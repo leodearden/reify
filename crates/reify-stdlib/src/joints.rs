@@ -566,7 +566,7 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
         // `Value::Undef`, the wrapper propagates that Undef unchanged.
         // See design decisions in the task-2676 plan.json.
         //
-        // End-to-end coverage lives in crates/reify-eval/tests/kinematic_stdlib_smoke.rs.
+        // End-to-end coverage lives in crates/reify-eval/tests/harness_fea_solver_e2e/kinematic_stdlib_smoke.rs.
 
         // `screw(parent, lead)` — wrap a prismatic driving joint as a screw.
         //
@@ -731,7 +731,8 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             }
         }
         "joint_jacobian" => {
-            // SE(3) twist column for a joint, returned as
+            // Jacobian column for a joint — the `JacobianColumn` nominal type
+            // (dpose/dq, NOT a Twist / spatial velocity), returned as
             // `Map { "angular": Vector3<DIMENSIONLESS>, "linear": Vector3<DIMENSIONLESS> }`.
             //
             // Per-kind formula (constant w.r.t. the motion variable for v0.1

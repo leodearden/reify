@@ -174,13 +174,14 @@ std::unique_ptr<OcctShape> fuse_all(const OcctShapeVec& shapes);
 
 // --- Boolean-op-pass counter (task 5213) ---
 
-/// Zero the process-global boolean-op-pass counter.
+/// Zero the CALLING THREAD's boolean-op-pass count.  The counter is per-thread;
+/// other threads' counts are untouched.
 void reset_boolean_pass_count();
 
-/// Read the process-global count of completed OCCT boolean passes.  Incremented
-/// once per successful Build() in boolean_fuse/boolean_cut/boolean_common and
-/// once per single-pass fuse_shape_list — so a K-instance pattern reads as
-/// exactly 1, not K−1.
+/// Read the calling thread's count of completed OCCT boolean passes — only the
+/// passes this thread performed itself.  Incremented once per successful Build()
+/// in boolean_fuse/boolean_cut/boolean_common and once per single-pass
+/// fuse_shape_list — so a K-instance pattern reads as exactly 1, not K−1.
 uint64_t boolean_pass_count();
 
 /// Classify `shape` by its top-level TopAbs_ShapeEnum, returning the canonical
@@ -191,6 +192,18 @@ rust::String shape_type_name(const OcctShape& shape);
 
 // --- Boolean operations ---
 
+/// Fuse / cut / intersect two shapes.
+///
+/// The stored result is NORMALIZED, not the raw `BRepAlgoAPI_*::Shape()`:
+/// BRepAlgoAPI always wraps its answer in a bare `TopoDS_COMPOUND`, which fails
+/// the SOLID|COMPSOLID|SHELL guard in `is_watertight`/`is_closed` and defeats
+/// `BRepExtrema_DistShapeShape`'s inner-solution test in
+/// `query_distance`/`min_clearance`. All three ops route through the shared
+/// `normalize_boolean_result` (occt_wrapper.cpp), which tightens the wrapper to
+/// the topology-preserving type the result actually is — one solid → bare
+/// SOLID, several → COMPSOLID, none → the compound untouched (task 7054).
+/// Callers must therefore classify the stored repr from the real shape (see
+/// `shape_type_name`) rather than assuming Solid.
 std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& right);
 std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& right);
 std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape& right);
@@ -796,6 +809,22 @@ std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
 // --- Thicken / Shell / Offset Solid ---
 
 std::unique_ptr<OcctShape> offset_solid_shape(const OcctShape& shape, double distance);
+
+/// Offset a single open face by `distance` along its normal using
+/// `BRepOffsetAPI_MakeOffsetShape` in Skin (surface) mode, producing a fresh
+/// parallel surface (offset_surface θ). Positive `distance` offsets along the
+/// face's +normal. Throws (surfaced as `Err`) when `distance` is ~0 or the
+/// result is degenerate/invalid.
+///
+/// Caller (`OcctKernel::execute`) registers the result as `BRepKind::Face`,
+/// which assumes a single-face input -- true for every current DSL surface
+/// producer (rectangle/circle/ellipse/nurbs_surface profiles). Skin mode
+/// also accepts a multi-face shell, but a shell input would offset to a
+/// shell result and the caller-side `BRepKind::Face` tag would then be
+/// inaccurate; there is no shell-valued surface producer today, so this is
+/// latent. Revisit (classify the result's actual TopoDS shape type, or
+/// reject shell input) if one is ever added.
+std::unique_ptr<OcctShape> make_offset_surface(const OcctShape& shape, double distance);
 
 std::unique_ptr<OcctShape> thicken_shape(const OcctShape& shape, double offset);
 

@@ -37,7 +37,7 @@ const EXAMPLE_PATH: &str = concat!(
 ///   - MountBad.has_bore   = is_some(parse_length("garbage"))                  = false
 ///
 /// This is the formatter-agnostic integration-gate assertion; the companion
-/// `crates/reify-cli/tests/cli_eval_fallback_recovery.rs` pins the same
+/// `crates/reify-cli/tests/harness_cli/cli_eval_fallback_recovery.rs` pins the same
 /// signal at the rendered-stdout binary surface (§1).
 #[test]
 fn fallback_recovery_example_evals_end_to_end() {

@@ -107,7 +107,7 @@ unit EUR : Money = 1.09
 | Concept | Location |
 |---------|----------|
 | Declaration site | `crates/reify-compiler/stdlib/units.ri` |
-| Regression tests | `crates/reify-compiler/tests/money_units_tests.rs` |
+| Regression tests | `crates/reify-compiler/tests/harness_units_materials/money_units_tests.rs` |
 
 ### Notes
 
@@ -167,7 +167,7 @@ literal, not `25USD` divided by a bare `kg` identifier. See `docs/prds/unit-expr
 
 ### Target test file
 
-`crates/reify-eval/tests/money_arithmetic_tests.rs` (owned by task 2379)
+`crates/reify-compiler/tests/harness_units_materials/money_arithmetic_tests.rs` (owned by task 2379)
 
 ---
 
@@ -311,8 +311,8 @@ task 2382 must not regress:
 The money-dimension feature is complete when all of the following hold:
 
 **(a) All sections 2–7 are implemented and their named tests pass:**
-- `crates/reify-compiler/tests/money_units_tests.rs` — §2 (task 2378)
-- `crates/reify-eval/tests/money_arithmetic_tests.rs` — §3 (task 2379)
+- `crates/reify-compiler/tests/harness_units_materials/money_units_tests.rs` — §2 (task 2378)
+- `crates/reify-compiler/tests/harness_units_materials/money_arithmetic_tests.rs` — §3 (task 2379)
 - `crates/reify-compiler/tests/money_force_diag_tests.rs` — §4 (task 2380)
 - Example `examples/cost-aggregation.ri` compiles and evaluates — §5 (task 2381)
 - LSP hover and diagnostics render user-visible names — §6 (task 2382)
@@ -351,8 +351,8 @@ or warning under `cargo test` or an equivalent integration harness.
 | § Overall design | `crates/reify-types/src/dimension.rs::money_content_hash_differs_from_other_base_dimensions` | landed |
 | § Overall design | `crates/reify-types/src/dimension.rs::content_hash_buffer_covers_slot_9` | landed |
 | § Overall design | `crates/reify-types/src/dimension.rs::money_does_not_leak_into_unrelated_arithmetic` | landed |
-| § Stdlib unit declaration | `crates/reify-compiler/tests/money_units_tests.rs` | in-flight (task 2378) |
-| § Quantity-literal arithmetic | `crates/reify-eval/tests/money_arithmetic_tests.rs` | in-flight (task 2379) |
+| § Stdlib unit declaration | `crates/reify-compiler/tests/harness_units_materials/money_units_tests.rs` | in-flight (task 2378) |
+| § Quantity-literal arithmetic | `crates/reify-compiler/tests/harness_units_materials/money_arithmetic_tests.rs` | in-flight (task 2379) |
 | § Dimension-mismatch diagnostic | `crates/reify-compiler/tests/money_force_diag_tests.rs` | in-flight (task 2380) |
 | § Cost-aggregation example | `examples/cost-aggregation.ri` | in-flight (task 2381) |
 | § Source-form display | `crates/reify-types/src/dimension.rs::to_display_units_recognises_money` | landed |

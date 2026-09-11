@@ -308,6 +308,14 @@ fn render_item(
     out.push_str(kw);
     out.push(' ');
     out.push_str(name);
+    // Type parameters (task #6342) render INSIDE the backtick code span — a
+    // bare `<T>` in a GFM heading is parsed as a raw HTML tag and silently
+    // swallowed.  The `<a id="…">` anchor below is emitted separately from
+    // `name` and stays the bare identifier, so item identity (anchors, TOC
+    // hrefs, cross-refs, split-mode filenames) is unaffected.
+    if let Some(generics) = crate::util::join_type_params(item.type_params()) {
+        out.push_str(&generics);
+    }
     out.push_str("` <a id=\"");
     out.push_str(name);
     out.push_str("\"></a>\n\n");
@@ -367,7 +375,7 @@ fn render_item(
             render_constraints(out, constraints);
             render_meta(out, meta);
         }
-        ItemKind::Trait { members } => {
+        ItemKind::Trait { members, .. } => {
             render_trait_members(out, members);
         }
         ItemKind::Function { signature } => {
@@ -391,7 +399,7 @@ fn render_item(
         ItemKind::Unit { base_unit, scale } => {
             render_unit_body(out, base_unit, scale);
         }
-        ItemKind::TypeAlias { type_repr } => {
+        ItemKind::TypeAlias { type_repr, .. } => {
             render_type_alias_body(out, type_repr);
         }
         ItemKind::ConstraintDef { expr_repr } => {

@@ -52,6 +52,12 @@ const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
 
 /// Extract an `f64` from a numeric value cell (`Int` / `Real` / dimensioned
 /// `Scalar`). Mirrors `dynamics_ops::cell_f64`; non-numeric cells yield `None`.
+///
+/// **This is where the dimension is ERASED.** The `Value::Scalar` arm takes
+/// `si_value` and DISCARDS the `DimensionVector` outright, so every `f64` this
+/// function returns is an undimensioned SI magnitude and the caller carries the
+/// dimensional meaning implicitly. See [`compliance_cell_f64`] for the full
+/// declaration of that contract and why it is not gated here (#6184).
 fn cell_f64(v: &Value) -> Option<f64> {
     match v {
         Value::Int(n) => Some(*n as f64),
@@ -97,7 +103,62 @@ fn cell_mass_f64(v: &Value) -> Option<f64> {
 /// for the dimension-stripping step, accepting `Int` and `Real` as well as
 /// `Scalar`. Used by `joint_compliance` to read `spring_rate`, `damping`,
 /// and `neutral` from a flexure joint Map in either the bare-Scalar shape
-/// that `make_flexure_joint` emits today or an Option-wrapped future shape.
+/// that `make_flexure_joint` emits today or an Option-wrapped future shape —
+/// and by the RNEA link loop to read the joint coordinate `q` itself (both
+/// call sites are enumerated under "Dimension erasure" below).
+///
+/// # Dimension erasure — a declared, deliberate one (INV-AD-4; #6184)
+///
+/// This reader takes the SI-coherent magnitude and DISCARDS the
+/// `DimensionVector` (the erasure itself happens in [`cell_f64`]). Every value
+/// it returns is an undimensioned SI `f64`, and each caller carries the
+/// dimensional meaning implicitly. There are TWO callers, not one, and they
+/// erase different things:
+///
+/// 1. `joint_compliance` reads the flexure-joint Map — `spring_rate`,
+///    `damping`, `neutral`. Their dimensions are whatever the joint's own
+///    generalized coordinate implies.
+/// 2. The RNEA link-building loop in `snapshot_inverse_dynamics` reads the
+///    per-body generalized coordinate `q` ITSELF out of `positions`, and hands
+///    the bare `f64` straight to `joint_compliance` as its `position` argument.
+///    That site erases the COORDINATE's own dimension — an ANGLE for a revolute
+///    joint, a LENGTH for a prismatic one.
+///
+/// Site 2 is the one an audit of the erasure surface most needs to find, and it
+/// is what makes that surface more than just the spring/damping constants:
+/// `spring_rate` (possibly `ROTATIONAL_STIFFNESS`, carrying rad⁻²), `neutral`
+/// (an ANGLE) and `q` (the same ANGLE) are erased as a COHERENT SET, not as
+/// three unrelated scalars. The spring term `−k·(q − neutral)` is only
+/// meaningful because all three agree, and after this reader nothing in the
+/// types records that they do.
+///
+/// The ANGULAR cases are why this site is declared here rather than left
+/// implicit: for a ROTATIONAL PRB flexure joint, `spring_rate` may be
+/// `ROTATIONAL_STIFFNESS` (N·m/rad², i.e. carrying rad⁻²) and `neutral` is an
+/// ANGLE (this module's own tests use `neutral = π/12` with `position = π/6`).
+/// Under rad = 1 SI coherence the erased `f64` is NUMERICALLY CORRECT — the
+/// defect INV-AD-4 names is that nothing DECLARED it.
+///
+/// ## Contrast: the house declared-bridge pattern
+///
+/// The guarded sibling is `spring_rate_for_lumped_dof` in
+/// `crates/reify-eval/src/modal_ops.rs`, whose `StiffnessSkipKind` enum REFUSES
+/// `ROTATIONAL_STIFFNESS` outright (and refuses any other unexpected dimension
+/// rather than silently propagating an upstream labelling bug).
+///
+/// The two differ for a real reason, not by oversight: that model's eigenvalue
+/// is `λ = k / m_body`, which is only valid for ONE dimension, so it MUST gate —
+/// `k_θ / m` is dimensionally wrong and the correct eigenvalue there is
+/// `k_θ / I_body`. This reader instead hands each value on in whatever
+/// generalized coordinate the joint already declares, so a gate would need that
+/// coordinate's dimension threaded in at BOTH call sites above — and site 2 is
+/// the harder half, because `positions` carries a bare per-body value with no
+/// joint-type context at that point, so the joint's DECLARED coordinate
+/// dimension would have to be plumbed through to reach it. That is exactly the
+/// dimension-checked-readers work PRD 5 owns (see the PRD-5 reader-gating
+/// bookmark in `docs/prds/v0_6/angle-dimension-completion.md`). Adding a guard
+/// here today would be a behaviour change, which this declarations-only leaf
+/// deliberately does not make.
 fn compliance_cell_f64(v: &Value) -> Option<f64> {
     match v {
         Value::Option(Some(inner)) => compliance_cell_f64(inner),
@@ -1000,13 +1061,25 @@ fn slice_generalized(arg: &Value, dof_counts: &[usize]) -> Option<Vec<Vec<f64>>>
 /// τ-arity mismatch against the kind's DOF count.
 fn joint_force_value(kind: &str, tau: &[f64]) -> Option<Value> {
     let components = |t: &[f64]| Value::List(t.iter().map(|&x| Value::Real(x)).collect());
-    let scalar = |type_name: &str, t: &[f64]| -> Option<Value> {
+    // `ScalarForce.magnitude` / `ScalarTorque.magnitude` are declared `: Force`
+    // / `: Torque` in stdlib/dynamics.ri (task 6098), so mint them dimensioned —
+    // same shape `make_mass_properties` already uses for `mass`. A bare
+    // `Value::Real` here would pass `reify check` but evaluate to undef with an
+    // OpContractViolation as soon as the field is read into dimensioned
+    // arithmetic.
+    let scalar = |type_name: &str, dimension: DimensionVector, t: &[f64]| -> Option<Value> {
         if t.len() != 1 {
             return None;
         }
         Some(mint_instance(
             type_name,
-            vec![("magnitude".to_string(), Value::Real(t[0]))],
+            vec![(
+                "magnitude".to_string(),
+                Value::Scalar {
+                    si_value: t[0],
+                    dimension,
+                },
+            )],
         ))
     };
     let multi = |type_name: &str, t: &[f64], dof: usize| -> Option<Value> {
@@ -1019,8 +1092,10 @@ fn joint_force_value(kind: &str, tau: &[f64]) -> Option<Value> {
         ))
     };
     match kind {
-        "revolute" => scalar("ScalarTorque", tau),
-        "prismatic" => scalar("ScalarForce", tau),
+        // TORQUE carries an Angle⁻¹ slot (N·m/rad) and is deliberately distinct
+        // from ENERGY — use the registry vector, never a FORCE·LENGTH product.
+        "revolute" => scalar("ScalarTorque", DimensionVector::TORQUE, tau),
+        "prismatic" => scalar("ScalarForce", DimensionVector::FORCE, tau),
         "cylindrical" => multi("CylForce", tau, 2),
         "planar" => multi("PlanarForce", tau, 3),
         "spherical" => multi("SphereForce", tau, 3),
@@ -2279,6 +2354,104 @@ mod tests {
             joint_force_value("flapper", &[1.0]).is_none(),
             "unknown joint kind must be None"
         );
+    }
+
+    // ── task 6098: the minted scalar magnitudes are DIMENSIONED ───────────────
+    //
+    // `ScalarForce.magnitude` / `ScalarTorque.magnitude` are declared `: Force`
+    // / `: Torque` in stdlib/dynamics.ri.  `joint_force_value` is the sole
+    // producer of these instances, so it must mint `Value::Scalar` rather than
+    // a bare `Value::Real` — a bare Real in a dimensioned slot passes
+    // `reify check` clean but evaluates to `undef` with an
+    // `OpContractViolation` the moment the field is read into dimensioned
+    // arithmetic, i.e. the declared type would be a silent runtime lie.
+    //
+    // These assertions destructure the VARIANT deliberately.  Going through
+    // `cell_f64` / `num` would be vacuous: both already accept `Value::Scalar`
+    // and strip the dimension, so they cannot tell the two shapes apart (which
+    // is exactly why the ~17 existing read sites need no migration).
+
+    #[test]
+    fn joint_force_value_mints_dimensioned_scalar_magnitudes() {
+        // prismatic → ScalarForce { magnitude: Scalar<FORCE> }
+        let r = joint_force_value("prismatic", &[2.5]).expect("prismatic/1");
+        match field(&r, "ScalarForce", "magnitude") {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!(
+                    (si_value - 2.5).abs() < 1e-12,
+                    "ScalarForce.magnitude si_value should be τ[0] = 2.5, got {si_value}"
+                );
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::FORCE,
+                    "ScalarForce.magnitude is declared `: Force` in stdlib/dynamics.ri, \
+                     so the η dispatcher must mint it newton-dimensioned"
+                );
+            }
+            other => panic!(
+                "ScalarForce.magnitude must be a dimensioned Value::Scalar, not a \
+                 bare Real (task 6098); got {other:?}"
+            ),
+        }
+
+        // revolute → ScalarTorque { magnitude: Scalar<TORQUE> }
+        // TORQUE carries an Angle⁻¹ slot (N·m/rad) and is distinct from ENERGY;
+        // assert the registry vector directly, never a FORCE·LENGTH composition.
+        let r = joint_force_value("revolute", &[0.4905]).expect("revolute/1");
+        match field(&r, "ScalarTorque", "magnitude") {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!(
+                    (si_value - 0.4905).abs() < 1e-12,
+                    "ScalarTorque.magnitude si_value should be τ[0] = 0.4905, got {si_value}"
+                );
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::TORQUE,
+                    "ScalarTorque.magnitude is declared `: Torque` in stdlib/dynamics.ri, \
+                     so the η dispatcher must mint it N·m-dimensioned"
+                );
+            }
+            other => panic!(
+                "ScalarTorque.magnitude must be a dimensioned Value::Scalar, not a \
+                 bare Real (task 6098); got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn joint_force_value_leaves_multi_component_kinds_dimensionless() {
+        // The List<Real> multi-component variants are explicitly out of scope
+        // for task 6098; this guards against the dimensioning leaking into
+        // them. All three go through the same `multi` closure, so all three
+        // are checked — a single-kind spot check would understate the guard.
+        for (kind, type_name, dof) in [
+            ("cylindrical", "CylForce", 2usize),
+            ("planar", "PlanarForce", 3),
+            ("spherical", "SphereForce", 3),
+        ] {
+            let tau: Vec<f64> = (0..dof).map(|i| 1.0 + i as f64).collect();
+            let r = joint_force_value(kind, &tau)
+                .unwrap_or_else(|| panic!("{kind}/{dof} should mint a {type_name}"));
+            match field(&r, type_name, "components") {
+                Value::List(comps) => {
+                    assert_eq!(comps.len(), dof, "{type_name} component count");
+                    for (i, c) in comps.iter().enumerate() {
+                        assert!(
+                            matches!(c, Value::Real(_)),
+                            "{type_name}.components is declared `List<Real>` and must \
+                             stay dimensionless; component {i} was {c:?}"
+                        );
+                    }
+                }
+                other => panic!("{type_name}.components must be a Value::List, got {other:?}"),
+            }
+        }
     }
 
     // ── step-7 RED: closed-chain inverse_dynamics routing smoke test ───────────

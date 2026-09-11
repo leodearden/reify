@@ -28,6 +28,8 @@
 #include <BRepAlgoAPI_Common.hxx>
 
 // OCCT fillet / chamfer
+#include <BRepTools_History.hxx>
+#include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <TopExp.hxx>
@@ -141,6 +143,7 @@
 // OCCT STEP export
 #include <STEPControl_Writer.hxx>
 #include <STEPControl_Controller.hxx>
+#include <StepData_StepModel.hxx>
 #include <Interface_Static.hxx>
 #include <Standard_Failure.hxx>
 
@@ -166,7 +169,6 @@
 #include <fstream>
 #include <cstdio>
 #include <cmath>
-#include <atomic>
 #include <mutex>
 #include <stdexcept>
 
@@ -574,22 +576,42 @@ std::unique_ptr<OcctShape> make_half_space(double px, double py, double pz,
 
 // --- Boolean-op-pass counter (task 5213) ---
 
-// Process-global count of completed OCCT boolean passes, incremented once per
+// PER-THREAD count of completed OCCT boolean passes, incremented once per
 // successful Build() in boolean_fuse/boolean_cut/boolean_common and once in the
-// single-pass fuse_shape_list.  Deterministic (an exact integer, not a
-// tolerance) and non-flaky: it lets tests assert that a K-instance pattern
-// performs exactly ONE boolean pass rather than K−1.  Also a first
-// instrumentation seed for future long-boolean progress reporting (Lever 4).
-// memory_order_relaxed is sufficient: tests reset/read under a mutex, so there
-// is no cross-thread ordering dependency to establish.
-static std::atomic<uint64_t> g_boolean_pass_count{0};
+// single-pass fuse_shape_list.  Each thread observes only the boolean passes it
+// performed itself, and reset_boolean_pass_count() zeroes the CALLING thread's
+// count only.  Deterministic (an exact integer, not a tolerance) and non-flaky:
+// it lets tests assert that a K-instance pattern performs exactly ONE boolean
+// pass rather than K−1.  It is a TEST-OBSERVABILITY hook, NOT a progress-
+// reporting one: production callers drive OCCT through OcctKernelHandle's
+// dedicated worker thread, so a reporter on any other thread reads a permanent
+// 0.  A cross-thread progress signal would need its own process-global
+// aggregate, deliberately not added here because nothing consumes one today.
+//
+// Per-thread rather than process-global because task #5277 folded all
+// reify-kernel-occt integration tests into ONE `harness_occt` binary: a
+// process-global counter is contaminated by any concurrently-scheduled test
+// that performs a boolean, so a reset→operate→read window could no longer be
+// trusted.  Per-thread storage restores the isolation that per-binary processes
+// used to provide, and does so in every execution mode (plain `cargo test`,
+// `--test-threads=1`, and nextest's process-per-test) rather than only under
+// the last.  It is sound because all four increment sites run synchronously on
+// the calling thread immediately after the corresponding Build() returns, so no
+// pass is ever attributed to a thread other than the one that performed it.
+//
+// `static` (internal linkage) matches the file's convention for file-scope
+// state (cf. g_step_export_mutex): nothing outside this TU names the variable —
+// only the two accessors below — so exporting the TLS symbol would needlessly
+// widen the ABI surface and force the general-dynamic TLS access model
+// (a __tls_get_addr call) at every increment site instead of local-exec.
+static thread_local uint64_t t_boolean_pass_count = 0;
 
 void reset_boolean_pass_count() {
-    g_boolean_pass_count.store(0, std::memory_order_relaxed);
+    t_boolean_pass_count = 0;
 }
 
 uint64_t boolean_pass_count() {
-    return g_boolean_pass_count.load(std::memory_order_relaxed);
+    return t_boolean_pass_count;
 }
 
 // --- Compound assembly ---
@@ -624,6 +646,367 @@ std::unique_ptr<OcctShape> make_compound(const OcctShapeVec& shapes) {
     });
 }
 
+// --- Shared boolean-result normalization (task 7054) ---
+
+// Normalize a raw `BRepAlgoAPI_*::Shape()` to the tightest topology-preserving
+// type before it is stored on an `OcctShape`.
+//
+// Every BRepAlgoAPI boolean — the binary `Fuse`/`Cut`/`Common` constructors as
+// well as the general SetArguments/SetTools path — wraps its answer in a bare
+// `TopoDS_COMPOUND`, whether or not the operands actually merged. Storing that
+// wrapper verbatim is user-visible in two ways:
+//
+//   * `is_watertight` / `is_closed` guard on SOLID|COMPSOLID|SHELL, so a
+//     genuinely closed body reports NOT watertight.
+//   * `BRepExtrema_DistShapeShape` (behind `query_distance` / `min_clearance`)
+//     only runs its inner-solution / SolidTreatment test when a top-level
+//     operand IS a `TopAbs_SOLID`, so a fully-contained probe silently reads
+//     the boundary-to-boundary distance instead of 0.
+//
+// The unwrap rule below is task 5213's reviewed treatment, lifted here verbatim
+// so every boolean entry point inherits exactly one semantics:
+//
+//   - exactly one solid  → the bare SOLID (operands merged into a single body).
+//     Returning a COMPSOLID here would misclassify one solid as a multi-body
+//     aggregate.
+//   - two or more solids → a COMPSOLID (disjoint multi-body result) which,
+//     unlike a bare COMPOUND, passes the SOLID|COMPSOLID|SHELL guard and
+//     reports the correct per-solid component count.
+//   - no solids          → leave the compound untouched (nothing to tighten).
+//
+// Any non-COMPOUND input is returned unchanged.
+//
+// LOSSLESSNESS PRECONDITION (amendment, esc review #2): the rule above collects
+// only `TopAbs_SOLID` sub-shapes, so applying it to a MIXED compound — one that
+// also carries a free SHELL / FACE / EDGE / VERTEX, which `BRepAlgoAPI_Common`
+// and `BRepAlgoAPI_Cut` do legitimately emit when operands touch tangentially
+// or the result degenerates — would silently DISCARD that geometry. That was
+// tolerable while the rule was confined to `fuse_shape_list` (n-ary fuse of
+// solid instances); it is not, now that every boolean in the system routes
+// through it, and `extract_boolean_history` builds its result face/edge maps
+// from the returned shape, so a child living on a dropped free face would stop
+// resolving and inflate `silent_drop_count`. `compound_holds_only_solids`
+// therefore gates the whole unwrap: a mixed compound is returned VERBATIM,
+// accepting the (pre-existing) COMPOUND symptoms for that shape rather than
+// losing geometry to fix them.
+//
+// MEASURED (OCCT 7.8, through the kernel's own API — see
+// `empty_boolean_results_stay_untouched_compounds`): no solid-solid boolean in
+// this kernel reaches the mixed case TODAY. `BRepAlgoAPI_Common` on cubes that
+// touch at a face or an edge returns an EMPTY compound rather than the free
+// contact face, and a boolean whose operand is a free FACE is rejected before
+// it reaches OCCT. So this gate is defense-in-depth for a non-solid operand
+// becoming reachable — not a live path — and it costs one direct-children walk.
+//
+// Descends through nested COMPOUNDs so a compound-of-compounds-of-solids — the
+// shape the general SetArguments/SetTools BOP path can produce — is still
+// unwrappable. An empty compound trivially satisfies the predicate and then
+// falls out of the `solids.Extent() == 0` arm untouched.
+bool compound_holds_only_solids(const TopoDS_Shape& shape) {
+    for (TopoDS_Iterator it(shape); it.More(); it.Next()) {
+        const TopAbs_ShapeEnum child_type = it.Value().ShapeType();
+        if (child_type == TopAbs_SOLID || child_type == TopAbs_COMPSOLID) {
+            continue;
+        }
+        if (child_type == TopAbs_COMPOUND) {
+            if (!compound_holds_only_solids(it.Value())) {
+                return false;
+            }
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
+TopoDS_Shape unwrap_boolean_compound(const TopoDS_Shape& raw) {
+    if (raw.ShapeType() != TopAbs_COMPOUND) {
+        return raw;
+    }
+    if (!compound_holds_only_solids(raw)) {
+        // Mixed compound: unwrapping would drop the free lower-dimensional
+        // children. Preserve the topology exactly as OCCT handed it over.
+        return raw;
+    }
+    TopTools_ListOfShape solids;
+    for (TopExp_Explorer ex(raw, TopAbs_SOLID); ex.More(); ex.Next()) {
+        solids.Append(ex.Current());
+    }
+    if (solids.Extent() == 1) {
+        return TopoDS::Solid(solids.First());
+    }
+    if (solids.Extent() > 1) {
+        TopoDS_CompSolid cs;
+        BRep_Builder builder;
+        builder.MakeCompSolid(cs);
+        for (TopTools_ListIteratorOfListOfShape sit(solids); sit.More(); sit.Next()) {
+            builder.Add(cs, TopoDS::Solid(sit.Value()));
+        }
+        return cs;
+    }
+    return raw;
+}
+
+// True iff no two solids anywhere in `operands` can touch — i.e. every pair of
+// their bounding boxes is disjoint, so the boolean about to be normalized
+// provably merged nothing and `ShapeUpgrade_UnifySameDomain` has nothing to do
+// (see the call site for why that matters, and for why the same test over the
+// RESULT would be unsound).
+//
+// Returns false when the operands carry fewer than two solids in total: a
+// single solid is exactly the case unification exists for, and must never be
+// skipped.
+//
+// Boxes come from the GEOMETRY, not the triangulation, and are enlarged by
+// OCCT's own `Bnd_Box` gap only (`BRepBndLib::Add` already inflates by the
+// shape tolerance); `Bnd_Box::IsOut` is then the exact separation test.
+// `useTriangulation` must stay explicitly false: it DEFAULTS to true
+// (BRepBndLib.hxx), and on a shape that already carries a triangulation the
+// chordal box can UNDERSTATE a curved solid's true extent — biasing the answer
+// toward "disjoint", which is the one direction this predicate may never err
+// in. Any doubt must resolve to "not disjoint", which merely runs the
+// unification pass.
+bool boolean_operand_solids_are_pairwise_disjoint(const TopTools_ListOfShape& operands) {
+    std::vector<Bnd_Box> boxes;
+    for (TopTools_ListIteratorOfListOfShape it(operands); it.More(); it.Next()) {
+        for (TopExp_Explorer ex(it.Value(), TopAbs_SOLID); ex.More(); ex.Next()) {
+            Bnd_Box box;
+            BRepBndLib::Add(ex.Current(), box, /*useTriangulation=*/Standard_False);
+            if (box.IsVoid()) {
+                return false;
+            }
+            boxes.push_back(box);
+        }
+    }
+    if (boxes.size() < 2) {
+        return false;
+    }
+    for (std::size_t i = 0; i + 1 < boxes.size(); ++i) {
+        for (std::size_t j = i + 1; j < boxes.size(); ++j) {
+            if (!boxes[i].IsOut(boxes[j])) {
+                // First overlap wins: the abutting case exits here immediately.
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// True iff `unified` encloses the same volume as `before` to within a relative
+// tolerance — the fail-soft acceptance test for a `ShapeUpgrade_UnifySameDomain`
+// pass (see `normalize_boolean_result`).
+//
+// Vacuously true when `before` carries no solids: there is no volume to compare
+// and the check cannot discriminate.
+bool unify_history_preserves_volume(const TopoDS_Shape& before, const TopoDS_Shape& unified) {
+    // Relative, not absolute: the same predicate has to hold for a 1 mm³ detail
+    // and a 10⁹ mm³ enclosure. 1e-9 is ~three orders above f64 round-off on the
+    // O(faces) Gauss sum and far below any real topological loss (the cheapest
+    // possible corruption — dropping one face of a cube — is a 100% error).
+    constexpr double kVolumeRelTol = 1.0e-9;
+    bool has_solid = false;
+    for (TopExp_Explorer ex(before, TopAbs_SOLID); ex.More(); ex.Next()) {
+        has_solid = true;
+        break;
+    }
+    if (!has_solid) {
+        return true;
+    }
+    GProp_GProps before_props;
+    BRepGProp::VolumeProperties(before, before_props);
+    GProp_GProps after_props;
+    BRepGProp::VolumeProperties(unified, after_props);
+    const double v_before = before_props.Mass();
+    const double v_after = after_props.Mass();
+    if (!std::isfinite(v_before) || !std::isfinite(v_after)) {
+        return false;
+    }
+    const double scale = std::abs(v_before);
+    if (scale == 0.0) {
+        return std::abs(v_after) == 0.0;
+    }
+    return std::abs(v_after - v_before) <= kVolumeRelTol * scale;
+}
+
+// The single normalization entry point shared by `boolean_fuse`,
+// `boolean_cut`, `boolean_common` and `fuse_shape_list`.
+//
+// Deliberately uniform across all four ops: an asymmetry in which, say,
+// `intersection()` returned a fragmented COMPOUND while `union()` returned a
+// clean SOLID would make `is_watertight`, containment and STEP export depend on
+// which operator produced the body, with nothing in the type system to signal
+// it.
+//
+// CALLER CONTRACT: assign the returned shape to `OcctShape::shape` BEFORE
+// anything queries that `OcctShape`. occt_wrapper.h documents an IMMUTABLE
+// POST-CONSTRUCTION INVARIANT under which the three lazy topology-map caches
+// (`face_map`, `edge_map`, `edge_face_map`) are populated once and never
+// invalidated — there is no version counter, no guard and no assert, so
+// assigning `shape` after a map has been built silently stales it.
+// History-returning overload. `out_unify_history` receives the
+// `BRepTools_History` describing what the unification pass did to the
+// unwrapped shape's sub-shapes, so a caller tracking per-sub-shape provenance
+// (`extract_boolean_history`) can CHAIN boolean-child -> unified-survivor.
+// Left as a NULL handle when no unification pass ran, which callers must treat
+// as "every child survived unchanged".
+TopoDS_Shape normalize_boolean_result(const TopoDS_Shape& raw,
+                                      const TopTools_ListOfShape& operands,
+                                      Handle(BRepTools_History)& out_unify_history) {
+    TopoDS_Shape unwrapped = unwrap_boolean_compound(raw);
+
+    // PAIRWISE-DISJOINT-OPERAND SHORT-CIRCUIT.
+    //
+    // Unification is a full topology rebuild whose cost scales with the FACE
+    // COUNT of the whole shape, and `fuse_shape_list` is the shared tail of all
+    // four pattern realizers — so a 1000-instance pattern would otherwise pay a
+    // rebuild over every face of every instance. When no two of the OPERANDS'
+    // solids can touch, nothing merged: this boolean is a re-wrap, the result's
+    // topology IS the operands' topology, and so this boolean introduced no
+    // seam for the pass to remove.
+    //
+    // THE SAME TEST OVER THE RESULT IS UNSOUND — do not reintroduce it. The
+    // seams unification exists to remove are created BY THE BOOLEAN BEING
+    // NORMALIZED, so a boolean that merges some operands into a cluster while
+    // other bodies stay far away hands back top-level solids that ARE pairwise
+    // disjoint and yet carry brand-new coplanar seams. Measured on the
+    // result-side form: `fuse_all([a, abutting, far])` kept 16 faces where the
+    // merged prism plus the far cube is 12.  A two-operand test cannot expose
+    // this, because with two operands "nothing could have merged" and "the
+    // result's solids are disjoint" coincide; the three-body guards named below
+    // are what pin it.
+    //
+    // Cost of the check is O(N²) cheap bbox overlap tests with an early exit on
+    // the FIRST overlap, so the abutting case — where unification is the point —
+    // bails out almost immediately; the disjoint case pays the full N²
+    // (≈500k six-float comparisons at N=1000, microseconds) to save the rebuild.
+    // The single-solid case, which is the overwhelmingly common binary boolean
+    // and the one unification exists for, never takes this branch.
+    //
+    // MEASURED (release build, OCCT 7.8, `fuse_all` over N unit boxes, 3 reps;
+    // the host was concurrently loaded, hence the spread — the disjoint-arm
+    // ratio is stable across every rep):
+    //
+    //   disjoint N=100   unify-always 182 / 382 / 378 ms   short-circuit  94 / 100 / 191 ms
+    //   disjoint N=1000  unify-always 2.30 / 3.91 / 2.93 s short-circuit 1.20 / 1.27 / 1.25 s
+    //   abutting N=1000  unify-always 5.86 / 8.19 / 6.07 s short-circuit 4.75 / 10.9 / 4.84 s
+    //
+    // i.e. the pass roughly DOUBLED disjoint pattern realization (~2.3× at the
+    // medians) for zero topological benefit, and the abutting control — which
+    // does not take this branch — shows no systematic difference. Face counts
+    // were bit-identical across both arms (600 at N=100, 6000 at N=1000
+    // disjoint; 6 abutting), which is the correctness-neutrality evidence:
+    // `disjoint_fuse_merges_nothing_and_the_abutting_control_still_merges` in
+    // `boolean_result_normalization_integration.rs` pins it as a standing guard,
+    // since the existing `boolean_pass_count()` perf guard counts BOP passes
+    // only and is structurally blind to this cost. Its three-body siblings
+    // there (`n_ary_fuse_of_a_cluster_plus_a_far_body_unifies_the_cluster` and
+    // the nested-binary / grid-pattern cases) pin the other half: that the skip
+    // stays predicated on the operands.
+    //
+    // The measurements above were taken on disjoint OPERANDS, so they still
+    // describe the arm that fires: a pure-disjoint `fuse_all` has
+    // pairwise-disjoint operands, so re-predicating on the operands preserves
+    // the win by construction. Re-measured on a prototype of exactly this
+    // change (architect, release build, OCCT 7.8): disjoint `fuse_all` at
+    // N=200 costs 312 ms for 1200 faces, in line with the N=100 short-circuit
+    // numbers above.
+    if (boolean_operand_solids_are_pairwise_disjoint(operands)) {
+        // NULL history — callers must read that as "every child survived
+        // unchanged", which is exactly true when no unification pass ran.
+        out_unify_history = Handle(BRepTools_History)();
+        return unwrapped;
+    }
+
+    // Merge same-domain faces and edges. A boolean leaves the seam where its
+    // operands met even when both sides lie on ONE surface, so a fuse chain
+    // (e.g. the compiler's `rounded_box` desugar — five successive fuses)
+    // hands back each logical planar face as many coplanar fragments. That is
+    // invisible in volume but very visible to a designer: a bbox-based edge
+    // selector picks up every phantom seam edge, and a curated fillet over
+    // that selection either explodes the face count or fails outright.
+    //
+    // SetSafeInputMode is deliberately left at its OCCT default of TRUE
+    // (documented at ShapeUpgrade_UnifySameDomain.hxx). With safe-input mode
+    // OFF, OCCT is permitted to modify the INPUT shape in place — and this
+    // kernel shares and caches operand `OcctShape`s across handles under
+    // occt_wrapper.h's IMMUTABLE POST-CONSTRUCTION INVARIANT, where the three
+    // lazy topology-map caches are populated once and never invalidated (no
+    // version counter, no guard, no assert). An in-place operand mutation
+    // would silently stale caches other handles are already reading, yielding
+    // wrong face/edge indices with no error anywhere. Do not turn it off as
+    // an optimisation.
+    ShapeUpgrade_UnifySameDomain unifier(
+        unwrapped,
+        /*UnifyEdges=*/Standard_True,
+        /*UnifyFaces=*/Standard_True,
+        /*ConcatBSplines=*/Standard_False);
+    TopoDS_Shape unified;
+    Handle(BRepTools_History) unify_history;
+    try {
+        unifier.Build();
+        unified = unifier.Shape();
+        // ShapeUpgrade_UnifySameDomain provides a history place holder and
+        // collects into it BY DEFAULT (documented at
+        // ShapeUpgrade_UnifySameDomain.hxx), so this is non-null after Build().
+        unify_history = unifier.History();
+    } catch (const Standard_Failure&) {
+        // Fall through to the fail-soft check below with a null `unified`.
+        unified = TopoDS_Shape();
+    }
+
+    // FAIL-SOFT ACCEPTANCE (amendment, esc review #3).
+    //
+    // `ShapeUpgrade_UnifySameDomain` has NO `IsDone()`, raises nothing on a bad
+    // merge, and is known to occasionally produce a degenerate or invalid face
+    // on tangent / periodic surfaces. Since this pass now sits on the single
+    // chokepoint every boolean flows through, accepting its output blind would
+    // let ONE bad unification corrupt the stored shape for every downstream
+    // consumer (volume, mass, STEP export, selectors) with no error anywhere:
+    // `is_watertight` would go false, but volume / mass / export would silently
+    // use the bad body.
+    //
+    // Volume is the cheap discriminator (O(faces), the same order as the pass
+    // itself, versus a full `BRepCheck_Analyzer` sweep) and it is exactly what
+    // unification must NOT change: merging same-domain faces re-describes the
+    // boundary, it does not move it. So: if the unified body's volume drifts
+    // from the unwrapped one's, or the shape came back null/empty, discard the
+    // unification and return `unwrapped` with a NULL history — which callers
+    // already treat as "every child survived unchanged", keeping
+    // `extract_boolean_history` correct on the fallback path too.
+    //
+    // The check is skipped when the unwrapped shape carries no volume (no
+    // solids), where it cannot discriminate; that shape has nothing for the
+    // unifier to get wrong at the solid level either.
+    const bool unified_usable = !unified.IsNull() && unify_history_preserves_volume(unwrapped, unified);
+    if (!unified_usable) {
+        out_unify_history = Handle(BRepTools_History)();
+        return unwrapped;
+    }
+    out_unify_history = unify_history;
+
+    // Unification can re-wrap its output in a compound, so tighten once more.
+    // Unwrapping never changes any sub-shape's identity — it only re-wraps the
+    // solids — so indices taken from the unify history stay valid against the
+    // returned shape's face/edge maps.
+    return unwrap_boolean_compound(unified);
+}
+
+// Convenience overload for the callers that do not track provenance
+// (`boolean_fuse` / `boolean_cut` / `boolean_common` / `fuse_shape_list`).
+TopoDS_Shape normalize_boolean_result(const TopoDS_Shape& raw,
+                                      const TopTools_ListOfShape& operands) {
+    Handle(BRepTools_History) unused;
+    return normalize_boolean_result(raw, operands, unused);
+}
+
+// The operand list for a binary boolean, in the order the op received them.
+TopTools_ListOfShape operand_pair(const TopoDS_Shape& left, const TopoDS_Shape& right) {
+    TopTools_ListOfShape operands;
+    operands.Append(left);
+    operands.Append(right);
+    return operands;
+}
+
 // --- Single-pass n-ary fuse (task 5213, Lever 1) ---
 
 // Fuse every member of `shapes` into a single result in ONE BOP pass.
@@ -638,16 +1021,19 @@ std::unique_ptr<OcctShape> make_compound(const OcctShapeVec& shapes) {
 //   - 1 element  → returned as-is (no BOP; identity)
 //   - N elements → single-pass fuse
 //
-// The general BOP path (SetArguments/SetTools) always wraps its output in a
-// TopoDS_COMPOUND, regardless of whether the inputs merged.  We normalize that
-// wrapper to the tightest topology-preserving type: a COMPOUND holding one
-// solid (overlapping inputs merged into a single body) is unwrapped to that
-// bare SOLID, while a COMPOUND holding multiple solids (fully-DISJOINT inputs)
-// is rewrapped as a TopoDS_COMPSOLID — a bare compound is not
-// watertight-queryable (`is_watertight` excludes COMPOUND), whereas a COMPSOLID
-// preserves total volume and per-solid component count while passing the
-// SOLID|COMPSOLID|SHELL type guard.  Defined here — ahead of the four pattern
-// realizers below — so they can share this one helper.
+// The result is normalized by the shared `normalize_boolean_result` above,
+// exactly as the three binary boolean ops are (task 7054): the COMPOUND the
+// general BOP path always wraps its output in is tightened to the tightest
+// topology-preserving type, and same-domain faces/edges are merged — the
+// latter skipped when the OPERANDS' solids are pairwise bbox-disjoint, so
+// nothing could have merged and there is provably nothing to remove. That is
+// the common pattern-realization case, and where the skip recovers the whole
+// cost of the pass.  See that helper for the full contract; the short version is that a
+// bare COMPOUND is not watertight-queryable (`is_watertight` excludes it),
+// whereas the SOLID / COMPSOLID it unwraps to preserves total volume and
+// per-solid component count while passing the SOLID|COMPSOLID|SHELL guard.
+// Defined here — ahead of the four pattern realizers below — so they can share
+// this one helper.
 TopoDS_Shape fuse_shape_list(const TopTools_ListOfShape& shapes) {
     if (shapes.IsEmpty()) {
         throw std::runtime_error("fuse_shape_list: input shape list must not be empty");
@@ -671,38 +1057,11 @@ TopoDS_Shape fuse_shape_list(const TopTools_ListOfShape& shapes) {
         throw std::runtime_error("fuse_shape_list: BRepAlgoAPI_Fuse failed (IsDone=false)");
     }
     // One completed boolean pass, regardless of instance count (task 5213).
-    g_boolean_pass_count.fetch_add(1, std::memory_order_relaxed);
-    TopoDS_Shape result = fuse.Shape();
-    // The general BOP path (SetArguments/SetTools) always wraps its output in a
-    // TopoDS_COMPOUND.  Normalize that wrapper to the tightest type that
-    // preserves the union's topology so downstream repr/query code sees the
-    // true kind:
-    //   - exactly one solid  → the bare SOLID (overlapping inputs merged into a
-    //     single body).  Returning a COMPSOLID here would misclassify one solid
-    //     as a multi-body aggregate (task 5213 repr-coherence amendment).
-    //   - two or more solids → a COMPSOLID (disjoint multi-body union) which,
-    //     unlike a bare COMPOUND, passes the is_watertight SOLID|COMPSOLID|SHELL
-    //     guard and reports the correct per-solid component count.
-    //   - no solids          → leave the compound untouched.
-    if (result.ShapeType() == TopAbs_COMPOUND) {
-        TopTools_ListOfShape solids;
-        for (TopExp_Explorer ex(result, TopAbs_SOLID); ex.More(); ex.Next()) {
-            solids.Append(ex.Current());
-        }
-        if (solids.Extent() == 1) {
-            return TopoDS::Solid(solids.First());
-        }
-        if (solids.Extent() > 1) {
-            TopoDS_CompSolid cs;
-            BRep_Builder builder;
-            builder.MakeCompSolid(cs);
-            for (TopTools_ListIteratorOfListOfShape sit(solids); sit.More(); sit.Next()) {
-                builder.Add(cs, TopoDS::Solid(sit.Value()));
-            }
-            return cs;
-        }
-    }
-    return result;
+    t_boolean_pass_count += 1;
+    // Behaviour-identical to the inline block this replaced (task 5213): the
+    // unwrap rule now lives once, in `normalize_boolean_result`, shared with the
+    // three binary boolean ops (task 7054).
+    return normalize_boolean_result(fuse.Shape(), shapes);
 }
 
 std::unique_ptr<OcctShape> fuse_all(const OcctShapeVec& shapes) {
@@ -743,9 +1102,9 @@ std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& 
         if (!fuse.IsDone()) {
             throw std::runtime_error("BRepAlgoAPI_Fuse failed");
         }
-        g_boolean_pass_count.fetch_add(1, std::memory_order_relaxed);
+        t_boolean_pass_count += 1;
         auto result = std::make_unique<OcctShape>();
-        result->shape = fuse.Shape();
+        result->shape = normalize_boolean_result(fuse.Shape(), operand_pair(left.shape, right.shape));
         return result;
     });
 }
@@ -757,9 +1116,9 @@ std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& r
         if (!cut.IsDone()) {
             throw std::runtime_error("BRepAlgoAPI_Cut failed");
         }
-        g_boolean_pass_count.fetch_add(1, std::memory_order_relaxed);
+        t_boolean_pass_count += 1;
         auto result = std::make_unique<OcctShape>();
-        result->shape = cut.Shape();
+        result->shape = normalize_boolean_result(cut.Shape(), operand_pair(left.shape, right.shape));
         return result;
     });
 }
@@ -771,9 +1130,9 @@ std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape
         if (!common.IsDone()) {
             throw std::runtime_error("BRepAlgoAPI_Common failed");
         }
-        g_boolean_pass_count.fetch_add(1, std::memory_order_relaxed);
+        t_boolean_pass_count += 1;
         auto result = std::make_unique<OcctShape>();
-        result->shape = common.Shape();
+        result->shape = normalize_boolean_result(common.Shape(), operand_pair(left.shape, right.shape));
         return result;
     });
 }
@@ -781,6 +1140,90 @@ std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape
 // --- BRepAlgoAPI_* history (v0.2 persistent-naming-v2, task 2590) ---
 
 namespace {
+
+/// Chain a boolean child through the unification history to the sub-shape(s)
+/// that actually survived into the NORMALIZED result (task 7054).
+///
+/// `ShapeUpgrade_UnifySameDomain` does not merely renumber — it RE-IDENTIFIES:
+/// when it merges two coplanar faces the survivor is a new TShape that
+/// `BRepAlgoAPI::Modified()` never reported. Looking the boolean's own children
+/// up in the normalized result's map directly would therefore miss on every
+/// merged face and blow `silent_drop_count`, which
+/// `boolean_op_history_integration.rs` and `topology_diagnostic_denoise_e2e.rs`
+/// both require to stay 0.
+///
+/// Cases, in the order they are tested:
+///   - NULL history (no unification pass ran) → the child itself.
+///   - `IsRemoved(child)` → absorbed by the merge. Reported via `out_removed`
+///     so the caller SKIPS it WITHOUT counting a silent drop: an absorbed child
+///     is an expected outcome, not a correspondence loss.
+///   - `Modified(child)` empty → survived unchanged → the child itself.
+///   - `Modified(child)` non-empty → one entry per survivor. Many-to-one merges
+///     are legitimate and must not be collapsed: both parents of a merged pair
+///     have to keep pointing at the shared survivor.
+void resolve_through_unify_history(
+    const Handle(BRepTools_History)& unify_history,
+    const TopoDS_Shape& child,
+    TopTools_ListOfShape& out_survivors,
+    bool& out_removed) {
+    out_survivors.Clear();
+    out_removed = false;
+    if (unify_history.IsNull()) {
+        out_survivors.Append(child);
+        return;
+    }
+    if (unify_history->IsRemoved(child)) {
+        out_removed = true;
+        return;
+    }
+    const TopTools_ListOfShape& modified = unify_history->Modified(child);
+    if (modified.IsEmpty()) {
+        out_survivors.Append(child);
+        return;
+    }
+    for (TopTools_ListIteratorOfListOfShape it(modified); it.More(); it.Next()) {
+        out_survivors.Append(it.Value());
+    }
+}
+
+/// Emit one record per DISTINCT surviving result sub-shape for a single parent
+/// sub-shape, chaining through the unification history first. Returns without
+/// emitting (and without touching `out_drop_count`) for children the merge
+/// absorbed; increments `out_drop_count` only for a survivor the result map
+/// genuinely cannot resolve — preserving `silent_drop_count`'s existing
+/// meaning.
+void emit_records_for_child(
+    const Handle(BRepTools_History)& unify_history,
+    const TopoDS_Shape& child,
+    const TopTools_IndexedMapOfShape& result_map,
+    uint32_t parent_index,
+    uint32_t parent_idx_0,
+    std::set<uint32_t>& seen_for_this_parent_sub,
+    std::vector<uint32_t>& out_records,
+    uint32_t& out_drop_count) {
+    TopTools_ListOfShape survivors;
+    bool removed = false;
+    resolve_through_unify_history(unify_history, child, survivors, removed);
+    if (removed) {
+        return;
+    }
+    for (TopTools_ListIteratorOfListOfShape it(survivors); it.More(); it.Next()) {
+        Standard_Integer one_based = result_map.FindIndex(it.Value());
+        if (one_based < 1) {
+            ++out_drop_count;
+            continue;
+        }
+        const uint32_t result_idx_0 = static_cast<uint32_t>(one_based - 1);
+        // Two boolean children of the SAME parent sub-shape can merge into one
+        // survivor; emit that pairing once rather than duplicating it.
+        if (!seen_for_this_parent_sub.insert(result_idx_0).second) {
+            continue;
+        }
+        out_records.push_back(parent_index);
+        out_records.push_back(parent_idx_0);
+        out_records.push_back(result_idx_0);
+    }
+}
 
 /// Walk `parent_map` (canonical TopExp 1-based order), querying
 /// `op.Modified()/Generated()/IsDeleted()` for each parent sub-shape.
@@ -804,6 +1247,7 @@ void emit_history_for_parent(
     BRepAlgoAPI_BooleanOperation& op,
     const TopTools_IndexedMapOfShape& parent_map,
     const TopTools_IndexedMapOfShape& result_map,
+    const Handle(BRepTools_History)& unify_history,
     uint32_t parent_index,
     std::vector<uint32_t>& out_modified,
     std::vector<uint32_t>& out_generated,
@@ -815,33 +1259,25 @@ void emit_history_for_parent(
         const uint32_t parent_idx_0 = static_cast<uint32_t>(i - 1);
 
         // Modified: parent sub-shape replaced by N result sub-shapes
-        // (split, merged, or otherwise transformed).
+        // (split, merged, or otherwise transformed). Each child is chained
+        // through the unification history before the result-map lookup — see
+        // `resolve_through_unify_history`.
+        std::set<uint32_t> seen_modified;
         const TopTools_ListOfShape& modified = op.Modified(parent_sub);
         for (TopTools_ListIteratorOfListOfShape it(modified); it.More(); it.Next()) {
-            const TopoDS_Shape& child = it.Value();
-            Standard_Integer one_based = result_map.FindIndex(child);
-            if (one_based < 1) {
-                ++out_drop_count;
-                continue;
-            }
-            out_modified.push_back(parent_index);
-            out_modified.push_back(parent_idx_0);
-            out_modified.push_back(static_cast<uint32_t>(one_based - 1));
+            emit_records_for_child(
+                unify_history, it.Value(), result_map, parent_index, parent_idx_0,
+                seen_modified, out_modified, out_drop_count);
         }
 
         // Generated: parent sub-shape gives rise to NEW sub-shapes
         // (e.g. fuse-section walls created from intersecting faces).
+        std::set<uint32_t> seen_generated;
         const TopTools_ListOfShape& generated = op.Generated(parent_sub);
         for (TopTools_ListIteratorOfListOfShape it(generated); it.More(); it.Next()) {
-            const TopoDS_Shape& child = it.Value();
-            Standard_Integer one_based = result_map.FindIndex(child);
-            if (one_based < 1) {
-                ++out_drop_count;
-                continue;
-            }
-            out_generated.push_back(parent_index);
-            out_generated.push_back(parent_idx_0);
-            out_generated.push_back(static_cast<uint32_t>(one_based - 1));
+            emit_records_for_child(
+                unify_history, it.Value(), result_map, parent_index, parent_idx_0,
+                seen_generated, out_generated, out_drop_count);
         }
 
         // Deleted: parent sub-shape has no result analogue. Emit only
@@ -876,7 +1312,16 @@ std::unique_ptr<BooleanOpHistory> extract_boolean_history(
     const OcctShape& right) {
     auto history = std::make_unique<BooleanOpHistory>();
     history->result = std::make_unique<OcctShape>();
-    history->result->shape = op.Shape();
+
+    // ORDER IS LOAD-BEARING (task 7054): normalize and assign `shape` BEFORE
+    // touching `face_map()` / `edge_map()` below. occt_wrapper.h documents the
+    // three lazy topology-map caches as populate-once with NO invalidation, no
+    // version counter and no assert, so assigning `shape` after a map has been
+    // built would silently stale it — the maps would index the raw COMPOUND
+    // while the stored shape is the unified SOLID.
+    Handle(BRepTools_History) unify_history;
+    history->result->shape =
+        normalize_boolean_result(op.Shape(), operand_pair(left.shape, right.shape), unify_history);
 
     // Build the result face/edge maps once via the cached lazy
     // accessors so subsequent FindIndex calls are O(1).
@@ -885,21 +1330,21 @@ std::unique_ptr<BooleanOpHistory> extract_boolean_history(
 
     // Faces: emit per-parent records.
     emit_history_for_parent(
-        op, left.face_map(), result_face_map, /*parent_index=*/0,
+        op, left.face_map(), result_face_map, unify_history, /*parent_index=*/0,
         history->face_modified, history->face_generated, history->face_deleted,
         history->silent_drop_count);
     emit_history_for_parent(
-        op, right.face_map(), result_face_map, /*parent_index=*/1,
+        op, right.face_map(), result_face_map, unify_history, /*parent_index=*/1,
         history->face_modified, history->face_generated, history->face_deleted,
         history->silent_drop_count);
 
     // Edges: emit per-parent records.
     emit_history_for_parent(
-        op, left.edge_map(), result_edge_map, /*parent_index=*/0,
+        op, left.edge_map(), result_edge_map, unify_history, /*parent_index=*/0,
         history->edge_modified, history->edge_generated, history->edge_deleted,
         history->silent_drop_count);
     emit_history_for_parent(
-        op, right.edge_map(), result_edge_map, /*parent_index=*/1,
+        op, right.edge_map(), result_edge_map, unify_history, /*parent_index=*/1,
         history->edge_modified, history->edge_generated, history->edge_deleted,
         history->silent_drop_count);
 
@@ -1484,6 +1929,9 @@ std::unique_ptr<SweepOpHistory> make_prism_with_history(
     });
 }
 
+// `angle_rad` is SI radians, consumed unconverted by BRepPrimAPI_MakeRevol (a
+// full revolution is 2*M_PI) — see the ANGULAR UNIT CONTRACT on `rotate_shape`
+// above (#6184).
 std::unique_ptr<SweepOpHistory> make_revolve_with_history(
     const OcctShape& profile,
     double ox, double oy, double oz,
@@ -2234,6 +2682,28 @@ std::unique_ptr<OcctShape> translate_shape(const OcctShape& shape, double dx, do
     });
 }
 
+// ANGULAR UNIT CONTRACT for every rotation/revolution entry point in this file
+// (INV-AD-4; #6184; docs/prds/v0_6/angle-dimension-completion.md).
+//
+// `angle_rad` arrives from reify's IR as SI RADIANS and is consumed here with
+// NO conversion, because OCCT's angular convention is radians universally:
+// `gp_Trsf::SetRotation(axis, angle)` and `BRepPrimAPI_MakeRevol(profile, axis,
+// angle)` both read radians. The reify-side `_rad` name and the OCCT-side
+// expectation therefore AGREE — and that agreement is the boundary declaration,
+// not an accident of both sides happening to pick the same unit.
+//
+// Contrast the two neighbouring conventions, so the reader does not
+// over-generalise from this one:
+//   - LENGTHS also cross this bridge unscaled (model space is SI metres), but
+//     ARE rescaled x1000 by the STEP writer at export time. Angles are not
+//     rescaled anywhere, because rad = 1 by SI coherence.
+//   - SolveSpace is the one genuine DEGREE crossing in the tree
+//     (`SLVS_C_ANGLE` reads `valA` in degrees); see
+//     `crates/reify-constraints/src/solvespace.rs`. Nothing in THIS file is in
+//     degrees.
+//
+// `rotate_around_shape`, `make_revolve` and `make_revolve_with_history` below
+// carry the same contract; this is the one place it is written out.
 std::unique_ptr<OcctShape> rotate_shape(const OcctShape& shape, double ax, double ay, double az, double angle_rad) {
     return wrap_occt_call("rotate_shape", [&]() {
         gp_Ax1 axis(gp_Pnt(0, 0, 0), gp_Dir(ax, ay, az));
@@ -2265,6 +2735,8 @@ std::unique_ptr<OcctShape> scale_shape(const OcctShape& shape, double factor, do
     });
 }
 
+// `angle_rad` is SI radians, consumed unconverted — see the ANGULAR UNIT
+// CONTRACT on `rotate_shape` above (#6184).
 std::unique_ptr<OcctShape> rotate_around_shape(const OcctShape& shape,
     double px, double py, double pz,
     double ax, double ay, double az,
@@ -2618,6 +3090,44 @@ std::unique_ptr<OcctShape> offset_solid_shape(const OcctShape& shape, double dis
         BRepGProp::VolumeProperties(result, props);
         if (props.Mass() <= Precision::Confusion()) {
             throw std::runtime_error("offset_solid_shape: result has degenerate (near-zero) volume");
+        }
+        auto out = std::make_unique<OcctShape>();
+        out->shape = result;
+        return out;
+    });
+}
+
+// Offset a surface (open face/shell) along its normal via BRepOffsetAPI_MakeOffsetShape
+// in Skin (surface) mode -- distinct from offset_solid_shape's PerformBySimple solid
+// mode above. Positive `distance` offsets along the face's +normal (e.g. a planar
+// rectangle face built with a +Z-normal wire lands at z = +distance).
+std::unique_ptr<OcctShape> make_offset_surface(const OcctShape& shape, double distance) {
+    return wrap_occt_call("make_offset_surface", [&]() {
+        if (std::abs(distance) < Precision::Confusion()) {
+            throw std::runtime_error("make_offset_surface: zero distance");
+        }
+        // Floor the tolerance at Precision::Confusion() so sub-micron (but
+        // still valid, non-zero) offsets don't get an unusably tight
+        // tolerance from the 1e-3 scale factor -- matches the fixed-scale
+        // guard used just above for the zero-distance check.
+        const double tol = std::max(1e-3 * std::abs(distance), Precision::Confusion());
+        BRepOffsetAPI_MakeOffsetShape maker;
+        maker.PerformByJoin(shape.shape, distance, tol, BRepOffset_Skin,
+            Standard_False, Standard_False, GeomAbs_Intersection);
+        if (!maker.IsDone()) {
+            throw std::runtime_error("make_offset_surface: BRepOffsetAPI_MakeOffsetShape failed");
+        }
+        TopoDS_Shape result = maker.Shape();
+        if (result.IsNull()) {
+            throw std::runtime_error("make_offset_surface: result shape is null");
+        }
+        if (!BRepCheck_Analyzer(result).IsValid()) {
+            throw std::runtime_error("make_offset_surface: result shape is invalid");
+        }
+        GProp_GProps props;
+        BRepGProp::SurfaceProperties(result, props);
+        if (props.Mass() <= Precision::Confusion()) {
+            throw std::runtime_error("make_offset_surface: result has degenerate (near-zero) area");
         }
         auto out = std::make_unique<OcctShape>();
         out->shape = result;
@@ -3719,6 +4229,9 @@ std::unique_ptr<OcctShape> make_prism_infinite(const OcctShape& profile,
     });
 }
 
+// `angle_rad` is SI radians, consumed unconverted by BRepPrimAPI_MakeRevol (a
+// full revolution is 2*M_PI) — see the ANGULAR UNIT CONTRACT on `rotate_shape`
+// above (#6184).
 std::unique_ptr<OcctShape> make_revolve(const OcctShape& profile,
     double ox, double oy, double oz,
     double ax, double ay, double az,
@@ -6249,6 +6762,150 @@ ExportStepResult export_step(const OcctShape& shape, rust::Str schema) {
         // Construct the writer AFTER the schema is set, so its model captures
         // the requested `write.step.schema`.
         STEPControl_Writer writer;
+
+        // LENGTH UNIT REGIME. Reify model space is SI METRES; exported STEP is
+        // MILLIMETRES (the CAD-interop default, and the unit OCCT already
+        // declares as SI_UNIT(.MILLI.,.METRE.) in the written file). Setting
+        // these two values is what makes the declaration and the payload
+        // AGREE: without them OCCT's scale factor is 1.0 and reify's metre
+        // coordinates are emitted verbatim under a millimetre declaration, so
+        // a 30 mm part reads back as 30 µm — a 1000x shrink.
+        //
+        // Both APIs express a unit as its SIZE IN MILLIMETRES, so the local
+        // (in-memory) unit is 1000.0 — "reify's coordinates are metres" — and
+        // the write unit is 1.0 — "emit millimetres". OCCT derives the scale
+        // factor from the ratio local/write and applies the x1000 itself; the
+        // declared SI_UNIT line is unchanged, only the payload moves.
+        //
+        // ORDERING IS LOAD-BEARING, for the same reason the `write.step.schema`
+        // ordering above is: the units cannot be set BEFORE the writer is
+        // constructed (the model does not exist yet — Model() is what creates
+        // and owns it) nor AFTER Transfer (which has already computed and
+        // applied the scale factor). Construct writer -> set units -> Transfer
+        // is the only correct order.
+        //
+        // BOTH values are set EXPLICITLY on every call, for the same reason the
+        // schema is re-set per call above: SetWriteLengthUnit is otherwise
+        // uninitialised and falls back to the process-global `write.step.unit`
+        // Interface_Static, which another caller could have moved.
+        //
+        // The PER-MODEL API is chosen deliberately over the equivalent
+        // process-global `xstep.cascade.unit` / `write.step.unit` statics: a
+        // per-model setting cannot leak into a concurrent export or into a
+        // future STEP reader, whereas this function already needs
+        // g_step_export_mutex and a per-call schema re-set precisely because
+        // OCCT's globals do leak.
+        Handle(StepData_StepModel) step_model = writer.Model();
+        if (step_model.IsNull()) {
+            // Fail loudly rather than exporting geometry mislabelled by 1000x.
+            throw std::runtime_error(
+                "STEPControl_Writer::Model() returned null; cannot set the STEP "
+                "length unit regime");
+        }
+        step_model->SetLocalLengthUnit(1000.0);  // reify model space: metres
+        step_model->SetWriteLengthUnit(1.0);     // STEP file: millimetres
+
+        // PLANE-ANGLE UNIT REGIME. Plane angles cross this boundary as SI
+        // RADIANS in both directions, and — unlike the length regime above —
+        // there is nothing to CALL to make that so. OCCT declares radians
+        // unconditionally: STEPConstruct_UnitContext::Init, the sole builder of
+        // the write-side unit context, emits `SI_UNIT($,.RADIAN.)` with no
+        // branch on any writer option. Contrast the length unit twenty
+        // instructions above, which carries a full conditional
+        // CONVERSION_BASED_UNIT chain driven by `write.step.unit`. So reify's
+        // angular declaration is correct BY CONSTRUCTION — which is precisely
+        // why it needed a DECLARATION: rad = 1 by SI coherence is numerically
+        // right, but until #6184 it was nowhere stated (INV-AD-4).
+        //
+        // THERE IS NO WRITE-SIDE ANGLE KNOB. No SetWriteAngleUnit /
+        // WriteAngleUnit / SetLocalAngleUnit exists, and StepData_StepModel —
+        // which carries SetLocalLengthUnit / SetWriteLengthUnit and a
+        // `myLocalLengthUnit` member — has no angular counterpart of any kind.
+        // This was settled empirically across several OCCT versions; do not
+        // re-investigate. See MEASURED below for the sweep.
+        //
+        // THE TRAP: `step.angleunit.mode`. It is a REGISTERED Interface_Static,
+        // an enum of File/Rad/Deg, and STEPControl_ActorWrite::Transfer
+        // genuinely reads it —
+        // `InitializeFactors(lenFactor, anglemode <= 1 ? 1. : M_PI/180., 1.)`.
+        // But it is HALF-WIRED: its only write-side consumer is
+        // TopoDSToStep_MakeStepFace::Init -> GeomConvert_Units::RadianToDegree,
+        // which rescales PCURVE PARAMETER space; the unit DECLARATION ignores
+        // it entirely. Setting it to Deg therefore emits degree pcurves under a
+        // radian header — a silently self-inconsistent file, NOT a degrees
+        // file. reify never sets this static, and MUST NOT.
+        //
+        // INTERACTION WITH THE LENGTH REGIME above: the two are independent
+        // here ONLY because the plane-angle factor is 1.0. StepData_Factors
+        // carries myLengthFactor and myPlaneAngleFactor as separate members,
+        // and 7.9 added DEFAULTED StepData_Factors arguments across the
+        // GeomToStep_* entry points — so a forgotten-factors regression would
+        // be INVISIBLE in the angle (factor 1.0, no observable change) and
+        // FATAL in the length (factor 1000). Do not infer from "angles are
+        // fine" that the factor plumbing is fine.
+        //
+        // THE GUARANTEE BOUNDARY. reify guarantees the declaration and the
+        // payload AGREE. It does NOT guarantee a consumer honours the
+        // declaration: a 26.565 deg cone semi-angle misread as 0.4636 deg puts
+        // the top edge 14.76 mm off its own surface on a 30 mm part — a
+        // topologically invalid face that importers resolve inconsistently.
+        // Nor do the pins below catch the `step.angleunit.mode` trap: they
+        // quantify over unit DECLARATIONS, and as measured below the
+        // declaration does not move when the payload does.
+        //
+        // PINS: export_step_declares_si_radians_in_every_unit_context (BRep /
+        // CONICAL_SURFACE) and ..._for_wireframe_curve_parameters (wireframe /
+        // TRIMMED_CURVE), both in crates/reify-kernel-occt/src/handle.rs. They
+        // quantify over EVERY unit context — a compound emits one per
+        // representation_context, three for a two-cone union — rather than
+        // grepping for one ".RADIAN." token, so a partial flip fails. INV-AD-4's
+        // third arm, a runtime refusal guard, is deliberately DEFERRED to #6344
+        // so this leaf keeps its no-behaviour-change character.
+        //
+        // ------------------------------------------------------------------
+        // MEASURED 2026-08-29 (task #6184) against SYSTEM OCCT 7.8. Everything
+        // ABOVE this line is version-independent contract; everything BELOW is
+        // a DATED OBSERVATION LOG, kept because it is the evidence the contract
+        // rests on and no test asserts any of it. Read it as "what one run on
+        // one version showed", never as a claim about the OCCT you are linking
+        // today: instance numbers renumber on any writer change, so if they no
+        // longer match, the log is STALE, not the export broken — re-measure
+        // and re-date rather than trusting these numbers. (Longer-term home for
+        // this log is docs/prds/v0_6/angle-dimension-completion.md section 9
+        // B7, where dated findings belong; the move is deferred because #6184
+        // holds no lock on that file.)
+        //
+        // WHICH OCCT. This writer is SYSTEM OCCT 7.8 from
+        // /usr/lib/x86_64-linux-gnu, NOT the 7.9.3 in /opt/reify-deps:
+        // crates/reify-build-utils/src/lib.rs deliberately lists system paths
+        // first for NativeDep::Occt (the deps tree ships 7.9 only as a
+        // transitive gmsh dependency). Both are loaded into one address space,
+        // and exported files carry 'Open CASCADE STEP processor 7.8'.
+        //
+        // NO-ANGLE-KNOB SWEEP. Checked in the 7.8 headers, and additionally in
+        // V7_9_0, V7_9_3, V8_0_1 and master: all clean, and there is no 7.10.
+        // OCCT's own docs describe the one angle parameter as "obsolete ...
+        // when a STEP file is read". Both versions hardcode the radian, which
+        // is why the contract above is stated as version-independent.
+        //
+        // THE step.angleunit.mode DIFF. Exporting one 30 mm cone under each of
+        // the three enum values:
+        //   - modes 0 (File) and 1 (Rad): byte-identical DATA sections.
+        //   - mode 2 (Deg): differs in exactly ONE entity, the pcurve point
+        //     inside a DEFINITIONAL_REPRESENTATION —
+        //       mode 0/1  #39 = CARTESIAN_POINT('',(-6.28318530718,0.))  [-2*pi rad]
+        //       mode 2    #39 = CARTESIAN_POINT('',(-360.,0.))           [same angle, degrees]
+        //   - the declaration is byte-identical in ALL THREE modes:
+        //       #84 = ( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.) );
+        //     with zero CONVERSION_BASED_UNIT and zero "degree" tokens anywhere
+        //     in the file, in every mode.
+        // The payload moves; the declaration does not. That is the whole defect
+        // in one diff, and the reason the pins cannot catch this trap.
+        // ------------------------------------------------------------------
+        //
+        // Refs: #6184; docs/prds/v0_6/angle-dimension-completion.md (INV-AD-4,
+        // section 9 B7). Length regime above: #6186.
+
         writer.Transfer(shape.shape, STEPControl_AsIs);
 
         // Write to a temporary file, then read back

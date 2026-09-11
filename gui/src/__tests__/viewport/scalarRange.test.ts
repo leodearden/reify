@@ -6,7 +6,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { computeScalarRange } from '../../viewport/scalarRange';
-import type { MeshData } from '../../types';
+import type { MeshData, ScalarChannelTag } from '../../types';
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -125,5 +125,83 @@ describe('computeScalarRange', () => {
       },
     } as unknown as MeshData;
     expect(computeScalarRange({ m: mesh }, 'vonMises')).toBeNull();
+  });
+});
+
+// ─── signed channels (task #6185) ────────────────────────────────────────────
+//
+// Everything above this line is the UNTAGGED regression pin — in particular
+// (b)/(b2), which pin that negatives are dropped for vonMises. Those must stay
+// green byte-unchanged; a tagged channel is what changes behaviour.
+
+function makeSignedMesh(
+  channel: string,
+  values: number[],
+  tag: ScalarChannelTag,
+): MeshData {
+  return {
+    entity_path: 'test',
+    vertices: new Float32Array(0),
+    indices: new Uint32Array(0),
+    normals: null,
+    scalar_channels: { [channel]: new Float32Array(values) },
+    scalar_channel_tags: { [channel]: tag },
+  } as unknown as MeshData;
+}
+
+const RAD: ScalarChannelTag = { unit: 'rad', signed: true };
+const PA: ScalarChannelTag = { unit: 'Pa', signed: false };
+
+describe('computeScalarRange — signed channels (task #6185)', () => {
+  it('(g) keeps negative values in a signed channel', () => {
+    // The range half of B8: negatives must survive to the renderer.
+    const meshes = { m: makeSignedMesh('rotation', [-0.5, 0, 0.25], RAD) };
+    expect(computeScalarRange(meshes, 'rotation')).toEqual({ min: -0.5, max: 0.25 });
+  });
+
+  it('(h) returns a range for an all-negative signed channel', () => {
+    // Untagged this would be null (every value filtered out).
+    const meshes = { m: makeSignedMesh('rotation', [-2, -0.5], RAD) };
+    expect(computeScalarRange(meshes, 'rotation')).toEqual({ min: -2, max: -0.5 });
+  });
+
+  it('(i) includes -1.0 in a signed channel — the OOB sentinel is not special there', () => {
+    // -1.0 rad is a legal value, so a signed channel cannot use the sentinel;
+    // the range must not silently treat it as a marker.
+    const meshes = { m: makeSignedMesh('rotation', [-1.0, 0.5], RAD) };
+    expect(computeScalarRange(meshes, 'rotation')).toEqual({ min: -1.0, max: 0.5 });
+  });
+
+  it('(j) still excludes NaN and ±Infinity in a signed channel', () => {
+    const meshes = { m: makeSignedMesh('rotation', [NaN, -3, Infinity, 2], RAD) };
+    expect(computeScalarRange(meshes, 'rotation')).toEqual({ min: -3, max: 2 });
+  });
+
+  it('(k) an explicit unsigned tag behaves exactly like untagged', () => {
+    const meshes = { m: makeSignedMesh('vonMises', [-1, 2, 5], PA) };
+    expect(computeScalarRange(meshes, 'vonMises')).toEqual({ min: 2, max: 5 });
+  });
+
+  it('(l) is ANY-signed across meshes: one signed tag keeps the negative', () => {
+    const meshes = {
+      tagged: makeSignedMesh('rotation', [-0.5, 0.25], RAD),
+      untagged: makeMesh('rotation', [1, 3]),
+    };
+    expect(computeScalarRange(meshes, 'rotation')).toEqual({ min: -0.5, max: 3 });
+  });
+
+  it('(m) a tag naming a DIFFERENT channel does not make the queried one signed', () => {
+    const mesh = {
+      entity_path: 'test',
+      vertices: new Float32Array(0),
+      indices: new Uint32Array(0),
+      normals: null,
+      scalar_channels: {
+        vonMises: new Float32Array([-1, 2, 5]),
+        rotation: new Float32Array([-0.5, 0.25]),
+      },
+      scalar_channel_tags: { rotation: RAD },
+    } as unknown as MeshData;
+    expect(computeScalarRange({ m: mesh }, 'vonMises')).toEqual({ min: 2, max: 5 });
   });
 });

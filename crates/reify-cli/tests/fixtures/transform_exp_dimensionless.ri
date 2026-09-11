@@ -1,0 +1,24 @@
+// transform_exp_dimensionless.ri — CLI eval fixture: a dimensionless twist
+// `linear` half is rejected on the transform_log ↔ transform_exp seam.
+//
+// RULING #6126: a twist is Map { angular: Vector3<…>, linear: Vector3<Length> }.
+// vec3(1.0, 2.0, 3.0) is dimensionless, so transform_exp returns Value::Undef and
+// the post-Undef geometry diagnose hook must emit on stderr:
+//   error: transform_exp: a twist's `linear` must be Vector3<Length>; got dimensionless ...
+// `reify eval` exits NON-ZERO: a wrong dimension is a design-correctness fault, so
+// the diagnostic is a Severity::Error (Leo's severity amendment, 2026-08-19, via
+// esc-6080-6), not a Warning.
+//
+// Lives in tests/fixtures/ (NOT examples/) since it intentionally triggers a
+// runtime Error diagnostic and a non-zero exit.
+//
+// The `module` declaration is load-bearing for the test, not decoration: without
+// it, W_MODULE_DECL_MISSING quotes the expected module name (= the file stem,
+// which contains "transform_exp") on stderr, and the assertion that the
+// diagnostic NAMES the rejecting builtin would pass incidentally.
+
+module transform_exp_dimensionless
+
+structure def TransformExpDimensionless {
+    let t = transform_exp(map{"angular" => vec3(0.0, 0.0, 0.0), "linear" => vec3(1.0, 2.0, 3.0)})
+}

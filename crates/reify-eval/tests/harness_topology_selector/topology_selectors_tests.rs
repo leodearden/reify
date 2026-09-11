@@ -31,9 +31,9 @@
 //! and validates compilation. The OCCT kernel assertions skip cleanly when
 //! OCCT is unavailable (`reify_kernel_occt::OCCT_AVAILABLE == false`).
 //!
-//! Modelled on `crates/reify-eval/tests/kernel_queries_moment_of_inertia_smoke.rs`
+//! Modelled on `crates/reify-eval/tests/harness_kernel_realization/kernel_queries_moment_of_inertia_smoke.rs`
 //! for the integration harness pattern and on
-//! `crates/reify-eval/tests/geometry_handle_freshness.rs` for the freshness
+//! `crates/reify-eval/tests/harness_geometry/geometry_handle_freshness.rs` for the freshness
 //! cascade pattern.
 
 use reify_constraints::SimpleConstraintChecker;

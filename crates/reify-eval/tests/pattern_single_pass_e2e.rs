@@ -32,19 +32,21 @@
 //!      disjoint through-holes) and that the result is a valid single connected
 //!      manifold body.
 //!
-//! ## Why the perforated result is NOT asserted `IsWatertight`
+//! ## The perforated result IS asserted `IsWatertight` (task 7054)
 //!
-//! `difference()` (`BRepAlgoAPI_Cut`) with a multi-solid tool returns a COMPOUND
-//! wrapping the (single) perforated solid. OCCT's `IsWatertight` / `IsClosed`
-//! guard on shape type — only SOLID / COMPSOLID / SHELL qualify (see
-//! `occt_wrapper.cpp` `is_watertight`) — so both report `false` on the COMPOUND
-//! even though the body is geometrically closed. The pinnable,
-//! shape-type-independent witnesses are `IsManifold` + `IsOrientable` +
-//! `IsConnected` (all true), matching the convention
-//! `pattern_differential_integration.rs` and `conformance_integration.rs` already
-//! follow: they leave the version/shape-type-dependent `IsWatertight` bool
-//! unpinned for compound-wrapped multi-solid results. The solid plate BEFORE
-//! perforation IS asserted watertight, as the "proper closed solid" anchor.
+//! It did not used to be. `difference()` (`BRepAlgoAPI_Cut`) with a multi-solid
+//! tool returned a COMPOUND wrapping the (single) perforated solid, and OCCT's
+//! `IsWatertight` / `IsClosed` guard on shape type — only SOLID / COMPSOLID /
+//! SHELL qualify (see `occt_wrapper.cpp` `is_watertight`) — reported `false` on
+//! that COMPOUND even though the body was geometrically closed. This module
+//! therefore pinned only the shape-type-independent witnesses `IsManifold` +
+//! `IsOrientable` + `IsConnected`, and recorded the gap.
+//!
+//! Every boolean result is now normalized (`normalize_boolean_result`) to the
+//! tightest topology-preserving type before it is stored, so this `difference`
+//! yields a genuine SOLID and the gap is closed: `IsWatertight` is pinned
+//! `true` alongside the other three. The solid plate BEFORE perforation is
+//! still asserted watertight as the "proper closed solid" anchor.
 
 use std::fs;
 
@@ -238,10 +240,11 @@ fn perforated_plate_builds_to_step_occt() {
 ///     intersection (analytically a clean through-hole cylinder segment, and the
 ///     N disjoint holes each remove exactly that);
 ///   - the perforated body is a valid single connected manifold solid
-///     (`IsManifold` ∧ `IsOrientable` ∧ `IsConnected`); the un-perforated plate is
-///     itself watertight. (`IsWatertight` on the perforated body is intentionally
-///     NOT pinned — see the module note: the `difference` result is a COMPOUND, a
-///     shape type OCCT's watertight guard rejects by construction.)
+///     (`IsManifold` ∧ `IsOrientable` ∧ `IsConnected`) and is WATERTIGHT; the
+///     un-perforated plate is itself watertight. (`IsWatertight` on the
+///     perforated body became pinnable in task 7054, which normalizes every
+///     boolean result to a real SOLID instead of the bare COMPOUND OCCT's
+///     watertight guard rejects by construction — see the module note.)
 #[test]
 fn perforated_plate_volume_and_topology_occt() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
@@ -315,7 +318,15 @@ fn perforated_plate_volume_and_topology_occt() {
          = {expected:.12} m³ (block={plate_vol:.12}, hole_cut={hole_cut_vol:.12}), rel_err={rel_err:.3e}"
     );
 
-    // Valid single connected manifold body (the pinnable closed-solid witnesses).
+    // Valid single connected manifold body, and — since task 7054 normalizes
+    // the `difference` result to a real SOLID rather than a bare COMPOUND —
+    // watertight.
+    assert!(
+        query_bool(&kernel, GeometryQuery::IsWatertight(perforated), "perforated"),
+        "the perforated plate must be watertight: the difference result is \
+         normalized to a SOLID, so it no longer fails the \
+         SOLID|COMPSOLID|SHELL type guard the way a bare COMPOUND did"
+    );
     assert!(
         query_bool(&kernel, GeometryQuery::IsManifold(perforated), "perforated"),
         "the perforated plate must be manifold"

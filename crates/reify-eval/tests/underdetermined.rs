@@ -7,10 +7,10 @@
 
 use reify_core::{DiagnosticCode, ModulePath, Type};
 use reify_eval::Engine;
-use reify_ir::{ObjectiveSense, ObjectiveSet, SolveResult};
+use reify_ir::{BinOp, ObjectiveSense, ObjectiveSet, SolveResult};
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver, SequencedMockConstraintSolver,
-    TopologyTemplateBuilder, gt, literal, mm, value_ref,
+    TopologyTemplateBuilder, binop, eq, gt, literal, mm, value_ref,
 };
 
 // ---------------------------------------------------------------------------
@@ -378,5 +378,339 @@ fn check_propagates_underdetermined_diagnostic() {
         count > 0,
         "engine.check() should propagate W_UNDERDETERMINED from eval(); got diagnostics: {:?}",
         check_result.diagnostics,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// LAYER 4 — let-tracing transitive closure (task #5467 / PRD2 α, step-5 RED)
+//
+// `detect_underdetermined` builds its global read-set from DIRECT
+// `extract_dependency_trace(&constraint.expr).reads` only. For
+// `let s = a + b; constraint s == 10.0` that read-set is `{S.s}` — never
+// `{S.a, S.b}` — so BOTH autos are flagged even though the constraint pins
+// them exactly. This pass runs OUTSIDE the `has_active_solver` gate and never
+// consults the `ResolutionProblem`, so no amount of solver-side fixing clears
+// it: it is the direct producer of the user-observable leaf signal and of the
+// `reify check` INDETERMINATE tripwire.
+//
+// Probe-verified baseline (release binary, HEAD=20abfe0103, on
+// `docs/prds/v0_6/fixtures/discrete_let_cont.ri`): TWO W_UNDERDETERMINED lines.
+// ---------------------------------------------------------------------------
+
+/// (h) THE α FIX — an auto pinned by a constraint only THROUGH a `let` must not
+/// be flagged. `let s = a + b; constraint s == 10.0` determines both `a` and
+/// `b` jointly; today each is reported free.
+///
+/// RED until `detect_underdetermined` seeds a transitive read-CLOSURE instead
+/// of a one-hop read set.
+#[test]
+fn no_underdetermined_for_auto_param_pinned_through_a_let() {
+    let template = TopologyTemplateBuilder::new("Derived")
+        .auto_param("Derived", "a", Type::length())
+        .auto_param("Derived", "b", Type::length())
+        .let_binding(
+            "Derived",
+            "s",
+            Type::length(),
+            binop(BinOp::Add, value_ref("Derived", "a"), value_ref("Derived", "b")),
+        )
+        // Reads ONLY `Derived.s` directly — but pins `a` and `b` through it.
+        .constraint(
+            "Derived",
+            0,
+            None,
+            eq(value_ref("Derived", "s"), literal(mm(10.0))),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = no_solver_engine();
+    let result = engine.eval(&module);
+
+    let count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
+        .count();
+    assert_eq!(
+        count, 0,
+        "an auto pinned by a constraint only THROUGH a `let` must NOT be \
+         flagged underdetermined — `constraint s == 10.0` with `let s = a + b` \
+         determines both `a` and `b`. A one-hop read-set sees only \
+         `Derived.s` and reports BOTH autos free (the two W_UNDERDETERMINED \
+         lines probe-verified on discrete_let_cont.ri); got: {:?}",
+        result.diagnostics,
+    );
+}
+
+/// (i) NON-REGRESSION — a genuinely untouched strict auto is still flagged,
+/// standing alongside a let-pinned one in the SAME template. Without this the
+/// α fix could degenerate into "never flag anything" and κ #4019's whole
+/// detector would go silently dead.
+#[test]
+fn an_auto_reachable_from_no_constraint_is_still_flagged() {
+    let template = TopologyTemplateBuilder::new("Mixed")
+        .auto_param("Mixed", "a", Type::length())
+        .auto_param("Mixed", "b", Type::length())
+        // `orphan` is in NO let and NO constraint — genuinely underdetermined.
+        .auto_param("Mixed", "orphan", Type::length())
+        .let_binding(
+            "Mixed",
+            "s",
+            Type::length(),
+            binop(BinOp::Add, value_ref("Mixed", "a"), value_ref("Mixed", "b")),
+        )
+        .constraint(
+            "Mixed",
+            0,
+            None,
+            eq(value_ref("Mixed", "s"), literal(mm(10.0))),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = no_solver_engine();
+    let result = engine.eval(&module);
+
+    let under_diags: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
+        .collect();
+
+    assert_eq!(
+        under_diags.len(),
+        1,
+        "EXACTLY the untouched auto `Mixed.orphan` may be flagged: `a` and `b` \
+         are pinned through the let, `orphan` is reachable from no constraint \
+         at all. Widening the read-set to a closure must not silence the \
+         detector; got: {:?}",
+        result.diagnostics,
+    );
+
+    let msg = &under_diags[0].message;
+    for expected in ["W_UNDERDETERMINED", "Mixed.orphan", "touching constraints: none"] {
+        assert!(
+            msg.contains(expected),
+            "the surviving diagnostic must still carry {expected:?} verbatim — \
+             the message text is pinned by κ #4019's existing tests; got: {msg}"
+        );
+    }
+}
+
+/// (j) NON-REGRESSION — an `auto(free)` cell is never flagged, in a model where
+/// the closure machinery genuinely RUNS. The `is_auto() && !is_auto_free()`
+/// gate is what keeps the solver's "resolved via auto(free)" warning from being
+/// double-emitted, and the closure widening must not disturb it.
+///
+/// FIXTURE DESIGN — the two halves are deliberate, and neither may be dropped:
+///
+///   * `slack` is `auto(free)` and NO let or constraint reaches it, so it is
+///     absent from the read closure and `is_auto_free()` is the ONLY gate
+///     keeping it unflagged. Deleting that gate flags it ⇒ RED.
+///   * `a`/`b` are STRICT autos pinned only THROUGH `let s`, so the closure
+///     walk actually executes and must reach them. Degrading `read_closure` to
+///     a one-hop read set flags both ⇒ RED.
+///
+/// An earlier revision had only the first half — one bare `auto_param_free`
+/// with no let and no constraint. That fixture leaves `global_reads` empty, so
+/// zero closure code runs and the test would have stayed green with
+/// `read_closure` deleted outright, despite its name (review round 3,
+/// suggestion 3). The obvious repair — giving `slack` itself a reaching let —
+/// is WRONG in the other direction: it puts `slack` INSIDE the closure, where
+/// closure membership alone unflags it and the `is_auto_free()` gate stops
+/// being load-bearing. Both properties are wanted, so both fixtures are here,
+/// in ONE template evaluated ONCE.
+#[test]
+fn an_auto_free_cell_is_still_never_flagged_under_the_closure() {
+    let template = TopologyTemplateBuilder::new("FreeDerived")
+        // Reached by NOTHING — the auto(free) gate is the only thing that can
+        // keep this unflagged.
+        .auto_param_free("FreeDerived", "slack", Type::length())
+        // Strict autos, pinned ONLY transitively through the let below — these
+        // are what force the closure walk to actually run.
+        .auto_param("FreeDerived", "a", Type::length())
+        .auto_param("FreeDerived", "b", Type::length())
+        .let_binding(
+            "FreeDerived",
+            "s",
+            Type::length(),
+            binop(
+                BinOp::Add,
+                value_ref("FreeDerived", "a"),
+                value_ref("FreeDerived", "b"),
+            ),
+        )
+        .constraint(
+            "FreeDerived",
+            0,
+            None,
+            eq(value_ref("FreeDerived", "s"), literal(mm(10.0))),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = no_solver_engine();
+    let result = engine.eval(&module);
+
+    let under_diags: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
+        .collect();
+    assert_eq!(
+        under_diags.len(),
+        0,
+        "NOTHING may be flagged here, and the two ways this can fail have \
+         different causes. `FreeDerived.slack` appearing means the \
+         `is_auto_free()` gate was dropped — an `auto(free)` cell is \
+         intentionally free by author declaration, and flagging it \
+         double-emits against the solver's 'resolved via auto(free)' warning. \
+         `FreeDerived.a`/`.b` appearing means the read closure stopped \
+         following `let s` transitively and degraded to a one-hop read set. \
+         Got: {:?}",
+        result.diagnostics,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// LAYER 4 — INSTANCE-PATH-keyed autos (task #5467 step-15, review finding 2)
+//
+// `detect_underdetermined` matches a RAW declaration id against the read
+// closure. The compiler mints instance-path-keyed auto decls at two sites —
+// `reify-compiler/src/entity.rs:3025` (construction named-arg) and `:3130`
+// (sub-override) — so `sub b : Bearing { bore = auto }` declares
+// `Parent.b.bore`, while the pinning constraint's read normalises to
+// `Bearing.bore`. If `CellReadIndex::read_closure` normalises DESTRUCTIVELY the
+// two can never meet and every such auto draws a false-positive warning.
+//
+// These assert the Underdetermined COUNT. Asserting only "no errors" is what
+// let the regression through: W_UNDERDETERMINED is a WARNING, so an
+// error-severity filter passes it silently.
+// ---------------------------------------------------------------------------
+
+/// (k) An instance-path-keyed auto (`sub b : Bearing { bore = auto }`, the shape
+/// `entity.rs:3130` mints) pinned by a constraint that reads the SAME
+/// instance-path spelling must NOT be flagged.
+///
+/// The constraint's read normalises to `Bearing.bore`; the declaration stays
+/// `Parent.b.bore`. Only a closure that carries BOTH spellings matches them up.
+///
+/// RED until step-17 makes `read_closure` a genuine superset.
+#[test]
+fn no_underdetermined_for_an_instance_path_auto_pinned_by_an_instance_path_constraint() {
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .sub_component("b", "Bearing", vec![])
+        // The sub-override auto decl: entity is the INSTANCE PATH `Parent.b`.
+        .auto_param("Parent.b", "bore", Type::length())
+        // `constraint self.b.bore == 10mm` — the same instance-path spelling.
+        .constraint(
+            "Parent",
+            0,
+            None,
+            eq(value_ref("Parent.b", "bore"), literal(mm(10.0))),
+        )
+        .build();
+
+    // The declaring template, so `Parent.b` is a known instance path and
+    // normalisation genuinely rewrites the read (identity would make this test
+    // pass for the wrong reason).
+    let bearing = TopologyTemplateBuilder::new("Bearing")
+        .param("Bearing", "bore", Type::length(), Some(literal(mm(5.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent)
+        .template(bearing)
+        .build();
+
+    let mut engine = no_solver_engine();
+    let result = engine.eval(&module);
+
+    let under_diags: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
+        .collect();
+
+    assert!(
+        under_diags.is_empty(),
+        "`Parent.b.bore` is pinned by `constraint self.b.bore == 10mm`, so it \
+         is NOT underdetermined. The declaration id is instance-path keyed \
+         (entity.rs:3130) while the constraint's read normalises to \
+         `Bearing.bore`; a read closure that keeps only the normalised spelling \
+         can never match the declaration and emits this false positive on \
+         every `reify check`. Got: {under_diags:?}",
+    );
+}
+
+/// (l) The FALSE-NEGATIVE guard, and the executable form of the design decision
+/// behind step-17: two sibling instances of ONE template, only one of them
+/// pinned. Exactly the unpinned sibling may be flagged.
+///
+/// This is why the fix must retain the raw spelling rather than normalise
+/// `cell.id` at the membership test: `normalize_cell_id` is MANY-TO-ONE
+/// (`Parent.b1` and `Parent.b2` both collapse to `Bearing`, and
+/// `strip_collection_indices` collapses `Rig.bolts[3]`/`Rig.bolts[7]` likewise),
+/// so normalising the declaration would let the pin on `b1` MASK the genuinely
+/// free `b2` — trading a false positive for a false negative. Under that
+/// alternative this test sees ZERO diagnostics and fails.
+#[test]
+fn two_sibling_instances_of_one_template_are_flagged_independently() {
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .sub_component("b1", "Bearing", vec![])
+        .sub_component("b2", "Bearing", vec![])
+        .auto_param("Parent.b1", "bore", Type::length())
+        .auto_param("Parent.b2", "bore", Type::length())
+        // ONLY b1 is pinned.
+        .constraint(
+            "Parent",
+            0,
+            None,
+            eq(value_ref("Parent.b1", "bore"), literal(mm(10.0))),
+        )
+        .build();
+
+    let bearing = TopologyTemplateBuilder::new("Bearing")
+        .param("Bearing", "bore", Type::length(), Some(literal(mm(5.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent)
+        .template(bearing)
+        .build();
+
+    let mut engine = no_solver_engine();
+    let result = engine.eval(&module);
+
+    let under_diags: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
+        .collect();
+
+    assert_eq!(
+        under_diags.len(),
+        1,
+        "EXACTLY ONE auto is free here. Two diagnostics means the closure lost \
+         the raw spelling and `Parent.b1.bore` is a false positive; ZERO means \
+         the membership test normalised the DECLARATION id, letting b1's pin \
+         mask the genuinely free b2 — a false negative, which is strictly \
+         worse. Got: {under_diags:?}",
+    );
+    assert!(
+        under_diags[0].message.contains("Parent.b2.bore"),
+        "the surviving diagnostic must name the UNPINNED sibling \
+         `Parent.b2.bore`; got: {}",
+        under_diags[0].message,
     );
 }

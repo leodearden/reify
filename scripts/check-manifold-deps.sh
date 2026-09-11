@@ -1,23 +1,45 @@
 #!/usr/bin/env bash
-# Preflight guard: verify the prebuilt manifold C++ libs are present and match
-# the pinned `manifold-csg-sys` version BEFORE any expensive compile.
+# Preflight guard for the workspace's native deps: THREE arms, all run BEFORE
+# any expensive compile, each converting a silent or cryptic downstream
+# failure into a fast, actionable message.
 #
-# The `[target.x86_64-unknown-linux-gnu.manifold]` override in
-# .cargo/config.toml makes Cargo link prebuilt static libs from
-# /opt/reify-deps/manifold/lib instead of building manifold from source. If
-# those libs are missing or stale (a `manifold-csg-sys` pin bump rebuilt the
-# crate but no one re-ran the deps script), the failure is otherwise a cryptic
-# linker error deep in a multi-minute build. This guard converts that into a
-# fast, actionable message naming `scripts/build-manifold-deps.sh`.
+#   1. manifold prebuilt. The `[target.x86_64-unknown-linux-gnu.manifold]`
+#      override in .cargo/config.toml makes Cargo link prebuilt static libs
+#      from /opt/reify-deps/manifold/lib instead of building manifold from
+#      source. If those libs are missing or stale (a `manifold-csg-sys` pin
+#      bump rebuilt the crate but no one re-ran the deps script), the failure
+#      is otherwise a cryptic linker error deep in a multi-minute build. This
+#      arm names `scripts/build-manifold-deps.sh` instead.
+#
+#   2. tbb pin dir (task #5192, mechanism A''). See that arm's own banner.
+#
+#   3. OCCT presence + SONAME (task #6343). A missing OCCT is not merely cryptic, it is
+#      SILENT: `reify_build_utils::find(NativeDep::Occt)` returns None,
+#      `crates/reify-kernel-occt/build.rs` emits a `cargo:warning` and returns
+#      without setting `has_occt`, and the crate degrades to stub types — which
+#      also deletes its `#[cfg(all(test, has_occt))]` module and its ~25
+#      `#![cfg(has_occt)]` integration binaries. The suite then reports ZERO
+#      tests rather than zero failures, so the gate stays green over a kernel
+#      nothing exercised. This arm makes that state red here. It also pins the
+#      resolved SONAME, because reify pins OCCT nowhere else in-tree: a distro
+#      upgrade that moves the version relinks the kernel with nothing louder
+#      than a `cargo:warning`, and the has_occt suite that would have caught
+#      the regression is exactly what disappears when OCCT goes missing.
 #
 # verify.sh runs this as the first plan entry when Rust work is in scope.
 #
-# Exit 0 on match; non-zero with a clear message otherwise. Fast: reads only
-# Cargo.lock + the VERSION stamp (no registry / no cargo).
+# Exit 0 when every arm passes; non-zero with a clear message otherwise. Fast:
+# reads only Cargo.lock, the VERSION stamp, and a handful of stat()s (no
+# registry / no cargo / no compile).
 set -euo pipefail
 
 err() { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
+# stdout, not stderr: this is the RECORDING half of the OCCT arm — it puts the
+# resolved version in the verify log so a reviewer reading a green
+# reify-kernel-occt result can see WHICH OCCT produced it. add_tool() only
+# executes plan entries, so nothing parses this script's stdout.
+ok() { printf '\033[1;32m[ok]\033[0m %s\n' "$*"; }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCKFILE="$REPO_ROOT/Cargo.lock"
@@ -118,5 +140,284 @@ case "$TBB_PIN_TARGET" in
         exit 1
         ;;
 esac
+
+# ---------- OCCT presence preflight (task #6343) ----------
+#
+# See arm 3 in the file header for why absence must be fatal HERE: nothing
+# downstream can observe it. Note this gates the VERIFY PIPELINE, not
+# `cargo build` — OCCT-free stub builds stay sanctioned, and
+# crates/reify-kernel-occt/src/stubs.rs carries a real
+# `#[cfg(all(test, not(has_occt)))] mod tests` contract suite for them.
+
+# BEGIN occt-candidates — EXACT MIRROR of reify_build_utils::NativeDep::Occt
+# (crates/reify-build-utils/src/lib.rs). Order is load-bearing: system paths
+# come first, and /opt/reify-deps/lib appears in NEITHER list, because the
+# conda env ships OCCT 7.9 as a transitive of gmsh=4.15.2 while reify links
+# system OCCT 7.8. Rust stays the source of truth; this block is a declared
+# mirror, pinned equal INCLUDING ORDER by
+# tests/infra/test_occt_deps_preflight.sh.
+OCCT_LIB_CANDIDATES=(
+    /usr/lib/x86_64-linux-gnu
+    /usr/lib
+    /usr/local/lib
+    /snap/freecad/current/usr/lib
+)
+OCCT_INCLUDE_CANDIDATES=(
+    /usr/include/opencascade
+    /usr/local/include/opencascade
+    /snap/freecad/current/usr/include/opencascade
+)
+OCCT_LIB_SENTINEL=libTKernel.so
+OCCT_INCLUDE_SENTINEL=Standard_Failure.hxx
+# END occt-candidates
+
+# Accepted OCCT versions, compared at MAJOR.MINOR. The value under test is the
+# suffix of the FIRST-level `libTKernel.so` symlink target — exactly what
+# reify_build_utils::read_soname_version() extracts and what
+# crates/reify-kernel-occt/build.rs splices into its
+# `dylib:+verbatim=libTK*.so.<ver>` link directives.
+#
+# WHY MAJOR.MINOR RATHER THAN THE VERBATIM SEGMENT: the segment's SHAPE is a
+# packaging detail, not a compatibility one. Debian points the dev symlink at
+# `libTKernel.so.7.8` (two hops), conda-forge points it straight at
+# `libTKernel.so.7.9.3` (one hop), and a repackaging that moves Debian's link
+# one hop further (`-> libTKernel.so.7.8.1`) changes the segment without
+# changing the OCCT. Exact-matching the segment would turn that non-event into
+# a hard stop on EVERY RUN_RUST=1 verify — instructing the operator to
+# re-validate the STEP/geometry pins — while build.rs would have spliced
+# `libTKernel.so.7.8.1`, a file that exists and links. So both sides are
+# projected through occt_majmin() before comparison. The VERBATIM segment
+# still appears in the [ok] line and in every error, because that is the exact
+# string build.rs links against. The projection also frees this array to hold
+# either shape: widening it with a conda-shaped `7.9.3` yields `7.9`, which is
+# what a resolved `7.9.3` projects to as well.
+#
+# WHY THIS IS A HARD PIN, not a warning: reify pins OCCT nowhere else in-tree
+# (there is no version constraint in any Cargo.toml, and nothing else in the
+# verify plan looks at OCCT at all), so a plain distro `apt upgrade` silently
+# relinks the kernel against a new OCCT. That is the exact event build.rs's
+# read_soname_version fallback anticipates — and if the move instead lands
+# reify in stub mode, the has_occt suite that would have caught the resulting
+# geometry regressions is itself deleted by the same cfg. A passing suite and
+# a DELETED suite are indistinguishable from outside, which is why this has to
+# be caught before the compile rather than inferred from test results.
+#
+# ON A LEGITIMATE BUMP: widening this array is the sanctioned response — but
+# only AFTER re-validating the OCCT-sensitive pins against the new version
+# (task 6184's STEP plane-angle unit pin, and the reify-kernel-occt geometry
+# suites). An array rather than a scalar so an operator can accept two
+# versions during a migration; either way, widening it is a one-line diff a
+# reviewer sees. scripts/setup-dev.sh's OCCT block provisions from the same
+# expectation (at major.minor — its dpkg parse is `grep -oP '\d+\.\d+'`), and
+# tests/infra/test_occt_deps_preflight.sh asserts that value still projects
+# into this set — bump the two together.
+OCCT_ACCEPTED_SONAMES=(7.8)
+
+# occt_majmin <version> — the MAJOR.MINOR projection acceptance compares on.
+# BOTH the resolved SONAME and every OCCT_ACCEPTED_SONAMES entry go through it,
+# so the two may be written in different shapes and still compare correctly. A
+# version with fewer than two dot-separated segments projects to itself.
+occt_majmin() {
+    printf '%s' "$1" | cut -d. -f1,2
+}
+
+occt_install_hint() {
+    err "Install the OCCT ${OCCT_ACCEPTED_SONAMES[0]} dev packages — scripts/setup-dev.sh's OCCT block does exactly this:"
+    err "    sudo add-apt-repository -y ppa:freecad-maintainers/occt-releases"
+    err "    sudo apt-get install -y libocct-foundation-dev libocct-modeling-algorithms-dev \\"
+    err "                            libocct-modeling-data-dev libocct-data-exchange-dev"
+    err "Or point OCCT_INCLUDE_DIR / OCCT_LIB_DIR at an existing install."
+}
+
+# Root of OCCT's numbered-snap fallback, mirroring the literal in
+# find_dir_with_override's `std::fs::read_dir("/snap/freecad")`. A DEFAULTED
+# variable rather than an inline literal so the branch is reachable from a
+# fixture on a host that has no system OCCT to short-circuit it, and so the
+# root itself is a named declaration the parity test can compare against the
+# Rust literal. The default IS the production value — overriding it changes
+# nothing any pipeline caller does.
+OCCT_SNAP_ROOT="${OCCT_SNAP_ROOT:-/snap/freecad}"
+
+occt_hint() {
+    occt_install_hint
+    err "WHY THIS IS FATAL rather than a warning: without OCCT, reify-kernel-occt's"
+    err " build.rs never emits has_occt, so its #[cfg(all(test, has_occt))] module and"
+    err " its ~25 #![cfg(has_occt)] integration binaries are not compiled AT ALL — the"
+    err " suite reports zero tests REPORTED, not zero tests FAILED, and the gate goes"
+    err " green over a kernel nothing exercised."
+}
+
+# occt_find_dir <override> <sentinel> <candidate>...
+#
+# Mirrors reify_build_utils::find_dir_with_override
+# (crates/reify-build-utils/src/lib.rs) rule for rule, with ONE deliberate,
+# one-directional divergence: an override must still CONTAIN the sentinel
+# here, whereas the build takes an override on trust. A guard's job is to
+# reject every configuration that yields a stub or an unverified link, so
+# being a strict superset of the build's silent-failure modes is correct — and
+# it is what makes this arm hermetically testable through the same two env
+# vars the build honours, with no test-only seam added to production code. The
+# strictness never rejects a real install: anything shipping OCCT headers also
+# ships the unversioned dev symlink.
+#
+# EMPTY-OVERRIDE RULE (shared, NOT a divergence): an exported-but-EMPTY
+# OCCT_LIB_DIR / OCCT_INCLUDE_DIR counts as UNSET on both sides and falls
+# through to the candidate list. `[ -n "$override" ]` below is the bash half;
+# `override_dir.filter(|d| !d.is_empty())` in find_dir_with_override is the
+# Rust half, pinned by its `find_dir_ignores_exported_but_empty_override` unit
+# test. Before that filter existed, the build resolved such a var to the EMPTY
+# PATH, still set has_occt, and linked against nothing — while this guard,
+# reading the same environment, went green describing a resolution the build
+# would not perform.
+#
+# Prints the resolved dir on stdout and returns 0; returns 1 with no output
+# when nothing resolves.
+occt_find_dir() {
+    local override="$1" sentinel="$2"
+    shift 2
+    if [ -n "$override" ]; then
+        [ -e "$override/$sentinel" ] || return 1
+        printf '%s' "$override"
+        return 0
+    fi
+    local cand
+    for cand in "$@"; do
+        if [ -e "$cand/$sentinel" ]; then
+            printf '%s' "$cand"
+            return 0
+        fi
+    done
+    # OCCT's numbered-snap fallback, mirroring find_dir_with_override's
+    # snap_subdir match. On any host that HAS system OCCT the candidate loop
+    # above short-circuits before this runs, so its runtime behaviour is
+    # unexercised there; what IS pinned by
+    # tests/infra/test_occt_deps_preflight.sh is the DECLARATION parity of
+    # both halves — OCCT_SNAP_ROOT's default against the Rust read_dir literal,
+    # and the sentinel -> subdir mapping below against the Rust match arms,
+    # order included.
+    local snap_subdir=""
+    case "$sentinel" in
+        Standard_Failure.hxx) snap_subdir="usr/include/opencascade" ;;
+        libTKernel.so) snap_subdir="usr/lib" ;;
+    esac
+    if [ -n "$snap_subdir" ]; then
+        local rev
+        for rev in "$OCCT_SNAP_ROOT"/*/; do
+            [ -d "$rev" ] || continue
+            if [ -e "$rev$snap_subdir/$sentinel" ]; then
+                printf '%s' "$rev$snap_subdir"
+                return 0
+            fi
+        done
+    fi
+    return 1
+}
+
+# occt_searched_desc <override> <env-var-name> <candidate>...
+# Human-readable rendering of WHERE the guard actually looked, so a red gate
+# names the searched paths rather than leaving the reader to infer them.
+occt_searched_desc() {
+    local override="$1" envvar="$2"
+    shift 2
+    if [ -n "$override" ]; then
+        printf '%s (from %s)' "$override" "$envvar"
+    else
+        printf '%s' "$*"
+    fi
+}
+
+OCCT_INCLUDE_OVERRIDE="${OCCT_INCLUDE_DIR:-}"
+OCCT_LIB_OVERRIDE="${OCCT_LIB_DIR:-}"
+
+# `|| true` inside the substitution: a non-resolving arm must reach the named
+# error below, not abort under `set -e` with no message at all.
+OCCT_INCLUDE_RESOLVED="$(occt_find_dir "$OCCT_INCLUDE_OVERRIDE" "$OCCT_INCLUDE_SENTINEL" "${OCCT_INCLUDE_CANDIDATES[@]}" || true)"
+OCCT_LIB_RESOLVED="$(occt_find_dir "$OCCT_LIB_OVERRIDE" "$OCCT_LIB_SENTINEL" "${OCCT_LIB_CANDIDATES[@]}" || true)"
+
+# Report BOTH halves before exiting. find() is None when EITHER is unresolved,
+# so a reader whose host is missing both should not have to fix one, re-run,
+# and discover the other.
+occt_failed=0
+
+if [ -z "$OCCT_INCLUDE_RESOLVED" ]; then
+    err "manifold-deps guard: OCCT headers not found — no $OCCT_INCLUDE_SENTINEL in:"
+    err "                     $(occt_searched_desc "$OCCT_INCLUDE_OVERRIDE" OCCT_INCLUDE_DIR "${OCCT_INCLUDE_CANDIDATES[@]}")"
+    occt_failed=1
+fi
+
+if [ -z "$OCCT_LIB_RESOLVED" ]; then
+    err "manifold-deps guard: OCCT libraries not found — no $OCCT_LIB_SENTINEL in:"
+    err "                     $(occt_searched_desc "$OCCT_LIB_OVERRIDE" OCCT_LIB_DIR "${OCCT_LIB_CANDIDATES[@]}")"
+    occt_failed=1
+fi
+
+if [ "$occt_failed" -ne 0 ]; then
+    occt_hint
+    exit 1
+fi
+
+# Both halves resolved, so has_occt WILL be set. Now pin which OCCT it is.
+#
+# Mirrors reify_build_utils::read_soname_version()
+# (crates/reify-build-utils/src/lib.rs) rule for rule:
+#   - the FIRST-level link target only — `readlink`, never `readlink -f`,
+#     because multi-hop resolution yields 7.8.1 on a host where the build sees
+#     7.8;
+#   - everything after the `libTKernel.so.` prefix taken VERBATIM, so the
+#     conda one-level `-> libTKernel.so.7.9.3` shape yields `7.9.3` and a
+#     `:libTKernel.so.7.9.3` link directive names a file that exists.
+OCCT_SONAME_PATH="$OCCT_LIB_RESOLVED/$OCCT_LIB_SENTINEL"
+# `|| true`: a non-symlink makes readlink exit non-zero, and under `set -e`
+# that would abort here with no message at all — the undeterminable branch
+# below is the whole point.
+OCCT_SONAME_TARGET="$(readlink "$OCCT_SONAME_PATH" 2>/dev/null || true)"
+OCCT_SONAME_BASE="${OCCT_SONAME_TARGET##*/}"
+OCCT_SONAME_PREFIX="$OCCT_LIB_SENTINEL."
+OCCT_SONAME_VER=""
+if [ -n "$OCCT_SONAME_BASE" ]; then
+    OCCT_SONAME_VER="${OCCT_SONAME_BASE#"$OCCT_SONAME_PREFIX"}"
+    # Unchanged => the prefix was absent, so there is no version to read. An
+    # empty remainder (a bare `libTKernel.so.` target) is equally unusable.
+    [ "$OCCT_SONAME_VER" = "$OCCT_SONAME_BASE" ] && OCCT_SONAME_VER=""
+fi
+
+if [ -z "$OCCT_SONAME_VER" ]; then
+    err "manifold-deps guard: could not determine the OCCT SONAME from $OCCT_SONAME_PATH"
+    err "                     (first-level symlink target: '${OCCT_SONAME_TARGET:-<not a symlink>}';"
+    err "                      expected $OCCT_SONAME_PREFIX<version>)."
+    err "This is NOT a cosmetic gap. find() reports the dir as resolved — it only tests"
+    err " existence — so has_occt IS set, and crates/reify-kernel-occt/build.rs falls"
+    err " back to a HARD-CODED version for its dylib:+verbatim=libTK*.so.<ver> link"
+    err " directives behind nothing but a cargo:warning. The build would link a version"
+    err " nobody verified."
+    occt_install_hint
+    exit 1
+fi
+
+OCCT_SONAME_MAJMIN="$(occt_majmin "$OCCT_SONAME_VER")"
+occt_soname_accepted=0
+for v in "${OCCT_ACCEPTED_SONAMES[@]}"; do
+    if [ "$(occt_majmin "$v")" = "$OCCT_SONAME_MAJMIN" ]; then
+        occt_soname_accepted=1
+        break
+    fi
+done
+
+if [ "$occt_soname_accepted" -ne 1 ]; then
+    err "manifold-deps guard: OCCT SONAME drift — resolved $OCCT_SONAME_VER (major.minor"
+    err "                     $OCCT_SONAME_MAJMIN) at $OCCT_LIB_RESOLVED, but the accepted"
+    err "                     set is: ${OCCT_ACCEPTED_SONAMES[*]}"
+    err "                     (read from $OCCT_SONAME_PATH -> $OCCT_SONAME_TARGET)."
+    err "If this move was NOT intended, install an accepted version:"
+    occt_install_hint
+    err "If it WAS intended: re-validate the OCCT-sensitive pins against $OCCT_SONAME_VER"
+    err " (the STEP plane-angle unit pin, the reify-kernel-occt geometry suites), then"
+    err " widen OCCT_ACCEPTED_SONAMES in scripts/check-manifold-deps.sh and bump"
+    err " scripts/setup-dev.sh's OCCT block to match — tests/infra/"
+    err " test_occt_deps_preflight.sh asserts the two agree."
+    exit 1
+fi
+
+ok "OCCT $OCCT_SONAME_VER at $OCCT_LIB_RESOLVED (headers: $OCCT_INCLUDE_RESOLVED)"
 
 exit 0

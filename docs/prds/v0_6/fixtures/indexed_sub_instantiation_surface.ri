@@ -1,10 +1,26 @@
 /// Target-surface fixture for docs/prds/v0_6/indexed-sub-instantiation.md task α.
 ///
-/// EXPECTED TO FAIL `tree-sitter parse --quiet` until α lands (probe #4,
-/// 2026-07-24: ERROR node at the indexer clause `[i in 0..4]`). α's observable
-/// signal is this file parsing with 0 ERROR nodes and a corpus test pinning the
-/// CST. Not referenced by any test harness until then (verified: no harness
-/// globs docs/prds/v0_6/fixtures/).
+/// α (#5481) HAS LANDED: the indexer clause `[i in 0..4]` on the `sub`
+/// instantiation arm is grammar, so this file now parses with 0 ERROR nodes.
+/// (It previously carried an EXPECTED-TO-FAIL note; that note is obsolete.)
+///
+/// LOAD-BEARING — this file is `include_str!`'d as the α target surface by two
+/// test files, and both assert it parses cleanly:
+///   - tree-sitter-reify/tests/indexed_sub_grammar_tests.rs
+///     (grammar/CST signal — the CI-enforced one)
+///   - crates/reify-syntax/tests/harness_syntax/indexed_sub_instantiation_parser_tests.rs
+///     (hand-parser/AST-lowering signal)
+/// Edit the declarations below only in step with those two tests; a change that
+/// stops this file parsing will fail both.
+///
+/// α is syntax only. Typing the domain as `Range<Int>`, scoping the binder, and
+/// deriving the collection count cell are task β's (#5482) — so *semantic*
+/// diagnostics on this fixture are still expected until β lands.
+///
+/// STILL REJECTED, DELIBERATELY. "0 ERROR nodes" is a CST-level statement; one
+/// layer down, `reify` refuses this file via the interim α→β rejection — see
+/// the `TODO(#5482)` site in `lower_sub` (crates/reify-syntax/src/ts_parser.rs)
+/// for why.
 module indexed_sub_instantiation_surface
 
 structure def Pulley {

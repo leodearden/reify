@@ -68,7 +68,8 @@ One line per idiom. Worked, compile-gated exemplars live in `examples/best_pract
   `box_centered` is an op-identical alias for `box`.) → `hollow_primitives.ri`
 - **Symmetric parts**: `mirror` returns a reflected copy — `let twin = union(g, mirror(g, plane_yz(0mm)))`.
   Plane ctors take exactly one offset arg; the 7-arg scalar form needs a *dimensioned*
-  origin (`0mm`, never bare `0`), and `reify check` will not tell you when it doesn't.
+  origin (`0mm`, never bare `0`) — `reify check` rejects that one outright. What stays
+  quiet is a wrong-arity datum ctor: it yields `undef`, and only the consuming op complains.
   → `symmetry_mirror.ri`
 - **Bolt circles**: `circular_pattern(hole, axis_z(point3(…)), n, 360deg)` — angle is the TOTAL
   sweep (step = total/count). Never construct geometry inside `generate` lambdas: silent `undef`
@@ -78,18 +79,37 @@ One line per idiom. Worked, compile-gated exemplars live in `examples/best_pract
   eval/build entry files self-contained.
 - **Interference/clearance oracle exists — run it before shipping an assembly**:
   `intersects(a, b)`/`distance(a, b)` on let-bound geometry (low ceremony), or
-  `mechanism`/`snapshot`/`min_clearance` (assembly-grade). Eval/build only — `reify check`
-  reports these INDETERMINATE, which is expected. → `clearance_oracle.ri`; assembly-grade
-  worked example: `examples/tolerancing/vc_bolt_pattern_clearance.ri`.
+  `mechanism`/`snapshot`/`min_clearance` (assembly-grade). `reify check` realizes geometry,
+  so it answers BOTH forms — gate clearance under it. Only a kernel-less surface (an
+  OCCT-less build, or an in-process `Engine::new(.., None)`) reports them INDETERMINATE.
+  → `clearance_oracle.ri`; assembly-grade worked example:
+  `examples/tolerancing/vc_bolt_pattern_clearance.ri`.
 - **Discrete choices**: until CP-SAT is wired, `param s : Real = auto(free)` +
   `constraint s*s == 1` (s = ±1). Note `auto` is a binding *value* — `auto s : Real` is a
   parse error — and strict `auto` goes `undef` here because two roots defeat the uniqueness
   re-solve. → `discrete_choice.ri`
+- **Turning an arc-measure ratio into an angle — and why the `* 1rad`**:
+  `let theta : Angle = (s/r) * 1rad` enters Angle, `theta / 1rad` leaves; arc length is
+  `r * theta / 1rad`. No-space literal only (`1 rad` is a parse error). Not optional:
+  `let theta : Angle = s / r` and `let arc : Length = r * theta` are hard errors; unannotated
+  `let arc = r * theta` silently yields `m·rad`. Arc-measure ratios only — a *trigonometric*
+  ratio needs no crossing: `atan`/`atan2`/`asin`/`acos` and the `angle`/`angle_between_surfaces`
+  queries return `Angle`, and annotated `let bad : Angle = atan(o/a) * 1rad` is a hard error
+  (declares `rad`, computes `rad^2`) — unannotated, or inside the call as `atan((o/a) * 1rad)`,
+  it is silent instead. Both readings typecheck, so the wrong one is silent. `omega = 2*pi * f * 1rad` is a
+  separate class (2π rad/cycle; no `cycle` unit). → `angle_crossings.ri`
+- **Why a part came out 1000x too big — what units geometry arguments take**: every
+  length-semantic argument carries one (`box(20mm, 20mm, 10mm)`, never `box(20, 20, 10)`;
+  bare `0` is not exempt), while axis components, `scale` factors and counts stay bare.
+  → `dimensioned_arguments.ri`
 
-A green `reify check` is weaker than it looks: geometry-argument dimension errors and
-wrong-arity datum constructors (`plane_yz(0mm, 0mm)`, `axis_z(vec3(…))`) produce no
-check-time diagnostic at all — the first silently fails at build, the second evaluates to
-`undef`. Run `reify eval` before believing a geometry expression is right.
+A green `reify check` is weaker than it looks, and the failure mode is the EXIT CODE
+rather than silence: for several classes of geometry error `check` prints `error:` lines on
+stderr and still exits **0** with "All constraints satisfied." underneath them. So read
+check's stderr, and gate on `reify eval`, never on `check`'s exit status alone. Which
+constructors fall on which side of that split is owned by
+`crates/reify-mcp/src/tools/chunks/units.md` §"Dimensioned Geometry Arguments" → "Which
+command catches it", whose SYNC ledger also records which half an executable test pins.
 
 ## Workflow
 
@@ -103,7 +123,7 @@ When extending an existing `.ri` file:
 
 ### 2. Iterate visually
 
-Reify ships a GUI with a debug MCP for visual verification. Two launch scripts (both auto-set `LD_LIBRARY_PATH` for OCCT's bundled libs):
+Reify ships a GUI with a debug MCP for visual verification. Two launch scripts (both auto-set `LD_LIBRARY_PATH` for OCCT's bundled libs, prepend `/opt/reify-deps/tbb-pin` ahead of any inherited `LD_LIBRARY_PATH`, and default `WEBKIT_DISABLE_DMABUF_RENDERER=1`; both refuse fast with no display — `REIFY_GUI_SKIP_PREFLIGHT=1` bypasses):
 
 - **Dev (HMR + debug MCP):** `scripts/run-gui-dev.sh <file.ri>` — vite on `:1420`, debug MCP on `127.0.0.1:${REIFY_DEBUG_PORT:-3939}`. Set `REIFY_DEBUG_PORT` per worktree to avoid port collisions. Use this when iterating.
 - **Release:** `scripts/run-gui.sh <file.ri>` — what end users will see.
@@ -178,11 +198,11 @@ repeating.
 
 5. **Verify before you commit:**
    ```sh
-   cargo test -p reify-compiler --test examples_smoke
+   cargo test -p reify-compiler --test harness_compilation_surface examples_smoke::
    ```
-   Also run `reify eval` on the new file, not just `reify check` — check is
-   silent about several classes of geometry error (see the note at the end of
-   the idiom index).
+   Also run `reify eval` on the new file, not just `reify check` — check can
+   exit 0 with geometry errors sitting on its stderr (see the note at the end
+   of the idiom index).
 
 **A file that cannot reach a clean compile must NOT be added.** The corpus is
 compile-gated by construction, and an exemplar that doesn't work is worse than

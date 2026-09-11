@@ -6,9 +6,29 @@
 //!
 //! ## Wire protocol
 //!
-//! MCP streamable-HTTP, protocol version `2024-11-05`. Mirror of
-//! `fused_memory_client.rs` — same handshake, same SSE/JSON dual-path, same
-//! `into_reader()` no-10 MiB cap discipline.
+//! MCP streamable-HTTP, protocol version `2024-11-05`. Same SSE/JSON
+//! dual-path and same `into_reader()` no-10 MiB cap discipline as
+//! `fused_memory_client.rs`.
+//!
+//! ## Session lifecycle
+//!
+//! The session id is assigned by the **server**, never minted by the
+//! client:
+//!
+//! 1. `initialize` is POSTed with **no** `mcp-session-id` request header.
+//! 2. The id the server returns in that response's `Mcp-Session-Id`
+//!    header is stored on the client.
+//! 3. Every subsequent POST — starting with `notifications/initialized` —
+//!    replays that stored id verbatim.
+//!
+//! A client-minted id is not merely redundant: a live jcodemunch serve
+//! answers such an `initialize` with `404 Invalid or expired session ID`,
+//! which [`post`](JcodemunchClient::post) maps to [`LoadError::Http`] and
+//! `reify-audit` then fail-softs into a no-op detector — silently.
+//!
+//! `fused_memory_client.rs` still mints its own id. That divergence is
+//! deliberate: fixing it is out of scope here (it works today against the
+//! fused-memory server) and belongs to its own task.
 //!
 //! ## MUNCH/1 encoding
 //!
@@ -747,9 +767,11 @@ fn filter_refs_to_file(refs: Vec<SymbolReference>, file: &str) -> Vec<SymbolRefe
 /// Sync MCP streamable-HTTP client for jcodemunch. One instance == one
 /// MCP session.
 ///
-/// Near-clone of [`crate::fused_memory_client::FusedMemoryClient`]; differs
-/// only in `CLIENT_NAME` and the `call_tool` content step (routes
-/// MUNCH-vs-JSON via [`decode_tool_result`]).
+/// `session_id` holds the id the **server** assigned during the handshake
+/// (see the module-level "Session lifecycle" notes); it is never minted
+/// here. Differs from [`crate::fused_memory_client::FusedMemoryClient`] in
+/// that session handling, in `CLIENT_NAME`, and in the `call_tool` content
+/// step (which routes MUNCH-vs-JSON via [`decode_tool_result`]).
 pub struct JcodemunchClient {
     url: String,
     session_id: String,
@@ -760,13 +782,19 @@ pub struct JcodemunchClient {
 impl JcodemunchClient {
     /// Connect to `url` and complete the MCP handshake
     /// (initialize + notifications/initialized).
+    ///
+    /// The `session_id` starts empty and is filled in by
+    /// [`Self::initialize`] before the value is returned. That window is
+    /// unobservable: `new` is the only constructor and it propagates a
+    /// failed handshake, so every instance a caller can hold carries a
+    /// real server-assigned id.
     pub fn new(url: impl Into<String>) -> Result<Self, LoadError> {
         let agent = ureq::AgentBuilder::new()
             .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
             .build();
-        let client = Self {
+        let mut client = Self {
             url: url.into(),
-            session_id: random_hex_32(),
+            session_id: String::new(),
             agent,
             next_id: Cell::new(1),
         };
@@ -774,8 +802,24 @@ impl JcodemunchClient {
         Ok(client)
     }
 
-    fn initialize(&self) -> Result<(), LoadError> {
-        let _ = self.post(&json!({
+    /// Run the MCP handshake: `initialize` with no session header, store
+    /// the id the server assigns in its response, then acknowledge with
+    /// `notifications/initialized` carrying that id.
+    ///
+    /// An `initialize` response that assigns no session id is a hard
+    /// failure, not an empty session: without an id every later POST is
+    /// answered `400 Missing session ID`, so an `Ok` here would hand back
+    /// a client that cannot make a single successful call.
+    ///
+    /// Gotcha, observed against a live serve: a jcodemunch **404**
+    /// response also carries a fresh `mcp-session-id` header, so the id
+    /// must only ever be read off a *success* response. `ureq` returns
+    /// `Err(Error::Status(..))` for 4xx and [`Self::post_raw`] maps that to
+    /// [`LoadError::Http`] before the header is read, so the confusion is
+    /// unreachable today — this note exists so a future refactor (e.g. one
+    /// that inspects error responses) does not quietly make it reachable.
+    fn initialize(&mut self) -> Result<(), LoadError> {
+        let payload = json!({
             "jsonrpc": "2.0",
             "id": self.next_id(),
             "method": "initialize",
@@ -787,12 +831,23 @@ impl JcodemunchClient {
                 },
                 "capabilities": {},
             },
-        }))?;
-        let _ = self.post(&json!({
+        });
+        // No session header on `initialize`: the server assigns it.
+        let (assigned, _) = self.post_raw(&payload, None)?;
+        self.session_id = assigned.ok_or_else(|| {
+            LoadError::Protocol(
+                "initialize response carried no Mcp-Session-Id header — the \
+                 server did not assign a session; not a live jcodemunch seam"
+                    .into(),
+            )
+        })?;
+
+        let ack = json!({
             "jsonrpc": "2.0",
             "method": "notifications/initialized",
             "params": {},
-        }))?;
+        });
+        let _ = self.post_raw(&ack, Some(&self.session_id))?;
         Ok(())
     }
 
@@ -802,18 +857,36 @@ impl JcodemunchClient {
         id
     }
 
-    fn post(&self, payload: &Value) -> Result<Value, LoadError> {
-        let response = self
+    /// POST `payload`, attaching `mcp-session-id` only when `session` is
+    /// `Some`. Returns the response's own `mcp-session-id` header (if any)
+    /// alongside the decoded body.
+    ///
+    /// The session header is copied out **before** anything else touches
+    /// the response: the 202 branch returns early, and `into_reader()`
+    /// consumes the response by value, so any later read is impossible.
+    /// `ureq`'s `Response::header` matches case-insensitively — a live
+    /// jcodemunch serve emits the name lowercase.
+    fn post_raw(
+        &self,
+        payload: &Value,
+        session: Option<&str>,
+    ) -> Result<(Option<String>, Value), LoadError> {
+        let mut request = self
             .agent
             .post(&self.url)
             .set("Content-Type", "application/json")
-            .set("Accept", "application/json, text/event-stream")
-            .set("mcp-session-id", &self.session_id)
+            .set("Accept", "application/json, text/event-stream");
+        if let Some(session) = session {
+            request = request.set("mcp-session-id", session);
+        }
+        let response = request
             .send_json(payload.clone())
             .map_err(|e| LoadError::Http(format!("POST {}: {e}", self.url)))?;
 
+        let assigned = response.header("mcp-session-id").map(|s| s.to_string());
+
         if response.status() == 202 {
-            return Ok(Value::Null);
+            return Ok((assigned, Value::Null));
         }
 
         let ctype = response
@@ -843,7 +916,7 @@ impl JcodemunchClient {
                 LoadError::Protocol(format!("no SSE data line in response: {body}"))
             })?
         } else if body.is_empty() {
-            return Ok(Value::Null);
+            return Ok((assigned, Value::Null));
         } else {
             serde_json::from_str(&body).map_err(|e| {
                 LoadError::Protocol(format!("body parse: {e}; body={body}"))
@@ -853,7 +926,14 @@ impl JcodemunchClient {
         if let Some(err) = value.get("error") {
             return Err(LoadError::Protocol(format!("JSON-RPC error: {err}")));
         }
-        Ok(value)
+        Ok((assigned, value))
+    }
+
+    /// POST `payload` on the established session. Thin wrapper over
+    /// [`Self::post_raw`] for every call after the handshake.
+    fn post(&self, payload: &Value) -> Result<Value, LoadError> {
+        self.post_raw(payload, Some(&self.session_id))
+            .map(|(_, value)| value)
     }
 
     fn call_tool(&self, name: &str, arguments: Value) -> Result<Value, LoadError> {
@@ -876,6 +956,71 @@ impl JcodemunchClient {
                 LoadError::Protocol(m) => LoadError::Protocol(format!("{name}: {m}")),
                 other => other,
             })
+    }
+
+    /// Client-side counterpart of the MCP `tools/list` method: the names of
+    /// every tool this session's server advertises.
+    ///
+    /// This is the observable signal for boundary scenario B1 — a completed
+    /// handshake only means the seam is live if the server actually offers
+    /// the tools the detectors call, which is what
+    /// `tests/jcodemunch_session_live.rs` asserts against a real serve.
+    ///
+    /// A missing or non-array `result.tools`, or an entry with no `name`, is
+    /// a [`LoadError::Protocol`] — never an empty or silently shortened
+    /// list. An absent tool list is a protocol violation, not a server with
+    /// no tools, and reporting it as `Ok(vec![])` would recreate exactly the
+    /// PASS-shaped nothing this client's session handling exists to prevent.
+    ///
+    /// Goes through [`Self::post`], so it carries the stored server-assigned
+    /// session id and reuses the SSE-vs-JSON routing unchanged (a live serve
+    /// answers `tools/list` as `text/event-stream`). It deliberately does
+    /// NOT route through [`decode_tool_result`], which decodes a
+    /// `tools/call` result's MUNCH-vs-JSON content and does not apply to a
+    /// `tools/list` envelope.
+    ///
+    /// Compiled out of production builds entirely
+    /// (`#[cfg(any(test, feature = "test-support"))]`, the same gate
+    /// `MockGitOps` uses in `lib.rs`): no production path calls it, and the
+    /// crate's own `[dev-dependencies]` self-pull enables `test-support`, so
+    /// `tests/jcodemunch_session_live.rs` — a separate crate — still sees it
+    /// without the surface leaking into the released API.
+    #[cfg(any(test, feature = "test-support"))]
+    // G-allow: test-facing pub fn, compiled out of production builds by the `test-support` gate above (sole external caller: tests/jcodemunch_session_live.rs, a separate crate; pub(crate) would break it). The observable signal for PRD boundary scenario B1 — that a live serve advertises the tools the detectors call. The marker stays because scripts/audit-orphan-producers.sh masks only a literal `#[cfg(test)]`, not this gate.
+    pub fn list_tools(&self) -> Result<Vec<String>, LoadError> {
+        let resp = self.post(&json!({
+            "jsonrpc": "2.0",
+            "id": self.next_id(),
+            "method": "tools/list",
+            "params": {},
+        }))?;
+        let tools = resp
+            .get("result")
+            .and_then(|r| r.get("tools"))
+            .ok_or_else(|| {
+                LoadError::Protocol(format!(
+                    "tools/list: response carried no `result.tools`; got {resp}"
+                ))
+            })?
+            .as_array()
+            .ok_or_else(|| {
+                LoadError::Protocol(format!(
+                    "tools/list: `result.tools` is not an array; got {resp}"
+                ))
+            })?;
+        tools
+            .iter()
+            .map(|tool| {
+                tool.get("name")
+                    .and_then(|n| n.as_str())
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        LoadError::Protocol(format!(
+                            "tools/list: tool entry has no string `name`; got {tool}"
+                        ))
+                    })
+            })
+            .collect()
     }
 }
 
@@ -1026,47 +1171,6 @@ impl JCodemunchOps for RealJCodemunchOps {
         };
         layer_violations_from_wire(&decoded)
     }
-}
-
-// -----------------------------------------------------------------------
-// Session ID (verbatim from fused_memory_client.rs)
-// -----------------------------------------------------------------------
-
-fn random_hex_32() -> String {
-    let mut buf = [0u8; 16];
-    #[cfg(unix)]
-    {
-        if let Ok(mut f) = std::fs::File::open("/dev/urandom")
-            && f.read_exact(&mut buf).is_ok()
-        {
-            return hex32(&buf);
-        }
-    }
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
-    let pid = std::process::id() as u64;
-    let mut x = now ^ pid.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    for chunk in buf.chunks_mut(8) {
-        x = x
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        let bytes = x.to_le_bytes();
-        for (i, b) in chunk.iter_mut().enumerate() {
-            *b = bytes[i];
-        }
-    }
-    hex32(&buf)
-}
-
-fn hex32(buf: &[u8; 16]) -> String {
-    let mut out = String::with_capacity(32);
-    for b in buf {
-        use std::fmt::Write;
-        let _ = write!(out, "{:02x}", b);
-    }
-    out
 }
 
 // -----------------------------------------------------------------------
@@ -1529,5 +1633,558 @@ mod tests {
             diagnostic.is_none(),
             "readable file must return no diagnostic; got: {diagnostic:?}"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // MCP session-handshake contract
+    // ------------------------------------------------------------------
+    //
+    // A hermetic loopback recording stub plus the assertions that pin the
+    // streamable-HTTP session lifecycle: the server assigns the session id,
+    // the client never mints one.
+    //
+    // The stub copies `tests/cli.rs`'s `spawn_mock_mcp_on` discipline —
+    // one request per connection (`Connection: close`, so `ureq` reconnects
+    // predictably) and a stop-flag + non-blocking accept poll teardown, so
+    // a failing assertion cannot leak the accept thread. The one addition
+    // is that it records each request's HEADERS alongside its body, which
+    // is exactly what `tests/cli.rs`'s version discards and what these
+    // contract assertions need.
+    mod session_contract {
+        use super::*;
+
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::{SocketAddr, TcpListener, TcpStream};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+
+        /// The session id the stub hands out in its `initialize` response.
+        ///
+        /// Deliberately NOT 32 lowercase hex: a client-minted id (the bug
+        /// under test) can then never accidentally satisfy an equality
+        /// assertion against it.
+        const ASSIGNED_SESSION: &str = "srv-assigned-0001";
+
+        /// How the stub answers `initialize` — the one axis these tests
+        /// vary. Everything after the handshake is identical across modes.
+        #[derive(Clone, Copy)]
+        enum InitializeReply {
+            /// A healthy serve: 200, a well-formed JSON-RPC result body,
+            /// and an `Mcp-Session-Id` header.
+            WithSession,
+            /// 200 and the same well-formed body, but NO session header —
+            /// the server never assigned a session.
+            NoSessionHeader,
+            /// 202 with an empty body and no session header. The shape a
+            /// notification-only responder produces.
+            AcceptedEmpty,
+        }
+
+        /// How the stub answers `tools/list` — the second axis these tests
+        /// vary, and the one [`JcodemunchClient::list_tools`] decodes.
+        ///
+        /// Orthogonal to [`InitializeReply`]: every mode here is reached
+        /// only after a healthy [`InitializeReply::WithSession`] handshake,
+        /// so a `list_tools` failure can be attributed to the `tools/list`
+        /// reply alone.
+        #[derive(Clone, Copy)]
+        enum ToolsListReply {
+            /// A well-formed `result.tools` array advertising exactly these
+            /// names, in this order.
+            Names(&'static [&'static str]),
+            /// A well-formed JSON-RPC result carrying no `tools` key at all.
+            NoToolsKey,
+            /// `result.tools` present, but an object rather than an array.
+            ToolsNotAnArray,
+            /// A well-formed array whose middle entry carries no `name`.
+            EntryWithoutName,
+        }
+
+        impl ToolsListReply {
+            /// The `result` object this mode puts in its JSON-RPC reply.
+            fn result(self) -> Value {
+                match self {
+                    Self::Names(names) => json!({
+                        "tools": names
+                            .iter()
+                            .map(|n| json!({"name": n, "description": "stub tool"}))
+                            .collect::<Vec<_>>(),
+                    }),
+                    Self::NoToolsKey => json!({"nextCursor": Value::Null}),
+                    Self::ToolsNotAnArray => json!({"tools": {"name": "not-an-array"}}),
+                    Self::EntryWithoutName => json!({
+                        "tools": [
+                            {"name": "get_layer_violations"},
+                            {"description": "an entry with no name at all"},
+                            {"name": "find_references"},
+                        ],
+                    }),
+                }
+            }
+        }
+
+        /// One recorded request: lowercased header names → values, plus the
+        /// parsed JSON body.
+        #[derive(Clone, Debug)]
+        struct Recorded {
+            headers: HashMap<String, String>,
+            body: Value,
+        }
+
+        impl Recorded {
+            fn method(&self) -> &str {
+                self.body.get("method").and_then(|m| m.as_str()).unwrap_or("")
+            }
+
+            fn session_header(&self) -> Option<&str> {
+                self.headers.get("mcp-session-id").map(|s| s.as_str())
+            }
+        }
+
+        /// Read one complete HTTP/1.1 request, returning its lowercased
+        /// headers and parsed JSON body. Assumes `Content-Length` is
+        /// present, which `ureq`'s `send_json` always sets.
+        fn read_request(stream: &mut TcpStream) -> Option<Recorded> {
+            let mut reader = BufReader::new(stream.try_clone().ok()?);
+            // Request line: read and discard. The stub serves every path.
+            let mut request_line = String::new();
+            if reader.read_line(&mut request_line).ok()? == 0 {
+                return None;
+            }
+            let mut headers: HashMap<String, String> = HashMap::new();
+            let mut content_length = 0usize;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).ok()? == 0 {
+                    return None;
+                }
+                if line == "\r\n" || line == "\n" {
+                    break;
+                }
+                let (name, value) = line.split_once(':')?;
+                let name = name.trim().to_ascii_lowercase();
+                let value = value.trim().to_string();
+                if name == "content-length" {
+                    content_length = value.parse().ok()?;
+                }
+                headers.insert(name, value);
+            }
+            let body = if content_length == 0 {
+                Value::Null
+            } else {
+                let mut buf = vec![0u8; content_length];
+                reader.read_exact(&mut buf).ok()?;
+                serde_json::from_slice(&buf).ok()?
+            };
+            Some(Recorded { headers, body })
+        }
+
+        fn write_response(
+            stream: &mut TcpStream,
+            status: u16,
+            session: Option<&str>,
+            body: &[u8],
+        ) {
+            let status_text = match status {
+                202 => "Accepted",
+                _ => "OK",
+            };
+            let mut head = format!(
+                "HTTP/1.1 {status} {status_text}\r\n\
+                 Content-Type: application/json\r\n\
+                 Content-Length: {}\r\n\
+                 Connection: close\r\n",
+                body.len()
+            );
+            if let Some(session) = session {
+                // Mixed case on purpose. HTTP header names are
+                // case-insensitive and a real jcodemunch serve emits this
+                // one lowercase, so the client must not match on case.
+                head.push_str(&format!("Mcp-Session-Id: {session}\r\n"));
+            }
+            head.push_str("\r\n");
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(body);
+        }
+
+        /// A recording MCP stub on loopback. Serves every path.
+        struct RecordingStub {
+            url: String,
+            addr: SocketAddr,
+            stop: Arc<AtomicBool>,
+            requests: Arc<Mutex<Vec<Recorded>>>,
+            handle: Option<thread::JoinHandle<()>>,
+        }
+
+        impl RecordingStub {
+            /// A healthy stub: `initialize` answers 200 with a session id.
+            fn start() -> Self {
+                Self::start_with(InitializeReply::WithSession)
+            }
+
+            /// Vary only the handshake. `tools/list` is never called by
+            /// these tests, so its reply is an inert empty advertisement.
+            fn start_with(reply: InitializeReply) -> Self {
+                Self::start_full(reply, ToolsListReply::Names(&[]))
+            }
+
+            /// Vary only the `tools/list` reply, behind a healthy handshake.
+            fn start_with_tools(tools_reply: ToolsListReply) -> Self {
+                Self::start_full(InitializeReply::WithSession, tools_reply)
+            }
+
+            /// Bind an ephemeral loopback port and start serving, answering
+            /// `initialize` per `reply` and `tools/list` per `tools_reply`.
+            /// The listener is bound once and kept — never dropped and
+            /// re-bound — so nothing else can win the port in between.
+            fn start_full(reply: InitializeReply, tools_reply: ToolsListReply) -> Self {
+                let listener =
+                    TcpListener::bind("127.0.0.1:0").expect("bind loopback stub");
+                let addr = listener.local_addr().expect("stub local_addr");
+                // No trailing slash: a real jcodemunch serve 307-redirects
+                // `/mcp/` and drops `mcp-session-id` on the way.
+                let url = format!("http://127.0.0.1:{}/mcp", addr.port());
+                listener
+                    .set_nonblocking(true)
+                    .expect("set_nonblocking on stub listener");
+
+                let stop = Arc::new(AtomicBool::new(false));
+                let requests: Arc<Mutex<Vec<Recorded>>> = Arc::new(Mutex::new(Vec::new()));
+                let stop_thread = Arc::clone(&stop);
+                let requests_thread = Arc::clone(&requests);
+
+                let handle = thread::spawn(move || loop {
+                    if stop_thread.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let mut stream = match listener.accept() {
+                        Ok((s, _)) => s,
+                        Err(_) => {
+                            // WouldBlock (the common case) and any other
+                            // transient error both back off, so the loop
+                            // can never peg a CPU nor miss the stop flag.
+                            thread::sleep(Duration::from_millis(10));
+                            continue;
+                        }
+                    };
+                    // Restore blocking semantics for BufReader, but bound
+                    // the read so a stalled peer can't wedge the join.
+                    let _ = stream.set_nonblocking(false);
+                    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+                    let recorded = match read_request(&mut stream) {
+                        Some(r) => r,
+                        None => continue,
+                    };
+                    let req_id = recorded.body.get("id").cloned().unwrap_or(Value::Null);
+                    let method = recorded.method().to_string();
+                    requests_thread
+                        .lock()
+                        .expect("stub request log")
+                        .push(recorded);
+
+                    match method.as_str() {
+                        "initialize" => {
+                            let body = json!({
+                                "jsonrpc": "2.0",
+                                "id": req_id,
+                                "result": {
+                                    "protocolVersion": PROTOCOL_VERSION,
+                                    "capabilities": {},
+                                    "serverInfo": {
+                                        "name": "recording-stub",
+                                        "version": "0.1",
+                                    },
+                                },
+                            })
+                            .to_string();
+                            match reply {
+                                InitializeReply::WithSession => write_response(
+                                    &mut stream,
+                                    200,
+                                    Some(ASSIGNED_SESSION),
+                                    body.as_bytes(),
+                                ),
+                                InitializeReply::NoSessionHeader => {
+                                    write_response(&mut stream, 200, None, body.as_bytes())
+                                }
+                                InitializeReply::AcceptedEmpty => {
+                                    write_response(&mut stream, 202, None, b"")
+                                }
+                            }
+                        }
+                        // A real serve answers this notification 202 with
+                        // an empty body — keep that shape.
+                        "notifications/initialized" => {
+                            write_response(&mut stream, 202, None, b"")
+                        }
+                        "tools/list" => {
+                            let body = json!({
+                                "jsonrpc": "2.0",
+                                "id": req_id,
+                                "result": tools_reply.result(),
+                            })
+                            .to_string();
+                            write_response(&mut stream, 200, None, body.as_bytes())
+                        }
+                        _ => write_response(&mut stream, 200, None, b"{}"),
+                    }
+                });
+
+                Self {
+                    url,
+                    addr,
+                    stop,
+                    requests,
+                    handle: Some(handle),
+                }
+            }
+
+            fn url(&self) -> &str {
+                &self.url
+            }
+
+            /// Every request recorded so far, in arrival order.
+            fn requests(&self) -> Vec<Recorded> {
+                self.requests.lock().expect("stub request log").clone()
+            }
+
+            /// The one recorded request whose JSON-RPC `method` is
+            /// `method`. Panics unless there is exactly one — zero or
+            /// several would make the caller's assertion vacuous or
+            /// ambiguous rather than wrong.
+            fn request_for(&self, method: &str) -> Recorded {
+                let mut matches: Vec<Recorded> = self
+                    .requests()
+                    .into_iter()
+                    .filter(|r| r.method() == method)
+                    .collect();
+                assert_eq!(
+                    matches.len(),
+                    1,
+                    "expected exactly one recorded `{method}` request; recorded: {:?}",
+                    self.requests()
+                        .iter()
+                        .map(|r| r.method().to_string())
+                        .collect::<Vec<_>>(),
+                );
+                matches.pop().expect("checked len == 1")
+            }
+        }
+
+        impl Drop for RecordingStub {
+            fn drop(&mut self) {
+                self.stop.store(true, Ordering::Relaxed);
+                // Best-effort wakeup; the non-blocking accept poll is the
+                // safety net, so this failing cannot hang the join.
+                let _ = TcpStream::connect_timeout(&self.addr, Duration::from_millis(50));
+                if let Some(handle) = self.handle.take() {
+                    let _ = handle.join();
+                }
+            }
+        }
+
+        /// Contract item 1: the `initialize` POST carries NO
+        /// `mcp-session-id` request header.
+        ///
+        /// In MCP streamable-HTTP the session is assigned by the server on
+        /// `initialize`. A client-minted id makes a real jcodemunch serve
+        /// answer `404 Invalid or expired session ID`, which `post` maps to
+        /// `LoadError::Http` and `reify-audit` fail-softs into a no-op —
+        /// silently, which is how the seam stayed dead for ten weeks.
+        #[test]
+        fn initialize_carries_no_client_minted_session_header() {
+            let stub = RecordingStub::start();
+
+            let client = JcodemunchClient::new(stub.url());
+            assert!(
+                client.is_ok(),
+                "handshake against the recording stub must succeed; got {:?}",
+                client.err(),
+            );
+
+            let requests = stub.requests();
+            let first = requests.first().expect("stub recorded no request at all");
+            assert_eq!(
+                first.method(),
+                "initialize",
+                "the handshake's first POST must be `initialize`",
+            );
+            assert_eq!(
+                first.session_header(),
+                None,
+                "`initialize` must carry no mcp-session-id request header — \
+                 the server assigns the session, the client never mints one",
+            );
+        }
+
+        /// Contract items 2 and 3: the client stores the `Mcp-Session-Id`
+        /// the server returned on `initialize` and replays exactly that
+        /// value on every subsequent POST.
+        ///
+        /// Asserted behaviourally — on the wire — rather than through a
+        /// getter, so the lock costs no new public surface.
+        #[test]
+        fn server_assigned_session_id_is_replayed_on_every_later_post() {
+            let stub = RecordingStub::start();
+            let client = JcodemunchClient::new(stub.url()).expect("handshake");
+
+            // The stub's fallback arm answers `200 {}`, so the decoded
+            // result is irrelevant here — the claim is about the request
+            // headers this call puts on the wire.
+            let _ = client.call_tool("get_layer_violations", json!({}));
+
+            assert_eq!(
+                stub.request_for("notifications/initialized").session_header(),
+                Some(ASSIGNED_SESSION),
+                "`notifications/initialized` must replay the server-assigned \
+                 session id verbatim",
+            );
+            assert_eq!(
+                stub.request_for("tools/call").session_header(),
+                Some(ASSIGNED_SESSION),
+                "every post-handshake call must replay the server-assigned \
+                 session id verbatim",
+            );
+        }
+
+        /// α's share of contract item 5: a responder that assigns no
+        /// session id is not a live seam, so the handshake must fail.
+        ///
+        /// Without an assigned id, contract item 3 (replay it on every
+        /// later POST) is unsatisfiable by construction — there is nothing
+        /// to replay. Returning `Ok` here would hand back a client whose
+        /// every subsequent call is answered `400 Missing session ID`,
+        /// which is exactly the PASS-shaped nothing this task exists to
+        /// remove.
+        ///
+        /// The residual hole — a response that DOES carry a session id but
+        /// whose body is 202/empty/not an initialize result — belongs to
+        /// task #5832 and is deliberately not asserted here.
+        #[test]
+        fn initialize_without_an_assigned_session_id_is_a_protocol_error() {
+            let stub = RecordingStub::start_with(InitializeReply::NoSessionHeader);
+
+            match JcodemunchClient::new(stub.url()) {
+                Err(LoadError::Protocol(_)) => {} // expected
+                Ok(_) => panic!(
+                    "expected Protocol error when the initialize response \
+                     carries no Mcp-Session-Id header, got Ok — a client with \
+                     no session id fails every later call",
+                ),
+                Err(LoadError::Http(e)) => panic!(
+                    "expected Protocol error for the missing session id, got \
+                     Http error: {e}",
+                ),
+            }
+        }
+
+        /// The same claim through the 202 shape: an `initialize` answered
+        /// `202` with an empty body and no session header assigns nothing,
+        /// so it too must fail rather than yield a session-less client.
+        #[test]
+        fn initialize_answered_202_without_a_session_id_is_a_protocol_error() {
+            let stub = RecordingStub::start_with(InitializeReply::AcceptedEmpty);
+
+            match JcodemunchClient::new(stub.url()) {
+                Err(LoadError::Protocol(_)) => {} // expected
+                Ok(_) => panic!(
+                    "expected Protocol error when initialize is answered 202 \
+                     with no Mcp-Session-Id header, got Ok",
+                ),
+                Err(LoadError::Http(e)) => panic!(
+                    "expected Protocol error for the 202-without-session-id \
+                     handshake, got Http error: {e}",
+                ),
+            }
+        }
+
+        /// `list_tools` reports exactly what the server advertised — every
+        /// name, in arrival order, nothing added or dropped — and does so
+        /// on the established session (contract item 3).
+        #[test]
+        fn list_tools_reports_every_advertised_name_in_order() {
+            const ADVERTISED: &[&str] = &[
+                "get_changed_symbols",
+                "find_references",
+                "get_dead_code_v2",
+            ];
+            let stub = RecordingStub::start_with_tools(ToolsListReply::Names(ADVERTISED));
+            let client = JcodemunchClient::new(stub.url()).expect("handshake");
+
+            let tools = client
+                .list_tools()
+                .expect("tools/list against a well-formed stub must succeed");
+            let expected: Vec<String> =
+                ADVERTISED.iter().map(|n| (*n).to_string()).collect();
+            assert_eq!(
+                tools, expected,
+                "list_tools must report the advertised names verbatim and in \
+                 order",
+            );
+
+            assert_eq!(
+                stub.request_for("tools/list").session_header(),
+                Some(ASSIGNED_SESSION),
+                "`tools/list` is a post-handshake call like any other and must \
+                 replay the server-assigned session id",
+            );
+        }
+
+        /// Every malformed `tools/list` shape must surface as
+        /// `LoadError::Protocol`.
+        ///
+        /// Never `Ok`: a silently empty or silently shortened tool list is
+        /// exactly the PASS-shaped nothing this client's session handling
+        /// exists to remove — a caller would read it as "the serve offers
+        /// no such tool" rather than "the serve answered nonsense". Never
+        /// `Http` either: the transport succeeded, the payload did not.
+        fn assert_list_tools_is_a_protocol_error(reply: ToolsListReply, what: &str) {
+            let stub = RecordingStub::start_with_tools(reply);
+            let client = JcodemunchClient::new(stub.url()).expect("handshake");
+
+            match client.list_tools() {
+                Err(LoadError::Protocol(_)) => {} // expected
+                Ok(tools) => panic!(
+                    "expected a Protocol error for {what}; got Ok({tools:?}) — a \
+                     malformed tool list must never be reported as a (possibly \
+                     empty or shortened) set of tools",
+                ),
+                Err(LoadError::Http(e)) => panic!(
+                    "expected a Protocol error for {what}; got Http error: {e}",
+                ),
+            }
+        }
+
+        /// An absent tool list is a protocol violation, not a server with
+        /// no tools.
+        #[test]
+        fn list_tools_without_result_tools_is_a_protocol_error() {
+            assert_list_tools_is_a_protocol_error(
+                ToolsListReply::NoToolsKey,
+                "a result carrying no `tools` key",
+            );
+        }
+
+        /// `result.tools` that is not an array cannot be iterated, so it is
+        /// a protocol violation rather than a zero-length list.
+        #[test]
+        fn list_tools_with_a_non_array_tools_field_is_a_protocol_error() {
+            assert_list_tools_is_a_protocol_error(
+                ToolsListReply::ToolsNotAnArray,
+                "`result.tools` that is an object, not an array",
+            );
+        }
+
+        /// One nameless entry poisons the whole list rather than being
+        /// skipped: silently returning the other two names would report a
+        /// tool set the server never advertised.
+        #[test]
+        fn list_tools_with_a_nameless_entry_is_a_protocol_error() {
+            assert_list_tools_is_a_protocol_error(
+                ToolsListReply::EntryWithoutName,
+                "a tool entry with no string `name`",
+            );
+        }
     }
 }

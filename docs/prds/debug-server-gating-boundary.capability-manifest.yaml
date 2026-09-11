@@ -1,0 +1,182 @@
+prd: docs/prds/debug-server-gating-boundary.md
+schema_version: 1
+tasks:
+- label: alpha
+  task_id: 6351
+  title: Move the non-Tauri half of debug_server into an ungated debug_protocol module
+  capabilities:
+  - name: debug-protocol-module-declared-ungated
+    binding: 'capability→producer (this leaf) — lib.rs gains `pub mod debug_protocol;`
+      with NO preceding #[cfg(feature = "gui")], while `debug_server` stays gated
+      (PRD §5 C1/C2)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^pub mod debug_protocol;
+      paths:
+      - gui/src-tauri/src/lib.rs
+      expect: present
+  - name: debug-server-is-test-free
+    binding: 'capability→producer (this leaf) — the C2 ratchet is ZERO: debug_server.rs
+      holds no #[test]/#[tokio::test] and no #[cfg(test)] mod tests. Currently 50
+      matches, so the check is discriminating.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '#\[(tokio::)?test\]'
+      paths:
+      - gui/src-tauri/src/debug_server.rs
+      expect: absent
+  - name: tool-defs-relocated
+    binding: capability→producer (this leaf) — tool_defs() leaves debug_server.rs.
+      This is the anti-regrowth anchor for reify-debug-mcp-expansion's ~30 future
+      tool-def entries (PRD §4 seam table).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^fn tool_defs\(
+      paths:
+      - gui/src-tauri/src/debug_server.rs
+      expect: absent
+  - name: mcp-envelope-relocated
+    binding: capability→producer (this leaf) — mcp_content_blocks() leaves debug_server.rs;
+      its own docblock already states it was made state-free precisely so it is unit-testable
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^fn mcp_content_blocks\(
+      paths:
+      - gui/src-tauri/src/debug_server.rs
+      expect: absent
+  - name: port-resolution-relocated
+    binding: capability→producer (this leaf) — parse_debug_port() leaves debug_server.rs,
+      so its claude_bridge.rs:766 / main.rs:945-946 consumers repoint to an ungated
+      path (PRD §2 consumer table)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^pub fn parse_debug_port\(
+      paths:
+      - gui/src-tauri/src/debug_server.rs
+      expect: absent
+  - name: mesh-morph-dependency-unconditional
+    binding: capability→producer (this leaf) — reify-mesh-morph leaves the `gui` feature
+      list and becomes a normal dependency (PRD §7 D3). Already an unconditional dev-dependency,
+      and reify-solver-elastic is already in reify-gui's non-gui graph via reify-eval
+      (crates/reify-eval/Cargo.toml:31), so the ungated test build links it today.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^gui = .*dep:reify-mesh-morph
+      paths:
+      - gui/src-tauri/Cargo.toml
+      expect: absent
+  - name: test-module-registered
+    binding: capability→producer (this leaf) — the relocated tests are declared from
+      src/tests/mod.rs, matching the crate's dominant convention (20 existing *_tests.rs
+      files)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^mod debug_protocol_tests;
+      paths:
+      - gui/src-tauri/src/tests/mod.rs
+      expect: present
+  - name: stale-briefing-fact-corrected
+    binding: capability→producer (this leaf) — review/briefing.yaml:561 currently
+      asserts debug_server is a `wholly gui-gated` module and records the 911/850
+      split; both become false. Docs-truth obligation, same diff.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: wholly gui-gated debug_server
+      paths:
+      - review/briefing.yaml
+      expect: absent
+  - name: stale-verify-comment-corrected
+    binding: capability→producer (this leaf) — scripts/verify.sh:2036-2041 describes
+      the gui-feature pass as reaching `the wholly gui-gated debug_server / event_bus
+      modules`; after this leaf only event_bus is. Comment-only edit, no `add` site
+      touched, so no THROUGHPUT-COUNTS bump (PRD §7 D9).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: debug_server / event_bus modules
+      paths:
+      - scripts/verify.sh
+      expect: absent
+  - name: gui-pass-carries-no-filterset
+    binding: rejection-mechanism (anti-drift) — (b8) in tests/infra/test_compute_trampoline_registration_wired.sh:1417-1418
+      asserts the emitted gui-feature pass contains no ' -E '. This leaf must narrow
+      the GATED SET, never the PASS (PRD §5 C4). Cited, not duplicated.
+    verdict: PASS
+    delivered_check:
+      kind: script
+      script: tests/infra/test_compute_trampoline_registration_wired.sh
+      timeout_secs: 600
+  - name: ungated-list-gains-the-fifty
+    binding: 'capability→producer (this leaf) — the `comm -13` set difference over
+      `cargo nextest list -p reify-gui` and `… --features gui` shrinks by exactly
+      50 and holds zero debug_server::/debug_protocol:: entries'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: A before/after delta over a COMPILED nextest listing, not a property
+        of the committed tree — no grep or committed script can express it. It is
+        the leaf's primary user-observable signal and is verified by running the two
+        listings in-task; PRD §7 D8 deliberately keeps it a delta plus a zero-membership
+        property rather than an absolute count, because reify-gui gains tests weekly.
+  - name: no-clippy-regression-on-the-moved-code
+    binding: capability→producer (this leaf) — once ungated, the moved code is seen
+      by the EXISTING `cargo clippy --workspace --all-targets -D warnings` pass. Task
+      5841's 2026-08-19 measurement puts all 4 debug_server warnings at :1788 (stays
+      gated) and :2143/:2213/:2235 (the morph tests, whose idiom this leaf owns per
+      PRD §7 D4). Landing without the idiom turns main RED.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'Enforced by the merge gate itself — the workspace clippy pass runs
+        under -D warnings, so this cannot land dirty. A standalone grep for `#[allow(clippy::await_holding_lock)]`
+        would be wrong: PRD §10 Q2 leaves the implementer free to RESTRUCTURE so the
+        guard drops before the await, which is the preferred resolution and leaves
+        no allow to match.'
+- label: beta
+  task_id: 6352
+  title: Land the debug_server/debug_protocol gating-boundary drift guard
+  capabilities:
+  - name: guard-registered-in-classification-manifest
+    binding: 'capability→producer (this leaf) — the bucket row lands in the SAME diff
+      as the script (overlay gate-test drift-guard rule; the esc-4914-162 failure
+      this exists to prevent). Bucket `pool`: hermetic, grep-only, no cargo, no host
+      resources.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^test_debug_server_gating_boundary\.sh '
+      paths:
+      - tests/infra/run-all-classification.manifest
+      expect: present
+  - name: guard-passes-on-a-conforming-tree
+    binding: rejection-mechanism (G6 branch 4), forward half — the guard exits 0 against
+      the post-alpha tree. Necessary-not-sufficient, so it is paired with the discriminating
+      manifest-row grep above and with the seeded-violation half below; a guard that
+      never goes red is the graceful-skip vacuity shape.
+    verdict: PASS
+    delivered_check:
+      kind: script
+      script: tests/infra/test_debug_server_gating_boundary.sh
+      timeout_secs: 120
+  - name: guard-rejects-a-seeded-violation
+    binding: 'rejection-mechanism (G6 branch 4), reverse half — the ASSERTED rejection
+      must be OBSERVED to fire: a #[test] fn with no gui dependency seeded into debug_server.rs
+      makes the guard exit non-zero naming that file and clause C2, and reverting
+      returns exit 0. Both directions required.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Observing a rejection requires mutating the tree and reverting it —
+        inexpressible as a check over the committed tree, which by construction holds
+        no violation. Discharged in-task by seeding, observing the non-zero exit and
+        the named clause, then observing exit 0 on revert; both transcripts recorded
+        in the task record. This is the leaf's user-observable signal, deliberately
+        not 'a unit test passes against synthetic input'.

@@ -10,7 +10,7 @@
 //! type-param-aware `VariantPayloadType` diagnostic surfaced on stderr. The
 //! CLI surfaces diagnostic MESSAGE text (not the typed `DiagnosticCode`), so
 //! these assertions match message substrings — the typed-code assertions
-//! live in the compiler tests (`reify-compiler/tests/result_prelude_enum_tests.rs`).
+//! live in the compiler tests (`reify-compiler/tests/harness_result_annotation/result_prelude_enum_tests.rs`).
 //! Mirrors `cli_check_variant_construction.rs` (task δ #3942, step-11).
 //!
 //! RED (before step-4 adds the two fixtures below): both fixture paths do

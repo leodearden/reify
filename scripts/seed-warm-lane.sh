@@ -2,10 +2,17 @@
 # scripts/seed-warm-lane.sh — CoW clone + warmth-transfer helper for warm-lane pool.
 #
 # D10 always-re-seed-at-acquire contract (PRD §9.3, 2026-06-18 amendment):
-#   The seed primitive itself is UNCHANGED.  The acquire path (pool consumer, DF ζ)
-#   MUST always pass --fresh-checkout so a staled lane is rescued to warm rather
-#   than rebuilt near-cold via --reset-in-place.  --reset-in-place is retained only
-#   as a control arm in the B13 re-seed warmth delta test.
+#   The seed primitive itself is UNCHANGED.  The TASK-lane acquire path (pool
+#   consumer, DF ζ `_acquire_warm_lane_impl`) MUST always pass --fresh-checkout so a
+#   staled lane is rescued to warm rather than rebuilt near-cold via --reset-in-place.
+#   The merge-spec `_spec-` acquire (DF `acquire_spec_lane`) always passes
+#   --reset-in-place instead, so --reset-in-place is NOT "B13 control arm only":
+#   it is the control arm AND a production acquire mode.
+#   TWO homes, do not restate the split anywhere else in this file: the MODE SPLIT
+#   note near the tail is the in-file home for what the split MEANS HERE (the
+#   consequence rule for anything gated on one mode); PRD §9.5's 2026-09-11 ledger
+#   entry is the normative home for the measurement and the spec/implementation
+#   divergence it records.
 #
 #   Resolve convention (D8 seam): the caller MUST resolve <base>/target (a symlink
 #   to a .gen.N dir) to its CONCRETE .gen.N path before passing it to this script.
@@ -32,14 +39,27 @@
 #     consumer already holds it -- with EX_TEMPFAIL (75) by default, or 77 under
 #     --distinct-lock-refusal-rc (task #5568). Either way the refusal is
 #     prefixed `LANE_LOCK_CONTENDED:` on stderr.
-#   --lane-lock: still accepted (now implied under --fresh-checkout; still the
-#     explicit opt-in for the --reset-in-place control arm, which does not lock
-#     by default).
+#   --lane-lock: still accepted (implied under --fresh-checkout; still the
+#     explicit opt-in for --reset-in-place -- the B13 control arm).  But whether
+#     THIS script self-acquires is settled by the OPT-OUT, not by the mode:
+#     --assume-lane-lock-held clears the default-on flag AFTER --fresh-checkout
+#     has set it, and DF's `_seed_warm_lane` appends that flag on EVERY
+#     `take_lane_lock=True` call (capability-probed; reify-5556 livelock fix) --
+#     which is BOTH production pool acquires, task and merge-spec alike.  So on
+#     the production pool path seed never takes the lane lock for EITHER role,
+#     and inv.11 is held for both by DF's own OUTER
+#     `flock -x -w 30 -E 124 <lane_dir>.lock` on this same sibling path.  The
+#     mode split changes seed's DEFAULT only; do not read it as a live
+#     task-vs-merge-spec difference in who locks.  Seed does still self-acquire
+#     for a caller that omits the opt-out: tests/infra, and DF's ephemeral
+#     warm-seed path (`take_lane_lock=False`), which is not a pool lane.
 #     REIFY_WARM_LANE_LANE_LOCK_WAIT (env, whenever the lock is acquired): 0
 #     (default) = non-blocking refuse; N>0 = queue up to N seconds (flock -w N)
-#     before refusing; "unlimited" = block until acquired, never refuses. A
-#     refused acquirer of a task lane can just try a different FREE lane, but
-#     the SINGLETON _merge-verify lane has no alternate -- it QUEUEs instead.
+#     before refusing; "unlimited" = block until acquired, never refuses. The
+#     default is tuned for the task-lane acquirer, which can just try a different
+#     FREE lane.  It is INERT on BOTH production pool acquires per the paragraph
+#     above -- DF's outer flock carries its own bounded wait (30s) and its own
+#     timeout code (124) instead.
 #     FD 9 (fixed, matching thin-warm-lane.sh's T3 convention): a caller that
 #     lets seed acquire the lock MUST NOT itself hold a load-bearing FD 9 open
 #     across this invocation -- `exec 9>"$LANE_LOCK"` would silently reassign it.
@@ -82,6 +102,25 @@
 #   `set -euo pipefail` and writes stdout exactly once, at the terminal echo.
 #   (§9.5 inv.13 "Caller obligation on the fail-closed path" is the ruling.)
 #
+#   PIPE-SAFE (task #6219): every DETACHED child this script forks (the
+#   orphan-trash sweep and the reseed-trash rm) holds NO descriptor of the
+#   caller's: fd 0, fd 1 and fd 2 are ALL redirected away EXPLICITLY
+#   (`</dev/null >/dev/null 2>&1` on the whole group -- the stdin half is
+#   spelled out rather than left to bash's async-list default, which does not
+#   reach a detach nested inside a redirected construct; see
+#   `_close_inherited_fds`'s doc-comment for the measurement, not restated
+#   here), and every OTHER inherited descriptor is
+#   closed generically by `_close_inherited_fds` (defined with the log
+#   helpers below) -- so ANY lock FD a caller holds is closed in the child,
+#   not just the two this pool's callers happen to use today (FD 9: seed's
+#   own --lane-lock acquire and thin-warm-lane.sh's --reseed; FD 8:
+#   warm-lane-gc.sh's reclaim). So a caller may capture this stdout through a
+#   pipe -- `$(...)`, `| consumer`, or the `2>&1 | while read` shape
+#   warm-lane-gc.sh:648-649 uses -- without blocking on that background rm of
+#   a possibly large tree, and without the rm silently outliving the
+#   caller's own lock release. A future caller's lock FD is covered
+#   automatically, with no closer to edit (task #6219 amendment).
+#
 # Stdout (record mode): resolved sidecar path on success.
 # Stderr:               all diagnostics, progress messages, and errors.
 #
@@ -116,6 +155,16 @@
 #     Knobs: REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT (see below).
 #   --reset-in-place: no bulk stamp (git clean -xfd -e target already moved changed mtimes).
 #
+# REIFY_WARM_LANE_RERERE_ARM=0 — OPERATOR ESCAPE HATCH, not a tuning knob.
+#   Skips the shared-store `git-rerere-guard.sh arm` delegation at the tail of
+#   --fresh-checkout (see the block there for why lane cadence exists at all).
+#   Exact `= "0"` match, inverted from the other knobs here on purpose: unset and
+#   every other value keep the defence ARMED, so the failure direction is always
+#   "still protected", never "silently off". Exists because that call runs on
+#   EVERY acquire across all linked worktrees of one shared .git/config, and a
+#   fleet-wide write path deserves an off-switch that needs no code change and no
+#   merge. Steady-state cost is a read-only sweep with no config lock taken.
+#
 # REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT=1 — HERMETIC-FIXTURE / deliberate-accept
 #   seam, NOT a production knob. Downgrades inv.13's refusal to a [warn] (the
 #   downgrade is itself logged) so a fixture that intentionally exercises the
@@ -135,11 +184,78 @@
 
 set -euo pipefail
 
+# Resolved once so sibling scripts/ helpers can be invoked by absolute path
+# regardless of the caller's CWD (this script is run from dark-factory, from
+# tests/infra fixtures, and by hand). Used by the rerere-disarm delegation at
+# the tail of this file.
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # ── log helpers (all write to stderr) ────────────────────────────────────────
 info()  { printf '\033[1;34m[info]\033[0m  %s\n' "$*" >&2; }
 ok()    { printf '\033[1;32m[ok]\033[0m    %s\n' "$*" >&2; }
 warn()  { printf '\033[1;33m[warn]\033[0m  %s\n' "$*" >&2; }
 err()   { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; }
+
+# _close_inherited_fds (task #6219 amendment) -- closes every file descriptor
+# >= 3 open in the calling shell. Called as the FIRST statement inside every
+# detached background job this script forks (the orphan-trash sweep, the
+# reseed-trash rm), so the child holds NO descriptor inherited from its
+# caller -- whatever it may be, present or future -- instead of enumerating
+# each caller's private FD-locking convention by number at every call site.
+# This codebase's callers currently use FD 9 for seed's own --lane-lock
+# acquire and thin-warm-lane.sh's --reseed, and FD 8 for warm-lane-gc.sh's
+# reclaim; before this function existed, a third convention would have
+# needed a third numbered close added at both call sites below -- an
+# inverted dependency (the callee needing to track every caller's private
+# implementation detail) that had already produced the same class of leak
+# twice (FD 9 in #5705, FD 8 in #6219). See the LANE-LOCK RELEASE CONTRACT
+# block below for why an inherited dup of a caller's flock'd descriptor
+# matters at all (short version: a flock is attached to the OPEN FILE
+# DESCRIPTION, not the descriptor, so a detached child holding a dup keeps
+# the caller's lock held for the child's entire lifetime, even after the
+# caller itself releases and exits).
+# fd 0/1/2 are deliberately EXCLUDED (-ge 3): the group this runs inside
+# applies its own `</dev/null >/dev/null 2>&1` redirect to the WHOLE group
+# before any statement in the group body runs, so by the time this loop runs
+# those three descriptors are already the group's own, not the caller's --
+# closing them here would break the pipe-safety this exists to provide rather
+# than help it.
+# The stdin half is spelled EXPLICITLY at both call sites rather than left to
+# bash's async-list /dev/null default (amendment 2, correcting this
+# doc-comment's earlier claim that the default sufficed): that default applies
+# only "in the absence of any explicit redirections", and the orphan-sweep
+# detach lives inside `while IFS= read ... done < <(find ...)`, so without an
+# explicit `</dev/null` its child inherits the LOOP's redirected stdin
+# instead. MEASURED with the shipped shape: the non-loop reseed-trash detach
+# reports fd 0 = /dev/null, the loop-nested one reports fd 0 = pipe:[...] (the
+# process substitution). Benign in itself -- that pipe is seed's own,
+# already-exhausted find, not the caller's -- but it made the invariant this
+# design leans on ("a future caller's lock FD is covered automatically") false
+# for fd 0, so a future detach placed inside a construct whose stdin IS the
+# caller's would have silently reintroduced the leak class. The explicit
+# redirect makes it true by construction; Block V's V14-V17 in
+# tests/infra/test_seed_warm_lane.sh pin it behaviourally and structurally.
+#
+# `2>/dev/null` sits OUTSIDE the eval'd string, scoping it to the eval builtin
+# (amendment 2). Inside the string it is a redirection on an `exec` with NO
+# command, which bash applies PERMANENTLY to the shell that runs it --
+# silently destroying this script's whole diagnostic channel (the header's
+# "Stderr: all diagnostics, progress messages, and errors" contract, err()
+# included) for any future caller of this helper that does not already
+# pre-redirect fd 2, which the doc above actively invites. Masked until now
+# only because both call sites wrap the helper in a group that is itself
+# already `>/dev/null 2>&1`. The suppression is belt-and-braces either way:
+# bash returns 0 silently when closing an unopened descriptor. Block V's V18
+# in tests/infra/test_seed_warm_lane.sh pins this against the SHIPPED body
+# (extracted from this file, not retyped), with a mutation control that
+# re-inserts the old spelling and asserts it goes red.
+_close_inherited_fds() {
+    local _fd _n
+    for _fd in /proc/self/fd/*; do
+        _n="${_fd##*/}"
+        [ "$_n" -ge 3 ] 2>/dev/null && eval "exec ${_n}<&-" 2>/dev/null
+    done
+}
 
 # ── usage ─────────────────────────────────────────────────────────────────────
 _usage() {
@@ -156,17 +272,23 @@ Seed mode: CoW-clone a warm base target/ into a pool lane.
   --fresh-checkout    Replace non-empty <lane_dir>/target (mv to trash, reflink-clone,
                       rm trash); then bulk-stamp sources to 2020-01-01 and touch
                       changed files to now (D5).
-  --reset-in-place    Refuse a non-empty <lane_dir>/target (B13 control arm only;
-                      production acquires always use --fresh-checkout).  No bulk stamp.
+  --reset-in-place    Refuse a non-empty <lane_dir>/target.  No bulk stamp.  Serves BOTH
+                      the B13 warmth-delta control arm and the merge-spec `_spec-`
+                      acquire mode; task-lane acquires use --fresh-checkout.
   --base-commit sha   Git commit the base was built from; drives git diff --name-only.
   --touch path        Additional path to touch to now after bulk stamp (repeatable).
-  --lane-lock         Accepted; IMPLIED under --fresh-checkout, where the lane lock
-                      is acquired BY DEFAULT (esc-5214/task 5354 fail-safe). Still the
-                      explicit opt-in for the --reset-in-place control arm. Holds an
-                      exclusive flock on the sibling ${LANE_DIR}.lock across the whole
-                      run, BEFORE any target mutation; refuses if a live consumer
-                      already holds it (inv.2 one-consumer-per-lane) -- with
-                      EX_TEMPFAIL 75 by default, 77 under --distinct-lock-refusal-rc.
+  --lane-lock         Accepted; IMPLIED under --fresh-checkout, which turns seed's own
+                      acquire ON by default (esc-5214/task 5354 fail-safe); still the
+                      explicit opt-in under --reset-in-place.  That default settles
+                      NOTHING on either production pool acquire, task or merge-spec:
+                      DF's `_seed_warm_lane` passes --assume-lane-lock-held on both, so
+                      seed takes the lock for NEITHER role and inv.11 is held by DF's
+                      own outer flock instead -- see the --lane-lock note in the header.
+                      Where seed DOES acquire, it holds an exclusive flock on the
+                      sibling ${LANE_DIR}.lock across the whole run, BEFORE any target
+                      mutation; refuses if a live consumer already holds it (inv.2
+                      one-consumer-per-lane) -- with EX_TEMPFAIL 75 by default, 77
+                      under --distinct-lock-refusal-rc.
                       REIFY_WARM_LANE_LANE_LOCK_WAIT (env, whenever the lock is
                       acquired): 0 (default) = non-blocking refuse (flock -n); N>0 =
                       queue up to N seconds before refusing (flock -w N); "unlimited"
@@ -181,7 +303,9 @@ Seed mode: CoW-clone a warm base target/ into a pool lane.
   --assume-lane-lock-held
                       Opt OUT of the default acquire for a caller that ALREADY holds
                       ${LANE_DIR}.lock itself (thin --reseed on FD 9, gc reclaim on
-                      FD 8). flock is not re-entrant across a process tree, so having
+                      FD 8, and -- the caller that dominates in production -- DF
+                      `_seed_warm_lane`, on BOTH pool acquires regardless of mode).
+                      flock is not re-entrant across a process tree, so having
                       seed re-acquire the same file would self-refuse; this makes seed
                       skip its own acquire. Mutually exclusive with --lane-lock (usage
                       error, exit 2). Seed never unlocks an FD 9 it did not open, so
@@ -229,6 +353,12 @@ Guards (seed mode, fail-closed before any work):
            REIFY_WARM_LANE_MOUNT set + LANE_TARGET not under mount → exit 1.
            LANE_TARGET or LANE_DIR == BASE_TARGET_DIR (self-clobber) → exit 1.
          REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 forces synchronous trash rm (tests).
+
+Environment (escape hatch):
+  REIFY_WARM_LANE_RERERE_ARM=0  Skip the shared-store `git-rerere-guard.sh arm`
+         delegation run at the end of --fresh-checkout. Operator escape hatch,
+         not a tuning knob: unset and any value other than a literal 0 keep the
+         disarm ARMED, so the failure direction is always "still protected".
 EOF
 }
 
@@ -756,7 +886,9 @@ if [ -n "$FRESH_CHECKOUT" ] || [ -n "$LANE_LOCK_OPT" ]; then
     _should_acquire_lane_lock=1
 fi
 # --assume-lane-lock-held (opt-out): the caller asserts it ALREADY holds
-# ${LANE_DIR}.lock (thin --reseed on FD 9, gc reclaim on FD 8). flock is not
+# ${LANE_DIR}.lock (thin --reseed on FD 9, gc reclaim on FD 8, and -- the caller
+# that dominates in production -- DF _seed_warm_lane's outer flock, which passes
+# this on BOTH pool acquires, so the default above is live for neither). flock is not
 # re-entrant across a process tree, so seed re-opening+flocking the same file
 # would self-refuse against the caller's own held lock. Skip our own acquire
 # entirely; the caller's held lock already provides the inv.2 exclusivity.
@@ -771,13 +903,21 @@ if [ -n "$_should_acquire_lane_lock" ]; then
     # the lane never was.
     [ -e "$LANE_LOCK" ] || info "Lane lock does not exist yet, creating: $LANE_LOCK (lane may never have been acquired through the pool)"
 
-    # REIFY_WARM_LANE_LANE_LOCK_WAIT (opt-in knob, default 0): a refused
-    # acquirer of an ordinary task lane should just try a different FREE
-    # lane (0 -> flock -n, non-blocking refuse) -- but the SINGLETON
-    # _merge-verify lane has no alternate to fall back to, so it can QUEUE
-    # instead: N>0 -> flock -w N (bounded queue, refuse on timeout);
-    # "unlimited" (case-insensitive) -> flock (block until acquired, never
-    # refuses). Validation mirrors lib_lane_x_flock.sh's
+    # REIFY_WARM_LANE_LANE_LOCK_WAIT (opt-in knob, default 0): it governs THIS
+    # block, so it binds only a caller that REACHES it -- one that lets seed
+    # self-acquire. Neither production pool acquire does: both pass
+    # --assume-lane-lock-held, so the knob is inert for BOTH roles and DF's
+    # outer flock carries its own bounded wait (30s) and timeout code (124)
+    # instead (see the --lane-lock header note). The callers it does bind are
+    # tests/infra and DF's ephemeral warm-seed path (take_lane_lock=False).
+    # The 0 default suits a refused task-lane acquirer, which can just try a
+    # different FREE lane (0 -> flock -n, non-blocking refuse); N>0 -> flock -w N
+    # (bounded queue, refuse on timeout); "unlimited" (case-insensitive) ->
+    # flock (block until acquired, never refuses).
+    # Attribute NO wait policy to the singleton _merge-verify lane: it does not
+    # call this script at all, and the prescription that used to stand here was
+    # WITHDRAWN as advice addressed to a non-caller (MODE SPLIT note near the
+    # tail). Validation mirrors lib_lane_x_flock.sh's
     # REIFY_LANE_X_FLOCK_WAIT gate (non-negative integer or "unlimited",
     # else exit 64/usage) and runs BEFORE the lock FD is even opened, so a
     # bad knob can never touch the target.
@@ -857,8 +997,10 @@ if [ -n "$_should_acquire_lane_lock" ]; then
     #
     # THIS BLOCK IS THE SINGLE SOURCE OF TRUTH for the mechanism and for the
     # measured rates. Every other site that touches FD 9 -- the --lane-lock
-    # header note, _usage(), the two `{ rm -rf ...; } 9<&- &` call sites below,
-    # tests/infra/test_seed_lane_lock_release_soak.sh, tests/infra/README.md --
+    # header note, _usage(), the two detached background jobs below (each
+    # spelled `{ _close_inherited_fds; rm -rf ...; } </dev/null >/dev/null 2>&1 &`,
+    # task #6219 amendment), tests/infra/test_seed_lane_lock_release_soak.sh,
+    # tests/infra/README.md --
     # carries a ONE-LINE POINTER here, never a copy of the argument or of the
     # numbers. Re-measuring (which is exactly what the soak harness exists to
     # make easy) must then edit one place, not six; the house G7
@@ -867,21 +1009,27 @@ if [ -n "$_should_acquire_lane_lock" ]; then
     #
     # WHY AN EXPLICIT LOCK_UN AND NOT JUST PROCESS EXIT / `exec 9>&-`:
     # a flock is attached to the OPEN FILE DESCRIPTION, not to the descriptor.
-    # The detached background jobs below (`{ rm -rf ...; } 9<&- &`, the orphan
-    # sweep and the reseed-trash rm) perform their `9<&-` in the forked CHILD,
-    # AFTER the fork -- so between fork() and that close the child holds a dup
-    # of this very OFD and the exclusive lock is STILL HELD, even once this
-    # process has exited. A consumer probing the instant seed exits then sees a
-    # held lock, and acquire_lane's default is a non-blocking `flock -n`
-    # (refusing with $LANE_LOCK_REFUSAL_RC -- 75 EX_TEMPFAIL by default, 77
-    # under --distinct-lock-refusal-rc), so it is spuriously refused. Note the
+    # The detached background jobs below (the orphan sweep and the
+    # reseed-trash rm) close every inherited descriptor, INCLUDING this one,
+    # via `_close_inherited_fds` (see its own doc-comment near the log
+    # helpers) in the forked CHILD, AFTER the fork -- so between fork() and
+    # that close the child holds a dup of this very OFD and the exclusive
+    # lock is STILL HELD, even once this process has exited. A consumer
+    # probing the instant seed exits then sees a held lock, and
+    # acquire_lane's default is a non-blocking `flock -n` (refusing with
+    # $LANE_LOCK_REFUSAL_RC -- 75 EX_TEMPFAIL by default, 77 under
+    # --distinct-lock-refusal-rc), so it is spuriously refused. Note the
     # refusal is spurious EITHER WAY: #5568's rc only makes a real refusal
     # legible, it does not make this window benign. `flock -u` on any
     # descriptor referring to the OFD drops the lock for every process holding
     # a dup, which closes the window; closing our own descriptor provably does
-    # not. Measured on a 32-core host under 24 busy-spin workers,
-    # held-after-exit over 200 trials: `9<&-` alone 16/200, `9<&-` + parent
-    # `exec 9>&-` 14/200, `9<&-` + parent `flock -u 9` 0/200.
+    # not. Measured on a 32-core host under 24 busy-spin workers (against the
+    # then-current explicit `9<&-` close; `_close_inherited_fds` closes FD 9
+    # the same way -- in the child, after the fork -- just discovered
+    # generically rather than by number, so this timing measurement is
+    # unchanged by the task #6219 amendment), held-after-exit over 200
+    # trials: `9<&-` alone 16/200, `9<&-` + parent `exec 9>&-` 14/200,
+    # `9<&-` + parent `flock -u 9` 0/200.
     #
     # WHY AN EXIT TRAP AND NOT A STATEMENT AT THE SUCCESS TAIL: a tail
     # statement is unreachable the moment seed aborts after acquiring -- the
@@ -1059,15 +1207,28 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         # <lane>.<pid> entry under RESEED_TRASH_DIR cannot be from a concurrent live
         # seed — it is always a prior-crash orphan and is safe to reclaim now.
         # Background rm mirrors the main rm (large tree, must not block acquire).
-        # 9<&-: close the (possibly held, --lane-lock) exclusive lane-lock FD
-        # so a detached child does not keep it open for its whole lifetime
-        # (lib_slot_acquire.sh daemon-FD-inheritance guard). A no-op when FD 9
-        # was never opened (--lane-lock not passed). It only NARROWS the
-        # fork-to-close window and cannot close it -- see the LANE-LOCK RELEASE
-        # CONTRACT block at the flock acquire above (#5705).
+        # _close_inherited_fds (task #6219 amendment): see its own doc-comment
+        # near the log helpers for the full argument -- not restated here
+        # (G7). Closes any lane-lock FD this or another caller may hold,
+        # generically. It only NARROWS the fork-to-close window and cannot
+        # close it entirely -- see the LANE-LOCK RELEASE CONTRACT block at
+        # the flock acquire above (#5705).
+        # </dev/null >/dev/null 2>&1 (task #6219): same rationale as the
+        # reseed-trash rm below (see its comment for the full fd-1/fd-2
+        # argument) -- this detached child must not hold a descriptor of a
+        # pipe-capturing caller either. A failed rm here is still surfaced:
+        # this very sweep re-finds and re-warns about the entry on the lane's
+        # next seed, and warm-lane-gc-sweep.sh's _reap_stale_trash reaps it
+        # pool-wide.
+        # The </dev/null half is LOAD-BEARING AT THIS SITE SPECIFICALLY
+        # (amendment 2): this detach is nested inside the `while ... done <
+        # <(find ...)` below, so bash's async-list /dev/null stdin default
+        # does not apply and the child would otherwise inherit the loop's
+        # redirected stdin. Measurement and the general argument live in
+        # `_close_inherited_fds`'s doc-comment -- not restated here (G7).
         while IFS= read -r -d '' _rp_orphan; do
             warn "Sweeping orphaned trash entry (prior-crash recovery): $_rp_orphan"
-            { rm -rf "$_rp_orphan" || warn "orphan trash sweep rm failed (leaked): $_rp_orphan"; } 9<&- &
+            { _close_inherited_fds; rm -rf "$_rp_orphan"; } </dev/null >/dev/null 2>&1 &
         done < <(find "$RESEED_TRASH_DIR" -maxdepth 1 -name "$(basename "$LANE_DIR").*" -print0 2>/dev/null)
         unset _rp_orphan
         RESEED_TRASH="$RESEED_TRASH_DIR/$(basename "$LANE_DIR").$$"
@@ -1075,8 +1236,14 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         mv "$LANE_TARGET" "$RESEED_TRASH"
     fi
 else
-    # --reset-in-place: keep existing clobber-refusal (B13 warmth-delta control arm).
-    # reset-in-place is a test-only path; production acquires always use --fresh-checkout.
+    # --reset-in-place: keep existing clobber-refusal.  This mode seeds a cold/empty
+    # lane only.  It is NOT test-only (it is also the merge-spec acquire mode — MODE
+    # SPLIT note near the tail), and the refusal below is not merely a contract a
+    # PRODUCTION caller COULD hit: DF retains `target/` across a `_spec-` release and
+    # excludes it from the pre-seed clean, so the refusal IS reached on every acquire
+    # after a lane's create-once one, degrading that verify to cold.  Composition,
+    # evidence and the DF-side fix: PRD §9.5's 2026-09-11 ledger entry and task #7410.
+    # Do not "fix" it by relaxing the guard here — that is the open question 7410 owns.
     if [ -d "$LANE_TARGET" ] && [ -n "$(ls -A "$LANE_TARGET" 2>/dev/null)" ]; then
         err "Clobber guard: <lane_dir>/target already exists and is non-empty: $LANE_TARGET"
         err "seed-warm-lane.sh --reset-in-place only seeds cold/empty lanes. Remove the lane first."
@@ -1423,29 +1590,164 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # On cp failure RESEED_TRASH is unset (no rename happened), so this block is skipped.
     # Background by default (production: large lane rm must not block acquire).
     # Foreground when REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 (test-determinism knob).
-    # 9<&-: close the (possibly held, --lane-lock) exclusive lane-lock FD so a
-    # detached child does not keep it open for its whole lifetime
-    # (lib_slot_acquire.sh daemon-FD-inheritance guard). No-op when FD 9 was
-    # never opened (--lane-lock not passed); the SYNC (foreground) branch needs
-    # no change -- it completes before seed exits either way. As at the orphan
-    # sweep above, 9<&- only NARROWS the fork-to-close window -- see the
-    # LANE-LOCK RELEASE CONTRACT block at the flock acquire above (#5705).
+    # _close_inherited_fds (task #6219 amendment): see its own doc-comment
+    # near the log helpers for the full argument -- not restated here (G7).
+    # The SYNC (foreground) branch needs no change: it completes before seed
+    # exits either way, so it never forks a detached child to close anything
+    # for. As at the orphan sweep above, the close only NARROWS the
+    # fork-to-close window -- see the LANE-LOCK RELEASE CONTRACT block at the
+    # flock acquire above (#5705).
+    # </dev/null >/dev/null 2>&1 (task #6219): this script's stdout is a single-use
+    # machine-readable result channel -- exactly one echo "$LANE_TARGET" at
+    # the very end (see the Stdout contract in the header) -- so a detached
+    # child must never hold a descriptor of it. Without this redirect, a
+    # caller that captures stdout through a PIPE rather than a file (e.g.
+    # scripts/warm-lane-gc.sh:648-649's `2>&1 | while IFS= read -r line; do
+    # ...; done`) blocks until this background rm of a possibly large tree
+    # ALSO exits, defeating the point of detaching it. Applied after the fd
+    # close so a lock-fd leak can never masquerade as a stdout leak; a failed
+    # rm here is no longer observable on this fd, but a leaked entry is
+    # still reported by two other mechanisms: the orphan-trash sweep above
+    # re-finds and re-warns about it on this lane's next seed, and
+    # warm-lane-gc-sweep.sh's _reap_stale_trash reaps it pool-wide.
+    # The </dev/null half is redundant HERE -- this detach is not nested in a
+    # redirected construct, so bash's async-list default already gives it
+    # /dev/null -- and is spelled anyway so the two sites share ONE shape that
+    # V17's structural guard can require uniformly, rather than one that holds
+    # by construction and one that holds by a conditional bash default (see
+    # `_close_inherited_fds`'s doc-comment, amendment 2; not restated, G7).
     if [ -n "$RESEED_TRASH" ] && [ -d "$RESEED_TRASH" ]; then
         info "Removing reseed trash: $(basename "$RESEED_TRASH") ..."
         if [ "${REIFY_WARM_LANE_RESEED_TRASH_SYNC:-}" = "1" ]; then
             rm -rf "$RESEED_TRASH"
         else
-            { rm -rf "$RESEED_TRASH" || warn "reseed trash rm failed (leaked): $RESEED_TRASH"; } 9<&- &
+            { _close_inherited_fds; rm -rf "$RESEED_TRASH"; } </dev/null >/dev/null 2>&1 &
         fi
     fi
 fi
 # --reset-in-place: no bulk stamp AND no build-dir invalidation.
-#   reset-in-place is a test-only control arm (B13 warmth-delta test) whose lane
-#   was built at its own path — build dirs already hold correct lane-K paths.
-#   Invalidating them would waste build-script re-runs for no benefit.
-#   Per D10 always-re-seed-at-acquire: production acquires (task lanes AND
-#   merge-spec slots) ALWAYS use --fresh-checkout, so the invalidation above
-#   covers both lane classes without extra code.
+#   A --reset-in-place lane was built at its own path, so its build dirs already
+#   hold correct lane-K paths; invalidating them would waste build-script re-runs
+#   for no benefit.  That reasoning holds for BOTH of this mode's callers (below),
+#   which is why the skip needs no caller-dependent condition.
+#
+# MODE SPLIT — the single in-file home for what the mode split means HERE; every
+# other mention in this script points at it rather than restating it (G7/SPOT).
+# The MEASUREMENT behind it, its liveness, and the spec/implementation divergence it
+# records are normative in PRD §9.5's 2026-09-11 ledger entry (task 7045) — read that
+# before amending this, and amend it THERE, not here.
+#   task lanes  → --fresh-checkout   DF `_acquire_warm_lane_impl`
+#   merge-spec  → --reset-in-place   DF `acquire_spec_lane`, ALWAYS (the call sits at
+#                                    an indent common to both its branches)
+# Resolve both by SYMBOL, never by line number: the cross-repo coordinates this note
+# used to carry drifted 26 lines in twelve days, which is why they are gone.
+#
+#   Do NOT read the split as "the merge-spec lane skips re-seeding" — D10's
+#   always-re-seed PROPERTY holds for BOTH classes (`acquire_spec_lane`'s own docstring
+#   asserts inv.8); only the mode differs.  And the split is LIVE in this deployment,
+#   not latent: `git.merge_spec_warm_lane_pool: true` in `dark-factory-orchestrator.yaml`
+#   (cited by KEY, and that file is tracked in THIS repo, so one grep re-checks it —
+#   deployment state can flip, so re-read the key rather than trusting a date).
+#
+# CONSEQUENCE RULE for anything gated on $FRESH_CHECKOUT (e.g. the rerere pin below):
+#   the gate reaches every acquire only for a SHARED-STORE scoped effect.  Any
+#   LANE-SCOPED effect — a per-lane config write, marker, or sweep — silently excludes
+#   the merge-spec slot, PRESENT TENSE, not hypothetically.  ONE live instance, and
+#   it is benign for its own reason rather than by luck of the gate: the build-dir
+#   invalidation above (lane-scoped, task lanes only — correct here for the first
+#   paragraph's reason).  The lane lock is NOT a second instance, though it reads
+#   like one: seed's own acquire is default-on under $FRESH_CHECKOUT, but DF's
+#   `--assume-lane-lock-held` clears it on BOTH production pool acquires, so that
+#   gate decides nothing for either role — see the --lane-lock note in the header.
+
+# ── git rerere disarm at LANE cadence (task 6889, open item (c)) ─────────────
+#
+# DELEGATION, not an implementation: every rerere.* write, every scope-resolution
+# rule and the whole exit-code contract stay normative in ONE place — the header
+# of scripts/git-rerere-guard.sh. This script grows no `git config` logic of its
+# own (it has exactly zero today, by design, as a CoW-clone + mtime-stamping
+# primitive); it only decides WHEN the guard runs.
+#
+# WHY HERE: .git/rr-cache is a git COMMON path, so all 254 linked worktrees of
+# this store share ONE unlocked resolution cache and one .git/config. scripts/
+# setup-dev.sh already calls the guard, but at DEVELOPER-SETUP cadence — nothing
+# re-pins the shared config between two setup runs. Measured on the live store,
+# that window is too wide: the shared config was found ARMED twice on a single
+# day (2026-08-30 07:06:11 and 11:44:46). An ACQUIRE is the natural narrower
+# cadence, and it costs a read-only sweep in the steady state.
+#
+# PLACEMENT: after every fail-closed post-condition above
+# (_assert_no_stale_delta_stamp and siblings) and immediately before the terminal
+# ok/echo pair, so it can never mask, precede or reorder an existing assertion —
+# and a seed that fails early never reaches it.
+#
+# EXISTENCE GATE: a checkout without the guard degrades to one stderr warning.
+#
+# FAIL-OPEN, ALWAYS: an ACQUIRE must never fail because the shared store could
+# not be pinned. 254 lanes contend for one .git/config, so a lost race on
+# .git/config.lock is a live possibility, and this defence is advisory.
+#
+# EXIT-CODE CONTRACT — normative in the guard's header; read it there before
+# touching the branch below. In short the branch is `0 | 2 | *`, NEVER a closed
+# set {0,1,2}: the guard runs under `set -euo pipefail`, so a git invocation
+# aborting outside a guarded `if` propagates GIT's own status, not 1.
+#
+# STDOUT: the >/dev/null is structural, not defensive style. This script's stdout
+# is a single-use machine-readable channel — exactly the one echo below (see the
+# Stdout contract in the header, pinned by C5/C6/E3/H1c/I3). The guard is
+# stderr-only today; the redirect makes that a property of this call site rather
+# than a property inherited from the callee.
+#
+# OPT-OUT — REIFY_WARM_LANE_RERERE_ARM=0 skips this block entirely. This is an
+# operator escape hatch, not a tuning knob: the call now runs on EVERY acquire
+# across 254 linked worktrees that share ONE .git/config, so if lane-cadence
+# arming ever produced .git/config.lock contention under fleet load, the
+# alternative to a switch would be an emergency revert. It also lets the seed
+# suite exercise both directions of this branch (Block W's W5-W7).
+# Skipped when and ONLY when the value is exactly `0` (the
+# REIFY_WARM_LANE_RESEED_TRASH_SYNC / REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT exact-
+# match idiom), so unset and every other value keep the defence armed — the
+# failure direction must be "still protected", never "silently off".
+# COST, so nobody reaches for the switch reflexively: the steady state takes no
+# .git/config.lock at all. cmd_arm compares against the current --local value and
+# skips the write when that set is exactly one `false` (git-rerere-guard.sh:735-758),
+# so once the store is pinned each acquire pays only a read-only sweep — measured
+# at 0.249s from a lane on the live 254-worktree store.
+#
+# MODE GATE — $FRESH_CHECKOUT, not a new flag. It reuses the discriminator this
+# script already switches on at the three sites above rather than inventing a
+# mode flag, and it covers every TASK-lane acquire: dark-factory drives the pooled
+# task-lane acquire through _seed_warm_lane(lane, '--fresh-checkout') in
+# `_acquire_warm_lane_impl`.
+#
+# It does NOT cover the merge-spec lane: that acquire is always --reset-in-place,
+# so it never reaches this block (it still re-seeds — MODE SPLIT note above, the
+# single in-file home for the split and its consequence rule).
+#
+# That gap is harmless for THIS defence, which is why the gate stays as it is:
+# the pin is a property of the ONE shared .git/config, not of a lane, so any
+# acquire that pins it pins it for every lane including the spec lane — and
+# task-lane acquires dominate by volume. It would matter for a lane-scoped
+# write; it does not for a shared-store one.
+if [ -n "$FRESH_CHECKOUT" ] && [ "${REIFY_WARM_LANE_RERERE_ARM:-1}" != "0" ] \
+        && [ -x "$_SCRIPT_DIR/git-rerere-guard.sh" ]; then
+    _rerere_arm_rc=0
+    "$_SCRIPT_DIR/git-rerere-guard.sh" arm "$LANE_DIR" >/dev/null || _rerere_arm_rc=$?
+    if [ "$_rerere_arm_rc" -eq 0 ]; then
+        info "git rerere disarmed for the shared store (lane cadence)"
+    elif [ "$_rerere_arm_rc" -eq 2 ]; then
+        warn "shared config pinned, but rerere is still armed — or unverifiable — in a"
+        warn "  scope 'arm' cannot reach (another lane's config.worktree, or the global"
+        warn "  gitconfig). Run 'scripts/git-rerere-guard.sh check' — it names the worktree."
+        warn "  See docs/notes/git-rerere-shared-worktree-hazard.md"
+    else
+        warn "git-rerere-guard.sh arm failed (exit $_rerere_arm_rc) — seed continues"
+        warn "  the shared store may be rerere-ARMED; run 'scripts/git-rerere-guard.sh check'"
+    fi
+    unset _rerere_arm_rc
+elif [ -n "$FRESH_CHECKOUT" ] && [ "${REIFY_WARM_LANE_RERERE_ARM:-1}" != "0" ]; then
+    warn "scripts/git-rerere-guard.sh not executable — skipping the shared-store rerere disarm"
+fi
 
 ok "Warm lane seeded at $LANE_TARGET"
 echo "$LANE_TARGET"

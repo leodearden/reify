@@ -16,6 +16,7 @@
 
 #![cfg(has_occt)]
 
+use crate::common::{Xyz, parse_xyz};
 use reify_kernel_occt::OcctKernel;
 use reify_ir::{GeometryHandleId, GeometryOp, GeometryQuery, QueryError, Value};
 
@@ -347,22 +348,10 @@ fn query_closest_point_on_shape_returns_xyz_json_for_external_point() {
         ),
     };
 
-    // Manually parse the {"x":_,"y":_,"z":_} payload — keep the test
-    // independent of the eval-side parse_xyz_value helper.
-    let parse = |key: &str| -> f64 {
-        let needle = format!("\"{key}\":");
-        let start = json
-            .find(&needle)
-            .unwrap_or_else(|| panic!("expected key {key:?} in {json:?}"))
-            + needle.len();
-        let tail = &json[start..];
-        let end = tail.find([',', '}']).unwrap_or(tail.len());
-        tail[..end]
-            .trim()
-            .parse::<f64>()
-            .unwrap_or_else(|e| panic!("parse {key} from {json:?}: {e}"))
-    };
-    let (x, y, z) = (parse("x"), parse("y"), parse("z"));
+    // Parse the {"x":_,"y":_,"z":_} payload with the harness's own shared
+    // parser — deliberately NOT reify-eval's `parse_xyz_value`, so this test
+    // stays independent of the production dispatcher it is cross-checking.
+    let Xyz { x, y, z } = parse_xyz(&json);
 
     assert!(
         (x - 5.0).abs() < 1e-6,

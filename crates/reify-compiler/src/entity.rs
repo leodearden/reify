@@ -294,6 +294,522 @@ pub(crate) fn substitute_expr(
     }
 }
 
+// ── task 5345: inline geometry-query-argument hoist ──────────────────────────
+//
+// A whole-handle geometry query (`volume`/`area`/`centroid`/`bounding_box`)
+// whose arg[0] is an INLINE geometry call — `let v = volume(torus(20mm,5mm))`,
+// with no intermediate geometry let — evaluates to `Value::Undef`: eval's
+// `resolve_geometry_handle_arg` only maps a `ValueRef` (a named geometry
+// let/param) to a `named_steps` kernel handle, never an inline `FunctionCall`
+// arg. This desugar rewrites the entity member list ONCE, upstream of every
+// `structure.members` walk (pass-1 registration, realization emission,
+// value-cell compilation), lifting each such inline arg into a synthetic
+// geometry let `__geoq_<N>` so the query routes through the identical
+// let-bound path (the workaround users are told to write by hand). Eval is
+// untouched. Mirrors the nested-target hoist precedents (task 5009
+// `linear_pattern_2d(box(..))`, task 4168 `arbitrary_pattern`).
+
+/// Reserved prefix for synthetic geometry-let members minted by the inline
+/// geometry-query-argument hoist. Mirrors the `__count_` / `__auto_` /
+/// `__guard_` / `__connector_` synthetic-member naming conventions.
+const GEOMETRY_QUERY_HOIST_PREFIX: &str = "__geoq_";
+
+/// `true` iff a call `name(args…)` is a whole-handle geometry query whose
+/// arg[0] is an inline geometry-producing call and therefore should be hoisted:
+///   - `name` ∈ {volume, area, centroid, bounding_box}
+///     ([`crate::units::is_whole_handle_geometry_query`]),
+///   - exactly one argument (mirrors eval's `is_geometry_query_call`
+///     `args.len() == 1` gate), and
+///   - arg[0] is a geometry-producing `FunctionCall` — a primitive / boolean /
+///     transform ctor accepted by [`is_geometry_let`]. Empty known-let sets are
+///     passed: an arg[0] `FunctionCall`'s geometry-ness is decided by its own
+///     function name, never a sibling let. A bare `Ident` /
+///     `self.<sub>.<member>` / index-access arg is deliberately excluded — it
+///     already resolves to a handle via `named_steps`, so hoisting it would
+///     double-realize a named geometry.
+fn is_hoistable_query_call(
+    name: &str,
+    args: &[reify_ast::Expr],
+    functions: &[CompiledFunction],
+) -> bool {
+    crate::units::is_whole_handle_geometry_query(name)
+        && args.len() == 1
+        && matches!(args[0].kind, reify_ast::ExprKind::FunctionCall { .. })
+        && is_geometry_let(&args[0], functions, &HashSet::new(), &HashSet::new())
+}
+
+/// Apply `f` to each DIRECT child expression of `expr` (read-only). Structural
+/// enumeration; the mutable mirror is [`for_each_child_mut`] — keep the two arms
+/// in lockstep. Modelled on `compile_builder::dot_chain_lint::walk_expr_depth`
+/// (the authoritative current AST-child enumeration).
+fn for_each_child<'e>(expr: &'e reify_ast::Expr, f: &mut dyn FnMut(&'e reify_ast::Expr)) {
+    use reify_ast::{ExprKind, StringPart};
+    match &expr.kind {
+        ExprKind::MemberAccess { object, .. } => f(object),
+        ExprKind::BinOp { left, right, .. } => {
+            f(left);
+            f(right);
+        }
+        ExprKind::UnOp { operand, .. } => f(operand),
+        ExprKind::FunctionCall { args, .. } => {
+            for a in args {
+                f(a);
+            }
+        }
+        ExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            f(condition);
+            f(then_branch);
+            f(else_branch);
+        }
+        ExprKind::ListLiteral(elems) | ExprKind::SetLiteral(elems) => {
+            for e in elems {
+                f(e);
+            }
+        }
+        ExprKind::MapLiteral(entries) => {
+            for (k, v) in entries {
+                f(k);
+                f(v);
+            }
+        }
+        ExprKind::IndexAccess { object, index } => {
+            f(object);
+            f(index);
+        }
+        ExprKind::Match { discriminant, arms } => {
+            f(discriminant);
+            for arm in arms {
+                f(&arm.body);
+            }
+        }
+        ExprKind::Lambda { body, .. } => f(body),
+        ExprKind::Quantifier {
+            collection,
+            predicate,
+            ..
+        } => {
+            f(collection);
+            f(predicate);
+        }
+        ExprKind::AdHocSelector { base, args, .. } => {
+            f(base);
+            for a in args {
+                f(a);
+            }
+        }
+        ExprKind::QualifiedAccess { qualifier, .. } => f(qualifier),
+        ExprKind::InstanceQualifiedAccess { object, qualified } => {
+            f(object);
+            f(qualified);
+        }
+        ExprKind::Range { lower, upper, .. } => {
+            if let Some(l) = lower {
+                f(l);
+            }
+            if let Some(u) = upper {
+                f(u);
+            }
+        }
+        ExprKind::TraitMethodCall { object, args, .. } => {
+            f(object);
+            for a in args {
+                f(a);
+            }
+        }
+        ExprKind::TraitStaticCall { args, .. } => {
+            for a in args {
+                f(a);
+            }
+        }
+        ExprKind::VariantConstruct { fields, .. } => {
+            for (_, v) in fields {
+                f(v);
+            }
+        }
+        ExprKind::InterpolatedString(parts) => {
+            for part in parts {
+                if let StringPart::Hole(e) = part {
+                    f(e);
+                }
+            }
+        }
+        ExprKind::Auto { params, .. } => {
+            for (_, v) in params {
+                f(v);
+            }
+        }
+        ExprKind::NumberLiteral { .. }
+        | ExprKind::QuantityLiteral { .. }
+        | ExprKind::StringLiteral(_)
+        | ExprKind::BoolLiteral(_)
+        | ExprKind::Undef
+        | ExprKind::EnumAccess { .. }
+        | ExprKind::Ident(_) => {}
+    }
+}
+
+/// Apply `f` to each DIRECT child expression of `expr` (mutable). Structural
+/// enumeration mirror of [`for_each_child`] — keep the two arms in lockstep.
+fn for_each_child_mut(expr: &mut reify_ast::Expr, f: &mut dyn FnMut(&mut reify_ast::Expr)) {
+    use reify_ast::{ExprKind, StringPart};
+    match &mut expr.kind {
+        ExprKind::MemberAccess { object, .. } => f(object),
+        ExprKind::BinOp { left, right, .. } => {
+            f(left);
+            f(right);
+        }
+        ExprKind::UnOp { operand, .. } => f(operand),
+        ExprKind::FunctionCall { args, .. } => {
+            for a in args {
+                f(a);
+            }
+        }
+        ExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            f(condition);
+            f(then_branch);
+            f(else_branch);
+        }
+        ExprKind::ListLiteral(elems) | ExprKind::SetLiteral(elems) => {
+            for e in elems {
+                f(e);
+            }
+        }
+        ExprKind::MapLiteral(entries) => {
+            for (k, v) in entries {
+                f(k);
+                f(v);
+            }
+        }
+        ExprKind::IndexAccess { object, index } => {
+            f(object);
+            f(index);
+        }
+        ExprKind::Match { discriminant, arms } => {
+            f(discriminant);
+            for arm in arms {
+                f(&mut arm.body);
+            }
+        }
+        ExprKind::Lambda { body, .. } => f(body),
+        ExprKind::Quantifier {
+            collection,
+            predicate,
+            ..
+        } => {
+            f(collection);
+            f(predicate);
+        }
+        ExprKind::AdHocSelector { base, args, .. } => {
+            f(base);
+            for a in args {
+                f(a);
+            }
+        }
+        ExprKind::QualifiedAccess { qualifier, .. } => f(qualifier),
+        ExprKind::InstanceQualifiedAccess { object, qualified } => {
+            f(object);
+            f(qualified);
+        }
+        ExprKind::Range { lower, upper, .. } => {
+            if let Some(l) = lower {
+                f(l);
+            }
+            if let Some(u) = upper {
+                f(u);
+            }
+        }
+        ExprKind::TraitMethodCall { object, args, .. } => {
+            f(object);
+            for a in args {
+                f(a);
+            }
+        }
+        ExprKind::TraitStaticCall { args, .. } => {
+            for a in args {
+                f(a);
+            }
+        }
+        ExprKind::VariantConstruct { fields, .. } => {
+            for (_, v) in fields {
+                f(v);
+            }
+        }
+        ExprKind::InterpolatedString(parts) => {
+            for part in parts {
+                if let StringPart::Hole(e) = part {
+                    f(e);
+                }
+            }
+        }
+        ExprKind::Auto { params, .. } => {
+            for (_, v) in params {
+                f(v);
+            }
+        }
+        ExprKind::NumberLiteral { .. }
+        | ExprKind::QuantityLiteral { .. }
+        | ExprKind::StringLiteral(_)
+        | ExprKind::BoolLiteral(_)
+        | ExprKind::Undef
+        | ExprKind::EnumAccess { .. }
+        | ExprKind::Ident(_) => {}
+    }
+}
+
+/// Does `expr` introduce a name binding over its own sub-expressions?
+///
+/// Exactly three `ExprKind` variants do: `Lambda` (its `LambdaParam` names bind
+/// over the body), `Quantifier` (its `variable` binds over the collection's
+/// element in the predicate), and `Match` (an arm's
+/// `MatchPattern::VariantBind { binders }` names bind over that arm's body).
+/// `Auto { params }` is named-argument syntax, not a binder.
+///
+/// This is the binder-level scope guard for the inline geometry-query hoist
+/// (task 5345). [`hoist_queries_in_expr`] lifts a matched query's arg[0]
+/// **verbatim** out to the STRUCTURE member list, where any identifier bound by
+/// an enclosing lambda param / quantifier variable / match-pattern binder would
+/// be UNBOUND — turning a cell that merely evaluated to `Value::Undef` into hard
+/// `unresolved name` Error diagnostics plus a bogus product realization injected
+/// into the template's export set.
+///
+/// Deliberately a per-VARIANT structural classification, not a free-identifier
+/// analysis: binder-FREE sub-positions of these nodes (a `Quantifier`'s
+/// `collection`, a `Match` discriminant, a binder-less arm body) are left
+/// un-hoisted too, even though they would be safe. That is conservative and
+/// correct — a query under a binder simply retains the pre-existing base
+/// behaviour (`Value::Undef`), so no regression is possible and the only thing
+/// forgone is a hoist that never worked. A free-identifier check would add a
+/// whole scope-tracking surface for an exotic payoff.
+///
+/// The `false` arm is written out EXHAUSTIVELY with no `_ =>` catch-all (the
+/// style [`for_each_child`] already uses): a future binder-introducing
+/// `ExprKind` must then fail to compile until someone classifies it here, rather
+/// than silently reopening this hole.
+fn expr_introduces_binder(expr: &reify_ast::Expr) -> bool {
+    use reify_ast::ExprKind;
+    match &expr.kind {
+        ExprKind::Lambda { .. } | ExprKind::Quantifier { .. } | ExprKind::Match { .. } => true,
+        ExprKind::NumberLiteral { .. }
+        | ExprKind::QuantityLiteral { .. }
+        | ExprKind::StringLiteral(_)
+        | ExprKind::BoolLiteral(_)
+        | ExprKind::Ident(_)
+        | ExprKind::BinOp { .. }
+        | ExprKind::UnOp { .. }
+        | ExprKind::FunctionCall { .. }
+        | ExprKind::MemberAccess { .. }
+        | ExprKind::EnumAccess { .. }
+        | ExprKind::Conditional { .. }
+        | ExprKind::ListLiteral(_)
+        | ExprKind::SetLiteral(_)
+        | ExprKind::MapLiteral(_)
+        | ExprKind::IndexAccess { .. }
+        | ExprKind::Auto { .. }
+        | ExprKind::Undef
+        | ExprKind::AdHocSelector { .. }
+        | ExprKind::QualifiedAccess { .. }
+        | ExprKind::InstanceQualifiedAccess { .. }
+        | ExprKind::Range { .. }
+        | ExprKind::TraitMethodCall { .. }
+        | ExprKind::TraitStaticCall { .. }
+        | ExprKind::VariantConstruct { .. }
+        | ExprKind::InterpolatedString(_) => false,
+    }
+}
+
+/// Read-only: does any sub-expression of `expr` contain a hoistable inline
+/// geometry-query call (per [`is_hoistable_query_call`])? Drives the cheap
+/// pre-scan so the common path (no inline query) clones nothing.
+///
+/// Scoped identically to [`hoist_queries_in_expr`] — the two MUST stay in
+/// lockstep, since this pre-scan drives the member-clone decision while the
+/// rewrite drives the actual hoist, and a guard on only one would leave them
+/// disagreeing about which members carry hoistable work. In particular a
+/// binder-introducing node ([`expr_introduces_binder`]) is opaque here too.
+fn expr_has_hoistable_query(expr: &reify_ast::Expr, functions: &[CompiledFunction]) -> bool {
+    if expr_introduces_binder(expr) {
+        return false;
+    }
+    if let reify_ast::ExprKind::FunctionCall { name, args, .. } = &expr.kind
+        && is_hoistable_query_call(name, args, functions)
+    {
+        return true;
+    }
+    let mut found = false;
+    for_each_child(expr, &mut |child| {
+        found = found || expr_has_hoistable_query(child, functions);
+    });
+    found
+}
+
+/// Post-order in-place rewrite: hoist every hoistable whole-handle geometry
+/// query in `expr` into a synthetic geometry let appended to `out` (a
+/// `__geoq_<*counter>` let carrying arg[0] verbatim), replacing arg[0] with an
+/// `Ident` to it. Children are visited first so both leaves of e.g.
+/// `volume(a) + area(b)` are hoisted. In-place mutation: an `ExprKind` not
+/// enumerated by [`for_each_child_mut`] is left untouched — a missed nested
+/// query would remain `Undef`, never silent corruption.
+///
+/// A binder-introducing node ([`expr_introduces_binder`]) is OPAQUE: neither
+/// descended nor rewritten, because arg[0] is lifted verbatim to the STRUCTURE
+/// member list where a lambda param / quantifier variable / match-pattern binder
+/// would be unbound. [`expr_has_hoistable_query`] carries the same guard — keep
+/// the two in lockstep. Note this is scoped at BOTH levels: only top-level
+/// `Let`/`Param` members are descended (see
+/// [`desugar_inline_geometry_query_args`]), and within those, only binder-free
+/// sub-expressions.
+fn hoist_queries_in_expr(
+    expr: &mut reify_ast::Expr,
+    counter: &mut usize,
+    functions: &[CompiledFunction],
+    out: &mut Vec<reify_ast::MemberDecl>,
+    minted: &mut HashSet<String>,
+) {
+    if expr_introduces_binder(expr) {
+        return;
+    }
+    for_each_child_mut(expr, &mut |child| {
+        hoist_queries_in_expr(child, counter, functions, out, minted);
+    });
+    if let reify_ast::ExprKind::FunctionCall { name, args, .. } = &mut expr.kind
+        && is_hoistable_query_call(name, args, functions)
+    {
+        let syn_name = format!("{GEOMETRY_QUERY_HOIST_PREFIX}{}", *counter);
+        *counter += 1;
+        let arg0_span = args[0].span;
+        let hoisted = std::mem::replace(
+            &mut args[0],
+            reify_ast::Expr {
+                kind: reify_ast::ExprKind::Ident(syn_name.clone()),
+                span: arg0_span,
+            },
+        );
+        minted.insert(syn_name.clone());
+        out.push(make_synthetic_geometry_let(syn_name, hoisted, arg0_span));
+    }
+}
+
+/// Mint a synthetic geometry `let __geoq_N = <value>`.
+///
+/// The AST `LetDecl` deliberately carries NO distinguishing modifier: `is_aux`
+/// stays `false` because `aux` is the wrong axis (see
+/// [`crate::RealizationDecl::is_query_only`]). The synthetic realization is
+/// instead tagged `is_query_only: true` at lowering, keyed off the exact set of
+/// names minted here — never off a name-prefix guess — so a user-authored
+/// `let __geoq_0 = box(...)` is unaffected.
+///
+/// The AST `content_hash` is not load-bearing (the template hash is rebuilt
+/// from compiled exprs), but a name-derived hash keeps it deterministic.
+fn make_synthetic_geometry_let(
+    name: String,
+    value: reify_ast::Expr,
+    span: SourceSpan,
+) -> reify_ast::MemberDecl {
+    reify_ast::MemberDecl::Let(reify_ast::LetDecl {
+        content_hash: ContentHash::of_str(&name),
+        name,
+        doc: None,
+        is_pub: false,
+        is_priv: false,
+        is_aux: false,
+        type_expr: None,
+        value,
+        where_clause: None,
+        annotations: Vec::new(),
+        span,
+    })
+}
+
+/// The value/default expression of a value-cell member (`Let` value / `Param`
+/// default), or `None` for non-value members.
+fn member_value_expr(member: &reify_ast::MemberDecl) -> Option<&reify_ast::Expr> {
+    match member {
+        reify_ast::MemberDecl::Let(l) => Some(&l.value),
+        reify_ast::MemberDecl::Param(p) => p.default.as_ref(),
+        _ => None,
+    }
+}
+
+/// Desugar inline geometry-query arguments into synthetic geometry lets
+/// (task 5345). For each top-level value-cell member (`Let` value / `Param`
+/// default) whose expression contains a hoistable whole-handle query, mint the
+/// `__geoq_<N>` geometry let(s) immediately BEFORE the consuming member and
+/// rewrite the query arg[0] to reference them. Synthetic names are minted from
+/// a single structure-scoped counter in source+post-order.
+///
+/// Returns `None` — and allocates nothing — when no member carries an inline
+/// geometry-query arg (the common path). Otherwise returns
+/// `(rewritten_members, minted_names)`, where `minted_names` is the EXACT set of
+/// synthetic `__geoq_<N>` names created by this call. Realization lowering keys
+/// [`crate::RealizationDecl::is_query_only`] off that set rather than off a
+/// `__geoq_` name-prefix test, so a user-authored `let __geoq_0 = box(...)`
+/// keeps ordinary product-geometry semantics.
+///
+/// The rewritten member list becomes the single source consumed by all downstream
+/// `structure.members` walks in [`compile_entity`]. Only top-level `Let`/`Param`
+/// members are descended (guarded-group / match-cluster members are out of
+/// scope, consistent with the whole-handle-query acceptance surface).
+///
+/// The scope is bounded at TWO levels, both because a hoisted arg[0] is lifted
+/// verbatim to the STRUCTURE member list: at the member level as above, and
+/// within a member's expression at every binder-introducing node — a lambda,
+/// quantifier, or match arm ([`expr_introduces_binder`]), whose bound names would
+/// be unbound at member scope.
+fn desugar_inline_geometry_query_args(
+    members: &[reify_ast::MemberDecl],
+    functions: &[CompiledFunction],
+) -> Option<(Vec<reify_ast::MemberDecl>, HashSet<String>)> {
+    let has_any = members
+        .iter()
+        .any(|m| member_value_expr(m).is_some_and(|e| expr_has_hoistable_query(e, functions)));
+    if !has_any {
+        return None;
+    }
+
+    let mut out: Vec<reify_ast::MemberDecl> = Vec::with_capacity(members.len());
+    let mut minted: HashSet<String> = HashSet::new();
+    let mut counter: usize = 0;
+    for member in members {
+        match member {
+            reify_ast::MemberDecl::Let(let_decl)
+                if expr_has_hoistable_query(&let_decl.value, functions) =>
+            {
+                let mut new_let = let_decl.clone();
+                hoist_queries_in_expr(
+                    &mut new_let.value,
+                    &mut counter,
+                    functions,
+                    &mut out,
+                    &mut minted,
+                );
+                out.push(reify_ast::MemberDecl::Let(new_let));
+            }
+            reify_ast::MemberDecl::Param(param)
+                if param
+                    .default
+                    .as_ref()
+                    .is_some_and(|e| expr_has_hoistable_query(e, functions)) =>
+            {
+                let mut new_param = param.clone();
+                if let Some(def) = new_param.default.as_mut() {
+                    hoist_queries_in_expr(def, &mut counter, functions, &mut out, &mut minted);
+                }
+                out.push(reify_ast::MemberDecl::Param(new_param));
+            }
+            other => out.push(other.clone()),
+        }
+    }
+    Some((out, minted))
+}
+
 /// Compile a single entity definition (structure or occurrence) into a topology template.
 ///
 /// # Two-pass compilation
@@ -905,8 +1421,47 @@ pub(crate) fn compile_entity(
     pending_connect_auto_params: &mut Vec<PendingConnectAutoParam>,
     diagnostics: &mut Vec<Diagnostic>,
     compiled_templates: &[TopologyTemplate],
-    prelude_template_registry: &HashMap<String, &TopologyTemplate>,
+    // task 5867: the prelude-derived lookup tables. `prelude.ctor` is
+    // Structure-filtered and drives constructor lowering; `prelude.sub_target`
+    // is unfiltered and is read ONLY via `find_template_with_prelude`, which
+    // also applies the `prelude.local_entity_names` shadowing guard. They
+    // travel bundled so the two same-typed maps cannot be transposed here; see
+    // `types::PreludeRegistries` for the full contract.
+    prelude: &PreludeRegistries<'_, '_>,
 ) -> TopologyTemplate {
+    // task 5345: desugar inline geometry-query arguments into synthetic geometry
+    // lets BEFORE any `structure.members` walk (pass-1 registration, realization
+    // emission, value-cell compilation all read the shadowed list). Needs
+    // `functions` for `is_geometry_let`'s user-defined-geometry-fn guard, so it
+    // runs here — not the borrow-only `EntityDefRef` `From` impls. The common
+    // path (no inline geometry-query arg) clones nothing: `desugar_…` returns
+    // `None`, the `map` is skipped, and `structure` is left borrowing the caller.
+    let desugared = desugar_inline_geometry_query_args(structure.members, functions);
+    // The EXACT set of synthetic `__geoq_<N>` names minted above; empty on the
+    // common (no-hoist) path. Realization lowering consults this to set
+    // `RealizationDecl::is_query_only` — see that field's docs for why a
+    // query-only realization must not displace real product geometry.
+    let query_only_names: HashSet<String> = desugared
+        .as_ref()
+        .map(|(_, minted)| minted.clone())
+        .unwrap_or_default();
+    let desugared_members = desugared.map(|(members, _)| members);
+    let desugared_entity = desugared_members.as_ref().map(|members| EntityDefRef {
+        name: structure.name,
+        doc: structure.doc.clone(),
+        is_pub: structure.is_pub,
+        type_params: structure.type_params,
+        trait_bounds: structure.trait_bounds,
+        members: members.as_slice(),
+        annotations: structure.annotations,
+        pragmas: structure.pragmas,
+        span: structure.span,
+    });
+    let structure: &EntityDefRef = match desugared_entity.as_ref() {
+        Some(e) => e,
+        None => structure,
+    };
+
     let entity_name = structure.name;
     // task 3540 (SIR-α): make `structure def` templates reachable at the
     // expression-lowering site so `Foo()` can lower to a
@@ -915,7 +1470,8 @@ pub(crate) fn compile_entity(
     // (later entries shadow earlier — local definitions shadow prelude,
     // matching Reify scoping). Declared BEFORE `scope` so it outlives the
     // scope's borrow (drop order is reverse-declaration).
-    let entity_template_registry: HashMap<String, &TopologyTemplate> = prelude_template_registry
+    let entity_template_registry: HashMap<String, &TopologyTemplate> = prelude
+        .ctor
         .iter()
         .map(|(k, v)| (k.clone(), *v))
         .chain(
@@ -1614,9 +2170,16 @@ pub(crate) fn compile_entity(
                             // (task 2373) is now handled inside compile_match_arm_decl_group,
                             // atomically with register_match_arm_group — moved from here in task 2872
                             // to close the orphan-entry bug on any early-return rejection path.
-                            if let Some(child_tmpl) =
-                                find_template(compiled_templates, &sub.structure_name)
-                            {
+                            // task 5867: module-first, prelude-fallback — same
+                            // rule as the plain-`Sub` pre-pass below. A bare
+                            // `find_template` here is module-only, so an arm sub
+                            // targeting a prelude template (`A => sub s :
+                            // DisplayStyle`) left every map below unpopulated.
+                            if let Some(child_tmpl) = find_template_with_prelude(
+                                compiled_templates,
+                                prelude,
+                                &sub.structure_name,
+                            ) {
                                 scope.sub_structure_traits.insert(
                                     sub.structure_name.clone(),
                                     child_tmpl.trait_bounds.clone(),
@@ -1750,10 +2313,19 @@ pub(crate) fn compile_entity(
                     .sub_component_types
                     .insert(sub.name.clone(), effective_structure_name.clone());
                 // Single lookup: handle deprecation, sub_structure_traits, and
-                // sub_member_types in one pass over compiled_templates.
-                if let Some(child_tmpl) =
-                    find_template(compiled_templates, &effective_structure_name)
-                {
+                // sub_member_types in one pass over the sub-target templates.
+                //
+                // task 5867: module-first, prelude-fallback. A bare
+                // `find_template` here is module-only, so for a prelude-typed
+                // sub (`sub tol = DimensionalTolerance(…)`) none of the maps
+                // below were populated while `sub_component_types` above always
+                // was — the "forward-declared" shape that makes a relaying
+                // `let` lower to a `RealizationDecl` instead of a value cell.
+                if let Some(child_tmpl) = find_template_with_prelude(
+                    compiled_templates,
+                    prelude,
+                    &effective_structure_name,
+                ) {
                     // Deprecation check: warn if the referenced structure is @deprecated.
                     if let Some(msg) = deprecation_message(&child_tmpl.annotations) {
                         emit_deprecation_warning(
@@ -1805,17 +2377,24 @@ pub(crate) fn compile_entity(
                                 Vec::with_capacity(group.arms.len());
                             for arm in &group.arms {
                                 if let Type::StructureRef(arm_struct) = &arm.arm_type {
+                                    // task 5867: module-first, prelude-fallback,
+                                    // so an arm type defined in the prelude does
+                                    // not yield an empty member map here.
                                     let arm_members: BTreeMap<String, Type> =
-                                        find_template(compiled_templates, arm_struct)
-                                            .map(|t| {
-                                                t.value_cells
-                                                    .iter()
-                                                    .map(|vc| {
-                                                        (vc.id.member.clone(), vc.cell_type.clone())
-                                                    })
-                                                    .collect()
-                                            })
-                                            .unwrap_or_default();
+                                        find_template_with_prelude(
+                                            compiled_templates,
+                                            prelude,
+                                            arm_struct,
+                                        )
+                                        .map(|t| {
+                                            t.value_cells
+                                                .iter()
+                                                .map(|vc| {
+                                                    (vc.id.member.clone(), vc.cell_type.clone())
+                                                })
+                                                .collect()
+                                        })
+                                        .unwrap_or_default();
                                     per_arm.push((arm_struct.clone(), arm_members));
                                 } else {
                                     // Non-StructureRef arm types are not produced in v0.1;
@@ -3700,6 +4279,7 @@ pub(crate) fn compile_entity(
                     &type_param_names,
                     &clusters_with_outside_collision,
                     compiled_templates,
+                    prelude,
                 );
             }
         }
@@ -3857,11 +4437,21 @@ pub(crate) fn compile_entity(
                     0,
                     &geometry_lets,
                     &mut HashSet::new(),
+                    &mut GeometryConstraintSink::new(
+                        entity_name,
+                        &mut constraints,
+                        &mut constraint_index,
+                    ),
                 ) {
                     realizations.push(RealizationDecl {
                         id: RealizationNodeId::new(entity_name, realization_index),
                         name: Some(let_decl.name.clone()),
                         is_aux: let_decl.is_aux,
+                        // task 5345: a hoisted `__geoq_<N>` arg is measurement
+                        // scaffolding, not a body. Keyed off the desugarer's
+                        // exact minted-name set, so a user-authored member that
+                        // happens to share the prefix stays product geometry.
+                        is_query_only: query_only_names.contains(&let_decl.name),
                         operations: ops,
                         span: let_decl.span,
                     });
@@ -3883,6 +4473,11 @@ pub(crate) fn compile_entity(
                         0,
                         &geometry_lets,
                         &mut HashSet::new(),
+                        &mut GeometryConstraintSink::new(
+                            entity_name,
+                            &mut constraints,
+                            &mut constraint_index,
+                        ),
                     )
                 {
                     realizations.push(RealizationDecl {
@@ -3890,6 +4485,8 @@ pub(crate) fn compile_entity(
                         name: Some(param.name.clone()),
                         // Solid-typed params carry no `aux` modifier in the grammar.
                         is_aux: false,
+                        // The hoist only ever mints `Let` members, never params.
+                        is_query_only: false,
                         operations: ops,
                         span: param.span,
                     });
@@ -3914,9 +4511,17 @@ pub(crate) fn compile_entity(
                     realizations: &mut realizations,
                     realization_index: &mut realization_index,
                     diagnostics,
+                    constraints: &mut constraints,
+                    next_constraint_index: &mut constraint_index,
+                    guarded_groups: &mut guarded_groups,
                 };
-                emit_guarded_geometry_realizations(&g.members, &deps, &mut sink);
-                emit_guarded_geometry_realizations(&g.else_members, &deps, &mut sink);
+                emit_guarded_geometry_realizations(&g.members, &deps, &mut sink, GuardArm::Where);
+                emit_guarded_geometry_realizations(
+                    &g.else_members,
+                    &deps,
+                    &mut sink,
+                    GuardArm::Else,
+                );
             }
             _ => {}
         }
@@ -4462,6 +5067,9 @@ fn compile_match_arm_decl_group(
     type_param_names: &HashSet<String>,
     clusters_with_outside_collision: &HashSet<String>,
     compiled_templates: &[TopologyTemplate],
+    // task 5867: the prelude-derived lookup tables; paired with
+    // `compiled_templates` in every `find_template_with_prelude` call.
+    prelude: &PreludeRegistries<'_, '_>,
 ) {
     // Resolve the discriminant's enum type.  Only simple `Ident` discriminants
     // are supported in this task; complex expressions are deferred to task 2373.
@@ -4844,14 +5452,18 @@ fn compile_match_arm_decl_group(
             });
 
             // Collect per-arm member types for match_arm_group_arm_member_types.
-            // Always push an entry (empty BTreeMap when find_template fails) so the
+            // Always push an entry (empty BTreeMap on a lookup miss) so the
             // per-arm Vec length always equals the cluster's Sub-arm count — preserving
             // the invariant that review suggestion 1 established in the pre-pass.
             // (task 2872: moved here from the pre-pass so insertion is atomic with
             // register_match_arm_group; see the if !group_arms.is_empty() block below.)
-            let arm_member_types = find_template(compiled_templates, &sub.structure_name)
-                .map(member_type_map_from_template)
-                .unwrap_or_default();
+            //
+            // task 5867 widened the LOOKUP to module-first/prelude-fallback; the
+            // always-push discipline above is unchanged.
+            let arm_member_types =
+                find_template_with_prelude(compiled_templates, prelude, &sub.structure_name)
+                    .map(member_type_map_from_template)
+                    .unwrap_or_default();
             per_arm_member_maps.push((sub.structure_name.clone(), arm_member_types));
         }
 
@@ -5303,6 +5915,32 @@ struct GeometryRealizationSink<'a> {
     realizations: &'a mut Vec<RealizationDecl>,
     realization_index: &'a mut u32,
     diagnostics: &'a mut Vec<Diagnostic>,
+    /// Compiler-synthesized constraints emitted by the geometry lowering
+    /// (see `GeometryConstraintSink`), plus the shared per-entity constraint
+    /// counter that names them. Carried here rather than as extra parameters
+    /// for the same reason as the other fields: one bundle of mutable outputs
+    /// with a lifetime independent of the read-only `GeometryRealizationDeps`.
+    constraints: &'a mut Vec<CompiledConstraint>,
+    next_constraint_index: &'a mut u32,
+    /// The entity's guarded groups, so a guarded geometry param's synthesized
+    /// constraint can be filed into its OWN arm rather than onto the flat
+    /// `constraints` list above. Borrowed mutably here and not through
+    /// `GeometryRealizationDeps`: every `guarded_groups` mutation site
+    /// precedes the third-pass loop this sink is built in, and `deps` borrows
+    /// only `scope` / `enum_defs` / `functions` / `known_geometry_lets` /
+    /// `geometry_lets`, so the two borrows are disjoint.
+    guarded_groups: &'a mut Vec<CompiledGuardedGroup>,
+}
+
+/// Which arm of a `where`/`else` group a member was declared in.
+///
+/// Only the POLARITY travels with the recursion — the guard CELL is looked up
+/// per-member via `CompilationScope::resolve_guard`, which already yields the
+/// innermost group a member belongs to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum GuardArm {
+    Where,
+    Else,
 }
 
 /// Recursively emit `RealizationDecl`s for Solid-typed geometry params inside
@@ -5315,16 +5953,84 @@ struct GeometryRealizationSink<'a> {
 /// Intentionally does NOT handle Lets — guarded geometry lets do not emit
 /// realizations (that is a separate, unimplemented feature; see the existing
 /// comment in the GuardedGroup arm of the third-pass loop).
+///
+/// # Arm-routing contract
+///
+/// A constraint the geometry lowering synthesizes for a guarded param (see
+/// `GeometryConstraintSink`) is filed into the arm that DECLARES the geometry —
+/// `constraints` for a `where` member, `else_constraints` for an `else` one —
+/// never onto the entity's flat `TopologyTemplate::constraints`. The two arms
+/// are mutually exclusive, so a flat filing would enforce a predicate over
+/// geometry that was never lowered.
+///
+/// `arm` carries only the POLARITY, and it is re-derived at each nesting level.
+/// The guard CELL comes from the per-member `CompilationScope::resolve_guard`
+/// lookup, which already yields the innermost group a member was registered
+/// under, so an inner `else` member reached from an outer `where` lands in the
+/// INNER group's `else_constraints`. When no guard cell resolves, the constraint
+/// falls back to the flat list rather than being dropped.
+///
+/// The consequence at runtime: `collect_active_constraints` (reify-eval's
+/// `engine_constraints.rs`) gates each group's two vecs on the group's
+/// `guard_value_cell`, so a guarded predicate is **never collected while its arm
+/// is inactive** — it does not merely evaluate true, it is not checked at all.
+///
+/// # Two pre-existing properties this deliberately matches
+///
+/// Both are true of EVERY guarded constraint in the language today, not
+/// introduced here, and are filed as follow-up work rather than absorbed
+/// silently:
+///
+/// 1. **A guarded constraint is not solver-bounded.**
+///    `filter_constraints_reading_autos` (reify-eval `engine_eval.rs`) is called
+///    only with `&template.constraints`, and `detect_underdetermined` reads that
+///    same flat vec. So an `auto` `corner_r` constrained ONLY inside a guard is
+///    checked but neither solver-bounded nor counted as determined — which is
+///    also why such a cell may now additionally draw `W_UNDERDETERMINED`.
+/// 2. **A nested else-arm over-approximates.** Its constraint activates whenever
+///    its `guard_value_cell` is false, and that includes "the outer guard was
+///    false, so this group was never reached" — `collect_active_constraints`
+///    keys on the cell alone. A hand-written nested `where`/`else` constraint
+///    over-approximates identically.
 fn emit_guarded_geometry_realizations(
     members: &[reify_ast::MemberDecl],
     deps: &GeometryRealizationDeps<'_>,
     sink: &mut GeometryRealizationSink<'_>,
+    arm: GuardArm,
 ) {
     for m in members {
         match m {
             reify_ast::MemberDecl::Param(param)
                 if deps.known_geometry_lets.contains(param.name.as_str()) =>
             {
+                // Resolve the constraint vec BEFORE lowering: a synthesized
+                // predicate over guarded geometry belongs to the arm that
+                // declares it, not to the entity's unconditional list.
+                //
+                // `sink.diagnostics`, `sink.guarded_groups` and
+                // `sink.next_constraint_index` are three DISJOINT fields of
+                // `*sink`, so the borrow checker accepts all three being
+                // borrowed across the `compile_geometry_call` below;
+                // `sink.realizations.push` happens afterwards, outside it.
+                let target_constraints =
+                    match deps.scope.resolve_guard(&param.name).and_then(|cell| {
+                        let cell = cell.clone();
+                        sink.guarded_groups
+                            .iter_mut()
+                            .find(|g| g.guard_value_cell == cell)
+                    }) {
+                        Some(group) => match arm {
+                            GuardArm::Where => &mut group.constraints,
+                            GuardArm::Else => &mut group.else_constraints,
+                        },
+                        // No guard cell resolved — fall back to the entity's
+                        // flat list rather than dropping the constraint. A
+                        // silent drop is exactly the bug class #5665 exists to
+                        // remove, so an unforeseen member shape must degrade to
+                        // "checked unconditionally", never to "not checked at
+                        // all".
+                        None => &mut *sink.constraints,
+                    };
                 if let Some(default_expr) = &param.default
                     && let Some(ops) = compile_geometry_call(
                         default_expr,
@@ -5335,6 +6041,11 @@ fn emit_guarded_geometry_realizations(
                         0,
                         deps.geometry_lets,
                         &mut HashSet::new(),
+                        &mut GeometryConstraintSink::new(
+                            deps.entity_name,
+                            target_constraints,
+                            sink.next_constraint_index,
+                        ),
                     )
                 {
                     sink.realizations.push(RealizationDecl {
@@ -5342,6 +6053,8 @@ fn emit_guarded_geometry_realizations(
                         name: Some(param.name.clone()),
                         // Guarded Solid-typed params carry no `aux` modifier.
                         is_aux: false,
+                        // Guarded groups are outside the hoist's member scope.
+                        is_query_only: false,
                         operations: ops,
                         span: param.span,
                     });
@@ -5349,8 +6062,14 @@ fn emit_guarded_geometry_realizations(
                 }
             }
             reify_ast::MemberDecl::GuardedGroup(g) => {
-                emit_guarded_geometry_realizations(&g.members, deps, sink);
-                emit_guarded_geometry_realizations(&g.else_members, deps, sink);
+                // Re-derive the polarity at each level rather than inheriting
+                // it: an inner `else` member reached from an outer `where`
+                // belongs to the INNER group's `else_constraints`. Only the
+                // polarity needs threading — the guard CELL comes from the
+                // per-member `resolve_guard` lookup above, which already yields
+                // the innermost group a member was registered under.
+                emit_guarded_geometry_realizations(&g.members, deps, sink, GuardArm::Where);
+                emit_guarded_geometry_realizations(&g.else_members, deps, sink, GuardArm::Else);
             }
             _ => {}
         }
@@ -5905,6 +6624,56 @@ pub(crate) fn expand_constraint_inst(
     }
 }
 
+/// Lower a nested `priv`-aware `Param` (declared inside a `port { }` block or a
+/// block-form `where { }` guarded group) to a lightweight skeleton value cell.
+///
+/// [`build_structure_def_skeleton`] populates the transient template's `ports`
+/// and `guarded_groups` with just enough shape for the function-body priv gate
+/// to fire (`template_member_is_priv` / `port_member_is_priv` in `expr.rs`),
+/// which read only `id.member`, `kind == Param`, and `visibility`. `cell_type`
+/// gets the same resolved-or-dimensionless fallback as the top-level param loop;
+/// `default_expr` is omitted — the gate never evaluates these nested defaults
+/// during fn-body member access. `member_name` is the composite `"<port>.<param>"`
+/// for a port member (matching `port_member_is_priv`'s composite lookup) and the
+/// bare param name for a guarded-block member (matching `template_member_is_priv`'s
+/// `guarded_groups` scan).
+#[allow(clippy::too_many_arguments)]
+fn skeleton_nested_param_cell(
+    entity_name: &str,
+    member_name: &str,
+    param: &reify_ast::ParamDecl,
+    type_param_names: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> ValueCellDecl {
+    let cell_type = param
+        .type_expr
+        .as_ref()
+        .and_then(|te| {
+            resolve_type_expr_with_aliases(
+                te,
+                type_param_names,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            )
+        })
+        .unwrap_or(Type::dimensionless_scalar());
+    ValueCellDecl {
+        id: ValueCellId::new(entity_name, member_name),
+        kind: ValueCellKind::Param,
+        visibility: priv_flag_to_visibility(param.is_priv),
+        is_aux: false,
+        cell_type,
+        default_expr: None,
+        solver_hints: vec![],
+        span: param.span,
+    }
+}
+
 /// Build a skeleton [`TopologyTemplate`] for a `structure_def` that appears in
 /// the same module as a compiled function.
 ///
@@ -6089,10 +6858,10 @@ pub(crate) fn build_structure_def_skeleton(
                 // member access (functions_phase merged_registry), so this
                 // TOP-LEVEL param site MUST mirror the authoritative compile_entity
                 // param site (via priv_flag_to_visibility) or a `priv` member leaks
-                // through a function body. Port-members and guarded-block members
-                // are a separate case: the skeleton omits them entirely rather than
-                // lowering them Public — see the `ports`/`guarded_groups` fields
-                // below, where that omission is confirmed harmless.
+                // through a function body. Nested `priv` members are carried the
+                // same way by the skeleton's `ports`/`guarded_groups` passes below,
+                // so they are priv-gated on function-body access too (`m.g`;
+                // `m.secret.main` paired with the expr.rs receiver-resolution branch).
                 visibility: priv_flag_to_visibility(param.is_priv),
                 is_aux: false,
                 cell_type,
@@ -6217,6 +6986,121 @@ pub(crate) fn build_structure_def_skeleton(
         }
     }
 
+    // ── Lightweight port-member population (function-body priv gate) ──
+    // Mirror the guarded-block population below, for `port { }` members: a fn body
+    // reading a `priv` port member (`m.secret.main`) is priv-gated via the expr.rs
+    // `<sub>.<port>.<member>` branch, which calls `port_member_is_priv` on the
+    // receiver structure's template. That helper matches the composite
+    // `"<port>.<member>"` ValueCellId the authoritative port-member compilation
+    // uses (entity.rs port arm), so build the skeleton members with the SAME
+    // composite name. Only the priv-gate-relevant fields are set; direction /
+    // type_name / constraints / frame_expr get defaults (the gate never reads
+    // them). Unlike the guarded case, ports also need the expr.rs receiver-
+    // resolution change to fire for fn-body receivers. One-level nesting only.
+    let mut ports: Vec<CompiledPort> = Vec::new();
+    for member in &structure.members {
+        if let reify_ast::MemberDecl::Port(port_decl) = member {
+            let mut members: Vec<ValueCellDecl> = Vec::new();
+            for pm in &port_decl.members {
+                if let reify_ast::MemberDecl::Param(param) = pm {
+                    members.push(skeleton_nested_param_cell(
+                        &structure.name,
+                        &format!("{}.{}", port_decl.name, param.name),
+                        param,
+                        &type_param_names,
+                        alias_registry,
+                        structure_names,
+                        trait_names,
+                        &mut throwaway_diags,
+                    ));
+                }
+            }
+            ports.push(CompiledPort {
+                name: port_decl.name.clone(),
+                direction: port_decl
+                    .direction
+                    .unwrap_or(reify_core::PortDirection::Bidi),
+                type_name: port_decl.type_name.clone(),
+                members,
+                constraints: vec![],
+                frame_expr: None,
+                is_priv: port_decl.is_priv,
+            });
+        }
+    }
+
+    // ── Lightweight guarded-block member population (function-body priv gate) ──
+    // The skeleton is the template consulted while type-checking function BODIES
+    // (phase_functions merged_registry). Populate `guarded_groups` with each
+    // block-form `where { }` group's `priv`-aware members so a fn body reading a
+    // `priv` guarded member (`m.g`) is priv-gated: the SIR-α StructureRef
+    // member-access block's E_PRIV gate (`template_member_is_priv`, expr.rs) scans
+    // `guarded_groups[].members` and is deliberately ordered BEFORE the
+    // member-not-found check — so populating this vec is sufficient, with no
+    // expr.rs change for the guarded case. Only the priv-gate-relevant fields are
+    // built (see `skeleton_nested_param_cell`); the authoritative guard compilation
+    // (guards.rs) — which needs the alias registry / trait names / diagnostic
+    // machinery that phase_functions runs without — is intentionally NOT invoked.
+    // One-level nesting only: guards-in-guards (and ports-in-guards) stay a
+    // documented lightweight-skeleton limitation, covering the test fixtures and
+    // task #5171's external coverage (all one level deep).
+    let mut guarded_groups: Vec<CompiledGuardedGroup> = Vec::new();
+    for member in &structure.members {
+        if let reify_ast::MemberDecl::GuardedGroup(group) = member {
+            let mut members: Vec<ValueCellDecl> = Vec::new();
+            for gm in &group.members {
+                if let reify_ast::MemberDecl::Param(param) = gm {
+                    members.push(skeleton_nested_param_cell(
+                        &structure.name,
+                        &param.name,
+                        param,
+                        &type_param_names,
+                        alias_registry,
+                        structure_names,
+                        trait_names,
+                        &mut throwaway_diags,
+                    ));
+                }
+            }
+            // `else_members` is carried for shape-parity with the authoritative
+            // CompiledGuardedGroup (which populates them too); it is NOT read by
+            // the priv gate. `template_member_is_priv` (expr.rs) scans only
+            // `members`, never `else_members` — so a `priv param` declared in a
+            // `where cond { } else { … }` else-branch is NOT fn-body priv-gated,
+            // exactly as it is NOT gated on the external-access path (the
+            // real-template gate ignores `else_members` too). Closing that
+            // symmetric gap would span both the external and fn-body paths and is
+            // out of scope here.
+            let mut else_members: Vec<ValueCellDecl> = Vec::new();
+            for gm in &group.else_members {
+                if let reify_ast::MemberDecl::Param(param) = gm {
+                    else_members.push(skeleton_nested_param_cell(
+                        &structure.name,
+                        &param.name,
+                        param,
+                        &type_param_names,
+                        alias_registry,
+                        structure_names,
+                        trait_names,
+                        &mut throwaway_diags,
+                    ));
+                }
+            }
+            guarded_groups.push(CompiledGuardedGroup {
+                // The priv gate reads only `members` / `else_members`; guard_expr,
+                // guard_value_cell, and constraints are throwaway placeholders
+                // (mirrors the idiomatic skeleton guard literal used elsewhere).
+                guard_expr: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+                guard_value_cell: ValueCellId::new(&structure.name, "__skeleton_guard"),
+                members,
+                constraints: vec![],
+                else_members,
+                else_constraints: vec![],
+                parent_guard: None,
+            });
+        }
+    }
+
     TopologyTemplate {
         name: structure.name.to_string(),
         doc: structure.doc.clone(),
@@ -6231,28 +7115,19 @@ pub(crate) fn build_structure_def_skeleton(
         realizations: vec![],
         sub_components: vec![],
         relations: vec![],
-        // Unconditionally empty — the member loop above only lowers top-level
-        // `MemberDecl::Param`/`Let`; it has no arm for `MemberDecl::Port` or
-        // `MemberDecl::GuardedGroup`, so port-members and guarded-block members
-        // never reach this skeleton, priv or not (task #5161 review:
-        // architecture_coherence). Confirmed harmless, not just assumed: an
-        // empty `ports`/`guarded_groups` means the port (or guarded member)
-        // itself is unresolved during function-body member access, so lookup
-        // fails closed with E_STRUCTURE_MEMBER_NOT_FOUND before any visibility
-        // check runs — it does not fall open to a Public-like default. See
-        // `function_body_priv_port_member_access_not_yet_priv_gated` /
-        // `function_body_priv_guarded_member_access_not_yet_priv_gated` in
-        // priv_member_visibility_tests.rs (Part D coda, function-body variant),
-        // which pin this empirically. Same gap and same root cause as the
-        // external-access enforcement seam that task #5171 closed for
-        // `obj.member` access (both port-member and guarded-block priv
-        // params) — but this skeleton is untouched by that fix, since
-        // function bodies never reach a real per-structure template at all.
-        // Extending the skeleton to carry these members (so function-body
-        // access can be priv-gated too) is tracked by follow-up #5222.
-        ports: vec![],
+        // Port members ARE carried (see the port pass above), so a function body
+        // reading a `priv` port member (`m.secret.main`) is priv-gated. Ports are
+        // absent from `value_cells`, so `m.secret` never types as a `StructureRef`
+        // and the outer `.main` is caught only by the expr.rs `<sub>.<port>.<member>`
+        // AST-pattern branch — which this task also extends to resolve a fn-body
+        // `StructureRef` receiver, completing the port half of the gap.
+        ports,
         connections: vec![],
-        guarded_groups: vec![],
+        // Guarded-block members ARE carried (see the population pass above), so a
+        // function body reading a `priv` guarded member (`m.g`) is priv-gated via
+        // the SIR-α `StructureRef` E_PRIV gate — closing the guarded half of the
+        // function-body gap left by task #5171's external-only enforcement.
+        guarded_groups,
         structure_controlling: HashSet::new(),
         objective: None,
         meta: HashMap::new(),

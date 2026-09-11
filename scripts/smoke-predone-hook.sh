@@ -12,7 +12,12 @@
 #      to --help.
 #   (2.5) The env var value contains the required template tokens:
 #          --task, {id}, and --pre-done (per design §11.1).
-#   3. The fused-memory MCP endpoint at :8002 is responsive.
+#   (2.6) That first token is the pre-done WRAPPER, not the raw reify-audit
+#          binary — only the wrapper runs the REFUSE-mode freshness guard.
+#   3. The fused-memory MCP endpoint at :8002 is responsive (retried a few
+#      times before failing; the final diagnostic distinguishes a refused
+#      connection [service down] from a timeout [service busy] rather than
+#      conflating them, per task 7061).
 #
 # Exits 0 on success (all assertions pass).
 # Exits 1 on first failed assertion (with a descriptive error message).
@@ -43,9 +48,16 @@ Usage: scripts/smoke-predone-hook.sh [-h|--help]
 Activation smoke test for the FUSED_MEMORY_PREDONE_HOOK_REIFY pre-done hook.
 Asserts: (1) env var set in fused-memory service, (2) binary executable,
          (2.5) env value contains --task {id} --pre-done template tokens,
-         (3) fused-memory MCP endpoint responsive,
-         (4a/4b) binary round-trip with seeded fixtures (known-pass + known-fail).
+         (2.6) hook first token is reify-audit-predone-wrapper.sh (not the
+               raw binary, which bypasses the freshness guard),
+         (3) fused-memory MCP endpoint responsive (retried; refused vs timed
+               out get distinct diagnostics),
+         (4a/4b) RAW binary round-trip with seeded fixtures (known-pass +
+               known-fail), against $REIFY_AUDIT_BIN rather than the hook target.
 Exits 0 on success, 1 on failure.
+
+Environment overrides:
+  FUSED_MEMORY_MCP_TIMEOUT   curl max-time in seconds per attempt (default: 5)
 USAGE
 }
 
@@ -57,7 +69,24 @@ fi
 SERVICE="fused-memory"
 ENV_VAR="FUSED_MEMORY_PREDONE_HOOK_REIFY"
 MCP_URL="http://localhost:8002/mcp"
-MCP_TIMEOUT=5
+# Per-attempt curl budget, overridable consistently with
+# scripts/reify-audit-predone-wrapper.sh's FUSED_MEMORY_MCP_TIMEOUT (default
+# 10 there; 5 here since this is a foreground operator check, not a hot-path
+# hook). Assertion 3 below retries several attempts at this budget rather than
+# leaning on one large timeout, so raising this only matters if a healthy
+# server routinely takes longer than a few seconds to answer.
+MCP_TIMEOUT="${FUSED_MEMORY_MCP_TIMEOUT:-5}"
+if [[ ! "$MCP_TIMEOUT" =~ ^[0-9]+$ ]]; then
+    echo "FAIL: FUSED_MEMORY_MCP_TIMEOUT must be an integer number of seconds; got '$MCP_TIMEOUT'." >&2
+    exit 1
+fi
+
+# Raw reify-audit binary used by assertion 4's fixture round-trips. Deliberately
+# NOT derived from the hook env var — see the assertion-4 comment block below.
+# Reuses the same env-var name and default as the constants block of
+# scripts/reify-audit-predone-wrapper.sh, so operators get ONE override across
+# both scripts rather than two.
+RAW_BIN="${REIFY_AUDIT_BIN:-/home/leo/.cargo/bin/reify-audit}"
 
 # ── Assertion 1: env var is set in the live service environment ──────────────
 echo "smoke-predone-hook: checking $ENV_VAR in $SERVICE service environment..."
@@ -126,45 +155,160 @@ if [[ "$env_value" != *"--pre-done"* ]]; then
     exit 1
 fi
 
+# ── Assertion 2.6: hook first token is the WRAPPER, not the raw binary ───────
+# The hook MUST route through scripts/reify-audit-predone-wrapper.sh. Only the
+# wrapper (a) runs the REFUSE-mode freshness guard from
+# scripts/reify-audit-freshness.sh and (b) materializes the TaskMetadata
+# snapshot from the fused-memory MCP. Wiring the env var straight at
+# /home/leo/.cargo/bin/reify-audit is executable, survives --help and carries
+# every template token — so assertions 1, 2 and 2.5 all stay green while the
+# freshness guard is silently bypassed. That is exactly how the raw-binary
+# wiring shipped live, unnoticed, for ~3 months (design §11.1.3).
+#
+# Checked by BASENAME, not by absolute path: the invariant is "the hook routes
+# through the wrapper", not "which checkout hosts it" — an absolute pin would
+# false-fail if the deploy is ever repointed at a different main checkout, and
+# false-failing a gate is how a gate gets disabled. Assertion 2 above already
+# requires this same token to be executable and to survive --help, so a
+# same-named impostor cannot pass silently.
+#
+# Placed BEFORE assertion 3 so a mis-wired host fails fast without touching the
+# network, keeping the diagnostic from being buried behind a connection error.
+echo "smoke-predone-hook: checking ${ENV_VAR} first token is the pre-done wrapper..."
+
+WRAPPER_BASENAME="reify-audit-predone-wrapper.sh"
+
+if [[ "$(basename "$binary")" != "$WRAPPER_BASENAME" ]]; then
+    echo "FAIL: hook first token is not the pre-done wrapper." >&2
+    echo "      observed: $binary" >&2
+    echo "      expected a path ending in: $WRAPPER_BASENAME" >&2
+    echo "      Invoking the raw reify-audit binary directly BYPASSES the" >&2
+    echo "      REFUSE-mode freshness guard in scripts/reify-audit-freshness.sh," >&2
+    echo "      so a stale detector runs silently on every done-flip." >&2
+    echo "      Re-deploy with: bash scripts/deploy-reify-audit-predone-hook.sh" >&2
+    echo "      (idempotent; backs up the unit and re-probes end-to-end)." >&2
+    echo "      Do NOT hand-edit /home/leo/.config/systemd/user/$SERVICE.service." >&2
+    exit 1
+fi
+
 # ── Assertion 3: fused-memory MCP endpoint is responsive ─────────────────────
+# Retries before failing, covering BOTH a curl transport failure (non-zero
+# curl exit) and an HTTP-level failure (non-200, or a 200 with no JSON-RPC
+# body): a busy fused-memory is at least as likely to answer 502/503 as it is
+# to hit curl's --max-time, so both go through the same retry loop and land on
+# the same "busy, not down" framing once exhausted. The final diagnostic
+# distinguishes curl's "connection refused" (7) -- service down, check status
+# -- from "timed out" (28) or a bad HTTP response -- service accepted the
+# connection but stalled or erred, NOT necessarily down. Observed in practice
+# (task 7061) as fused-memory answering instantly on immediate re-probe under
+# fleet load, so the busy path must not steer anyone toward restarting the
+# fleet-wide MCP server on a momentary stall.
 echo "smoke-predone-hook: probing MCP endpoint at $MCP_URL..."
 
 initialize_payload='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke-test","version":"0.1"}}}'
 
-http_response=$(curl -s -o /tmp/smoke-predone-mcp-resp.json -w "%{http_code}" \
-    --max-time "$MCP_TIMEOUT" \
-    -X POST "$MCP_URL" \
-    -H "Content-Type: application/json" \
-    -H "Accept: application/json, text/event-stream" \
-    -d "$initialize_payload" 2>/dev/null) || {
-    echo "FAIL: curl to $MCP_URL failed (connection refused or timeout)." >&2
-    echo "      Check: systemctl --user status $SERVICE" >&2
-    exit 1
-}
+MCP_PROBE_ATTEMPTS=3
+MCP_PROBE_BACKOFF_SECS=1
 
-if [[ "$http_response" != "200" ]]; then
-    echo "FAIL: fused-memory MCP endpoint at $MCP_URL returned HTTP $http_response (expected 200)." >&2
+# Isolated per-run response file. mktemp (not a fixed path) because curl does
+# NOT truncate its -o target on a transport failure (verified: a pre-seeded
+# file survives a connection-refused run byte-for-byte), so a fixed path could
+# both leak a stale body into this run's JSON-RPC check and collide with a
+# concurrent run on the same host. Cleaned up via EXIT trap so every exit path
+# -- not just the success path -- removes it.
+MCP_RESP_FILE=$(mktemp /tmp/smoke-predone-mcp-resp.XXXXXX)
+trap 'rm -f "$MCP_RESP_FILE"' EXIT
+
+curl_exit=0
+http_response=""
+probe_ok=0
+attempt=1
+while [[ "$attempt" -le "$MCP_PROBE_ATTEMPTS" ]]; do
+    http_response=$(curl -s -o "$MCP_RESP_FILE" -w "%{http_code}" \
+        --max-time "$MCP_TIMEOUT" \
+        -X POST "$MCP_URL" \
+        -H "Content-Type: application/json" \
+        -H "Accept: application/json, text/event-stream" \
+        -d "$initialize_payload" 2>/dev/null) && curl_exit=0 || curl_exit=$?
+
+    if [[ "$curl_exit" -eq 0 && "$http_response" == "200" ]] && grep -q '"jsonrpc"' "$MCP_RESP_FILE" 2>/dev/null; then
+        probe_ok=1
+        break
+    fi
+
+    if [[ "$attempt" -lt "$MCP_PROBE_ATTEMPTS" ]]; then
+        if [[ "$curl_exit" -ne 0 ]]; then
+            echo "smoke-predone-hook: MCP probe attempt $attempt/$MCP_PROBE_ATTEMPTS failed (curl exit $curl_exit); retrying in ${MCP_PROBE_BACKOFF_SECS}s..." >&2
+        elif [[ "$http_response" != "200" ]]; then
+            echo "smoke-predone-hook: MCP probe attempt $attempt/$MCP_PROBE_ATTEMPTS returned HTTP $http_response (expected 200); retrying in ${MCP_PROBE_BACKOFF_SECS}s..." >&2
+        else
+            echo "smoke-predone-hook: MCP probe attempt $attempt/$MCP_PROBE_ATTEMPTS returned HTTP 200 with no JSON-RPC body; retrying in ${MCP_PROBE_BACKOFF_SECS}s..." >&2
+        fi
+        sleep "$MCP_PROBE_BACKOFF_SECS"
+    fi
+    attempt=$((attempt + 1))
+done
+
+if [[ "$probe_ok" -ne 1 ]]; then
+    if [[ "$curl_exit" -ne 0 ]]; then
+        case "$curl_exit" in
+            7)
+                echo "FAIL: curl to $MCP_URL failed: connection refused (curl exit 7), after $MCP_PROBE_ATTEMPTS attempts." >&2
+                echo "      This means fused-memory is DOWN or not listening on :8002." >&2
+                echo "      Check: systemctl --user status $SERVICE" >&2
+                ;;
+            28)
+                echo "FAIL: curl to $MCP_URL timed out (curl exit 28), after $MCP_PROBE_ATTEMPTS attempts of ${MCP_TIMEOUT}s each." >&2
+                echo "      This means fused-memory ACCEPTED the connection but did not answer in" >&2
+                echo "      time -- a busy/stalled service, not necessarily a down one. Do NOT" >&2
+                echo "      restart $SERVICE on a timeout alone: re-run this script, or raise the" >&2
+                echo "      per-attempt budget with FUSED_MEMORY_MCP_TIMEOUT=<seconds>." >&2
+                ;;
+            *)
+                echo "FAIL: curl to $MCP_URL failed (curl exit $curl_exit), after $MCP_PROBE_ATTEMPTS attempts." >&2
+                echo "      Check: systemctl --user status $SERVICE" >&2
+                ;;
+        esac
+    elif [[ "$http_response" != "200" ]]; then
+        echo "FAIL: fused-memory MCP endpoint at $MCP_URL returned HTTP $http_response (expected 200), after $MCP_PROBE_ATTEMPTS attempts." >&2
+        echo "      curl connected fine -- fused-memory is UP but overloaded or erroring, not" >&2
+        echo "      necessarily down. Do NOT restart $SERVICE on this alone: re-run this script," >&2
+        echo "      or raise the per-attempt budget with FUSED_MEMORY_MCP_TIMEOUT=<seconds>." >&2
+    else
+        echo "FAIL: fused-memory MCP endpoint at $MCP_URL did not respond with a JSON-RPC body, after $MCP_PROBE_ATTEMPTS attempts." >&2
+        echo "      Response: $(cat "$MCP_RESP_FILE" 2>/dev/null)" >&2
+    fi
     exit 1
 fi
-
-if ! grep -q '"jsonrpc"' /tmp/smoke-predone-mcp-resp.json 2>/dev/null; then
-    echo "FAIL: fused-memory MCP endpoint at $MCP_URL did not respond with a JSON-RPC body." >&2
-    echo "      Response: $(cat /tmp/smoke-predone-mcp-resp.json 2>/dev/null)" >&2
-    exit 1
-fi
-
-rm -f /tmp/smoke-predone-mcp-resp.json
 
 # ── Assertion 4: binary round-trip with seeded fixtures ──────────────────────
 # Tests a known-pass task (4a) and a known-fail task (4b) directly against the
 # binary (not via the wrapper) to catch re-introduction of the dead
 # .taskmaster/tasks/tasks.json default and output-format regressions.
 #
+# The target is $RAW_BIN and MUST NOT follow the hook env var, even though the
+# two were the same path historically. Routing 4a/4b through the wrapper would:
+#   - inject the wrapper's OWN --tasks-file/--runs-db/--project-root ahead of
+#     the seeded fixture's, leaving the fixture to win only by clap's last-wins
+#     argument precedence — so the round-trip would stop proving that an
+#     explicit --tasks-file is honoured, which is the whole point; and
+#   - make a self-contained fixture round-trip depend on a live fused-memory
+#     MCP, since the wrapper materializes a snapshot before invoking.
+# Assertion 2.6 above already covers the hook target's identity; this assertion
+# covers the binary's behaviour. Keeping the two decoupled is deliberate.
+#
 # Design ref: task 3731 Part B; docs/architecture-audit/f-infra-design.md §11.
 echo "smoke-predone-hook: running seeded fixture round-trips (assertions 4a, 4b)..."
 
+if [[ ! -x "$RAW_BIN" ]]; then
+    echo "FAIL (4-setup): raw reify-audit binary '$RAW_BIN' is not executable (or does not exist)." >&2
+    echo "  Install via: cargo install --path crates/reify-audit --root ~/.cargo --force" >&2
+    echo "  Override the path with REIFY_AUDIT_BIN=<path> if it lives elsewhere." >&2
+    exit 1
+fi
+
 SMOKE_TMPDIR=$(mktemp -d /tmp/smoke-predone-XXXXXX)
-trap 'rm -rf "$SMOKE_TMPDIR"' EXIT
+trap 'rm -f "$MCP_RESP_FILE"; rm -rf "$SMOKE_TMPDIR"' EXIT
 
 # Write tasks.json with two synthetic TaskMetadata shapes.
 cat > "$SMOKE_TMPDIR/tasks.json" <<'TASKS_EOF'
@@ -207,7 +351,7 @@ fi
 
 # ── Sub-assertion 4a: known-pass → expect exit 0 ─────────────────────────────
 set +e
-"$binary" \
+"$RAW_BIN" \
     --task smoke-pass-99991 \
     --pre-done \
     --tasks-file "$SMOKE_TMPDIR/tasks.json" \
@@ -220,6 +364,7 @@ set -e
 
 if [[ "$pass_exit" -ne 0 ]]; then
     echo "FAIL (4a): known-pass task exited $pass_exit (expected 0)." >&2
+    echo "  binary: $RAW_BIN" >&2
     echo "  stdout: $(cat "$SMOKE_TMPDIR/pass.stdout")" >&2
     echo "  stderr: $(cat "$SMOKE_TMPDIR/pass.stderr")" >&2
     exit 1
@@ -233,6 +378,7 @@ fi
 if ! awk 'BEGIN{p=0} /^\[/{p=1} p{print}' "$SMOKE_TMPDIR/pass.stderr" \
         | jq -e 'type == "array"' >/dev/null 2>&1; then
     echo "FAIL (4a): known-pass stderr trailing block is not a JSON array (output-format regression)." >&2
+    echo "  binary: $RAW_BIN" >&2
     echo "  stderr: $(cat "$SMOKE_TMPDIR/pass.stderr")" >&2
     exit 1
 fi
@@ -241,7 +387,7 @@ echo "smoke-predone-hook: assertion 4a OK (known-pass → exit 0, stderr JSON ar
 
 # ── Sub-assertion 4b: known-fail → expect non-zero AND not 125 ───────────────
 set +e
-"$binary" \
+"$RAW_BIN" \
     --task smoke-fail-99992 \
     --pre-done \
     --tasks-file "$SMOKE_TMPDIR/tasks.json" \
@@ -254,6 +400,7 @@ set -e
 
 if [[ "$fail_exit" -eq 0 ]]; then
     echo "FAIL (4b): known-fail task exited 0 (expected non-zero High-finding count)." >&2
+    echo "  binary: $RAW_BIN" >&2
     echo "  stderr: $(cat "$SMOKE_TMPDIR/fail.stderr")" >&2
     exit 1
 fi
@@ -261,6 +408,7 @@ fi
 if [[ "$fail_exit" -eq 125 ]]; then
     echo "FAIL (4b): known-fail task exited 125 (infrastructure error — likely missing" >&2
     echo "  --tasks-file or output-format-parser regression)." >&2
+    echo "  binary: $RAW_BIN" >&2
     echo "  stderr: $(cat "$SMOKE_TMPDIR/fail.stderr")" >&2
     exit 1
 fi
@@ -268,4 +416,4 @@ fi
 echo "smoke-predone-hook: assertion 4b OK (known-fail → exit $fail_exit, not 125)"
 
 # ── All assertions passed ─────────────────────────────────────────────────────
-echo "smoke-predone-hook: OK  binary=$binary  service=active"
+echo "smoke-predone-hook: OK  hook=$binary  raw-binary=$RAW_BIN  service=active"

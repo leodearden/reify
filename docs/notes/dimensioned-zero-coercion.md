@@ -29,7 +29,7 @@ It covers:
 | Dimension family | every family — base, compound-product, compound-quotient | the gate is dimension-agnostic; it copies `D` off the sibling |
 | Operator | `Lt Le Gt Ge Eq Ne Add Sub` | the `matches!` gate in `compile_binop`; the call runs BEFORE `infer_binop_type` |
 | Operand order | both | two symmetric arms in `coerce_zero_operand` |
-| Sibling shape | any expression whose COMPILED TYPE is a non-dimensionless `Scalar`, `CompiledExprKind::IndexAccess` included — and BOTH the member-access form (`material.density`) and the subscript form (`moi_principal[0]`) lower to that one node kind, as `assert_density_positive_constraint_present` in `crates/reify-compiler/tests/structural_physical_tests.rs` shows by destructuring `material.density` as `IndexAccess { object: ValueRef("material"), index: Literal(String("density")) }` | the rewrite keys on that type, not on the sibling's expression shape |
+| Sibling shape | any expression whose COMPILED TYPE is a non-dimensionless `Scalar`, `CompiledExprKind::IndexAccess` included — and BOTH the member-access form (`material.density`) and the subscript form (`moi_principal[0]`) lower to that one node kind, as `assert_density_positive_constraint_present` in `crates/reify-compiler/tests/harness_geometry_solver/structural_physical_tests.rs` shows by destructuring `material.density` as `IndexAccess { object: ValueRef("material"), index: Literal(String("density")) }` | the rewrite keys on that type, not on the sibling's expression shape |
 
 **Consequence.** A dimensioned RHS literal is never *required* in this position. `magnitude > 0N`
 and `magnitude > 0` compile to the same thing, and the compiled RHS is dimensioned by the time
@@ -63,7 +63,7 @@ rewrite *cannot* fire. A site that merely declines to depend on the rewrite is a
   dimensioned RHS by **choice**, exactly as the `0N` / `0kg` sites above do.
 
   No shape-based carve-out is expressible in the first place: `coerce_zero_operand`
-  (`crates/reify-compiler/src/expr.rs:319-368`) gates ONLY on the sibling's compiled `result_type`
+  (in `crates/reify-compiler/src/expr.rs`) gates ONLY on the sibling's compiled `result_type`
   being a non-dimensionless `Type::Scalar` — it never inspects the sibling's expression shape.
   Stating this once is the point: the earlier version of this note filed the subscript form as a
   place the rule "does NOT reach" while the table above filed the member-access form as covered,
@@ -102,5 +102,5 @@ that way.
 
 `modal_analysis.ri` (`StepForce.magnitude`, `ImpulseForce.impulse`, `HarmonicForce.amplitude` /
 `.frequency`), `dynamics.ri` (`MassProperties.mass >= 0kg`), `trajectory.ri`
-(`JointLimit.max_force`, `ZVShaper.target_frequency`), `structural_physical.ri` (`trait Physical`,
-`trait Flexible`), `materials_electrical.ri` (`trait Insulating`).
+(`ZVShaper.target_frequency`), `structural_physical.ri` (`trait Physical`, `trait Flexible`),
+`materials_electrical.ri` (`trait Insulating`).

@@ -1,0 +1,34 @@
+// Fixture: precision-nominal α (task 6166) — CONE regime probe.
+//
+// Copies the pnrg_envelope_sphere.ri layout verbatim (one geometry `let`, a
+// separate typed checker, a deliberately unreachable 1 μm bound as a read-out
+// instrument).  READ THAT FIXTURE'S HEADER FIRST — the OK trap and the validity
+// assertion it states apply here unchanged: a run yields a datum only if it
+// emits `sampled facet deviation <X> m`; `OK` means the subject never realized.
+//
+// REGIME PARAMETER: the cone's half-angle, walked via `top_r` toward the knife
+// edge.  `cone(bottom_r, top_r, height)`.  The dimensionless coordinate the note
+// tabulates is (top_r / bottom_r) — 1.0 is a cylinder (a ruled surface, exactly
+// representable in the axial direction) and 0.0 is a sharp apex.  A single spot
+// value is NOT representative: PRD §2 quotes 0.851 for one cone, and the ratio
+// this fixture measures moves with top_r/bottom_r.
+//
+// The sweep rewrites BOTH the `#precision(...)` argument and the `cone(...)`
+// arguments; see the note's reproduction section for the fenced loop.
+//
+// NOT wired into any probe set or auto-run gate.
+
+module pnrg_envelope_cone
+
+#precision(10mm)
+
+// Subject: a truncated cone.  Default point: bottom_r = 500 mm, top_r = 250 mm,
+// height = 1000 mm  ->  top_r/bottom_r = 0.5.
+structure PnrgCone {
+    let c = cone(500mm, 250mm, 1000mm)
+}
+
+structure PnrgConeCheck {
+    param subject : PnrgCone
+    constraint RepresentationWithin(subject, 0.001mm)
+}

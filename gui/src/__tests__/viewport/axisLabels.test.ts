@@ -11,6 +11,7 @@ vi.mock('three', async () => {
     MockSpriteMaterial,
     MockCanvasTexture,
     MockColor,
+    LinearFilter,
   } = await import('./threeAxisMocks');
   return {
     Group: MockGroup,
@@ -18,10 +19,18 @@ vi.mock('three', async () => {
     SpriteMaterial: MockSpriteMaterial,
     CanvasTexture: MockCanvasTexture,
     Color: MockColor,
+    // axisLabels.ts imports LinearFilter from 'three' to pin the label texture's
+    // minification filter (#6588); the factory must supply it or the import is
+    // undefined at module load.
+    LinearFilter,
   };
 });
 
-import { createAxisLabels } from '../../viewport/axisLabels';
+import { createAxisLabels, DEFAULT_LABEL_OFFSET } from '../../viewport/axisLabels';
+// The same sentinel object the vi.mock('three') factory above hands to
+// axisLabels.ts, so `map.minFilter === LinearFilter` is a real identity check.
+import { LinearFilter } from './threeAxisMocks';
+import { AXES_RENDER_ORDER, AXIS_LABEL_RENDER_ORDER } from '../../viewport/renderOrder';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -114,24 +123,29 @@ describe('createAxisLabels', () => {
     expect(zSprite.position.y).toBe(0);
   });
 
-  it('all sprites have depthTest === false (always-on-top)', () => {
+  it('label sprites are depth-tested so geometry between the camera and the label tip occludes them (#6587)', () => {
     const { group } = createAxisLabels();
     for (const child of group.children as any[]) {
-      expect(child.material.depthTest).toBe(false);
+      // Assert on ctorOpts, NOT material.depthTest: MockSpriteMaterial defaults
+      // depthTest to `opts.depthTest ?? true`, so a material.depthTest assertion
+      // would pass vacuously if the option were dropped from axisLabels.ts entirely.
+      expect(child.material.ctorOpts.depthTest).toBe(true);
     }
   });
 
-  it('all sprites have depthWrite === false (always-on-top)', () => {
+  it('label sprites write no depth and stay transparent', () => {
     const { group } = createAxisLabels();
     for (const child of group.children as any[]) {
-      expect(child.material.depthWrite).toBe(false);
+      expect(child.material.ctorOpts.depthWrite).toBe(false);
+      expect(child.material.ctorOpts.transparent).toBe(true);
     }
   });
 
-  it('all sprites have renderOrder > 0', () => {
+  it('label sprites sit at the top of the helper tier, after the axes they annotate', () => {
     const { group } = createAxisLabels();
     for (const child of group.children as any[]) {
-      expect(child.renderOrder).toBeGreaterThan(0);
+      expect(child.renderOrder).toBe(AXIS_LABEL_RENDER_ORDER);
+      expect(child.renderOrder).toBeGreaterThan(AXES_RENDER_ORDER);
     }
   });
 
@@ -156,6 +170,135 @@ describe('createAxisLabels', () => {
   });
 });
 
+// ── setOffset tests (#6588) ──────────────────────────────────────────────────
+// The label ring must be able to follow a SCENE-SIZED axis triad (scene.ts's
+// fitHelpers), and it must do so by repositioning the sprites — not by scaling
+// the Group, which the r183 sprite shader would fold into the on-screen size via
+// length(modelMatrix[0].xyz), undoing the constant-screen-size fix above.
+
+describe('createAxisLabels setOffset (#6588)', () => {
+  /** Sprite lookup by its own declared axis, not by array order. */
+  function byAxis(group: any, axis: 'X' | 'Y' | 'Z'): any {
+    const sprite = group.children.find((s: any) => s.userData.axis === axis);
+    expect(sprite).toBeDefined();
+    return sprite;
+  }
+
+  function expectRingAt(group: any, d: number): void {
+    expect(byAxis(group, 'X').position.x).toBe(d);
+    expect(byAxis(group, 'X').position.y).toBe(0);
+    expect(byAxis(group, 'X').position.z).toBe(0);
+
+    expect(byAxis(group, 'Y').position.y).toBe(d);
+    expect(byAxis(group, 'Y').position.x).toBe(0);
+    expect(byAxis(group, 'Y').position.z).toBe(0);
+
+    expect(byAxis(group, 'Z').position.z).toBe(d);
+    expect(byAxis(group, 'Z').position.x).toBe(0);
+    expect(byAxis(group, 'Z').position.y).toBe(0);
+  }
+
+  it('exposes setOffset alongside group and dispose', () => {
+    const result = createAxisLabels() as any;
+    expect(typeof result.setOffset).toBe('function');
+  });
+
+  it('setOffset(d) moves each sprite to d along its own axis, zero on the other two', () => {
+    const result = createAxisLabels() as any;
+    result.setOffset(0.35);
+    expectRingAt(result.group, 0.35);
+  });
+
+  it.each([
+    ['zero', 0],
+    ['negative', -1],
+    ['NaN', NaN],
+    ['Infinity', Infinity],
+  ])('setOffset(%s) is a no-op that leaves the previous offset in place', (_label, bad) => {
+    const result = createAxisLabels() as any;
+    result.setOffset(0.35);
+    result.setOffset(bad as number);
+    // A degenerate offset must not collapse the ring onto the origin, fold it
+    // behind the origin, or poison the positions with NaN/Infinity.
+    expectRingAt(result.group, 0.35);
+  });
+
+  it('places the ring at EXACTLY DEFAULT_LABEL_OFFSET until setOffset is called', () => {
+    const result = createAxisLabels() as any;
+    // Deliberately stronger than the "positioned beyond the axis tip" tests above,
+    // which only bound the offset (> 2) and would pass for any value in a wide band.
+    // The EXACT construction position is load-bearing across modules: scene.ts's
+    // fitHelpers resets the ring to its own derived AXES_BASE_LENGTH * LABEL_TIP_MARGIN,
+    // and scene.test.ts requires that to restore precisely this value — so a change
+    // here that merely stayed "beyond the tip" would silently unpair reset from
+    // as-constructed. Pin the number, not the band.
+    expectRingAt(result.group, DEFAULT_LABEL_OFFSET);
+  });
+});
+
+// ── Screen-footprint tests (#6588) ───────────────────────────────────────────
+
+describe('axis label screen footprint (#6588)', () => {
+  // SCOPE: this suite asserts only what it can genuinely OBSERVE. It mocks 'three'
+  // with the sprite/label classes alone and never builds a camera, so the actual
+  // on-screen fraction — f = s * cot(fov/2) / 2, a JOINT property of this module's
+  // sprite scale and scene.ts's camera fov — is not evaluable here. Restating fov 60
+  // as a local literal to compute it anyway would add drift surface without adding
+  // coverage: a fov change in scene.ts would leave the restated copy green.
+  //
+  // scene.test.ts's "keeps the axis labels under 10% of the viewport height at the
+  // fov the camera actually uses" is the SINGLE owner of that bound — it builds the
+  // real scene and evaluates the formula against the exported CAMERA_FOV_DEG. What
+  // is left here is the module-local half: the material flag that removes the
+  // camera-distance term at all, and the shape of the scale vector.
+
+  // REGRESSION REPRO (#6588, dogfood session). With three.js's DEFAULT
+  // `sizeAttenuation: true`, the `-mvPosition.z` factor is absent, the perspective
+  // divide survives, and the fraction becomes distance-dependent:
+  //     f = worldScale * cot(fov/2) / (2 * d)
+  // Reported camera (0.2923, -0.2809, 1.8260); the Z label sits at (0, 0, 2.3), so
+  //     d = sqrt(0.2923^2 + 0.2809^2 + 0.4740^2) = 0.6237
+  //     f = 0.5 * 1.7320508 / (2 * 0.6237) = 0.694
+  // i.e. the "Z" glyph covered 69% of the frame height, sourced from a 64-texel
+  // texture — ~9x bilinear magnification at DPR 1. That is the reported blocky,
+  // stair-stepped cyan/azure band terminating in a wedge. `sizeAttenuation: false`
+  // removes the `d` term entirely, so NO camera position can reproduce it.
+
+  it('sprites use sizeAttenuation: false, making their screen size camera-independent', () => {
+    const { group } = createAxisLabels();
+    expect(group.children).toHaveLength(3);
+    for (const child of group.children as any[]) {
+      // Assert on ctorOpts (the value handed to the constructor), matching how the
+      // colour/depth tests above assert. MockSpriteMaterial leaves the field
+      // undefined when the option is absent, so this cannot pass vacuously.
+      expect(child.material.ctorOpts.sizeAttenuation).toBe(false);
+    }
+  });
+
+  it('scales the sprite quad squarely, so the square glyph texture is not stretched', () => {
+    const { group } = createAxisLabels();
+    for (const child of group.children as any[]) {
+      expect(child.scale.set).toHaveBeenCalled();
+      const [sx, sy] = (child.scale.set as any).mock.calls[0];
+      // Positivity is already pinned by "all sprites have a non-degenerate positive
+      // scale" above; the property THIS test owns is the x/y equality. A non-square
+      // scale would stretch the letter into the reported #6588 wedge shape even at a
+      // correct overall footprint.
+      expect(sy).toBe(sx);
+    }
+  });
+
+  it('leaves the sprite quad\'s unused third scale component at 1', () => {
+    const { group } = createAxisLabels();
+    for (const child of group.children as any[]) {
+      const [, , sz] = (child.scale.set as any).mock.calls[0];
+      expect(sz).toBe(1);
+      // The mock writes back, so the resulting scale.z is observable too.
+      expect(child.scale.z).toBe(1);
+    }
+  });
+});
+
 // ── Glyph drawing tests ──────────────────────────────────────────────────────
 // jsdom returns null for getContext('2d') by default, which causes makeTextSprite
 // to skip the drawing path. These tests stub getContext to verify that fillText
@@ -167,17 +310,23 @@ describe('createAxisLabels', () => {
 
 describe('createAxisLabels — glyph drawing (getContext truthy)', () => {
   let mockFillText: ReturnType<typeof vi.fn>;
+  /** ctx.font as it stood at each fillText call — pins the font that was actually
+   *  IN FORCE when the glyph was drawn, not merely the last one ever assigned. */
+  let fontsAtDraw: string[];
 
   beforeEach(() => {
-    mockFillText = vi.fn();
+    fontsAtDraw = [];
     const mockCtx = {
       clearRect: vi.fn(),
-      fillText: mockFillText,
+      fillText: vi.fn(() => {
+        fontsAtDraw.push(mockCtx.font);
+      }),
       fillStyle: '',
       font: '',
       textAlign: '',
       textBaseline: '',
     };
+    mockFillText = mockCtx.fillText;
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(
       (contextId: string) => (contextId === '2d' ? (mockCtx as any) : null),
     );
@@ -193,5 +342,47 @@ describe('createAxisLabels — glyph drawing (getContext truthy)', () => {
     expect(lettersDrawn).toContain('X');
     expect(lettersDrawn).toContain('Y');
     expect(lettersDrawn).toContain('Z');
+  });
+
+  // ── Texel budget and filtering (#6588) ─────────────────────────────────────
+  // Halving the label's screen size (step-2) is only half the cure for the
+  // reported staircase: the glyph also needs enough texels to survive, and must
+  // not be resolved through a blurred mip once it is usually MINIFIED.
+
+  it('draws each glyph into a square canvas of at least 128 px so it has texels to spare', () => {
+    const { group } = createAxisLabels();
+    expect(group.children).toHaveLength(3);
+    for (const child of group.children as any[]) {
+      const canvas = child.material.map.canvas;
+      expect(canvas.width).toBe(canvas.height);
+      // 4.8% of a 1600-device-px-tall HiDPI viewport is ~77 px, so 128 leaves
+      // headroom and the glyph is never magnified. 64 (the #6588 value) does not.
+      expect(canvas.width).toBeGreaterThanOrEqual(128);
+    }
+  });
+
+  it('scales the font with the canvas so more texels mean a bigger letter, not a smaller one', () => {
+    const { group } = createAxisLabels();
+    const edge = (group.children[0] as any).material.map.canvas.width;
+    expect(fontsAtDraw).toHaveLength(3);
+    for (const font of fontsAtDraw) {
+      const px = /(\d+(?:\.\d+)?)px/.exec(font);
+      expect(px).not.toBeNull();
+      // A fixed 48px font in a 128px canvas would shrink the letter to 37% of the
+      // texture and waste the extra resolution on empty margin.
+      expect(Number(px![1])).toBeGreaterThanOrEqual(0.6 * edge);
+    }
+  });
+
+  it('pins the label texture to linear minification with no mipmaps', () => {
+    const { group } = createAxisLabels();
+    for (const child of group.children as any[]) {
+      // CanvasTexture inherits minFilter = LinearMipmapLinearFilter. Now that the
+      // label is a fixed ~4.8% of the frame it is usually MINIFIED, so that default
+      // would sample a blurred mip of a 128-px letter instead of the letter.
+      // MockCanvasTexture starts both fields undefined, so this cannot pass vacuously.
+      expect(child.material.map.minFilter).toBe(LinearFilter);
+      expect(child.material.map.generateMipmaps).toBe(false);
+    }
   });
 });

@@ -1,0 +1,25 @@
+module raw_lambda_material_field_rejected
+
+// PRD negative fixture: damped-modal-bonded-heterogeneous (leaf γ scope pin).
+// A raw fn_field lambda CANNOT author a spatially-typed material field today:
+// the parameterized lambda-param annotation does not resolve
+// ("unresolved type in lambda param 'p': Point3<Length>"), and lambda-param
+// member access (p.z) is unsupported — task #6871 owns both gaps. This
+// fixture MUST stay red (reify check exit 1) until #6871 lands (#6872 owns
+// the flip + raw-lambda wiring, dep-gated on #6871 + the PRD's γ leaf); the PRD's
+// author surface for spatial material variation is the declarative
+// constructors (sandwich_material / material_zones), not raw lambdas.
+// Probed 2026-08-27 (branch HEAD 81329c84a1).
+
+structure RawLambdaMaterialField {
+    let frame = MaterialFrame(
+        origin: point3(0mm, 0mm, 0mm),
+        x_axis: vec3(1.0, 0.0, 0.0),
+        y_axis: vec3(0.0, 1.0, 0.0),
+        z_axis: vec3(0.0, 0.0, 1.0))
+    let mat_field = fn_field(|p : Point3<Length>| AnisotropicMaterial(law: Steel_AISI_1045(), frame: frame))
+    let r = solve_elastic_static(mat_field, 100mm, 10mm, 10mm,
+        [PointLoad(point: "tip", force: 100.0)],
+        [FixedSupport(target: "root")])
+    let d = max(r.displacement)
+}

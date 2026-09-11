@@ -1,8 +1,26 @@
 //! Shared tracing test utilities for reify crates.
+//!
+//! # Test-only: the subscriber constructors install a process-global default
+//!
+//! [`warn_counting_subscriber`], [`CountingSubscriberBuilder::build`] and
+//! [`CapturingSubscriberBuilder::build`] each call
+//! [`prime_tracing_callsite_cache`] as their first statement, which installs a
+//! process-global tracing subscriber via `set_global_default`.  That install is
+//! irreversible for the life of the process and makes every later
+//! `set_global_default` (including `tracing_subscriber::fmt().init()`) fail, so
+//! calling one of these constructors from non-test code would permanently
+//! silence that binary's real tracing setup.
+//!
+//! Nothing in the type system stops that: `reify-test-support` is a *normal*,
+//! not `dev-`, dependency (a deliberate choice recorded in its `Cargo.toml`,
+//! carried for `reify-audit`), so these constructors are reachable from
+//! shipping code.  **Call them only from `#[cfg(test)]` code.**  Every call
+//! site in the workspace is `#[cfg(test)]`- or `#[cfg(all(test, …))]`-gated
+//! today; the invariant is load-bearing rather than enforced.
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 /// Install a permissive global tracing subscriber once per process, so
 /// thread-local `with_default` event-counting tests work reliably under
@@ -10,33 +28,90 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 ///
 /// # Why this exists
 ///
-/// `tracing` caches each callsite's `Interest` in a process-global atomic
-/// keyed on first-hit-wins. `tracing::subscriber::with_default` installs only
-/// a thread-local default and does NOT trigger `rebuild_interest_cache`. If
-/// any sibling test thread hits a counted callsite first with no subscriber
-/// active, `NoSubscriber::register_callsite` returns `Interest::never` and
-/// the callsite is permanently dead in this process — every later
-/// `with_default` is silently bypassed at the macro level, and the
-/// per-test subscriber receives nothing.
+/// `tracing` caches each callsite's `Interest` in a process-global,
+/// first-hit-wins atomic. The poisoning vector is
+/// `callsite::DefaultCallsite::register` (`callsite.rs:308`), which runs on a
+/// callsite's FIRST hit in the process and computes the cached `Interest` via
+/// `rebuild_callsite_interest(self, &DISPATCHERS.rebuilder())`.
 ///
-/// `set_global_default` calls `tracing-core::callsite::register_dispatch`,
-/// which forces `rebuild_interest_cache`. This helper installs a no-op
-/// subscriber that returns `Interest::sometimes` from `register_callsite`
-/// so that:
+/// `Dispatchers::rebuilder()` returns `Rebuilder::JustOne` whenever
+/// `has_just_one == true` — i.e. at most one live dispatcher, which is the
+/// normal state in a test binary. `Rebuilder::JustOne::for_each` consults
+/// **only `dispatcher::get_default(f)`, the REGISTERING THREAD's own default
+/// dispatcher**. A sibling test thread with no thread-local subscriber, in a
+/// process with no global default, resolves that to `NoSubscriber`, whose
+/// `register_callsite` returns `Interest::never` (`subscriber.rs:676`). The
+/// callsite is then permanently dead for *every* thread in this process: the
+/// `tracing::warn!` macro elides it at the gate, so a later `with_default` /
+/// `set_default` subscriber never sees the event and the assertion reads
+/// `before=0, after=0`.
 ///
-/// - The cache is no longer poisoned to `never` by unsubscribed threads.
-/// - Per-event routing is decided by `enabled()` on the *current thread's*
-///   default (the per-test `with_default` subscriber when one is active,
-///   the no-op global otherwise).
+/// Two corollaries worth stating, because the obvious guesses are wrong:
+///
+/// - It is **not** `set_global_default` that rebuilds the cache.
+///   `Dispatch::new` does (`dispatcher.rs:479` calls
+///   `callsite::register_dispatch`), and `set_global_default`, `set_default`
+///   and `with_default` all construct a `Dispatch` — so all three rebuild.
+///   A rebuild only fixes callsites already registered; it cannot help a
+///   callsite whose first hit is still in the future.
+/// - Adding a *second* live dispatcher is enough to make the bug
+///   inexpressible, which is why it is intermittent: with `has_just_one ==
+///   false` the rebuilder `and`s every live dispatcher's interest, and
+///   `Interest::and` (`subscriber.rs:658`) returns `sometimes` whenever the
+///   two differ — so `never.and(always) == sometimes`, i.e. healthy.
+///
+/// This helper closes the hole by installing a global whose
+/// `register_callsite` returns `Interest::sometimes`, which removes
+/// `NoSubscriber` from that path entirely: a subscriber-less thread's
+/// `get_default` now resolves to the `Priming` global rather than
+/// `NoSubscriber`, so no callsite can ever be cached as `never`. Per-event
+/// routing is still decided by `enabled()` on the *current thread's* default
+/// — the per-test subscriber when one is active, and otherwise this global,
+/// whose `enabled()` returns `false` so the event is dropped before its
+/// arguments are formatted. Priming therefore widens nothing: it only
+/// prevents elision at the macro gate.
+///
+/// # Precondition: nothing else installs a global default
+///
+/// The guarantee above holds only while this is the *first* global default
+/// installed in the process. `set_global_default` fails if another one is
+/// already in place, and another crate's global is not interchangeable with
+/// this one: `tracing_subscriber::fmt().with_env_filter(..).init()`, for
+/// example, returns `Interest::never()` for every callsite its filter rejects
+/// and poisons the cache in exactly the same first-hit-wins way. No such
+/// global exists anywhere in this workspace today — there is no
+/// `set_global_default` / `fmt().init()` / `try_init()` call site outside this
+/// function — so the hazard is latent, not live. If one ever appears, this
+/// helper does not silently no-op: it prints a diagnostic to stderr **and**
+/// sets a process-wide flag that every assertion helper in this module appends
+/// to its panic message.
+///
+/// Both channels are needed, and the flag is the load-bearing one. libtest
+/// captures stderr per test thread and replays it only for a *failing* test,
+/// while `INIT.call_once` runs on whichever test happens to touch a
+/// constructor first — which is virtually never the test that later fails with
+/// a count of zero. The stderr copy alone would therefore be written into a
+/// passing test's buffer and discarded, leaving the operator with a bare
+/// count-of-zero panic and no hint: exactly the expensive-to-rediagnose
+/// failure the diagnostic exists to prevent. It surfaces on its own only under
+/// `--nocapture`.
 ///
 /// # Usage
 ///
-/// Call this at the top of any test that asserts the exact count of
-/// `tracing::*` events captured via `tracing::subscriber::with_default` or
-/// `set_default`. `Once`-gated; safe and cheap to call from every such test.
+/// The three leaf constructors — [`warn_counting_subscriber`],
+/// [`CountingSubscriberBuilder::build`] and
+/// [`CapturingSubscriberBuilder::build`] — now call this themselves, so tests
+/// that obtain their subscriber from one of those (directly or via
+/// [`warn_counting_guard`] / [`warn_capturing_subscriber`]) need no explicit
+/// call. An explicit call is only needed for a test that asserts event counts
+/// **without** using them, e.g. one that hand-rolls its own `Subscriber`.
 ///
-/// (See `tracing-core` 0.1.x: `callsite.rs::register_dispatch`,
-/// `dispatcher.rs::set_default`, and `NoSubscriber::register_callsite`.)
+/// `Once`-gated, so it stays safe and cheap to call from anywhere; the
+/// pre-existing explicit call sites across the workspace remain correct
+/// no-ops and are deliberately left in place.
+///
+/// (Line numbers above are `tracing-core` 0.1.36, the version pinned in
+/// `Cargo.lock`.)
 pub fn prime_tracing_callsite_cache() {
     use std::sync::Once;
     use tracing::span::{Attributes, Id, Record};
@@ -48,10 +123,40 @@ pub fn prime_tracing_callsite_cache() {
     struct Priming;
     impl Subscriber for Priming {
         fn register_callsite(&self, _: &'static Metadata<'static>) -> Interest {
+            // `sometimes` — never `always`, never `never`. This is the entire
+            // point of the type: it keeps `NoSubscriber`'s `Interest::never`
+            // out of the callsite-registration path without widening
+            // anything, because `sometimes` defers the per-event decision to
+            // `enabled()` on the *current thread's* default subscriber.
             Interest::sometimes()
         }
         fn enabled(&self, _: &Metadata<'_>) -> bool {
-            true
+            // `false`, deliberately. This is reached only on a thread whose
+            // own default resolves to this global — i.e. one with no
+            // subscriber of its own — where the event has nowhere to go:
+            // `Priming::event()` below drops it. Returning `false` drops it
+            // one step earlier, *before* the macro formats its arguments, so
+            // a now-un-elided `tracing::debug!("{}", expensive())` in a hot
+            // loop under test costs nothing. Returning `true` could never
+            // make an extra event observable anywhere — the counting and
+            // capturing subscribers are installed thread-locally, so they are
+            // consulted via their own `enabled()`, never via this one — it
+            // would only pay to construct an event that is then discarded.
+            //
+            // This does NOT re-poison the callsite cache: the cached
+            // `Interest` comes from `register_callsite` above, never from
+            // `enabled()`.
+            //
+            // A `max_level_hint() -> Some(LevelFilter::OFF)` would trim the
+            // remaining static-gate cost as well, and is deliberately NOT
+            // implemented: `Callsites::rebuild_interest` (tracing-core 0.1.36
+            // `callsite.rs:407`) sets the process-global max level to the
+            // MAXIMUM hint over all live dispatchers, so whenever `Priming`
+            // is the only live one the global max would be `OFF` and the
+            // `level_enabled!` gate inside `tracing::warn!` would elide the
+            // callsite before `interest()` is ever consulted — re-closing the
+            // very gate this helper exists to hold open.
+            false
         }
         fn new_span(&self, _: &Attributes<'_>) -> Id {
             Id::from_u64(1)
@@ -64,12 +169,64 @@ pub fn prime_tracing_callsite_cache() {
     }
 
     INIT.call_once(|| {
-        // Errors only on a second `set_global_default` — the `Once` makes
-        // that impossible from this code path. Anything else racing us
-        // (e.g. another crate's test harness) is fine: their global
-        // already serves the same purpose.
-        let _ = tracing::subscriber::set_global_default(Priming);
+        // The `Once` makes a second call from *this* path impossible, so an
+        // error here means something else installed a global default first —
+        // and another crate's global is NOT interchangeable with ours. A
+        // `tracing_subscriber::fmt().with_env_filter(..).init()`, say,
+        // returns `Interest::never()` from `register_callsite` for every
+        // callsite its filter rejects, poisoning the cache in exactly the
+        // first-hit-wins way this helper exists to prevent. Priming would
+        // then be a silent no-op and the constructors' documented guarantee
+        // quietly false, resurfacing as an intermittent count-of-zero
+        // assertion — the original task-6273 flake. Say so loudly instead;
+        // non-fatal, because the competing global may well be benign and
+        // panicking here would take down every test in the process.
+        if tracing::subscriber::set_global_default(Priming).is_err() {
+            // Flag first, then print. The flag is what actually reaches the
+            // operator: see `# Precondition` above for why the stderr copy
+            // alone is usually swallowed by libtest's per-test capture.
+            PRIMING_INACTIVE.store(true, Ordering::Release);
+            eprintln!(
+                "reify-test-support: prime_tracing_callsite_cache() could not install its \
+                 global tracing subscriber — another global default was installed first. \
+                 Callsite-interest priming is INACTIVE in this process, so warn-counting \
+                 and capturing assertions may intermittently observe zero events (task \
+                 6273). Remove the competing global, or install it *after* a call to \
+                 prime_tracing_callsite_cache()."
+            );
+        }
     });
+}
+
+/// Set when [`prime_tracing_callsite_cache`] lost the `set_global_default`
+/// race, i.e. callsite-interest priming is INACTIVE in this process.
+///
+/// Never cleared: the losing install is irreversible, so the condition is
+/// monotonic for the life of the process.
+static PRIMING_INACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// A trailing note for assertion panic messages — non-empty only when callsite
+/// priming is inactive in this process (see [`PRIMING_INACTIVE`]).
+///
+/// Attaching it to the panic is what makes the diagnostic reach the operator:
+/// the stderr copy emitted at install time lands in the libtest buffer of
+/// whichever test first touched a constructor, which is replayed only if *that*
+/// test fails. Priming being inactive is exactly the state in which some
+/// *other* test intermittently observes zero events, so this note is appended
+/// to the panic that is actually read.
+///
+/// Reads `Acquire`, pairing with the `Release` store in
+/// [`prime_tracing_callsite_cache`], so a thread that never called the priming
+/// helper itself still observes the flag.
+fn priming_inactive_note() -> &'static str {
+    if PRIMING_INACTIVE.load(Ordering::Acquire) {
+        "\nNOTE: tracing callsite priming is INACTIVE in this process (a competing global \
+         tracing default was installed before prime_tracing_callsite_cache() ran), so this \
+         event may have been elided at the macro gate rather than never emitted — see \
+         prime_tracing_callsite_cache's docs, task 6273."
+    } else {
+        ""
+    }
 }
 
 /// Assert that `counter` has advanced by exactly `expected_delta` since the
@@ -111,9 +268,10 @@ pub fn assert_warn_count_delta(
         "warn counter went backwards (before={before}, after={after}): {context}"
     );
     let actual_delta = after - before;
+    let note = priming_inactive_note();
     assert_eq!(
         actual_delta, expected_delta,
-        "expected warn delta of {expected_delta} (before={before}, after={after}): {context}"
+        "expected warn delta of {expected_delta} (before={before}, after={after}): {context}{note}"
     );
 }
 
@@ -148,6 +306,17 @@ pub fn assert_warn_count(counter: &AtomicUsize, expected: usize, context: &str) 
 /// - `counter` is the `Arc<AtomicUsize>` shared with the subscriber; loads
 ///   with `Ordering::Acquire` observe all WARN increments.
 ///
+/// # Callsite priming is automatic
+///
+/// [`warn_counting_subscriber`] calls [`prime_tracing_callsite_cache`]
+/// internally, so callers do **not** need an explicit priming call — a
+/// subscriber-less sibling test thread can no longer poison a counted
+/// callsite's cached `Interest` to `never`.
+///
+/// **Test-only.** That priming installs a process-global tracing subscriber,
+/// which is irreversible and blocks any later `set_global_default` — call this
+/// only from `#[cfg(test)]` code. See the module-level docs.
+///
 /// # Example
 ///
 /// ```rust,ignore
@@ -167,12 +336,29 @@ pub fn warn_counting_guard() -> (tracing::subscriber::DefaultGuard, Arc<AtomicUs
 /// [`Arc`] so callers can read the count after the subscriber has been
 /// installed and removed.
 ///
+/// # Callsite priming is automatic
+///
+/// This constructor calls [`prime_tracing_callsite_cache`] as its first
+/// statement, so callers do **not** need an explicit priming call. That
+/// covers both usage shapes — `tracing::subscriber::with_default(subscriber,
+/// …)` and the [`warn_counting_guard`] / `set_default` shape — because the
+/// caller's `Dispatch::new` happens strictly *after* this constructor
+/// returns, by which time the global `Priming` dispatch is already installed
+/// and `NoSubscriber` (whose `register_callsite` returns `Interest::never`)
+/// is out of the callsite-registration path.
+///
+/// **Test-only.** Priming installs a process-global tracing subscriber, which
+/// is irreversible and blocks any later `set_global_default` — call this only
+/// from `#[cfg(test)]` code. See the module-level docs for the full rationale.
+///
 /// # Span ID uniqueness
 ///
 /// Unlike a naïve implementation that returns `Id::from_u64(1)` for every
 /// span, this subscriber uses an [`AtomicU64`] to issue monotonically
 /// increasing IDs, avoiding the "all spans share the same ID" bug.
 pub fn warn_counting_subscriber() -> (impl tracing::Subscriber + Send + Sync, Arc<AtomicUsize>) {
+    prime_tracing_callsite_cache();
+
     let warn_count = Arc::new(AtomicUsize::new(0));
     let warn_count_clone = Arc::clone(&warn_count);
     (WarnCountingSubscriber::new(warn_count_clone), warn_count)
@@ -224,12 +410,32 @@ impl CountingSubscriberBuilder {
     /// Build the subscriber and return it alongside a map of counters keyed by
     /// level.  The returned `Arc<AtomicUsize>` values are shared with the
     /// subscriber so external reads observe internal increments.
+    ///
+    /// # Callsite priming is automatic
+    ///
+    /// This calls [`prime_tracing_callsite_cache`] as its first statement, so
+    /// callers do **not** need an explicit priming call: a subscriber-less
+    /// sibling test thread can no longer poison a counted callsite's cached
+    /// `Interest` to `never`.  Ordering holds because the caller's
+    /// `Dispatch::new` happens at `with_default`/`set_default` time, strictly
+    /// after this method returns.
+    ///
+    /// Priming does not widen what gets counted: the global `Priming`
+    /// subscriber returns `Interest::sometimes()` from `register_callsite`,
+    /// which defers the per-event decision to `enabled()` on the *current
+    /// thread's* default — i.e. this subscriber's own level/target filter.
+    ///
+    /// **Test-only.** Priming installs a process-global tracing subscriber, which
+    /// is irreversible and blocks any later `set_global_default` — call this only
+    /// from `#[cfg(test)]` code. See the module-level docs for the full rationale.
     pub fn build(
         self,
     ) -> (
         impl tracing::Subscriber + Send + Sync,
         HashMap<tracing::Level, Arc<AtomicUsize>>,
     ) {
+        prime_tracing_callsite_cache();
+
         let counters: HashMap<tracing::Level, Arc<AtomicUsize>> = self
             .levels
             .into_iter()
@@ -427,7 +633,11 @@ impl WarnCapture {
     /// Panics if the count does not equal `expected`.
     pub fn assert_count(&self, expected: usize) {
         let n = self.count();
-        assert_eq!(n, expected, "expected {expected} WARN events, got {n}");
+        let note = priming_inactive_note();
+        assert_eq!(
+            n, expected,
+            "expected {expected} WARN events, got {n}{note}"
+        );
     }
 
     /// Assert that exactly `expected` WARN events were emitted **and** that at
@@ -439,9 +649,10 @@ impl WarnCapture {
     pub fn assert_count_and_any_message_contains(&self, expected: usize, substring: &str) {
         self.assert_count(expected);
         let msgs = self.messages();
+        let note = priming_inactive_note();
         assert!(
             msgs.iter().any(|m| m.contains(substring)),
-            "no WARN message contained {substring:?}; captured messages: {msgs:?}"
+            "no WARN message contained {substring:?}; captured messages: {msgs:?}{note}"
         );
     }
 
@@ -493,9 +704,10 @@ impl WarnCapture {
     /// diagnostics.
     pub fn assert_any_message_equals(&self, expected: &str) {
         let messages = self.messages();
+        let note = priming_inactive_note();
         assert!(
             messages.iter().any(|m| m == expected),
-            "no WARN message equaled {expected:?}; captured messages: {messages:?}"
+            "no WARN message equaled {expected:?}; captured messages: {messages:?}{note}"
         );
     }
 
@@ -533,10 +745,11 @@ impl WarnCapture {
         });
         if !found {
             let msgs = self.messages();
+            let note = priming_inactive_note();
             panic!(
                 "no WARN event had all expected fields {pairs:?};\n  \
                  fields_by_event: {all_fields:?}\n  \
-                 messages: {msgs:?}"
+                 messages: {msgs:?}{note}"
             );
         }
     }
@@ -567,10 +780,11 @@ impl WarnCapture {
         });
         if !found {
             let msgs = self.messages();
+            let note = priming_inactive_note();
             panic!(
                 "no WARN event had a field {key:?} containing {substring:?};\n  \
                  fields_by_event: {all_fields:?}\n  \
-                 messages: {msgs:?}"
+                 messages: {msgs:?}{note}"
             );
         }
     }
@@ -582,6 +796,16 @@ impl WarnCapture {
 /// Returns a `(subscriber, capture)` pair.  The [`WarnCapture`] is shared via
 /// [`Arc`] so callers can inspect results after the subscriber has been
 /// installed and removed.
+///
+/// # Callsite priming is automatic
+///
+/// This delegates to [`CapturingSubscriberBuilder::build`], which calls
+/// [`prime_tracing_callsite_cache`] internally, so callers do **not** need an
+/// explicit priming call.
+///
+/// **Test-only.** That priming installs a process-global tracing subscriber,
+/// which is irreversible and blocks any later `set_global_default` — call this
+/// only from `#[cfg(test)]` code. See the module-level docs.
 pub fn warn_capturing_subscriber() -> (impl tracing::Subscriber + Send + Sync, WarnCapture) {
     let (subscriber, inner) = CapturingSubscriberBuilder::new(tracing::Level::WARN).build();
     (subscriber, WarnCapture { inner })
@@ -668,7 +892,27 @@ impl CapturingSubscriberBuilder {
     }
 
     /// Build the subscriber and return it alongside a [`Capture`] handle.
+    ///
+    /// # Callsite priming is automatic
+    ///
+    /// This calls [`prime_tracing_callsite_cache`] as its first statement, so
+    /// callers do **not** need an explicit priming call: a subscriber-less
+    /// sibling test thread can no longer poison a captured callsite's cached
+    /// `Interest` to `never`.  Ordering holds because the caller's
+    /// `Dispatch::new` happens at `with_default`/`set_default` time, strictly
+    /// after this method returns.
+    ///
+    /// Priming does not widen what gets captured: the global `Priming`
+    /// subscriber returns `Interest::sometimes()` from `register_callsite`,
+    /// which defers the per-event decision to `enabled()` on the *current
+    /// thread's* default — i.e. this subscriber's own level/target filter.
+    ///
+    /// **Test-only.** Priming installs a process-global tracing subscriber, which
+    /// is irreversible and blocks any later `set_global_default` — call this only
+    /// from `#[cfg(test)]` code. See the module-level docs for the full rationale.
     pub fn build(self) -> (impl tracing::Subscriber + Send + Sync, Capture) {
+        prime_tracing_callsite_cache();
+
         let count = Arc::new(AtomicUsize::new(0));
         let messages = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let fields = Arc::new(std::sync::Mutex::new(Vec::<HashMap<String, String>>::new()));

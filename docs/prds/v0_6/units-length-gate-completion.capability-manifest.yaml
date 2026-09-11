@@ -251,9 +251,9 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: compile_linear_pattern_2d_wrong_arity_produces_diagnostic
+      pattern: PRD boundary row 9b — RESOLUTION RECORDED
       paths:
-      - crates/reify-compiler/tests/compile_api_tests.rs
+      - crates/reify-compiler/tests/harness_compilation_surface/compile_api_tests.rs
       expect: present
 - label: θ
   task_id: 5751
@@ -491,10 +491,17 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: INDEX
+      pattern: best_practices_index_matches_corpus_directory
       paths:
       - examples/best_practices/INDEX.md
       expect: present
+      # pattern corrected 2026-09-10 (esc-5761-2). It was `INDEX`, echoing the
+      # FILENAME; the checker runs a case-sensitive `git grep -E` over file
+      # CONTENT, and this file's prose has only ever said "index" in lowercase,
+      # so the check could never pass — it FAILED from the day it was written
+      # and blocked dependent task 5761. The replacement names the bidirectional
+      # INDEX-to-corpus invariant in examples_smoke.rs, which is the capability
+      # this check is actually asserting, and is quoted verbatim in INDEX.md.
   - name: cheatsheet-index-target
     binding: capability→producer (upstream, on main) — .claude/skills/reify-design/SKILL.md;
       a ONE-LINE index entry, not an inline playbook

@@ -270,7 +270,7 @@ serialized to avoid contention + renames build on the additive surface).
 (substrate shipped, §3).
 
 - **α — mechanical *additive* surface.** *(`materials_mechanical.ri` + new
-  `crates/reify-compiler/tests/materials_param_surface_tests.rs`)*
+  `crates/reify-compiler/tests/harness_units_materials/materials_param_surface_tests.rs`)*
   Add `trait TemperatureDependent { param reference_temperature : Temperature = 293.15K }`
   (§6.1). On `Elastic`: add `constraint 0 < poissons_ratio < 0.5` and change
   `shear_modulus : Real` → `shear_modulus : Real = undef`. On `Strong`/`Ductile`:
@@ -289,10 +289,10 @@ serialized to avoid contention + renames build on the additive surface).
 - **β — mechanical *breaking* renames + collapsed-param restores + atomic
   consumer migration.** *(`materials_mechanical.ri` + `examples/m8_materials.ri`,
   `examples/io_export.ri`, `examples/drivebelt_trait_bounds.ri`,
-  `crates/reify-compiler/tests/materials_mechanical_tests.rs`,
+  `crates/reify-compiler/tests/harness_units_materials/materials_mechanical_tests.rs`,
   `crates/reify-compiler/tests/stdlib_loader_tests.rs`,
-  `crates/reify-compiler/tests/parametric_tensor_resolution_tests.rs`,
-  `crates/reify-compiler/tests/cross_module_alias_propagation_tests.rs`,
+  `crates/reify-compiler/tests/harness_langcore/parametric_tensor_resolution_tests.rs`,
+  `crates/reify-compiler/tests/harness_result_annotation/cross_module_alias_propagation_tests.rs`,
   `crates/reify-eval/tests/m8_3_stdlib_integration.rs`,
   `crates/reify-eval/tests/drivebelt_trait_bounds.rs`,
   `crates/reify-test-support/src/fixtures.rs`)* — **depends on α.**

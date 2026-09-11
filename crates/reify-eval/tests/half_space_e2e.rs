@@ -86,7 +86,7 @@ fn build_step(source: &str) -> Option<Vec<u8>> {
 ///   - The retained half is bounded → must produce a valid STEP solid.
 ///
 /// Exact volume check (½·(20mm)³) is done by the kernel-direct integration
-/// test in `crates/reify-kernel-occt/tests/half_space_integration.rs`; here
+/// test in `crates/reify-kernel-occt/tests/harness_occt/half_space_integration.rs`; here
 /// we verify the full source→STEP pipeline succeeds.
 ///
 /// RED: panics at `todo!()` in geometry_ops.rs until step-8.

@@ -21,7 +21,7 @@ A pragma always validates and either takes effect on the toolchain or emits an a
 
 ### 1. `#no_prelude` — bootstrap-critical
 
-**Status:** wired in `compile_builder/pre_pass.rs::resolve_prelude_with_pragmas`. The prelude itself uses `#no_prelude` to bootstrap (otherwise it would import itself). Tests at `crates/reify-compiler/tests/pragma_compile_tests.rs::no_prelude_simple_structure_compiles_clean` and `constant_compile_tests.rs::pi_works_under_no_prelude` exist.
+**Status:** wired in `compile_builder/pre_pass.rs::resolve_prelude_with_pragmas`. The prelude itself uses `#no_prelude` to bootstrap (otherwise it would import itself). Tests at `crates/reify-compiler/tests/harness_compilation_surface/pragma_compile_tests.rs::no_prelude_simple_structure_compiles_clean` and `constant_compile_tests.rs::pi_works_under_no_prelude` exist.
 
 **Outstanding work in scope of v0.1:**
 - Audit that the prelude `.ri` files in `crates/reify-compiler/stdlib/` all carry `#no_prelude` at the top (they currently rely on the pre-pass list-based bootstrap; making the source explicit makes the convention self-documenting).
@@ -104,7 +104,7 @@ The auto-migration tool referenced in §14.2 is **explicitly v0.2 scope** — de
 
 ## Acceptance
 
-- `cargo test -p reify-compiler --test pragma_compile_tests` adds tests for each pragma covering: valid value stored on `CompiledModule`, every diagnostic path (multiple, malformed, unknown back-end, deferred-to-v0.2 kernel, etc.), and the `#kernel(brep_xyz)` error message text.
+- `cargo test -p reify-compiler --test harness_compilation_surface pragma_compile_tests::` adds tests for each pragma covering: valid value stored on `CompiledModule`, every diagnostic path (multiple, malformed, unknown back-end, deferred-to-v0.2 kernel, etc.), and the `#kernel(brep_xyz)` error message text.
 - `examples/integration_full_v01.ri` carries `#version(0.1)` and `#precision(0.001m)` at the top with no warnings.
 - `compile_with_stdlib` smoke test asserts the prelude modules all compile under `#no_prelude` (regression guard for the bootstrap path).
 

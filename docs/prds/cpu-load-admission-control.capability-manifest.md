@@ -1,7 +1,9 @@
 # Capability manifest — `cpu-load-admission-control.md`
 
 Mechanizes G3 + G6 per leaf for the work-conserving CPU-load admission-control PRD.
-Built at decompose time (2026-06-17). Each leaf's user-observable signal is broken into
+Built at decompose time (2026-06-17). **Any `path:line` written below is dated evidence from that verification, not a live
+breadcrumb** — do not re-anchor it; grep the symbol named beside it to find the code today.
+ Each leaf's user-observable signal is broken into
 the capabilities it asserts, and each capability is bound to evidence. Any binding
 resolving to a FAIL value (`declared-only` · `test-only` · `producer-absent` ·
 `producer-extent-short` · `producer-downstream` · `fixture-ERROR` · `bound≤floor` ·
@@ -75,7 +77,7 @@ Owner: **dark-factory**. Filed as the cross-repo consumer; reify ships α/β/γ 
 | Agent ad-hoc `cargo` runs inside a `reify-agents.slice` cpu-weighted scope (observable via `cat /proc/<cargo-pid>/cgroup`) | producer = **γ** (`cpu-governed-exec.sh --role task`), **upstream** of ζ (DAG: γ→ζ); placement works via the **confirmed** delegated user `cpu` controller | PASS (`producer:γ upstream`) |
 | Agent ad-hoc `cargo` PSI-admits via the shim on the agent PATH | producer = **β** (`scripts/agent-bin/cargo`), **upstream** of ζ (DAG: β→ζ); PATH prepend is ζ's own dark-factory work | PASS (`producer:β upstream`) |
 | Merge-verify runs under the `--role merge` weighted scope | producer = **γ** (`--role merge` weight path); `--role merge` placement + existing merge PSI/semaphore bypass preserved (PRD §4.4 DF-3) | PASS (`producer:γ upstream`) |
-| The dark-factory spawn prefix + PATH injection seam exists | mirrors the **landed** `DF_AGENT_CPU_NICE` / `_cpu_priority_prefix` mechanism at `cli_invoke.py:1125` (PRD §6 mapped); reciprocal-ownership clean (reify can't edit DF launch path) | PASS (established seam pattern) |
+| The dark-factory spawn prefix + PATH injection seam exists | mirrors the **landed** `DF_AGENT_CPU_NICE` / `_cpu_priority_prefix` mechanism in `cli_invoke.py` (PRD §6 mapped); reciprocal-ownership clean (reify can't edit DF launch path) | PASS (established seam pattern) |
 
 DAG-direction: ζ depends on α/β/γ — **no inversion**. **ζ clears.**
 

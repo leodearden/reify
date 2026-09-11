@@ -158,7 +158,7 @@ _default_slow_timeout_seconds_for_file() {
 # pool cap — section-scoped to that table only (the /^\[/ reset excludes the
 # [[profile.default.overrides]] blocks that follow), mirroring
 # _default_slow_timeout_seconds_for_file above and test_occt_gated_scope.sh's
-# _DEFAULT_TT_AWK. Prints the integer (e.g. "16") or an empty string if the key
+# _DEFAULT_TT_AWK. Prints the integer (e.g. "32") or an empty string if the key
 # is absent. Feeds Assertion I.
 # Usage: _default_test_threads_for_file <file>
 # ---------------------------------------------------------------------------

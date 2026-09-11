@@ -15,6 +15,10 @@
 //!    `Value::Map` profile records (mirroring the `mechanism` builtin's
 //!    `Value::Map` structured-result precedent, since the `eval_builtin` path
 //!    has no `StructureRegistry` to mint a `Value::StructureInstance`).
+//!    [`waypoint_to_value`] is the UNIT-REGIME BOUNDARY of that arm: layer 1
+//!    stays in native g-code units (millimetres, mm/min) for lossless parse
+//!    fidelity, and the DSL-visible projection built here is SI and
+//!    dimensioned. See that function's docs for the field-by-field contract.
 //!
 //! Diagnostics: `E_GcodeParseError` reuses `reify_gcode::ParseError` verbatim;
 //! the two `W_` warnings (`DialectUnsupported`, `ShaperConflict`) are a local
@@ -36,9 +40,49 @@
 
 use std::collections::BTreeMap;
 
+use reify_core::DimensionVector;
 use reify_ir::Value;
 
 use reify_gcode::{GcodeCommand, ParseError};
+
+/// Millimetres → SI metres. Same name and value as the other mm→SI
+/// boundaries in the FDM stack (`reify-fdm/src/r0.rs`,
+/// `reify-eval/src/compute_targets/as_printed_material_r0.rs`), so grepping
+/// `MM_TO_M` enumerates all of them.
+///
+/// # Why positions MULTIPLY while the feedrate below DIVIDES
+///
+/// This is a rounded reciprocal, so it is exactly the spelling
+/// [`MM_PER_MIN_PER_M_PER_S`] argues against — and the two forms really do
+/// differ for positions, not just in principle. Measured:
+///
+/// - `205.0 * 1.0e-3` == `0x1.a3d70a3d70a3ep-3`, `205.0 / 1_000.0` ==
+///   `0x1.a3d70a3d70a3dp-3` — one ULP (2.8e-17 m) apart;
+/// - `123.456` mm likewise differs by one ULP;
+/// - round values (10, 20, 0.3, 5 mm) are BIT-IDENTICAL under both forms,
+///   which is why this module's fixtures can assert exact bits either way.
+///
+/// The multiply form is kept deliberately: the constant's name, value AND
+/// spelling together are what enrol this boundary in the greppable family
+/// above, and a locally-exact `/ 1_000.0` would drop it straight back out of
+/// the survey that family exists to serve. One ULP at bed scale is 2.8e-17 m
+/// — smaller than any tolerance a mechanical design can express, and far
+/// below the mm-resolution the g-code source itself carries.
+///
+/// So the exactness argument stated on [`MM_PER_MIN_PER_M_PER_S`] is about
+/// the FEEDRATE ONLY. It applies there and not here for two reasons: that
+/// conversion has no family spelling to match (it is new with this boundary),
+/// and it is pinned bitwise by `tests::waypoint_feedrate_is_si_velocity`, so
+/// the exact form is an enforced contract rather than a preference.
+const MM_TO_M: f64 = 1.0e-3;
+
+/// G-code feedrate mm-per-minute → SI m/s, as the DIVISOR (1e3 mm per metre
+/// × 60 s per minute), not a reciprocal factor. Dividing is exact for the
+/// round feedrates a slicer emits; multiplying by the rounded reciprocal is
+/// not — `1800.0 / 60_000.0` is exactly `0.03`, while
+/// `1800.0 * (1.0 / 60_000.0)` is `0.030000000000000002`. Pinned by
+/// `tests::waypoint_feedrate_is_si_velocity`.
+const MM_PER_MIN_PER_M_PER_S: f64 = 60_000.0;
 
 /// Which dialect parser [`lower_gcode`] should drive.
 #[derive(Debug, Clone, PartialEq)]
@@ -384,18 +428,59 @@ fn profile_to_value(profile: &MotionProfile) -> Value {
 }
 
 /// Encode one [`Waypoint`] as a `Value::Map` of its absolute coordinates:
-/// `{ x, y, z, e }` as `Value::Real` (the `Waypoint` fields are raw,
-/// unit-agnostic f64 lifted straight from the g-code, so they are preserved
-/// verbatim — no unit interpretation is imposed here). The `feedrate` key is
-/// present only when a feed is in effect for the move.
+/// `{ x, y, z, e }` plus an optional `feedrate`.
+///
+/// # This function is the unit-regime boundary
+///
+/// Two regimes meet here, and the split is deliberate:
+///
+/// - The [`Waypoint`] STRUCT (and everything in the pure `lower_gcode` layer
+///   below it) stays in NATIVE G-CODE UNITS: millimetres for `x`/`y`/`z`/`e`
+///   and millimetres-per-minute for `feedrate`, lifted verbatim from the
+///   source so parse fidelity is lossless.
+/// - The DSL-VISIBLE PROJECTION built here is SI and dimensioned, field for
+///   field:
+///   - `x`, `y`, `z`, `e` → `Length` scalars in SI metres (via [`MM_TO_M`]);
+///   - `feedrate` → a `Velocity` scalar in m/s (via
+///     [`MM_PER_MIN_PER_M_PER_S`]), and the key is present ONLY when a feed is
+///     in effect for the move — an unknown feed is an absent key, never a `0.0`
+///     sentinel.
+///
+/// The conversion is TOTAL over the dimensional fields: every field names its
+/// own unit, so there is no carve-out left for a reader to have to remember.
+///
+/// # This is NOT the regime the FDM slice surface uses
+///
+/// Worth knowing before writing the next g-code-derived payload, because the
+/// sibling one diverges: `reify_eval::compute_targets::fdm_slice`'s
+/// `toolpath_to_value` marshals its geometry scalars as undimensioned
+/// `Value::Real`, and `crates/reify-compiler/stdlib/fdm_slice.ri` accordingly
+/// declares `Bead.width` / `.height` / `.layer_z` / `.speed` and the
+/// centerline as `Real` / `Point3<Real>` in RAW millimetres and mm·min⁻¹.
+/// Native units therefore survive all the way THROUGH that DSL surface, and
+/// the mm→SI conversion happens later and deeper, inside Rust, at the θ
+/// `FDMPrint` mapping (the two `MM_TO_M` sites cited on the constant above).
+///
+/// The two g-code-derived payloads consequently sit in OPPOSITE regimes
+/// today, so a reader arriving from the FDM surface should not assume this
+/// one matches it. A new DSL-visible payload should follow the regime HERE:
+/// converting at the projection is what lets a design author's dimensional
+/// arithmetic see the units at all, and it keeps the whole conversion at one
+/// nameable boundary instead of spreading it through downstream consumers.
 fn waypoint_to_value(wp: &Waypoint) -> Value {
     let mut m = BTreeMap::new();
-    m.insert(Value::String("x".to_string()), Value::Real(wp.x));
-    m.insert(Value::String("y".to_string()), Value::Real(wp.y));
-    m.insert(Value::String("z".to_string()), Value::Real(wp.z));
-    m.insert(Value::String("e".to_string()), Value::Real(wp.e));
+    m.insert(Value::String("x".to_string()), Value::length(wp.x * MM_TO_M));
+    m.insert(Value::String("y".to_string()), Value::length(wp.y * MM_TO_M));
+    m.insert(Value::String("z".to_string()), Value::length(wp.z * MM_TO_M));
+    m.insert(Value::String("e".to_string()), Value::length(wp.e * MM_TO_M));
     if let Some(f) = wp.feedrate {
-        m.insert(Value::String("feedrate".to_string()), Value::Real(f));
+        m.insert(
+            Value::String("feedrate".to_string()),
+            Value::Scalar {
+                si_value: f / MM_PER_MIN_PER_M_PER_S,
+                dimension: DimensionVector::VELOCITY,
+            },
+        );
     }
     Value::Map(m)
 }
@@ -403,6 +488,7 @@ fn waypoint_to_value(wp: &Waypoint) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
 
     /// A three-move Marlin run with no non-motion commands lowers to exactly
     /// ONE motion profile whose ordered waypoints are the absolute move
@@ -685,5 +771,204 @@ mod tests {
         assert_eq!(wps.len(), 2, "both pre-M104 moves flush together");
         assert_eq!(wps[0].x, 10.0, "G1 X10");
         assert_eq!(wps[1].x, 20.0, "G1 X20");
+    }
+    // ── Unit-regime contract: the DSL-visible payload is SI and dimensioned ──
+
+    /// Build a `MarlinDialect` dialect value as the eval path receives it: a
+    /// `Value::StructureInstance` whose `type_name` is `"MarlinDialect"` (only
+    /// that name is read by the dispatcher — no StructureRegistry is involved).
+    /// Same construction as the eval-boundary test in `trajectory/mod.rs`.
+    fn marlin_dialect_value() -> Value {
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "MarlinDialect".to_string(),
+            version: 0,
+            fields: PersistentMap::default(),
+        }))
+    }
+
+    /// Drive `eval_gcode_import` and dig out every waypoint record of the
+    /// single lowered profile: `List -> profile Map -> "waypoints" List ->
+    /// waypoint Maps`. Panics with a pointed message at every level.
+    fn waypoint_maps(src: &str) -> Vec<BTreeMap<Value, Value>> {
+        let result = eval_gcode_import(&[Value::String(src.to_string()), marlin_dialect_value()]);
+        let Value::List(profiles) = result else {
+            panic!("expected a Value::List of profiles, got {result:?}")
+        };
+        assert_eq!(profiles.len(), 1, "expected exactly one profile: {profiles:?}");
+        let Value::Map(profile) = &profiles[0] else {
+            panic!("expected a Value::Map profile record, got {:?}", profiles[0])
+        };
+        let Some(Value::List(waypoints)) = profile.get(&Value::String("waypoints".to_string()))
+        else {
+            panic!("profile record should carry a \"waypoints\" list, got {profile:?}")
+        };
+        waypoints
+            .iter()
+            .map(|w| match w {
+                Value::Map(wp) => wp.clone(),
+                other => panic!("expected a Value::Map waypoint record, got {other:?}"),
+            })
+            .collect()
+    }
+
+    /// [`waypoint_maps`] narrowed to a fixture that must lower to exactly one
+    /// waypoint.
+    fn sole_waypoint_map(src: &str) -> BTreeMap<Value, Value> {
+        let mut wps = waypoint_maps(src);
+        assert_eq!(wps.len(), 1, "expected exactly one waypoint: {wps:?}");
+        wps.remove(0)
+    }
+
+    /// Read one field out of a waypoint record, panicking if it is absent.
+    fn field(wp: &BTreeMap<Value, Value>, key: &str) -> Value {
+        wp.get(&Value::String(key.to_string()))
+            .unwrap_or_else(|| panic!("waypoint should carry a {key:?} key: {wp:?}"))
+            .clone()
+    }
+
+    /// The `feedrate` a waypoint carries into the DSL is an SI `Velocity`
+    /// (m/s), converted from the g-code's native mm-per-minute.
+    ///
+    /// # F1800 is the discriminating fixture — do not "simplify" it
+    ///
+    /// This test pins the DIVISOR form, not merely the magnitude. Measured:
+    ///
+    /// - `1800.0 / 60_000.0`         == 0.03                 (`0x1.eb851eb851eb8p-6`)
+    /// - `1800.0 * (1.0 / 60_000.0)` == 0.030000000000000002 (`0x1.eb851eb851eb9p-6`)
+    ///
+    /// One ULP apart, so the exact `assert_eq!` below FAILS if the conversion
+    /// is ever refactored into a multiply-by-reciprocal. F1200, F600 and F3000
+    /// give BIT-IDENTICAL results under both forms and would make this test
+    /// vacuous — F1800 (= 30 mm/s, a realistic print speed) is the point.
+    /// Never weaken the comparison to a tolerance either: a tolerance is
+    /// precisely what cannot discriminate a one-ULP difference.
+    #[test]
+    fn waypoint_feedrate_is_si_velocity() {
+        let wp = sole_waypoint_map("G1 X10 Y0 F1800");
+
+        let got = wp
+            .get(&Value::String("feedrate".to_string()))
+            .unwrap_or_else(|| panic!("waypoint should carry a \"feedrate\" key: {wp:?}"));
+        match got {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert_eq!(
+                    *si_value, 0.03,
+                    "F1800 mm/min is exactly 0.03 m/s under the divisor form \
+                     (1800.0 / 60_000.0); got {si_value} — a multiply by the \
+                     rounded reciprocal yields 0.030000000000000002 instead"
+                );
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::VELOCITY,
+                    "feedrate should carry the VELOCITY dimension, got {dimension:?}"
+                );
+            }
+            other => panic!(
+                "waypoint.feedrate should be a dimensioned Value::Scalar, got {other:?} — \
+                 an undimensioned Real leaves the unit regime unstated"
+            ),
+        }
+
+        // The positions ride along in the same record and stay SI Lengths.
+        assert_eq!(
+            wp.get(&Value::String("x".to_string())),
+            Some(&Value::length(0.01)),
+            "X10 mm is 0.01 m: {wp:?}"
+        );
+    }
+
+    /// EVERY position axis crosses the mm→m boundary, and EVERY waypoint does
+    /// — not just `x`, and not just the first record.
+    ///
+    /// Both neighbouring pins are blind to most of that. The shipped e2e
+    /// fixture is `"G1 X10 Y10"`, so `z` and `e` are only ever asserted at
+    /// `0.0` — a scale-invariant value, which any factor (or none at all)
+    /// reproduces. Deleting `* MM_TO_M` from the `z` or `e` insert, or
+    /// applying a wrong factor there, would leave every other test in the
+    /// module green; `e` is the axis a slicer-emitted program exercises
+    /// hardest. `sole_waypoint_map` additionally asserts a single waypoint, so
+    /// nothing else reaches a second record's conversion.
+    ///
+    /// Fixture design: the four axes land on four DISTINCT magnitudes
+    /// (0.01 / 0.02 / 0.0003 / 0.005 m) and the tail move's `x` on a fifth
+    /// (0.04 m), so a crossed-wire axis swap cannot pass this by coincidence.
+    /// The second move carries only `X`, making it a modal continuation — `y`,
+    /// `z`, `e` and the feed ride through from the first record, which is
+    /// exactly the tail conversion being pinned. All five values are bit-exact
+    /// under `* 1.0e-3` (measured: 10, 20, 0.3, 5 and 40 mm all give the same
+    /// bits as the divisor form), so `assert_eq!` needs no tolerance.
+    #[test]
+    fn every_axis_and_every_waypoint_is_an_si_length() {
+        let wps = waypoint_maps("G1 X10 Y20 Z0.3 E5 F1800\nG1 X40");
+        assert_eq!(wps.len(), 2, "two linear moves lower to two waypoints: {wps:?}");
+
+        // Waypoint 0 — every axis named explicitly in the move.
+        assert_eq!(field(&wps[0], "x"), Value::length(0.01), "X10 mm is 0.01 m");
+        assert_eq!(field(&wps[0], "y"), Value::length(0.02), "Y20 mm is 0.02 m");
+        assert_eq!(
+            field(&wps[0], "z"),
+            Value::length(0.0003),
+            "Z0.3 mm is 0.0003 m — the layer-height axis, asserted only at 0.0 elsewhere"
+        );
+        assert_eq!(
+            field(&wps[0], "e"),
+            Value::length(0.005),
+            "E5 mm is 0.005 m — the extrusion axis, asserted only at 0.0 elsewhere"
+        );
+
+        // Waypoint 1 — the modal continuation. Its own `x` converts, and the
+        // ridden-through axes stay converted rather than reverting to mm.
+        assert_eq!(field(&wps[1], "x"), Value::length(0.04), "X40 mm is 0.04 m");
+        assert_eq!(field(&wps[1], "y"), Value::length(0.02), "modal Y20 mm stays 0.02 m");
+        assert_eq!(field(&wps[1], "z"), Value::length(0.0003), "modal Z0.3 mm stays 0.0003 m");
+        assert_eq!(field(&wps[1], "e"), Value::length(0.005), "modal E5 mm stays 0.005 m");
+
+        // `Value::length` carries DimensionVector::LENGTH, so the assertions
+        // above pin the dimension too — but state it once explicitly, because
+        // that is the half an undimensioned `Real` regression would drop.
+        for (i, wp) in wps.iter().enumerate() {
+            for key in ["x", "y", "z", "e"] {
+                match field(wp, key) {
+                    Value::Scalar { dimension, .. } => assert_eq!(
+                        dimension,
+                        DimensionVector::LENGTH,
+                        "waypoint[{i}].{key} should carry the LENGTH dimension"
+                    ),
+                    other => panic!(
+                        "waypoint[{i}].{key} should be a dimensioned Value::Scalar, got {other:?}"
+                    ),
+                }
+            }
+        }
+
+        // The modal feed converts on both records too (F1800 -> 0.03 m/s).
+        for (i, wp) in wps.iter().enumerate() {
+            assert_eq!(
+                field(wp, "feedrate"),
+                Value::Scalar {
+                    si_value: 0.03,
+                    dimension: DimensionVector::VELOCITY,
+                },
+                "waypoint[{i}] should carry the modal F1800 as 0.03 m/s"
+            );
+        }
+    }
+
+    /// With no `F` word in effect the `feedrate` key is ABSENT from the
+    /// waypoint record — never a `0.0` velocity sentinel. Pins that the
+    /// SI conversion preserves `waypoint_to_value`'s `if let Some(f)` shape
+    /// rather than defaulting the missing feed to a real (and wrong) speed.
+    #[test]
+    fn waypoint_without_feed_has_no_feedrate_key() {
+        let wp = sole_waypoint_map("G1 X10 Y0");
+        assert!(
+            !wp.contains_key(&Value::String("feedrate".to_string())),
+            "no feed is in effect, so the record must carry NO \"feedrate\" key \
+             at all (not a 0.0 sentinel); got {wp:?}"
+        );
     }
 }

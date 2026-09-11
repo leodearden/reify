@@ -1,6 +1,6 @@
 //! Pin: the `reify-gui` workspace binary embeds a RUNPATH entry and does
 //! NOT link conda-forge OCCT 7.9. Mirrors
-//! `crates/reify-cli/tests/rpath_smoke.rs`; see its module doc for full
+//! `crates/reify-cli/tests/harness_cli/rpath_smoke.rs`; see its module doc for full
 //! rationale. Only runs when the `gui` feature is enabled (the binary
 //! requires it via `required-features`).
 
@@ -67,7 +67,7 @@ fn readelf_d(path: &str) -> Option<String> {
 // Mechanism A'' (task #5192): tbb-only RUNPATH pin dir + forced direct
 // `NEEDED libtbb.so.12`, proven at RUNTIME (not just readelf token order —
 // DT_RUNPATH's non-transitivity makes a token-order-only check phantom
-// green). Mirrors crates/reify-cli/tests/rpath_smoke.rs; see its module
+// green). Mirrors crates/reify-cli/tests/harness_cli/rpath_smoke.rs; see its module
 // doc for full rationale. No GUI bare-launch smoke here — the windowed
 // launch + MCP health check is the verify skill's job (acceptance #4).
 // ---------------------------------------------------------------------

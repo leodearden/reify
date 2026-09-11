@@ -1,0 +1,13 @@
+// PRD gate fixture (angle-dimension-completion leaf α): rad/m curvature
+// literals. Grammar gate target: tree-sitter parse --quiet exit 0.
+// NOTE `param kc : Curvature = 0.2rad / 1mm` FAILS `reify check` TODAY
+// (CURVATURE is m⁻¹ pre-α; rad·m⁻¹ initializer mismatches) — that check-time
+// flip is exactly leaf α's B1 signal, not a grammar question.
+
+module curvature_rad_literal
+
+structure CurvatureRadLiteral {
+    let k = 0.2rad / 1mm
+    let kd = 1deg / 1mm
+    param kc : Curvature = 0.2rad / 1mm
+}

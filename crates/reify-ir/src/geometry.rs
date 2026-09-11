@@ -301,6 +301,8 @@ pub enum Operation {
     ModifyZoneSlab,
     /// Offset a solid outward/inward by distance.
     ModifyOffsetSolid,
+    /// Offset a surface along its normal by distance (Skin/surface mode).
+    ModifyOffsetSurface,
     /// Offset a planar curve by distance, producing a fresh curve.
     ModifyOffsetCurve,
 
@@ -696,6 +698,19 @@ pub enum GeometryOp {
         dz: f64,
     },
     /// Rotate around axis by angle.
+    ///
+    /// **Angular unit contract** (INV-AD-4; #6184). `angle_rad` is SI RADIANS,
+    /// and positive is right-handed about `axis`. The `_rad` SUFFIX IS THE
+    /// CONTRACT — it is load-bearing, not decoration, and it is the same name
+    /// the value carries all the way down: IR -> the cxx bridge
+    /// (`reify-kernel-occt/src/ffi.rs`) -> the C++ wrapper, where OCCT's
+    /// `gp_Trsf::SetRotation` takes radians too. Nothing on that path converts,
+    /// because every layer is SI-coherent (rad = 1). Contrast lengths, which
+    /// also cross unscaled here but ARE rescaled x1000 by the STEP writer at
+    /// export.
+    ///
+    /// The sibling angular variants [`GeometryOp::RotateAround`] and
+    /// [`GeometryOp::Revolve`] carry the same contract.
     Rotate {
         target: GeometryHandleId,
         axis: [f64; 3],
@@ -707,6 +722,9 @@ pub enum GeometryOp {
         factor: f64,
     },
     /// Rotate around an arbitrary axis passing through a given point.
+    ///
+    /// `angle_rad` is SI RADIANS, positive right-handed about `axis` — see
+    /// [`GeometryOp::Rotate`] for the full angular unit contract (#6184).
     RotateAround {
         target: GeometryHandleId,
         point: [f64; 3],
@@ -820,6 +838,10 @@ pub enum GeometryOp {
         distance: Value,
     },
     /// Create a revolved solid by rotating a profile around an axis.
+    ///
+    /// `angle_rad` is SI RADIANS, positive right-handed about `axis_dir` — see
+    /// [`GeometryOp::Rotate`] for the full angular unit contract (#6184). A
+    /// full revolution is therefore `2.0 * PI`, not 360.
     Revolve {
         profile: GeometryHandleId,
         axis_origin: [f64; 3],
@@ -969,6 +991,18 @@ pub enum GeometryOp {
     },
     /// Offset a solid outward (positive) or inward (negative) by distance.
     OffsetSolid {
+        target: GeometryHandleId,
+        distance: Value,
+    },
+    /// Offset a surface along its normal by `distance`, using the Skin
+    /// (surface) mode of `BRepOffsetAPI_MakeOffsetShape` — distinct from
+    /// [`GeometryOp::OffsetSolid`]'s `PerformBySimple` solid mode. Produces
+    /// fresh `BRepKind::Face` geometry via the early-return execute path,
+    /// like the profile producers (e.g. [`GeometryOp::RectangleProfile`]).
+    ///
+    /// A positive `distance` offsets along the face's +normal (e.g. a planar
+    /// face in the XY plane with +Z normal lands at z ≈ +distance).
+    OffsetSurface {
         target: GeometryHandleId,
         distance: Value,
     },
@@ -1328,6 +1362,13 @@ pub static GEOMETRY_OP_DESCRIPTORS: &[OpDescriptor] = &[
         parent_role: ParentRole::SingleTarget,
         kind_token: "OffsetSolid",
         names: &["offset_solid"],
+    },
+    OpDescriptor {
+        disc: GeometryOpDiscriminants::OffsetSurface,
+        operation: Some(Operation::ModifyOffsetSurface),
+        parent_role: ParentRole::SingleTarget,
+        kind_token: "OffsetSurface",
+        names: &["offset_surface"],
     },
     OpDescriptor {
         disc: GeometryOpDiscriminants::Shell,
@@ -2473,9 +2514,24 @@ pub enum ExportWarning {
 }
 
 /// Tessellated mesh for visualization.
+///
+/// **Units:** `vertices` are in SI METRES — reify model space. Every kernel
+/// tessellation produces metres, and every consumer that needs another unit
+/// converts at its own boundary. In particular every export writer that carries
+/// a unit DECLARATION or targets a format with a settled unit CONVENTION scales
+/// to millimetres at its own vertex-emit site — [`write_3mf`] to match the
+/// `unit="millimeter"` it declares, [`write_stl_binary`] / [`write_stl_ascii`]
+/// to match STL's de-facto millimetre convention — so callers hand these
+/// writers metres and never pre-scale. Leaving this unstated is the root
+/// ambiguity that produced the 1000× STEP/3MF unit mislabel, so state it here
+/// rather than at each use site.
+///
+/// `normals` carry NO length unit: they are dimensionless unit direction
+/// vectors, invariant under the uniform positive metre→millimetre scale the
+/// export writers apply, so no writer converts them (and none must).
 #[derive(Debug, Clone)]
 pub struct Mesh {
-    /// Vertex positions, flat [x0, y0, z0, x1, y1, z1, ...].
+    /// Vertex positions in SI metres, flat [x0, y0, z0, x1, y1, z1, ...].
     pub vertices: Vec<f32>,
     /// Triangle indices, flat [i0, i1, i2, i3, i4, i5, ...].
     pub indices: Vec<u32>,
@@ -2511,6 +2567,36 @@ impl ValidatedMesh {
 
     /// Consume the wrapper and recover the plain [`Mesh`].
     pub fn into_inner(self) -> Mesh {
+        self.0
+    }
+}
+
+/// A position-weld remap proven to come from [`Mesh::weld_remap`] — a
+/// proof-carrying newtype witnessing that the wrapped `Vec<u32>` is exactly
+/// some mesh's bit-exact `weld_positions().1` output, using the identical
+/// keying (never a caller-hand-rolled reimplementation that might, say,
+/// skip the `-0.0` normalization).
+///
+/// Minted only by [`Mesh::weld_remap`]; there is no public constructor, so
+/// an external (cross-crate) caller cannot hand
+/// [`Mesh::check_mesh_contract_welded`] a remap whose *keying* diverges from
+/// `weld_positions`'s — the precondition that method documents becomes
+/// structurally guaranteed rather than merely caller-trusted. This does NOT
+/// prove the remap was computed from *this specific* mesh (a same-length
+/// `WeldRemap` minted for a different mesh can still be threaded in); that
+/// residual case is defended by `check_mesh_contract_welded`'s existing
+/// length/content checks, unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WeldRemap(Vec<u32>);
+
+impl WeldRemap {
+    /// Borrow the underlying old-vertex-index → canonical-vertex-index remap.
+    pub fn as_slice(&self) -> &[u32] {
+        &self.0
+    }
+
+    /// Consume the wrapper and recover the plain `Vec<u32>`.
+    pub fn into_inner(self) -> Vec<u32> {
         self.0
     }
 }
@@ -2735,6 +2821,24 @@ impl Mesh {
         (canon_verts, remap)
     }
 
+    /// Sealed sibling of [`Self::weld_positions`] for cross-crate callers
+    /// that intend to thread the remap into
+    /// [`Self::check_mesh_contract_welded`]: identical computation (calls
+    /// `weld_positions` directly — single source of truth for the keying),
+    /// but wraps the remap in a [`WeldRemap`] witness instead of a bare
+    /// `Vec<u32>` so that method's precondition is structurally guaranteed
+    /// rather than merely documented.
+    ///
+    /// Returns `(canonical_vertices, remap)` — the same first element as
+    /// [`Self::weld_positions`]; use this when a single weld pass needs to
+    /// feed both the canonical positions AND a
+    /// `check_mesh_contract_welded`-ready remap (e.g. a kernel ingest hot
+    /// path that also needs the canonical positions for its own output).
+    pub fn weld_remap(&self) -> (Vec<[f32; 3]>, WeldRemap) {
+        let (canon_verts, remap) = self.weld_positions();
+        (canon_verts, WeldRemap(remap))
+    }
+
     /// Report the CONSUMER-CAPABILITY axis: does the raw index buffer
     /// already reference each distinct vertex position exactly once?
     ///
@@ -2760,7 +2864,16 @@ impl Mesh {
     /// [`Self::into_validated`] (by-value; moves `self` instead, to avoid
     /// the clone on hot paths) — see those methods' docs for the full mesh
     /// contract.
-    fn check_contract(&self, tol: f64) -> Result<(), MeshContractViolation> {
+    ///
+    /// `welded`, when `Some`, is a caller-supplied position-weld remap (see
+    /// [`Self::weld_positions`]) threaded into the Closed/ConsistentWinding
+    /// obligation in place of a redundant internal re-weld; `None`
+    /// recomputes it via `weld_positions()`.
+    fn check_contract(
+        &self,
+        tol: f64,
+        welded: Option<&[u32]>,
+    ) -> Result<(), MeshContractViolation> {
         // Obligation 2, part A — IndexValid (buffer shape): `vertices.len()`
         // must be a multiple of 3, and if `normals` is present its length
         // must equal `vertices.len()`. Checked FIRST, before Obligation 1
@@ -2958,7 +3071,67 @@ impl Mesh {
         // reverse absent, so both counts populate together for that input
         // — but ConsistentWinding is reported first (PRD §11.1): it is the
         // more specific diagnosis of the two.
-        let (_, welded_indices) = self.weld_positions();
+        // Reuse the caller's weld remap when threaded (already computed on
+        // this exact mesh — see `check_mesh_contract_welded`'s precondition),
+        // else recompute via `weld_positions()` as before. The owned
+        // `Vec<u32>` is declared here (outside the match) so a borrow of it
+        // can outlive the match and unify with the `Some`/fallback arms'
+        // `&[u32]`.
+        //
+        // A length mismatch would otherwise panic on out-of-bounds indexing
+        // below in release builds, where `debug_assert_eq!` alone doesn't
+        // fire — so it is checked in ALL build modes and defended by
+        // falling back to an internal reweld, keeping this public API
+        // panic-free even if a future caller violates the precondition.
+        // The `debug_assert_eq!` still fires first in debug/test builds, so
+        // a length mismatch is caught loudly during development rather
+        // than silently repaired.
+        //
+        // A same-length-but-wrong-content remap can't be defended the same
+        // way — there is no `MeshContractViolation` shape for "caller
+        // passed a bogus remap", so it remains an undetected "garbage in,
+        // garbage out" caller bug in release builds, per
+        // `check_mesh_contract_welded`'s precondition. The matching-length
+        // arm below does `debug_assert_eq!` the supplied remap's CONTENT
+        // against a freshly recomputed `weld_positions().1`, so a
+        // divergence is still caught loudly in debug/test builds even
+        // though release builds pay no cost for it.
+        //
+        // NOTE: that content check re-runs the full O(n) `weld_positions()`
+        // on EVERY threaded call whenever `debug_assertions` are on — which
+        // includes plain `cargo test` / dev-profile builds — fully negating
+        // this method's hot-path saving in that profile. This is intentional
+        // (see above), but it means dev-profile timing of
+        // `check_mesh_contract_welded` does not reflect its release-mode
+        // cost; benchmark or profile this path with `--release`.
+        let recomputed_weld: Vec<u32>;
+        let welded_indices: &[u32] = match welded {
+            Some(w) if w.len() == self.vertices.len() / 3 => {
+                debug_assert_eq!(
+                    w,
+                    self.weld_positions().1.as_slice(),
+                    "check_contract: threaded weld remap content must match \
+                     self.weld_positions().1 — a same-length-but-wrong-content \
+                     remap is an undetected caller bug (GIGO) in release builds, \
+                     per check_mesh_contract_welded's precondition"
+                );
+                w
+            }
+            Some(w) => {
+                debug_assert_eq!(
+                    w.len(),
+                    self.vertices.len() / 3,
+                    "check_contract: threaded weld remap length must equal vertex count \
+                     — falling back to an internal reweld in release builds"
+                );
+                recomputed_weld = self.weld_positions().1;
+                &recomputed_weld
+            }
+            None => {
+                recomputed_weld = self.weld_positions().1;
+                &recomputed_weld
+            }
+        };
         let remapped: Vec<u32> = self
             .indices
             .iter()
@@ -3056,7 +3229,7 @@ impl Mesh {
     /// original `Mesh` back after a successful check, prefer
     /// [`Self::into_validated`] to move it in instead and skip the clone.
     pub fn validate(&self, tol: f64) -> Result<ValidatedMesh, MeshContractViolation> {
-        self.check_contract(tol)?;
+        self.check_contract(tol, None)?;
         Ok(ValidatedMesh(self.clone()))
     }
 
@@ -3074,10 +3247,65 @@ impl Mesh {
         self,
         tol: f64,
     ) -> Result<ValidatedMesh, Box<(Mesh, MeshContractViolation)>> {
-        match self.check_contract(tol) {
+        match self.check_contract(tol, None) {
             Ok(()) => Ok(ValidatedMesh(self)),
             Err(violation) => Err(Box::new((self, violation))),
         }
+    }
+
+    /// Non-cloning by-reference sibling of [`Self::validate`]: runs the
+    /// identical producer-obligation checks (see that method's docs for the
+    /// full mesh contract) but returns `Result<(), MeshContractViolation>`
+    /// without minting — and therefore without cloning `self` into — a
+    /// [`ValidatedMesh`] witness. Prefer this over `validate` on hot paths
+    /// (e.g. kernel ingest paths) that only need the `Err` side and don't
+    /// need the witness back.
+    ///
+    /// This is the precondition-free general entry point: unlike
+    /// [`Self::check_mesh_contract_welded`], it always (re)computes its own
+    /// weld internally, so it is safe to call on any `Mesh` regardless of
+    /// whether the caller has already welded it — the right choice for
+    /// external/cross-crate callers, and for any caller that hasn't already
+    /// computed a bit-exact position weld of this exact mesh.
+    ///
+    /// `tol` has the same [`MeshInvariant::NonDegenerate`] semantics as
+    /// `validate`'s `tol`.
+    pub fn check_mesh_contract(&self, tol: f64) -> Result<(), MeshContractViolation> {
+        self.check_contract(tol, None)
+    }
+
+    /// Weld-threaded sibling of [`Self::check_mesh_contract`], for callers
+    /// that have already position-welded this exact mesh via
+    /// [`Self::weld_remap`] and want to avoid a redundant internal re-weld
+    /// inside the Closed/ConsistentWinding obligation.
+    ///
+    /// # Precondition
+    ///
+    /// `welded_indices` MUST have been minted by [`Self::weld_remap`] on
+    /// THIS mesh, with length `self.vertices.len() / 3`. Taking a sealed
+    /// [`WeldRemap`] (rather than a bare `&[u32]`) rules out the *keying*
+    /// half of that precondition structurally: a [`WeldRemap`] cannot be
+    /// hand-rolled by an external caller, so it can never diverge from
+    /// `weld_positions`'s bit-exact `-0.0`-normalizing keying (e.g. by
+    /// skipping that normalization). It does NOT rule out threading a
+    /// same-length [`WeldRemap`] minted for a *different* mesh — that
+    /// residual "right shape, wrong mesh" case is still only a documented
+    /// caller obligation, defended exactly as before: a length mismatch is
+    /// defended in ALL build modes (debug builds assert it loudly; release
+    /// builds silently fall back to an internal reweld instead of indexing
+    /// out of bounds, so this method never panics), while a
+    /// same-length-but-wrong-content remap is checked by content against a
+    /// freshly recomputed `weld_positions().1` via `debug_assert_eq!` (loud
+    /// in debug/test builds) but remains a silent caller bug (garbage in,
+    /// garbage out) in release. Callers that cannot guarantee the
+    /// precondition must use [`Self::check_mesh_contract`] instead, which
+    /// recomputes the weld internally.
+    pub fn check_mesh_contract_welded(
+        &self,
+        tol: f64,
+        welded_indices: &WeldRemap,
+    ) -> Result<(), MeshContractViolation> {
+        self.check_contract(tol, Some(welded_indices.as_slice()))
     }
 }
 
@@ -3105,6 +3333,48 @@ fn compute_facet_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
         [n[0] / len, n[1] / len, n[2] / len]
     }
 }
+
+/// Millimetres per metre — the single metre→millimetre conversion point for
+/// the 3MF and STL writers.
+///
+/// **Export length regime.** Reify model space is SI METRES. Reify's export
+/// formats emit MILLIMETRES, the CAD/3MF/STL interop default, so that the unit
+/// a file DECLARES — or, where the format carries no unit field, the unit its
+/// consumers universally ASSUME — and the coordinates it CARRIES agree.
+/// [`write_3mf`] declares `unit="millimeter"`, so it applies this factor at the
+/// vertex-emit site; [`write_stl_binary`] / [`write_stl_ascii`] apply it at
+/// theirs against STL's de-facto millimetre convention; the STEP writer makes
+/// the same promise through OCCT's per-model length units (see `export_step` in
+/// `reify-kernel-occt`'s `occt_wrapper.cpp`).
+///
+/// **Why this is `f32` and not `f64`.** [`Mesh::vertices`] is `Vec<f32>`, and
+/// the scaling is deliberately done in the source precision. Promoting to f64
+/// first (`f64::from(v) * 1000.0`) is exact — a 24-bit significand times
+/// `1000 = 2^3·125` needs 31 bits — but exactness here is a MISFEATURE: it
+/// preserves, and then prints, all 17 digits of the f32 input's binary
+/// representation error. Multiplying in f32 instead re-rounds onto the f32
+/// grid at the millimetre magnitude, whose ulp (1.9e-6 at 30) is COARSER than
+/// the scaled input's deviation from the round decimal (6.7e-7 at 30), so the
+/// product lands back exactly on the decimal the author wrote. Measured, with
+/// `{}` (shortest round-trip) formatting:
+///
+/// | input (m) | `v * MM_PER_METRE_F32` | `f64::from(v) * 1000.0` |
+/// |---|---|---|
+/// | `0.030`  | `30`   | `29.999999329447746` |
+/// | `0.0335` | `33.5` | `33.50000083446503`  |
+/// | `0.1`    | `100`  | `100.00000149011612` |
+///
+/// The f32 route is therefore the one that emits round, diffable coordinates
+/// and keeps every value exactly f32-round-trippable (the mesh's own
+/// precision); the f64 route emits false precision, and in the measured cases
+/// above it grows each coordinate literal from 2 to 18 characters.
+///
+/// The accuracy given up is bounded by 2^-23 relative — the input's own
+/// ≤2^-24 plus one re-rounding of ≤2^-24 — so it is within a FACTOR OF TWO of
+/// the precision the `Vec<f32>` buffer already has, and cannot meaningfully
+/// degrade data that is f32 to begin with. Worst case on a 30 mm part is
+/// ~3.6e-6 mm, i.e. nanometres.
+const MM_PER_METRE_F32: f32 = 1000.0;
 
 /// Fetch the XYZ position of vertex `idx` from the flat `vertices` buffer.
 /// Returns `None` if `idx` is out of bounds.
@@ -3141,6 +3411,16 @@ fn triangle_verts(
 }
 
 /// Write a mesh to the STL binary format.
+///
+/// **Units:** takes a [`Mesh`] whose vertices are SI METRES (reify model space)
+/// and emits MILLIMETRES, converting the coordinates by [`MM_PER_METRE_F32`] as
+/// it writes them. STL carries no unit field, so there is no declaration to
+/// keep honest — but every STL consumer (PrusaSlicer, Cura, every mesh viewer)
+/// reads the coordinates as millimetres, so that de-facto convention IS the
+/// promise this writer makes, and a 0.030 m cube is written as 30 mm. Scaling
+/// here — at the site that makes the promise — rather than in the callers is
+/// what makes the promise un-bypassable: no caller can obtain a 1000×-shrunk
+/// file, and callers must NOT pre-scale (doing so is 1,000,000×).
 ///
 /// **Format** (LITTLE-ENDIAN):
 /// - 80-byte header (fixed ASCII label, NOT starting with "solid")
@@ -3193,13 +3473,29 @@ pub fn write_stl_binary(
     // once per triangle, avoiding one tiny syscall per field for unbuffered sinks.
     for chunk in mesh.indices.chunks_exact(3) {
         let (v0, v1, v2) = triangle_verts(&mesh.vertices, chunk)?;
+        // Computed from the UNSCALED verts on purpose. The normal is a
+        // dimensionless unit direction, invariant under the uniform positive
+        // metre→millimetre scale (see [`Mesh`]), so scaling first would change
+        // nothing but the arithmetic — while magnifying the cross product by
+        // 1e6 and risking an f32 overflow on large meshes. Normalising the
+        // unscaled cross product keeps these bytes bit-identical.
         let n = compute_facet_normal(v0, v1, v2);
 
         // Pack: 3×f32 normal + 3×(3×f32) vertices = 48 bytes, then 2-byte attr count.
         let mut tri = [0u8; 50];
         let mut off = 0usize;
-        for &c in n.iter().chain(v0.iter()).chain(v1.iter()).chain(v2.iter()) {
+        for &c in n.iter() {
             tri[off..off + 4].copy_from_slice(&c.to_le_bytes());
+            off += 4;
+        }
+        // Vertices convert SI metres → millimetres AT THE EMIT SITE — no `Mesh`
+        // clone, no extra allocation, exactly as `write_3mf` does. Multiply in
+        // f32, NOT via an `f64::from(v) * 1000.0` promotion: the f32
+        // re-rounding is what lands `0.030 m` back on `30` instead of
+        // `29.999999329447746`. That is measured on `MM_PER_METRE_F32` — do not
+        // "fix" it to f64 without re-reading it.
+        for &c in v0.iter().chain(v1.iter()).chain(v2.iter()) {
+            tri[off..off + 4].copy_from_slice(&(c * MM_PER_METRE_F32).to_le_bytes());
             off += 4;
         }
         // tri[48..50] = attribute byte count 0 (already zero-initialized)
@@ -3210,6 +3506,14 @@ pub fn write_stl_binary(
 }
 
 /// Write a mesh to the STL ASCII format.
+///
+/// **Units:** as with [`write_stl_binary`], takes a [`Mesh`] whose vertices are
+/// SI METRES (reify model space) and emits MILLIMETRES, converting by
+/// [`MM_PER_METRE_F32`] as it writes them. STL carries no unit field, so there
+/// is no declaration to keep honest — but its consumers universally read
+/// millimetres, so that de-facto convention IS the promise, and scaling here
+/// rather than in the callers makes it un-bypassable. Callers must NOT
+/// pre-scale.
 ///
 /// Emits `solid reify\n … endsolid reify\n`.  Each triangle produces a
 /// `facet normal …` / `outer loop` / 3× `vertex …` / `endloop` / `endfacet`
@@ -3248,15 +3552,22 @@ pub fn write_stl_ascii(
     let mut line_buf = String::with_capacity(200);
     for chunk in mesh.indices.chunks_exact(3) {
         let (v0, v1, v2) = triangle_verts(&mesh.vertices, chunk)?;
+        // Normal from the UNSCALED verts, identically to `write_stl_binary`:
+        // it is a dimensionless unit direction, invariant under the uniform
+        // positive metre→millimetre scale, so this text stays byte-unchanged.
         let n = compute_facet_normal(v0, v1, v2);
         line_buf.clear();
+        // Vertices convert SI metres → millimetres in the same single `write!`
+        // — no second format call and no extra allocation, so the reused-String
+        // / one-`write_all`-per-triangle buffering contract above survives.
+        // Multiply in f32; see `MM_PER_METRE_F32` for why not via f64.
         let _ = write!(
             line_buf,
             "  facet normal {nx} {ny} {nz}\n    outer loop\n      vertex {x0} {y0} {z0}\n      vertex {x1} {y1} {z1}\n      vertex {x2} {y2} {z2}\n    endloop\n  endfacet\n",
             nx = n[0], ny = n[1], nz = n[2],
-            x0 = v0[0], y0 = v0[1], z0 = v0[2],
-            x1 = v1[0], y1 = v1[1], z1 = v1[2],
-            x2 = v2[0], y2 = v2[1], z2 = v2[2],
+            x0 = v0[0] * MM_PER_METRE_F32, y0 = v0[1] * MM_PER_METRE_F32, z0 = v0[2] * MM_PER_METRE_F32,
+            x1 = v1[0] * MM_PER_METRE_F32, y1 = v1[1] * MM_PER_METRE_F32, z1 = v1[2] * MM_PER_METRE_F32,
+            x2 = v2[0] * MM_PER_METRE_F32, y2 = v2[1] * MM_PER_METRE_F32, z2 = v2[2] * MM_PER_METRE_F32,
         );
         writer.write_all(line_buf.as_bytes())?;
     }
@@ -3308,6 +3619,14 @@ impl ThreeMfWarning {
 
 /// Write `mesh` to the 3MF format (OPC ZIP package).
 ///
+/// **Units:** takes a `Mesh` whose vertices are SI METRES (reify model space)
+/// and emits a package declaring `unit="millimeter"`, converting the
+/// coordinates by [`MM_PER_METRE_F32`] as it writes them. The declaration and
+/// the payload therefore agree: a 0.030 m cube is written as 30 mm and reads
+/// back as 30 mm in any 3MF consumer. Scaling here — at the site that makes
+/// the `unit=` promise — rather than in the callers is what makes the promise
+/// un-bypassable: no caller can obtain a mislabelled package.
+///
 /// Produces a valid 3MF/OPC ZIP holding three parts:
 ///
 /// - `[Content_Types].xml` — OPC content-type declarations
@@ -3330,9 +3649,10 @@ impl ThreeMfWarning {
 /// Returns [`ThreeMfWarning::NoMaterials`] when either `include_materials` or
 /// `include_colors` is set (geometry is still written).
 ///
-/// **NaN/Inf coordinates:** non-finite `f32` values are written as-is via
-/// `{}` formatting (matching `write_stl_ascii` behavior).  3MF consumers
-/// that require IEEE-finite coordinates will reject such packages.
+/// **NaN/Inf coordinates:** non-finite `f32` values stay non-finite through
+/// the metre→millimetre multiply and are written as-is via `{}` formatting
+/// (matching `write_stl_ascii` behavior).  3MF consumers that require
+/// IEEE-finite coordinates will reject such packages.
 pub fn write_3mf(
     mesh: &Mesh,
     opts: ThreeMfOptions,
@@ -3437,10 +3757,24 @@ pub fn write_3mf(
                 Error::new(ErrorKind::InvalidData, format!("vertex index {i} out of bounds"))
             })?;
             line_buf.clear();
+            // Metres → millimetres, so the emitted coordinates match the
+            // `unit="millimeter"` declared above. See `MM_PER_METRE_F32`.
+            //
+            // Multiply in f32, NOT via an `f64::from(v) * 1000.0` promotion:
+            // the f32 re-rounding is what lands `0.030 m` back on `30` instead
+            // of printing `29.999999329447746`. That is measured, and the
+            // reasoning is written out on `MM_PER_METRE_F32` — do not "fix" it
+            // to f64 without re-reading it.
+            //
             // Using std::fmt::Write on String is infallible.
             let _ = std::fmt::write(
                 &mut line_buf,
-                format_args!("<vertex x=\"{}\" y=\"{}\" z=\"{}\"/>", v[0], v[1], v[2]),
+                format_args!(
+                    "<vertex x=\"{}\" y=\"{}\" z=\"{}\"/>",
+                    v[0] * MM_PER_METRE_F32,
+                    v[1] * MM_PER_METRE_F32,
+                    v[2] * MM_PER_METRE_F32
+                ),
             );
             zw.write_all(line_buf.as_bytes())?;
         }
@@ -4025,6 +4359,37 @@ pub trait GeometryKernel: Send + Sync {
         let handle = self.execute(op)?;
         Ok((handle, AttributeHistory::None))
     }
+
+    /// Free all resident kernel state built for the previous whole-file
+    /// design, returning the kernel to an empty-but-reusable state, so a
+    /// long-lived kernel reused across GUI whole-file reloads does not
+    /// accumulate the prior design's native geometry unbounded (task 5212).
+    ///
+    /// The **default** is a no-op, so mocks, stubs and every adapter that is
+    /// not on the reload path stay compiling unchanged. Mirrors the
+    /// default-forwarding convention of
+    /// [`execute_with_history`](GeometryKernel::execute_with_history) and
+    /// [`query_many`](GeometryKernel::query_many).
+    ///
+    /// Only the OCCT handle overrides it today — whose `OcctKernel` owns a
+    /// growing `HashMap<u64, UniquePtr<OcctShape>>` of native B-rep shapes —
+    /// routing an eviction over its actor channel. That is scope, not a claim
+    /// that the other adapters are already bounded: OCCT is the only kernel
+    /// the GUI's reload path can reach, because `Engine::with_registered_kernel`
+    /// (the production boot constructor) instantiates the single lex-min
+    /// BRep-capable registration. The Manifold, OpenVDB and Fidget adapters
+    /// each keep their own monotonic per-handle table that nothing clears
+    /// (`ManifoldKernel::shapes`/`sub_shapes`, `OpenVdbKernel::handles` —
+    /// native `cxx::UniquePtr` grids — and `FidgetKernel::trees`), so each
+    /// needs its own override before it may join a reload path; wiring one in
+    /// without that override reintroduces exactly the leak this method exists
+    /// to close. A delegating wrapper must forward instead of inheriting the
+    /// default (see `reify_geometry::SingleKernelHolder::reset`).
+    ///
+    /// Callers must invoke this exactly once per whole-file reload (see
+    /// `reify_eval::Engine::reset_geometry_for_reload`), never on a parameter
+    /// (slider) edit — a reset on every tick would needlessly wipe warm shapes.
+    fn reset(&mut self) {}
 
     /// Run a query against a handle.
     fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError>;
@@ -5406,11 +5771,9 @@ pub struct BooleanOpHistoryRecords {
     /// the non-zero path (e.g. a stub result map missing one child) is deferred
     /// to a follow-up task.
     ///
-    /// **Wired (#4545):** a non-zero count surfaces as a
-    /// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
-    /// emitted by `reify-eval`'s `Engine::execute_realization_ops` (via
-    /// `diagnose_topology_correspondence_drops`). The geometry is valid; only
-    /// persistent-naming correspondence tracking is degraded.
+    /// **Wired (#4545, severity revised #5196):** a non-zero count surfaces
+    /// via [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`] — see
+    /// that variant's docs for severity, emitter and message contract.
     ///
     /// A future per-kind or per-operand counter split (face vs. edge, left vs.
     /// right operand) remains an option if finer-grained diagnostics are needed;
@@ -5454,6 +5817,10 @@ pub struct LocalFeatureOpHistoryRecords {
     /// but could not map back into the result face/edge map (i.e. the child
     /// shape reported by BRep_Builder was absent from the result's TopExp
     /// map).  For well-formed BRep operations this should be zero.
+    ///
+    /// **Wired (#4545, severity revised #5196):** a non-zero count surfaces
+    /// via [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`] — see
+    /// that variant's docs for severity, emitter and message contract.
     pub silent_drop_count: u32,
     pub face_modified: Vec<HistoryRecord>,
     pub face_generated: Vec<HistoryRecord>,
@@ -5515,11 +5882,9 @@ pub struct SweepOpHistoryRecords {
     /// `result_map.FindIndex(child) < 1` branch) is a deferred follow-up;
     /// see design note: SweepOpHistory silent_drop_count non-zero path test.
     ///
-    /// **Wired (#4545):** a non-zero count surfaces as a
-    /// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
-    /// emitted by `reify-eval`'s `Engine::execute_realization_ops` (via
-    /// `diagnose_topology_correspondence_drops`). The geometry is valid; only
-    /// persistent-naming correspondence tracking is degraded.
+    /// **Wired (#4545, severity revised #5196):** a non-zero count surfaces
+    /// via [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`] — see
+    /// that variant's docs for severity, emitter and message contract.
     ///
     /// A future per-kind counter split (face vs. edge) remains an option if
     /// finer-grained diagnostics are needed; the current single counter matches
@@ -5561,6 +5926,10 @@ pub struct SweepOpHistoryRecords {
     /// (`dot ≈ 2e-6`, just over `DIR_TOL = 1e-6`), using the assertion
     /// `unsynthesized_profile_edge_count == n_profile_edges − face_generated.len()`
     /// so the test is agnostic to whether OCCT covers the edge independently.
+    ///
+    /// **Wired (#4545, severity revised #5196):** a non-zero count surfaces
+    /// via [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`] — see
+    /// that variant's docs for severity, emitter and message contract.
     pub unsynthesized_profile_edge_count: u32,
     /// Count of `face_generated` records dropped by the post-sort dedup pass
     /// because their `parent_subshape_index` duplicated the immediately
@@ -5582,6 +5951,10 @@ pub struct SweepOpHistoryRecords {
     /// == 0` in happy-path full-revolve tests. The FFI fixture
     /// `revolve_synthesis_post_sort_for_test` enables white-box testing of
     /// the dedup logic on synthetic flat inputs without real OCCT geometry.
+    ///
+    /// **Wired (#4545, severity revised #5196):** a non-zero count surfaces
+    /// via [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`] — see
+    /// that variant's docs for severity, emitter and message contract.
     pub duplicate_parent_subshape_index_count: u32,
 }
 
@@ -8400,7 +8773,7 @@ mod tests {
             Operation::PrimitiveWedge,
             Operation::PrimitiveTorus,
             Operation::PrimitiveHalfSpace,
-            // Modify (8)
+            // Modify (9)
             Operation::ModifyFillet,
             Operation::ModifyChamfer,
             Operation::ModifyShell,
@@ -8408,6 +8781,7 @@ mod tests {
             Operation::ModifyThicken,
             Operation::ModifyZoneSlab,
             Operation::ModifyOffsetSolid,
+            Operation::ModifyOffsetSurface,
             Operation::ModifyOffsetCurve,
             // Transform (6)
             Operation::TransformTranslate,
@@ -8519,6 +8893,7 @@ mod tests {
             Operation::ModifyThicken => {}
             Operation::ModifyZoneSlab => {}
             Operation::ModifyOffsetSolid => {}
+            Operation::ModifyOffsetSurface => {}
             Operation::ModifyOffsetCurve => {}
             Operation::TransformTranslate => {}
             Operation::TransformRotate => {}
@@ -9643,7 +10018,7 @@ mod tests {
                 GeometryOp::Draft {
                     target: GeometryHandleId(1),
                     faces: vec![],
-                    angle: Value::Real(0.1),
+                    angle: Value::angle(0.1),
                     plane: GeometryHandleId(2),
                 },
             ),
@@ -9673,6 +10048,13 @@ mod tests {
             (
                 "OffsetSolid",
                 GeometryOp::OffsetSolid {
+                    target: GeometryHandleId(1),
+                    distance: Value::Real(0.002),
+                },
+            ),
+            (
+                "OffsetSurface",
+                GeometryOp::OffsetSurface {
                     target: GeometryHandleId(1),
                     distance: Value::Real(0.002),
                 },
@@ -10304,17 +10686,19 @@ mod tests {
             "|nz| should be ≈1 for z=0 triangle, got {nz}"
         );
 
-        // Vertex 0 at bytes 96..108: must round-trip exactly
+        // Vertices must round-trip exactly, converted to the writer's
+        // millimetre regime: the 1 m fixture edges emit as 1000 mm.
+        // Vertex 0 at bytes 96..108
         assert_eq!(le_f32(&buf, 96), 0.0_f32, "v0.x");
         assert_eq!(le_f32(&buf, 100), 0.0_f32, "v0.y");
         assert_eq!(le_f32(&buf, 104), 0.0_f32, "v0.z");
         // Vertex 1 at bytes 108..120
-        assert_eq!(le_f32(&buf, 108), 1.0_f32, "v1.x");
+        assert_eq!(le_f32(&buf, 108), 1000.0_f32, "v1.x");
         assert_eq!(le_f32(&buf, 112), 0.0_f32, "v1.y");
         assert_eq!(le_f32(&buf, 116), 0.0_f32, "v1.z");
         // Vertex 2 at bytes 120..132
         assert_eq!(le_f32(&buf, 120), 0.0_f32, "v2.x");
-        assert_eq!(le_f32(&buf, 124), 1.0_f32, "v2.y");
+        assert_eq!(le_f32(&buf, 124), 1000.0_f32, "v2.y");
         assert_eq!(le_f32(&buf, 128), 0.0_f32, "v2.z");
 
         // Attribute byte count at bytes 132..134 must be 0
@@ -10378,6 +10762,87 @@ mod tests {
         );
     }
 
+    /// The binary STL writer must emit MILLIMETRES: a `[0, 0.030]^3` cube in
+    /// reify's SI-metre model space must land on exactly 0 and exactly 30 in the
+    /// payload, not on 0.03 — the de-facto STL convention every consumer
+    /// (PrusaSlicer, Cura, every mesh viewer) assumes is millimetres.
+    ///
+    /// **Why the bound is exact `==` rather than an epsilon.** The identity
+    /// `0.030_f32 * MM_PER_METRE_F32 == 30.0_f32` is MEASURED, and the table
+    /// establishing it is written out on [`MM_PER_METRE_F32`]: multiplying in
+    /// f32 re-rounds onto the f32 grid at the millimetre magnitude, whose ulp
+    /// (1.9e-6 at 30) is COARSER than the scaled input's deviation from the
+    /// round decimal (6.7e-7 at 30), so the product lands back exactly on the
+    /// decimal. The identical fixture and the identical multiply are already
+    /// pinned GREEN for the 3MF writer by
+    /// `write_3mf_emits_exact_millimetre_coordinates_without_conversion_noise`,
+    /// so the exactness transfers rather than being assumed here. Any epsilon
+    /// loose enough to be worth writing would also admit the f64-route noise
+    /// (`29.999999329447746`) that exactness exists to reject.
+    #[test]
+    fn write_stl_binary_emits_exact_millimetre_vertices() {
+        let mesh = cube_30mm_mesh();
+        let mut buf = Vec::new();
+        write_stl_binary(&mesh, &mut buf).expect("write_stl_binary should succeed");
+
+        // Binary STL: 80-byte header, u32 triangle count at 80..84, then a
+        // 50-byte record per triangle = 12-byte facet normal + 9×f32 vertices
+        // + 2-byte attribute count.
+        let tri_count = le_u32(&buf, 80) as usize;
+        assert_eq!(tri_count, 12, "a 12-triangle cube must emit 12 triangles");
+
+        let mut coords: Vec<[f32; 3]> = Vec::with_capacity(tri_count * 3);
+        for t in 0..tri_count {
+            let tri_base = 84 + t * 50 + 12; // skip the facet normal
+            for v in 0..3 {
+                let o = tri_base + v * 12;
+                coords.push([le_f32(&buf, o), le_f32(&buf, o + 4), le_f32(&buf, o + 8)]);
+            }
+        }
+
+        // (a) Every emitted coordinate is exactly 0 or exactly 30 mm.
+        for (i, c) in coords.iter().enumerate() {
+            for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+                let v = c[axis];
+                assert!(
+                    v == 0.0_f32 || v == 30.0_f32,
+                    "vertex {i} {name} = {v} — a [0, 0.030] m cube must emit exactly 0 or 30 in \
+                     a millimetre-regime binary STL; either the metre→millimetre conversion is \
+                     missing (0.03) or it is introducing avoidable representation noise (see \
+                     MM_PER_METRE_F32)"
+                );
+            }
+        }
+
+        // (b) Both values must actually OCCUR on every axis, so a collapsed or
+        // all-zero payload cannot satisfy (a) vacuously.
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            assert!(
+                coords.iter().any(|c| c[axis] == 0.0_f32),
+                "no vertex carries {name} = 0"
+            );
+            assert!(
+                coords.iter().any(|c| c[axis] == 30.0_f32),
+                "no vertex carries {name} = 30"
+            );
+        }
+
+        // (c) ...and the per-axis AABB extent is exactly 30 mm — the physical
+        // quantity a consumer actually reads off the file.
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            let min = coords.iter().map(|c| c[axis]).fold(f32::INFINITY, f32::min);
+            let max = coords
+                .iter()
+                .map(|c| c[axis])
+                .fold(f32::NEG_INFINITY, f32::max);
+            assert_eq!(
+                max - min,
+                30.0_f32,
+                "{name} extent must be exactly 30 mm (min {min}, max {max})"
+            );
+        }
+    }
+
     // ── ASCII serializer unit tests ──────────────────────────────────────────
 
     #[test]
@@ -10424,20 +10889,109 @@ mod tests {
             "single triangle: expected 3 'vertex ' entries"
         );
 
-        // Each specific vertex line must appear verbatim in the output.
-        // (Rust formats 0.0f32 as "0" and 1.0f32 as "1" via Display.)
+        // Each specific vertex line must appear verbatim in the output. The
+        // writer emits millimetres, so the 1 m fixture edges appear as 1000.
+        // (Rust formats 0.0f32 as "0" and 1000.0f32 as "1000" via Display.)
         assert!(
             text.contains("vertex 0 0 0"),
             "vertex (0,0,0) must appear in ascii output"
         );
         assert!(
-            text.contains("vertex 1 0 0"),
-            "vertex (1,0,0) must appear in ascii output"
+            text.contains("vertex 1000 0 0"),
+            "vertex (1,0,0) m must appear as 1000 mm in ascii output"
         );
         assert!(
-            text.contains("vertex 0 1 0"),
-            "vertex (0,1,0) must appear in ascii output"
+            text.contains("vertex 0 1000 0"),
+            "vertex (0,1,0) m must appear as 1000 mm in ascii output"
         );
+    }
+
+    /// The ASCII sibling of `write_stl_binary_emits_exact_millimetre_vertices`:
+    /// a `[0, 0.030]^3` cube in reify's SI-metre model space must reach the
+    /// emitted text as exactly 0 and exactly 30, not 0.03.
+    ///
+    /// **Why exact `==`.** Identical reasoning to the binary test: the identity
+    /// `0.030_f32 * MM_PER_METRE_F32 == 30.0_f32` is MEASURED in the table on
+    /// [`MM_PER_METRE_F32`], and the same fixture through the same multiply is
+    /// already pinned GREEN for the 3MF writer. Any epsilon worth writing would
+    /// also admit the f64-route noise (`29.999999329447746`).
+    ///
+    /// Asserted on the PARSED values, not on the literal decimal text, for the
+    /// reason given on
+    /// `write_3mf_emits_exact_millimetre_coordinates_without_conversion_noise`:
+    /// the property under test is EXACTNESS, and pinning literal strings would
+    /// additionally freeze the writer to `{}` shortest-round-trip formatting, so
+    /// a legitimate formatting change would read here as a precision regression
+    /// when it is not. `write_stl_ascii_single_triangle_structure` keeps its
+    /// literal-string asserts — that test is about ASCII STRUCTURE.
+    #[test]
+    fn write_stl_ascii_emits_exact_millimetre_vertices() {
+        let mesh = cube_30mm_mesh();
+        let mut buf = Vec::new();
+        write_stl_ascii(&mesh, &mut buf).expect("write_stl_ascii should succeed");
+        let text = std::str::from_utf8(&buf).expect("ascii output must be valid UTF-8");
+
+        // Each `vertex X Y Z` line carries three whitespace-separated f32s.
+        let coords: Vec<[f32; 3]> = text
+            .split("vertex ")
+            .skip(1)
+            .map(|tail| {
+                let mut it = tail.split_whitespace();
+                let mut next = || {
+                    it.next()
+                        .expect("a `vertex ` line must carry 3 tokens")
+                        .parse::<f32>()
+                        .expect("each vertex token must parse as f32")
+                };
+                [next(), next(), next()]
+            })
+            .collect();
+        assert_eq!(
+            coords.len(),
+            36,
+            "a 12-triangle cube must emit 36 `vertex ` entries"
+        );
+
+        // (a) Every emitted coordinate is exactly 0 or exactly 30 mm.
+        for (i, c) in coords.iter().enumerate() {
+            for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+                let v = c[axis];
+                assert!(
+                    v == 0.0_f32 || v == 30.0_f32,
+                    "vertex {i} {name} = {v} — a [0, 0.030] m cube must emit exactly 0 or 30 in \
+                     a millimetre-regime ASCII STL; either the metre→millimetre conversion is \
+                     missing (0.03) or it is introducing avoidable representation noise (see \
+                     MM_PER_METRE_F32)"
+                );
+            }
+        }
+
+        // (b) Both values must actually OCCUR on every axis, so a collapsed or
+        // all-zero payload cannot satisfy (a) vacuously.
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            assert!(
+                coords.iter().any(|c| c[axis] == 0.0_f32),
+                "no vertex carries {name} = 0"
+            );
+            assert!(
+                coords.iter().any(|c| c[axis] == 30.0_f32),
+                "no vertex carries {name} = 30"
+            );
+        }
+
+        // (c) ...and the per-axis AABB extent is exactly 30 mm.
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            let min = coords.iter().map(|c| c[axis]).fold(f32::INFINITY, f32::min);
+            let max = coords
+                .iter()
+                .map(|c| c[axis])
+                .fold(f32::NEG_INFINITY, f32::max);
+            assert_eq!(
+                max - min,
+                30.0_f32,
+                "{name} extent must be exactly 30 mm (min {min}, max {max})"
+            );
+        }
     }
 
     #[test]
@@ -10565,6 +11119,23 @@ mod tests {
         Mesh { vertices, indices, normals: None }
     }
 
+    /// Helper: [`unit_cube_mesh`]'s `[0,1]^3` corners expressed in reify's
+    /// SI-metre model space as `[0, 0.030]^3` — a 30 mm cube, topology
+    /// unchanged.
+    ///
+    /// Shared by every test that pins an export writer's LENGTH REGIME (3MF and
+    /// both STL writers): 0.030 m is the fixture value whose f32 metre→mm
+    /// conversion is measured on [`MM_PER_METRE_F32`], so the same cube pins
+    /// magnitude and exactness for every writer that makes the millimetre
+    /// promise.
+    fn cube_30mm_mesh() -> Mesh {
+        let mut mesh = unit_cube_mesh();
+        for v in &mut mesh.vertices {
+            *v *= 0.030_f32;
+        }
+        mesh
+    }
+
     #[test]
     fn write_3mf_box_produces_valid_3mf_package() {
         use std::io::Cursor;
@@ -10606,6 +11177,170 @@ mod tests {
         write_3mf(&mesh, ThreeMfOptions::default(), &mut buf2)
             .expect("second write_3mf should succeed");
         assert_eq!(buf, buf2, "write_3mf must be byte-deterministic");
+    }
+
+    /// Write a 30 mm cube through [`write_3mf`] and read the package back:
+    /// returns the `3D/3dmodel.model` XML plus every `<vertex>`'s parsed
+    /// `[x, y, z]`.
+    ///
+    /// The mesh is the unit cube's `[0,1]^3` corners expressed in reify's
+    /// SI-metre model space as `[0, 0.030]^3` — topology unchanged. Shared by
+    /// the two tests that pin the writer's length regime: one asserts the unit
+    /// DECLARATION and the coordinate MAGNITUDES agree, the other that the
+    /// metre→millimetre conversion adds no representation noise.
+    fn read_back_30mm_cube_3mf() -> (String, Vec<[f64; 3]>) {
+        use std::io::Cursor;
+
+        let mesh = cube_30mm_mesh();
+
+        let mut buf = Vec::new();
+        write_3mf(&mesh, ThreeMfOptions::default(), &mut buf)
+            .expect("write_3mf should succeed");
+
+        // `write_3mf` stores entries with CompressionMethod::Stored, so the
+        // default-features-off `zip` dependency can read them back as-is.
+        let mut archive = zip::ZipArchive::new(Cursor::new(&buf))
+            .expect("output should be a valid ZIP archive");
+        let mut model_file = archive.by_name("3D/3dmodel.model").unwrap();
+        let mut model_xml = String::new();
+        std::io::Read::read_to_string(&mut model_file, &mut model_xml).unwrap();
+        drop(model_file);
+
+        fn attr(tail: &str, name: &str) -> f64 {
+            // Attributes appear in x, y, z order inside one element, and this
+            // element's three attributes all precede the next element's, so
+            // the FIRST match after the split point is the right one.
+            let key = format!("{name}=\"");
+            let start = tail.find(&key).expect("vertex must carry the attribute") + key.len();
+            let end = tail[start..].find('"').expect("attribute must be quoted") + start;
+            tail[start..end]
+                .parse::<f64>()
+                .unwrap_or_else(|_| panic!("vertex {name} must be a parsable number"))
+        }
+
+        let coords = model_xml
+            .split("<vertex ")
+            .skip(1)
+            .map(|tail| [attr(tail, "x"), attr(tail, "y"), attr(tail, "z")])
+            .collect();
+        (model_xml, coords)
+    }
+
+    /// 3MF export must keep its unit DECLARATION and its vertex PAYLOAD in
+    /// agreement: reify model space is SI metres, the package declares
+    /// `unit="millimeter"`, so the vertices it carries must be millimetres.
+    ///
+    /// The two halves DISAGREE today, and that asymmetry IS the defect. The
+    /// declaration half already passes — `write_3mf` hardcodes
+    /// `unit="millimeter"` — while the payload half fails, because the vertex
+    /// buffer is emitted verbatim with no metre→millimetre conversion. A 30 mm
+    /// cube is written as 0.030 and read by any 3MF consumer as 30 µm — a
+    /// 1000× shrink, the same mislabel as the STEP half of this bug.
+    ///
+    /// The 1e-5 mm bound is derived, not guessed. `Mesh::vertices` is
+    /// `Vec<f32>` and the conversion is done in f32 (see `MM_PER_METRE_F32`),
+    /// so each emitted coordinate carries at most 2^-23 relative error — the
+    /// input's own representation error plus one re-rounding at the millimetre
+    /// magnitude. Across the two AABB endpoints that is 2·30·2^-23 ≈ 7.2e-6 mm
+    /// worst case, so 1e-5 is the tightest honest bound; 1e-6 (the f64 STEP
+    /// path's bound) is NOT derivable here. In practice the error is 0.0 — the
+    /// f32 re-rounding puts `0.030 m` exactly on `30` mm and `0.0` on `0.0` —
+    /// but that exactness is pinned by
+    /// `write_3mf_emits_exact_millimetre_coordinates_without_conversion_noise`,
+    /// NOT here: this test stays about the unit regime alone, so a change to
+    /// how coordinates are formatted can never fail it as a unit regression.
+    /// 1e-5 sits ~6 orders below the 0.030-vs-30.0 gap it guards, so it cannot
+    /// pass while the bug lives.
+    #[test]
+    fn write_3mf_declares_millimetres_and_scales_metre_vertices() {
+        let (model_xml, coords) = read_back_30mm_cube_3mf();
+
+        // (1) DECLARATION half — passes today, and is otherwise unasserted
+        // anywhere in the tree.
+        assert!(
+            model_xml.contains("unit=\"millimeter\""),
+            "3MF model part should declare unit=\"millimeter\""
+        );
+
+        // (2) PAYLOAD half — every <vertex x=".." y=".." z=".."/> value,
+        // folded into a per-axis AABB.
+        assert_eq!(coords.len(), 8, "a cube should emit 8 <vertex> elements");
+        let mut min = [f64::INFINITY; 3];
+        let mut max = [f64::NEG_INFINITY; 3];
+        for c in &coords {
+            for axis in 0..3 {
+                min[axis] = min[axis].min(c[axis]);
+                max[axis] = max[axis].max(c[axis]);
+            }
+        }
+
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            let extent = max[axis] - min[axis];
+            assert!(
+                (extent - 30.0).abs() < 1e-5,
+                "a 30 mm cube (0.030 m in reify model space) should span 30.0 mm on {name} in a \
+                 millimetre-declared 3MF package, but the vertex AABB extent is {extent} \
+                 (min {}, max {}) — declaration and payload disagree",
+                min[axis],
+                max[axis]
+            );
+        }
+    }
+
+    /// The metre→millimetre conversion must land EXACTLY on the millimetre
+    /// values the author wrote: the conversion arithmetic itself must add no
+    /// representation noise.
+    ///
+    /// This is what makes the f32-vs-f64 choice at the emit site a TESTED
+    /// behaviour rather than a comment. Doing the multiply as
+    /// `f64::from(v) * 1000.0` emits `29.999999329447746` for a `0.030 m`
+    /// coordinate — comfortably inside the sibling unit-regime test's 1e-5 mm
+    /// AABB tolerance, so that test stays green, while every emitted
+    /// coordinate grows from 2 to 18 characters of false precision. The
+    /// measured table and the full reasoning live on `MM_PER_METRE_F32`.
+    ///
+    /// Asserted on the PARSED values, not on the emitted decimal strings: the
+    /// property is exactness, and pinning the literal text would additionally
+    /// freeze the writer to f32 `{}` (shortest-round-trip) formatting, so a
+    /// legitimate formatting change — `{:.6}` for a picky consumer, a fixed
+    /// decimal count for byte-determinism — would fail here and read as a
+    /// precision regression when it is not.
+    ///
+    /// The `==` comparisons are exact ON PURPOSE. Both endpoints are exactly
+    /// representable in f32 and in f64, so exact equality is the correct
+    /// predicate here, and any epsilon loose enough to be worth writing would
+    /// also admit the `29.999999329447746` this test exists to reject.
+    #[test]
+    fn write_3mf_emits_exact_millimetre_coordinates_without_conversion_noise() {
+        let (_model_xml, coords) = read_back_30mm_cube_3mf();
+        assert_eq!(coords.len(), 8, "a cube should emit 8 <vertex> elements");
+
+        // The cube's corners are [0, 0.030]^3 m, so in millimetres every
+        // emitted coordinate must be exactly 0 or exactly 30.
+        for (i, c) in coords.iter().enumerate() {
+            for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+                let v = c[axis];
+                assert!(
+                    v == 0.0 || v == 30.0,
+                    "vertex {i} {name} = {v} — a [0, 0.030] m cube must emit exactly 0 or 30 in \
+                     a millimetre-declared 3MF package; the metre→millimetre conversion is \
+                     introducing avoidable representation noise (see MM_PER_METRE_F32)"
+                );
+            }
+        }
+
+        // ...and both values must actually OCCUR on every axis, so a collapsed
+        // or all-zero payload cannot satisfy the check above vacuously.
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            assert!(
+                coords.iter().any(|c| c[axis] == 0.0),
+                "no vertex carries {name} = 0"
+            );
+            assert!(
+                coords.iter().any(|c| c[axis] == 30.0),
+                "no vertex carries {name} = 30"
+            );
+        }
     }
 
     #[test]
@@ -11017,7 +11752,7 @@ mod tests {
         let curated = GeometryOp::Draft {
             target: GeometryHandleId(1),
             faces: vec![GeometryHandleId(2)],
-            angle: Value::Real(0.05),
+            angle: Value::angle(0.05),
             plane: GeometryHandleId(3),
         };
         match curated {
@@ -11035,7 +11770,7 @@ mod tests {
         let all_faces = GeometryOp::Draft {
             target: GeometryHandleId(1),
             faces: vec![],
-            angle: Value::Real(0.05),
+            angle: Value::angle(0.05),
             plane: GeometryHandleId(3),
         };
         match all_faces {
@@ -11416,6 +12151,43 @@ mod tests {
         );
     }
 
+    /// Pins [`Mesh::weld_positions`]'s two documented keying edge cases: a
+    /// corner encoded as `-0.0` in one triangle vs `+0.0` in another (must
+    /// normalize to the same canonical vertex) and a bit-for-bit duplicate
+    /// corner (plain shared-vertex welding). Without a direct test of the
+    /// remap's actual content, only end-to-end `validate`/
+    /// `check_mesh_contract*` tests exercise `weld_positions` indirectly —
+    /// those only check the final Ok/Err verdict, so a keying regression
+    /// (e.g. dropping the `-0.0` normalization) could silently produce a
+    /// different-but-still-valid remap without any of them failing.
+    #[test]
+    fn weld_positions_normalizes_signed_zero_and_dedups_bit_exact_duplicates() {
+        let mesh = Mesh {
+            vertices: vec![
+                // triangle 0
+                -0.0, 0.0, 0.0, // corner A, encoded as -0.0
+                1.0, 0.0, 0.0, // corner B
+                0.0, 1.0, 0.0, // corner C
+                // triangle 1
+                0.0, 0.0, 0.0, // corner A again, encoded as +0.0 this time
+                1.0, 0.0, 0.0, // corner B again, bit-for-bit duplicate
+                0.0, 0.0, 1.0, // corner D
+            ],
+            indices: vec![0, 1, 2, 3, 4, 5],
+            normals: None,
+        };
+
+        let (_, remap) = mesh.weld_positions();
+
+        assert_eq!(
+            remap,
+            vec![0, 1, 2, 0, 1, 3],
+            "weld_positions must collapse the -0.0/+0.0 corner pair (idx 0 \
+             and 3) and the bit-exact duplicate (idx 1 and 4) to shared \
+             canonical indices in first-seen order; got {remap:?}"
+        );
+    }
+
     #[test]
     fn validate_rejects_non_finite() {
         // A NaN vertex coordinate on vertex 1 (x-component).
@@ -11615,6 +12387,443 @@ mod tests {
             MeshWitness::Edge { .. } => {}
             other => panic!("expected MeshWitness::Edge naming the offender, got {other:?}"),
         }
+    }
+
+    /// Verdict-equivalence comparison shared by every `check_mesh_contract*`
+    /// equivalence test: given two `Result<(), MeshContractViolation>`
+    /// verdicts that are expected to agree (because both call sites
+    /// ultimately wrap the same private `check_contract` body), assert they
+    /// do — same `Ok`/`Err`, and on `Err` the same `invariant`/`counts`,
+    /// with a witness naming the same offender (compared via
+    /// [`assert_witness_bits_eq`]). `ctx` names the two methods being
+    /// compared, for the panic messages.
+    fn assert_verdicts_equivalent(
+        a: Result<(), MeshContractViolation>,
+        b: Result<(), MeshContractViolation>,
+        ctx: &str,
+    ) {
+        match (a, b) {
+            (Ok(()), Ok(())) => {}
+            (Err(a), Err(b)) => {
+                assert_eq!(
+                    a.invariant, b.invariant,
+                    "{ctx} must report the same invariant"
+                );
+                assert_eq!(a.counts, b.counts, "{ctx} must report the same counts");
+                assert_witness_bits_eq(a.witness, b.witness);
+            }
+            (a, b) => panic!("{ctx} must agree on verdict: {a:?} vs {b:?}"),
+        }
+    }
+
+    /// [`Mesh::check_mesh_contract`] must return the same verdict as
+    /// [`Mesh::validate`] (mapped to drop the witness) — see
+    /// [`assert_verdicts_equivalent`] for the comparison semantics.
+    fn assert_check_mesh_contract_matches_validate(mesh: &Mesh, tol: f64) {
+        let via_check = mesh.check_mesh_contract(tol);
+        let via_validate = mesh.validate(tol).map(|_| ());
+        assert_verdicts_equivalent(via_check, via_validate, "check_mesh_contract and validate");
+    }
+
+    /// NaN-safe structural comparison of two [`MeshWitness`] values — used
+    /// by [`assert_verdicts_equivalent`] because several witnesses embed
+    /// the mesh's own injected `f32::NAN` coordinate (or a synthetic
+    /// `[NAN, NAN, NAN]` marker), and IEEE-754 NaN is never equal to itself
+    /// under `PartialEq` — this is exactly why `MeshWitness` derives
+    /// `PartialEq` but not `Eq`.
+    fn assert_witness_bits_eq(a: MeshWitness, b: MeshWitness) {
+        match (a, b) {
+            (
+                MeshWitness::Vertex {
+                    index: i1,
+                    coord: c1,
+                },
+                MeshWitness::Vertex {
+                    index: i2,
+                    coord: c2,
+                },
+            ) => {
+                assert_eq!(i1, i2, "witness must name the same vertex");
+                assert_eq!(
+                    c1.map(f32::to_bits),
+                    c2.map(f32::to_bits),
+                    "witness coord bit patterns must match"
+                );
+            }
+            (
+                MeshWitness::Triangle {
+                    tri: t1,
+                    indices: idx1,
+                },
+                MeshWitness::Triangle {
+                    tri: t2,
+                    indices: idx2,
+                },
+            ) => {
+                assert_eq!(t1, t2, "witness must name the same triangle");
+                assert_eq!(idx1, idx2, "witness must name the same triangle indices");
+            }
+            (MeshWitness::Edge { u: u1, v: v1 }, MeshWitness::Edge { u: u2, v: v2 }) => {
+                assert_eq!(u1, u2, "witness must name the same edge start");
+                assert_eq!(v1, v2, "witness must name the same edge end");
+            }
+            // Same-variant pair that didn't match one of the explicit arms
+            // above: a `MeshWitness` variant added after this function was
+            // written. Panic instead of silently falling back to derived
+            // `PartialEq` — the whole reason this function exists is that
+            // derived `PartialEq` mishandles NaN in `f32` fields (as
+            // `Vertex`'s `[f32; 3]` coord does today), so a new variant
+            // carrying its own float field would reintroduce that exact
+            // pitfall and could let a genuine mismatch pass. Forcing a panic
+            // here means adding a variant requires consciously adding an
+            // explicit bit-exact arm above, not just falling through. A
+            // genuine cross-variant mismatch (different discriminants)
+            // still falls through to the panic below.
+            (a, b) if std::mem::discriminant(&a) == std::mem::discriminant(&b) => {
+                panic!("unhandled MeshWitness variant {a:?} vs {b:?} — add an explicit bit-exact comparison arm")
+            }
+            (a, b) => panic!("witness variant mismatch: {a:?} vs {b:?}"),
+        }
+    }
+
+    /// [`Mesh::check_mesh_contract`] must return the same verdict as
+    /// [`Mesh::validate`] (mapped to drop the witness) across every fixture
+    /// exercised by the `validate_accepts_*` / `validate_rejects_*` tests
+    /// above — it wraps the identical private `check_contract` body, just
+    /// without minting/cloning a `ValidatedMesh`.
+    ///
+    /// RED: fails to compile until `check_mesh_contract` is added to `Mesh`.
+    #[test]
+    fn check_mesh_contract_matches_validate_verdict() {
+        // Valid meshes — both methods must accept.
+        assert_check_mesh_contract_matches_validate(&welded_tetra_mesh(), 0.0);
+        assert_check_mesh_contract_matches_validate(&per_face_block_tetra_mesh(), 0.0);
+
+        // NaN vertex coordinate — mirrors `validate_rejects_non_finite`.
+        let mut nan_vertex_mesh = welded_tetra_mesh();
+        nan_vertex_mesh.vertices[3] = f32::NAN;
+        assert_check_mesh_contract_matches_validate(&nan_vertex_mesh, 0.0);
+
+        // +Inf normal component — mirrors `validate_rejects_non_finite`.
+        let mut inf_normal_mesh = welded_tetra_mesh();
+        let normal_len = inf_normal_mesh.vertices.len();
+        inf_normal_mesh.normals = Some(vec![0.0_f32; normal_len]);
+        inf_normal_mesh.normals.as_mut().unwrap()[2 * 3 + 1] = f32::INFINITY;
+        assert_check_mesh_contract_matches_validate(&inf_normal_mesh, 0.0);
+
+        // Out-of-bounds triangle index — mirrors
+        // `validate_rejects_out_of_bounds_index`.
+        let mut oob_mesh = welded_tetra_mesh();
+        let last = oob_mesh.indices.len() - 1;
+        oob_mesh.indices[last] = 4;
+        assert_check_mesh_contract_matches_validate(&oob_mesh, 0.0);
+
+        // Dangling trailing index group — same test.
+        let mut truncated_mesh = welded_tetra_mesh();
+        truncated_mesh.indices.pop();
+        assert_check_mesh_contract_matches_validate(&truncated_mesh, 0.0);
+
+        // Non-multiple-of-3 vertex buffer — mirrors
+        // `validate_rejects_malformed_vertex_buffer_length`.
+        let mut malformed_vertices_mesh = welded_tetra_mesh();
+        malformed_vertices_mesh.vertices.push(0.0);
+        assert_check_mesh_contract_matches_validate(&malformed_vertices_mesh, 0.0);
+
+        // Mismatched normals length (short and long) — mirrors
+        // `validate_rejects_mismatched_normals_length`.
+        let mut short_normals = welded_tetra_mesh();
+        let full_len = short_normals.vertices.len();
+        short_normals.normals = Some(vec![0.0_f32; full_len - 3]);
+        assert_check_mesh_contract_matches_validate(&short_normals, 0.0);
+
+        let mut long_normals = welded_tetra_mesh();
+        long_normals.normals = Some(vec![0.0_f32; full_len + 3]);
+        assert_check_mesh_contract_matches_validate(&long_normals, 0.0);
+
+        // Degenerate triangle: repeated raw index — mirrors
+        // `validate_rejects_degenerate_triangle`.
+        let repeated_index_mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 1],
+            normals: None,
+        };
+        assert_check_mesh_contract_matches_validate(&repeated_index_mesh, 0.0);
+
+        // Degenerate triangle: coincident positions, distinct indices —
+        // same test.
+        let coincident_position_mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+        assert_check_mesh_contract_matches_validate(&coincident_position_mesh, 0.0);
+
+        // Open boundary — mirrors `validate_rejects_open_boundary`.
+        let open_mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+        assert_check_mesh_contract_matches_validate(&open_mesh, 0.0);
+
+        // Reversed winding — mirrors `validate_rejects_reversed_winding`.
+        let mut faces = tetra_faces();
+        faces[0] = [faces[0][0], faces[0][2], faces[0][1]];
+        let positions = tetra_positions();
+        let vertices: Vec<f32> = positions.iter().flat_map(|v| v.iter().copied()).collect();
+        let indices: Vec<u32> = faces.into_iter().flatten().collect();
+        let reversed_winding_mesh = Mesh {
+            vertices,
+            indices,
+            normals: None,
+        };
+        assert_check_mesh_contract_matches_validate(&reversed_winding_mesh, 0.0);
+    }
+
+    /// [`Mesh::check_mesh_contract_welded`] must return the same verdict as
+    /// [`Mesh::check_mesh_contract`] when handed the mesh's own
+    /// `weld_positions().1` remap — verifying verdict-equivalence between
+    /// the threaded and recompute-internally paths. Note this does NOT by
+    /// itself prove the threaded remap is *consumed* rather than silently
+    /// ignored-and-recomputed: because the remap passed here is exactly
+    /// what the unthreaded path would compute internally, an
+    /// implementation that dropped the parameter and always recomputed
+    /// would produce byte-identical verdicts and still pass this test.
+    /// `per_face_block_tetra_mesh()` is still the most meaningful case:
+    /// its raw index buffer is open, and only the welded quotient is
+    /// closed, so it exercises a real (non-identity) remap rather than a
+    /// no-op one.
+    ///
+    /// RED: fails to compile until `check_mesh_contract_welded` is added to
+    /// `Mesh`.
+    #[test]
+    fn check_mesh_contract_welded_matches_unthreaded() {
+        fn assert_welded_matches_unthreaded(mesh: &Mesh, tol: f64) {
+            let (_, remap) = mesh.weld_remap();
+            let via_welded = mesh.check_mesh_contract_welded(tol, &remap);
+            let via_unthreaded = mesh.check_mesh_contract(tol);
+            assert_verdicts_equivalent(
+                via_welded,
+                via_unthreaded,
+                "check_mesh_contract_welded and check_mesh_contract",
+            );
+        }
+
+        // Already-welded valid tetra — both methods must accept.
+        assert_welded_matches_unthreaded(&welded_tetra_mesh(), 0.0);
+
+        // Unwelded per-face-block tetra: the raw buffer is open; only the
+        // welded quotient is closed. This is the most meaningful case — it
+        // exercises a real (non-identity) remap, though (per the docstring
+        // above) it still can't distinguish "consumed" from "ignored and
+        // recomputed".
+        assert_welded_matches_unthreaded(&per_face_block_tetra_mesh(), 0.0);
+
+        // Open boundary — mirrors `validate_rejects_open_boundary`.
+        let open_mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+        assert_welded_matches_unthreaded(&open_mesh, 0.0);
+
+        // Reversed winding — mirrors `validate_rejects_reversed_winding`.
+        let mut faces = tetra_faces();
+        faces[0] = [faces[0][0], faces[0][2], faces[0][1]];
+        let positions = tetra_positions();
+        let vertices: Vec<f32> = positions.iter().flat_map(|v| v.iter().copied()).collect();
+        let indices: Vec<u32> = faces.into_iter().flatten().collect();
+        let reversed_winding_mesh = Mesh {
+            vertices,
+            indices,
+            normals: None,
+        };
+        assert_welded_matches_unthreaded(&reversed_winding_mesh, 0.0);
+    }
+
+    /// Debug-buildable happy-path smoke test for
+    /// [`Mesh::check_mesh_contract_welded`]: threads a genuinely
+    /// non-identity [`WeldRemap`] — minted by [`Mesh::weld_remap`] on
+    /// `per_face_block_tetra_mesh()`, whose 12 raw per-face-block vertices
+    /// collapse to 4 canonical corners — and asserts the call is accepted.
+    ///
+    /// The two tests below (`check_mesh_contract_welded_consumes_threaded_remap`
+    /// and `check_mesh_contract_welded_falls_back_on_length_mismatch`) are
+    /// `#[cfg(not(debug_assertions))]` because they deliberately feed a
+    /// *bogus* remap to observe release-only fallback behavior that a debug
+    /// `debug_assert_eq!` would otherwise trip — so neither runs under a
+    /// plain `cargo test` / task-role debug verify (see their docs). This
+    /// test threads a *correct* remap instead, so it has nothing to elide
+    /// and runs in every build profile, giving debug builds at least one
+    /// signal that `check_mesh_contract_welded`'s happy-path plumbing —
+    /// mint a real `WeldRemap`, thread it through, get `Ok(())` back —
+    /// hasn't broken. It cannot, on its own, distinguish "consumed" from
+    /// "ignored-and-recomputed" (see `check_mesh_contract_welded_matches_unthreaded`
+    /// above and `check_mesh_contract_welded_consumes_threaded_remap` below
+    /// for that guarantee).
+    #[test]
+    fn check_mesh_contract_welded_accepts_correct_non_identity_remap() {
+        let mesh = per_face_block_tetra_mesh();
+        let (_, remap) = mesh.weld_remap();
+
+        // Confirm the remap is genuinely non-identity (welds 12 raw
+        // vertices down to 4 canonical corners) so this smoke test can't
+        // silently degenerate into a vacuous already-welded check.
+        let mut canonical_indices = remap.as_slice().to_vec();
+        canonical_indices.sort_unstable();
+        canonical_indices.dedup();
+        assert_eq!(
+            canonical_indices.len(),
+            4,
+            "per_face_block_tetra_mesh's weld remap must collapse 12 raw \
+             vertices to 4 canonical corners; got {:?}",
+            remap.as_slice()
+        );
+
+        mesh.check_mesh_contract_welded(0.0, &remap).expect(
+            "a correct non-identity weld remap on a valid (if unwelded) mesh \
+             must be accepted",
+        );
+    }
+
+    /// [`Mesh::check_mesh_contract_welded`] must actually CONSUME the
+    /// threaded remap rather than silently ignoring it and recomputing its
+    /// own weld. `check_mesh_contract_welded_matches_unthreaded` above
+    /// cannot prove this on its own — as its docstring candidly notes,
+    /// every remap it passes is exactly what the unthreaded path would
+    /// recompute anyway, so an implementation that dropped the parameter
+    /// entirely would still pass it.
+    ///
+    /// Here the remap is deliberately WRONG: `per_face_block_tetra_mesh()`
+    /// is unwelded (12 vertices, a private corner triple per triangle; only
+    /// the welded quotient — 4 canonical corners — is closed), and the
+    /// identity remap `[0, 1, .., 11]` falsely claims no two vertices are
+    /// shared. If `check_mesh_contract_welded` threads this remap through
+    /// (as it must), the Closed obligation sees 4 pairwise-disjoint
+    /// triangles sharing no edges at all and must reject with `Closed`
+    /// (every one of the 12 directed edges lacks a reverse). If it instead
+    /// ignored the parameter and recomputed the TRUE weld internally, it
+    /// would collapse to the 4-corner tetrahedron and report `Ok(())`
+    /// instead — the verdict already pinned for the *correct* remap by
+    /// `check_mesh_contract_welded_matches_unthreaded` above. Asserting
+    /// `Err(Closed)` here therefore distinguishes "consumed" from
+    /// "ignored-and-recomputed".
+    ///
+    /// Constructs a [`WeldRemap`] directly from a bogus `Vec<u32>` via its
+    /// private tuple field — only possible because this test module is a
+    /// descendant of `geometry` (Rust's module-privacy rules give
+    /// descendants access to a private field), i.e. exactly the kind of
+    /// in-crate access [`WeldRemap`]'s sealing is not meant to stop; it is
+    /// used here purely to drive this negative test of the
+    /// defense-in-depth fallback.
+    ///
+    /// `#[cfg(not(debug_assertions))]`: a same-length-but-wrong-content
+    /// remap trips the matching-length arm's `debug_assert_eq!` (inside
+    /// `check_contract`) against a freshly recomputed `weld_positions().1`
+    /// — that assert exists precisely to catch this kind of bogus remap in
+    /// debug/test builds, so this test observes the release-mode behavior
+    /// where the assert is elided (per `check_mesh_contract_welded`'s
+    /// documented release-mode contract for a same-length-but-wrong-content
+    /// remap).
+    ///
+    /// Release-only here is not a silent coverage gap: a task's own
+    /// fast-feedback verify runs `DF_VERIFY_ROLE=task`, which
+    /// `scripts/verify.sh` defaults to `profile=debug`, so this test is
+    /// legitimately skipped there — but landing on `main` always goes
+    /// through `scripts/land.sh` (or the orchestrator merge queue), both of
+    /// which stamp `DF_VERIFY_ROLE=merge`; `verify.sh` then defaults
+    /// unstamped profile to `both` and force-widens scope to `all` (its
+    /// merge-gate contract C2), so this test still runs — and gates the
+    /// merge — before this "consumed, not ignored" guarantee ever reaches
+    /// `main`.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn check_mesh_contract_welded_consumes_threaded_remap() {
+        let mesh = per_face_block_tetra_mesh();
+        let identity_remap: Vec<u32> = (0..(mesh.vertices.len() / 3) as u32).collect();
+
+        let err = mesh
+            .check_mesh_contract_welded(0.0, &WeldRemap(identity_remap))
+            .expect_err(
+                "a bogus identity remap on an unwelded mesh must be reported as \
+                 an open mesh if actually consumed — Ok(()) here would mean the \
+                 true weld was recomputed internally and the parameter ignored",
+            );
+        assert_eq!(
+            err.invariant,
+            MeshInvariant::Closed,
+            "an identity remap over 12 pairwise-disjoint per-face vertices leaves \
+             every edge without a reverse; got {err:?}"
+        );
+        assert_eq!(
+            err.counts.open_edges, 12,
+            "all 4 triangles' 3 edges each lack a reverse under the identity \
+             remap; got {:?}",
+            err.counts
+        );
+        assert_eq!(
+            err.counts.reversed_edges, 0,
+            "an identity remap introduces no duplicate-direction edges, only \
+             missing reverses; got {:?}",
+            err.counts
+        );
+    }
+
+    /// Release-mode characterization of `check_mesh_contract_welded`'s
+    /// defensive length-mismatch fallback: a caller-supplied remap whose
+    /// length differs from `self.vertices.len() / 3` must not panic, and
+    /// must fall back to the exact verdict an internal reweld
+    /// (`check_mesh_contract`) would produce — the release-build guarantee
+    /// documented on `check_mesh_contract_welded`.
+    ///
+    /// Exercises both an `Ok` fixture (`per_face_block_tetra_mesh` — closed
+    /// only on the welded quotient, so the fallback must actually recompute
+    /// the weld rather than e.g. defaulting to `Ok`) and an `Err` fixture
+    /// (a single open triangle, `MeshInvariant::Closed`), each with both a
+    /// too-short and a too-long bogus remap.
+    ///
+    /// `#[cfg(not(debug_assertions))]`: in debug/test builds the length
+    /// `debug_assert_eq!` inside `check_contract` fires first — loudly, as
+    /// intended, to catch this same caller bug during development — before
+    /// the fallback branch's own logic ever runs, so the fallback path is
+    /// only observable (and only needs to be exercised) in release builds.
+    ///
+    /// Same release-gate coverage note as
+    /// `check_mesh_contract_welded_consumes_threaded_remap` above: skipped
+    /// under a task's own `DF_VERIFY_ROLE=task` (`profile=debug`)
+    /// fast-feedback verify, but exercised — and gating — at
+    /// `DF_VERIFY_ROLE=merge` (`scripts/land.sh` / the orchestrator merge
+    /// queue), which `scripts/verify.sh` defaults to `profile=both`, before
+    /// landing on `main`.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn check_mesh_contract_welded_falls_back_on_length_mismatch() {
+        fn assert_fallback_matches(mesh: &Mesh, bogus_remap: &[u32]) {
+            // `WeldRemap`'s field is private (accessible from this
+            // descendant test module, not `pub(crate)`-restricted for
+            // external callers) — see
+            // `check_mesh_contract_welded_consumes_threaded_remap`'s doc
+            // for why constructing one directly here is expected and
+            // doesn't defeat the sealing.
+            assert_verdicts_equivalent(
+                mesh.check_mesh_contract_welded(0.0, &WeldRemap(bogus_remap.to_vec())),
+                mesh.check_mesh_contract(0.0),
+                "check_mesh_contract_welded with a length-mismatched remap \
+                 (release fallback) and check_mesh_contract",
+            );
+        }
+
+        let closed_mesh = per_face_block_tetra_mesh();
+        assert_fallback_matches(&closed_mesh, &[0_u32; 1]); // too short
+        assert_fallback_matches(&closed_mesh, &[0_u32; 100]); // too long
+
+        let open_mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+        assert_fallback_matches(&open_mesh, &[0_u32; 1]); // too short
+        assert_fallback_matches(&open_mesh, &[0_u32; 100]); // too long
     }
 
     // --- MeshContractMode env-knob parser (task #5105 δ, INV-GEO-1) ---

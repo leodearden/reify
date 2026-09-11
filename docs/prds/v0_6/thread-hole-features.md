@@ -49,7 +49,9 @@ resolved interactively with Leo in that session. Substrate probes (fixtures
 - `MeshingOptions.threads` is CPU worker threads (cache-key note), **not** screw threads —
   a red-herring name collision; this PRD deliberately avoids the bare word "threads" in
   its pragma/type names (`#thread_repr`, `ThreadRepr`).
-- `iso_it_tolerance` (`crates/reify-stdlib/src/tolerancing.rs:112-128`) is the house
+- `iso_it_tolerance` (`fn iso_it_tolerance` in `crates/reify-stdlib/src/tolerancing.rs`
+  — cited by SYMBOL, not by line range: the range this bullet used to carry went stale
+  twice inside task #6091 alone, once per edit landed above the function) is the house
   pattern for standards builtins: pure `fn(&[Value]) -> Value`, dispatcher arm, `diagnose`
   classifier (`E_TolerancingOutOfEnvelope`), `.ri` derived-let caller, layered tests
   pinning published table cells.
@@ -107,7 +109,7 @@ loud-indeterminate). Geometry observables use `reify eval`/`build`.
    dep #5342; #5343 not needed.
 6. **Fit = `FitDesignation` structure with a real consumer today** (INV-SF-3/-5
    compliant): `structure def FitDesignation { param letter : String; param grade : Int;
-   let tolerance_width = iso_it_tolerance(grade, nominal…) }`. The grade half is consumed
+   let tolerance_width = iso_it_tolerance(nominal…, grade) }`. The grade half is consumed
    NOW via the existing ISO 286-1 IT builtin; the `letter` half (fundamental deviation)
    is **owned by #5391** — the String param carries a PTODO citing #5391 (live,
    non-terminal). Hole slot: `param fit : Option<FitDesignation> = none`.
@@ -202,7 +204,7 @@ structure def FitDesignation {
     param letter : String            // "H", "g", … — fundamental deviation; PTODO(#5391)
     param grade  : Int               // IT grade 5..18
     param nominal : Length           // the feature's nominal Ø (bound by the owning feature)
-    let tolerance_width = iso_it_tolerance(grade, nominal, nominal)
+    let tolerance_width = iso_it_tolerance(nominal, nominal, grade)
 }
 ```
 
@@ -268,7 +270,7 @@ Producer side = generator/compiler/stdlib; consumer side = dogfood/examples via 
 | 8 | TappedHole DFM: depth < D | γ | check() reports the engagement constraint violated |
 | 9 | FittedBore H7-style fit | γ | `fit.tolerance_width` = published IT cell (exact-value pin, iso_it 24.969 µm pattern); seat constraint consumes it at check() |
 | 10 | ThreadSpec.thread_form filled | α, γ | `some(thread_solid(...))` binds; `is_some(spec.thread_form)`; eval prints Some(…) (closes the §2 carrier-slot arc + the untested some(geometry) cell) |
-| 11 | capstan groove | **#5342**, δ | drum volume delta ≈ 0.5·π·r²·L_helix within ±15%, **computed from dev_capstan's actual parameters** (pitch radius, lead, wrap band, groove profile r) — the rope seat is a half-round with its arc centre ON the land surface, so only the radially **inner** half of the swept tube is ever stock (the outer half sweeps through air above the land, except where it emerges into the flanges at the band ends). A band and not an equality because two corrections pull opposite ways at dev_capstan's parameters: the seated half's area centroid lies radially inboard of the spine and therefore sweeps a shorter helix (≈ −5.3%), while end-emergence into the flanges adds back the outer half's end lenses (≈ +1.5%) — net ≈ −3.9%, which the band must swallow (G6 basis: #5342's acceptance *formula*, not its 24/7/63 numbers — D3 refinement; reference value re-spec'd π·r²·L → 0.5·π·r²·L by **#5580**) |
+| 11 | capstan groove | **#5342**, δ | drum volume delta ≈ 0.5·π·r²·L_helix within ±15%, **computed from dev_capstan's actual parameters** (pitch radius, lead, wrap band, groove profile r) — the rope seat is a half-round with its arc centre ON the land surface, so only the radially **inner** half of the swept tube is ever stock (the outer half sweeps through air above the land, except where it emerges into the flanges at the band ends). Since **#5683** `r` is the DIN 15061 seat **arc** radius `0.53·rope_dia`, not the rope radius, and `L_helix` is measured at the seat's arc-centre radius `seat_c = pitch_r + r − rope_dia/2`, not at `pitch_r` — the reference value and the band width are both unchanged in form. A band and not an equality because two corrections pull opposite ways at dev_capstan's parameters: the seated half's area centroid lies radially inboard of the spine and therefore sweeps a shorter helix (≈ −5.6%), while end-emergence into the flanges adds back the outer half's end lenses (≈ +1.5%) — net ≈ −4.0%, which the band must swallow (G6 basis: #5342's acceptance *formula*, not its 24/7/63 numbers — D3 refinement; reference value re-spec'd π·r²·L → 0.5·π·r²·L by **#5580**, symbols re-anchored onto the oversize arc by **#5683**) |
 | 12 | printer retrofit invariance | γ, 5426, ε | pure bore→FittedBore retrofit leaves each part volume unchanged (< 0.1%); added clearance holes change volume by computed amount |
 
 The integration-gate task (θ) names this table as its observable signal; rows 1–6 face
@@ -284,6 +286,31 @@ mid-band position — which a 2.6 mm mouth on a 6 mm Vectran braid forbids. #558
 cut the land back to the rope centreline (a half-round seat, mouth = rope diameter, the
 only depth that admits the rope at all) and re-spec'd this row's reference value
 accordingly. The ±15% band width is unchanged — only the reference moved.
+
+**Amendment (#5683) — row 11's seat arc.** #5580's half-round seat had
+`groove_r = rope_dia/2`: a zero-clearance slip fit, touching the rope everywhere at
+once. #5683 moved it to DIN 15061 rope-drum practice, `groove_r = 0.53·rope_dia`, and
+moved the land from `pitch_r` to the seat's arc centre `seat_c = pitch_r + groove_r −
+rope_dia/2`. What stays on the D/d circle is the **rope's** centreline, not the arc
+centre: under tension the rope bottoms out in its seat, so pinning the rope to `pitch_r`
+and pushing the arc centre outboard leaves `drum_d`, the pitch circumference and
+`active_turns` bit-identical — and with them all three of the design's distinct axial
+figures, `Capstan.band` (≈ 60.3 mm), `groove_len` (≈ 88.3 mm) and `Fairlead.stroke`
+(63 mm). The D/d story is untouched, and so are the two `CapstanDrive`
+stroke-coverage constraints, which read only those cells. That was the objection #5580 recorded for deferring this work, and
+anchoring the rope rather than the arc dissolves it. What the oversize arc buys is a
+mouth of `2·groove_r = 1.06·rope_dia` — a strict 6% clearance where #5580 had an exact
+equality — and 0.175 mm of per-side clearance at the rope's widest section, so a
+load-ovalised braid cannot pinch at the seat bottom. One DSL constraint,
+`groove_r > rope_dia/2`, carries both: it is algebraically exactly the anti-pinch
+condition. What **retires** is #5580's claim above that a half-round is "the only depth
+that admits the rope at all" — with an oversize arc the admitting land radii form a band
+`|land_r − seat_c| ≤ sqrt(groove_r² − (rope_dia/2)²)`, a HALF-width of 1.055 mm at the
+defaults, so the band is ~2.11 mm wide. Pinning `land_r = seat_c` is therefore now a
+design *choice*, justified by maximising the mouth and by keeping exactly half the swept
+section seated — the premise this row's closed form rests on. The ±15% band width here
+and the ±3% band of the Rust gate's centroid-Pappus refinement are both unchanged — only
+the reference moved.
 
 ## 7. Pre-conditions for activating
 

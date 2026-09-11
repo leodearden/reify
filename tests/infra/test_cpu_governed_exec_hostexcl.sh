@@ -15,6 +15,68 @@
 # Test coverage:
 #   D: governed cgroup placement (scope, weight, cpu.max, exit code) host-gated
 #
+# SLICE LIFECYCLE (task 6386). This file creates FIVE per-run systemd user
+# units and owns them through tests/infra/govtest_slice_reaper_lib.sh — the
+# same library test_cpu_load_governance.sh uses, parameterised on a `reify-test`
+# profile. It supplies the naming, the UNCONDITIONAL EXIT-trap teardown, the
+# startup sweep for predecessors killed by an uncatchable signal, and the
+# one-off sweep for the legacy residue described next.
+#
+#   THE D7/D8 RENAME, AND THE LEAK IT CLOSES. D7/D8 were previously named
+#   `reify-test-task-$$.slice` / `reify-test-merge-$$.slice`. systemd
+#   dash-nesting means `a-b-c.slice` implies parents `a.slice` and `a-b.slice`,
+#   vivified automatically and named by nothing — so every run silently
+#   accreted `reify-test.slice`, `reify-test-task.slice` and
+#   `reify-test-merge.slice`, which no teardown stopped and no pid-keyed sweep
+#   could recognise. Measured on the host on 2026-08-21 all three were present,
+#   `loaded active active`, and EMPTY (TasksCurrent=0). The two units are now
+#   `reify-test$$-taskweight.slice` / `reify-test$$-mergeweight.slice`, so every
+#   unit this run creates carries at most ONE dash segment after the pid and its
+#   only implicit parents are `reify-test$$.slice` — which IS named, torn down,
+#   and cascade-stops its children — and the shared `reify.slice`, which is
+#   correctly never touched by anything here.
+#
+#   WHY reify.slice IS SAFE. Measured on the same host: `reify-test<pid>.slice`
+#   parents to `reify.slice`, NOT to `reify-test.slice` (`reify-test1234` is ONE
+#   dash segment, not `reify-test` + `1234`). `reify.slice` is also the shared
+#   implicit root of the PRODUCTION hierarchy — `reify-governed.slice` and
+#   `reify-governed-agents.slice` nest under it carrying live orchestrator agent
+#   placement — so it is structurally unreachable from every stop path the
+#   library exposes, by anchored grammar rather than by convention.
+#
+#   The five units must stay FIVE DISTINCT slices, merely re-parented:
+#   cgroup_set_slice_weight sets the SLICE's own CPUWeight, so D5's
+#   REIFY_CPU_GOVERN_W_TASK=250 leaves $D_TASK_SLICE at 250 and reusing it for
+#   D7 would send that row's SLICE_WEIGHT==100 assertion red.
+#
+# Knobs:
+#   REIFY_GOVTEST_TEST_MODE             ARMING KEY for the seam below (tasks
+#                                       5930/6386). It is refused unless this
+#                                       is 1. Nothing in the repo sets it except
+#                                       test_govtest_slice_reaper.sh, so the
+#                                       seam is inert on every real run no
+#                                       matter what else is exported.
+#   REIFY_CPU_GOVEXEC_TEST_LIFECYCLE_ONLY
+#                                       with the arming key, exit 0 immediately
+#                                       after the startup sweeps, with the EXIT
+#                                       trap already installed so teardown still
+#                                       fires. Exists so
+#                                       test_govtest_slice_reaper.sh can prove
+#                                       the slice lifecycle is WIRED by driving
+#                                       this script for real without placing
+#                                       five systemd-run scopes (which a stub
+#                                       systemctl cannot intercept — the wrapper
+#                                       shells out to systemd-run).
+#                                       NEVER set in a normal run — it would
+#                                       make this suite vacuously green, and
+#                                       run_all.sh judges a member by exit code
+#                                       alone. Set WITHOUT the arming key it is
+#                                       refused loudly and the full suite runs.
+#   REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS  with the arming key, replaces the
+#                                       `kill -0` liveness oracle used by the
+#                                       startup sweep (consumed in
+#                                       govtest_slice_reaper_lib.sh).
+#
 # Auto-discovered by tests/infra/run_all.sh (glob test_*.sh).
 # No cargo/npm builds — pure shell/cgroup hermetic assertions (host-gated).
 
@@ -32,35 +94,137 @@ LIB="$REPO_ROOT/scripts/lib_cgroup.sh"
 # shellcheck source=tests/infra/test_helpers.sh
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# Slice lifecycle (task 6386): owns the naming, the unconditional teardown and
+# the two startup sweeps for this run's private reify-test$$ slices. MANDATORY,
+# the same missing-file-is-a-broken-checkout idiom as test_helpers.sh above and
+# as test_cpu_load_governance.sh uses for this same library — without it this
+# script would create five systemd user units it has no way to clean up, which
+# is the leak the library exists to close.
+GOVTEST_SLICE_REAPER_LIB="$SCRIPT_DIR/govtest_slice_reaper_lib.sh"
+[ -f "$GOVTEST_SLICE_REAPER_LIB" ] || {
+    echo "ERROR: govtest_slice_reaper_lib.sh not found at $GOVTEST_SLICE_REAPER_LIB" >&2
+    exit 1
+}
+# shellcheck source=tests/infra/govtest_slice_reaper_lib.sh
+source "$GOVTEST_SLICE_REAPER_LIB"
+
+# This file's namespace. The library defaults to test_cpu_load_governance.sh's
+# `reify-govtest` profile at source time, so the switch is explicit and local.
+# The setter validates both the prefix and every suffix; a dash inside a suffix
+# is refused precisely because it would re-create the implicit-parent leak the
+# D7/D8 rename closes.
+govtest_profile_set reify-test agents merge taskweight mergeweight
+
 echo "=== cpu-governed-exec.sh tests (task 4632) — host-exclusive real-scope placement (D) ==="
 
 # ---------------------------------------------------------------------------
 # Hermetic workdir — cleaned up on exit.
 # ---------------------------------------------------------------------------
 WORK="$(mktemp -d)"
-# Per-run unique slice names used for D7/D8 isolation (avoid cross-test
-# races on the shared reify-governed-agents/merge slices — see D7 comment).
-D7_TASK_SLICE="reify-test-task-$$.slice"
-D8_MERGE_SLICE="reify-test-merge-$$.slice"
 
-# Per-run unique PRIVATE slice hierarchy for D1-D6 isolation (task 4919):
-# shared-parent $$-scoped slices so cpu-governed-exec.sh's slice-weight-set +
-# scope placement never touch the live production reify-governed-*.slice
-# hierarchy (which the running orchestrator's governance depends on).
-# systemd dash-nesting (a-b-c.slice -> a.slice/a-b.slice/a-b-c.slice) gives
-# task+merge a COMMON parent (D_PARENT_SLICE), faithfully mirroring the
-# production reify-governed.slice/reify-governed-<agents|merge>.slice
-# two-level hierarchy that D1a/D3a assert.
-D_PARENT_SLICE="reify-test$$.slice"
-D_TASK_SLICE="reify-test$$-agents.slice"
-D_MERGE_SLICE="reify-test$$-merge.slice"
+# Per-run unique PRIVATE slice hierarchy (task 4919), now derived from the
+# library so the names, the teardown list and the sweep grammar cannot drift
+# apart — this file spells no slice literal of its own.
+#
+# D1-D6 use a shared-parent $$-scoped pair so cpu-governed-exec.sh's
+# slice-weight-set + scope placement never touch the live production
+# reify-governed-*.slice hierarchy (which the running orchestrator's governance
+# depends on). systemd dash-nesting (a-b-c.slice -> a.slice/a-b.slice/
+# a-b-c.slice) gives task+merge a COMMON parent (D_PARENT_SLICE), faithfully
+# mirroring the production reify-governed.slice/reify-governed-<agents|merge>
+# .slice two-level hierarchy that D1a/D3a assert.
+#
+# D7/D8 use two MORE $$-scoped children of that same parent (task 6386, the
+# rename: they were reify-test-task-$$.slice / reify-test-merge-$$.slice, whose
+# extra dash segment vivified the pidless implicit parents this file now
+# sweeps). They stay DISTINCT from D_TASK_SLICE/D_MERGE_SLICE rather than
+# reusing them: cgroup_set_slice_weight sets the slice's own CPUWeight, so D5's
+# REIFY_CPU_GOVERN_W_TASK=250 leaves D_TASK_SLICE at 250 and D7's
+# SLICE_WEIGHT==100 assertion would go red against it.
+D_PARENT_SLICE="$(govtest_slice_name "$$")"
+D_TASK_SLICE="$(govtest_slice_name "$$" agents)"
+D_MERGE_SLICE="$(govtest_slice_name "$$" merge)"
+D7_TASK_SLICE="$(govtest_slice_name "$$" taskweight)"
+D8_MERGE_SLICE="$(govtest_slice_name "$$" mergeweight)"
 # grep-BRE dot-escaped forms (a literal "." in a slice name must not match
-# "any char" when used inside a grep pattern).
+# "any char" when used inside a grep pattern). Only the three D1-D6 names need
+# one today — D7/D8 assert on SLICE_WEIGHT= lines, not on unit names — so the
+# other two are deliberately not minted rather than left unread; apply the same
+# "${NAME//./\\.}" idiom at the point of use if that ever changes.
 D_PARENT_SLICE_RE="${D_PARENT_SLICE//./\\.}"
 D_TASK_SLICE_RE="${D_TASK_SLICE//./\\.}"
 D_MERGE_SLICE_RE="${D_MERGE_SLICE//./\\.}"
 
-trap 'rm -rf "$WORK"; systemctl --user stop "$D7_TASK_SLICE" "$D8_MERGE_SLICE" "$D_TASK_SLICE" "$D_MERGE_SLICE" "$D_PARENT_SLICE" 2>/dev/null || true' EXIT
+# UNCONDITIONAL teardown (task 6386). This previously stopped a hand-written
+# list of five names, which had to be kept in step with five separate
+# assignments; govtest_slice_teardown derives all five from `$$` alone, so
+# there is nothing left to keep in step and no future call site that can forget
+# to. `systemctl --user stop` on a never-started slice is a harmless no-op
+# already swallowed by the library, so it needs no record of what was created.
+_cleanup_all() {
+    govtest_slice_teardown "$$"
+    rm -rf "$WORK"
+}
+trap '_cleanup_all' EXIT
+
+# Startup sweeps — installed AFTER the trap above (so the sweeps themselves are
+# covered) and BEFORE anything is created.
+#
+# (1) Predecessor runs stranded by an UNCATCHABLE exit. Measured in task 5930:
+#     a bash script blocked in a foreground command DOES run its EXIT trap on
+#     SIGTERM, SIGINT and SIGHUP, so only SIGKILL — a verify timeout, a harness
+#     reap, an OOM kill — can strand units, and that residue is what this
+#     clears. It never touches a live run's slices, which matters because
+#     run_all.sh schedules many lanes against ONE shared per-user systemd
+#     session.
+govtest_reap_stale "$$"
+
+# (2) The LEGACY pidless residue of the pre-rename naming, listed HERE rather
+#     than in the library because a naming history belongs to the file that
+#     made it. Each is stopped only once the fresh enumeration shows it has no
+#     dash-child left to cascade into, so this converges in two runs and then
+#     goes permanently silent — nothing in the repo produces these names any
+#     more. See govtest_legacy_stale for why the rule is "blocked by ANY
+#     dash-child" rather than deepest-first-in-one-pass.
+#
+#     TRANSITIONAL NOTE, so a re-reap does not read as a failure to converge.
+#     Convergence is per-HOST, not per-run, and the systemd user session is
+#     shared host-wide. Measured on the dev host 2026-08-21 while this change
+#     was still on its task branch: three consecutive runs drove the residue to
+#     zero, and a later run reaped the two leaves AGAIN — because 68 other warm
+#     lanes still had the pre-rename file checked out and one of them ran it in
+#     between. That is the sweep working, not failing: it re-reaped the leaves
+#     and still correctly left the root alone. Expect re-reaping until this
+#     lands on main and the lanes re-seed; only then does the producer set go
+#     empty and the sweep stay silent.
+govtest_reap_legacy reify-test-task.slice reify-test-merge.slice reify-test.slice
+
+# Lifecycle-only seam (task 6386): exit HERE, after the trap is installed and
+# both sweeps have run, so tests/infra/test_govtest_slice_reaper.sh can prove
+# the slice lifecycle is wired by driving this script for real. Without it that
+# proof would place five REAL systemd-run --user scopes, which the stub
+# systemctl cannot intercept because the wrapper shells out to a different
+# binary.
+#
+# TWO KEYS, NOT A COMMENT. This is the only knob in this file that can make a
+# host-exclusive gate exit GREEN having run zero placement rows, and run_all.sh
+# judges a member by EXIT CODE alone — it parses no "Results:" line — so a
+# single stray export (a verify_env entry, an operator shell, a future harness
+# forwarding REIFY_* wholesale) would silently turn this gate into a no-op that
+# still reports success. So it is armed only in conjunction with
+# REIFY_GOVTEST_TEST_MODE=1, a marker nothing in the repo sets outside that
+# test's drive. Disarmed, the request is refused LOUDLY and the full suite runs
+# — the failure mode of a stray var is then a noisy real run, never a quiet
+# vacuous pass.
+if [ "${REIFY_CPU_GOVEXEC_TEST_LIFECYCLE_ONLY:-0}" = "1" ]; then
+    if [ "${REIFY_GOVTEST_TEST_MODE:-0}" = "1" ]; then
+        echo "REIFY_CPU_GOVEXEC_TEST_LIFECYCLE_ONLY=1 — exiting after startup sweeps (slice-lifecycle drive only)"
+        exit 0
+    fi
+    echo "WARNING: REIFY_CPU_GOVEXEC_TEST_LIFECYCLE_ONLY=1 IGNORED — REIFY_GOVTEST_TEST_MODE=1 is not set." >&2
+    echo "WARNING: that seam would exit 0 having run zero placement rows, so it is refused unless" >&2
+    echo "WARNING: explicitly armed.  Running the FULL suite.  If this is a real run, unset the var." >&2
+fi
 
 # ---------------------------------------------------------------------------
 # host_supports_governance — gate helper for the host-dependent green path.

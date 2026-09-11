@@ -14,7 +14,9 @@ use reify_ir::{EnumDef, EnumVariantDef, VariantPayload};
 
 use crate::CompiledModule;
 use crate::compile_builder::ctx::CompilationCtx;
-use crate::type_resolution::{resolve_enum_type_with_args, resolve_type_expr_with_aliases};
+use crate::type_resolution::{
+    resolve_enum_type_with_args, resolve_type_expr_with_aliases, unresolved_alias_body_name,
+};
 
 /// Resolve each enum variant's named-field payload `TypeExpr`s into the IR's
 /// `VariantPayload::Named(Vec<(String, Type)>)` (task δ #3942).
@@ -147,10 +149,38 @@ pub(crate) fn resolve_enum_variant_payloads(
                             // trait-member (`traits.rs`) type resolution use.
                             match &type_expr.kind {
                                 reify_ast::TypeExprKind::Named { name, type_args }
-                                    if type_args.is_empty()
-                                        && enum_names.contains(name.as_str()) =>
+                                    if type_args.is_empty() =>
                                 {
-                                    Some(Type::Enum(name.clone()))
+                                    // `enum_names` is this phase's PRIVATE enum
+                                    // namespace — the ambient `RESOLUTION_ENUM_NAMES`
+                                    // set (which the deferred alias arm in
+                                    // `resolve_type_expr_with_aliases_kinded` consults)
+                                    // is NOT installed here. So `type AL = Zq` reaches
+                                    // this arm still spelled `AL`, and a raw
+                                    // `enum_names.contains("AL")` misses the enum-ness
+                                    // of its body. Hop the unresolved-alias chain to the
+                                    // name the body ultimately spells, and key BOTH the
+                                    // membership test and the resulting `Type::Enum` on
+                                    // it, so the payload type equals the direct
+                                    // spelling's (task 6259).
+                                    //
+                                    // Strictly additive: this runs only after
+                                    // `resolve_type_expr_with_aliases` above already
+                                    // returned `None`, a branch the direct spelling
+                                    // never reaches. `unresolved_alias_body_name`
+                                    // returns `None` for a non-alias (and for a
+                                    // resolved / parametric / non-bare-`Named`-bodied
+                                    // one), so the raw name is used unchanged there.
+                                    let lookup = unresolved_alias_body_name(
+                                        name,
+                                        &ctx.alias_registry,
+                                    )
+                                    .unwrap_or_else(|| name.clone());
+                                    if enum_names.contains(lookup.as_str()) {
+                                        Some(Type::Enum(lookup))
+                                    } else {
+                                        None
+                                    }
                                 }
                                 // Generic enum reference WITH type args — e.g. a
                                 // self-/sibling-referential `left: Tree<T>` inside
@@ -285,4 +315,50 @@ pub(crate) fn build_resolution_enums_from_cache(
 ) {
     ctx.resolution_enums = prelude_resolution_enums.to_vec();
     ctx.resolution_enums.extend(ctx.enum_defs.iter().cloned());
+}
+
+/// Build the MODULE-LOCAL enum shadow set installed via
+/// [`crate::type_resolution::LocalEnumShadowScope`] (task #5429; PRD
+/// `docs/prds/v0_6/uniform-member-access.md` §4 M5 / D8): every module-local
+/// `enum N` whose name is NOT also a module-local structure/occurrence name.
+///
+/// The two halves each carry a rule:
+/// - **`ctx.enum_defs`, not `ctx.resolution_enums`.** The former is module-local
+///   only; the latter is prelude ++ local. A PRELUDE enum must never shadow a
+///   LOCAL structure, or a user's own `structure def ThreadSystem` would be
+///   silently retyped to the stdlib `enum ThreadSystem`
+///   (`stdlib/ports_mechanical.ri:35`). Oracle:
+///   `enum_ctor_param_binding_tests::prelude_enum_does_not_shadow_local_structure`.
+/// - **Local structure/occurrence names subtracted.** A same-module
+///   `structure def N` still beats a same-module `enum N`, so the
+///   most-local-declaration-wins rule is applied conservatively — no behaviour
+///   change where today's answer is at least defensible. Oracle:
+///   `enum_ctor_param_binding_tests::local_structure_wins_over_same_named_local_enum`.
+///
+/// **Single source of truth, called once.** `compile_with_prelude_context_checked_with_config`
+/// installs the resulting scope ONCE around the whole phase sequence rather than
+/// per-phase. That is load-bearing, not tidiness: `phase_functions` and
+/// `phase_traits` run BEFORE `phase_entities`, so a scope installed only inside
+/// `phase_entities` left a trait requirement / fn signature param at
+/// `Type::StructureRef("Fit")` while the conforming structure's param lowered to
+/// `Type::Enum("Fit")` — the two disagreed and a previously-WARNING module
+/// became a hard ERROR (esc-5429-1). Oracles:
+/// `enum_ctor_param_binding_tests::{trait_member_typed_by_shadowing_local_enum_conforms,
+/// fn_param_typed_by_shadowing_local_enum_resolves_call}`.
+///
+/// Both inputs are final from `pre_pass::collect_decl_refs` onward, so the call
+/// site only needs to sit after that (it sits after
+/// [`build_resolution_enums_from_cache`], alongside the other enum-set setup).
+pub(crate) fn build_local_enum_shadow_set(ctx: &CompilationCtx) -> HashSet<String> {
+    let local_structure_names: HashSet<&str> = ctx
+        .seen_entity_names
+        .iter()
+        .filter(|(_, (_, kind))| *kind == "structure" || *kind == "occurrence")
+        .map(|(name, _)| name.as_str())
+        .collect();
+    ctx.enum_defs
+        .iter()
+        .map(|e| e.name.clone())
+        .filter(|n| !local_structure_names.contains(n.as_str()))
+        .collect()
 }

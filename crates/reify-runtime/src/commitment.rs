@@ -15,10 +15,16 @@ use std::time::Duration;
 use reify_eval::cache::NodeId;
 use reify_ir::NodeTraits;
 use crate::Priority;
-// Re-export the canonical NodeKind from reify-types so all existing call sites
-// (including reify_runtime::commitment::NodeKind in tests and concurrent_eval.rs)
-// continue to resolve transparently. The From<&NodeId> bridge impl lives in
-// reify-eval/src/cache.rs (the only orphan-rule-clean host; see PRD §4).
+// Re-export the canonical `NodeKind` from `reify-ir` (it lives in
+// `reify-ir/src/node_traits.rs`; the `reify-types` façade that originally
+// hosted it was retired in 3f3da9f03d, task η, #3775) so existing
+// `reify_runtime::commitment::NodeKind` call sites keep resolving
+// transparently. The live witness is this module's
+// `node_kind_reexport_identity` test; the other former beneficiary,
+// `concurrent_eval.rs`, was deleted alongside `concurrent.rs` in
+// c1b8dba3f7 (task ο, #5065). The `From<&NodeId>` bridge impl lives in
+// reify-eval/src/cache.rs (the only orphan-rule-clean host; see
+// docs/prds/v0_3/node-traits-unification.md §4).
 pub use reify_ir::NodeKind;
 
 /// Project-level configuration for the dual-threshold commitment policy.
@@ -55,7 +61,7 @@ pub enum NodeCommitmentOverride {
 
 /// Per-node commitment policy overrides, settable per instance and per type.
 ///
-/// Implements the precedence chain from architecture §7.3 (lines 751–767):
+/// Implements the precedence chain from architecture §7.3:
 ///   1. **Instance override** — highest priority; set via [`set_instance`](Self::set_instance)
 ///   2. **Type override** — applied by [`NodeKind`]; set via [`set_type`](Self::set_type)
 ///   3. **Default** — [`NodeCommitmentOverride::CommitIfSlow`] (lowest priority)
@@ -91,6 +97,11 @@ impl NodePolicyOverrides {
     /// 1. Instance override (if set for this exact node)
     /// 2. Type override (if set for the node's [`NodeKind`])
     /// 3. [`NodeCommitmentOverride::default()`] (`CommitIfSlow`)
+    ///
+    /// Has no production consumer today: the concurrent scheduler was
+    /// deleted with `concurrent.rs` in c1b8dba3f7 (task ο, #5065); every
+    /// remaining caller is a test.
+    // G-allow: retain-or-remove decision tracked in #7073; no production consumer, scheduler deleted — see doc above
     pub fn resolve(&self, node_id: &NodeId) -> NodeCommitmentOverride {
         if let Some(o) = self.instance_overrides.get(node_id) {
             return *o;
@@ -114,9 +125,9 @@ impl NodePolicyOverrides {
     /// 5. (Future) **Global fallback** — unconditional project default (not yet implemented)
     ///
     /// Level 4 subsumes the old hard `CommitIfSlow` default when `traits` are known.
-    /// The existing single-arg [`resolve`](Self::resolve) (consumed by the scheduler at
-    /// `concurrent.rs:358`) is **left unchanged** — level-4 is NOT wired into the
-    /// scheduler until task η/3581 (B4) lands the IMMEDIATE→never-cancelled short-circuit.
+    /// Its only production consumer is `render_inspection` in the `reify` CLI
+    /// binary (the `reify dev inspect-node` subcommand, δ step); unit tests in
+    /// this module also exercise it directly.
     pub fn resolve_with_traits(
         &self,
         node_id: &NodeId,
@@ -255,9 +266,14 @@ fn kind_from_name(pat: &str) -> Option<NodeKind> {
 ///
 /// **Q-3 note (PRD §12):** `default_overrides(Value, IMMEDIATE)` returns
 /// `AlwaysCancelWhenStale` because `IMMEDIATE` does not include `COMMITTABLE`.
-/// This is intentional: task η/3581 (B4) will add an IMMEDIATE→never-cancelled
-/// short-circuit at the scheduler before `resolve_with_traits` is wired into
-/// scheduler dispatch, making the cosmetic mismatch moot.
+/// This is intentional, and the mismatch stays cosmetic: the
+/// IMMEDIATE→never-cancelled guard was task η (#3581, B4), and the scheduler
+/// that would have consumed it was deleted with `concurrent.rs` in c1b8dba3f7
+/// (task ο, #5065), so no *scheduler dispatch* path observes the mismatch
+/// today. The only live reader is `reify dev inspect-node` (via
+/// [`resolve_with_traits`](NodePolicyOverrides::resolve_with_traits)), which
+/// reports the derived policy verbatim — so the mismatch **is** observable
+/// there, just not in dispatch.
 // G-allow: same-file caller only; audit counts cross-file refs
 pub fn default_overrides(_kind: NodeKind, traits: NodeTraits) -> NodeCommitmentOverride {
     if !traits.contains(NodeTraits::COMMITTABLE) {
@@ -1047,9 +1063,10 @@ mod tests {
 
     #[test]
     fn node_kind_reexport_identity() {
-        // Asserts that crate::commitment::NodeKind IS reify_types::NodeKind
-        // (the same type, not a wrapper). After step-6, this compiles because
-        // commitment re-exports via `pub use reify_types::NodeKind`.
+        // Asserts that crate::commitment::NodeKind IS reify_ir::NodeKind — the
+        // same type, not a wrapper — which is exactly what the module-head
+        // `pub use reify_ir::NodeKind` buys. This read `reify_types::NodeKind`
+        // until that façade crate was retired in 3f3da9f03d (task η, #3775).
         let _: reify_ir::NodeKind = crate::commitment::NodeKind::Value;
     }
 

@@ -1,4 +1,12 @@
-//! Pipeline helpers for parsing, compiling, and evaluating Reify source in tests.
+//! Shared test helpers.
+//!
+//! Most of this module is the `eval-helpers`-gated pipeline for parsing,
+//! compiling, and evaluating Reify source in tests. Alongside it sit un-gated
+//! helpers that need no engine: [`collect_value_ref_members`], which inspects
+//! an already-compiled expression, and [`missing_paths_under`], a filesystem
+//! path-existence filter shared by the test suites' skip-list guards.
+
+use std::path::Path;
 
 use reify_compiler::TopologyTemplate;
 use reify_core::{Diagnostic, DiagnosticLabel, ModulePath, Severity};
@@ -31,6 +39,54 @@ pub fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<String> {
         }
     });
     members
+}
+
+/// Return the subset of `rel_paths` that have no filesystem entry at
+/// `dir.join(rel)`.
+///
+/// This is the single source of truth for the SKIP_SET dead-key check — the
+/// guard that catches a skip-list entry naming a file that has since been
+/// renamed or deleted, which would otherwise silently disable coverage
+/// forever. It replaced the per-file copies of this `Path::exists` filter that
+/// each such guard used to open-code. This doc is the only place their shared
+/// contract is stated: a call site carries a pointer back here, not a copy.
+///
+/// # Contracts callers may rely on
+///
+/// - **The full offending set is returned.** This never short-circuits on the
+///   first miss, so a caller can report every stale key in one panic instead
+///   of forcing an operator to fix them one run at a time.
+/// - **Input order is preserved** (`filter` is order-preserving), so callers
+///   need not sort to get a stable, reviewable failure message.
+///
+/// # Arity is the caller's problem
+///
+/// Skip lists carry per-file metadata of differing shape, so this takes a
+/// plain iterator of relative paths and callers project their own tuple away
+/// at the call boundary — `SKIP_SET.iter().map(|(rel, _)| *rel)`. That is what
+/// lets skip lists of differing arity share one implementation while staying
+/// private to their own crate: no cross-crate coupling of the skip lists is
+/// created or implied.
+///
+/// # Filesystem semantics
+///
+/// Existence is [`Path::exists`], which follows symlinks and does not
+/// distinguish a file from a directory. A broken symlink therefore reports as
+/// *missing* — pinned by
+/// `test_missing_paths_under_reports_dangling_symlink_as_missing` below.
+///
+/// Any other condition under which `Path::exists` answers `false` — an
+/// unreadable parent directory, say — likewise reports as *missing*. That is a
+/// consequence of `Path::exists`, not a separately pinned behaviour: no test
+/// below exercises it.
+pub fn missing_paths_under<'a>(
+    dir: &Path,
+    rel_paths: impl IntoIterator<Item = &'a str>,
+) -> Vec<&'a str> {
+    rel_paths
+        .into_iter()
+        .filter(|rel| !dir.join(rel).exists())
+        .collect()
 }
 
 /// Create a new `Engine` backed by a fresh `MockConstraintChecker` and no
@@ -671,46 +727,178 @@ pub fn run_modify_pipeline(
     (result, ops)
 }
 
-/// Retrieve the compiled `default_expr` of a let binding by name from a named template.
+/// Retrieve the `ValueCellDecl` of a value cell by name from a named template.
+///
+/// Resolves any value cell — `let` bindings and `param`s (defaulted or `auto`) alike —
+/// since lookup keys on the cell's member name, not its kind.
+///
+/// This is the cell-level primitive: it returns the full declaration (kind,
+/// visibility, is_aux, cell_type, default_expr, ...) rather than just the
+/// compiled default expression. Callers needing only the compiled default
+/// expression should prefer [`get_let_expr_in`], which delegates here.
+///
+/// Resolution keys on `id.member` alone; `id.entity` is not considered. A
+/// template holding two value cells that share a member name under
+/// different entities cannot be resolved this way, and this function
+/// panics, naming the colliding entities (see # Panics). The realistic
+/// producer is a scoped sub/connect `Auto` cell (`id.entity =
+/// "Parent.sub"`, `default_expr: None`) sitting alongside the parent's own
+/// same-named cell — real `.ri` source produces this with zero diagnostics,
+/// e.g. `sub v : Vent { area = auto }` next to a parent `let area = ...`.
+/// If a specific entity's cell matters, disambiguate before calling, e.g.
+/// by searching `template.value_cells` directly for the desired
+/// `id.entity`. [`get_let_expr_in_template`] shares this same resolution
+/// walk and is subject to the identical ambiguity contract.
+///
+/// # Panics
+/// - `"no template named '{template_name}'"` if no template with that name exists.
+/// - `"no value cell named '{cell_name}' in template '{template_name}'; has: [...]"` if the
+///   cell is absent — the panic lists the `entity.member` of every cell the template does carry.
+/// - `"ambiguous cell name '{cell_name}' in template '{template_name}'"` if more than one value
+///   cell shares that member name, naming the colliding entities.
+#[track_caller]
+pub fn get_value_cell_in<'a>(
+    module: &'a reify_compiler::CompiledModule,
+    template_name: &str,
+    cell_name: &str,
+) -> &'a reify_compiler::ValueCellDecl {
+    let Some(template) = module.templates.iter().find(|t| t.name == template_name) else {
+        panic!("no template named '{template_name}'")
+    };
+    lookup_value_cell(template, cell_name)
+}
+
+/// THE single ambiguity-guarded cell walk, shared by [`get_value_cell_in`] and
+/// [`get_let_expr_in_template`]: resolves `cell_name` against
+/// `template.value_cells` by `id.member` alone; `id.entity` is not considered.
+///
+/// See `get_value_cell_in`'s rustdoc for the full ambiguity contract —
+/// the realistic producer of a collision and the disambiguation route.
+///
+/// # Panics
+/// - `"no value cell named '{cell_name}' in template '{template.name}'; has: [...]"` if no
+///   cell matches — the panic lists the `entity.member` of every cell the template does carry.
+/// - `"ambiguous cell name '{cell_name}' in template '{template.name}'"` if more than one
+///   value cell shares that member name, naming the colliding `id.entity` values.
+#[track_caller]
+fn lookup_value_cell<'a>(
+    template: &'a TopologyTemplate,
+    cell_name: &str,
+) -> &'a reify_compiler::ValueCellDecl {
+    let matching: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == cell_name)
+        .collect();
+    match matching.as_slice() {
+        [] => {
+            let available: Vec<String> = template
+                .value_cells
+                .iter()
+                .map(|vc| vc.id.to_string())
+                .collect();
+            panic!(
+                "no value cell named '{cell_name}' in template '{}'; has: {available:?}",
+                template.name
+            )
+        }
+        [only] => only,
+        many => {
+            let entities: Vec<&str> = many.iter().map(|vc| vc.id.entity.as_str()).collect();
+            panic!(
+                "ambiguous cell name '{cell_name}' in template '{}': {} value cells share this \
+                 member, under entities {entities:?}; this lookup resolves on id.member alone, \
+                 so disambiguate by searching `template.value_cells` for the desired id.entity",
+                template.name,
+                many.len()
+            )
+        }
+    }
+}
+
+/// THE single site of "has no default expr", shared by [`get_let_expr_in`] and
+/// [`get_let_expr_in_template`].
+///
+/// # Panics
+/// - `"value cell '{cell.id.member}' in '{template_name}' has no default expr"` if
+///   `default_expr` is `None`.
+#[track_caller]
+fn require_default_expr<'a>(
+    cell: &'a reify_compiler::ValueCellDecl,
+    template_name: &str,
+) -> &'a CompiledExpr {
+    cell.default_expr.as_ref().unwrap_or_else(|| {
+        let cell_name = &cell.id.member;
+        panic!("value cell '{cell_name}' in '{template_name}' has no default expr")
+    })
+}
+
+/// Retrieve the compiled `default_expr` of any value cell by name from a template you already hold.
+///
+/// Resolves any value cell carrying a `default_expr` — `let` bindings and defaulted
+/// `param`s alike — since lookup keys on the cell's member name, not its kind. A
+/// defaultless cell (e.g. an `auto` param) panics; see # Panics.
+///
+/// Reach for this when you're already holding a `&TopologyTemplate` directly — e.g. from
+/// [`compile_first_template`] or [`compile_template`], both of which return an *owned*
+/// `TopologyTemplate` and consume the compiled module in the process, so they cannot feed
+/// [`get_let_expr_in`]/[`get_let_expr`] (which both take `&CompiledModule`). Shares its
+/// cell-resolution walk with [`get_value_cell_in`]; see that function's rustdoc for the
+/// full ambiguity contract.
+///
+/// # Panics
+/// - `"no value cell named '{cell_name}' in template '{template.name}'; has: [...]"` if the
+///   cell is absent — the panic lists the `entity.member` of every cell the template does carry.
+/// - `"ambiguous cell name '{cell_name}' in template '{template.name}'"` if more than one value
+///   cell shares that member name (see [`get_value_cell_in`]'s rustdoc for the hazard).
+/// - `"value cell '{cell_name}' in '{template.name}' has no default expr"` if `default_expr` is `None`.
+#[track_caller]
+pub fn get_let_expr_in_template<'a>(
+    template: &'a TopologyTemplate,
+    cell_name: &str,
+) -> &'a CompiledExpr {
+    require_default_expr(lookup_value_cell(template, cell_name), &template.name)
+}
+
+/// Retrieve the compiled `default_expr` of any value cell by name from a named template.
 ///
 /// Variant of [`get_let_expr`] for multi-structure modules where `templates.first()` may
 /// not be the desired template. `get_let_expr` delegates to this function.
 ///
+/// Delegates to [`get_value_cell_in`] for template and cell resolution.
+///
 /// # Panics
-/// - `"no template named '{template_name}'"` if no template with that name exists.
-/// - `"no value cell named '{cell_name}' in template '{template_name}'"` if the cell is absent.
+/// - `"no template named '{template_name}'"` if no template with that name exists (raised by
+///   [`get_value_cell_in`]).
+/// - `"no value cell named '{cell_name}' in template '{template_name}'; has: [...]"` if the cell
+///   is absent (raised by [`get_value_cell_in`]).
+/// - `"ambiguous cell name '{cell_name}' in template '{template_name}'"` if more than one value
+///   cell shares that member name (raised by [`get_value_cell_in`]).
 /// - `"value cell '{cell_name}' in '{template_name}' has no default expr"` if `default_expr` is `None`.
+#[track_caller]
 pub fn get_let_expr_in<'a>(
     module: &'a reify_compiler::CompiledModule,
     template_name: &str,
     cell_name: &str,
 ) -> &'a CompiledExpr {
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == template_name)
-        .unwrap_or_else(|| panic!("no template named '{template_name}'"));
-    let cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == cell_name)
-        .unwrap_or_else(|| {
-            panic!("no value cell named '{cell_name}' in template '{template_name}'")
-        });
-    cell.default_expr.as_ref().unwrap_or_else(|| {
-        panic!("value cell '{cell_name}' in '{template_name}' has no default expr")
-    })
+    require_default_expr(
+        get_value_cell_in(module, template_name, cell_name),
+        template_name,
+    )
 }
 
-/// Retrieve the compiled `default_expr` of a let binding by name from the first template.
+/// Retrieve the compiled `default_expr` of any value cell by name from the first template.
 ///
 /// Convenience wrapper that delegates to [`get_let_expr_in`] using the name of the first
 /// template in the module. Use [`get_let_expr_in`] directly when the module has multiple
 /// templates and you need to target a specific one.
 ///
+/// Resolution and panic semantics for cell lookup: see [`get_let_expr_in_template`].
+///
 /// # Panics
 /// - `"expected at least one template in module"` if `templates` is empty.
-/// - Panics from [`get_let_expr_in`] if the cell or its default expr is absent.
+/// - Panics from [`get_let_expr_in`] if the cell is absent, ambiguous, or its default expr is absent.
+#[track_caller]
 pub fn get_let_expr<'a>(
     module: &'a reify_compiler::CompiledModule,
     name: &str,
@@ -827,10 +1015,65 @@ pub fn cell_value(result: &reify_eval::EvalResult, structure: &str, member: &str
     })
 }
 
+/// Sorted `member` list of every cell `result` produced for `entity` — used to
+/// make a missing-cell panic read as "mirror reintroduced" rather than
+/// "cell renamed".
+///
+/// Canonical replacement for the verbatim-duplicated `members_of` helper in
+/// `m8_3_stdlib_integration.rs` and `m8_4_stdlib_integration.rs` (task #5653;
+/// surfaced by task #5582 code review).
+#[cfg(feature = "eval-helpers")]
+pub fn members_of(result: &reify_eval::EvalResult, entity: &str) -> Vec<String> {
+    let mut members: Vec<String> = result
+        .values
+        .iter()
+        .filter(|(id, _)| id.entity == entity)
+        .map(|(id, _)| id.member.clone())
+        .collect();
+    members.sort();
+    members
+}
+
 #[cfg(test)]
 mod tests {
     use crate::fixtures::bracket_source;
     use reify_core::{Diagnostic, Severity};
+
+    /// Build a `reify_eval::EvalResult` from the only two fields these unit
+    /// tests ever vary. `EvalResult` derives no `Default`, so keeping its
+    /// 5-field literal in exactly ONE place means a new field on the struct is
+    /// a one-line fix here rather than an edit at every test site
+    /// (task #5653 review).
+    #[cfg(feature = "eval-helpers")]
+    fn eval_result(
+        values: reify_ir::ValueMap,
+        diagnostics: Vec<reify_core::Diagnostic>,
+    ) -> reify_eval::EvalResult {
+        reify_eval::EvalResult {
+            values,
+            diagnostics,
+            resolved_params: std::collections::HashMap::new(),
+            objective_provenance: std::collections::HashMap::new(),
+            structured_detail: vec![],
+        }
+    }
+
+    /// `eval_result`'s sibling for `reify_eval::CheckResult` — the
+    /// `assert_no_check_errors` tests below vary only `diagnostics`, so the same
+    /// one-place-to-edit rationale as `eval_result` applies: `CheckResult`
+    /// derives no `Default`, and open-coding its 5-field literal at each
+    /// `#[should_panic]` site would make a new struct field an edit at every one
+    /// of them (task #5653 review).
+    #[cfg(feature = "eval-helpers")]
+    fn check_result(diagnostics: Vec<reify_core::Diagnostic>) -> reify_eval::CheckResult {
+        reify_eval::CheckResult {
+            values: reify_ir::ValueMap::new(),
+            constraint_results: vec![],
+            diagnostics,
+            resolved_params: std::collections::HashMap::new(),
+            structured_detail: vec![],
+        }
+    }
 
     /// mesh_aabb: computes the correct (min, max) AABB over a known flat
     /// vertex buffer.
@@ -881,16 +1124,9 @@ mod tests {
     #[test]
     fn cell_value_returns_value_for_present_cell() {
         use reify_ir::ValueMap;
-        use std::collections::HashMap;
         let mut values = ValueMap::new();
         values.insert(reify_core::ValueCellId::new("S", "x"), reify_ir::Value::Bool(true));
-        let result = reify_eval::EvalResult {
-            values,
-            diagnostics: vec![],
-            resolved_params: HashMap::new(),
-            objective_provenance: HashMap::new(),
-            structured_detail: vec![],
-        };
+        let result = eval_result(values, vec![]);
         assert_eq!(super::cell_value(&result, "S", "x"), reify_ir::Value::Bool(true));
     }
 
@@ -901,15 +1137,121 @@ mod tests {
     #[should_panic(expected = "not found in eval result")]
     fn cell_value_panics_on_absent_cell() {
         use reify_ir::ValueMap;
-        use std::collections::HashMap;
-        let result = reify_eval::EvalResult {
-            values: ValueMap::new(),
-            diagnostics: vec![],
-            resolved_params: HashMap::new(),
-            objective_provenance: HashMap::new(),
-            structured_detail: vec![],
-        };
+        let result = eval_result(ValueMap::new(), vec![]);
         let _ = super::cell_value(&result, "Nope", "missing");
+    }
+
+    /// members_of: the returned member list is sorted ascending, independent of
+    /// the order the cells were inserted into the `ValueMap` (pins the explicit
+    /// `members.sort()`, so the helper never leaks `ValueMap` iteration order
+    /// into a panic message).
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn members_of_returns_sorted_members() {
+        use reify_ir::ValueMap;
+        let mut values = ValueMap::new();
+        // Inserted in deliberately NON-ascending member order.
+        values.insert(
+            reify_core::ValueCellId::new("Flange.pos", "zone_shape"),
+            reify_ir::Value::Bool(true),
+        );
+        values.insert(
+            reify_core::ValueCellId::new("Flange.pos", "nominal_zone"),
+            reify_ir::Value::Bool(true),
+        );
+        values.insert(
+            reify_core::ValueCellId::new("Flange.pos", "feature"),
+            reify_ir::Value::Bool(true),
+        );
+        let result = eval_result(values, vec![]);
+        let members = super::members_of(&result, "Flange.pos");
+        assert_eq!(
+            members,
+            vec!["feature", "nominal_zone", "zone_shape"],
+            "members must come back sorted ascending; got {members:?}",
+        );
+    }
+
+    /// members_of: only cells belonging to the queried entity are reported —
+    /// a same-named member on a *different* entity must not leak in (pins the
+    /// `id.entity == entity` filter).
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn members_of_filters_other_entities() {
+        use reify_ir::ValueMap;
+        let mut values = ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("Flange.pos", "a"),
+            reify_ir::Value::Bool(true),
+        );
+        values.insert(
+            reify_core::ValueCellId::new("Flange.flat", "b"),
+            reify_ir::Value::Bool(true),
+        );
+        let result = eval_result(values, vec![]);
+        let members = super::members_of(&result, "Flange.pos");
+        assert_eq!(
+            members,
+            vec!["a"],
+            "only Flange.pos's own members may be reported; got {members:?}",
+        );
+    }
+
+    /// members_of: the entity filter is EXACT equality, not a prefix/ancestor
+    /// match — a cell on the descendant entity `Flange.pos` must not be
+    /// reported for the query `Flange`.
+    ///
+    /// This is the case the call sites actually depend on: `m8_3_stdlib_integration`
+    /// asserts `members_of(&result, root)` is empty for the bare root names
+    /// `Position` / `Flatness` / … to prove no standalone mirror ROOT entity was
+    /// reintroduced. Under prefix semantics that assertion would instead fire on
+    /// any entity merely *starting with* the root name, silently changing what it
+    /// detects — and the sibling-only case above (`Flange.pos` vs `Flange.flat`)
+    /// would not catch the swap, since neither name prefixes the other.
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn members_of_matches_entity_exactly_not_by_prefix() {
+        use reify_ir::ValueMap;
+        let mut values = ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("Flange", "own"),
+            reify_ir::Value::Bool(true),
+        );
+        values.insert(
+            reify_core::ValueCellId::new("Flange.pos", "descendant"),
+            reify_ir::Value::Bool(true),
+        );
+        let result = eval_result(values, vec![]);
+        let members = super::members_of(&result, "Flange");
+        assert_eq!(
+            members,
+            vec!["own"],
+            "querying `Flange` must report only its OWN members, never the \
+             descendant entity `Flange.pos`'s — the filter is `==`, not \
+             `starts_with`; got {members:?}",
+        );
+    }
+
+    /// members_of: an entity with no cells yields an empty `Vec` rather than
+    /// panicking — the contract difference from its neighbour `cell_value`,
+    /// which panics on a missing cell. Every call site invokes `members_of`
+    /// *inside* a panic-message formatter, so a panic here would mask the
+    /// caller's own diagnostic.
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn members_of_returns_empty_for_unknown_entity() {
+        use reify_ir::ValueMap;
+        let mut values = ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("Flange.pos", "a"),
+            reify_ir::Value::Bool(true),
+        );
+        let result = eval_result(values, vec![]);
+        let members = super::members_of(&result, "NoSuchEntity");
+        assert!(
+            members.is_empty(),
+            "an unknown entity must yield an empty list, not panic; got {members:?}",
+        );
     }
 
     /// assert_no_eval_errors should not panic when the result has no diagnostics.
@@ -917,14 +1259,7 @@ mod tests {
     #[test]
     fn test_assert_no_eval_errors_passes_on_clean_result() {
         use reify_ir::ValueMap;
-        use std::collections::HashMap;
-        let result = reify_eval::EvalResult {
-            values: ValueMap::new(),
-            diagnostics: vec![],
-            resolved_params: HashMap::new(),
-            objective_provenance: HashMap::new(),
-            structured_detail: vec![],
-        };
+        let result = eval_result(ValueMap::new(), vec![]);
         super::assert_no_eval_errors(&result);
     }
 
@@ -934,16 +1269,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "eval errors")]
     fn test_assert_no_eval_errors_panics_on_error_diagnostic() {
-        use reify_core::Diagnostic;
         use reify_ir::ValueMap;
-        use std::collections::HashMap;
-        let result = reify_eval::EvalResult {
-            values: ValueMap::new(),
-            diagnostics: vec![Diagnostic::error("something went wrong")],
-            resolved_params: HashMap::new(),
-            objective_provenance: HashMap::new(),
-            structured_detail: vec![],
-        };
+        let result = eval_result(ValueMap::new(), vec![Diagnostic::error("something went wrong")]);
         super::assert_no_eval_errors(&result);
     }
 
@@ -951,15 +1278,7 @@ mod tests {
     #[cfg(feature = "eval-helpers")]
     #[test]
     fn test_assert_no_check_errors_passes_on_clean_result() {
-        use reify_ir::ValueMap;
-        use std::collections::HashMap;
-        let result = reify_eval::CheckResult {
-            values: ValueMap::new(),
-            constraint_results: vec![],
-            diagnostics: vec![],
-            resolved_params: HashMap::new(),
-            structured_detail: vec![],
-        };
+        let result = check_result(vec![]);
         super::assert_no_check_errors(&result);
     }
 
@@ -969,16 +1288,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "check errors")]
     fn test_assert_no_check_errors_panics_on_error_diagnostic() {
-        use reify_core::Diagnostic;
-        use reify_ir::ValueMap;
-        use std::collections::HashMap;
-        let result = reify_eval::CheckResult {
-            values: ValueMap::new(),
-            constraint_results: vec![],
-            diagnostics: vec![Diagnostic::error("something went wrong")],
-            resolved_params: HashMap::new(),
-            structured_detail: vec![],
-        };
+        let result = check_result(vec![Diagnostic::error("something went wrong")]);
         super::assert_no_check_errors(&result);
     }
 
@@ -987,16 +1297,7 @@ mod tests {
     #[cfg(feature = "eval-helpers")]
     #[test]
     fn test_assert_no_check_errors_passes_with_warnings_only() {
-        use reify_core::Diagnostic;
-        use reify_ir::ValueMap;
-        use std::collections::HashMap;
-        let result = reify_eval::CheckResult {
-            values: ValueMap::new(),
-            constraint_results: vec![],
-            diagnostics: vec![Diagnostic::warning("just a warning")],
-            resolved_params: HashMap::new(),
-            structured_detail: vec![],
-        };
+        let result = check_result(vec![Diagnostic::warning("just a warning")]);
         // Should not panic — warnings are not errors
         super::assert_no_check_errors(&result);
     }
@@ -1006,16 +1307,8 @@ mod tests {
     #[cfg(feature = "eval-helpers")]
     #[test]
     fn test_assert_no_eval_errors_ignores_warnings() {
-        use reify_core::Diagnostic;
         use reify_ir::ValueMap;
-        use std::collections::HashMap;
-        let result = reify_eval::EvalResult {
-            values: ValueMap::new(),
-            diagnostics: vec![Diagnostic::warning("just a warning")],
-            resolved_params: HashMap::new(),
-            objective_provenance: HashMap::new(),
-            structured_detail: vec![],
-        };
+        let result = eval_result(ValueMap::new(), vec![Diagnostic::warning("just a warning")]);
         // Should not panic — warnings are not errors
         super::assert_no_eval_errors(&result);
     }
@@ -1025,14 +1318,7 @@ mod tests {
     #[test]
     fn test_assert_eval_clean_passes_on_empty_result() {
         use reify_ir::ValueMap;
-        use std::collections::HashMap;
-        let result = reify_eval::EvalResult {
-            values: ValueMap::new(),
-            diagnostics: vec![],
-            resolved_params: HashMap::new(),
-            objective_provenance: HashMap::new(),
-            structured_detail: vec![],
-        };
+        let result = eval_result(ValueMap::new(), vec![]);
         super::assert_eval_clean(&result);
     }
 
@@ -1042,16 +1328,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "expected no diagnostics")]
     fn test_assert_eval_clean_panics_on_warning() {
-        use reify_core::Diagnostic;
         use reify_ir::ValueMap;
-        use std::collections::HashMap;
-        let result = reify_eval::EvalResult {
-            values: ValueMap::new(),
-            diagnostics: vec![Diagnostic::warning("just a warning")],
-            resolved_params: HashMap::new(),
-            objective_provenance: HashMap::new(),
-            structured_detail: vec![],
-        };
+        let result = eval_result(ValueMap::new(), vec![Diagnostic::warning("just a warning")]);
         super::assert_eval_clean(&result);
     }
 
@@ -1554,20 +1832,267 @@ mod tests {
         super::assert_no_diagnostics(&diags, "guard compile");
     }
 
-    // ── get_let_expr_in ───────────────────────────────────────────────────
+    // ── get_value_cell_in ─────────────────────────────────────────────────
+    // get_value_cell_in, get_let_expr_in_template, get_let_expr_in, and
+    // get_let_expr all resolve through the shared lookup_value_cell walk, so
+    // the not-found and ambiguity panics pinned once below (on
+    // get_value_cell_in) apply identically at all four entry points — no
+    // per-entry-point duplicate is added for either panic.
 
-    /// get_let_expr_in should return the default_expr of the named cell in the
-    /// named template, even when the module has multiple templates.
-    /// Uses non-integer floats (1.5, 2.7) because whole-number float literals
-    /// (e.g. 1.0, 2.0) are compiled as Type::Int by the Reify compiler when
-    /// they satisfy `*v == (*v as i64) as f64`.
+    /// Shared fixture: two templates both declare `w` with different values, so a
+    /// wrong-template resolution is observable in the assertion.
+    const ALPHA_BETA_W: &str = r#"
+        structure Alpha { let w = 1.5 }
+        structure Beta  { let w = 2.7 }
+    "#;
+
+    /// Asserts `expr` is `CompiledExprKind::Literal(Value::Real(expected))`.
+    /// Shared by every test that resolves a real-literal default expr and
+    /// checks its value — the module's single real-literal comparison policy
+    /// (exact equality: both sides come from the same literal parse, so no
+    /// epsilon is needed).
+    fn assert_real_literal(expr: &reify_ir::CompiledExpr, expected: f64) {
+        use reify_ir::{CompiledExprKind, Value};
+
+        match &expr.kind {
+            CompiledExprKind::Literal(Value::Real(v)) => {
+                assert_eq!(*v, expected, "expected literal {expected}, got {v}")
+            }
+            other => {
+                panic!("expected CompiledExprKind::Literal(Value::Real({expected})), got {other:?}")
+            }
+        }
+    }
+
+    /// Resolves `Beta.w` and asserts `kind`, `cell_type`, and the default expr literal.
     #[test]
-    fn test_get_let_expr_in_finds_named_template() {
+    fn test_get_value_cell_in_returns_cell_from_named_template() {
+        let module = super::compile_source(ALPHA_BETA_W);
+        let cell = super::get_value_cell_in(&module, "Beta", "w");
+        assert_eq!(
+            cell.kind,
+            reify_compiler::ValueCellKind::Let,
+            "expected cell.kind == ValueCellKind::Let for Beta.w (pins that the \
+             helper returns the full declaration, not just an expr), got {:?}",
+            cell.kind
+        );
+        assert_eq!(
+            cell.cell_type,
+            reify_core::Type::dimensionless_scalar(),
+            "expected cell_type == Type::dimensionless_scalar() for Beta.w, got {:?}",
+            cell.cell_type
+        );
+        assert_real_literal(
+            cell.default_expr
+                .as_ref()
+                .expect("Beta.w should have a default expr"),
+            2.7,
+        );
+    }
+
+    /// get_value_cell_in should panic with "no template named" when the template
+    /// name does not match any template in the module.
+    #[test]
+    #[should_panic(expected = "no template named")]
+    fn test_get_value_cell_in_panics_on_missing_template() {
+        let source = r#"structure S { let v = 1.0 }"#;
+        let module = super::compile_source(source);
+        super::get_value_cell_in(&module, "DoesNotExist", "v");
+    }
+
+    /// get_value_cell_in should panic with "no value cell named" when the cell
+    /// name does not match any value cell in the named template.
+    #[test]
+    #[should_panic(expected = "no value cell named")]
+    fn test_get_value_cell_in_panics_on_missing_cell() {
+        let source = r#"structure S { let x = 1.0 }"#;
+        let module = super::compile_source(source);
+        super::get_value_cell_in(&module, "S", "y");
+    }
+
+    /// Pins that the not-found panic enumerates the template's actual cells
+    /// as `entity.member`, rather than an empty or truncated list.
+    #[test]
+    #[should_panic(expected = "[\"First.x\", \"Second.x\"]")]
+    fn test_get_value_cell_in_missing_cell_panic_lists_available_cells() {
+        use reify_core::ModulePath;
+
+        let module = crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(ambiguous_x_template())
+            .build();
+        super::get_value_cell_in(&module, "Bracket", "y");
+    }
+
+    /// Shared fixture: a module with template `S` and an `auto_param` cell `x`,
+    /// the only way to produce a `default_expr: None` cell in compiled output.
+    fn auto_param_module() -> reify_compiler::CompiledModule {
+        use reify_core::{ModulePath, Type};
+        let template = crate::builders::TopologyTemplateBuilder::new("S")
+            .auto_param("S", "x", Type::dimensionless_scalar())
+            .build();
+        let cell = template
+            .value_cells
+            .iter()
+            .find(|vc| vc.id.member == "x")
+            .expect("auto_param should have added cell 'x'");
+        assert!(
+            cell.default_expr.is_none(),
+            "auto_param must produce default_expr = None for this fixture's intent"
+        );
+        crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template)
+            .build()
+    }
+
+    /// Asserts the cell is returned (not panicked on) when its default_expr is None.
+    #[test]
+    fn test_get_value_cell_in_returns_cell_with_no_default_expr() {
+        let module = auto_param_module();
+        let cell = super::get_value_cell_in(&module, "S", "x");
+        assert_eq!(
+            cell.id.member, "x",
+            "expected get_value_cell_in to return the cell named 'x', got {:?}",
+            cell.id.member
+        );
+        assert!(
+            cell.default_expr.is_none(),
+            "auto_param_module's fixture guarantees default_expr = None; \
+             get_value_cell_in must return the cell as-is, not synthesize a default"
+        );
+    }
+
+    /// Pins that two value cells sharing a member name under different
+    /// entities panic, rather than silently resolving to the first declared.
+    #[test]
+    #[should_panic(expected = "ambiguous cell name")]
+    fn test_get_value_cell_in_panics_on_ambiguous_member() {
+        use reify_core::ModulePath;
+
+        let module = crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(ambiguous_x_template())
+            .build();
+        super::get_value_cell_in(&module, "Bracket", "x");
+    }
+
+    // ── get_let_expr_in_template ────────────────────────────────────────────
+
+    /// get_let_expr_in_template should return the default_expr of the named
+    /// cell directly from a template the caller already holds (no module or
+    /// template-name resolution step).
+    /// The fixture uses a real-form literal (`1.5`) because the assertion is on
+    /// `result_type`: `classify_number_literal` (reify-ast/src/decl.rs) maps any
+    /// real-form token — one containing `.`, `e`, or `E`, whole-number or not —
+    /// to `Real`, and only integer-form tokens (`1`) reach the `Int` branch. So
+    /// `1.0` would work here too; `1` would not.
+    #[test]
+    fn test_get_let_expr_in_template_finds_cell() {
+        let (template, _) = super::compile_first_template(r#"structure Alpha { let v = 1.5 }"#);
+        let expr = super::get_let_expr_in_template(&template, "v");
+        assert_eq!(
+            expr.result_type,
+            reify_core::Type::dimensionless_scalar(),
+            "expected result_type == Type::dimensionless_scalar() for Alpha.v, got {:?}",
+            expr.result_type
+        );
+    }
+
+    /// Two value cells sharing member name "x" under different entities on
+    /// one "Bracket" template — the ambiguity fixture shared by the two
+    /// tests below. Both cells carry a default so a resolution failure can
+    /// only be the collision, never a missing default.
+    fn ambiguous_x_template() -> reify_compiler::TopologyTemplate {
+        use reify_core::Type;
+        use reify_ir::{CompiledExpr, Value};
+
+        crate::builders::TopologyTemplateBuilder::new("Bracket")
+            .param(
+                "First",
+                "x",
+                Type::dimensionless_scalar(),
+                Some(CompiledExpr::literal(
+                    Value::Real(1.5),
+                    Type::dimensionless_scalar(),
+                )),
+            )
+            .param(
+                "Second",
+                "x",
+                Type::Int,
+                Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
+            )
+            .build()
+    }
+
+    /// The two panic branches of `get_let_expr_in_template` ("no value cell
+    /// named" / "has no default expr") are intentionally NOT re-tested here.
+    /// `get_let_expr_in_template` and `get_let_expr_in` both resolve through
+    /// the shared `lookup_value_cell` / `require_default_expr` primitives, and
+    /// `test_get_let_expr_in_panics_on_missing_cell` /
+    /// `test_get_let_expr_in_panics_on_missing_default_expr` below already
+    /// exercise both branches through those primitives — duplicating them at
+    /// this layer would add coverage of the new entry point only, not of new
+    /// behavior (task #5831 review).
+    ///
+    /// What IS specific to this layer: `get_let_expr_in_template` matches on
+    /// `id.member` alone, so a template holding two value cells that share a
+    /// member name under different entities is unresolvable by member name
+    /// alone — there is no principled way to pick between them. This pins
+    /// that the lookup aborts rather than silently returning one of the two.
+    #[test]
+    #[should_panic(expected = "ambiguous cell name")]
+    fn test_get_let_expr_in_template_panics_on_ambiguous_member() {
+        let _ = super::get_let_expr_in_template(&ambiguous_x_template(), "x");
+    }
+
+    /// Pins that the ambiguity panic is actionable: it enumerates the
+    /// colliding `id.entity` values, in `value_cells` order, in its message.
+    /// Without this, a maintainer hitting the panic from
+    /// `test_get_let_expr_in_template_panics_on_ambiguous_member` learns only
+    /// that a collision occurred, not which entities collided — forcing them
+    /// to reproduce it by hand before they can disambiguate.
+    #[test]
+    #[should_panic(expected = "[\"First\", \"Second\"]")]
+    fn test_get_let_expr_in_template_ambiguity_panic_names_colliding_entities() {
+        let _ = super::get_let_expr_in_template(&ambiguous_x_template(), "x");
+    }
+
+    /// The realistic producer of a same-member collision is a scoped
+    /// sub/connect `Auto` cell (`id.entity = "Parent.sub"`, `default_expr:
+    /// None`) sitting alongside the parent's own same-named `let`/defaulted
+    /// `param` cell — real `.ri` source produces exactly this with zero
+    /// diagnostics, via `sub v : Vent { area = auto }` next to a parent
+    /// `let area = ...`. With the `sub` declared first, as below, the scoped
+    /// `Manifold.v` cell precedes `Manifold`'s own cell in `value_cells`, so
+    /// the ambiguity check must fire before the `default_expr` deref — not
+    /// after — or this fixture would report a missing default instead of an
+    /// ambiguity.
+    ///
+    /// The zero-diagnostics assertion below is a precondition guard: it
+    /// keeps a fixture that stops compiling cleanly from being misread as
+    /// this test failing to detect the ambiguity, rather than failing on the
+    /// precondition with a message naming the actual diagnostics.
+    #[test]
+    #[should_panic(expected = "ambiguous cell name")]
+    fn test_get_let_expr_in_template_ambiguity_beats_missing_default_expr() {
         let source = r#"
-            structure Alpha { let v = 1.5 }
-            structure Beta  { let w = 2.7 }
+            structure def Vent { param area : Length = 1mm }
+            structure def Manifold {
+                sub v : Vent { area = auto }
+                let area = 2mm
+            }
         "#;
         let module = super::compile_source(source);
+        super::assert_no_diagnostics(&module.diagnostics, "Vent/Manifold fixture");
+
+        let _ = super::get_let_expr_in(&module, "Manifold", "area");
+    }
+
+    // ── get_let_expr_in ───────────────────────────────────────────────────
+
+    /// Resolves `Beta.w` across multiple templates and asserts `result_type` and the literal.
+    #[test]
+    fn test_get_let_expr_in_finds_named_template() {
+        let module = super::compile_source(ALPHA_BETA_W);
         let expr = super::get_let_expr_in(&module, "Beta", "w");
         assert_eq!(
             expr.result_type,
@@ -1575,10 +2100,14 @@ mod tests {
             "expected result_type == Type::dimensionless_scalar() for Beta.w, got {:?}",
             expr.result_type
         );
+        assert_real_literal(expr, 2.7);
     }
 
     /// get_let_expr_in should panic with "no template named" when the template
-    /// name does not match any template in the module.
+    /// name does not match any template in the module. This panic is now raised
+    /// by get_value_cell_in (see its own tests above); kept here too as a
+    /// deliberate API-contract guard on get_let_expr_in's own public panic
+    /// behaviour, independent of its current delegating implementation.
     #[test]
     #[should_panic(expected = "no template named")]
     fn test_get_let_expr_in_panics_on_missing_template() {
@@ -1588,7 +2117,9 @@ mod tests {
     }
 
     /// get_let_expr_in should panic with "no value cell named" when the cell
-    /// name does not match any value cell in the named template.
+    /// name does not match any value cell in the named template. Same
+    /// deliberate API-contract guard rationale as the "no template named" test
+    /// above.
     #[test]
     #[should_panic(expected = "no value cell named")]
     fn test_get_let_expr_in_panics_on_missing_cell() {
@@ -1597,36 +2128,47 @@ mod tests {
         super::get_let_expr_in(&module, "S", "y");
     }
 
-    /// get_let_expr_in should panic with "has no default expr" for a value cell
-    /// whose default_expr is None. Uses a builder-synthesized module with an
-    /// auto_param (which always has default_expr = None) rather than a compiled
-    /// source, since a source-level `param` always carries a default in well-formed
-    /// compiled output.  The inline `assert!` below makes the precondition explicit:
-    /// if `auto_param` ever changes to synthesize a placeholder default, the guard
-    /// will fire loudly rather than silently letting the test pass for the wrong reason.
+    /// Asserts a panic with "has no default expr" when the cell's default_expr is None.
     #[test]
     #[should_panic(expected = "has no default expr")]
     fn test_get_let_expr_in_panics_on_missing_default_expr() {
-        use reify_core::{ModulePath, Type};
-        let template = crate::builders::TopologyTemplateBuilder::new("S")
-            .auto_param("S", "x", Type::dimensionless_scalar())
-            .build();
-        // Precondition: auto_param must produce default_expr = None; if that ever
-        // changes this guard fires before get_let_expr_in, surfacing the broken
-        // assumption clearly instead of silently exercising the wrong branch.
-        let cell = template
+        let module = auto_param_module();
+        super::get_let_expr_in(&module, "S", "x");
+    }
+
+    /// get_let_expr_in resolves a defaulted `param` cell exactly like a `let`
+    /// binding: lookup keys on `vc.id.member`, not cell kind, so lets and
+    /// defaulted params resolve identically. Fixture mirrors reify-compiler's
+    /// `constant_compile_tests::user_param_pi_shadows_builtin`.
+    #[test]
+    fn test_get_let_expr_in_resolves_defaulted_param_cell() {
+        use reify_compiler::ValueCellKind;
+
+        let source = "structure S {\n  param pi: Real = 1.5\n  let x = pi\n}";
+        let module = super::compile_source(source);
+        // Precondition: 'pi' really is a param cell carrying a default_expr,
+        // not a let — otherwise this test would pass for the wrong reason.
+        let cell = module
+            .templates
+            .first()
+            .expect("expected at least one template")
             .value_cells
             .iter()
-            .find(|vc| vc.id.member == "x")
-            .expect("auto_param should have added cell 'x'");
-        assert!(
-            cell.default_expr.is_none(),
-            "auto_param must produce default_expr = None for this test's intent"
+            .find(|vc| vc.id.member == "pi")
+            .expect("compiled module should have a value cell named 'pi'");
+        assert_eq!(
+            cell.kind,
+            ValueCellKind::Param,
+            "expected 'pi' to be a param cell, got {:?}",
+            cell.kind
         );
-        let module = crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
-            .template(template)
-            .build();
-        super::get_let_expr_in(&module, "S", "x");
+        assert!(
+            cell.default_expr.is_some(),
+            "expected 'pi' param cell to carry a default_expr"
+        );
+
+        let expr = super::get_let_expr_in(&module, "S", "pi");
+        assert_real_literal(expr, 1.5);
     }
 
     // ── get_let_expr ─────────────────────────────────────────────────────
@@ -1669,6 +2211,20 @@ mod tests {
         let module =
             crate::builders::CompiledModuleBuilder::new(ModulePath::single("empty")).build();
         super::get_let_expr(&module, "anything");
+    }
+
+    /// get_let_expr (first-template convenience wrapper) resolves a defaulted
+    /// `param` cell the same way it resolves a `let` binding. Together with
+    /// `test_get_let_expr_in_resolves_defaulted_param_cell`, this pins the
+    /// contract that these helpers are cell-KIND-agnostic: they key on
+    /// `vc.id.member` and unwrap `default_expr`, so lets and defaulted params
+    /// resolve identically.
+    #[test]
+    fn test_get_let_expr_resolves_defaulted_param_cell() {
+        let source = "structure S {\n  param pi: Real = 1.5\n  let x = pi\n}";
+        let module = super::compile_source(source);
+        let expr = super::get_let_expr(&module, "pi");
+        assert_real_literal(expr, 1.5);
     }
 
     // ── assert_no_type_cascade ────────────────────────────────────────────
@@ -1923,6 +2479,112 @@ mod tests {
             result_none.is_empty(),
             "expected empty result for OptionNone; got {:?}",
             result_none
+        );
+    }
+
+    // ─── missing_paths_under contract ─────────────────────────────────────
+
+    /// Prefix for every temp dir these `missing_paths_under` tests create, so
+    /// SIGKILL debris under `/tmp` stays attributable to this suite (see
+    /// `temp_dirs::prefixed_tempdir`'s "Names stay attributable" section).
+    const MISSING_PATHS_TEMPDIR_PREFIX: &str = "reify-missing-paths-under-";
+
+    /// Materialise a "present" fixture at `dir.join(rel)`, creating any parent
+    /// directories the forward-slash-separated `rel` implies.
+    fn touch_under(dir: &std::path::Path, rel: &str) {
+        let path = dir.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .unwrap_or_else(|e| panic!("create parent dirs for fixture {rel:?}: {e}"));
+        }
+        std::fs::write(&path, "// present fixture\n")
+            .unwrap_or_else(|e| panic!("write fixture {rel:?}: {e}"));
+    }
+
+    /// missing_paths_under: over a mixed skip list, exactly the entries with no
+    /// file on disk come back — in input order.
+    ///
+    /// One case carries the whole contract on purpose. Entries are ordered
+    /// missing, present, missing, present, so neither a short-circuit on the
+    /// first miss nor an off-by-one can pass; the comparison is made WITHOUT
+    /// sorting, so an order-scrambling implementation cannot pass either; and
+    /// the keys are nested, forward-slash-separated paths — the real SKIP_SET
+    /// key shape — so `dir.join(rel)` resolution is exercised for a present
+    /// nested file, a missing sibling, and a path under an entirely absent
+    /// subdirectory.
+    #[test]
+    fn test_missing_paths_under_flags_only_missing_entries_in_input_order() {
+        let guard = crate::temp_dirs::prefixed_tempdir(MISSING_PATHS_TEMPDIR_PREFIX);
+        let dir = guard.path();
+        touch_under(dir, "topology_selectors/fillet_top_edges.ri");
+        touch_under(dir, "present.ri");
+
+        let missing = super::missing_paths_under(
+            dir,
+            [
+                "topology_selectors/deleted_by_a_rename.ri",
+                "topology_selectors/fillet_top_edges.ri",
+                "auto/never_existed.ri",
+                "present.ri",
+            ],
+        );
+
+        assert_eq!(
+            missing,
+            vec![
+                "topology_selectors/deleted_by_a_rename.ri",
+                "auto/never_existed.ri"
+            ],
+            "expected exactly the two entries with no file on disk, in input order and \
+             compared without sorting: an implementation that short-circuited on the first \
+             miss would drop 'auto/never_existed.ri', and neither materialised fixture \
+             (nested or top-level) may be flagged; got {missing:?}"
+        );
+    }
+
+    /// missing_paths_under: an empty input iterator yields an empty `Vec`
+    /// rather than panicking, even when `dir` names a path that does not
+    /// exist. (Whether the call touches the filesystem at all is not something
+    /// this test can observe, so it does not claim it.)
+    #[test]
+    fn test_missing_paths_under_empty_input_yields_empty_vec() {
+        let empty: [&str; 0] = [];
+        let missing =
+            super::missing_paths_under(std::path::Path::new("/definitely/not/a/real/dir"), empty);
+
+        assert!(
+            missing.is_empty(),
+            "expected an empty input iterator to yield an empty Vec, even for a `dir` that \
+             does not exist; got {missing:?}"
+        );
+    }
+
+    /// missing_paths_under: a dangling symlink reports as *missing*, pinning the
+    /// documented `Path::exists` semantics — it follows symlinks, so a link whose
+    /// target is gone is indistinguishable from an absent path.
+    ///
+    /// This is the one documented filesystem behaviour with a real failure mode
+    /// behind it: an `examples/` entry that decays into a dangling link trips a
+    /// SKIP_SET guard exactly as a deleted file would.
+    #[cfg(unix)]
+    #[test]
+    fn test_missing_paths_under_reports_dangling_symlink_as_missing() {
+        let guard = crate::temp_dirs::prefixed_tempdir(MISSING_PATHS_TEMPDIR_PREFIX);
+        let dir = guard.path();
+        touch_under(dir, "live_target.ri");
+        std::os::unix::fs::symlink(dir.join("live_target.ri"), dir.join("live_link.ri"))
+            .expect("create resolvable symlink fixture");
+        std::os::unix::fs::symlink(dir.join("deleted_target.ri"), dir.join("dangling_link.ri"))
+            .expect("create dangling symlink fixture");
+
+        let missing = super::missing_paths_under(dir, ["live_link.ri", "dangling_link.ri"]);
+
+        assert_eq!(
+            missing,
+            vec!["dangling_link.ri"],
+            "expected the symlink whose target is gone to report as missing and the one \
+             pointing at a live file not to — Path::exists resolves through the link; \
+             got {missing:?}"
         );
     }
 }

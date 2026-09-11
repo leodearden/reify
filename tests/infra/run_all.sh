@@ -221,6 +221,39 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# ---------------------------------------------------------------------------
+# Git repository-environment scrub (task #7106).
+#
+# The defect, its measurement and the variable list live in ONE place —
+# scripts/lib_git_env_scrub.sh's header — and are deliberately NOT restated
+# here; only this site's own reasoning is.
+#
+# Sourced HERE, at the top, rather than beside the pool wiring it was first
+# written for: run_all.sh makes SEVEN repo-targeting `git -C` calls of its OWN
+# (the flaky ledger's branch read, and the content-skip engine's toplevel /
+# diff / status / HEAD reads), and every one of them is the same `git -C is
+# outranked` class. The skip engine in particular is gated on
+# _RA_INBOUND_ROLE=merge — i.e. it runs ONLY under the hook environment that
+# actually exports GIT_INDEX_FILE — and `git status` both reads and (stat-cache
+# refresh) can WRITE the index that variable names. Sourcing before every git
+# call site, rather than merely before the member spawns, is what makes the
+# helper reachable from all of them by construction.
+#
+# UNCONDITIONAL and hard-required (never fail-open): the legacy all-serial
+# fallback path spawns members too, and a silently-absent scrub is the exact
+# defect this closes. run_all.sh is always invoked as $SCRIPT_DIR/run_all.sh
+# from the real tests/infra (only INFRA_DIR is ever redirected at a fixture),
+# so this path always resolves — deliberately derived from SCRIPT_DIR rather
+# than $_H2_REPO_ROOT, which is not resolved until much further down.
+# ---------------------------------------------------------------------------
+_RA_GIT_ENV_SCRUB_LIB="$SCRIPT_DIR/../../scripts/lib_git_env_scrub.sh"
+if [ ! -f "$_RA_GIT_ENV_SCRUB_LIB" ]; then
+    echo "run_all.sh: ERROR — scripts/lib_git_env_scrub.sh not found at $_RA_GIT_ENV_SCRUB_LIB" >&2
+    exit 1
+fi
+# shellcheck source=scripts/lib_git_env_scrub.sh
+source "$_RA_GIT_ENV_SCRUB_LIB"
+
 # Per-run identifier for the FLAKY ledger (task #5142): stamps every ledger
 # line so the chronic-offender scan (_ra_flaky_chronic_check) can window
 # over "the last M DISTINCT runs" exactly, even though a single run can
@@ -367,13 +400,162 @@ _RA_INTERRUPTED_EXIT_CODE=99
 # and Layer 2's anchored matcher covers their quoted-marker case regardless.
 _RA_CLOCK_SANITIZE='s/@@REIFY_CLOCK_/@@REIFY_QUOTED_CLOCK_/g'
 
-# _ra_emit_sanitized <captured-output-file>
-#   cat a captured per-test output file to stdout with clock-marker tokens
-#   neutralized. A missing file is a silent no-op, preserving the prior
-#   `cat "$f" 2>/dev/null || true` re-emit semantics exactly.
+# Rule 2 (task #6389) -- the SLOT-TIMEOUT sentinel family, a SEPARATE variable
+# rather than a widening of the clock rule above.
+#
+# Different consumer, different failure: this one is read by dark-factory's
+# verify FAILURE CLASSIFIER (orchestrator/src/orchestrator/verify_classify.py,
+# `_SLOT_TIMEOUT_SENTINEL_RE`, consumed by classify_failure), not by the
+# clock-stop timeout parser. A live `@@REIFY_SLOT_TIMEOUT@@` anywhere in the
+# aggregated verify-leg output makes DF classify the ENTIRE leg as
+# SEMAPHORE_TIMEOUT -- an infra hold, not a branch fault -- so the merge gate
+# blocks on a phantom starvation instead of reporting the real test failure.
+# run_all is a TEST RUNNER: a sentinel that arrived inside a MEMBER's captured
+# output is that member quoting or fixture-emitting the token, never a real
+# starved acquire by run_all itself, so neutralizing it here loses no signal.
+#
+# Same two pollution shapes as the clock family, and the same reason the
+# per-source stderr-diversion patches (tasks 6255/6278/6291/6353) cannot close
+# the class on their own: they keep an AUDITED member's own capture clean, but
+# a new or unaudited member that quotes the token in assertion prose walks
+# straight past them. Prefix rewrite keeps the text human-readable while
+# breaking DF's `^[ \t]*` line-anchored matcher.
+#
+# SEAM CARVE-OUT -- deliberately NOT covered, and it must stay that way:
+# run_all's OWN pool-wait sentinel. It rides the pool worker subshell's
+# INHERITED parent fd 2 (see the note at the _H2_POOL_TIMEOUT_REASON site
+# below); the `> .out 2>&1` redirect there is scoped to the member `bash`
+# command only, so that sentinel never enters this re-emission path at all.
+# It must keep reaching DF verbatim: run_all's pool wait is the one
+# finite-WAIT path absent from DF's three-basename allowlist, which makes the
+# sentinel its ONLY classification route. Pinned behaviourally by
+# tests/infra/test_slot_timeout_marker.sh Section C (C1/C2/C5).
+#
+# Scope: identical to the clock rule, and stated as the set of SITES rather
+# than a single path, because there are two -- everything that re-emits
+# through the shared helpers below: the concurrent-pool Phase-3 replay, AND
+# the `REIFY_RUN_ALL_MEMBER_SUBSET` retry loop (:1440 / :1452). Naming the
+# subset site explicitly matters more for this family than it did for the
+# clock one it borrows its phrasing from: that subset run IS dark-factory's
+# OWN retry (see the note at its call site) and therefore runs ON the
+# DF-parsed stream, so it is the path that most NEEDS the rule, not an
+# incidental extra a reader should have to infer. NOT the `--scope host-infra`
+# (H9) runner and NOT the legacy all-serial path -- neither re-emits through
+# these helpers at all.
+_RA_SLOT_SANITIZE='s/@@REIFY_SLOT_/@@REIFY_QUOTED_SLOT_/g'
+
+# Rule 3 (task #6389) -- dark-factory's OTHER slot anchor: the per-wrapper
+# `<basename>.sh: failed to acquire <what> within <N>s` deadline lines
+# (verify_classify.py `_SLOT_ACQUIRE_DEADLINE_RE`, three-basename allowlist:
+# lib_test_semaphore | cargo-test-occt-gated | lib_lane_x_flock).
+#
+# WHY A THIRD RULE AND NOT A WIDER RULE 2: these lines carry no `@@` token at
+# all, so a prefix rewrite is STRUCTURALLY INAPPLICABLE to them. They are a
+# second, independent route to the same SEMAPHORE_TIMEOUT verdict, and closing
+# only the sentinel half would leave the classification fully reachable.
+#
+# The three-name allowlist is DF's, transcribed here, so two sets must agree.
+# That it still equals reify's ACTUAL set of deadline-line emitters is
+# MACHINE-CHECKED (test_slot_timeout_marker.sh A6f/A6g derive both sides -- the
+# allowlist back out of this very expression, the emitters out of scripts/*.sh
+# -- so a fourth reify wrapper landing without a widened alternation turns RED
+# rather than silently escaping the rule). The DF half -- that DF's own
+# allowlist has not grown past these three -- is cross-repo and stays a
+# documented manual re-verification against verify_classify.py.
+#
+# MEASURED GROUNDING (esc-5623): the archived verify log that DF mislabelled as
+# a semaphore starvation contained ZERO anchored sentinels and exactly THREE of
+# these basename lines -- quoted by infra tests, not emitted by a real starved
+# acquire. Removing precisely those three lines flipped `classify_failure` from
+# `semaphore_timeout` to `test_failure`. The basename half was the whole cause.
+#
+# WHY `[quoted]` AND NOT AN INDENT: DF's matcher tolerates LEADING HORIZONTAL
+# WHITESPACE ONLY (`^[ \t]*`), so shifting the line right neutralizes nothing.
+# VERIFIED against the live regex, not assumed -- an indent still matches all
+# four grounded shapes (bare, indented, `ERROR: `-prefixed, and the
+# `within unlimiteds` wart) -- and pinned by test_slot_timeout_marker.sh H2c so
+# a future "just indent it" simplification turns RED. Inserting `[quoted]`
+# breaks the required `\.sh: failed to acquire` literal while keeping the
+# basename, the message, `LOCK=` and `N=` intact, so the diagnostic stays
+# readable and greppable for a human. Unanchored/global for the same reason the
+# clock rule is: the real HG-2 shape is a multi-line capture whose continuation
+# can land at any column.
+#
+# ACCEPTED TRADE-OFF: a GENUINE starved acquire inside a pool MEMBER now loses
+# both anchors from the re-emitted stream. That is the deliberate cost of a
+# systemic layer, and two things carry the load instead -- run_all's own fd-2
+# pool sentinel (below, never sanitized) stays the classifiable signal for the
+# runner's own starvation, and DF's failing-leg scoping means a member that
+# actually aborts on rc=75 still fails loudly with its own FAIL detail.
+#
+# Scope: the same as rules 1 and 2 -- the concurrent-pool Phase-3 replay and
+# the `REIFY_RUN_ALL_MEMBER_SUBSET` retry site (:1440 / :1452, dark-factory's
+# own retry, on the DF-parsed stream), i.e. everything routed through the two
+# shared helpers below; NOT `--scope host-infra` (H9) and NOT the legacy
+# all-serial path. run_all's OWN H9 Lane-X acquire failure line uses basename
+# `run_all.sh`, which is outside DF's three-name allowlist, and is
+# deliberately untouched.
+_RA_SLOT_BASENAME_SANITIZE='s/\(lib_test_semaphore\|cargo-test-occt-gated\|lib_lane_x_flock\)\.sh: failed to acquire /\1.sh[quoted]: failed to acquire /g'
+
+# THE APPLIED CHAIN, hoisted to exactly one definition (task #6389).
+#
+# Both re-emission helpers below sanitize, and they MUST sanitize identically:
+# _ra_emit_sanitized feeds the per-member replay and _ra_collect_fail_detail
+# feeds the Summary FAILED region that verify.sh / dark-factory's merge-gate
+# block reason quote verbatim. Written out as two independent `sed -e ... -e
+# ... -e ...` chains they agreed only by inspection -- a fourth rule wired into
+# one site and forgotten at the other would leave the other quietly
+# unsanitized, and nothing would notice. One shared array makes that drift
+# STRUCTURALLY impossible rather than merely tested-for, and
+# tests/infra/test_slot_timeout_marker.sh A6 resolves each helper's chain
+# through THIS definition (A6a) and asserts the two helpers' derived, ordered
+# rule lists are identical (A6e) -- so re-inlining a divergent chain at either
+# site is RED, not merely discouraged.
+#
+# Still separate `-e` expressions rather than one combined script: each rule
+# stays independently readable, independently commented, and independently
+# extractable BY NAME, which is what lets A6 report exactly which rules run.
+_RA_SANITIZE_SED=(-e "$_RA_CLOCK_SANITIZE" -e "$_RA_SLOT_SANITIZE" -e "$_RA_SLOT_BASENAME_SANITIZE")
+
+# _ra_note_slot_rewrite <captured-output-file> [member-name]
+#   Debuggability breadcrumb for $_RA_SLOT_BASENAME_SANITIZE (task #6389).
+#
+#   The sentinel rewrite announces itself -- `@@REIFY_QUOTED_SLOT_TIMEOUT@@`
+#   is visibly not the live token. The BASENAME rewrite deliberately does not:
+#   `lib_test_semaphore.sh[quoted]: failed to acquire ...` reads the same
+#   whether it came from a member quoting the line in assertion prose or from
+#   a member that hit a REAL rc=75 deadline and continued. run_all's own fd-2
+#   pool sentinel covers the runner's own starvation and DF's failing-leg
+#   scoping covers the abort-loudly case, but neither leaves a breadcrumb for
+#   that middle case -- so leave one here: one line, on run_all's OWN fd 2,
+#   naming the member and the count, so a human grepping a slow merge-verify
+#   log can tell a neutralized line from an untouched one.
+#
+#   Deliberately NOT anchored and deliberately not on stdout: it carries no
+#   `@@` token and no `<basename>.sh: failed to acquire ` literal, so it
+#   matches neither of DF's two slot patterns (pinned by H4b), and routing it
+#   to stderr keeps it out of the stdout block structure that run_all's own
+#   header/RESULT contracts are parsed from. Fail-open like every other
+#   diagnostic on this path (INV-4): an unreadable file or a failed write is a
+#   silent no-op and never changes an exit code.
+_ra_note_slot_rewrite() {
+    local _n
+    _n="$(grep -acE -- '(lib_test_semaphore|cargo-test-occt-gated|lib_lane_x_flock)\.sh: failed to acquire ' "$1" 2>/dev/null || true)"
+    [ "${_n:-0}" -gt 0 ] 2>/dev/null || return 0
+    echo "INFO: run_all.sh neutralized ${_n} captured slot-deadline line(s) from ${2:-$(basename "$1")} (see _RA_SLOT_BASENAME_SANITIZE)" >&2 || return 0
+}
+
+# _ra_emit_sanitized <captured-output-file> [member-name]
+#   cat a captured per-test output file to stdout with the marker families
+#   above neutralized, via the single shared $_RA_SANITIZE_SED chain. A
+#   missing file is a silent no-op, preserving the prior
+#   `cat "$f" 2>/dev/null || true` re-emit semantics exactly. The optional
+#   member name is diagnostics-only -- it labels the fd-2 breadcrumb above
+#   and never affects what is emitted to stdout.
 _ra_emit_sanitized() {
     [ -f "$1" ] || return 0
-    sed "$_RA_CLOCK_SANITIZE" "$1" 2>/dev/null || true
+    _ra_note_slot_rewrite "$1" "${2:-}"
+    sed "${_RA_SANITIZE_SED[@]}" "$1" 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
@@ -394,6 +576,17 @@ _ra_emit_sanitized() {
 # whitespace permitted), so it never matches this script's own indented
 # "  RESULT: FAIL (name)" lines.
 #
+# Sanitized with the SAME rule chain as _ra_emit_sanitized, and for a sharper
+# reason: this region is what verify.sh and dark-factory's merge-gate block
+# reason quote VERBATIM, so a marker token surviving here is quoted straight
+# into a block reason. It applies the SAME $_RA_SANITIZE_SED array as
+# _ra_emit_sanitized -- one definition, referenced twice -- so the two paths
+# cannot drift by construction rather than by inspection; that both sites
+# reference it is pinned by test_slot_timeout_marker.sh A6e, and the resulting
+# behaviour by H3 (slot family) and test_run_all.sh's T30e (clock family). The
+# collector's own grep anchors are a SEPARATE contract from the sanitizer and
+# are deliberately untouched.
+#
 # Fail-open: a missing/unreadable captured file, or zero matches, is a
 # silent no-op -- this is pure observability layered on the failure path and
 # must never itself become a new failure source or change any exit code
@@ -406,7 +599,7 @@ _ra_collect_fail_detail() {
     [ -f "$_file" ] || return 0
 
     local _matched
-    _matched="$(grep -aE '(^[[:space:]]*FAIL:|^[A-Za-z][A-Za-z0-9_]*[[:space:]]+FAIL([[:space:]]|$))' "$_file" 2>/dev/null | sed "$_RA_CLOCK_SANITIZE" || true)"
+    _matched="$(grep -aE '(^[[:space:]]*FAIL:|^[A-Za-z][A-Za-z0-9_]*[[:space:]]+FAIL([[:space:]]|$))' "$_file" 2>/dev/null | sed "${_RA_SANITIZE_SED[@]}" || true)"
     [ -n "$_matched" ] || return 0
 
     local _count
@@ -503,7 +696,7 @@ _ra_flaky_ledger_append() {
     command -v flock >/dev/null 2>&1 || return 0
 
     local _branch _task _line
-    _branch="$(git -C "$INFRA_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    _branch="$(reify_git_env_scrub git -C "$INFRA_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
     [ -n "$_branch" ] || _branch="unknown"
     case "$_branch" in
         task/*) _task="${_branch#task/}" ;;
@@ -867,8 +1060,8 @@ _ra_skip_engine() {
     [ -n "${REIFY_RUN_ALL_SKIP_STATE:-}" ] || return 0
     _RA_SKIP_ACTIVE=1
 
-    _RA_SKIP_TOPLEVEL="$(git -C "$INFRA_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
-    _RA_SKIP_INFRA_REL="$(git -C "$INFRA_DIR" rev-parse --show-prefix 2>/dev/null || true)"
+    _RA_SKIP_TOPLEVEL="$(reify_git_env_scrub git -C "$INFRA_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+    _RA_SKIP_INFRA_REL="$(reify_git_env_scrub git -C "$INFRA_DIR" rev-parse --show-prefix 2>/dev/null || true)"
     _ra_skip_read_closures
     _ra_skip_read_state
 
@@ -915,9 +1108,9 @@ _ra_skip_engine() {
         # or a git error such as a bad sha) ⇒ RUN (delta). Capture a
         # representative touched path (first changed file) for the log line.
         _rc=0
-        git -C "$_RA_SKIP_TOPLEVEL" diff --quiet "$_green" HEAD -- "${_RA_SKIP_SPECS[@]}" 2>/dev/null || _rc=$?
+        reify_git_env_scrub git -C "$_RA_SKIP_TOPLEVEL" diff --quiet "$_green" HEAD -- "${_RA_SKIP_SPECS[@]}" 2>/dev/null || _rc=$?
         if [ "$_rc" -ne 0 ]; then
-            _names="$(git -C "$_RA_SKIP_TOPLEVEL" diff --name-only "$_green" HEAD -- "${_RA_SKIP_SPECS[@]}" 2>/dev/null)" || _names=""
+            _names="$(reify_git_env_scrub git -C "$_RA_SKIP_TOPLEVEL" diff --name-only "$_green" HEAD -- "${_RA_SKIP_SPECS[@]}" 2>/dev/null)" || _names=""
             _touch="${_names%%$'\n'*}"
             [ -n "$_touch" ] || _touch="(unknown)"
             echo "RUN (delta): $_name touched=$_touch"
@@ -926,7 +1119,7 @@ _ra_skip_engine() {
         # Worktree delta over the closure (staged/unstaged/untracked) ⇒ RUN
         # (delta). The porcelain first line is `XY <path>`; strip the 3-char
         # status prefix to name the touched path.
-        _wt="$(git -C "$_RA_SKIP_TOPLEVEL" status --porcelain -- "${_RA_SKIP_SPECS[@]}" 2>/dev/null || true)"
+        _wt="$(reify_git_env_scrub git -C "$_RA_SKIP_TOPLEVEL" status --porcelain -- "${_RA_SKIP_SPECS[@]}" 2>/dev/null || true)"
         if [ -n "$_wt" ]; then
             _touch="${_wt%%$'\n'*}"
             _touch="${_touch:3}"
@@ -993,7 +1186,7 @@ _ra_skip_state_write() {
     [ -n "$_state" ] || return 0
 
     local _head _now _new_global
-    _head="$(git -C "$_RA_SKIP_TOPLEVEL" rev-parse HEAD 2>/dev/null || true)"
+    _head="$(reify_git_env_scrub git -C "$_RA_SKIP_TOPLEVEL" rev-parse HEAD 2>/dev/null || true)"
     [ -n "$_head" ] || return 0
     _now="${EPOCHSECONDS:-$(date +%s)}"
     _new_global=$(( _RA_SKIP_GLOBAL_MERGES + 1 ))
@@ -1221,7 +1414,7 @@ if [ "$SCOPE" = "host-infra" ]; then
         echo ""
         echo "--- Running: $_h9_name ---"
         _h9_child_rc=0
-        bash "$INFRA_DIR/$_h9_name" 9<&- || _h9_child_rc=$?
+        reify_git_env_scrub bash "$INFRA_DIR/$_h9_name" 9<&- || _h9_child_rc=$?
         if [ "$_h9_child_rc" -eq 0 ]; then
             echo "  RESULT: PASS ($_h9_name)"
         else
@@ -1286,9 +1479,9 @@ elif [ "${#_ra_member_subset[@]}" -gt 0 ]; then
             # corrupting that member's self-tests. The subset knob governs
             # only the outer/top-level discovery, never a member's own
             # nested invocations.
-            env -u REIFY_RUN_ALL_MEMBER_SUBSET \
+            reify_git_env_scrub env -u REIFY_RUN_ALL_MEMBER_SUBSET \
                 bash "$INFRA_DIR/$_ra_subset_base" > "$_ra_subset_tmp" 2>&1 || _ra_subset_rc=$?
-            _ra_emit_sanitized "$_ra_subset_tmp"
+            _ra_emit_sanitized "$_ra_subset_tmp" "$_ra_subset_base"
             if [ "$_ra_subset_rc" -eq 0 ]; then
                 echo "  RESULT: PASS ($_ra_subset_base)"
             else
@@ -1389,10 +1582,45 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # clock-stop parser already recognizes it. The marker rides the worker
     # subshell's inherited parent stderr (fd 2), NOT the per-member `.out`
     # capture (the `> .out 2>&1` redirect below is scoped to the member
-    # `bash` command only), so it is never rewritten by
-    # _RA_CLOCK_SANITIZE/_ra_emit_sanitized, which only touches the Phase-3
-    # `.out` re-emission.
+    # `bash` command only), so it is never rewritten by _ra_emit_sanitized --
+    # by ANY of its rules, clock or slot -- because that function only touches
+    # the Phase-3 `.out` re-emission. The same routing is what keeps this
+    # worker's @@REIFY_SLOT_TIMEOUT@@ sentinel reaching dark-factory intact
+    # even though $_RA_SLOT_SANITIZE rewrites that very prefix in member
+    # output; see that rule's own carve-out paragraph above.
     _H2_POOL_CLOCK_REASON="test_slot_starvation"
+
+    # Slot-TIMEOUT reason token for the same wait (task #6024), passed as
+    # slot_acquire's optional 5th arg. DELIBERATELY DISTINCT from the clock
+    # reason above, and the two must not be collapsed into one:
+    #   - the CLOCK reason stays `test_slot_starvation` for the reason stated
+    #     above -- DF's clock-stop parser already recognizes that token;
+    #   - the TIMEOUT reason is its own value because this pool wait is the ONE
+    #     finite-WAIT path absent from dark-factory's grounded basename
+    #     allowlist (lib_test_semaphore | cargo-test-occt-gated |
+    #     lib_lane_x_flock), so the @@REIFY_SLOT_TIMEOUT@@ sentinel is its only
+    #     classification route, and a token shared with the test-semaphore path
+    #     would make a starved POOL indistinguishable from a starved test slot.
+    # The sentinel rides the inherited parent stderr for the same reason the
+    # clock markers do (the `.out` note above) and survives re-emission by
+    # design (docs/notes/verify-pipeline-knobs.md).
+    _H2_POOL_TIMEOUT_REASON="run_all_pool_starvation"
+
+    # Slot-timeout DISPOSITION for the same wait (slot_acquire's optional 6th
+    # arg). `soft` -- not the `fatal` default the three wrapper paths take --
+    # because this is the ONLY caller whose rc=75 is not an abort: the worker
+    # proceeds unslotted, the member still runs, and run_all still exits 0 (the
+    # soft-admission contract asserted at the acquire site below). Without this
+    # field the sentinel would be indistinguishable from a genuine starvation
+    # abort, so a merely-degraded pool would read on the wire exactly like the
+    # infra-hold class task #6024 exists to make identifiable -- inverted.
+    # CLOSED (dark-factory task 4212, 2026-08-19): dark-factory's detector now
+    # parses this field and gates the SEMAPHORE_TIMEOUT arm on it, so a soft
+    # pool deadline in the output of an ALREADY-FAILING verify is no longer
+    # misattributed to SEMAPHORE_TIMEOUT -- it falls through to per-tool
+    # dispatch instead. Detail: docs/notes/verify-pipeline-knobs.md,
+    # "Slot-acquisition-timeout sentinel".
+    _H2_POOL_TIMEOUT_DISPOSITION="soft"
 
     # Phase-1 single-writer progress-heartbeat cadence (task #5130). Pure
     # observability / strictly additive (INV-4): unlike the load-bearing
@@ -1657,8 +1885,8 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
             # Soft acquire: on deadline (75) proceed unslotted -- never skip a
             # test, never hang. slot_acquire itself already closes FD 9 on
             # every failed attempt, so no held-slot cleanup is needed here.
-            slot_acquire "$_H2_POOL_LOCK" "$_H2_POOL_N" "$_H2_POOL_WAIT" "$_H2_POOL_CLOCK_REASON" || _h2_slot_rc=$?
-            bash "$INFRA_DIR/$_h2_name" 9<&- > "$_H2_WORKDIR/${_h2_i}.out" 2>&1 || _h2_child_rc=$?
+            slot_acquire "$_H2_POOL_LOCK" "$_H2_POOL_N" "$_H2_POOL_WAIT" "$_H2_POOL_CLOCK_REASON" "$_H2_POOL_TIMEOUT_REASON" "$_H2_POOL_TIMEOUT_DISPOSITION" || _h2_slot_rc=$?
+            reify_git_env_scrub bash "$INFRA_DIR/$_h2_name" 9<&- > "$_H2_WORKDIR/${_h2_i}.out" 2>&1 || _h2_child_rc=$?
             if [ "$_h2_slot_rc" -eq 0 ]; then
                 exec 9>&-
             fi
@@ -1695,7 +1923,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
         _ra_interrupt_if_worktree_gone
         _h2_i="${_h2_index_of[$_h2_name]}"
         _h2_rc=0
-        bash "$INFRA_DIR/$_h2_name" > "$_H2_WORKDIR/${_h2_i}.out" 2>&1 || _h2_rc=$?
+        reify_git_env_scrub bash "$INFRA_DIR/$_h2_name" > "$_H2_WORKDIR/${_h2_i}.out" 2>&1 || _h2_rc=$?
         echo "$_h2_rc" > "$_H2_WORKDIR/${_h2_i}.rc"
     done
 
@@ -1726,7 +1954,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
         _h2_first_rc="$(cat "$_H2_WORKDIR/${_h2_i}.rc" 2>/dev/null || echo 1)"
         [ "$_h2_first_rc" -eq 0 ] && continue
         _h2_retry_rc_val=0
-        bash "$INFRA_DIR/$_h2_name" > "$_H2_WORKDIR/${_h2_i}.retry.out" 2>&1 || _h2_retry_rc_val=$?
+        reify_git_env_scrub bash "$INFRA_DIR/$_h2_name" > "$_H2_WORKDIR/${_h2_i}.retry.out" 2>&1 || _h2_retry_rc_val=$?
         echo "$_h2_retry_rc_val" > "$_H2_WORKDIR/${_h2_i}.retry.rc"
         _h2_retried["$_h2_name"]=1
         _h2_retry_rc["$_h2_name"]="$_h2_retry_rc_val"
@@ -1752,9 +1980,9 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
             else
                 echo "--- attempt 1 (serial) ---"
             fi
-            _ra_emit_sanitized "$_H2_WORKDIR/${_h2_i}.out"
+            _ra_emit_sanitized "$_H2_WORKDIR/${_h2_i}.out" "$_h2_name"
             echo "--- attempt 2 (serial retry) ---"
-            _ra_emit_sanitized "$_H2_WORKDIR/${_h2_i}.retry.out"
+            _ra_emit_sanitized "$_H2_WORKDIR/${_h2_i}.retry.out" "$_h2_name"
             _h2_rc="${_h2_retry_rc[$_h2_name]}"
             if [ "$_h2_rc" -eq 0 ]; then
                 echo "  RESULT: PASS ($_h2_name) [flaky: passed on serial retry]"
@@ -1766,7 +1994,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
                 _ra_collect_fail_detail "$_h2_name" "$_H2_WORKDIR/${_h2_i}.retry.out"
             fi
         else
-            _ra_emit_sanitized "$_H2_WORKDIR/${_h2_i}.out"
+            _ra_emit_sanitized "$_H2_WORKDIR/${_h2_i}.out" "$_h2_name"
             _h2_rc="$(cat "$_H2_WORKDIR/${_h2_i}.rc" 2>/dev/null || echo 1)"
             if [ "$_h2_rc" -eq 0 ]; then
                 echo "  RESULT: PASS ($_h2_name)"
@@ -1807,7 +2035,7 @@ else
         echo ""
         echo "--- Running: $basename ---"
         _ra_legacy_rc=0
-        bash "$test_file" || _ra_legacy_rc=$?
+        reify_git_env_scrub bash "$test_file" || _ra_legacy_rc=$?
         if [ "$_ra_legacy_rc" -eq 0 ]; then
             echo "  RESULT: PASS ($basename)"
         else

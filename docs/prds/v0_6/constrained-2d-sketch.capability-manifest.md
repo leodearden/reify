@@ -60,7 +60,7 @@ Leaves: ζ, η, θ.
 ## θ — docs-truth (chunk + cheatsheet + discoverability)
 
 - **chunk-smoke-gate** (substrate) — chunk-vs-compiler drift gate exists on main:
-  `crates/reify-compiler/tests/geometry_chunk_smoke.rs` (task 5364). θ adds the
+  `crates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs` (task 5364). θ adds the
   sketch smoke fixture(s) there; every documented signature compiles as written. PASS.
 - **documented-surface-exists** → `producer:task-ε` + `producer:task-ζ` (upstream) —
   θ documents only batch-delivered surface; ordered by real dep edges, not prose. PASS.

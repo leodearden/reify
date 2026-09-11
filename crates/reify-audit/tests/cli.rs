@@ -10,43 +10,72 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::process::Command;
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use std::thread;
 use std::time::Duration;
 
 mod common;
 
+/// The per-call fail-soft breadcrumb literals, shared with
+/// `tests/jcodemunch_live.rs`.
+///
+/// `#[path]` rather than a `common::` re-export: the two binaries consume
+/// these with opposite polarity — the tests here assert the literal is
+/// PRESENT in the real binary's stderr, `assert_live_leg` over there asserts
+/// it is ABSENT — and an absence check is only meaningful against a string
+/// the binary can actually emit. See the module's own header.
+#[path = "common/breadcrumbs.rs"]
+mod breadcrumbs;
+
+/// The `tasks.json` record fixtures, shared with `tests/jcodemunch_live.rs`.
+///
+/// `#[path]` for the same reason as `breadcrumbs` above: two binaries need a
+/// P1-ELIGIBLE record, and a fixture that gets P1's eligibility rules wrong
+/// does not fail — it goes vacuous. Keeping the rules in one module is what
+/// stops the two copies from drifting. See the module's own header.
+#[path = "common/task_json.rs"]
+mod task_json;
+
+use task_json::{done_task_fixture, task_fixture};
+
 // -----------------------------------------------------------------------
 // Fixture helpers
 // -----------------------------------------------------------------------
 
-/// Minimal tasks.json fixture object with all 9 required TaskMetadata fields.
-/// Returns a serde_json::Value so callers can override fields as needed.
-fn task_fixture(
+/// [`task_fixture`] with a caller-controlled `files` list.
+///
+/// [`task_fixture`] hardcodes `files: ["crates/reify-audit/src/lib.rs"]`, which
+/// is tracked on main and therefore always corroborates. The pre-done landing
+/// tests need the declared deliverable set to be the variable under test.
+fn task_fixture_with_files(
     task_id: &str,
     status: &str,
     kind: Option<&str>,
     commit: Option<&str>,
+    files: &[&str],
 ) -> serde_json::Value {
-    let done_provenance = match kind {
-        Some(k) => serde_json::json!({
-            "kind": k,
-            "commit": commit,
-            "note": null
-        }),
-        None => serde_json::Value::Null,
-    };
-    serde_json::json!({
-        "task_id": task_id,
-        "status": status,
-        "files": ["crates/reify-audit/src/lib.rs"],
-        "done_provenance": done_provenance,
-        "title": format!("Task {}", task_id),
-        "prd": null,
-        "consumer_ref": null,
-        "audit_foundation": null,
-        "done_at": null
-    })
+    let mut v = task_fixture(task_id, status, kind, commit);
+    v["files"] = serde_json::json!(files);
+    v
+}
+
+/// Absolute path to this workspace's git repository root.
+///
+/// `CARGO_MANIFEST_DIR` is `<root>/crates/reify-audit`, so two levels up is the
+/// worktree root. Tests that exercise `path_tracked_on` must point
+/// `--project-root` at a REAL git repo — a bare `tempfile::tempdir()` is not one,
+/// so every `git ls-tree` there fails and `path_tracked_on` fail-safes to
+/// `false` for every path, which would make an "absent from main" assertion
+/// vacuously true.
+fn repo_root() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .canonicalize()
+        .expect("canonicalize repo root from CARGO_MANIFEST_DIR/../..")
 }
 
 /// Write tasks.json with the given task fixtures to `dir/tasks.json`.
@@ -91,19 +120,48 @@ fn insert_completed_event(db_path: &Path, task_id: &str) {
 /// This keeps tests robust to git failures in temp dirs (which aren't real
 /// git repositories).
 fn parse_findings_from_stderr(stderr: &str) -> Vec<serde_json::Value> {
-    let json_start = stderr
-        .rfind("\n[")
-        .map(|pos| pos + 1) // skip the '\n', keep the '['
-        .or_else(|| {
-            // Fallback: JSON starts at position 0 (no preceding diagnostic lines).
-            if stderr.starts_with('[') { Some(0) } else { None }
-        })
+    let json_start = find_findings_array_start(stderr)
         .unwrap_or_else(|| panic!("no JSON array found in stderr; full stderr:\n{stderr}"));
     serde_json::from_str(&stderr[json_start..]).unwrap_or_else(|e| {
         panic!(
             "stderr does not contain valid JSON after '[': {e}\nstderr:\n{stderr}"
         )
     })
+}
+
+/// Byte offset where the findings array begins, or `None` if there is none.
+///
+/// Factored out of [`parse_findings_from_stderr`] so the positive direction
+/// ("an array was emitted") and the negative direction
+/// ([`stderr_has_parseable_findings_array`], "no array was emitted") share ONE
+/// definition of the parse boundary and cannot drift apart.
+fn find_findings_array_start(stderr: &str) -> Option<usize> {
+    stderr
+        .rfind("\n[")
+        .map(|pos| pos + 1) // skip the '\n', keep the '['
+        .or_else(|| {
+            // Fallback: JSON starts at position 0 (no preceding diagnostic lines).
+            if stderr.starts_with('[') { Some(0) } else { None }
+        })
+}
+
+/// Whether stderr carries a parseable findings array — non-panicking, for
+/// asserting the ABSENCE of one.
+///
+/// This models the `/audit` skill's exit-125 disambiguator, which separates an
+/// infrastructure error from "125 High-severity findings" on exactly this
+/// property: successful runs always emit a JSON array on stderr, while error
+/// paths emit human-readable text and never produce parseable JSON. Tests that
+/// assert a refusal emits no array must therefore ask the same question the
+/// skill asks, rather than assuming a panic means absence.
+#[allow(dead_code)]
+fn stderr_has_parseable_findings_array(stderr: &str) -> bool {
+    match find_findings_array_start(stderr) {
+        Some(start) => {
+            serde_json::from_str::<Vec<serde_json::Value>>(&stderr[start..]).is_ok()
+        }
+        None => false,
+    }
 }
 
 /// Recursively copy the directory tree at `src` into `dst` (creating `dst`).
@@ -247,6 +305,411 @@ mod cli {
             stdout.contains("3242"),
             "stdout summary must mention task 3242\nstdout: {}",
             stdout
+        );
+    }
+
+    /// The pre-done gate must REFUSE a done-flip whose declared deliverable is
+    /// absent from main, in the state the hook ACTUALLY sees: pre-transition
+    /// status and no persisted `done_provenance`.
+    ///
+    /// Why that is the real state: fused-memory's `task_interceptor.py` fires
+    /// the hook at step "2d" BEFORE the write, so the live `get_task` returns
+    /// "in-progress"/"review" (never "done"), and `done_provenance` is only
+    /// accumulated in the interceptor's in-memory `audit_fields` — it is not
+    /// persisted until after the hook returns. The upstream hook template
+    /// (`middleware/pre_done_hook.py`) substitutes only `{id}`, with no env
+    /// injection and no stdin, so the subprocess receives no task state beyond
+    /// the id. A gate that requires either signal is structurally unable to
+    /// fire on the transition it exists to guard.
+    ///
+    /// The control tasks pin the other two directions: a task with no declared
+    /// deliverable (research / ops / escalation work) must never be refused,
+    /// and a task whose deliverable IS on main must pass cleanly.
+    ///
+    /// Control (c) is what makes (a) non-vacuous. `path_tracked_on` fail-safes
+    /// to `false` on ANY git error, so (a)'s refusal would still be asserted if
+    /// `git ls-tree main` were broken for every path in this environment
+    /// (missing `main` ref, sanitised `GIT_DIR`, shallow checkout) — and (b)
+    /// returns before any git call at all. (c) fails loudly the moment real git
+    /// stops resolving `main`, which is the property `repo_root()`'s doc
+    /// comment claims but nothing previously pinned.
+    #[test]
+    fn pre_done_gate_refuses_unlanded_task_without_provenance() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+        let root = repo_root();
+
+        let tasks = vec![
+            // (a) unlanded deliverable — must be refused.
+            task_fixture_with_files(
+                "63451",
+                "in-progress",
+                None,
+                None,
+                &["crates/reify-audit-ghost/src/lib.rs"],
+            ),
+            // (b) control: no declared deliverable — must flip freely.
+            task_fixture_with_files("63452", "in-progress", None, None, &[]),
+            // (c) positive control: a deliverable that IS tracked on main.
+            task_fixture_with_files(
+                "63453",
+                "in-progress",
+                None,
+                None,
+                &["crates/reify-audit/src/lib.rs"],
+            ),
+        ];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let run = |task_id: &str| {
+            Command::new(bin)
+                .args([
+                    "--task",
+                    task_id,
+                    "--pre-done",
+                    "--tasks-file",
+                    tasks_file.to_str().unwrap(),
+                    "--runs-db",
+                    runs_db.to_str().unwrap(),
+                    "--project-root",
+                    root.to_str().unwrap(),
+                ])
+                .output()
+                .expect("invoke reify-audit --pre-done")
+        };
+
+        // (a) The refusal.
+        let out = run("63451");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        let p5_high = findings.iter().find(|f| {
+            f["pattern"].as_str() == Some("P5PhantomDone")
+                && f["severity"].as_str() == Some("High")
+                && f["task_id"].as_str() == Some("63451")
+        });
+        assert!(
+            p5_high.is_some(),
+            "pre-done gate must emit P5PhantomDone/High/63451 for a deliverable \
+             absent from main; got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        let code = out.status.code().unwrap_or(1);
+        assert!(
+            code >= 1,
+            "pre-done gate must exit non-zero (refusing the done-flip); got {}\n\
+             stdout: {}\nstderr: {}",
+            code,
+            String::from_utf8_lossy(&out.stdout),
+            stderr
+        );
+
+        // (b) The control: no deliverable declared → nothing to corroborate.
+        let out = run("63452");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "a task with an empty metadata.files must never be refused; got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "empty-files control must exit 0\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            stderr
+        );
+
+        // (c) The positive control: this file is tracked on main, so the
+        // healthy-flip leg must close the gate WITHOUT reaching any rescue.
+        // If real git ever stops resolving `main` here, this is the assertion
+        // that fails — which is precisely what keeps (a) honest.
+        let out = run("63453");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "a deliverable tracked on main must pass the pre-done gate cleanly — a \
+             finding here means `git ls-tree {} -- crates/reify-audit/src/lib.rs` did \
+             not resolve, which would also make case (a)'s refusal vacuous; got:\n{:#}",
+            "main",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "tracked-on-main control must exit 0\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            stderr
+        );
+    }
+
+    /// `REIFY_AUDIT_PREDONE_WARN_ONLY` is scoped to the pre-done landing
+    /// refusal ONLY — it must never mute a sweep High.
+    ///
+    /// The break-glass exists so an operator can soak a fail-closed gate
+    /// without a red-tier fused-memory restart. If it leaked into the sweep it
+    /// would become a general P5 mute, silently disarming the phantom-done
+    /// detector for every task on the box that inherits the env var.
+    #[test]
+    fn pre_done_warn_only_env_does_not_mute_sweep_high() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+
+        // A done/merged task with an empty `events` table: the classic sweep
+        // High, reached through the provenance path, not the pre-done leg.
+        let tasks = vec![task_fixture("3242", "done", Some("merged"), Some("deadbeef"))];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "3242",
+                "--pattern",
+                "P5",
+                "--no-jcodemunch",
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .env("REIFY_AUDIT_PREDONE_WARN_ONLY", "1")
+            .output()
+            .expect("invoke reify-audit sweep with the break-glass set");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        let high = findings.iter().find(|f| {
+            f["pattern"].as_str() == Some("P5PhantomDone")
+                && f["severity"].as_str() == Some("High")
+                && f["task_id"].as_str() == Some("3242")
+        });
+        assert!(
+            high.is_some(),
+            "the pre-done break-glass must not downgrade a SWEEP High — that would \
+             make it a general P5 mute; got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert!(
+            out.status.code().unwrap_or(0) >= 1,
+            "a sweep High must still exit non-zero with the break-glass set; got {:?}\n\
+             stdout: {}\nstderr: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout),
+            stderr
+        );
+    }
+
+    /// `REIFY_AUDIT_PREDONE_WARN_ONLY=1` makes the pre-done refusal advisory:
+    /// the finding is still emitted, at Low, and the exit code drops to 0.
+    ///
+    /// Why the hatch exists: this gate is fail-closed production infrastructure
+    /// that had never emitted a finding before this task. Without an escape
+    /// hatch, an operator hit by a misfire must edit
+    /// `~/.config/systemd/user/fused-memory.service` and restart fused-memory —
+    /// a red-tier restart under a dirty-start guard. Mirrors the house
+    /// `REIFY_MAIN_GATE_BYPASS` / `REIFY_STASH_GUARD_BYPASS` convention.
+    ///
+    /// This must be a subprocess test, not a library one: `std::env::set_var`
+    /// is process-global and would race sibling tests under `cargo test`'s
+    /// thread-per-test model (the same hazard `tests/common/git_env.rs`
+    /// documents at length for `GIT_DIR`).
+    #[test]
+    fn pre_done_warn_only_env_downgrades_refusal_to_low() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+        let root = repo_root();
+
+        let tasks = vec![task_fixture_with_files(
+            "63451",
+            "in-progress",
+            None,
+            None,
+            &["crates/reify-audit-ghost/src/lib.rs"],
+        )];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let run = |warn_only: bool| {
+            let mut cmd = Command::new(bin);
+            cmd.args([
+                "--task",
+                "63451",
+                "--pre-done",
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                root.to_str().unwrap(),
+            ]);
+            if warn_only {
+                cmd.env("REIFY_AUDIT_PREDONE_WARN_ONLY", "1");
+            } else {
+                cmd.env_remove("REIFY_AUDIT_PREDONE_WARN_ONLY");
+            }
+            cmd.output().expect("invoke reify-audit --pre-done")
+        };
+
+        // Break-glass active: advisory.
+        let out = run(true);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        let low = findings.iter().find(|f| {
+            f["pattern"].as_str() == Some("P5PhantomDone")
+                && f["task_id"].as_str() == Some("63451")
+        });
+        let low = low.unwrap_or_else(|| {
+            panic!(
+                "warn-only must PRESERVE the finding, only drop its blocking effect; \
+                 got:\n{:#}",
+                serde_json::Value::Array(findings.clone())
+            )
+        });
+        assert_eq!(
+            low["severity"].as_str(),
+            Some("Low"),
+            "warn-only must downgrade the refusal to Low; got:\n{:#}",
+            low
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "warn-only must exit 0 (the exit code counts Highs)\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            stderr
+        );
+
+        // Default is ARMED.
+        let out = run(false);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        let high = findings.iter().find(|f| {
+            f["pattern"].as_str() == Some("P5PhantomDone")
+                && f["severity"].as_str() == Some("High")
+                && f["task_id"].as_str() == Some("63451")
+        });
+        assert!(
+            high.is_some(),
+            "without the env var the gate must stay ARMED (High); got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert!(
+            out.status.code().unwrap_or(1) >= 1,
+            "armed default must exit non-zero; got {:?}",
+            out.status.code()
+        );
+    }
+
+    /// The pre-done gate must ACCEPT a task whose declared deliverable was
+    /// RENAMED away by its own landing commit.
+    ///
+    /// This is the end-to-end half of
+    /// `changed_paths_in_commit_reports_both_sides_of_a_rename`: that test pins
+    /// the seam's return value, this one pins the GATE's verdict — the thing
+    /// that was actually broken. A seam-only guard would still let a future
+    /// change reintroduce the false refusal somewhere between the seam and
+    /// `check_pre_done_landing`.
+    ///
+    /// The shape mirrors the reported reproduction exactly: `a/old.rs` on main,
+    /// a branch that `git mv`s it to `a/new.rs`, merged `--no-ff`, and a task
+    /// declaring BOTH paths with no `done_provenance`. `a/old.rs` is not tracked
+    /// on main (it was renamed away), so the deletion/rename rescue is the only
+    /// leg that can corroborate it, and with rename detection on the landing
+    /// commit's delta reports `a/new.rs` alone — producing
+    /// `[High] P5PhantomDone task=9911: … neither tracked on main nor covered by
+    /// a task-referencing commit's own delta` with evidence
+    /// `MetadataFiles { entries: ["a/old.rs"] }` and exit 1.
+    ///
+    /// Two fixture details are load-bearing. The merge subject must reference
+    /// the id with non-digit neighbours (`task/9911 ` — a `/` and a space) or
+    /// the digit-boundary filter in `task_referencing_commits` drops the hit and
+    /// the test would go red for the wrong reason. And `--project-root` must be
+    /// the temp repo — a REAL git repo, per `repo_root()`'s doc comment — or
+    /// every `git ls-tree` fails, `path_tracked_on` fail-safes to `false` for
+    /// `a/new.rs` too, and the scenario stops being a rename scenario.
+    #[test]
+    fn pre_done_gate_accepts_rename_task_via_landing_commit() {
+        let repo_tmp = tempfile::tempdir().expect("create repo tempdir");
+        let repo = repo_tmp.path();
+        let run = |args: &[&str]| {
+            let status = common::git_env::git_cmd(repo)
+                .args(args)
+                .status()
+                .expect("git command failed to spawn");
+            assert!(status.success(), "git {:?} exited {:?}", args, status.code());
+        };
+
+        run(&["init", "--initial-branch=main"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test"]);
+        run(&["config", "commit.gpgsign", "false"]);
+
+        std::fs::create_dir_all(repo.join("a")).expect("create a/");
+        std::fs::write(repo.join("a/old.rs"), "fn task() {}\n").expect("write a/old.rs");
+        run(&["add", "."]);
+        run(&["commit", "-m", "base: add a/old.rs"]);
+
+        run(&["checkout", "-b", "feat"]);
+        run(&["mv", "a/old.rs", "a/new.rs"]);
+        run(&["commit", "-m", "feat: move old.rs to new.rs"]);
+        run(&["checkout", "main"]);
+        run(&["merge", "--no-ff", "-m", "Merge task/9911 into main", "feat"]);
+
+        // tasks.json and runs.db live OUTSIDE the repo so the fixture repo's
+        // tree stays exactly the two commits above.
+        let data_tmp = tempfile::tempdir().expect("create data tempdir");
+        let dir = data_tmp.path();
+        let tasks = vec![task_fixture_with_files(
+            "9911",
+            "in-progress",
+            None,
+            None,
+            &["a/old.rs", "a/new.rs"],
+        )];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "9911",
+                "--pre-done",
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                repo.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --task 9911 --pre-done");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        let p5 = findings
+            .iter()
+            .find(|f| f["pattern"].as_str() == Some("P5PhantomDone"));
+        assert!(
+            p5.is_none(),
+            "a deliverable renamed away by the task's own landing commit must not be \
+             refused — the rename really did touch both paths; got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "the rename flip must exit 0\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            stderr
         );
     }
 
@@ -884,12 +1347,18 @@ mod cli {
     /// The adversary here is the real one: `spawn_mock_mcp_on` is the same
     /// in-suite responder whose ephemeral-port recycling closed the failure
     /// chain in the observed flake. It answers `initialize` with a
-    /// well-formed JSON-RPC result, so `RealJCodemunchOps::new` returns
-    /// `Ok`, the fail-soft `Err(e)` breadcrumb arm never runs, and
+    /// well-formed JSON-RPC result AND an assigned `Mcp-Session-Id`, so
+    /// `RealJCodemunchOps::new` returns `Ok`, the fail-soft `Err(e)`
+    /// breadcrumb arm never runs, and
     /// `default_sweep_survives_unreachable_jcodemunch`'s breadcrumb
     /// assertion blows up. Same fixture and argv as that test, and the same
     /// assertion set, so this lock is strictly stronger than the test it
     /// shadows; the only difference is the deliberate hijack.
+    ///
+    /// The session header is load-bearing for THIS lock's adversary, not
+    /// incidental: without it the client now rejects the handshake, the
+    /// hijacker stops being a convincing jcodemunch, and the lock quietly
+    /// degrades into a duplicate of the test it is meant to shadow.
     #[test]
     fn unreachable_jcodemunch_url_cannot_be_hijacked_by_a_racing_mcp_responder() {
         let url = common::net::unreachable_mcp_url();
@@ -1234,6 +1703,21 @@ mod cli {
         let tmp = tempfile::tempdir().expect("create tempdir");
         let dir = tmp.path();
 
+        // PLAYER is jcodemunch-backed, so this run now passes through the §4.3
+        // freshness gate. Give it a real one-commit repo and a fresh index so
+        // the precondition holds and the dispatch path under test is actually
+        // reached — a bare non-git tempdir leaves `live_head` unverifiable,
+        // which the gate refuses. Making the project root real is a strict
+        // improvement to this test rather than an accommodation.
+        let live_head = common::index_fixture::init_git_repo_with_one_commit(dir);
+        let index_dir = tmp.path().join("code-index");
+        common::index_fixture::write_index_db(
+            &index_dir,
+            &common::index_fixture::expected_repo_id(dir),
+            Some(&live_head),
+            2,
+        );
+
         let tasks_file = write_tasks_json(dir, &[]);
         let runs_db = write_empty_runs_db(dir);
 
@@ -1263,6 +1747,8 @@ mod cli {
                 runs_db.to_str().unwrap(),
                 "--project-root",
                 dir.to_str().unwrap(),
+                "--jcodemunch-index-dir",
+                index_dir.to_str().unwrap(),
             ])
             .output()
             .expect("invoke reify-audit --pattern PLAYER with mock jcodemunch");
@@ -2049,12 +2535,75 @@ mod cli {
 // blocking HTTP server stands in for fused-memory; it speaks just enough of
 // MCP streamable-HTTP to answer `initialize`, `notifications/initialized`,
 // and a single `tools/call get_task` per session.
+//
+// "Just enough" now includes assigning a session id: the `initialize`
+// response carries an `Mcp-Session-Id` header (see [`MOCK_SESSION_ID`]),
+// because `JcodemunchClient` treats an initialize response with no
+// server-assigned session as a hard `Protocol` failure. The mock answers
+// the header but does not police it — see
+// [`write_response_with_session`] for why enforcement is off the table.
+//
+// Dual wire framing: every JSON-framed test has an SSE-framed sibling that
+// calls [`spawn_mock_mcp_shaped`] directly with an explicit [`Framing`] and
+// [`ResultShape`] (e.g. `spawn_mock_mcp_shaped(Framing::Sse,
+// ResultShape::ContentText, ...)`), threaded through
+// [`write_response_framed`]. JSON drives `FusedMemoryClient::post`'s
+// bare-body `else` branch; [`Framing::Sse`] drives its
+// `ctype.contains("text/event-stream")` branch, and the mock wraps the
+// body as a realistic `event: message\ndata: <json>\n\n` frame rather
+// than a bare `data:` line so the client's line-scan is genuinely
+// exercised rather than getting lucky on a single-line body.
+// [`Framing::SseNoData`] and [`Framing::SseMalformedData`] are the SSE
+// branch's two failure modes — a data-less keep-alive-shaped frame, and a
+// `data:` line whose payload isn't valid JSON — for locking `post()`'s
+// "no SSE data line in response" and "SSE data parse" refusals
+// respectively. The `notifications/initialized` leg always answers 202
+// with an empty body under ALL framings: that matches real MCP, and
+// `post()` short-circuits on status 202 before it ever sniffs
+// content-type, so SSE-framing that leg would be untestable fiction.
+// Independently, [`ResultShape`] selects the `tools/call` result envelope
+// (`structuredContent` vs the `content[0].text` fallback), mirroring
+// `call_tool`'s two decode branches.
+//
+// All of this is purely additive: `spawn_mock_mcp`, `spawn_mock_mcp_on`,
+// `write_response` and `write_response_with_session` keep their exact
+// pre-existing signatures and just delegate into the framing/shape-aware
+// cores (`spawn_mock_mcp_on_shaped`, `write_response_framed`,
+// `spawn_mock_mcp_shaped`). That is deliberate — those four helpers have 13
+// call sites elsewhere in this file, in suites unrelated to this SSE work,
+// and a signature change would have dragged all of them into this diff.
 
-/// Read a complete HTTP/1.1 request from `stream` and return its body as a
-/// JSON Value. Assumes Content-Length is present (which `ureq` always sets
-/// for `send_json`). Returns `None` on EOF / parse failure.
-fn read_request_body(stream: &mut TcpStream) -> Option<serde_json::Value> {
+/// A single HTTP request the mock's accept loop observed, captured so
+/// tests can assert on it (e.g. session-id-on-every-POST). Header names
+/// are stored ASCII-lowercased at capture time (`ureq` sends them
+/// lowercase anyway, but [`ObservedRequest::header`] does a
+/// case-insensitive lookup regardless so an assertion never depends on
+/// that).
+struct ObservedRequest {
+    /// The JSON-RPC `method` field from the request body (`initialize`,
+    /// `notifications/initialized`, `tools/call`) — NOT the HTTP verb,
+    /// which is always POST for every request this mock accepts.
+    rpc_method: String,
+    headers: Vec<(String, String)>,
+}
+
+impl ObservedRequest {
+    /// Case-insensitive header lookup by name.
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
+}
+
+/// Read a complete HTTP/1.1 request from `stream`, returning every request
+/// header (name lowercased) alongside the body as a JSON Value. Assumes
+/// Content-Length is present (which `ureq` always sets for `send_json`).
+/// Returns `None` on EOF / parse failure.
+fn read_request(stream: &mut TcpStream) -> Option<(Vec<(String, String)>, serde_json::Value)> {
     let mut reader = BufReader::new(stream.try_clone().ok()?);
+    let mut headers: Vec<(String, String)> = Vec::new();
     let mut content_length = 0usize;
     loop {
         let mut line = String::new();
@@ -2064,30 +2613,158 @@ fn read_request_body(stream: &mut TcpStream) -> Option<serde_json::Value> {
         if line == "\r\n" || line == "\n" {
             break;
         }
-        if let Some(rest) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-            content_length = rest.trim().parse().ok()?;
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if let Some((name, value)) = trimmed.split_once(':') {
+            let name = name.trim().to_ascii_lowercase();
+            let value = value.trim().to_string();
+            if name == "content-length" {
+                content_length = value.parse().ok()?;
+            }
+            headers.push((name, value));
         }
     }
-    if content_length == 0 {
-        return Some(serde_json::Value::Null);
-    }
-    let mut buf = vec![0u8; content_length];
-    reader.read_exact(&mut buf).ok()?;
-    serde_json::from_slice(&buf).ok()
+    let body = if content_length == 0 {
+        serde_json::Value::Null
+    } else {
+        let mut buf = vec![0u8; content_length];
+        reader.read_exact(&mut buf).ok()?;
+        serde_json::from_slice(&buf).ok()?
+    };
+    Some((headers, body))
+}
+
+/// The session id this mock assigns on `initialize`.
+///
+/// `JcodemunchClient` requires the server to assign one — an `initialize`
+/// response with no `Mcp-Session-Id` header is a hard `Protocol` failure —
+/// so without this the mock would no longer stand in for a live seam at
+/// all. Deliberately not 32 lowercase hex, so it can never be confused
+/// with a client-minted id.
+const MOCK_SESSION_ID: &str = "mock-mcp-session";
+
+/// Which wire framing the mock's accept loop answers with. Mirrors the two
+/// branches `FusedMemoryClient::post` distinguishes on `content-type`:
+/// [`Framing::Json`] drives the `else` bare-JSON-body branch,
+/// [`Framing::Sse`] drives the `ctype.contains("text/event-stream")`
+/// branch.
+#[derive(Clone, Copy, PartialEq)]
+enum Framing {
+    Json,
+    Sse,
+    /// A degenerate SSE frame carrying no `data:` line at all — just
+    /// `event: message\n\n`, as a keep-alive/comment-only chunk might
+    /// look. Exercises `post()`'s "no SSE data line in response"
+    /// refusal — one of the SSE branch's two failure modes; see
+    /// [`Framing::SseMalformedData`] for the other. The `body` argument
+    /// passed to [`write_response_framed`] is ignored under this
+    /// variant: there is by definition no data to carry.
+    SseNoData,
+    /// An SSE frame WITH a `data:` line, but whose payload is not valid
+    /// JSON — `event: message\ndata: {not json\n\n`. Exercises `post()`'s
+    /// "SSE data parse" refusal, the SSE branch's other failure mode
+    /// alongside [`Framing::SseNoData`]. Verified uncovered anywhere else
+    /// in the crate: `fused_memory_client.rs`'s own `mod tests` never
+    /// constructs a `FusedMemoryClient` or exercises `post()` at all. As
+    /// with `SseNoData`, the `body` argument passed to
+    /// [`write_response_framed`] is ignored under this variant: the
+    /// payload is fixed garbage regardless of what the caller asked to
+    /// send.
+    SseMalformedData,
+}
+
+/// Which JSON-RPC `result` envelope shape the mock's `tools/call` arm
+/// builds. Mirrors the two branches `FusedMemoryClient::call_tool`
+/// distinguishes: [`ResultShape::StructuredContent`] drives the
+/// `result.structuredContent` early return; [`ResultShape::ContentText`]
+/// drives the `result.content[].text` fallback. The `None` /
+/// error-envelope branch (task not found) is shape-independent and stays
+/// the same under either variant.
+#[derive(Clone, Copy, PartialEq)]
+enum ResultShape {
+    StructuredContent,
+    ContentText,
 }
 
 fn write_response(stream: &mut TcpStream, status: u16, body: &[u8]) {
+    write_response_with_session(stream, status, None, body)
+}
+
+/// As [`write_response`], but additionally emits an `Mcp-Session-Id`
+/// response header when `session` is `Some`.
+///
+/// Only the `initialize` arm needs it: assigning the session is the
+/// server's job, and every later request carries the id back on the
+/// request side. The mock deliberately does NOT *enforce* the contract
+/// (no 404 on an inbound id, no 400 on a missing one) — the same responder
+/// backs the `--fused-memory-url` loader tests, and `fused_memory_client`
+/// still mints its own id and sends it on `initialize`, so enforcement
+/// would turn all of those red. The jcodemunch-side contract is locked
+/// gate-resident by the hermetic unit tests in `jcodemunch_client.rs`,
+/// which assert the request headers directly.
+///
+/// Always [`Framing::Json`] — thin wrapper over [`write_response_framed`]
+/// kept byte-identical for its 13 existing call sites. Call
+/// `write_response_framed` directly to answer with SSE framing.
+fn write_response_with_session(
+    stream: &mut TcpStream,
+    status: u16,
+    session: Option<&str>,
+    body: &[u8],
+) {
+    write_response_framed(stream, status, session, Framing::Json, body);
+}
+
+/// As [`write_response_with_session`], but with the wire framing an
+/// explicit parameter rather than always JSON.
+///
+/// Under [`Framing::Sse`] the body is wrapped as a realistic MCP
+/// streamable-HTTP frame — `event: message\ndata: <json>\n\n` — rather
+/// than a bare `data:` line. The `event:` line and trailing blank line
+/// matter: they prove the client's `post()` SSE branch's `body.lines()`
+/// scan actually skips a non-`data:` line rather than getting lucky on a
+/// single-line body. `Content-Length` is computed over the WRAPPED bytes,
+/// matching what a real server would send. [`Framing::SseNoData`] and
+/// [`Framing::SseMalformedData`] instead ignore `body` entirely and wrap a
+/// fixed, framing-specific payload — see their own doc comments.
+fn write_response_framed(
+    stream: &mut TcpStream,
+    status: u16,
+    session: Option<&str>,
+    framing: Framing,
+    body: &[u8],
+) {
     let status_text = match status {
         200 => "OK",
         202 => "Accepted",
         _ => "OK",
     };
-    let header = format!(
-        "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
+    let content_type = match framing {
+        Framing::Json => "application/json",
+        Framing::Sse | Framing::SseNoData | Framing::SseMalformedData => "text/event-stream",
+    };
+    let framed_body = match framing {
+        Framing::Json => body.to_vec(),
+        Framing::Sse => {
+            let mut framed = Vec::with_capacity(body.len() + 32);
+            framed.extend_from_slice(b"event: message\n");
+            framed.extend_from_slice(b"data: ");
+            framed.extend_from_slice(body);
+            framed.extend_from_slice(b"\n\n");
+            framed
+        }
+        Framing::SseNoData => b"event: message\n\n".to_vec(),
+        Framing::SseMalformedData => b"event: message\ndata: {not json\n\n".to_vec(),
+    };
+    let mut header = format!(
+        "HTTP/1.1 {status} {status_text}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n",
+        framed_body.len()
     );
+    if let Some(session) = session {
+        header.push_str(&format!("Mcp-Session-Id: {session}\r\n"));
+    }
+    header.push_str("\r\n");
     let _ = stream.write_all(header.as_bytes());
-    let _ = stream.write_all(body);
+    let _ = stream.write_all(&framed_body);
 }
 
 /// Handle returned by [`spawn_mock_mcp`]. Carries the bound `SocketAddr`
@@ -2099,6 +2776,9 @@ struct MockServer {
     addr: SocketAddr,
     stop: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<()>>,
+    /// Every request the accept loop has observed so far, under both
+    /// framings. See [`MockServer::observed_handle`].
+    observed: Arc<Mutex<Vec<ObservedRequest>>>,
 }
 
 /// Spawn a one-shot mock MCP server on an OS-assigned ephemeral port.
@@ -2117,16 +2797,69 @@ where
     spawn_mock_mcp_on(listener, task_responder)
 }
 
+/// Spawn a one-shot mock MCP server on an OS-assigned ephemeral port with
+/// an explicit wire `framing` and `tools/call` result `shape`. The single
+/// entry point for every SSE scenario in this suite — call sites name the
+/// framing/shape combination directly, e.g.
+/// `spawn_mock_mcp_shaped(Framing::Sse, ResultShape::ContentText, ...)`,
+/// rather than through a differently-named wrapper per combination. See
+/// [`spawn_mock_mcp_on_shaped`] for the accept-loop details, including
+/// exactly which leg stays JSON-shaped regardless (the
+/// `notifications/initialized` 202).
+///
+/// `spawn_mock_mcp` and `spawn_mock_mcp_on` are deliberately NOT built on
+/// this: they have 13 call sites elsewhere in this file predating this
+/// task's SSE work (see the harness section doc comment above), and this
+/// function exists precisely so those two can keep their exact
+/// pre-existing signatures untouched.
+fn spawn_mock_mcp_shaped<F>(framing: Framing, shape: ResultShape, task_responder: F) -> MockServer
+where
+    F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
+{
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    spawn_mock_mcp_on_shaped(listener, framing, shape, task_responder)
+}
+
+/// Spawn a one-shot mock MCP server on an already-bound `listener`, speaking
+/// JSON framing with the `structuredContent` result shape. Thin
+/// [`Framing::Json`]/[`ResultShape::StructuredContent`] wrapper over
+/// [`spawn_mock_mcp_on_shaped`]; see that function for the accept-loop
+/// details (non-blocking poll, stop-flag teardown, per-leg responses).
+fn spawn_mock_mcp_on<F>(listener: TcpListener, task_responder: F) -> MockServer
+where
+    F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
+{
+    spawn_mock_mcp_on_shaped(
+        listener,
+        Framing::Json,
+        ResultShape::StructuredContent,
+        task_responder,
+    )
+}
+
 /// Spawn a one-shot mock MCP server on an ALREADY-BOUND `listener`, deriving
 /// the advertised `addr`/`url` from `listener.local_addr()`. Lets a caller
 /// stand a real MCP responder at a specific address (e.g. to play the
 /// adversary in a port-recycling regression lock) rather than at whatever
 /// ephemeral port the OS hands out.
 ///
+/// `framing` (see [`Framing`]) selects the wire framing every response in
+/// the session is written with, EXCEPT the `notifications/initialized`
+/// leg, which always answers 202 with an empty body regardless of framing
+/// — that matches real MCP, and `FusedMemoryClient::post` short-circuits
+/// on status 202 before sniffing content-type, so SSE-framing that leg
+/// would be untestable fiction. `shape` (see [`ResultShape`]) selects the
+/// `tools/call` result envelope shape independently of `framing`.
+///
 /// The accept loop uses a short `set_nonblocking` poll so it wakes
 /// periodically to check the stop flag even without a wakeup connection —
 /// that way a stop request can't hang the test runner.
-fn spawn_mock_mcp_on<F>(listener: TcpListener, task_responder: F) -> MockServer
+fn spawn_mock_mcp_on_shaped<F>(
+    listener: TcpListener,
+    framing: Framing,
+    shape: ResultShape,
+    task_responder: F,
+) -> MockServer
 where
     F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
 {
@@ -2134,6 +2867,8 @@ where
     let url = format!("http://127.0.0.1:{}/mcp/", addr.port());
     let stop = Arc::new(AtomicBool::new(false));
     let stop_clone = Arc::clone(&stop);
+    let observed: Arc<Mutex<Vec<ObservedRequest>>> = Arc::new(Mutex::new(Vec::new()));
+    let observed_clone = Arc::clone(&observed);
     let responder = Arc::new(task_responder);
 
     // Non-blocking accept with a short poll so the accept loop wakes
@@ -2163,10 +2898,10 @@ where
                 }
             };
             // Restore blocking semantics on the accepted stream so the
-            // BufReader inside read_request_body() doesn't busy-loop.
+            // BufReader inside read_request() doesn't busy-loop.
             let _ = stream.set_nonblocking(false);
-            let body = match read_request_body(&mut stream) {
-                Some(b) => b,
+            let (headers, body) = match read_request(&mut stream) {
+                Some(pair) => pair,
                 None => continue,
             };
             let method = body
@@ -2175,6 +2910,18 @@ where
                 .unwrap_or("")
                 .to_string();
             let req_id = body.get("id").cloned();
+
+            // Record the request BEFORE dispatching to the responder, and
+            // release the lock immediately — the responder (a test
+            // closure) never runs while this lock is held, so a panic
+            // inside it cannot poison `observed`.
+            {
+                let mut log = observed_clone.lock().unwrap_or_else(|e| e.into_inner());
+                log.push(ObservedRequest {
+                    rpc_method: method.clone(),
+                    headers,
+                });
+            }
 
             match method.as_str() {
                 "initialize" => {
@@ -2187,9 +2934,18 @@ where
                             "serverInfo": {"name": "mock-mcp", "version": "0.1"}
                         }
                     });
-                    write_response(&mut stream, 200, resp.to_string().as_bytes());
+                    write_response_framed(
+                        &mut stream,
+                        200,
+                        Some(MOCK_SESSION_ID),
+                        framing,
+                        resp.to_string().as_bytes(),
+                    );
                 }
                 "notifications/initialized" => {
+                    // Always 202/empty regardless of `framing` — see the
+                    // doc comment above for why SSE-framing this leg would
+                    // be untestable fiction.
                     write_response(&mut stream, 202, b"");
                 }
                 "tools/call" => {
@@ -2199,21 +2955,37 @@ where
                         .cloned()
                         .unwrap_or(serde_json::Value::Null);
                     let resp_value = match responder(&args) {
-                        Some(structured) => serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": req_id,
-                            "result": {"structuredContent": structured, "content": []}
-                        }),
+                        Some(structured) => {
+                            let result = match shape {
+                                ResultShape::StructuredContent => {
+                                    serde_json::json!({"structuredContent": structured, "content": []})
+                                }
+                                ResultShape::ContentText => serde_json::json!({
+                                    "content": [{"type": "text", "text": structured.to_string()}]
+                                }),
+                            };
+                            serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": req_id,
+                                "result": result
+                            })
+                        }
                         None => serde_json::json!({
                             "jsonrpc": "2.0",
                             "id": req_id,
                             "error": {"code": -32000, "message": "task not found"}
                         }),
                     };
-                    write_response(&mut stream, 200, resp_value.to_string().as_bytes());
+                    write_response_framed(
+                        &mut stream,
+                        200,
+                        None,
+                        framing,
+                        resp_value.to_string().as_bytes(),
+                    );
                 }
                 _ => {
-                    write_response(&mut stream, 200, b"{}");
+                    write_response_framed(&mut stream, 200, None, framing, b"{}");
                 }
             }
         }
@@ -2224,12 +2996,21 @@ where
         addr,
         stop,
         handle: Some(handle),
+        observed,
     }
 }
 
 impl MockServer {
     fn url(&self) -> &str {
         &self.url
+    }
+
+    /// A handle to the observed-request log, rather than a snapshot copy.
+    /// `stop` takes `self` by value, so a caller that wants a race-free
+    /// read of the log AFTER stopping (which joins the accept thread) must
+    /// grab this handle first and read through it once `stop()` returns.
+    fn observed_handle(&self) -> Arc<Mutex<Vec<ObservedRequest>>> {
+        Arc::clone(&self.observed)
     }
 
     /// Signal the accept loop to exit and join the thread. Uses the bound
@@ -2312,6 +3093,216 @@ mod http_loader {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let findings = parse_findings_from_stderr(&stderr);
         assert!(findings.is_empty(), "expected zero findings; got {:#}", serde_json::Value::Array(findings));
+    }
+
+    /// SSE-framed counterpart to `pre_done_via_http_loader_corroborated_exits_zero`.
+    /// Proves what the JSON sibling does not: the full three-POST MCP
+    /// handshake and the `get_task` `structuredContent` decode complete
+    /// when the server answers `Content-Type: text/event-stream` instead
+    /// of `application/json` — i.e. `post()`'s
+    /// `ctype.contains("text/event-stream")` branch is exercised
+    /// end-to-end through the real binary for the first time.
+    ///
+    /// Also locks the session-id-on-every-POST contract on this same run
+    /// (folded in here rather than kept as its own test — a second full
+    /// three-POST handshake against the real binary would buy nothing
+    /// these assertions can't ride on this one's): `mcp-session-id` must
+    /// ride EVERY POST of the three-leg handshake (`initialize`,
+    /// `notifications/initialized`, `tools/call`) with one stable value
+    /// per session — the "handshake completing with `mcp-session-id`
+    /// attached to every POST" item. `notifications/initialized` is the
+    /// interesting leg: it is a 202 with an empty body, and this is the
+    /// only assertion in the suite proving the header rides that leg too.
+    /// Also asserts the `Accept: application/json, text/event-stream`
+    /// request header `post()` sets rides every POST — the precondition
+    /// for a real server ever choosing SSE framing in the first place.
+    ///
+    /// Deliberately does NOT assert the session-id value is the
+    /// client-minted 32-hex id, and does NOT assert it differs from
+    /// `MOCK_SESSION_ID` — per the plan's design decision,
+    /// `FusedMemoryClient` mints its own id and never adopts the
+    /// server's (unlike `JcodemunchClient` since #6106), and freezing
+    /// "must be client-minted" here would veto a legitimate future
+    /// alignment of the two clients. Presence-on-every-POST plus
+    /// one-id-per-session is exactly the contract locked here.
+    #[test]
+    fn pre_done_via_http_loader_sse_corroborated_exits_zero() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+        // Seed the runs.db corroboration leg.
+        insert_completed_event(&runs_db, "9998");
+
+        let mock = spawn_mock_mcp_shaped(Framing::Sse, ResultShape::StructuredContent, |args| {
+            assert_eq!(args.get("id").and_then(|v| v.as_str()), Some("9998"));
+            // Files=[] → P5's git-diff check trivially passes; the runs.db
+            // task_completed event corroborates the done-flip.
+            Some(serde_json::json!({
+                "id": "9998",
+                "title": "Mock task 9998",
+                "status": "done",
+                "updatedAt": "2026-05-16T07:39:04Z",
+                "metadata": {
+                    "files": [],
+                    "done_provenance": {"kind": "merged", "commit": "cafebabe", "note": null}
+                }
+            }))
+        });
+        let observed = mock.observed_handle();
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "9998",
+                "--pre-done",
+                "--fused-memory-url",
+                mock.url(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+
+        // `stop()` JOINS the accept thread, so `observed` is race-free to
+        // read from this point on.
+        mock.stop();
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "corroborated task via SSE must exit 0; stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "expected zero findings; got {:#}",
+            serde_json::Value::Array(findings)
+        );
+
+        let requests = observed.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            requests.len() >= 3,
+            "expected at least 3 observed POSTs (initialize, notifications/initialized, tools/call); got {}",
+            requests.len()
+        );
+        let methods: std::collections::HashSet<&str> =
+            requests.iter().map(|r| r.rpc_method.as_str()).collect();
+        for expected in ["initialize", "notifications/initialized", "tools/call"] {
+            assert!(
+                methods.contains(expected),
+                "expected observed methods to contain {expected:?}; got {methods:?}"
+            );
+        }
+
+        let session_ids: Vec<&str> = requests
+            .iter()
+            .map(|req| {
+                req.header("mcp-session-id").unwrap_or_else(|| {
+                    panic!(
+                        "request for JSON-RPC method {:?} missing mcp-session-id header",
+                        req.rpc_method
+                    )
+                })
+            })
+            .collect();
+        for (req, sid) in requests.iter().zip(session_ids.iter()) {
+            assert!(
+                !sid.is_empty(),
+                "mcp-session-id must be non-empty on every POST; rpc_method={}",
+                req.rpc_method
+            );
+        }
+        let first = session_ids[0];
+        assert!(
+            session_ids.iter().all(|sid| *sid == first),
+            "expected one stable session id across the whole session; got {session_ids:?}"
+        );
+
+        for req in requests.iter() {
+            assert_eq!(
+                req.header("accept"),
+                Some("application/json, text/event-stream"),
+                "expected the SSE-advertising Accept header on every POST \
+                 (the precondition for a real server ever choosing SSE \
+                 framing); rpc_method={}",
+                req.rpc_method
+            );
+        }
+    }
+
+    /// SSE-framed `content[0].text` fallback lock. Unlike its neighbours,
+    /// this test has NO JSON sibling to sit beside: the mock's `tools/call`
+    /// arm has always emitted `{"structuredContent": ..., "content": []}`,
+    /// and `structuredContent` always wins in `call_tool`, so its
+    /// `result.content[].text` fallback branch was unreachable through
+    /// this mock under EITHER framing before this test — this is the
+    /// first coverage of that branch, period.
+    ///
+    /// The mock emits a `tools/call` result with no `structuredContent`
+    /// key and a single `content` entry
+    /// `{"type":"text","text": <task serialized as a JSON STRING>}` — note
+    /// `text` is a JSON *string containing* serialized JSON, not a nested
+    /// object, since that is the shape `from_str(text)` expects and the
+    /// easiest thing to get wrong.
+    #[test]
+    fn pre_done_via_http_loader_sse_content_text_fallback() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+        insert_completed_event(&runs_db, "9997");
+
+        let mock = spawn_mock_mcp_shaped(Framing::Sse, ResultShape::ContentText, |args| {
+            assert_eq!(args.get("id").and_then(|v| v.as_str()), Some("9997"));
+            Some(serde_json::json!({
+                "id": "9997",
+                "title": "Mock task 9997",
+                "status": "done",
+                "updatedAt": "2026-05-16T07:39:04Z",
+                "metadata": {
+                    "files": [],
+                    "done_provenance": {"kind": "merged", "commit": "cafebabe", "note": null}
+                }
+            }))
+        });
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "9997",
+                "--pre-done",
+                "--fused-memory-url",
+                mock.url(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+
+        mock.stop();
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "content[0].text fallback must decode identically to structuredContent; stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "expected zero findings; got {:#}",
+            serde_json::Value::Array(findings)
+        );
     }
 
     /// Pre-done via HTTP loader: a done/merged task with files but no
@@ -2397,6 +3388,199 @@ mod http_loader {
             Some(125),
             "missing task must exit 125; stderr: {}",
             String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// SSE-framed counterpart to `pre_done_via_http_loader_missing_task_exits_125`.
+    /// Proves the centralised JSON-RPC error-envelope check in `post()`
+    /// — HTTP 200 carrying a top-level `{"error":{...}}` surfaces as
+    /// `LoadError::Protocol` — fires identically when the envelope
+    /// arrives inside a `data:` frame rather than as a bare JSON body.
+    ///
+    /// Asserts BOTH `post()`'s own distinctive `"JSON-RPC error"` text
+    /// AND the `get_task` tool-name breadcrumb `call_tool` decorates
+    /// Protocol errors with — `get_task` alone is not enough, since an
+    /// SSE-decode failure (e.g. "no SSE data line in response") would
+    /// ALSO exit 125 and get the same `get_task:` decoration, which
+    /// would let this test pass green even if SSE decoding never
+    /// actually reached the error envelope.
+    #[test]
+    fn pre_done_via_http_loader_sse_error_envelope_exits_125() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+
+        let mock =
+            spawn_mock_mcp_shaped(Framing::Sse, ResultShape::StructuredContent, |_args| None);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "9995",
+                "--pre-done",
+                "--fused-memory-url",
+                mock.url(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+
+        mock.stop();
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "missing task via SSE must exit 125; stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("get_task"),
+            "stderr should breadcrumb the tool name via call_tool's Protocol \
+             decoration; got: {stderr}"
+        );
+        assert!(
+            stderr.contains("JSON-RPC error"),
+            "stderr should carry post()'s own JSON-RPC error-envelope text, \
+             proving the failure is the error envelope and not merely an \
+             SSE-decode failure that also happens to exit 125; got: {stderr}"
+        );
+    }
+
+    /// Negative SSE lock: a data-less SSE frame (e.g. a keep-alive or
+    /// comment-only chunk, no `data:` line at all) on the `initialize`
+    /// leg must be refused rather than silently treated as an empty or
+    /// successful response. Exercises `post()`'s "no SSE data line in
+    /// response" refusal — one of the SSE branch's two failure modes; see
+    /// [`pre_done_via_http_loader_sse_malformed_data_exits_125`] below for
+    /// the other (a `data:` line whose payload isn't valid JSON).
+    #[test]
+    fn pre_done_via_http_loader_sse_no_data_line_exits_125() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+
+        // `initialize` fails to decode before any later leg is ever sent,
+        // so this responder must never run. A panic inside the mock's
+        // accept thread would NOT by itself fail this test —
+        // `MockServer::stop()` discards the accept thread's join result —
+        // so the guard here is this flag, read back after `stop()` (which
+        // joins the thread and is therefore the race-free read barrier).
+        let reached = Arc::new(AtomicBool::new(false));
+        let reached_clone = Arc::clone(&reached);
+        let mock = spawn_mock_mcp_shaped(
+            Framing::SseNoData,
+            ResultShape::StructuredContent,
+            move |_args| {
+                reached_clone.store(true, Ordering::Relaxed);
+                None
+            },
+        );
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "9994",
+                "--pre-done",
+                "--fused-memory-url",
+                mock.url(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+
+        mock.stop();
+
+        assert!(
+            !reached.load(Ordering::Relaxed),
+            "tools/call must never be reached — the handshake fails while \
+             decoding `initialize`"
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "data-less SSE frame must exit 125; stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("no SSE data line"),
+            "stderr should breadcrumb the missing-data-line refusal; got: {stderr}"
+        );
+    }
+
+    /// Negative SSE lock: an SSE `data:` line whose payload is not valid
+    /// JSON must be refused rather than silently treated as an empty or
+    /// successful response. Exercises `post()`'s "SSE data parse" refusal
+    /// — the SSE branch's other failure mode, sibling to
+    /// [`pre_done_via_http_loader_sse_no_data_line_exits_125`] above.
+    /// Verified uncovered anywhere else in the crate before this test:
+    /// `fused_memory_client.rs`'s own `mod tests` only covers
+    /// `parse_iso8601_to_epoch`, `days_from_civil` and
+    /// `task_metadata_from_wire` — it never constructs a
+    /// `FusedMemoryClient` or exercises `post()` at all.
+    #[test]
+    fn pre_done_via_http_loader_sse_malformed_data_exits_125() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+
+        // `initialize` fails to decode before any later leg is ever sent,
+        // so this responder must never run — see the sibling no-data-line
+        // test above for why a bare in-thread `panic!()` would not by
+        // itself fail this test.
+        let reached = Arc::new(AtomicBool::new(false));
+        let reached_clone = Arc::clone(&reached);
+        let mock = spawn_mock_mcp_shaped(
+            Framing::SseMalformedData,
+            ResultShape::StructuredContent,
+            move |_args| {
+                reached_clone.store(true, Ordering::Relaxed);
+                None
+            },
+        );
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "9993",
+                "--pre-done",
+                "--fused-memory-url",
+                mock.url(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+
+        mock.stop();
+
+        assert!(
+            !reached.load(Ordering::Relaxed),
+            "tools/call must never be reached — the handshake fails while \
+             decoding `initialize`"
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "malformed SSE data line must exit 125; stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("SSE data parse"),
+            "stderr should breadcrumb the SSE data-parse refusal; got: {stderr}"
         );
     }
 
@@ -2638,5 +3822,1188 @@ mod http_loader {
             stderr.contains("get_tasks") && stderr.contains("tasks"),
             "stderr should breadcrumb the malformed-tasks reason; got: {stderr}"
         );
+    }
+
+    /// SSE-framed counterpart to `sweep_via_http_loader_malformed_tasks_payload_exits_125`.
+    /// Proves the `missing or non-array \`tasks\` field` refusal in
+    /// `FusedMemoryClient::get_tasks` is reached identically under SSE
+    /// framing — i.e. the framing change cannot silently downgrade a
+    /// malformed corpus into a healthy-looking exit 0.
+    ///
+    /// Asserts the refusal's own distinctive text (`"missing or
+    /// non-array"`), not just the `get_tasks`/`tasks` breadcrumb —
+    /// `"tasks"` is a substring of `"get_tasks"`, so a bare
+    /// `contains("get_tasks") && contains("tasks")` check is satisfied by
+    /// ANY Protocol error mentioning the tool name, including an
+    /// SSE-decode failure that never reached this refusal at all.
+    #[test]
+    fn sweep_via_http_loader_sse_malformed_tasks_payload_exits_125() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+
+        // Responder returns an empty object — well-formed envelope,
+        // missing `tasks` field. Same shape as the JSON sibling, just
+        // delivered as an SSE `data:` frame.
+        let mock = spawn_mock_mcp_shaped(Framing::Sse, ResultShape::StructuredContent, |_args| {
+            Some(serde_json::json!({}))
+        });
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--since",
+                "1970-01-01",
+                "--fused-memory-url",
+                mock.url(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+
+        mock.stop();
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "malformed get_tasks payload via SSE must exit 125; stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("missing or non-array"),
+            "stderr should carry get_tasks()'s own missing/non-array `tasks` \
+             refusal text, proving the sweep actually reached that check \
+             rather than failing for an unrelated (e.g. SSE-decode) reason; \
+             got: {stderr}"
+        );
+    }
+}
+
+// -----------------------------------------------------------------------
+// §4.3 freshness gate — end-to-end boundary scenarios
+// -----------------------------------------------------------------------
+
+/// The freshness gate refuses to query a stale or empty jcodemunch corpus.
+///
+/// Every test here is HERMETIC and gate-resident: no serve, no network, no
+/// `uvx`, no `#[ignore]`. The degenerate corpus shapes are manufactured on
+/// disk by `common::index_fixture`, and `spawn_mock_mcp` stands in for the
+/// serve so `RealJCodemunchOps::new` succeeds — the precondition for the gate
+/// firing at all. That matters beyond convenience: a live-only test for this
+/// gate would be a PASS-shaped skip on every machine without a serve, which is
+/// exactly the "looks green, proves nothing" failure the gate exists to
+/// eliminate. Making this task's own evidence vacuous would be self-defeating.
+mod freshness_gate {
+    use super::*;
+    use crate::common::index_fixture::{
+        expected_repo_id, index_db_path, init_git_repo_with_one_commit, write_index_db,
+    };
+
+    const BOGUS_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    /// A jcodemunch-shaped mock that answers the handshake and returns an
+    /// empty result for any `tools/call`.
+    ///
+    /// The gate must fire BEFORE any detector query, so on the refusal paths
+    /// this responder should never be consulted for anything but `initialize`.
+    fn spawn_jcodemunch_mock() -> MockServer {
+        spawn_mock_mcp(|_args| Some(serde_json::json!({})))
+    }
+
+    /// The common scaffolding: a real one-commit git repo (so `live_head` is a
+    /// genuine sha), an empty tasks fixture, an empty runs.db, and a separate
+    /// tempdir standing in for `~/.code-index`.
+    struct Scenario {
+        _tmp: tempfile::TempDir,
+        repo: std::path::PathBuf,
+        index_dir: std::path::PathBuf,
+        tasks_file: std::path::PathBuf,
+        runs_db: std::path::PathBuf,
+        live_head: String,
+        repo_id: String,
+    }
+
+    fn scenario() -> Scenario {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("create repo dir");
+        let index_dir = tmp.path().join("code-index");
+        std::fs::create_dir_all(&index_dir).expect("create index dir");
+
+        let live_head = init_git_repo_with_one_commit(&repo);
+        let repo_id = expected_repo_id(&repo);
+        let tasks_file = write_tasks_json(tmp.path(), &[]);
+        let runs_db = write_empty_runs_db(tmp.path());
+
+        Scenario { _tmp: tmp, repo, index_dir, tasks_file, runs_db, live_head, repo_id }
+    }
+
+    impl Scenario {
+        /// Invoke the binary with the given pattern and extra flags.
+        fn run(&self, pattern: &str, extra: &[&str]) -> std::process::Output {
+            self.run_raw(&["--pattern", pattern], extra)
+        }
+
+        /// Invoke the binary with NO `--pattern` — the default all-detector
+        /// sweep, whose run set is mixed (P1 alongside P2/P5/PTODO/…).
+        fn run_default_sweep(&self, extra: &[&str]) -> std::process::Output {
+            self.run_raw(&[], extra)
+        }
+
+        fn run_raw(&self, pattern: &[&str], extra: &[&str]) -> std::process::Output {
+            let bin = env!("CARGO_BIN_EXE_reify-audit");
+            let mut cmd = Command::new(bin);
+            cmd.args(pattern);
+            cmd.args([
+                "--tasks-file", self.tasks_file.to_str().unwrap(),
+                "--runs-db", self.runs_db.to_str().unwrap(),
+                "--project-root", self.repo.to_str().unwrap(),
+                "--jcodemunch-index-dir", self.index_dir.to_str().unwrap(),
+            ]);
+            cmd.args(extra);
+            cmd.output().expect("invoke reify-audit")
+        }
+
+        /// Invoke WITHOUT `--jcodemunch-index-dir`, so the binary must resolve
+        /// the index directory from the environment. `env` entries are applied
+        /// verbatim; `None` removes the variable.
+        ///
+        /// Every env-precedence assertion must go through this helper rather
+        /// than `run_raw`: with the flag present, the production default is
+        /// never exercised at all, so a wrong default stays green. That gap is
+        /// exactly what let the `CODE_INDEX_PATH` divergence through review.
+        fn run_env(
+            &self,
+            pattern: &str,
+            env: &[(&str, Option<&str>)],
+            extra: &[&str],
+        ) -> std::process::Output {
+            let bin = env!("CARGO_BIN_EXE_reify-audit");
+            let mut cmd = Command::new(bin);
+            cmd.args(["--pattern", pattern]);
+            cmd.args([
+                "--tasks-file", self.tasks_file.to_str().unwrap(),
+                "--runs-db", self.runs_db.to_str().unwrap(),
+                "--project-root", self.repo.to_str().unwrap(),
+            ]);
+            // Clear both index-dir variables first so an inherited value from
+            // the developer's shell cannot decide the outcome.
+            cmd.env_remove("JCODEMUNCH_INDEX_DIR");
+            cmd.env_remove("CODE_INDEX_PATH");
+            for (k, v) in env {
+                match v {
+                    Some(val) => cmd.env(k, val),
+                    None => cmd.env_remove(k),
+                };
+            }
+            cmd.args(extra);
+            cmd.output().expect("invoke reify-audit")
+        }
+    }
+
+    /// With no `--jcodemunch-index-dir`, the gate must probe `CODE_INDEX_PATH`.
+    ///
+    /// `CODE_INDEX_PATH` is jcodemunch's own index-directory variable and the
+    /// supported redirection across this substrate:
+    /// `scripts/jcodemunch-index-reify.sh` resolves the DB as
+    /// `${CODE_INDEX_PATH:-$HOME/.code-index}/local-<name>.db`, and
+    /// `tests/infra/test_jcodemunch_index_reify.sh` drives its whole suite
+    /// through a temp one. If the gate ignored it, then on any host or CI job
+    /// that sets it the indexer would write a healthy corpus to
+    /// `$CODE_INDEX_PATH` while the gate probed `$HOME/.code-index`, found
+    /// nothing, and hard-refused `E_JC_INDEX_EMPTY` against a fully-indexed
+    /// tree — the phantom-reindex failure the identity half already forbids.
+    ///
+    /// The assertion is deliberately `E_JC_INDEX_STALE`, not merely "non-zero":
+    /// STALE is reachable ONLY by opening the DB written at `index_dir` and
+    /// reading its `git_head`. `E_JC_INDEX_EMPTY` is what a wrong directory
+    /// produces, so the two markers cleanly separate "probed the right place"
+    /// from "probed nothing".
+    #[test]
+    fn index_dir_defaults_to_code_index_path_env() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(BOGUS_SHA), 12);
+        let mock = spawn_jcodemunch_mock();
+
+        let out = s.run_env(
+            "P1",
+            &[("CODE_INDEX_PATH", Some(s.index_dir.to_str().unwrap()))],
+            &["--jcodemunch-url", mock.url()],
+        );
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "the gate must refuse using the CODE_INDEX_PATH store; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("E_JC_INDEX_STALE"),
+            "STALE proves the DB under CODE_INDEX_PATH was actually opened and \
+             its git_head read; EMPTY would mean the gate probed elsewhere. \
+             stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains(BOGUS_SHA),
+            "refusal must name the index head read from CODE_INDEX_PATH; \
+             stderr:\n{stderr}"
+        );
+    }
+
+    /// `JCODEMUNCH_INDEX_DIR` is the audit-local override and must outrank
+    /// `CODE_INDEX_PATH`. Both are set to REAL but DIFFERENT stores: the
+    /// override holds a stale DB, `CODE_INDEX_PATH` holds a fresh one. Only a
+    /// gate that honours the documented precedence refuses; one that silently
+    /// preferred `CODE_INDEX_PATH` would proceed to the detector instead.
+    #[test]
+    fn jcodemunch_index_dir_env_outranks_code_index_path() {
+        let s = scenario();
+        let other = s._tmp.path().join("other-index");
+        std::fs::create_dir_all(&other).expect("create second index dir");
+        // Override store: stale. CODE_INDEX_PATH store: fresh and populated.
+        write_index_db(&other, &s.repo_id, Some(BOGUS_SHA), 12);
+        write_index_db(&s.index_dir, &s.repo_id, Some(&s.live_head), 7);
+        let mock = spawn_jcodemunch_mock();
+
+        let out = s.run_env(
+            "P1",
+            &[
+                ("JCODEMUNCH_INDEX_DIR", Some(other.to_str().unwrap())),
+                ("CODE_INDEX_PATH", Some(s.index_dir.to_str().unwrap())),
+            ],
+            &["--jcodemunch-url", mock.url()],
+        );
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert!(
+            stderr.contains("E_JC_INDEX_STALE") && stderr.contains(BOGUS_SHA),
+            "JCODEMUNCH_INDEX_DIR must win: the refusal has to name the stale \
+             head from the override store, not the fresh CODE_INDEX_PATH one. \
+             stderr:\n{stderr}"
+        );
+    }
+
+    /// The `--jcodemunch-index-dir` flag outranks both variables. Guards the
+    /// top of the documented precedence chain, so a future refactor cannot
+    /// quietly let an inherited `CODE_INDEX_PATH` capture an explicit flag.
+    #[test]
+    fn jcodemunch_index_dir_flag_outranks_both_env_vars() {
+        let s = scenario();
+        let decoy = s._tmp.path().join("decoy-index");
+        std::fs::create_dir_all(&decoy).expect("create decoy index dir");
+        // Both env stores are fresh; only the flagged store is stale.
+        write_index_db(&decoy, &s.repo_id, Some(&s.live_head), 7);
+        write_index_db(&s.index_dir, &s.repo_id, Some(BOGUS_SHA), 12);
+        let mock = spawn_jcodemunch_mock();
+
+        let out = s.run_env(
+            "P1",
+            &[
+                ("JCODEMUNCH_INDEX_DIR", Some(decoy.to_str().unwrap())),
+                ("CODE_INDEX_PATH", Some(decoy.to_str().unwrap())),
+            ],
+            &[
+                "--jcodemunch-url", mock.url(),
+                "--jcodemunch-index-dir", s.index_dir.to_str().unwrap(),
+            ],
+        );
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert!(
+            stderr.contains("E_JC_INDEX_STALE") && stderr.contains(BOGUS_SHA),
+            "the explicit flag must win over both env vars; stderr:\n{stderr}"
+        );
+    }
+
+    /// B4 — a corpus indexed at a DIFFERENT commit must be refused.
+    ///
+    /// This is the harm §4.3 exists to prevent: queries answer about another
+    /// commit's code, so P1 reports symbols as orphaned that the current tree
+    /// references — a fabricated High-severity finding, indistinguishable at
+    /// the CLI surface from a real one.
+    #[test]
+    fn b4_stale_index_refuses_with_e_jc_index_stale() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(BOGUS_SHA), 12);
+        let mock = spawn_jcodemunch_mock();
+
+        let out = s.run("P1", &["--jcodemunch-url", mock.url()]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "a stale index must refuse the run; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("E_JC_INDEX_STALE"),
+            "refusal must carry the machine-readable marker; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains(BOGUS_SHA),
+            "refusal must name the index head; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains(&s.live_head),
+            "refusal must name the live head; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("symbol_count=12"),
+            "refusal must name the symbol count; stderr:\n{stderr}"
+        );
+        // The one field that says WHICH index to rebuild. Without this
+        // assertion, dropping `with_repo_id` leaves the whole suite green
+        // while the operator loses the only actionable identifier — the
+        // §4.2-derived id is not something they can reconstruct by hand.
+        assert!(
+            stderr.contains(&s.repo_id),
+            "refusal must name the probed repo id {}; stderr:\n{stderr}",
+            s.repo_id
+        );
+
+        // Load-bearing, not cosmetic. The `/audit` skill disambiguates
+        // exit-125-as-infra-error from exit-125-as-125-High-findings by
+        // parsing stderr for a JSON array. Because the refusal returns before
+        // any findings are serialized, it emits no array and the EXISTING
+        // disambiguator classifies it correctly with no skill-side change.
+        assert!(
+            !stderr_has_parseable_findings_array(&stderr),
+            "a refusal must emit NO findings array; stderr:\n{stderr}"
+        );
+    }
+
+    /// B5 — an index at the right commit but carrying zero symbols must be
+    /// refused. The mirror-image failure: a head comparison alone says "all
+    /// good" while every query returns nothing, so every producer looks
+    /// orphaned. This is the shape `delete-index` leaves behind.
+    #[test]
+    fn b5_empty_husk_index_refuses_with_e_jc_index_empty() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(&s.live_head), 0);
+        let mock = spawn_jcodemunch_mock();
+
+        let out = s.run("P1", &["--jcodemunch-url", mock.url()]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "an empty-husk index must refuse the run; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("E_JC_INDEX_EMPTY"),
+            "refusal must carry the machine-readable marker; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("symbol_count=0"),
+            "refusal must name the symbol count; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains(&s.repo_id),
+            "refusal must name the probed repo id {}; stderr:\n{stderr}",
+            s.repo_id
+        );
+        assert!(
+            !stderr_has_parseable_findings_array(&stderr),
+            "a refusal must emit NO findings array; stderr:\n{stderr}"
+        );
+    }
+
+    /// B5b — no index at all is the limiting case of an empty one, and gets
+    /// the same refusal. Also the end-to-end proof of the read-only open:
+    /// `Connection::open` CREATES a missing file, so a run against an absent
+    /// index must not litter a phantom zero-symbol DB that jcodemunch would
+    /// then register as an empty repo — the gate must not manufacture the very
+    /// condition it detects.
+    #[test]
+    fn b5b_absent_index_refuses_without_creating_the_db() {
+        let s = scenario();
+        let expected_db = index_db_path(&s.index_dir, &s.repo_id);
+        assert!(!expected_db.exists(), "precondition: no index db");
+        let mock = spawn_jcodemunch_mock();
+
+        let out = s.run("P1", &["--jcodemunch-url", mock.url()]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "an absent index must refuse the run; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("E_JC_INDEX_EMPTY"),
+            "refusal must carry the machine-readable marker; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr_has_parseable_findings_array(&stderr),
+            "a refusal must emit NO findings array; stderr:\n{stderr}"
+        );
+        assert!(
+            !expected_db.exists(),
+            "the gate must NOT create the index db it fails to find, at {}",
+            expected_db.display()
+        );
+    }
+
+    /// B6 — a fresh, populated index lets the run PROCEED.
+    ///
+    /// Per the manifest's `no-finding-count-assertion` guardrail this asserts
+    /// only that a well-formed findings array was emitted, never that it is
+    /// non-empty: the corpus here is a synthetic two-symbol index, so a
+    /// specific finding count would pin an artifact of the fixture rather than
+    /// any behaviour of the gate.
+    #[test]
+    fn b6_fresh_index_admits_the_run() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(&s.live_head), 2);
+        let mock = spawn_jcodemunch_mock();
+
+        let out = s.run("P1", &["--jcodemunch-url", mock.url()]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "a fresh populated index must admit the run; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("E_JC_INDEX_STALE") && !stderr.contains("E_JC_INDEX_EMPTY"),
+            "an admitted run must emit NEITHER marker; stderr:\n{stderr}"
+        );
+        // The same predicate the /audit skill's exit-125 disambiguator
+        // applies, and the exact inverse of what B4/B5/B5b assert. A bare
+        // `contains('[')` would be satisfied by any incidental diagnostic
+        // line — `git check-ignore exited Some(..)`, a PTODO
+        // `tasks.db unreachable at ...` breadcrumb — so it would still pass
+        // if the findings array were never serialized at all.
+        assert!(
+            stderr_has_parseable_findings_array(&stderr),
+            "an admitted run must emit a well-formed findings array; stderr:\n{stderr}"
+        );
+    }
+
+    /// B7 — detectors that never touch jcodemunch must be unaffected by a
+    /// stale index. `needs_jcodemunch` is false for a P2/P5-only run, so no
+    /// client is constructed and the gate is unreachable. A gate that fired
+    /// here would turn every P2/P5 sweep red on any machine with a stale
+    /// corpus it never consults.
+    #[test]
+    fn b7_non_jcodemunch_patterns_ignore_a_stale_index() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(BOGUS_SHA), 12);
+
+        let out = s.run("P2,P5", &[]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(out.status.code(), Some(0), "stderr:\n{stderr}");
+        assert!(
+            !stderr.contains("E_JC_INDEX_STALE") && !stderr.contains("E_JC_INDEX_EMPTY"),
+            "the gate must be unreachable for non-jcodemunch patterns; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr_has_parseable_findings_array(&stderr),
+            "the run must still emit its findings array; stderr:\n{stderr}"
+        );
+    }
+
+    /// SERVE-DOWN PRECEDENCE — with no serve there is no stale corpus to be
+    /// misled by, so there is nothing to refuse.
+    ///
+    /// This is the regression lock on where the gate fires. The existing
+    /// unreachable-serve fail-soft (P1 degrades to zero findings, exit 0, one
+    /// breadcrumb) is a documented healthy path: jcodemunch is legitimately
+    /// absent in a task worktree. Gating before the connection attempt would
+    /// convert that into a hard exit 125 on every such machine — turning a
+    /// fail-soft into an outage, and breaking the pre-existing contract that
+    /// an optional substrate never fails a run.
+    #[test]
+    fn serve_down_fail_soft_takes_precedence_over_a_stale_index() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(BOGUS_SHA), 12);
+
+        let unreachable = common::net::unreachable_mcp_url();
+        let out = s.run("P1", &["--jcodemunch-url", &unreachable]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "an unreachable serve must still fail-soft, not refuse; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("jcodemunch unreachable"),
+            "the existing fail-soft breadcrumb must survive; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("E_JC_INDEX_STALE") && !stderr.contains("E_JC_INDEX_EMPTY"),
+            "the gate must not fire when no serve was reached; stderr:\n{stderr}"
+        );
+    }
+
+    /// Overwrite `tasks_file` with ONE P1-eligible done task pinned to
+    /// `commit`, replacing whatever `scenario()` put there.
+    ///
+    /// The eligibility rules (`status: "done"`, a `done_provenance.commit`, a
+    /// non-null `done_at`) live in `task_json::done_task_fixture`, shared with
+    /// `tests/jcodemunch_live.rs`'s `write_synthetic_done_task`, and the
+    /// serialize-and-write in `write_tasks_json`; this helper only supplies
+    /// what is scenario-specific.
+    ///
+    /// `since_sha` is derived by P1 as `{commit}^1`, which does NOT resolve in
+    /// `scenario()`'s one-commit repo. That is fine and deliberate: both SHAs
+    /// are passed verbatim into `RealJCodemunchOps::get_changed_symbols`'s
+    /// `tools/call` arguments with no local git resolution, and the mock errors
+    /// the call regardless.
+    fn write_p1_done_task(tasks_file: &std::path::Path, commit: &str) {
+        let mut task = done_task_fixture("synthetic-per-call-p1", commit, 1_700_000_000);
+        // `seed.rs` is the one file `init_git_repo_with_one_commit` actually
+        // commits into the scenario repo, so this record names a path that
+        // EXISTS where the binary is pointed. `task_fixture`'s default is a
+        // reify path with no meaning inside a throwaway temp repo; P1 never
+        // reads `files` on this route (it derives its range from
+        // `done_provenance.commit` and its symbols from `get_changed_symbols`),
+        // so an inert-but-plausible path would read as a live premise.
+        task["files"] = serde_json::json!(["seed.rs"]);
+
+        let dir = tasks_file
+            .parent()
+            .expect("the scenario's tasks.json must live in a directory");
+        let written = write_tasks_json(dir, &[task]);
+        assert_eq!(
+            written, tasks_file,
+            "write_tasks_json must land on the scenario's OWN tasks.json — the \
+             one `Scenario::run` passes as --tasks-file"
+        );
+    }
+
+    /// The assertions a PER-CALL fail-soft run PASSES — i.e. everything that
+    /// makes it indistinguishable from a genuine zero-finding success.
+    ///
+    /// Exit 0 (the seam fail-softs, it does not refuse); no `E_JC_INDEX_`
+    /// marker (the §4.3 gate ADMITTED the run, so a detector really did
+    /// execute and the breadcrumb the caller asserts on is reachable); no
+    /// `jcodemunch unreachable at` (the handshake SUCCEEDED, so this is the
+    /// PER-CALL layer and not the CONSTRUCTION one).
+    ///
+    /// Shared by all three `per_call_fail_soft_*` tests rather than written
+    /// three times over — the shape `jcodemunch_live.rs::assert_live_leg`
+    /// already uses for its two legs, and for the same reason: one contract
+    /// asserted in three places drifts into three subtly different claims
+    /// about it, and each copy then has to be found and fixed separately.
+    ///
+    /// Each caller adds only its own breadcrumb and findings assertions.
+    fn assert_admitted_after_a_successful_handshake(out: &std::process::Output, stderr: &str) {
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "a per-call failure must still fail-soft, not refuse; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("E_JC_INDEX_"),
+            "the gate must have ADMITTED this run — a refusal would mean no \
+             detector ever ran and the per-call breadcrumb is unreachable; \
+             stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("jcodemunch unreachable at"),
+            "the handshake must have SUCCEEDED, or this would be the \
+             CONSTRUCTION fail-soft layer rather than the PER-CALL one; \
+             stderr:\n{stderr}"
+        );
+    }
+
+    /// PER-CALL FAIL-SOFT — the vacuous pass that survives every other check.
+    ///
+    /// CONSUMER: `jcodemunch_live.rs::assert_live_leg`, via
+    /// `breadcrumbs::PDEAD_CALL`. This test is the anti-rot lock for that
+    /// literal. The seam tests over there prove `assert_live_leg` FIRES on a
+    /// given string; they cannot prove that string is what the binary actually
+    /// emits. This test observes the breadcrumb come out of the REAL binary on
+    /// the ordinary merge gate, so a reword of the `eprintln!` in
+    /// `RealJCodemunchOps::get_dead_code`'s `Err` arm turns THIS test red
+    /// instead of silently reverting the capstone to vacuous.
+    ///
+    /// Both consumers read the SAME constant, so a reword is one edit in
+    /// `tests/common/breadcrumbs.rs` and both move together. When each binary
+    /// spelled its own copy, only prose bound them: fixing this test alone
+    /// restored the green build while leaving the capstone asserting the
+    /// absence of a string that could no longer appear — PRD §2.4's failure
+    /// mode displaced one file over.
+    ///
+    /// The sibling below (`serve_down_fail_soft_takes_precedence_over_a_stale_index`,
+    /// above) pins the CONSTRUCTION layer; this pins the PER-CALL layer. They
+    /// are independent: a per-call failure happens AFTER a successful
+    /// handshake, which is exactly what the first four assertions here
+    /// document — this run is indistinguishable from success without the
+    /// fifth.
+    ///
+    /// HERMETIC and gate-resident, like the rest of this module: no serve, no
+    /// network, no `uvx`, no `#[ignore]`.
+    #[test]
+    fn per_call_fail_soft_is_a_vacuous_pass_the_capstone_must_catch() {
+        let s = scenario();
+        // FRESH index, so the §4.3 gate ADMITS. Required: under a
+        // jcodemunch-only run set a stale/empty index hard-exits 125 BEFORE
+        // any `tools/call`, and no breadcrumb could ever be reached.
+        write_index_db(&s.index_dir, &s.repo_id, Some(&s.live_head), 7);
+
+        // `None` => HTTP 200 carrying a top-level JSON-RPC `error` envelope,
+        // which `JcodemunchClient::call_tool` maps to `LoadError::Protocol` —
+        // landing on precisely the `Err` arm that prints the breadcrumb.
+        // `initialize` and `notifications/initialized` are still answered
+        // normally, so `RealJCodemunchOps::new` SUCCEEDS and the construction
+        // fail-soft stays silent.
+        let mock = spawn_mock_mcp(|_args| None);
+        let out = s.run("PDEAD", &["--jcodemunch-url", mock.url()]);
+        // Tear the mock down BEFORE asserting so a failing assertion cannot
+        // leak the accept thread into the rest of the run (the convention
+        // every other mock-using test in this file follows; `Drop` alone sets
+        // the flag without joining the thread).
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        // --- the four assertions that ALL PASS on this vacuous run ---
+        assert_admitted_after_a_successful_handshake(&out, &stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "the errored op returns Vec::new(), so PDEAD's array must be \
+             empty here; got {findings:?}\nstderr:\n{stderr}"
+        );
+
+        // --- the fifth, and the only one that can tell the difference ---
+        assert!(
+            stderr.contains(breadcrumbs::PDEAD_GET_DEAD_CODE),
+            "the real binary must emit the per-call fail-soft breadcrumb this \
+             run's emptiness is EXPLAINED BY. Every assertion above passed, so \
+             without this one the run is indistinguishable from a genuine \
+             zero-finding success. If the `eprintln!` at \
+             the Err arm of RealJCodemunchOps::get_dead_code was reworded, \
+             update breadcrumbs::PDEAD_GET_DEAD_CODE — the live capstone reads the \
+             same constant and moves with it.\nstderr:\n{stderr}"
+        );
+    }
+
+    /// PER-CALL FAIL-SOFT, P1 leg — the anti-rot lock for the load-bearing
+    /// half of `breadcrumbs::P1_CALL`.
+    ///
+    /// CONSUMER: `jcodemunch_live.rs::assert_live_leg`, via
+    /// `breadcrumbs::P1_CALL`, which reads the same
+    /// `breadcrumbs::P1_GET_CHANGED_SYMBOLS` this test asserts on — so a
+    /// reword of the `eprintln!` in `RealJCodemunchOps::get_changed_symbols`'s
+    /// `Err` arm is one edit and both consumers move.
+    ///
+    /// `find_references` is NOT asserted HERE, and could not be: this
+    /// responder errors every tool, so `get_changed_symbols` returns no
+    /// symbol, so `p1_producer_orphan::check`'s `for symbol in ...` loop —
+    /// which is where the `find_references` call lives — never runs its body. That is a property of THIS responder, not of the harness —
+    /// the sibling below (`per_call_fail_soft_on_p1s_second_call`) dispatches
+    /// on the arguments to reach it.
+    #[test]
+    fn per_call_fail_soft_on_the_p1_pair() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(&s.live_head), 7);
+        write_p1_done_task(&s.tasks_file, &s.live_head);
+
+        let mock = spawn_mock_mcp(|_args| None);
+        let out = s.run("P1", &["--jcodemunch-url", mock.url()]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_admitted_after_a_successful_handshake(&out, &stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "get_changed_symbols returned Vec::new(), so P1 has nothing to \
+             report; got {findings:?}\nstderr:\n{stderr}"
+        );
+
+        assert!(
+            stderr.contains(breadcrumbs::P1_GET_CHANGED_SYMBOLS),
+            "the real binary must emit the per-call fail-soft breadcrumb. If \
+             the `eprintln!` in the Err arm of \
+             RealJCodemunchOps::get_changed_symbols was reworded, \
+             update breadcrumbs::P1_GET_CHANGED_SYMBOLS — the live capstone \
+             reads the same constant.\nstderr:\n{stderr}"
+        );
+    }
+
+    /// PER-CALL FAIL-SOFT, P1's SECOND call — the anti-rot lock for
+    /// `breadcrumbs::P1_FIND_REFERENCES`.
+    ///
+    /// The sibling above errors EVERY tool, so `get_changed_symbols` returns
+    /// nothing and `find_references` is never reached. That is a limitation of
+    /// that responder, not of the mock: `spawn_mock_mcp`'s closure receives
+    /// the `tools/call` arguments, and the two calls are trivially
+    /// distinguishable — `get_changed_symbols` sends
+    /// `{repo, since_sha, until_sha}` while `find_references` sends
+    /// `{repo, identifier}` (each op's own `call_tool` arguments). So
+    /// this test DISPATCHES: it answers the first call with a real symbol row
+    /// and errors only the second, which is what walks the real binary into
+    /// `RealJCodemunchOps::find_references`'s `Err` arm.
+    ///
+    /// Without it, `P1_FIND_REFERENCES` would be pinned only by
+    /// `jcodemunch_live.rs`'s seam test — i.e. against SYNTHETIC stderr, which
+    /// proves `assert_live_leg` fires on the string but not that the binary
+    /// ever emits it. A reword of that `Err` arm would then leave every test
+    /// green while the live capstone asserted the absence of a string that can
+    /// no longer appear.
+    ///
+    /// The symbol row is `seed`/`seed.rs`/line 1, which is not decoration:
+    /// `init_git_repo_with_one_commit` commits exactly `pub fn seed() {}` into
+    /// the scenario repo, so suppression enrichment
+    /// (`RealJCodemunchOps::get_changed_symbols`) reads a file that EXISTS and
+    /// finds no `#[allow(dead_code)]` / `#[cfg(test)]` above the declaration.
+    /// A symbol that tripped either guard would be skipped before
+    /// `find_references` was ever called, and this test would pass vacuously.
+    ///
+    /// HERMETIC and gate-resident: no serve, no network, no `uvx`, no
+    /// `#[ignore]`.
+    #[test]
+    fn per_call_fail_soft_on_p1s_second_call() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(&s.live_head), 7);
+        write_p1_done_task(&s.tasks_file, &s.live_head);
+
+        // `identifier` is present ONLY in find_references' arguments — error
+        // that one, answer get_changed_symbols with one well-formed
+        // `added_symbols` row (the shape `changed_symbols_from_wire` reads).
+        let mock = spawn_mock_mcp(|args| {
+            if args.get("identifier").is_some() {
+                None
+            } else {
+                Some(serde_json::json!({
+                    "added_symbols": [{"name": "seed", "file": "seed.rs", "line": 1}]
+                }))
+            }
+        });
+        let out = s.run("P1", &["--jcodemunch-url", mock.url()]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_admitted_after_a_successful_handshake(&out, &stderr);
+        // The FIRST call must have SUCCEEDED, or this test would be re-proving
+        // the sibling above rather than reaching the second call at all.
+        assert!(
+            !stderr.contains(breadcrumbs::P1_GET_CHANGED_SYMBOLS),
+            "get_changed_symbols was answered, so its breadcrumb must be \
+             silent — if it fired, the dispatch predicate is wrong and \
+             find_references was never reached; stderr:\n{stderr}"
+        );
+
+        // The symbol flowed all the way through: find_references errored, so
+        // it returned no reference, so P1 found no non-test caller and
+        // reported the orphan. Asserting the FINDING (not emptiness) is what
+        // proves the row survived decode + enrichment + every per-symbol
+        // suppression guard.
+        let findings = parse_findings_from_stderr(&stderr);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly the one orphan finding for `seed`; \
+             got {findings:?}\nstderr:\n{stderr}"
+        );
+        assert_eq!(
+            findings[0]["pattern"], "P1ProducerOrphan",
+            "the finding must come from the P1 detector; \
+             got {:?}",
+            findings[0]
+        );
+        assert!(
+            findings[0]["summary"].as_str().unwrap_or_default().contains("`seed`"),
+            "the finding must name the symbol the mock returned, or the row \
+             did not actually reach the detector; got {:?}",
+            findings[0]
+        );
+
+        assert!(
+            stderr.contains(breadcrumbs::P1_FIND_REFERENCES),
+            "the real binary must emit find_references' per-call fail-soft \
+             breadcrumb. If the `eprintln!` at \
+             the Err arm of RealJCodemunchOps::find_references was reworded, \
+             update breadcrumbs::P1_FIND_REFERENCES — the live capstone reads the \
+             same constant.\nstderr:\n{stderr}"
+        );
+    }
+
+    /// `--no-jcodemunch` PRECEDENCE — the explicit escape hatch bypasses the
+    /// seam entirely, so it must bypass the gate too. An escape hatch that
+    /// still hard-failed on index state would not be an escape hatch.
+    #[test]
+    fn no_jcodemunch_bypasses_the_gate_entirely() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(BOGUS_SHA), 12);
+
+        let out = s.run("P1", &["--no-jcodemunch"]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(out.status.code(), Some(0), "stderr:\n{stderr}");
+        assert!(
+            !stderr.contains("E_JC_INDEX_STALE") && !stderr.contains("E_JC_INDEX_EMPTY"),
+            "--no-jcodemunch must bypass the gate; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("jcodemunch unreachable"),
+            "--no-jcodemunch must not even attempt a connection; stderr:\n{stderr}"
+        );
+    }
+
+    /// BLAST RADIUS — a mixed run set must NOT be killed by an unusable
+    /// corpus.
+    ///
+    /// The default sweep runs P2, P5, PTODO and PDSSENTINEL alongside P1, and
+    /// none of those four consult jcodemunch at all. Refusing the process here
+    /// would delete four working detectors' output over one stale index — and
+    /// §4.2 makes that the EXPECTED case, not an anomaly: identity is now
+    /// per-checkout, so every task worktree derives an id nothing has indexed.
+    /// A default `reify-audit --since <date>` from any warm lane with the
+    /// serve up would exit 125 with zero findings.
+    ///
+    /// So the corpus is still never queried (the Noop seam answers every
+    /// jcodemunch call with nothing), but the run completes and emits its
+    /// findings array, exactly as the unreachable-serve fail-soft does.
+    #[test]
+    fn default_sweep_degrades_rather_than_refusing_on_a_stale_index() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(BOGUS_SHA), 12);
+        let mock = spawn_jcodemunch_mock();
+
+        let out = s.run_default_sweep(&["--jcodemunch-url", mock.url()]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_ne!(
+            out.status.code(),
+            Some(125),
+            "a mixed run set must not be refused wholesale; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr_has_parseable_findings_array(&stderr),
+            "the non-jcodemunch detectors must still emit their findings; stderr:\n{stderr}"
+        );
+        // Degraded, not silent: the marker keeps the condition machine-
+        // detectable, and the breadcrumb names what was lost.
+        assert!(
+            stderr.contains("E_JC_INDEX_STALE"),
+            "the degraded sweep must still carry the marker; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("degraded to zero findings"),
+            "the breadcrumb must name what was lost; stderr:\n{stderr}"
+        );
+    }
+
+    /// The same stale corpus, selected by an ALL-jcodemunch pattern, is still
+    /// a hard refusal — nothing in that run set could have survived it. Pins
+    /// the boundary from the other side, so a future widening of the
+    /// degrade path cannot silently swallow §4.3.
+    #[test]
+    fn all_jcodemunch_pattern_still_refuses_hard() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(BOGUS_SHA), 12);
+        let mock = spawn_jcodemunch_mock();
+
+        let out = s.run("P1,PDEAD", &["--jcodemunch-url", mock.url()]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "an all-jcodemunch run set must refuse; stderr:\n{stderr}"
+        );
+        assert!(stderr.contains("E_JC_INDEX_STALE"), "stderr:\n{stderr}");
+        assert!(
+            !stderr_has_parseable_findings_array(&stderr),
+            "a refusal must emit NO findings array; stderr:\n{stderr}"
+        );
+    }
+
+    /// A valid SQLite file carrying the WRONG SCHEMA is neither stale nor
+    /// empty: the file exists, and what is behind it is unknown. It gets its
+    /// own code and its own remedy, because "re-index this checkout" is the
+    /// wrong instruction for a corpus that may be perfectly intact.
+    ///
+    /// The reader-level version of this is pinned in the library's unit tests;
+    /// what is pinned HERE is that the diagnostic survives all the way into
+    /// the rendered CLI message, which no reader-level test can show.
+    #[test]
+    fn schema_drifted_index_refuses_with_its_own_code_and_diagnostic() {
+        let s = scenario();
+        let db = index_db_path(&s.index_dir, &s.repo_id);
+        let conn = rusqlite::Connection::open(&db).expect("open drifted db");
+        conn.execute_batch("CREATE TABLE something_else (x INTEGER);")
+            .expect("create unrelated table");
+        drop(conn);
+        let mock = spawn_jcodemunch_mock();
+
+        let out = s.run("P1", &["--jcodemunch-url", mock.url()]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(out.status.code(), Some(125), "stderr:\n{stderr}");
+        assert!(
+            stderr.contains("E_JC_INDEX_UNREADABLE"),
+            "schema drift must carry its own marker, not be collapsed into \
+             EMPTY; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("index unreadable:"),
+            "the reader's diagnostic must reach the operator; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("re-index this checkout before querying"),
+            "the empty/stale remedy points at the wrong artifact here; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr_has_parseable_findings_array(&stderr),
+            "a refusal must emit NO findings array; stderr:\n{stderr}"
+        );
+    }
+
+    /// A freshness claim that cannot be VERIFIED gets a third message,
+    /// carrying no marker token at all.
+    ///
+    /// `--project-root` outside any git repo makes `git rev-parse HEAD` fail,
+    /// so there is no live head to compare against. Neither staleness nor
+    /// emptiness nor unreadability of the INDEX has been established, and
+    /// labelling this as any of them would send the operator to re-index when
+    /// the real fault is the git invocation.
+    #[test]
+    fn unverifiable_head_refuses_without_naming_an_index_fault() {
+        let s = scenario();
+        write_index_db(&s.index_dir, &s.repo_id, Some(&s.live_head), 2);
+        let non_git = s.repo.parent().expect("tempdir parent").join("not-a-repo");
+        std::fs::create_dir_all(&non_git).expect("create non-git root");
+        let mock = spawn_jcodemunch_mock();
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--pattern", "P1",
+                "--tasks-file", s.tasks_file.to_str().unwrap(),
+                "--runs-db", s.runs_db.to_str().unwrap(),
+                "--project-root", non_git.to_str().unwrap(),
+                "--jcodemunch-index-dir", s.index_dir.to_str().unwrap(),
+                "--jcodemunch-url", mock.url(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "an unverifiable head must refuse; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("cannot verify jcodemunch index freshness"),
+            "the third message must be distinct from the index refusals; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("E_JC_INDEX_"),
+            "no index fault has been established, so no index marker may be \
+             emitted; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr_has_parseable_findings_array(&stderr),
+            "a refusal must emit NO findings array; stderr:\n{stderr}"
+        );
+    }
+}
+
+// -----------------------------------------------------------------------
+// §4.2 — the derived identity must reach the wire
+// -----------------------------------------------------------------------
+
+/// Close the loop between §4.2 and the detector query.
+///
+/// It is not enough that `resolve_repo_id` returns the right string in a unit
+/// test: the id the detector actually SENDS as `"repo"` must be that same
+/// derived value, and the id the gate PROBES must be that same value too. A
+/// plausible wiring slip is for an override to reach the ops constructor while
+/// the gate silently keeps checking the derived path — which would gate one
+/// index and query another, re-opening exactly the vacuity the gate closes.
+mod wire_identity {
+    use super::*;
+    use crate::common::index_fixture::{
+        expected_repo_id, index_db_path, init_git_repo_with_one_commit, write_index_db,
+    };
+
+    /// Spawn a jcodemunch mock that RECORDS every `tools/call` arguments
+    /// object it is handed, returning the shared log alongside the server.
+    ///
+    /// `spawn_mock_mcp`'s responder is bounded `Fn(&Value) -> Option<Value> +
+    /// Send + Sync + 'static`, so it can close over shared state. There is no
+    /// existing recorder helper in this file to reuse — the other mock call
+    /// sites merely INSPECT their args — so the capture is written here.
+    fn spawn_recording_mock() -> (MockServer, Arc<std::sync::Mutex<Vec<serde_json::Value>>>) {
+        let calls: Arc<std::sync::Mutex<Vec<serde_json::Value>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&calls);
+        let mock = spawn_mock_mcp(move |args| {
+            sink.lock().expect("record call args").push(args.clone());
+            // A canned layer violation keeps PLAYER's dispatch path alive, so
+            // the wire call this test observes is a real detector query.
+            Some(serde_json::json!({
+                "violations": [{
+                    "from": "crates/reify-cli",
+                    "to": "crates/reify-kernel",
+                    "from_symbol": "reify_cli::main",
+                    "to_symbol": "reify_kernel::solver::Solver::solve",
+                    "allowed": false,
+                    "rule_index": 0
+                }]
+            }))
+        });
+        (mock, calls)
+    }
+
+    /// Every recorded call that carries a `repo` field, as strings.
+    fn recorded_repos(calls: &Arc<std::sync::Mutex<Vec<serde_json::Value>>>) -> Vec<String> {
+        calls
+            .lock()
+            .expect("read recorded calls")
+            .iter()
+            .filter_map(|args| args.get("repo").and_then(|r| r.as_str()).map(str::to_string))
+            .collect()
+    }
+
+    struct Fixture {
+        _tmp: tempfile::TempDir,
+        repo: std::path::PathBuf,
+        index_dir: std::path::PathBuf,
+        tasks_file: std::path::PathBuf,
+        runs_db: std::path::PathBuf,
+        live_head: String,
+    }
+
+    fn fixture() -> Fixture {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("create repo dir");
+        let index_dir = tmp.path().join("code-index");
+        std::fs::create_dir_all(&index_dir).expect("create index dir");
+        let live_head = init_git_repo_with_one_commit(&repo);
+        let tasks_file = write_tasks_json(tmp.path(), &[]);
+        let runs_db = write_empty_runs_db(tmp.path());
+        Fixture { _tmp: tmp, repo, index_dir, tasks_file, runs_db, live_head }
+    }
+
+    impl Fixture {
+        fn run(&self, url: &str, extra: &[&str]) -> std::process::Output {
+            let bin = env!("CARGO_BIN_EXE_reify-audit");
+            let mut cmd = Command::new(bin);
+            cmd.args([
+                "--pattern", "PLAYER",
+                "--jcodemunch-url", url,
+                "--tasks-file", self.tasks_file.to_str().unwrap(),
+                "--runs-db", self.runs_db.to_str().unwrap(),
+                "--project-root", self.repo.to_str().unwrap(),
+                "--jcodemunch-index-dir", self.index_dir.to_str().unwrap(),
+            ]);
+            cmd.args(extra);
+            cmd.output().expect("invoke reify-audit")
+        }
+    }
+
+    /// With no `--jcodemunch-repo`, the id on the wire must be the §4.2 derived
+    /// identity for the project root — and specifically NOT the legacy
+    /// git-identity default this task removed.
+    #[test]
+    fn derived_repo_id_reaches_the_wire() {
+        let f = fixture();
+        let derived = expected_repo_id(&f.repo);
+        write_index_db(&f.index_dir, &derived, Some(&f.live_head), 2);
+
+        let (mock, calls) = spawn_recording_mock();
+        let out = f.run(mock.url(), &[]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "fresh index must admit the run; stderr:\n{stderr}"
+        );
+
+        let repos = recorded_repos(&calls);
+        assert!(
+            !repos.is_empty(),
+            "no jcodemunch call carrying a `repo` was observed — the detector \
+             never queried, so this test would be vacuous; stderr:\n{stderr}"
+        );
+        for repo in &repos {
+            assert_eq!(
+                repo, &derived,
+                "the wire must carry the §4.2 derived identity; recorded {repos:?}"
+            );
+            assert_ne!(
+                repo, "leodearden/reify",
+                "the removed legacy git-identity default must never reach the wire"
+            );
+        }
+    }
+
+    /// `--jcodemunch-repo` must reach BOTH consumers: the wire AND the gate.
+    ///
+    /// The index is written ONLY at the override's flattened filename and
+    /// deliberately NOT at the derived path, so admission is itself the proof
+    /// that the gate probed the override — had it kept checking the derived
+    /// path it would have found no index and refused with E_JC_INDEX_EMPTY.
+    #[test]
+    fn override_repo_id_reaches_both_the_wire_and_the_gate() {
+        let f = fixture();
+        let override_id = "my/custom-repo";
+        let override_db = index_db_path(&f.index_dir, override_id);
+        write_index_db(&f.index_dir, override_id, Some(&f.live_head), 2);
+        assert_eq!(
+            override_db.file_name().unwrap().to_str().unwrap(),
+            "my-custom-repo.db",
+            "the override's slash must be flattened for the on-disk filename"
+        );
+        assert!(
+            !index_db_path(&f.index_dir, &expected_repo_id(&f.repo)).exists(),
+            "no index at the DERIVED path: admission must be attributable to \
+             the gate probing the override"
+        );
+
+        let (mock, calls) = spawn_recording_mock();
+        let out = f.run(mock.url(), &["--jcodemunch-repo", override_id]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "the gate must probe the OVERRIDE's index, not the derived path; \
+             stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("E_JC_INDEX_EMPTY") && !stderr.contains("E_JC_INDEX_STALE"),
+            "the override's index is fresh, so neither marker may appear; \
+             stderr:\n{stderr}"
+        );
+
+        let repos = recorded_repos(&calls);
+        assert!(!repos.is_empty(), "the detector never queried; stderr:\n{stderr}");
+        for repo in &repos {
+            assert_eq!(
+                repo, override_id,
+                "the override must reach the wire verbatim; recorded {repos:?}"
+            );
+        }
     }
 }

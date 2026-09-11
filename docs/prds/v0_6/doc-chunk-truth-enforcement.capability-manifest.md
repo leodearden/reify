@@ -9,7 +9,7 @@ Machine-readable twin: `doc-chunk-truth-enforcement.capability-manifest.yaml`.
 | Capability | Evidence binding | Verdict |
 |---|---|---|
 | C1 harness contract exists and sanctions `harness_<subsystem>.rs` by name | `tests/infra/test_harness_kloc_cap.sh` header (C1 naming + module-path-preservation guarantee, PRD merge-gate-compile-cost.md §5); four in-crate precedents on main: `harness_auto_binding.rs`, `harness_langcore.rs`, `harness_patterns.rs`, `harness_traits.rs` in `crates/reify-compiler/tests/` (ls-verified 2026-07-25) | PASS |
-| Absorption target 1 wired on main | `crates/reify-compiler/tests/geometry_chunk_smoke.rs` landed via #5364 merge `b81331913d`; grandfather entry at `tests/infra/harness-layout-baseline.manifest:126` (grep-verified) — α removes it (ratchet shrink) | PASS |
+| Absorption target 1 wired on main | `crates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs` landed via #5364 merge `b81331913d`; grandfather entry at `tests/infra/harness-layout-baseline.manifest:126` (grep-verified) — α removes it (ratchet shrink) | PASS |
 | Absorption target 2 upstream | producer: **#5347** (in-progress 2026-07-25; adds `stdlib_chunk_geometry_ops_smoke.rs` + fixture per its metadata.files) — hard `add_dependency` edge 5477→5347 wired | PASS (producer-upstream, dep wired) |
 | Merge gate runs the harness | consumer wired on main: the verify pipeline runs reify-compiler integration tests (`examples_smoke.rs` precedent) + `test_harness_kloc_cap.sh` (run-all classified `pool`) on every merge_request | PASS |
 

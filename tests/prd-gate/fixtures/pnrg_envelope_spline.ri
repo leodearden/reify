@@ -1,0 +1,49 @@
+// Fixture: precision-nominal α (task 6166) — SPLINE probe (non-analytic class).
+//
+// Copies the pnrg_envelope_sphere.ri anchor layout.  READ THAT HEADER FIRST for
+// the OK trap and the validity assertion.
+//
+// ── WHY THE SUBJECT IS A SWEPT BEZIER AND NOT A NURBS SURFACE ──
+//
+// `nurbs(degree, n_pts, coords…, weights…)` returns a WIRE — no facets, no
+// chord deviation, not a measurable class at all (semantics, not behaviour).
+//
+// `nurbs_surface(control_points, weights, u_knots, v_knots, u_degree,
+// v_degree)` DOES realize and measure.  Its control net must be a NESTED
+// u-major grid of `point3(...)` poles (never bare `[x,y,z]` literals), with
+// nested per-row weights; a runnable, correctly-shaped probe lives at
+// tests/prd-gate/fixtures/pnrg_envelope_nurbs_surface.ri.  It is not the
+// subject here only because its numbers are calibrated separately (see below) —
+// not because it fails to realize.
+//
+// Full mechanism history — including the superseded 2026-08-10
+// kernel-capability-gap misattribution and why the corrected nested call
+// realizes — lives in docs/notes/precision-refine-envelope-calibration.md
+// §1.5, which is the canonical record; it is not repeated here to avoid the
+// two-location drift this fixture was once a monument to.  Pending d-ladder
+// work for the nurbs_surface class: #6545 (ticket
+// tkt_0RSV7JNW3WXWDSFJGRDMHDT63T).
+//
+// The subject below is nonetheless the swept Bezier: its numbers — 100 mm
+// 0.003, 50 mm 0.007, 20 mm 0.013 (§1.1 summary row and §1.5 d-ladder of
+// docs/notes/precision-refine-envelope-calibration.md) — are already
+// committed to the calibration tables, and swapping the subject now would
+// invalidate them.
+//
+// NOT wired into any probe set or auto-run gate.
+
+module pnrg_envelope_spline
+
+#precision(20mm)
+
+// Subject: a circle swept along a cubic Bezier path — the measurable spline
+// surface.  For the nurbs_surface alternative, see
+// tests/prd-gate/fixtures/pnrg_envelope_nurbs_surface.ri.
+structure PnrgSpline {
+    let g = sweep(circle(100mm), bezier(0mm, 0mm, 0mm, 500mm, 800mm, 0mm, 1000mm, 0mm, 0mm))
+}
+
+structure PnrgSplineCheck {
+    param subject : PnrgSpline
+    constraint RepresentationWithin(subject, 0.001mm)
+}

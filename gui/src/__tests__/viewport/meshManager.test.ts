@@ -194,6 +194,21 @@ function makeMeshData(
   };
 }
 
+/**
+ * Length-generic sentinel bake: writes each scalar into the red channel and
+ * leaves green/blue at zero, so `[10, 20, 30]` bakes to
+ * `[10, 0, 0, 20, 0, 0, 30, 0, 0]`.
+ *
+ * Shared at module scope rather than re-declared per describe block: the
+ * colorize suites need it at three different vertex counts, and three
+ * byte-identical copies of one function is exactly what lets them drift.
+ */
+const rampBake = (s: Float32Array): Float32Array => {
+  const out = new Float32Array(s.length * 3);
+  for (let i = 0; i < s.length; i++) out[i * 3] = s[i];
+  return out;
+};
+
 describe('meshManager', () => {
   function setup() {
     const scene = new Scene();
@@ -547,6 +562,133 @@ describe('meshManager', () => {
       expect(geom.attributes.position.count).toBe(4); // 12 / 3
       expect(geom.attributes.position.itemSize).toBe(3);
     });
+
+    it('re-sync with a different vertex count creates a new colour BufferAttribute (#6757)', () => {
+      // `color` is the fourth attribute updateMeshGeometry writes. Unlike its
+      // position/index/normal siblings it had no size guard, so a re-evaluation
+      // that re-tessellated the same entity at a different vertex count while
+      // FEA colorize was active resized the colour attribute in place — which
+      // makes THREE.WebGLAttributes throw once per draw call.
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: rampBake },
+      });
+      vi.clearAllMocks();
+
+      manager.sync({
+        A: {
+          ...makeMeshData('A'),
+          scalar_channels: { vonMises: new Float32Array([10, 20, 30]) },
+        },
+      });
+
+      const geom = manager.getSceneMeshes().get('A')!.geometry as any;
+      const colorAttrBefore = geom.attributes.color;
+      expect(colorAttrBefore).toBeDefined();
+      expect(colorAttrBefore.count).toBe(3);
+
+      // Re-tessellated: 4 vertices instead of 3, with a matching scalar channel.
+      manager.sync({
+        A: {
+          ...makeMeshData(
+            'A',
+            new Float32Array([0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3]),
+            new Uint32Array([0, 1, 2]),
+            new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          ),
+          scalar_channels: { vonMises: new Float32Array([10, 20, 30, 40]) },
+        },
+      });
+
+      // NEW BufferAttribute — the old one's GPU buffer cannot be resized.
+      expect(geom.attributes.color).not.toBe(colorAttrBefore);
+      expect(geom.attributes.color.count).toBe(4);
+      expect(geom.attributes.color.itemSize).toBe(3);
+    });
+
+    it('re-sync that drops the colorize channel deletes the stale colour attribute', () => {
+      // Adjacent hole in the same defect family, one branch away from the test
+      // above: the material-rebuild guard in updateMeshGeometry declines to
+      // rebuild while a colour attribute is attached, so skipping the re-bake
+      // would leave a MeshPhongMaterial({ vertexColors: true }) mesh drawing a
+      // 3-vertex colour buffer against a 4-vertex position buffer. No version is
+      // bumped, so THREE never throws — WebGL just reads out of range on every
+      // draw call. Converge on the uncolorized state instead.
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: rampBake },
+      });
+      vi.clearAllMocks();
+
+      manager.sync({
+        A: {
+          ...makeMeshData('A'),
+          scalar_channels: { vonMises: new Float32Array([10, 20, 30]) },
+        },
+      });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const geom = mesh.geometry as any;
+      expect(geom.attributes.color).toBeDefined();
+      const phongBefore = mesh.material as any;
+      expect(mockPhongMaterials.some((m: any) => m === phongBefore)).toBe(true);
+
+      // Re-tessellated to 4 vertices AND the backend stopped emitting the solve.
+      manager.sync({
+        A: makeMeshData(
+          'A',
+          new Float32Array([0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3]),
+          new Uint32Array([0, 1, 2]),
+          new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        ),
+      });
+
+      expect(geom.attributes.color).toBeUndefined();
+      // Degraded to the base material, and the phong one was disposed, not leaked.
+      expect(mockMaterials.some((m: any) => m === mesh.material)).toBe(true);
+      expect(phongBefore.dispose).toHaveBeenCalled();
+    });
+
+    it('re-sync whose channel length lags the new vertex count deletes the colour attribute', () => {
+      // Subtler route to the same undersized-buffer state: the channel is still
+      // present, but its length still describes the OLD tessellation. bake()
+      // sizes its output off the scalars, not off position.count, so re-baking
+      // would install a correctly-versioned 3-vertex colour buffer on a 4-vertex
+      // geometry — and because the byte size is unchanged, assignOrReplace would
+      // reuse the attribute in place and nothing at all would look wrong.
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: rampBake },
+      });
+      vi.clearAllMocks();
+
+      manager.sync({
+        A: {
+          ...makeMeshData('A'),
+          scalar_channels: { vonMises: new Float32Array([10, 20, 30]) },
+        },
+      });
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      const geom = mesh.geometry as any;
+      expect(geom.attributes.color.count).toBe(3);
+
+      manager.sync({
+        A: {
+          ...makeMeshData(
+            'A',
+            new Float32Array([0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3]),
+            new Uint32Array([0, 1, 2]),
+            new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          ),
+          // Still 3 scalars — one short of the new 4-vertex geometry.
+          scalar_channels: { vonMises: new Float32Array([10, 20, 30]) },
+        },
+      });
+
+      expect(geom.attributes.color).toBeUndefined();
+      expect(mockMaterials.some((m: any) => m === mesh.material)).toBe(true);
+    });
   });
 
   describe('mesh data validation (V-06)', () => {
@@ -895,15 +1037,16 @@ describe('meshManager', () => {
   });
 
   describe('setColorize in-place mutation (C-03)', () => {
-    const redBake = (s: Float32Array) =>
-      new Float32Array([s[0], 0, 0, s[1], 0, 0, s[2], 0, 0]);
+    // Red-channel bakes come from the module-scope `rampBake`: this block needs
+    // the same semantics at 3 and 4 vertices, and a fixed-length copy would only
+    // work for the former.
     const greenBake = (s: Float32Array) =>
       new Float32Array([0, s[0], 0, 0, s[1], 0, 0, s[2], 0]);
 
     function setupColorized() {
       const scene = new Scene();
       const manager = createMeshManager(scene, {
-        colorize: { channel: 'vonMises', bake: redBake },
+        colorize: { channel: 'vonMises', bake: rampBake },
       });
       vi.clearAllMocks();
 
@@ -977,7 +1120,7 @@ describe('meshManager', () => {
     it('(e) setColorize with a different channel name re-bakes from the new channel scalars', () => {
       const scene = new Scene();
       const manager = createMeshManager(scene, {
-        colorize: { channel: 'vonMises', bake: redBake },
+        colorize: { channel: 'vonMises', bake: rampBake },
       });
       vi.clearAllMocks();
 
@@ -1016,7 +1159,7 @@ describe('meshManager', () => {
       // and re-bake the colour attribute in place when colorize is active.
       const scene = new Scene();
       const manager = createMeshManager(scene, {
-        colorize: { channel: 'vonMises', bake: redBake },
+        colorize: { channel: 'vonMises', bake: rampBake },
       });
       vi.clearAllMocks();
 
@@ -1034,7 +1177,7 @@ describe('meshManager', () => {
       const geom = mesh.geometry as any;
       const savedColorRef = geom.attributes.color;
       expect(savedColorRef).toBeDefined();
-      // redBake([10, 20, 30]) = [10, 0, 0, 20, 0, 0, 30, 0, 0]
+      // rampBake([10, 20, 30]) = [10, 0, 0, 20, 0, 0, 30, 0, 0]
       expect(Array.from(savedColorRef.array as Float32Array)).toEqual([10, 0, 0, 20, 0, 0, 30, 0, 0]);
 
       vi.clearAllMocks();
@@ -1051,7 +1194,7 @@ describe('meshManager', () => {
 
       // Same buffer reference (in-place mutation, not a new attribute)
       expect(geom.attributes.color).toBe(savedColorRef);
-      // Colour re-baked from updated vonMises: redBake([40, 50, 60]) = [40, 0, 0, 50, 0, 0, 60, 0, 0]
+      // Colour re-baked from updated vonMises: rampBake([40, 50, 60]) = [40, 0, 0, 50, 0, 0, 60, 0, 0]
       expect(Array.from(geom.attributes.color.array as Float32Array)).toEqual(
         [40, 0, 0, 50, 0, 0, 60, 0, 0],
       );
@@ -1088,6 +1231,64 @@ describe('meshManager', () => {
       expect(geom.attributes.color.needsUpdate).toBe(true);
       // No new geometry or materials — in-place update only
       expect(mockPhongMaterials.length).toBe(1);
+    });
+
+    it('(h) setColorize replaces the colour attribute when the vertex count changed while off (#6757)', () => {
+      // setColorize(null) deliberately leaves the colour buffer attached, and a
+      // sync() while colorize is null skips the re-bake entirely — so the mesh
+      // can be re-tessellated underneath a stale, wrong-sized colour attribute.
+      // Re-enabling colorize must replace it, not resize it in place.
+      const scene = new Scene();
+      const manager = createMeshManager(scene, {
+        colorize: { channel: 'vonMises', bake: rampBake },
+      });
+      vi.clearAllMocks();
+
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          scalar_channels: { vonMises: new Float32Array([10, 20, 30]) },
+        },
+      });
+
+      const geom = manager.getSceneMeshes().get('A')!.geometry as any;
+      const savedRef = geom.attributes.color;
+      expect(savedRef).toBeDefined();
+      expect(savedRef.count).toBe(3);
+
+      // FEA mode off — colour buffer stays attached by design.
+      // NOTE: deliberately NOT paired with rebuildMaterials() here (Viewport.tsx
+      // does pair them), because that would strip the colour attribute and mask
+      // the path under test.
+      manager.setColorize(null);
+
+      // Model edited and re-evaluated at 4 vertices while colorize was off.
+      manager.sync({
+        A: {
+          entity_path: 'A',
+          vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          scalar_channels: { vonMises: new Float32Array([10, 20, 30, 40]) },
+        },
+      });
+
+      // The stale 3-vertex colour attribute survived the uncolorized sync.
+      expect(geom.attributes.color).toBe(savedRef);
+      expect(geom.attributes.color.count).toBe(3);
+
+      // FEA mode back on: a 4-vertex bake cannot fit the 3-vertex attribute.
+      manager.setColorize({ channel: 'vonMises', bake: rampBake });
+
+      expect(geom.attributes.color).not.toBe(savedRef);
+      expect(geom.attributes.color.count).toBe(4);
+      expect(geom.attributes.color.itemSize).toBe(3);
+      expect(Array.from(geom.attributes.color.array as Float32Array)).toEqual([
+        10, 0, 0, 20, 0, 0, 30, 0, 0, 40, 0, 0,
+      ]);
     });
   });
 

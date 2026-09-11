@@ -292,9 +292,11 @@ fn linear_pattern_wrong_dimension_spacing_gives_one_arg_type_mismatch() {
         compiled.diagnostics
     );
     assert_eq!(
-        errors[0].message, "linear_pattern: spacing argument expects Length, got Scalar[rad]",
+        errors[0].message,
+        "linear_pattern: spacing argument expects Length, got Scalar[rad]; \
+         pass a dimensioned length such as `5mm`",
         "a wrong-unit spacing must name the builtin, the arg, the expected type \
-         and the offending unit"
+         and the offending unit, and carry the C1 migration hint"
     );
 }
 
@@ -304,9 +306,17 @@ fn linear_pattern_wrong_dimension_spacing_gives_one_arg_type_mismatch() {
 /// A geometry-`let` routes through `entity.rs -> compile_geometry_call`, but its
 /// value expression is ALSO compiled as a value cell via
 /// `compile_expr -> resolve_function_overload`, which is where
-/// `check_builtin_arg_types` is wired (expr.rs). Adding a second call site in
-/// `compile_geometry_call_inner` would therefore DOUBLE-emit here. This test is
-/// what makes that regression loud.
+/// `check_builtin_arg_types` is wired (expr.rs).
+///
+/// SCOPE OF THIS PIN, post-dedup: it no longer proves single-WIRING. Since this
+/// task's `emit_mismatch` drops any `ArgTypeMismatch` whose (code, span,
+/// message) triple is already in the sink, a second call site in
+/// `compile_geometry_call_inner` emitting at the same call span would now be
+/// SWALLOWED and this test would stay green. What it still pins is the
+/// user-visible contract — exactly one diagnostic reaches the author — which is
+/// the property that matters at the CLI. The underlying walk is still doubled;
+/// de-duplicating it belongs in `expr.rs` and is tracked as task #6627. Do not
+/// cite this test as evidence that the walk is single-wired.
 #[test]
 fn nested_linear_pattern_bare_spacing_emits_exactly_one_diagnostic() {
     let compiled = compile_struct_body(
@@ -403,5 +413,1057 @@ fn moment_of_inertia_via_material_density_gives_no_arg_type_mismatch() {
          A false-positive here would break the stdlib Rigid trait universally.\n\
          Got: {:#?}",
         arg_type_mismatches
+    );
+}
+
+// ── Task 5750 (units-length η): the C1 migration hint on compile-layer slots ──
+//
+// PRD `docs/prds/v0_6/units-length-gate-completion.md`, decision D9. The eval
+// layer's `ArgRejection::message` already appends a migration hint to a LENGTH
+// rejection; η makes the compile layer reproduce it VERBATIM so the two layers
+// read identically for the same authoring mistake.
+//
+// The tests below pin the hint on an EXISTING LENGTH slot (`linear_pattern`
+// spacing), deliberately BEFORE any new slot is added, so the primitive /
+// modify / sweep slots that follow are written once against the final
+// `ExpectedArg` shape rather than churned by a later field addition.
+
+/// The exact C1 hint clause the eval layer appends to a LENGTH rejection.
+///
+/// Hard-coded here on purpose: this test file is the DRIFT PIN. Deriving it
+/// from the same const the implementation reads would make the assertion a
+/// tautology — it would pass for whatever the implementation happened to say.
+const LENGTH_HINT: &str = "pass a dimensioned length such as `5mm`";
+
+/// (b) SIGNAL — the BARE-INT arm carries the hint too.
+///
+/// Not a duplicate of `linear_pattern_wrong_dimension_spacing_gives_one_arg_type_mismatch`:
+/// a bare `10` is a KIND mismatch (`Type::Int` where a dimensioned scalar is
+/// required) and a `10deg` is a DIMENSION mismatch between two dimensioned
+/// scalars. They travel different arms of `check_builtin_arg_types`
+/// (`Type::Scalar { .. }` vs the catch-all `other =>`), so pinning the hint on
+/// one says nothing about the other.
+#[test]
+fn linear_pattern_bare_int_spacing_message_carries_the_migration_hint() {
+    let compiled = compile_struct_body("    let p = linear_pattern(b, 1, 0, 0, 5, 10)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 ArgTypeMismatch for a bare `10` spacing.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert_eq!(
+        errors[0].message,
+        "linear_pattern: spacing argument expects Length, got Int; \
+         pass a dimensioned length such as `5mm`",
+        "the bare-Int arm must render the full C1 template, hint included"
+    );
+}
+
+/// (c) LAYER ATTRIBUTION (PRD decision D2) — a compile-layer LENGTH rejection
+/// carries `ArgTypeMismatch`, and explicitly NOT `DimensionedArgRejected`.
+///
+/// This is a REGRESSION PIN, not a RED test: it passes on the pre-η table and
+/// must keep passing. It exists because the task text for this leaf contains
+/// the ambiguous phrase "give it β's DiagnosticCode", which a future leaf could
+/// read literally. `DimensionedArgRejected`'s own minting rationale in
+/// `crates/reify-core/src/diagnostics.rs` forecloses that reading — it records
+/// that `ArgTypeMismatch` "was the closer candidate and was considered
+/// seriously", and was kept SEPARATE because "PRD leaf eta will emit
+/// `ArgTypeMismatch` at the compile layer for these very same argument
+/// positions, so sharing one code would make 'which layer rejected this?'
+/// unanswerable from the code alone".
+///
+/// Both PRD 3 (ANGLE) and task 5662 land on this same table, so the pin is what
+/// keeps the two layers independently observable as they do.
+#[test]
+fn length_slot_rejection_uses_the_compile_layer_code_not_the_eval_layer_one() {
+    let compiled = compile_struct_body("    let p = linear_pattern(b, 1, 0, 0, 5, 10)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(errors.len(), 1, "diagnostics: {:#?}", compiled.diagnostics);
+    assert_eq!(
+        errors[0].code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "the compile layer must keep its own code"
+    );
+
+    let eval_layer_coded: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DimensionedArgRejected))
+        .collect();
+    assert!(
+        eval_layer_coded.is_empty(),
+        "DimensionedArgRejected is the EVAL layer's code (task 5743). The compile \
+         layer must not borrow it, or 'which layer rejected this?' stops being \
+         answerable from the code alone (PRD decision D2). Got: {eval_layer_coded:#?}"
+    );
+}
+
+/// (d) NEGATIVE CONTROL — an ANGLE slot's message carries NO hint.
+///
+/// The compile layer MIRRORS the eval layer exactly: `angle_spec` has no
+/// migration hint either, so neither does this. Pinning it stops a future
+/// reader mistaking the ANGLE gap for an oversight in this task — PRD 3 owns
+/// closing both halves together, by binding seam decree.
+#[test]
+fn angle_slot_rejection_carries_no_migration_hint() {
+    let compiled = compile_struct_body(
+        "    let dir = vec3(0.0, 0.0, 1.0)\n    let sel = faces_by_normal(b, dir, 5)\n",
+    );
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 ArgTypeMismatch for a bare `5` tol.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert_eq!(
+        errors[0].message, "faces_by_normal: tol argument expects Angle, got Int",
+        "an ANGLE slot must render the un-hinted template — eval's angle path has \
+         no hint either, and PRD 3 owns closing both halves together"
+    );
+    assert!(
+        !errors[0].message.contains("pass a dimensioned"),
+        "no migration hint may leak onto an ANGLE slot: {}",
+        errors[0].message
+    );
+}
+
+/// (e) ANTI-UNIFICATION GUARD — the builtin-slot LENGTH hint and the
+/// struct-ctor/fn-param LENGTH hint are DELIBERATELY not byte-identical.
+///
+/// `reify-compiler` already hosts a SECOND, unrelated migration-hint generator:
+/// `conformance::dimensioned_scalar_migration_hint` (task 5627, decisions
+/// D4-6), used for DIMENSIONED ctor / param slots. It is COMPUTED from the
+/// dimension via `canonical_name()` + `example_unit_literal()`, so for LENGTH it
+/// renders "pass a dimensioned **Length literal** such as `1m`" — capital L, the
+/// word "literal", and `1m` rather than `5mm`.
+///
+/// The two must NOT be unified, in either direction:
+/// * this builtin path must reproduce the EVAL-layer C1 text verbatim (D9), so
+///   the compile and eval diagnostics for one authoring mistake read the same;
+/// * rewording the ctor path to match would silently change already-shipped
+///   diagnostics that `struct_ctor_field_conformance_tests.rs` guards via
+///   `HINT_CLAUSE_PREFIX` / `HINT_EXAMPLE_INTRO`, and whose derived-from-the-
+///   registry shape is what makes that family drift-proof.
+///
+/// Without this pin a future reader "helpfully" collapsing the two would break
+/// one contract or the other, and no existing test would say so.
+#[test]
+fn builtin_slot_and_ctor_conformance_length_hints_are_deliberately_different() {
+    let builtin = {
+        let compiled = compile_struct_body("    let p = linear_pattern(b, 1, 0, 0, 5, 10)\n");
+        let errors = arg_type_mismatch_errors(&compiled);
+        assert_eq!(errors.len(), 1, "diagnostics: {:#?}", compiled.diagnostics);
+        errors[0].message.clone()
+    };
+
+    let ctor = {
+        let compiled = compile_source_with_stdlib(
+            "module test.eta_hint_divergence\n\
+             structure def W { param p : Scalar<Length> }\n\
+             structure def Root { let a = W(p: 5) }\n",
+        );
+        // No severity filter here, unlike the builtin half: the ctor-conformance
+        // walker emits this family at `Severity::Warning` (task 5465's value-floor
+        // gradualism), whereas `check_builtin_arg_types` emits `Severity::Error`.
+        // That difference is orthogonal to the hint WORDING this test is about, so
+        // filtering on Error would make the test fail for an unrelated reason.
+        let rejections: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch))
+            .collect();
+        assert_eq!(
+            rejections.len(),
+            1,
+            "expected exactly 1 ctor-conformance ArgTypeMismatch.\n\
+             All diagnostics: {:#?}",
+            compiled.diagnostics
+        );
+        rejections[0].message.clone()
+    };
+
+    assert!(
+        builtin.contains(LENGTH_HINT),
+        "the builtin slot must carry the EVAL-layer C1 hint verbatim ({LENGTH_HINT:?}); \
+         got: {builtin:?}"
+    );
+    assert!(
+        ctor.contains("pass a dimensioned Length literal such as `1m`"),
+        "the ctor-conformance path must keep its own COMPUTED hint shape \
+         (`dimensioned_scalar_migration_hint`); got: {ctor:?}"
+    );
+    assert!(
+        !ctor.contains(LENGTH_HINT),
+        "the ctor-conformance hint must NOT have been rewritten to the builtin \
+         wording — that would silently reword already-shipped diagnostics that \
+         struct_ctor_field_conformance_tests.rs guards. builtin: {builtin:?}; \
+         ctor: {ctor:?}"
+    );
+}
+
+// ── Task 5750 (units-length η): PRIMITIVE + PROFILE LENGTH slots, end to end ──
+//
+// PRD `docs/prds/v0_6/units-length-gate-completion.md` boundary row 9. The unit
+// tests in `builtin_signatures.rs::tests` pin the TABLE; these pin what an
+// author actually sees — that the slots are reached through the real compile
+// pipeline and render the eval layer's C1 template verbatim.
+
+/// SIGNAL — a bare `box(20, 20, 10)` is rejected once PER AXIS.
+///
+/// All three, not just the first: the eval layer reads a multi-slot builtin's
+/// whole set in ONE `required_length_values` call precisely so an author fixes
+/// `width`, `height` and `depth` in a single edit rather than one per rebuild
+/// (`crates/reify-eval/src/arg_acceptance.rs`'s "all-at-once discipline"). The
+/// compile layer must not degrade that to a one-at-a-time drip, so the count is
+/// asserted, not just non-emptiness.
+///
+/// The full message is asserted for every axis — the C1 template INCLUDING the
+/// D9 migration hint — because that byte-identity with the eval layer is the
+/// whole point of hoisting the hint into `reify-core`.
+#[test]
+fn box_bare_dimensions_are_rejected_once_per_axis() {
+    let compiled = compile_struct_body("    let bad = box(20, 20, 10)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    let messages: Vec<&str> = errors.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        vec![
+            "box: width argument expects Length, got Int; \
+             pass a dimensioned length such as `5mm`",
+            "box: height argument expects Length, got Int; \
+             pass a dimensioned length such as `5mm`",
+            "box: depth argument expects Length, got Int; \
+             pass a dimensioned length such as `5mm`",
+        ],
+        "a bare box(20, 20, 10) must be diagnosed at width, height AND depth, \
+         each rendering the full C1 template.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// BOUNDARY ok — the dimensioned control emits nothing.
+///
+/// The migration this leaf performs is only safe if `box(20mm, 20mm, 10mm)` —
+/// the form every `examples/**/*.ri` file already uses — stays clean. Without
+/// this, `box_bare_dimensions_are_rejected_once_per_axis` could be satisfied by
+/// a slot that fires unconditionally.
+#[test]
+fn box_dimensioned_gives_no_arg_type_mismatch() {
+    let compiled = compile_struct_body("    let good = box(20mm, 20mm, 10mm)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        errors.is_empty(),
+        "a fully dimensioned box must emit no ArgTypeMismatch, got: {:#?}",
+        errors
+    );
+}
+
+/// SIGNAL — the PROFILE family is gated too, and names its own argument.
+///
+/// `circle`'s sole argument is `radius`, so the message must say `radius` and
+/// not borrow a neighbouring family's name.
+#[test]
+fn circle_bare_radius_is_rejected_naming_radius() {
+    let compiled = compile_struct_body("    let c = circle(4)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 ArgTypeMismatch for a bare circle radius.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert_eq!(
+        errors[0].message,
+        "circle: radius argument expects Length, got Int; \
+         pass a dimensioned length such as `5mm`"
+    );
+}
+
+/// SIGNAL — a dimensionless REAL renders `got Real`, not `got Scalar[dimensionless]`.
+///
+/// A bare `4.0` types as `Type::Scalar { DIMENSIONLESS }`, whose `Display`
+/// special-cases the dimensionless case to `Real`
+/// (`crates/reify-core/src/ty.rs`). Worth pinning separately from the bare-Int
+/// case: the two travel DIFFERENT arms of `check_builtin_arg_types` (the
+/// `Type::Scalar { .. }` dimension comparison vs the catch-all kind mismatch),
+/// and an author who wrote `4.0` must not be told about a type name the
+/// language does not surface.
+#[test]
+fn sphere_dimensionless_real_radius_renders_got_real() {
+    let compiled = compile_struct_body("    let s = sphere(4.0)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 ArgTypeMismatch for a dimensionless-Real sphere radius.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert_eq!(
+        errors[0].message,
+        "sphere: radius argument expects Length, got Real; \
+         pass a dimensioned length such as `5mm`"
+    );
+}
+
+/// GRADUALISM CONTROL (contract C3) — a statically-invisible operand stays
+/// SILENT at compile time, so the eval gate is never redundant.
+///
+/// `missing_thing` is unresolved, so its `CompiledExpr` carries `Type::Error`
+/// and `check_builtin_arg_types` skips the slot by design. This is what makes
+/// the compile slot a COMPLEMENT to `required_length_values` rather than a
+/// replacement: removing the eval gate on the strength of this leaf would leave
+/// exactly this shape ungated.
+///
+/// The unresolved-name error itself is asserted present, so the test cannot
+/// pass because compilation quietly did nothing.
+#[test]
+fn statically_invisible_primitive_operand_stays_silent_at_compile_time() {
+    let compiled = compile_struct_body("    let bad = box(missing_thing, 20mm, 10mm)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        errors.is_empty(),
+        "a Type::Error operand must be skipped by the LENGTH slot (PRD decision-6 \
+         gradualism), leaving the eval-layer gate to catch it; got: {:#?}",
+        errors
+    );
+    assert!(
+        compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error && d.message.contains("missing_thing")),
+        "the fixture must actually reach the slot with an unresolved operand — \
+         expected an unresolved-name Error naming `missing_thing`.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// MEASURED DIVERGENCE — an ALIAS slot names the SURFACE builtin the author
+/// typed, while the eval layer names the LOWERED KIND.
+///
+/// `box_centered` lowers to `PrimitiveKind::Box`, and the eval-layer gate
+/// renders its `{builtin}` prefix from that kind's `Display`
+/// (`crates/reify-eval/src/geometry_ops.rs`'s `prim_box` passes `kind` as
+/// `kind_label`; `crates/reify-compiler/src/types.rs:1394` writes `"box"`), so
+/// eval says `box:` for a bare `box_centered(20, 20, 10)`. The compile layer is
+/// keyed on the CALL, so it says `box_centered:`.
+///
+/// This is the ONE place decision D9's "byte-identical" wording does NOT hold,
+/// and it holds this way DELIBERATELY: the compile layer knows the name that
+/// actually appears in the author's source, and reporting it is strictly more
+/// useful than reporting a lowering detail they never wrote. D9's substance —
+/// the C1 template and the shared migration hint — is unaffected, and both are
+/// asserted here alongside the prefix.
+///
+/// Pinned because it is exactly the kind of difference a later reader would
+/// "fix" in the wrong direction, by teaching the compile layer to report the
+/// lowered kind.
+#[test]
+fn centered_alias_slots_name_the_surface_builtin_not_the_lowered_kind() {
+    let compiled = compile_struct_body("    let bc = box_centered(20, 20, 10)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    let messages: Vec<&str> = errors.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        vec![
+            "box_centered: width argument expects Length, got Int; \
+             pass a dimensioned length such as `5mm`",
+            "box_centered: height argument expects Length, got Int; \
+             pass a dimensioned length such as `5mm`",
+            "box_centered: depth argument expects Length, got Int; \
+             pass a dimensioned length such as `5mm`",
+        ],
+        "the compile slot must name the SURFACE call `box_centered`, not the \
+         lowered `box` kind the eval layer reports.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+// ── Task 5750 (units-length η): MODIFY + SWEEP LENGTH slots, end to end ──────
+//
+// PRD `docs/prds/v0_6/units-length-gate-completion.md` boundary row 4.
+
+/// SIGNAL — a bare `fillet` radius is rejected, naming `radius` with the hint.
+///
+/// The target is fully dimensioned so the only thing that can fire is the
+/// fillet slot: without that, a `box` rejection from the primitive slots would
+/// satisfy a loose count assertion and this row would never actually exercise
+/// the modify family.
+#[test]
+fn fillet_bare_radius_is_rejected_naming_radius() {
+    let compiled = compile_struct_body("    let f = fillet(box(10mm, 10mm, 10mm), 1)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 ArgTypeMismatch for a bare fillet radius.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert_eq!(
+        errors[0].message,
+        "fillet: radius argument expects Length, got Int; \
+         pass a dimensioned length such as `5mm`"
+    );
+}
+
+/// SIGNAL — `chamfer_asymmetric` is rejected once per MAGNITUDE.
+///
+/// Both `d1` and `d2`, for the same reason `box` is diagnosed on all three
+/// axes: the eval layer reads the pair in one grouped call so the author fixes
+/// the line in a single edit, and the compile layer must not degrade that.
+#[test]
+fn chamfer_asymmetric_bare_distances_are_rejected_once_each() {
+    let compiled = compile_struct_body(
+        "    let sel = edges(b)\n    let c = chamfer_asymmetric(b, sel, 1, 2)\n",
+    );
+    let errors = arg_type_mismatch_errors(&compiled);
+    let messages: Vec<&str> = errors.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        vec![
+            "chamfer_asymmetric: d1 argument expects Length, got Int; \
+             pass a dimensioned length such as `5mm`",
+            "chamfer_asymmetric: d2 argument expects Length, got Int; \
+             pass a dimensioned length such as `5mm`",
+        ],
+        "both asymmetric setbacks must be diagnosed in one compile.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// SIGNAL — a bare `extrude` distance is rejected, from the SWEEP family.
+#[test]
+fn extrude_bare_distance_is_rejected_naming_distance() {
+    let compiled = compile_struct_body("    let e = extrude(rectangle(10mm, 10mm), 20)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 ArgTypeMismatch for a bare extrude distance.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert_eq!(
+        errors[0].message,
+        "extrude: distance argument expects Length, got Int; \
+         pass a dimensioned length such as `5mm`"
+    );
+}
+
+/// BOUNDARY ok — the dimensioned controls for both families emit nothing.
+///
+/// Paired with the three signals above for the same reason every bare fixture
+/// in the eval-layer e2e files carries a control: without it, a slot that fired
+/// unconditionally would satisfy all three.
+#[test]
+fn dimensioned_modify_and_sweep_args_give_no_arg_type_mismatch() {
+    let compiled = compile_struct_body(
+        "    let f = fillet(box(10mm, 10mm, 10mm), 1mm)\n\
+         \x20   let e = extrude(rectangle(10mm, 10mm), 20mm)\n\
+         \x20   let s = shell(b, 2mm)\n\
+         \x20   let p = pipe(line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 10mm), 1mm)\n",
+    );
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        errors.is_empty(),
+        "fully dimensioned modify/sweep calls must emit no ArgTypeMismatch, got: {:#?}",
+        errors
+    );
+}
+
+/// BOUNDARY ok — `fillet`'s 3-arg curated form does NOT slot its edge SELECTOR.
+///
+/// The concrete false positive the arity guard exists to prevent: `radius`
+/// moves from index 1 to index 2 between the two overloads, so an
+/// arity-agnostic `radius@1` slot would demand a Length of the `edges`
+/// selector — an ArgTypeMismatch on correct code. The magnitude here is
+/// dimensioned, so the ONLY thing that could fire is that false positive.
+#[test]
+fn fillet_curated_form_does_not_reject_its_edge_selector() {
+    let compiled =
+        compile_struct_body("    let sel = edges(b)\n    let f = fillet(b, sel, 2mm)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        errors.is_empty(),
+        "fillet(target, edges, radius) must not slot its edge selector — that is \
+         the false positive the arity guard exists to prevent; got: {:#?}",
+        errors
+    );
+}
+
+// ── Task 5750 amendment: the nested-argument double-walk ─────────────────────
+
+/// SIGNAL — a bare-argument call NESTED as a geometry argument reports each of
+/// its slots exactly ONCE.
+///
+/// `extrude(circle(4), 12mm)` is the single most common authoring shape a
+/// nested primitive/profile takes, and before this amendment it rendered
+/// `circle: radius …` TWICE: a nested geometry argument is walked by
+/// `compile_expr` more than once, so every diagnostic emitted from the
+/// type-inference walk was duplicated. That double-walk PRE-DATES task 5750
+/// (`extrude(circle(nope), 12mm)` still reports `unresolved name` three
+/// times), but before this leaf no primitive or profile had a slot, so no
+/// nested inner call could emit an `ArgTypeMismatch` at all — landing the
+/// slots made a latent defect user-visible on the dominant shape.
+///
+/// `emit_mismatch` therefore drops an exact (code, span, message) duplicate.
+/// This test is the pin: it must NOT be relaxed to "at least 1".
+#[test]
+fn nested_profile_in_a_sweep_reports_its_bare_radius_exactly_once() {
+    let compiled = compile_struct_body("    let e = extrude(circle(4), 12mm)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "a nested `circle(4)` must report its bare radius exactly once, not \
+         once per compile-walk.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert_eq!(
+        errors[0].message,
+        "circle: radius argument expects Length, got Int; \
+         pass a dimensioned length such as `5mm`"
+    );
+}
+
+/// BOUNDARY ok — the dedup drops only EXACT duplicates, never a distinct
+/// sibling diagnostic.
+///
+/// `box(1, 2, 3)` nested as a sweep target shares one call span across all
+/// three of its slots, so a dedup keyed on the span alone (or on the code
+/// alone) would collapse three real errors into one. Each message names a
+/// different axis, so all three must survive.
+#[test]
+fn nested_primitive_keeps_one_diagnostic_per_axis() {
+    let compiled = compile_struct_body("    let f = fillet(box(1, 2, 3), 1mm)\n");
+    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        messages,
+        vec![
+            "box: width argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+            "box: height argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+            "box: depth argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+        ],
+        "all three axes must survive the duplicate drop.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+// ── Task 5750 amendment: message-level pins for the ORIGIN/PIVOT rows ────────
+
+/// SIGNAL — a bare `revolve` axis ORIGIN is rejected, naming `ox`/`oy`/`oz`.
+///
+/// The straddle row: the origin is a point in space (gated), while the axis
+/// DIRECTION `0, 0, 1` and the `90` angle in this same call are legitimately
+/// bare and must stay silent. Three errors, not six or seven.
+#[test]
+fn revolve_bare_origin_is_rejected_naming_the_origin_components() {
+    let compiled = compile_struct_body(
+        "    let profile = rectangle(10mm, 10mm)\n\
+         \x20   let r = revolve(profile, 0, 0, 0, 0, 0, 1, 90)\n",
+    );
+    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        messages,
+        vec![
+            "revolve: ox argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+            "revolve: oy argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+            "revolve: oz argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+        ],
+        "only the axis ORIGIN is gated — the direction and the angle must stay \
+         silent.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// SIGNAL — a bare `rotate_around` PIVOT is rejected, naming `px`/`py`/`pz`.
+///
+/// Same straddle shape as `revolve`'s, on the TRANSFORM row: the pivot is
+/// gated, the axis direction and the angle are not.
+#[test]
+fn rotate_around_bare_pivot_is_rejected_naming_the_pivot_components() {
+    let compiled = compile_struct_body("    let r = rotate_around(b, 0, 0, 0, 0, 0, 1, 90)\n");
+    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        messages,
+        vec![
+            "rotate_around: px argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+            "rotate_around: py argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+            "rotate_around: pz argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+        ],
+        "only the PIVOT is gated — the axis direction and the angle must stay \
+         silent.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+// ── Task 5662: mirror / circular_pattern ORIGIN triples, end to end ──────────
+//
+// PRD `docs/prds/v0_6/units-length-gate-completion.md`, the pattern-origin row
+// task 5652 deferred and this task closes. Same straddle shape as the `revolve`
+// and `rotate_around` rows above: the origin is a point in space (gated), the
+// direction components beside it are dimensionless unit vectors (never gated).
+
+/// SIGNAL — a bare 7-arg `mirror` plane ORIGIN is rejected, naming `ox`/`oy`/`oz`.
+///
+/// Three errors, not six: the plane NORMAL `1, 0, 0` in this same call is a
+/// dimensionless unit vector and must stay silent.
+#[test]
+fn mirror_bare_origin_is_rejected_naming_the_origin_components() {
+    let compiled = compile_struct_body("    let m = mirror(b, 0, 0, 0, 1, 0, 0)\n");
+    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        messages,
+        vec![
+            "mirror: ox argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+            "mirror: oy argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+            "mirror: oz argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+        ],
+        "only the plane ORIGIN is gated — the plane normal must stay \
+         silent.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// SIGNAL — a bare 9-arg `circular_pattern` axis ORIGIN is rejected, naming
+/// `ox`/`oy`/`oz`.
+///
+/// Three errors, not seven: the axis DIRECTION `0, 0, 1`, the Int `count` and
+/// the `60deg` angle in this same call must all stay silent. The angle belongs
+/// to `docs/prds/v0_6/angle-units-surface-convergence.md` by binding seam
+/// decree, so its silence here is a scope boundary, not an oversight.
+#[test]
+fn circular_pattern_bare_origin_is_rejected_naming_the_origin_components() {
+    let compiled =
+        compile_struct_body("    let p = circular_pattern(b, 12, 0, 0, 0, 0, 1, 6, 60deg)\n");
+    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        messages,
+        vec![
+            "circular_pattern: ox argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+            "circular_pattern: oy argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+            "circular_pattern: oz argument expects Length, got Int; pass a dimensioned length such as `5mm`",
+        ],
+        "only the axis ORIGIN is gated — the direction, the count and the angle \
+         must stay silent.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// BOUNDARY ok — dimensioned scalar origins on both builtins produce NO
+/// `ArgTypeMismatch`.
+///
+/// A no-error guard that holds both BEFORE and after the slots land (this
+/// file's Case-2/4/5 convention): before, because there is no slot to fire;
+/// after, because the argument is correct. Its job is to prove the new arms
+/// reject the bare form specifically, not the shape of the call.
+#[test]
+fn dimensioned_pattern_origins_give_no_arg_type_mismatch() {
+    let compiled = compile_struct_body(
+        "    let m = mirror(b, 0mm, 0mm, 0mm, 1, 0, 0)\n\
+         \x20   let p = circular_pattern(b, 12mm, 0mm, 0mm, 0, 0, 1, 6, 60deg)\n",
+    );
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        errors.is_empty(),
+        "dimensioned origin components must not trip any slot.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// BOUNDARY ok — the task-5745 decoded-VALUE forms produce NO
+/// `ArgTypeMismatch`, because their arities expose no slots at all.
+///
+/// Also a no-error guard holding both before and after — but the one that
+/// matters most, because index 1 EXISTS in both of these calls, holding a
+/// `Plane` / an `Axis`. It is the arity guard on each arm, not the
+/// `compiled_args.get(index)` bounds check, that keeps them quiet; an
+/// arity-agnostic `ox@1 LENGTH` slot would demand a Length of a Plane here, on
+/// correct code.
+#[test]
+fn pattern_value_forms_give_no_arg_type_mismatch() {
+    let compiled = compile_struct_body(
+        "    let m = mirror(b, plane_xy(0mm))\n\
+         \x20   let p = circular_pattern(b, axis_z(point3(0mm, 0mm, 0mm)), 6, 60deg)\n",
+    );
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        errors.is_empty(),
+        "the decoded-value forms expose no slots, so no ArgTypeMismatch may \
+         fire.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// MEASURED DIVERGENCE — `circular_pattern`'s compile slot names the SURFACE
+/// builtin, while the eval layer names the LOWERED KIND; `mirror` does not
+/// diverge at all.
+///
+/// The twin of `centered_alias_slots_name_the_surface_builtin_not_the_lowered_kind`,
+/// and the second instance of that class. `circular_pattern` lowers to
+/// `PatternKind::Circular`, whose `Display` — the eval layer's `kind_label` — is
+/// `"circular"` (`crates/reify-compiler/src/types.rs:1748`), so eval says
+/// `circular:` where this layer says `circular_pattern:`. `PatternKind::Mirror`
+/// displays as `"mirror"` (types.rs:1749), so for `mirror` the two layers agree
+/// byte-for-byte and decision D9's "byte-identical" wording holds unmodified.
+///
+/// Both halves are pinned — the divergence AND its absence — because a reader
+/// who saw only the divergence might "fix" it in the wrong direction, by
+/// teaching the compile layer to report the lowered kind for both.
+#[test]
+fn circular_pattern_slot_names_the_surface_builtin_not_the_lowered_kind() {
+    let compiled =
+        compile_struct_body("    let p = circular_pattern(b, 12, 0, 0, 0, 0, 1, 6, 60deg)\n");
+    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    for message in &messages {
+        assert!(
+            message.starts_with("circular_pattern: "),
+            "the compile slot must name the SURFACE call `circular_pattern`, not \
+             the lowered `circular` kind the eval layer reports; got {message:?}"
+        );
+    }
+    assert_eq!(messages.len(), 3, "expected the origin triple: {messages:#?}");
+
+    // The negative half: `mirror` is NOT an alias, so no prefix divergence.
+    let compiled = compile_struct_body("    let m = mirror(b, 0, 0, 0, 1, 0, 0)\n");
+    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    for message in &messages {
+        assert!(
+            message.starts_with("mirror: "),
+            "`PatternKind::Mirror` displays as \"mirror\", so the compile and eval \
+             layers must agree byte-for-byte here; got {message:?}"
+        );
+    }
+    assert_eq!(messages.len(), 3, "expected the origin triple: {messages:#?}");
+}
+
+// ── Task 6862: a dimension-kinded generic param at a LENGTH slot ─────────────
+
+/// The task-6862 regression fixture: `fn beam<Q: Dimension>(l: Scalar<Q>) -> Solid`
+/// whose body passes `l` straight into two LENGTH compile slots (`circle` arg0
+/// radius, `extrude` arg1 distance), instantiated at `beam(10mm)`.
+const DIM_KINDED_LENGTH_SLOT: &str = include_str!("fixtures/dim_kinded_length_slot.ri");
+
+/// SIGNAL — a dimension-kinded generic fn parameter used at a slotted LENGTH
+/// argument is CORRECT user code and must compile clean.
+///
+/// Both halves are load-bearing:
+///
+/// (i) zero `ArgTypeMismatch` diagnostics — the specific defect. MEASURED on the
+///     base before the fix: two of them, `circle: radius argument expects Length,
+///     got Scalar<Q>; …` and `extrude: distance argument expects Length, got
+///     Scalar<Q>; …`.
+///
+/// (ii) zero Error-severity diagnostics of ANY code — the compile-layer
+///      equivalent of the acceptance criterion's `reify check` exit 0, since that
+///      exit code is derived from Error-severity diagnostics. Without (ii) the
+///      test would pass on a fix that merely renamed the diagnostic code.
+#[test]
+fn dim_kinded_generic_param_at_length_slot_compiles_clean() {
+    let compiled = compile_source_with_stdlib(DIM_KINDED_LENGTH_SLOT);
+
+    let mismatches: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch))
+        .collect();
+    assert!(
+        mismatches.is_empty(),
+        "a dimension-kinded generic param at a LENGTH slot is correct user code \
+         (Q binds to LENGTH at `beam(10mm)`) and must emit no ArgTypeMismatch.\n\
+         Got: {:#?}\nAll diagnostics: {:#?}",
+        mismatches,
+        compiled.diagnostics
+    );
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "the fixture must compile with NO Error-severity diagnostic — the \
+         compile-layer equivalent of `reify check` exit 0.\nGot: {:#?}",
+        errors
+    );
+}
+
+/// NEGATIVE CONTROL (green before AND after task 6862) — bare `Int` operands at
+/// the very same two slots are still rejected end-to-end.
+///
+/// `extrude(circle(5), 12)` is the fixture's shape with the generic parameter
+/// replaced by bare integers, so it isolates exactly what the defer must NOT
+/// swallow.
+#[test]
+fn bare_int_at_generic_call_site_still_rejected() {
+    let compiled = compile_struct_body("    let s = extrude(circle(5), 12)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        !errors.is_empty(),
+        "bare Int operands at LENGTH slots must still be rejected.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert!(
+        errors.iter().any(|d| d.message.contains("got Int")),
+        "at least one rejection must name the bare Int operand: {:#?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ── Task 6862 (reviewer amendment): where the WRONG dimension is actually caught
+
+/// The fixture with its instantiation swapped to a MASS — `beam(10kg)`, i.e.
+/// `Q = MASS` reaching two LENGTH slots. Derived from the fixture by
+/// substitution rather than copied, so the two cannot drift apart.
+fn dim_kinded_wrong_dimension_source() -> String {
+    let swapped = DIM_KINDED_LENGTH_SLOT.replace("10mm", "10kg");
+    assert_ne!(
+        swapped, DIM_KINDED_LENGTH_SLOT,
+        "the fixture no longer instantiates `beam` at `10mm`, so this control \
+         silently stopped swapping the dimension — re-derive it"
+    );
+    swapped
+}
+
+/// Build `compiled` against a mock kernel and return the build-layer
+/// diagnostics.
+///
+/// The eval-layer LENGTH gate (`geometry_ops::required_length_value`, task
+/// 5743) runs on BUILD, not on `Engine::eval` — `engine_eval` mints symbolic
+/// handles and never reaches the kernel — so `BuildResult.diagnostics` is the
+/// only place its `DimensionedArgRejected` is observable. Same reasoning, same
+/// shape, as `crates/reify-eval/tests/harness_geometry/
+/// primitive_profile_length_units_e2e.rs`'s `build_compiled`.
+fn build_diagnostics(compiled: &reify_compiler::CompiledModule) -> Vec<reify_core::Diagnostic> {
+    let mut engine = reify_eval::Engine::new(
+        Box::new(reify_test_support::mocks::MockConstraintChecker::new()),
+        Some(Box::new(
+            reify_test_support::mocks::MockGeometryKernel::new(),
+        )),
+    );
+    engine
+        .build(compiled, reify_ir::ExportFormat::Step)
+        .diagnostics
+}
+
+/// WHAT THE DEFER COSTS, pinned as a MEASUREMENT rather than left unstated.
+///
+/// The `ScalarParam` defer added by task 6862 is a gradualism trade, and this
+/// is the side of the trade that is easy to misread. A generic fn body is
+/// compiled ONCE, generically — which is exactly why the false positive the
+/// task fixed existed — and NOTHING re-checks that body per instantiation; the
+/// call-site unify arm accepts `ScalarParam(Q)` against any `Scalar { .. }`.
+/// So instantiating the fixture's `beam` at a MASS produces NO compile Error at
+/// all.
+///
+/// This test exists so that a future reader cannot widen the defer believing an
+/// instantiation-time recheck backstops it. It does not: this hole is the cost,
+/// and its sibling `wrong_dimension_written_inline_is_rejected_at_both_layers`
+/// records what the cost does NOT extend to.
+///
+/// NOR DOES THE EVAL LAYER BACKSTOP IT for this shape, and the reason is
+/// structural rather than a gap in that gate. `is_geometry_let`
+/// (`reify-compiler/src/geometry.rs`, the `FunctionCall` arm) requires
+/// `!functions.iter().any(|f| f.name == *name)` — a USER-DEFINED function name
+/// is excluded from geometry-let classification by construction. So
+/// `let s = beam(10mm)` lowers to NO `RealizationDecl` (MEASURED: zero
+/// realizations, against one holding two ops for the same body written inline),
+/// and `geometry_ops::required_length_value` never runs on it. Do not read this
+/// test as evidence that the eval-layer gate is broken; it is never reached.
+///
+/// If this test ever turns RED because a diagnostic APPEARED, that is good news
+/// — some later leaf started checking instantiations. Delete the test and say
+/// so; do not re-pin the silence.
+///
+/// # Scoped to the DIMENSION-rejection family, not to Error-severity at large
+///
+/// The filter names [`DiagnosticCode::ArgTypeMismatch`] and
+/// [`DiagnosticCode::DimensionedArgRejected`] — the two codes that carry a
+/// wrong-dimension rejection at the compile and eval layers respectively — and
+/// not "any Error". An unrelated future Error on this fixture (a new stdlib
+/// check, a name-resolution rule, a change to `Solid` return typing) would
+/// otherwise turn this RED under a message that asserts a specific wrong cause,
+/// sending the next reader to the `ScalarParam` arm for a defect that is not
+/// there. The sibling SIGNAL test
+/// [`dim_kinded_generic_param_at_length_slot_compiles_clean`] keeps the broad
+/// Error sweep, because there exit-0 equivalence IS the assertion.
+///
+/// The narrowing costs a vacuity risk — a fixture that stopped compiling at all
+/// would emit no dimension diagnostic either — so the shape under test is
+/// anchored first: `beam` must still be compiled with a dim-kinded
+/// (`Type::ScalarParam`) parameter, which is the only way its body can reach a
+/// LENGTH slot with the type this defer is about.
+#[test]
+fn wrong_dimension_through_a_dim_kinded_generic_is_undiagnosed_at_compile() {
+    let compiled = compile_source_with_stdlib(&dim_kinded_wrong_dimension_source());
+
+    let beam = compiled
+        .functions
+        .iter()
+        .find(|f| f.name == "beam")
+        .unwrap_or_else(|| {
+            panic!(
+                "the fixture's `beam` is not in the compiled module, so the silence \
+                 asserted below would be vacuous — it would hold of a module that \
+                 never compiled the generic body at all.\nAll diagnostics: {:#?}",
+                compiled.diagnostics
+            )
+        });
+    assert!(
+        beam.params
+            .iter()
+            .any(|(_, ty)| matches!(ty, reify_core::Type::ScalarParam(_))),
+        "`beam` must still take a DIM-KINDED parameter (`Scalar<Q>` → \
+         `Type::ScalarParam`) — that type at a LENGTH slot is the whole subject \
+         of this pin. Got: {:?}",
+        beam.params
+    );
+
+    let dimension_rejections: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && matches!(
+                    d.code,
+                    Some(DiagnosticCode::ArgTypeMismatch)
+                        | Some(DiagnosticCode::DimensionedArgRejected)
+                )
+        })
+        .collect();
+    assert!(
+        dimension_rejections.is_empty(),
+        "MEASURED (task 6862 reviewer amendment): `beam(10kg)` through a \
+         dim-kinded generic emits no wrong-dimension Error — the deliberate cost \
+         of the ScalarParam defer. A rejection appearing here means instantiations \
+         are now checked; update the arm's comment in `builtin_signatures.rs` and \
+         this test together.\nGot: {dimension_rejections:#?}"
+    );
+}
+
+/// WHERE THE WRONG DIMENSION IS STILL CAUGHT, half 1 — written INLINE it is
+/// rejected at BOTH layers, so the defer is narrow rather than a blanket hole.
+///
+/// `extrude(circle(10kg), 10kg)` is the fixture's body with the generic
+/// parameter substituted away. Both halves are load-bearing and MEASURED:
+///
+/// (i)  compile layer — two `ArgTypeMismatch` Errors, `circle: radius …` and
+///      `extrude: distance …`, both naming `Scalar[kg]`. This is the same
+///      `Type::Scalar { dimension }` arm the unit test
+///      `wrong_dimension_scalar_at_length_slot_still_rejected` covers, seen
+///      end-to-end.
+///
+/// (ii) eval layer — a `DimensionedArgRejected` Error at BUILD, and the op is
+///      DROPPED. This is the "COMPLEMENTS, never replaces" relationship the
+///      module doc of `builtin_signatures.rs` describes, made observable.
+#[test]
+fn wrong_dimension_written_inline_is_rejected_at_both_layers() {
+    let compiled = compile_source_with_stdlib(
+        "module inline_wrong_dimension\n\
+         \n\
+         structure def InlineWrongDimension {\n\
+         \x20   let s = extrude(circle(10kg), 10kg)\n\
+         }\n",
+    );
+
+    let compile_errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        compile_errors.len(),
+        2,
+        "both LENGTH slots carry a CONCRETE wrong dimension, so both must be \
+         rejected at compile.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert!(
+        compile_errors
+            .iter()
+            .all(|d| d.message.contains("Scalar[kg]")),
+        "each rejection must name the offending MASS scalar: {:#?}",
+        compile_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let build_errors = build_diagnostics(&compiled);
+    assert!(
+        build_errors.iter().any(|d| {
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::DimensionedArgRejected)
+        }),
+        "the eval-layer LENGTH gate must reject it too, under its OWN code — \
+         that is what keeps the two layers independently observable (task \
+         5743 / 5750).\nBuild diagnostics: {build_errors:#?}"
+    );
+}
+
+/// WHERE THE WRONG DIMENSION IS STILL CAUGHT, half 2 — through a NON-generic
+/// fn, overload resolution rejects it at the call site.
+///
+/// This is what localises the hole pinned above: it is specific to a
+/// DIM-KINDED generic parameter, whose whole point is that its dimension is
+/// open. Give the same fn a concrete `Length` parameter and the call site is
+/// checked normally.
+#[test]
+fn wrong_dimension_through_a_non_generic_fn_is_rejected_at_the_call_site() {
+    let compiled = compile_source_with_stdlib(
+        "module non_generic_wrong_dimension\n\
+         \n\
+         fn beam(l: Length) -> Solid { extrude(circle(l), l) }\n\
+         \n\
+         structure def NonGenericWrongDimension {\n\
+         \x20   let s = beam(10kg)\n\
+         }\n",
+    );
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "a MASS passed to a concrete `Length` parameter must still be rejected \
+         at the call site — the task-6862 defer is scoped to dim-kinded \
+         generics and must not have widened to concrete signatures.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert!(
+        errors.iter().any(|d| d.message.contains("beam")),
+        "the rejection must name the call it rejected: {:#?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }

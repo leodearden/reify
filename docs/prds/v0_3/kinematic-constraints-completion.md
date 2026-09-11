@@ -581,7 +581,7 @@ Phase 7 is dogfood.
   - Prereqs: none.
 
 - **α — Wire `solve_loop_closure_with_diagnostics` into `snapshot()` and `sweep()`; add `is_singular` field; refine over-constrained pre-check to use effective residual dimension.**
-  - Crates: `reify-stdlib/src/snapshot.rs`, `reify-stdlib/src/sweep.rs`, `reify-stdlib/src/loop_closure_solver.rs`, `reify-types/src/diagnostics.rs` (strip "not currently emitted" TODOs), `reify-eval/tests/kinematic_diagnostics_e2e.rs` (extend to assert via snapshot).
+  - Crates: `reify-stdlib/src/snapshot.rs`, `reify-stdlib/src/sweep.rs`, `reify-stdlib/src/loop_closure_solver.rs`, `reify-types/src/diagnostics.rs` (strip "not currently emitted" TODOs), `reify-eval/tests/harness_fea_solver_e2e/kinematic_diagnostics_e2e.rs` (extend to assert via snapshot).
   - Observable signal: kinematic_diagnostics_e2e.rs adds a snapshot-routed assertion: `Snapshot.is_singular == true` AND `EvalResult.diagnostics` contains `KinematicSingularity` for a rank-deficient four-bar fixture. Bare `solve_loop_closure_with_diagnostics`-direct tests still pass.
   - Prereqs: α-pre.
 
@@ -589,7 +589,7 @@ Phase 7 is dogfood.
 
 - **γ — Widen `value_for_joint`, `joint_range_midpoint`, `chain_transform` to operate on `JointValue`. Wire planar/spherical/cylindrical chain participation. Add analytic-J for planar + spherical (δ folded into this task).**
   - Crates: `reify-stdlib/src/loop_closure.rs`, `reify-stdlib/src/loop_closure_solver.rs`, `reify-stdlib/src/joints.rs` (analytic-J replacements at :785, :800).
-  - Observable signal: `crates/reify-eval/tests/kinematic_loop_closure_machinery.rs` adds a closed-chain planar-joint fixture (counter-mass-balance with planar joint in loop). Snapshot returns finite bodies; iteration count < 50; analytic-J path used (logged via tracing).
+  - Observable signal: `crates/reify-eval/tests/harness_fea_solver_e2e/kinematic_loop_closure_machinery.rs` adds a closed-chain planar-joint fixture (counter-mass-balance with planar joint in loop). Snapshot returns finite bodies; iteration count < 50; analytic-J path used (logged via tracing).
   - Prereqs: α-pre.
 
 ### Phase 3 — FK-aware OCCT (ε)
@@ -600,7 +600,7 @@ Phase 7 is dogfood.
   - Prereqs: none.
 
 - **ε — Wire FK-aware dispatch in `reify-eval/src/geometry_ops.rs`; add `try_resolve_snapshot_body` helper.**
-  - Crates: `reify-eval/src/geometry_ops.rs`, `examples/kinematic/dock_pickup.ri` (strip FIXME comment block), `reify-eval/tests/kinematic_examples_e2e.rs`.
+  - Crates: `reify-eval/src/geometry_ops.rs`, `examples/kinematic/dock_pickup.ri` (strip FIXME comment block), `reify-eval/tests/harness_fea_solver_e2e/kinematic_examples_e2e.rs`.
   - Observable signal: `cargo test -p reify-eval --test kinematic_examples_e2e -- dock_pickup_clearance_sweep` runs `dock_pickup.ri` end-to-end; `min_clearance` returns expected pattern (positive outside dock, negative inside, monotonic transition). FIXME comments at the head of dock_pickup.ri removed.
   - Prereqs: ε-occt, KGQ Phase 2 `distance` dispatcher landed (cross-PRD dep).
 

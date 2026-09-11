@@ -840,6 +840,97 @@ fn solve_ranked_registry_cross_merges_independent_component_into_every_candidate
     }
 }
 
+/// CHARACTERIZATION GUARD (task #5721 item 1) — every per-component
+/// sub-problem inherits the FULL `current_values`, with no per-component
+/// filter of any kind.
+///
+/// `SolverRegistry::solve_inner` builds each component's sub-problem from a
+/// `..problem.clone()` spread. It USED TO also rebuild `current_values` cell by
+/// cell into a fresh `ValueMap` under a comment claiming to "Filter
+/// current_values to only this component's params"; that comment misdescribed
+/// the code, because the loop copied EVERY entry, so the rebuild was an exact
+/// — and strictly more expensive — reproduction of what the spread already
+/// supplies (`ValueMap` is a persistent `im::HashMap`, so the spread's clone is
+/// O(1) structural sharing rather than n inserts + 2n key/value clones). Both
+/// the rebuild and that comment were removed by task #5721 item 1; the spread
+/// is now the sole source of each sub-problem's `current_values`.
+///
+/// This test pins the observable contract that deletion relied on: with the
+/// fixture decomposing into an objective component {x,y} and a genuinely
+/// independent component {z}, BOTH sub-problems must still see all three
+/// cells — the {z} component sees x and y, and the {x,y} component sees z.
+/// It was GREEN both before and after the rebuild was deleted; that is exactly
+/// what makes the deletion provably a no-op.
+///
+/// The pass-through is not incidental, it is load-bearing: the #5720
+/// per-component `dependent_cells` filter is justified in registry.rs on the
+/// explicit premise that every cell of `problem.current_values` reaches every
+/// component, so each retained dependent expression stays evaluable.
+///
+/// If a FUTURE task legitimately introduces a REAL per-component
+/// `current_values` filter, this test is expected to fail. Update it
+/// deliberately alongside that change — and re-check the #5720 filter's
+/// premise while doing so — rather than deleting it.
+#[test]
+fn every_component_sub_problem_inherits_the_full_current_values() {
+    let (problem, x_id, y_id, z_id) = two_param_objective_plus_independent_component();
+
+    // Capture the originals before the solve so the assertions compare against
+    // the problem's own seeded values rather than restating literals.
+    let expected: Vec<(reify_core::ValueCellId, Value)> = [&x_id, &y_id, &z_id]
+        .into_iter()
+        .map(|id| {
+            (
+                id.clone(),
+                problem
+                    .current_values
+                    .get(id)
+                    .unwrap_or_else(|| panic!("fixture must seed current_values for {id:?}"))
+                    .clone(),
+            )
+        })
+        .collect();
+
+    // `registry.solve()` runs `solve_inner` with `want_optimality = false`, so
+    // EVERY component — objective-bearing or not — goes through the plain
+    // `solver.solve()` arm and is captured by the spy.
+    let spy = MultiCallSpyConstraintSolver::new(vec![
+        SolveResult::Solved { values: std::collections::HashMap::new(), unique: false },
+        SolveResult::Solved { values: std::collections::HashMap::new(), unique: false },
+    ]);
+    let captured = spy.captured_problems();
+    let registry = SolverRegistry::new(Box::new(spy));
+
+    let _ = registry.solve(&problem);
+
+    let captured_guard = captured.lock().unwrap();
+    assert_eq!(
+        captured_guard.len(),
+        2,
+        "fixture must decompose into exactly 2 components ({{x,y}} + independent {{z}}); \
+         got {} sub-problem(s)",
+        captured_guard.len()
+    );
+
+    for (i, sub) in captured_guard.iter().enumerate() {
+        let own: Vec<_> = sub.auto_params.iter().map(|ap| ap.id.clone()).collect();
+        for (id, want) in &expected {
+            let got = sub.current_values.get(id).unwrap_or_else(|| {
+                panic!(
+                    "sub-problem[{i}] (autos {own:?}) is missing current_values entry {id:?}: \
+                     `current_values` must reach every component WHOLE, with no per-component \
+                     filter — the #5720 `dependent_cells` filter is justified on that premise"
+                )
+            });
+            assert_eq!(
+                got, want,
+                "sub-problem[{i}] (autos {own:?}) altered current_values entry {id:?}: \
+                 expected {want:?}, got {got:?}"
+            );
+        }
+    }
+}
+
 /// dim=1 companion guard: a single-auto-param objective problem must keep
 /// the pre-δ single-candidate path at the registry seam (mirrors B1 at the
 /// `DimensionalSolver` level and the byte-identical test at the registry
@@ -1843,4 +1934,184 @@ fn lexicographic_preserves_rank1_within_epsilon_and_improves_rank2() {
         "WeightedSum must NOT preserve rank-1 (x_ws={x_ws:.6}m expected < x_lex−1mm={:.6}m)",
         x_lex - 0.001
     );
+}
+
+// ---- ComputeDispatch forwarding tests (step-11 RED / step-12 GREEN, task #4880) ----
+//
+// `SolverRegistry` overrides only `solve`/`solve_ranked`, so before step-12 it
+// inherits the `ConstraintSolver` trait DEFAULTS for `solve_with_dispatch` /
+// `solve_ranked_with_dispatch` (task #4880 step-2), which discard `dispatch` and
+// re-enter `solve`/`solve_inner` with no hook. This mirrors the DimensionalSolver
+// fixture in `solver.rs`'s `dispatch_hook_steers_convergence_to_fea_binding_point`
+// (step-5) but drives it through the registry's per-component decomposition.
+//
+// This gap is REAL for the production path: the CLI/GUI `configured_eval_engine`
+// wires `SolverRegistry::production()`, so without the override FEA-in-the-loop
+// would work only for callers that use `DimensionalSolver` directly.
+
+/// A [`reify_ir::ComputeDispatch`] that resolves exactly `"test::stress"` to
+/// `K / t` (reading trial `t` from `args[0]`), counting how many times it was
+/// asked to resolve that target. Defers (`None`) for every other target.
+struct CountingDispatch {
+    calls: std::sync::atomic::AtomicUsize,
+    k: f64,
+}
+
+impl reify_ir::ComputeDispatch for CountingDispatch {
+    fn dispatch(&self, target: &str, args: &[Value]) -> Option<Value> {
+        if target != "test::stress" {
+            return None;
+        }
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let t = args.first()?.as_f64()?;
+        Some(Value::Scalar {
+            si_value: self.k / t,
+            dimension: DimensionVector::DIMENSIONLESS,
+        })
+    }
+}
+
+/// Builds the shared `stress(t) < LIMIT`, `minimize t` fixture. `K` / `LIMIT` are
+/// chosen so the binding point `t* = K / LIMIT = 0.25` sits strictly inside the
+/// declared bounds `(0.001, 1.0)` (and away from their `0.5005` midpoint, so a
+/// pass that actually reaches the optimum is distinguishable from one that merely
+/// reports the unmoved initial guess). Mirrors `solver.rs`'s in-crate step-5
+/// fixture, duplicated here because that one is private to the crate's `mod tests`.
+fn fea_binding_problem() -> (reify_core::ValueCellId, ResolutionProblem) {
+    use reify_core::{ConstraintNodeId, ValueCellId};
+    use reify_ir::{CompiledFnBody, CompiledFunction};
+
+    let params = vec![("t".to_string(), Type::length())];
+    let stress_fn = CompiledFunction {
+        name: "stress".to_string(),
+        doc: None,
+        is_pub: false,
+        param_defaults: CompiledFunction::no_defaults_for(&params),
+        params,
+        return_type: Type::dimensionless_scalar(),
+        body: CompiledFnBody {
+            let_bindings: vec![],
+            result_expr: CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar()),
+        },
+        content_hash: ContentHash::of(b"step11_registry_fea_binding_stress_stub"),
+        annotations: vec![],
+        optimized_target: Some("test::stress".to_string()),
+        type_params: vec![],
+    };
+
+    let t_id = ValueCellId::new("Bracket", "t");
+    let t_ref = CompiledExpr::value_ref(t_id.clone(), Type::length());
+    let stress_call = CompiledExpr::user_function_call(
+        "stress".to_string(),
+        vec![t_ref.clone()],
+        Type::dimensionless_scalar(),
+    );
+    let limit_lit = CompiledExpr::literal(
+        Value::Scalar {
+            si_value: 4.0, // LIMIT; with K = 1.0 below, t* = K / LIMIT = 0.25
+            dimension: DimensionVector::DIMENSIONLESS,
+        },
+        Type::dimensionless_scalar(),
+    );
+    let lt_expr = CompiledExpr::binop(BinOp::Lt, stress_call, limit_lit, Type::Bool);
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, t_ref);
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: t_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.001, 1.0)),
+            free: false,
+        }],
+        constraints: vec![(ConstraintNodeId::new("Bracket", 0), lt_expr)],
+        current_values: ValueMap::new(),
+        objective: Some(objective),
+        functions: vec![stress_fn].into(),
+        dependent_cells: Vec::new(),
+    };
+    (t_id, problem)
+}
+
+/// RED before task #4880 step-12: `SolverRegistry` must FORWARD the compute-dispatch
+/// hook to its inner solver rather than swallowing it in the trait default.
+#[test]
+fn registry_forwards_compute_dispatch_to_inner_solver() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let (t_id, problem) = fea_binding_problem();
+    let (lo, hi) = (0.001, 1.0);
+    let registry = SolverRegistry::new(Box::new(DimensionalSolver));
+
+    // (a) WITH the hook, routed through the registry: `stress(t)` resolves to a real,
+    // t-varying value inside the inner solver's cost loop, so the constraint binds at
+    // the interior optimum t* = K / LIMIT.
+    let mock = CountingDispatch {
+        calls: AtomicUsize::new(0),
+        k: 1.0,
+    };
+    match registry.solve_with_dispatch(&problem, Some(&mock)) {
+        SolveResult::Solved { values, .. } => {
+            let t = values
+                .get(&t_id)
+                .expect("t should be in the solution")
+                .as_f64()
+                .expect("t should be numeric");
+            assert!(
+                t > lo && t < hi,
+                "registry solve_with_dispatch should converge to a t strictly interior \
+                 to bounds ({lo}, {hi}); got {t}"
+            );
+        }
+        other => panic!(
+            "expected Solved once SolverRegistry forwards the dispatch hook to its inner \
+             solver; got {other:?}"
+        ),
+    }
+    assert!(
+        mock.calls.load(Ordering::SeqCst) > 0,
+        "expected the dispatch hook to have been invoked from inside the inner solver's \
+         cost loop (registry path)"
+    );
+
+    let mock_ranked = CountingDispatch {
+        calls: AtomicUsize::new(0),
+        k: 1.0,
+    };
+    match registry.solve_ranked_with_dispatch(&problem, Some(&mock_ranked)) {
+        RankedSolveResult::Ranked { candidates, .. } => {
+            let t = candidates
+                .first()
+                .expect("non-empty candidates (invariant I2)")
+                .values
+                .get(&t_id)
+                .expect("t should be in the solution")
+                .as_f64()
+                .expect("t should be numeric");
+            assert!(
+                t > lo && t < hi,
+                "registry solve_ranked_with_dispatch should converge to a t strictly \
+                 interior to bounds ({lo}, {hi}); got {t}"
+            );
+        }
+        other => panic!(
+            "expected Ranked once SolverRegistry forwards the dispatch hook to its inner \
+             solver; got {other:?}"
+        ),
+    }
+    assert!(
+        mock_ranked.calls.load(Ordering::SeqCst) > 0,
+        "expected the dispatch hook to have been invoked from inside the inner solver's \
+         cost loop (registry ranked path)"
+    );
+
+    // (b) WITHOUT the hook: `stress(t)` body-evals to Undef for every t, so the
+    // constraint never decomposes numerically — back-compat with pre-#4880 behaviour
+    // (invariant I1: the historical decomposition path is unchanged).
+    match registry.solve(&problem) {
+        SolveResult::Infeasible { .. } => {}
+        other => panic!(
+            "expected Infeasible for the plain (no-dispatch) registry solve -- stress(t) \
+             is Undef for every t without the hook; got {other:?}"
+        ),
+    }
 }

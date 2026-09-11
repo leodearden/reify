@@ -1,0 +1,829 @@
+prd: docs/prds/v0_6/driver-contract-implementation.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 6773
+  title: Capability profile + profile-taking engine construction path
+  capabilities:
+  - name: resolution-profile-is-upstream-not-here
+    binding: DAG-direction — ResolutionProfile does not exist on main (exhaustive grep over
+      crates/, zero hits). It is created by solver-driver-parity leaf alpha, upstream by a
+      real edge. This leaf widens a type it does not create.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ResolutionProfile
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: trampoline-bundler-exists
+    binding: capability->producer, wired on main — Engine::register_production_compute_fns
+      is a real method with three delegating call sites; alpha composes it and becomes its
+      sole caller.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn register_production_compute_fns
+      expect: present
+      paths:
+      - crates/reify-eval/src/compute_targets/mod.rs
+  - name: bundler-panics-on-double-registration
+    binding: observed (doc + code) — the bundler rustdoc states it panics if called twice
+      because it re-runs the unconditional registrar. Sole ownership is a correctness requirement,
+      not a style rule.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: A panic-on-double-registration contract is asserted by the bundler doc and by
+        construction; the post-fix property (exactly one caller) is covered by the widened
+        architecture gate below.
+  - name: grep-architecture-gate-exists
+    binding: capability->producer, wired on main — scripts/check-compute-trampoline-registration.sh
+      exists and is registered in the verify-pipeline manifests. Alpha widens it; it does
+      not mint a second gate.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: register_production_compute_fns
+      expect: present
+      paths:
+      - scripts/check-compute-trampoline-registration.sh
+  - name: seventeen-construction-sites
+    binding: observed — an exhaustive census of production (non-test-helper) engine construction
+      found 17 sites carrying 12 distinct 7-axis fingerprints. This is the duplication alpha
+      removes.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Site-count reduction is not greppable as a single pattern; the widened architecture
+        gate is the mechanical successor.
+  - name: inv-fea-1-row-exists
+    binding: capability->producer, wired on main — docs/invariants.md carries an INV-FEA-1
+      row (full registration has one constructor, status proposed). Alpha generalises that
+      row rather than minting a new id.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: INV-FEA-1
+      expect: present
+      paths:
+      - docs/invariants.md
+  - name: cmd-check-predicates-are-not-alphas
+    binding: 'SCOPE BOUNDARY, added 2026-08-27 — check''s content predicates ARE its kernel
+      routing, which a binding G4 ruling reserves to check-diagnostic-truthfulness. As first
+      filed, alpha''s deliverable 3 asked for something this PRD''s own section 8.1 forbids.
+      Resolved by ordering, not by exemption: #5748 rewrites check''s routing, #6803 then
+      unifies check''s body behaviour-preservingly, and alpha adopts the result. Both are
+      real edges on alpha now.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: An ordering/ownership boundary; the mechanical successor is the widened architecture
+        gate, which cannot distinguish who moved a predicate.
+- label: β
+  task_id: 6775
+  title: reify build gains the FEA persistent cache
+  capabilities:
+  - name: cache-installer-exists
+    binding: capability->producer, wired on main — Engine::set_persistent_cache_dir is the
+      installer; four production sites already call it. Beta adds a fifth.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn set_persistent_cache_dir
+      expect: present
+      paths:
+      - crates/reify-eval/src/engine_admin.rs
+  - name: build-lacks-the-cache
+    binding: observed — cmd_build builds its engine directly and deliberately bypasses the
+      shared helper that installs the cache; no set_persistent_cache_dir call is reachable
+      from it.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Post-fix delivery is a cache-hit behaviour, observed by running reify build
+        twice; not expressible as a pattern that distinguishes cmd_build from the other CLI
+        callers in the same file.
+  - name: cache-hooks-are-inert-without-a-dir
+    binding: observed (doc + code) — the setter contract states that None (the default) makes
+      the compute-dispatch write/lookup hooks inert. Beta signal is a real behavioural change,
+      not a no-op flag flip.
+    verdict: PASS
+- label: γ
+  task_id: 6777
+  title: reify eval adopts the full profile (kernel + measurement arm)
+  capabilities:
+  - name: measurement-seam-is-upstream
+    binding: DAG-direction — Engine::run_measurement_pass does not exist on main (zero hits).
+      Created by gui-on-demand-measurement leaf alpha, upstream by a real edge, whose D1 forbids
+      a second copy of the arm sequence. Gamma calls it.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: run_measurement_pass
+      expect: present
+      paths:
+      - crates/reify-cli/src/main.rs
+  - name: openvdb-attach-api-exists
+    binding: capability->producer, wired on main — Engine::ensure_openvdb_kernel is idempotent,
+      registry-driven, and returns false when the adapter is absent. Two production callers
+      today.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn ensure_openvdb_kernel
+      expect: present
+      paths:
+      - crates/reify-eval/src/engine_admin.rs
+  - name: eval-never-attaches-openvdb
+    binding: observed by execution — reify eval on an isosurface module emits "no openvdb
+      kernel registered (call ensure_openvdb_kernel()); leaving the BRep/Mesh fallback", which
+      reify build does not.
+    verdict: PASS
+  - name: dfm-arm-is-check-only
+    binding: 'observed by execution — driver_contract_dfm_measurement_arm.ri: check exit 1
+      with E_DFM_MIN_WALL + E_DFM_MIN_FEATURE; eval exit 0 with neither.'
+    verdict: PASS
+  - name: fixture-parses
+    binding: grammar-fixture — tests/prd-gate/fixtures/driver_contract_dfm_measurement_arm.ri,
+      0 ERROR nodes under tree-sitter parse --quiet.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: driver_contract_dfm_measurement_arm
+      expect: present
+      paths:
+      - tests/prd-gate/fixtures/driver_contract_dfm_measurement_arm.ri
+- label: δ
+  task_id: 6779
+  title: reify report and reify explain adopt the full profile
+  capabilities:
+  - name: measurement-seam-is-upstream
+    binding: DAG-direction — as gamma; Engine::run_measurement_pass is created by gui-on-demand-measurement
+      leaf alpha, upstream by a real edge.
+    verdict: PASS
+  - name: report-is-kernel-free
+    binding: observed — cmd_report constructs a kernel-less engine and evaluates; BOM mass
+      cells are undef in consequence (survey DV13).
+    verdict: PASS
+  - name: report-lacks-dfm
+    binding: 'observed by execution — report --bom on the DFM fixture: exit 0, zero DFM diagnostics.'
+    verdict: PASS
+  - name: explain-is-kernel-free
+    binding: observed — cmd_explain constructs a kernel-less engine; corroborated independently
+      by solver-legibility-telemetry, which records that pose autos therefore produce zero
+      provenance on the CLI.
+    verdict: PASS
+- label: ε
+  task_id: 6781
+  title: reify test gains the BRep kernel
+  capabilities:
+  - name: test-engine-is-kernel-free
+    binding: observed — the test runner engine builder passes no kernel; its rustdoc documents
+      the solver omission, and the kernel omission is what makes a geometry @test structurally
+      Indeterminate.
+    verdict: PASS
+  - name: trampoline-half-already-landed
+    binding: capability->producer, wired on main — the test runner already calls register_production_compute_fns
+      (morph Unavailable) under INV-FEA-1. Only the BRep kernel is missing; epsilon must not
+      re-do the trampoline half.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: register_production_compute_fns
+      expect: present
+      paths:
+      - crates/reify-eval/src/test_runner.rs
+  - name: geometry-test-is-indeterminate
+    binding: 'observed by execution — driver_contract_geometry_test_indeterminate.ri: INDETERMINATE
+      TestBlockVolume, exit 0.'
+    verdict: PASS
+  - name: solver-half-is-upstream
+    binding: DAG-direction — the solver for reify test is solver-driver-parity leaf zeta,
+      upstream by a real edge. Epsilon owns the kernel only.
+    verdict: PASS
+- label: ζ
+  task_id: 6784
+  title: reify explain on the kernel-bearing path
+  capabilities:
+  - name: provenance-field-is-upstream
+    binding: DAG-direction — CheckResult and BuildResult have no provenance field on main
+      (verified by reading both struct definitions). The field is added by solver-legibility-telemetry
+      leaf alpha, upstream by a real edge.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: objective_provenance
+      expect: present
+      paths:
+      - crates/reify-eval/src/engine_constraints.rs
+  - name: provenance-map-populated-only-under-a-solver
+    binding: observed — the eval-side population is gated on an active solver; with none the
+      map stays empty. Zeta engine needs a solver as well as a kernel. Recorded because a
+      leaf adding only the kernel would produce an empty map and read as done.
+    verdict: PASS
+  - name: matrix-cite-is-wrong
+    binding: premise correction — the matrix cited line is inside field elaboration at HEAD,
+      and the empty map it names lives in the warm/cached serve path, not build(). Bound so
+      no leaf is written against the cited line.
+    verdict: PASS
+  - name: explain-prints-no-provenance-today
+    binding: observed by execution — reify explain on the eval-blindness fixture prints "No
+      objective provenance recorded (no auto parameters resolved)."
+    verdict: PASS
+- label: η
+  task_id: 6786
+  title: Evaluating drivers obtain constraint verdicts (the return-type gap)
+  capabilities:
+  - name: eval-result-has-no-verdict-field
+    binding: observed — the eval-path result struct carries values, diagnostics, resolved
+      params and provenance, and no constraint results. This is the structural gap, not a
+      missing call.
+    verdict: PASS
+  - name: check-result-has-verdicts
+    binding: capability->producer, wired on main — the check-path result carries constraint_results;
+      eta widens the eval path toward that shape rather than inventing a verdict type.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: constraint_results
+      expect: present
+      paths:
+      - crates/reify-eval/src/lib.rs
+  - name: geometry-branch-already-computes-verdicts
+    binding: observed — cmd_eval geometry branch calls Engine::build, which calls check()
+      internally; the verdicts are computed and then dropped at the destructuring. Half of
+      eta is deletion of a discard.
+    verdict: PASS
+- label: θ
+  task_id: 6788
+  title: reify eval gates exit on constraint violation
+  capabilities:
+  - name: eval-does-not-gate-today
+    binding: 'NEGATIVE-ASSERTION SENTINEL, observed by execution — driver_contract_eval_blind_to_violation.ri:
+      check exit 1 VIOLATED, eval exit 0 with no constraint output at all. Rejection ABSENT,
+      so theta produces it.'
+    verdict: PASS
+  - name: shared-verdict-fold-exists
+    binding: capability->producer, wired on main — ConstraintOutcome, report_constraint_results,
+      check_fails, build_is_success and finish_check all exist and are used by check and build.
+      Theta routes through them and adds no private fold.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: enum ConstraintOutcome
+      expect: present
+      paths:
+      - crates/reify-cli/src/main.rs
+  - name: fixture-parses
+    binding: grammar-fixture — tests/prd-gate/fixtures/driver_contract_eval_blind_to_violation.ri,
+      0 ERROR nodes.
+    verdict: PASS
+- label: ι
+  task_id: 6790
+  title: reify report runs check() and gates exit on violation
+  capabilities:
+  - name: report-never-runs-check
+    binding: observed — cmd_report calls eval() and never check(); no verdict exists on that
+      path.
+    verdict: PASS
+  - name: report-does-not-gate-today
+    binding: 'NEGATIVE-ASSERTION SENTINEL, observed by execution — driver_contract_report_blind_to_violation.ri:
+      check exit 1, report --bom exit 0 printing the line item and "Total: 0.42 USD". Rejection
+      ABSENT, so iota produces it.'
+    verdict: PASS
+  - name: fixture-parses
+    binding: grammar-fixture — tests/prd-gate/fixtures/driver_contract_report_blind_to_violation.ri,
+      0 ERROR nodes.
+    verdict: PASS
+- label: κ
+  task_id: 6792
+  title: reify explain warns on check failure and never gates
+  capabilities:
+  - name: explain-warning-absent
+    binding: NEGATIVE-ASSERTION SENTINEL, observed by execution — explain never runs the constraint
+      pass, so no warning exists. Warning ABSENT, so kappa produces it.
+    verdict: PASS
+  - name: explain-exit-zero-present
+    binding: PRESERVATION ASSERTION, observed by execution — reify explain on the violated
+      fixture exits 0 today. This half must survive kappa, which is why the boundary test
+      asserts it in the reverse direction. Binding only the warning would let a leaf fix explain
+      into gating and still pass.
+    verdict: PASS
+  - name: role-difference-is-ruled
+    binding: producer-self — the warn-never-gate split is ruling 3(b) of the closed driver-contract
+      matrix, not an inference from code.
+    verdict: PASS
+  - name: warning-severity-is-invariant-required
+    binding: G7 INTERACTION, observed — INV-SF-2 forbids a per-command exemption from the
+      Error-severity exit gate, and explain already gates on Error-severity diagnostics. An
+      Error-severity warn-but-exit-0 would create exactly the exemption the invariant bans;
+      Warning severity keeps it unnecessary. Bound because "warns" alone leaves the severity
+      to the implementer.
+    verdict: PASS
+- label: λ
+  task_id: 6793
+  title: '@test Indeterminate exits non-zero; @allow_indeterminate annotation'
+  capabilities:
+  - name: annotation-grammar-already-admits-it
+    binding: grammar-fixture — tests/prd-gate/fixtures/driver_contract_allow_indeterminate.ri
+      parses with 0 ERROR nodes. The annotation production already admits @name, @name(ident)
+      and @name("string"); all three candidate spellings probed clean. NO GRAMMAR WORK IS
+      QUEUED.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: allow_indeterminate
+      expect: present
+      paths:
+      - tests/prd-gate/fixtures/driver_contract_allow_indeterminate.ri
+  - name: annotation-is-loudly-unregistered
+    binding: 'observed by execution — check and test emit "warning: unknown annotation @allow_indeterminate".
+      Lambda completion is partly the disappearance of this warning, which makes the leaf
+      falsifiable.'
+    verdict: PASS
+  - name: schema-registry-exists
+    binding: capability->producer, wired on main — the annotation schema registry is a real
+      const slice with nine entries and a validation dispatcher; lambda adds an entry, it
+      does not build a registry.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: allow_indeterminate
+      expect: present
+      paths:
+      - crates/reify-compiler/src/annotations/schema.rs
+  - name: test-args-are-silently-dropped
+    binding: observed by execution — @test(allow_indeterminate) and @test("allow_indeterminate")
+      both compile with ZERO diagnostics. The measured basis for choosing the sibling spelling
+      (PRD decision 5), explicitly NOT fixed here (PRD section 11).
+    verdict: PASS
+  - name: indeterminate-does-not-gate-today
+    binding: 'NEGATIVE-ASSERTION SENTINEL, observed by execution — the geometry @test fixture:
+      "test result: ok. 0 passed; 0 failed; 1 indeterminate", exit 0. Rejection ABSENT, so
+      lambda produces it.'
+    verdict: PASS
+  - name: runner-fold-exists
+    binding: capability->producer, wired on main — compute_status folds per-constraint satisfaction
+      into a test status, and the CLI already counts Indeterminate separately. Lambda changes
+      the exit decision, which is one arm.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn compute_status
+      expect: present
+      paths:
+      - crates/reify-eval/src/test_runner.rs
+  - name: diagnostics-printing-is-upstream
+    binding: DAG-direction — printing the dropped TestResult.diagnostics is solver-driver-parity
+      leaf zeta, upstream by a real edge. Lambda owns the exit contract and the annotation
+      only.
+    verdict: PASS
+- label: μ
+  task_id: 6794
+  title: GUI diagnostics carry their DiagnosticCode
+  capabilities:
+  - name: strip-is-one-projection-function
+    binding: observed — diagnostics_to_info in the GUI backend hard-codes code:None at a single
+      line, with three production callers.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn diagnostics_to_info
+      expect: present
+      paths:
+      - gui/src-tauri/src/engine.rs
+  - name: code-is-available-upstream
+    binding: 'observed — the source Diagnostic carries code: Option<DiagnosticCode>, and the
+      same projection reads severity, message and labels off that very value. A lossy projection,
+      not an upstream absence.'
+    verdict: PASS
+  - name: wire-field-exists
+    binding: 'capability->producer, wired on main — reify_core::DiagnosticInfo.code: Option<String>
+      exists, is serde-serialized, and has a TS mirror. Mu populates a field it does not add.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub code: Option<String>'
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: non-lossy-precedent-exists
+    binding: capability->producer, wired on main — the LSP converter already projects a DiagnosticCode
+      to a string through serde. Mu copies it.
+    verdict: PASS
+  - name: existing-tests-lock-the-strip
+    binding: observed — GUI tests assert code:None, and one carries a comment anticipating
+      exactly this change and instructing the implementer to update both the assertion and
+      the doc comment. Bound so the leaf budgets for the re-baseline.
+    verdict: PASS
+  - name: two-synthesised-codes-exist
+    binding: observed — two GUI sites synthesise string codes downstream, one guarded by "if
+      d.code.is_none()" which is always true today. The reverse boundary test exists because
+      that guard meaning changes.
+    verdict: PASS
+- label: ν
+  task_id: 6795
+  title: Module-header diagnostics gain a DiagnosticCode and a span
+  capabilities:
+  - name: header-check-carries-no-code-or-label
+    binding: observed — both variants build a bare warning/error with the W_MODULE_DECL_MISSING
+      / E_MODULE_PATH_MISMATCH mnemonic baked into the MESSAGE STRING, with no DiagnosticCode
+      and no DiagnosticLabel.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn check_module_path_decl
+      expect: present
+      paths:
+      - crates/reify-compiler/src/compile_builder/pre_pass.rs
+  - name: codeless-renders-at-origin
+    binding: observed — the LSP converter falls back to range (0,0)-(0,0) when a diagnostic
+      has no label, and drops the code when absent. This is why "squiggles in the editor"
+      is unreachable before nu.
+    verdict: PASS
+  - name: diagnostic-code-enum-is-extensible
+    binding: capability->producer, wired on main — DiagnosticCode is non_exhaustive, has 187
+      fieldless variants, no impl block anywhere and serde round-trips automatically, so a
+      variant addition is a one-line change by that type own documented contract.
+    verdict: PASS
+  - name: codeless-cannot-be-ledgered
+    binding: ANTI-VACUITY — the two-way divergence ledger this PRD adopts states that a diagnostic
+      whose code is None can never be matched and always surfaces as an unreasoned divergence.
+      Nu is a prerequisite of the parity gate, not only of the squiggle.
+    verdict: PASS
+- label: ξ
+  task_id: 6796
+  title: The GUI enforces the module-header rule on the edited file
+  capabilities:
+  - name: gui-entry-file-is-unchecked
+    binding: CODE-READ (no GUI runtime session available) — the GUI two compile funnels call
+      the compiler entry points directly and neither applies the header-check helper; the
+      GUI IMPORTS do get it via the module DAG. The rule fires for every imported module and
+      never for the file the user is editing.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: check_module_path_decl|attach_module_path_diag
+      expect: present
+      paths:
+      - gui/src-tauri/src/engine.rs
+  - name: gui-names-modules-by-file-stem
+    binding: CODE-READ — both GUI load paths derive a single-segment module path from the
+      file stem, which is exactly the identity the header rule compares against. The comparison
+      input exists; only the call is missing.
+    verdict: PASS
+  - name: mechanism-may-arrive-unasserted
+    binding: DAG-direction — resolution-unification GUI leaf deletes the GUI hand-rolled compile
+      twin and routes it to the shared entry point, which DOES attach the header diagnostic.
+      Enforcement could arrive as an unasserted side effect; xi owns the ASSERTION and is
+      ordered behind that leaf by a real edge.
+    verdict: PASS
+  - name: fixture-parses
+    binding: grammar-fixture — tests/prd-gate/fixtures/driver_contract_header_mismatch.ri,
+      0 ERROR nodes; all seven CLI subcommands exit 1 on it (observed by execution).
+    verdict: PASS
+- label: ο
+  task_id: 6797
+  title: The LSP enforces the module-header rule
+  capabilities:
+  - name: lsp-never-checks-the-header
+    binding: CODE-READ (no LSP runtime session available) — exhaustive grep over the LSP crate
+      for the header-check helper and both mnemonics returns zero hits.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: check_module_path_decl|MODULE_PATH_MISMATCH
+      expect: present
+      paths:
+      - crates/reify-lsp/src
+  - name: lsp-names-modules-by-uri-stem
+    binding: CODE-READ — the LSP derives a single-segment module path from the URI stem, and
+      re-implements that derivation inline in its diagnostics path. Comparison input present.
+    verdict: PASS
+  - name: import-axis-is-owned-elsewhere
+    binding: DAG-direction — imported-file header-mismatch surfacing is a resolution-unification
+      leaf. Omicron is the DRIVER axis and is disjoint from it; bound so the two are not read
+      as duplicates.
+    verdict: PASS
+- label: π
+  task_id: 6798
+  title: The LSP uses the real constraint checker
+  capabilities:
+  - name: lsp-compiles-with-the-stub-checker
+    binding: 'observed — the LSP three compile sites call the entry point that hard-wires
+      the compile-time stub checker, which returns Indeterminate for every constraint. The
+      real-checker entry point has exactly two production callers: the CLI and the GUI.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: compile_with_stdlib_checked
+      expect: present
+      paths:
+      - crates/reify-lsp/src
+  - name: real-checker-is-keystroke-cheap
+    binding: observed — the real checker is a zero-sized struct whose whole body is an expression
+      evaluation over an already-built value map; it touches no geometry kernel and no solver.
+      The latency objection does not apply.
+    verdict: PASS
+  - name: injection-is-a-no-op-except-for-constants
+    binding: VACUITY GUARD, observed (two in-tree pins) — one test pins that injecting the
+      real checker is a NO-OP at compile time (the compile-time value map is empty, so both
+      checkers return Indeterminate); a second pins that a CONSTANT constraint diverges. Pi
+      signal and BT8 are specified on the constant case. WITHOUT THIS BINDING PI IS A FAKE-DONE
+      LEAF.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: The observable difference is a constraint verdict on a constant-constraint fixture,
+        asserted by the leaf own test; no grep pattern distinguishes a vacuous injection from
+        a real one.
+  - name: trampoline-subtraction-must-survive
+    binding: PRESERVATION ASSERTION — the LSP trampoline-free posture is Leo-ratified, documented
+      and locked by a named test. Pi changes the CHECKER, not the posture; the reverse boundary
+      direction asserts the lock still holds.
+    verdict: PASS
+- label: ρ
+  task_id: 6799
+  title: The GUI installs the FEA persistent cache
+  capabilities:
+  - name: gui-never-installs-the-cache
+    binding: CODE-READ (no GUI runtime session available) — set_persistent_cache_dir has zero
+      occurrences under the GUI tree, so the compute-dispatch cache hooks are inert there.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: set_persistent_cache_dir
+      expect: present
+      paths:
+      - gui/src-tauri/src
+  - name: shared-resolver-is-already-reachable
+    binding: 'capability->producer, wired on main — the GUI already calls the shared config-crate
+      cache resolver in its startup sweep, so it resolves the exact root the CLI installs
+      and then discards the path. NOT a crate-visibility refactor: the CLI own private resolver
+      is a different function.'
+    verdict: PASS
+  - name: survey-framing-corrected
+    binding: premise correction — the survey calls this a comment-vs-code contradiction and
+      says a comment promises the wiring. No such comment exists; it is a resolve-then-discard
+      gap. Bound so the leaf is not written hunting for a promise.
+    verdict: PASS
+- label: σ
+  task_id: 6800
+  title: CLI --json driver-result envelope
+  capabilities:
+  - name: no-json-surface-exists-today
+    binding: observed — exhaustive grep finds no --json flag in any Rust crate. Sigma creates
+      the surface.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"--json"'
+      expect: present
+      paths:
+      - crates/reify-cli/src/main.rs
+  - name: structured-stdout-precedent-exists
+    binding: capability->producer, wired on main — reify doc --format json already emits serde
+      JSON of a model to stdout, and is the only structured-stdout mode on the CLI. Sigma
+      follows its convention.
+    verdict: PASS
+  - name: diagnostic-code-serializes
+    binding: capability->producer, wired on main — DiagnosticCode derives serde behind a feature
+      and renames to PascalCase; the LSP already relies on that round-trip and pins it with
+      a table test. That is the wire form.
+    verdict: PASS
+  - name: cli-does-not-enable-the-serde-feature-directly
+    binding: observed, AND A REAL HAZARD — reify-cli does not request reify-core serde feature;
+      it compiles with serde only through feature unification via its LSP and MCP dependencies.
+      Sigma must enable it explicitly (PRD decision 7) or a dependency reshuffle breaks --json
+      for an unrelated reason.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: serde
+      expect: present
+      paths:
+      - crates/reify-cli/Cargo.toml
+  - name: verdicts-require-eta
+    binding: DAG-direction — the envelope carries constraint verdicts, which do not exist
+      on the eval path until eta lands. Real intra-batch edge.
+    verdict: PASS
+- label: τ
+  task_id: 6801
+  title: reify doc usage errors exit 1 instead of 2
+  capabilities:
+  - name: doc-is-the-only-exit-2-driver
+    binding: observed by execution — reify doc with no args and with an unknown flag both
+      exit 2; reify check with an unknown flag and reify eval with no args both exit 1.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ExitCode::from\(2u8\)
+      expect: absent
+      paths:
+      - crates/reify-cli/src/main.rs
+  - name: fifteen-sites
+    binding: observed — fifteen ExitCode::from(2u8) sites, all inside the doc command; nothing
+      else in the workspace asserts a reify exit code 2.
+    verdict: PASS
+  - name: twelve-tests-and-three-doc-sites-must-move
+    binding: observed — twelve tests assert the code (several encode "two" in their names),
+      plus the harness module doc block, a format-enum doc comment, and one sentence in the
+      reify-doc PRD. Bound so the leaf budgets for a rename-and-rebaseline, not a one-line
+      change.
+    verdict: PASS
+  - name: no-clap-to-fight
+    binding: observed — the workspace has no clap dependency; every subcommand hand-rolls
+      its flag walk, so the exit code is chosen explicitly at each site and there is no framework
+      default to override.
+    verdict: PASS
+- label: υ
+  task_id: 6802
+  title: 'LSP cfg surface: host-default plus an initializationOptions cfg map'
+  capabilities:
+  - name: lsp-has-no-cfg-surface-at-all
+    binding: 'PREMISE CORRECTION, observed — the matrix ruling says the LSP baseline is host-default.
+      It is not: the LSP constructs no cfg set anywhere and its compile entry point takes
+      no cfg parameter. Upsilon INTRODUCES the host default.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: CfgSet
+      expect: present
+      paths:
+      - crates/reify-lsp/src
+  - name: host-default-constructor-exists
+    binding: capability->producer, wired on main — CfgSet::host_default() exists and is what
+      the GUI uses; upsilon adopts it.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn host_default
+      expect: present
+      paths:
+      - crates/reify-compiler/src/cfg.rs
+  - name: initialization-options-are-already-read
+    binding: capability->producer, wired on main — the LSP initialize handler already reads
+      one key from initializationOptions by inline JSON access and stores it on server state.
+      Upsilon adds a second key to a live path.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: initialization_options
+      expect: present
+      paths:
+      - crates/reify-lsp/src/server.rs
+  - name: cfg-parameter-arrives-with-the-ru-leaf
+    binding: 'DAG-direction — the cfg-bearing compile entry point is defined by one resolution-unification
+      leaf and reaches the LSP via another; both upstream by real edges. LABEL CORRECTION:
+      the brief calls the LSP leaf "the cfg surface"; the cfg surface is a different decision
+      in that PRD. The dependency is right, the label is not.'
+    verdict: PASS
+- label: φ
+  task_id: 6804
+  title: --purpose on the other CLI drivers
+  capabilities:
+  - name: purpose-engine-api-exists
+    binding: capability->producer, wired on main — activate/deactivate/is-active purpose methods
+      all exist on the engine and are exercised today by reify check --purpose.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn activate_purpose
+      expect: present
+      paths:
+      - crates/reify-eval/src/engine_purposes.rs
+  - name: purpose-is-check-only-today
+    binding: observed — --purpose appears in exactly one usage string; no other driver parses
+      it, and the GUI has no purpose surface at all (33 Tauri commands, none purpose-related).
+    verdict: PASS
+  - name: shared-seam-is-upstream-and-filed
+    binding: 'DAG-direction — RESOLVED 2026-08-27. activate_purpose_session() is owned by
+      the GUI purpose PRD, which landed and decomposed on 2026-08-27; the seam is its leaf
+      alpha #6803. The real edge is wired and phi is pending. This binding read ''unfiled''
+      at authoring, when phi was correctly parked deferred per PRD section 8.3.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn activate_purpose_session
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: seam-is-behaviour-preserving-for-check
+    binding: 'observed in the landed sibling PRD, added 2026-08-27 — #6803 is explicitly scoped
+      behaviour-preserving: it changes no cmd_check routing, exit code, diagnostic or --strict,
+      because all four are reserved elsewhere. So phi inherits a callable unified body, NOT
+      a fixed --purpose arm. The same PRD records, with executed evidence, that reify check
+      --purpose exits 0 on a file plain reify check rejects with a RepresentationWithin violation
+      — a false green the seam does not close. Phi must not assume it has.'
+    verdict: PASS
+- label: χ
+  task_id: 6805
+  title: Cross-driver diagnostic-set and exit-code parity, including the LSP
+  capabilities:
+  - name: resolution-harness-is-upstream
+    binding: DAG-direction — solver-driver-parity parity leaf already drives one fixture corpus
+      through six surfaces; it exists as a specification, not as code, and is upstream by
+      a real edge. Chi extends its target rather than building a fourth harness.
+    verdict: PASS
+  - name: diagnostic-set-harness-covers-three-surfaces
+    binding: observed — resolution-unification parity leaf asserts diagnostic-set equality
+      across check, eval and the GUI load path; IT DOES NOT COVER THE LSP, and it deliberately
+      excludes exit-code equality under a recorded G7 waiver. That exclusion is the residue
+      chi closes.
+    verdict: PASS
+  - name: neither-harness-exists-yet
+    binding: observed — the file named by the diagnostic-set harness own task metadata does
+      not exist, and no test in the workspace performs a cross-driver diagnostic comparison.
+      Chi is a producing leaf, not an extension of running code.
+    verdict: PASS
+  - name: no-new-standalone-binary
+    binding: CONSTRAINT, observed — the harness-layout ratchet supersedes grandfathering a
+      new standalone test binary in this crate; the sanctioned remedy is a harness_<subsystem>/
+      compile unit. Chi extends the existing consolidated CLI harness.
+    verdict: PASS
+  - name: drift-guard-registration-same-diff
+    binding: CONSTRAINT — a new gate-resident test owes its drift-guard registrations in the
+      same diff (classification manifest row, wall-clock bounds, nextest partitions). Bound
+      because the overlay worked case is exactly a parity harness landing without them and
+      reddening main.
+    verdict: PASS
+- label: ψ
+  task_id: 6806
+  title: Distinguishable Ring-2 parity and Ring-1 conformance verdicts
+  capabilities:
+  - name: two-way-ledger-precedent-exists
+    binding: capability->producer, wired on main — the differential harness Divergence enum
+      and assert_equivalent_or_allowed implement a two-way gate that fails both on an unmatched
+      divergence and on a STALE ALLOW-ENTRY. Psi adopts this shape.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn assert_equivalent_or_allowed
+      expect: present
+      paths:
+      - crates/reify-eval/tests/common/differential.rs
+  - name: one-way-ledger-precedents-also-exist
+    binding: observed — two one-way ledgers exist in tree (a grammar-corpus expected-clean
+      set and a static/runtime exemption list). Both were considered; the two-way one is the
+      only one that fails on stale cover, which is why it is chosen.
+    verdict: PASS
+  - name: verdict-split-is-ruled-but-unbuilt
+    binding: producer-self — the parity-vs-conformance distinction is ruled in the committed
+      conformance scope-boundary note; no PRD implements it. Psi produces it.
+    verdict: PASS
+  - name: codes-must-exist-first
+    binding: DAG-direction — the ledger matches allow-entries by diagnostic code, and its
+      own contract says a code-less diagnostic can never be matched. Mu and nu are upstream
+      by real edges.
+    verdict: PASS
+- label: ω
+  task_id: 6807
+  title: 'Docs-truth obligations: chunks, corpus, cheatsheet index, spec'
+  capabilities:
+  - name: language-surface-changes
+    binding: producer-self — this PRD adds @allow_indeterminate (language surface), --json
+      and the exit-code contract (tooling surface), and widens --purpose reach. The overlay
+      docs-truth gate fires and requires all four deliverables.
+    verdict: PASS
+  - name: chunk-and-corpus-substrate-exists
+    binding: capability->producer, wired on main — the MCP chunk directory, the auto-compile-gated
+      best-practices corpus with its index, and the reify-design cheatsheet index all exist.
+      Omega updates them.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: allow_indeterminate
+      expect: present
+      paths:
+      - crates/reify-mcp/src/tools/chunks
+  - name: spec-test-section-is-already-wrong
+    binding: observed — the language spec @test section promises that test output reports
+      pass/fail with constraint diagnostics for failures. The runner does not print them.
+      Omega corrects the spec alongside the leaf that makes the promise true.
+    verdict: PASS
+  - name: purposes-chunk-is-not-omegas
+    binding: 'DOCS-OWNERSHIP BOUNDARY, added 2026-08-27 — the GUI purpose PRD''s docs leaf
+      #6837 owns crates/reify-mcp/src/tools/chunks/purposes.md and documents --purpose as
+      it stands when it runs (check + GUI). Phi #6804 then widens the flag to five more drivers,
+      making that statement stale. Omega is ordered behind #6837 by a real edge and corrects
+      ONLY that statement; it does not rewrite the chunk, and it extends the existing reify-design
+      index line rather than adding a competing one.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: An ownership boundary between two leaves editing one file; no grep distinguishes
+        a narrow additive edit from a competing rewrite.
+- label: Ω
+  task_id: 6808
+  title: 'PRD close: terminal stamp, task-id backfill, AS-AUTHORED freeze header'
+  capabilities:
+  - name: terminal-vocabulary-is-closed
+    binding: producer-self — the overlay defines exactly three terminal status tokens and
+      the freeze-header shape. Omega-capital applies it to this PRD and to this manifest.
+    verdict: PASS
+  - name: cancelled-sibling-counts-as-satisfied
+    binding: producer-self — per the overlay, a cancelled sibling leaf satisfies the close
+      dependency edge; if the scheduler treats it as unmet the steward removes the edge by
+      hand rather than leaving the close leaf permanently blocked.
+    verdict: PASS

@@ -24,7 +24,7 @@
 //!
 //! Sibling to `crates/reify-eval/tests/conformance_runtime.rs` (task 2320 —
 //! `is_watertight` / `is_manifold` / `is_orientable`) and
-//! `crates/reify-eval/tests/mechanism_interference_smoke.rs` (task 2531 —
+//! `crates/reify-eval/tests/harness_mechanism/mechanism_interference_smoke.rs` (task 2531 —
 //! `interferes` / `interferes_with` / `min_clearance`). The structural shape
 //! is intentionally identical: a per-helper happy-path mock-kernel test, a
 //! per-helper literal-arg-falls-through-to-Undef defensive test, a

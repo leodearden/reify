@@ -377,7 +377,7 @@ tasks:
           paths: ["tests/infra/harness-layout-baseline.manifest"]
           expect: absent
       - name: "doc-chunk-carve-out-preserved"
-        binding: "extent match (anti-over-reach) — crates/reify-compiler/tests/geometry_chunk_smoke.rs matches this batch's geometry_ prefix but is OWNED BY TASK 5477 (doc-chunk harness), which removes its grandfather row itself; sweeping it here would make 5477's baseline-grandfather-reversed check vacuously green"
+        binding: "extent match (anti-over-reach) — crates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs matches this batch's geometry_ prefix but is OWNED BY TASK 5477 (doc-chunk harness), which removes its grandfather row itself; sweeping it here would make 5477's baseline-grandfather-reversed check vacuously green"
         verdict: PASS
         delivered_check:
           kind: grep
@@ -460,7 +460,7 @@ tasks:
           paths: ["tests/infra/harness-layout-baseline.manifest"]
           expect: absent
       - name: "doc-chunk-carve-out-preserved"
-        binding: "extent match (anti-over-reach) — crates/reify-compiler/tests/stdlib_chunk_geometry_ops_smoke.rs matches this batch's stdlib prefix but is OWNED BY TASK 5477, which absorbs it into harness_doc_chunks/ and removes its grandfather row itself"
+        binding: "extent match (anti-over-reach) — crates/reify-compiler/tests/harness_doc_chunks/stdlib_chunk_geometry_ops_smoke.rs matches this batch's stdlib prefix but is OWNED BY TASK 5477, which absorbs it into harness_doc_chunks/ and removes its grandfather row itself"
         verdict: PASS
         delivered_check:
           kind: grep

@@ -1,8 +1,9 @@
 # Reify Language Specification
 
-**Version:** 0.1
-**Date:** 2026-03-13
-**Status:** Draft -- synthesized from 16 design decision documents and design review resolutions
+**Language version:** 0.6 -- the version of the LANGUAGE this document specifies. (Not the toolchain crate version, which is versioned separately and independently.)
+**Scope:** A living specification tracking the current language version, not a dated snapshot -- so there is deliberately no date pin here. See §14 (Language Versioning and Stability) for the versioning scheme and its terminology.
+**Status:** Draft -- synthesized from 16 design decision documents and design review resolutions. Clauses remain subject to change and carry no backwards-compatibility guarantee (§14.3).
+**Anchor contract:** Paragraph-level cite targets for the conformance suite are defined in [docs/notes/spec-anchor-contract.md](notes/spec-anchor-contract.md). Resolve one only by grepping its literal id -- never by parsing a section number.
 
 ---
 
@@ -1540,6 +1541,28 @@ where needs_cooling {
 
 Desugars to per-declaration guards. `where` blocks do NOT introduce a new lexical scope.
 
+**Objectives take no guard, in either form.** `minimize`/`maximize` accept no
+`where_guard?` suffix and may not appear inside a `where` block. Because `where`
+controls structural *presence*, `minimize E where C` would mean "this objective
+exists only when C holds" -- and C invariably reads the very `auto` parameters the
+objective drives, so the objective's presence would depend on the solution it
+determines. The predicate an author wants there is a *constraint*, already
+spelled as a separate member:
+
+```
+constraint peak_stress < material.yield_stress
+minimize mass
+```
+
+The tree-sitter grammar does still *parse* a `where` suffix on `minimize`/`maximize`
+-- an artefact of the March-2026 six-way guard sweep (commit `66866d6311`) that this
+spec never authorised. The compiler MUST reject it with an error; until that lands
+(task 6575) it silently DISCARDS the guard -- the objective then runs unopposed with
+no diagnostic, so do not use the form. (Contrast `sub`,
+`forall connect` and `forall constraint` inside a `where` block: those are "not yet
+supported" -- deferred implementation, not excluded by design -- and they stay in the
+§15 productions.)
+
 **`else` clause (v0.1):**
 
 ```
@@ -1961,12 +1984,15 @@ Every parameter sits on a determinacy spectrum:
 3. **`auto`** -- Delegated to the system. A decision, not an absence. "I want this to have a value; figure it out for me."
 4. **Determined** -- Specific value or fully resolved expression (`wall_thickness = 3mm`).
 
+<!-- sc-anchor: sc-f31e89 -->
 ### 9.2 `undef` Semantics
 
 `undef` means "not yet decided." It is the default state of every unassigned parameter without a default value. `undef` is always valid syntactically and semantically -- a design with `undef` parameters is a legitimate, partially-specified design.
 
+<!-- sc-anchor: sc-dc50ac -->
 **Core propagation principle:** `undef` propagates strictly through computations, except where the result is provably independent of the unknown operand under the semantics of the operator. The rules below are exhaustive for v0.1.
 
+<!-- sc-anchor: sc-da4bd2 -->
 #### 9.2.1 Arithmetic Operators
 
 `undef` propagates strictly through all arithmetic. No algebraic identities are exploited.
@@ -1981,8 +2007,10 @@ Every parameter sits on a determinacy spectrum:
 | `-undef` | `undef` | Unary negation propagates |
 | `undef % 5` | `undef` | Modulo propagates |
 
+<!-- sc-anchor: sc-a88f22 -->
 **Rationale for strict arithmetic:** Exploiting algebraic identities (like `0 * x = 0`) would require the compiler to reason about mathematical properties of operators, creating implementation complexity and surprising edge cases (e.g., `0 / 0`, overflow). Strict propagation is simpler, predictable, and sufficient -- expressions like `0 * param` with a literal zero are vanishingly rare in engineering designs.
 
+<!-- sc-anchor: sc-f3d1cd -->
 #### 9.2.2 Comparison Operators
 
 Comparisons with any `undef` operand produce `undef` (of type `Bool`).
@@ -1994,8 +2022,10 @@ Comparisons with any `undef` operand produce `undef` (of type `Bool`).
 | `undef == undef` | `undef` |
 | `2mm < undef < 10mm` | `undef` (desugars to `2mm < undef and undef < 10mm`) |
 
+<!-- sc-anchor: sc-7879c0 -->
 An `undef`-valued `Bool` in a constraint context makes the constraint **indeterminate** -- neither satisfied nor violated.
 
+<!-- sc-anchor: sc-4b453f -->
 #### 9.2.3 Logical Operators (Kleene Three-Valued Logic)
 
 Logical operators follow **Kleene's strong three-valued logic**, where `undef` acts as "unknown." A logical operator absorbs `undef` only when the result is determined regardless of the unknown operand's value.
@@ -2012,10 +2042,13 @@ Logical operators follow **Kleene's strong three-valued logic**, where `undef` a
 | `undef` | `false` | `false`   | `undef`  |         | `undef`       |
 | `undef` | `undef` | `undef`   | `undef`  |         | `undef`       |
 
+<!-- sc-anchor: sc-b99f58 -->
 Logical operators are **commutative with respect to `undef`** -- operand order does not affect propagation. This is consistent with Reify's declarative semantics (not imperative short-circuit evaluation).
 
+<!-- sc-anchor: sc-d40fab -->
 **Rationale for Kleene but not algebraic identities in arithmetic:** Boolean absorption is cheap to verify (two rules per operator, finite truth table). Arithmetic identity exploitation opens unbounded complexity (must reason about `0 * infinity`, dimensional edge cases, etc.). The asymmetry is deliberate.
 
+<!-- sc-anchor: sc-7d950c -->
 #### 9.2.4 Conditional Expressions
 
 ```
@@ -2028,8 +2061,10 @@ if condition then expr_a else expr_b
 | `false`     | `expr_b` (evaluated; `expr_a` does not contribute) |
 | `undef`     | `undef` (neither branch can be selected) |
 
+<!-- sc-anchor: sc-29c0df -->
 When the condition is determined, only the selected branch's determinacy matters. `if true then 5mm else undef` evaluates to `5mm`. The compiler does not attempt to prove branch equivalence when the condition is `undef` -- even `if undef then 5mm else 5mm` evaluates to `undef`.
 
+<!-- sc-anchor: sc-2d7b07 -->
 #### 9.2.5 `match` Expressions
 
 | Discriminant state | Result |
@@ -2038,10 +2073,13 @@ When the condition is determined, only the selected branch's determinacy matters
 | `undef` (tag undetermined — no variant selectable) | `undef` (no branch can be selected) |
 | Tag determined, payload field `undef` (e.g. `Circle { radius: undef }`) | Tagged arm IS selected; field binder receives `undef`; body propagates per §9.2.7 |
 
+<!-- sc-anchor: sc-81a5d5 -->
 **D2/INV-4 note:** A discriminant whose variant tag is determined always selects that arm, even when a payload field is `undef`. The `undef` payload is bound to the field binder and propagates through the arm body per the normal `undef`-propagation rules (§9.2.7). This is distinct from a wholly-`undef` discriminant (second row above, D3), where no arm can be selected. See `examples/m6_data_carrying_enum_undef.ri` for an observable example (`Circle { radius: undef }` selects the `Circle` arm; `area` evaluates to `undef`).
 
+<!-- sc-anchor: sc-e56c05 -->
 #### 9.2.6 Collection Operations
 
+<!-- sc-anchor: sc-ed61c2 -->
 **Collection structure vs element values:** A collection's structure (count, keys) is independent of its element values. When the collection structure is determined but elements contain `undef`, structural operations produce determined results.
 
 | Expression | Collection state | Result |
@@ -2055,6 +2093,7 @@ When the condition is determined, only the selected branch's determinacy matters
 | `map[key]` | Structure determined, key absent | Evaluation failure (not `undef`) |
 | `map[key]` | Map itself `undef` | `undef` |
 
+<!-- sc-anchor: sc-7fb580 -->
 **`forall` and `exists`:** Quantifiers follow Kleene semantics, consistent with their interpretation as iterated `and` / `or`:
 
 | Quantifier | Predicate results across elements | Result |
@@ -2068,14 +2107,18 @@ When the condition is determined, only the selected branch's determinacy matters
 | `exists` | No `true`, some `undef` | `undef` |
 | `exists` | Empty collection | `false` (vacuous falsity) |
 
+<!-- sc-anchor: sc-17ef2f -->
 When the collection itself is `undef`, quantifiers produce `undef`.
 
+<!-- sc-anchor: sc-677679 -->
 #### 9.2.7 Function Application
 
 `undef` propagates strictly through function calls. If any argument is `undef`, the result is `undef`. Functions are pure and cannot inspect the determinacy state of their arguments.
 
+<!-- sc-anchor: sc-46bce6 -->
 **Exception:** Determinacy predicates (`determined()`, `constrained()`, `undetermined()`, `partially_determined()`) operate on the determinacy state itself, not the value. `determined(undef_param)` returns `false`, not `undef`.
 
+<!-- sc-anchor: sc-da611a -->
 #### 9.2.8 `Option` Constructors
 
 `some(undef)` is valid and distinct from both `none` and `undef`:
@@ -2087,6 +2130,7 @@ When the collection itself is `undef`, quantifiers produce `undef`.
 | `none` | Value absent |
 | `undef` (of type `Option<T>`) | Existence itself not yet decided |
 
+<!-- sc-anchor: sc-e0bc61 -->
 `Option<Option<T>>` is a valid type. `some(none)`, `some(some(x))`, `none`, and `undef` are all distinguishable states. Pattern matching on `Option<Option<T>>`:
 
 ```
@@ -2097,12 +2141,15 @@ match outer {
 }
 ```
 
+<!-- sc-anchor: sc-b6ef4d -->
 #### 9.2.9 Tracing
 
 A read-only undef-cause tracer reconstructs the complete, deduplicated set of root causes for an `undef` cell: `Unbound` (a required param with no value), `AwaitingSolve` (an `auto` param not yet resolved by the constraint solver), `SolveFailed` (the solve was infeasible or made no progress), `OpContractFailed` (an operation rejected an undef argument), or `UserUndef` (an explicit `undef` literal). The tracer walks forward dependencies through undef cells only, so a value made `undef` by propagation (§9.2.1) reports its upstream roots, not itself.
 
+<!-- sc-anchor: sc-66993d -->
 Three tooling surfaces expose the tracer: the CLI (`reify eval`, widened to every undef cell with `--explain-undef`), the GUI parameter panel and hover (via the `reify-debug` MCP server), and the LSP hover. All three report the same underlying cause set for a given cell but apply surface-appropriate framing -- e.g. the CLI qualifies each cause by entity (`Tube.outer_diameter unbound`) where the GUI/LSP hover already has the entity in view (`outer_diameter unbound`).
 
+<!-- sc-anchor: sc-1a4c93 -->
 This is a tooling/implementation concern, not a language semantics concern: the tracer is purely additive and read-only, with no effect on `undef` value identity, content-hash, or the propagation rules above. See §9.4 for the complementary determinacy predicates, which answer *whether* a param is determined -- the tracer answers *why* it is not.
 
 ### 9.3 `auto` Resolution
@@ -2269,7 +2316,11 @@ If no explicit purpose or objective is specified, a default purpose applies (pro
 minimize price_per_kg * density * volume_expr(self.thickness)
 ```
 
-`cost(<collection-expr>)` is the cost-aggregation builtin (M-WHOLE γ): it sums the `line_cost` of every `Costed`-conforming element of a collection expression -- typically `self.descendants` -- into a single `Scalar<Money>`. Non-`Costed` elements are filtered out before any `line_cost` lookup happens, so they are safely excluded rather than erroring on an absent `line_cost`. `cost(...)` reaches DEPTH-1 descendants only: direct `sub`s and top-level collection elements. A `Costed` cell nested a further level down is a different, v1-boundary case, not a silent exclusion: it still passes the conformance filter, but its `line_cost` does not resolve at that nested instance path, so the unresolved reference is `Undef` and poisons the whole aggregate to `Undef` rather than just omitting that one line -- keep `Costed` cells at depth-1 when using `cost(...)` in this slice. `cost(filter(self.descendants, Costed))` is an equivalent explicit passthrough. See `examples/cost_subtree_aggregate.ri`, covered end-to-end by `crates/reify-eval/tests/cost_subtree_aggregate_eval.rs`. Bound to a plain expression (e.g. via `let`), `cost(...)` is purely observational: it reads already-resolved child cost and does not by itself put a parent objective in joint control of child `auto` parameters -- that distinct, separately-gated capability is described in the next paragraph. A scope that is itself `Costed` (the BOM cost-rollup trait -- see `docs/prds/v0_6/io-lifecycle-bom-cost.md`) may instead write `minimize self.line_cost` whenever `line_cost` is closed-form in the scope's own auto parameters. See `examples/continuous_cost_min.ri` for a runnable end-to-end example.
+`cost(<collection-expr>)` is the cost-aggregation builtin (M-WHOLE γ): it sums the `line_cost` of every `Costed`-conforming element of a collection expression -- typically `self.descendants` -- into a single `Scalar<Money>`. Non-`Costed` elements are filtered out before any `line_cost` lookup happens, so they are safely excluded rather than erroring on an absent `line_cost`. `cost(...)` reaches DEPTH-1 descendants only: direct `sub`s and top-level collection elements. A `Costed` cell nested a further level down is a different, v1-boundary case, not a silent exclusion: it still passes the conformance filter, but its `line_cost` does not resolve at that nested instance path, so the unresolved reference is `Undef` and poisons the whole aggregate to `Undef` rather than just omitting that one line -- keep `Costed` cells at depth-1 when using `cost(...)` in this slice. `cost(filter(self.descendants, Costed))` is an equivalent explicit passthrough. See `examples/cost_subtree_aggregate.ri`, covered end-to-end by `crates/reify-eval/tests/cost_subtree_aggregate_eval.rs`. Bound to a plain expression (e.g. via `let`), `cost(...)` is purely observational: it is intended to read already-resolved child cost (subject to the resolution boundary below) and does not by itself put a parent objective in joint control of child `auto` parameters -- that distinct, separately-gated capability is described under "Subtree / whole-model cost" below.
+
+**Known limitation (#5835).** One boundary applies to that observational form regardless of coupling: when the aggregated child cell is itself resolved by the solver in a cross-sub scope (a child `auto` feeding `line_cost`), a parent-scope `let` reading that cost stays `Undef` post-solve today -- in BOTH the merged and the no-cluster frozen-cascade shapes -- so read the child's own cells instead. That is an engine gap, not a language rule. See the known-limitation pin `crates/reify-eval/tests/joint_drive_expansion_boundary.rs::parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves`, which asserts exactly that in both halves, and the "Reading the result" section of `examples/whole_model_joint_drive.ri`. A `let` over children whose `line_cost` folds from constants alone is unaffected -- `examples/cost_subtree_aggregate.ri` resolves its `subtree_cost` to 42.64 USD.
+
+A scope that is itself `Costed` (the BOM cost-rollup trait -- see `docs/prds/v0_6/io-lifecycle-bom-cost.md`) may instead write `minimize self.line_cost` whenever `line_cost` is closed-form in the scope's own auto parameters. See `examples/continuous_cost_min.ri` for a runnable end-to-end example.
 
 **Subtree / whole-model cost.** A parent's `minimize cost(self.descendants)`, written INLINED in the `minimize` -- never behind a `let` -- forms a merged solve cluster spanning parent and child, so the child's `auto` parameters are jointly resolved under the parent's cost objective rather than treated as frozen constants read bottom-up (M-WHOLE β/δ + the joint-drive seam). See `docs/prds/v0_6/whole-model-objective-coupling.md` (M-WHOLE) and `docs/prds/v0_6/whole-model-joint-drive-seam.md` for the coupling mechanism. Worked example: `examples/whole_model_joint_drive.ri`, asserted end-to-end by `crates/reify-eval/tests/joint_drive_expansion_boundary.rs::bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade` (the child auto resolves strictly below its frozen-cascade freeze; the merged whole-assembly cost strictly below the frozen baseline). This is a v1 slice with real boundaries, not an aspirational note: the aggregate must stay inlined in the `minimize` to couple -- an unexpanded `let subtree = cost(...)` followed by `minimize subtree` forms no cluster at all (the example file's header works this boundary case in detail); only depth-1 `Costed` descendants participate (as above); the coupled structure must be reachable by exactly one non-collection instance path for the parent-side surfacing to resolve; and a cluster wider than a fixed auto-dimension cap degrades to the ordinary bottom-up frozen-approximate solve plus a `W_COUPLING_APPROXIMATED` diagnostic instead of failing outright.
 
@@ -2277,9 +2328,13 @@ minimize price_per_kg * density * volume_expr(self.thickness)
 
 Applying the floor is loud, not silent: it emits a `RobustnessFloorApplied` Info diagnostic naming `cost_robustness_tradeoff(cost_expr, lambda)` (below) as the override. When the floor cannot be satisfied -- no point in the feasible region has slack >= `m` -- the solver reports the distinct `E_ROBUSTNESS_FLOOR_INFEASIBLE` diagnostic ("infeasible under robustness floor ...; relax opposing constraints or widen the tolerance margin") instead of the ordinary "constraints could not be satisfied" diagnostic every other infeasible solve reports. The margin `m` is a configurable default today; deriving it from the per-purpose tolerance scope is a deferred enhancement. See `examples/continuous_cost_min.ri`: a wall-thickness parameter is held off its 2mm stress/clearance boundary, with exactly one `RobustnessFloorApplied` Info diagnostic.
 
-**The `cost_robustness_tradeoff` override.** `minimize cost_robustness_tradeoff(<money-expr>, <lambda>)` is recognized by the compiler as a special objective form, where `lambda` must be a compile-time-known `Real` in `[0, 1]`. Its semantics are a normalized two-anchor blend: the solver solves the two anchor points (minimum cost, maximum robustness), normalizes each term to `[0, 1]` over its own anchor range, and minimizes `lambda * cost_hat + (1 - lambda) * (-robustness_hat)`. `lambda = 1` resolves to pure cost (the constraint boundary); `lambda = 0` resolves to the robustness-oriented centrality default (§10.7); intermediate values resolve to a normalized blend between the two. Normalization keeps `lambda` a true dimensionless dial and avoids the `USD + length` incoherence a naive weighted sum would have. When `cost_robustness_tradeoff` is present in a scope's objective, it replaces that scope's robustness-floor default above -- the user has taken explicit control.
+**The `cost_robustness_tradeoff` override.** `minimize cost_robustness_tradeoff(<money-expr>, <lambda>)` is recognized by the compiler as a special objective form, where `lambda` must be a compile-time-known `Real` in `[0, 1]`. Its semantics are a normalized two-anchor blend: the solver solves the two anchor points (minimum cost, maximum robustness), normalizes each term to `[0, 1]` over its own anchor range, and minimizes `lambda * cost_hat + (1 - lambda) * (-robustness_hat)`. `lambda = 1` resolves to pure cost -- the argmin of the cost expression, which is the constraint boundary only when the cost is MONOTONE; `lambda = 0` resolves to the robustness-oriented centrality default (§10.7) -- the max-min-slack point, which is the *geometric* Chebyshev centre only when every constraint has unit gradient. Both qualifications are spelled out two paragraphs below. Intermediate values resolve to a normalized blend between the two. Normalization keeps `lambda` a true dimensionless dial and avoids the `USD + length` incoherence a naive weighted sum would have. When `cost_robustness_tradeoff` is present in a scope's objective, it replaces that scope's robustness-floor default above -- the user has taken explicit control.
 
-Malformed calls report a diagnostic, never a panic: `E_COST_TRADEOFF_NON_MONEY` when the first argument is not `Money`-dimensioned, `E_COST_TRADEOFF_INVALID_LAMBDA` when `lambda` is outside `[0, 1]` or not compile-time-known, and `E_COST_TRADEOFF_ARITY` for the wrong number of arguments. See `examples/cost_robustness_tradeoff.ri`: the same `Money` cost and constraint box swept across `lambda = 1` (boundary), `lambda = 0.5` (between), and `lambda = 0` (the 13mm centrality point). Note: at today's eval layer the `lambda = 1` run lands boundary-*adjacent* rather than pinned exactly to the 1mm boundary -- `.ri`-compiled `auto` params get wide default bounds, so the example's e2e test asserts the strict ordering `t(1) < t(0.5) < t(0)` rather than an exact boundary value; the true zero-margin-boundary invariant is verified at the solver layer with tight `AutoParam` bounds (`crates/reify-constraints/tests/cost_robustness_tradeoff_blend.rs`).
+Malformed calls report a diagnostic, never a panic: `E_COST_TRADEOFF_NON_MONEY` when the first argument is not `Money`-dimensioned, `E_COST_TRADEOFF_INVALID_LAMBDA` when `lambda` is outside `[0, 1]` or not compile-time-known, and `E_COST_TRADEOFF_ARITY` for the wrong number of arguments. See `examples/cost_robustness_tradeoff.ri`: one `Money` cost and one constraint set swept across `lambda = 1`, `lambda = 0.5`, and `lambda = 0`. Two features of that example are deliberate, and each pins one anchor to an independently-derived target. Its cost has a closed-form INTERIOR optimum (`5USD * (t/1mm + 25mm/t)`, minimised at `sqrt(1mm * 25mm) = 5mm`), so `lambda = 1` resolves there; and its constraints are ASYMMETRIC (`t > 1mm`, `t < 25mm`, `t * 2 < 30mm`), so the centrality default's argmax `31/3 mm` is a different point from the solver's constraint-derived starting midpoint -- and `lambda = 0` resolves there, matched by an objectiveless `CentralityReference` structure in the same file. `lambda = 0.5` lands strictly between, and all three are separated from the seed.
+
+Two qualifications on those anchor names. **(1) Naming.** The `lambda = 0` target is the max-min-SLACK point, not the *geometric* Chebyshev centre of the feasible region (the largest ball inscribed in `(1mm, 15mm)` is centred at `8mm`): `collect_slack_terms` folds each inequality's signed slack un-normalised by that constraint's gradient, so a scaled constraint such as `t * 2 < 30mm` weighs double its geometric distance. The two coincide when every constraint has unit gradient -- the usual case, and the reason "Chebyshev centre" is the customary shorthand for the §10.7 default -- but `lambda = 0` is defined to reduce to the ENGINE's centrality objective, so the max-min-slack point is contract-correct whenever they differ. **(2) Layer.** At today's eval layer only the general `lambda = 1` form -- the argmin of the cost -- is observable, not the zero-margin *boundary* special case: `.ri`-compiled `auto` params get `bounds: None`, and a monotone cost's optimum sits an infinitesimal distance past a strict inequality, so a floor-free `lambda = 1` on a monotone cost drifts infeasible and the solver's safety net reports its seed instead. That is why the example uses an interior optimum; the boundary form is verified at the solver layer with tight `AutoParam` bounds (`crates/reify-constraints/tests/cost_robustness_tradeoff_blend.rs`).
+
+The derivations behind both qualifications -- and the measured values -- are OWNED by that example file's header, not restated here or in the PRD (`docs/prds/v0_6/continuous-cost-minimisation.md` §2.4 carries the PRD-side citation).
 
 **Deferred capabilities -- where the rest lives.** This section covers only single-aspect, closed-form, in-scope cost objectives. Three extensions are named successors to the owning PRD, `docs/prds/v0_6/continuous-cost-minimisation.md`, and remain deferred. (A fourth, subtree/whole-model cost, was originally scoped here too; it has since landed -- see "Subtree / whole-model cost" above.)
 
@@ -2664,10 +2719,16 @@ purpose_param   ::= IDENT ':' type_expr
 purpose_member  ::= constraint_line | sub_decl | let_decl | minimize_decl | maximize_decl
                   | guarded_block
 
-guarded_block   ::= 'where' expr '{' purpose_member* '}' ('else' '{' purpose_member* '}')?
+(* Objectives take no guard, in either form (§6.3): minimize_decl/maximize_decl
+   carry no where_guard? suffix and are excluded from guarded bodies. *)
+guarded_purpose_member
+                ::= constraint_line | sub_decl | let_decl | guarded_block
 
-minimize_decl   ::= 'minimize' expr
-maximize_decl   ::= 'maximize' expr
+guarded_block   ::= 'where' expr '{' guarded_purpose_member* '}'
+                    ('else' '{' guarded_purpose_member* '}')?
+
+minimize_decl   ::= 'minimize' expr                      (* no where_guard? -- §6.3 *)
+maximize_decl   ::= 'maximize' expr                      (* no where_guard? -- §6.3 *)
 
 (* --- Enum declarations --- *)
 enum_decl       ::= 'pub'? 'enum' TYPE_IDENT type_params? '{' enum_variant (',' enum_variant)* '}'
@@ -2708,6 +2769,14 @@ member          ::= param_decl | port_decl | sub_decl | let_decl | type_alias_de
                    | where_block | match_block | meta_block
                    | minimize_decl | maximize_decl
 
+(* Objectives take no guard, in either form (§6.3): excluded from guarded bodies.
+   sub_decl/forall statements ARE admitted here -- the compiler's "not yet
+   supported" on those is deferred implementation, not a design exclusion. *)
+guarded_member  ::= param_decl | port_decl | sub_decl | let_decl | type_alias_decl
+                   | constraint_line | connect_stmt | chain_stmt
+                   | entity_decl | field_body | fn_decl
+                   | where_block | match_block | meta_block
+
 where_guard     ::= 'where' expr                         (* per-declaration guard *)
 
 param_decl      ::= 'param' IDENT ':' type_expr ('=' expr)? where_guard?
@@ -2736,7 +2805,7 @@ chain_stmt      ::= 'chain' IDENT ('->' IDENT)+
 
 port_ref        ::= path ('@' IDENT ('(' args ')')? )?
 
-where_block     ::= 'where' expr '{' member* '}' ('else' '{' member* '}')?
+where_block     ::= 'where' expr '{' guarded_member* '}' ('else' '{' guarded_member* '}')?
 
 match_block     ::= 'match' expr '{' match_arm* '}'
 match_arm       ::= pattern '=>' (member+ | expr)
@@ -2828,7 +2897,7 @@ map_entry       ::= expr '=>' expr
 BOOL_LIT        ::= 'true' | 'false'
 ```
 
-### 13.1 Newline and Continuation Rules
+### 15.1 Newline and Continuation Rules
 
 Reify is newline-significant: newlines terminate declarations and statements within `{ }` blocks.
 

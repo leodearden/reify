@@ -1,0 +1,16 @@
+// enum-shadow-coherence.md fixture: obligation collision, REQUIRED member.
+// Local `enum Provenance` shadows prelude `structure def Provenance` (std.io);
+// trait Input's obligation `provenance : Provenance` is required (no default),
+// so the member cannot be omitted — the collision is unavoidable.
+// Pre-#5429: exit 0 + Warning TypeNotConformingToStructureRef.
+// Post-#5429: hard Error TypeMismatchForTraitMember via the requirements loop
+// (probe 2026-08-19/20; same shape confirmed for ThreadedPort.thread_spec).
+// Target (task gamma): the obligation Error, naming trait Input and std.io.
+module shadow_oblig_required
+
+enum Provenance { Internal, Vendor }
+
+structure def ImportedBlock : Input {
+    param source : String = "vendor.step"
+    param provenance : Provenance = Provenance.Vendor
+}

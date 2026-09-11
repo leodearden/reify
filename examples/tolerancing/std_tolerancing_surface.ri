@@ -82,7 +82,7 @@ structure def StdTolerancingSurface {
 
     // ── §7.1 ISO Tolerance Grade ──────────────────────────────────────────────
     // Direct builtin: IT7@Ø30–50mm ≈ 24.969µm (≈25µm published, ISO 286-1)
-    let it7_width = iso_it_tolerance(7, 30mm, 50mm)
+    let it7_width = iso_it_tolerance(30mm, 50mm, 7)
 
     // ISOToleranceGrade struct: derives tolerance_value via iso_it_tolerance(...)
     let grade7 = ISOToleranceGrade(grade: 7, nominal_min: 30mm, nominal_max: 50mm)

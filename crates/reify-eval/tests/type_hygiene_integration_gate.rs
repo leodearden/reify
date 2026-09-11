@@ -12,27 +12,27 @@
 //! **Row ownership:** each §10 row is tested in exactly ONE canonical file;
 //! this gate is the *collected-view* for the eval-layer rows.  Compiler-layer
 //! rows (1, 3, 4a, 5, 7a, 10, 11) live in
-//! `crates/reify-compiler/tests/type_hygiene_integration_gate.rs`; the CLI
-//! row (12) lives in `crates/reify-cli/tests/cli_type_hygiene_strict.rs`.
+//! `crates/reify-compiler/tests/harness_langcore/type_hygiene_integration_gate.rs`; the CLI
+//! row (12) lives in `crates/reify-cli/tests/harness_cli/cli_type_hygiene_strict.rs`.
 //!
 //! # §10 boundary-test table + row→owner cross-reference
 //!
 //! | Row | Description                                                  | Owner (eval gate fn)                                                  |
 //! |-----|--------------------------------------------------------------|-----------------------------------------------------------------------|
-//! | 1   | tensor>scalar → CmpOperandKind+fixit                         | `reify-compiler/tests/type_hygiene_integration_gate.rs`               |
+//! | 1   | tensor>scalar → CmpOperandKind+fixit                         | `reify-compiler/tests/harness_langcore/type_hygiene_integration_gate.rs`               |
 //! | 2   | mass>0 OK / VIOLATED                                         | `ci_example_compiles_clean_and_evaluates_green` (OK) + `row_2_mass_constraint_violated` (VIOLATED) |
-//! | 3   | bare 0 vs tensor → CmpOperandKind                            | `reify-compiler/tests/type_hygiene_integration_gate.rs`               |
-//! | 4a  | `x and 5` err                                                | `reify-compiler/tests/type_hygiene_integration_gate.rs`               |
+//! | 3   | bare 0 vs tensor → CmpOperandKind                            | `reify-compiler/tests/harness_langcore/type_hygiene_integration_gate.rs`               |
+//! | 4a  | `x and 5` err                                                | `reify-compiler/tests/harness_langcore/type_hygiene_integration_gate.rs`               |
 //! | 4b  | Kleene runtime preserved                                     | `row_4b_kleene_runtime_preserved`                                     |
-//! | 5   | TypeParam gradualism no-diag                                 | `reify-compiler/tests/type_hygiene_integration_gate.rs`               |
+//! | 5   | TypeParam gradualism no-diag                                 | `reify-compiler/tests/harness_langcore/type_hygiene_integration_gate.rs`               |
 //! | 6   | moi(b,material.density) via let → non-Undef tensor           | `ci_example_compiles_clean_and_evaluates_green` (OCCT-gated)          |
-//! | 7a  | moi(b,7850.0) → ArgTypeMismatch                              | `reify-compiler/tests/type_hygiene_integration_gate.rs`               |
+//! | 7a  | moi(b,7850.0) → ArgTypeMismatch                              | `reify-compiler/tests/harness_langcore/type_hygiene_integration_gate.rs`               |
 //! | 7b  | moi runtime density rejection never-silent                   | `row_7b_inline_density_rejection_never_silent`                        |
 //! | 8   | body_mass_props(b,Pressure) loud reject                      | `row_8_body_mass_props_pressure_as_density_warns`                     |
 //! | 9   | body_mass_props(b) no-Material warn + water UNCHANGED        | `row_9_body_mass_props_no_material_warns_and_uses_water`              |
-//! | 10  | scalar override of tensor-defaulted trait param → mismatch   | `reify-compiler/tests/type_hygiene_integration_gate.rs`               |
-//! | 11  | compatible override conforms                                 | `reify-compiler/tests/type_hygiene_integration_gate.rs` + example     |
-//! | 12  | `reify check --strict` exit both ways                        | `crates/reify-cli/tests/cli_type_hygiene_strict.rs`                  |
+//! | 10  | scalar override of tensor-defaulted trait param → mismatch   | `reify-compiler/tests/harness_langcore/type_hygiene_integration_gate.rs`               |
+//! | 11  | compatible override conforms                                 | `reify-compiler/tests/harness_langcore/type_hygiene_integration_gate.rs` + example     |
+//! | 12  | `reify check --strict` exit both ways                        | `crates/reify-cli/tests/harness_cli/cli_type_hygiene_strict.rs`                  |
 //! | 13  | distinct indeterminacy messages                              | `row_13_distinct_indeterminacy_messages`                              |
 //! | 14  | RNEA identical post-κ                                        | `row_14_rnea_numerically_identical_post_kappa`                        |
 

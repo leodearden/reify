@@ -4458,6 +4458,7 @@ dependencies = [
  "reify-constraints",
  "reify-core",
  "reify-eval",
+ "reify-expr",
  "reify-ir",
  "reify-stdlib",
  "reify-syntax",
@@ -4571,6 +4572,7 @@ dependencies = [
  "reify-eval",
  "reify-ir",
  "reify-test-support",
+ "tracing",
 ]
 
 [[package]]
@@ -4761,6 +4763,7 @@ dependencies = [
  "reify-constraints",
  "reify-core",
  "reify-eval",
+ "reify-expr",
  "reify-ir",
  "reify-syntax",
  "serde_json",

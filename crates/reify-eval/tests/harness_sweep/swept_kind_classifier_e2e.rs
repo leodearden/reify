@@ -269,8 +269,14 @@ fn engine_swept_kind_table_resets_between_builds() {
 /// compiled by `compile_geometry_op`'s Revolve arm into
 /// `GeometryOp::Revolve { profile, axis_origin, axis_dir, angle_rad }`. That arm
 /// reads **seven named f64 args**: `ox`, `oy`, `oz` (axis origin), `ax`, `ay`,
-/// `az` (axis direction), and `angle` (angle in radians). All seven are
-/// `Type::dimensionless_scalar()` — they are dimensionless ratios/radians, not length-typed.
+/// `az` (axis direction), and `angle` (angle in radians). They are NOT all one
+/// type. The axis ORIGIN is a point in space, so `ox`/`oy`/`oz` are
+/// `Type::length()` — task 5623 routed them through the LENGTH units gate, and
+/// a bare `Real` in one of them is now REJECTED (it would have been read as SI
+/// metres). The axis DIRECTION `ax`/`ay`/`az` and the `angle` stay
+/// `Type::dimensionless_scalar()`: a unit vector is genuinely dimensionless,
+/// and all ANGLE gating belongs to PRD 3
+/// (`docs/prds/v0_6/angle-units-surface-convergence.md`), not to this gate.
 ///
 /// # Non-degenerate parameters chosen
 ///
@@ -304,16 +310,17 @@ fn engine_swept_kind_table_records_revolve_realization() {
         args: vec![("radius".into(), mm_literal(5.0))],
     };
 
-    // Op 1: Revolve(Step(0), axis=+Z, angle=π/2). The seven f64 args are
-    // Type::dimensionless_scalar() (not length-typed) because they are dimensionless ratios /
-    // radians — matches the precedent in stress_sweep_degenerate.rs:108.
+    // Op 1: Revolve(Step(0), axis=+Z, angle=π/2). The axis ORIGIN is
+    // length-typed (task 5623's units gate rejects a bare Real there); the axis
+    // direction and the angle stay Type::dimensionless_scalar(). Reverting
+    // ox/oy/oz to real_literal here re-trips the gate, not a golden.
     let revolve_op = CompiledGeometryOp::Sweep {
         kind: SweepKind::Revolve,
         profiles: vec![GeomRef::Step(0)],
         args: vec![
-            ("ox".into(), real_literal(0.0)),
-            ("oy".into(), real_literal(0.0)),
-            ("oz".into(), real_literal(0.0)),
+            ("ox".into(), mm_literal(0.0)),
+            ("oy".into(), mm_literal(0.0)),
+            ("oz".into(), mm_literal(0.0)),
             ("ax".into(), real_literal(0.0)),
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(1.0)),

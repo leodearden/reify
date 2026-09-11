@@ -14,8 +14,12 @@ use reify_core::{DiagnosticInfo, ModulePath, SourceLocationInfo, Type, ValueCell
 
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref};
 
-use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, build_constraints, build_template_node, module_key, parse_value_string};
+use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, build_constraints, build_template_node, module_key, parse_value_string, unit_hint_from_default_literal};
 use crate::mcp_context::TauriToolContext;
+use crate::tests::test_helpers::{
+    assert_rigid_mass_props_determined, find_moi_principal_constraint,
+    rigid_mass_props_fixture_path, rigid_mass_props_session, visible_realization_keys,
+};
 use crate::types::EntityTreeNode;
 
 #[test]
@@ -1894,26 +1898,1526 @@ fn parse_value_string_unit_table_ordering_invariant() {
     }
 }
 
-// --- UNIT_TABLE descending-length ordering ---
+// --- Composed unit index descending-length ordering ---
 
-/// Directly assert that UNIT_TABLE is sorted by descending suffix length.
+/// Directly assert that the composed unit index is sorted by descending suffix
+/// BYTE length.
 ///
-/// The debug_assert in parse_value_string vanishes in release builds; this
-/// #[test] provides coverage in both debug and release builds. It references
-/// the pub(crate) const UNIT_TABLE extracted from parse_value_string in step-4.
+/// The `debug_assert!` in `parse_value_string` vanishes in release builds; this
+/// `#[test]` provides coverage in both. That is the whole reason it exists
+/// alongside the assertion, and the reason survives task #5757 retargeting it
+/// from the retired five-entry `UNIT_TABLE` onto
+/// `composed_unit_index()` — the index is now DERIVED from two other tables, so
+/// the ordering is produced by a sort rather than by hand, and a future change
+/// to how it is built must not silently drop it.
+///
+/// Byte length, not char count: `strip_suffix` works on bytes and the curated
+/// superscript glyphs (`mm²`, `kg/m³`) are two bytes each.
 #[test]
 fn unit_table_ordering_invariant_holds() {
-    use crate::engine::UNIT_TABLE;
+    use crate::engine::composed_unit_index;
 
-    let sorted = UNIT_TABLE.windows(2).all(|w| w[0].0.len() >= w[1].0.len());
+    let index = composed_unit_index();
+    assert!(
+        !index.is_empty(),
+        "the composed unit index must be non-vacuous — an empty one satisfies \
+         the ordering invariant trivially"
+    );
+    let sorted = index
+        .windows(2)
+        .all(|w| w[0].label.len() >= w[1].label.len());
     assert!(
         sorted,
-        "UNIT_TABLE entries must be sorted by descending suffix length (longest first). \
-         Adjacent pairs: {:?}",
-        UNIT_TABLE
+        "composed unit index entries must be sorted by descending suffix byte \
+         length (longest first), or `m` shadows `cm` and `m^3` shadows \
+         `kg/m^3`. Adjacent pairs: {:?}",
+        index
             .windows(2)
-            .map(|w| (w[0].0, w[0].0.len(), w[1].0, w[1].0.len()))
+            .map(|w| (
+                w[0].label.as_str(),
+                w[0].label.len(),
+                w[1].label.as_str(),
+                w[1].label.len()
+            ))
             .collect::<Vec<_>>()
+    );
+}
+
+/// ONE LABEL, ONE ANSWER — asserted of the INDEX ITSELF, not of its sources.
+///
+/// `COMPOSED_UNIT_INDEX`'s doc licenses the flat, non-dimension-narrowed lookup
+/// on this property, and `parse_value_string` returns the first suffix match
+/// with no second lookup to disambiguate it. The builder's dedup key is
+/// `(label, dimension)`, so two entries sharing a LABEL under different
+/// dimensions would both be registered and first-match would silently pick a
+/// dimension for the user.
+///
+/// The three guards that carried this claim are each indirect and each has a
+/// hole: `curated_ladder_labels_are_unique_across_every_dimension` is
+/// curated-vs-curated only; reify-core's `builtin_unit_symbols_are_unique` is
+/// builtin-vs-builtin only; and
+/// `curated_ladders_and_builtin_units_agree_bit_for_bit_where_they_overlap`
+/// looks each ladder rung up by `opt.label`, the RAW spelling, so a NORMALIZED
+/// curated label colliding with a builtin symbol goes unchecked — safe today
+/// only because no builtin symbol contains `^`. Asserting the property of the
+/// composed index is strictly stronger than all three and closes that case
+/// without depending on that accident.
+#[test]
+fn composed_unit_index_holds_at_most_one_entry_per_spelling() {
+    use crate::engine::composed_unit_index;
+    use std::collections::BTreeMap;
+
+    let mut seen: BTreeMap<&str, (f64, reify_core::DimensionVector)> = BTreeMap::new();
+    for entry in composed_unit_index() {
+        if let Some((prev_scale, prev_dim)) =
+            seen.insert(entry.label.as_str(), (entry.si_scale, entry.dimension))
+        {
+            panic!(
+                "unit label {:?} is registered twice in the composed index \
+                 ({prev_dim} @ {prev_scale} vs {} @ {}) — `parse_value_string` \
+                 takes the first suffix match, so one of the two is unreachable and \
+                 the user's `5{}` silently lands in whichever sorted first",
+                entry.label, entry.dimension, entry.si_scale, entry.label
+            );
+        }
+    }
+    assert!(
+        seen.len() >= 25,
+        "expected at least 25 distinct spellings in the composed index (both curated \
+         spellings plus the builtin symbols), got {} — the index shrank unexpectedly \
+         and uniqueness over a near-empty table proves nothing",
+        seen.len()
+    );
+}
+
+// --- Composed unit accept-set: curated display ladders ∪ DSL builtin symbols ---
+//
+// Task #5757 replaces the hand-maintained five-entry `UNIT_TABLE` with an index
+// composed from `reify_core::display_units::unit_ladders()` (the curated
+// per-dimension DISPLAY ladders, the SAME table the frontend derives its typed
+// input alphabet from) and `reify_core::BUILTIN_UNITS` (the DSL's bare built-in
+// symbols). WHY it is composed rather than hand-maintained, and what each
+// source contributes, is argued ONCE on `COMPOSED_UNIT_INDEX` in
+// `gui/src-tauri/src/engine.rs`; this block asserts the resulting behaviour and
+// deliberately does not carry a second copy of that argument.
+//
+// EVERY assertion below is driven off those two tables rather than off a
+// hand-mirrored list of unit strings, so a future ladder edit is covered
+// automatically and cannot silently widen or narrow what the GUI parses.
+// (A hand-written mirror would be a fifth curated label table — the drift
+// defect `unitLadder.ts`'s #5788 D6 note exists to prevent, restated in Rust.)
+
+/// The ladder-dimension NAME -> `DimensionVector` reverse lookup used to state
+/// these tests' expectations.
+///
+/// NOT AN INDEPENDENT ORACLE, and deliberately not sold as one: this is the same
+/// first-match `NAMED_DIMENSIONS` scan as production's `ladder_dimension`
+/// (`gui/src-tauri/src/engine.rs`), duplicated only because that function is
+/// private (as is `reify-compiler`'s `resolve_dimension_type`, which it in turn
+/// mirrors). So every dimension-EQUALITY assertion built on it is a CONSISTENCY
+/// check — it pins that the index files a rung under the same vector this scan
+/// yields, and would agree with the index even if `NAMED_DIMENSIONS` mapped a
+/// ladder name to the wrong vector.
+///
+/// The mapping itself is guarded where it lives, by reify-core's
+/// `every_ladder_dimension_round_trips_through_canonical_name`. What the
+/// assertions here DO independently establish is the other half: that each
+/// spelling resolves to the one ladder carrying it (via the uniqueness and
+/// agreement guards below) with the `si_scale` that ladder advertises.
+fn dimension_for_ladder_name(name: &str) -> reify_core::DimensionVector {
+    reify_core::NAMED_DIMENSIONS
+        .iter()
+        .find(|(_, n)| *n == name)
+        .map(|(d, _)| *d)
+        .unwrap_or_else(|| {
+            panic!("curated ladder dimension {name:?} has no NAMED_DIMENSIONS entry")
+        })
+}
+
+/// (a) Every curated ladder rung resolves — in BOTH its raw superscript
+/// spelling (`mm³`) and its ASCII-normalized spelling (`mm^3`) — to that
+/// ladder's dimension, with `si_value == magnitude * si_scale`.
+///
+/// Both spellings are required because the backend is deliberately a strict
+/// SUPERSET of the frontend gate: `normalizeUnitLabel` is one-way, so the
+/// frontend only ever admits the ASCII spelling, while a user who copy-pastes
+/// the label they SEE in the unit picker types the superscript one. Accepting
+/// both can never cause a frontend-accepted value to be refused on commit,
+/// which is the only direction that reproduces the reported defect.
+///
+/// The lookup is FLAT — one label, one answer, with no per-cell dimension
+/// narrowing (see `COMPOSED_UNIT_INDEX`). This block is what makes that safe:
+/// together with `curated_ladder_labels_are_unique_across_every_dimension` and
+/// `curated_ladders_and_builtin_units_agree_bit_for_bit_where_they_overlap`, it
+/// pins that each spelling resolves to exactly the ladder that carries it.
+///
+/// Driven through `parse_value_string` — the real production entry point —
+/// rather than an index lookup only tests call, so the suffix scan and its
+/// longest-first ordering are exercised on every rung too. `3mm³` in particular
+/// also ends with the shorter Volume rung `m³`, and only the ordering keeps it
+/// from being read as 3 CUBIC METRES.
+#[test]
+fn parse_value_string_accepts_every_curated_ladder_rung_in_both_spellings() {
+    use crate::engine::{normalize_unit_label, superscript_label_spelling};
+
+    // Any magnitude works; a non-unit one keeps a stray `* 1.0` from passing.
+    // Kept integral so `format!` renders it without an exponent or a decimal
+    // point that could perturb the remainder parse.
+    const MAGNITUDE: f64 = 3.0;
+
+    let ladders = crate::display_units::unit_ladders();
+    assert!(
+        !ladders.is_empty(),
+        "unit_ladders() must be non-vacuous — an empty table would make every \
+         assertion in this block pass trivially"
+    );
+
+    let mut rungs_checked = 0usize;
+    for ladder in &ladders {
+        let expected_dim = dimension_for_ladder_name(&ladder.dimension);
+        assert!(
+            !ladder.units.is_empty(),
+            "ladder {:?} must advertise at least one rung",
+            ladder.dimension
+        );
+        for opt in &ladder.units {
+            let expected_si = MAGNITUDE * opt.si_scale;
+            // All three spellings, so this stays a statement about the ASCII
+            // form AND the superscript one whichever of the two the curated
+            // table currently carries: before task λ (#5788) the label WAS the
+            // superscript form and `normalize_unit_label` supplied the other;
+            // since λ it is the ASCII form and `superscript_label_spelling`
+            // does. Iterating only the first two would silently have become
+            // "the ASCII spelling, twice" — and `COMPOSED_UNIT_INDEX` registers
+            // all three, so this must range over all three too.
+            for spelling in [
+                opt.label.clone(),
+                normalize_unit_label(&opt.label),
+                superscript_label_spelling(&opt.label),
+            ] {
+                let literal = format!("{MAGNITUDE}{spelling}");
+                let parsed = parse_value_string(&literal).unwrap_or_else(|e| {
+                    panic!(
+                        "curated rung {spelling:?} (ladder {:?}) must parse — the \
+                         frontend already admits {literal:?}; got {e}",
+                        ladder.dimension
+                    )
+                });
+                let reify_ir::Value::Scalar { si_value, dimension } = parsed else {
+                    panic!("{literal:?} must parse to a Value::Scalar; got {parsed:?}");
+                };
+                assert_eq!(
+                    dimension, expected_dim,
+                    "{literal:?} must resolve to the {:?} ladder's dimension",
+                    ladder.dimension
+                );
+                // RELATIVE, not absolute. This walk is generic over every rung
+                // the curated table grows, and those scales span 1e9 (GPa) to
+                // 1e-9 (mm³) today. An absolute 1e-10 band is ±3.3% at the mm³
+                // rung and VACUOUS below si_scale ≈ 3e-11 — `si_value == 0.0`
+                // would pass while `rungs_checked` still incremented, so the
+                // non-vacuity floor below would not notice. The expected value
+                // is exact by construction (same `si_scale`, same product), so
+                // the band only has to absorb one rounding of the multiply.
+                assert!(
+                    (si_value - expected_si).abs() <= 1e-12 * expected_si.abs(),
+                    "{literal:?} → {si_value}, expected {expected_si} \
+                     (= {MAGNITUDE} * si_scale {})",
+                    opt.si_scale
+                );
+                rungs_checked += 1;
+            }
+        }
+    }
+    assert!(
+        rungs_checked >= 20,
+        "expected the curated ladders to contribute at least 20 (rung, spelling) \
+         pairs; got {rungs_checked} — the table shrank unexpectedly"
+    );
+}
+
+/// The Rust mirror of `normalizeUnitLabel` (`gui/src/stores/unitLadder.ts`):
+/// the two superscript exponent glyphs and nothing else.
+///
+/// Pinned directly rather than only through its use above, so the two-character
+/// substitution is covered independently of the resolver that consumes it. Kept
+/// deliberately tiny — a divergence from the TypeScript twin is what would let
+/// the frontend and backend disagree about `mm^3` again.
+#[test]
+fn normalize_unit_label_rewrites_only_the_superscript_exponent_glyphs() {
+    use crate::engine::normalize_unit_label;
+
+    assert_eq!(normalize_unit_label("mm\u{00B2}"), "mm^2");
+    assert_eq!(normalize_unit_label("mm\u{00B3}"), "mm^3");
+    assert_eq!(normalize_unit_label("kg/m\u{00B3}"), "kg/m^3");
+    assert_eq!(normalize_unit_label("g/cm\u{00B3}"), "g/cm^3");
+    // Everything else is untouched, including labels already in ASCII form.
+    assert_eq!(normalize_unit_label("mm"), "mm");
+    assert_eq!(normalize_unit_label("mm^3"), "mm^3");
+    assert_eq!(normalize_unit_label("deg"), "deg");
+    assert_eq!(normalize_unit_label("MPa"), "MPa");
+}
+
+/// The curated table stays inside the GLYPH ALPHABET both normalizers rewrite.
+///
+/// This does NOT catch a divergence between `normalize_unit_label` and its
+/// TypeScript twin — nothing does, and that function's doc says so and names the
+/// two mirror-image goldens that carry the obligation instead. What this does is
+/// BOUND the surface on which such a divergence could bite.
+///
+/// The bound: a one-sided rewrite rule only matters for a glyph that actually
+/// OCCURS in a curated label. For every other character both twins are the
+/// identity, so both ends spell the rung identically and `COMPOSED_UNIT_INDEX`
+/// registers exactly that spelling. The reachable surface is therefore the set
+/// of non-ASCII glyphs the curated table uses, and this pins that set at exactly
+/// the two arms both goldens already cover.
+///
+/// A rung introducing a third — an `m⁴`, a `·` in a compound label — fails HERE.
+/// That is the moment to extend both twins and both goldens together, rather
+/// than after a user reports that the panel admits a spelling the engine
+/// refuses.
+#[test]
+fn curated_unit_labels_carry_no_glyph_outside_the_shared_normalizer_alphabet() {
+    /// The two superscript exponent glyphs `normalize_unit_label` and
+    /// `normalizeUnitLabel` BOTH rewrite, and the only non-ASCII characters the
+    /// curated ladders are allowed to carry.
+    const SHARED: [char; 2] = ['\u{00B2}', '\u{00B3}'];
+
+    let ladders = crate::display_units::unit_ladders();
+    let mut checked = 0usize;
+    for ladder in &ladders {
+        for opt in &ladder.units {
+            for ch in opt.label.chars() {
+                assert!(
+                    ch.is_ascii() || SHARED.contains(&ch),
+                    "curated rung {:?} (ladder {:?}) carries {ch:?} (U+{:04X}), outside the \
+                     alphabet `normalize_unit_label` and its TypeScript twin \
+                     `normalizeUnitLabel` BOTH rewrite. Extend both normalizers and both \
+                     goldens before adding it — otherwise whichever side grows an arm first \
+                     admits a spelling the other refuses.",
+                    opt.label,
+                    ladder.dimension,
+                    ch as u32
+                );
+            }
+            checked += 1;
+        }
+    }
+    assert!(
+        checked >= 20,
+        "expected at least 20 curated rungs to be inspected, got {checked} — the table \
+         shrank and an alphabet bound over a near-empty one proves nothing"
+    );
+}
+
+/// (b) Every `BUILTIN_UNITS` symbol resolves to its own factor and dimension.
+///
+/// This is the PRD's named delegation target (§M9): the five SI bases no
+/// curated ladder carries (s, K, A, mol, cd) reach the index only through this
+/// half of it, and the eight that ARE also ladder rungs must come back with the
+/// builtin table's own values — which (d) below pins as bit-identical.
+///
+/// Driven through `parse_value_string` for the same reason as (a). A unit
+/// magnitude would let a stray `* 1.0` pass, so the factor is checked at
+/// magnitude 3 and compared exactly: every builtin factor is a power-of-ten or
+/// exactly-representable constant, and multiplying it by 3.0 is the same single
+/// rounding the implementation performs, so `to_bits()` equality is reproducible
+/// rather than optimistic.
+#[test]
+fn parse_value_string_resolves_every_builtin_unit_symbol() {
+    const MAGNITUDE: f64 = 3.0;
+
+    assert!(
+        !reify_core::BUILTIN_UNITS.is_empty(),
+        "BUILTIN_UNITS must be non-vacuous"
+    );
+    for &(symbol, factor, dimension) in reify_core::BUILTIN_UNITS {
+        let literal = format!("{MAGNITUDE}{symbol}");
+        let parsed = parse_value_string(&literal).unwrap_or_else(|e| {
+            panic!("builtin unit symbol {symbol:?} must parse through the composed index; got {e}")
+        });
+        let reify_ir::Value::Scalar { si_value, dimension: got_dim } = parsed else {
+            panic!("{literal:?} must parse to a Value::Scalar; got {parsed:?}");
+        };
+        assert_eq!(
+            got_dim, dimension,
+            "builtin symbol {symbol:?} must resolve to its own dimension"
+        );
+        assert_eq!(
+            si_value.to_bits(),
+            (MAGNITUDE * factor).to_bits(),
+            "builtin symbol {symbol:?} must resolve to its own factor ({factor}): \
+             {literal:?} → {si_value}, expected {}",
+            MAGNITUDE * factor
+        );
+    }
+}
+
+/// (c) Curated ladder labels are UNIQUE across all dimensions, in both
+/// spellings.
+///
+/// Load-bearing, not tidiness: the resolver matches one flat index — the UNION
+/// of every ladder's rungs plus the builtins, with no per-cell dimension
+/// narrowing — so a label carried by two dimensions would make it silently
+/// ambiguous, first-match deciding which dimension a user's `5X` lands in. This
+/// guard is precisely what licenses that flat lookup.
+#[test]
+fn curated_ladder_labels_are_unique_across_every_dimension() {
+    use crate::engine::{normalize_unit_label, superscript_label_spelling};
+    use std::collections::BTreeMap;
+
+    let ladders = crate::display_units::unit_ladders();
+    // label -> (dimension name, si_scale). A repeat within the SAME ladder is
+    // expected (a label with no superscript normalizes to itself); a repeat
+    // across ladders, or with a different scale, is the ambiguity.
+    let mut seen: BTreeMap<String, (String, f64)> = BTreeMap::new();
+    for ladder in &ladders {
+        for opt in &ladder.units {
+            // All three spellings, so this stays a statement about the ASCII
+            // form AND the superscript one whichever of the two the curated
+            // table currently carries: before task λ (#5788) the label WAS the
+            // superscript form and `normalize_unit_label` supplied the other;
+            // since λ it is the ASCII form and `superscript_label_spelling`
+            // does. Iterating only the first two would silently have become
+            // "the ASCII spelling, twice" — and `COMPOSED_UNIT_INDEX` registers
+            // all three, so this must range over all three too.
+            for spelling in [
+                opt.label.clone(),
+                normalize_unit_label(&opt.label),
+                superscript_label_spelling(&opt.label),
+            ] {
+                if let Some((prev_dim, prev_scale)) =
+                    seen.insert(spelling.clone(), (ladder.dimension.clone(), opt.si_scale))
+                {
+                    assert_eq!(
+                        (&prev_dim, prev_scale.to_bits()),
+                        (&ladder.dimension, opt.si_scale.to_bits()),
+                        "unit label {spelling:?} is carried by more than one curated ladder \
+                         ({prev_dim} @ {prev_scale} vs {} @ {}) — resolve_unit_label \
+                         would resolve it ambiguously",
+                        ladder.dimension,
+                        opt.si_scale
+                    );
+                }
+            }
+        }
+    }
+    assert!(
+        seen.len() >= 20,
+        "expected at least 20 distinct curated labels across both spellings, got {}",
+        seen.len()
+    );
+}
+
+/// (d) Where the curated display ladders and the DSL builtin table OVERLAP,
+/// they must agree bit-for-bit on both factor and dimension.
+///
+/// The composed index reads from both. Today the eight shared labels (mm, cm,
+/// m, in, deg, rad, kg, g) carry identical values, so which source wins is
+/// unobservable — this test is what keeps it that way. If a future edit moves
+/// one table and not the other, the GUI would start parsing a unit differently
+/// from the DSL; that must fail loudly HERE rather than silently change what a
+/// user's typed `3in` means.
+#[test]
+fn curated_ladders_and_builtin_units_agree_bit_for_bit_where_they_overlap() {
+    use std::collections::BTreeSet;
+
+    let ladders = crate::display_units::unit_ladders();
+    let mut overlapping: BTreeSet<&str> = BTreeSet::new();
+    for ladder in &ladders {
+        let ladder_dim = dimension_for_ladder_name(&ladder.dimension);
+        for opt in &ladder.units {
+            let Some((factor, builtin_dim)) = reify_core::unit_symbol_to_si(&opt.label) else {
+                continue;
+            };
+            overlapping.insert(
+                reify_core::BUILTIN_UNITS
+                    .iter()
+                    .find(|(s, ..)| *s == opt.label)
+                    .map(|(s, ..)| *s)
+                    .expect("unit_symbol_to_si is a faithful view of BUILTIN_UNITS"),
+            );
+            assert_eq!(
+                builtin_dim, ladder_dim,
+                "{:?} is in both tables but the builtin table calls it {builtin_dim:?} \
+                 while the curated ladder puts it under {:?}",
+                opt.label, ladder.dimension
+            );
+            assert_eq!(
+                factor.to_bits(),
+                opt.si_scale.to_bits(),
+                "{:?} is in both tables with DIFFERENT factors: builtin {factor} vs \
+                 ladder si_scale {}",
+                opt.label,
+                opt.si_scale
+            );
+        }
+    }
+    // Non-vacuity floor, expressed as required MEMBERS rather than a count so
+    // adding a ladder rung that happens to be a builtin does not turn it red.
+    for expected in ["mm", "cm", "m", "in", "deg", "rad", "kg", "g"] {
+        assert!(
+            overlapping.contains(expected),
+            "{expected:?} must appear in BOTH the curated ladders and BUILTIN_UNITS; \
+             overlap was {overlapping:?}"
+        );
+    }
+}
+
+// --- parse_value_string over the composed accept-set (task #5757) ---
+
+/// Assert `parse_value_string(input)` yields a `Scalar` with the expected SI
+/// magnitude and dimension.
+///
+/// Expected values are exact by construction — `si_value = magnitude *
+/// si_scale`, with the scale read from the same curated table the resolver
+/// reads — so the tolerance only has to absorb one rounding of that multiply.
+///
+/// It is RELATIVE for the reason the generic walk above states: callers pass
+/// expectations spanning 1e10 (`10GPa`) to 5e-9 (`5mm^3`), and a fixed 1e-10
+/// absolute band is ±2% at the small end and vacuous below it.
+fn assert_parses_to_scalar(input: &str, expected_si: f64, expected_dim: reify_core::DimensionVector) {
+    use reify_ir::Value;
+
+    let v = parse_value_string(input).unwrap_or_else(|e| panic!("{input:?} should parse: {e}"));
+    match v {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                dimension, expected_dim,
+                "{input:?} must carry dimension {expected_dim:?}, got {dimension:?}"
+            );
+            assert!(
+                (si_value - expected_si).abs() <= 1e-12 * expected_si.abs(),
+                "{input:?} → {si_value}, expected {expected_si}"
+            );
+        }
+        other => panic!("{input:?} must parse to Value::Scalar, got {other:?}"),
+    }
+}
+
+/// The nineteen labels the property editor admitted and `parse_value_string`
+/// refused — the reported defect — now parse.
+///
+/// One representative per resolution branch: an `in` that was in the DSL
+/// builtin table but missing from the GUI's; the compound Area/Volume/Density
+/// spellings that are in NEITHER the builtin table nor the .ri lexer's reach
+/// and exist only as curated display labels; the single-rung coherent-SI
+/// ladders (N, J, W); and `L`, which is not a DSL unit at all
+/// (`reify-compiler/stdlib/units.ri` declares no SI volume units) and is
+/// reachable ONLY through the display ladders.
+#[test]
+fn parse_value_string_accepts_the_ladder_labels_the_property_editor_admits() {
+    use reify_core::DimensionVector;
+
+    // Was in reify_core::BUILTIN_UNITS but absent from the GUI's five-entry table.
+    assert_parses_to_scalar("3in", 3.0 * 0.0254, DimensionVector::LENGTH);
+
+    // Volume — `L` and the compound spellings, none of them DSL unit symbols.
+    assert_parses_to_scalar("5L", 0.005, DimensionVector::VOLUME);
+    assert_parses_to_scalar("5mm^3", 5e-9, DimensionVector::VOLUME);
+    assert_parses_to_scalar("5cm^3", 5e-6, DimensionVector::VOLUME);
+    assert_parses_to_scalar("5m^3", 5.0, DimensionVector::VOLUME);
+
+    // Area.
+    assert_parses_to_scalar("2mm^2", 2e-6, DimensionVector::AREA);
+    assert_parses_to_scalar("2cm^2", 2e-4, DimensionVector::AREA);
+    assert_parses_to_scalar("2m^2", 2.0, DimensionVector::AREA);
+
+    // Mass — `kg`/`g` were builtins the GUI table lacked.
+    assert_parses_to_scalar("4kg", 4.0, DimensionVector::MASS);
+    assert_parses_to_scalar("4g", 0.004, DimensionVector::MASS);
+
+    // Pressure.
+    assert_parses_to_scalar("10Pa", 10.0, DimensionVector::PRESSURE);
+    assert_parses_to_scalar("10kPa", 1e4, DimensionVector::PRESSURE);
+    assert_parses_to_scalar("10MPa", 1e7, DimensionVector::PRESSURE);
+    assert_parses_to_scalar("10GPa", 1e10, DimensionVector::PRESSURE);
+
+    // Density — the compound-with-solidus spellings.
+    assert_parses_to_scalar("2kg/m^3", 2.0, DimensionVector::MASS_DENSITY);
+    assert_parses_to_scalar("2g/cm^3", 2000.0, DimensionVector::MASS_DENSITY);
+
+    // The single-rung coherent-SI ladders.
+    assert_parses_to_scalar("750N", 750.0, DimensionVector::FORCE);
+    assert_parses_to_scalar("120J", 120.0, DimensionVector::ENERGY);
+    assert_parses_to_scalar("40W", 40.0, DimensionVector::POWER);
+}
+
+/// The raw superscript spellings parse too, making the backend a strict
+/// SUPERSET of the frontend gate.
+///
+/// `normalizeUnitLabel` is one-way, so the property editor admits only the
+/// ASCII form and a user who copy-pastes the label shown in the unit picker
+/// types the superscript one. Accepting both can never cause a
+/// frontend-accepted value to be refused, which is the only direction that
+/// reproduces the reported defect.
+#[test]
+fn parse_value_string_also_accepts_the_raw_superscript_ladder_spellings() {
+    use reify_core::DimensionVector;
+
+    assert_parses_to_scalar("5mm\u{00B3}", 5e-9, DimensionVector::VOLUME);
+    assert_parses_to_scalar("5m\u{00B3}", 5.0, DimensionVector::VOLUME);
+    assert_parses_to_scalar("2cm\u{00B2}", 2e-4, DimensionVector::AREA);
+    assert_parses_to_scalar("2kg/m\u{00B3}", 2.0, DimensionVector::MASS_DENSITY);
+}
+
+/// The SI base symbols no curated ladder carries reach the parser through the
+/// `BUILTIN_UNITS` half of the composed index — the delegation the units-length
+/// PRD §M9 names.
+#[test]
+fn parse_value_string_accepts_the_builtin_symbols_no_ladder_carries() {
+    use reify_core::DimensionVector;
+
+    assert_parses_to_scalar("2s", 2.0, DimensionVector::TIME);
+    assert_parses_to_scalar("300K", 300.0, DimensionVector::TEMPERATURE);
+    assert_parses_to_scalar("5A", 5.0, DimensionVector::CURRENT);
+    assert_parses_to_scalar("3mol", 3.0, DimensionVector::AMOUNT_OF_SUBSTANCE);
+    assert_parses_to_scalar("7cd", 7.0, DimensionVector::LUMINOUS_INTENSITY);
+}
+
+/// Longest-suffix-first: a shorter registered label must not shadow the longer
+/// one the input actually ends with.
+///
+/// This pins the ORDERING defence only. With the index correctly sorted every
+/// case below is decided by longest-first alone — no input here reaches the
+/// state the remainder guard exists for. That second defence is pinned
+/// separately by
+/// `parse_value_string_remainder_guard_disambiguates_without_the_ordering`
+/// (continue-to-correct-match) and by the `10zPa` case in
+/// `parse_value_string_widening_does_not_disturb_the_non_ladder_paths`
+/// (continue-to-`Err`).
+#[test]
+fn parse_value_string_compound_labels_are_not_shadowed_by_their_own_suffixes() {
+    use reify_core::DimensionVector;
+
+    // `m^3` (Volume) is a suffix of `kg/m^3` (Density).
+    assert_parses_to_scalar("5kg/m^3", 5.0, DimensionVector::MASS_DENSITY);
+    // `cm^3` (Volume) is a suffix of `g/cm^3` (Density).
+    assert_parses_to_scalar("5g/cm^3", 5000.0, DimensionVector::MASS_DENSITY);
+    // `Pa` (Pressure, 1.0) is a suffix of `MPa`/`kPa`/`GPa`.
+    assert_parses_to_scalar("5MPa", 5e6, DimensionVector::PRESSURE);
+    assert_parses_to_scalar("5kPa", 5e3, DimensionVector::PRESSURE);
+    assert_parses_to_scalar("5GPa", 5e9, DimensionVector::PRESSURE);
+    // `m^2` (Area) is a suffix of `mm^2`/`cm^2`.
+    assert_parses_to_scalar("5mm^2", 5e-6, DimensionVector::AREA);
+    // The pre-existing case, restated against the widened table: `m` must not
+    // shadow `cm`, and now also must not shadow `in`/`mm`.
+    assert_parses_to_scalar("100cm", 1.0, DimensionVector::LENGTH);
+    assert_parses_to_scalar("100mm", 0.1, DimensionVector::LENGTH);
+}
+
+/// The remainder guard alone disambiguates the compound labels, with the
+/// ordering defence not merely absent but INVERTED.
+///
+/// The scan is run over a reverse-sorted copy of the real index — shortest label
+/// first — so `m^3` is reached before `kg/m^3` and `cm^3` before `g/cm^3`. Every
+/// such candidate is rejected on its non-numeric remainder (`"5kg/"`, `"5g/c"`),
+/// and the scan continues to the label that leaves a number. This is the
+/// continue-to-CORRECT-MATCH path; nothing else in the suite reaches it, because
+/// with the index sorted correctly no input can (a longer label is only ever
+/// reached first, and only ever with a shorter one behind it).
+///
+/// It drives production's `resolve_quantity_suffix` rather than restating the
+/// scan, so what is pinned is the real loop's behaviour on a hostile ordering.
+#[test]
+fn parse_value_string_remainder_guard_disambiguates_without_the_ordering() {
+    use crate::engine::{composed_unit_index, resolve_quantity_suffix};
+    use reify_core::DimensionVector;
+    use reify_ir::Value;
+
+    // Ascending byte length — the exact inverse of the production invariant.
+    let mut reversed: Vec<&crate::engine::ComposedUnit> = composed_unit_index().iter().collect();
+    reversed.sort_by_key(|e| e.label.len());
+    let inverted: Vec<_> = reversed
+        .into_iter()
+        .map(|e| crate::engine::ComposedUnit {
+            label: e.label.clone(),
+            si_scale: e.si_scale,
+            dimension: e.dimension,
+        })
+        .collect();
+    assert!(
+        inverted
+            .windows(2)
+            .all(|w| w[0].label.len() <= w[1].label.len()),
+        "the copy must really be mis-ordered, or this test proves nothing"
+    );
+    // The premise: a strictly shorter registered label IS a suffix of the
+    // compound one, and under this ordering it is reached first.
+    assert!(
+        inverted.iter().any(|e| e.label == "m^3")
+            && inverted.iter().any(|e| e.label == "kg/m^3")
+            && inverted.iter().position(|e| e.label == "m^3")
+                < inverted.iter().position(|e| e.label == "kg/m^3"),
+        "premise: `m^3` must be reached before `kg/m^3` in the inverted index"
+    );
+
+    for (input, expected_si, expected_dim) in [
+        ("5kg/m^3", 5.0, DimensionVector::MASS_DENSITY),
+        ("5g/cm^3", 5000.0, DimensionVector::MASS_DENSITY),
+    ] {
+        let parsed = resolve_quantity_suffix(&inverted, input).unwrap_or_else(|| {
+            panic!("{input:?} must still resolve on a mis-ordered index — the remainder guard is what makes the scan order-independent")
+        });
+        let Value::Scalar { si_value, dimension } = parsed else {
+            panic!("{input:?} must resolve to a Value::Scalar; got {parsed:?}");
+        };
+        assert_eq!(
+            dimension, expected_dim,
+            "{input:?} must resolve to the DENSITY label, not the VOLUME label it also ends with"
+        );
+        assert!(
+            (si_value - expected_si).abs() <= 1e-12 * expected_si.abs(),
+            "{input:?} → {si_value}, expected {expected_si}"
+        );
+    }
+}
+
+/// Widening the accept-set must not change anything else `parse_value_string`
+/// does.
+///
+/// The legacy five are re-asserted here as a regression LOCK alongside
+/// `parse_value_string_all_units_correct` (which pins the same five in the
+/// pre-#5757 style): they are the units every existing GUI test and call site
+/// uses, so a change in what they mean would be a silent unit bug across the
+/// whole panel. Bare numbers, booleans and the unparseable case are pinned
+/// because the new suffix scan runs BEFORE all three.
+#[test]
+fn parse_value_string_widening_does_not_disturb_the_non_ladder_paths() {
+    use reify_core::DimensionVector;
+    use reify_ir::Value;
+
+    // The legacy five, unchanged.
+    assert_parses_to_scalar("5mm", 0.005, DimensionVector::LENGTH);
+    assert_parses_to_scalar("5cm", 0.05, DimensionVector::LENGTH);
+    assert_parses_to_scalar("5m", 5.0, DimensionVector::LENGTH);
+    assert_parses_to_scalar("90deg", std::f64::consts::FRAC_PI_2, DimensionVector::ANGLE);
+    assert_parses_to_scalar("1rad", 1.0, DimensionVector::ANGLE);
+
+    // Bare numbers still yield Int/Real — `parse_value_string` itself stays
+    // dimension-agnostic. The bare-number REJECTION is a separate, cell-scoped
+    // gate (`parse_value_string_for_cell`), because this function has callers
+    // with no cell context.
+    assert!(matches!(parse_value_string("10"), Ok(Value::Int(10))));
+    assert!(matches!(parse_value_string("-3"), Ok(Value::Int(-3))));
+    match parse_value_string("2.0") {
+        Ok(Value::Real(f)) => assert!((f - 2.0).abs() < 1e-10, "2.0 → {f}"),
+        other => panic!("`2.0` must parse to Value::Real, got {other:?}"),
+    }
+    match parse_value_string("1e3") {
+        Ok(Value::Real(f)) => assert!((f - 1000.0).abs() < 1e-10, "1e3 → {f}"),
+        other => panic!("`1e3` must parse to Value::Real, got {other:?}"),
+    }
+
+    // Booleans still short-circuit ahead of the suffix scan.
+    assert!(matches!(parse_value_string("true"), Ok(Value::Bool(true))));
+    assert!(matches!(parse_value_string("false"), Ok(Value::Bool(false))));
+
+    // And an unknown suffix still errors, with the message the frontend pins.
+    let err = parse_value_string("10xyz").expect_err("`10xyz` must not parse");
+    assert!(
+        err.contains("Cannot parse value") && err.contains("10xyz"),
+        "unknown-unit error must name the input; got {err:?}"
+    );
+    // A registered label with no numeric part is still not a value.
+    assert!(parse_value_string("mm^3").is_err(), "bare `mm^3` must not parse");
+    // A number with a nearly-right suffix is still refused rather than being
+    // silently truncated to the shorter registered label it ends with.
+    assert!(parse_value_string("10zPa").is_err(), "`10zPa` must not parse");
+}
+
+// --- set_parameter: bare numbers are not valid for a dimensioned cell ---
+//
+// Task #5757 defect 1. `parse_value_string("120")` yields `Value::Int(120)`,
+// and reify-eval then ACCEPTS it into a `Length` cell: `value_type_kind_matches`
+// maps Int/Real onto `Type::Scalar { .. }` with a dimension WILDCARD, and
+// `validate_param_override` guards its dimension comparison on
+// `let Value::Scalar { .. } = value`, which an Int never matches — so the
+// dimension check is skipped entirely and `120` silently becomes 120 METRES.
+//
+// The fix is scoped to the GUI boundary rather than to reify-eval: that
+// Int/Real coercion is deliberate and load-bearing there (it is what lets
+// `edit_param` emit a Warning instead of a hard error), and it is on the hot
+// path for every param override in the workspace. Rejecting before `edit_check`
+// is ever called fixes the user-visible defect with no risk to the evaluator,
+// and yields a better message besides, because the GUI knows the cell.
+//
+// The controls in this block are what stop the gate over-rejecting — each one
+// covers a distinct fall-through the gate must NOT swallow.
+
+/// One dimensioned param and one `Real` param.
+///
+/// Lets the bare-number gate be shown firing on the former and not on the
+/// latter without dragging in the heavy `RigidDensityScale` mass-props fixture
+/// — whose own `density_scale : Real` edit is separately pinned by
+/// `commands_tests.rs::warm_edit_of_a_non_op_arg_mass_input_does_not_replay_a_stale_mass`,
+/// an unrelated #5338 regression lock that must keep passing.
+const BARE_NUMBER_GATE_SRC: &str = r#"structure def GateScope {
+    param width : Length = 80mm
+    param scale : Real = 1.0
+    let body = box(width, width, width)
+}"#;
+
+/// One dimensioned param NO curated ladder covers, and one that is covered.
+///
+/// The `Money` half is the in-tree case: 16 `param … : Money` declarations
+/// spell their literals `NUSD` across `examples/*.ri` (`cost_aggregation.ri`,
+/// `bom_lifecycle.ri`, `continuous_cost_min.ri`, `aspect_massive.ri`, …), and
+/// `USD` lives only in the compiler's per-module `UnitRegistry`, which the
+/// composed index deliberately excludes. Pairing it with a `Length` neighbour
+/// is what lets the covered and uncovered rules be shown DISCRIMINATED in one
+/// session, the way `set_parameter_still_accepts_a_bare_number_for_an_undimensioned_cell`
+/// already does for the dimensionless axis.
+const BARE_NUMBER_COVERAGE_SRC: &str = r#"structure def MoneyScope {
+    param cost : Money = 5USD
+    param width : Length = 80mm
+    let body = box(width, width, width)
+}"#;
+
+/// A bare number typed into a dimensioned cell is refused, and the message
+/// names both the expected dimension and the offending input.
+#[test]
+fn set_parameter_rejects_a_bare_number_for_a_dimensioned_cell() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load");
+
+    let err = session
+        .set_parameter("Bracket.width", "120")
+        .expect_err("a bare number must not be accepted for a Length cell");
+    assert!(
+        err.contains("Length"),
+        "the rejection must name the expected dimension so the user knows what \
+         to supply; got {err:?}"
+    );
+    assert!(
+        err.contains("120"),
+        "the rejection must quote the offending input; got {err:?}"
+    );
+
+    // The float spelling is the same defect, and reify-eval's Int/Real wildcard
+    // covers both — so the gate must too.
+    let err = session
+        .set_parameter("Bracket.width", "120.5")
+        .expect_err("a bare float must not be accepted for a Length cell either");
+    assert!(
+        err.contains("Length") && err.contains("120.5"),
+        "the bare-float rejection must name the dimension and the input; got {err:?}"
+    );
+}
+
+/// The gate must not narrow what a dimensioned cell accepts WITH a unit —
+/// including a unit the retired five-entry table lacked.
+#[test]
+fn set_parameter_still_accepts_united_literals_for_a_dimensioned_cell() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load");
+
+    session
+        .set_parameter("Bracket.width", "120mm")
+        .expect("a Length literal in a legacy-table unit must still be accepted");
+
+    // `in` was in the DSL builtin registry all along and absent from the GUI's
+    // five-entry table — PRD §6 boundary row 17.
+    session
+        .set_parameter("Bracket.width", "3in")
+        .expect("`in` must be accepted now that the accept-set is composed");
+}
+
+/// A CROSS-DIMENSION literal is not refused at the GUI boundary — it is refused
+/// one layer down, by reify-eval, with a message naming BOTH dimensions.
+///
+/// This is the executable form of the claim `COMPOSED_UNIT_INDEX` rests its
+/// flat, non-dimension-narrowed lookup on. That widening is the largest
+/// behavioural change in task #5757: `parse_value_string` resolves the whole
+/// composed index instead of five spellings, so `5kg` in a `Length` cell no
+/// longer dies here as `Cannot parse value '5kg'` — it resolves to
+/// `Value::Scalar { dimension: MASS }` and is handed to `edit_check`. The design
+/// licenses that on reify-eval catching it, and nothing pinned that.
+///
+/// It needs pinning because the adjacent arm of the very same guard is this
+/// task's whole reason for existing: `validate_param_override` (reify-eval
+/// `engine_admin.rs`) compares dimensions only under
+/// `let reify_ir::Value::Scalar { .. } = value`, which is exactly why an
+/// `Value::Int` slips through as a dimension WILDCARD and `120` becomes 120
+/// METRES. An edit to that pattern would silently turn a cross-dimension GUI
+/// edit into an ACCEPTED wrong value, and — before this test — no assertion
+/// anywhere would have failed.
+///
+/// Both halves are asserted, in order: the GUI layer PARSES it, and the engine
+/// then hard-`Err`s. The expected words are DERIVED from the two
+/// `DimensionVector` Display forms rather than spelled out, so this tracks
+/// `EngineError::DimensionMismatch`'s message instead of freezing a snapshot of
+/// it.
+#[test]
+fn set_parameter_leaves_a_cross_dimension_literal_to_reify_evals_dimension_mismatch() {
+    use reify_core::{DimensionVector, Type};
+
+    // (1) The GUI boundary does NOT refuse it, and does not coerce it either:
+    //     `5kg` resolves to its OWN dimension. Narrowing the index lookup by the
+    //     cell's declared dimension would have made this an unparseable-string
+    //     error and re-opened the panel-accepts / engine-refuses gap in the
+    //     opposite direction, since the panel's per-cell alphabet always carries
+    //     the `BASE_UNIT_LABELS` floor alongside the cell's own ladder.
+    let parsed = crate::engine::parse_value_string_for_cell(
+        "5kg",
+        &Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+    )
+    .expect("a cross-dimension literal must still PARSE — the refusal belongs to reify-eval");
+    let reify_ir::Value::Scalar {
+        dimension: got_dim, ..
+    } = parsed
+    else {
+        panic!("`5kg` must parse to a Value::Scalar; got {parsed:?}");
+    };
+    assert_eq!(
+        got_dim,
+        DimensionVector::MASS,
+        "`5kg` must resolve to its own dimension, never be coerced to the cell's"
+    );
+
+    // (2) …and the engine refuses it, naming both dimensions.
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load");
+
+    let err = session
+        .set_parameter("Bracket.width", "5kg")
+        .expect_err("a Mass literal in a Length cell must be a hard error, not a warning");
+    assert!(
+        err.contains(&format!(
+            "expected {}, got {}",
+            DimensionVector::LENGTH,
+            DimensionVector::MASS
+        )),
+        "the rejection must name BOTH the expected and the supplied dimension — that is what \
+         makes it actionable, and it is the whole reason the GUI layer deliberately says \
+         nothing here; got {err:?}"
+    );
+
+    // Refused BEFORE anything is committed, so the session is untouched and a
+    // subsequent good edit still lands.
+    session
+        .set_parameter("Bracket.width", "120mm")
+        .expect("the failed cross-dimension edit must not have poisoned the session");
+}
+
+/// An UNDIMENSIONED cell still takes a bare number.
+///
+/// The gate keys on `!dimension.is_dimensionless()`, so `Real`, `Int` and
+/// `Scalar { DIMENSIONLESS }` cells are untouched. Without this the gate would
+/// break every dimensionless slider in the panel.
+#[test]
+fn set_parameter_still_accepts_a_bare_number_for_an_undimensioned_cell() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(BARE_NUMBER_GATE_SRC, "bare_number_gate")
+        .expect("initial load");
+
+    session
+        .set_parameter("GateScope.scale", "2.0")
+        .expect("a Real cell must still take a bare number");
+    session
+        .set_parameter("GateScope.scale", "3")
+        .expect("a Real cell must still take a bare integer");
+
+    // Same session, same panel: the dimensioned neighbour is still gated.
+    let err = session
+        .set_parameter("GateScope.width", "120")
+        .expect_err("the dimensioned neighbour must still reject a bare number");
+    assert!(err.contains("Length"), "got {err:?}");
+}
+
+/// A dimensioned cell whose dimension NO curated ladder covers stays settable:
+/// the bare number is the only input the panel can produce for it.
+///
+/// The reviewer_comprehensive correctness regression this closes: keying the
+/// gate on `!dimension.is_dimensionless()` alone refuses a bare `Int`/`Real`
+/// for ANY non-dimensionless `Type::Scalar`, but `parse_value_string` can only
+/// resolve the ten curated ladders' rungs plus `BUILTIN_UNITS` — so a dimension
+/// outside that union has NO accepted input at all and its cells become
+/// permanently uneditable through `set_parameter` (property editor AND the GUI
+/// MCP surface). Accepting the bare number restores the pre-#5757 SI-number
+/// behaviour for exactly those cells rather than inventing a new one.
+///
+/// Asserts the RULE — EXPRESSIBILITY, not dimensionedness — never an
+/// enumeration of dimension names.
+#[test]
+fn set_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_covers() {
+    use reify_core::DimensionVector;
+
+    // (a) PREMISE, asserted not assumed. If a future task adds a Money ladder
+    // or registers `USD`, this line fails FIRST with a legible reason instead
+    // of the test silently changing subject.
+    assert!(
+        !crate::display_units::unit_ladders()
+            .iter()
+            .any(|l| l.dimension == "Money"),
+        "this test needs a dimension with NO curated ladder; Money has one now — \
+         pick another uncovered dimension"
+    );
+    assert!(
+        !crate::engine::composed_unit_index()
+            .iter()
+            .any(|e| e.dimension == DimensionVector::MONEY),
+        "no spelling the composed index can parse may resolve to MONEY, or a united \
+         Money literal would be expressible and the bare number would not be the \
+         cell's only input"
+    );
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let loaded = session
+        .load_from_source(BARE_NUMBER_COVERAGE_SRC, "bare_number_coverage")
+        .expect("initial load");
+
+    /// The Money cell out of a payload — read twice, before and after the edit.
+    fn cost_cell(state: &crate::types::GuiState) -> &crate::types::ValueData {
+        state
+            .values
+            .iter()
+            .find(|v| v.name == "cost")
+            .expect("the Money cell must be in the payload")
+    }
+
+    // (b) The uncovered cell takes a bare number, and the magnitude lands
+    // verbatim as the canonical SI number.
+    //
+    // Asserted in BOTH states because the transition is the observable cost of
+    // leaving the Int/Real coercion to reify-eval (see
+    // `parse_value_string_for_cell`, which explains why this gate deliberately
+    // does not touch it). The `5USD` default compiles to a
+    // `Value::Scalar { MONEY }`, so the cell starts out carrying a dimension and
+    // an `si_value`; a bare-number edit replaces it with a `Value::Int`, which
+    // reify-eval accepts through that wildcard — and a non-Scalar has no
+    // dimension to report, so `dimension`/`si_value` go empty and `value` alone
+    // carries the magnitude. Pinned rather than described so a future change to
+    // that coercion surfaces here.
+    let before = cost_cell(&loaded);
+    assert_eq!(before.dimension, "Money", "the default is a dimensioned literal");
+    assert_eq!(
+        before.si_value,
+        Some(5.0),
+        "the default carries its SI magnitude; got {before:?}"
+    );
+
+    let state = session
+        .set_parameter("MoneyScope.cost", "6")
+        .expect("a Money cell has no expressible unit, so its bare number must be accepted");
+    let cost = cost_cell(&state);
+    assert_eq!(
+        cost.value, "6",
+        "the bare number must land verbatim as the canonical SI magnitude; got {cost:?}"
+    );
+    assert_eq!(
+        (cost.dimension.as_str(), cost.si_value),
+        ("", None),
+        "a bare number lands as a `Value::Int`, which has no dimension to report — \
+         the pre-#5757 behaviour this relaxation restores; got {cost:?}"
+    );
+
+    // (c) The COVERED neighbour, in the SAME session, is untouched by the
+    // relaxation — it has a ladder, so a unit is expressible and required.
+    let err = session
+        .set_parameter("MoneyScope.width", "120")
+        .expect_err("a Length cell has a curated ladder, so it must still reject a bare number");
+    assert!(err.contains("Length"), "got {err:?}");
+    session
+        .set_parameter("MoneyScope.width", "120mm")
+        .expect("a united Length literal must still be accepted");
+
+    // (d) The honest statement of what makes (b) necessary: `USD` is NOT
+    // parseable here. It lives only in the compiler's per-module
+    // `UnitRegistry`, which the composed index deliberately excludes — so
+    // refusing the bare number would leave the cell with no accepted input.
+    let err = session
+        .set_parameter("MoneyScope.cost", "6USD")
+        .expect_err("`USD` is outside the composed index — pinned as fact, not aspiration");
+    assert!(
+        err.contains("Cannot parse value") && err.contains("6USD"),
+        "got {err:?}"
+    );
+}
+
+/// NAMEDNESS IS NOT THE KEY — EXPRESSIBILITY IS.
+///
+/// Reconciled in place from
+/// `parse_value_string_for_cell_falls_back_to_the_display_form_for_a_composed_dimension`,
+/// whose subject was "the gate must not be keyed on `canonical_name().is_some()`".
+/// That subject survives verbatim; only the direction the evidence points has
+/// changed. Under the coverage-conditional rule the m^7 cell it built is no
+/// longer gated either — not because it lacks a name, but because it lacks a
+/// LADDER, which is the same reason the NAMED `Money`/`Torque` cells are not.
+///
+/// So the two are asserted to behave IDENTICALLY: a future edit that re-keys the
+/// gate on namedness (either polarity) splits them and fails here.
+///
+/// Driven at `parse_value_string_for_cell` directly rather than through
+/// `set_parameter`, because no `.ri` param type reaches that function carrying a
+/// nameless dimension: the surface syntax names its dimension, so every compiled
+/// cell that gets here has a canonical name.
+#[test]
+fn parse_value_string_for_cell_keys_the_gate_on_expressibility_not_on_namedness() {
+    use reify_core::{DimensionVector, Type};
+    use reify_ir::Value;
+
+    // m^7 — dimensionally meaningful, physically nobody's, and deliberately not
+    // in `NAMED_DIMENSIONS`. Asserted rather than assumed: if a future edit ever
+    // names it, this fails HERE with a clear reason instead of quietly testing
+    // the canonical-name path it was written to avoid.
+    let composed = DimensionVector::LENGTH.pow(7);
+    assert!(
+        composed.canonical_name().is_none(),
+        "this half needs a dimension with NO canonical name; {composed} has one now — \
+         pick another exponent vector"
+    );
+    assert!(
+        !composed.is_dimensionless(),
+        "m^7 must not be dimensionless, or the dimensionless arm would carry it"
+    );
+
+    // (e) Torque: NAMED, and still uncovered by any curated ladder. No `.ri`
+    // fixture is needed to reach it, and it is the dimension the frontend
+    // fixtures use for the same rule.
+    let named_but_unladdered = DimensionVector::TORQUE;
+    assert!(
+        named_but_unladdered.canonical_name().is_some(),
+        "this half needs a NAMED dimension, or it cannot discriminate namedness \
+         from coverage"
+    );
+    assert!(
+        !crate::display_units::unit_ladders()
+            .iter()
+            .any(|l| Some(l.dimension.as_str()) == named_but_unladdered.canonical_name()),
+        "this half needs a named dimension with NO curated ladder; Torque has one \
+         now — pick another"
+    );
+
+    // Both ungated, and for the same reason. `matches!` on Int rather than a
+    // bare `is_ok()` so a future edit that starts coercing the bare number into
+    // a `Scalar` of the cell's dimension is caught too.
+    for dimension in [composed, named_but_unladdered] {
+        let parsed = crate::engine::parse_value_string_for_cell("120", &Type::Scalar { dimension })
+            .unwrap_or_else(|e| {
+                panic!(
+                    "no rung of any curated ladder can express {dimension}, so refusing its \
+                     bare number would leave the cell with no accepted input; got {e:?}"
+                )
+            });
+        assert!(
+            matches!(parsed, Value::Int(120)),
+            "an ungated cell keeps the context-free parse verbatim; {dimension} gave {parsed:?}"
+        );
+
+        // The gate stays scoped to Int/Real either way: a UNITED literal parses
+        // fine here and is left for reify-eval's `DimensionMismatch`, which is
+        // the layer that actually knows the two dimensions disagree.
+        crate::engine::parse_value_string_for_cell("120mm", &Type::Scalar { dimension })
+            .unwrap_or_else(|e| {
+                panic!("a united literal must still parse for {dimension}; got {e:?}")
+            });
+    }
+}
+
+/// An `Option<Length>` cell is gated exactly like a `Length` one.
+///
+/// The shape is real in tree — `examples/option_map_or.ri` (`param empty :
+/// Option<Length> = none`), `crates/reify-compiler/stdlib/flexures.ri`
+/// (`parasitic_error`), four `Option<Pressure>` params in
+/// `stdlib/fdm_correlations.ri`. Matching `Type::Scalar` directly skipped every
+/// one of them, and the `none`-valued state is reachable from the panel's own
+/// gate: `display_scalar` returns `None` for `Value::Option(None)`, so
+/// `format_determined_cell` emits `dimension: ""` and `acceptsBareNumber('', …)`
+/// lets the bare number through to be refused here.
+///
+/// Not a corruption either way — reify-eval maps `Value::Int` onto
+/// `Type::Int | Type::Scalar { .. }` only, so the Option cell hard-errors
+/// regardless. What the unwrap buys is the ACTIONABLE message this task exists
+/// to produce, in place of a generic `TypeKindMismatch`.
+#[test]
+fn parse_value_string_for_cell_gates_through_an_option_wrapper() {
+    use reify_core::{DimensionVector, Type};
+    use reify_ir::Value;
+
+    let optional_length = Type::Option(Box::new(Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    }));
+
+    // (a) A bare number is refused, with the same words the unwrapped cell gets.
+    let err = crate::engine::parse_value_string_for_cell("120", &optional_length)
+        .expect_err("a bare number is as ambiguous in an Option<Length> cell as in a Length one");
+    let bare = crate::engine::parse_value_string_for_cell("120", &Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    })
+    .expect_err("premise: the unwrapped Length cell refuses it");
+    assert_eq!(
+        err, bare,
+        "the Option wrapper must not change the diagnostic — it is the same cell content"
+    );
+
+    // (b) A united literal still commits, so the wrapper does not brick the row.
+    let parsed = crate::engine::parse_value_string_for_cell("120mm", &optional_length)
+        .expect("a united literal must still parse for an Option<Length> cell");
+    assert!(
+        matches!(parsed, Value::Scalar { dimension, .. } if dimension == DimensionVector::LENGTH),
+        "`120mm` must resolve to a Length Scalar; got {parsed:?}"
+    );
+
+    // (c) An UNCOVERED dimension stays ungated through the wrapper too — the
+    //     unwrap changes which type is inspected, never the coverage rule.
+    let optional_torque = Type::Option(Box::new(Type::Scalar {
+        dimension: DimensionVector::TORQUE,
+    }));
+    assert!(
+        matches!(
+            crate::engine::parse_value_string_for_cell("120", &optional_torque),
+            Ok(Value::Int(120))
+        ),
+        "Option<Torque> has no curated ladder, so its bare number must survive"
+    );
+
+    // (d) Nothing was accepted that was not accepted before: `none` is not a
+    //     literal this parser has ever produced, on either shape.
+    assert!(
+        crate::engine::parse_value_string_for_cell("none", &optional_length).is_err(),
+        "`none` is not parseable here, so the gate cannot have removed it"
+    );
+}
+
+/// EVERY curated ladder's dimension is gated, and the rung its refusal names
+/// parses back to that same dimension.
+///
+/// `LADDER_COVERAGE` is the table that decides which cells get their bare
+/// number refused, and `dimension_requires_unit`'s doc claims the refusal
+/// "cannot name a unit the index could not have parsed" — total by
+/// construction. That claim was argued for ten dimensions and executed for one
+/// (`Length`, by the two tests either side of this one). Here it is made
+/// checkable for all of them: coverage implies the gate fires, and the rung
+/// coverage names for a dimension parses back through `parse_value_string` to
+/// that same dimension.
+///
+/// Driven off `unit_ladders()` rather than a hand-written list of dimension
+/// names, so a new curated ladder is covered automatically — the same
+/// table-derived convention as the accept-set block above, and for the same
+/// reason: a mirrored list here would be one more copy of the curated table to
+/// keep in sync.
+#[test]
+fn every_curated_ladder_dimension_is_gated_and_names_a_rung_that_parses() {
+    use crate::engine::{dimension_requires_unit, normalize_unit_label};
+    use reify_core::Type;
+
+    // Non-unit, so a stray `* 1.0` cannot pass; integral, so `format!` renders
+    // no decimal point or exponent to perturb the remainder parse.
+    const MAGNITUDE: f64 = 3.0;
+
+    let ladders = crate::display_units::unit_ladders();
+    let mut gated = 0usize;
+    for ladder in &ladders {
+        let dimension = dimension_for_ladder_name(&ladder.dimension);
+        let (name, rung) = dimension_requires_unit(&dimension).unwrap_or_else(|| {
+            panic!(
+                "ladder {:?} registers rungs in the composed index, so a bare number in \
+                 one of its cells IS ambiguous and must be gated — an unrecorded ladder \
+                 means coverage and the index disagree",
+                ladder.dimension
+            )
+        });
+        assert_eq!(
+            name, ladder.dimension,
+            "coverage must report the ladder's OWN dimension name, since that is the \
+             word the refusal puts in front of the user"
+        );
+        assert!(
+            ladder
+                .units
+                .iter()
+                .any(|u| normalize_unit_label(&u.label) == rung),
+            "the example rung {rung:?} must be one of ladder {:?}'s own rungs, not a \
+             plausible-looking string; its rungs are {:?}",
+            ladder.dimension,
+            ladder.units.iter().map(|u| &u.label).collect::<Vec<_>>()
+        );
+
+        // The named rung round-trips: it parses, and to THIS dimension. This is
+        // the totality claim — the refusal cannot name a unit the index could
+        // not have parsed.
+        let literal = format!("{MAGNITUDE}{rung}");
+        let parsed = parse_value_string(&literal).unwrap_or_else(|e| {
+            panic!("the rung {rung:?} named for {name} must itself parse; got {e}")
+        });
+        let reify_ir::Value::Scalar {
+            dimension: got_dim, ..
+        } = parsed
+        else {
+            panic!("{literal:?} must parse to a Value::Scalar; got {parsed:?}");
+        };
+        assert_eq!(
+            got_dim, dimension,
+            "{literal:?} must resolve to the dimension whose refusal named it"
+        );
+
+        // And the gate really fires for a cell of this dimension.
+        //
+        // Only that it FIRES is asserted. The message's CONTENT is not re-checked
+        // here: it is formatted from the very `(name, rung)` this loop already
+        // holds, so `err.contains(name)` would hold for any coverage table
+        // including a wrong one. The claim that the words are usable is carried
+        // by the round-trip above (the named rung parses, and to this dimension)
+        // and by `the_bare_number_refusal_names_a_rung_from_the_cells_own_ladder`,
+        // which derives its expectation from `unit_ladders()` instead.
+        crate::engine::parse_value_string_for_cell("120", &Type::Scalar { dimension }).expect_err(
+            "a covered dimension must refuse a bare number — that is what coverage MEANS",
+        );
+        gated += 1;
+    }
+    assert!(
+        gated >= 10,
+        "expected at least the ten curated ladders to be gated, got {gated} — the \
+         curated table shrank and this loop is no longer covering what it claims"
+    );
+}
+
+/// The backend gates every dimension the FRONTEND's static floor gates, and
+/// parses every label that floor admits.
+///
+/// `acceptsBareNumber` (`gui/src/stores/unitLadder.ts`) no longer fails open
+/// unconditionally when the `get_unit_ladders` fetch has not resolved or has
+/// failed. It keeps gating the `BASE_UNIT_DIMENSIONS` floor — the dimensions of
+/// the five `BASE_UNIT_LABELS` its alphabet carries unconditionally — because
+/// THIS side's `LADDER_COVERAGE` is built from the Rust-authored curated table
+/// and is always populated. Failing open on that path made the two ends disagree
+/// exactly where the panel could not see the ladders, and in the harmful
+/// direction: the panel accepted `80` in a Length cell, the engine refused it,
+/// and the typed text was discarded behind an async toast (task #5757
+/// amendment).
+///
+/// This is the direction that has to hold for that floor to be safe — the panel
+/// must never refuse INLINE what the engine would have accepted. Asserting it
+/// here, where the coverage table lives, is what stops a future curated-table
+/// edit from dropping the Length or Angle ladder and quietly bricking every such
+/// row in the ladder-less panel: coverage would go away on this side while the
+/// frontend's static floor kept gating.
+///
+/// THE FLOOR IS MIRRORED BY HAND, deliberately. It is not derived from
+/// `unit_ladders()` because it is not derived from `unit_ladders()` on the
+/// frontend either: it is the five labels `PropertyEditor` hard-coded before
+/// task #6028 made the alphabet ladder-derived, frozen so every ladder-less
+/// caller stays byte-identical to that behaviour. There is no table to derive it
+/// from, and five strings are not the curated table, so the standing #5788 D6
+/// prohibition on mirroring curated labels is untouched.
+#[test]
+fn every_dimension_the_frontend_floor_gates_is_gated_here_too() {
+    use crate::engine::dimension_requires_unit;
+
+    // `BASE_UNIT_LABELS` paired with `BASE_UNIT_DIMENSIONS`, i.e. each floor
+    // label alongside the canonical dimension name the frontend records for it.
+    const FLOOR: [(&str, &str); 5] = [
+        ("mm", "Length"),
+        ("cm", "Length"),
+        ("m", "Length"),
+        ("deg", "Angle"),
+        ("rad", "Angle"),
+    ];
+    // Non-unit, so a stray `* 1.0` cannot pass; integral, so `format!` renders
+    // no decimal point or exponent to perturb the remainder parse.
+    const MAGNITUDE: f64 = 3.0;
+
+    for (label, dimension_name) in FLOOR {
+        let dimension = dimension_for_ladder_name(dimension_name);
+
+        // (1) The floor's dimension is gated HERE, so the frontend gating it on
+        //     the ladders-absent path can only ever AGREE with the engine.
+        let (name, _rung) = dimension_requires_unit(&dimension).unwrap_or_else(|| {
+            panic!(
+                "the frontend's static floor gates {dimension_name} unconditionally, so this \
+                 side must gate it too — otherwise a ladders-less panel refuses a bare number \
+                 inline that `set_parameter` would have accepted"
+            )
+        });
+        assert_eq!(
+            name, dimension_name,
+            "coverage must report the floor's own dimension name — it is the word the panel \
+             and the engine both put in front of the user"
+        );
+
+        // (2) The floor's LABEL parses, and to that same dimension. This is what
+        //     keeps the ladders-absent seed honest: `editSeedUnitLabel` falls
+        //     back to the cell's `unit` badge there, so `80` + `mm` must be a
+        //     literal this engine takes.
+        let literal = format!("{MAGNITUDE}{label}");
+        let parsed = parse_value_string(&literal).unwrap_or_else(|e| {
+            panic!("the floor label {label:?} must parse through the composed index; got {e}")
+        });
+        let reify_ir::Value::Scalar {
+            dimension: got_dim, ..
+        } = parsed
+        else {
+            panic!("{literal:?} must parse to a Value::Scalar; got {parsed:?}");
+        };
+        assert_eq!(
+            got_dim, dimension,
+            "{literal:?} must resolve to {dimension_name} — the dimension the frontend's floor \
+             files it under"
+        );
+    }
+}
+
+/// The refusal a COVERED cell gets names its dimension and a rung from ITS OWN
+/// ladder — and does not claim a unit picker.
+///
+/// The picker claim was actively misleading: `pickerLadder` in
+/// `gui/src/panels/PropertyEditor.tsx` renders no `<select>` for a ladder with
+/// fewer than two rungs, and the `Force`/`Energy`/`Power` ladders carry exactly
+/// one each, so those cells were told to consult a control that does not exist.
+///
+/// The expected rung is DERIVED from `unit_ladders()` — any rung of the cell's
+/// own ladder satisfies it — rather than mirroring the implementation's choice
+/// of which one to name, which would make this a tautology.
+#[test]
+fn the_bare_number_refusal_names_a_rung_from_the_cells_own_ladder() {
+    use reify_core::{DimensionVector, Type};
+
+    let err = crate::engine::parse_value_string_for_cell("120", &Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    })
+    .expect_err("a covered cell must still refuse a bare number");
+
+    let ladder = crate::display_units::unit_ladders()
+        .into_iter()
+        .find(|l| l.dimension == "Length")
+        .expect("Length must have a curated ladder, or this test has no subject");
+    assert!(
+        ladder.units.iter().any(|u| {
+            err.contains(&format!(
+                "'120{}'",
+                crate::engine::normalize_unit_label(&u.label)
+            ))
+        }),
+        "the refusal must show a CONCRETE literal built from the offending input and a \
+         rung of this cell's own ladder; got {err:?}"
+    );
+    assert!(
+        err.contains("Length"),
+        "the refusal must still name the expected dimension; got {err:?}"
+    );
+    assert!(
+        !err.contains("picker"),
+        "the refusal must not point at a unit picker — the one-rung Force/Energy/Power \
+         ladders render none; got {err:?}"
+    );
+}
+
+/// The literal a refusal suggests must be one the FRONTEND would also accept.
+///
+/// `parse_value_string` trims internally, so a padded input reaches the gate
+/// intact and used to be interpolated verbatim on both sides: `" 120 "` was
+/// quoted back as `' 120 '` and suggested as `' 120 mm'`. This backend accepts
+/// that spelling, but the panel's `buildQuantityRe`
+/// (`gui/src/stores/unitLadder.ts`) allows no whitespace between magnitude and
+/// unit — mirroring the .ri grammar's `token.immediate` — so the message was
+/// handing the user a literal the panel then refuses inline.
+///
+/// The suggested literal is EXTRACTED from the message and fed back through
+/// `parse_value_string`, so this pins the round-trip rather than the wording:
+/// whatever the refusal proposes must parse, and parse to the cell's own
+/// dimension.
+#[test]
+fn the_bare_number_refusal_suggests_a_literal_in_the_canonical_spelling() {
+    use reify_core::{DimensionVector, Type};
+
+    let err = crate::engine::parse_value_string_for_cell(" 120 ", &Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    })
+    .expect_err("a padded bare number is still a bare number");
+
+    assert!(
+        err.contains("'120"),
+        "the refusal must quote the input in its trimmed form; got {err:?}"
+    );
+
+    let suggested = err
+        .split("such as '")
+        .nth(1)
+        .and_then(|rest| rest.split('\'').next())
+        .unwrap_or_else(|| panic!("the refusal must suggest a concrete literal; got {err:?}"));
+    assert!(
+        !suggested.chars().any(char::is_whitespace),
+        "the suggested literal {suggested:?} must carry no whitespace, or the panel's \
+         whitespace-free quantity grammar refuses it inline"
+    );
+
+    let parsed = parse_value_string(suggested)
+        .unwrap_or_else(|e| panic!("the suggested literal {suggested:?} must parse; got {e}"));
+    let reify_ir::Value::Scalar { dimension, .. } = parsed else {
+        panic!("{suggested:?} must parse to a Value::Scalar; got {parsed:?}");
+    };
+    assert_eq!(
+        dimension,
+        DimensionVector::LENGTH,
+        "the suggested literal must resolve to the cell's OWN dimension"
+    );
+}
+
+/// A `Bool` for a `Length` cell still falls through to reify-eval.
+///
+/// The gate is scoped to `Value::Int`/`Value::Real` precisely so every other
+/// variant keeps producing reify-eval's own diagnostics — here the
+/// `TypeKindMismatch` that `set_parameter_edit_check_err_still_fires_solve_finished`
+/// depends on. A broader gate would silently change that test's observable.
+#[test]
+fn set_parameter_bool_for_a_length_cell_still_yields_the_engine_type_kind_mismatch() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load");
+
+    let err = session
+        .set_parameter("Bracket.width", "true")
+        .expect_err("a Bool for a Length cell must still be rejected");
+    assert!(
+        err.contains("type-kind mismatch"),
+        "the Bool path must still surface reify-eval's TypeKindMismatch, not the \
+         new bare-number message; got {err:?}"
+    );
+}
+
+/// An unknown cell still reports "Unknown parameter", which also locks in the
+/// cell-lookup-before-parse ordering the dimension-aware parse requires.
+#[test]
+fn set_parameter_unknown_cell_still_reports_unknown_parameter() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load");
+
+    let err = session
+        .set_parameter("Nonexistent.param", "50mm")
+        .expect_err("an unknown cell must still be rejected");
+    assert!(
+        err.contains("Unknown parameter"),
+        "got {err:?}"
     );
 }
 
@@ -9158,9 +10662,15 @@ fn get_mechanism_descriptors_does_not_warn_for_normally_named_params() {
 
 // ---- amendment review tests (suggestions 1, 3, 4) ---------------------------
 
-/// Source for unsupported-unit test: bind(y_axis, 50inch) where "inch" is not
-/// in UNIT_TABLE.  initial_value_si must be None and a DEBUG event must fire at
+/// Source for unsupported-unit test: bind(y_axis, 50inch), where "inch" is not a
+/// symbol `reify_core::unit_symbol_to_si` resolves — the DSL spells inches `in`.
+/// initial_value_si must be None and a DEBUG event must fire at
 /// `reify_gui::engine::literal_bind`.
+///
+/// Task #5757 widened this site from the retired five-entry table to the full
+/// builtin symbol set; "inch" is outside BOTH, so this stays the unresolvable
+/// case. `bind(y_axis, 3in)` — the spelling that DID move — is covered by
+/// `literal_bind_resolves_the_builtin_unit_symbols_the_old_table_dropped`.
 const SNAPSHOT_UNSUPPORTED_UNIT_BIND_SOURCE: &str = r#"
 structure Kinematic {
     let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
@@ -9170,8 +10680,8 @@ structure Kinematic {
 }
 "#;
 
-/// `bind(y_axis, 50inch)` — "inch" is not in UNIT_TABLE — must produce
-/// `JointBinding::LiteralBound { initial_value_si: None, scrubbable: true }`
+/// `bind(y_axis, 50inch)` — "inch" is not a resolvable DSL unit symbol — must
+/// produce `JointBinding::LiteralBound { initial_value_si: None, scrubbable: true }`
 /// AND emit exactly one DEBUG event at the `literal_bind` target.
 #[test]
 fn get_mechanism_descriptors_literal_bind_with_unsupported_unit_yields_none_and_logs_debug() {
@@ -9215,6 +10725,225 @@ fn get_mechanism_descriptors_literal_bind_with_unsupported_unit_yields_none_and_
         matches!(joint.binding, crate::types::JointBinding::LiteralBound { initial_value_si: None, .. }),
         "unsupported unit must produce LiteralBound with initial_value_si=None; got {:?}",
         joint.binding
+    );
+}
+
+// ---- bind(joint, <quantity>) — the second UNIT_TABLE lookup site (task #5757) ----
+//
+// `collect_snapshot_bind_pairs`'s `BindValue::Literal` arm resolves the value
+// side of `bind(joint, <quantity>)` inside a `snapshot(...)` call. It did its
+// own lookup over the same five-entry `UNIT_TABLE`, so every other DSL unit
+// symbol silently lost its value to `initial_value_si: None` — the joint slider
+// then has no initial position.
+//
+// This site's universe is DSL SOURCE TOKENS, not GUI display labels: it consumes
+// an already-parsed `reify_ast::UnitExpr` produced by the .ri lexer. It therefore
+// delegates to `reify_core::unit_symbol_to_si` and NOT to the ladder-backed
+// `resolve_unit_label` — admitting `L` or `mm³` here would let the GUI resolve a
+// literal the compiler itself rejects, manufacturing a GUI/compiler disagreement
+// in the opposite direction to the one this task fixes.
+
+/// `bind(y_axis, 3in)` — `in` is a DSL built-in symbol the five-entry GUI table
+/// dropped.
+const SNAPSHOT_INCH_BIND_SOURCE: &str = r#"
+structure Kinematic {
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+    let snap   = snapshot(m1, [bind(y_axis, 3in)])
+}
+"#;
+
+/// `bind(y_axis, 2kg)` — a MASS-dimensioned literal, a dimension the old table
+/// could not resolve at all.
+const SNAPSHOT_KILOGRAM_BIND_SOURCE: &str = r#"
+structure Kinematic {
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+    let snap   = snapshot(m1, [bind(y_axis, 2kg)])
+}
+"#;
+
+/// `bind(y_axis, 2s)` — a TIME-dimensioned literal. `s` reaches the resolver
+/// only through `BUILTIN_UNITS`; no curated display ladder carries it.
+const SNAPSHOT_SECOND_BIND_SOURCE: &str = r#"
+structure Kinematic {
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+    let snap   = snapshot(m1, [bind(y_axis, 2s)])
+}
+"#;
+
+/// `bind(y_axis, 5kg/m^3)` — a COMPOUND unit expression (`UnitExpr::Div`).
+const SNAPSHOT_COMPOUND_DIV_BIND_SOURCE: &str = r#"
+structure Kinematic {
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+    let snap   = snapshot(m1, [bind(y_axis, 5kg/m^3)])
+}
+"#;
+
+/// `bind(y_axis, 5m^2)` — a COMPOUND unit expression (`UnitExpr::Pow`).
+const SNAPSHOT_COMPOUND_POW_BIND_SOURCE: &str = r#"
+structure Kinematic {
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+    let snap   = snapshot(m1, [bind(y_axis, 5m^2)])
+}
+"#;
+
+/// Read the single joint's `LiteralBound.initial_value_si` for a source.
+fn literal_bind_initial_value_si(src: &str) -> Option<f64> {
+    let mut session = make_session();
+    session
+        .load_from_source(src, "kinematic")
+        .expect("bind-literal source should load");
+    let descriptors = session.get_mechanism_descriptors();
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .expect("expected descriptor with bodies_count=1");
+    match &m1_desc.joints[0].binding {
+        crate::types::JointBinding::LiteralBound {
+            initial_value_si, ..
+        } => *initial_value_si,
+        other => panic!("expected LiteralBound for a literal bind; got {other:?}"),
+    }
+}
+
+/// Bare DSL unit symbols outside the retired five-entry table now resolve to an
+/// SI value instead of silently degrading to `None`.
+#[test]
+fn literal_bind_resolves_the_builtin_unit_symbols_the_old_table_dropped() {
+    let inch = literal_bind_initial_value_si(SNAPSHOT_INCH_BIND_SOURCE);
+    let expected = 3.0 * 0.0254;
+    match inch {
+        Some(v) => assert!(
+            (v - expected).abs() < 1e-10,
+            "bind(y_axis, 3in) → {v}, expected {expected}"
+        ),
+        None => panic!("bind(y_axis, 3in) must resolve an SI value, not degrade to None"),
+    }
+
+    match literal_bind_initial_value_si(SNAPSHOT_KILOGRAM_BIND_SOURCE) {
+        Some(v) => assert!((v - 2.0).abs() < 1e-10, "bind(y_axis, 2kg) → {v}, expected 2"),
+        None => panic!("bind(y_axis, 2kg) must resolve an SI value, not degrade to None"),
+    }
+
+    match literal_bind_initial_value_si(SNAPSHOT_SECOND_BIND_SOURCE) {
+        Some(v) => assert!((v - 2.0).abs() < 1e-10, "bind(y_axis, 2s) → {v}, expected 2"),
+        None => panic!("bind(y_axis, 2s) must resolve an SI value, not degrade to None"),
+    }
+}
+
+/// Compound unit EXPRESSIONS stay unresolved.
+///
+/// The `UnitExpr::Mul`/`Div`/`Pow` arm is explicitly deferred — its in-code note
+/// assigns the compound resolver to task γ (#3803), which needs a per-module
+/// `UnitRegistry` rebuilt GUI-side. Widening the bare-symbol arm must not
+/// quietly widen this one, so the deferral is pinned rather than left implicit.
+#[test]
+fn literal_bind_still_defers_compound_unit_expressions_to_task_3803() {
+    assert_eq!(
+        literal_bind_initial_value_si(SNAPSHOT_COMPOUND_DIV_BIND_SOURCE),
+        None,
+        "bind(y_axis, 5kg/m^3) is a UnitExpr::Div — the compound resolver is task γ (#3803)"
+    );
+    assert_eq!(
+        literal_bind_initial_value_si(SNAPSHOT_COMPOUND_POW_BIND_SOURCE),
+        None,
+        "bind(y_axis, 5m^2) is a UnitExpr::Pow — the compound resolver is task γ (#3803)"
+    );
+}
+
+/// `bind(y_axis, 5MPa)` — `MPa` is a curated PRESSURE ladder rung and a unit the
+/// compiler's own registry resolves (`si_units.rs` generates `Pa` with the
+/// `k`/`M`/`G` prefixes), but NOT a `BUILTIN_UNITS` symbol.
+const SNAPSHOT_LADDER_ONLY_LABEL_BIND_SOURCE: &str = r#"
+structure Kinematic {
+    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let m0     = mechanism()
+    let m1     = body(m0, "solid_a", y_axis)
+    let snap   = snapshot(m1, [bind(y_axis, 5MPa)])
+}
+"#;
+
+/// This site resolves DSL symbols, never GUI display labels — plus the bounded
+/// SUBSET of the DSL the `BUILTIN_UNITS` delegation currently reaches.
+///
+/// TWO DIFFERENT THINGS ARE PINNED HERE; only the first is a designed boundary.
+///
+/// (a) THE BOUNDARY. The curated display labels `L`, `mm³`, `kg/m³`, `mm^3` are
+/// not `BUILTIN_UNITS` symbols and must never resolve here — admitting them
+/// would let the GUI read a literal by a table the compiler does not share.
+///
+/// The superscript spellings cannot be tested through the engine at all: they
+/// have never been lexable, so the compiler rejects such a source outright with
+/// `unknown unit:` and no `.ri` file can carry one into this site. The table is
+/// the only observable for those. `L` and `mm^3` ARE `.ri`-writable since task
+/// λ (#5788) declared `pub unit L : Volume` in `reify-compiler/stdlib/units.ri`
+/// and relabelled the curated ladders to the ASCII exponent alphabet — but they
+/// resolve through the compiler's unit machinery (a `units.ri` declaration for
+/// `L`, the unit-expression grammar for `mm^3`), never through
+/// `unit_symbol_to_si`, so the boundary this asserts is untouched by that.
+///
+/// (b) THE DEFERRED GAP, `5MPa`. `MPa` is a curated Pressure rung that the
+/// compiler DOES resolve — `si_units.rs` generates `Pa` with the `k`/`M`/`G`
+/// prefixes — while `BUILTIN_UNITS` does not carry it, so this site silently
+/// drops it. That is the same class as the user-declared `km`/`ft`/`psi` gap in
+/// the `None` arm's own note, and six curated rungs sit in it (`Pa`, `kPa`,
+/// `MPa`, `GPa`, `N`, `J`, `W`). It is NOT a boundary: closing it is task γ
+/// (#3803)'s registry work, and doing so means UPDATING the assertion below to
+/// the resolved value, not preserving the `None`.
+///
+/// Structurally, in fact, every literal that REACHES this site is
+/// compiler-resolvable — an unresolvable one fails to compile — so `None` here
+/// always means the GUI is behind the compiler, never that the GUI is holding a
+/// line. What guards the direction that matters is (a).
+#[test]
+fn literal_bind_universe_is_dsl_symbols_not_gui_display_labels() {
+    // (a) The display-only spellings are outside the DSL table entirely.
+    for label in ["L", "mm\u{00B3}", "kg/m\u{00B3}", "mm^3"] {
+        assert!(
+            reify_core::unit_symbol_to_si(label).is_none(),
+            "{label:?} is a display label, not a DSL unit symbol — the bind site \
+             must not be able to resolve it"
+        );
+    }
+    // …while the symbols this site DOES admit are exactly the builtin ones.
+    for label in ["in", "kg", "g", "s", "K", "A", "mol", "cd"] {
+        assert!(
+            reify_core::unit_symbol_to_si(label).is_some(),
+            "{label:?} must be resolvable as a DSL unit symbol"
+        );
+    }
+
+    // (b) The gap, pinned as CURRENT STATE. The premise: the composed index
+    // carries `MPa` and `BUILTIN_UNITS` does not, so the two delegations
+    // genuinely differ on it.
+    assert!(
+        reify_core::unit_symbol_to_si("MPa").is_none(),
+        "premise: `MPa` must be outside BUILTIN_UNITS for this to discriminate"
+    );
+    assert!(
+        crate::engine::composed_unit_index()
+            .iter()
+            .any(|e| e.label == "MPa"),
+        "premise: `MPa` must be IN the composed index (it is a curated Pressure \
+         ladder rung) for this to discriminate"
+    );
+    assert_eq!(
+        literal_bind_initial_value_si(SNAPSHOT_LADDER_ONLY_LABEL_BIND_SOURCE),
+        None,
+        "bind(y_axis, 5MPa) does not resolve today: this site delegates to \
+         BUILTIN_UNITS, which lacks the SI-derived prefixed units the compiler \
+         generates. A Some here means either the gap was closed (task γ #3803 — \
+         update this to the resolved value) or the site was rewired to the \
+         ladder-backed composed index (a regression: see (a))."
     );
 }
 
@@ -10727,6 +12456,7 @@ fn make_test_mesh_data() -> crate::types::MeshData {
         indices: vec![0, 1, 2],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -11045,6 +12775,86 @@ fn apply_fea_channels_without_error_indicator_omits_error_indicator_channel() {
     );
 }
 
+// --- scalar_channel_tags producer stamping (task #6185) ---
+//
+// The FEA channel producers must stamp `ScalarChannelTag::pressure()` beside
+// each channel they insert, so the GUI legend can name the unit and the range
+// computation knows the channel is unsigned.  Compiles after step-2; FAILS on
+// the empty tags map until step-4 wires the stamping into engine.rs.
+
+/// apply_fea_channels tags the vonMises channel with the declared pressure unit.
+#[test]
+fn apply_fea_channels_tags_von_mises_as_pressure() {
+    let stress_sf = make_stress_field();
+    let disp_sf = make_disp_field();
+    let map = make_elastic_result_value_map(stress_sf, disp_sf);
+    let mut meshes = vec![make_test_mesh_data()];
+
+    crate::engine::apply_fea_channels(&mut meshes, &map, None);
+
+    let mesh = &meshes[0];
+    assert_eq!(
+        mesh.scalar_channel_tags.get("vonMises"),
+        Some(&crate::types::ScalarChannelTag::pressure()),
+        "vonMises must be tagged as an unsigned Pa channel"
+    );
+}
+
+/// apply_fea_channels tags errorIndicator as pressure when the indicator is
+/// populated, and stamps NO errorIndicator tag when it is absent — an orphan
+/// tag would trip the step-2 serialize contract.
+#[test]
+fn apply_fea_channels_tags_error_indicator_as_pressure() {
+    // (a) Populated indicator ⇒ channel present AND tagged.
+    let map = make_elastic_result_value_map_with_indicator(
+        make_stress_field(),
+        make_disp_field(),
+        Some(make_scalar_field()),
+    );
+    let mut meshes = vec![make_test_mesh_data()];
+    crate::engine::apply_fea_channels(&mut meshes, &map, None);
+    assert_eq!(
+        meshes[0].scalar_channel_tags.get("errorIndicator"),
+        Some(&crate::types::ScalarChannelTag::pressure()),
+        "errorIndicator must be tagged as an unsigned Pa channel when populated"
+    );
+
+    // (b) Absent indicator ⇒ NO channel and, critically, NO orphan tag.
+    let map_none = make_elastic_result_value_map(make_stress_field(), make_disp_field());
+    let mut meshes_none = vec![make_test_mesh_data()];
+    crate::engine::apply_fea_channels(&mut meshes_none, &map_none, None);
+    assert!(
+        !meshes_none[0]
+            .scalar_channels
+            .contains_key("errorIndicator"),
+        "errorIndicator channel must be absent when error_indicator is Option(None)"
+    );
+    assert!(
+        !meshes_none[0]
+            .scalar_channel_tags
+            .contains_key("errorIndicator"),
+        "no errorIndicator TAG may be stamped when the channel is absent — an \
+         orphan tag hard-fails MeshData::serialize"
+    );
+}
+
+/// The tagged mesh the producers actually emit satisfies the step-2 serialize
+/// contracts on real FEA data.  This is the check that would catch a genuinely
+/// negative von-Mises sample reaching an unsigned-tagged channel.
+#[test]
+fn apply_fea_channels_tagged_mesh_serializes() {
+    let map = make_elastic_result_value_map_with_indicator(
+        make_stress_field(),
+        make_disp_field(),
+        Some(make_scalar_field()),
+    );
+    let mut meshes = vec![make_test_mesh_data()];
+    crate::engine::apply_fea_channels(&mut meshes, &map, None);
+
+    serde_json::to_value(&meshes[0])
+        .expect("a tagged FEA mesh must satisfy the orphan-tag and unsigned-negative contracts");
+}
+
 // ── Task 3001 step-7: RED — extract_fea_convergence ───────────────────────────
 //
 // `extract_fea_convergence(values, active_case)` resolves the active
@@ -11183,6 +12993,7 @@ fn apply_shell_channels_populates_matching_mesh() {
         indices: vec![0, 1, 2],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -11232,6 +13043,41 @@ fn apply_shell_channels_populates_matching_mesh() {
         .expect("populated shell MeshData must serialize (length contracts hold)");
 }
 
+/// apply_shell_channels tags all three vonMises variants as pressure channels
+/// (task #6185).
+#[test]
+fn apply_shell_channels_tags_all_three_von_mises_variants_as_pressure() {
+    let mut meshes = vec![crate::types::MeshData {
+        entity_path: "FeaShellFlexure#realization[0]".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 9.0, 9.0, 9.0, 3.0, 3.0, 3.0],
+        indices: vec![0, 1, 2],
+        normals: None,
+        scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
+        displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        element_index: None,
+        vector_channels: std::collections::HashMap::new(),
+        appearance: None,
+    }];
+    let views = vec![make_test_shell_view()];
+
+    crate::engine::apply_shell_channels(&mut meshes, &views);
+
+    let mesh = &meshes[0];
+    for key in ["vonMises_top", "vonMises_mid", "vonMises_bottom"] {
+        assert_eq!(
+            mesh.scalar_channel_tags.get(key),
+            Some(&crate::types::ScalarChannelTag::pressure()),
+            "{key} must be tagged as an unsigned Pa channel"
+        );
+    }
+
+    serde_json::to_value(mesh)
+        .expect("a tagged shell MeshData must satisfy the scalar_channel_tags contracts");
+}
+
 /// apply_shell_channels leaves a non-matching mesh entirely untouched.
 #[test]
 fn apply_shell_channels_leaves_non_matching_mesh_untouched() {
@@ -11241,6 +13087,7 @@ fn apply_shell_channels_leaves_non_matching_mesh_untouched() {
         indices: vec![0, 1, 2],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -11294,6 +13141,7 @@ fn element_kind_count_histograms_element_kind_bytes() {
         indices: Vec::new(),
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind,
         region_tags: None,
@@ -14326,7 +16174,7 @@ structure Part {
 ///
 /// The `Ok` assertion alone is the proof: the stub would return `Err` here, so
 /// an `Ok` can only arise if the real checker is wired into `EngineSession`.
-/// This test mirrors the CLI smoke in `crates/reify-cli/tests/cli_auto_type_param_select.rs`
+/// This test mirrors the CLI smoke in `crates/reify-cli/tests/harness_cli/cli_auto_type_param_select.rs`
 /// (step-8) and completes §11.2 row "LSP/MCP/CLI/GUI binary surface" (task ζ).
 #[test]
 fn auto_type_param_real_checker_selects_in_gui_engine() {
@@ -14803,7 +16651,7 @@ fn build_gui_state_no_display_output_yields_empty_display_panes() {
 fn build_gui_state_drops_display_output_with_unresolved_subject() {
     // `param b : Solid` with no default compiles legally (the Reify compiler
     // accepts geometry-typed params without a constructor; confirmed by
-    // crates/reify-compiler/tests/geometry_profile_precondition_tests.rs).
+    // crates/reify-compiler/tests/harness_geometry_solver/geometry_profile_precondition_tests.rs).
     // At eval time, the cell has no `RealizationDecl`, so
     // `mint_symbolic_geometry_handles_into_values` skips it and the
     // evaluator writes `Value::Undef` for it (no default_expr → Undef path
@@ -16266,6 +18114,53 @@ fn update_source_emits_fea_diagnostics() {
     );
 }
 
+/// apply_param_to_source_emits_fea_diagnostics (INV-GUI-2 / gui-state-sync L4;
+/// task 5096 γ).
+///
+/// Behavioural regression covering the `apply_param_to_source` production
+/// entry point — and, more precisely, the COUNT. `apply_param_to_source`
+/// deliberately has no emit of its own: its emit rides the `update_source`
+/// recompile it already performs, which fires `post_engine_call_telemetry`
+/// after `commit_state`. EXACTLY ONE event is therefore the guard that the
+/// write-back inherits the shared choke-point instead of adding a second emit
+/// path — the hook θ extends when it brings the δ MCP write tools into this
+/// cluster.
+///
+/// Setup mirrors `update_source_emits_fea_diagnostics`: prime the session
+/// first (here with the tempdir-backed `writeback_session`, since the
+/// write-back needs a canonical on-disk `.ri`), THEN install the recorder so
+/// only the write-back's emit is counted.
+#[test]
+fn apply_param_to_source_emits_fea_diagnostics() {
+    use std::sync::Arc;
+
+    let (_dir, _path, mut session) = writeback_session();
+
+    // Install AFTER the initial load_file so only the write-back's emit counts.
+    let recorder = RecordingFeaDiagnosticsEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_diagnostics_emitter(Arc::new(recorder));
+
+    session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect("apply_param_to_source should succeed");
+
+    let events = captured.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "INV-GUI-2: apply_param_to_source must fire EXACTLY ONE \
+         fea-diagnostics-changed event — one for the update_source recompile it \
+         rides, and none of its own; got {}",
+        events.len()
+    );
+    assert!(
+        events[0].is_empty(),
+        "non-FEA design must produce an empty fea-diagnostics payload; got {:?}",
+        events[0]
+    );
+}
+
 // ── FeaConvergenceEmitter tests (#5032) ─────────────────────────────────────
 
 /// Mirrors [`RecordingFeaDiagnosticsEmitter`] for the fea-convergence-changed channel.
@@ -17366,96 +19261,11 @@ fn dock_pickup_mechanism_exposes_scrubbable_literal_bound_slider_smoke() {
 
 // ── Task 5194: Rigid auto-derived mass-property cells surface in the GUI panel ──
 //
-// A `structure def X : Rigid` auto-derives four geometry-query lets via the
-// stdlib `Rigid : Physical` traits (crates/reify-compiler/stdlib/structural_physical.ri):
-//   mass              = volume(geometry) * material.density
-//   centroid          = centroid(geometry)
-//   moment_of_inertia = moment_of_inertia(geometry, body_density)
-//   moi_principal     = eigenvalues(moment_of_inertia)   (+ PD constraint [0] > 0)
-//
-// These are populated ONLY by the kernel-bearing build's `run_post_processes`
-// (mass/centroid via geometry queries; moment_of_inertia via the topology-selector
-// pass; moi_principal via the derived-let pass). The GUI property panel, however,
-// sources cell values from the kernel-LESS `check.values` (eval / warm edit_param),
-// so all four read `undetermined` and the `moi_principal[0] > 0` PD constraint reads
-// `Indeterminate`. The fix overlays the kernel-derived `tessellate_snapshot`
-// `result.values` / `result.constraint_results` onto the panel in `build_gui_state`.
-
-/// Shared harness for the task-5194 GUI tests: an `EngineSession` whose
-/// `MockGeometryKernel` is pre-seeded with volume / centroid / inertia-tensor
-/// replies for `GeometryHandleId` 1..=4.
-///
-/// The id RANGE (not just id 1) covers the post-edit rebuild handle drift: the
-/// mock's `next_id` is monotonic and NOT reset between builds, so the initial
-/// load realizes the box to id 1 but a subsequent `set_parameter` rebuild
-/// re-executes the box and allocates a fresh id (2, 3, …). Seeding 1..=4 keeps
-/// the geometry queries answered across both the load and warm-edit rebuilds.
-///
-/// The inertia tensor is diagonal `diag(1, 2, 3)` (positive) so `moi_principal`
-/// eigenvalues are `[1, 2, 3]` and the PD constraint `moi_principal[0] > 0` is
-/// satisfiable. Seeded magnitudes are arbitrary stand-ins — the tests assert on
-/// determinacy / constraint status, not analytic values (the OCCT-gated
-/// crates/reify-eval/tests/rigid_moment_of_inertia_autoderive_smoke.rs owns the
-/// exact-magnitude checks).
-fn rigid_mass_props_session() -> EngineSession {
-    use reify_ir::{GeometryHandleId, Value};
-    let checker = SimpleConstraintChecker;
-    let mut kernel = MockGeometryKernel::new();
-    for id in 1..=4u64 {
-        let h = GeometryHandleId(id);
-        kernel = kernel
-            .with_volume_result(h, Value::Real(0.003))
-            .with_centroid_result(
-                h,
-                Value::String("{\"x\":0.05,\"y\":0.05,\"z\":0.15}".to_string()),
-            )
-            .with_inertia_tensor_result(
-                h,
-                7850.0,
-                Value::List(vec![
-                    Value::List(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]),
-                    Value::List(vec![Value::Real(0.0), Value::Real(2.0), Value::Real(0.0)]),
-                    Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(3.0)]),
-                ]),
-            );
-    }
-    EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
-}
-
-/// Absolute path to the committed `examples/rigid_mass_props_smoke.ri` fixture,
-/// resolved from this crate's manifest dir (two levels up → workspace root),
-/// mirroring `load_file_returns_gui_state`.
-fn rigid_mass_props_fixture_path() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("examples/rigid_mass_props_smoke.ri")
-}
-
-/// Locate the `moi_principal[0] > 0` positive-definiteness constraint injected by
-/// the stdlib `Rigid` trait, matching on either its formatted expression or its
-/// collected `parameter_ids` (both carry the `moi_principal` cell name).
-fn find_moi_principal_constraint(state: &crate::types::GuiState) -> &crate::types::ConstraintData {
-    state
-        .constraints
-        .iter()
-        .find(|c| {
-            c.expression.contains("moi_principal")
-                || c.parameter_ids.iter().any(|p| p.contains("moi_principal"))
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "expected the Rigid `moi_principal[0] > 0` PD constraint; have: {:?}",
-                state
-                    .constraints
-                    .iter()
-                    .map(|c| (c.expression.as_str(), &c.parameter_ids, c.status.as_str()))
-                    .collect::<Vec<_>>()
-            )
-        })
-}
+// The shared harness for these tests — `rigid_mass_props_session()`,
+// `rigid_mass_props_fixture_path()` and `find_moi_principal_constraint()`, plus
+// the section banner explaining the auto-derived cells — was promoted verbatim
+// to `crate::tests::test_helpers` by task #5338 (pre-1) so the command-level
+// entry-point tests in `commands_tests.rs` can reuse the same seeded kernel.
 
 /// Task 5194 (step-1, RED): on GUI **load**, a `: Rigid` body's auto-derived
 /// mass-property cells must surface as `determined` in the property panel, and
@@ -17574,6 +19384,232 @@ fn rigid_mass_props_stay_determined_after_warm_edit() {
     );
 }
 
+/// Task #5338 (step-1, RED): a `: Rigid` body's auto-derived mass-property cells
+/// must survive REPEATED `build_gui_state` rebuilds under the frontend's
+/// SELECTIVE demand posture, with no intervening edit.
+///
+/// This mirrors production argv-launch exactly. `main()` loads the file at
+/// startup (cold, `full_scope`), the frontend then boots, calls `sync_demand`
+/// with the visible realization keys — flipping demand SELECTIVE and `full_scope`
+/// OFF — and calls `get_initial_state`, which rebuilds. That second build is the
+/// state the GUI actually paints.
+///
+/// RED against the pre-fix panel, at rebuild #2 or later: the first SELECTIVE
+/// tessellate stores the realization's `input_cone_hash`
+/// (engine_build.rs `refresh_and_gate_demanded_realizations`), so every
+/// subsequent one finds it HASH-EXEMPT, excludes it from the seed, never calls
+/// `execute_realization_ops`, never hydrates a
+/// `Value::GeometryHandle { kernel_handle: Some(..) }`, and therefore emits
+/// `Undef` for all four mass-prop cells in `TessellateResult.values`.
+/// `surface_geometry_derived_cells` treats that delta as a full SNAPSHOT and
+/// silently leaves the absent cells undetermined — a violation of the engine's
+/// own DELTA CONTRACT (engine_build.rs `demand_scoped_unified_pass` docs), which
+/// states that an absent realization means "retain the previous value", not "the
+/// value is gone".
+///
+/// The `sync_demand` call is load-bearing: `eval()` / `check()` set
+/// `full_scope = true` and `refresh_and_gate_demanded_realizations` early-returns
+/// empty under `full_scope`, so the hash gate is INERT on any cold/load build and
+/// the bug is unreachable there. That is exactly why a debug-MCP `open_file`
+/// "heals" a degraded session.
+///
+/// The loop asserts after EACH of three rebuilds rather than after one: the
+/// invariant is "repeated rebuilds must not degrade a determined cell"; WHICH
+/// iteration the hash gate first bites is an implementation detail of the gate.
+///
+/// Determinacy / constraint status only — never analytic magnitudes.
+#[test]
+fn rigid_mass_props_survive_repeated_rebuild_under_selective_demand() {
+    let mut session = rigid_mass_props_session();
+
+    // (1) Cold load — runs under `full_scope`, so the mass props DO surface.
+    //     This re-pins task 5194's landed behaviour as the baseline.
+    let state = session
+        .load_file(&rigid_mass_props_fixture_path())
+        .expect("load_file should succeed for the rigid_mass_props_smoke fixture");
+    assert_rigid_mass_props_determined(&state, "load");
+
+    // (2) The frontend's post-load handshake: report the visible realizations,
+    //     flipping the engine to SELECTIVE demand (`full_scope` OFF). Nothing
+    //     else in the GUI turns `full_scope` off, so this is what arms the
+    //     input-cone-hash reuse gate.
+    let keys = visible_realization_keys(&state);
+    assert!(
+        !keys.is_empty(),
+        "the loaded fixture must render at least one realization mesh — an empty \
+         key list would make sync_demand a no-op and this test vacuous; meshes: {:?}",
+        state
+            .meshes
+            .iter()
+            .map(|m| m.entity_path.as_str())
+            .collect::<Vec<_>>()
+    );
+    session.sync_demand(&keys);
+
+    // (3) Three successive re-renders with NO intervening edit — exactly what the
+    //     GUI does on every frame-driving state refresh. None may degrade.
+    for i in 1..=3 {
+        let state = session
+            .build_gui_state()
+            .unwrap_or_else(|e| panic!("build_gui_state rebuild #{i} should succeed; got {e}"));
+        assert_rigid_mass_props_determined(&state, &format!("rebuild #{i}"));
+    }
+}
+
+/// Task #5338 amendment (reviewer suggestion 3): `set_active_fea_case` is a FIFTH
+/// GuiState-producing entry point, and it must not revert a `: Rigid` body's
+/// auto-derived mass-prop cells.
+///
+/// It deliberately does NOT re-evaluate or re-tessellate — it clones the cached
+/// mesh payload, re-applies the FEA channels, and rebuilds `values` /
+/// `constraints` from the kernel-LESS `last_check`. That rebuild is where the
+/// gap sat: `build_values` leaves `mass` / `centroid` / `moment_of_inertia` /
+/// `moi_principal` Undef and the `moi_principal[0] > 0` PD constraint
+/// Indeterminate, and unlike `build_gui_state` this path never called
+/// `surface_geometry_derived_cells`, so a case switch silently undid what the
+/// previous rebuild had determined (pre-existing since task 5194).
+///
+/// The `sync_demand` + rebuild before the switch is load-bearing: it flips the
+/// engine to the frontend's SELECTIVE posture, so the retention cache — not a
+/// fresh full-scope delta — is the only thing the case switch can source the
+/// cells from, which is exactly the production situation.
+#[test]
+fn rigid_mass_props_survive_an_fea_case_switch() {
+    let mut session = rigid_mass_props_session();
+
+    let state = session
+        .load_file(&rigid_mass_props_fixture_path())
+        .expect("load_file should succeed for the rigid_mass_props_smoke fixture");
+    assert_rigid_mass_props_determined(&state, "cold load");
+
+    let keys = visible_realization_keys(&state);
+    assert!(
+        !keys.is_empty(),
+        "the loaded fixture must render at least one realization mesh — an empty \
+         key list would make sync_demand a no-op and this test vacuous"
+    );
+    session.sync_demand(&keys);
+    let state = session
+        .build_gui_state()
+        .expect("the selective rebuild before the case switch should succeed");
+    assert_rigid_mass_props_determined(&state, "selective rebuild");
+
+    // An unknown case name is deliberate and harmless — `set_active_fea_case`
+    // falls back to the lex-first default, and the fixture carries no FEA case at
+    // all. What is under test is the REBUILD it performs, not case selection.
+    let state = session
+        .set_active_fea_case("overload")
+        .expect("set_active_fea_case should succeed on a loaded module");
+    assert_rigid_mass_props_determined(&state, "after the FEA case switch");
+}
+
+/// Task #5338 amendment round 3 (reviewer suggestion 7) — the debug full-scene
+/// projection must not leave FULL-SCENE meshes in `tess_mesh_cache`, where the
+/// next `set_active_fea_case` would serve them.
+///
+/// `build_gui_state_full_scene` brackets `demand_is_full_scope` and
+/// `geometry_derived_cache`, and its doc claims the read is "READ-ONLY with
+/// respect to the production posture". The inner full-scope `build_gui_state`
+/// also ASSIGNS `tess_mesh_cache` / `tess_diag_cache`, and `set_active_fea_case`
+/// clones the mesh cache verbatim to re-source per-case channels without
+/// re-tessellating — so without those two in the bracket, a debug-MCP read
+/// followed by a case switch hands back meshes for realizations the user hid.
+///
+/// The scene is made FEA-bearing via `inject_check_for_test` +
+/// `make_multi_case_value_map` (the established pattern in this file) because
+/// `tess_mesh_cache` is deliberately populated only for FEA scenes; a non-FEA
+/// scene sets it to `None` and the leak has no carrier.
+///
+/// Sequence: full-scope load of a TWO-body module → FEA rebuild (cache holds both)
+/// → `sync_demand` naming only body `a` + rebuild (production posture: cache holds
+/// one) → `build_gui_state_full_scene` (the debug read, which internally sees both)
+/// → `set_active_fea_case`. The case switch must still see ONE body.
+#[test]
+fn full_scene_debug_read_does_not_leak_hidden_meshes_into_the_fea_case_switch() {
+    use reify_eval::CheckResult;
+
+    const TWO_BODY_SRC: &str = r#"pub structure LeakTwoBody {
+    let a = box(30mm, 30mm, 30mm)
+    let b = box(20mm, 20mm, 20mm)
+}"#;
+
+    let mut session = rigid_mass_props_session();
+    session
+        .load_from_source(TWO_BODY_SRC, "leak_two_body")
+        .expect("load_from_source must succeed");
+
+    // Make the scene FEA-bearing so `build_gui_state` populates `tess_mesh_cache`.
+    session.inject_check_for_test(CheckResult {
+        values: make_multi_case_value_map(),
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+        structured_detail: vec![],
+    });
+    let full = session
+        .build_gui_state()
+        .expect("the FEA-bearing full-scope rebuild must succeed");
+    let all_keys = visible_realization_keys(&full);
+    assert_eq!(
+        all_keys.len(),
+        2,
+        "the fixture must realize TWO bodies — with one body there is no hidden \
+         mesh to leak and this test is vacuous; got {all_keys:?}"
+    );
+
+    // Production posture: hide body `b`, keep `a`.
+    let kept: Vec<String> = all_keys
+        .iter()
+        .filter(|k| k.contains("realization[0]"))
+        .cloned()
+        .collect();
+    assert_eq!(kept.len(), 1, "expected exactly one kept key; got {kept:?}");
+    session.sync_demand(&kept);
+    let selective = session
+        .build_gui_state()
+        .expect("the selective rebuild must succeed");
+    assert_eq!(
+        selective.meshes.len(),
+        1,
+        "the selective rebuild must dispatch only the visible body — this is the \
+         posture the debug read must not disturb; got {:?}",
+        selective
+            .meshes
+            .iter()
+            .map(|m| m.entity_path.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    // The debug-MCP read. Internally full-scope, so it SEES both bodies…
+    let debug_state = session
+        .build_gui_state_full_scene()
+        .expect("build_gui_state_full_scene must succeed");
+    assert_eq!(
+        debug_state.meshes.len(),
+        2,
+        "the debug projection is supposed to return the complete realized scene — \
+         if it does not, this test can no longer detect the leak it exists for"
+    );
+
+    // …and must leave nothing of that behind for the case switch.
+    let switched = session
+        .set_active_fea_case("overload")
+        .expect("set_active_fea_case must succeed");
+    assert_eq!(
+        switched.meshes.len(),
+        1,
+        "a case switch after a debug full-scene read must serve the PRODUCTION \
+         mesh set, not the full scene — `set_active_fea_case` clones \
+         `tess_mesh_cache` verbatim, so an unbracketed debug read hands the user \
+         meshes for realizations they hid; got {:?}",
+        switched
+            .meshes
+            .iter()
+            .map(|m| m.entity_path.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
 // ── Task 5074 step-1: from_engine must delegate to the canonical A1
 // production-compute-fns bundler (PRD docs/prds/compute-fea-hardening.md
 // task A3), not hand-roll register_compute_fns + register_shell_extract_compute_fns.
@@ -17616,16 +19652,15 @@ fn engine_session_registers_fea_and_shell_extract_dispatch() {
 ///
 /// Gated because `reify-mesh-morph` is only on the graph under `--features
 /// gui` (see the `gui` feature list in `gui/src-tauri/Cargo.toml`).
-/// Compile-verified in CI by the gui-feature compile-check block in
-/// `scripts/verify.sh` but never executed there — OCCT/tauri linking makes
-/// gui-feature test execution a local-only step, so this specific assertion
-/// (the only one exercising the new mesh-morph registration) has no
-/// CI-executed regression coverage today: a future change that flipped the
-/// `#[cfg(feature = "gui")]` arm in `from_engine` to `Unavailable` would
-/// compile clean and pass every CI pass silently. Closing that gap is task
-/// 5076 (PRD task A5's static drift guard + gui-feature test execution),
-/// out of this task's scope. Precedent for this gated-module shape:
-/// `kernel_status_tests` and `event_bus_tests` in this same directory.
+/// A change flipping the `#[cfg(feature = "gui")]` arm in `from_engine` to
+/// `Unavailable` compiles clean, so it is caught only by executing this
+/// assertion or by a static check. Task 5076 wired both: `scripts/verify.sh`
+/// now EXECUTES this module, via the `-p reify-gui --features gui` test pass
+/// emitted from `add_test_passes()`, and
+/// `scripts/check-compute-trampoline-registration.sh` pins a
+/// `MorphRegistration::Enabled` on `gui/src-tauri/src/engine.rs`.
+/// Precedent for this gated-module shape: `kernel_status_tests` and
+/// `event_bus_tests` in this same directory.
 ///
 /// Asserts only `morph_producer().is_some()`: TEST A above
 /// (`engine_session_registers_fea_and_shell_extract_dispatch`, ungated)
@@ -17657,3 +19692,1765 @@ mod gui_feature_tests {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// task 5094 α — EngineSession::resolve_param_default_span (INV-GUI-3 substrate)
+//
+// The happy-path assertions slice the SOURCE with the returned span. That is
+// what makes PRD v0_6 ai-native-editing §6.1's "default expression range only,
+// never the whole `param … = …` decl" observable rather than merely structural:
+// a span that covered the decl, or included the `=`, would produce a different
+// slice and fail here.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Slice `bracket_source()` with a span the resolver returned.
+fn slice_bracket(span: reify_core::SourceSpan) -> &'static str {
+    &bracket_source()[span.start as usize..span.end as usize]
+}
+
+#[test]
+fn resolve_param_default_span_slices_the_default_literal_only() {
+    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+
+    let span = session
+        .resolve_param_default_span("Bracket.width")
+        .expect("Bracket.width has a default literal");
+    let slice = slice_bracket(span);
+
+    assert_eq!(
+        slice, "80mm",
+        "span must cover the default expression exactly"
+    );
+    // §6.1 invariant, from the observable side: expression range ONLY.
+    assert!(
+        !slice.contains("param"),
+        "span must not reach back over the `param` keyword, got {slice:?}"
+    );
+    assert!(
+        !slice.contains('='),
+        "span must not include the `=`, got {slice:?}"
+    );
+}
+
+#[test]
+fn resolve_param_default_span_resolves_a_non_first_member() {
+    // `thickness` is the THIRD param in bracket_source(). A single case on the
+    // first member would not catch a first-member / off-by-one bias.
+    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+
+    let span = session
+        .resolve_param_default_span("Bracket.thickness")
+        .expect("Bracket.thickness has a default literal");
+    assert_eq!(slice_bracket(span), "5mm");
+}
+
+#[test]
+fn resolve_param_default_span_returns_none_with_no_module_loaded() {
+    // parsed_cache is None on a fresh session (and on load_from_compiled-injected
+    // sessions). Must degrade to None, never panic.
+    let session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    assert_eq!(session.resolve_param_default_span("Bracket.width"), None);
+}
+
+#[test]
+fn resolve_param_default_span_returns_none_for_unknown_entity() {
+    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    assert_eq!(session.resolve_param_default_span("Nope.width"), None);
+}
+
+#[test]
+fn resolve_param_default_span_returns_none_for_unknown_member() {
+    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    assert_eq!(session.resolve_param_default_span("Bracket.nope"), None);
+}
+
+#[test]
+fn resolve_param_default_span_returns_none_for_malformed_cell_id() {
+    // No '.' — parse_cell_id returns Err, which this method maps to None.
+    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    assert_eq!(session.resolve_param_default_span("width"), None);
+}
+
+#[test]
+fn resolve_param_default_span_returns_none_for_instance_path_cell_id() {
+    // The source below declares a REAL `sub` with a specialization override, so
+    // "Holder.child.width" is an instance path that actually exists rather than a
+    // name nothing could ever match. That distinction is what gives this test
+    // teeth: `Holder` ALSO declares its own `param width = 10mm`, so a plausible
+    // wrong implementation — one that split the cell_id on the LAST '.', or that
+    // otherwise took `width` as the member and `Holder` as the entity — would
+    // return Some(span-of-"10mm") here and let a caller rewrite the SHARED
+    // structure default when the user only asked to change one instance's value.
+    // That is precisely the silent-wrong-edit INV-GUI-3 exists to prevent.
+    //
+    // `parse_cell_id` splits on the FIRST '.', so the member is "child.width",
+    // which matches no ParamDecl.name (member names never contain a '.') — hence
+    // None, which γ surfaces as a structured error.
+    const SRC: &str = "structure def Leaf { param width : Length = 80mm }\n\
+                       structure def Holder {\n\
+                           param width : Length = 10mm\n\
+                           sub child : Leaf { width = 90mm }\n\
+                       }";
+
+    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    session
+        .load_from_source(SRC, "holder")
+        .expect("load should succeed");
+
+    // Sanity: the bare-member cell_id on the same entity DOES resolve, so a None
+    // below cannot be blamed on the entity or the source failing to load.
+    let own = session
+        .resolve_param_default_span("Holder.width")
+        .expect("Holder.width is a plain param with a default");
+    assert_eq!(&SRC[own.start as usize..own.end as usize], "10mm");
+
+    assert_eq!(
+        session.resolve_param_default_span("Holder.child.width"),
+        None,
+        "an instance path must not resolve to the shared structure's own default"
+    );
+}
+
+#[test]
+fn resolve_param_default_span_returns_none_for_param_without_default() {
+    // PRD §6.1's explicit "returns None if the param has no default literal to
+    // rewrite". Shape verified against real source (examples/appearance_surface.ri:16,
+    // `param name : String` inside a structure def).
+    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    session
+        .load_from_source("structure def S { param t : Length }", "s")
+        .expect("load should succeed");
+    assert_eq!(session.resolve_param_default_span("S.t"), None);
+}
+
+#[test]
+fn resolve_param_default_span_resolves_an_occurrence_entity() {
+    // Shape taken from real source (examples/m5_occurrence_process.ri:5-9,
+    // `occurrence def Machining { … param feed_rate : Real = 100 }`), minus the
+    // ports. A cell_id naming an occurrence is a real, reachable input:
+    // OccurrenceDef is field-for-field equivalent to StructureDef for this
+    // purpose (same name/members/span), and the compiled side does not
+    // distinguish the two — reify_eval::source_location::find_parsed_decl_containing_offset,
+    // the walk get_containing_definition already delegates to, matches BOTH.
+    const SRC: &str = "occurrence def Machining { param feed_rate : Real = 100 }";
+
+    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    session
+        .load_from_source(SRC, "machining")
+        .expect("load should succeed");
+
+    let span = session
+        .resolve_param_default_span("Machining.feed_rate")
+        .expect("Machining.feed_rate has a default literal");
+    assert_eq!(&SRC[span.start as usize..span.end as usize], "100");
+}
+// --- task 5208: build/realization-time geometry errors reach the designer ----
+
+/// A source whose curated 3-arg `fillet` is deliberately broken: the
+/// `edges_at_height` plane (`999mm`) is nowhere near the 5mm-thick plate, so the
+/// edge selector resolves to ZERO edges and the build refuses to silently fillet
+/// all edges (`E_EMPTY_SELECTION` — the task-3295 anti-fake-done guard).
+///
+/// The source **compiles cleanly** — the breakage is a *value*, not a type or a
+/// parse error — so `load_from_source` succeeds and `compiled.diagnostics` is
+/// empty. The failure is born at build/realization time, inside
+/// `tessellate_snapshot`, which is precisely the class of error task 5208 must
+/// keep visible now that curated edge selection is genuinely reachable.
+fn broken_curated_fillet_source() -> &'static str {
+    r#"structure def BrokenFillet {
+    param plate_size: Length = 20mm
+    param plate_thickness: Length = 5mm
+    param soften: Length = 1mm
+
+    let plate = box(plate_size, plate_size, plate_thickness)
+
+    param geometry: Solid = fillet(plate, edges_at_height(plate, 999mm, 0.5mm), soften)
+}"#
+}
+
+/// Task 5208 (step-11/12): a build/realization-time geometry-op **Error** must
+/// reach the GUI's *compile-diagnostic* surface — the panel a designer actually
+/// reads — instead of vanishing into `tessellation_diagnostics` and leaving them
+/// with a blank viewport and an empty diagnostics list.
+///
+/// Task 5208 makes curated 3-arg `fillet`/`chamfer` reachable through the
+/// production `.ri` pipeline. The flip side of a live capability is that its
+/// *residual* failures become real designer-facing errors: a selector that picks
+/// zero edges, a radius the kernel cannot apply, a reference to an unrealized
+/// solid. Those are authored mistakes, and they must be reported as such.
+///
+/// Before this task `EngineSession::build_compile_diagnostics` folded in only
+/// static `compiled.diagnostics` (via `get_diagnostics`) plus live-edit and
+/// hot-reload failures. Errors raised by the build/realization pass landed only
+/// in the separate `tessellation_diagnostics` stream, so
+/// `commands::engine_state_json`'s `compile_diagnostics` came back EMPTY for a
+/// program that produced no geometry at all — the exact "silent empty viewport"
+/// failure mode task 5197 calls out.
+///
+/// Disjointness is preserved in the direction its contract states
+/// (`build_gui_state_compile_diagnostics_populated_from_warning`: compile
+/// diagnostics must not leak into `tessellation_diagnostics`). This test asserts
+/// the *reverse* flow for the Error class only — Warning/Info tessellation
+/// diagnostics (e.g. the "no topology extraction fixture" seeder warning) must
+/// stay out of `compile_diagnostics` so the designer-facing panel does not fill
+/// with kernel chatter.
+///
+/// Kernel-independent: `MockGeometryKernel` registers no extracted edges, so the
+/// selector resolves to zero edges under the mock exactly as a mis-authored
+/// `edges_at_height` does under real OCCT. No `cfg(has_occt)` gate needed.
+#[test]
+fn build_gui_state_surfaces_build_time_geometry_error_in_compile_diagnostics() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(broken_curated_fillet_source(), "broken_fillet")
+        .expect(
+            "load_from_source must succeed: the broken selector is a build-time value failure, \
+             not a compile error",
+        );
+
+    // The failure must be visible in the designer-facing compile-diagnostic
+    // surface, as an Error.
+    let errors: Vec<&DiagnosticInfo> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.severity == "Error")
+        .collect();
+
+    assert!(
+        !errors.is_empty(),
+        "a curated fillet that fails to build must surface an Error in compile_diagnostics — \
+         otherwise the designer gets an empty viewport with no explanation.\n\
+         compile_diagnostics: {:?}\n\
+         tessellation_diagnostics: {:?}",
+        state.compile_diagnostics,
+        state.tessellation_diagnostics
+    );
+
+    // …and it must name the offending op, not just say "something failed".
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.to_lowercase().contains("fillet")),
+        "the surfaced Error must name the failing `fillet` op so the designer can locate it; \
+         got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // Only the Error class crosses over: non-Error tessellation diagnostics must
+    // NOT be duplicated into the compile-diagnostic panel.
+    let non_error_tess: Vec<&String> = state
+        .tessellation_diagnostics
+        .iter()
+        .filter(|d| d.severity != "Error")
+        .map(|d| &d.message)
+        .collect();
+    for msg in &non_error_tess {
+        assert!(
+            !state.compile_diagnostics.iter().any(|c| &&c.message == msg),
+            "non-Error tessellation diagnostic {msg:?} must not be folded into \
+             compile_diagnostics — only the Error class crosses over.\n\
+             compile_diagnostics: {:?}",
+            state.compile_diagnostics
+        );
+    }
+}
+
+/// Guard for the other half of the step-12 contract: folding build-time Errors
+/// into `compile_diagnostics` must not make a CLEAN program report errors.
+///
+/// `bracket_source` tessellates successfully under `MockGeometryKernel`, so
+/// `compile_diagnostics` must stay free of Error entries. Without this, a fold
+/// that mistakenly copied *all* tessellation diagnostics (or misclassified
+/// severity) would light up the designer's panel on every clean load.
+#[test]
+fn build_gui_state_clean_source_has_no_error_compile_diagnostics() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new()
+        .with_extracted_faces(reify_ir::GeometryHandleId(1), vec![])
+        .with_extracted_edges(reify_ir::GeometryHandleId(1), vec![])
+        .with_extracted_vertices(reify_ir::GeometryHandleId(1), vec![]);
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed with valid bracket source");
+
+    let errors: Vec<&DiagnosticInfo> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.severity == "Error")
+        .collect();
+
+    assert!(
+        errors.is_empty(),
+        "a clean source must produce no Error compile_diagnostics; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// task 5096 γ — EngineSession::apply_param_to_source (INV-GUI-3 write-back)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn unit_hint_from_default_literal_reads_the_symbol_off_a_dimensioned_literal() {
+    // The hint is what keeps `width = 50mm` writing millimetres instead of
+    // hopping to the canonical ladder (see value_to_ri_literal_with_unit's
+    // doc on `preferred_unit`). Table-driven across the literal shapes the
+    // splice source can actually contain.
+    let cases: &[(&str, &str)] = &[
+        ("80mm", "mm"),
+        ("0.5m", "m"),
+        ("0.08 m", "m"), // Display-style spaced form.
+        ("1.5in", "in"),
+        ("250mm", "mm"),
+    ];
+    for (input, expected) in cases {
+        assert_eq!(
+            unit_hint_from_default_literal(input),
+            Some(*expected),
+            "expected {input:?} to yield hint {expected:?}"
+        );
+    }
+}
+
+#[test]
+fn unit_hint_from_default_literal_returns_none_for_a_non_dimensioned_default() {
+    // A false hint here can only make value_to_ri_literal_with_unit fall back
+    // to the canonical ladder — it validates the hint before ever honouring
+    // it — so these must read None rather than a spurious unit: bare
+    // numbers, booleans, `auto`, and plain identifiers all lack a digit/`.`
+    // predecessor to anchor a trailing alpha run.
+    //
+    // `"width - 10mm"` is deliberately NOT covered here: the helper is
+    // lexical, not a parser, and expression defaults are out of its
+    // contract.
+    let cases: &[&str] = &[
+        "3",
+        "3.0",
+        "true",
+        "false",
+        "undef",
+        "auto",
+        "auto(free)",
+        "width",
+        "base_width",
+    ];
+    for input in cases {
+        assert_eq!(
+            unit_hint_from_default_literal(input),
+            None,
+            "expected {input:?} to yield no unit hint"
+        );
+    }
+}
+
+/// Fixture for the `apply_param_to_source` cluster: a unit-mixing source (`mm`
+/// AND `m` defaults so the hint-discrimination test has something to
+/// discriminate against) whose header comment is deliberately non-ASCII (`°`)
+/// so a `chars()`-based splice would be off by the multi-byte delta while a
+/// byte-offset splice is not.
+fn writeback_source() -> &'static str {
+    r#"// header — unit-mixing fixture, non-ASCII (°) so byte offsets ≠ char offsets
+structure def Part {
+    param width: Length = 80mm
+    param depth: Length = 0.5m
+    param no_default: Length
+
+    let body = box(width, width, depth)
+}"#
+}
+
+/// tempdir-backed session: writes `writeback_source()` to `<tmp>/part.ri` and
+/// `load_file`s it, so `apply_param_to_source` has a canonical on-disk file
+/// to write back to (INV-GUI-3). Mirrors the tempdir pattern already used at
+/// `tests/commands_tests.rs:125`. The returned `TempDir` must be kept alive
+/// (bind it, don't discard it) for as long as the session is used.
+fn writeback_session() -> (tempfile::TempDir, std::path::PathBuf, EngineSession) {
+    writeback_session_from(writeback_source())
+}
+
+/// `writeback_session()` parameterized by source text, so the rejection-taxonomy
+/// cluster can use its own fixture without perturbing `writeback_source()`.
+fn writeback_session_from(source: &str) -> (tempfile::TempDir, std::path::PathBuf, EngineSession) {
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let path = dir.path().join("part.ri");
+    std::fs::write(&path, source).expect("write part.ri should succeed");
+
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    session.load_file(&path).expect("load_file should succeed");
+
+    (dir, path, session)
+}
+
+#[test]
+fn apply_param_to_source_writes_disk_source_map_and_eval_state_consistently() {
+    let (_dir, path, mut session) = writeback_session();
+
+    let state = session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect("apply_param_to_source should succeed");
+
+    let disk_text = std::fs::read_to_string(&path).expect("disk file should be readable");
+    assert!(
+        disk_text.contains("param width: Length = 120mm"),
+        "disk text should contain the rewritten default, got: {disk_text}"
+    );
+    assert!(
+        !disk_text.contains("80mm"),
+        "disk text should no longer contain the old default, got: {disk_text}"
+    );
+
+    // source_map ≡ disk: the in-memory buffer the engine parses from must be
+    // byte-identical to what commit_state just wrote to disk.
+    let (_key, source_map_text) = session
+        .resolve_source_for_test()
+        .expect("resolve_source_for_test should succeed after a successful write-back");
+    assert_eq!(
+        source_map_text, disk_text,
+        "source_map text must equal disk text (INV-GUI-3 three-way consistency)"
+    );
+
+    // eval state ≡ source: the returned GuiState must already report the new
+    // value, not the pre-edit one.
+    let width = state
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Part.width")
+        .expect("Part.width should be present in the returned GuiState");
+    assert_eq!(width.value, "120");
+    assert_eq!(width.unit, "mm");
+}
+
+#[test]
+fn apply_param_to_source_rewrites_only_the_default_span() {
+    let (_dir, path, mut session) = writeback_session();
+
+    session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect("apply_param_to_source should succeed");
+
+    let disk_text = std::fs::read_to_string(&path).expect("disk file should be readable");
+    let expected = writeback_source().replace("80mm", "120mm");
+    assert_eq!(
+        disk_text, expected,
+        "only the default span should change — comments, whitespace, and every \
+         other param must be preserved byte for byte (PRD D6 splice preserves \
+         user formatting/comments)"
+    );
+}
+
+#[test]
+fn apply_param_to_source_honours_the_replaced_literals_unit() {
+    let (_dir, path, mut session) = writeback_session();
+
+    // si_value 0.25 — must round-trip through the `m` hint read off the
+    // replaced "0.5m" literal, not hop to the canonical ladder's `250mm`.
+    // This is the case that discriminates hint-honouring from the ladder;
+    // Part.width's 80mm→120mm cannot, because `mm` is the ladder's first
+    // rung anyway.
+    session
+        .apply_param_to_source("Part.depth", &mm(250.0))
+        .expect("apply_param_to_source should succeed");
+
+    let disk_text = std::fs::read_to_string(&path).expect("disk file should be readable");
+    assert!(
+        disk_text.contains("param depth: Length = 0.25m"),
+        "expected the replaced literal's unit (m) to be honoured, got: {disk_text}"
+    );
+    assert!(
+        !disk_text.contains("250mm"),
+        "must not fall back to the canonical ladder's mm when the hint is \
+         honourable, got: {disk_text}"
+    );
+}
+
+/// Rejection-taxonomy fixture for `apply_param_to_source`: one param of every
+/// shape the RESOLVE phase must discriminate between — a rewritable quantity
+/// literal (`width`), a BinOp default (`computed`), a bare-identifier default
+/// (`aliased`), a call default (`scaled`), a solver-determined `auto` default
+/// (`solved`), a param with NO default (`no_default`), a quantity literal in a
+/// MODULE-DECLARED unit (`thickness`, in `mil`) which the emitter cannot write
+/// back without silently canonicalizing it, and the three remaining admitted
+/// literal kinds — Bool (`flag`), String (`label`) and the two NumberLiteral
+/// shapes, `Int` (`count`) and dimensionless `Real` (`ratio`) — which must all
+/// stay rewritable.
+///
+/// `count`/`ratio` are the only params in the whole cluster with a bare
+/// `NumberLiteral` default, and they are what drives the `Value::Int` /
+/// `Value::Real` arms of `value_to_ri_literal_with_unit` through the write-back
+/// end to end: those are the arms where the unit hint is `None` and the
+/// emitter's own `force_decimal_point` choice decides the text that lands in
+/// the user's file (`80` vs `80.0`).
+///
+/// The four REFUSED expression kinds are the four the `apply_param_to_source`
+/// rustdoc names (`BinOp`, `Ident`, a call, `Auto`), so the doc's enumeration
+/// and the test table cover the same set rather than drifting apart.
+///
+/// Deliberately SEPARATE from `writeback_source()`: that fixture's
+/// byte-for-byte test (`apply_param_to_source_rewrites_only_the_default_span`)
+/// derives its expectation from its own text, so adding params there would
+/// silently widen an unrelated assertion.
+fn writeback_rejection_source() -> &'static str {
+    r#"unit mil : Length = 0.0000254
+
+structure def Part {
+    param width: Length = 80mm
+    param computed: Length = width * 2
+    param aliased: Length = width
+    param scaled: Length = abs(width)
+    param solved: Length = auto
+    param no_default: Length
+    param thickness: Length = 200mil
+    param flag: Bool = true
+    param label: String = "unset"
+    param count: Int = 4
+    param ratio: Real = 0.5
+
+    let body = box(width, width, computed)
+}"#
+}
+
+/// Assert the full NO-MUTATION ledger after a REJECTED `apply_param_to_source`:
+/// every one of the four state surfaces — the on-disk `.ri`, the `source_map`
+/// buffer the engine parses from, the stored `compile_failure`, and the eval
+/// state as seen through `build_gui_state` — must be exactly as the call found
+/// them ("on failure NONE are mutated", INV-GUI-3).
+fn assert_writeback_untouched(
+    session: &mut EngineSession,
+    path: &std::path::Path,
+    expected_source: &str,
+) {
+    let disk = std::fs::read_to_string(path).expect("disk file should be readable");
+    assert_eq!(
+        disk, expected_source,
+        "disk text must be byte-identical after a rejected write-back"
+    );
+
+    {
+        let (_key, source_map_text) = session
+            .resolve_source_for_test()
+            .expect("source_map should still resolve after a rejected write-back");
+        assert_eq!(
+            source_map_text, expected_source,
+            "source_map text must be byte-identical after a rejected write-back"
+        );
+    }
+
+    assert!(
+        session.compile_failure_for_test().is_none(),
+        "a rejected write-back must not leave compile diagnostics describing text \
+         that reached neither disk nor source_map"
+    );
+
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should succeed after a rejected write-back");
+    let width = state
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Part.width")
+        .expect("Part.width should still be present after a rejected write-back");
+    assert_eq!(
+        (width.value.as_str(), width.unit.as_str()),
+        ("80", "mm"),
+        "eval state must still report the pre-edit value after a rejected write-back"
+    );
+}
+
+#[test]
+fn apply_param_to_source_discriminates_its_resolve_phase_rejections() {
+    // PRD §7 B7 requires a STRUCTURED error: δ (the MCP `set_parameter` tool)
+    // is the consumer that must map "you named something that does not exist"
+    // apart from "that param's default is not a literal I may rewrite". α's
+    // `Option`-returning span resolver collapses all of these into one `None`,
+    // so the discrimination has to be rebuilt here in γ.
+    //
+    // Substrings, not exact prose — the taxonomy is the contract, the wording
+    // is not.
+    let cases: &[(&str, &[&str])] = &[
+        // Entity absent from the module.
+        ("Nope.width", &["Unknown parameter", "Nope.width"]),
+        // Entity present, member absent.
+        ("Part.nope", &["Unknown parameter", "Part.nope"]),
+        // No `.` at all — never even a well-formed cell id.
+        ("width", &["Invalid cell ID", "width"]),
+        // A real, editable cell whose param simply has no default to rewrite.
+        ("Part.no_default", &["Part.no_default", "no default"]),
+        // NON-LITERAL defaults: refusing these is the point of the taxonomy —
+        // splicing over `width * 2` would silently destroy a user-authored
+        // parametric relationship, and splicing over `auto` would destroy a
+        // solver-determined value. Both must name the offending kind so the
+        // two are distinguishable from each other, and both must say the
+        // existing expression survives.
+        (
+            "Part.computed",
+            &["Part.computed", "not a literal", "BinOp", "preserved"],
+        ),
+        (
+            "Part.solved",
+            &["Part.solved", "not a literal", "Auto", "preserved"],
+        ),
+        // The other two non-literal shapes the rustdoc names. `aliased = width`
+        // is an alias one param keeps to another and `scaled = abs(width)` is a
+        // computed value; splicing a constant over either destroys the relation
+        // exactly as splicing over `width * 2` would.
+        (
+            "Part.aliased",
+            &["Part.aliased", "not a literal", "Ident", "preserved"],
+        ),
+        (
+            "Part.scaled",
+            &["Part.scaled", "not a literal", "FunctionCall", "preserved"],
+        ),
+        // A literal of an ADMITTED kind whose UNIT the emitter cannot re-emit.
+        // `200mil` resolves only through the compiled module's `UnitRegistry`,
+        // which `value_to_ri_literal_with_unit` deliberately has no view of, so
+        // the hint would be dropped and the ladder would write `5.08mm` —
+        // numerically right, and the user's own unit vocabulary silently gone
+        // from their canonical document. Discriminated apart from the
+        // non-literal refusals on purpose: the default here IS a literal, so a
+        // "not a literal" message would send δ's caller looking for a formula
+        // that is not there.
+        (
+            "Part.thickness",
+            &["Part.thickness", "'mil'", "not a built-in", "preserved"],
+        ),
+    ];
+
+    for (cell_id, expected_substrings) in cases {
+        let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+
+        let err = session
+            .apply_param_to_source(cell_id, &mm(250.0))
+            .expect_err(&format!("{cell_id} must be REFUSED, not written back"));
+
+        for needle in *expected_substrings {
+            assert!(
+                err.contains(needle),
+                "rejection for {cell_id:?} should mention {needle:?}, got: {err}"
+            );
+        }
+
+        assert_writeback_untouched(&mut session, &path, writeback_rejection_source());
+    }
+}
+
+#[test]
+fn apply_param_to_source_leaves_no_trace_when_the_recompile_rejects_the_value() {
+    // PRD §7 B7's SECOND half: a type/dimension-mismatched V. Unlike the
+    // resolve-phase taxonomy above, nothing here is refusable up front —
+    // `Part.width`'s default IS a rewritable quantity literal, so the splice
+    // happens and the RECOMPILE is what rejects the result.
+    //
+    // The no-mutation ledger must nonetheless be identical to a resolve-phase
+    // rejection. Three of the four surfaces already are (the recompile fails
+    // before `commit_state`, so disk, `source_map` and eval state never move);
+    // the fourth is the leak this test exists to close. `update_source`'s
+    // failure path calls `record_compile_failure`, which stores the SPLICED
+    // text plus its diagnostics — and `build_gui_state`'s LiveEdit branch then
+    // surfaces diagnostics indexed into text that reached neither disk nor
+    // `source_map`, i.e. text no user has ever seen.
+    let cases: &[reify_ir::Value] = &[
+        reify_ir::Value::Bool(true),
+        reify_ir::Value::String("hi".to_string()),
+    ];
+
+    for value in cases {
+        let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+
+        let err = session
+            .apply_param_to_source("Part.width", value)
+            .expect_err(&format!(
+                "{value:?} into a `Length` param must be REFUSED by the recompile"
+            ));
+        assert!(
+            err.contains("width"),
+            "the recompile rejection should name the offending param, got: {err}"
+        );
+        // Deliberately NOT asserting the compiler's wording for the mismatch
+        // itself ("declared `Scalar[m]` but its initializer evaluates to …"):
+        // that diagnostic belongs to reify-compiler, and rewording it must not
+        // break a GUI test. What this module owns is WHICH PHASE rejected, so
+        // that is what is discriminated — the message must not read as one of
+        // the resolve-phase refusals, because those would mean the splice never
+        // happened and this test would be asserting the wrong ledger.
+        for resolve_phase_wording in ["not a literal", "Unknown parameter", "no default"] {
+            assert!(
+                !err.contains(resolve_phase_wording),
+                "this rejection must come from the RECOMPILE, not the resolve \
+                 phase — {resolve_phase_wording:?} says otherwise, got: {err}"
+            );
+        }
+
+        assert_writeback_untouched(&mut session, &path, writeback_rejection_source());
+
+        // The staleness banner is the fifth thing a user would SEE, and it is
+        // driven by `last_reload_error` rather than by `compile_failure`, so
+        // `assert_writeback_untouched` does not reach it. A write-back the
+        // engine refused is not a failed hot reload — the on-disk file the
+        // watcher would reload is exactly the one already loaded.
+        assert!(
+            !session.is_stale(),
+            "a rejected write-back must not raise the hot-reload staleness banner"
+        );
+    }
+}
+
+#[test]
+fn apply_param_to_source_rolls_the_engine_back_when_the_disk_write_fails() {
+    // The OTHER direction of invariant (1)'s mutual consistency. The recompile
+    // rejection above leaves disk behind the engine's intent; this leaves the
+    // ENGINE ahead of disk: `update_source` has already committed `source_map`,
+    // `parsed_cache`, `compiled` and `last_check` to the spliced text when
+    // `fs::write` fails, so the GUI would show a value that the `.ri` on disk
+    // does not contain — and a later FS-watcher re-fire would silently revert
+    // it, with no error anywhere near the revert.
+    //
+    // Trigger: replace the `.ri` with a DIRECTORY at the same path. `fs::write`
+    // then fails EISDIR deterministically — and unlike a `chmod 0444` trigger,
+    // it still fails when the suite happens to run as root.
+    let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+    std::fs::remove_file(&path).expect("removing the fixture .ri should succeed");
+    std::fs::create_dir(&path).expect("creating a directory at the .ri path should succeed");
+
+    let err = session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect_err("a failed disk write must surface as Err, not be swallowed");
+    assert!(
+        err.contains(&path.display().to_string()),
+        "the write failure should name the path it could not write, got: {err}"
+    );
+    assert!(
+        err.contains("writing"),
+        "the write failure should say the WRITE is what failed, so it is not \
+         mistaken for a compile rejection, got: {err}"
+    );
+
+    // A failed write must also clean up after itself: the write goes through a
+    // sibling temp file, and the rename is what consumes it, so a rename that
+    // fails leaves the temp behind unless the error path removes it. One
+    // `part.ri.<pid>.<seq>.tmp` per failed edit accumulating next to the user's
+    // design would be a user-visible regression.
+    let litter: Vec<String> = std::fs::read_dir(_dir.path())
+        .expect("the fixture directory should be readable")
+        .map(|e| {
+            e.expect("directory entry should be readable")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|name| name.ends_with(".tmp"))
+        .collect();
+    assert!(
+        litter.is_empty(),
+        "a failed write-back must leave no temp file behind, found: {litter:?}"
+    );
+
+    // Disk is deliberately not read back here — it is a directory now, so
+    // `assert_writeback_untouched`'s `read_to_string` cannot apply. The other
+    // three surfaces are asserted directly.
+    {
+        let (_key, source_map_text) = session
+            .resolve_source_for_test()
+            .expect("source_map should still resolve after a failed disk write");
+        assert_eq!(
+            source_map_text,
+            writeback_rejection_source(),
+            "source_map must be rolled back to the PRE-EDIT text — the engine \
+             must never sit ahead of what is on disk"
+        );
+    }
+
+    assert!(
+        session.compile_failure_for_test().is_none(),
+        "the rollback recompile must succeed cleanly and leave no diagnostics"
+    );
+    assert!(
+        !session.is_stale(),
+        "a failed disk write must not raise the hot-reload staleness banner"
+    );
+
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should succeed after a rolled-back write-back");
+    let width = state
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Part.width")
+        .expect("Part.width should still be present after a rolled-back write-back");
+    assert_eq!(
+        (width.value.as_str(), width.unit.as_str()),
+        ("80", "mm"),
+        "eval state must report the PRE-EDIT value after a failed disk write"
+    );
+}
+
+#[test]
+fn apply_param_to_source_preserves_an_existing_staleness_banner_when_the_disk_write_fails() {
+    // The write-failure sibling of
+    // `apply_param_to_source_preserves_an_existing_staleness_banner_when_it_rejects`,
+    // and it needs its own test for a reason the recompile one does not cover:
+    // on THIS path BOTH `update_source` calls succeed, and a successful
+    // `commit_state` clears `compile_failure` and `last_reload_error`
+    // unconditionally. So a failed write would "roll back" the engine while
+    // silently clearing a banner it never earned the right to clear — the GUI
+    // would then claim it is in sync with a hot reload that actually failed.
+    //
+    // The sibling assertion in `..._rolls_the_engine_back_when_the_disk_write_fails`
+    // is `!session.is_stale()` on a session that was never stale, which cannot
+    // fail no matter what the rollback does; this one starts the session STALE,
+    // so the assertion has a direction to regress in.
+    let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+    session.record_reload_error("boom".to_string());
+    assert!(
+        session.is_stale(),
+        "precondition: the session must start stale for this test to mean anything"
+    );
+
+    // Same EISDIR trigger as the sibling test: deterministic, and still fails
+    // when the suite happens to run as root. Note the divergence guard passes
+    // FIRST — it reads the file before the swap, so this exercises the write
+    // failure and not the guard.
+    std::fs::remove_file(&path).expect("removing the fixture .ri should succeed");
+    std::fs::create_dir(&path).expect("creating a directory at the .ri path should succeed");
+
+    let err = session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect_err("a failed disk write must surface as Err, not be swallowed");
+    assert!(
+        err.contains("writing"),
+        "precondition: the failure must be the WRITE, not a compile rejection, got: {err}"
+    );
+
+    assert_eq!(
+        session.reload_error(),
+        Some("boom"),
+        "a failed disk write must leave the pre-existing staleness banner exactly \
+         as it found it — the rollback recompile succeeds, and `commit_state` \
+         would otherwise clear a banner this call never earned the right to clear"
+    );
+    assert!(
+        session.compile_failure_for_test().is_none(),
+        "the rollback must not leave diagnostics either — the snapshot restored \
+         is the pre-edit one, which had none"
+    );
+}
+
+#[test]
+fn apply_param_to_source_is_idempotent_on_reapply() {
+    // D7: applying the SAME value twice is a no-op, not an error and not a
+    // second textual edit. This is the property that makes the FS-watcher
+    // re-fire safe — the watcher may hand the engine the file it just wrote,
+    // and a write-back that drifted on reapply would turn every save into a
+    // slow accumulation of rewrites. Green on arrival; kept as a regression
+    // guard, not manufactured as a failure.
+    let (_dir, path, mut session) = writeback_session();
+
+    session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect("first apply_param_to_source should succeed");
+    let disk_after_first = std::fs::read_to_string(&path).expect("disk file should be readable");
+    let source_map_after_first = {
+        let (_key, text) = session
+            .resolve_source_for_test()
+            .expect("source_map should resolve after the first write-back");
+        text.to_string()
+    };
+
+    session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect("re-applying the same value must succeed, not error");
+
+    let disk_after_second = std::fs::read_to_string(&path).expect("disk file should be readable");
+    assert_eq!(
+        disk_after_second, disk_after_first,
+        "re-applying the same value must leave disk byte-identical (D7)"
+    );
+
+    let (_key, source_map_after_second) = session
+        .resolve_source_for_test()
+        .expect("source_map should resolve after the second write-back");
+    assert_eq!(
+        source_map_after_second, source_map_after_first,
+        "re-applying the same value must leave source_map byte-identical (D7)"
+    );
+}
+
+#[test]
+fn apply_param_to_source_reload_of_the_written_file_is_an_empty_delta() {
+    // The γ-level half of PRD §7 B5: the FS-watcher re-fire that follows a
+    // write-back must be a NO-OP at the wire, so the user never sees the
+    // viewport flicker or a value round-trip through its own edit. Simulated
+    // here by feeding the on-disk text the write-back just produced back
+    // through `update_source` — exactly what the watcher does — and diffing
+    // the resulting GuiState against the one the write-back returned.
+    //
+    // The full ChatPanel-to-viewport assertion stays with ζ; this pins the
+    // engine-level property it depends on.
+    use std::sync::Mutex;
+
+    let (_dir, path, mut session) = writeback_session();
+
+    let after_write = session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect("apply_param_to_source should succeed");
+
+    let disk_text = std::fs::read_to_string(&path).expect("disk file should be readable");
+    let path_str = path.to_str().expect("tempdir path should be UTF-8");
+    let after_reload = session
+        .update_source(path_str, &disk_text)
+        .expect("reloading the just-written file must recompile cleanly");
+
+    let tessellation_before = after_write.tessellation_diagnostics.clone();
+    let tessellation_after = after_reload.tessellation_diagnostics.clone();
+
+    let last_state: Mutex<Option<crate::types::GuiState>> = Mutex::new(Some(after_write));
+    let delta = crate::diff::compute_delta(&last_state, &after_reload);
+
+    assert!(
+        delta.changed_meshes.is_empty(),
+        "watcher re-fire must not re-push meshes; got {:?}",
+        delta
+            .changed_meshes
+            .iter()
+            .map(|m| &m.entity_path)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        delta.changed_values.is_empty(),
+        "watcher re-fire must not re-push values; got {:?}",
+        delta
+            .changed_values
+            .iter()
+            .map(|v| &v.cell_id)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        delta.changed_constraints.is_empty(),
+        "watcher re-fire must not re-push constraints"
+    );
+    assert!(delta.removed_mesh_paths.is_empty(), "nothing was removed");
+    assert!(delta.removed_value_ids.is_empty(), "nothing was removed");
+    assert!(
+        delta.removed_constraint_ids.is_empty(),
+        "nothing was removed"
+    );
+    assert!(
+        delta.changed_compile_diagnostics.is_none(),
+        "watcher re-fire must not re-push compile diagnostics"
+    );
+    assert!(
+        delta.changed_tensegrity_wires.is_none(),
+        "watcher re-fire must not re-push tensegrity wires"
+    );
+    assert!(
+        delta.changed_tensegrity_surfaces.is_none(),
+        "watcher re-fire must not re-push tensegrity surfaces"
+    );
+    assert!(
+        delta.changed_display_panes.is_none(),
+        "watcher re-fire must not re-push display panes"
+    );
+    assert!(
+        delta.changed_display_appearance.is_none(),
+        "watcher re-fire must not re-push display appearance"
+    );
+
+    // `tessellation_diagnostics` is the ONE diffed field this test does not
+    // assert empty, and the exclusion is a TEST-FIXTURE artifact rather than a
+    // property of the write-back — stated here rather than left as a silently
+    // narrower claim than the test's name suggests.
+    //
+    // MEASURED: `MockGeometryKernel` ships no topology-extraction fixture, so
+    // every tessellation emits a warning naming the handle it failed on —
+    // `…no topology extraction fixture for GeometryHandleId(2)` after the
+    // write-back, `…GeometryHandleId(3)` after the reload. The handle counter
+    // advances per tessellation call, so two structurally identical states
+    // cannot produce byte-identical diagnostics here no matter what the engine
+    // does. A real kernel emits no such warning at all, leaving the field empty
+    // on both sides and the delta genuinely empty.
+    //
+    // What IS assertable under the mock is that the diagnostics are equal once
+    // that handle id is normalised away: same count, same severity, same
+    // failure — i.e. the reload did not introduce a NEW class of diagnostic.
+    let without_handle_id = |ds: &[DiagnosticInfo]| -> Vec<(String, String)> {
+        ds.iter()
+            .map(|d| {
+                let message = match d.message.find("GeometryHandleId(") {
+                    Some(i) => d.message[..i].to_string(),
+                    None => d.message.clone(),
+                };
+                (d.severity.clone(), message)
+            })
+            .collect()
+    };
+    assert_eq!(
+        without_handle_id(&tessellation_after),
+        without_handle_id(&tessellation_before),
+        "the watcher re-fire must not introduce a new class of tessellation \
+         diagnostic — only the mock kernel's per-call handle id may differ"
+    );
+
+    // The summary the per-field assertions above decompose into: the re-fire
+    // emits no events at all beyond the mock-kernel artifact just accounted for.
+    let event_names: Vec<String> = crate::diff::delta_to_events(&delta)
+        .into_iter()
+        .map(|(name, _)| name)
+        .filter(|name| name != "tessellation-diagnostics")
+        .collect();
+    assert!(
+        event_names.is_empty(),
+        "the watcher re-fire after a write-back must emit no events beyond the \
+         mock kernel's tessellation-diagnostics artifact; got {event_names:?}"
+    );
+}
+
+#[test]
+fn apply_param_to_source_still_rewrites_a_bool_literal_default() {
+    // The literal-ness gate must admit the whole literal set, not just
+    // quantities: Number/Quantity/String/Bool defaults all stay rewritable.
+    // This is the guard against over-narrowing the gate added for `computed`
+    // and `solved`.
+    let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+
+    session
+        .apply_param_to_source("Part.flag", &reify_ir::Value::Bool(false))
+        .expect("a Bool literal default must stay rewritable");
+
+    let disk = std::fs::read_to_string(&path).expect("disk file should be readable");
+    assert_eq!(
+        disk,
+        writeback_rejection_source().replace("param flag: Bool = true", "param flag: Bool = false"),
+        "only the Bool default span should change"
+    );
+}
+
+#[test]
+fn apply_param_to_source_refuses_to_clobber_a_file_that_changed_on_disk() {
+    // The write replaces the WHOLE file with the in-memory buffer, so a session
+    // whose buffer has diverged from disk would resolve that divergence by
+    // destroying the disk side — wholesale, not merely at the spliced span.
+    // Two ordinary ways to get there: an external editor saved the `.ri` and
+    // the FS-watcher has not re-fired `update_source` yet, or the GUI editor's
+    // dirty-buffer path (per-keystroke `update_source`, never a disk write) is
+    // holding text the user did not ask to save.
+    //
+    // Simulated with the first: write the file behind the session's back, and
+    // deliberately change a param the write-back would NOT splice, so what is
+    // at stake is an edit no splice of `Part.width` could ever preserve.
+    let (_dir, path, mut session) = writeback_session();
+    let external_edit =
+        writeback_source().replace("param depth: Length = 0.5m", "param depth: Length = 0.75m");
+    std::fs::write(&path, &external_edit).expect("the external edit should be writable");
+
+    let err = session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect_err("a write-back over a diverged file must be REFUSED, not silently applied");
+    assert!(
+        err.contains("disk"),
+        "the rejection should say the DISK copy is what diverged, so it is not \
+         mistaken for a compile rejection, got: {err}"
+    );
+    assert!(
+        err.contains(&path.display().to_string()),
+        "the rejection should name the file it refused to write, got: {err}"
+    );
+
+    // The whole point: the other writer's edit survives byte for byte.
+    let disk_after = std::fs::read_to_string(&path).expect("disk file should be readable");
+    assert_eq!(
+        disk_after, external_edit,
+        "the external edit must survive untouched — a refusal that still wrote \
+         would be the exact data loss this check exists to prevent"
+    );
+
+    // ...and the refusal is resolve-phase-shaped: it happens before the
+    // recompile, so no in-process surface moved either. `assert_writeback_untouched`
+    // does not apply here (it expects disk and source_map to hold the SAME text,
+    // which is precisely what this test arranges not to be true), so the three
+    // in-process surfaces are asserted directly.
+    {
+        let (_key, source_map_text) = session
+            .resolve_source_for_test()
+            .expect("source_map should still resolve after a refused write-back");
+        assert_eq!(
+            source_map_text,
+            writeback_source(),
+            "source_map must still hold the text this session compiled"
+        );
+    }
+    assert!(
+        session.compile_failure_for_test().is_none(),
+        "a refused write-back must not leave compile diagnostics behind"
+    );
+    assert!(
+        !session.is_stale(),
+        "a refused write-back must not raise the hot-reload staleness banner"
+    );
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should succeed after a refused write-back");
+    let width = state
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Part.width")
+        .expect("Part.width should still be present after a refused write-back");
+    assert_eq!(
+        (width.value.as_str(), width.unit.as_str()),
+        ("80", "mm"),
+        "eval state must still report the pre-edit value after a refused write-back"
+    );
+}
+
+#[test]
+fn apply_param_to_source_leaves_no_temp_file_beside_the_design() {
+    // The write is temp-file-plus-rename (so a partial write can never leave a
+    // truncated `.ri` for the watcher to reload). The temp is an implementation
+    // detail and must stay one: the rename consumes it on success, and the
+    // failure path removes it — a project directory accumulating
+    // `part.ri.1234.0.tmp` siblings would be a user-visible regression.
+    let (dir, path, mut session) = writeback_session();
+
+    session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect("apply_param_to_source should succeed");
+
+    let mut entries: Vec<String> = std::fs::read_dir(dir.path())
+        .expect("the fixture directory should be readable")
+        .map(|e| {
+            e.expect("directory entry should be readable")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    entries.sort();
+    assert_eq!(
+        entries,
+        vec![
+            path.file_name()
+                .expect("fixture path has a file name")
+                .to_string_lossy()
+                .into_owned()
+        ],
+        "a successful write-back must leave the design file and nothing else"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_param_to_source_writes_through_a_symlinked_design_rather_than_replacing_it() {
+    // `rename(2)` does NOT follow a symlink at its destination. Renaming the
+    // temp straight over the session's path would therefore DELETE a symlinked
+    // `.ri` and leave a regular file where the link was, while the file the
+    // link pointed at kept the pre-edit content forever — the exact opposite of
+    // the write-through a plain `fs::write` would have done, and INVISIBLE to
+    // the divergence guard, which reads through the link and so keeps comparing
+    // against the (still matching) target's bytes.
+    //
+    // Keeping `current.ri -> versions/v3.ri` and opening the link is an
+    // ordinary way to keep a design under version control, so this is a real
+    // shape rather than a contrived one.
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let target_dir = dir.path().join("versions");
+    std::fs::create_dir(&target_dir).expect("creating the target directory should succeed");
+    let target = target_dir.join("v3.ri");
+    std::fs::write(&target, writeback_source()).expect("writing the target .ri should succeed");
+
+    let link = dir.path().join("current.ri");
+    std::os::unix::fs::symlink(&target, &link).expect("creating the symlink should succeed");
+
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    session
+        .load_file(&link)
+        .expect("load_file through a symlink should succeed");
+
+    session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect("apply_param_to_source through a symlink should succeed");
+
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .expect("the link should still exist")
+            .file_type()
+            .is_symlink(),
+        "the write-back must not replace the user's symlink with a regular file"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&target).expect("the link target should be readable"),
+        writeback_source().replace("80mm", "120mm"),
+        "the edit must land in the file the link points AT — a detached copy at \
+         the link path would leave the versioned design stale forever"
+    );
+
+    // Same no-litter contract as the non-symlinked path, checked in BOTH
+    // directories: the temp is a sibling of the RESOLVED target (rename is only
+    // atomic within one filesystem), so it must not appear beside the link
+    // either.
+    for probe in [dir.path(), target_dir.as_path()] {
+        let litter: Vec<String> = std::fs::read_dir(probe)
+            .expect("the probed directory should be readable")
+            .map(|e| {
+                e.expect("directory entry should be readable")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(
+            litter.is_empty(),
+            "a successful write-back must leave no temp file in {}, found: {litter:?}",
+            probe.display()
+        );
+    }
+}
+
+#[test]
+fn apply_param_to_source_refuses_a_param_declared_in_an_imported_module() {
+    // `compile_entry_with_imports` MERGES a direct import's pub templates into
+    // `compiled.templates`, so an imported param passes the cell-existence gate
+    // — while its text never enters `parsed_cache` or `source_map`, so there is
+    // nothing here to splice. Without a dedicated arm that combination reads as
+    // "no default expression", which is not what happened: the default is right
+    // there in the other file, and δ would surface a reason that sends its
+    // caller looking in the wrong place.
+    //
+    // Two-file fixture mirroring `load_file_with_user_import_resolves_imported_structure`.
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let helper_source = "pub structure Helper { param x: Length = 10mm }\n";
+    let entry_source = "import helper\nstructure Top { sub h = Helper() }\n";
+    let helper_path = dir.path().join("helper.ri");
+    let entry_path = dir.path().join("main.ri");
+    std::fs::write(&helper_path, helper_source).expect("write helper.ri");
+    std::fs::write(&entry_path, entry_source).expect("write main.ri");
+
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    session
+        .load_file(&entry_path)
+        .expect("load_file should succeed with a resolved import");
+
+    let err = session
+        .apply_param_to_source("Helper.x", &mm(20.0))
+        .expect_err("a param declared in an imported module must be REFUSED");
+    assert!(
+        err.contains("Helper"),
+        "the rejection should name the entity it refused, got: {err}"
+    );
+    assert!(
+        err.contains("imported module"),
+        "the rejection should say the declaration lives in an IMPORTED module — \
+         that is the actionable half for the caller, got: {err}"
+    );
+    assert!(
+        !err.contains("no default expression"),
+        "the misdiagnosis this arm exists to prevent: Helper.x's default is right \
+         there in helper.ri, got: {err}"
+    );
+
+    // NEITHER file moved — least of all the imported one, which this session
+    // has no business rewriting.
+    assert_eq!(
+        std::fs::read_to_string(&helper_path).expect("helper.ri should be readable"),
+        helper_source,
+        "the imported module must be byte-identical after a refused write-back"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&entry_path).expect("main.ri should be readable"),
+        entry_source,
+        "the entry module must be byte-identical after a refused write-back"
+    );
+    assert!(
+        session.compile_failure_for_test().is_none(),
+        "a refused write-back must not leave compile diagnostics behind"
+    );
+
+    // The rejection is specifically NOT "unknown parameter": the cell exists,
+    // and the ephemeral edit path proves it by accepting the very same id. That
+    // agreement is what `require_known_cell` exists to keep true — the slider
+    // and the write-back must never disagree about which params exist, only
+    // about which are rewritable IN SOURCE.
+    assert!(
+        !err.contains("Unknown parameter"),
+        "an imported param is known, just not rewritable here, got: {err}"
+    );
+    session
+        .set_parameter("Helper.x", "20mm")
+        .expect("the ephemeral edit path must still accept the same cell id");
+}
+
+#[test]
+fn apply_param_to_source_still_rewrites_a_string_literal_default() {
+    // The fourth admitted literal kind. `Bool` is covered above; `String` is
+    // the one whose splice actually changes the byte LENGTH of the literal
+    // (`"unset"` → `"done"`), so it is the case where an off-by-one in the
+    // byte-offset splice would show up as a mangled neighbour rather than as a
+    // value that merely reads wrong.
+    let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+
+    session
+        .apply_param_to_source("Part.label", &reify_ir::Value::String("done".to_string()))
+        .expect("a String literal default must stay rewritable");
+
+    let disk = std::fs::read_to_string(&path).expect("disk file should be readable");
+    assert_eq!(
+        disk,
+        writeback_rejection_source().replace(r#""unset""#, r#""done""#),
+        "only the String default span should change"
+    );
+}
+
+#[test]
+fn apply_param_to_source_still_rewrites_a_bare_number_literal_default() {
+    // The FOURTH admitted `ExprKind`, and the only one the cluster did not
+    // drive end to end: `Bool`, `String` and `QuantityLiteral` were covered,
+    // `NumberLiteral` was not, because until now no fixture param had a bare
+    // number default.
+    //
+    // It is also the only shape that reaches `value_to_ri_literal_with_unit`
+    // with a `None` hint (there is no trailing unit for
+    // `unit_hint_from_default_literal` to read), so it is the ONLY path on
+    // which the emitter's `force_decimal_point` choice decides the text that
+    // lands in the user's file. That is what makes `7` vs `7.0` and `0.25` vs
+    // `.25` an assertable contract here rather than an emitter detail: the
+    // written form has to re-parse as the same param, and a `Real` default
+    // silently becoming an integer-looking literal is exactly the kind of drift
+    // a byte-for-byte assertion catches.
+    //
+    // Both `Value` variants are driven from one test because they share the
+    // whole path and differ only in that emitter arm.
+    let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+
+    session
+        .apply_param_to_source("Part.count", &reify_ir::Value::Int(7))
+        .expect("an Int NumberLiteral default must stay rewritable");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("disk file should be readable"),
+        writeback_rejection_source().replace("param count: Int = 4", "param count: Int = 7"),
+        "only the Int default span should change"
+    );
+
+    session
+        .apply_param_to_source("Part.ratio", &reify_ir::Value::Real(0.25))
+        .expect("a dimensionless Real NumberLiteral default must stay rewritable");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("disk file should be readable"),
+        writeback_rejection_source()
+            .replace("param count: Int = 4", "param count: Int = 7")
+            .replace("param ratio: Real = 0.5", "param ratio: Real = 0.25"),
+        "only the Real default span should change, and the Int edit must survive it"
+    );
+
+    // Both edits must be visible to the ENGINE too, not just on disk — the
+    // three-way consistency the happy-path test pins for the quantity case.
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should succeed after two number write-backs");
+    for (cell_id, expected) in [("Part.count", "7"), ("Part.ratio", "0.25")] {
+        let cell = state
+            .values
+            .iter()
+            .find(|v| v.cell_id == cell_id)
+            .unwrap_or_else(|| panic!("{cell_id} should be present in the GuiState"));
+        assert_eq!(
+            cell.value, expected,
+            "{cell_id} should evaluate to the written-back value"
+        );
+    }
+}
+
+#[test]
+fn apply_param_to_source_leaves_no_trace_when_the_value_cannot_be_serialized() {
+    // The SERIALIZE phase's own rejection arm, between the resolve-phase
+    // taxonomy and the recompile: `Part.width` resolves fine (its default IS a
+    // rewritable quantity literal) and the value is refused by
+    // `value_to_ri_literal_with_unit` instead. A non-finite real is the
+    // shortest trigger — there is no `.ri` literal that re-parses to NaN, so
+    // the emitter refuses rather than writing something that would not round-trip.
+    //
+    // The ledger claim being pinned is the rustdoc's "**Serialize** likewise —
+    // nothing has been mutated at that point": the splice has not been computed
+    // yet, so all four surfaces must be exactly as the call found them.
+    let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+
+    let err = session
+        .apply_param_to_source("Part.width", &reify_ir::Value::Real(f64::NAN))
+        .expect_err("a value with no `.ri` literal form must be REFUSED");
+    assert!(
+        err.contains("serialize"),
+        "the rejection should say SERIALIZATION is what failed, so it is not \
+         mistaken for a resolve-phase refusal or a compile rejection, got: {err}"
+    );
+    assert!(
+        err.contains("Part.width"),
+        "the rejection should name the cell it could not write, got: {err}"
+    );
+
+    assert_writeback_untouched(&mut session, &path, writeback_rejection_source());
+    assert!(
+        !session.is_stale(),
+        "a serialize rejection must not raise the hot-reload staleness banner"
+    );
+}
+
+#[test]
+fn apply_param_to_source_refuses_a_session_with_no_file_on_disk() {
+    // INV-GUI-3 writes the CANONICAL `.ri`, so a session that has no such file
+    // has nothing to be canonical about. `load_from_source` builds exactly that
+    // session — the debug bridge and several GUI entry points use it — and it
+    // must be refused rather than silently degrading to an engine-state-only
+    // edit, which is the ephemeral behaviour INV-GUI-3 exists to replace.
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    session
+        .load_from_source(writeback_source(), "part")
+        .expect("load_from_source should succeed");
+
+    let err = session
+        .apply_param_to_source("Part.width", &mm(120.0))
+        .expect_err("a session with no on-disk .ri must be REFUSED");
+    assert!(
+        err.contains("no on-disk"),
+        "the rejection should say the session has no file to write, got: {err}"
+    );
+
+    // Refused before any mutation, exactly like the resolve-phase arms — there
+    // is no disk surface to check here, so the other three are asserted directly.
+    {
+        let (_key, source_map_text) = session
+            .resolve_source_for_test()
+            .expect("source_map should still resolve after a refused write-back");
+        assert_eq!(
+            source_map_text,
+            writeback_source(),
+            "source_map must be byte-identical after a refused write-back"
+        );
+    }
+    assert!(
+        session.compile_failure_for_test().is_none(),
+        "a refused write-back must not leave compile diagnostics behind"
+    );
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should succeed after a refused write-back");
+    let width = state
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Part.width")
+        .expect("Part.width should still be present after a refused write-back");
+    assert_eq!(
+        (width.value.as_str(), width.unit.as_str()),
+        ("80", "mm"),
+        "eval state must still report the pre-edit value after a refused write-back"
+    );
+}
+
+#[test]
+fn apply_param_to_source_preserves_an_existing_staleness_banner_when_it_rejects() {
+    // The `last_reload_error` half of the snapshot/restore taken around the
+    // recompile. The sibling rejection tests assert `!session.is_stale()` on a
+    // session that was never stale, which cannot fail no matter what the
+    // restore does; this one starts the session STALE, so the assertion has a
+    // direction to regress in.
+    //
+    // A prior hot-reload failure is the user's banner, not this write-back's:
+    // a rejected write-back must neither clear it (the reload really did fail
+    // and still has not been retried) nor replace it with its own diagnostics
+    // (nothing on disk changed, so nothing about the reload's status did).
+    let (_dir, path, mut session) = writeback_session_from(writeback_rejection_source());
+    session.record_reload_error("boom".to_string());
+    assert!(
+        session.is_stale(),
+        "precondition: the session must start stale for this test to mean anything"
+    );
+
+    session
+        .apply_param_to_source("Part.width", &reify_ir::Value::Bool(true))
+        .expect_err("a Bool into a `Length` param must be REFUSED by the recompile");
+
+    assert_eq!(
+        session.reload_error(),
+        Some("boom"),
+        "a rejected write-back must leave the pre-existing staleness banner \
+         exactly as it found it — neither cleared nor overwritten"
+    );
+    assert_writeback_untouched(&mut session, &path, writeback_rejection_source());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// task 5097 δ — EngineSession::apply_param_to_source_str (string-typed front
+// door for the reify-debug `reify_set_parameter` write tool)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn apply_param_to_source_str_parses_a_unit_bearing_literal() {
+    // The δ front door must be a pure PARSE in front of γ's write-back — not a
+    // second write path. Pinned by byte-equality against what the landed
+    // `apply_param_to_source(&mm(120.0))` produces on the same fixture
+    // (`apply_param_to_source_rewrites_only_the_default_span`): only the
+    // `80mm` span moves, the non-ASCII header comment and the `0.5m` default
+    // survive byte for byte.
+    let (_dir, path, mut session) = writeback_session();
+
+    let state = session
+        .apply_param_to_source_str("Part.width", "120mm")
+        .expect("apply_param_to_source_str should succeed on a unit-bearing literal");
+
+    let disk_text = std::fs::read_to_string(&path).expect("disk file should be readable");
+    let expected = writeback_source().replace("80mm", "120mm");
+    assert_eq!(
+        disk_text, expected,
+        "the string front door must splice exactly the span the Value-typed \
+         entry point does — only the default, never a reformat"
+    );
+
+    // eval state ≡ source, exactly as the Value-typed entry point reports it.
+    let width = state
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Part.width")
+        .expect("Part.width should be present in the returned GuiState");
+    assert_eq!((width.value.as_str(), width.unit.as_str()), ("120", "mm"));
+}
+
+#[test]
+fn apply_param_to_source_str_refuses_a_bare_number_on_a_dimensioned_cell() {
+    // The parse is the SAME dimension-aware one the property-panel slider runs
+    // (task #5757): `parse_value_string_for_cell` owns the rule and the
+    // ladder-rung suggestion, so the AI path and the slider can never disagree
+    // about what a value string denotes. Asserted on the message this front
+    // door must NOT re-author, plus the full no-mutation ledger — a refused
+    // parse must not have touched disk, source_map, compile_failure or eval
+    // state.
+    let (_dir, path, mut session) = writeback_session();
+
+    let err = session
+        .apply_param_to_source_str("Part.width", "120")
+        .expect_err("a bare number on a Length cell must be REFUSED");
+    assert!(
+        err.contains("bare number '120'"),
+        "the refusal must be the one parse_value_string_for_cell owns, got: {err}"
+    );
+    assert!(
+        err.contains("120mm"),
+        "the refusal must carry the ladder-rung suggestion (#5757), got: {err}"
+    );
+
+    assert_writeback_untouched(&mut session, &path, writeback_source());
+}
+
+#[test]
+fn apply_param_to_source_str_rejects_an_unknown_cell() {
+    // Cell resolution precedes the parse, so an unknown cell reads as
+    // "Unknown parameter" rather than as a parse diagnostic — the same
+    // ordering `set_parameter` documents, and the taxonomy δ maps into its
+    // tool result.
+    let (_dir, path, mut session) = writeback_session();
+
+    let err = session
+        .apply_param_to_source_str("Part.nope", "1mm")
+        .expect_err("an unknown cell must be REFUSED");
+    assert!(
+        err.contains("Unknown parameter"),
+        "expected the shared unknown-cell rejection, got: {err}"
+    );
+
+    assert_writeback_untouched(&mut session, &path, writeback_source());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// task 5097 δ — EngineSession::holds_rejected_source (the write-back interlock)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn holds_rejected_source_tracks_the_compile_failure() {
+    // `build_gui_state().files[].content` is NOT unconditionally the committed
+    // buffer: `build_files_with_live_edit` deliberately SPLICES a recorded
+    // `LiveEdit` failure's rejected source into the matching entry to hold its
+    // one-snapshot invariant (so `files[]` and `compile_diagnostics` come from
+    // the same snapshot). Correct for a read-only snapshot; catastrophic for
+    // any consumer that PERSISTS that content — which is exactly what the
+    // reify-debug `reify_save_file` write tool does.
+    //
+    // This is the predicate such a consumer must consult first. Asserted over
+    // the full round trip, so it cannot regress into a permanent wedge: a
+    // successful recompile clears it via `commit_state`.
+    let (_dir, _path, mut session) = writeback_session();
+
+    assert!(
+        !session.holds_rejected_source(),
+        "a freshly loaded session holds no rejected buffer"
+    );
+
+    session
+        .update_source("part.ri", "structure def Part { param width: Length = ")
+        .expect_err("source that does not parse must be REFUSED");
+    assert!(
+        session.holds_rejected_source(),
+        "a refused recompile RECORDS the rejected source (record_compile_failure), \
+         which build_files_with_live_edit then surfaces in files[].content"
+    );
+
+    session
+        .update_source("part.ri", writeback_source())
+        .expect("a buffer that compiles must be accepted");
+    assert!(
+        !session.holds_rejected_source(),
+        "a successful commit_state clears compile_failure — the interlock is \
+         transient, not a permanent wedge"
+    );
+}
+
+/// Task 5212 (GUI reload wiring): every whole-file reload entry
+/// (`load_from_source` / `load_file` / `update_source`) funnels through
+/// `EngineSession::check_with_solve_slot`, which must reset the geometry kernel
+/// — freeing the prior design's resident native shapes — and clear the
+/// realization cache exactly once per reload (via
+/// `Engine::reset_geometry_for_reload`). The slider path (`set_parameter` →
+/// `edit_check`) deliberately BYPASSES that funnel, so a parameter edit must
+/// NOT reset the kernel (otherwise every slider tick would wipe the warm
+/// shapes). Together these two facts bound OCCT native-shape memory across a
+/// long dogfooding session: reset frees the shapes AND fires exactly once per
+/// reload, never on a slider drag.
+///
+/// A reset-counting `MockGeometryKernel` observes the count across the engine
+/// ownership boundary via a shared `Arc<Mutex<usize>>` handle cloned before the
+/// mock is boxed (mirrors the reify-eval
+/// `reset_geometry_for_reload_resets_kernels_and_clears_realization_cache`
+/// test). This keeps the reload-boundedness proof off the heavy real-OCCT path:
+/// the real-OCCT mechanism test pins that `reset()` bounds `shape_count`, and
+/// this wiring test pins that `reset()` fires once per reload and never on a
+/// slider edit.
+#[test]
+fn whole_file_reload_resets_geometry_kernel_once_per_reload_slider_does_not() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    // Clone the shared reset counter BEFORE the mock is boxed into the session —
+    // `reset_count()` needs `&MockGeometryKernel`, which the boxed
+    // `dyn GeometryKernel` inside the engine no longer exposes.
+    let reset_calls = kernel.reset_calls_ref();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    assert_eq!(
+        *reset_calls.lock().unwrap(),
+        0,
+        "precondition: no reset before any load",
+    );
+
+    // First whole-file load — funnels through check_with_solve_slot, resets once
+    // (idempotent no-op on the cold engine, but still invokes reset()).
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial whole-file load");
+    assert_eq!(
+        *reset_calls.lock().unwrap(),
+        1,
+        "the first whole-file load must reset the geometry kernel exactly once",
+    );
+
+    // Second whole-file reload via update_source — the primary dirty-buffer
+    // reload path; also funnels through check_with_solve_slot. Resets once more.
+    session
+        .update_source("bracket.ri", bracket_source())
+        .expect("whole-file reload via update_source");
+    assert_eq!(
+        *reset_calls.lock().unwrap(),
+        2,
+        "each whole-file reload must reset the geometry kernel exactly once \
+         (== 2 after two reloads)",
+    );
+
+    // Slider path — set_parameter → edit_check BYPASSES check_with_solve_slot,
+    // so it must NOT reset (a reset here would wipe warm shapes on every tick).
+    session
+        .set_parameter("Bracket.width", "120mm")
+        .expect("slider edit should succeed");
+    assert_eq!(
+        *reset_calls.lock().unwrap(),
+        2,
+        "a slider (set_parameter) edit must NOT reset the geometry kernel — the \
+         reload wiring lives on the check_with_solve_slot funnel, which the \
+         slider path bypasses",
+    );
+}
+
+
+/// `source_key_matches_path` is DIRECTIONAL, and both of its live call sites
+/// depend on that. `debug_server::filter_diagnostics_for_file` calls it
+/// `(stamped_key, caller_path)`; `update_source_target_matches_active` calls
+/// it `(caller_spelling, active_path)`. Both put the possibly-stem-only
+/// spelling first and the real filesystem path second — but only the second
+/// argument's stem is ever taken, so swapping them changes the answer.
+///
+/// Pinned here (rather than only through the two debug_server predicates that
+/// consume it) so a future tightening — rejecting an absolute first argument,
+/// or taking stems on BOTH sides — cannot silently break the active-file guard
+/// while the diagnostics filter stays green (task #5097 δ, review finding).
+#[cfg(feature = "gui")]
+#[test]
+fn source_key_matches_path_is_directional() {
+    use crate::engine::source_key_matches_path;
+
+    // Direction 1 — the diagnostics filter: the engine stamps the stem-only
+    // module key, the caller supplies a real path.
+    assert!(
+        source_key_matches_path("part.ri", "/tmp/x/part.ri"),
+        "the stamped module key must match the caller's real path"
+    );
+    // Direction 2 — the active-file guard: an AI client echoes back the
+    // stem-only key it read off a diagnostic, the session holds a real path.
+    assert!(
+        source_key_matches_path("part.ri", "/home/u/proj/part.ri"),
+        "the guard must accept the stem-only spelling of the active file"
+    );
+    // Verbatim equality is accepted in either direction (the `==` arm).
+    assert!(source_key_matches_path("/tmp/x/part.ri", "/tmp/x/part.ri"));
+    assert!(source_key_matches_path("part.ri", "part.ri"));
+
+    // THE ASYMMETRY. Only the SECOND argument's stem is taken, so the reverse
+    // of the accepting case above is a REJECT. This is not an accident to be
+    // "cleaned up": both call sites are written to it.
+    assert!(
+        !source_key_matches_path("/tmp/x/part.ri", "part.ri"),
+        "the loose (stem-only) side is the FIRST argument, never the second"
+    );
+
+    // It still discriminates on the stem — a different file is not the same
+    // file in either direction.
+    assert!(!source_key_matches_path("other.ri", "/tmp/x/part.ri"));
+    assert!(!source_key_matches_path("part.ri", "/tmp/x/other.ri"));
+
+    // A path with no file stem cannot match anything but itself.
+    assert!(!source_key_matches_path("part.ri", "/"));
+    assert!(source_key_matches_path("/", "/"));
+}

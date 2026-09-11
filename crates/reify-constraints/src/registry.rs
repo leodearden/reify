@@ -3,9 +3,12 @@
 //! Combines classification + decomposition to dispatch sub-problems
 //! to domain-specific solvers.
 
-use crate::decompose::decompose_into_components;
 use reify_core::{ConstraintNodeId, Type, ValueCellId};
-use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledFunction, ConstraintDomain, ConstraintSolver, ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, OptimalityStatus, RankedCandidate, RankedSolveResult, ResolutionProblem, SolveResult, UnOp, Value, ValueMap};
+use reify_ir::{
+    AutoParam, BinOp, CompiledExpr, CompiledFunction, ComputeDispatch, ConstraintDomain, ConstraintSolver,
+    ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, OptimalityStatus,
+    RankedCandidate, RankedSolveResult, ResolutionProblem, SolveResult, UnOp, Value, ValueMap,
+};
 use std::collections::HashMap;
 
 // ε-band constants (task ε — PRD §12.1).
@@ -133,6 +136,7 @@ impl SolverRegistry {
         &self,
         problem: &ResolutionProblem,
         want_optimality: bool,
+        dispatch: Option<&dyn ComputeDispatch>,
     ) -> (
         SolveResult,
         Option<OptimalityStatus>,
@@ -171,6 +175,11 @@ impl SolverRegistry {
 
         // Collect value-refs from ALL objective terms for objective-aware decomposition.
         // Single-term ObjectiveSet reduces to the prior single-expr ref set bit-identically.
+        //
+        // RETAINED, not discarded (task #5467 amendment): the expansion's reach
+        // delta is handed to the decomposition below so it need not re-derive
+        // the identical set. See the `obj_reach` note at that call.
+        let mut obj_reach: Vec<ValueCellId> = Vec::new();
         let obj_refs: Option<std::collections::HashSet<ValueCellId>> =
             problem.objective.as_ref().map(|obj: &ObjectiveSet| {
                 let mut refs = std::collections::HashSet::new();
@@ -179,14 +188,22 @@ impl SolverRegistry {
                 }
                 // Expand through `dependent_cells` (task #5720): a ref to a
                 // derived cell also means every auto that cell transitively
-                // drives.  `dependent_cell_auto_reads` is already transitive, so
-                // one pass over the syntactic refs closes the set.
-                let reached: Vec<ValueCellId> = refs
-                    .iter()
-                    .filter_map(|id| dependent_auto_reads.get(id))
-                    .flat_map(|autos| autos.iter().cloned())
-                    .collect();
-                refs.extend(reached);
+                // drives.  Delegated to decompose.rs' ONE expansion body (task
+                // #5467 layer 2) rather than hand-rolled here — the same helper
+                // the decomposition's own constraint and objective sides use,
+                // so the three cannot drift out of lock-step (G7).
+                // This expansion exists for the `objective_component` FIRST-MATCH
+                // LOOKUP below, not for `decompose_into_components_with_reads` —
+                // that function widens `objective_refs` itself and never needed a
+                // pre-expanded input. Handing it the already-widened set is
+                // behaviourally free (the expansion is idempotent), but it is not
+                // COST-free: re-deriving the delta there re-clones every reached
+                // id, two `String` allocations apiece. So the delta is kept here
+                // and passed down instead of dropped on the floor.
+                obj_reach = crate::decompose::expand_refs_through_dependent_cells(
+                    &mut refs,
+                    &dependent_auto_reads,
+                );
                 refs
             });
 
@@ -206,8 +223,26 @@ impl SolverRegistry {
         // objective to an arbitrary component of a nondeterministic `HashMap`
         // iteration while the other component's autos were solved
         // feasibility-only against stale seeds.
-        let components =
-            decompose_into_components(&problem.auto_params, &problem.constraints, obj_refs.as_ref());
+        //
+        // LAYER 2 (task #5467 / PRD2 α): the CONSTRAINT side now follows
+        // `dependent_cells` too, so `constraint s == 10.0` over `let s = a + b`
+        // couples `a` and `b` into one component instead of referencing no auto
+        // at all and being skipped. `_with_reads` is called directly with the
+        // map built once above — the 4-arg `decompose_into_components` wrapper
+        // would rebuild it, a second transitive walk on the solve hot path.
+        //
+        // `obj_reach` is the delta the pre-expansion above already computed and
+        // already folded into `obj_refs`; passing it spares the objective-union
+        // step a second full `dependent_cell_reach_delta` walk over the same
+        // map. It is empty (and the parameter inert) whenever there is no
+        // objective or no dependent cell — the D1/B2 identity path.
+        let components = crate::decompose::decompose_into_components_with_reads(
+            &problem.auto_params,
+            &problem.constraints,
+            obj_refs.as_ref(),
+            Some(&obj_reach),
+            &dependent_auto_reads,
+        );
 
         // If no components (all constraints reference non-auto params),
         // the auto params are unconstrained. Return current values or defaults.
@@ -259,12 +294,6 @@ impl SolverRegistry {
                 .filter_map(|id| param_lookup.get(id).map(|ap| (*ap).clone()))
                 .collect();
 
-            // Filter current_values to only this component's params
-            let mut sub_values = ValueMap::new();
-            for (k, v) in problem.current_values.iter() {
-                sub_values.insert(k.clone(), v.clone());
-            }
-
             // Attach objective only to the designated component
             let sub_objective = if objective_component == Some(ci) {
                 problem.objective.clone()
@@ -302,14 +331,61 @@ impl SolverRegistry {
             // NEXT field added to `ResolutionProblem` cannot be silently dropped.
             // That warning still holds for every field this literal does not name.
             //
+            // # What the spread COSTS, and why it is kept anyway (task #5721)
+            //
+            // This is the ONE cost accounting for the spreads.  The other two
+            // registry sites cross-reference it rather than restate it, and it
+            // names the constants instead of inlining their current values so a
+            // reader is sent to a definition that cannot go stale.
+            //
+            // `..problem.clone()` clones all six `ResolutionProblem` fields and
+            // immediately discards the four this literal overrides
+            // (`auto_params`, `constraints`, `objective`, `dependent_cells`),
+            // keeping only what it inherits: `current_values` — an O(1)
+            // persistent-`ValueMap` structural-sharing clone — and `functions`,
+            // an `Arc` refcount bump.  The discarded work that is REAL is
+            // `constraints` and `dependent_cells`: genuine `CompiledExpr` deep
+            // clones of the whole model's lists.
+            //
+            // It is kept because that cost is paid ONCE PER COMPONENT, not per
+            // trial, while the sub-problem it builds then drives a best-of-K
+            // multistart (`multistart_points` in solver.rs, K rising with the
+            // component's dimension), each start running Nelder-Mead for up to
+            // a `FEASIBLE_OPT_ITERS_PER_DIM`-scaled iteration budget when
+            // warm-started, or `MAX_ITERS` cold.  EVERY one of those iterations
+            // re-evaluates the entire `constraints` list via
+            // `compute_total_violation` (plus a `build_trial_values` fold).  At
+            // the constants those three names carry today that is roughly FOUR
+            // ORDERS OF MAGNITUDE more evaluations of the list than clones of
+            // it, for a two-dimensional component — a cold path, not the
+            // per-trial hot path `fold_dependent_cells`' own cost model
+            // identifies.
+            //
+            // Restructuring to hoist the invariant tail out of the loop would
+            // therefore trade a real drift guard for a speedup on a path that
+            // is not hot.  The guard is deliberately KEPT.  Its one weakness —
+            // that a NEW field is inherited WHOLESALE here rather than getting
+            // a per-site decision, which is exactly what #5720 had to fix for
+            // `dependent_cells` — is covered by the compile-time tripwire
+            // `resolution_problem_field_set_is_pinned_at_the_registry_spread_sites`
+            // (this file's `mod tests`) and its solver.rs sibling, which are
+            // ADDITIVE to the spread, not a replacement for it.
+            //
             // # Why `dependent_cells` is FILTERED per component (task #5720)
             //
-            // It used to be passed wholesale, on the rationale that `sub_values`
-            // carries every cell in `problem.current_values` so every dependent
-            // expression stays evaluable.  That is FALSE for an auto owned by
-            // ANOTHER component: such an auto is in neither `sub_auto_params` nor
-            // (necessarily) `current_values`, so the fold evaluates its `ValueRef`
-            // to `Undef`, writes `Undef` into the cell, and an objective reading
+            // It used to be passed wholesale, on the rationale that
+            // `current_values` reaches every component WHOLE — it is inherited
+            // from the `..problem.clone()` spread below, with no per-component
+            // filter of any kind — so every dependent expression stays
+            // evaluable.  That PREMISE still holds, and is pinned by
+            // `every_component_sub_problem_inherits_the_full_current_values`
+            // (tests/registry_tests.rs); a future task that introduces a real
+            // per-component `current_values` filter breaks it and must revisit
+            // this filter's justification.  What was FALSE is the CONCLUSION
+            // drawn from it, for an auto owned by ANOTHER component: such an
+            // auto is in neither `sub_auto_params` nor (necessarily)
+            // `current_values`, so the fold evaluates its `ValueRef` to
+            // `Undef`, writes `Undef` into the cell, and an objective reading
             // that cell reports `NoProgress { reason: "objective expression
             // evaluated to undefined at solution point" }`.
             //
@@ -346,32 +422,37 @@ impl SolverRegistry {
             //   cell whose auto reads are unknown is exactly one we cannot prove
             //   is foldable here.
             //
-            // # SCOPE of "structurally impossible" — objective refs only
+            // # SCOPE of "structurally impossible" — now BOTH ref sides
             //
-            // The expansion above is applied to `obj_refs` ONLY.
-            // `decompose_into_components` still unions a CONSTRAINT's autos
-            // purely SYNTACTICALLY, so the guarantee is scoped to reads that
-            // happen inside the fold and the objective, NOT to every read in the
-            // model.  A constraint that reaches a second auto only THROUGH a
-            // derived cell — `a + side >= K` where `side = SIDE_COEFF*c` — still
-            // splits `a` and `c` into separate components, because the union
-            // step sees only the syntactic ref `side` and filters it away as a
-            // non-auto.  This filter then also removes `side` from the `{a}`
-            // component, since `{c}` is not a subset of `{a}`, and the
-            // constraint is evaluated each trial against whatever stale `side`
-            // sits in `current_values`.
+            // When task #5720 landed the filter, the expansion was applied to
+            // `obj_refs` ONLY: `decompose_into_components` still unioned a
+            // CONSTRAINT's autos purely SYNTACTICALLY, so a constraint that
+            // reached a second auto only THROUGH a derived cell —
+            // `a + side >= K` where `side = SIDE_COEFF*c` — split `a` and `c`
+            // into separate components.  The union step saw only the syntactic
+            // ref `side` and filtered it away as a non-auto; this filter then
+            // removed `side` from the `{a}` component too (since `{c}` is not a
+            // subset of `{a}`) and the constraint was evaluated each trial
+            // against whatever stale `side` sat in `current_values`.
             //
-            // That coupling gap PRE-DATES task #5720 — decomposition has always
-            // unioned constraint refs syntactically — but this filter does change
-            // its symptom, from a loud `Undef` (the wholesale list folded `side`
-            // against an unowned `c`) to a silent stale read.  Closing it means
-            // expanding constraint refs through `dependent_auto_reads` the same
-            // way, which changes decomposition for every existing model and is
-            // deliberately OUT OF SCOPE here; it is filed as its own follow-up.
+            // LAYER 2 (task #5467 / PRD2 α) CLOSES that gap: the constraint
+            // side is expanded through `dependent_auto_reads` by the SAME
+            // `expand_refs_through_dependent_cells` body (decompose.rs), so
+            // `a + side >= K` now unions `a` and `c` into ONE component, `side`
+            // is a subset of that component's autos, and the filter RETAINS it.
+            // The stale-silent-read failure mode is therefore gone, and the
+            // guarantee above is no longer scoped to fold-and-objective reads:
+            // every read that can couple two autos now couples them for real,
+            // whichever side of the problem it appears on.
+            //
+            // What the filter still drops is unchanged and still deliberate: a
+            // cell whose transitive auto set is UNKNOWN (the cycle case in the
+            // bullet above).  Do not read the closure of the coupling gap as a
+            // licence to widen the subset test — the subset test is what bounds
+            // the per-trial fold to the component's own cells.
             let sub_problem = ResolutionProblem {
                 auto_params: sub_auto_params,
                 constraints: component.constraints.clone(),
-                current_values: sub_values,
                 objective: sub_objective,
                 dependent_cells: sub_dependent_cells,
                 ..problem.clone()
@@ -402,10 +483,10 @@ impl SolverRegistry {
             let mut component_candidates: Option<Vec<RankedCandidate>> = None;
             let result = match &sub_problem.objective {
                 Some(obj) if obj.combination == ObjectiveCombination::Lexicographic => {
-                    solve_lexicographic(solver, &sub_problem)
+                    solve_lexicographic(solver, &sub_problem, dispatch)
                 }
                 Some(_) if want_optimality && is_objective_component => {
-                    match solver.solve_ranked(&sub_problem) {
+                    match solver.solve_ranked_with_dispatch(&sub_problem, dispatch) {
                         RankedSolveResult::Ranked {
                             candidates,
                             optimality,
@@ -439,7 +520,7 @@ impl SolverRegistry {
                         }
                     }
                 }
-                _ => solver.solve(&sub_problem),
+                _ => solver.solve_with_dispatch(&sub_problem, dispatch),
             };
 
             match result {
@@ -525,9 +606,33 @@ impl SolverRegistry {
 
 impl ConstraintSolver for SolverRegistry {
     fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
-        // I1: delegate to the shared core with optimality recovery OFF, which
-        // reproduces the historical dispatch path byte-for-byte.
-        self.solve_inner(problem, false).0
+        // I1: delegate to the shared core with optimality recovery OFF and NO
+        // compute-dispatch hook, which reproduces the historical dispatch path
+        // byte-for-byte.
+        //
+        // Straight to `solve_inner`, NOT via `self.solve_with_dispatch(problem, None)`
+        // (task #4880): the trait's DEFAULT `solve_with_dispatch` calls `self.solve`,
+        // so routing through it would make `solve` -> `solve_with_dispatch` -> `solve`
+        // an infinite mutual recursion the moment the override below is deleted — a
+        // silent stack overflow at runtime rather than a compile error. Calling the
+        // shared core directly makes the two entry points independent.
+        self.solve_inner(problem, false, None).0
+    }
+
+    /// `solve`, forwarding a compute-dispatch hook to the inner solver of EVERY
+    /// decomposed component (task #4880 step-12).
+    ///
+    /// Overriding this is what stops the registry from swallowing the hook: the
+    /// `ConstraintSolver` trait default discards `dispatch` and re-enters
+    /// `self.solve`, so an `@optimized` call reached inside a component's cost
+    /// loop would fall back to `Value::Undef`. The production path matters here —
+    /// the CLI/GUI `configured_eval_engine` wires `SolverRegistry::production()`.
+    fn solve_with_dispatch(
+        &self,
+        problem: &ResolutionProblem,
+        dispatch: Option<&dyn ComputeDispatch>,
+    ) -> SolveResult {
+        self.solve_inner(problem, false, dispatch).0
     }
 
     /// δ (task #5016) contract: `solve_ranked` is a best-of-K propagation, NOT
@@ -557,8 +662,29 @@ impl ConstraintSolver for SolverRegistry {
     /// distinct alternatives must dedupe by resolved-value fingerprint
     /// themselves.
     fn solve_ranked(&self, problem: &ResolutionProblem) -> RankedSolveResult {
+        // I1: no hook => byte-for-byte the historical ranked path.
+        //
+        // This half DOES still delegate to its `*_with_dispatch` sibling, unlike `solve`
+        // above, so it keeps the latent mutual-recursion shape that comment describes:
+        // deleting `solve_ranked_with_dispatch` below would fall back to the trait
+        // default, which re-enters here. Left as-is deliberately (task #4880) — breaking
+        // it needs the ~40-line Solved-arm lift in that method extracted into a shared
+        // helper, which is a refactor of ranked-lift behaviour, not part of wiring a
+        // compute-dispatch hook.
+        self.solve_ranked_with_dispatch(problem, None)
+    }
+
+    /// `solve_ranked`, forwarding a compute-dispatch hook to the inner solver of
+    /// every decomposed component (task #4880 step-12). Carries the full
+    /// `solve_ranked` contract documented above; `solve_ranked` is now its
+    /// `dispatch = None` specialisation.
+    fn solve_ranked_with_dispatch(
+        &self,
+        problem: &ResolutionProblem,
+        dispatch: Option<&dyn ComputeDispatch>,
+    ) -> RankedSolveResult {
         let (result, optimality, objective_score, objective_candidates) =
-            self.solve_inner(problem, true);
+            self.solve_inner(problem, true, dispatch);
         match result {
             SolveResult::Solved { values, unique } => {
                 // Prefer the optimality recovered from the objective component.
@@ -627,8 +753,15 @@ impl ConstraintSolver for SolverRegistry {
 /// uniqueness-verified).  The final stage's own `unique` verdict is preserved — given
 /// the accumulated ε-band constraints, the final rank may itself be uniquely determined.
 /// Infeasible / NoProgress from any stage propagates immediately.
-fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) -> SolveResult {
-    let obj = base.objective.as_ref().expect("solve_lexicographic: objective must be Some");
+fn solve_lexicographic(
+    solver: &dyn ConstraintSolver,
+    base: &ResolutionProblem,
+    dispatch: Option<&dyn ComputeDispatch>,
+) -> SolveResult {
+    let obj = base
+        .objective
+        .as_ref()
+        .expect("solve_lexicographic: objective must be Some");
 
     // --- Group terms into ranks by distinct priority, sorted DESCENDING ---
     let priority_order: Vec<u32> = {
@@ -640,6 +773,13 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
     };
 
     // Degenerate case: all terms share one priority — delegate as WeightedSum.
+    //
+    // This is the THIRD `ResolutionProblem` spread site in the registry (task
+    // #5721), and the cheapest: it runs exactly once, overrides only
+    // `objective`, and therefore discards nothing meaningful from the
+    // `..base.clone()`.  It is the shape the staged loop below was made to
+    // mirror in #5189.  Cost accounting is not restated here: it lives at ONE
+    // site, the β comment on `solve_inner`'s `sub_problem`.
     if priority_order.len() == 1 {
         let ws_objective = ObjectiveSet {
             terms: obj.terms.clone(),
@@ -650,7 +790,7 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
             objective: Some(ws_objective),
             ..base.clone()
         };
-        return solver.solve(&ws_problem);
+        return solver.solve_with_dispatch(&ws_problem, dispatch);
     }
 
     // Multi-rank staged loop.
@@ -682,7 +822,10 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
         let free_auto_params: Vec<AutoParam> = base
             .auto_params
             .iter()
-            .map(|ap| AutoParam { free: true, ..ap.clone() })
+            .map(|ap| AutoParam {
+                free: true,
+                ..ap.clone()
+            })
             .collect();
 
         // β (task #5189): mirror the degenerate single-priority path above, which
@@ -692,6 +835,18 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
         // priorities the objective carries — a multi-rank lexicographic objective
         // over a joint-drive cluster dropped the per-trial fold at every stage.
         // Override only what genuinely differs per stage.
+        //
+        // COST, and why the spread is kept (task #5721).  `..base.clone()`
+        // runs ONCE PER DISTINCT PRIORITY RANK and each stage then hands its
+        // sub-problem to a full solve, so the same accounting applies as at the
+        // per-component site — which is where it lives, deliberately once: the
+        // β comment on `solve_inner`'s `sub_problem`.  The guard is KEPT here
+        // for the same reason.  Every site is enumerated by the compile-time
+        // tripwires — this file's
+        // `resolution_problem_field_set_is_pinned_at_the_registry_spread_sites`
+        // and its solver.rs sibling — which catch the failure mode the spread
+        // itself cannot: a NEW field inherited WHOLESALE instead of getting a
+        // per-site decision.
         let stage_problem = ResolutionProblem {
             auto_params: free_auto_params,
             constraints: accumulated_constraints.clone(),
@@ -700,10 +855,13 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
             ..base.clone()
         };
 
-        let stage_result = solver.solve(&stage_problem);
+        let stage_result = solver.solve_with_dispatch(&stage_problem, dispatch);
 
         match stage_result {
-            SolveResult::Solved { values, unique: stage_unique } => {
+            SolveResult::Solved {
+                values,
+                unique: stage_unique,
+            } => {
                 // Warm-start the next stage from this stage's solution.
                 for (k, v) in &values {
                     current_values.insert(k.clone(), v.clone());
@@ -741,16 +899,29 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
                 // Computed here, before `values` is moved into `last_result`, and only
                 // on the non-final path — the final stage builds no band.
                 if !is_final {
+                    // The ε-band anchor is one side of the SAME constraint the next
+                    // stage's cost surface evaluates, so it must be measured with the
+                    // same compute-dispatch hook (task #4880). Passing `None` here
+                    // while every stage solve above gets `dispatch` would make an
+                    // `@optimized` rank term evaluate to `Undef` -> `obj*` = `None` ->
+                    // band skipped, silently dropping the lexicographic ordering the
+                    // user asked for on a model where the hook works everywhere else.
+                    // Same two-sides-of-one-constraint-on-two-value-maps class as the
+                    // stale-`current_values` defect this block already documents.
                     let scored = crate::solver::build_scoring_values(
                         &current_values,
                         &values,
                         &base.dependent_cells,
                         &base.functions,
+                        dispatch,
                     );
-                    match eval_rank_cost(&rank_terms, &scored, &base.functions) {
+                    match eval_rank_cost(&rank_terms, &scored, &base.functions, dispatch) {
                         Some(obj_star) => {
-                            accumulated_constraints
-                                .extend(build_band_constraints(&rank_terms, obj_star, stage_idx));
+                            accumulated_constraints.extend(build_band_constraints(
+                                &rank_terms,
+                                obj_star,
+                                stage_idx,
+                            ));
                         }
                         None => {
                             tracing::warn!(
@@ -763,7 +934,10 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
                     }
                 }
 
-                last_result = Some(SolveResult::Solved { values, unique: result_unique });
+                last_result = Some(SolveResult::Solved {
+                    values,
+                    unique: result_unique,
+                });
 
                 if is_final {
                     break;
@@ -792,6 +966,7 @@ fn eval_rank_cost(
     rank_terms: &[ObjectiveTerm],
     values: &ValueMap,
     functions: &[CompiledFunction],
+    dispatch: Option<&dyn ComputeDispatch>,
 ) -> Option<f64> {
     // I-UNITS backstop (PRD D2/I-UNITS, task α #5018): this does NOT re-diagnose —
     // the compile-time gate (E_OBJECTIVE_MIXED_DIMENSION, `check_objective_dimension_coherence`
@@ -808,7 +983,14 @@ fn eval_rank_cost(
     );
     let mut acc = 0.0_f64;
     for term in rank_terms {
-        let v = reify_expr::eval_expr(&term.expr, &reify_expr::EvalContext::new(values, functions))
+        // `dispatch = None` reconstructs `EvalContext::new(values, functions)`
+        // exactly, so the no-hook path is byte-identical to pre-#4880.
+        let ctx = reify_expr::EvalContext::new(values, functions);
+        let ctx = match dispatch {
+            Some(d) => ctx.with_compute_dispatch(d),
+            None => ctx,
+        };
+        let v = reify_expr::eval_expr(&term.expr, &ctx)
             .as_f64()
             .filter(|v| v.is_finite())?;
         match term.sense {
@@ -838,11 +1020,13 @@ fn signed_term_expr(term: &ObjectiveTerm) -> CompiledExpr {
         ObjectiveSense::Minimize if is_unit => e,
         ObjectiveSense::Maximize if is_unit => CompiledExpr::unop(UnOp::Neg, e, e_type),
         ObjectiveSense::Minimize => {
-            let w_lit = CompiledExpr::literal(Value::Real(term.weight), Type::dimensionless_scalar());
+            let w_lit =
+                CompiledExpr::literal(Value::Real(term.weight), Type::dimensionless_scalar());
             CompiledExpr::binop(BinOp::Mul, w_lit, e, e_type)
         }
         ObjectiveSense::Maximize => {
-            let w_lit = CompiledExpr::literal(Value::Real(-term.weight), Type::dimensionless_scalar());
+            let w_lit =
+                CompiledExpr::literal(Value::Real(-term.weight), Type::dimensionless_scalar());
             CompiledExpr::binop(BinOp::Mul, w_lit, e, e_type)
         }
     }
@@ -892,6 +1076,77 @@ fn build_band_constraints(
     let base_idx = stage_idx as u32 * 2;
     vec![
         (ConstraintNodeId::new("__lex_freeze__", base_idx), le_expr),
-        (ConstraintNodeId::new("__lex_freeze__", base_idx + 1), ge_expr),
+        (
+            ConstraintNodeId::new("__lex_freeze__", base_idx + 1),
+            ge_expr,
+        ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ResolutionProblem;
+
+    /// COMPILE-TIME DRIFT TRIPWIRE for the `ResolutionProblem` field set
+    /// (task #5721 item 2) — registry half of a two-file pin.
+    ///
+    /// SIX production sites in this crate build a `ResolutionProblem` with
+    /// functional-update syntax, inheriting every field their literal does not
+    /// name:
+    ///
+    /// - `registry.rs`: `solve_inner`'s `sub_problem`,
+    ///   `solve_lexicographic`'s `stage_problem` and its degenerate
+    ///   single-priority `ws_problem`
+    /// - `solver.rs`: `solve_cost_robustness_tradeoff`'s `cost_problem`,
+    ///   `rob_problem` and `blend_problem`
+    ///
+    /// Anchors only, deliberately. An earlier revision restated each literal's
+    /// override/inherit set here, and that prose is exactly what drifts — this
+    /// very task had to edit it when site 1 stopped overriding
+    /// `current_values`. Read the literal; the list above only says where.
+    ///
+    /// The spread is deliberately KEPT (see the β/#5189 comments at each site):
+    /// it is the runtime drift guard that stops a newly-added field from being
+    /// silently DROPPED, which is how `dependent_cells` got zeroed in the first
+    /// place. But it buys that at the cost of the opposite failure mode — a new
+    /// field is inherited WHOLESALE at every site, with no one forced to decide
+    /// whether wholesale is right. That is exactly what #5720 had to fix for
+    /// `dependent_cells`, which needed a per-component FILTER rather than a
+    /// blanket pass-through.
+    ///
+    /// This test is the compile-time signal for that second mode: the
+    /// exhaustive destructure carries NO `..` rest pattern, so adding a seventh
+    /// field to `ResolutionProblem` fails to COMPILE here (E0027).
+    ///
+    /// An IDENTICAL pin lives in `solver.rs`, beside that file's three spreads
+    /// (`resolution_problem_field_set_is_pinned_at_the_solver_spread_sites`).
+    /// The duplication is the point: the pin's value is WHERE the break lands,
+    /// and a single copy would break only here while handing the author a list
+    /// of which half the sites live in another file.
+    ///
+    /// It is ADDITIVE to the runtime drift guard, NOT a replacement for it:
+    /// removing a spread in favour of this test would restore the
+    /// silently-dropped-field mode the spreads exist to prevent. Cost
+    /// accounting for the spreads lives at ONE site — the β comment on
+    /// `solve_inner`'s `sub_problem`.
+    ///
+    /// Destructuring a REFERENCE keeps this free — no `ResolutionProblem` is
+    /// constructed, and binding every field to `_` raises no unused warning.
+    #[test]
+    fn resolution_problem_field_set_is_pinned_at_the_registry_spread_sites() {
+        fn pin(p: &ResolutionProblem) {
+            let ResolutionProblem {
+                auto_params: _,
+                constraints: _,
+                current_values: _,
+                objective: _,
+                functions: _,
+                dependent_cells: _,
+            } = p;
+        }
+
+        // Reference `pin` so it is not dead code; calling it would need a
+        // constructed problem, which the tripwire deliberately does not need.
+        let _ = pin as fn(&ResolutionProblem);
+    }
 }

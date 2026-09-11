@@ -486,15 +486,28 @@ const GEOMETRY_ALIAS_SRC: &str = r#"
 module test.geomalias
 
 structure def H {
-    param w      : Real = 1.0
-    param factor : Real = 2.0
+    param w      : Length = 1mm
+    param factor : Real   = 2.0
     let base    = box(w, w, w)
     let shifted = base
     let scaled  = w * factor
 }
 
-pub fn make_h() -> H { H(1.0, 2.0) }
+pub fn make_h() -> H { H(1mm, 2.0) }
 "#;
+
+// C6 MIGRATION (task 5750): `w` was `Real = 1.0` and fed all three `box`
+// dimensions, which now carry compile-layer LENGTH slots — so assertion (a)
+// ("zero errors") started failing on a fixture that has nothing to do with
+// units. Dimensioning `w` restores it while preserving everything this test
+// exists for: `base`/`shifted` are still routed out of the ctor `lets`, and
+// `scaled = w * factor` still survives as a non-poison scalar (now
+// `Scalar{LENGTH}` rather than `Real`, which assertion (e) does not constrain —
+// it asserts only that the type is not `Type::Error`). `factor` stays `Real`:
+// it is a dimensionless multiplier, not a length.
+//
+// NOT in this leaf's plan-time measured migration list; surfaced by the full
+// `cargo test -p reify-compiler` rerun that step-7 mandates.
 
 #[test]
 fn fn_returned_struct_ctor_excludes_geometry_let_alias() {

@@ -1,0 +1,28 @@
+module solver_unification_ineq_eq_penalty_offset
+// PRD evidence — docs/prds/v0_6/geometry-algebra-solver-unification.md §2.6, signal B7.
+//
+// MEASURED ON MAIN 2128c3692c (2026-08-26): this FEASIBLE model reports
+//   error: constraints could not be satisfied (max absolute residual: 5.00e-7)
+// and leaves `w` undef. No geometry is involved.
+//
+// ROOT CAUSE (derived, then confirmed by a three-case discriminating probe):
+// with >=1 inequality slack and no author objective, `build_centrality_objective`
+// synthesises Maximize(min slack). `ConstraintCostFunction::cost` then minimises
+//     cost(w) = -(w - 8mm) + PENALTY_WEIGHT * (w - 10mm)^2
+// whose stationary point is w* - 10mm = 1/(2*PENALTY_WEIGHT) = 5e-7 exactly.
+// `comparison_residual` measures 5.00e-7, which exceeds the dimension-blind
+// FEASIBILITY_THRESHOLD = 1e-12, so a feasible model is declared infeasible.
+// The offset is INDEPENDENT of the bound: `w >= 1mm` gives a byte-identical
+// message, because the sole slack's gradient is 1 everywhere. Replacing the
+// inequality with a two-sided pair (see the companion fixture) makes the
+// gradients cancel and the model solves — which is what confirms the mechanism.
+//
+// A finite penalty weight makes every constraint SOFT, so any objective --
+// including one the system synthesised on the user's behalf -- can buy its way
+// out of a constraint for a bounded price. AFTER leaf kappa (squared-slack
+// exact constraints) this file must resolve w = 10mm.
+pub structure SolverUnificationIneqEqPenaltyOffset {
+    param w : Length = auto
+    constraint w >= 8mm
+    constraint w == 10mm
+}

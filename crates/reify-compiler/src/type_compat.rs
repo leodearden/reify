@@ -1,6 +1,24 @@
 use super::*;
 use reify_ir::EnumDef;
 
+// The overload ladder's per-slot predicates live in `reify-core` (#5689) so
+// that this resolver and `reify_expr::find_matching_compiled_function` share
+// ONE definition rather than a hand-synced mirror pair. See
+// `reify_core::overload`'s module doc for the normative tier contract.
+use reify_core::overload::{slot_matches_head_tier, slot_matches_wildcard_tier};
+
+// Facade re-export, and NOT an ownership claim: `reify_core::overload` is the
+// normative home of these three, alongside the two tier predicates imported
+// above. It survives only because `crate::expr`,
+// `crate::compile_builder::entities_phase` and `crate::variant_construct`
+// still reach them through `crate::type_compat`, and those three modules were
+// outside #5689's scope. A NEW call site should import from
+// `reify_core::overload` directly; the alias is expected to be retired once
+// the three modules can be edited.
+pub(crate) use reify_core::overload::{
+    type_carries_dim_param, type_carries_trait_object, type_carries_type_param,
+};
+
 /// Returns `true` if `ty` is a scalar-like leaf type eligible as the `Q`
 /// (quantity) side of Rules 2a/2b/2c.
 ///
@@ -403,128 +421,6 @@ pub(crate) enum OverloadResolution<'a> {
     Ambiguous(Vec<&'a CompiledFunction>),
 }
 
-/// Returns `true` when `t` is, or recursively wraps, a `Type::TraitObject`.
-///
-/// Covers bare `TraitObject(name)` and the four generic wrappers
-/// `Option<T>`, `List<T>`, `Set<T>`, and `Map<K,V>`.  A `Map<TraitObject, V>`
-/// or `Map<K, TraitObject>` is also trait-carrying because both positions
-/// participate in conformance checking.
-///
-/// Used by `resolve_function_overload` to make trait-carrying params act as
-/// resolution wildcards (match any arg type), while concrete params keep
-/// exact-equality semantics.  Eval-builtins (bind/sweep/dim) have no `.ri`
-/// signature → their `named` vec is empty → `NoUserFunctions` arm → unaffected.
-pub(crate) fn type_carries_trait_object(t: &Type) -> bool {
-    match t {
-        Type::TraitObject(_) => true,
-        Type::Option(inner) => type_carries_trait_object(inner),
-        Type::List(inner) => type_carries_trait_object(inner),
-        Type::Set(inner) => type_carries_trait_object(inner),
-        Type::Map(key, val) => type_carries_trait_object(key) || type_carries_trait_object(val),
-        // task 4602 β: Applied — recurse into type args; Projection — recurse into base.
-        // Added explicitly (not compiler-forced) to stay verbatim-synced with
-        // the reify-expr copy (esc-4231-120/126) and for §5 substrate correctness.
-        Type::Applied { args, .. } => args.iter().any(type_carries_trait_object),
-        Type::Projection { base, .. } => type_carries_trait_object(base),
-        _ => false,
-    }
-}
-
-/// Returns `true` when `t` is, or recursively wraps, a `Type::TypeParam`.
-///
-/// Recurses through the **same** inner-`Type`-bearing constructor set as
-/// [`unify`] and [`crate::type_resolution::substitute_type_params`] —
-/// `List`/`Set`/`Keyed`/`Option`/`Complex`/`Range`,
-/// `Point`/`Vector`/`Tensor`/`Matrix` (quantity slot), `Map`, `Field`,
-/// `Function` (params + return), and `Union` — so a generic param that embeds a
-/// type-param inside ANY of those (e.g. `Field<T, Real>`, `List<Field<T>>`) is
-/// recognized. Keeping this predicate aligned with the unify/substitute walks
-/// avoids the asymmetry where overload resolution would reject a param shape
-/// the downstream inference machinery can actually handle.
-///
-/// Used by `resolve_function_overload` to make a *generic* candidate's
-/// type-param-carrying params act as resolution wildcards (match any arg type),
-/// gated on `!f.type_params.is_empty()` so non-generic fns are completely
-/// unaffected (INV-6, task 4231 β).
-///
-/// The `match` is intentionally exhaustive (no `_` wildcard) so a future `Type`
-/// variant forces a compile-time decision here, in lock-step with the sibling
-/// `unify` / `substitute_type_params` walks.
-///
-/// See also [`type_carries_dim_param`] for the sibling predicate that covers
-/// dimension-kinded parameters (`Type::ScalarParam`). The two predicates are
-/// kept separate because dimension params are a distinct kind (D7) — they are
-/// NOT substituted by type-param logic. The overload-resolution wildcard ORs
-/// them together at two sites.
-pub(crate) fn type_carries_type_param(t: &Type) -> bool {
-    match t {
-        // The type-parameter leaf itself.
-        Type::TypeParam(_) => true,
-
-        // Single-inner-Type wrappers: recurse on the child.
-        Type::List(inner)
-        | Type::Set(inner)
-        | Type::Keyed(inner)
-        | Type::Option(inner)
-        | Type::Complex(inner)
-        | Type::Range(inner) => type_carries_type_param(inner),
-
-        // Quantity-bearing aggregates: recurse into the quantity slot.
-        Type::Point { quantity, .. }
-        | Type::Vector { quantity, .. }
-        | Type::Tensor { quantity, .. }
-        | Type::Matrix { quantity, .. } => type_carries_type_param(quantity),
-
-        // Two-inner-Type wrappers.
-        Type::Map(key, val) => type_carries_type_param(key) || type_carries_type_param(val),
-        Type::Field { domain, codomain } => {
-            type_carries_type_param(domain) || type_carries_type_param(codomain)
-        }
-
-        // Function: any param, or the return type.
-        Type::Function {
-            params,
-            return_type,
-        } => params.iter().any(type_carries_type_param) || type_carries_type_param(return_type),
-
-        // Union: any arm.
-        Type::Union(arms) => arms.iter().any(type_carries_type_param),
-
-        // task 4602 β: Applied — recurse into type args; Projection — recurse into base.
-        Type::Applied { args, .. } => args.iter().any(type_carries_type_param),
-        Type::Projection { base, .. } => type_carries_type_param(base),
-
-        // All remaining leaves carry no inner `Type`.
-        Type::Bool
-        | Type::Int
-        | Type::String
-        | Type::Scalar { .. }
-        | Type::Enum(_)
-        | Type::StructureRef(_)
-        | Type::TraitObject(_)
-        | Type::Geometry
-        // Feature identity token (task 4808 / P1 γ): inner-Type-free leaf.
-        | Type::Feature
-        | Type::Orientation(_)
-        | Type::Frame(_)
-        | Type::Transform(_)
-        | Type::AffineMap(_)
-        | Type::Plane
-        | Type::Axis
-        | Type::Direction
-        // Relation directive (γ): an inner-Type-free leaf, carries no type param.
-        | Type::Relation
-        | Type::BoundingBox
-        | Type::Selector(_)
-        | Type::AnySelector
-        // Dimension-param scalar: carries no *type* param; dimension binding is
-        // handled by the dedicated `unify` ScalarParam arm (ζ / D8) and by
-        // `type_carries_dim_param` — not by type-param substitution.
-        | Type::ScalarParam(_)
-        | Type::Error => false,
-    }
-}
-
 /// Returns `true` when `t` (or any type nested within it) is a
 /// `Type::TypeParam` whose name is a member of `conflicted`.
 ///
@@ -623,90 +519,6 @@ pub(crate) fn type_mentions_conflicted_param(t: &Type, conflicted: &HashSet<Stri
         | Type::Selector(_)
         | Type::AnySelector
         | Type::ScalarParam(_)
-        | Type::Error => false,
-    }
-}
-
-/// Whether `t` (or any type nested within it) carries a dimension-kinded
-/// parameter (`Type::ScalarParam`).
-///
-/// This is the sibling of [`type_carries_type_param`] for dimension params.
-/// It uses the SAME constructor recursion (List/Set/Keyed/Option/Complex/Range;
-/// Map; Field; Function params+return; Point/Vector/Tensor/Matrix quantity;
-/// Union) and returns `true` at the `ScalarParam(_)` leaf, `false` at all
-/// other leaves.
-///
-/// The match is intentionally exhaustive (no `_` wildcard) so that a new
-/// `Type` variant forces a compile-time decision here, in lock-step with
-/// `type_carries_type_param`, `unify`, and `substitute_type_params`.
-///
-/// Wired into the generic-candidate wildcard in `resolve_function_overload`
-/// and `try_default_padding` (OR'd with `type_carries_type_param`) so that
-/// a `Scalar<Q>` parameter is recognised as a generic wildcard slot (task 4235
-/// ζ / D8).
-pub(crate) fn type_carries_dim_param(t: &Type) -> bool {
-    match t {
-        // The dimension-parameter leaf itself.
-        Type::ScalarParam(_) => true,
-
-        // Single-inner-Type wrappers: recurse on the child.
-        Type::List(inner)
-        | Type::Set(inner)
-        | Type::Keyed(inner)
-        | Type::Option(inner)
-        | Type::Complex(inner)
-        | Type::Range(inner) => type_carries_dim_param(inner),
-
-        // Quantity-bearing aggregates: recurse into the quantity slot.
-        Type::Point { quantity, .. }
-        | Type::Vector { quantity, .. }
-        | Type::Tensor { quantity, .. }
-        | Type::Matrix { quantity, .. } => type_carries_dim_param(quantity),
-
-        // Two-inner-Type wrappers.
-        Type::Map(key, val) => type_carries_dim_param(key) || type_carries_dim_param(val),
-        Type::Field { domain, codomain } => {
-            type_carries_dim_param(domain) || type_carries_dim_param(codomain)
-        }
-
-        // Function: any param, or the return type.
-        Type::Function {
-            params,
-            return_type,
-        } => params.iter().any(type_carries_dim_param) || type_carries_dim_param(return_type),
-
-        // Union: any arm.
-        Type::Union(arms) => arms.iter().any(type_carries_dim_param),
-
-        // task 4602 β: Applied — recurse into type args; Projection — recurse into base.
-        Type::Applied { args, .. } => args.iter().any(type_carries_dim_param),
-        Type::Projection { base, .. } => type_carries_dim_param(base),
-
-        // All remaining leaves carry no `ScalarParam`.
-        Type::Bool
-        | Type::Int
-        | Type::String
-        | Type::Scalar { .. }
-        | Type::Enum(_)
-        | Type::StructureRef(_)
-        | Type::TraitObject(_)
-        | Type::Geometry
-        // Feature identity token (task 4808 / P1 γ): inner-Type-free leaf.
-        | Type::Feature
-        | Type::Orientation(_)
-        | Type::Frame(_)
-        | Type::Transform(_)
-        | Type::AffineMap(_)
-        | Type::Plane
-        | Type::Axis
-        | Type::Direction
-        // Relation directive (γ): an inner-Type-free leaf, carries no dim param.
-        | Type::Relation
-        | Type::BoundingBox
-        | Type::Selector(_)
-        | Type::AnySelector
-        // Type-param leaf: carries no *dimension* param.
-        | Type::TypeParam(_)
         | Type::Error => false,
     }
 }
@@ -990,156 +802,6 @@ pub(crate) fn unify(
     }
 }
 
-/// Strict constructor-head compatibility check — the middle tie-break tier
-/// in [`resolve_function_overload`] (D-head-exact, result-fallback Layer-B
-/// task, B2).
-///
-/// Mirrors [`unify`]'s arm structure (the same constructor pairs recurse on
-/// the same shape), but is a STRICT match gate rather than a permissive one:
-/// `unify` treats a constructor-head mismatch as its conservative
-/// `Ok(())` fallthrough (binds nothing, never errors), which is exactly why
-/// it cannot discriminate `Option<T>` from `Applied{"Result", [T, E]}` — both
-/// "unify" against any subject without erroring. `heads_unifiable` instead
-/// returns `false` on a head mismatch, so it can serve as a genuine
-/// disambiguator between two generic overloads whose type-param-carrying
-/// params would otherwise both wildcard-match the same subject.
-///
-/// Differences from `unify`, both deliberate:
-/// - A bare `Type::TypeParam` / `Type::ScalarParam` (matched against a
-///   concrete `Scalar`) leaf is a wildcard slot (`true`) — the slot itself
-///   carries no constructor head to disagree on.
-/// - `Applied{name, ..}` vs `Enum(name)` (same name) is a head match:
-///   variant construction (`Ok { .. }` / `Err { .. }`) type-erases its
-///   result to `Type::Enum(name)` (`variant_construct.rs`), so a declared
-///   `Applied{"Result", ..}` param must still recognise an erased `Result`
-///   subject.
-/// - The catch-all is `param == arg` (plain equality) rather than `unify`'s
-///   permissive `Ok(())` — a head mismatch (or two leaves) must agree
-///   exactly to count as "unifiable" here.
-fn heads_unifiable(param: &Type, arg: &Type) -> bool {
-    match (param, arg) {
-        // Type-param / dim-param leaves: wildcard slots, always compatible.
-        (Type::TypeParam(_), _) => true,
-        (Type::ScalarParam(_), Type::Scalar { .. }) => true,
-
-        // Single-inner-Type constructors: same head → recurse on the child.
-        (Type::List(d), Type::List(a))
-        | (Type::Set(d), Type::Set(a))
-        | (Type::Keyed(d), Type::Keyed(a))
-        | (Type::Option(d), Type::Option(a))
-        | (Type::Complex(d), Type::Complex(a))
-        | (Type::Range(d), Type::Range(a)) => heads_unifiable(d, a),
-
-        // Two-inner-Type constructors.
-        (Type::Map(dk, dv), Type::Map(ak, av)) => {
-            heads_unifiable(dk, ak) && heads_unifiable(dv, av)
-        }
-        (
-            Type::Field {
-                domain: dd,
-                codomain: dc,
-            },
-            Type::Field {
-                domain: ad,
-                codomain: ac,
-            },
-        ) => heads_unifiable(dd, ad) && heads_unifiable(dc, ac),
-
-        // Function: equal arity → recurse on each param + the return type.
-        (
-            Type::Function {
-                params: dp,
-                return_type: dr,
-            },
-            Type::Function {
-                params: ap,
-                return_type: ar,
-            },
-        ) if dp.len() == ap.len() => {
-            dp.iter().zip(ap.iter()).all(|(d, a)| heads_unifiable(d, a)) && heads_unifiable(dr, ar)
-        }
-
-        // Quantity-bearing aggregates: same shape → recurse on the quantity slot.
-        (
-            Type::Point {
-                n: dn,
-                quantity: dq,
-            },
-            Type::Point {
-                n: an,
-                quantity: aq,
-            },
-        ) if dn == an => heads_unifiable(dq, aq),
-        (
-            Type::Vector {
-                n: dn,
-                quantity: dq,
-            },
-            Type::Vector {
-                n: an,
-                quantity: aq,
-            },
-        ) if dn == an => heads_unifiable(dq, aq),
-        (
-            Type::Tensor {
-                rank: drk,
-                n: dn,
-                quantity: dq,
-            },
-            Type::Tensor {
-                rank: ark,
-                n: an,
-                quantity: aq,
-            },
-        ) if drk == ark && dn == an => heads_unifiable(dq, aq),
-        (
-            Type::Matrix {
-                m: dm,
-                n: dn,
-                quantity: dq,
-            },
-            Type::Matrix {
-                m: am,
-                n: an,
-                quantity: aq,
-            },
-        ) if dm == am && dn == an => heads_unifiable(dq, aq),
-
-        // Union: equal length → recurse arm-by-arm.
-        (Type::Union(da), Type::Union(aa)) if da.len() == aa.len() => {
-            da.iter().zip(aa.iter()).all(|(d, a)| heads_unifiable(d, a))
-        }
-
-        // Applied: same name + same arity → recurse element-wise on args.
-        (Type::Applied { name: dn, args: da }, Type::Applied { name: an, args: aa })
-            if dn == an && da.len() == aa.len() =>
-        {
-            da.iter().zip(aa.iter()).all(|(d, a)| heads_unifiable(d, a))
-        }
-
-        // Erased-subject rule: a declared `Applied{name}` param head-matches
-        // an erased `Enum(name)` arg (same name) — see the doc comment above.
-        (Type::Applied { name: dn, .. }, Type::Enum(en)) if dn == en => true,
-
-        // Projection: same member → recurse on the bases.
-        (
-            Type::Projection {
-                base: db,
-                member: dm,
-            },
-            Type::Projection {
-                base: ab,
-                member: am,
-            },
-        ) if dm == am => heads_unifiable(db, ab),
-
-        // Catch-all: leaves and mismatched/differently-shaped constructors
-        // must agree by plain equality — unlike `unify`'s permissive
-        // `Ok(())` fallthrough, a head mismatch here is `false`.
-        _ => param == arg,
-    }
-}
-
 /// Resolve a function call against the list of compiled user functions.
 ///
 /// Uses **exact** type matching for concrete params; trait-object-carrying params
@@ -1173,32 +835,17 @@ pub(crate) fn resolve_function_overload<'a>(
         .iter()
         .copied()
         .filter(|f| {
-            // For a GENERIC candidate, a type-param-carrying param is a
-            // resolution wildcard (matches any arg) — mirroring the trait-object
-            // wildcard. Gated on `is_generic` so non-generic fns (empty
-            // type_params) are bit-for-bit unchanged (INV-6). A full wildcard
-            // (not structural unify) is deliberate: a conflicting generic call
-            // (e.g. `pair(1, 1.5)`) still SELECTS the candidate so the call site
-            // can emit `E_FN_TYPE_ARG_CONFLICT` rather than a generic no-match.
-            //
-            // D4 (task-4232 γ): A type-param-carrying ARG also acts as a
-            // resolution wildcard (matches any param). This lets a generic fn
-            // body pass a TypeParam-typed value to a concrete-param function
-            // without a spurious NoMatch. It is self-scoping: TypeParam args only
-            // arise inside generic fn bodies, so concrete-arg calls (non-generic
-            // callers) are bit-for-bit unchanged — type_carries_type_param(concrete) = false.
+            // Tier 3 (WILDCARD) — the broadest tier. Disjuncts, their
+            // `is_generic` gating (INV-6) and the D4 / task-4232 γ
+            // type-param-ARG rule are documented once, at
+            // `reify_core::overload::slot_matches_wildcard_tier`.
             let is_generic = !f.type_params.is_empty();
             f.params.len() == arg_types.len()
                 && f.params
                     .iter()
                     .zip(arg_types.iter())
                     .all(|((_, param_ty), arg_ty)| {
-                        type_carries_trait_object(param_ty)
-                            || (is_generic
-                                && (type_carries_type_param(param_ty)
-                                    || type_carries_dim_param(param_ty)))
-                            || type_carries_type_param(arg_ty)
-                            || param_ty == arg_ty
+                        slot_matches_wildcard_tier(param_ty, arg_ty, is_generic)
                     })
         })
         .collect();
@@ -1224,69 +871,32 @@ pub(crate) fn resolve_function_overload<'a>(
 
     // Second tie-break tier (D-head-exact, result-fallback Layer-B task B2):
     // when no exact match exists, prefer candidates whose type-param-carrying
-    // params are STRUCTURALLY compatible with their arg (`heads_unifiable`)
-    // over the full wildcard relaxation used by `matches`. This disambiguates
-    // two GENERIC overloads with different container heads — e.g. a
-    // user `unwrap_or<T,E>(r: Result<T,E>, ..)` vs the stdlib
-    // `unwrap_or<T>(o: Option<T>, ..)` — which would otherwise both
-    // wildcard-match any subject via `type_carries_type_param` and force a
-    // spurious `Ambiguous`.
-    //
-    // `head_matches` FILTERS `matches` (⊆ matches by construction), so it can
-    // only NARROW a would-be ambiguity, never introduce a spurious match:
-    // single-candidate resolution and the deliberate select-then-conflict
-    // behavior (a constructor-headed generic param over-selecting a
-    // mismatched-head arg so the call site can emit `E_FN_TYPE_ARG_CONFLICT`)
-    // are preserved because an empty `head_matches` falls through to
-    // `matches` below. Only the `type_carries_type_param(param_ty)` disjunct
-    // is replaced by `heads_unifiable`; `type_carries_dim_param(param_ty)`
-    // stays a full wildcard — dimension-param overload resolution is
-    // orthogonal to enum-head disambiguation.
+    // params are STRUCTURALLY compatible with their arg over the full wildcard
+    // relaxation used by `matches`. What that means per slot is
+    // `reify_core::overload::slot_matches_head_tier`'s remit; what stays here
+    // is the POLICY: `head_matches` FILTERS `matches` (⊆ matches by
+    // construction), so it can only NARROW a would-be ambiguity, never
+    // introduce a spurious match. Single-candidate resolution and the
+    // deliberate select-then-conflict behavior (a constructor-headed generic
+    // param over-selecting a mismatched-head arg so the call site can emit
+    // `E_FN_TYPE_ARG_CONFLICT`) are preserved because an empty `head_matches`
+    // falls through to `matches` below.
     let head_matches: Vec<&CompiledFunction> = matches
         .iter()
         .copied()
         .filter(|f| {
+            // Tier 2 (HEAD). Applied here as a FILTER over `matches` (tier 3),
+            // which is the caller contract — tier 2 is NOT a subset of tier 3,
+            // so a standalone pass would WIDEN resolution. Disjuncts, the
+            // dim-param carve-out and the bare-vs-headed-`TypeParam`-arg rule
+            // are documented once, at
+            // `reify_core::overload::slot_matches_head_tier`.
             let is_generic = !f.type_params.is_empty();
             f.params
                 .iter()
                 .zip(arg_types.iter())
                 .all(|((_, param_ty), arg_ty)| {
-                    type_carries_trait_object(param_ty)
-                        || (is_generic
-                            && (heads_unifiable(param_ty, arg_ty)
-                                || type_carries_dim_param(param_ty)))
-                        // D4 (task-4232 γ) in the head-exact tier: a type-param
-                        // arg is a wildcard ONLY when it is a BARE `TypeParam`
-                        // (a generic fn body passing a `T`-typed value) — that
-                        // slot carries no constructor head to disagree on, so
-                        // `heads_unifiable` (above) can't discriminate it. A
-                        // HEADED arg carrying a NESTED type-param (e.g. an
-                        // `Applied{"Result", [T, E]}` produced by composing two
-                        // generic stdlib fns over a headless-`Enum` builtin —
-                        // task #4038 δ) must NOT wildcard-match every candidate:
-                        // it has a real head, so `heads_unifiable` discriminates
-                        // it (`Result` matches the `Result<T,E>` overload, not
-                        // the `Option<T>` one), turning a spurious `Ambiguous`
-                        // into a clean `Resolved`. This narrows head_matches
-                        // (⊆ matches) only; a resulting empty set still falls
-                        // through to `matches`, so bare-`TypeParam`-arg
-                        // resolution is bit-for-bit unchanged.
-                        //
-                        // NOTE (reviewer_comprehensive #2): this narrowing also
-                        // means a NON-generic candidate (`is_generic == false`)
-                        // is never eligible for head_matches against a headed
-                        // nested-type-param arg — it fails `is_generic`, the
-                        // bare-`TypeParam` wildcard, and plain equality. The
-                        // head-exact tier therefore deliberately assumes headed
-                        // nested-type-param args only ever need to disambiguate
-                        // GENERIC container overloads (e.g. Option<T> vs
-                        // Result<T,E>); a same-name non-generic candidate in the
-                        // same overload set is excluded from head_matches
-                        // rather than causing a spurious `Ambiguous`. See
-                        // `overload_leaky_headed_arg_excludes_non_generic_candidate`
-                        // for the precedent lock.
-                        || matches!(arg_ty, Type::TypeParam(_))
-                        || param_ty == arg_ty
+                    slot_matches_head_tier(param_ty, arg_ty, is_generic)
                 })
         })
         .collect();
@@ -2165,18 +1775,13 @@ pub(crate) fn mul_div_result_or_placeholder(
 ///   `resolve_function_overload` (see below), and
 /// - every trailing `cand.param_defaults[provided..]` is `Some`.
 ///
-/// **Prefix predicate (mirrors `resolve_function_overload`):**
-/// For each `(param_ty, arg_ty)` pair in the provided prefix, the pair
-/// *matches* when any of:
-/// - `type_carries_trait_object(param_ty)` — trait-object param is a wildcard;
-///   the concrete arg type's trait conformance is validated downstream by
-///   `phase_fn_arg_conformance`, not here.
-/// - `is_generic && type_carries_type_param(param_ty)` — type-param-carrying
-///   param in a generic candidate is a wildcard (gated on non-empty `type_params`
-///   so concrete candidates are unaffected — INV-6).
-/// - `type_carries_type_param(arg_ty)` — a TypeParam-typed arg (inside a
-///   generic fn body) matches any param type (D4, task-4232 γ).
-/// - `param_ty == arg_ty` — exact equality for concrete params.
+/// **Prefix predicate:** [`reify_core::overload::slot_matches_wildcard_tier`],
+/// the tier-3 gate — the SAME function `resolve_function_overload` applies, not
+/// a restatement of it (#5689). Its disjuncts, their `is_generic` gating
+/// (INV-6) and the D4 / task-4232 γ type-param-ARG rule are documented there.
+/// A trait-object param is a wildcard here for the same reason it is there: the
+/// concrete arg type's trait conformance is validated downstream by
+/// `phase_fn_arg_conformance`, not at resolution time.
 ///
 /// This alignment is intentional: a call padded with defaults is compiled as a
 /// normal `UserFunctionCall` whose trait-arg conformance is checked by
@@ -2232,18 +1837,15 @@ pub(crate) fn try_default_padding<'a>(
             continue;
         }
         // Provided prefix types must match candidate params using the same
-        // trait/type-param wildcard predicate as `resolve_function_overload`.
-        // See the function-level doc for the full rationale.
+        // tier-3 wildcard predicate as `resolve_function_overload` — literally
+        // the same function now (#5689), so the two cannot drift apart. See
+        // the function-level doc for why the alignment is required.
         let is_generic = !cand.type_params.is_empty();
         let prefix_matches = cand.params[..provided]
             .iter()
             .zip(arg_types[..provided].iter())
             .all(|((_, param_ty), arg_ty)| {
-                type_carries_trait_object(param_ty)
-                    || (is_generic
-                        && (type_carries_type_param(param_ty) || type_carries_dim_param(param_ty)))
-                    || type_carries_type_param(arg_ty)
-                    || param_ty == arg_ty
+                slot_matches_wildcard_tier(param_ty, arg_ty, is_generic)
             });
         if !prefix_matches {
             continue;
@@ -3546,52 +3148,6 @@ mod tests {
         }
     }
 
-    // ── task 4231 β amendment: type_carries_type_param coverage parity ───────
-
-    #[test]
-    fn type_carries_type_param_recurses_through_all_constructors() {
-        // The predicate must recognize a type-param embedded in ANY
-        // inner-Type-bearing constructor, in parity with unify /
-        // substitute_type_params — not just the bare leaf + Option/List/Set/Map.
-        // Positive cases across the widened constructor set:
-        assert!(type_carries_type_param(&tp("T")));
-        assert!(type_carries_type_param(&Type::Field {
-            domain: Box::new(tp("D")),
-            codomain: Box::new(Type::dimensionless_scalar()),
-        }));
-        assert!(
-            type_carries_type_param(&Type::List(Box::new(Type::Field {
-                domain: Box::new(tp("D")),
-                codomain: Box::new(Type::dimensionless_scalar()),
-            }))),
-            "recursion must pass through List into Field"
-        );
-        assert!(type_carries_type_param(&Type::Function {
-            params: vec![Type::dimensionless_scalar(), tp("T")],
-            return_type: Box::new(Type::dimensionless_scalar()),
-        }));
-        assert!(type_carries_type_param(&Type::Union(vec![
-            Type::Int,
-            tp("T")
-        ])));
-        assert!(type_carries_type_param(&Type::Tensor {
-            rank: 2,
-            n: 3,
-            quantity: Box::new(tp("Q")),
-        }));
-        assert!(type_carries_type_param(&Type::Keyed(Box::new(tp("T")))));
-        assert!(type_carries_type_param(&Type::Complex(Box::new(tp("T")))));
-        assert!(type_carries_type_param(&Type::Range(Box::new(tp("T")))));
-
-        // Negative: no type-param anywhere → false (leaves + concrete nesting).
-        assert!(!type_carries_type_param(&Type::dimensionless_scalar()));
-        assert!(!type_carries_type_param(&Type::Field {
-            domain: Box::new(Type::dimensionless_scalar()),
-            codomain: Box::new(Type::length()),
-        }));
-        assert!(!type_carries_type_param(&Type::List(Box::new(Type::Int))));
-    }
-
     // ── task γ #4031 amendment: type_mentions_conflicted_param ───────────────
 
     #[test]
@@ -4424,63 +3980,15 @@ mod tests {
         );
     }
 
-    // ── task 4235 ζ: type_carries_dim_param + overload dim-param wildcard ─────
+    // ── task 4235 ζ: overload dim-param wildcard ──────────────────────────────
+    //
+    // `type_carries_dim_param`'s own arm coverage moved to
+    // `reify_core::overload` with the predicate (#5689); what stays here is the
+    // COMPILER-side policy it feeds — `resolve_function_overload`'s ladder.
 
     /// Helper: ScalarParam shorthand.
     fn sp(name: &str) -> Type {
         Type::ScalarParam(name.to_string())
-    }
-
-    /// `type_carries_dim_param(ScalarParam("Q"))` must return true.
-    ///
-    /// RED until step-6: the function does not exist (compile error).
-    #[test]
-    fn type_carries_dim_param_bare_scalar_param_is_true() {
-        assert!(
-            type_carries_dim_param(&sp("Q")),
-            "ScalarParam should carry a dim-param"
-        );
-    }
-
-    /// `type_carries_dim_param(Vector3<ScalarParam("Q")>)` must return true
-    /// (dim-param in the quantity slot).
-    ///
-    /// RED until step-6.
-    #[test]
-    fn type_carries_dim_param_vector3_quantity_is_true() {
-        let vec3_q = Type::Vector {
-            n: 3,
-            quantity: Box::new(sp("Q")),
-        };
-        assert!(
-            type_carries_dim_param(&vec3_q),
-            "Vector3<ScalarParam(\"Q\")> should carry a dim-param"
-        );
-    }
-
-    /// `type_carries_dim_param(Scalar{LENGTH})` must return false.
-    ///
-    /// RED until step-6.
-    #[test]
-    fn type_carries_dim_param_concrete_scalar_is_false() {
-        assert!(
-            !type_carries_dim_param(&Type::Scalar {
-                dimension: DimensionVector::LENGTH
-            }),
-            "concrete Scalar{{LENGTH}} should NOT carry a dim-param"
-        );
-    }
-
-    /// `type_carries_dim_param(TypeParam("T"))` must return false — a type-param
-    /// is not a dimension-param.
-    ///
-    /// RED until step-6.
-    #[test]
-    fn type_carries_dim_param_type_param_is_false() {
-        assert!(
-            !type_carries_dim_param(&tp("T")),
-            "TypeParam should NOT carry a dim-param"
-        );
     }
 
     /// Overload wildcard for dim-param: `scale_q<Q: Dimension>(x: Scalar<Q>, k: Real)`
@@ -4681,6 +4189,72 @@ mod tests {
         }
     }
 
+    /// Compile-side pin for the mixed generic / non-generic overload set that
+    /// eval-side
+    /// `mixed_set_head_mismatched_generic_yields_to_non_generic_trait_object`
+    /// (crates/reify-expr/tests/find_matching_compiled_function_tests.rs)
+    /// asserts against. That test claims its promotion "is what compile-side
+    /// `resolve_function_overload` resolves to"; since the whole point of #5685
+    /// is compile/eval agreement, the claim is pinned here rather than left as
+    /// prose. `resolve_function_overload` is `pub(crate)` in a private module,
+    /// so this half can only live compiler-side.
+    ///
+    /// Both candidates land in `matches` (the generic one via
+    /// `type_carries_type_param`, the non-generic one via its trait object), so
+    /// table order alone would hand this to the generic candidate declared
+    /// FIRST. `head_matches` drops it — `Option<T>` is not head-compatible with
+    /// `List<PointLoad>` — leaving exactly one candidate, which is what makes
+    /// this `Resolved` rather than `Ambiguous`.
+    #[test]
+    fn overload_mixed_set_head_mismatched_generic_yields_to_non_generic_trait_object() {
+        let generic_first = make_generic_fn(
+            "f",
+            vec![("x", Type::Option(Box::new(tp("T"))))],
+            &["T"],
+            tp("T"),
+        );
+        let non_generic_second = make_fn(
+            "f",
+            vec![(
+                "x",
+                Type::List(Box::new(Type::TraitObject("Load".to_string()))),
+            )],
+        );
+        let fns = vec![generic_first, non_generic_second];
+        let arg = Type::List(Box::new(Type::StructureRef("PointLoad".to_string())));
+
+        match resolve_function_overload("f", &[arg], &fns) {
+            OverloadResolution::Resolved(matched) => {
+                assert!(
+                    matched.type_params.is_empty(),
+                    "a List<PointLoad> arg must select the NON-generic List<Load> \
+                     candidate even though a wildcard-eligible generic Option<T> \
+                     candidate is declared first — only the former head-matches; \
+                     got a candidate with {} type params",
+                    matched.type_params.len()
+                );
+                assert!(
+                    matches!(&matched.params[0].1, Type::List(inner)
+                        if matches!(**inner, Type::TraitObject(_))),
+                    "expected the List<Load> candidate; got params[0] = {:?}",
+                    matched.params[0].1
+                );
+            }
+            OverloadResolution::Ambiguous(candidates) => panic!(
+                "expected Resolved(f(List<Load>)), got Ambiguous({} candidates) — \
+                 the head tier failed to drop the head-mismatched generic candidate, \
+                 so eval-side head narrowing would disagree with compile-side",
+                candidates.len()
+            ),
+            OverloadResolution::NoMatch(_) => {
+                panic!("expected Resolved(f(List<Load>)), got NoMatch")
+            }
+            OverloadResolution::NoUserFunctions => {
+                panic!("expected Resolved(f(List<Load>)), got NoUserFunctions")
+            }
+        }
+    }
+
     /// D4 preservation (task-4232 γ): a BARE `TypeParam` arg (a generic fn body
     /// passing a `T`-typed value to a concrete-param overload) must STILL
     /// resolve after the head-exact-tier narrowing — the narrowing only strips
@@ -4700,9 +4274,12 @@ mod tests {
 
     // ── task 4602 β: Applied / Projection coverage ──────────────────────────
     // Tests for the new behavioral branches: unify (element-wise Applied,
-    // Projection base, and structural-mismatch fallthrough), substitute_type_params
-    // (Applied arg rebuild and Projection base rebuild), and type_carries_type_param
-    // / type_carries_dim_param recursion into Applied args and Projection base.
+    // Projection base, and structural-mismatch fallthrough) and
+    // substitute_type_params (Applied arg rebuild and Projection base rebuild)
+    // — the two that are still compiler-owned. The matching
+    // `type_carries_type_param` / `type_carries_dim_param` Applied-args and
+    // Projection-base recursion cases moved to `reify_core::overload` with the
+    // predicates themselves (#5689), near-misses included.
 
     /// unify(Applied{C,[TypeParam(T)]}, Applied{C,[StructureRef(X)]}) must bind T=X.
     #[test]
@@ -4775,37 +4352,6 @@ mod tests {
         assert!(
             subst.is_empty(),
             "Applied-vs-StructureRef must bind nothing in β (see unify doc β note)"
-        );
-    }
-
-    /// type_carries_type_param returns true for Applied whose args contain a TypeParam.
-    #[test]
-    fn type_carries_type_param_applied_with_type_param_arg() {
-        let t = Type::applied("C", vec![tp("T")]);
-        assert!(
-            type_carries_type_param(&t),
-            "Applied with TypeParam arg must carry a type param"
-        );
-        // Applied with no TypeParam in args → false.
-        let t2 = Type::applied("C", vec![Type::StructureRef("X".to_string())]);
-        assert!(
-            !type_carries_type_param(&t2),
-            "Applied with only concrete args must not carry a type param"
-        );
-    }
-
-    /// type_carries_type_param returns true for Projection whose base is a TypeParam.
-    #[test]
-    fn type_carries_type_param_projection_with_type_param_base() {
-        let t = Type::projection(tp("T"), "M");
-        assert!(
-            type_carries_type_param(&t),
-            "Projection with TypeParam base must carry a type param"
-        );
-        let t2 = Type::projection(Type::StructureRef("X".to_string()), "M");
-        assert!(
-            !type_carries_type_param(&t2),
-            "Projection with concrete base must not carry a type param"
         );
     }
 

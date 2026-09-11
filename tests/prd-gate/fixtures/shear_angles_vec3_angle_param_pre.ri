@@ -1,0 +1,20 @@
+module shear_angles_vec3_angle_param_pre
+
+// Fixture (γ decompose-phase premise): PRD angle-dimension-completion leaf σ
+// (`ElasticResult.shear_angles` channel), PRE-STATE probe.
+//
+// Premise: the Angle-vector type spelling the channel's POST-state pins will
+// use — `Vector3<Angle>` in fn param position — PARSES and RESOLVES today.
+// A fn declaring `fn f(v : Vector3<Angle>) -> Real { 1.0 }` must pass both
+// tree-sitter parse and `reify check` (exit 0).
+//
+// POST-STATE (`sample(result.shear_angles)` feeding this fn) is NOT probed
+// here: the channel is absent today by design. No rejection assertions.
+
+fn f(v : Vector3<Angle>) -> Real { 1.0 }
+
+structure def ShearAnglesVec3AnglePre {
+    param a : Angle = 1deg
+    let axis = vec3(a, a, a)
+    let out  = f(axis)
+}

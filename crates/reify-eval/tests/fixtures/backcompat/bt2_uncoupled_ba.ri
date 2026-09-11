@@ -13,7 +13,7 @@
 //
 // Shared golden: crates/reify-eval/tests/golden/bt2_uncoupled.txt
 // Counterpart:   tests/fixtures/backcompat/bt2_uncoupled_ab.ri
-// Test:          crates/reify-eval/tests/harness_fea_solver_e2e/objective_inheritance_e2e.rs::bt2_uncoupled_declaration_order_independence
+// Test:          crates/reify-cli/tests/harness_cli/cli_objective_inheritance_golden.rs::bt2_uncoupled_declaration_order_independence
 structure B {
     param b: Length = auto
 

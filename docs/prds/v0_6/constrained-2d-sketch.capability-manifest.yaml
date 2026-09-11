@@ -173,7 +173,7 @@ tasks:
   title: 'constrained-2d-sketch θ: docs-truth — chunk + cheatsheet + discoverability'
   capabilities:
   - name: chunk-smoke-gate
-    binding: substrate — anti-phantom chunk gate crates/reify-compiler/tests/geometry_chunk_smoke.rs
+    binding: substrate — anti-phantom chunk gate crates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs
       exists on main (task 5364); θ adds sketch smoke fixtures; documented-surface
       producers task-5510/task-5511 upstream (real dep edges)
     verdict: PASS

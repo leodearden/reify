@@ -21,13 +21,14 @@
 #   S — scaffolding + fixture-builder self-checks
 #   A — CLI contract + empty-input degradation
 #   B — the liveness guard
-#   C — trigger class A (gate_closure)
-#   D — trigger class B (merge_verify_red)
-#   E — trigger class C (unmet_dependency)
+#   C — the RETIRED gate_closure class (task 7349)
+#   D — trigger class B (merge_verify_red) — the only surviving class
+#   E — the retired unmet_dependency class (task 7349)
 #   F — the #5316 corruption suppressors
 #   G — --emit-requests + the read-only proof
 #   R — request retraction (the only block that mutates its fixture between runs)
 #   T — tag scoping
+#   Z — end-to-end acceptance for the task-7349 retirement
 #
 # The suite is free of `sleep` / wall-clock upper bounds by construction
 # (offset-timestamp fixtures instead), so
@@ -75,7 +76,20 @@ _TMPDIRS+=("$ERR_FILE")
 
 # _sq <args...> — the sqlite3 CLI with LD_LIBRARY_PATH cleared.
 #
-# EVERY sqlite3 invocation in this file must go through this wrapper. verify.sh's
+# EVERY sqlite3 invocation in this file must go through this wrapper.
+#
+# STILL NEEDED, but no longer the primary mechanism (task 5730). verify.sh now
+# scrubs the loader path structurally: apply_env() captures the pre-OCCT ambient
+# into REIFY_AMBIENT_LD_LIBRARY_PATH and every non-cargo plan line is emitted via
+# add_tool(), which restores it — so under the gate this suite no longer inherits
+# the conda prefix at all. This wrapper is retained as DEFENCE IN DEPTH for the
+# one case that fix cannot reach: a bare `bash tests/infra/…` run from a shell
+# that already carries a hostile ambient loader path. Do not "clean it up" — but
+# equally, do not copy this per-call-site pattern into new code. A new verify.sh
+# tool plan line belongs on add_tool(); see docs/notes/verify-pipeline-knobs.md
+# ("Loader path") and tests/infra/test_verify_ld_library_path_scope.sh.
+#
+# The original hazard, for context: verify.sh's
 # apply_env() exports LD_LIBRARY_PATH=/opt/reify-deps/lib globally (for OCCT), and
 # that directory also ships a conda libsqlite3 NEWER (3.53.1) than the one
 # /usr/bin/sqlite3 was linked against (3.45.1). Under the full verify environment
@@ -293,13 +307,13 @@ _not() { ! "$@"; }
 # is load-dependent, which made it a genuine heisenflake here.
 _matches() { grep -qE "$1" <<<"$2"; }
 
-# _snapshot_readonly <db> <esc_dir> — emit a sha256 of the DB plus a sorted
-# listing (path/size/mtime) of the escalations dir AND of the DB's directory,
-# so the read-only proof also catches a stray -wal/-shm sidecar.
+# _snapshot_readonly <db> — emit a sha256 of the DB plus a sorted listing
+# (path/size/mtime) of the DB's own directory, so the read-only proof also
+# catches a stray -wal/-shm sidecar.
 _snapshot_readonly() {
-    local db="$1" esc_dir="$2"
+    local db="$1"
     sha256sum "$db" 2>/dev/null | awk '{print $1}'
-    find "$(dirname "$db")" "$esc_dir" -mindepth 0 -printf '%p %s %T@\n' 2>/dev/null | LC_ALL=C sort
+    find "$(dirname "$db")" -mindepth 0 -printf '%p %s %T@\n' 2>/dev/null | LC_ALL=C sort
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -374,9 +388,9 @@ run_sweep --help
 assert "S6a: run_sweep populates RC without aborting" test -n "${RC:-}"
 
 # S7 — _snapshot_readonly is stable across two reads of an unmodified fixture.
-_s7_before="$(_snapshot_readonly "$DB" "$ESC_DIR")"
+_s7_before="$(_snapshot_readonly "$DB")"
 assert "S7: _snapshot_readonly is stable when nothing mutates" \
-    test "$_s7_before" = "$(_snapshot_readonly "$DB" "$ESC_DIR")"
+    test "$_s7_before" = "$(_snapshot_readonly "$DB")"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block A — CLI contract + empty-input degradation
@@ -392,19 +406,17 @@ echo "--- Block A: CLI contract + empty-input degradation ---"
 # An empty fixture: production schema present, zero rows.
 _mk_tasks_db
 EMPTY_DB="$DB"
-_mk_esc_dir
-EMPTY_ESC="$ESC_DIR"
 _mk_repo
 EMPTY_REPO="$REPO_DIR"
 
 # The canonical all-zero summary, asserted as one exact string so a counter
 # rename or reordering is caught rather than silently tolerated.
-ZERO_SWEEP="SWEEP: candidates=0 gate_closure=0 merge_verify_red=0 unmet_dependency=0 corrupt_hold=0 live_skipped=0 no_class=0 unknown=0"
+ZERO_SWEEP="SWEEP: candidates=0 merge_verify_red=0 corrupt_hold=0 live_skipped=0 no_class=0 unknown=0"
 
 # Every value-taking flag, in one place: the A1 usage-completeness check and
 # the A3 missing-value sweep both iterate this list, so a future flag cannot
 # be added to the parser without both checks noticing.
-VALUE_FLAGS=(--db --tag --escalations --repo --main-ref --format --class --stale-heartbeat-min --emit-requests)
+VALUE_FLAGS=(--db --tag --repo --main-ref --format --class --stale-heartbeat-min --emit-requests)
 
 # _usage_names_all_flags — every VALUE_FLAGS entry appears in the usage text.
 # One assert over the whole set (rather than one per flag) keeps the fork
@@ -458,7 +470,7 @@ run_sweep --db "$EMPTY_DB" --stale-heartbeat-min -1
 assert "A4d: --stale-heartbeat-min -1 exits 2" _rc_is 2
 
 # --- A5: unreadable DB degrades, never aborts -------------------------------
-run_sweep --db "$EMPTY_REPO/definitely-not-here.db" --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO"
+run_sweep --db "$EMPTY_REPO/definitely-not-here.db" --repo "$EMPTY_REPO"
 assert "A5a: a nonexistent --db still exits 0 (advisory-only)" _rc_is 0
 assert "A5a: a nonexistent --db reports zero candidates" _sweep_line_is "$ZERO_SWEEP"
 assert "A5a: a nonexistent --db warns on stderr" _err_has '\[warn\]'
@@ -466,30 +478,30 @@ assert "A5a: a nonexistent --db warns on stderr" _err_has '\[warn\]'
 _A5_STUB="$(mktemp "${TMPDIR:-/tmp}/gate-staleness-stub-XXXXXX.db")"
 _TMPDIRS+=("$_A5_STUB")
 : > "$_A5_STUB"
-run_sweep --db "$_A5_STUB" --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO"
+run_sweep --db "$_A5_STUB" --repo "$EMPTY_REPO"
 assert "A5b: a 0-byte DB stub still exits 0" _rc_is 0
 assert "A5b: a 0-byte DB stub reports zero candidates" _sweep_line_is "$ZERO_SWEEP"
 assert "A5b: a 0-byte DB stub warns on stderr" _err_has '\[warn\]'
 
 # --- A6: empty fixture, table format ----------------------------------------
-run_sweep --db "$EMPTY_DB" --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO" --format table
+run_sweep --db "$EMPTY_DB" --repo "$EMPTY_REPO" --format table
 assert "A6: empty fixture exits 0" _rc_is 0
-assert "A6: trailing SWEEP: line carries all eight counters at zero" _sweep_line_is "$ZERO_SWEEP"
+assert "A6: trailing SWEEP: line carries all six counters at zero" _sweep_line_is "$ZERO_SWEEP"
 
 # --- A7: empty fixture, json format -----------------------------------------
-run_sweep --db "$EMPTY_DB" --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO" --format json
+run_sweep --db "$EMPTY_DB" --repo "$EMPTY_REPO" --format json
 assert "A7: --format json exits 0" _rc_is 0
 assert "A7: stdout is a single valid JSON object" _out_json_check 'isinstance(d, dict)'
 assert "A7: candidates == []" _out_json_check 'd["candidates"] == []'
 assert "A7: summary keys exactly match the A6 counter set" _out_json_check \
-    'sorted(d["summary"]) == ["candidates","corrupt_hold","gate_closure","live_skipped","merge_verify_red","no_class","unknown","unmet_dependency"]'
+    'sorted(d["summary"]) == ["candidates","corrupt_hold","live_skipped","merge_verify_red","no_class","unknown"]'
 assert "A7: every summary counter is 0" _out_json_check 'all(v == 0 for v in d["summary"].values())'
 
 # --- A8: flag <-> env parity for the task-DB knob ---------------------------
-run_sweep --db "$EMPTY_DB" --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO"
+run_sweep --db "$EMPTY_DB" --repo "$EMPTY_REPO"
 _A8_FLAG_OUT="$OUT"
 _SWEEP_ENV=(REIFY_LANE_TASK_DB="$EMPTY_DB")
-run_sweep --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO"
+run_sweep --repo "$EMPTY_REPO"
 _SWEEP_ENV=()
 assert "A8a: REIFY_LANE_TASK_DB produces byte-identical stdout to --db" \
     test "$OUT" = "$_A8_FLAG_OUT"
@@ -497,14 +509,14 @@ assert "A8a: REIFY_LANE_TASK_DB produces byte-identical stdout to --db" \
 # An explicit --db must WIN over the env value: point the env at a
 # nonexistent path and the flag at the good fixture — no [warn] must fire.
 _SWEEP_ENV=(REIFY_LANE_TASK_DB="$EMPTY_REPO/env-not-here.db")
-run_sweep --db "$EMPTY_DB" --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO"
+run_sweep --db "$EMPTY_DB" --repo "$EMPTY_REPO"
 _SWEEP_ENV=()
 assert "A8b: an explicit --db overrides REIFY_LANE_TASK_DB" _rc_is 0
 assert "A8b: the overridden (bad) env path never warns" _not _err_has '\[warn\].*env-not-here'
 
 # --- A9: every --class value is accepted -------------------------------------
-for _c in all gate_closure merge_verify_red unmet_dependency; do
-    run_sweep --db "$EMPTY_DB" --escalations "$EMPTY_ESC" --repo "$EMPTY_REPO" --class "$_c"
+for _c in all merge_verify_red; do
+    run_sweep --db "$EMPTY_DB" --repo "$EMPTY_REPO" --class "$_c"
     assert "A9[$_c]: accepted on the empty fixture (exit 0)" _rc_is 0
 done
 
@@ -525,8 +537,6 @@ echo "--- Block B: the liveness guard ---"
 
 _mk_tasks_db
 B_DB="$DB"
-_mk_esc_dir
-B_ESC="$ESC_DIR"
 _mk_repo
 B_REPO="$REPO_DIR"
 
@@ -579,7 +589,7 @@ _add_task 9107 in-progress "$B_PROPOSAL" "" "$B_CLAIMANT"
 # live store's blocked rows legitimately carry no heartbeat.
 _add_task 9108 blocked '{}' "" "$B_CLAIMANT"
 
-run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
+run_sweep --db "$B_DB" --repo "$B_REPO" \
     --stale-heartbeat-min "$B_WINDOW_MIN" --format json
 
 assert "B0: the liveness fixture sweep exits 0" _rc_is 0
@@ -590,7 +600,7 @@ assert "B1: a 60s-old heartbeat with a live claimant is LIVE" \
 assert "B1: a LIVE row is not classified (class=-, action=none)" \
     _json_is 't[9101]["class"] == "-" and t[9101]["action"] == "none"'
 assert "B1: a LIVE row is counted in live_skipped, not in any class counter" \
-    _json_is 's["live_skipped"] == 4 and s["merge_verify_red"] == 0 and s["unmet_dependency"] == 0'
+    _json_is 's["live_skipped"] == 4 and s["merge_verify_red"] == 0'
 
 # --- B1c/B1d: a CLAIMED in-progress row with no heartbeat is LIVE ------------
 # `merge_verify_red == 0` above is the sharpest signal for these: 9107 carries
@@ -611,13 +621,13 @@ assert "B1d: ... and does not claim a heartbeat matched the window" \
 # --- B2: a LIVE row never yields a request file ------------------------------
 B_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-req-XXXXXX")"
 _TMPDIRS+=("$B_REQ")
-run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
+run_sweep --db "$B_DB" --repo "$B_REPO" \
     --stale-heartbeat-min "$B_WINDOW_MIN" --emit-requests "$B_REQ"
 assert "B2: a LIVE row emits no re-dispatch request" _no_request_for "$B_REQ" 9101
 assert "B2: a claimant-based LIVE row emits no re-dispatch request either" \
     _no_request_for "$B_REQ" 9107
 
-run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
+run_sweep --db "$B_DB" --repo "$B_REPO" \
     --stale-heartbeat-min "$B_WINDOW_MIN" --format json
 
 # --- B3/B4: genuinely stranded rows stay eligible ----------------------------
@@ -637,20 +647,20 @@ assert "B5b: outside the window (25h > 24h) => eligible" _json_is 't[9105]["verd
 
 # --- B6: flag <-> env parity for the window ---------------------------------
 _SWEEP_ENV=(REIFY_GATE_STALENESS_HEARTBEAT_MIN=0)
-run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" --format json
+run_sweep --db "$B_DB" --repo "$B_REPO" --format json
 _SWEEP_ENV=()
 assert "B6a: REIFY_GATE_STALENESS_HEARTBEAT_MIN=0 makes a 60s heartbeat eligible" \
     _json_is 't[9101]["verdict"] != "LIVE"'
 
 _SWEEP_ENV=(REIFY_GATE_STALENESS_HEARTBEAT_MIN=0)
-run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
+run_sweep --db "$B_DB" --repo "$B_REPO" \
     --stale-heartbeat-min "$B_WINDOW_MIN" --format json
 _SWEEP_ENV=()
 assert "B6b: an explicit --stale-heartbeat-min overrides the env value" \
     _json_is 't[9101]["verdict"] == "LIVE"'
 
 # --- B7: an unparseable heartbeat fails SAFE --------------------------------
-run_sweep --db "$B_DB" --escalations "$B_ESC" --repo "$B_REPO" \
+run_sweep --db "$B_DB" --repo "$B_REPO" \
     --stale-heartbeat-min "$B_WINDOW_MIN" --format json
 assert "B7: an unparseable heartbeat degrades to LIVE, never to eligible" \
     _json_is 't[9106]["verdict"] == "LIVE"'
@@ -667,202 +677,84 @@ assert "B7: an unparseable heartbeat warns on stderr" \
     _err_has '\[warn\].*9106'
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Block C — trigger class A: gate_closure
+# Block C — the RETIRED gate_closure class (task 7349)
 #
-# This task's original scope: a deterministic always-escalates gate task left
-# `blocked` after its gating escalation was resolved or dismissed elsewhere.
-# The staleness signal is the ABSENCE of a live `status=pending`
-# esc-<id>-*.json — validated against the live store on 2026-07-26, where
-# 5537/5549/5559 were blocked with always_escalates=true and zero live
-# escalation files (theirs archived `dismissed`), while every other blocked
-# gate task still had a live pending file.
+# `gate_closure` was the sweep's class A: a `blocked` task carrying
+# task_kind=deterministic and always_escalates, with no live pending
+# escalation, reported STALE with action=close — which the dark-factory
+# consumer turned into set_task_status('cancelled'). Its premise was unsound
+# (an escalation is resolved routinely while the work it was filed against is
+# still open) and it drove seven real tasks to `cancelled` before it was
+# retired — the seven archived requests under data/redispatch-requests/
+# consumed/, enumerated in the runbook's "Retired classes" section. So the
+# class is retired at the SOURCE rather than defused downstream in the
+# consumer.
 #
-# The emitted action is `close`, not `redispatch`: per #5316 §5 the correct
-# closure for a satisfied deterministic gate is a transition to `cancelled`,
-# not a re-run.
+# What this block pins is the absence, in BOTH directions: the canonical
+# class-A shape is now adjudicated NO-CLASS whether or not a live escalation
+# exists. Class A owned the sweep's only read of the escalation store, so its
+# retirement also removes `--escalations` outright — C4 pins that, and the
+# fixture below writes its escalation into the DEFAULT path the sweep used to
+# resolve ($REPO/data/escalations), so a surviving residual read would still
+# find it and C2 would still catch it.
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
-echo "--- Block C: trigger class A (gate_closure) ---"
+echo "--- Block C: the retired gate_closure class ---"
 
 _mk_tasks_db
 C_DB="$DB"
-_mk_esc_dir
-C_ESC="$ESC_DIR"
 _mk_repo
 C_REPO="$REPO_DIR"
 
-# The class-A metadata predicate, as recorded on the live blocked gate tasks.
+# The class-A metadata predicate as recorded on the live blocked gate tasks —
+# the exact shape that cancelled those seven tasks.
 C_GATE_META='{"task_kind":"deterministic","always_escalates":true,"gate_escalated_at":"2026-07-26T08:00:00Z"}'
-# The 5372 shape: deterministic, but with no always_escalates key at all.
-C_NO_ALWAYS_META='{"task_kind":"deterministic","gate_escalated_at":"2026-07-26T08:00:00Z"}'
 
-_add_task 9201 blocked "$C_GATE_META"                         # no esc files    => STALE
-_add_task 9202 blocked "$C_GATE_META"                         # pending         => GATED
-_add_task 9203 blocked "$C_GATE_META"                         # dismissed       => STALE
-_add_task 9204 blocked "$C_GATE_META"                         # resolved        => STALE
-_add_task 9205 blocked "$C_GATE_META"                         # dismissed+pending => GATED
-_add_task 9206 blocked "$C_NO_ALWAYS_META"                    # not class A
-_add_task 9207 in-progress "$C_GATE_META" "$(_now_iso -10800)" ""   # blocked-only => not class A
-_add_task 9208 blocked "$C_GATE_META"                         # malformed esc   => unknown
-_add_task 9209 blocked "$C_GATE_META"                         # unrecognized st => unknown
-_add_task 9210 blocked "$C_GATE_META"                         # null status     => unknown
-_add_task 9211 blocked "$C_GATE_META"                         # absent status   => unknown
+_add_task 9201 blocked "$C_GATE_META"   # no escalation file at all
+_add_task 9202 blocked "$C_GATE_META"   # a LIVE status=pending escalation
 
+# The escalation goes where the sweep's OWN default used to point, not into a
+# temp dir it can no longer be aimed at — so this is a real negative and not
+# an artefact of the store being out of reach.
+mkdir -p "$C_REPO/data/escalations"
+ESC_DIR="$C_REPO/data/escalations"
 _add_esc 9202 1 pending
-_add_esc 9203 1 dismissed
-_add_esc 9204 1 resolved
-_add_esc 9205 1 dismissed
-_add_esc 9205 2 pending
-printf 'this is not json\n' > "$C_ESC/esc-9208-1.json"
-# A well-formed record carrying a status OUTSIDE the store's `pending /
-# resolved / dismissed` vocabulary (models.py:100). A schema addition on the
-# escalation side produces exactly this shape.
-printf '{"id":"esc-9209-1","task_id":"9209","status":"in_triage"}\n' > "$C_ESC/esc-9209-1.json"
-# A well-formed record whose status is JSON null — the live store holds one
-# such file today (data/escalations/b3-state.json), which escapes the sweep's
-# glob only by name, not by shape.
-printf '{"id":"esc-9210-1","task_id":"9210","status":null}\n' > "$C_ESC/esc-9210-1.json"
-# A well-formed record with NO `status` key AT ALL — the mid-write shape, and
-# the one case whose ROUTE through _esc_state changes when the parse sentinel
-# stops being a NUL. `.get("status","")` yields the empty string, which today
-# collides with the NUL sentinel (bash strips the NUL from BOTH the capture and
-# the `case` pattern, so the arm degenerates to ""-matches-"") and so lands on
-# the parse-error arm; once the sentinel is a literal token it will land on the
-# `*)` unrecognized-status arm instead. The VERDICT is `unknown` either way —
-# that equivalence is what C10g/C10h pin, so the sentinel change is provably
-# behaviour-preserving rather than merely asserted to be.
-printf '{"id":"esc-9211-1","task_id":"9211"}\n' > "$C_ESC/esc-9211-1.json"
-# A .json.lock sidecar (the live store holds these next to the real files):
-# the glob must match *.json only, never *.json.lock, or 9201 would read as
-# gated by a lock file.
-printf 'lock\n' > "$C_ESC/esc-9201-1.json.lock"
 
-run_sweep --db "$C_DB" --escalations "$C_ESC" --repo "$C_REPO" --format json
-assert "C0: the class-A fixture sweep exits 0" _rc_is 0
-
-# --- C1: zero live escalation files => STALE + close -------------------------
-assert "C1: a blocked always-escalates gate task with no live escalation is a class-A hit" \
-    _json_is 't[9201]["class"] == "gate_closure" and t[9201]["verdict"] == "STALE"'
-assert "C1: the emitted action is close (not redispatch) per #5316 §5" \
-    _json_is 't[9201]["action"] == "close"'
-assert "C1: evidence names the absence of a live pending escalation" \
-    _json_is '"no live pending escalation" in t[9201]["evidence"]'
-assert "C1: a *.json.lock sidecar does not read as a gating escalation" \
-    _json_is 't[9201]["verdict"] == "STALE"'
-
-# --- C2/C3/C4: the escalation-state oracle ----------------------------------
-assert "C2: a live status=pending escalation still gates the task" \
-    _json_is 't[9202]["verdict"] == "GATED"'
-assert "C3a: a dismissed escalation is stale (the live 5537/5549/5559 shape)" \
-    _json_is 't[9203]["verdict"] == "STALE"'
-assert "C3b: a resolved escalation is stale" \
-    _json_is 't[9204]["verdict"] == "STALE"'
-assert "C4: any single pending escalation gates, even alongside a dismissed one" \
-    _json_is 't[9205]["verdict"] == "GATED"'
-assert "C2/C4: a GATED row is not counted as a hit" \
-    _json_is 's["gate_closure"] == 3'
-
-# --- C5/C6: the class-A predicate is narrow ---------------------------------
-assert "C5: no always_escalates key (the 5372 shape) is not class A" \
-    _json_is 't[9206]["class"] != "gate_closure"'
-assert "C6: an in-progress row matching A's metadata is not class A (blocked-only)" \
-    _json_is 't[9207]["class"] != "gate_closure"'
-
-# --- C7/C8: a failed oracle degrades to unknown, never to STALE -------------
 C_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-creq-XXXXXX")"
 _TMPDIRS+=("$C_REQ")
-run_sweep --db "$C_DB" --escalations "$C_REPO/no-such-escalations-dir" --repo "$C_REPO" \
-    --emit-requests "$C_REQ" --format json
-assert "C7: a nonexistent --escalations dir still exits 0" _rc_is 0
-assert "C7: a missing oracle degrades every class-A candidate to unknown, never STALE" \
-    _json_is 't[9201]["verdict"] == "unknown" and s["gate_closure"] == 0'
-assert "C7: a missing oracle is counted in unknown" _json_is 's["unknown"] >= 1'
-assert "C7: a missing oracle warns on stderr" _err_has '\[warn\]'
-assert "C7: a missing oracle emits no re-dispatch request" _no_request_for "$C_REQ" 9201
 
-C_REQ2="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-creq2-XXXXXX")"
-_TMPDIRS+=("$C_REQ2")
-run_sweep --db "$C_DB" --escalations "$C_ESC" --repo "$C_REPO" \
-    --emit-requests "$C_REQ2" --format json
-assert "C8: a malformed escalation file degrades to unknown, not STALE" \
-    _json_is 't[9208]["verdict"] == "unknown"'
-assert "C8: a malformed escalation file warns on stderr" _err_has '\[warn\].*9208'
-# Deliberately adjacent to the assert above so it reads the SAME run's ERR_OUT.
-# The parse sentinel must survive command substitution: bash strips a NUL from
-# `$(...)` and warns while doing it, and that warning lands on the SUT's OWN
-# stderr — the very channel `warn()` writes to and every `_err_has` assert here
-# reads. Diagnostics a consumer cannot distinguish from the tool's own output
-# are a defect in the tool, not noise.
-assert "C8: the parse sentinel leaks no bash NUL warning onto the SUT's own stderr" \
-    _not _err_has 'ignored null byte'
+run_sweep --db "$C_DB" --repo "$C_REPO" --emit-requests "$C_REQ" --format json
+assert "C0: the retired-class fixture sweep exits 0" _rc_is 0
 
-# --- C10: the status predicate is a TERMINAL allowlist, not a pending one ----
-# `pending` gates and `resolved`/`dismissed` clear; EVERY other value —
-# unrecognized, null, empty — is a failed oracle read and must degrade to
-# `unknown`. A pending-allowlist would sink all of these into `clear`, which
-# yields STALE / close / an emitted request telling the consumer to CANCEL the
-# task — failing open toward the sweep's single most destructive action, and
-# inverting invariant L2 ("a failed oracle lookup must never manufacture an
-# actionable verdict"). Both shapes below are realistic: a schema addition on
-# the escalation side, and a mid-write/partially-populated record.
-assert "C10a: an unrecognized escalation status degrades to unknown, not STALE" \
-    _json_is 't[9209]["verdict"] == "unknown"'
-assert "C10b: an unrecognized status warns, naming the task and the status" \
-    _err_has '\[warn\].*9209.*in_triage'
-assert "C10c: an unrecognized status emits no re-dispatch request" \
-    _no_request_for "$C_REQ2" 9209
-assert "C10d: a null escalation status degrades to unknown, not STALE" \
-    _json_is 't[9210]["verdict"] == "unknown"'
-assert "C10e: a null status emits no re-dispatch request" \
-    _no_request_for "$C_REQ2" 9210
-assert "C10g: an ABSENT status key degrades to unknown, not STALE" \
-    _json_is 't[9211]["verdict"] == "unknown"'
-assert "C10h: an absent status key emits no re-dispatch request" \
-    _no_request_for "$C_REQ2" 9211
-assert "C10f: none of these shapes is counted as a class-A hit" \
-    _json_is 's["gate_closure"] == 3'
+# --- C1: the canonical shape is adjudicated, and matches nothing -------------
+# NO-CLASS, not `unknown`: nothing failed to be read here. The row is fully
+# adjudicated and the answer is negative.
+assert "C1: the canonical gate-closure shape is no longer a trigger class" \
+    _json_is 't[9201]["class"] == "-" and t[9201]["verdict"] == "NO-CLASS" and t[9201]["action"] == "none"'
+assert "C1: ... it is counted in no_class, and no gate_closure counter is rendered at all" \
+    _json_is 's["no_class"] == 2 and "gate_closure" not in s'
+assert "C1: ... and emits no re-dispatch request" _no_request_for "$C_REQ" 9201
 
-# --- C11: an UNREADABLE escalations dir degrades exactly like a missing one --
-# C7 covers a NONEXISTENT dir. The dir that exists but cannot be enumerated
-# (mode 000, root-owned dir swept by another uid, a stale mount) is the more
-# dangerous shape, because it defeats the terminal allowlist WITHOUT ever
-# entering the loop: `[ -d ]` succeeds (stat needs +x on the PARENT, not on the
-# dir), the glob fails to expand for want of +r, `[ -e "$f" ] || continue`
-# swallows the unexpanded pattern, and found=0/pending=0 falls straight into
-# the `clear` branch. Task 9202 carries a live status=pending escalation, so
-# reporting it STALE / close is a fail-open on a task whose gate IS still live
-# — inverting L2 at the one point the allowlist cannot defend.
-if [ "$(id -u)" != 0 ]; then
-    C_REQ3="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-creq3-XXXXXX")"
-    _TMPDIRS+=("$C_REQ3")
-    chmod 000 "$C_ESC"
-    run_sweep --db "$C_DB" --escalations "$C_ESC" --repo "$C_REPO" \
-        --emit-requests "$C_REQ3" --format json
-    chmod 700 "$C_ESC"
-    assert "C11: an unreadable --escalations dir still exits 0" _rc_is 0
-    assert "C11: a task with a LIVE pending escalation degrades to unknown, never STALE" \
-        _json_is 't[9202]["verdict"] == "unknown"'
-    assert "C11: an unreadable oracle yields no class-A hit at all" \
-        _json_is 's["gate_closure"] == 0'
-    assert "C11: an unreadable oracle is counted in unknown" _json_is 's["unknown"] >= 1'
-    assert "C11: an unreadable oracle warns on stderr" _err_has '\[warn\].*9202'
-    assert "C11: an unreadable oracle emits no re-dispatch request" \
-        _no_request_for "$C_REQ3" 9202
-    assert "C11: ... and none for the genuinely-stale row either" \
-        _no_request_for "$C_REQ3" 9201
-else
-    echo "  SKIP: C11 unreadable-dir asserts (running as uid 0; mode bits do not apply)"
-fi
+# --- C2: the other direction — a LIVE escalation changes nothing -------------
+assert "C2: a task with a live pending escalation adjudicates identically" \
+    _json_is 't[9202]["class"] == "-" and t[9202]["verdict"] == "NO-CLASS" and t[9202]["action"] == "none"'
+assert "C2: ... and emits no re-dispatch request either" _no_request_for "$C_REQ" 9202
+# The strongest form: not merely "both are NO-CLASS", but that the escalation
+# is invisible in every field the report carries.
+assert "C2: the two rows are indistinguishable in every reported field" \
+    _json_is 'all(t[9201][k] == t[9202][k] for k in ("class", "verdict", "action", "evidence", "flags"))'
 
-# --- C9: --class filtering ---------------------------------------------------
-run_sweep --db "$C_DB" --escalations "$C_ESC" --repo "$C_REPO" \
-    --class gate_closure --format json
-assert "C9a: --class gate_closure emits only class-A rows" \
-    _json_is 'all(c["class"] == "gate_closure" for c in d["candidates"]) and len(d["candidates"]) > 0'
-run_sweep --db "$C_DB" --escalations "$C_ESC" --repo "$C_REPO" \
-    --class merge_verify_red --format json
-assert "C9b: --class merge_verify_red suppresses the class-A hit" \
-    _json_is '9201 not in t and s["gate_closure"] == 0'
+# --- C3: the retired name leaves the --class vocabulary ----------------------
+# Same shape as A4b's `--class bogus`: a name the sweep cannot act on is a
+# usage error, not a silently-empty sweep that reads as "nothing to do".
+run_sweep --db "$C_DB" --repo "$C_REPO" --class gate_closure
+assert "C3: --class gate_closure is now a usage error (exit 2)" _rc_is 2
+assert "C3: ... and the error names the surviving vocabulary" _err_has 'merge_verify_red'
+
+# --- C4: the escalation store is not an input any more -----------------------
+run_sweep --db "$C_DB" --repo "$C_REPO" --escalations "$C_REPO/data/escalations"
+assert "C4: --escalations is no longer a recognised flag (exit 2)" _rc_is 2
+assert "C4: ... and the error names it" _err_has '\[error\].*--escalations'
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block D — trigger class B: merge_verify_red
@@ -897,8 +789,6 @@ echo "--- Block D: trigger class B (merge_verify_red) ---"
 
 _mk_tasks_db
 D_DB="$DB"
-_mk_esc_dir
-D_ESC="$ESC_DIR"
 
 # Fixture main history (linear):
 #   c0 root
@@ -993,7 +883,7 @@ _add_task 9315 in-progress "$(_d_meta "$(_d_prop "$D_REASON_B" "$D_C1" "$D_FILES
 D_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-dreq-XXXXXX")"
 _TMPDIRS+=("$D_REQ")
 
-run_sweep --db "$D_DB" --escalations "$D_ESC" --repo "$D_REPO" \
+run_sweep --db "$D_DB" --repo "$D_REPO" \
     --emit-requests "$D_REQ" --format json
 assert "D0: the class-B fixture sweep exits 0" _rc_is 0
 
@@ -1055,14 +945,14 @@ assert "D: merge_verify_red counts exactly the four STALE class-B rows" \
     _json_is 's["merge_verify_red"] == 4'
 
 # --- D10: --repo / --main-ref are honoured, and the real repo is never read --
-run_sweep --db "$D_DB" --escalations "$D_ESC" --repo "$D_REPO" \
+run_sweep --db "$D_DB" --repo "$D_REPO" \
     --main-ref "$D_C1" --format json
 assert "D10a: --main-ref is honoured (pinning main-ref at main_sha => UNRESOLVED)" \
     _json_is 't[9301]["verdict"] == "UNRESOLVED" and s["merge_verify_red"] == 0'
 _D10_FLAG_OUT="$OUT"
 
 _SWEEP_ENV=(REIFY_GATE_STALENESS_MAIN_REF="$D_C1" REIFY_GATE_STALENESS_REPO="$D_REPO")
-run_sweep --db "$D_DB" --escalations "$D_ESC" --format json
+run_sweep --db "$D_DB" --format json
 _SWEEP_ENV=()
 assert "D10b: REIFY_GATE_STALENESS_MAIN_REF/_REPO match the --main-ref/--repo flags" \
     test "$OUT" = "$_D10_FLAG_OUT"
@@ -1074,127 +964,73 @@ assert "D10b: REIFY_GATE_STALENESS_MAIN_REF/_REPO match the --main-ref/--repo fl
 # reach the real repo.
 D_NOGIT="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-nogit-XXXXXX")"
 _TMPDIRS+=("$D_NOGIT")
-run_sweep --db "$D_DB" --escalations "$D_ESC" --repo "$D_NOGIT" --format json
+run_sweep --db "$D_DB" --repo "$D_NOGIT" --format json
 assert "D10c: --repo is honoured — a non-git --repo degrades class B to unknown" \
     _json_is 't[9301]["verdict"] == "unknown" and s["merge_verify_red"] == 0'
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Block E — trigger class C: unmet_dependency
+# Block E — the RETIRED unmet_dependency class (task 7349)
 #
-# A `blocked` task whose every dependency has since reached a terminal status.
-# Reproduces 5372's live shape (blocked, its one dependency 5271 `done`).
+# `unmet_dependency` was the sweep's class C: a `blocked` task whose every
+# dependency had reached a terminal status, reported STALE with
+# action=redispatch. It is retired not because the predicate was wrong but
+# because it had a SECOND OWNER. dark-factory's
+# Scheduler._phase_redispatch_stranded_blocked (scheduler.py:6458) runs the
+# same adjudication at TICK cadence — status=blocked, no live claimant, deps
+# satisfied (accepting BOTH terminal spellings) -> set_task_claimant(None) then
+# set_task_status('pending') — byte-identical to what the consumer's
+# _apply_repend did for a class-C request.
 #
-# E5 IS THE LOAD-BEARING ASSERT OF THIS ENTIRE SUITE. Measured live on
-# 2026-07-26, ALL TEN in-progress tasks had every dependency `done` — task
-# 5321 itself among them. A "dependency premise resolved => re-dispatch" rule
-# that spanned in-progress would therefore have emitted re-dispatch requests
-# for ten actively-running agents: the capability would DESTROY work rather
-# than recover it. Class C is `blocked`-only for exactly that reason, and E5
-# pins it independently of the heartbeat guard — a stale heartbeat plus fully
-# satisfied dependencies still must not fire.
+# Class C's entire non-overlapping delta was DF's two DELIBERATE refusals: the
+# `task_kind == 'deterministic'` carve-out ("owned exclusively by the
+# deterministic gate flow") and the open-pending-escalation veto ("a false 'no
+# open escalation' would redispatch a deliberately parked task"). reify class C
+# had neither check, so it was not filling a coverage gap — it was a second
+# owner overriding those refusals.
 #
-# The two fail-safe directions are pinned too: an empty dependency set must
-# not read as "all satisfied" (E4), and a depends_on id that resolves to no
-# row must not read as satisfied (E6) — including the tag-scoped variant,
-# where the row exists only under a DIFFERENT tag (E7). `tasks` is
-# PRIMARY KEY (tag, id), so an unqualified lookup would silently conflate
-# tags the moment a second one exists.
+# What this block pins is that the 5372 shape is now adjudicated NO-CLASS, on
+# BOTH terminal spellings, so neither can quietly keep firing.
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
-echo "--- Block E: trigger class C (unmet_dependency) ---"
+echo "--- Block E: the retired unmet_dependency class ---"
 
 _mk_tasks_db
 E_DB="$DB"
-_mk_esc_dir
-E_ESC="$ESC_DIR"
 _mk_repo
 E_REPO="$REPO_DIR"
 
-# Dependency targets, one per terminal / non-terminal status.
 _add_task 9490 done      '{}'
 _add_task 9491 cancelled '{}'
-_add_task 9492 pending   '{}'
-_add_task 9493 in-progress '{}' "$(_now_iso -90000)" ""
-_add_task 9494 blocked   '{}'
-_add_task 9495 deferred  '{}'
-# 9496 exists ONLY under a different tag (E7). It is `done` there, so a
-# tag-blind lookup would wrongly read task 9410's dependency as satisfied.
-_add_task 9496 done      '{}' "" "" other
 
-# E1 — the 5372 shape: one dependency, and it is done.
+# The 5372 shape: blocked, one dependency, and it is terminal.
 _add_task 9401 blocked '{}'; _add_dep 9401 9490
-# E2 — several dependencies, all terminal, done and cancelled mixed.
+# The same shape with the OTHER terminal spelling alongside it.
 _add_task 9402 blocked '{}'; _add_dep 9402 9490; _add_dep 9402 9491
-# E3 — one non-terminal dependency is enough to keep the premise unresolved.
-_add_task 9403 blocked '{}'; _add_dep 9403 9490; _add_dep 9403 9492
-_add_task 9404 blocked '{}'; _add_dep 9404 9493
-_add_task 9405 blocked '{}'; _add_dep 9405 9494
-_add_task 9406 blocked '{}'; _add_dep 9406 9495
-# E4 — zero dependency rows: an empty set is NOT "all satisfied".
-_add_task 9407 blocked '{}'
-# E5 — the flood guard: in-progress, stale heartbeat, every dependency done.
-_add_task 9408 in-progress '{}' "$(_now_iso -90000)" ""; _add_dep 9408 9490
-# E6 — a depends_on id with no row in tasks at all.
-_add_task 9409 blocked '{}'; _add_dep 9409 9999
-# E7 — a depends_on whose row exists only under tag='other'.
-_add_task 9410 blocked '{}'; _add_dep 9410 9496
-# E8 — matches class A AND class C: A must win, and the row must be counted
-# exactly once. Class A's action is `close` (a satisfied deterministic gate is
-# cancelled, per #5316 §5); silently downgrading it to class C's `redispatch`
-# would re-run a gate task that should simply be closed.
-_add_task 9411 blocked "$C_GATE_META"; _add_dep 9411 9490
 
 E_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-ereq-XXXXXX")"
 _TMPDIRS+=("$E_REQ")
 
-run_sweep --db "$E_DB" --escalations "$E_ESC" --repo "$E_REPO" \
-    --emit-requests "$E_REQ" --format json
-assert "E0: the class-C fixture sweep exits 0" _rc_is 0
+run_sweep --db "$E_DB" --repo "$E_REPO" --emit-requests "$E_REQ" --format json
+assert "E0: the retired-class fixture sweep exits 0" _rc_is 0
 
-# --- E1/E2: every dependency terminal => STALE + redispatch ------------------
-assert "E1: a blocked task whose only dependency is done is a class-C hit (the 5372 shape)" \
-    _json_is 't[9401]["class"] == "unmet_dependency" and t[9401]["verdict"] == "STALE"'
-assert "E1: the emitted action is redispatch" _json_is 't[9401]["action"] == "redispatch"'
-assert "E1: evidence names the satisfied dependency id and its status" \
-    _json_is '"9490=done" in t[9401]["evidence"]'
-assert "E2: done and cancelled are both terminal" \
-    _json_is 't[9402]["verdict"] == "STALE" and "9491=cancelled" in t[9402]["evidence"]'
+# --- E1/E2: the 5372 shape matches nothing, on either terminal spelling ------
+assert "E1: a blocked task whose only dependency is done is no longer a trigger class" \
+    _json_is 't[9401]["class"] == "-" and t[9401]["verdict"] == "NO-CLASS" and t[9401]["action"] == "none"'
+assert "E1: ... and emits no re-dispatch request" _no_request_for "$E_REQ" 9401
+assert "E2: a cancelled dependency is not a live spelling either" \
+    _json_is 't[9402]["class"] == "-" and t[9402]["verdict"] == "NO-CLASS" and t[9402]["action"] == "none"'
+assert "E2: ... and emits no re-dispatch request" _no_request_for "$E_REQ" 9402
 
-# --- E3: any non-terminal dependency keeps the premise unresolved ------------
-assert "E3: pending / in-progress / blocked / deferred dependencies all block the hit" \
-    _json_is 'all(t[i]["verdict"] == "UNRESOLVED" for i in (9403, 9404, 9405, 9406))'
-assert "E3: an UNRESOLVED class-C row is still reported as class C" \
-    _json_is 't[9403]["class"] == "unmet_dependency"'
+# --- E3: counted as adjudicated-negative, and the counter is gone ------------
+assert "E3: both rows are counted in no_class, and no unmet_dependency counter is rendered" \
+    _json_is 's["no_class"] == 2 and "unmet_dependency" not in s'
+assert "E3: the fixture emits nothing at all" \
+    test "$(find "$E_REQ" -maxdepth 1 -type f | wc -l)" = "0"
 
-# --- E4: an empty dependency set is not "all satisfied" ----------------------
-assert "E4: a blocked task with zero dependency rows is not class C" \
-    _json_is 't[9407]["class"] != "unmet_dependency"'
-
-# --- E5: THE FLOOD GUARD ------------------------------------------------------
-assert "E5: an in-progress task with a stale heartbeat and all deps done is NOT class C" \
-    _json_is 't[9408]["class"] != "unmet_dependency"'
-assert "E5: the flood-guard row is not counted in unmet_dependency" \
-    _json_is 's["unmet_dependency"] == 2'
-assert "E5: the flood-guard row emits no re-dispatch request" _no_request_for "$E_REQ" 9408
-
-# --- E6/E7: an unresolvable dependency is not a satisfied one ----------------
-assert "E6: a depends_on with no row in tasks degrades to unknown, never STALE" \
-    _json_is 't[9409]["verdict"] == "unknown"'
-assert "E6: an unresolvable dependency warns on stderr" _err_has '\[warn\].*9409'
-assert "E7: dependency lookup is tag-scoped — a done row under another tag does not satisfy" \
-    _json_is 't[9410]["verdict"] == "unknown"'
-
-# --- E8: class precedence — gate_closure > merge_verify_red > unmet_dependency
-assert "E8: a row matching both A and C reports gate_closure as its primary class" \
-    _json_is 't[9411]["class"] == "gate_closure" and t[9411]["verdict"] == "STALE"'
-assert "E8: A's close action is not downgraded to C's redispatch" \
-    _json_is 't[9411]["action"] == "close"'
-assert "E8: the secondary class is still disclosed in evidence" \
-    _json_is '"also:unmet_dependency" in t[9411]["evidence"]'
-assert "E8: a multi-class row increments exactly one class counter" \
-    _json_is 's["gate_closure"] == 1 and s["unmet_dependency"] == 2'
-assert "E8: a multi-class row appears exactly once in the report" \
-    _json_is 'len([c for c in d["candidates"] if c["task_id"] == 9411]) == 1'
+# --- E4: the retired name leaves the --class vocabulary (cf. C3) -------------
+run_sweep --db "$E_DB" --repo "$E_REPO" --class unmet_dependency
+assert "E4: --class unmet_dependency is now a usage error (exit 2)" _rc_is 2
+assert "E4: ... and the error names the surviving vocabulary" _err_has 'merge_verify_red'
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block F — the #5316 corruption signatures, wired in as SUPPRESSORS
@@ -1227,10 +1063,6 @@ echo "--- Block F: the #5316 corruption suppressors ---"
 
 _mk_tasks_db
 F_DB="$DB"
-# No escalation files are ever written into F_ESC: the class-A rows in this
-# block must reach STALE so F6's suppression is observable on a real hit.
-_mk_esc_dir
-F_ESC="$ESC_DIR"
 
 # Fixture history:
 #   c0 root
@@ -1257,10 +1089,6 @@ F_PROV_SIDE="{\"done_provenance\":{\"commit\":\"$F_SIDE\"}}"
 F_PROV_ANCESTOR="{\"done_provenance\":{\"commit\":\"$F_C1\"}}"
 F_PROV_FAKE="{\"done_provenance\":{\"commit\":\"$F_FAKE_SHA\"}}"
 
-# Dependency targets for the class-C rows below.
-_add_task 9690 done    '{}'
-_add_task 9691 pending '{}'
-
 # F1 — each Signature-1 marker on its own row.
 _add_task 9601 blocked "$F_SIG1_USAGE"
 _add_task 9602 blocked "$F_SIG1_OPTIONS"
@@ -1273,32 +1101,35 @@ _add_task 9606 blocked "$F_PROV_ANCESTOR"
 _add_task 9607 blocked '{}'
 _add_task 9608 blocked "$F_PROV_FAKE"
 
-# F6 — one confirmed STALE hit per trigger class, each carrying a corruption
-# flag, so suppression is pinned on all three classes rather than just one.
-F_GATE_FIELDS='"task_kind":"deterministic","always_escalates":true,"gate_escalated_at":"2026-07-26T08:00:00Z"'
-_add_task 9610 blocked "{$F_GATE_FIELDS,\"failing_tests\":[\"Usage:\"]}"
+# F6 — one confirmed STALE hit per corruption SIGNATURE, every one of them a
+# class-B (merge_verify_red) row. Suppression is a property of the signature,
+# not of the trigger class, so it is pinned per signature.
 F_PROP_B="$(_d_prop 'Post-merge verification failed: cargo test --workspace returned 101' \
     "$F_C1" '["docs/f-resolver.md"]' 2026-07-24T10:00:00Z)"
+# Signature 1 on a confirmed hit.
+_add_task 9610 blocked "{\"dry_run_proposals\":[$F_PROP_B],\"failing_tests\":[\"Usage:\"]}"
+# Signature 2 on a confirmed hit.
 _add_task 9611 blocked "{\"dry_run_proposals\":[$F_PROP_B],\"done_provenance\":{\"commit\":\"$F_SIDE\"}}"
-_add_task 9612 blocked "$F_SIG1_USAGE"; _add_dep 9612 9690
-# The unflagged control: the SAME class-A shape with a clean record must stay
+# The unflagged control: the SAME class-B shape with a clean record must stay
 # STALE in the same sweep, so F6 measures suppression and not a blanket
 # downgrade of every hit.
-_add_task 9613 blocked "{$F_GATE_FIELDS}"
+_add_task 9613 blocked "{\"dry_run_proposals\":[$F_PROP_B]}"
 # F5's suppression half: an UNRESOLVABLE provenance SHA is treated
 # conservatively as corrupt, so an otherwise-confirmed hit is still held.
-_add_task 9616 blocked "{$F_GATE_FIELDS,\"done_provenance\":{\"commit\":\"$F_FAKE_SHA\"}}"
+_add_task 9616 blocked "{\"dry_run_proposals\":[$F_PROP_B],\"done_provenance\":{\"commit\":\"$F_FAKE_SHA\"}}"
 
-# F7 — corrupt but NOT stale: one dependency still pending, so the row is
-# UNRESOLVED. The flag must still be computed and reported.
-_add_task 9614 blocked "$F_SIG1_USAGE"; _add_dep 9614 9691
+# F7 — corrupt but NOT stale: main is still AT the recorded main_sha, so the
+# premise is UNRESOLVED. The flag must still be computed and reported.
+F_PROP_B_TIP="$(_d_prop 'Post-merge verification failed: cargo test --workspace returned 101' \
+    "$F_C2" '["docs/f-resolver.md"]' 2026-07-24T10:00:00Z)"
+_add_task 9614 blocked "{\"dry_run_proposals\":[$F_PROP_B_TIP],\"failing_tests\":[\"Usage:\"]}"
 # F8 — both signatures on one row.
 _add_task 9615 blocked "{\"failing_tests\":[\"Options:\"],\"done_provenance\":{\"commit\":\"$F_SIDE\"}}"
 
 F_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-freq-XXXXXX")"
 _TMPDIRS+=("$F_REQ")
 
-run_sweep --db "$F_DB" --escalations "$F_ESC" --repo "$F_REPO" \
+run_sweep --db "$F_DB" --repo "$F_REPO" \
     --emit-requests "$F_REQ" --format json
 assert "F0: the corruption-suppressor fixture sweep exits 0" _rc_is 0
 
@@ -1325,23 +1156,22 @@ assert "F5: an unresolvable done_provenance.commit flags provenance_unresolvable
     _json_is '"provenance_unresolvable" in t[9608]["flags"]'
 
 # --- F6: THE SUPPRESSION COUPLING --------------------------------------------
-assert "F6a: a flagged class-A hit is held as CORRUPT-HOLD / human_gate" \
+assert "F6a: a Signature-1-flagged hit is held as CORRUPT-HOLD / human_gate" \
     _json_is 't[9610]["verdict"] == "CORRUPT-HOLD" and t[9610]["action"] == "human_gate"'
-assert "F6b: a flagged class-B hit is held as CORRUPT-HOLD / human_gate" \
+assert "F6b: a Signature-2-flagged hit is held as CORRUPT-HOLD / human_gate" \
     _json_is 't[9611]["verdict"] == "CORRUPT-HOLD" and t[9611]["action"] == "human_gate"'
-assert "F6c: a flagged class-C hit is held as CORRUPT-HOLD / human_gate" \
-    _json_is 't[9612]["verdict"] == "CORRUPT-HOLD" and t[9612]["action"] == "human_gate"'
 assert "F5/F6: an unresolvable provenance SHA holds the hit conservatively too" \
     _json_is 't[9616]["verdict"] == "CORRUPT-HOLD"'
 assert "F6: a held row still reports the primary class it matched" \
-    _json_is 't[9610]["class"] == "gate_closure" and t[9611]["class"] == "merge_verify_red" and t[9612]["class"] == "unmet_dependency"'
+    _json_is 'all(t[i]["class"] == "merge_verify_red" for i in (9610, 9611, 9616))'
+# The class counter reads 1, not 4: all four hits here are class B, so a
+# counter that merely counted MATCHES rather than confirmed hits would read 4.
 assert "F6: held rows are counted in corrupt_hold, never in a class counter" \
-    _json_is 's["corrupt_hold"] == 4 and s["merge_verify_red"] == 0 and s["unmet_dependency"] == 0'
+    _json_is 's["corrupt_hold"] == 3 and s["merge_verify_red"] == 1'
 assert "F6: an unflagged hit in the same sweep is still STALE" \
-    _json_is 't[9613]["verdict"] == "STALE" and s["gate_closure"] == 1'
-assert "F6: a held class-A row emits no re-dispatch request" _no_request_for "$F_REQ" 9610
-assert "F6: a held class-B row emits no re-dispatch request" _no_request_for "$F_REQ" 9611
-assert "F6: a held class-C row emits no re-dispatch request" _no_request_for "$F_REQ" 9612
+    _json_is 't[9613]["verdict"] == "STALE" and s["merge_verify_red"] == 1'
+assert "F6: a Signature-1-held row emits no re-dispatch request" _no_request_for "$F_REQ" 9610
+assert "F6: a Signature-2-held row emits no re-dispatch request" _no_request_for "$F_REQ" 9611
 assert "F5/F6: the conservatively-held row emits no re-dispatch request" _no_request_for "$F_REQ" 9616
 
 # --- F7: audit coverage is not lost on non-stale rows ------------------------
@@ -1353,7 +1183,7 @@ assert "F7: a flagged non-stale row is not counted in corrupt_hold" \
 # --- F8: multiple flags, stable order ----------------------------------------
 assert "F8: two signatures on one row are reported in a deterministic order" \
     _json_is 't[9615]["flags"] == ["corrupt_autofile", "misattributed_provenance"]'
-run_sweep --db "$F_DB" --escalations "$F_ESC" --repo "$F_REPO" --format table
+run_sweep --db "$F_DB" --repo "$F_REPO" --format table
 assert "F8: the table report renders flags as a comma-separated list" \
     _out_has 'corrupt_autofile,misattributed_provenance'
 
@@ -1370,8 +1200,8 @@ assert "F8: the table report renders flags as a comma-separated list" \
 #
 # The consequence is not cosmetic. Invariant L5 suppresses any STALE hit that
 # carries a flag, so one spurious flag silently converts a real, actionable hit
-# into a human-gate hold and drops its re-dispatch request (F9f/F9g pin both
-# halves on the unflagged control). Every other unresolvable-ref path in the
+# into a human-gate hold and drops its re-dispatch request (F9f/F9g pin that
+# NEITHER happens here). Every other unresolvable-ref path in the
 # sweep warns and degrades — the class-B path checks the pre-resolved SHA for
 # emptiness FIRST, for this identical premise — so F9e pins the missing warn.
 #
@@ -1381,7 +1211,7 @@ assert "F8: the table report renders flags as a comma-separated list" \
 F9_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-f9req-XXXXXX")"
 _TMPDIRS+=("$F9_REQ")
 
-run_sweep --db "$F_DB" --escalations "$F_ESC" --repo "$F_REPO" \
+run_sweep --db "$F_DB" --repo "$F_REPO" \
     --main-ref no-such-ref --emit-requests "$F9_REQ" --format json
 assert "F9a: an unresolvable --main-ref degrades rather than aborting" _rc_is 0
 
@@ -1401,14 +1231,18 @@ assert "F9d: provenance_unresolvable is a --repo check and is unaffected by --ma
 assert "F9e: the missing ancestry oracle warns, naming the ref and the un-adjudicated check" \
     _err_has '\[warn\].*no-such-ref.*provenance reachability not adjudicable'
 # F9f/F9g — the L5 consequence, and the reason this is blocking rather than
-# cosmetic: a spurious flag would demote a confirmed hit to a human-gate hold
-# and silently drop its actionable output.
-assert "F9f: an unflagged class-A hit is still STALE / close and still counted" \
-    _json_is 't[9613]["verdict"] == "STALE" and t[9613]["action"] == "close" and t[9613]["class"] == "gate_closure" and s["gate_closure"] == 1'
-assert "F9f: ... and is not rewritten to a CORRUPT-HOLD / human_gate row" \
-    _json_is 't[9613]["verdict"] != "CORRUPT-HOLD" and t[9613]["action"] != "human_gate"'
-assert "F9g: ... so its re-dispatch request is still emitted" \
-    test -f "$F9_REQ/redispatch-9613-gate_closure.json"
+# cosmetic: a spurious flag would demote a hit to a human-gate hold and
+# silently drop its actionable output. The surviving trigger class needs the
+# very ref that did not resolve, so the whole sweep must DEGRADE — every row
+# to `unknown`, and not one row to a manufactured hold.
+assert "F9f: the unflagged control carries no manufactured flag and is not held" \
+    _json_is 't[9613]["flags"] == [] and t[9613]["verdict"] != "CORRUPT-HOLD" and t[9613]["action"] != "human_gate"'
+assert "F9f: ... it degrades to unknown/none, because its own premise needed that ref too" \
+    _json_is 't[9613]["verdict"] == "unknown" and t[9613]["action"] == "none"'
+assert "F9g: a missing ancestry oracle manufactures NO human-gate hold anywhere in the sweep" \
+    _json_is 's["corrupt_hold"] == 0'
+assert "F9g: ... and emits no request off a premise the sweep could not adjudicate" \
+    _no_request_for "$F9_REQ" 9613
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block G — --emit-requests and the read-only invariant
@@ -1422,7 +1256,7 @@ assert "F9g: ... so its re-dispatch request is still emitted" \
 # primitive, dark-factory wires the invocation that performs the
 # set_task_status / update_task write.
 #
-# G3 is the emission-boundary re-pinning of B2 / C2 / E5 / F6: STALE is the
+# G3 is the emission-boundary re-pinning of B2 / D3 / F6: STALE is the
 # ONLY verdict that emits, asserted once per non-emitting verdict so a
 # regression in any one of them cannot hide behind the others. G8 is the
 # read-only proof — a byte-level before/after comparison of the fixture store
@@ -1474,34 +1308,36 @@ _all_requests_parse() {
 }
 _mk_tasks_db
 G_DB="$DB"
-_mk_esc_dir
-G_ESC="$ESC_DIR"
 _mk_repo
 G_REPO="$REPO_DIR"
 G_C1="$(_commit_touching docs/g-premise.md)"
 G_TIP="$(_commit_touching docs/g-resolver.md)"
 
-G_GATE='"task_kind":"deterministic","always_escalates":true,"gate_escalated_at":"2026-07-26T08:00:00Z"'
+# The class-B premise in three shapes: RESOLVED by the tip (a confirmed hit),
+# still AT the tip (matched, premise not yet resolved), and recording no
+# files_referenced at all (matched, with no diff surface to adjudicate).
 G_PROP_B="$(_d_prop 'Post-merge verification failed: cargo test --workspace returned 101' \
     "$G_C1" '["docs/g-resolver.md"]' 2026-07-24T10:00:00Z)"
+G_PROP_B_TIP="$(_d_prop 'Post-merge verification failed: cargo test --workspace returned 101' \
+    "$G_TIP" '["docs/g-resolver.md"]' 2026-07-24T10:00:00Z)"
+G_PROP_B_NOFILES="$(_d_prop 'Post-merge verification failed: cargo test --workspace returned 101' \
+    "$G_C1" '-' 2026-07-24T10:00:00Z)"
 
-_add_task 9790 done    '{}'
-_add_task 9791 pending '{}'
-
-# One confirmed hit per trigger class — the three files G1 expects.
-_add_task 9701 blocked "{$G_GATE}"
+# Three confirmed hits — the three files G1 expects. They share a class, so G1
+# also pins that the filename carries the TASK id and not merely the class.
+_add_task 9701 blocked "{\"dry_run_proposals\":[$G_PROP_B]}"
 _add_task 9702 blocked "{\"dry_run_proposals\":[$G_PROP_B]}"
-_add_task 9703 blocked '{}'; _add_dep 9703 9790
+_add_task 9703 blocked "{\"dry_run_proposals\":[$G_PROP_B]}"
 # One row per NON-emitting verdict. 9704 carries a premise that WOULD fire, so
 # the liveness guard is what suppresses it and not an inert fixture.
 _add_task 9704 in-progress "{\"dry_run_proposals\":[$G_PROP_B]}" \
     "$(_now_iso -60)" "run-7c8e838c39e7/9704-abc123/pid=3551081"
-_add_task 9705 blocked "{$G_GATE}"; _add_esc 9705 1 pending
-_add_task 9706 blocked '{}'; _add_dep 9706 9791
-_add_task 9707 blocked "{$G_GATE,\"failing_tests\":[\"Usage:\"]}"
-# 9708 is a genuine `unknown`: class C MATCHES (it has a dependency row) and
-# its oracle then fails, because 9999 resolves to no row under this tag.
-_add_task 9708 blocked '{}'; _add_dep 9708 9999
+_add_task 9706 blocked "{\"dry_run_proposals\":[$G_PROP_B_TIP]}"
+_add_task 9707 blocked "{\"dry_run_proposals\":[$G_PROP_B],\"failing_tests\":[\"Usage:\"]}"
+# 9708 is a genuine `unknown`: the class MATCHES (the block_reason prose prefix
+# is there) and its oracle then fails, because the proposal records no
+# files_referenced, so there is no diff surface to adjudicate.
+_add_task 9708 blocked "{\"dry_run_proposals\":[$G_PROP_B_NOFILES]}"
 # 9709 is NO-CLASS: no class matched it at all. It is a DISTINCT verdict from
 # 9708's — a complete adjudication with a negative result, not a failed one.
 _add_task 9709 blocked '{}'
@@ -1510,48 +1346,46 @@ G_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-greq-XXXXXX")"
 _TMPDIRS+=("$G_REQ")
 
 # --- G8 read-only proof: snapshot the store BEFORE the emitting run ----------
-G_BEFORE="$(_snapshot_readonly "$G_DB" "$G_ESC")"
+G_BEFORE="$(_snapshot_readonly "$G_DB")"
 
-run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
+run_sweep --db "$G_DB" --repo "$G_REPO" \
     --emit-requests "$G_REQ" --format json
 assert "G0: the emission fixture sweep exits 0" _rc_is 0
 
-G_AFTER="$(_snapshot_readonly "$G_DB" "$G_ESC")"
+G_AFTER="$(_snapshot_readonly "$G_DB")"
 
 # --- G1: one file per confirmed hit, named for the task and its class -------
-assert "G1: the class-A hit emits redispatch-9701-gate_closure.json" \
-    test -f "$G_REQ/redispatch-9701-gate_closure.json"
-assert "G1: the class-B hit emits redispatch-9702-merge_verify_red.json" \
+assert "G1: the first hit emits redispatch-9701-merge_verify_red.json" \
+    test -f "$G_REQ/redispatch-9701-merge_verify_red.json"
+assert "G1: the second hit emits redispatch-9702-merge_verify_red.json" \
     test -f "$G_REQ/redispatch-9702-merge_verify_red.json"
-assert "G1: the class-C hit emits redispatch-9703-unmet_dependency.json" \
-    test -f "$G_REQ/redispatch-9703-unmet_dependency.json"
+assert "G1: the third hit emits redispatch-9703-merge_verify_red.json" \
+    test -f "$G_REQ/redispatch-9703-merge_verify_red.json"
 assert "G1: exactly three files — one per hit, and nothing else" \
     _request_count_is "$G_REQ" 3
 
 # --- G2: the consumer contract ----------------------------------------------
 assert "G2: the request carries the full consumer field set" \
-    _json_check "$G_REQ/redispatch-9701-gate_closure.json" \
+    _json_check "$G_REQ/redispatch-9701-merge_verify_red.json" \
     'set(["schema_version","task_id","class","action","verdict","evidence","main_ref_sha","emitted_by"]) <= set(d)'
-assert "G2: the class-A request records task_id, class, verdict and the close action" \
-    _json_check "$G_REQ/redispatch-9701-gate_closure.json" \
-    'd["task_id"] == 9701 and d["class"] == "gate_closure" and d["verdict"] == "STALE" and d["action"] == "close"'
-assert "G2: the class-B request's action is reverify" \
-    _json_check "$G_REQ/redispatch-9702-merge_verify_red.json" 'd["action"] == "reverify"'
-assert "G2: the class-C request's action is redispatch" \
-    _json_check "$G_REQ/redispatch-9703-unmet_dependency.json" 'd["action"] == "redispatch"'
+assert "G2: the request records task_id, class, verdict and the reverify action" \
+    _json_check "$G_REQ/redispatch-9701-merge_verify_red.json" \
+    'd["task_id"] == 9701 and d["class"] == "merge_verify_red" and d["verdict"] == "STALE" and d["action"] == "reverify"'
+assert "G2: each request names its OWN task, not the first hit's" \
+    _json_check "$G_REQ/redispatch-9703-merge_verify_red.json" 'd["task_id"] == 9703'
 assert "G2: evidence is carried through verbatim from the row" \
-    _json_check "$G_REQ/redispatch-9703-unmet_dependency.json" '"9790=done" in d["evidence"]'
+    _json_check "$G_REQ/redispatch-9702-merge_verify_red.json" '"docs/g-resolver.md" in d["evidence"]'
 assert "G2: main_ref_sha is the resolved --main-ref tip, not the recorded premise sha" \
     _json_check "$G_REQ/redispatch-9702-merge_verify_red.json" "d['main_ref_sha'] == '$G_TIP'"
 assert "G2: emitted_by names this script" \
-    _json_check "$G_REQ/redispatch-9701-gate_closure.json" \
+    _json_check "$G_REQ/redispatch-9701-merge_verify_red.json" \
     '"deterministic-gate-closure-staleness-sweep" in d["emitted_by"]'
 
 # --- G3: STALE is the ONLY verdict that emits -------------------------------
 # Pinned against the fixture's own verdicts first, so none of the five
 # no-request asserts below can pass vacuously against a mis-built row.
 assert "G3: the fixture really does produce one row of each non-emitting verdict" \
-    _json_is '[t[i]["verdict"] for i in (9704, 9705, 9706, 9707, 9708, 9709)] == ["LIVE", "GATED", "UNRESOLVED", "CORRUPT-HOLD", "unknown", "NO-CLASS"]'
+    _json_is '[t[i]["verdict"] for i in (9704, 9706, 9707, 9708, 9709)] == ["LIVE", "UNRESOLVED", "CORRUPT-HOLD", "unknown", "NO-CLASS"]'
 # unknown vs NO-CLASS are counted SEPARATELY. `unknown` exists so that "no
 # hits" stays distinguishable from "could not tell"; on the live store the
 # great majority of blocked / in-progress rows match no class, so folding them
@@ -1562,7 +1396,6 @@ assert "G3: a class-less row increments no_class and NOT unknown" \
     _json_is 's["unknown"] == 1 and s["no_class"] == 1'
 assert "G3: a LIVE row emits no request (re-pins B2 at the emission boundary)" \
     _no_request_for "$G_REQ" 9704
-assert "G3: a GATED row emits no request (re-pins C2)" _no_request_for "$G_REQ" 9705
 assert "G3: an UNRESOLVED row emits no request" _no_request_for "$G_REQ" 9706
 assert "G3: a CORRUPT-HOLD row emits no request (re-pins F6)" _no_request_for "$G_REQ" 9707
 assert "G3: an unknown row emits no request" _no_request_for "$G_REQ" 9708
@@ -1573,7 +1406,7 @@ G_SNAP1="$(_request_snapshot "$G_REQ")"
 assert "G5: every emitted request file parses as JSON" _all_requests_parse "$G_REQ"
 assert "G5: no mktemp intermediate survives the first run" _only_request_files "$G_REQ"
 
-run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
+run_sweep --db "$G_DB" --repo "$G_REPO" \
     --emit-requests "$G_REQ" --format json
 assert "G4: a second sweep still exits 0" _rc_is 0
 assert "G4: re-emission leaves the request set byte-identical" \
@@ -1584,30 +1417,30 @@ assert "G5: no mktemp intermediate survives the second run either" _only_request
 # --- G6: request emission never gates the sweep ------------------------------
 G_PARENT="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-gparent-XXXXXX")"
 _TMPDIRS+=("$G_PARENT")
-run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
+run_sweep --db "$G_DB" --repo "$G_REPO" \
     --emit-requests "$G_PARENT/created-on-demand" --format json
 assert "G6: a nonexistent DIR whose parent exists is created" \
     test -d "$G_PARENT/created-on-demand"
 assert "G6: and it receives the same three requests" \
     _request_count_is "$G_PARENT/created-on-demand" 3
 
-run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
+run_sweep --db "$G_DB" --repo "$G_REPO" \
     --emit-requests "$G_PARENT/no/such/parent" --format json
 assert "G6: a DIR whose parent does not exist still exits 0" _rc_is 0
 assert "G6: ... warns on stderr" _err_has '\[warn\]'
 assert "G6: ... and still prints a complete report on stdout" \
-    _json_is 's["gate_closure"] == 1 and s["merge_verify_red"] == 1 and s["unmet_dependency"] == 1'
+    _json_is 's["merge_verify_red"] == 3'
 
 if [ "$(id -u)" != 0 ]; then
     G_RO="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-gro-XXXXXX")"
     _TMPDIRS+=("$G_RO")
     chmod 500 "$G_RO"
-    run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
+    run_sweep --db "$G_DB" --repo "$G_REPO" \
         --emit-requests "$G_RO" --format json
     assert "G6: a non-writable DIR still exits 0" _rc_is 0
     assert "G6: a non-writable DIR warns on stderr" _err_has '\[warn\]'
     assert "G6: a non-writable DIR still prints a complete report" \
-        _json_is 's["gate_closure"] == 1'
+        _json_is 's["merge_verify_red"] == 3'
     assert "G6: nothing was written into the non-writable DIR" _request_count_is "$G_RO" 0
     chmod 700 "$G_RO"
 else
@@ -1617,12 +1450,12 @@ fi
 # --- G7: --emit-requests honours --class ------------------------------------
 G_REQ_A="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-greqa-XXXXXX")"
 _TMPDIRS+=("$G_REQ_A")
-run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
-    --class gate_closure --emit-requests "$G_REQ_A" --format json
-assert "G7: a --class-restricted sweep emits only that class's request" \
-    _request_count_is "$G_REQ_A" 1
-assert "G7: and it is the class-A request" \
-    test -f "$G_REQ_A/redispatch-9701-gate_closure.json"
+run_sweep --db "$G_DB" --repo "$G_REPO" \
+    --class merge_verify_red --emit-requests "$G_REQ_A" --format json
+assert "G7: a --class-restricted sweep emits that class's requests and nothing else" \
+    _request_count_is "$G_REQ_A" 3
+assert "G7: and they are the merge_verify_red requests" \
+    test -f "$G_REQ_A/redispatch-9701-merge_verify_red.json"
 
 # --- G8: the read-only proof, BEHAVIOURAL ONLY -------------------------------
 #
@@ -1639,7 +1472,7 @@ assert "G7: and it is the class-A request" \
 #     wrapper function) — it can silently pass on exactly the regression it
 #     exists to catch.
 # The three asserts below are behavioural and cannot be fooled by either.
-assert "G8a: the fixture tasks.db and escalation store are byte-identical after an emitting sweep" \
+assert "G8a: the fixture tasks.db is byte-identical after an emitting sweep" \
     test "$G_BEFORE" = "$G_AFTER"
 assert "G8b: no -wal / -shm sidecar was created alongside the fixture DB" \
     _not test -e "$G_DB-wal"
@@ -1656,15 +1489,15 @@ if [ "$(id -u)" != 0 ]; then
     G_DB_DIR="$(dirname "$G_DB")"
     chmod 400 "$G_DB"
     chmod 500 "$G_DB_DIR"
-    G_RO_BEFORE="$(_snapshot_readonly "$G_DB" "$G_ESC")"
-    run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
+    G_RO_BEFORE="$(_snapshot_readonly "$G_DB")"
+    run_sweep --db "$G_DB" --repo "$G_REPO" \
         --emit-requests "$G_RO_REQ" --format json
-    G_RO_AFTER="$(_snapshot_readonly "$G_DB" "$G_ESC")"
+    G_RO_AFTER="$(_snapshot_readonly "$G_DB")"
     chmod 700 "$G_DB_DIR"
     chmod 600 "$G_DB"
     assert "G8c: a physically read-only store (db 400, dir 500) still exits 0" _rc_is 0
     assert "G8c: ... and still yields the complete three-hit report" \
-        _json_is 's["gate_closure"] == 1 and s["merge_verify_red"] == 1 and s["unmet_dependency"] == 1'
+        _json_is 's["merge_verify_red"] == 3'
     assert "G8c: ... and still emits all three requests" _request_count_is "$G_RO_REQ" 3
     assert "G8c: ... leaving the store byte-identical (no handle was opened read-write)" \
         test "$G_RO_BEFORE" = "$G_RO_AFTER"
@@ -1676,7 +1509,7 @@ fi
 G_REQ_ENV="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-greqenv-XXXXXX")"
 _TMPDIRS+=("$G_REQ_ENV")
 _SWEEP_ENV=(REIFY_GATE_STALENESS_REQUESTS_DIR="$G_REQ_ENV")
-run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" --format json
+run_sweep --db "$G_DB" --repo "$G_REPO" --format json
 _SWEEP_ENV=()
 assert "G9: REIFY_GATE_STALENESS_REQUESTS_DIR emits the same request set as the flag" \
     test "$G_SNAP1" = "$(_request_snapshot "$G_REQ_ENV")"
@@ -1710,7 +1543,7 @@ _TMPDIRS+=("$G_NONE")
 
 # (a) CONTROL: this fixture demonstrably emits into G_NONE when pointed at it.
 _SWEEP_ENV=(REIFY_GATE_STALENESS_REQUESTS_DIR="$G_NONE")
-run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" --format json
+run_sweep --db "$G_DB" --repo "$G_REPO" --format json
 _SWEEP_ENV=()
 assert "G9: CONTROL — pointed at it, the sweep emits all three requests into G_NONE" \
     _request_count_is "$G_NONE" 3
@@ -1721,7 +1554,7 @@ assert "G9: CONTROL — G_NONE is back to empty before the flagless run" \
     _request_count_is "$G_NONE" 0
 
 # (c) FLAGLESS: same fixture, same dir, knob removed — the ONLY difference.
-run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" --format json
+run_sweep --db "$G_DB" --repo "$G_REPO" --format json
 assert "G9: with neither the flag nor its env knob set, the sweep writes nothing" \
     _request_count_is "$G_NONE" 0
 assert "G9: ... and the previously-emitted request set is left untouched" \
@@ -1737,12 +1570,12 @@ _TMPDIRS+=("$G_SANDBOX")
 _SWEEP_ENV=(-u REIFY_GATE_STALENESS_REQUESTS_DIR HOME="$G_SANDBOX")
 _G_OLDPWD="$PWD"
 cd "$G_SANDBOX"
-run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" --format json
+run_sweep --db "$G_DB" --repo "$G_REPO" --format json
 cd "$_G_OLDPWD"
 _SWEEP_ENV=()
 assert "G9: a flagless sweep still exits 0 with cwd and HOME inside a sandbox" _rc_is 0
 assert "G9: ... and still produces its complete report (so the run was real)" \
-    _json_is 's["gate_closure"] == 1 and s["merge_verify_red"] == 1 and s["unmet_dependency"] == 1'
+    _json_is 's["merge_verify_red"] == 3'
 assert "G9: ... and created NOTHING under cwd/\$HOME — there is no default emit target" \
     _tree_is_empty "$G_SANDBOX"
 
@@ -1782,13 +1615,13 @@ assert "G10: the CLI arm's sqlite3 actually runs (else this block is vacuous)" \
     env LD_LIBRARY_PATH= "$_G_CLI_BIN" "$G_DB" "SELECT 1;"
 
 _SWEEP_ENV=(LD_LIBRARY_PATH= REIFY_GATE_STALENESS_SQLITE_BIN="$_G_CLI_BIN")
-run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
+run_sweep --db "$G_DB" --repo "$G_REPO" \
     --emit-requests "$G_REQ_CLI" --format json
 _SWEEP_ENV=()
 G_OUT_CLI="$OUT"
 
 _SWEEP_ENV=(REIFY_GATE_STALENESS_SQLITE_BIN=)
-run_sweep --db "$G_DB" --escalations "$G_ESC" --repo "$G_REPO" \
+run_sweep --db "$G_DB" --repo "$G_REPO" \
     --emit-requests "$G_REQ_PY" --format json
 _SWEEP_ENV=()
 assert "G10: the python3 engine alone still exits 0" _rc_is 0
@@ -1798,10 +1631,71 @@ assert "G10: ... and an identical emitted request set" \
     test "$(_request_snapshot "$G_REQ_CLI")" = "$(_request_snapshot "$G_REQ_PY")"
 # The regression this exists to catch head-on: with no sqlite3, every class
 # predicate used to fail closed and the whole report collapsed to no-class rows.
-assert "G10: ... with all three classes still adjudicated, not collapsed to no_class" \
-    _json_is 's["gate_closure"] == 1 and s["merge_verify_red"] == 1 and s["unmet_dependency"] == 1'
+assert "G10: ... with the trigger class still adjudicated, not collapsed to no_class" \
+    _json_is 's["merge_verify_red"] == 3 and s["no_class"] == 1'
 assert "G10: ... and the corruption suppressor still firing on the python3 engine" \
     _json_is 's["corrupt_hold"] == 1 and t[9707]["flags"] == ["corrupt_autofile"]'
+
+# --- G11: with NO python3, "could not tell" — never a clean negative sweep ----
+#
+# G10's failure shape, one engine over. The proposal parser is not a downstream
+# detail of merge_verify_red — it IS the oracle that reads the class predicate,
+# so a host without python3 can adjudicate nothing at all. Every such row used
+# to fall through the parser's empty-output guard and be reported NO-CLASS,
+# which asserts a COMPLETE adjudication with a negative result: the run ended
+# with a clean, entirely negative report and no per-row signal, while the
+# startup warning claimed rows would "degrade to unknown". That is precisely
+# the conflation the no_class/unknown counter split exists to prevent.
+#
+# The retraction half is the destructive one. Retraction acts on the ABSENCE of
+# a hit, so a sweep that could classify nothing would delete every live request
+# in the directory — and with no python3 it cannot render a single one back.
+# Hence a parser-less run is a DEGRADED READ, on the same footing as an
+# unreadable DB.
+#
+# The seam is that _PYTHON_BIN is a bare `command -v python3`, so PATH reaches
+# it — unlike the sqlite3 probe, which is absolute and needs G10's env override.
+# The bin farm below carries everything the sweep shells out to EXCEPT python3
+# (`bash` included: the shebang is `/usr/bin/env bash`, so env resolves the
+# interpreter through the farm too). A missed entry cannot degrade quietly —
+# it fails G11a loudly.
+G_NOPY_BIN="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-nopy-XXXXXX")"
+_TMPDIRS+=("$G_NOPY_BIN")
+for _b in bash env dirname basename cat grep date git mktemp mv mkdir rm; do
+    ln -s "$(command -v "$_b")" "$G_NOPY_BIN/$_b"
+done
+assert "G11: the farm really has no python3 (else this block is vacuous)" \
+    _not test -e "$G_NOPY_BIN/python3"
+
+# A live request from an earlier, parser-equipped run. Nothing this run can
+# observe is evidence that it has been superseded.
+G_NOPY_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-nopyreq-XXXXXX")"
+_TMPDIRS+=("$G_NOPY_REQ")
+G_NOPY_KEEP="$G_NOPY_REQ/redispatch-9701-merge_verify_red.json"
+printf '%s\n' '{"schema_version":1,"task_id":9701,"class":"merge_verify_red","action":"reverify"}' \
+    > "$G_NOPY_KEEP"
+
+_SWEEP_ENV=(PATH="$G_NOPY_BIN" LD_LIBRARY_PATH= REIFY_GATE_STALENESS_SQLITE_BIN="$_G_CLI_BIN")
+run_sweep --db "$G_DB" --repo "$G_REPO" --emit-requests "$G_NOPY_REQ"
+_SWEEP_ENV=()
+assert "G11a: the sweep still exits 0 with no python3 on PATH" _rc_is 0
+assert "G11b: ... warning once, at startup, that the class itself is unreadable" \
+    _err_has 'python3 is not on PATH.*degrades to unknown'
+# 9704 is LIVE (heartbeat), and 9709 is the one row whose metadata carries no
+# dry_run_proposals blob at all — nothing to parse, so NO-CLASS remains a
+# complete answer for it. The other six all carry a blob the parser cannot
+# read. Before the fix this line read `no_class=7 unknown=0`.
+assert "G11c: ... every row with a proposals blob is unknown, not no_class" \
+    _sweep_line_is "SWEEP: candidates=8 merge_verify_red=0 corrupt_hold=0 live_skipped=1 no_class=1 unknown=6"
+# The class COLUMN, not the whole report: the trailing SWEEP: line always names
+# the merge_verify_red COUNTER, so a bare substring search here would be
+# satisfied by a summary that reads merge_verify_red=0.
+assert "G11d: ... and no row claims a class the run could not read" \
+    _not _out_has '^[0-9]+ +[a-z-]+ +merge_verify_red'
+assert "G11e: ... an unadjudicable run retracts nothing it could not re-emit" \
+    test -f "$G_NOPY_KEEP"
+assert "G11f: ... and emits nothing off a premise it never adjudicated" \
+    _request_count_is "$G_NOPY_REQ" 1
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block R — request retraction: the directory is a SNAPSHOT, not a log
@@ -1812,13 +1706,9 @@ assert "G10: ... and the corruption suppressor still firing on the python3 engin
 #       its request file survives forever — so a consumer following the
 #       documented "diff the directory" contract keeps seeing an actionable
 #       request for an already-closed task;
-#   (b) if a row's PRIMARY class changes between runs (its gating escalation
-#       reappears, so gate_closure stops winning and unmet_dependency takes
-#       over) the directory ends up holding redispatch-<id>-gate_closure.json
-#       (action=close) AND redispatch-<id>-unmet_dependency.json
-#       (action=redispatch) at the same time — two contradictory instructions
-#       with no ordering hint, since the bodies deliberately carry NO
-#       wall-clock field (G4's idempotence property).
+#   (b) a stale request left behind by an EARLIER version of the sweep is
+#       still a live instruction to the consumer. Task 7349's retired classes
+#       are the live instance of this, and R8 (added with the drain) pins it.
 #
 # Each run therefore retracts what is no longer a hit before it emits. This is
 # the one block whose fixture DB is MUTATED between runs — that is the point:
@@ -1826,7 +1716,7 @@ assert "G10: ... and the corruption suppressor still firing on the python3 engin
 # above is observable in a single run.
 #
 # The three scoping rules matter as much as the retraction: R4 pins that a
-# --class-restricted run cannot delete another class's requests, R5 that a
+# --class-restricted run retracts only what it adjudicated, R5 that a
 # DEGRADED READ retracts nothing (an unreadable DB reports zero candidates
 # too, and wiping on that would be the sweep destroying its own output on a
 # transient fault), and R7 that a consumer's own files are never touched.
@@ -1836,87 +1726,73 @@ echo "--- Block R: request retraction ---"
 
 _mk_tasks_db
 R_DB="$DB"
-_mk_esc_dir
-R_ESC="$ESC_DIR"
 _mk_repo
 R_REPO="$REPO_DIR"
 R_C1="$(_commit_touching docs/r-premise.md)"
 R_TIP="$(_commit_touching docs/r-resolver.md)"
 
-R_GATE='"task_kind":"deterministic","always_escalates":true,"gate_escalated_at":"2026-07-26T08:00:00Z"'
 R_PROP_B="$(_d_prop 'Post-merge verification failed: cargo test --workspace returned 101' \
     "$R_C1" '["docs/r-resolver.md"]' 2026-07-24T10:00:00Z)"
 
-_add_task 9990 done '{}'
-# One confirmed hit per class.
-_add_task 9901 blocked "{$R_GATE}"
+# Four confirmed hits, one per retraction scenario below (R1, R4, R6) plus one
+# survivor that stays live to the end, so R5's and R7's "untouched" asserts are
+# never satisfied by an empty directory.
+_add_task 9901 blocked "{\"dry_run_proposals\":[$R_PROP_B]}"
 _add_task 9902 blocked "{\"dry_run_proposals\":[$R_PROP_B]}"
-_add_task 9903 blocked '{}'; _add_dep 9903 9990
+_add_task 9903 blocked "{\"dry_run_proposals\":[$R_PROP_B]}"
+_add_task 9904 blocked "{\"dry_run_proposals\":[$R_PROP_B]}"
 
 R_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-rreq-XXXXXX")"
 _TMPDIRS+=("$R_REQ")
 
-run_sweep --db "$R_DB" --escalations "$R_ESC" --repo "$R_REPO" \
+run_sweep --db "$R_DB" --repo "$R_REPO" \
     --emit-requests "$R_REQ" --format json
 assert "R0: the retraction fixture sweep exits 0" _rc_is 0
-assert "R0: one request per class is emitted" _request_count_is "$R_REQ" 3
+assert "R0: one request per hit is emitted" _request_count_is "$R_REQ" 4
 R_SNAP_B="$(sha256sum <"$R_REQ/redispatch-9902-merge_verify_red.json" | awk '{print $1}')"
 
 # --- R1: a remediated hit's request is retracted -----------------------------
 # 9901 is closed out of band (exactly what a consumer acting on the request
 # does), so it is no longer enumerated at all.
 _sq "$R_DB" "UPDATE tasks SET status='done' WHERE tag='master' AND id=9901;"
-run_sweep --db "$R_DB" --escalations "$R_ESC" --repo "$R_REPO" \
+run_sweep --db "$R_DB" --repo "$R_REPO" \
     --emit-requests "$R_REQ" --format json
 assert "R1: the second sweep still exits 0" _rc_is 0
 assert "R1: the remediated task's request is retracted" _no_request_for "$R_REQ" 9901
 assert "R1: the retraction is announced on stderr" _err_has 'Retracted superseded request.*9901'
 assert "R1: the still-live hits are untouched" \
-    test -f "$R_REQ/redispatch-9902-merge_verify_red.json" -a -f "$R_REQ/redispatch-9903-unmet_dependency.json"
+    test -f "$R_REQ/redispatch-9902-merge_verify_red.json" -a -f "$R_REQ/redispatch-9904-merge_verify_red.json"
 assert "R1: a surviving request is still byte-identical (retraction is not rewrite)" \
     test "$R_SNAP_B" = "$(sha256sum <"$R_REQ/redispatch-9902-merge_verify_red.json" | awk '{print $1}')"
-assert "R1: exactly the two surviving requests remain" _request_count_is "$R_REQ" 2
+assert "R1: exactly the three surviving requests remain" _request_count_is "$R_REQ" 3
 
-# --- R2/R3: a class change never leaves two contradictory instructions -------
-# 9903 keeps its satisfied dependency but gains the class-A gate shape, so
-# gate_closure now wins on precedence and its class-C request is superseded.
-_sq "$R_DB" "UPDATE tasks SET metadata='{$R_GATE}' WHERE tag='master' AND id=9903;"
-run_sweep --db "$R_DB" --escalations "$R_ESC" --repo "$R_REPO" \
-    --emit-requests "$R_REQ" --format json
-assert "R2: the reclassified task's OLD class request is retracted" \
-    _no_request_for "$R_REQ" 9903-unmet_dependency
-assert "R2: ... and its new class request is emitted" \
-    test -f "$R_REQ/redispatch-9903-gate_closure.json"
-assert "R3: the task maps to EXACTLY ONE request — no contradictory pair" \
-    test "$(find "$R_REQ" -maxdepth 1 -name 'redispatch-9903-*.json' | wc -l)" = "1"
-assert "R3: and that one carries the new class's action" \
-    _json_check "$R_REQ/redispatch-9903-gate_closure.json" 'd["action"] == "close"'
-
-# --- R4: a --class-restricted run retracts only its own class ----------------
-# 9902 stops being a hit, but a gate_closure-only sweep did not adjudicate
-# class B at all, so it has no standing to retract that request.
+# --- R4: a --class-restricted run retracts only what it adjudicated ----------
+# With one trigger class left, the discriminating cross-class case is a RETIRED
+# class's file, which R8 pins. What survives here is that a restricted run is
+# still a REAL run: it retracts its own class's superseded request rather than
+# treating "restricted" as "retract nothing".
 _sq "$R_DB" "UPDATE tasks SET status='done' WHERE tag='master' AND id=9902;"
-run_sweep --db "$R_DB" --escalations "$R_ESC" --repo "$R_REPO" \
-    --class gate_closure --emit-requests "$R_REQ" --format json
+run_sweep --db "$R_DB" --repo "$R_REPO" \
+    --class merge_verify_red --emit-requests "$R_REQ" --format json
 assert "R4: a --class-restricted sweep exits 0" _rc_is 0
-assert "R4: it does NOT retract a request of a class it never adjudicated" \
-    test -f "$R_REQ/redispatch-9902-merge_verify_red.json"
-assert "R4: and it keeps its own class's live request" \
-    test -f "$R_REQ/redispatch-9903-gate_closure.json"
+assert "R4: it retracts its own class's superseded request" _no_request_for "$R_REQ" 9902
+assert "R4: and it keeps its own class's live requests" \
+    test -f "$R_REQ/redispatch-9903-merge_verify_red.json" -a -f "$R_REQ/redispatch-9904-merge_verify_red.json"
 
 # --- R5: a degraded DB read retracts nothing ---------------------------------
-run_sweep --db "$R_REPO/definitely-not-here.db" --escalations "$R_ESC" --repo "$R_REPO" \
+run_sweep --db "$R_REPO/definitely-not-here.db" --repo "$R_REPO" \
     --emit-requests "$R_REQ" --format json
 assert "R5: an unreadable --db still exits 0" _rc_is 0
 assert "R5: an unreadable --db retracts NOTHING (zero candidates is not evidence)" \
     _request_count_is "$R_REQ" 2
 assert "R5: ... and says so on stderr" _err_has '\[warn\].*no superseded request was retracted'
 
-# --- R6: a full sweep then does retract the now-stale class-B request --------
-run_sweep --db "$R_DB" --escalations "$R_ESC" --repo "$R_REPO" \
+# --- R6: a plain --class all run retracts a superseded request ---------------
+_sq "$R_DB" "UPDATE tasks SET status='done' WHERE tag='master' AND id=9903;"
+run_sweep --db "$R_DB" --repo "$R_REPO" \
     --emit-requests "$R_REQ" --format json
-assert "R6: a full sweep retracts the class-B request R4 was not entitled to" \
-    _no_request_for "$R_REQ" 9902
+assert "R6: a full sweep retracts the newly-superseded request" \
+    _no_request_for "$R_REQ" 9903
 assert "R6: only the one live hit remains" _request_count_is "$R_REQ" 1
 
 # --- R7: a consumer's own files in the directory are never touched -----------
@@ -1925,7 +1801,7 @@ assert "R6: only the one live hit remains" _request_count_is "$R_REQ" 1
 : > "$R_REQ/consumer-bookkeeping.txt"
 : > "$R_REQ/redispatch-notanid-gate_closure.json"
 : > "$R_REQ/redispatch-9999-some_other_class.json"
-run_sweep --db "$R_DB" --escalations "$R_ESC" --repo "$R_REPO" \
+run_sweep --db "$R_DB" --repo "$R_REPO" \
     --emit-requests "$R_REQ" --format json
 assert "R7: a consumer's own non-request file survives" \
     test -f "$R_REQ/consumer-bookkeeping.txt"
@@ -1934,7 +1810,78 @@ assert "R7: a redispatch-shaped file with a non-numeric id survives" \
 assert "R7: a redispatch-shaped file naming an unknown class survives" \
     test -f "$R_REQ/redispatch-9999-some_other_class.json"
 assert "R7: and the live hit is still emitted alongside them" \
-    test -f "$R_REQ/redispatch-9903-gate_closure.json"
+    test -f "$R_REQ/redispatch-9904-merge_verify_red.json"
+
+# --- R8: the retired-class DRAIN (task 7349) ---------------------------------
+# The retirement does not take effect at RUNTIME unless the leftovers are
+# removed. The consumer is request-driven, so a redispatch-<id>-gate_closure
+# .json left in the directory by a pre-retirement sweep still instructs it to
+# set_task_status('cancelled') the next time that row is eligible. The exposure
+# is ONE cancel per leftover file, not a loop — the consumer archives an
+# APPLIED request out of the top level — but one spurious cancel is one too
+# many, and draining costs only a widened name set. See the runbook's "Why the
+# drain exists" for the bound and the two consumer mechanisms that cap it.
+#
+# A retired class can never appear in _KEEP, because no row can be classified
+# into one, so on a --class all run it is ALWAYS retracted with no extra
+# condition. The two scoping rules that still bind are the --class restriction
+# (R8d) and the degraded-read guard (R8e) — the drain inherits both rather than
+# bypassing them.
+R8_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-r8req-XXXXXX")"
+_TMPDIRS+=("$R8_REQ")
+
+# _r8_seed <task_id> <class> <action> — a leftover request in the documented
+# consumer schema, byte-shaped as a pre-retirement sweep would have left it.
+_r8_seed() {
+    cat > "$R8_REQ/redispatch-$1-$2.json" <<JSON
+{
+  "schema_version": 1,
+  "task_id": $1,
+  "class": "$2",
+  "verdict": "STALE",
+  "action": "$3",
+  "evidence": "fixture leftover from a pre-retirement sweep",
+  "main_ref_sha": "$R_TIP",
+  "emitted_by": "scripts/deterministic-gate-closure-staleness-sweep.sh"
+}
+JSON
+}
+_r8_seed 9401 gate_closure close
+_r8_seed 9402 unmet_dependency redispatch
+
+# R8d — a --class-restricted run adjudicated ONE class, so it must not delete a
+# request it never looked at, retired or not.
+run_sweep --db "$R_DB" --repo "$R_REPO" \
+    --class merge_verify_red --emit-requests "$R8_REQ" --format json
+assert "R8d: a --class-restricted run leaves both retired-class requests alone" \
+    test -f "$R8_REQ/redispatch-9401-gate_closure.json" -a -f "$R8_REQ/redispatch-9402-unmet_dependency.json"
+
+# R8e — R5's rule extends to retired classes: absence of a hit is not evidence
+# when the query never ran.
+run_sweep --db "$R_REPO/definitely-not-here.db" --repo "$R_REPO" \
+    --emit-requests "$R8_REQ" --format json
+assert "R8e: a degraded DB read retracts neither retired-class request" \
+    test -f "$R8_REQ/redispatch-9401-gate_closure.json" -a -f "$R8_REQ/redispatch-9402-unmet_dependency.json"
+
+# R8a/R8b/R8c — the drain itself.
+run_sweep --db "$R_DB" --repo "$R_REPO" \
+    --emit-requests "$R8_REQ" --format json
+assert "R8a: a full sweep drains the retired gate_closure request" \
+    _not test -f "$R8_REQ/redispatch-9401-gate_closure.json"
+assert "R8a: ... and the retired unmet_dependency request" \
+    _not test -f "$R8_REQ/redispatch-9402-unmet_dependency.json"
+assert "R8b: the drain names gate_closure as RETIRED" _err_has 'retired.*gate_closure'
+assert "R8b: ... and unmet_dependency too" _err_has 'retired.*unmet_dependency'
+assert "R8b: ... and cites the task that retired them, so the journal is legible" \
+    _err_has '7349'
+# The wording must be DISTINGUISHABLE from an ordinary supersession: an
+# operator reading the nightly journal has to be able to tell a one-off drain
+# from a hit that stopped being confirmed.
+assert "R8b: the drain wording is distinct from the supersession wording" \
+    _not _err_has 'no longer a confirmed (gate_closure|unmet_dependency) hit'
+assert "R8c: the live merge_verify_red hit is emitted in the same run" \
+    test -f "$R8_REQ/redispatch-9904-merge_verify_red.json"
+assert "R8c: ... and is all that is left" _request_count_is "$R8_REQ" 1
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block T — tag scoping
@@ -1949,8 +1896,8 @@ assert "R7: and the live hit is still emitted alongside them" \
 # tag-blind ENUMERATION returns the same id twice; a tag-blind metadata read
 # (`... WHERE id=<id> LIMIT 1`) answers for whichever tag the (tag, id) index
 # reaches first; and the sweep would then emit `redispatch-<id>-<class>.json`
-# adjudicated from one tag's row while naming a task in another — telling the
-# consumer to CANCEL the wrong task.
+# adjudicated from one tag's row while naming a task in another — instructing
+# the consumer to act on the wrong task.
 #
 # ROW-ORDER ROBUSTNESS: a scalar read of the shape `... WHERE id=<id> LIMIT 1`
 # cannot use the (tag, id) primary-key index (id is not its leading column), so
@@ -1962,47 +1909,48 @@ assert "R7: and the live hit is still emitted alongside them" \
 # 9805's after — and both are asserted clean. Whichever way a tag-blind scan
 # resolves, one of the two is adjudicated from the wrong tag and fails.
 #
-# Each decoy row is shaped to trip every tag-scoped query at once: it carries a
-# satisfied dependency (the class-C LEFT JOIN), a Signature-1 corruption marker
-# (the flags query), and no `task_kind` at all (the class-A metadata reads).
+# Each decoy row is shaped to trip every tag-scoped query at once: it records a
+# block premise main has NOT resolved (the metadata reads, which would downgrade
+# the swept row's verdict) and a Signature-1 corruption marker (the flags query,
+# which would demote the swept row to a human-gate hold).
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block T: tag scoping ---"
 
 _mk_tasks_db
 T_DB="$DB"
-_mk_esc_dir
-T_ESC="$ESC_DIR"
 _mk_repo
 T_REPO="$REPO_DIR"
 
-T_GATE='"task_kind":"deterministic","always_escalates":true,"gate_escalated_at":"2026-07-26T08:00:00Z"'
-# The decoy shape: NOT class A (no task_kind), corrupt per Signature 1, and
-# carrying a dependency — divergent from the swept tag's row in every dimension
-# the sweep reads.
-T_DECOY='{"failing_tests":["Usage:"]}'
+T_C1="$(_commit_touching docs/t-premise.md)"
+T_TIP="$(_commit_touching docs/t-resolver.md)"
 
-_add_task 9890 done '{}' "" "" alt
+T_REASON_B='Post-merge verification failed: cargo test --workspace returned 101'
+# The swept tag's shape: a block premise the fixture main HAS resolved, with a
+# clean record — a confirmed hit.
+T_HIT="{\"dry_run_proposals\":[$(_d_prop "$T_REASON_B" "$T_C1" '["docs/t-resolver.md"]' 2026-07-24T10:00:00Z)]}"
+# The decoy shape: a premise main has NOT resolved (its recorded main_sha IS
+# the tip), plus a Signature-1 corruption marker — divergent from the swept
+# tag's row in every dimension the sweep reads.
+T_DECOY="{\"dry_run_proposals\":[$(_d_prop "$T_REASON_B" "$T_TIP" '["docs/t-resolver.md"]' 2026-07-24T10:00:00Z)],\"failing_tests\":[\"Usage:\"]}"
 
 # 9801 — DECOY FIRST, then the swept row.
 _add_task 9801 blocked "$T_DECOY" "" "" alt
-_add_dep  9801 9890 alt
-_add_task 9801 blocked "{$T_GATE}"
+_add_task 9801 blocked "$T_HIT"
 # 9805 — SWEPT ROW FIRST, then the decoy.
-_add_task 9805 blocked "{$T_GATE}"
+_add_task 9805 blocked "$T_HIT"
 _add_task 9805 blocked "$T_DECOY" "" "" alt
-_add_dep  9805 9890 alt
 # 9803 — present only under master. The control that keeps T7/T9 from passing
 # merely because the report came back empty.
-_add_task 9803 blocked "{$T_GATE}"
-# 9802 — exists ONLY under alt, and is a class-A hit THERE. It must never
+_add_task 9803 blocked "$T_HIT"
+# 9802 — exists ONLY under alt, and is a confirmed hit THERE. It must never
 # appear in a master sweep, and must appear in an alt one.
-_add_task 9802 blocked "{$T_GATE}" "" "" alt
+_add_task 9802 blocked "$T_HIT" "" "" alt
 
 T_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-treq-XXXXXX")"
 _TMPDIRS+=("$T_REQ")
 
-run_sweep --db "$T_DB" --escalations "$T_ESC" --repo "$T_REPO" \
+run_sweep --db "$T_DB" --repo "$T_REPO" \
     --tag master --emit-requests "$T_REQ" --format json
 assert "T0: the two-tag fixture sweep exits 0" _rc_is 0
 
@@ -2015,50 +1963,123 @@ assert "T2: the swept tag's own rows are all enumerated" \
     _json_is 'sorted(t) == [9801, 9803, 9805]'
 
 # --- T3: the metadata reads are tag-scoped -----------------------------------
-# The decoy carries no task_kind, so a tag-blind read drops the row out of
-# class A entirely. Asserted for BOTH row orders (see the header note).
-assert "T3: both dual-tag rows are adjudicated from the MASTER metadata (class A, STALE, close)" \
-    _json_is 'all(t[i]["class"] == "gate_closure" and t[i]["verdict"] == "STALE" and t[i]["action"] == "close" for i in (9801, 9805))'
-
-# --- T4: the dependency LEFT JOIN is tag-scoped (re-pins E7 from the other side)
-# E7 pins that a dependency TARGET under another tag does not satisfy. This
-# pins the complementary direction: another tag's dependency ROWS are not read
-# for this task at all.
-assert "T4: the other tag's dependency rows are not attributed to these tasks" \
-    _json_is 'all("also:unmet_dependency" not in t[i]["evidence"] for i in (9801, 9805))'
+# The decoy's premise is unresolved, so a tag-blind read downgrades the row's
+# verdict out of STALE. Asserted for BOTH row orders (see the header note).
+assert "T3: both dual-tag rows are adjudicated from the MASTER metadata (STALE, reverify)" \
+    _json_is 'all(t[i]["class"] == "merge_verify_red" and t[i]["verdict"] == "STALE" and t[i]["action"] == "reverify" for i in (9801, 9805))'
 
 # --- T5: the Signature-1 flags query is tag-scoped ---------------------------
 assert "T5: the other tag's corruption marker does not flag these tasks" \
     _json_is 'all(t[i]["flags"] == [] for i in (9801, 9805))'
 assert "T5: ... so neither hit is spuriously demoted to CORRUPT-HOLD" \
-    _json_is 's["gate_closure"] == 3 and s["corrupt_hold"] == 0'
+    _json_is 's["merge_verify_red"] == 3 and s["corrupt_hold"] == 0'
 
 # --- T6: emission follows the swept tag --------------------------------------
-assert "T6: the emitted requests are the master rows' close requests" \
-    test -f "$T_REQ/redispatch-9801-gate_closure.json"
+assert "T6: the emitted requests are the master rows' own requests" \
+    test -f "$T_REQ/redispatch-9801-merge_verify_red.json"
 assert "T6: exactly the three master hits emit, and nothing from the other tag" \
     _request_count_is "$T_REQ" 3
 assert "T6: no request is emitted for the other tag's task" _no_request_for "$T_REQ" 9802
 
 # --- T7: --tag really does select the namespace ------------------------------
-run_sweep --db "$T_DB" --escalations "$T_ESC" --repo "$T_REPO" --tag alt --format json
+run_sweep --db "$T_DB" --repo "$T_REPO" --tag alt --format json
 assert "T7: --tag alt sweeps the other namespace (its rows appear, master's do not)" \
     _json_is '9802 in t and 9803 not in t'
-assert "T7: the dual-tag ids now adjudicate from the ALT rows — class C, flagged, held" \
-    _json_is 'all(t[i]["class"] == "unmet_dependency" and t[i]["verdict"] == "CORRUPT-HOLD" for i in (9801, 9805))'
+assert "T7: the dual-tag ids now adjudicate from the ALT rows — unresolved and flagged" \
+    _json_is 'all(t[i]["verdict"] == "UNRESOLVED" and t[i]["flags"] == ["corrupt_autofile"] for i in (9801, 9805))'
 _T7_ALT_OUT="$OUT"
 
 # --- T8/T9: flag <-> env parity for the tag knob (mirrors A8a/A8b) -----------
 _SWEEP_ENV=(REIFY_LANE_TASK_TAG=alt)
-run_sweep --db "$T_DB" --escalations "$T_ESC" --repo "$T_REPO" --format json
+run_sweep --db "$T_DB" --repo "$T_REPO" --format json
 _SWEEP_ENV=()
 assert "T8: REIFY_LANE_TASK_TAG produces byte-identical stdout to --tag" \
     test "$OUT" = "$_T7_ALT_OUT"
 
 _SWEEP_ENV=(REIFY_LANE_TASK_TAG=alt)
-run_sweep --db "$T_DB" --escalations "$T_ESC" --repo "$T_REPO" --tag master --format json
+run_sweep --db "$T_DB" --repo "$T_REPO" --tag master --format json
 _SWEEP_ENV=()
 assert "T9: an explicit --tag overrides REIFY_LANE_TASK_TAG" \
-    _json_is 'sorted(t) == [9801, 9803, 9805] and t[9801]["class"] == "gate_closure"'
+    _json_is 'sorted(t) == [9801, 9803, 9805] and t[9801]["verdict"] == "STALE"'
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block Z — end-to-end acceptance for the task-7349 retirement
+#
+# Every other block pins one half of the change against its own fixture. This
+# one pins the SIGNAL the task was filed for, as a SINGLE sweep over a SINGLE
+# store: the two shapes that actually fired collaterally on the live instance
+# are adjudicated to nothing, their leftover requests are drained, and the one
+# surviving class still works end to end. Deliberately written as one
+# integration assert so a future partial regression in any one of the three
+# cannot hide behind the per-class blocks.
+#
+# Row 1 is the shape that cancelled all seven of the gate_closure tasks. Row 2 is the shape that fired on task 5318 (its one dependency 5214
+# `done`) while esc-5318-7 was still pending — ~9h before the human ruled. Row 3
+# is a genuine merge_verify_red candidate, which must still be reported AND
+# emitted: this task retires two classes, it does not disable the sweep.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block Z: end-to-end acceptance (task 7349) ---"
+
+_mk_tasks_db
+Z_DB="$DB"
+_mk_repo
+Z_REPO="$REPO_DIR"
+Z_C1="$(_commit_touching docs/z-premise.md)"
+Z_TIP="$(_commit_touching docs/z-resolver.md)"
+
+# (1) the collateral gate_closure shape: deterministic, always-escalates, with
+#     no live escalation anywhere.
+_add_task 9501 blocked '{"task_kind":"deterministic","always_escalates":true,"gate_escalated_at":"2026-07-26T08:00:00Z"}'
+# (2) the 5318 shape: blocked, one dependency, and it is terminal.
+_add_task 9590 done '{}'
+_add_task 9502 blocked '{}'; _add_dep 9502 9590
+# (3) a genuine merge_verify_red hit: main advanced past the recorded main_sha
+#     and touched the referenced path.
+_add_task 9503 blocked "{\"dry_run_proposals\":[$(_d_prop \
+    'Post-merge verification failed: cargo test --workspace returned 101' \
+    "$Z_C1" '["docs/z-resolver.md"]' 2026-07-24T10:00:00Z)]}"
+
+Z_REQ="$(mktemp -d "${TMPDIR:-/tmp}/gate-staleness-zreq-XXXXXX")"
+_TMPDIRS+=("$Z_REQ")
+
+# Leftovers from a pre-retirement sweep, in the shape the live directory held:
+# these are what kept instructing the consumer to cancel and to re-pend.
+_z_leftover() {
+    printf '{"schema_version":1,"task_id":%s,"class":"%s","verdict":"STALE","action":"%s","evidence":"pre-retirement leftover","main_ref_sha":"%s","emitted_by":"scripts/deterministic-gate-closure-staleness-sweep.sh"}\n' \
+        "$1" "$2" "$3" "$Z_TIP" > "$Z_REQ/redispatch-$1-$2.json"
+}
+_z_leftover 9501 gate_closure close
+_z_leftover 9502 unmet_dependency redispatch
+
+run_sweep --db "$Z_DB" --repo "$Z_REPO" --emit-requests "$Z_REQ" --format json
+assert "Z0: the acceptance sweep exits 0" _rc_is 0
+
+# --- the two retired shapes are adjudicated, and match nothing ---------------
+assert "Z1: the collateral gate-closure shape is NO-CLASS / none" \
+    _json_is 't[9501]["class"] == "-" and t[9501]["verdict"] == "NO-CLASS" and t[9501]["action"] == "none"'
+assert "Z2: the 5318 satisfied-dependency shape is NO-CLASS / none" \
+    _json_is 't[9502]["class"] == "-" and t[9502]["verdict"] == "NO-CLASS" and t[9502]["action"] == "none"'
+assert "Z3: both are counted in no_class, and neither retired counter is rendered" \
+    _json_is 's["no_class"] == 2 and "gate_closure" not in s and "unmet_dependency" not in s'
+
+# --- the leftovers are drained in the same run -------------------------------
+assert "Z4: the leftover gate_closure request is gone" \
+    _not test -f "$Z_REQ/redispatch-9501-gate_closure.json"
+assert "Z4: the leftover unmet_dependency request is gone" \
+    _not test -f "$Z_REQ/redispatch-9502-unmet_dependency.json"
+
+# --- the surviving class still works, end to end -----------------------------
+assert "Z5: the merge_verify_red candidate is still a confirmed hit" \
+    _json_is 't[9503]["class"] == "merge_verify_red" and t[9503]["verdict"] == "STALE" and s["merge_verify_red"] == 1'
+assert "Z5: exactly one request file remains" _request_count_is "$Z_REQ" 1
+assert "Z5: and it is the merge_verify_red request" \
+    test -f "$Z_REQ/redispatch-9503-merge_verify_red.json"
+assert "Z5: it carries EXACTLY the documented consumer field set" \
+    _json_check "$Z_REQ/redispatch-9503-merge_verify_red.json" \
+    'set(d) == set(["schema_version","task_id","class","action","verdict","evidence","main_ref_sha","emitted_by"])'
+assert "Z5: with action=reverify — the only action this sweep can still ask for" \
+    _json_check "$Z_REQ/redispatch-9503-merge_verify_red.json" \
+    'd["task_id"] == 9503 and d["class"] == "merge_verify_red" and d["action"] == "reverify"'
 
 test_summary

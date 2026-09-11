@@ -248,7 +248,7 @@ If the pre-done hook returns Err, `set_task_status` raises an exception; the orc
 | ID | Description | Who lands it | Blocking? |
 |---|---|---|---|
 | D-1 | dark-factory: pre-write validator hook on `set_task_status(done)` in fused-memory MCP. Configurable per-project via env var: `FUSED_MEMORY_PREDONE_HOOK_REIFY=/home/leo/.cargo/bin/reify-audit --task {id} --pre-done`. On exit-code ≠ 0, the MCP call raises and the done-flip is refused. Landed upstream as `fused_memory.middleware.pre_done_hook`. | dark-factory side; implement session queues the task. | **Done 2026-05-16:** D-1 shipped upstream; activated on Reify host via T-8. Subsequently rewired 2026-05-16+ to flow through `scripts/reify-audit-predone-wrapper.sh` (task 3731) after the Taskmaster removal (2026-05-12) left the CLI's dead default pointing at a non-existent path. |
-| T-8 | Reify-side activation: set `Environment=FUSED_MEMORY_PREDONE_HOOK_REIFY=/home/leo/src/reify/scripts/reify-audit-predone-wrapper.sh --task {id} --pre-done` in `/home/leo/.config/systemd/user/fused-memory.service`; reload + restart fused-memory; verify via `bash scripts/smoke-predone-hook.sh`. Hook invocation flows through `scripts/reify-audit-predone-wrapper.sh`, which materializes a TaskMetadata snapshot from `mcp__fused-memory__get_tasks` before invoking `reify-audit --tasks-file <tempfile>`. | Reify side; this task (3675); rewired by task 3731. | **Done 2026-05-16.** Operator action required: rewire systemd env var to wrapper path (see §11.1). |
+| T-8 | Reify-side activation: set `Environment=FUSED_MEMORY_PREDONE_HOOK_REIFY=/home/leo/src/reify/scripts/reify-audit-predone-wrapper.sh --task {id} --pre-done` in `/home/leo/.config/systemd/user/fused-memory.service`; reload + restart fused-memory; verify via `bash scripts/smoke-predone-hook.sh`. Hook invocation flows through `scripts/reify-audit-predone-wrapper.sh`, which materializes a TaskMetadata snapshot from `mcp__fused-memory__get_tasks` before invoking `reify-audit --tasks-file <tempfile>`. | Reify side; this task (3675); rewired by task 3731. | **Done 2026-05-16.** The systemd env var was rewired to the wrapper path and the binary reinstalled on 2026-08-30 via `scripts/deploy-reify-audit-predone-hook.sh` (tasks 6939, 6362) — see §11.1.3. |
 | D-2 | jcodemunch repo index reasonably fresh (≤24h). F's invocation triggers `mcp__jcodemunch__index_repo` if stale. | F itself manages this. | Non-blocking. |
 | D-3 | Confirm `runs.db` schema (task_results, events tables) stable enough to pin SQL queries. | Verify during implementation. | Non-blocking; SQL embedded in T-1. |
 | D-4 | `/prd`-decomposed tasks already carry consumer_ref / user_observable_signal / grammar_confirmed. | Already shipped (per `procedural_prd_skill.md`). | Done. |
@@ -258,17 +258,300 @@ If the pre-done hook returns Err, `set_task_status` raises an exception; the orc
 The pre-done gating loop is **active** on the Reify host as of 2026-05-16 (F-infra T-8, task 3675). The hook command was subsequently rewired to flow through a snapshot-materializer wrapper (task 3731, 2026-05-16+) after the Taskmaster removal (2026-05-12) left the direct binary invocation pointing at a non-existent default path.
 
 - **Systemd unit:** `/home/leo/.config/systemd/user/fused-memory.service`
-- **Env var:** `FUSED_MEMORY_PREDONE_HOOK_REIFY=/home/leo/src/reify/scripts/reify-audit-predone-wrapper.sh --task {id} --pre-done`
+- **Env var (live, as measured 2026-08-30 — see §11.1.3):** `FUSED_MEMORY_PREDONE_HOOK_REIFY=/home/leo/src/reify/scripts/reify-audit-predone-wrapper.sh --task {id} --pre-done`
 - **Wrapper (snapshot + invoke):** `/home/leo/src/reify/scripts/reify-audit-predone-wrapper.sh` — materializes a TaskMetadata JSON snapshot from `mcp__fused-memory__get_tasks`, then invokes `reify-audit` with `--tasks-file <tempfile>` (snapshot cleaned up on EXIT). → uses `scripts/reify-audit-snapshot-filter.jq`; see §11.2 for the `done_at` proxy rationale.
-- **Binary:** `/home/leo/.cargo/bin/reify-audit` (invoked by wrapper; installed via `cargo install --path crates/reify-audit --root ~/.cargo --force`). The binary requires an explicit `--tasks-file`; there is no default path (removed in task 3731 after the Taskmaster deletion made the old default non-existent).
-- **Smoke test:** `bash scripts/smoke-predone-hook.sh` (exits 0 when wiring AND wrapper round-trip both succeed; assertion 4 catches re-introduction of the dead default).
+- **Binary:** `/home/leo/.cargo/bin/reify-audit` (installed via `cargo install --path crates/reify-audit --root ~/.cargo --force`). `--tasks-file` defaults to `None`, which loads live from fused-memory MCP at `--fused-memory-url` (env `FUSED_MEMORY_URL`) via `load_tasks_from_fused_memory`; `--tasks-file` is now an opt-in override for fixtures/tests, per the binary's own `--help` ("JSON array of TaskMetadata (overrides live loader; for tests)") — see `crates/reify-audit/src/bin/reify-audit.rs` (default :295, doc :236-242, dispatch :704-713, help :107) and the live loader `crates/reify-audit/src/fused_memory_client.rs`; the raw-binary measurement already recorded in §11.1.3 (`0 findings`, exit 0, no `--tasks-file` needed) corroborates this.
+- **Smoke test:** `bash scripts/smoke-predone-hook.sh` (exits 0 when wiring AND wrapper round-trip both succeed; assertion 2.6 catches re-drift back to the raw binary; assertion 4 round-trips the binary directly with an explicit `--tasks-file` — 4a checks a known-pass case exits 0, 4b checks a known-fail case exits non-zero and not 125 — so per §11.1.3 it exercises neither the wrapper nor the live loader and cannot evidence the rewire on its own). Gated hermetically on every merge by `tests/infra/test_smoke_predone_hook.sh`.
 - **Reload command:** `systemctl --user daemon-reload && systemctl --user restart fused-memory`
-- **Operator action required:** rewire the systemd `Environment=` line to point at the wrapper: `Environment=FUSED_MEMORY_PREDONE_HOOK_REIFY=/home/leo/src/reify/scripts/reify-audit-predone-wrapper.sh --task {id} --pre-done`. Then reload and verify via `bash scripts/smoke-predone-hook.sh`.
+- **Re-deploy path:** `bash scripts/deploy-reify-audit-predone-hook.sh` (task 6939) — idempotent: installs the binary, asserts freshness, rewrites the systemd `Environment=` line (backing the unit up and refusing ambiguous or duplicated hook lines), reloads + restarts, and re-probes end-to-end. Use it rather than hand-editing the unit; confirm with `bash scripts/smoke-predone-hook.sh`. What the wrapper still uniquely buys over pointing the hook straight at the raw binary — narrower justification than before the crate's live loader shipped, but still live: (1) the freshness guard (`scripts/reify-audit-freshness.sh`, wrapper :80), bypassed entirely by a raw invocation, which under the current warn-open policy (§11.1.5) emits an `E_AUDIT_BIN_STALE` advisory and still runs the detector against a stale-but-runnable binary, exiting 125 only for an unrunnable binary (`E_AUDIT_BIN_MISSING`) or an operator-armed `REIFY_AUDIT_FRESHNESS_STRICT=1` — so the raw path's loss is no staleness signal at all, not a lost refusal; (2) the `.metadata.done_at` precedence tier in `scripts/reify-audit-snapshot-filter.jq`, which the crate's live loader does not implement (§11.2.1); and (3) the wrapper's loud-fail stderr WARNING for snapshot rows with `status=="done"` and `done_at==null` (§11.2, "Loud-fail mode").
 - **Procedural memory:** entry keyed `FUSED_MEMORY_PREDONE_HOOK_REIFY systemd activation` in fused-memory memory store
 
-#### 11.1.1 Why the snapshot wrapper? (task 3731)
+#### 11.1.1 Why the snapshot wrapper? (task 3731; superseded by task 3736)
 
-The `reify-audit` binary is a pure-logic library (no MCP client, no scheduler). Before task 3731, the CLI defaulted `--tasks-file` to `.taskmaster/tasks/tasks.json`, which was deleted in commit `1402b46c63` (Taskmaster removal, 2026-05-12). Any invocation without an explicit `--tasks-file` silently exited 125 ("infrastructure error") and blocked done-flips. The fix makes `--tasks-file` required (no default) and concentrates fused-memory coupling at the wrapper boundary: the wrapper materializes a fresh TaskMetadata snapshot via `mcp__fused-memory__get_tasks` before each invocation, keeping the audit crate dependency-free. See design decisions in `.task/plan.json` for the rationale for Option 1 over Options 2 (new `--from-fused-memory` flag) and 3 (auto-write snapshot on state change).
+At task-3731 time the `reify-audit` binary was a pure-logic library (no MCP client, no scheduler). Before task 3731, the CLI defaulted `--tasks-file` to `.taskmaster/tasks/tasks.json`, which was deleted in commit `1402b46c63` (Taskmaster removal, 2026-05-12). Any invocation without an explicit `--tasks-file` silently exited 125 ("infrastructure error") and blocked done-flips. Task 3731's fix (Option 1) made `--tasks-file` required (no default) and concentrated fused-memory coupling at the wrapper boundary: the wrapper materializes a fresh TaskMetadata snapshot via `mcp__fused-memory__get_tasks` before each invocation, which at the time kept the audit crate dependency-free. That rationale was subsequently overtaken by what this section itself called Option 2 — a built-in live loader — landed by task 3736 in commit `462402904f` ("impl(3736): reify-audit loads tasks from fused-memory MCP, not removed tasks.json"), which is why `--tasks-file` is an opt-in override rather than a requirement today; for what the wrapper still buys today, see the **Re-deploy path** bullet above in §11.1.
+
+#### 11.1.2 What the hook subprocess actually receives (task 6345)
+
+Verified read-only against dark-factory. `middleware/pre_done_hook.py`
+substitutes exactly one placeholder, `{id}`, over the `shlex.split` tokens
+(docstring lines 8-10 and the `run_hook` docstring both state it is the ONLY
+one; there is no `.format(`, `%`, or `string.Template` in the module). Launch
+is `asyncio.create_subprocess_exec` with no `env=` kwarg, no stdin written,
+stdout captured-and-discarded, a 30 s timeout, and `cwd=project_root`.
+
+`task_interceptor.py` calls the hook at step "2d", BEFORE the write, and
+accumulates `done_provenance` in an in-memory `audit_fields` dict that is
+persisted only at write time. So the subprocess sees the PRE-transition status
+and NO persisted provenance, and receives no task state beyond the id.
+
+Consequence: the `--pre-done` leg is necessarily provenance-free. It
+corroborates landing from `task_id` + `metadata.files`. Passing pending
+provenance instead would require a cross-repo dark-factory change (a new
+placeholder, or an env export) and is out of scope here.
+
+Second correction from the same task: `git diff main..<commit>` is DEGENERATE
+once `<commit>` is an ancestor of main. `main..X` is a two-point TREE diff, so
+the paths the two trees agree on — post-merge, exactly the paths `X` introduced
+— are excluded by construction, and what comes back is the reverse-delta of
+whatever landed after `X`. P5 now selects the diff base by ancestry
+(`changed_paths_for_claim`): `<commit>^1..<commit>` for a landed commit,
+`main..<commit>` for an un-landed branch tip. That is also what makes a
+deletion visible, which the pre-done gate's removal/rename rescue depends on.
+
+**Fail-safe direction is INVERTED on this path, and must be corrected for.**
+Every git seam in `reify-audit` fail-safes to `false`/empty on error. In the
+sweep that converges on "no finding" — the safe direction. On the `--pre-done`
+path the same defaults converge on a `High` that REFUSES a state transition, so
+an infrastructure hiccup inside the 30 s hook subprocess is otherwise
+indistinguishable from a genuine phantom-done. Two guards restore the safe
+direction: a one-fork probe that `main` resolves at all
+(`git merge-base --is-ancestor main main`), run only once something is already
+absent so the healthy flip pays nothing for it; and a truncation flag on the
+`PRE_DONE_SIBLING_SCAN_CAP` (50) break, since the corroborating commit may be
+one the capped scan never inspected. Either downgrades the refusal to an
+advisory `Low` carrying its reason — still emitted and visible, but exit 0, so
+it cannot block the flip. **A refusal must rest on evidence actually gathered.**
+
+One consequence for readers of the corroboration legs: `log_grep` matches the
+whole commit message but `LOG_GREP_FORMAT` (`%H%x09%s`) returns only the
+subject, so the digit-boundary collision filter can only adjudicate hits whose
+subject contains the id. A hit matched on the body or a trailer is KEPT
+unchanged — dropping it would silently narrow "reject digit collisions" into
+"reject every body-only reference".
+
+#### 11.1.3 Live wiring: the raw-binary drift and its remediation (measured 2026-08-28, task 6345; re-measured 2026-08-30, task 6362)
+
+**The drift, as measured 2026-08-28 (task 6345).** The live unit did not match
+the **Env var** bullet in §11.1 —
+`/home/leo/.config/systemd/user/fused-memory.service:54` read:
+
+```
+Environment="FUSED_MEMORY_PREDONE_HOOK_REIFY=/home/leo/.cargo/bin/reify-audit --task {id} --pre-done"
+```
+
+— the RAW binary, not the wrapper. Invoking the binary directly skips
+`scripts/reify-audit-predone-wrapper.sh`, and with it the REFUSE-mode freshness
+guard that would exit 125 rather than run a stale detector; a stale install was
+served silently instead. At that measurement `/home/leo/.cargo/bin/reify-audit`
+had mtime `2026-06-09 23:32` against `d8e36e3e4c` (2026-08-25), the last commit
+touching `crates/reify-audit/` on `main` — ~77 days stale by the guard's own
+reference, so the deployed binary could not have contained the `--pre-done` gate
+armed in §11.1.4.
+
+- **The wrapper's freshness guard is bypassed on the live hook path.** Invoking
+  the binary directly skips `scripts/reify-audit-predone-wrapper.sh`, and with it
+  the REFUSE-mode freshness guard that would exit 125 rather than run a stale
+  detector; a stale install is served silently instead. (SUPERSEDED as to policy
+  by §11.1.5 — the wrapper no longer refuses on staleness, it falls open with an
+  alarm. The bypass observation itself stands.) Measured:
+  `/home/leo/.cargo/bin/reify-audit` has mtime `2026-06-09 23:32`, while the last
+  commit touching `crates/reify-audit/` on `main` is `d8e36e3e4c` (2026-08-25) —
+  ~77 days newer, i.e. stale by the guard's own freshness reference.
+
+**Remediation.** Both operator actions — the rewire and the
+`cargo install --path crates/reify-audit --root ~/.cargo --force` reinstall —
+were carried out by task 6939's `scripts/deploy-reify-audit-predone-hook.sh`,
+an idempotent deploy that installs the binary, asserts freshness, rewrites the
+unit (backing it up and refusing ambiguous or duplicated hook lines), reloads +
+restarts, and re-probes end-to-end. That script is the sanctioned path for any
+future re-deploy; the unit must not be hand-edited.
+
+**Post-fix state, measured 2026-08-30 (task 6362).**
+
+- `/home/leo/.config/systemd/user/fused-memory.service:54` now reads
+  `Environment="FUSED_MEMORY_PREDONE_HOOK_REIFY=/home/leo/src/reify/scripts/reify-audit-predone-wrapper.sh --task {id} --pre-done"`,
+  and the EFFECTIVE environment — `systemctl --user show fused-memory
+  --property=Environment`, not merely the on-disk unit — names the wrapper. The
+  service is `active`.
+- `reify_audit_guard /home/leo/.cargo/bin/reify-audit refuse /home/leo/src/reify`
+  exits **0**. The deployed binary has mtime `2026-08-30 16:29`, ahead of
+  `848a6c0ded` (2026-08-30T01:19), the last commit touching `crates/reify-audit/`
+  on `main` — fresh by the guard's own predicate.
+- `bash scripts/smoke-predone-hook.sh` exits 0 on the live host.
+
+- **The freshness check cannot move into the binary.** See the "WHY THE GUARD IS
+  EXTERNAL" block in `scripts/reify-audit-freshness.sh`: the staleness to catch
+  is precisely a binary built before any guard existed, so a Rust self-check can
+  never fire from it. The guard must stay in the caller — which is exactly why
+  the hook has to route through the wrapper, and why the drift above was
+  bypass-by-construction rather than a mere misconfiguration.
+- **Why the drift went unrecorded, and what now catches it.**
+  `scripts/smoke-predone-hook.sh` asserted that the env var was set, that its
+  first token was executable and survived `--help`, and that the value carried
+  `--task` / `{id}` / `--pre-done` — but never that the first token was the
+  *wrapper*. It was therefore green under BOTH wirings, and so was worthless
+  both as evidence that the rewire had happened and as a guard against silent
+  re-drift. Task 6362 closed that gap on two fronts. **Assertion 2.6** now
+  requires the hook's first token to be `reify-audit-predone-wrapper.sh`
+  (compared by basename, so the check states the routing invariant rather than
+  pinning a checkout; placed before the MCP probe so a mis-wired host fails fast
+  without touching the network). **Assertion 4** was decoupled from the env var:
+  its fixture round-trips now target `$REIFY_AUDIT_BIN` directly, restoring the
+  "round-trip the binary, not the wrapper" intent that the rewire had silently
+  inverted — routing them through the wrapper had left the seeded `--tasks-file`
+  winning only by clap's last-wins precedence, and had made a self-contained
+  fixture round-trip depend on a live fused-memory MCP. Both are gated on every
+  merge by the hermetic `tests/infra/test_smoke_predone_hook.sh`, which
+  PATH-stubs `systemctl` and `curl` and asserts the raw-binary wiring is refused
+  and the wrapper wiring is not; the smoke script itself needs a live host and is
+  deliberately not part of `scripts/verify.sh`.
+
+#### 11.1.4 Arming the gate: rollout, and why a warn-only soak is silent (2026-08-29, task 6345)
+
+Until this task the `--pre-done` path returned `[]` unconditionally — `check_task`'s
+`status == "done"` guard made it structurally unable to fire on the one transition it
+exists to gate (§11.1.2). This task converts it, in one step and with no soak, into a
+fail-closed blocking gate that is **ARMED by default**. Two properties of the deployment
+are worth planning the rollout around; both are measured, not inferred.
+
+- **The break-glass costs the very restart it exists to avoid.**
+  `REIFY_AUDIT_PREDONE_WARN_ONLY=1` is read from the hook subprocess's environment, which
+  it inherits from fused-memory (§11.1.2: `create_subprocess_exec` with no `env=` kwarg).
+  Setting it therefore means editing `~/.config/systemd/user/fused-memory.service` and
+  running `systemctl --user daemon-reload && systemctl --user restart fused-memory` — the
+  red-tier restart. An operator hit by a misfire mid-incident cannot apply the break-glass
+  without the outage it was meant to prevent, so the decision to set it belongs *before*
+  the reinstall, not after a misfire.
+- **Warn-only makes the gate SILENT on the live hook path, not advisory.** Measured
+  read-only against dark-factory
+  `fused-memory/src/fused_memory/middleware/pre_done_hook.py`: the subprocess is launched
+  with `stdout=PIPE, stderr=PIPE` (so neither stream reaches fused-memory's journal), and
+  on `returncode == 0` the function returns `None` immediately — the captured
+  `stderr_bytes` is decoded and surfaced only on a NON-zero exit. Warn-only downgrades
+  every refusal to `Low` and so exits 0 by construction, which means its
+  `[warn-only] pre-done gate: …` line is captured and discarded. The same is true of the
+  advisory `Low` the fail-safe guards emit. **A soak run through the live hook observes
+  nothing.**
+
+Recommended sequence — all operator actions, outside this repo:
+
+1. **Soak out-of-band, before the reinstall.** The only observational soak available is to
+   run the gate directly and read its findings: build the crate on `main` and invoke
+   `--task <id> --pre-done --project-root /home/leo/src/reify` against the tasks that are
+   about to flip (or run the `/audit` sweep, whose P5 lane shares the corroboration legs).
+   Reading exit codes and findings here is what the hook path cannot give you.
+2. **If that run is clean**, `cargo install --path crates/reify-audit --root ~/.cargo --force`
+   (§11.1.3) and let the gate arm.
+3. **If it is not clean**, add `Environment="REIFY_AUDIT_PREDONE_WARN_ONLY=1"` to the unit
+   and `daemon-reload && restart fused-memory` *before* the reinstall, so the first live
+   exposure cannot block a flip — accepting that it is silent, and that the soak signal
+   must still come from step 1.
+4. **Disarming is a second restart.** Removing the `Environment=` line to arm the gate for
+   real needs another `daemon-reload && restart`; budget it rather than discovering it.
+
+Residual risk is reduced but not removed. The guards in §11.1.2, plus the fallible
+`try_path_tracked_on` / `try_log_grep` seams added in this task, mean a git failure now
+downgrades to an advisory `Low` rather than refusing — so the misfire surface is a task
+whose `metadata.files` genuinely does not correspond to what landed, which is the gate
+working as designed. And note the exposure is currently **deferred, not removed**: per
+§11.1.3 the live hook still runs the stale 2026-06-09 binary, so the armed gate has zero
+live effect until step 2 above is performed.
+
+#### 11.1.5 The freshness guard fails OPEN (2026-09-02, task 7139)
+
+§11.1.3 and §11.1.4 above describe the guard as REFUSE-mode: a stale
+`REIFY_AUDIT_BIN` exits 125 "rather than run a stale detector". That policy is
+reversed as of this task. A stale-but-runnable binary now emits a
+self-describing `E_AUDIT_BIN_STALE` advisory to stderr and the detector runs
+anyway; only an **unrunnable** binary (`E_AUDIT_BIN_MISSING`), or an operator
+who armed `REIFY_AUDIT_FRESHNESS_STRICT=1`, still exits 125.
+
+**Why: refuse mode was a project-wide outage, not a safeguard.** The wrapper is
+a synchronous pre-done hook. Measured read-only against dark-factory
+`fused-memory/src/fused_memory/middleware/pre_done_hook.py`: `returncode == 0`
+returns `None` and ALLOWS the flip (:222-223); any non-zero rc becomes
+`pre_done_hook_rejected` and BLOCKS it. So one stale binary blocked **every**
+done-flip in the project until a human ran `cargo install`.
+
+That is not a rare edge. `git log --since=90.days main -- crates/reify-audit`
+counts 361 commits — ~4/day — and the freshness reference is the last commit
+epoch of that path, so it advances several times a day. Each advance re-wedges
+the project. The recorded instance ran **~15.7h** over 2026-08-30/31 (crate
+epoch `617a053837` at 17:41 BST; reinstall at 09:25:51 BST the next morning),
+and no automated repair path exists. Measured 2026-09-02: the only
+`cargo install --path crates/reify-audit` invocation anywhere in `hooks/`,
+`scripts/` or `dark-factory-orchestrator.yaml` is in the one-shot, operator-run
+`scripts/deploy-reify-audit-predone-hook.sh`. Every other `cargo install` in
+the tree installs a DIFFERENT tool (`setup-dev.sh`: sccache, cargo-nextest,
+tree-sitter-cli) or is a hint string inside a diagnostic message
+(`reify-audit-freshness.sh`, `reify-audit-predone-wrapper.sh`,
+`smoke-predone-hook.sh`, `tree-sitter-generate.sh`). And `hooks/` contains only
+`main-gate-lib.sh`, `pre-commit`, `pre-merge-commit`, `project-checks` and
+`reference-transaction` — there is no post-merge hook to hang a reinstall on.
+
+**Why the tokens are self-describing.** The outage produced three escalations —
+esc-7042-2, esc-6315-2, esc-6120-5 — and all three misattributed it: they
+blamed stale `metadata.files` and the `done_provenance` ancestor check, neither
+of which was involved. The 125 was cryptic enough that competent triage went to
+the wrong subsystem three times. Both message forms therefore now lead with a
+stable machine token, state explicitly that this is *infrastructure* and NOT an
+audit finding about `metadata.files` or `done_provenance`, carry the exact
+one-line remedy, and report the two observed numbers (binary mtime, crate
+epoch) — all inside `pre_done_hook.py`'s `_STDERR_CLIP = 2000` (:51), which is
+what bounds what a triager actually sees.
+
+**Why not auto-reinstall instead.** The hook runs INSIDE fused-memory's
+per-project write lock with a 30s timeout (:25-31, :151), while
+`cargo install --path crates/reify-audit` pulls the whole reify compiler stack
+via `reify-test-support`. Inline reinstall would convert a refusal into a
+*timeout* refusal and serialize every task mutation on the project behind a 30s
+stall per flip. `scripts/release-sensitive-crates.txt` is likewise the wrong
+lever: it declares debug-vs-release TEST scope, never invokes `cargo install`,
+and is set-equality-gated by `tests/infra/test_release_scoped_scope.sh`.
+
+**The advisory needs a channel that survives rc 0 (added in review).** Making
+the guard exit 0 has a trap of its own, and it is the same one §11.1.4 records
+for `REIFY_AUDIT_PREDONE_WARN_ONLY`: `pre_done_hook.py` captures the
+subprocess's stderr with `stderr=PIPE` and surfaces it ONLY on a non-zero exit,
+so on the live hook path an rc-0 advisory is captured and **discarded**. Left at
+stderr alone, fail-open would have traded a loud outage for a *silent* one — at
+~4 commits/day the fleet would sit permanently on a stale P5 detector with no
+operator-visible signal, and the only thing that ever surfaced the token would
+be an attended `deploy-reify-audit-predone-hook.sh` run.
+
+So `reify-audit-predone-wrapper.sh` captures the guard's stderr, re-emits it
+verbatim (the rc-125 path is unchanged — that one *is* surfaced) and also
+records it on two channels the hook cannot swallow:
+
+1. the **systemd journal**, via `logger -t reify-audit-predone`. The wrapper's
+   parent is `fused-memory.service`, so `journalctl --user -t
+   reify-audit-predone` shows it with no extra wiring.
+2. a **one-line sentinel file** — `REIFY_AUDIT_ADVISORY_SENTINEL`, default
+   `${TMPDIR:-/tmp}/reify-audit-predone-advisory.$(id -u)`. Truncate-written,
+   never appended, because the condition persists across every done-flip for
+   hours-to-days and an append would turn one stale binary into unbounded
+   `/tmp` growth. Its **presence** answers "is the fleet running a stale
+   detector?", its **mtime** answers "since when?", and a fresh binary writes
+   nothing — so absence means healthy.
+
+Both are strictly best-effort and neither can change the exit code: an
+observability path that could block a done-flip would reintroduce the outage
+this task removed (pinned by Check 9g in
+`tests/infra/test_reify_audit_predone_wrapper.sh`, which points the sentinel at
+an unwritable path and asserts rc 0). Residual limits, accepted: the sentinel
+is host-local and per-uid, nothing sweeps it on a schedule today, and `logger`
+is best-effort — a host without it degrades to the sentinel alone. Wiring a
+scheduled read-only sweep over the sentinel (the `warm-lane-audit.sh` shape) is
+follow-up work, not part of this task.
+
+**A caller typo cannot reinstate the refusal (added in review).**
+`reify_audit_guard` had no mode validation, so any unrecognised mode string fell
+through to the terminal `return 125` refuse path — one slip at the wrapper's
+call site (`warm-open`) would have restored the outage with the OLD cryptic
+message. Unknown modes now emit `E_AUDIT_GUARD_BAD_MODE` and are treated as
+`warn-open`.
+
+**Consumers diverge deliberately.** Fail-open is right for the unattended
+done-flip hot path. It is wrong for an ATTENDED deploy that just claimed to
+have installed a fresh binary, so `deploy-reify-audit-predone-hook.sh` step 6
+now treats an `E_AUDIT_BIN_STALE` advisory as fatal *regardless of rc* — without
+that, a fail-open probe would have reported a green deploy over a stale fleet,
+and that script is the `before_done` action of deterministic task #6939.
+
+**Not closed by this task:** sibling task 6642 replaces the mtime PREDICATE with
+a content-derived one (the case where a stale binary looks FRESH). This task
+changes the POLICY applied once staleness is detected. They are orthogonal and
+compose.
 
 ### 11.2 Snapshot filter and the `updatedAt`→`done_at` proxy
 
@@ -278,7 +561,7 @@ The `reify-audit` binary is a pure-logic library (no MCP client, no scheduler). 
 
 The filter uses `updatedAt` as a proxy: for tasks with `status=="done"`, it parses the ISO-8601 string (stripping the `.NNN` millisecond suffix that jq 1.7's `fromdateiso8601` rejects) and emits epoch-seconds. For non-done tasks `done_at` is always `null` (P1 skips them by status anyway — see `p1_producer_orphan.rs:79`).
 
-Priority rule: the filter checks `.metadata.done_at` first (via jq `//` fallback). If fused-memory ever exposes an explicit done-flip timestamp on the task record, the filter picks it up automatically and the `updatedAt` fallback becomes unreachable. This makes the filter forward-compatible without requiring a code change.
+Priority rule: the filter checks `.metadata.done_at` first (via jq `//` fallback). If fused-memory ever exposes an explicit done-flip timestamp on the task record, the filter picks it up automatically and the `updatedAt` fallback becomes unreachable. This makes the filter forward-compatible without requiring a code change on the wrapper path — the crate's live loader does not implement this precedence (see §11.2.1).
 
 **Approximation skew.** `updatedAt` is "when the task record was last written," which equals the done-flip time only when nothing further has been written to that task (status, metadata, etc.) after the flip. In practice this is true for most done tasks; the typical skew is hours-to-days, well inside P1's 14-day grace window.
 
@@ -286,7 +569,76 @@ Priority rule: the filter checks `.metadata.done_at` first (via jq `//` fallback
 
 **Single point of truth.** The filter is referenced from both the wrapper and the audit-skill references (`references/cli-invocation.md` §2, `references/modes.md` §§1-4). This prevents copy-paste drift: fixing the filter in one place fixes all consumers. The regression-guard assertion (5e) in `tests/infra/test_reify_audit_predone_wrapper.sh` ensures the wrapper continues referencing the sidecar rather than an inlined copy.
 
-**Follow-up action (upstream fused-memory).** A future enhancement to the fused-memory task store can stamp an explicit `metadata.done_at` field at the moment a task flips to `status=="done"`, reading from the existing `TaskInterceptor` reconciliation event stream. Once that field is exposed by `get_tasks`, the filter's `.metadata.done_at //` precedence picks it up automatically and the `updatedAt` fallback can be deleted. Action item logged via memory (`add_memory` category `procedural_knowledge`, keyed "fused-memory done_at proxy"). Track on the Reify side until upstream lands.
+**Follow-up action (upstream fused-memory).** A future enhancement to the fused-memory task store can stamp an explicit `metadata.done_at` field at the moment a task flips to `status=="done"`, reading from the existing `TaskInterceptor` reconciliation event stream. Once that field is exposed by `get_tasks`, the filter's `.metadata.done_at //` precedence picks it up automatically and the `updatedAt` fallback can be deleted on the wrapper path (see §11.2.1 for why the live loader needs a separate change). Action item logged via memory (`add_memory` category `procedural_knowledge`, keyed "fused-memory done_at proxy"). Track on the Reify side until upstream lands.
+
+#### 11.2.1 Do the two load paths derive `done_at` equivalently? (2026-09-03, task 6985)
+
+**Equivalent on the shared tier.** For `status == "done"`, both the jq
+sidecar and the crate's live loader derive `done_at` from the same
+top-level `updatedAt` field, and both tolerate the `.NNN` fractional-second
+suffix: `scripts/reify-audit-snapshot-filter.jq:73` strips it via
+`sub("\\.[0-9]+Z$"; "Z")`, `crates/reify-audit/src/fused_memory_client.rs:405`
+via `time_str.split('.').next()`. Both yield `null`/`None` for non-done
+tasks and for an absent or `null` `updatedAt`. The Rust parser
+additionally accepts `±HH:MM` offsets (`split_tz`, `:404`) that jq's
+`fromdateiso8601` rejects. Unreachable today since fused-memory's writer
+only ever emits `...Z`; if it ever became reachable it would land in the
+failure tier below (jq aborts the whole snapshot) rather than degrading
+gracefully.
+
+**Not equivalent on the precedence tier.** The jq filter prefers
+`.metadata.done_at` before falling back to `updatedAt`
+(`scripts/reify-audit-snapshot-filter.jq:70`). `task_metadata_from_wire`
+(`fused_memory_client.rs:364-370`) does not implement that precedence — it
+derives `done_at` solely from the top-level `updatedAt`. Its `metadata`
+binding (`:327`) is read only for `files`, `done_provenance`, `prd`,
+`consumer_ref`, and `audit_foundation` (`:329-352`); `metadata.done_at` is
+never consulted.
+
+**Not equivalent on the failure tier.** On an unparseable `updatedAt`
+the two paths diverge hard, in opposite directions. Measured against a
+`get_tasks` payload whose `status=="done"` row carries
+`"updatedAt":"garbage"`: `jq -r -f scripts/reify-audit-snapshot-filter.jq`
+prints `jq: error (at <stdin>:1): date "garbage" does not match format
+"%Y-%m-%dT%H:%M:%SZ"` and exits 5 with no output at all — the whole
+snapshot is lost, every task, not just the offending row. jq's
+`fromdateiso8601` raises rather than returning null, and the filter
+guards only the empty-string case (`if . == "" then null else
+(sub(...) | fromdateiso8601) end`,
+`scripts/reify-audit-snapshot-filter.jq:71-75`), so a
+non-empty-but-unparseable value reaches the raiser uncaught. The Rust
+path degrades per row instead: `parse_iso8601_to_epoch`
+(`crates/reify-audit/src/fused_memory_client.rs:398`) starts
+`s.split_once('T')?`, so `"garbage"` returns `None`; `done_at` is
+`None` for that row alone (`:364-370`) and every other task still
+loads. The blast radius lands on the wrapper: the jq failure trips
+`set -euo pipefail` in the `curl | jq` pipeline
+(`scripts/reify-audit-predone-wrapper.sh:298-299`), so `--tasks-file`
+materialization fails and the wrapper takes the `exit 125` arm
+(`:308`; its documented "Infrastructure error ... jq failure" code,
+`:130`) — through the synchronous pre-done hook once the §11.1 rewire
+lands (today §11.1.3 measures the raw binary invoked directly on the
+hook path, bypassing the wrapper entirely), that is a project-wide
+blocked done-flip caused by one malformed row. So the
+wrapper path is fail-closed and blast-radius-wide while the
+live-loader path is fail-open and per-row: which loader is wired
+(§11.1.3) changes not just the derived value but the failure mode
+itself.
+
+**Consequence: a latent forward-compatibility hazard, not a live bug.**
+§11.2's claim that once fused-memory exposes an explicit `metadata.done_at`
+"the filter picks it up automatically ... without requiring a code change"
+holds for the wrapper path only. Today the divergence is latent — upstream
+does not yet stamp `metadata.done_at`, so both paths compute the identical
+`updatedAt`-derived value and nothing is currently miscomputed. Once
+§11.2's own logged upstream follow-up lands, the wrapper path switches to
+the true done-flip timestamp while the live-loader path — which is what
+the live systemd hook actually runs, per §11.1.3 — silently keeps the
+`updatedAt` proxy; the two would then disagree by the full post-done edit
+skew for exactly the tasks P1 grades against its 14-day grace window (§5
+P1). Closing this is a one-tier change to `task_metadata_from_wire` (read
+`metadata.done_at` first, matching the jq precedence), deliberately left
+to a follow-up: this task holds `fused_memory_client.rs` read-only.
 
 ## 12. Implementation cost budget
 

@@ -51,9 +51,23 @@ fn eval_affine_scale_zero_warns_degenerate() {
         status.success(),
         "a zero factor is a Warning (not an Error), so reify eval should exit 0;\nstdout: {stdout}\nstderr: {stderr}"
     );
+    // Minimum disambiguating anchor: builtin name + failure cause, contiguous.
+    // Deliberately stops before "produces a degenerate (det=0) non-invertible
+    // map" — this warning carries no DiagnosticCode (reify-stdlib
+    // `geometry::diagnose`), so its tail prose is the drift-prone part;
+    // reify-eval's `geometry_ops` already words the same condition differently
+    // ("scale dropped: factor=0 produces degenerate (zero-volume) geometry").
     assert!(
-        stderr.contains("affine_scale") && stderr.contains("degenerate"),
-        "stderr should contain the affine_scale degenerate (det=0) warning; got: {stderr}"
+        stderr.contains("affine_scale dropped: factor=0"),
+        "stderr should contain the affine_scale degenerate (factor=0) warning; got: {stderr}"
+    );
+    // Guards the fixture's `module affine_scale_zero` decl: without it,
+    // W_MODULE_DECL_MISSING ("expected `module affine_scale_zero`") re-supplies
+    // the "affine_scale" substring for free and weakens the anchor above.
+    assert!(
+        !stderr.contains("W_MODULE_DECL_MISSING"),
+        "affine_scale_zero.ri declares its module, so no module-decl warning \
+         should appear; got: {stderr}"
     );
 }
 
@@ -93,8 +107,20 @@ fn eval_affine_scale_dimensioned_warns_dimensionless() {
         status.success(),
         "a dimensioned factor is a Warning (not an Error), so reify eval should exit 0;\nstdout: {stdout}\nstderr: {stderr}"
     );
+    // Minimum disambiguating anchor: builtin name + failure cause, contiguous.
+    // Deliberately stops before "(Real); a dimensioned factor was dropped ..."
+    // — this warning carries no DiagnosticCode (reify-stdlib
+    // `geometry::diagnose`), so its tail prose is the drift-prone part.
     assert!(
-        stderr.contains("affine_scale") && stderr.contains("dimensionless"),
+        stderr.contains("affine_scale: scale factors must be dimensionless"),
         "stderr should contain the affine_scale dimensionless-requirement warning; got: {stderr}"
+    );
+    // Guards the fixture's `module affine_scale_dim` decl: without it,
+    // W_MODULE_DECL_MISSING ("expected `module affine_scale_dim`") re-supplies
+    // the "affine_scale" substring for free and weakens the anchor above.
+    assert!(
+        !stderr.contains("W_MODULE_DECL_MISSING"),
+        "affine_scale_dim.ri declares its module, so no module-decl warning \
+         should appear; got: {stderr}"
     );
 }
