@@ -1028,6 +1028,22 @@ enum ReductionExtent {
     Bounded,
 }
 
+/// Which reduction a name spells, independent of the operand values.
+///
+/// Shared by [`field_reduction_kind`] (which then checks the operand SHAPES)
+/// and by the arity-1 arm of [`eval_kink_builtin`] (which is reached only when
+/// those shapes did NOT match), so the two can never disagree about what
+/// `argmin` means.
+fn reduction_kind_of(name: &str) -> Option<ReductionKind> {
+    match name {
+        "max" => Some(ReductionKind::Max),
+        "min" => Some(ReductionKind::Min),
+        "argmax" => Some(ReductionKind::ArgMax),
+        "argmin" => Some(ReductionKind::ArgMin),
+        _ => None,
+    }
+}
+
 /// Recognise a field reduction, at either arity, from the ALREADY-EVALUATED
 /// argument values.
 ///
@@ -1042,13 +1058,7 @@ enum ReductionExtent {
 /// unconditional index into the caller's argument vector, which was a latent
 /// panic on a zero-argument call.
 fn field_reduction_kind(name: &str, args: &[Value]) -> Option<(ReductionKind, ReductionExtent)> {
-    let kind = match name {
-        "max" => ReductionKind::Max,
-        "min" => ReductionKind::Min,
-        "argmax" => ReductionKind::ArgMax,
-        "argmin" => ReductionKind::ArgMin,
-        _ => return None,
-    };
+    let kind = reduction_kind_of(name)?;
     match args {
         [Value::Field { .. }] => Some((kind, ReductionExtent::WholeField)),
         [Value::Field { .. }, Value::BoundingBox { .. }] => {
@@ -1301,6 +1311,42 @@ fn eval_kink_builtin(
             }
             // Piecewise constant: the derivative is exactly zero almost
             // everywhere.  That is a genuine `Tangent::Zero`, not a refusal.
+            DualValue::constant(value)
+        }
+        ("max" | "min" | "argmax" | "argmin", 1) => {
+            // `is_kink_builtin` claims this shape, so `node_is_kink` kept the
+            // node off the seed-independence fast path and an entry is OWED
+            // here.  Without one, reaching the `_` catch-all below would leave
+            // an empty record for a node positively identified as a kink — and
+            // "no entries" would mean "we did not look" rather than "no kink",
+            // which is the one thing λ (#6679) may never be told.
+            //
+            // Getting here at all means `field_reduction_kind` DECLINED the
+            // call: the single argument is not a `Value::Field`, so no reduction
+            // ran and there is no winning grid node to name.  The primal is
+            // whatever the stdlib made of it — today always `Undef`, since
+            // `eval_builtin("max", &[x])` routes to the binary form and
+            // `argmax`/`argmin` have no scalar binding at all.  That is an
+            // accident of the stdlib, not a guarantee, so the undef case is
+            // checked rather than assumed.
+            let kind = reduction_kind_of(name).expect("guarded by the match arm");
+            note(record, path, KinkKind::FieldReduction(kind), BranchChoice::Unresolved);
+            if value.is_undef() {
+                seeds.note_refusal(NonDifferentiable::UndefPrimal {
+                    site: KinkSite::new(path.to_vec()),
+                });
+                return DualValue::opaque(value);
+            }
+            // A future scalar binding would still have no derivative rule here.
+            // Masked by contribution, like every other refusal in this module:
+            // an argument that reaches nothing must not veto a row.
+            if contributes(&duals[0]) {
+                seeds.note_refusal(NonDifferentiable::UnsupportedKind {
+                    kind: "a 1-argument reduction whose operand is not a field",
+                    site: KinkSite::new(path.to_vec()),
+                });
+                return DualValue::opaque(value);
+            }
             DualValue::constant(value)
         }
         ("mod", 2) => {

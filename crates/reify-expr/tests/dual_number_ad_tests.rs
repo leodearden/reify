@@ -1559,6 +1559,66 @@ fn malformed_two_argument_reduction_shapes_still_agree_with_eval_expr_on_undef()
     }
 }
 
+#[test]
+fn an_arity_one_reduction_over_a_non_field_operand_records_its_kink_and_names_the_site() {
+    use reify_expr::{BranchChoice, KinkKind, ReductionKind};
+
+    // `is_kink_builtin` claims `("max"|"min"|"argmax"|"argmin", 1)`, so
+    // `node_is_kink` keeps this node off the seed-independence fast path —
+    // while `field_reduction_kind` DECLINES it, because the single operand is
+    // not a `Value::Field`.  A node positively identified as a kink still owes
+    // the record an entry: "no entries" must mean "no kink", never "we did not
+    // look", which is the one guarantee λ (#6679) builds on.
+    let (values, seed_cells) = probe(&[("x", 3.0)]);
+    for (name, kind) in [
+        ("max", ReductionKind::Max),
+        ("min", ReductionKind::Min),
+        ("argmax", ReductionKind::ArgMax),
+        ("argmin", ReductionKind::ArgMin),
+    ] {
+        // Nested one level down, so the refusal's SITE distinguishes a real
+        // record from the root-sited generic fallback `jacobian_row` produces
+        // when the traversal noted nothing at all.
+        let expr = binop(BinOp::Sub, calln(name, vec![pref("x")]), literal(Value::Real(1.0)));
+        let ctx = EvalContext::simple(&values);
+        let seeds = Seeds::new(&seed_cells);
+        let mut record = BranchRecord::new();
+        let dual = eval_dual(&expr, &ctx, &seeds, &mut record);
+
+        assert_eq!(dual.value, eval_expr(&expr, &ctx), "{name}: the primal invariant");
+        assert_eq!(
+            dual.value,
+            Value::Undef,
+            "{name}: today the stdlib has no 1-argument scalar binding — that is an accident \
+             of the stdlib, and the arm does not depend on it"
+        );
+
+        assert_eq!(
+            record.len(),
+            1,
+            "{name}: one kink node was traversed, got {:?}",
+            record.entries()
+        );
+        let entry = &record.entries()[0];
+        assert_eq!(entry.kind, KinkKind::FieldReduction(kind), "{name}: the recorded kind");
+        assert_eq!(
+            entry.choice,
+            BranchChoice::Unresolved,
+            "{name}: nothing reduced, so there is no winning grid node to name"
+        );
+        assert_eq!(entry.site.path(), [0_u16], "{name}: child 0 of the subtraction");
+
+        match jrow(&expr, &values, &seed_cells) {
+            Err(NonDifferentiable::UndefPrimal { site }) => assert_eq!(
+                site.path(),
+                [0_u16],
+                "{name}: the refusal must name the undef call, not fall back to the root"
+            ),
+            other => panic!("{name}: expected UndefPrimal at the call, got {other:?}"),
+        }
+    }
+}
+
 // ===========================================================================
 // Step-25: the finiteness guard must be MASKED by argument contribution, and
 // the two spellings of a power must agree
