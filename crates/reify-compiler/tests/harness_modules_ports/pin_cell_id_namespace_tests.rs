@@ -417,9 +417,6 @@ fn values_namespace_is_distinct_from_and_corresponds_to_the_constraint_namespace
             values_namespace_id(module, type_name, member).unwrap_or_else(|| {
                 panic!("values_namespace_id(module, {type_name:?}, {member:?}) returned None")
             });
-        eprintln!(
-            "EVIDENCE {sub_name} -> {type_name}: constraint={constraint_spelling} values={values_spelling}"
-        );
         assert_eq!(
             values_spelling,
             format!("{type_name}.{member}"),
