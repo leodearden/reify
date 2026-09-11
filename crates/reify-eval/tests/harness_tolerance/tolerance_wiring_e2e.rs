@@ -511,13 +511,14 @@ fn cache_lookup_misses_when_purpose_changes_demanded_tolerance() {
     );
 }
 
-/// Step-9 (failing initially; passes once step-10 adds the
-/// `Engine::compute_realization_tolerance_budget(&self, registry, demanded_tol)`
-/// helper that synthesises a `DispatchPlan` via
-/// `dispatch(registry, Operation::BooleanUnion, ReprKind::BRep, &{ReprKind::BRep})`
-/// and forwards through `per_stage_tolerance_for_plan(&plan, demanded_tol)`).
-///
-/// Pins the per-stage tolerance-budget pipeline at the engine surface:
+/// Pins the per-stage tolerance-budget pipeline at the engine surface.
+/// `Engine::compute_realization_tolerance_budget` synthesises a
+/// `DispatchPlan` via
+/// `dispatch(registry, Operation::BooleanUnion, ReprKind::BRep, available)`
+/// and forwards through `per_stage_tolerance_for_plan(&plan, demanded_tol)`,
+/// taking the borrowed-value registry map and a caller-supplied
+/// `available: &HashSet<ReprKind>` (production callers hoist both once per
+/// build in `Engine::compute_tessellation_budgets`).
 ///
 /// - **Part (i): single-kernel registry → 0-conversion plan, helper passes
 ///   `demanded_tol` through unchanged.** The fixture registers a single
@@ -530,9 +531,9 @@ fn cache_lookup_misses_when_purpose_changes_demanded_tolerance() {
 ///   helper returns `demanded_tol` bit-exactly.
 ///
 /// - **Part (ii): two-stage chain primitive → `per_stage_tolerance(_, 2)`.**
-///   The 2-stage chain in `tests/tolerance_dispatch_budget.rs` (alpha:
-///   BRep→Sdf, beta: Sdf→Mesh, manifold: BooleanUnion on Mesh) yields a
-///   2-conversion plan only when dispatched for `demanded = ReprKind::Mesh`.
+///   The 2-stage chain in `tests/harness_tolerance/tolerance_dispatch_budget.rs`
+///   (alpha: BRep→Sdf, beta: Sdf→Mesh, manifold: BooleanUnion on Mesh) yields
+///   a 2-conversion plan only when dispatched for `demanded = ReprKind::Mesh`.
 ///   The engine helper hard-codes `demanded = ReprKind::BRep` (per the design
 ///   decision: `RealizationDecl` carries no Operation/ReprKind metadata, and
 ///   the v0.2 occt-only baseline is BRep-on-BRep), so a 2-stage chain ending
@@ -543,19 +544,20 @@ fn cache_lookup_misses_when_purpose_changes_demanded_tolerance() {
 ///   construct a `DispatchPlan` literal with two conversions and assert that
 ///   `per_stage_tolerance_for_plan(&plan, demanded_tol)` equals
 ///   `per_stage_tolerance(demanded_tol, 2)`. The literal-construction route
-///   mirrors the dispatcher's own multi-stage unit tests (dispatcher.rs:1349)
-///   and the lib re-export integration smoke
-///   (`tolerance_dispatch_budget.rs:46`); replicating the assertion at the
-///   engine-test layer locks the integration of the budget primitive into
-///   the same test file as the helper, so a future refactor cannot drop the
-///   wiring without breaking this pin.
+///   mirrors the dispatcher's own multi-stage unit test
+///   `per_stage_tolerance_for_plan_multi_stage_chain_uses_geometric_split`
+///   (`src/dispatcher.rs`) and the lib re-export integration smoke
+///   `lib_re_exports_per_stage_tolerance_for_plan_and_dispatch_end_to_end`
+///   (`tests/harness_tolerance/tolerance_dispatch_budget.rs`); replicating
+///   the assertion at the engine-test layer locks the integration of the
+///   budget primitive into the same test file as the helper, so a future
+///   refactor cannot drop the wiring without breaking this pin.
 ///
-/// Today (pre step-10) the helper does not exist, so the call to
-/// `engine.compute_realization_tolerance_budget(&single, demand)` is a
-/// compile error and this test FAILS. Once step-10 lands the helper as a
-/// cfg-gated `pub` accessor (mirroring `realization_cache()` /
-/// `feature_tag_table()` precedent), the call resolves and both parts of the
-/// assertion pass.
+/// The call below is the compile-time pin on the helper's public
+/// visibility: `compute_realization_tolerance_budget` is an un-gated `pub
+/// fn` on `Engine` (`src/engine_build.rs`), called directly as
+/// `engine.compute_realization_tolerance_budget(&single_borrow, &available,
+/// demand)`.
 #[test]
 fn per_stage_tolerance_for_plan_governs_tolerance_budget_for_two_stage_dispatch_chain() {
     let engine = make_engine();
@@ -567,18 +569,14 @@ fn per_stage_tolerance_for_plan_governs_tolerance_budget_for_two_stage_dispatch_
     };
     let mut single: BTreeMap<String, CapabilityDescriptor> = BTreeMap::new();
     single.insert("occt".to_string(), occt);
-    // Amendment 2: `compute_realization_tolerance_budget` now takes the
-    // borrowed-value variant of the registry that `dispatch` requires —
-    // production callers build it once per build inside
-    // `compute_tessellation_budgets`. Direct test-seam callers build it at
-    // the call site.
+    // `compute_realization_tolerance_budget` takes the borrowed-value
+    // variant of the registry that `dispatch` requires, plus a
+    // caller-supplied `available: &HashSet<ReprKind>` (task 3227).
+    // Production callers (inside `compute_tessellation_budgets`) hoist both
+    // once per build; this direct test-seam call builds them at the call
+    // site instead, mirroring the borrowed-registry pattern.
     let single_borrow: BTreeMap<String, &CapabilityDescriptor> =
         single.iter().map(|(k, v)| (k.clone(), v)).collect();
-    // Amendment 3 (task 3227): `compute_realization_tolerance_budget` now
-    // takes the `available: &HashSet<ReprKind>` as a caller-supplied arg.
-    // Production callers hoist one HashSet per build in
-    // `compute_tessellation_budgets`. Direct test-seam callers build it at
-    // the call site, mirroring the borrowed-registry pattern.
     //
     // Use `Engine::budget_available_set()` — the public helper that wraps
     // `BUDGET_QUERY_TRIPLE_V02.2` — so a future change to the underlying
@@ -604,7 +602,7 @@ fn per_stage_tolerance_for_plan_governs_tolerance_budget_for_two_stage_dispatch_
 
     // 2-conversion plan literal; matches the chain-shape pinned by
     // dispatcher.rs::per_stage_tolerance_for_plan_multi_stage_chain_uses_geometric_split
-    // and tests/tolerance_dispatch_budget.rs::lib_re_exports_per_stage_tolerance_for_plan_and_dispatch_end_to_end.
+    // and tests/harness_tolerance/tolerance_dispatch_budget.rs::lib_re_exports_per_stage_tolerance_for_plan_and_dispatch_end_to_end.
     let plan_two = DispatchPlan {
         kernel: "manifold".to_string(),
         conversions: vec![
