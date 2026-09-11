@@ -496,58 +496,6 @@ fn out_of_bounds_index_errors() {
     );
 }
 
-/// A meshing failure must report gmsh's own diagnosis, not only the single
-/// line `gmshLoggerGetLastError` holds.
-///
-/// Fixture is a SINGLE open triangle. MEASURED through this public API: it
-/// clears all four pre-lock validations, reaches `mesh_generate(3)`, and
-/// returns `Err(OperationFailed("gmshModelMeshGenerate: ierr=1 (HXT 3D mesh
-/// failed)"))` in ~0.8s — a clean `Err`, not the #4876 SIGSEGV that
-/// `mesh_boundary.rs` documents for non-watertight input. Chosen over the
-/// other measured clean-failure fixture (a unit cube missing one face, same
-/// error) because it captures 28 lines against that one's 66: the cheaper,
-/// more legible witness.
-///
-/// Assertion (iii) is the crisp statement of "more than the last-error
-/// line": `gmshLoggerGetLastError` only ever holds the last ERROR, so an
-/// `Info:` line in the message can only have come from the capture buffer.
-/// The assertions stay on stable gmsh phrases and deliberately do not pin
-/// the captured line COUNT, which is version- and thread-sensitive.
-#[test]
-fn mesh_to_volume_failure_reports_gmsh_log_not_just_the_last_error_line() {
-    let open_triangle = reify_ir::Mesh {
-        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-        indices: vec![0, 1, 2],
-        normals: None,
-    };
-    let kernel = GmshKernel::new();
-    let err = kernel
-        .mesh_to_volume(
-            &open_triangle,
-            &MeshingOptions::default(),
-            ElementOrderTag::P1,
-        )
-        .expect_err("a single open triangle has no volume for HXT to fill");
-    let msg = format!("{err}");
-
-    assert!(
-        msg.contains("gmshModelMeshGenerate") && msg.contains("HXT 3D mesh failed"),
-        "the pre-existing last-error annotation must be preserved, not replaced; got: {msg}",
-    );
-    assert!(
-        msg.contains("gmsh log ("),
-        "expected the captured-log header; got: {msg}",
-    );
-    assert!(
-        msg.contains("Info:"),
-        "expected a captured Info line — gmshLoggerGetLastError can never supply one; got: {msg}",
-    );
-    assert!(
-        msg.contains("Meshing 3D"),
-        "expected the measured `Info: Meshing 3D...` line; got: {msg}",
-    );
-}
-
 /// The success-path half of "stop the capture on EVERY exit path".
 ///
 /// MEASURED: one unit-cube `mesh_to_volume` emits 95 captured lines, so a
@@ -596,3 +544,11 @@ fn mesh_to_volume_leaves_the_gmsh_logger_stopped() {
 // `indices_length_not_multiple_of_three_errors`,
 // `out_of_bounds_index_errors`) cover the preflight validation that does
 // have testable error paths.
+//
+// That pollution warning is now MEASURED, not just reasoned: adding an
+// HXT-failing fixture to this binary turned 7 of the 14 tests above into
+// `tet_indices.len() = 0` failures, while the same run with that one test
+// filtered out was 14/14 green (task #6969). The test it describes does
+// exist — as `mesh_to_volume_failure_reports_gmsh_log_not_just_the_last_error_line`
+// in `tests/log_capture_tests.rs`, whose other tests are immune by
+// construction (pure formatting, plus one 1D mesh that HXT never touches).

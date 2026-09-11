@@ -99,6 +99,92 @@ pub const CLASSIFY_FEATURE_ANGLE: f64 = std::f64::consts::FRAC_PI_4;
 /// Exported alongside [`CLASSIFY_FEATURE_ANGLE`] for the same reason.
 pub const CLASSIFY_CURVE_ANGLE: f64 = std::f64::consts::FRAC_PI_4;
 
+/// Reclassify the pushed discrete surface into a B-rep region and tet-mesh it.
+///
+/// Takes and returns nothing because it communicates only through gmsh's
+/// process-global model state: the caller has already pushed the surface
+/// nodes and triangles into the current model, and reads the tets back out
+/// of that same model afterwards. Requires [`init::GMSH_LOCK`] to be held,
+/// like every other gmsh call in this file.
+///
+/// Split out from [`GmshKernel::mesh_to_volume`] so this span — seven `?`
+/// sites, and where every interesting meshing failure surfaces — folds
+/// gmsh's captured log into its error at ONE seam rather than seven.
+fn classify_and_mesh_volume() -> Result<(), GeometryError> {
+    // Reclassify the discrete surface and build geometry so 3D meshing has
+    // a parametric region to fill.
+    //
+    // The feature angle MUST stay strictly below π/2 (#6200). gmsh's
+    // sharp-edge test is strictly-greater-than, and a box's dihedral angle
+    // is EXACTLY π/2, so a π/2 threshold registers none of the box's own
+    // edges as sharp. This site used to pass FRAC_PI_2 with a comment
+    // claiming it "splits cube faces into separate B-rep surface entities";
+    // that claim was false, and nothing tested it. Measured with the gmsh
+    // logger armed (the caller's `General.Terminal = 0` otherwise hides all
+    // of this), on a welded 8-vertex unit cube at FRAC_PI_2:
+    //
+    //     Classifying surfaces (angle: 90)...
+    //      - Level 0 partition with 12 triangles split in 2 parts because
+    //        poincare characteristic 2 is not 0
+    //     Found 2 model surfaces
+    //     Found 1 model curves
+    //
+    // i.e. the only split that happened was TOPOLOGICAL (a parametrizability
+    // necessity), not a feature split. `create_geometry` then reparametrizes
+    // 2 non-planar patches instead of 6 planar faces, so the region
+    // `geo_add_volume` hands HXT is not the full box: HXT built 206 tets
+    // while the model retained only 91. Fill fraction 0.74–0.86 with ZERO
+    // interior nodes, scale-invariantly, and refinement does not rescue it
+    // (4x resolution only reaches 0.926). Downstream, #6154 measured the
+    // same pathology as 0.8429 on the realized fixture.
+    //
+    // Two sibling call sites in this crate already diagnosed this exact bug
+    // and worked around it — `mesh_boundary.rs` (FRAC_PI_4, the attributed
+    // producer) and `refine_volume.rs` (PI/12) — each noting that a cube's
+    // corners do not become dim-0 entities under a π/2 threshold. What
+    // `mesh_boundary.rs` got wrong was inferring that volume meshing "only
+    // needs a closed watertight surface" and could therefore tolerate 90°;
+    // that inference is what left this site as the crate's last 90°
+    // hold-out. It cannot: HXT fills the B-rep region, not the shell.
+    // See `tests/classify_feature_angle.rs` (B-rep census, importing the
+    // constants below) and `tests/volume_fill_fraction.rs` (fill fraction).
+    //
+    // Note: this affects only the B-rep classification. `create_geometry`
+    // and `mesh_generate(3)` below re-mesh from the resulting parametric
+    // geometry, so output node identities are gmsh's choice and do NOT
+    // preserve the input discrete vertex set — confirmed by the
+    // diagnostic test in `tests/gmsh_classify_diagnostics.rs`. See task
+    // 3591 for the broader NodeAttachment-producer redesign that
+    // implication motivates.
+    ffi::classify_surfaces(CLASSIFY_FEATURE_ANGLE, 1, 1, CLASSIFY_CURVE_ANGLE, 0)?;
+    ffi::create_geometry(&[])?;
+
+    // After classify+createGeometry, gmsh creates new geometric surface
+    // entities whose tags supersede the original discrete-entity
+    // `surf_tag`; query them so `geo_add_surface_loop` references the
+    // correct entities. (`surf_tag` is the discrete-mesh entity tag and
+    // is no longer referenced from this point on.)
+    let surface_tags = ffi::get_entity_tags(2)?;
+    if surface_tags.is_empty() {
+        return Err(GeometryError::OperationFailed(
+            "gmsh produced no dim=2 entities after classify_surfaces+create_geometry — \
+             input surface mesh may be open or non-manifold"
+                .into(),
+        ));
+    }
+
+    // Wrap the reclassified surface(s) in a surface loop and a volume
+    // so HXT has a closed region to mesh.
+    let loop_tag = ffi::geo_add_surface_loop(&surface_tags)?;
+    let _vol_tag = ffi::geo_add_volume(&[loop_tag])?;
+    ffi::geo_synchronize()?;
+
+    // Tet meshing.
+    ffi::mesh_generate(3)?;
+
+    Ok(())
+}
+
 impl GmshKernel {
     /// Construct a new `GmshKernel` with an empty volume-mesh store. The gmsh
     /// library is initialised lazily on the first `mesh_to_volume` call (via
@@ -147,6 +233,17 @@ impl GmshKernel {
     /// acquisition, model setup, mesh generation, readback). Common
     /// failure modes: open / non-manifold input mesh, degenerate triangles,
     /// HXT internal errors.
+    ///
+    /// A failure in the classify→tet-mesh span — where those common modes
+    /// surface — carries more than that one line. Since task #6969 the
+    /// message also holds the tail of gmsh's own captured Info/Warning
+    /// stream, via [`crate::log_capture::LogCapture`]:
+    /// `gmshLoggerGetLastError` only ever holds the last ERROR, and gmsh's
+    /// actual diagnosis is routinely an Info line above it (measured on a
+    /// single open triangle — last error `HXT 3D mesh failed`, explanation
+    /// `Info: all vertices are coplanar or nearly coplanar`). That same
+    /// guard stops the process-global capture on every exit path, success
+    /// included.
     pub fn mesh_to_volume(
         &self,
         surface: &Mesh,
@@ -240,6 +337,23 @@ impl GmshKernel {
         // Silence gmsh's stdout chatter — keeps test output readable.
         ffi::option_set_number("General.Terminal", 0.0)?;
 
+        // --- Capture gmsh's own diagnosis (task #6969) ---
+        //
+        // Armed HERE because the line above is what makes it necessary:
+        // `General.Terminal = 0` silences gmsh's stdout, so the capture
+        // buffer becomes the only route by which a caller can see gmsh's
+        // reasoning. The `gmshLoggerGetLastError` annotation every `?` below
+        // already carries holds just the last ERROR line — measured on a
+        // single open triangle, the explanation ("all vertices are coplanar
+        // or nearly coplanar") is an Info line it never sees.
+        //
+        // Declared after `_guard` AND after `_clamp_reset`, so it drops
+        // first: `logger_stop` lands while `GMSH_LOCK` is still held, and
+        // the clamp's own restore writes are not captured as though they
+        // were part of this call's diagnosis. See `log_capture`'s "Why it
+        // borrows the lock guard" for what makes the first half structural.
+        let log_capture = crate::log_capture::LogCapture::armed(&_guard);
+
         // Resolve mesh size: caller override > auto-derived from smallest
         // triangle edge. `auto_mesh_size_from_features` returns 0.0 for
         // empty meshes; we leave the gmsh defaults in place in that case
@@ -306,76 +420,10 @@ impl GmshKernel {
         let tri_node_tags: Vec<u64> = surface.indices.iter().map(|&i| i as u64 + 1).collect();
         ffi::add_elements_2d(surf_tag, 2, &tri_tags, &tri_node_tags)?;
 
-        // Reclassify the discrete surface and build geometry so 3D meshing has
-        // a parametric region to fill.
-        //
-        // The feature angle MUST stay strictly below π/2 (#6200). gmsh's
-        // sharp-edge test is strictly-greater-than, and a box's dihedral angle
-        // is EXACTLY π/2, so a π/2 threshold registers none of the box's own
-        // edges as sharp. This site used to pass FRAC_PI_2 with a comment
-        // claiming it "splits cube faces into separate B-rep surface entities";
-        // that claim was false, and nothing tested it. Measured with the gmsh
-        // logger armed (the `General.Terminal = 0` above otherwise hides all of
-        // this), on a welded 8-vertex unit cube at FRAC_PI_2:
-        //
-        //     Classifying surfaces (angle: 90)...
-        //      - Level 0 partition with 12 triangles split in 2 parts because
-        //        poincare characteristic 2 is not 0
-        //     Found 2 model surfaces
-        //     Found 1 model curves
-        //
-        // i.e. the only split that happened was TOPOLOGICAL (a parametrizability
-        // necessity), not a feature split. `create_geometry` then reparametrizes
-        // 2 non-planar patches instead of 6 planar faces, so the region
-        // `geo_add_volume` hands HXT is not the full box: HXT built 206 tets
-        // while the model retained only 91. Fill fraction 0.74–0.86 with ZERO
-        // interior nodes, scale-invariantly, and refinement does not rescue it
-        // (4x resolution only reaches 0.926). Downstream, #6154 measured the
-        // same pathology as 0.8429 on the realized fixture.
-        //
-        // Two sibling call sites in this crate already diagnosed this exact bug
-        // and worked around it — `mesh_boundary.rs` (FRAC_PI_4, the attributed
-        // producer) and `refine_volume.rs` (PI/12) — each noting that a cube's
-        // corners do not become dim-0 entities under a π/2 threshold. What
-        // `mesh_boundary.rs` got wrong was inferring that volume meshing "only
-        // needs a closed watertight surface" and could therefore tolerate 90°;
-        // that inference is what left this site as the crate's last 90°
-        // hold-out. It cannot: HXT fills the B-rep region, not the shell.
-        // See `tests/classify_feature_angle.rs` (B-rep census, importing the
-        // constants below) and `tests/volume_fill_fraction.rs` (fill fraction).
-        //
-        // Note: this affects only the B-rep classification. `create_geometry`
-        // and `mesh_generate(3)` below re-mesh from the resulting parametric
-        // geometry, so output node identities are gmsh's choice and do NOT
-        // preserve the input discrete vertex set — confirmed by the
-        // diagnostic test in `tests/gmsh_classify_diagnostics.rs`. See task
-        // 3591 for the broader NodeAttachment-producer redesign that
-        // implication motivates.
-        ffi::classify_surfaces(CLASSIFY_FEATURE_ANGLE, 1, 1, CLASSIFY_CURVE_ANGLE, 0)?;
-        ffi::create_geometry(&[])?;
-
-        // After classify+createGeometry, gmsh creates new geometric surface
-        // entities whose tags supersede the original discrete-entity
-        // `surf_tag`; query them so `geo_add_surface_loop` references the
-        // correct entities. (`surf_tag` is the discrete-mesh entity tag and
-        // is no longer referenced from this point on.)
-        let surface_tags = ffi::get_entity_tags(2)?;
-        if surface_tags.is_empty() {
-            return Err(GeometryError::OperationFailed(
-                "gmsh produced no dim=2 entities after classify_surfaces+create_geometry — \
-                 input surface mesh may be open or non-manifold"
-                    .into(),
-            ));
-        }
-
-        // Wrap the reclassified surface(s) in a surface loop and a volume
-        // so HXT has a closed region to mesh.
-        let loop_tag = ffi::geo_add_surface_loop(&surface_tags)?;
-        let _vol_tag = ffi::geo_add_volume(&[loop_tag])?;
-        ffi::geo_synchronize()?;
-
-        // Tet meshing.
-        ffi::mesh_generate(3)?;
+        // One seam for seven `?` sites: whatever fails inside, the caller
+        // gets gmsh's own captured reasoning folded into the message, not
+        // just the last-error line.
+        classify_and_mesh_volume().map_err(|e| log_capture.annotate(e))?;
 
         // Element type for readback: P1 = 4 (4-node tet), P2 = 11 (10-node tet).
         let elem_type = match element_order {
