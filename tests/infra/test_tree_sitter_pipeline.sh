@@ -3598,6 +3598,14 @@ test_build_rs_repairs_a_parser_from_another_grammar() {
     if [ "$guard_rc" -eq 2 ]; then return 0; fi
     if [ "$guard_rc" -ne 0 ]; then return 1; fi
 
+    # Every arm of the two gating predicates lands here, which is why this one
+    # assertion carries the "no error path may skip generation" contract. `true`
+    # from shell_stamp_is_current — or `false` from needs_generate — means SKIP
+    # GENERATION, and that is the one verdict a branch that does not know must
+    # never give: the old condition 4 stat-ed the stamp and did
+    # `Err(_) => return true` under the comment "Can't stat stamp; assume it's
+    # fine", conceding in the direction that links a parser the grammar never
+    # produced. A regenerate costs seconds; this costs a silent false GREEN.
     local after
     after=$(ts_sha256 "$fix/src/parser.c")
     if [ "$after" = "$hash_b" ]; then

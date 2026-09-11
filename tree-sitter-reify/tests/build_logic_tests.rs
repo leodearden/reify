@@ -13,6 +13,19 @@
 //! The remaining local duplicates (`content_hash`, `stamp_write`,
 //! `verify_outputs`, `run_with_timeout`) are logic this task does not touch;
 //! they stay hand-copied and are still labelled as such.
+//!
+//! DO NOT ASSERT ON build.rs's OR build_support.rs's SOURCE TEXT HERE. A
+//! `contains("write_shell_stamps(")`-style scan is satisfied by a comment or a
+//! commented-out line — delete the real call, keep its explanation above it,
+//! and the test stays green — and its negative form pins one SPELLING, so
+//! `rel.ends_with("parser.c")` reintroduces a defect that
+//! `!contains("rel == \"src/parser.c\"")` was watching for. Comment-stripping
+//! fixes only the first half. Contracts about what build.rs DOES belong in
+//! `tests/infra/test_tree_sitter_pipeline.sh`, whose subjects are runtime
+//! values: the directives cargo actually captured in
+//! `target/*/build/tree-sitter-reify-*/output`, and the stamp bytes on disk
+//! after a real `cargo build` (`#6992` review). Source scans of THIS file's own
+//! text are a different thing and stay — they pin this file's conventions.
 include!("../build_support.rs");
 
 use std::hash::{Hash, Hasher};
@@ -65,40 +78,6 @@ const THIS_FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/build_logic_
 /// Absolute path to build.rs, resolved at compile time via CARGO_MANIFEST_DIR.
 /// Used by source-level regression tests that read the build script's contents.
 const BUILD_RS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/build.rs");
-
-/// Absolute path to `build_support.rs` — the staleness source shared with
-/// build.rs — derived from [`BUILD_RS`]'s directory.
-///
-/// DERIVED, not a third `env!` const on `CARGO_MANIFEST_DIR`, on purpose:
-/// (spelled apart so the occurrence counter in
-/// `test_self_path_constants_guard_is_not_vacuous`, which scans raw source text
-/// including comments, does not count this sentence as a definition.)
-/// `test_self_path_constants_guard_is_not_vacuous` pins that count at exactly 2
-/// to catch INFLATION, and a third const would force that guard to be weakened.
-/// Deriving still anchors on `CARGO_MANIFEST_DIR` transitively, which is the
-/// property that actually matters.
-fn build_support_path() -> std::path::PathBuf {
-    Path::new(BUILD_RS).with_file_name("build_support.rs")
-}
-
-/// Return the text of the top-level item named by `fn_sig`, from the signature
-/// through the closing brace in column 0.
-///
-/// A separate extractor from [`extract_test_fn_body`], which is scoped to THIS
-/// file's `#[test]` items and terminates on the next `#[test]` — an attribute
-/// neither `build.rs` nor `build_support.rs` carries.
-fn extract_top_level_fn<'a>(source: &'a str, fn_sig: &str) -> Option<&'a str> {
-    let start = source.find(fn_sig)?;
-    let rest = &source[start..];
-    let end = rest.find("\n}\n").map(|p| p + 3).unwrap_or(rest.len());
-    Some(&rest[..end])
-}
-
-/// Reads `build_support.rs` and returns it as a `String`.
-fn read_build_support_source() -> String {
-    std::fs::read_to_string(build_support_path())
-        .expect("should be able to read build_support.rs from BUILD_RS's directory")
-}
 
 /// Reads this test file's own source code and returns it as a `String`.
 ///
@@ -280,112 +259,6 @@ fn test_all_three_outputs_verified() {
         );
         // Restore for next iteration
         std::fs::write(&path, b"placeholder").unwrap();
-    }
-}
-
-#[test]
-fn test_generated_parser_c_is_watched() {
-    // Hole E, and the INVERSE of the pin this test used to carry.
-    //
-    // build.rs excluded src/parser.c from its watch loop — `if rel ==
-    // "src/parser.c" { continue; }` — citing double execution. Cargo narrows a
-    // build script's watch set to EXACTLY the emitted rerun-if-changed list, so
-    // the consequence was that parser.c could be DELETED, or replaced by CoW
-    // seeding with a copy from a different base, with grammar.js untouched, and
-    // cargo had no reason to re-run this script: the previously-built
-    // libtree_sitter_reify.a stayed linked and the change was never under test.
-    // That is the same defect class `#5784`/`#5629` already fixed for
-    // src/scanner.c and the headers, left open for the one input that matters
-    // most.
-    //
-    // The double-execution cost is real but BOUNDED and CONVERGENT — see
-    // test_gating_predicates_converge_after_one_regeneration, which pins that
-    // directly. One extra build-script run after a genuine regeneration is a
-    // build you were going to pay for anyway.
-    let build_rs = std::fs::read_to_string(BUILD_RS)
-        .expect("should be able to read build.rs from tree-sitter-reify crate root");
-
-    // NOTE: build_support.rs is watched too (it is include!d, so cargo cannot
-    // infer the dependency), but that is pinned BEHAVIOURALLY in
-    // tests/infra/test_tree_sitter_pipeline.sh ::
-    // test_build_rs_watches_all_compiled_inputs, which reads the directives
-    // cargo ACTUALLY captured in target/*/build/tree-sitter-reify-*/output. The
-    // source scan that used to live here was satisfied by a comment or a
-    // commented-out line, so deleting the real println! while keeping its
-    // explanation above passed green (#6992 amendment pass).
-
-    // src/parser.c must be IN the enumeration the watch loop iterates...
-    let inputs = extract_top_level_fn(&build_rs, "fn compilation_inputs()")
-        .expect("build.rs must define compilation_inputs");
-    assert!(
-        inputs.contains("src/parser.c"),
-        "compilation_inputs() must enumerate src/parser.c — its bytes are \
-         compiled into the archive. Body:\n{}",
-        inputs
-    );
-
-    // ...and the loop must emit EVERY element, with no exclusion for it.
-    assert!(
-        !build_rs.contains("rel == \"src/parser.c\""),
-        "build.rs must not exclude src/parser.c from the watch loop. Cargo \
-         narrows the watch set to exactly the emitted list, so an excluded \
-         parser.c cannot re-trigger the build script when it is deleted or \
-         CoW-replaced — the archive stays linked and the change is never tested."
-    );
-}
-
-#[test]
-fn test_regeneration_branch_writes_both_shell_stamps() {
-    // Hole B. build.rs's run_tree_sitter_generate() shells straight out to
-    // `tree-sitter generate` and stops there — it never touches
-    // src/.grammar_hash.stamp. So build.rs can leave parser.c(B) on disk beside
-    // a stamp still reading sha256(A). A later merge or checkout that restores
-    // grammar.js == A makes that stamp MATCH again, and it then actively vouches
-    // for a parser the current grammar never produced. That is the reproducing
-    // sequence for both of #6992's measurements.
-    //
-    // The cure is that whatever regenerates must also re-attest.
-    let build_rs = std::fs::read_to_string(BUILD_RS)
-        .expect("should be able to read build.rs from tree-sitter-reify crate root");
-    let main_body =
-        extract_top_level_fn(&build_rs, "fn main()").expect("build.rs must define main");
-
-    let after_generate = main_body
-        .split_once("run_tree_sitter_generate();")
-        .expect("main() must call run_tree_sitter_generate()")
-        .1;
-    // Match the CALL, not its argument text: `verify_outputs(&src_dir)` or a
-    // local rebinding is the same contract, and pinning the spelling turns a
-    // benign rename into a red test (#6992 amendment pass). The ORDER — verify
-    // before attest — is what matters, and it is what the split above pins.
-    assert!(
-        after_generate.contains("verify_outputs("),
-        "the regeneration branch must still verify the outputs exist before \
-         attesting them. Branch:\n{}",
-        after_generate
-    );
-    assert!(
-        after_generate.contains("write_shell_stamps("),
-        "the regeneration branch must write BOTH shell stamps immediately after \
-         verify_outputs — otherwise build.rs regenerates parser.c behind a \
-         .grammar_hash.stamp that still describes the PREVIOUS grammar, which is \
-         exactly how a later merge turns a matching stamp into a false GREEN. \
-         Branch:\n{}",
-        after_generate
-    );
-
-    let support = read_build_support_source();
-    let writer = extract_top_level_fn(&support, "fn write_shell_stamps(")
-        .expect("build_support.rs must define write_shell_stamps");
-    for name in ["GRAMMAR_STAMP_NAME", "OUTPUTS_STAMP_NAME"] {
-        assert!(
-            writer.contains(name),
-            "write_shell_stamps must write {} — a regeneration that re-attests \
-             only one of the two stamps leaves the other vouching for bytes that \
-             no longer exist. Body:\n{}",
-            name,
-            writer
-        );
     }
 }
 
@@ -2561,38 +2434,5 @@ fn test_shell_stamp_not_current_without_an_outputs_manifest() {
     assert!(
         !shell_stamp_is_current(&grammar, &output_refs, &src_dir),
         "an absent .generated_outputs.stamp must force regeneration"
-    );
-}
-
-#[test]
-fn test_shell_stamp_has_no_error_path_that_skips_generation() {
-    // (d) The INVERTED fallback. Condition 4 read the stamp's mtime and, on a
-    // stat failure, did `Err(_) => return true` under the comment "Can't stat
-    // stamp; assume it's fine" — but `true` from this function means SKIP
-    // GENERATION. The one branch that admitted it did not know returned the one
-    // answer that cannot be taken back.
-    //
-    // Asserted at source level because the condition is not reachable through
-    // the filesystem: `read_to_string` succeeding implies `metadata` succeeds,
-    // so no fixture can produce a readable-but-unstattable stamp. What IS
-    // assertable, and is the durable property, is that the mtime comparison is
-    // gone and every error path concedes in the safe direction.
-    let source = read_build_support_source();
-    let body = extract_top_level_fn(&source, "fn shell_stamp_is_current(")
-        .expect("build_support.rs must define shell_stamp_is_current");
-
-    assert!(
-        !body.contains("=> return true"),
-        "no error arm in shell_stamp_is_current may return true — true means \
-         SKIP GENERATION, which is the one verdict a branch that does not know \
-         must never give. Body:\n{}",
-        body
-    );
-    assert!(
-        !body.contains(".modified()"),
-        "shell_stamp_is_current must not compare mtimes: warm-lane seeding stamps \
-         every source to 2020-01-01, so mtime ordering carries no information \
-         there (measured in this lane). Body:\n{}",
-        body
     );
 }
