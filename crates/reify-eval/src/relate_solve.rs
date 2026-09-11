@@ -682,6 +682,29 @@ fn global_float_diagnostic(floating: &[String]) -> Diagnostic {
     .with_code(DiagnosticCode::AssemblyGlobalFloat)
 }
 
+/// The un-consumable-relate-member [`Diagnostic`] (code
+/// [`DiagnosticCode::RelateExpectsRelation`], task 7050) for a `relate {}` member
+/// that is not itself a geometric relation call — e.g. a call to a user-defined
+/// `fn ... -> Relation` wrapper. `source` is the member's 0-based index into
+/// `scope.relations`; the message names its 1-based DECLARATION position, so it
+/// reads the way an author counts members in their own source.
+///
+/// This replaces a SILENT drop: `build_relation_instances` cannot build a
+/// [`RelationInstance`] for such a member, so without this diagnostic it would
+/// vanish from every downstream pass with no trace — an INV-SF-3 violation
+/// (`docs/legibility/design-invariants.md:130`: a declaration is either consumed by
+/// a solve/verify pass this run, or generates a diagnostic naming why not).
+fn unconsumable_relation_diagnostic(source: usize, auto_sub: &str) -> Diagnostic {
+    let position = source + 1;
+    Diagnostic::error(format!(
+        "relate-block member {position} on `{auto_sub}` is not a call to a geometric \
+         relation, so the relate-solve cannot verify it: every `relate {{}}` member \
+         must directly call a geometric relation — a function that RETURNS one \
+         (`fn ... -> Relation`) is not itself a relation call."
+    ))
+    .with_code(DiagnosticCode::RelateExpectsRelation)
+}
+
 /// Run the per-scope relate-solve over already-realized LOCAL datums (ζ steps
 /// 14/16/18): rank-partition the relations into a driving set + a redundant
 /// remainder, solve ONLY the driving set for the `at auto` Frame, then verify the
@@ -762,6 +785,15 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
     let built = build_relation_instances(scope, realized);
     let instances = &built.instances;
 
+    // A relate-block member the solve could not consume (not a geometric relation
+    // call) is diagnosed here, before the partition — never silently dropped
+    // (INV-SF-3, task 7050).
+    let skip_diagnostics: Vec<Diagnostic> = built
+        .skipped
+        .iter()
+        .map(|&source| unconsumable_relation_diagnostic(source, &frame_unknown.sub))
+        .collect();
+
     // 2. Partition at the witness into driving + redundant; the rank-revealing
     //    tolerance is tied to the solver-convergence tol (design §4).
     let partition =
@@ -772,6 +804,7 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
         free: partition.free,
         driving: partition.driving.len(),
         redundant: partition.redundant.len(),
+        diagnostics: skip_diagnostics,
         ..RelateSolution::default()
     };
 
@@ -1374,7 +1407,9 @@ pub fn solve_scopes(
 /// indices. `sources[i]` is the one place that mapping is recorded, and
 /// [`ScopeInstances::relation`] is the ONLY sanctioned crossing from an instance
 /// POSITION back to its source relation in `scope.relations` — no other code may
-/// index `scope.relations` with an instance position.
+/// index `scope.relations` with an instance position. Every skipped member's
+/// source index is recorded too ([`skipped`](Self::skipped)), so the skip itself
+/// is diagnosed rather than silently vanishing (task 7050, INV-SF-3).
 struct ScopeInstances {
     /// The built instances, contiguous and in source order — the shape every
     /// `reify_constraints::relate_solve` entry point (`partition_driving_set`,
@@ -1386,6 +1421,10 @@ struct ScopeInstances {
     /// `scope.relations`), so an instance-position `max` and a `sources`-keyed
     /// `max` over the same index set always agree.
     sources: Vec<usize>,
+    /// The `scope.relations` source indices of the members that yielded NO
+    /// instance (not a `FunctionCall`) — disjoint from `sources`, together
+    /// covering every index `0..scope.relations.len()` exactly once.
+    skipped: Vec<usize>,
 }
 
 impl ScopeInstances {
@@ -1412,14 +1451,16 @@ impl ScopeInstances {
 fn build_relation_instances(scope: &RelateScope, realized: &RealizedDatums) -> ScopeInstances {
     let mut instances = Vec::new();
     let mut sources = Vec::new();
+    let mut skipped = Vec::new();
     for (source, rel) in scope.relations.iter().enumerate() {
         let Some(instance) = relation_instance(rel, realized) else {
+            skipped.push(source);
             continue;
         };
         instances.push(instance);
         sources.push(source);
     }
-    ScopeInstances { instances, sources }
+    ScopeInstances { instances, sources, skipped }
 }
 
 /// Build ONE relation's [`RelationInstance`] from its compiled expr + the realized
@@ -1428,7 +1469,7 @@ fn build_relation_instances(scope: &RelateScope, realized: &RealizedDatums) -> S
 /// Both [`build_relation_instances`] and the zero-auto static arm walk
 /// `scope.relations` with `enumerate()` through this, keeping each entry's SOURCE
 /// index: a `None` here means the instance list is SHORTER than `scope.relations`,
-/// so the two are never index-aligned by position.
+/// so position in one is not an index into the other.
 fn relation_instance(rel: &CompiledExpr, realized: &RealizedDatums) -> Option<RelationInstance> {
     let CompiledExprKind::FunctionCall { function, args } = &rel.kind else {
         return None;
