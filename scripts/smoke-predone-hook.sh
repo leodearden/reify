@@ -192,12 +192,16 @@ if [[ "$(basename "$binary")" != "$WRAPPER_BASENAME" ]]; then
 fi
 
 # ── Assertion 3: fused-memory MCP endpoint is responsive ─────────────────────
-# Retries before failing, and distinguishes curl's "connection refused" (7)
-# from "timed out" (28) on the final diagnostic: these warrant OPPOSITE
-# operator responses. Refused means the service is down (check status).
-# Timed out means it accepted the connection but stalled -- observed in
-# practice (task 7061) as fused-memory answering instantly on immediate
-# re-probe under fleet load -- and must NOT steer anyone toward restarting the
+# Retries before failing, covering BOTH a curl transport failure (non-zero
+# curl exit) and an HTTP-level failure (non-200, or a 200 with no JSON-RPC
+# body): a busy fused-memory is at least as likely to answer 502/503 as it is
+# to hit curl's --max-time, so both go through the same retry loop and land on
+# the same "busy, not down" framing once exhausted. The final diagnostic
+# distinguishes curl's "connection refused" (7) -- service down, check status
+# -- from "timed out" (28) or a bad HTTP response -- service accepted the
+# connection but stalled or erred, NOT necessarily down. Observed in practice
+# (task 7061) as fused-memory answering instantly on immediate re-probe under
+# fleet load, so the busy path must not steer anyone toward restarting the
 # fleet-wide MCP server on a momentary stall.
 echo "smoke-predone-hook: probing MCP endpoint at $MCP_URL..."
 
@@ -206,60 +210,76 @@ initialize_payload='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"pro
 MCP_PROBE_ATTEMPTS=3
 MCP_PROBE_BACKOFF_SECS=1
 
+# Isolated per-run response file. mktemp (not a fixed path) because curl does
+# NOT truncate its -o target on a transport failure (verified: a pre-seeded
+# file survives a connection-refused run byte-for-byte), so a fixed path could
+# both leak a stale body into this run's JSON-RPC check and collide with a
+# concurrent run on the same host. Cleaned up via EXIT trap so every exit path
+# -- not just the success path -- removes it.
+MCP_RESP_FILE=$(mktemp /tmp/smoke-predone-mcp-resp.XXXXXX)
+trap 'rm -f "$MCP_RESP_FILE"' EXIT
+
 curl_exit=0
 http_response=""
+probe_ok=0
 attempt=1
 while [[ "$attempt" -le "$MCP_PROBE_ATTEMPTS" ]]; do
-    http_response=$(curl -s -o /tmp/smoke-predone-mcp-resp.json -w "%{http_code}" \
+    http_response=$(curl -s -o "$MCP_RESP_FILE" -w "%{http_code}" \
         --max-time "$MCP_TIMEOUT" \
         -X POST "$MCP_URL" \
         -H "Content-Type: application/json" \
         -H "Accept: application/json, text/event-stream" \
         -d "$initialize_payload" 2>/dev/null) && curl_exit=0 || curl_exit=$?
 
-    [[ "$curl_exit" -eq 0 ]] && break
+    if [[ "$curl_exit" -eq 0 && "$http_response" == "200" ]] && grep -q '"jsonrpc"' "$MCP_RESP_FILE" 2>/dev/null; then
+        probe_ok=1
+        break
+    fi
 
     if [[ "$attempt" -lt "$MCP_PROBE_ATTEMPTS" ]]; then
-        echo "smoke-predone-hook: MCP probe attempt $attempt/$MCP_PROBE_ATTEMPTS failed (curl exit $curl_exit); retrying in ${MCP_PROBE_BACKOFF_SECS}s..." >&2
+        if [[ "$curl_exit" -ne 0 ]]; then
+            echo "smoke-predone-hook: MCP probe attempt $attempt/$MCP_PROBE_ATTEMPTS failed (curl exit $curl_exit); retrying in ${MCP_PROBE_BACKOFF_SECS}s..." >&2
+        elif [[ "$http_response" != "200" ]]; then
+            echo "smoke-predone-hook: MCP probe attempt $attempt/$MCP_PROBE_ATTEMPTS returned HTTP $http_response (expected 200); retrying in ${MCP_PROBE_BACKOFF_SECS}s..." >&2
+        else
+            echo "smoke-predone-hook: MCP probe attempt $attempt/$MCP_PROBE_ATTEMPTS returned HTTP 200 with no JSON-RPC body; retrying in ${MCP_PROBE_BACKOFF_SECS}s..." >&2
+        fi
         sleep "$MCP_PROBE_BACKOFF_SECS"
     fi
     attempt=$((attempt + 1))
 done
 
-if [[ "$curl_exit" -ne 0 ]]; then
-    case "$curl_exit" in
-        7)
-            echo "FAIL: curl to $MCP_URL failed: connection refused (curl exit 7), after $MCP_PROBE_ATTEMPTS attempts." >&2
-            echo "      This means fused-memory is DOWN or not listening on :8002." >&2
-            echo "      Check: systemctl --user status $SERVICE" >&2
-            ;;
-        28)
-            echo "FAIL: curl to $MCP_URL timed out (curl exit 28), after $MCP_PROBE_ATTEMPTS attempts of ${MCP_TIMEOUT}s each." >&2
-            echo "      This means fused-memory ACCEPTED the connection but did not answer in" >&2
-            echo "      time -- a busy/stalled service, not necessarily a down one. Do NOT" >&2
-            echo "      restart $SERVICE on a timeout alone: re-run this script, or raise the" >&2
-            echo "      per-attempt budget with FUSED_MEMORY_MCP_TIMEOUT=<seconds>." >&2
-            ;;
-        *)
-            echo "FAIL: curl to $MCP_URL failed (curl exit $curl_exit), after $MCP_PROBE_ATTEMPTS attempts." >&2
-            echo "      Check: systemctl --user status $SERVICE" >&2
-            ;;
-    esac
+if [[ "$probe_ok" -ne 1 ]]; then
+    if [[ "$curl_exit" -ne 0 ]]; then
+        case "$curl_exit" in
+            7)
+                echo "FAIL: curl to $MCP_URL failed: connection refused (curl exit 7), after $MCP_PROBE_ATTEMPTS attempts." >&2
+                echo "      This means fused-memory is DOWN or not listening on :8002." >&2
+                echo "      Check: systemctl --user status $SERVICE" >&2
+                ;;
+            28)
+                echo "FAIL: curl to $MCP_URL timed out (curl exit 28), after $MCP_PROBE_ATTEMPTS attempts of ${MCP_TIMEOUT}s each." >&2
+                echo "      This means fused-memory ACCEPTED the connection but did not answer in" >&2
+                echo "      time -- a busy/stalled service, not necessarily a down one. Do NOT" >&2
+                echo "      restart $SERVICE on a timeout alone: re-run this script, or raise the" >&2
+                echo "      per-attempt budget with FUSED_MEMORY_MCP_TIMEOUT=<seconds>." >&2
+                ;;
+            *)
+                echo "FAIL: curl to $MCP_URL failed (curl exit $curl_exit), after $MCP_PROBE_ATTEMPTS attempts." >&2
+                echo "      Check: systemctl --user status $SERVICE" >&2
+                ;;
+        esac
+    elif [[ "$http_response" != "200" ]]; then
+        echo "FAIL: fused-memory MCP endpoint at $MCP_URL returned HTTP $http_response (expected 200), after $MCP_PROBE_ATTEMPTS attempts." >&2
+        echo "      curl connected fine -- fused-memory is UP but overloaded or erroring, not" >&2
+        echo "      necessarily down. Do NOT restart $SERVICE on this alone: re-run this script," >&2
+        echo "      or raise the per-attempt budget with FUSED_MEMORY_MCP_TIMEOUT=<seconds>." >&2
+    else
+        echo "FAIL: fused-memory MCP endpoint at $MCP_URL did not respond with a JSON-RPC body, after $MCP_PROBE_ATTEMPTS attempts." >&2
+        echo "      Response: $(cat "$MCP_RESP_FILE" 2>/dev/null)" >&2
+    fi
     exit 1
 fi
-
-if [[ "$http_response" != "200" ]]; then
-    echo "FAIL: fused-memory MCP endpoint at $MCP_URL returned HTTP $http_response (expected 200)." >&2
-    exit 1
-fi
-
-if ! grep -q '"jsonrpc"' /tmp/smoke-predone-mcp-resp.json 2>/dev/null; then
-    echo "FAIL: fused-memory MCP endpoint at $MCP_URL did not respond with a JSON-RPC body." >&2
-    echo "      Response: $(cat /tmp/smoke-predone-mcp-resp.json 2>/dev/null)" >&2
-    exit 1
-fi
-
-rm -f /tmp/smoke-predone-mcp-resp.json
 
 # ── Assertion 4: binary round-trip with seeded fixtures ──────────────────────
 # Tests a known-pass task (4a) and a known-fail task (4b) directly against the
@@ -288,7 +308,7 @@ if [[ ! -x "$RAW_BIN" ]]; then
 fi
 
 SMOKE_TMPDIR=$(mktemp -d /tmp/smoke-predone-XXXXXX)
-trap 'rm -rf "$SMOKE_TMPDIR"' EXIT
+trap 'rm -f "$MCP_RESP_FILE"; rm -rf "$SMOKE_TMPDIR"' EXIT
 
 # Write tasks.json with two synthetic TaskMetadata shapes.
 cat > "$SMOKE_TMPDIR/tasks.json" <<'TASKS_EOF'
