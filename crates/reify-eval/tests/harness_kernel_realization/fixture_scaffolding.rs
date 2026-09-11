@@ -39,23 +39,26 @@
 //!
 //! # Cell assertions
 //!
-//! The same reasoning covers `assert_bool_cell` / `assert_length_cell`: a
-//! pin's *reading* of a built `BuildResult` cell is as copy-pasteable as its
-//! building, and a message-format tweak in one copy silently desynchronises
-//! the rest. They live here so that any pin adopting them reports a failing
-//! cell identically.
+//! The same reasoning covers the cell-assertion helpers below: a pin's
+//! *reading* of a built `BuildResult` cell is as copy-pasteable as its
+//! building, so they live here and any pin adopting one reports a failing cell
+//! identically. Adoption follows a CRITERION, deliberately stated instead of a
+//! per-module list:
 //!
-//! Adoption is INCREMENTAL — read the paragraph above as the intent, not as a
-//! description of today's harness. As of task #6269 the sole consumer is
-//! `kernel_queries_intersects_smoke`; nine sibling modules still hand-roll an
-//! inline `ValueCellId::new` + `assert_eq!` / `match ... Value::Scalar` at each
-//! call site, the closest being `best_practices_clearance_oracle`. So the drift
-//! these helpers close is still open across the rest of the harness: they are
-//! AVAILABLE to every pin, and migrating one is a mechanical, self-contained
-//! change for whichever task next holds that pin's lock.
+//! **Adopt a helper where it pins EXACTLY what the call site already pinned.
+//! Never widen a tolerance, and never relax an exactness, to make a call site
+//! fit.** The mirror-image error is equally excluded: do not add a helper that
+//! would serve exactly one call site, since it closes no duplication and buys
+//! only indirection.
+//!
+//! What the criterion admits is a property of the VALUE, not a backlog of
+//! unconverted modules — so a pin reading a cell directly is not thereby
+//! behind. Each helper's own doc comment states the shape it pins.
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::ValueCellId;
+use reify_core::ty::SelectorKind;
+use reify_ir::value::{LeafQuery, SelectorNode};
 use reify_ir::{ExportFormat, Value};
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
@@ -254,5 +257,40 @@ pub(crate) fn assert_length_cell(
             "{struct_name}.{cell_name} should be Value::Scalar{{LENGTH, {expected}}}, \
              got: {other:?}"
         ),
+    }
+}
+
+/// Asserts that `cell_value` holds a kernel-free `Value::Selector` whose node is
+/// a single `Leaf` of the expected `kind`, then runs `check_query` against the
+/// leaf's `LeafQuery` (task 4118 γ).
+///
+/// Takes the already-read `Option<&Value>` rather than a `(&BuildResult,
+/// struct_name, cell_name)` triple like its two siblings, because what varies
+/// per call site here is the leaf predicate, not the read: the caller's
+/// `check_query` closure owns every numeric expectation and epsilon, so the
+/// helper pins the SHAPE (kernel-free `Selector` / expected `kind` / single
+/// `Leaf`) and nothing else. That keeps a tolerance out of this file, where it
+/// could only be a shared default that silently retunes a pin.
+///
+/// `#[track_caller]` is load-bearing because the fn lives in a different file
+/// from its callers: without it a failure would report `fixture_scaffolding.rs`
+/// and lose WHICH pin broke.
+#[track_caller]
+pub(crate) fn assert_selector_leaf(
+    cell_value: Option<&Value>,
+    label: &str,
+    kind: SelectorKind,
+    check_query: impl FnOnce(&LeafQuery),
+) {
+    let sv = match cell_value {
+        Some(Value::Selector(sv)) => sv,
+        other => panic!(
+            "{label} must be a kernel-free Value::Selector (task 4118 γ; BT7), got: {other:?}"
+        ),
+    };
+    assert_eq!(sv.kind, kind, "{label}: selector kind");
+    match &sv.node {
+        SelectorNode::Leaf { query, .. } => check_query(query),
+        other => panic!("{label} must be a Leaf selector node, got: {other:?}"),
     }
 }

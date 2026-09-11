@@ -28,6 +28,10 @@ import { invoke } from '@tauri-apps/api/core';
 import { initDebugBridge } from '../debug/bridge';
 import type { DebugStores } from '../debug/types';
 import type { ViewStateStore } from '../stores/viewStateStore';
+// The REAL editor store, for the `apply_gui_state` `file`-member cases: the
+// dirty/clean split they pin lives in editorStore.openFile, so a mock would
+// pin nothing.
+import { createEditorStore } from '../stores/editorStore';
 
 type DebugRequestHandler = (event: {
   payload: { id: number; command: string; params: Record<string, unknown> };
@@ -174,6 +178,191 @@ describe('debug contract — error envelope + wiring (step-3)', () => {
     const r2 = (await dispatchCmd(capturedHandler!, 5, 'get_layout_metrics', {})) as any;
     expect(typeof r2).toBe('object');
     expect(typeof r2.error).toBe('string');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// task 5097 δ: apply_gui_state — AI write-tool editor sync
+//
+// `apply_gui_state` gained a second class of caller: the five `reify_*` AI
+// write tools on the reify-debug MCP server. `reify_update_source` routes
+// through the IN-MEMORY `EngineSession::update_source` and writes no disk, so
+// no FS-watcher re-fire will reconcile the editor buffer — the push carries
+// the new text in an OPTIONAL `file` member instead. The existing
+// `handle_set_fea_case` caller sends no `file` and must stay byte-identical.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('apply_gui_state — AI write-tool editor sync (task 5097)', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  /** Minimal well-formed RawGuiState — `apply_gui_state` requires the key. */
+  const RAW_GUI_STATE = {
+    meshes: [],
+    values: [],
+    constraints: [],
+    files: [],
+    tessellation_diagnostics: [],
+    compile_diagnostics: [],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    document.body.innerHTML = '';
+  });
+
+  it('(a) with a file member, reopens the editor buffer and still does not reset the view', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    const result = (await dispatchCmd(capturedHandler!, 900, 'apply_gui_state', {
+      guiState: RAW_GUI_STATE,
+      file: { path: '/tmp/part.ri', content: 'NEW' },
+    })) as any;
+
+    expect(result.ok).toBe(true);
+    // The AI wrote the engine's in-memory buffer; nothing else will bring the
+    // editor along, so the push must.
+    expect(stores.editor.openFile).toHaveBeenCalledTimes(1);
+    expect(stores.editor.openFile).toHaveBeenCalledWith({
+      path: '/tmp/part.ri',
+      content: 'NEW',
+    });
+    expect(stores.engine.initFromState).toHaveBeenCalledTimes(1);
+    // The camera-stability property handle_set_fea_case depends on covers the
+    // AI path too: a parameter tweak must not throw the user's view away.
+    expect(stores.viewState.resetToDefaultView).not.toHaveBeenCalled();
+  });
+
+  it('(b) without a file member, behaves exactly as before (set_fea_case regression guard)', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    const result = (await dispatchCmd(capturedHandler!, 901, 'apply_gui_state', {
+      guiState: RAW_GUI_STATE,
+      case: 'overload',
+    })) as any;
+
+    expect(result.ok).toBe(true);
+    expect(result.case).toBe('overload');
+    expect(stores.editor.openFile).not.toHaveBeenCalled();
+    expect(stores.engine.initFromState).toHaveBeenCalledTimes(1);
+    expect(stores.viewState.resetToDefaultView).not.toHaveBeenCalled();
+  });
+
+  it('(c) a malformed file member is refused and mutates neither store', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    const result = (await dispatchCmd(capturedHandler!, 902, 'apply_gui_state', {
+      guiState: RAW_GUI_STATE,
+      file: { path: '/tmp/part.ri' },
+    })) as any;
+
+    expect(result.error).toBe('file requires path and content');
+    expect(result.ok).toBeUndefined();
+    // Refusing HALFWAY — applying the GuiState but not the buffer — is the
+    // desync this handler exists to prevent, so neither store may move.
+    expect(stores.editor.openFile).not.toHaveBeenCalled();
+    expect(stores.engine.initFromState).not.toHaveBeenCalled();
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // (d)/(e) task 5097 δ amendment (review finding): what the `file` member
+  // actually DOES to the editor store.
+  //
+  // (a) above pins only that `openFile` was CALLED, with a mock. But the member
+  // is delivered through `editorStore.openFile`, whose contract is "reopen from
+  // DISK" — while `reify_update_source` writes no disk at all. So the two arms
+  // of `openFile`'s dirty/clean split (editorStore.ts, task-5359) land
+  // differently here than they do for a watcher re-fire, and which way they land
+  // is a real product decision that was neither stated nor covered. These drive
+  // the REAL store so the decision is pinned in observable state, not prose; the
+  // rationale for each arm is on the `apply_gui_state` handler in bridge.ts.
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /** The real editor store standing in for the mocked `editor` slot. */
+  function storesWithRealEditor(): DebugStores & { editor: ReturnType<typeof createEditorStore> } {
+    const editor = createEditorStore();
+    return { ...makeStores(), editor } as DebugStores & {
+      editor: ReturnType<typeof createEditorStore>;
+    };
+  }
+
+  it('(d) a CLEAN tab takes the pushed buffer — and stays clean', async () => {
+    const stores = storesWithRealEditor();
+    stores.editor.openFile({ path: '/tmp/part.ri', content: 'OLD' });
+    await initDebugBridge(stores);
+
+    const result = (await dispatchCmd(capturedHandler!, 903, 'apply_gui_state', {
+      guiState: RAW_GUI_STATE,
+      file: { path: '/tmp/part.ri', content: 'NEW' },
+    })) as any;
+
+    expect(result.ok).toBe(true);
+    // The desync the member exists to close: the engine took NEW, so the buffer
+    // must too.
+    expect(stores.editor.state.openFiles).toHaveLength(1);
+    expect(stores.editor.state.openFiles[0].content).toBe('NEW');
+    // …and the tab is left CLEAN. This is the accepted consequence, stated so it
+    // cannot change silently: the buffer now differs from disk with no unsaved
+    // indicator, and a later CLEAN reopen of the same path (an FS-watcher
+    // re-fire from reify_set_parameter, File→Open) will overwrite the AI's edit.
+    // reify_save_file is the commit step; reify_set_parameter is the durable
+    // write path.
+    expect(stores.editor.state.dirtyFiles).toStrictEqual([]);
+    expect(stores.editor.state.externallyChanged).toStrictEqual([]);
+  });
+
+  it('(e) a DIRTY tab keeps the user’s text and surfaces the conflict', async () => {
+    const stores = storesWithRealEditor();
+    stores.editor.openFile({ path: '/tmp/part.ri', content: 'OLD' });
+    stores.editor.markDirty('/tmp/part.ri');
+    stores.editor.updateFileContent('/tmp/part.ri', 'USER EDIT');
+    await initDebugBridge(stores);
+
+    const result = (await dispatchCmd(capturedHandler!, 904, 'apply_gui_state', {
+      guiState: RAW_GUI_STATE,
+      file: { path: '/tmp/part.ri', content: 'AI EDIT' },
+    })) as any;
+
+    expect(result.ok).toBe(true);
+    // openFile does NOT clobber unsaved edits, so the engine holds the AI's text
+    // while the editor keeps the user's. That divergence is real; the point is
+    // that it is SURFACED rather than silently resolved in either direction.
+    expect(stores.editor.state.openFiles[0].content).toBe('USER EDIT');
+    expect(stores.editor.state.dirtyFiles).toStrictEqual(['/tmp/part.ri']);
+    expect(stores.editor.state.externallyChanged).toStrictEqual(['/tmp/part.ri']);
+    // The engine half of the push still lands — refusing it would leave the
+    // design un-rendered for a conflict the user has not resolved yet.
+    expect(stores.engine.initFromState).toHaveBeenCalledTimes(1);
+  });
+
+  it('(f) a no-op push over a dirty tab raises no spurious conflict', async () => {
+    // The refinement editorStore.openFile makes over App.onFileChanged: a dirty
+    // reopen flags a conflict only when the incoming text actually DIVERGES.
+    // Pinned from this caller because a write tool re-pushing the buffer the
+    // user already has is the ordinary case, not an edge one.
+    const stores = storesWithRealEditor();
+    stores.editor.openFile({ path: '/tmp/part.ri', content: 'OLD' });
+    stores.editor.markDirty('/tmp/part.ri');
+    await initDebugBridge(stores);
+
+    const result = (await dispatchCmd(capturedHandler!, 905, 'apply_gui_state', {
+      guiState: RAW_GUI_STATE,
+      file: { path: '/tmp/part.ri', content: 'OLD' },
+    })) as any;
+
+    expect(result.ok).toBe(true);
+    expect(stores.editor.state.openFiles[0].content).toBe('OLD');
+    expect(stores.editor.state.externallyChanged).toStrictEqual([]);
   });
 });
 

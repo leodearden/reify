@@ -347,7 +347,10 @@ fi
 #
 #    HOW MUCH IT BUYS TODAY: NOTHING — and that is the honest reading, not a
 #    defect. Measured on this tree, `--list-plan-derived` is BYTE-IDENTICAL to
-#    clause 4a's source-text set (12 paths). verify.sh has no live plan line
+#    clause 4a's source-text set (13 paths; re-measured by task 6296 after
+#    scripts/tree-sitter-freshness.sh joined the plan with #5629 — the
+#    byte-identity itself still holds, only the count moved). verify.sh has no
+#    live plan line
 #    that names a *.sh path from behind a variable. (The `_gui_cmd` /
 #    `_sidecar_cmd` / `_ts_cmd` triple — grep `_gui_cmd=` in scripts/verify.sh
 #    — IS variable-assembled, but its value is a pure npm shell snippet
@@ -382,8 +385,8 @@ fi
 #    verify-pipeline-paths.txt row (or a rewrite to a literal path, or to a
 #    branch the canonical invocation reaches). The five widenings in that
 #    invocation are load-bearing precisely because they shrink this residual:
-#    measured, dropping --include-infra and role=merge takes the derived set
-#    from 12 gates to 6.
+#    measured (task 6296), dropping --include-infra and role=merge takes the
+#    derived set from 13 gates to 7.
 #
 #    Shares the $_verify_sh resolved at clause 3 — one knob, three clauses, no
 #    second env var. NOTE that the knob's semantics WIDEN here from READ to
@@ -438,8 +441,11 @@ derive_plan_paths() {
     # action=all, --scope all, --profile both, --include-infra,
     # DF_VERIFY_ROLE=merge. Every one of those five widenings is load-bearing
     # rather than decoration. Measured on this tree: plain
-    # `all --scope all --profile both` derives only 6 of the 12 gates; adding
-    # --include-infra reaches 11; role=merge is what adds tests/infra/run_all.sh.
+    # `all --scope all --profile both` derives only 7 of the 13 gates; adding
+    # --include-infra reaches 12; role=merge is what adds tests/infra/run_all.sh.
+    # (Counts re-measured by task 6296; every one moved by exactly +1 when
+    # scripts/tree-sitter-freshness.sh joined the plan, and each claim about
+    # WHICH widening buys what still holds as written.)
     # With all five, the derived set is byte-identical BOTH to clause 4a's
     # source-text set AND to the union over a 4-action x 3-scope x 4-role,
     # 48-invocation matrix — so ONE fork is the exact superset today, and an
@@ -450,7 +456,7 @@ derive_plan_paths() {
     # to export. verify.sh reads ~38 REIFY_*/DF_* knobs and several of them
     # narrow the plan, so an inherited one silently shrinks this clause. That is
     # not hypothetical: MEASURED on this tree, an ambient
-    # REIFY_INFRA_SUITE_ACTIVE=1 takes the derived set from 12 paths to 11 (it
+    # REIFY_INFRA_SUITE_ACTIVE=1 takes the derived set from 13 paths to 12 (it
     # is verify.sh's re-entrancy sentinel — see its RE-ENTRANCY GUARD comment —
     # and suppresses the very tests/infra/run_all.sh line that role=merge is
     # here to add). Monotonicity means such a loss can never fail OPEN, but
@@ -463,7 +469,7 @@ derive_plan_paths() {
     # -u REIFY_VERIFY_PREBUILD_TIMEOUT` in test_occt_flock_gate.sh, a shorter
     # one in test_run_all_ambient_isolation.sh), and the two knobs most likely
     # to be named first — REIFY_AFFECTED_CRATES_OVERRIDE and
-    # REIFY_RELEASE_DELTA_SKIP — measure as NON-narrowing here (12 -> 12), while
+    # REIFY_RELEASE_DELTA_SKIP — measure as NON-narrowing here (13 -> 13), while
     # the one that does narrow is neither. Scrubbing the whole REIFY_*/DF_*
     # prefix is self-healing in the same way clauses 3/4a/4b are: a future
     # narrowing knob is neutralized with no edit here.

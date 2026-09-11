@@ -20,6 +20,7 @@ use reify_kernel_gmsh::mesh_volume::{
 use reify_kernel_gmsh::repair::RepairConfig;
 use reify_kernel_gmsh::through_thickness::ThroughThicknessConfig;
 use reify_ir::{ElementOrderTag, GeometryError, Mesh, VolumeConnectivity, VolumeMesh};
+use reify_test_support::fixtures::unit_cube_mesh;
 
 // ---------------------------------------------------------------------------
 // Helpers shared across multiple tests in this file
@@ -98,33 +99,6 @@ fn apply_repair_if_requested_some_delegates_to_repair_surface_mesh() {
 // ---------------------------------------------------------------------------
 // resolve_mesh_size — caller-wins, auto-fires, none-defers
 // ---------------------------------------------------------------------------
-
-/// A unit cube surface mesh — 8 vertices, 12 triangles (2 per face).
-/// Inline duplicate of `mesh_to_volume_tests.rs::unit_cube_mesh`.
-fn unit_cube_mesh() -> Mesh {
-    Mesh {
-        vertices: vec![
-            0.0, 0.0, 0.0, // 0
-            1.0, 0.0, 0.0, // 1
-            1.0, 1.0, 0.0, // 2
-            0.0, 1.0, 0.0, // 3
-            0.0, 0.0, 1.0, // 4
-            1.0, 0.0, 1.0, // 5
-            1.0, 1.0, 1.0, // 6
-            0.0, 1.0, 1.0, // 7
-        ],
-        #[rustfmt::skip]
-        indices: vec![
-            0, 2, 1,  0, 3, 2,
-            4, 5, 6,  4, 6, 7,
-            0, 1, 5,  0, 5, 4,
-            3, 7, 6,  3, 6, 2,
-            0, 4, 7,  0, 7, 3,
-            1, 2, 6,  1, 6, 5,
-        ],
-        normals: None,
-    }
-}
 
 /// Caller's explicit `mesh_size` must win over the auto-derived value, even
 /// when both are supplied. Pin: the caller-wins policy from the design decision.

@@ -5,7 +5,7 @@
 //! must compile without errors and type as `StructureRef("ModalResult")`.
 //!
 //! Mirrors the Probe type-check pattern in
-//! `crates/reify-compiler/tests/dynamics_stdlib_compile.rs`
+//! `crates/reify-compiler/tests/harness_mechanics/dynamics_stdlib_compile.rs`
 //! (`point_mass_and_mass_properties_ctors_type_as_mass_properties_struct_ref`,
 //! ~line 440) — embeds a `structure def Probe` whose `let` cells are
 //! inspected for their resolved `cell_type`.

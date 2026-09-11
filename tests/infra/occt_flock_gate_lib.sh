@@ -1,35 +1,45 @@
 #!/usr/bin/env bash
-# Shared serialization-timing bounds for OCCT flock-gate Tests 20 and 21B
+# Shared serialization predicates and helpers for the OCCT flock-gate suite
 # (tests/infra/test_occt_flock_gate.sh).
 #
 # WHY A SHARED LIB:
 # Tests 20 and 21B both spawn 3 concurrent wrapper invocations with N=2 slots
-# and assert wall-clock is within [LOW,HIGH]ms to prove the 3rd was serialized.
-# Extracting the constants and predicate here ensures the two tests cannot drift
-# out of sync (one source of truth) and makes the bounds unit-testable with
-# synthetic inputs (see test_occt_flock_gate_bounds.sh), avoiding another
-# sleep-based timing test that could itself flake under load.
+# and must prove the 3rd was serialized.  Keeping the predicate here ensures the
+# two tests cannot drift out of sync (one source of truth) and makes it
+# unit-testable with synthetic inputs (see test_occt_flock_gate_bounds.sh),
+# avoiding another timing-based test that could itself flake under load.
 #
-# UPPER BOUND RATIONALE (esc-3939-94):
-# The original upper bound of 1200ms was raised to 2000ms because the merge-queue
-# verify pipeline runs concurrently with cargo clippy + OCCT/GUI builds, inflating
-# process-spawn and flock-acquire latency of the serialized 3rd invocation.
-# An observed run measured 1473ms (FAIL) while its semantically identical twin
-# Test 21B measured 948ms (PASS) in the SAME run — non-determinism, not a logic
-# defect. On an idle host both pass deterministically (2026-05-30: Test 20=984ms,
-# Test 21B=939ms, 41 passed/0 failed).
+# WHY THE MILLISECOND BAND IS GONE (PRD docs/prds/infra-test-wallclock-deflake.md
+# decision D1, task 6247):
+# this lib used to answer "was the 3rd invocation serialized?" with an absolute
+# wall-clock window, `occt_serial3_n2_within_bounds` over [LOW,HIGH]ms.  The
+# ceiling was ratcheted 1200 -> 2000 -> 5000 as the merge queue grew busier
+# (esc-3939-94, then task/3443's observed 3317ms) and was STILL observed at
+# 5791ms.  D1 abandons absolute upper bounds for this class rather than
+# re-tuning them again: the quantity being bounded is process-spawn and
+# flock-acquire latency on a shared 32-core host under concurrent verify load,
+# which has no defensible ceiling.
 #
-# At 2000ms the upper bound no longer discriminates N=2 (~800ms) from fully-serial
-# N=1 (~1200ms); it becomes a load-tolerant sanity ceiling that still flags gross
-# wedges (a true hang lands in LOCK_WAIT/timeout territory, orders of magnitude
-# larger). The >=700ms LOWER bound guards against under-serialization only
-# (all-parallel N>=3 finishes ~400ms).
+# The band was not merely loose, it was non-discriminating in the direction that
+# mattered — this lib's own COVERAGE GAP note admitted it: three FULLY SERIAL
+# invocations land ~1200ms, comfortably inside [700,5000], so an N->1
+# over-serialization regression was invisible.  `occt_serial3_n2_serialized`
+# replaces the band with the causal fact read straight off the slot event log,
+# and detects both regressions the band could not: over-serialization (max
+# concurrency 1) and a lost slot cap (max concurrency 3).
 #
-# COVERAGE GAP (accepted tradeoff per esc-3939-94): no test in this suite currently
-# detects an over-serialization regression (N collapsing to 1, producing ~1200ms for
-# three invocations — inside [700,2000], undetected). Test 19 does NOT cover this
-# case: two fully-serial invocations complete in ~800ms, below Test 19's own <2000ms
-# threshold, so Test 19 also passes under a fully-serial regression.
+# The causal primitives themselves live in tests/infra/slot_holder_handshake_lib.sh,
+# which is the SPOT home shared with test_test_run_semaphore.sh,
+# test_lane_x_flock.sh, test_warm_lane_gc.sh and test_run_all.sh.  This lib
+# SOURCES that one and callers use its `holder_*` names directly; there is no
+# occt_*-prefixed forwarder for any of them.  Two such forwarders existed
+# briefly and were removed: a name that only calls another name gives a reader
+# two places to look and a future change two places to edit, for no gain over
+# the rename.
+#
+# What remains here is what is genuinely OCCT-SPECIFIC — the ready-count
+# barrier and gated payload this suite's multi-invocation tests synchronize on,
+# and the exactly-2 specialization of the shared max-concurrency predicate.
 
 # Source guard — prevent double-sourcing.
 if [ "${_REIFY_OCCT_FLOCK_GATE_LIB_SH_SOURCED:-}" = "1" ]; then
@@ -37,96 +47,95 @@ if [ "${_REIFY_OCCT_FLOCK_GATE_LIB_SH_SOURCED:-}" = "1" ]; then
 fi
 _REIFY_OCCT_FLOCK_GATE_LIB_SH_SOURCED=1
 
-# Lower bound (ms): proves the 3rd invocation was serialized.
-# All-parallel N>=3 finishes ~400ms; >=700ms means at least one invocation waited.
-OCCT_SERIAL3_N2_LOW_MS=700
-
-# Upper bound (ms): load-tolerant sanity ceiling, raised 1200->2000->5000 per esc-3939-94.
-# Observed 3317ms (Test 21B) under task/3443 verify load: process-spawn latency for
-# `timeout … bash -c 'sleep 0.4'` inflated slot hold-time beyond 2000ms with no
-# logic defect.  5000ms still flags gross wedges (a true hang is LOCK_WAIT territory:
-# minutes, not seconds) while avoiding spurious failures under heavy verify-pipeline
-# concurrency.
-OCCT_SERIAL3_N2_HIGH_MS=5000
-
-# occt_serial3_n2_within_bounds MS
-# Returns 0 (success) if MS is in [OCCT_SERIAL3_N2_LOW_MS, OCCT_SERIAL3_N2_HIGH_MS].
-# Returns 1 (failure) otherwise.
-occt_serial3_n2_within_bounds() {
-    local ms="$1"
-    [ "$ms" -ge "$OCCT_SERIAL3_N2_LOW_MS" ] && [ "$ms" -le "$OCCT_SERIAL3_N2_HIGH_MS" ]
+_reify_occt_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[ -f "$_reify_occt_lib_dir/slot_holder_handshake_lib.sh" ] || {
+    echo "ERROR: slot_holder_handshake_lib.sh not found at $_reify_occt_lib_dir/slot_holder_handshake_lib.sh" >&2
+    return 1 2>/dev/null || exit 1
 }
+# shellcheck disable=SC1090,SC1091
+source "$_reify_occt_lib_dir/slot_holder_handshake_lib.sh"
+unset _reify_occt_lib_dir
 
-# occt_max_concurrent_holders EVENT_LOG
-# R-technique predicate (PRD docs/prds/infra-test-wallclock-deflake.md §2/T3).
-# Reads a slot event log (REIFY_SLOT_EVENT_LOG format from
-# scripts/lib_slot_acquire.sh) and echoes to stdout the maximum number of
-# slots held simultaneously across all events recorded in the log.
+# occt_wait_for_ready_count BARRIER_DIR N [BASE_ITERS=100]
+# Return 0 once BARRIER_DIR holds at least N `ready-*` files — the multi-payload
+# form of the ready-file handshake, used by Tests 20, 21A and 21B where several
+# wrapper invocations each announce that they now hold a slot.
 #
-# Log line format:
-#   <epoch_ns> <pid> ACQUIRE slot-N   (emitted by slot_acquire on success)
-#   <epoch_ns> <pid> RELEASE          (emitted by caller before closing FD 9)
+# Waiting for a COUNT rather than a named marker is what lets a test with N
+# slots and more than N invocations synchronize at all: waiting for every
+# payload would deadlock, since the surplus invocations cannot enter their
+# critical section until an earlier one leaves.
 #
-# Why sort -n by the leading epoch-ns field (NOT physical line order):
-#   Concurrent wrapper PIDs write via O_APPEND (atomic EoF appends), but the
-#   OS may schedule competing appends in any order, so physical line order may
-#   differ from nanosecond-timestamp order.  The CAUSAL ORDERING INVARIANT in
-#   scripts/lib_slot_acquire.sh guarantees ts(prev RELEASE) < ts(next ACQUIRE),
-#   so ns-sorted order is the canonical causal sequence.
-#
-# Echoes an integer >= 0.  Empty log or RELEASE-only log → 0.
-occt_max_concurrent_holders() {
-    local _log="$1"
-    sort -n "$_log" | awk '
-        $3 == "ACQUIRE" { c++; if (c > m) m = c }
-        $3 == "RELEASE" { c-- }
-        END { print m+0 }
-    '
-}
-
-# occt_wait_until_slot_held SLOT_FILE [MAX_ITERS=100]
-# Causal flock-probe barrier (PRD docs/prds/merge-gate-health.md W4b, task 5258).
-#
-# Polls a NON-BLOCKING `flock -n -x 9` probe on SLOT_FILE until the probe FAILS —
-# proving some other process actually HOLDS the slot's exclusive flock — then
-# returns 0.  A probe that SUCCEEDS means the slot is FREE (no holder yet), so we
-# keep polling.  Returns non-zero if MAX_ITERS polls (× 0.2s) elapse without ever
-# observing the slot held.
-#
-# WHY: replaces the fixed `sleep 0.2` holder-grace in Tests 14/15/22.  Under load
-# a background holder subshell may not be scheduled within a fixed sleep, leaving
-# the slot FREE when the wrapper runs → the wrapper acquires instantly (got 0 /
-# elapsed 0s) instead of blocking.  Gating on the CAUSAL fact "a holder holds the
-# slot" eliminates that race.  The barrier asserts a causal OUTCOME (probe fails),
-# NEVER an elapsed magnitude, so it adds no wall-clock upper-bound assertion
-# (respects the test_no_new_wallclock_upper_bounds guard, task 5257 / PRD W4a).
-# This is the external-holder analogue of the ready-file barrier Tests 19/21A use.
-#
-# The MAX_ITERS×0.2s bound (default ~20s) is a BROKEN-INFRA BACKSTOP so a
-# never-arriving holder cannot hang the suite — it is NOT a timing assertion.
-#
-# `9>>"$slot"` opens the slot file for append (creating it if absent), so a probe
-# that races ahead of the holder self-heals: both converge on the same inode.
-# The probe runs as an `if` condition so a non-zero `flock -n` return does not
-# trip `set -euo pipefail`.
-occt_wait_until_slot_held() {
-    local slot="$1"
-    local max_iters="${2:-100}"
-    local i=0
-    while [ "$i" -lt "$max_iters" ]; do
-        # Probe SUCCEEDS (rc 0) ⇒ slot FREE ⇒ keep polling; FAILS (rc≠0) ⇒ a
-        # holder holds the slot ⇒ confirmed.
-        if ! ( flock -n -x 9 ) 9>>"$slot"; then
+# BASE_ITERS x 0.2s (load-scaled) is a BROKEN-INFRA BACKSTOP so a payload that
+# never arrives cannot hang the suite — it is NOT a timing assertion.  Callers
+# assert on the resulting event log, so an exhausted budget yields a clean RED
+# rather than a hang.
+occt_wait_for_ready_count() {
+    local _dir="$1" _want="$2"
+    local _budget
+    _budget="$(load_tolerant_attempts "${3:-100}")"
+    local _i=0
+    while [ "$_i" -lt "$_budget" ]; do
+        if [ "$(find "$_dir" -maxdepth 1 -name 'ready-*' | wc -l)" -ge "$_want" ]; then
             return 0
         fi
         sleep 0.2
-        i=$(( i + 1 ))
+        _i=$(( _i + 1 ))
     done
     return 1
 }
-# Exported so the bounds-file negative unit test (`bash -c "! occt_wait_...")
-# runs the REAL helper in the child shell (else it is a vacuous command-not-found).
-export -f occt_wait_until_slot_held
+export -f occt_wait_for_ready_count
+
+# occt_hold_until_go [BASE_ITERS=300]
+# THE gated payload every barrier-synchronized wrapper invocation in this suite
+# runs, in one place instead of pasted into each `bash -c` body.
+#
+# Announce "I now hold a slot" by touching ready-$$ in OCCT_BARRIER_DIR, then
+# keep holding until the TEST touches `go`.  Pinning the holders that way is
+# what MAKES the contention happen rather than hoping the spawns overlap, and it
+# is the payload half of the handshake whose waiting half is
+# occt_wait_for_ready_count above.
+#
+# OCCT_BARRIER_DIR arrives through the ENVIRONMENT (a `VAR=... "$WRAPPER"`
+# prefix at the call site), not by interpolating the path into a quoted script
+# body.  The body is then a single identifier, so the ten call sites cannot
+# drift from one another the way ten pasted copies of the loop could.
+#
+# BASE_ITERS x 0.2s (load-scaled) is a BROKEN-INFRA BACKSTOP so a test that dies
+# before touching `go` cannot leave a payload holding a slot forever -- it is
+# NOT a timing assertion.  The base is deliberately LARGER than
+# occt_wait_for_ready_count's, because the hold must outlive the barrier that
+# waits on it: were they equal, a slow-but-healthy run could have the hold
+# expire at the same moment the barrier gave up, and both scale by the same
+# factor so the ordering holds at every load level.
+occt_hold_until_go() {
+    local _dir="${OCCT_BARRIER_DIR:?occt_hold_until_go: OCCT_BARRIER_DIR must be set by the caller}"
+    local _budget
+    _budget="$(load_tolerant_attempts "${1:-300}")"
+    touch "$_dir/ready-$$"
+    local _i=0
+    while [ ! -e "$_dir/go" ] && [ "$_i" -lt "$_budget" ]; do
+        sleep 0.2
+        _i=$(( _i + 1 ))
+    done
+}
+# Exported so it survives the `"$WRAPPER" bash -c` hop at every call site (and
+# so the bounds-file unit cases run the REAL helper in their child shell).
+export -f occt_hold_until_go
+
+# occt_serial3_n2_serialized EVENT_LOG
+# Returns 0 iff the log shows a maximum of EXACTLY 2 slots held at once — the
+# causal signature of three invocations correctly serialized behind a 2-slot
+# cap.  Replaces the retired [700,5000]ms band (see the header): 1 means the
+# gate over-serialized to N=1, 3 means the cap was lost, 0 means no wrapper
+# ever recorded an acquire, and all four cases are now distinguishable.
+occt_serial3_n2_serialized() {
+    [ "$(holder_max_concurrent "$1")" -eq 2 ]
+}
+# Exported so the bounds-file negative unit tests (`bash -c "! occt_serial3..."`)
+# run the REAL helper in the child shell rather than a vacuous
+# command-not-found.
+export -f occt_serial3_n2_serialized
 
 # occt_plan_grep_or_dump PATTERN PLAN ERRFILE
 # Plan-grep with an on-no-match child-stderr dump (task 5258, PRD
@@ -164,5 +173,5 @@ occt_plan_grep_or_dump() {
     return 1
 }
 # Exported so the bounds-file negative unit test runs the real helper in its
-# `bash -c` child shell (matching occt_wait_until_slot_held above).
+# `bash -c` child shell (matching occt_serial3_n2_serialized above).
 export -f occt_plan_grep_or_dump

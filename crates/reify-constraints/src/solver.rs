@@ -265,8 +265,11 @@ const SEED_NUDGE_ABS: f64 = 1e-6;
 /// entry and keep the solver's own value.
 ///
 /// An empty `dependent_cells` returns without touching `values` OR running any
-/// of the guard work — that zero-cost skip is what keeps every non-clustered
-/// solve byte-identical to its pre-joint-drive behaviour (PRD §6.2).
+/// of the guard work — that skip is what keeps every non-clustered solve
+/// byte-identical to its pre-joint-drive BEHAVIOUR (PRD §6.2).  What the
+/// #5721 split's returned vector does and does not cost on that skip is
+/// accounted for on [`fold_dependent_cells_skipping_collisions`]; it is no
+/// longer a claim about identical codegen.
 ///
 /// # Hot-path cost model (task #5720)
 ///
@@ -312,6 +315,30 @@ const SEED_NUDGE_ABS: f64 = 1e-6;
 /// topological order with the `EvalContext` rebuilt against the RUNNING map
 /// each iteration (PRD §6.3 single-authority-on-order), and the
 /// `is_solver_owned` guard that stops a fold from clobbering a trial auto.
+///
+/// # Split into a reporting sibling (task #5721)
+///
+/// The body proper lives in
+/// [`fold_dependent_cells_skipping_collisions`], which RETURNS the ids it
+/// skipped; this function is a thin wrapper that defers the alarm to that
+/// list.  The split exists because the collision contract has two halves —
+/// the ALARM below, and the SKIP that keeps the solver's value — and before
+/// the split only the alarm was reachable under `cargo test`: the per-cell
+/// `debug_assert!(false, ..)` panicked at the FIRST collision, so every
+/// assertion about what the fold does AFTER skipping was dead code in the
+/// debug profile.  Hoisting the decision out makes the skip semantics
+/// assertable unconditionally, in both profiles.
+///
+/// Two consequences of deferring the assert, both deliberate:
+///
+/// * the alarm now reports EVERY colliding cell rather than only the first,
+///   which is strictly more diagnostic for a membership drift that hits
+///   several cells at once;
+/// * in a debug build the panic therefore fires after the whole list has been
+///   folded rather than at the first collision.  That is unobservable: a
+///   `debug_assert!` unwinds, and `values` is a `&mut` borrow the caller drops
+///   on unwind, so no partially-folded map can escape.
+#[inline]
 pub(crate) fn fold_dependent_cells(
     values: &mut ValueMap,
     dependent_cells: &[(ValueCellId, CompiledExpr)],
@@ -319,23 +346,82 @@ pub(crate) fn fold_dependent_cells(
     is_solver_owned: impl Fn(&ValueCellId) -> bool,
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) {
+    let collisions = fold_dependent_cells_skipping_collisions(
+        values,
+        dependent_cells,
+        functions,
+        is_solver_owned,
+        dispatch,
+    );
+    debug_assert!(
+        collisions.is_empty(),
+        "fold_dependent_cells: dependent cell(s) {collisions:?} — each \
+         collides with an auto param — reify-eval's `build_dependent_cells` \
+         excludes autos by construction, so this means upstream membership \
+         drifted. Skipping the entries to keep the solver's value."
+    );
+}
+
+/// [`fold_dependent_cells`]' body, reporting rather than asserting: folds the
+/// list exactly as the wrapper's contract describes and RETURNS, in stored
+/// order, the ids it skipped because `is_solver_owned` claimed them.
+///
+/// Do NOT call this from production code — every production caller goes
+/// through [`fold_dependent_cells`] and keeps the debug alarm.  That rule is
+/// enforced by the VISIBILITY, not by this paragraph (task #5721 review): the
+/// function is private rather than `pub(crate)`, so a future sibling module —
+/// cpsat already calls the wrapper — cannot pick the alarm-free variant and
+/// quietly drop the drift alarm this split exists to strengthen.  The only
+/// non-production caller is this file's `mod tests`, which reaches it through
+/// `super::`, so private is sufficient.
+///
+/// It exists so the SKIP half of the collision contract — "pass the entry over
+/// and keep the solver's own value" — is assertable in every profile, which it
+/// is not through the wrapper: in debug the wrapper's `debug_assert!` unwinds
+/// before a caller can inspect the map.
+///
+/// An empty returned vector is the ONLY correct steady state; a non-empty one
+/// means reify-eval's `build_dependent_cells` membership drifted.
+///
+/// # What the returned vector costs on the hot path
+///
+/// The empty-`dependent_cells` early return is preserved: it still touches
+/// neither `values` nor any of the guard work, which is what keeps every
+/// non-clustered solve behaviourally unchanged (PRD §6.2).  What it is no
+/// longer, strictly, is byte-identical CODEGEN — the skip now constructs and
+/// drops a `Vec`.  `Vec::new()` does not allocate, so a clean fold — the
+/// overwhelmingly common case — still allocates nothing, but the construct and
+/// its drop branch are not literally nothing, and in release the
+/// `debug_assert!` that consumes the vector is compiled out entirely.  Both
+/// this function and its wrapper therefore carry `#[inline]`, so the empty
+/// round trip reliably vanishes instead of depending on LLVM to inline an
+/// unannotated call on the Nelder-Mead path.
+///
+/// On a genuinely DRIFTED list a release build now does one `id.clone()` plus
+/// a heap allocation per trial where it previously did nothing at all.  That is
+/// the degraded mode, not the steady state, and it is what buys the release
+/// profile the observable seam its half of the contract is asserted through.
+#[inline]
+fn fold_dependent_cells_skipping_collisions(
+    values: &mut ValueMap,
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
+    functions: &[CompiledFunction],
+    is_solver_owned: impl Fn(&ValueCellId) -> bool,
+    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
+) -> Vec<ValueCellId> {
+    let mut collisions = Vec::new();
     if dependent_cells.is_empty() {
-        return;
+        return collisions;
     }
     for (id, expr) in dependent_cells {
         if is_solver_owned(id) {
-            debug_assert!(
-                false,
-                "fold_dependent_cells: dependent cell {id:?} collides with an \
-                 auto param — reify-eval's `build_dependent_cells` excludes \
-                 autos by construction, so this means upstream membership \
-                 drifted. Skipping the entry to keep the solver's value."
-            );
+            collisions.push(id.clone());
             continue;
         }
         let v = reify_expr::eval_expr(expr, &ctx_with(values, functions, dispatch));
         values.insert(id.clone(), v);
     }
+    collisions
 }
 
 /// Materialise the ValueMap an objective SCORE is read from: the problem's base
@@ -2808,6 +2894,66 @@ fn solve_cost_robustness_tradeoff(
         ..problem.clone()
     };
     solve_core_with_sd_tolerance(&blend_problem, initial, NM_SD_TOLERANCE, false, dispatch)
+}
+
+// ---------------------------------------------------------------------------
+// Solver half of the `ResolutionProblem` field-set pin (task #5721 review).
+// Placed HERE, beside the three anchor/blend spreads above, so the compile
+// break lands in the file whose sites it affects.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod resolution_problem_spread_pin {
+    use super::ResolutionProblem;
+
+    /// COMPILE-TIME DRIFT TRIPWIRE for the `ResolutionProblem` field set —
+    /// solver half; twin of `registry.rs`'s
+    /// `resolution_problem_field_set_is_pinned_at_the_registry_spread_sites`,
+    /// whose doc carries the full rationale.
+    ///
+    /// SIX production sites in this crate build a `ResolutionProblem` with
+    /// functional-update syntax, inheriting every field their literal does not
+    /// name:
+    ///
+    /// - `solver.rs`: `solve_cost_robustness_tradeoff`'s `cost_problem`,
+    ///   `rob_problem` and `blend_problem` — the three directly above
+    /// - `registry.rs`: `solve_inner`'s `sub_problem`,
+    ///   `solve_lexicographic`'s `stage_problem` and its degenerate
+    ///   single-priority `ws_problem`
+    ///
+    /// Anchors only, deliberately: restating each literal's override/inherit
+    /// set is the prose that drifts. Read the literal.
+    ///
+    /// The exhaustive destructure carries NO `..` rest pattern, so adding a
+    /// seventh field fails to COMPILE (E0027) in BOTH files, and the author of
+    /// that field is forced to visit every site and decide whether wholesale
+    /// inheritance is right — the failure mode the spreads themselves cannot
+    /// catch (they stop a new field being silently DROPPED, not one being
+    /// silently INHERITED, which is what #5720 had to retrofit for
+    /// `dependent_cells`). Both guards are kept; this is ADDITIVE.
+    ///
+    /// The duplicated pin is deliberate rather than a shared helper: its whole
+    /// value is WHERE the compile error lands, and one copy would hand the
+    /// author a single file's list while half the sites live in the other.
+    ///
+    /// Destructuring a REFERENCE keeps this free — no `ResolutionProblem` is
+    /// constructed, and binding every field to `_` raises no unused warning.
+    #[test]
+    fn resolution_problem_field_set_is_pinned_at_the_solver_spread_sites() {
+        fn pin(p: &ResolutionProblem) {
+            let ResolutionProblem {
+                auto_params: _,
+                constraints: _,
+                current_values: _,
+                objective: _,
+                functions: _,
+                dependent_cells: _,
+            } = p;
+        }
+
+        // Reference `pin` so it is not dead code; calling it would need a
+        // constructed problem, which the tripwire deliberately does not need.
+        let _ = pin as fn(&ResolutionProblem);
+    }
 }
 
 /// Returns `true` if `a` and `b` agree within the project's uniqueness
@@ -9264,36 +9410,26 @@ mod tests {
         );
     }
 
-    /// BT-2 never-overwrite-auto INVARIANT (PRD §6.2 first INVARIANT).
+    /// The hostile auto-collision fixture shared by the three BT-2 collision
+    /// tests below.
     ///
-    /// Hands the fold a hostile/malformed `dependent_cells` list whose entry id
-    /// COLLIDES with an auto param — a list reify-eval's `build_dependent_cells`
-    /// would never emit, since stage (a) drops autos by construction. The trial
-    /// auto scalar must survive: silently clobbering it would corrupt the point
-    /// Nelder-Mead thinks it is evaluating, and the corruption would be
-    /// invisible (the solver would report a solved auto it never actually
-    /// tested).
+    /// Returns `(auto id, base values, auto params, dependent cells)` for a
+    /// malformed `dependent_cells` list whose SOLE entry is keyed on the AUTO's
+    /// own id — a list reify-eval's `build_dependent_cells` would never emit,
+    /// since stage (a) drops autos by construction.  The entry evaluates to
+    /// `unit_cost * unit_cost` = 0.5 * 0.5 = 0.25, which is neither trial point,
+    /// so a clobber is unmistakable.
     ///
-    /// This guards against upstream membership DRIFT, not against today's
-    /// contract — which is exactly why it must be enforced rather than assumed.
-    ///
-    /// The guard is profile-split, and this one test pins BOTH halves rather
-    /// than taking either on trust — the `should_panic` attribute is itself
-    /// `cfg_attr`-gated on `debug_assertions`, so the same body asserts a
-    /// different contract per profile:
-    ///
-    /// * debug (`cargo test`) — the `debug_assert!` fires, and the expected
-    ///   panic substring pins that the alarm NAMES the offending cell. A
-    ///   membership regression in reify-eval must not reach production quietly.
-    /// * release — there is no alarm, so the entry is skipped, the body runs to
-    ///   completion, and its assertions pin that the trial scalar survived.
-    #[test]
-    #[cfg_attr(
-        debug_assertions,
-        should_panic(expected = "collides with an auto param")
-    )]
-    fn fold_must_never_overwrite_an_auto_param() {
-        use super::build_trial_values;
+    /// One fixture, three tests: the unconditional helper-level test, and the
+    /// two cfg-gated end-to-end siblings that drive `build_trial_values`. They
+    /// must stay on the SAME hostile input or the profile halves stop being
+    /// comparable.
+    fn hostile_auto_collision_fixture() -> (
+        reify_core::ValueCellId,
+        ValueMap,
+        Vec<reify_ir::AutoParam>,
+        Vec<(reify_core::ValueCellId, reify_ir::CompiledExpr)>,
+    ) {
         use reify_core::{DimensionVector, Type, ValueCellId};
         use reify_ir::{AutoParam, BinOp, CompiledExpr, Value};
 
@@ -9316,9 +9452,6 @@ mod tests {
             free: true,
         }];
 
-        // HOSTILE: a dependent cell keyed on the AUTO's own id. Evaluating it
-        // would yield 0.5 * 0.5 = 0.25, which is neither trial point — so a
-        // clobber is unmistakable.
         let money = Type::Scalar {
             dimension: DimensionVector::MONEY,
         };
@@ -9331,6 +9464,155 @@ mod tests {
                 Type::dimensionless_scalar(),
             ),
         )];
+
+        (q_id, base, auto_params, hostile)
+    }
+
+    /// BT-2 never-overwrite-auto INVARIANT — the half that is assertable in
+    /// EVERY profile (task #5721 item 3).
+    ///
+    /// The collision contract has two halves: an ALARM (debug trips a
+    /// `debug_assert!` so a reify-eval membership regression cannot reach
+    /// production quietly) and a SKIP (the entry is passed over and the
+    /// solver's own value survives, so a drifted list degrades rather than
+    /// silently corrupting the point Nelder-Mead thinks it is evaluating).
+    ///
+    /// Before #5721 only the alarm was reachable under `cargo test`: the
+    /// per-cell `debug_assert!(false, ...)` panicked at the FIRST collision, so
+    /// every assertion about the skip lived downstream of an unconditional
+    /// panic and was dead code in the debug profile — which is the profile a
+    /// bare `cargo test -p reify-constraints` and every `DF_VERIFY_ROLE=task`
+    /// verify run. The skip half was therefore only exercised at merge, where
+    /// verify.sh's `--profile both` reaches release.
+    ///
+    /// [`super::fold_dependent_cells_skipping_collisions`] hoists the collision
+    /// DECISION out from behind that assert and returns the skipped ids, so
+    /// both halves become assertable here with NO cfg gate and NO
+    /// `should_panic`:
+    ///
+    /// * the returned list is exactly the colliding id — this is where "the
+    ///   alarm NAMES the offending cell" is actually pinned, in every profile.
+    ///   (The `should_panic` substring never contained the cell name; only the
+    ///   formatted message it is a substring of does.)
+    /// * the map still holds the trial scalar, not the folded expression's
+    ///   value — the release-side skip-and-preserve contract.
+    ///
+    /// The end-to-end wiring through the real `build_trial_values` call site
+    /// stays pinned by the two cfg-gated siblings below; this test deliberately
+    /// exercises the extracted helper instead, because that is the only way to
+    /// observe the fold BODY running past a collision in a debug build.
+    #[test]
+    fn fold_skips_a_colliding_cell_and_keeps_the_solver_value_in_either_profile() {
+        use reify_core::DimensionVector;
+        use reify_ir::Value;
+
+        let (q_id, base, _auto_params, hostile) = hostile_auto_collision_fixture();
+
+        for trial in [2.0_f64, 8.0_f64] {
+            // Mirror the state `build_trial_values` hands the fold: the base
+            // cells, plus the trial auto already inserted.
+            let mut values = base.clone();
+            values.insert(
+                q_id.clone(),
+                Value::Scalar {
+                    si_value: trial,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                },
+            );
+
+            let skipped = super::fold_dependent_cells_skipping_collisions(
+                &mut values,
+                &hostile,
+                &[],
+                |id| id == &q_id,
+                None,
+            );
+
+            assert_eq!(
+                skipped,
+                vec![q_id.clone()],
+                "the fold must REPORT the colliding cell by id, so the debug \
+                 alarm has something to name and a release build still has a \
+                 seam a caller could observe; got {skipped:?}"
+            );
+
+            match values.get(&q_id) {
+                Some(&Value::Scalar { si_value, .. }) => assert!(
+                    (si_value - trial).abs() < 1e-12,
+                    "the fold must NEVER overwrite an auto param's trial \
+                     scalar: expected {trial}, got {si_value}. A dependent-cell \
+                     id colliding with an auto id means upstream membership \
+                     drifted; the trial point must still win (0.25 here would \
+                     be the folded expression clobbering it)."
+                ),
+                other => panic!("expected a Scalar at the auto id, got {other:?}"),
+            }
+        }
+    }
+
+    /// BT-2 never-overwrite-auto INVARIANT (PRD §6.2 first INVARIANT) — the
+    /// DEBUG half: the alarm must FIRE on the production path.
+    ///
+    /// Hands the fold a hostile/malformed `dependent_cells` list whose entry id
+    /// COLLIDES with an auto param — a list reify-eval's `build_dependent_cells`
+    /// would never emit, since stage (a) drops autos by construction. This
+    /// guards against upstream membership DRIFT, not against today's contract,
+    /// which is exactly why it must be enforced rather than assumed.
+    ///
+    /// Drives the REAL `build_trial_values` call site rather than the extracted
+    /// helper, so what is pinned here is the end-to-end wiring: a membership
+    /// regression reaching `build_trial_values` must trip the `debug_assert!`
+    /// rather than pass quietly into production.
+    ///
+    /// What this pins, precisely: that the alarm fires, and that its message
+    /// contains "collides with an auto param". It does NOT pin that the alarm
+    /// NAMES the offending cell — `should_panic` matches a substring of the
+    /// formatted message, and this substring never contained the cell name. The
+    /// cell-naming, and the skip-and-preserve behaviour, are pinned in EVERY
+    /// profile by
+    /// `fold_skips_a_colliding_cell_and_keeps_the_solver_value_in_either_profile`
+    /// above.
+    ///
+    /// One trial point suffices: the panic is unconditional on the collision,
+    /// so looping would add nothing, and any assertion placed after the call
+    /// would be unreachable. The surviving-trial-scalar half lives in the
+    /// `#[cfg(not(debug_assertions))]` sibling below.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "collides with an auto param")]
+    fn fold_collision_alarm_fires_on_the_production_path_in_debug() {
+        use super::build_trial_values;
+
+        let (_q_id, base, auto_params, hostile) = hostile_auto_collision_fixture();
+
+        let _ = build_trial_values(&base, &auto_params, &[2.0_f64], &hostile, &[], None);
+    }
+
+    /// BT-2 never-overwrite-auto INVARIANT (PRD §6.2 first INVARIANT) — the
+    /// RELEASE half: end-to-end, the trial scalar SURVIVES a collision.
+    ///
+    /// Same hostile fixture, same `build_trial_values` call site. In release
+    /// there is no alarm, so the call runs to completion and the fold must have
+    /// skipped the colliding entry rather than clobbering the auto with the
+    /// expression's 0.25. Silently clobbering it would corrupt the point
+    /// Nelder-Mead thinks it is evaluating, and the corruption would be
+    /// invisible — the solver would report a solved auto it never actually
+    /// tested.
+    ///
+    /// This is the profile `DF_VERIFY_ROLE=merge` reaches via verify.sh's
+    /// `--profile both`; keeping this sibling is what stops the split from
+    /// trading away coverage that exists today. The same skip-and-preserve
+    /// contract is pinned at the helper level in EVERY profile by
+    /// `fold_skips_a_colliding_cell_and_keeps_the_solver_value_in_either_profile`
+    /// above — this sibling adds that the wiring THROUGH `build_trial_values`
+    /// still delivers it.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn fold_keeps_the_trial_scalar_on_the_production_path_in_release() {
+        use super::build_trial_values;
+        use reify_ir::Value;
+
+        let (q_id, base, auto_params, hostile) = hostile_auto_collision_fixture();
 
         for trial in [2.0_f64, 8.0_f64] {
             let values = build_trial_values(&base, &auto_params, &[trial], &hostile, &[], None);

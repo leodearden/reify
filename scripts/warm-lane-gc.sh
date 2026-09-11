@@ -151,8 +151,18 @@
 #     live-consumer flock is free is reclaimed REGARDLESS of dirty tracked
 #     changes, ahead-of-main tip, or backing-task status. acquire_lane ALWAYS
 #     re-seeds from base (§9.5), so a FREE lane's divergent target/ is never
-#     reused; committed work lives on refs/heads/task/NNNN and reset touches
-#     only target/, never the source tree or branch (sizing-lifecycle T1).
+#     reused; committed work lives on the durable refs/heads/task/NNNN ref and
+#     is never moved, and the reset REPLACES only target/ — its SOLE effect on
+#     the lane's source tree is an mtime re-stamp, never a content change and
+#     never a deletion (sizing-lifecycle T1; pinned by
+#     tests/infra/test_seed_warm_lane.sh Block X).
+#     The re-stamp is the seed's own: seed-warm-lane.sh:1243 walks $LANE_DIR
+#     with `-exec touch -h -d 2020-01-01`, plus the *.rs relink touch at :1525.
+#     The `git clean -xfd -e target` named in that seed's comments (:136, :323,
+#     :1139) is DARK-FACTORY's acquire-step operation acting on the lane from
+#     outside; the seed runs none of git clean/checkout/reset/restore/rm/stash,
+#     and every rm/mv it performs is scoped to $LANE_TARGET or the pool-level
+#     trash sibling (measured, task 7227 / esc-7227-3).
 #     Preserving a flock-free lane's target/ thus yields zero warm-cache value
 #     and only accretes disk. Pass 1 has exactly TWO preserve gates, checked in
 #     this order: (1) the live-consumer flock (inv.2), and (2) a live PROCESS
@@ -606,8 +616,11 @@ _do_reclaim() {
         # consulted. acquire_lane ALWAYS re-seeds a
         # lane from base (cow-seeding §9.5), so a FREE lane's divergent target/
         # is never reused; committed work lives on the durable
-        # refs/heads/task/NNNN branch ref, and reset touches only target/, never
-        # the source tree or branch (sizing-lifecycle Invariant T1). Preserving
+        # refs/heads/task/NNNN branch ref and is never moved, and the reset
+        # REPLACES only target/ — its sole effect on the lane's source tree is
+        # an mtime re-stamp, never a content change and never a deletion
+        # (sizing-lifecycle Invariant T1; task 7227 / esc-7227-3, pinned by
+        # tests/infra/test_seed_warm_lane.sh Block X). Preserving
         # a flock-free lane's target/ therefore yields zero warm-cache value and
         # only accretes disk. The flock (inv.2) and the live process reference
         # above are the two Pass-1 preserve gates; Pass 2 (destructive orphan

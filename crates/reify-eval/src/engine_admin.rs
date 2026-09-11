@@ -1671,10 +1671,15 @@ impl Engine {
             // so the diagnostic would be misleading. The lowering site in
             // `engine_eval.rs` emits its own diagnostic that DOES mention
             // body-inline fallback, where that wording is accurate.
-            None => Err(vec![reify_core::Diagnostic::error(format!(
-                "@optimized target {:?}: no registered compute trampoline",
-                target
-            ))]),
+            //
+            // Both HARD sites build this via
+            // `crate::engine_compute::hard_no_trampoline_diagnostic`, which
+            // single-sources the message from `NO_TRAMPOLINE_STEM` and pins the
+            // severity unconditionally to Error — see its rustdoc for why the
+            // SOFT sites' empty-registry downgrade does not apply here.
+            None => Err(vec![crate::engine_compute::hard_no_trampoline_diagnostic(
+                target,
+            )]),
         }
     }
 

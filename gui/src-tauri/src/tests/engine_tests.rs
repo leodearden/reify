@@ -21207,6 +21207,130 @@ fn apply_param_to_source_preserves_an_existing_staleness_banner_when_it_rejects(
     assert_writeback_untouched(&mut session, &path, writeback_rejection_source());
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// task 5097 δ — EngineSession::apply_param_to_source_str (string-typed front
+// door for the reify-debug `reify_set_parameter` write tool)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn apply_param_to_source_str_parses_a_unit_bearing_literal() {
+    // The δ front door must be a pure PARSE in front of γ's write-back — not a
+    // second write path. Pinned by byte-equality against what the landed
+    // `apply_param_to_source(&mm(120.0))` produces on the same fixture
+    // (`apply_param_to_source_rewrites_only_the_default_span`): only the
+    // `80mm` span moves, the non-ASCII header comment and the `0.5m` default
+    // survive byte for byte.
+    let (_dir, path, mut session) = writeback_session();
+
+    let state = session
+        .apply_param_to_source_str("Part.width", "120mm")
+        .expect("apply_param_to_source_str should succeed on a unit-bearing literal");
+
+    let disk_text = std::fs::read_to_string(&path).expect("disk file should be readable");
+    let expected = writeback_source().replace("80mm", "120mm");
+    assert_eq!(
+        disk_text, expected,
+        "the string front door must splice exactly the span the Value-typed \
+         entry point does — only the default, never a reformat"
+    );
+
+    // eval state ≡ source, exactly as the Value-typed entry point reports it.
+    let width = state
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Part.width")
+        .expect("Part.width should be present in the returned GuiState");
+    assert_eq!((width.value.as_str(), width.unit.as_str()), ("120", "mm"));
+}
+
+#[test]
+fn apply_param_to_source_str_refuses_a_bare_number_on_a_dimensioned_cell() {
+    // The parse is the SAME dimension-aware one the property-panel slider runs
+    // (task #5757): `parse_value_string_for_cell` owns the rule and the
+    // ladder-rung suggestion, so the AI path and the slider can never disagree
+    // about what a value string denotes. Asserted on the message this front
+    // door must NOT re-author, plus the full no-mutation ledger — a refused
+    // parse must not have touched disk, source_map, compile_failure or eval
+    // state.
+    let (_dir, path, mut session) = writeback_session();
+
+    let err = session
+        .apply_param_to_source_str("Part.width", "120")
+        .expect_err("a bare number on a Length cell must be REFUSED");
+    assert!(
+        err.contains("bare number '120'"),
+        "the refusal must be the one parse_value_string_for_cell owns, got: {err}"
+    );
+    assert!(
+        err.contains("120mm"),
+        "the refusal must carry the ladder-rung suggestion (#5757), got: {err}"
+    );
+
+    assert_writeback_untouched(&mut session, &path, writeback_source());
+}
+
+#[test]
+fn apply_param_to_source_str_rejects_an_unknown_cell() {
+    // Cell resolution precedes the parse, so an unknown cell reads as
+    // "Unknown parameter" rather than as a parse diagnostic — the same
+    // ordering `set_parameter` documents, and the taxonomy δ maps into its
+    // tool result.
+    let (_dir, path, mut session) = writeback_session();
+
+    let err = session
+        .apply_param_to_source_str("Part.nope", "1mm")
+        .expect_err("an unknown cell must be REFUSED");
+    assert!(
+        err.contains("Unknown parameter"),
+        "expected the shared unknown-cell rejection, got: {err}"
+    );
+
+    assert_writeback_untouched(&mut session, &path, writeback_source());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// task 5097 δ — EngineSession::holds_rejected_source (the write-back interlock)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn holds_rejected_source_tracks_the_compile_failure() {
+    // `build_gui_state().files[].content` is NOT unconditionally the committed
+    // buffer: `build_files_with_live_edit` deliberately SPLICES a recorded
+    // `LiveEdit` failure's rejected source into the matching entry to hold its
+    // one-snapshot invariant (so `files[]` and `compile_diagnostics` come from
+    // the same snapshot). Correct for a read-only snapshot; catastrophic for
+    // any consumer that PERSISTS that content — which is exactly what the
+    // reify-debug `reify_save_file` write tool does.
+    //
+    // This is the predicate such a consumer must consult first. Asserted over
+    // the full round trip, so it cannot regress into a permanent wedge: a
+    // successful recompile clears it via `commit_state`.
+    let (_dir, _path, mut session) = writeback_session();
+
+    assert!(
+        !session.holds_rejected_source(),
+        "a freshly loaded session holds no rejected buffer"
+    );
+
+    session
+        .update_source("part.ri", "structure def Part { param width: Length = ")
+        .expect_err("source that does not parse must be REFUSED");
+    assert!(
+        session.holds_rejected_source(),
+        "a refused recompile RECORDS the rejected source (record_compile_failure), \
+         which build_files_with_live_edit then surfaces in files[].content"
+    );
+
+    session
+        .update_source("part.ri", writeback_source())
+        .expect("a buffer that compiles must be accepted");
+    assert!(
+        !session.holds_rejected_source(),
+        "a successful commit_state clears compile_failure — the interlock is \
+         transient, not a permanent wedge"
+    );
+}
+
 /// Task 5212 (GUI reload wiring): every whole-file reload entry
 /// (`load_from_source` / `load_file` / `update_source`) funnels through
 /// `EngineSession::check_with_solve_slot`, which must reset the geometry kernel
@@ -21280,3 +21404,53 @@ fn whole_file_reload_resets_geometry_kernel_once_per_reload_slider_does_not() {
     );
 }
 
+
+/// `source_key_matches_path` is DIRECTIONAL, and both of its live call sites
+/// depend on that. `debug_server::filter_diagnostics_for_file` calls it
+/// `(stamped_key, caller_path)`; `update_source_target_matches_active` calls
+/// it `(caller_spelling, active_path)`. Both put the possibly-stem-only
+/// spelling first and the real filesystem path second — but only the second
+/// argument's stem is ever taken, so swapping them changes the answer.
+///
+/// Pinned here (rather than only through the two debug_server predicates that
+/// consume it) so a future tightening — rejecting an absolute first argument,
+/// or taking stems on BOTH sides — cannot silently break the active-file guard
+/// while the diagnostics filter stays green (task #5097 δ, review finding).
+#[cfg(feature = "gui")]
+#[test]
+fn source_key_matches_path_is_directional() {
+    use crate::engine::source_key_matches_path;
+
+    // Direction 1 — the diagnostics filter: the engine stamps the stem-only
+    // module key, the caller supplies a real path.
+    assert!(
+        source_key_matches_path("part.ri", "/tmp/x/part.ri"),
+        "the stamped module key must match the caller's real path"
+    );
+    // Direction 2 — the active-file guard: an AI client echoes back the
+    // stem-only key it read off a diagnostic, the session holds a real path.
+    assert!(
+        source_key_matches_path("part.ri", "/home/u/proj/part.ri"),
+        "the guard must accept the stem-only spelling of the active file"
+    );
+    // Verbatim equality is accepted in either direction (the `==` arm).
+    assert!(source_key_matches_path("/tmp/x/part.ri", "/tmp/x/part.ri"));
+    assert!(source_key_matches_path("part.ri", "part.ri"));
+
+    // THE ASYMMETRY. Only the SECOND argument's stem is taken, so the reverse
+    // of the accepting case above is a REJECT. This is not an accident to be
+    // "cleaned up": both call sites are written to it.
+    assert!(
+        !source_key_matches_path("/tmp/x/part.ri", "part.ri"),
+        "the loose (stem-only) side is the FIRST argument, never the second"
+    );
+
+    // It still discriminates on the stem — a different file is not the same
+    // file in either direction.
+    assert!(!source_key_matches_path("other.ri", "/tmp/x/part.ri"));
+    assert!(!source_key_matches_path("part.ri", "/tmp/x/other.ri"));
+
+    // A path with no file stem cannot match anything but itself.
+    assert!(!source_key_matches_path("part.ri", "/"));
+    assert!(source_key_matches_path("/", "/"));
+}

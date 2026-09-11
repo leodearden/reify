@@ -8,6 +8,10 @@
 //                            (undamped solve; default behaviour)
 //   - `RayleighDamping`    — proportional damping (alpha, beta) refining
 //                            `DampingDescriptor`
+//   - `MaterialDamping`    — modal-strain-energy damping from the material's
+//                            own loss factor, plus an additive `extra`
+//                            descriptor; refines `DampingDescriptor`
+//                            (task #6878)
 //   - `Mode`               — single (frequency, shape, participation, damping)
 //                            modal eigenpair
 //   - `ModalResult`        — solver-output container (part, modes, BCs,
@@ -160,6 +164,103 @@ structure def NoDamping : DampingDescriptor { }
 structure def RayleighDamping : DampingDescriptor {
     param alpha : Frequency
     param beta : Time
+}
+
+// ── MaterialDamping ──────────────────────────────────────────────────────────
+
+// `MaterialDamping` selects the MODAL-STRAIN-ENERGY (MSE) value source for
+// `Mode.damping_ratio` (task #6878, PRD leaf β of
+// docs/prds/v0_6/damped-modal-bonded-heterogeneous.md §C5).
+//
+// CANONICAL — this block is the single in-repo, author-facing expansion of
+// PRD §C5's derivation. The Rust sites that implement it (`plan_modal_damping`,
+// `DampingKind::Material`, `ModalDampingPlan` and the producer in
+// crates/reify-eval/src/modal_ops.rs) CITE it rather than restating it, so a
+// later leaf that makes ζ genuinely mode-dependent (the heterogeneous MSE
+// post-process) has one place to edit. Per mode i:
+//
+//     ζ_i = ½ · (Σ_e η_e · SE_e) / (Σ_e SE_e)  +  ζ_extra(ω_i)
+//
+// where SE_e is element e's modal strain energy in mode shape φ_i and η_e is
+// the loss factor of the material occupying that element. The MSE weighting is
+// what makes ζ mode-DEPENDENT in a heterogeneous model: a mode that stores most
+// of its energy in the lossy zone is damped more than one that does not.
+//
+// THE DEGENERATE IDENTITY (check it by hand). With a SINGLE material the
+// energy ratio collapses: every η_e is the same η, so
+// Σ_e η·SE_e / Σ_e SE_e = η · (Σ_e SE_e / Σ_e SE_e) ≡ 1 · η for ANY mode shape
+// whatsoever, and therefore
+//
+//     ζ_i = η / 2   exactly, for every FLEXIBLE mode, independent of φ_i.
+//
+// That is what today's homogeneous FEA path delivers, and it needs no
+// eigensolve accuracy at all — the ratio is 1 by construction, not by
+// convergence. The genuinely per-element weighted sum (the heterogeneous case,
+// where the ratio is no longer 1) is a later leaf of the same PRD and is
+// deliberately NOT implemented by #6878.
+//
+// THE IDENTITY DOES NOT REACH ω ≈ 0 — hence the "FLEXIBLE" qualifier above. A
+// rigid-body or spurious mode (which `modal_analysis` reports under
+// `W_ModalRigidBodyMode` for an under-constrained model) stores no strain
+// energy, so the ratio's denominator vanishes and η/2 is not the right answer
+// there. Such a mode reports
+//
+//     ζ_i = 0,
+//
+// exactly as `RayleighDamping` already does, through the SAME ω-floor — both
+// halves share one, so the two descriptors cannot drift apart on this. The
+// argument for that floor is owned by `total_damping_ratio`
+// (crates/reify-stdlib/src/modal/free_vibration.rs) and is not restated here.
+//
+// COMPOSITION IS ADDITIVE AND EXPLICIT, NEVER IMPLICIT. `extra` is a full
+// `DampingDescriptor`, and its contribution is the EXISTING Rayleigh closed
+// form — the same `rayleigh_damping_ratio` the `RayleighDamping` descriptor
+// above is consumed through, called verbatim:
+//
+//     extra = NoDamping()          ⇒ ζ_extra = 0          (the default)
+//     extra = RayleighDamping(α,β) ⇒ ζ_extra = (α + β·ω²) / (2·ω)
+//
+// So a bare `MaterialDamping()` is the pure MSE term and nothing else: there is
+// no hidden second contribution an author did not write. A descriptor the
+// trampoline does not implement in `extra` position is a LOUD partial degrade
+// (the MSE half is applied, the `extra` half contributes 0 under a warning
+// naming the offending nested type) — never a silent drop.
+//
+// η'S PROVENANCE — NOT THIS DECLARATION. The per-material hysteretic loss
+// factor comes from `trait Damped { param loss_factor : Real }` in
+// materials_fea.ri (task #6877), which `trait DampedMaterial : ElasticMaterial
+// + Damped` bundles with the elastic surface. That is why this structure
+// carries NO `loss_factor` of its own: η is a property of the MATERIAL, not of
+// the damping strategy, and duplicating it here would let the two disagree.
+// (Naming trap: the unrelated `trait Damping : MaterialSpec` in
+// materials_mechanical.ri also has a `loss_factor` field. The trait this
+// descriptor reads is `Damped` / `DampedMaterial`, never `Damping`.)
+//
+// FAILURE CONTRACT — LOUD, NEVER A SILENT ζ = 0. `modal_analysis` takes
+// `material : ElasticMaterial` (modal_analysis_fns.ri), which does NOT imply
+// `Damped`, so a material with no `loss_factor` reaches the solver and the
+// compiler cannot catch it. A `MaterialDamping` solve over such a material is
+// an eval-time ERROR that names the offending material and the fix
+// (`E_ModalDampingMaterialNotDamped`, produced by `run_modal_analysis` in
+// crates/reify-eval/src/modal_ops.rs), returning an empty modal result rather
+// than modes carrying `damping_ratio = 0` — a silent zero would be
+// indistinguishable from a genuinely undamped model (PRD §C6, INV-SF-2/SF-6).
+//
+// ANGULAR-RATE CROSS-REFERENCE. `extra`'s coefficients are consumed against the
+// SAME ω = 2π·f as `RayleighDamping`'s own — see the ANGULAR-RATE TRAP note on
+// that declaration above. That cycles/s-vs-s⁻¹ surface is owned by
+// docs/prds/v0_6/angle-units-surface-convergence.md, NOT by this declaration:
+// `MaterialDamping` consumes `RayleighDamping` entirely unchanged through
+// `extra` and adds no new consumption of α's units.
+//
+// The `extra` default below is the stdlib's FIRST trait-typed INSTANCE default
+// — see the note on `ModalOptions`'s defaults further down, which this
+// declaration is the landed precedent for. Pinned by
+// `modal_options_validation_tests::material_damping_structure_shape`.
+//
+// PRD reference: docs/prds/v0_6/damped-modal-bonded-heterogeneous.md §C5/§C6.
+structure def MaterialDamping : DampingDescriptor {
+    param extra : DampingDescriptor = NoDamping()
 }
 
 // ── Mode ─────────────────────────────────────────────────────────────────────
@@ -391,13 +492,19 @@ structure def ModalResult {
 //       PRD §1 example usage, where every caller passes `boundary_conditions:`
 //       and `damping:` explicitly and supplies an excitation
 //       `reference_direction:` (there is no canonical default direction).
-//   (c) A trait-typed default `damping = NoDamping()` is intentionally
-//       DEFERRED to a follow-up: the trait-typed-default and Vector3-literal-
-//       default code-paths are not exercised by any existing stdlib
-//       structure_def, so adding them here would turn a 1-line .ri change
-//       into uncharted compiler territory (plan design-decision-5). Callers
-//       in PRD §1 already pass `damping:` explicitly, so there is no
-//       API-surface regression.
+//   (c) A trait-typed default `damping = NoDamping()` stays DEFERRED as a
+//       plain SCOPE FENCE, not as an unknown: the compiler handles the
+//       trait-typed-default path fine. `MaterialDamping.extra`
+//       (`param extra : DampingDescriptor = NoDamping()`, declared above by
+//       task #6878) is the landed precedent — its default resolves and an
+//       explicit override round-trips. What holds the fence is the API
+//       surface: giving `ModalOptions.damping` a default changes the
+//       construction contract of every existing caller and every member-count
+//       pin, and no task has yet carried a signal for that change. Callers in
+//       PRD §1 already pass `damping:` explicitly, so nothing regresses by
+//       leaving it defaultless. A `reference_direction` default is separately
+//       deferred: no Vector3-literal default is exercised anywhere in the
+//       stdlib, so that half IS still uncharted.
 //
 // NOTE: the three positivity constraints land in step-18 — declared
 // constraintless here so the step-17 RED test fails before that impl.
