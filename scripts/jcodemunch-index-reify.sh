@@ -459,13 +459,11 @@ headroom_note() {
 #
 # THE PIN AND THE INTERPRETER COME FROM THE LIB. `scripts/lib_jcodemunch_pin.sh`,
 # sourced at the top of this file, defines JC_PIN and JC_PYTHON — there and
-# nowhere else (#6454). Its header carries the PIN-BUMP CHECKLIST, why the pin
-# is 1.108.54 rather than the de-published 1.108.27 (PRD §8), and why the
-# interpreter is part of the pin at all: the bare unpinned-interpreter form does
-# not run AT ALL on this host, because uvx defaults to
-# cpython-3.14.0+freethreaded and a transitive dep of the PINNED wheel publishes
-# no 3.14t wheel. Both guard suites cross-check every consumer's CONSTRUCTED
-# argv against the lib, so a one-sided bump fails the gate instead of drifting.
+# nowhere else (#6454). Its header carries the PIN-BUMP CHECKLIST and the
+# provenance of both values, including the measurement that authorises the
+# interpreter. Do NOT restate any of it here: the guard suites cross-check this
+# script's CONSTRUCTED argv against the lib, but nothing cross-checks this
+# COMMENT against it, so a second copy of a measurement record drifts unseen.
 # ── THE IDENTITY LEVER IS PART OF THE INVOCATION (esc-6107-6/-7) ─────────────
 #
 # `local/<basename>-<sha1>` is NOT what jcodemunch resolves by default. At the

@@ -13,47 +13,21 @@
 # index it is being asked to query is silent at the call site: the session
 # opens, the query answers, and the answer is merely wrong.
 #
-# ── THE CONSUMERS, AND WHY TWO OF THEM STAY LITERAL ─────────────────────────
-#
-# THREE PRODUCTION CONSUMERS source or read this file:
-#   * β  scripts/jcodemunch-index-reify.sh    — the `watch --once` indexer;
-#   * δ  scripts/with-jcodemunch-serve.sh     — the transient-serve wrapper;
-#   * α  crates/reify-audit/tests/jcodemunch_session_live.rs — the live session
-#        test, which cannot source a shell lib and therefore carries
-#        `const JCODEMUNCH_PIN` / `const JCODEMUNCH_PYTHON` instead. Both are
-#        cross-checked against THIS file by the guard suites below, so they are
-#        mirrors, not independent owners.
-#
-# TWO GUARD NEEDLES DELIBERATELY KEEP THE LITERAL VALUES, and must be bumped by
-# hand alongside this file:
-#   * tests/infra/test_with_jcodemunch_serve.sh — b2_pin_and_shape;
-#   * tests/infra/test_jcodemunch_index_reify.sh — `argv pins jcodemunch-mcp==…`.
-# That is NOT an oversight. Once β and δ source this lib their constructed argv
-# is DERIVED from it, so a guard that read the expected value from here and
-# compared it against an argv built from here would be comparing the lib to
-# itself — tautologically green, and silently so. The literal needles are the
-# only assertions that fail when the value in THIS FILE changes, which is
-# exactly the event a pin bump is.
-#
-# The two guard suites cross-check every consumer against this file:
-# tests/infra/test_with_jcodemunch_serve.sh (lib contract, δ's constructed
-# argv, α's consts) and tests/infra/test_jcodemunch_index_reify.sh (β's
-# constructed argv). Both are hermetic — no uvx, no PyPI, no network.
-#
-# THE STATE IS NOW UNIFIED, for the interpreter as well as the wheel (#6548).
-# Both values have ONE definition site — this file — and all three production
-# consumers are gate-cross-checked against it: β and δ through their CONSTRUCTED
-# --dry-run argv, α through `const JCODEMUNCH_PIN` and `const JCODEMUNCH_PYTHON`.
-# α previously owned its interpreter independently, hardcoding `--python 3.12`
-# inline while β and δ ran 3.13; that divergence is closed and the const is a
-# MIRROR of JC_PYTHON, not an independent owner. Nothing here is
-# hand-reconciled any more — a one-sided change reds the gate.
+# WHO CONSUMES THIS FILE, AND WHAT HOLDS THEM TO IT, are both stated
+# EXECUTABLY in the two hermetic guard suites — read them there rather than from
+# a second, uncross-checked copy here:
+#   * tests/infra/test_with_jcodemunch_serve.sh  — this file's load contract,
+#     δ's constructed argv, and α's two mirrored consts (a Rust test cannot
+#     source a shell lib, so it mirrors rather than owns);
+#   * tests/infra/test_jcodemunch_index_reify.sh — β's constructed argv.
+# Every consumer is cross-checked against THIS file, so a one-sided change reds
+# the gate instead of drifting silently.
 #
 # ── PIN-BUMP CHECKLIST ──────────────────────────────────────────────────────
 #
 # Consolidated here ONCE, from what were near-duplicate copies in β's and δ's
 # headers. A bump touches this file, α's two consts, and the two literal guard
-# needles named above — and must work through the following:
+# needles named in step 6 — and must work through the following:
 #
 # 1. THE IDENTITY LEVER IS DEPRECATED UPSTREAM. `JCODEMUNCH_GIT_ROOT_IDENTITY`
 #    is accepted at the pinned 1.108.54, but the package logs "will be removed
@@ -91,21 +65,23 @@
 #    does not run at all" means on this host, and for the two standing
 #    measurements (`serve` and `watch`) that authorise the current value.
 #
-# 6. BUMP THE TWO LITERAL GUARD NEEDLES named above in the same change. They do
-#    not read this file by design, so they are what fails when the value HERE
-#    moves -- which is the whole point of them, and the one step a bumper who
-#    only greps for the old value will still get right.
+# 6. BUMP THE TWO LITERAL GUARD NEEDLES in the same change:
+#      * tests/infra/test_with_jcodemunch_serve.sh  — b2_pin_and_shape;
+#      * tests/infra/test_jcodemunch_index_reify.sh — `argv pins jcodemunch-mcp==…`.
+#    They keep the literal value ON PURPOSE. Every other assertion reads its
+#    expectation from THIS file and compares it against an argv DERIVED from
+#    this file — comparing the lib to itself, so tautologically green when the
+#    value here moves. These two are the only assertions a bump reds, which is
+#    the whole point of them, and the one step a bumper who only greps for the
+#    old value will still get right.
 #
 # All of the above was re-verified first-hand against the PINNED 1.108.54 wheel,
 # not a neighbouring release.
 #
-# ── THIS FILE MUST BE INERT AT LOAD ─────────────────────────────────────────
-#
-# NO `set -euo pipefail` and NO side effects — in particular nothing on stdout,
-# ever. This lib is sourced INTO scripts whose `--dry-run` stdout IS their
-# contract (both guard suites parse it), so one stray `echo` here would corrupt
-# the output every one of those assertions reads. Setting shell options here
-# would likewise silently impose them on whatever sourced us.
+# INERT AT LOAD (asserted by b2_lib_sources_silently): no `set -euo pipefail`,
+# no side effects, nothing on stdout — this lib is sourced INTO scripts whose
+# `--dry-run` stdout IS their contract, and shell options set here would
+# silently impose themselves on the sourcer.
 
 # Source guard — prevent double-sourcing. Load-bearing rather than hygienic:
 # JC_IDENTITY_ENV is an ARRAY, and a re-source that appended to it would double

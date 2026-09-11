@@ -255,21 +255,17 @@ fi
 # THE PIN, THE INTERPRETER AND THE IDENTITY LEVER ALL COME FROM THE LIB.
 # `scripts/lib_jcodemunch_pin.sh`, sourced at the top of this file, defines
 # JC_PIN, JC_PYTHON and JC_IDENTITY_ENV — there and nowhere else (#6454). Its
-# header carries the PIN-BUMP CHECKLIST, the interpreter provenance (the bare
-# unpinned-interpreter form does not run AT ALL on this host: uvx defaults to
-# cpython-3.14.0+freethreaded and a transitive dep of the pinned wheel publishes
-# no 3.14t wheel) and the consumer inventory. Both guard suites cross-check
-# every consumer's CONSTRUCTED argv against the lib, so a one-sided bump fails
-# the gate instead of drifting silently.
+# header carries the PIN-BUMP CHECKLIST and the provenance of all three values,
+# including the measurement that authorises the interpreter. Do NOT restate any
+# of it here: the guard suites cross-check this script's CONSTRUCTED argv
+# against the lib, but nothing cross-checks this COMMENT against it, so a second
+# copy of a measurement record drifts unseen.
 #
 # α IS A MIRROR, NOT AN INDEPENDENT OWNER (#6548).
 # `crates/reify-audit/tests/jcodemunch_session_live.rs` cannot source a shell
 # lib, so it carries `const JCODEMUNCH_PIN` and `const JCODEMUNCH_PYTHON`. BOTH
-# are now cross-checked against the lib by
-# tests/infra/test_with_jcodemunch_serve.sh. α used to hardcode `--python 3.12`
-# inline while δ and β ran 3.13, with only the PIN cross-checked; that
-# divergence is closed — the interpreter was measured against `serve` directly
-# on 2026-09-04 and is recorded in the lib.
+# are cross-checked against the lib by tests/infra/test_with_jcodemunch_serve.sh,
+# so δ and α cannot resolve the same wheel under different interpreters.
 #
 # WHY THE LEVER MATTERS HERE SPECIFICALLY: without it jcodemunch answers for
 # `leodearden/reify` (the empty husk) instead of the per-path
