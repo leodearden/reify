@@ -231,7 +231,11 @@ pub fn residual_jacobian(
 ///
 /// It also returns the cells' own [`BranchRecord`]s, concatenated in stored
 /// order, each re-sited under `[DEPENDENT_MARKER, k]` for its `enumerate`
-/// index `k`.  That prefix is what keeps a derived cell's kink separately
+/// index `k`.  A cell that could NOT be differentiated carries its REASON the
+/// same way — bound alongside the poisoned tangent and re-sited under the same
+/// prefix — so `JacobianError::cause` names the construct inside the derived
+/// cell rather than a generic root-sited fallback, and names it only to the
+/// rows that read that cell.  That prefix is what keeps a derived cell's kink separately
 /// addressable from the residual's own and from its sibling cells' — the
 /// reserved segment can never be a structural child index, so a dependent-cell
 /// site can never alias a real node.
@@ -323,9 +327,32 @@ fn fold_dependent_duals(
         // branches taken by whatever it read.
         let mut record = BranchRecord::new();
         let dual = eval_dual_with_env(expr, &ctx, seeds, &env, &mut record);
-        prelude.extend_from(&record.prefixed(&[DEPENDENT_MARKER, k as u16]));
-        if !matches!(dual.tangent, Tangent::Zero) {
-            env.bind(id.clone(), dual.tangent);
+        let prefix = [DEPENDENT_MARKER, k as u16];
+        prelude.extend_from(&record.prefixed(&prefix));
+        // Drained NOW, unconditionally: `eval_dual_with_env` clears the slot on
+        // entry, so a reason left here is a reason the NEXT traversal — the
+        // next cell, or the first residual row — silently discards.  That is
+        // how a refusal originating in a derived cell used to reach the caller
+        // as the generic root-sited "an expression with no derivative rule".
+        let cause = seeds.take_refusal();
+        match dual.tangent {
+            // Flat cells bind nothing: unbound already means zero.
+            Tangent::Zero => {}
+            // The cause travels WITH the binding rather than in the shared
+            // slot, so it is raised only by a row that actually reads this
+            // cell — and it names the cell, because its site is re-rooted
+            // under the same `[DEPENDENT_MARKER, k]` prefix the record half
+            // uses.
+            Tangent::None => env.bind_refused(
+                id.clone(),
+                cause
+                    .unwrap_or(NonDifferentiable::UnsupportedKind {
+                        kind: "a dependent cell with no derivative rule",
+                        site: KinkSite::root(),
+                    })
+                    .prefixed(&prefix),
+            ),
+            tangent => env.bind(id.clone(), tangent),
         }
     }
     (env, prelude)

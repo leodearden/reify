@@ -114,7 +114,12 @@ impl Seeds {
     }
 
     /// Drain the recorded refusal, leaving the sink empty for the next row.
-    fn take_refusal(&self) -> Option<NonDifferentiable> {
+    ///
+    /// A caller that drives MORE THAN ONE traversal through one `Seeds` — the
+    /// solver's dependent-cell fold does — must drain between them.
+    /// [`eval_dual_with_env`] clears the slot on entry, so a reason left in it
+    /// is a reason the next traversal discards.
+    pub fn take_refusal(&self) -> Option<NonDifferentiable> {
         self.refusal.borrow_mut().take()
     }
 
@@ -213,6 +218,10 @@ pub struct DualEnv {
     /// memo per binding instead makes `eval_dual_fn_body`'s let-binding loop
     /// re-walk the remaining body once per `let`.
     carries: RefCell<HashMap<ContentHash, (u32, bool)>>,
+    /// Why a cell was bound as [`Tangent::None`], for the cells whose binder
+    /// knew.  Read at the point a residual READS the cell, so a row that never
+    /// touches it is never told about it.
+    causes: HashMap<ValueCellId, NonDifferentiable>,
     /// Bumped once per newly bound cell — never on a rebind, which cannot
     /// change a membership answer.
     generation: u32,
@@ -235,9 +244,26 @@ impl DualEnv {
         }
     }
 
+    /// Bind `cell` as NON-differentiable, keeping the reason.
+    ///
+    /// `bind(cell, Tangent::None)` already says the tangent is unavailable;
+    /// this also says WHY, so a residual that reads the cell refuses with the
+    /// construct responsible instead of the generic root-sited fallback.  The
+    /// reason is raised at the READ, not here, which is what keeps a poisoned
+    /// derived cell from condemning rows that never look at it.
+    pub fn bind_refused(&mut self, cell: ValueCellId, cause: NonDifferentiable) {
+        self.causes.insert(cell.clone(), cause);
+        self.bind(cell, Tangent::None);
+    }
+
     /// The tangent bound to `cell`, or `None` when it carries no tangent.
     pub fn get(&self, cell: &ValueCellId) -> Option<&Tangent> {
         self.bindings.get(cell)
+    }
+
+    /// Why `cell` was bound as non-differentiable, when its binder recorded it.
+    fn refusal_for(&self, cell: &ValueCellId) -> Option<&NonDifferentiable> {
+        self.causes.get(cell)
     }
 
     /// True when no cell carries a tangent.
@@ -386,6 +412,28 @@ fn eval_dual_at(
                 // parameter's tangent is already expressed in seed columns, so
                 // it is adopted as-is.
                 None => match env.get(id) {
+                    // A cell the overlay bound as non-differentiable.  The
+                    // refusal is raised HERE, at the read, for two reasons: the
+                    // cause names the construct inside the cell rather than
+                    // whatever generic fallback the root reaches for, and a row
+                    // that never reads this cell never hears about it — which is
+                    // the difference between one poisoned derived cell and a
+                    // condemned cluster.
+                    //
+                    // `note_refusal` is first-wins, so the synthesised fallback
+                    // below cannot displace a real cause already in the slot —
+                    // which is the case for a callee parameter bound `None` by
+                    // `eval_dual_fn_body`, whose traversal recorded the reason
+                    // moments earlier in the same slot.
+                    Some(Tangent::None) => {
+                        seeds.note_refusal(env.refusal_for(id).cloned().unwrap_or_else(|| {
+                            NonDifferentiable::UnsupportedKind {
+                                kind: "a bound cell with no derivative rule",
+                                site: KinkSite::new(path.to_vec()),
+                            }
+                        }));
+                        DualValue::opaque(value)
+                    }
                     Some(tangent) => DualValue { value, tangent: tangent.clone() },
                     None => DualValue::constant(value),
                 },
@@ -1707,6 +1755,29 @@ pub enum NonDifferentiable {
     /// A tangent component came out NaN or ±Inf.  The primal may look perfectly
     /// ordinary, which is exactly why this is checked rather than assumed.
     NonFiniteTangent { column: usize },
+}
+
+impl NonDifferentiable {
+    /// This refusal with its site re-rooted under `prefix`.
+    ///
+    /// The sibling of [`BranchRecord::prefixed`], and there for the same
+    /// reason: a refusal raised while evaluating some SUBSIDIARY expression — a
+    /// solver dependent cell — is root-relative to THAT expression, so
+    /// reporting it against a residual without moving it would name a site in
+    /// the residual's own tree.  The two variants that carry no site are
+    /// returned unchanged.
+    pub fn prefixed(&self, prefix: &[u16]) -> NonDifferentiable {
+        let moved = |site: &KinkSite| KinkSite::new([prefix, site.path()].concat());
+        match self {
+            NonDifferentiable::UndefPrimal { site } => {
+                NonDifferentiable::UndefPrimal { site: moved(site) }
+            }
+            NonDifferentiable::UnsupportedKind { kind, site } => {
+                NonDifferentiable::UnsupportedKind { kind, site: moved(site) }
+            }
+            other => other.clone(),
+        }
+    }
 }
 
 impl std::fmt::Display for NonDifferentiable {

@@ -558,6 +558,60 @@ fn a_non_differentiable_dependent_cell_refuses_only_the_rows_that_read_it() {
     )
     .expect_err("a residual reading an undifferentiable derived cell must refuse");
     assert_eq!(err.row, 1, "the SECOND residual is the one that reads it");
+
+    // And it names WHAT and WHERE.  `JacobianError`'s doc promises a typed
+    // cause, and η turns it into a user-visible tier-2 refusal — so the
+    // clustered case, which is the one the fold exists for, must not be the
+    // case that degrades to "an expression with no derivative rule" at the
+    // root.  The site's `[DEPENDENT_MARKER, 0]` prefix is the record half's
+    // namespace, used here for the refusal half.
+    match &err.cause {
+        NonDifferentiable::UnsupportedKind { kind, site } => {
+            assert_eq!(
+                *kind, "IndexAccess",
+                "the construct INSIDE the derived cell, not a generic fallback"
+            );
+            assert_eq!(
+                site.path(),
+                [reify_expr::DEPENDENT_MARKER, 0],
+                "and the site names WHICH derived cell the construct is in"
+            );
+        }
+        other => panic!("expected the derived cell's own cause, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_poisoned_dependent_cell_does_not_leak_a_refusal_into_a_later_row() {
+    // `Seeds` carries its refusal in an interior-mutable slot SHARED across
+    // every traversal of one `residual_jacobian` call — the fold's cells and
+    // then every row.  The poison must therefore be raised at the READ, not
+    // left in that slot: two rows that never touch the bad cell must both
+    // survive, even though the fold refused while evaluating it.
+    let params = vec![auto("q", dl())];
+    let base = ValueMap::new();
+    let dependent = vec![(
+        cell("bad"),
+        index_access(
+            reify_test_support::builders::expr::list_expr(vec![dref("q"), num(1.0)]),
+            literal(Value::Int(0)),
+        ),
+    )];
+    let first = binop(BinOp::Sub, binop(BinOp::Mul, num(2.0), dref("q")), num(4.0));
+    let second = binop(BinOp::Add, dref("q"), num(1.0));
+
+    let j = residual_jacobian(
+        &params,
+        &[first, second],
+        &base,
+        &[5.0],
+        &dependent,
+        &[],
+        None,
+    )
+    .expect("neither residual reads the poisoned cell, so neither may refuse");
+    assert_eq!(j.rows[0], vec![2.0], "row 0 is ∂(2q−4)/∂q");
+    assert_eq!(j.rows[1], vec![1.0], "row 1 is ∂(q+1)/∂q, unpoisoned by row 0's traversal");
 }
 
 // ===========================================================================
