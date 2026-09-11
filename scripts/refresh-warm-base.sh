@@ -387,9 +387,15 @@ ok "Reflink copy complete (gen ${_next_gen})."
 # dir) — a failure here is covered for free by the existing EXIT trap's
 # `.gen.*.partial` sweep above, with no new cleanup code needed.
 readonly _PRUNE_KEEP_GENERATIONS=2
+# _prune_deps is the ONE place the prune's reach is written (SPOT) — every
+# find/cd/rm below reads only this local, never a second path expression, so
+# the scope of the sweep is a single line to audit.
 _prune_deps="${_new_gen_partial}/debug/deps"
 if [ -d "$_prune_deps" ]; then
     info "Pruning superseded hash-generations under $_prune_deps (keep newest ${_PRUNE_KEEP_GENERATIONS}) ..."
+    # -maxdepth 1 -type f confines the sweep to regular files directly in
+    # deps/, excluding the nested dir (e.g. deps/rustc*/), its contents, and
+    # any symlink — never descended into, never followed.
     find "$_prune_deps" -maxdepth 1 -type f -printf '%T@\t%f\n' \
         | sort \
         | awk -F'\t' -v keep="$_PRUNE_KEEP_GENERATIONS" '
@@ -423,7 +429,7 @@ if [ -d "$_prune_deps" ]; then
                 }
             }
         ' \
-        | (cd "$_prune_deps" && xargs -0 rm -f --)
+        | (cd "$_prune_deps" && xargs -r -0 rm -f --)
 else
     info "No debug/deps under staging copy — skipping hash-generation prune."
 fi
