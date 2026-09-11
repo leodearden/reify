@@ -2164,9 +2164,15 @@ fn realized_cylinder_mesh_covers_its_own_aabb() {
 ///   (1) no `Severity::Error` diagnostics — a clean realize + adaptive solve;
 ///   (2) the LOCALIZED-lane Info diagnostic is present and the 4902 uniform-grid
 ///       one is NOT — i.e. the lane selector chose the realized lane;
-///   (3) `convergence_status` is `NotConverged { reason: MaxIterations }` — the
-///       budget is deliberately built so the iteration cap, not the accuracy
-///       target and not `max_dofs`, is what terminates the loop;
+///   (3) `convergence_status` is `NotConverged`, the dof ceiling provably did
+///       not bind (the reason is `MaxIterations` or `Stalled`, never `MaxDofs`),
+///       and the full refinement budget was consumed — exactly one mark-driven
+///       refine. WHICH of those two reasons reports the stop is deliberately NOT
+///       claimed here: the loop's termination precedence puts the stall gate
+///       above the iteration cap, so that discrimination is a ~1% numeric band
+///       over two real gmsh remeshes rather than a categorical fact. It is
+///       pinned deterministically instead by `stall_pre_empts_the_iteration_cap`
+///       in `reify-solver-elastic`'s `adaptive_refinement_tests.rs` (task 7414);
 ///   (4) `global_relative_energy_error` is finite, > 0 and <= 1.0;
 ///   (5) the localized diagnostic's reported POST-refine element count is
 ///       strictly greater than its PRE-refine count.
@@ -2178,6 +2184,15 @@ fn realized_cylinder_mesh_covers_its_own_aabb() {
 /// with no numeric tolerance band — the same shape as the always-on landed test
 /// in `reify-solver-elastic`'s `aposteriori_validation.rs`, and deliberately not
 /// the shape of its `#[ignore]`d cross-gmsh-version-unstable sibling.
+///
+/// Since task 7414 that "no numeric tolerance band" property is true of the
+/// WHOLE test and not of (5) alone — which is the point of that change, because
+/// this test runs in the shared, oversubscribed merge-verify environment. No
+/// assertion here now turns on a tuned threshold: the enum variants, the refine
+/// count and the element-count inequality are exact; the unreachable accuracy
+/// target and the non-binding dof ceiling carry measured margins of three orders
+/// of magnitude or more; and (4) is a finiteness-and-range sanity check rather
+/// than a tolerance.
 #[cfg(has_gmsh)]
 #[test]
 fn body_adaptive_solve_runs_the_gmsh_realized_localized_lane() {
