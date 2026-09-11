@@ -858,12 +858,17 @@ fn two_structurally_identical_sibling_kinks_get_distinct_sites() {
     // content-addressed site would collapse them into one and λ could never
     // tell which of the two moved.  As child indices 0 and 1 of the `+` they
     // are distinct.
-    let leaf = call("abs", vec![vref("x")]);
-    let expr = binop(BinOp::Add, leaf.clone(), leaf.clone());
+    // Built TWICE, into separate bindings, so the premise is established rather
+    // than assumed: comparing one binding to itself cannot fail, and would keep
+    // passing if `call` ever stopped producing equal hashes for equal input —
+    // at which point this would silently no longer be the collision case.
+    let a = call("abs", vec![vref("x")]);
+    let b = call("abs", vec![vref("x")]);
     assert_eq!(
-        leaf.content_hash, leaf.content_hash,
-        "the two operands are content-identical by construction"
+        a.content_hash, b.content_hash,
+        "the two operands must be content-identical, or this is not the collision case"
     );
+    let expr = binop(BinOp::Add, a, b);
     let rec = record_of(&expr, &[("x", Value::Real(2.0))], &["x"]);
     assert_eq!(rec.len(), 2, "each traversed kink gets its own entry");
     assert_eq!(rec.entries()[0].site.path(), &[0]);

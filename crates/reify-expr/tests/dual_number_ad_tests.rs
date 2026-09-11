@@ -909,13 +909,16 @@ fn a_kink_inside_a_user_function_body_is_recorded_at_a_site_that_includes_the_ca
     );
 
     // The comparison and the conditional are both kinks, and both are inside
-    // the callee — so neither may report the bare root site, or two distinct
-    // call sites of `clip` would be indistinguishable to λ.
+    // the callee — so both must descend through `CALLEE_MARKER` explicitly.
+    // A mere `!is_empty()` is satisfied by ANY nested path, including one that
+    // never pushed the marker at all, which is precisely the scheme that keeps
+    // two call sites of the same function distinguishable to λ.
     assert_eq!(record.len(), 2, "the `>` comparison and the `if`");
     for entry in record.entries() {
-        assert!(
-            !entry.site.path().is_empty(),
-            "a kink inside a callee must carry the call-site descent in its path, got {:?}",
+        assert_eq!(
+            entry.site.path().first().copied(),
+            Some(reify_expr::CALLEE_MARKER),
+            "a kink inside a callee must descend through CALLEE_MARKER, got {:?}",
             entry.site.path()
         );
     }
@@ -930,6 +933,20 @@ fn a_kink_inside_a_user_function_body_is_recorded_at_a_site_that_includes_the_ca
     let _ = eval_dual(&two_calls, &ctx, &seeds, &mut rec2);
     assert_eq!(rec2.len(), 4, "two calls × two kinks each");
     let sites: Vec<&[u16]> = rec2.entries().iter().map(|e| e.site.path()).collect();
+    // Each call site contributes its own two-segment PREFIX — its argument
+    // index under the `+`, then the callee descent — and everything after the
+    // marker is identical between the two.  That is the whole namespacing
+    // scheme: what distinguishes two calls of one function is the prefix, and
+    // nothing else.
+    for (k, site) in sites.iter().enumerate() {
+        let call_index = (k / 2) as u16;
+        assert_eq!(
+            site[..2],
+            [call_index, reify_expr::CALLEE_MARKER],
+            "entry {k} must sit under call site {call_index}'s own descent, got {site:?}"
+        );
+    }
+    assert_eq!(sites[0][2..], sites[2][2..], "the same kink, at the same place inside the callee");
     assert_ne!(sites[0], sites[2], "the same kink at two call sites must not collide");
     assert_ne!(sites[1], sites[3]);
 }
@@ -1124,8 +1141,11 @@ fn a_seed_dependent_unsupported_kind_is_named_in_the_refusal() {
     );
     match jrow(&expr, &values, &seed_cells) {
         Err(NonDifferentiable::UnsupportedKind { kind, .. }) => {
-            assert!(
-                !kind.is_empty(),
+            // `kind` is a `&'static str` from a closed set, none of which is
+            // empty, so `!is_empty()` never checked the name this test is named
+            // for.  The construct here is the `IndexAccess`.
+            assert_eq!(
+                kind, "IndexAccess",
                 "the refusal must NAME the construct, or the user cannot act on it"
             );
         }
@@ -1198,7 +1218,10 @@ fn jacobian_row_rejects_a_non_finite_tangent_even_when_the_primal_is_finite() {
     );
     match jrow(&expr, &values, &seed_cells) {
         Err(NonDifferentiable::NonFiniteTangent { column }) => {
-            assert!(column < 2, "the refusal names which column blew up");
+            // `column < 2` is unconditionally true for a two-wide row — the
+            // discriminating claim is WHICH column, and it is the first one
+            // `position` reaches.
+            assert_eq!(column, 0, "the refusal names which column blew up");
         }
         other => panic!("expected NonFiniteTangent, got {other:?}"),
     }
@@ -1211,38 +1234,29 @@ fn jacobian_row_rejects_a_non_finite_tangent_even_when_the_primal_is_finite() {
 #[test]
 fn every_non_differentiable_variant_display_names_the_offending_construct() {
     use reify_expr::branch_signature::KinkSite;
-    let cases = [
-        NonDifferentiable::UndefPrimal { site: KinkSite::new(vec![1, 2]) },
-        NonDifferentiable::UnsupportedKind {
-            kind: "IndexAccess",
-            site: KinkSite::new(vec![0]),
-        },
-        NonDifferentiable::NonScalarResult { got: "Point" },
-        NonDifferentiable::NonFiniteTangent { column: 3 },
+    // Each variant is paired with the ONE thing its message must carry for η's
+    // tier-2 refusal to be actionable without the surrounding code.  A
+    // prose-length proxy (`len() > 20`) would pass for any sentence at all; the
+    // discriminant is what the reader actually needs.
+    let cases: [(NonDifferentiable, &str); 4] = [
+        (NonDifferentiable::UndefPrimal { site: KinkSite::new(vec![1, 2]) }, "[1, 2]"),
+        (
+            NonDifferentiable::UnsupportedKind {
+                kind: "IndexAccess",
+                site: KinkSite::new(vec![0]),
+            },
+            "IndexAccess",
+        ),
+        (NonDifferentiable::NonScalarResult { got: "Point" }, "Point"),
+        (NonDifferentiable::NonFiniteTangent { column: 3 }, "3"),
     ];
-    for case in &cases {
+    for (case, must_name) in &cases {
         let text = case.to_string();
-        assert!(!text.is_empty(), "every variant must render");
-        // The message has to be actionable on its own: η copies it into a
-        // tier-2 refusal, where the user sees it without the surrounding code.
         assert!(
-            text.len() > 20,
-            "a refusal that only says its variant name is not actionable: {text:?}"
+            text.contains(must_name),
+            "{case:?} must name {must_name:?} in its message, got {text:?}"
         );
     }
-    assert!(
-        NonDifferentiable::UnsupportedKind { kind: "IndexAccess", site: KinkSite::root() }
-            .to_string()
-            .contains("IndexAccess"),
-        "the offending kind must appear verbatim in the message"
-    );
-    assert!(
-        NonDifferentiable::NonScalarResult { got: "Point" }.to_string().contains("Point")
-    );
-    assert!(
-        NonDifferentiable::NonFiniteTangent { column: 3 }.to_string().contains('3'),
-        "the failing column index must appear"
-    );
     // It is an error type, so `?` works in η's assembly loop.
     fn assert_is_error<E: std::error::Error>(_: &E) {}
     assert_is_error(&NonDifferentiable::NonFiniteTangent { column: 0 });

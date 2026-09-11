@@ -485,12 +485,37 @@ fn the_fold_never_clobbers_an_auto_params_own_seed_column() {
 
 #[test]
 fn an_empty_dependent_cells_list_leaves_the_non_clustered_path_bit_identical() {
+    // Pinned to CONTENT, not to a recomputation of itself: comparing an empty
+    // fold against `jac(..)` would be comparing one call to the same call with
+    // the same arguments, which can only fail under nondeterminism.
     let (params, residuals, base, x) = two_auto_model();
-    let with_empty = residual_jacobian(&params, &residuals, &base, &x, &[], &[], None).unwrap();
-    let baseline = jac(&params, &residuals, &base, &x);
-    assert_eq!(
-        with_empty, baseline,
-        "every non-clustered solve must take exactly the path it took before"
+    let empty = residual_jacobian(&params, &residuals, &base, &x, &[], &[], None).unwrap();
+
+    assert_eq!(empty.residuals, vec![0.0, 6.0], "sqrt(3²+4²)−5 = 0 and 3·4−6 = 6");
+    assert!((empty.rows[0][0] - 0.6).abs() < 1e-12, "∂r0/∂w, got {:?}", empty.rows[0]);
+    assert!((empty.rows[0][1] - 0.8).abs() < 1e-12, "∂r0/∂h, got {:?}", empty.rows[0]);
+    assert_eq!(empty.rows[1], vec![4.0, 3.0], "∂r1 = (h, w)");
+    for (i, record) in empty.branch_records.iter().enumerate() {
+        assert!(record.is_empty(), "row {i} has no fold prelude and no kink, got {record:?}");
+    }
+
+    // The contrast that gives the claim teeth: a fold that DOES run, over a
+    // derived cell no residual reads.  The ROWS must be untouched — the cell
+    // contributes no tangent to anything — while the RECORDS must not be, since
+    // every row carries every dependent cell's branches by design.
+    let unread = vec![(
+        cell("unread"),
+        call("clamp", vec![aref("w", DimensionVector::LENGTH), len_lit(1.0), len_lit(4.0)],
+            DimensionVector::LENGTH),
+    )];
+    let folded =
+        residual_jacobian(&params, &residuals, &base, &x, &unread, &[], None).unwrap();
+    assert_eq!(folded.rows, empty.rows, "an unread derived cell moves no derivative");
+    assert_eq!(folded.residuals, empty.residuals, "nor any primal");
+    assert!(
+        folded.branch_records.iter().all(|r| !r.is_empty()),
+        "the unread cell's clamp still reaches every row — that is the fold running, and it \
+         is what makes the empty-list assertions above a real claim"
     );
 }
 
@@ -852,10 +877,5 @@ fn no_dependent_cells_leaves_the_records_exactly_as_the_non_clustered_path_produ
         clamp.site.path(),
         [0_u16],
         "root-relative, with no dependent-cell prefix in front of it"
-    );
-    assert_eq!(
-        j.branch_records[0].len(),
-        clamp_jac(2.5).branch_records[0].len(),
-        "and the record is reproducible at the same point"
     );
 }
