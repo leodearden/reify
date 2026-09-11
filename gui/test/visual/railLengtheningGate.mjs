@@ -201,11 +201,11 @@ export const PIN_ABSENT = "absent";
 
 /**
  * @typedef {'outage'|'shape'|'vacuity'|'subject'|'stale'|'value'|'constraint'
- *           |'canonical'|'coverage'|'reload'|'rejection'} RailGateFailureGate
+ *           |'canonical'|'coverage'|'reload'|'rejection'|'read-order'} RailGateFailureGate
  *   Which gate rejected the run. Load-bearing beyond labelling: `outage`,
- *   `shape` and `vacuity` mean the invariant was never TESTED, while `value` and
- *   `constraint` mean it was tested and violated. A caller that cannot tell those
- *   apart reports a debug-tool outage as an AI-write-path regression.
+ *   `shape`, `vacuity` and `read-order` mean the invariant was never TESTED, while
+ *   `value` and `constraint` mean it was tested and violated. A caller that cannot
+ *   tell those apart reports a debug-tool outage as an AI-write-path regression.
  *
  * @typedef {object} RailGateFailure
  * @property {RailGateFailureGate} gate
@@ -347,6 +347,14 @@ export function formatFailures(failures) {
           `${failurePath(f)} is ${describeValue(f.observed)}, expected ${describeValue(f.expected)} ` +
           `— a refused write must fail structurally and leave disk, source_map and engine ` +
           `byte-identical (§6.1 atomicity)`
+        );
+      case "read-order":
+        return (
+          `${failurePath(f)} was ${describeValue(f.observed)}, expected ${describeValue(f.expected)} ` +
+          `— an object literal in argument position is evaluated, its awaits included, BEFORE the ` +
+          `callee runs, so those reads would precede the phase's own and the reify_open_file among ` +
+          `them would reload the file from disk (debug_server.rs:1525), making PRD §7 B1's ` +
+          `"without a file reload" a tautology`
         );
       default:
         return `${failurePath(f)}: unrecognised gate ${describeValue(f.gate)} (observed ${describeValue(f.observed)})`;
@@ -795,6 +803,109 @@ export function checkRejectionAtomicity(observed) {
   return failures;
 }
 
+// ─── The read-order seam ─────────────────────────────────────────────────────
+
+/** What `gatherExtras` must be. Stated once; the record's `expected` reads it. */
+const EXTRAS_THUNK = "a thunk — see observeThenExtras";
+
+/** The {@link RailGateInputs} field a read-order problem is parked in. */
+const READ_ORDER = "readOrder";
+
+/** `err`'s message, or a description of whatever non-Error was thrown. */
+function throwReason(err) {
+  return err instanceof Error && typeof err.message === "string" ? err.message : describeValue(err);
+}
+
+/** A marker the verdict renders as a `read-order` record. */
+function readOrderMarker(field, observed) {
+  return { [READ_ORDER]: { field, observed } };
+}
+
+/**
+ * Observe one phase's state, THEN gather whatever extra readings it needs.
+ *
+ * THE MECHANISM THIS EXISTS TO CLOSE. An object literal passed as an ARGUMENT is
+ * fully evaluated — its `await`s included — before the callee runs. So
+ *
+ *     gradePhase(phase, subject, {sourceCanonical: await readSourceCanonical(…)})
+ *
+ * issues every read inside the literal FIRST, and `readSourceCanonical`'s chain
+ * is `reify_open_file` -> `reify_save_file` -> `reify_open_file`. The first of
+ * those reaches `open_path_into_engine` (debug_server.rs:1525), which re-reads
+ * the file from disk and refreshes the baseline — a full reload. Every reading
+ * the phase then takes describes a freshly reloaded engine, so PRD §7 B1 ("the
+ * viewport and property panel follow WITHOUT a file reload") passes no matter
+ * what the AI write did. The failure is silent and in the direction that PASSES.
+ *
+ * `observePhase`'s READ ORDER IS LOAD-BEARING paragraph in
+ * `./smoke_rail_lengthening_e2e.mjs` states that invariant; this function is
+ * where it is ENFORCED, because a driver needs a live reify-gui to run at all
+ * and this module is the only half of the gate CI can execute. Heuristic 10:
+ * enforced where it can be, stated where it must be.
+ *
+ * NEVER REJECTS, for any pair of arguments — a rejecting thunk, a non-thunk, a
+ * symbol — because the caller holding the result is a live driver whose job is
+ * to REPORT. Each problem becomes a {@link READ_ORDER} marker that
+ * {@link checkRailLengtheningGate} turns into a `read-order` record, so the
+ * disarmed spelling reds the run instead of quietly reordering it.
+ *
+ * @param {() => unknown} observe       Takes the phase's own readings.
+ * @param {(() => unknown) | undefined} [gatherExtras]  Extra readings, or
+ *   nothing — a phase with no extra PRD row to grade legitimately passes none.
+ * @returns {Promise<Record<string, unknown>>} The observation with the resolved
+ *   extras merged OVER it, so an extra wins a key collision.
+ */
+export async function observeThenExtras(observe, gatherExtras) {
+  if (typeof observe !== "function") {
+    return readOrderMarker("observe", describeValue(observe));
+  }
+  let inputs;
+  try {
+    inputs = await observe();
+  } catch (err) {
+    return readOrderMarker("observe", `a thunk that threw: ${throwReason(err)}`);
+  }
+
+  if (gatherExtras === undefined) return { ...asObject(inputs) };
+  if (typeof gatherExtras !== "function") {
+    // NOT merged, deliberately. Merging it would produce exactly the verdict the
+    // thunk form produces, leaving the reordering to be noticed by nobody.
+    return { ...asObject(inputs), ...readOrderMarker("extras", typeof gatherExtras) };
+  }
+  try {
+    // The await-then-await IS the contract. A `Promise.all` here, or hoisting
+    // either call above this line, reinstates the interleaving described above.
+    const extras = await gatherExtras();
+    return { ...asObject(inputs), ...asObject(extras) };
+  } catch (err) {
+    return { ...asObject(inputs), ...readOrderMarker("extras", `a thunk that threw: ${throwReason(err)}`) };
+  }
+}
+
+/**
+ * Render a {@link READ_ORDER} marker as the one record it stands for.
+ *
+ * A marker is only ever produced by {@link observeThenExtras}, so a reading that
+ * is not marker-shaped is itself the anomaly and is reported rather than
+ * skipped; `null`/`undefined` mean "no problem" and grade clean.
+ *
+ * @param {unknown} observed
+ * @returns {RailGateFailure[]}
+ */
+export function checkReadOrder(observed) {
+  if (observed === null || observed === undefined) return [];
+  const src = asObject(observed) ?? {};
+  return [
+    {
+      gate: "read-order",
+      tool: "railLengtheningGate",
+      field: typeof src.field === "string" ? src.field : "extras",
+      observed: "observed" in src ? src.observed : describeValue(observed),
+      expected: EXTRAS_THUNK,
+    },
+  ];
+}
+
 /**
  * The PRD rows that are checked only when the caller supplies their reading —
  * name → the {@link RailGateInputs} field carrying it, and the predicate.
@@ -802,12 +913,18 @@ export function checkRejectionAtomicity(observed) {
  * `list` marks a row a run can exercise more than once: B7 is driven twice (a
  * derived `let`, then a dimension-mismatched value), and both rejections must be
  * graded rather than only the last one supplied.
+ *
+ * {@link READ_ORDER} is the one row that is NOT a PRD row: it grades the harness
+ * rather than the subject. It rides the same "a supplied reading is what asks to
+ * be graded" mechanism because that is precisely its shape — a clean run parks
+ * no marker and the row never fires.
  */
 const EXTRA_GATES = Object.freeze({
   sourceCanonical: { check: checkSourceCanonical, list: false },
   fieldCoverage: { check: checkFieldCoverage, list: false },
   idempotentReload: { check: checkIdempotentReload, list: false },
   rejectionAtomicity: { check: checkRejectionAtomicity, list: true },
+  [READ_ORDER]: { check: checkReadOrder, list: false },
 });
 
 /** Shape token for an unrecognised entry in `requires`. */
@@ -838,6 +955,9 @@ const KNOWN_EXTRA = `one-of-${Object.keys(EXTRA_GATES).join("|")}`;
  * @property {unknown} [idempotentReload]   B5 reading — see {@link checkIdempotentReload}.
  * @property {unknown} [rejectionAtomicity] B7 reading, or a list of them — see
  *                                          {@link checkRejectionAtomicity}.
+ * @property {unknown} [readOrder]          Harness marker, not a PRD row — parked by
+ *                                          {@link observeThenExtras} when the phase's
+ *                                          reads were not taken in order.
  *
  * @typedef {object} RailGateResult
  * @property {boolean} ok                 True only when every gate passed.
