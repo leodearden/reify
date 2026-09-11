@@ -10,6 +10,7 @@
 use reify_kernel_gmsh::{GmshKernel, MeshingOptions};
 use reify_ir::{ElementOrderTag, GeometryHandleId, GeometryKernel, QueryError};
 use reify_test_support::fixtures::unit_cube_mesh;
+use reify_kernel_gmsh::{ffi, init};
 
 /// Round-trip a unit cube (8 vertices, 12 outward-winding triangles)
 /// through `mesh_to_volume` with the default options + P1 element order.
@@ -492,6 +493,86 @@ fn out_of_bounds_index_errors() {
     assert!(
         msg.contains("99") && msg.contains("out of bounds"),
         "error message should mention the out-of-bounds tag and phrasing; got: {msg}"
+    );
+}
+
+/// A meshing failure must report gmsh's own diagnosis, not only the single
+/// line `gmshLoggerGetLastError` holds.
+///
+/// Fixture is a SINGLE open triangle. MEASURED through this public API: it
+/// clears all four pre-lock validations, reaches `mesh_generate(3)`, and
+/// returns `Err(OperationFailed("gmshModelMeshGenerate: ierr=1 (HXT 3D mesh
+/// failed)"))` in ~0.8s — a clean `Err`, not the #4876 SIGSEGV that
+/// `mesh_boundary.rs` documents for non-watertight input. Chosen over the
+/// other measured clean-failure fixture (a unit cube missing one face, same
+/// error) because it captures 28 lines against that one's 66: the cheaper,
+/// more legible witness.
+///
+/// Assertion (iii) is the crisp statement of "more than the last-error
+/// line": `gmshLoggerGetLastError` only ever holds the last ERROR, so an
+/// `Info:` line in the message can only have come from the capture buffer.
+/// The assertions stay on stable gmsh phrases and deliberately do not pin
+/// the captured line COUNT, which is version- and thread-sensitive.
+#[test]
+fn mesh_to_volume_failure_reports_gmsh_log_not_just_the_last_error_line() {
+    let open_triangle = reify_ir::Mesh {
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        indices: vec![0, 1, 2],
+        normals: None,
+    };
+    let kernel = GmshKernel::new();
+    let err = kernel
+        .mesh_to_volume(
+            &open_triangle,
+            &MeshingOptions::default(),
+            ElementOrderTag::P1,
+        )
+        .expect_err("a single open triangle has no volume for HXT to fill");
+    let msg = format!("{err}");
+
+    assert!(
+        msg.contains("gmshModelMeshGenerate") && msg.contains("HXT 3D mesh failed"),
+        "the pre-existing last-error annotation must be preserved, not replaced; got: {msg}",
+    );
+    assert!(
+        msg.contains("gmsh log ("),
+        "expected the captured-log header; got: {msg}",
+    );
+    assert!(
+        msg.contains("Info:"),
+        "expected a captured Info line — gmshLoggerGetLastError can never supply one; got: {msg}",
+    );
+    assert!(
+        msg.contains("Meshing 3D"),
+        "expected the measured `Info: Meshing 3D...` line; got: {msg}",
+    );
+}
+
+/// The success-path half of "stop the capture on EVERY exit path".
+///
+/// MEASURED: one unit-cube `mesh_to_volume` emits 95 captured lines, so a
+/// success path that left the capture armed would leave all 95 buffered for
+/// the next caller in this process to report as its own — and this read
+/// would find them. `logger_stop` drains, so empty is the witness that the
+/// guard fired. The error path is covered by the failure test above plus
+/// `log_capture_tests::log_capture_guard_folds_captured_lines_into_the_error_and_stops_on_drop`.
+#[test]
+fn mesh_to_volume_leaves_the_gmsh_logger_stopped() {
+    let cube = unit_cube_mesh();
+    let kernel = GmshKernel::new();
+    kernel
+        .mesh_to_volume(&cube, &MeshingOptions::default(), ElementOrderTag::P1)
+        .expect("mesh_to_volume must succeed for a closed unit-cube surface");
+
+    // `mesh_to_volume` released GMSH_LOCK on return, so this read is
+    // serialised against any concurrent mesher in this binary rather than
+    // racing one mid-flight.
+    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let leftover = ffi::logger_get().expect("ffi::logger_get failed");
+    assert!(
+        leftover.is_empty(),
+        "mesh_to_volume must leave gmsh's capture stopped and drained; {} lines left: {leftover:?}",
+        leftover.len(),
     );
 }
 
