@@ -68,6 +68,15 @@ pub mod init;
 #[cfg(has_gmsh)]
 pub mod mesh_size_clamp;
 
+// The shared gmsh message-capture discipline — only compiled when has_gmsh
+// is set (it drives `crate::ffi`'s logger family, itself has_gmsh-gated).
+// `pub` for the same reason as `init` and `mesh_size_clamp`: the `tests/`
+// binaries are separate compilation units and cannot reach `pub(crate)`.
+// Deliberately NOT re-exported at the crate root, so the cap constant keeps
+// exactly one public path and a citation cannot drift between spellings.
+#[cfg(has_gmsh)]
+pub mod log_capture;
+
 // Real kernel (FFI-backed) — only compiled when has_gmsh is set.
 #[cfg(has_gmsh)]
 pub mod kernel_real;

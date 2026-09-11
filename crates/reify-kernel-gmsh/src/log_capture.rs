@@ -1,0 +1,97 @@
+//! The crate-wide gmsh message-capture discipline, and the formatter that
+//! folds a captured log tail into a failing operation's error.
+//!
+//! # The invariant
+//!
+//! Gmsh's message capture is a **process-global** switch, not a per-call
+//! buffer. Once armed by [`crate::ffi::logger_start`] it accumulates every
+//! line gmsh emits — from any caller, on any thread — until
+//! [`crate::ffi::logger_stop`] both stops it and drains the buffer (that
+//! drain is measured, and pinned by
+//! `tests/ffi_smoke_tests.rs::gmsh_logger_captures_mesh_generate_output_even_with_terminal_silenced`'s
+//! post-stop assertion). One SUCCESSFUL `mesh_to_volume` on a unit cube
+//! measured 95 captured lines. So:
+//!
+//! > **Whoever arms the capture must stop it before returning — on every
+//! > exit path, early `?`-returns included.**
+//!
+//! Leaving it armed is not merely untidy: the buffer grows for the life of
+//! the process, and the next unrelated gmsh failure would report this
+//! call's lines as its own.
+//!
+//! # Why capture at all
+//!
+//! `ffi`'s [`gmsh_call!`](crate::ffi) macro already annotates every failure
+//! with `gmshLoggerGetLastError`, but that holds only the last ERROR line.
+//! Gmsh's actual diagnosis is routinely an `Info:` line that never reaches
+//! it. Measured, on a single open triangle handed to
+//! [`crate::kernel_real::GmshKernel::mesh_to_volume`]: the last error is
+//! `HXT 3D mesh failed`, while the explanation — `Info: all vertices are
+//! coplanar or nearly coplanar`, and before it `Info: Model has 0 non
+//! manifold mesh edges and 3 boundary mesh edges` — sits in the captured
+//! stream only.
+//!
+//! Capture is independent of the `"General.Terminal" = 0` that every
+//! production mesher in this crate sets to silence gmsh's own stdout; see
+//! [`crate::ffi::logger_start`] for that measurement. Silencing the
+//! terminal is precisely what makes the capture the ONLY route by which a
+//! caller can see gmsh's diagnosis.
+
+use reify_ir::GeometryError;
+
+/// How many captured lines [`annotated`] appends — the most recent ones.
+///
+/// Picked from measurement, not taste. Failing runs probed through
+/// `mesh_to_volume` captured 21 lines (zero-area triangle), 28 (single
+/// triangle) and 66 (unit cube missing one face); a successful unit cube
+/// captured 95. A 40-line tail therefore keeps a small failing run's
+/// capture ENTIRE, and for a larger one keeps the part that carries the
+/// diagnosis — gmsh states its conclusion at the END of the stream.
+///
+/// A cap is needed at all because gmsh logs per-entity `Info:` and
+/// `Progress:` lines, so a large model failing late would otherwise append
+/// thousands of lines to a message that flows on into logs and the GUI.
+///
+/// `pub` (like [`crate::mesh_size_clamp`]'s defaults, and for the same
+/// reason) so this crate's `tests/` binaries — separate compilation units —
+/// can assert against the cap rather than re-declaring a literal that could
+/// drift away from the value this module actually applies.
+pub const MAX_APPENDED_LOG_LINES: usize = 40;
+
+/// Fold a captured gmsh log tail into `err`, returning the annotated error.
+///
+/// Pure: takes the lines already read, calls no gmsh function, and needs no
+/// lock — which is what lets the format be tested without touching the
+/// process-global capture switch.
+///
+/// Two inputs are passed through untouched: an empty `lines` (so a
+/// best-effort arm that failed costs the caller nothing but the capture it
+/// never got), and any variant other than
+/// [`GeometryError::OperationFailed`] — that is the only one carrying a
+/// gmsh message worth extending.
+///
+/// Otherwise the original message is kept as the prefix — the
+/// `gmshLoggerGetLastError` annotation is ADDED to, never replaced — and
+/// the last [`MAX_APPENDED_LOG_LINES`] entries follow it, one per line,
+/// under a `gmsh log ({shown} of {total} lines):` header. That header is
+/// emitted in the same form whether or not lines were elided, so there is
+/// no branch to get wrong and a reader never has to infer whether the tail
+/// is the whole capture.
+pub fn annotated(err: GeometryError, lines: &[String]) -> GeometryError {
+    match err {
+        GeometryError::OperationFailed(message) if !lines.is_empty() => {
+            let kept = &lines[lines.len().saturating_sub(MAX_APPENDED_LOG_LINES)..];
+            let mut message_with_log = format!(
+                "{message}\ngmsh log ({} of {} lines):",
+                kept.len(),
+                lines.len(),
+            );
+            for line in kept {
+                message_with_log.push_str("\n  ");
+                message_with_log.push_str(line);
+            }
+            GeometryError::OperationFailed(message_with_log)
+        }
+        unannotated => unannotated,
+    }
+}
