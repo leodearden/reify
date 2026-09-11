@@ -1608,11 +1608,17 @@ fi
 #
 #   D10's always-re-seed-at-acquire PROPERTY holds for BOTH classes — `acquire_spec_lane`'s
 #   own docstring asserts inv.8 — so nothing here means "the merge-spec lane skips
-#   re-seeding".  It re-seeds; only the mode differs.  (The `_spec-` pool is itself
-#   gated behind DF's `merge_spec_warm_lane_pool`, default False and unset in the live
-#   config, so the path is dormant in this deployment — dormant, not absent: it goes
-#   live the moment that flag is set, and the old "task lanes AND merge-spec slots
-#   ALWAYS use --fresh-checkout" claim was already false about the code.)
+#   re-seeding".  It re-seeds; only the mode differs.  (And this split is LIVE here, not
+#   latent: `merge_spec_warm_lane_pool` defaults False in DF, but this deployment sets
+#   `git.merge_spec_warm_lane_pool: true`.  Cited by KEY — and unlike the cross-repo
+#   coordinates this note deleted, that config (`dark-factory-orchestrator.yaml`) is
+#   tracked in THIS repo, so one grep re-checks it.  Observed 2026-09-11: K = 1 + enabled
+#   verify runners = 2, with `_spec-0`/`_spec-1` registered worktrees holding non-empty
+#   `target/`; the knob's own adjacent comment records the 2026-07-01 queue backup that
+#   motivated enabling it.  A deployment state can flip, so re-read the key rather than
+#   trusting this date — but as measured, the exclusion in the CONSEQUENCE RULE below is
+#   PRESENT-TENSE, and the old "task lanes AND merge-spec slots ALWAYS use
+#   --fresh-checkout" claim was false about the CODE either way.)
 #
 # CONSEQUENCE RULE for anything gated on $FRESH_CHECKOUT (e.g. the rerere pin below):
 #   the gate reaches every acquire only for a SHARED-STORE scoped effect.  Any
