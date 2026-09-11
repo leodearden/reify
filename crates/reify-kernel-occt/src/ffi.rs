@@ -806,8 +806,10 @@ pub mod ffi {
         /// passes them to `BRepBuilderAPI_MakeEdge(circle, U1, U2)` as the
         /// CURVE PARAMETERS of a `Geom_Circle`, and that parameter space is
         /// radians by OCCT's parameterisation (a full circle is `2*PI`). The
-        /// suffix-free names are the user-facing DSL keyword spelling, not an
-        /// unknown convention — see `GeometryOp::Arc` in `reify-ir` for why,
+        /// suffix-free names are the compiler-minted cross-crate string key
+        /// (`compile_curve_op` emits them positionally, `curve_arc` looks them
+        /// up by name) and the published `arc(...)` signature — not an
+        /// unstated convention. See `GeometryOp::Arc` in `reify-ir` for why,
         /// and `rotate_shape` above for the contract (INV-AD-4; #6184).
         fn make_arc_wire(
             cx: f64,
