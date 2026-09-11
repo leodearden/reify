@@ -25,7 +25,7 @@ pub use branch_signature::{
     BranchChoice, BranchEntry, BranchRecord, CALLEE_MARKER, DEPENDENT_MARKER, KinkKind, KinkSite,
     ReductionKind,
 };
-pub use dual::{Dual, DualValue, Tangent};
+pub use dual::{DualValue, Tangent};
 pub use dual_eval::{
     DualEnv, NonDifferentiable, Seeds, eval_dual, eval_dual_with_env, jacobian_row,
     jacobian_row_with_env,
