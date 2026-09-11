@@ -590,10 +590,12 @@ plus the brackets scanned around them. A dense search raises a lower bound; it c
 prove a supremum over a continuum, and no claim of exhaustiveness is made here. Two
 distinct statements follow, and they should not be conflated: that **`K` > 1 for this
 class is established** — that is a lower-bound claim, and a lower bound above 1 settles
-it — while **the numeric value 1.0010 remains a lower bound** on the true supremum. All
-~90 probes in this block lie within [0.96, 1.002], with no sign of a second branch like
-the sphere's ~2.07 tread, but that is an observation about where these samples fell, not a
-bound on where others might.
+it — while **the numeric value 1.0010 remains a lower bound** on the true supremum. All 92
+probes of the dense walk itself — Stage A onward, `d` ∈ [0.118, 0.182] mm — lie within
+[0.9623, 1.0010], with no sign of a second branch like the sphere's ~2.07 tread, but that
+is an observation about where these samples fell, not a bound on where others might. (The
+block's three reproduction-gate runs sit outside that window by construction: the 20 mm
+rung reads 0.8565, deep in the coarse regime.)
 **Determinism and datum gates.** Every probe in this block passed the §0 Caveat-2 datum
 gate: the harness extracts `a` only from the `deviation <X> m` capture and emits a literal
 `NO-DATUM` token when that capture is empty, so a non-realization cannot enter a table as a
@@ -619,6 +621,23 @@ Stage A's: these are the rungs the block's conclusions rest on, and the two at �
 exactly on the K = 1 boundary, where a single unreproducible digit in the last printed
 place would flip the verdict rather than perturb it. Both returned 1.440e-4 and 1.450e-4
 again.
+
+*Stage C:* every probe defining a pinned edge was re-run for a second repetition — **both
+sides** of all three brackets (0.14385/0.14386, 0.14319/0.1432, 0.1449/0.14495 mm), P1's
+upper bracket (0.144/0.1442 mm), and the highest-ratio probe overall — and all nine
+returned **byte-identical achieved strings**. Zero divergence. A plateau edge is precisely
+where the tessellator's facet count changes, so it is the one place a non-deterministic
+tie-break would surface if one existed; pinning an edge without re-running both of its
+sides would have been the weakest link in the chain, and `d_lo` = 0.14386 mm returned
+1.440e-4 both times.
+
+*Totals across the block:* **95 runs over 65 distinct `d` values** — 3 reproduction-gate
+runs, 19 in Stage A (13 rungs, 6 re-run), 33 in Stage B (25 rungs, 8 leaders re-run) and
+40 in Stage C (31 probes, 9 edge probes re-run). Every one emitted the datum line; not a
+single `OK`, `INDETERMINATE` or `NO-DATUM` occurred. No achieved value differed between
+repetitions anywhere in the block, at any stage or resolution. Nothing timed out, so this
+class remains **not budget-limited** at these `d` — the finest probe, 0.14305 mm, is well
+inside the regime 6545 already showed to be affordable.
 ### 1.6 Loft is unreachable from the source language
 
 Two mutually exclusive failure modes with no path between them:
