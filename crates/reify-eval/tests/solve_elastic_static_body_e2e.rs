@@ -2372,3 +2372,34 @@ fn parse_localized_element_counts(message: &str) -> (usize, usize) {
             .unwrap_or_else(|e| panic!("post-refine element count `{after}` must parse: {e}")),
     )
 }
+
+/// Parse the count of mark-driven refinement iterations out of the localized
+/// lane's Info diagnostic.
+///
+/// Same contract as [`parse_localized_element_counts`]: the wording is settled
+/// once at the emission site in `elastic_static.rs` and asserted against by both
+/// the in-crate unit test and this end-to-end test, so a change to it breaks
+/// loudly in one place rather than silently weakening an assertion here.
+///
+/// Anchored on the literal ` refinement iteration(s)` rather than on the
+/// surrounding punctuation, and deliberately so: the emission site's
+/// `refine_count == 0` arm is worded `0 refinement iterations` — plural, without
+/// the `(s)` form — and therefore does NOT contain this marker. A budget that
+/// terminated before any remesh ran thus panics here rather than parsing to a
+/// quiet `0`, which is the wanted behaviour: the caller asserts the refine
+/// budget was fully consumed, and a silent `0` would report that as an ordinary
+/// count mismatch instead of as the structurally different "no remesh ran" case.
+#[cfg(has_gmsh)]
+fn parse_localized_refine_count(message: &str) -> usize {
+    const MARKER: &str = " refinement iteration(s)";
+    let (head, _) = message.split_once(MARKER).unwrap_or_else(|| {
+        panic!("localized diagnostic must report `N{MARKER}`: {message}")
+    });
+    // The digits sit immediately BEFORE the marker, so scan backwards off the
+    // end of `head` and restore reading order before parsing.
+    let backwards: String = head.chars().rev().take_while(|c| c.is_ascii_digit()).collect();
+    let count: String = backwards.chars().rev().collect();
+    count.parse().unwrap_or_else(|e| {
+        panic!("refinement-iteration count `{count}` must parse: {e} (diagnostic: {message})")
+    })
+}
