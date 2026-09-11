@@ -471,7 +471,9 @@ no-cap-burn `BlockDisposition` row, and `merge_queue.py` `_run_inflight_verify`
 requeues it in a defer arm ahead of the generic handler. Contention on this
 inode is therefore no longer classified `merge_error`. Kept here, struck rather
 than deleted, because §1's historical chain and esc-5363-5 both refer to it; see
-§1 for the four bounds that keep the fix from being unconditional.
+§1 for the four bounds that keep the fix from being unconditional — two in the
+prose immediately after §1's acquirer table, and two *further* in §1's
+`LaneLockSelfOwnedLeak` paragraph.
 
 Only **(a)** remains outstanding, and it is genuinely unlanded — at the same DF
 HEAD, zero hits for `lock_guard_enabled`, `warm-lane-lock-guard` or
