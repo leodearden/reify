@@ -272,19 +272,19 @@ Seed mode: CoW-clone a warm base target/ into a pool lane.
   --fresh-checkout    Replace non-empty <lane_dir>/target (mv to trash, reflink-clone,
                       rm trash); then bulk-stamp sources to 2020-01-01 and touch
                       changed files to now (D5).
-  --reset-in-place    Refuse a non-empty <lane_dir>/target.  No bulk stamp.  Does not
-                      self-acquire the lane lock (see --lane-lock).  Serves BOTH the
-                      B13 warmth-delta control arm and the merge-spec `_spec-` acquire
-                      mode; task-lane acquires use --fresh-checkout.
+  --reset-in-place    Refuse a non-empty <lane_dir>/target.  No bulk stamp.  Serves BOTH
+                      the B13 warmth-delta control arm and the merge-spec `_spec-`
+                      acquire mode; task-lane acquires use --fresh-checkout.
   --base-commit sha   Git commit the base was built from; drives git diff --name-only.
   --touch path        Additional path to touch to now after bulk stamp (repeatable).
-  --lane-lock         Accepted; IMPLIED under --fresh-checkout, where the lane lock
-                      is acquired BY DEFAULT (esc-5214/task 5354 fail-safe). Still the
-                      explicit opt-in for --reset-in-place (B13 control arm AND
-                      merge-spec acquire), which does NOT self-acquire: a
-                      --reset-in-place caller needing inv.11 exclusivity must pass this
-                      or already hold the lock itself (DF's own outer flock is what
-                      covers the merge-spec acquire). Holds an exclusive flock on the
+  --lane-lock         Accepted; IMPLIED under --fresh-checkout, which turns seed's own
+                      acquire ON by default (esc-5214/task 5354 fail-safe); still the
+                      explicit opt-in under --reset-in-place.  That default settles
+                      NOTHING on either production pool acquire, task or merge-spec:
+                      DF's `_seed_warm_lane` passes --assume-lane-lock-held on both, so
+                      seed takes the lock for NEITHER role and inv.11 is held by DF's
+                      own outer flock instead -- see the --lane-lock note in the header.
+                      Where seed DOES acquire, it holds an exclusive flock on the
                       sibling ${LANE_DIR}.lock across the whole run, BEFORE any target
                       mutation; refuses if a live consumer already holds it (inv.2
                       one-consumer-per-lane) -- with EX_TEMPFAIL 75 by default, 77
@@ -303,7 +303,9 @@ Seed mode: CoW-clone a warm base target/ into a pool lane.
   --assume-lane-lock-held
                       Opt OUT of the default acquire for a caller that ALREADY holds
                       ${LANE_DIR}.lock itself (thin --reseed on FD 9, gc reclaim on
-                      FD 8). flock is not re-entrant across a process tree, so having
+                      FD 8, and -- the caller that dominates in production -- DF
+                      `_seed_warm_lane`, on BOTH pool acquires regardless of mode).
+                      flock is not re-entrant across a process tree, so having
                       seed re-acquire the same file would self-refuse; this makes seed
                       skip its own acquire. Mutually exclusive with --lane-lock (usage
                       error, exit 2). Seed never unlocks an FD 9 it did not open, so
