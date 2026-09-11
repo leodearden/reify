@@ -29,10 +29,12 @@ described in prose after the table:
 | `_seed_warm_lane` (`git_ops.py`, `async def _seed_warm_lane(`) | `flock -x -w <_SEED_WARM_LANE_LOCK_WAIT_SECS> -E <_SEED_WARM_LANE_LOCK_TIMEOUT_RC>` — assembled as an argv **list** from those two constants (currently 30 / 124). DF's PRODUCTION code never carries this as a quoted literal, so reify must mirror the VALUES and never pattern-match a string. (DF's own `orchestrator/tests/test_ephemeral_worktree.py` *does* carry the expanded literal, as a test-side assertion — see §3.) | fail-CLOSED at the lock: `rc == _SEED_WARM_LANE_LOCK_TIMEOUT_RC` is logged as a distinct diagnosable timeout ("failing closed rather than risk a torn target/") and returned to callers, which read any non-zero as a seed fault and degrade to a **cold** worktree — fail-soft, the lane is never removed and the scheduler never blocks. No retry inside the method. Same VALUE as the reset row (30) but a **separate** constant since DF 3003 |
 | `GitOps.task_verify_lease` (`git_ops.py`, `async def task_verify_lease(`) — DF task 3027 | 300s (`_TASK_VERIFY_LEASE_WAIT_SECS`), then **holds for the whole task-lane verify** | **fail-OPEN**: logs a WARNING and yields *without* the hold rather than raising. A task verify must never be aborted by its own lane lease, and proceeding unheld is exactly the pre-3027 baseline, so fail-open is non-regressive. No merge-queue disposition is involved on this path at all |
 
-The reset row's defer carries **two bounds** of its own, stated once here
-rather than inside the cell above; two *further* bounds on the contended
-family as a whole are stated below, with `LaneLockSelfOwnedLeak` — four in
-total. Git faults *inside the method body* still raise plain
+The reset row's defer carries **two bounds** of its own — the git-fault
+escape to `blocked`, and the `MAX_CONTENDED_LEASE_DEFER_SECS` cap-out —
+stated once here rather than inside the cell above; two *further* bounds on
+the contended family as a whole are stated below (`LaneLockSelfOwnedLeak`,
+and the fail-CLOSED `MergeVerifyLeaseHeld` pre-check) — four in total. Git
+faults *inside the method body* still raise plain
 `RuntimeError` and still resolve `blocked` (deliberate — "so a genuine git
 fault still classifies as blocked"). Continuous contention past
 `MAX_CONTENDED_LEASE_DEFER_SECS` (`merge_queue.py`, 4h) does terminally
@@ -306,9 +308,13 @@ the seam; remediation, if any, is dark-factory's half.
 Speculative dispatch is **not** required to reproduce the failure, and
 provisioning more verify lanes does **not** fix it.
 
-`git.merge_spec_warm_lane_pool: true` has been live since task 4941 (in
-`dark-factory-orchestrator.yaml`, cited by KEY rather than line — that file
-is tracked in reify itself, so one grep re-checks it). With it,
+`merge_spec_warm_lane_pool: true` — nested under the top-level `git:` block
+of `dark-factory-orchestrator.yaml`, hence the dotted shorthand
+`git.merge_spec_warm_lane_pool` used elsewhere — has been live since task
+4941. Cited by KEY, not by line: that file is tracked in reify, so grepping
+the leaf as written re-checks it from any worktree, whereas a line number
+into a 1100+ line actively-edited config only rots (this cite's had). With
+it,
 `merge_liveness.py`'s
 `lane_path, warm = await git_ops.acquire_spec_lane(merge_commit)` routes
 SPECULATIVE items to `_spec-N` lanes — **not** to `_merge-verify`. Only the
