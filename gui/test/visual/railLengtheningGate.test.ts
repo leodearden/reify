@@ -681,19 +681,22 @@ describe("formatFailures — the single site where a record becomes English", ()
     expect(line).toContain("Violated");
   });
 
-  it("explains a stale reading by naming demand pruning, the cause that produces it", () => {
+  it("explains a stale reading in terms of the cell and the freshness actually read", () => {
     const { failures } = checkRailLengtheningGate({
       ...BASELINE,
       cells: { ...BASELINE.cells, [TRAVEL_AVAIL_CELL]: { mm: 510, freshness: "pending" } },
     }) as Verdict;
-    expect(formatFailures(failures)[0]!).toMatch(/prun/i);
+    const line = formatFailures(failures)[0]!;
+    expect(line).toContain(TRAVEL_AVAIL_CELL);
+    expect(line).toContain("pending");
   });
 
-  it("says an outage means the invariant was never tested", () => {
+  it("explains an outage in terms of the tool that failed and what it returned", () => {
     const line = formatFailures([
       { gate: "outage", tool: "engine_state", observed: "boom" },
     ] as Failure[])[0]!;
-    expect(line).toMatch(/never/i);
+    expect(line).toContain("engine_state");
+    expect(line).toContain("boom");
   });
 
   it("degrades a malformed record to a dump rather than throwing", () => {
