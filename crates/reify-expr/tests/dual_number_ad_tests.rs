@@ -429,12 +429,6 @@ fn pref(member: &str) -> CompiledExpr {
     value_ref_typed(ENT, member, Type::Scalar { dimension: DimensionVector::DIMENSIONLESS })
 }
 
-fn call1(name: &str, a: CompiledExpr) -> CompiledExpr {
-    fn_call(name, &format!("std::{name}"), vec![a], Type::Scalar {
-        dimension: DimensionVector::DIMENSIONLESS,
-    })
-}
-
 fn calln(name: &str, args: Vec<CompiledExpr>) -> CompiledExpr {
     fn_call(name, &format!("std::{name}"), args, Type::Scalar {
         dimension: DimensionVector::DIMENSIONLESS,
@@ -443,7 +437,17 @@ fn calln(name: &str, args: Vec<CompiledExpr>) -> CompiledExpr {
 
 /// Central-difference reference for `∂expr/∂cell`, computed only through
 /// `eval_expr` on a perturbed copy of the value map.
-fn central_difference(expr: &CompiledExpr, values: &ValueMap, target: &ValueCellId) -> f64 {
+///
+/// `functions` is threaded rather than assumed empty so that a residual
+/// containing user algebra is differenced by the SAME reference as one that is
+/// not — a second finite-difference implementation for the with-functions case
+/// is a second thing to keep right.
+fn central_difference(
+    expr: &CompiledExpr,
+    values: &ValueMap,
+    target: &ValueCellId,
+    functions: &[CompiledFunction],
+) -> f64 {
     let base = values.get(target).cloned().expect("probe cell must exist");
     let x = base.as_f64().expect("probe cell must be numeric");
     let dim = base.dimension();
@@ -454,7 +458,7 @@ fn central_difference(expr: &CompiledExpr, values: &ValueMap, target: &ValueCell
     let at = |v: f64| -> f64 {
         let mut perturbed = values.clone();
         perturbed.insert(target.clone(), Value::from_real_scalar(v, dim));
-        let ctx = EvalContext::simple(&perturbed);
+        let ctx = EvalContext::new(&perturbed, functions);
         eval_expr(expr, &ctx).as_f64().expect("perturbed evaluation must stay numeric")
     };
     (at(x + h) - at(x - h)) / (2.0 * h)
@@ -463,8 +467,28 @@ fn central_difference(expr: &CompiledExpr, values: &ValueMap, target: &ValueCell
 /// The suite's single assertion shape: one dual traversal produces the whole
 /// gradient row, and every column is checked against its own central
 /// difference.
-fn assert_ad_matches_cd(label: &str, expr: &CompiledExpr, values: &ValueMap, seed_cells: &[ValueCellId]) {
-    let ctx = EvalContext::simple(values);
+///
+/// `EvalContext::simple(v)` IS `EvalContext::new(v, &[])`, so the no-functions
+/// case is this same driver with an empty slice rather than a second copy of
+/// it.
+fn assert_ad_matches_cd(
+    label: &str,
+    expr: &CompiledExpr,
+    values: &ValueMap,
+    seed_cells: &[ValueCellId],
+) {
+    assert_ad_matches_cd_with_fns(label, expr, values, seed_cells, &[]);
+}
+
+/// [`assert_ad_matches_cd`] with user functions in scope.
+fn assert_ad_matches_cd_with_fns(
+    label: &str,
+    expr: &CompiledExpr,
+    values: &ValueMap,
+    seed_cells: &[ValueCellId],
+    functions: &[CompiledFunction],
+) {
+    let ctx = EvalContext::new(values, functions);
     let seeds = Seeds::new(seed_cells);
     let mut record = BranchRecord::new();
     let dual = eval_dual(expr, &ctx, &seeds, &mut record);
@@ -481,7 +505,7 @@ fn assert_ad_matches_cd(label: &str, expr: &CompiledExpr, values: &ValueMap, see
         .unwrap_or_else(|| panic!("{label}: expected a differentiable tangent, got Tangent::None"));
 
     for (j, target) in seed_cells.iter().enumerate() {
-        let cd = central_difference(expr, values, target);
+        let cd = central_difference(expr, values, target, functions);
         assert!(
             cd.abs() >= 0.1,
             "{label} column {j}: probe point must have |∂r/∂x_j| >= 0.1 in SI units so the \
@@ -500,7 +524,7 @@ fn assert_ad_matches_cd(label: &str, expr: &CompiledExpr, values: &ValueMap, see
 /// One-variable convenience: seed a single cell `x` at `x0` and compare.
 fn assert_unary_builtin(name: &str, x0: f64) {
     let (values, seed_cells) = probe(&[("x", x0)]);
-    let expr = call1(name, pref("x"));
+    let expr = calln(name, vec![pref("x")]);
     assert_ad_matches_cd(name, &expr, &values, &seed_cells);
 }
 
@@ -579,7 +603,7 @@ fn abs_tangent_away_from_the_origin_agrees_with_central_differences() {
     // only ever test the positive branch.
     assert_unary_builtin("abs", 2.0);
     let (values, seed_cells) = probe(&[("x", -1.3)]);
-    assert_ad_matches_cd("abs_negative", &call1("abs", pref("x")), &values, &seed_cells);
+    assert_ad_matches_cd("abs_negative", &calln("abs", vec![pref("x")]), &values, &seed_cells);
 }
 
 // --- multi-argument smooth builtins ----------------------------------------
@@ -639,7 +663,7 @@ fn circle_residual_gradient_agrees_with_central_differences_in_both_columns() {
         binop(BinOp::Pow, pref("x"), literal(Value::Int(2))),
         binop(BinOp::Pow, pref("y"), literal(Value::Int(2))),
     );
-    let expr = binop(BinOp::Sub, call1("sqrt", sum), literal(Value::Real(5.0)));
+    let expr = binop(BinOp::Sub, calln("sqrt", vec![sum]), literal(Value::Real(5.0)));
     assert_ad_matches_cd("circle_residual", &expr, &values, &seed_cells);
 }
 
@@ -651,8 +675,8 @@ fn three_variable_trig_composite_gradient_agrees_with_central_differences() {
     let (values, seed_cells) = probe(&[("a", 0.7), ("b", 0.4), ("c", 0.3)]);
     let expr = binop(
         BinOp::Add,
-        binop(BinOp::Mul, call1("sin", pref("a")), call1("cos", pref("b"))),
-        call1("exp", neg(pref("c"))),
+        binop(BinOp::Mul, calln("sin", vec![pref("a")]), calln("cos", vec![pref("b")])),
+        calln("exp", vec![neg(pref("c"))]),
     );
     assert_ad_matches_cd("trig_composite", &expr, &values, &seed_cells);
 }
@@ -662,16 +686,13 @@ fn nested_sqrt_and_tanh_composite_gradient_agrees_with_central_differences() {
     // f(x, y) = sqrt(x·x + y·y) · tanh(x − y) — nests a builtin inside a
     // builtin inside arithmetic, so a chain-rule slip anywhere shows up.
     let (values, seed_cells) = probe(&[("x", 2.0), ("y", 1.2)]);
-    let norm = call1(
-        "sqrt",
-        binop(
-            BinOp::Add,
-            binop(BinOp::Mul, pref("x"), pref("x")),
-            binop(BinOp::Mul, pref("y"), pref("y")),
-        ),
-    );
+    let norm = calln("sqrt", vec![binop(
+        BinOp::Add,
+        binop(BinOp::Mul, pref("x"), pref("x")),
+        binop(BinOp::Mul, pref("y"), pref("y")),
+    )]);
     let expr =
-        binop(BinOp::Mul, norm, call1("tanh", binop(BinOp::Sub, pref("x"), pref("y"))));
+        binop(BinOp::Mul, norm, calln("tanh", vec![binop(BinOp::Sub, pref("x"), pref("y"))]));
     assert_ad_matches_cd("sqrt_tanh_composite", &expr, &values, &seed_cells);
 }
 
@@ -730,62 +751,12 @@ fn hyp_fn() -> CompiledFunction {
         "hyp",
         &["a", "b"],
         vec![],
-        call1(
-            "sqrt",
-            binop(
-                BinOp::Add,
-                binop(BinOp::Mul, param_ref("hyp", "a"), param_ref("hyp", "a")),
-                binop(BinOp::Mul, param_ref("hyp", "b"), param_ref("hyp", "b")),
-            ),
-        ),
+        calln("sqrt", vec![binop(
+            BinOp::Add,
+            binop(BinOp::Mul, param_ref("hyp", "a"), param_ref("hyp", "a")),
+            binop(BinOp::Mul, param_ref("hyp", "b"), param_ref("hyp", "b")),
+        )]),
     )
-}
-
-/// The step-5 central-difference driver, with user functions in scope.
-fn assert_ad_matches_cd_with_fns(
-    label: &str,
-    expr: &CompiledExpr,
-    values: &ValueMap,
-    seed_cells: &[ValueCellId],
-    functions: &[CompiledFunction],
-) {
-    let ctx = EvalContext::new(values, functions);
-    let seeds = Seeds::new(seed_cells);
-    let mut record = BranchRecord::new();
-    let dual = eval_dual(expr, &ctx, &seeds, &mut record);
-    assert_eq!(dual.value, eval_expr(expr, &ctx), "{label}: the primal invariant");
-
-    let ad = dual
-        .tangent
-        .materialize(seed_cells.len())
-        .unwrap_or_else(|| panic!("{label}: expected a differentiable tangent, got Tangent::None"));
-
-    for (j, target) in seed_cells.iter().enumerate() {
-        // Central differences, driven only through `eval_expr`.
-        let base = values.get(target).cloned().expect("probe cell");
-        let x = base.as_f64().expect("numeric probe cell");
-        let dim = base.dimension();
-        let h = 1e-6_f64 * x.abs().max(1e-3);
-        let at = |v: f64| -> f64 {
-            let mut perturbed = values.clone();
-            perturbed.insert(target.clone(), Value::from_real_scalar(v, dim));
-            eval_expr(expr, &EvalContext::new(&perturbed, functions))
-                .as_f64()
-                .expect("perturbed evaluation must stay numeric")
-        };
-        let cd = (at(x + h) - at(x - h)) / (2.0 * h);
-        assert!(
-            cd.abs() >= 0.1,
-            "{label} column {j}: probe point must have |∂r/∂x_j| >= 0.1 so the relative arm \
-             binds; got {cd:?}"
-        );
-        let tol = 1e-6 * cd.abs() + 1e-8;
-        assert!(
-            (ad[j] - cd).abs() <= tol,
-            "{label} column {j}: ad={:?} vs central-difference {cd:?} (tol {tol:?})",
-            ad[j]
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -833,7 +804,7 @@ fn a_user_function_let_binding_carries_its_tangent_into_the_result_expression() 
                 binop(BinOp::Mul, param_ref("norm2", "b"), param_ref("norm2", "b")),
             ),
         )],
-        call1("sqrt", CompiledExpr::value_ref(VCell::new("norm2", "s"), dl())),
+        calln("sqrt", vec![CompiledExpr::value_ref(VCell::new("norm2", "s"), dl())]),
     );
     let (values, seed_cells) = probe(&[("x", 3.0), ("y", 4.0)]);
     let expr = user_fn_call("norm2", vec![pref("x"), pref("y")], dl());
@@ -901,7 +872,7 @@ fn a_lambda_applied_inside_a_residual_propagates_its_argument_tangent() {
     let (mut values, seed_cells) = probe(&[("x", 2.0)]);
     let (cell_id, field) = cube_field_cell();
     values.insert(cell_id, field);
-    let expr = call1("cube", pref("x"));
+    let expr = calln("cube", vec![pref("x")]);
     assert_ad_matches_cd_with_fns("lambda_cube", &expr, &values, &seed_cells, &[]);
 }
 
@@ -1077,14 +1048,11 @@ fn jacobian_row_returns_the_si_primal_and_a_full_width_row_for_a_smooth_residual
     // r = sqrt(x² + y²) − 5
     let expr = binop(
         BinOp::Sub,
-        call1(
-            "sqrt",
-            binop(
-                BinOp::Add,
-                binop(BinOp::Mul, pref("x"), pref("x")),
-                binop(BinOp::Mul, pref("y"), pref("y")),
-            ),
-        ),
+        calln("sqrt", vec![binop(
+            BinOp::Add,
+            binop(BinOp::Mul, pref("x"), pref("x")),
+            binop(BinOp::Mul, pref("y"), pref("y")),
+        )]),
         literal(Value::Real(5.0)),
     );
     let (primal, row) = jrow(&expr, &values, &seed_cells).expect("smooth residual");
@@ -1711,7 +1679,7 @@ fn a_non_finite_partial_on_a_moving_argument_still_refuses() {
     let unary_refusals: [(&str, f64); 2] = [("sqrt", 0.0), ("asin", 1.0)];
     for (name, x0) in unary_refusals {
         let (values, seed_cells) = probe(&[("x", x0)]);
-        let expr = call1(name, pref("x"));
+        let expr = calln(name, vec![pref("x")]);
         match jrow(&expr, &values, &seed_cells) {
             Err(NonDifferentiable::UnsupportedKind { kind, .. }) => assert_eq!(
                 kind, "a builtin evaluated where its derivative does not exist",
@@ -1750,7 +1718,7 @@ fn a_builtin_whose_primal_is_undef_refuses_at_the_primal_cliff_regardless_of_the
     // masked guard is therefore unreachable for these, which is the point —
     // whichever refusal arrives first, a refusal is what must arrive.
     let (values, seed_cells) = probe(&[("x", 0.0)]);
-    let log0 = call1("log", pref("x"));
+    let log0 = calln("log", vec![pref("x")]);
     match jrow(&log0, &values, &seed_cells) {
         Err(NonDifferentiable::UndefPrimal { .. }) => {}
         other => panic!("log(0): expected UndefPrimal, got {other:?}"),
@@ -1806,7 +1774,7 @@ fn a_constant_abs_at_the_origin_still_yields_a_full_row() {
     // `abs(0) + w`, seeded on `w` alone.  ∂R/∂w = 1 exactly; the `abs` node
     // contributes nothing to that column and must not be able to withhold it.
     let (values, seed_cells) = probe(&[("w", 0.0)]);
-    let expr = binop(BinOp::Add, call1("abs", literal(Value::Real(0.0))), pref("w"));
+    let expr = binop(BinOp::Add, calln("abs", vec![literal(Value::Real(0.0))]), pref("w"));
     let (primal, row) = jrow(&expr, &values, &seed_cells)
         .unwrap_or_else(|err| panic!("abs(0) + w: refused with {err:?}"));
     assert_eq!(primal, 0.0, "the primal is an ordinary 0.0 — nothing here is undefined");
@@ -1819,7 +1787,7 @@ fn a_constant_abs_at_the_origin_nested_a_level_down_still_yields_a_full_row() {
     // the fix is a property of the NODE and not of one shape.  ∂R/∂w = 1.
     let (values, seed_cells) = probe(&[("w", 0.0)]);
     let inner =
-        binop(BinOp::Add, call1("abs", literal(Value::Real(0.0))), literal(Value::Real(1.0)));
+        binop(BinOp::Add, calln("abs", vec![literal(Value::Real(0.0))]), literal(Value::Real(1.0)));
     let expr = binop(BinOp::Mul, pref("w"), inner);
     let (primal, row) = jrow(&expr, &values, &seed_cells)
         .unwrap_or_else(|err| panic!("w * (abs(0) + 1): refused with {err:?}"));
@@ -1834,8 +1802,8 @@ fn a_constant_abs_has_no_cliff_at_zero() {
     // a constant 2 must produce the SAME row — anything else is a cliff in the
     // Jacobian at a point no seeded variable can even move through.
     let (values, seed_cells) = probe(&[("w", 0.0)]);
-    let at_kink = binop(BinOp::Add, call1("abs", literal(Value::Real(0.0))), pref("w"));
-    let away = binop(BinOp::Add, call1("abs", literal(Value::Real(2.0))), pref("w"));
+    let at_kink = binop(BinOp::Add, calln("abs", vec![literal(Value::Real(0.0))]), pref("w"));
+    let away = binop(BinOp::Add, calln("abs", vec![literal(Value::Real(2.0))]), pref("w"));
 
     let (_, row_at_kink) = jrow(&at_kink, &values, &seed_cells)
         .unwrap_or_else(|err| panic!("abs(0) + w: refused with {err:?}"));
@@ -1859,7 +1827,7 @@ fn a_seeded_abs_sitting_exactly_on_its_kink_still_refuses() {
     const ABS_KINK: &str = "`abs` evaluated exactly at its kink (x = 0)";
 
     let (values, seed_cells) = probe(&[("x", 0.0)]);
-    let direct = call1("abs", pref("x"));
+    let direct = calln("abs", vec![pref("x")]);
     match jrow(&direct, &values, &seed_cells) {
         Err(NonDifferentiable::UnsupportedKind { kind, .. }) => {
             assert_eq!(kind, ABS_KINK, "abs(x) at x = 0 must keep naming the abs kink");
@@ -1870,7 +1838,7 @@ fn a_seeded_abs_sitting_exactly_on_its_kink_still_refuses() {
     // And through a subtraction: seeded `x` sitting exactly ON the constant it
     // is measured against is the commonest way a solver arrives at the kink.
     let (values, seed_cells) = probe(&[("x", 3.0)]);
-    let shifted = call1("abs", binop(BinOp::Sub, pref("x"), literal(Value::Real(3.0))));
+    let shifted = calln("abs", vec![binop(BinOp::Sub, pref("x"), literal(Value::Real(3.0)))]);
     match jrow(&shifted, &values, &seed_cells) {
         Err(NonDifferentiable::UnsupportedKind { kind, .. }) => {
             assert_eq!(kind, ABS_KINK, "abs(x − 3) at x = 3 must keep naming the abs kink");
@@ -1898,7 +1866,7 @@ fn every_other_all_constant_kink_already_yields_a_full_row() {
         ("min(0, 0)", calln("min", vec![c(0.0), c(0.0)]), 0.0),
         ("max(0, 0)", calln("max", vec![c(0.0), c(0.0)]), 0.0),
         ("clamp(0, 0, 1)", calln("clamp", vec![c(0.0), c(0.0), c(1.0)]), 0.0),
-        ("floor(0)", call1("floor", c(0.0)), 0.0),
+        ("floor(0)", calln("floor", vec![c(0.0)]), 0.0),
         ("mod(7, 3)", calln("mod", vec![literal(Value::Int(7)), literal(Value::Int(3))]), 1.0),
     ];
     for (label, kink, expected_primal) in cases {
@@ -1976,7 +1944,7 @@ fn a_shadow_cell_does_not_outrank_a_whole_field_reduction_on_the_dual_path() {
         let (cell_id, field) = shadow_cell(name);
         values.insert(cell_id, field);
 
-        let expr = call1(name, literal(bounded_probe_field()));
+        let expr = calln(name, vec![literal(bounded_probe_field())]);
         let (dual_v, _, plain) = dual_and_plain(&expr, &values, &seed_cells);
 
         // The invariant itself: `eval_expr` takes the named reduction arm, so
@@ -2034,7 +2002,7 @@ fn a_shadow_cell_still_outranks_the_builtin_tables_on_both_paths() {
         let (cell_id, field) = shadow_cell(name);
         values.insert(cell_id, field);
 
-        let expr = call1(name, pref("x"));
+        let expr = calln(name, vec![pref("x")]);
         let (dual_v, tangent, plain) = dual_and_plain(&expr, &values, &seed_cells);
 
         assert_eq!(
