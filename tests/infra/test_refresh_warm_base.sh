@@ -1199,6 +1199,96 @@ assert "J4g: <base> not created/advanced after prune failure" test ! -e "$J4G_BA
 assert "J4g: no <base>.gen.*.partial residue after prune failure (EXIT trap cleanup)" \
     bash -c '_n=0; for _p in "${1}".gen.*.partial; do [ -e "$_p" ] && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$J4G_BASE"
 
+# J5 — mtime-tie determinism. NOT a theoretical edge case: measured on the live
+# base, 1 of 3,607 (stem, ext) groups contains duplicate mtimes. The current
+# sort has no DELIBERATE secondary key — ties fall through to whichever field
+# happens to sit next in the `find -printf` stream (byte size), which is an
+# accident of field order, not a rule anyone chose. J5c pins the intended
+# rule (mtime desc, filename desc) and is red against that accident.
+J5_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j5-XXXXXX)"
+_TMPDIRS+=("$J5_TMP")
+J5_LANE="$(mk_git_advancing "$J5_TMP")"
+J5_ADV="$J5_LANE/advancing"
+J5_HEAD="$(git -C "$J5_LANE" rev-parse HEAD)"
+mkdir -p "$J5_ADV/debug/deps"
+
+# Three generations of one unit: the two OLDEST tied at an IDENTICAL mtime
+# (touch -d the same timestamp on both), the newest distinct. Content sizes
+# are deliberately swapped relative to filename order — the LEXICALLY
+# SMALLER hash suffix (-1111...) gets the LARGER byte count, and the
+# LEXICALLY LARGER suffix (-2222...) gets the SMALLER byte count — so that
+# "tiebreak by byte size" and "tiebreak by filename" pick DIFFERENT
+# survivors. No sleeps; explicit `touch -d` timestamps only (T8).
+printf '%s' "aaaaa" > "$J5_ADV/debug/deps/reify_tie_unit-1111111111111111"                 # 5 bytes
+printf '%s' "bbbbbbbbbbbbbbbbbbbb" > "$J5_ADV/debug/deps/reify_tie_unit-2222222222222222"  # 20 bytes
+printf '%s' "newest content" > "$J5_ADV/debug/deps/reify_tie_unit-3333333333333333"
+touch -d '2026-01-01 00:00:00' \
+    "$J5_ADV/debug/deps/reify_tie_unit-1111111111111111" \
+    "$J5_ADV/debug/deps/reify_tie_unit-2222222222222222"
+touch -d '2026-03-01 00:00:00' "$J5_ADV/debug/deps/reify_tie_unit-3333333333333333"
+
+J5_BASE="$J5_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$J5_ADV" "$J5_BASE" --landed-commit "$J5_HEAD"
+assert "J5a: refresh with a tied-mtime group exits 0" test "$RC" -eq 0
+
+J5_GEN="$(readlink "$J5_BASE")"
+J5_DEPS="$J5_GEN/debug/deps"
+
+assert "J5a: exactly 2 files remain in the tied group (keep count honoured despite the tie)" \
+    bash -c '[ "$(find "$1" -maxdepth 1 -type f -name "reify_tie_unit-*" | wc -l)" -eq 2 ]' _ "$J5_DEPS"
+assert "J5a: the distinct-newest generation survives" \
+    test -f "$J5_DEPS/reify_tie_unit-3333333333333333"
+
+# J5c — the tiebreak must be filename-based (mtime desc, filename desc), not
+# an accident of byte size. -2222... is the lexically LARGER of the tied-old
+# pair, so the intended rule keeps it and prunes -1111.... Today's grouper
+# has no filename tiebreak and falls through to comparing byte size as the
+# next `find -printf` field, under which -1111... (5 bytes, string "5") sorts
+# AFTER -2222... (20 bytes, string "20") — "5" > "20" lexically — making
+# -1111... the one kept and -2222... the one pruned: the opposite of the
+# intended rule. RED until step-10 gives the sort a deliberate secondary key.
+assert "J5c: the lexically-larger tied filename survives (-2222...)" \
+    test -f "$J5_DEPS/reify_tie_unit-2222222222222222"
+assert "J5c: the lexically-smaller tied filename is pruned (-1111...)" \
+    test ! -f "$J5_DEPS/reify_tie_unit-1111111111111111"
+
+# J5b — the survivor SET is deterministic across independent refreshes: a
+# second, byte-identical advancing fixture (same names, same stamped mtimes,
+# same content), built from an independently-created lane so this exercises
+# a genuinely separate `find`/readdir traversal, must produce the same
+# surviving filename set as the first.
+J5B_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j5b-XXXXXX)"
+_TMPDIRS+=("$J5B_TMP")
+J5B_LANE="$(mk_git_advancing "$J5B_TMP")"
+J5B_ADV="$J5B_LANE/advancing"
+J5B_HEAD="$(git -C "$J5B_LANE" rev-parse HEAD)"
+mkdir -p "$J5B_ADV/debug/deps"
+printf '%s' "aaaaa" > "$J5B_ADV/debug/deps/reify_tie_unit-1111111111111111"
+printf '%s' "bbbbbbbbbbbbbbbbbbbb" > "$J5B_ADV/debug/deps/reify_tie_unit-2222222222222222"
+printf '%s' "newest content" > "$J5B_ADV/debug/deps/reify_tie_unit-3333333333333333"
+touch -d '2026-01-01 00:00:00' \
+    "$J5B_ADV/debug/deps/reify_tie_unit-1111111111111111" \
+    "$J5B_ADV/debug/deps/reify_tie_unit-2222222222222222"
+touch -d '2026-03-01 00:00:00' "$J5B_ADV/debug/deps/reify_tie_unit-3333333333333333"
+
+J5B_BASE="$J5B_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$J5B_ADV" "$J5B_BASE" --landed-commit "$J5B_HEAD"
+assert "J5b: second independent refresh of a byte-identical fixture exits 0" test "$RC" -eq 0
+
+J5B_GEN="$(readlink "$J5B_BASE")"
+J5B_DEPS="$J5B_GEN/debug/deps"
+
+assert "J5b: survivor filename SET is identical across two independent refreshes" \
+    bash -c '
+        s1="$(cd "$1" && find . -maxdepth 1 -type f -name "reify_tie_unit-*" -printf "%f\n" | sort)"
+        s2="$(cd "$2" && find . -maxdepth 1 -type f -name "reify_tie_unit-*" -printf "%f\n" | sort)"
+        [ "$s1" = "$s2" ]
+    ' _ "$J5_DEPS" "$J5B_DEPS"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately
 # kept as two independently-reported signals: TRASH2 can realistically only ever
