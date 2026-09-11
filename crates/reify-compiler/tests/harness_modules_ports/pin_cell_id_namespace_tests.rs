@@ -326,13 +326,24 @@ fn gui_pin_selectors_select_exactly_the_shape_located_pins() {
     }
 }
 
-/// STUB (S3): always empty regardless of input — this is what makes
-/// `gui_pin_selectors_select_exactly_the_shape_located_pins` RED with the
-/// PIN_ABSENT message. Real body (the faithful mirror of the GUI's
-/// `selectPinConstraints`) lands in S4.
+/// The faithful Rust mirror of the GUI's `selectPinConstraints` (cited via
+/// #5098 — not a `main` path; see module doc): keeps a constraint when EVERY
+/// entry of `cells` is present in its `constraint_parameter_ids`, matching
+/// `cells.every((cell) => ids.includes(cell))` — superset, not equality,
+/// because a pin expression legitimately also names `Printer.o1_pin_slack`
+/// (and, for the tool-dock pin, `Printer.a_frame.centre_y`). Do not
+/// "improve" this into equality or prefix matching: the value of this guard
+/// is that it runs the SAME predicate the GUI runs, so a divergence the GUI
+/// cannot see is one this guard must not see either.
 fn select_pin_constraints<'a>(
-    _constraints: &'a [CompiledConstraint],
-    _cells: &[&str],
+    constraints: &'a [CompiledConstraint],
+    cells: &[&str],
 ) -> Vec<&'a CompiledConstraint> {
-    Vec::new()
+    constraints
+        .iter()
+        .filter(|c| {
+            let ids = constraint_parameter_ids(c);
+            cells.iter().all(|cell| ids.iter().any(|id| id.as_str() == *cell))
+        })
+        .collect()
 }
