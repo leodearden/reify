@@ -35,7 +35,7 @@ use reify_constraints::relate_solve::{
     FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, max_relation_residual,
     partition_driving_set, pose_from_frame,
 };
-use reify_core::{DiagnosticCode, Severity, Type};
+use reify_core::{Diagnostic, DiagnosticCode, Severity, Type};
 use reify_eval::relate_solve::{
     RealizedDatums, RelateScope, RelateSolution, auto_pose_cell, collect_relate_scope,
     realize_operand_datums, solve_relate_scope, trace_to_ground,
@@ -1449,6 +1449,94 @@ fn conflict_diagnostic_unshifted_by_a_non_call_relate_member() {
     assert_eq!(
         shifted_msg, baseline_msg,
         "a relate member the solve cannot consume must not change the conflict diagnostic"
+    );
+}
+
+/// step-3 — a relate member no pass can consume is DIAGNOSED, not silently dropped
+/// (INV-SF-3, `docs/legibility/design-invariants.md:130`: a declaration is either
+/// consumed by a solve/verify pass this run, or generates a diagnostic naming why
+/// not). RED until step-4 emits the un-consumable-member diagnostic (task 7050).
+#[test]
+fn non_call_relate_member_is_diagnosed_not_silently_dropped() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping non_call_relate_member_is_diagnosed_not_silently_dropped: \
+             OCCT not available"
+        );
+        return;
+    }
+
+    // Leading `mate(...)` (position 1) + the two §1 driving relations. This scope
+    // solves cleanly today — the bolt is placed and `solution.diagnostics` is
+    // EMPTY, which is exactly the silent skip this step closes.
+    let source = bolt_plate_scope_source(
+        Some("fn mate(a: Axis, b: Axis) -> Relation { concentric(a, b) }"),
+        &[
+            "mate(bolt.shank_axis, plate.hole_axis)",
+            "concentric(bolt.shank_axis, plate.hole_axis)",
+            "flush(bolt.seat_plane, plate.top_plane)",
+        ],
+    );
+
+    let solution = solve_bolt_plate(&source);
+
+    // (a) at least one Error-severity diagnostic exists — the skip is no longer silent.
+    assert!(
+        solution.diagnostics.iter().any(|d| d.severity == Severity::Error),
+        "an un-consumable relate member must raise an Error diagnostic, got none \
+         (solution.diagnostics = {:?})",
+        solution.diagnostics
+    );
+
+    // (b)+(c) exactly one diagnostic carries RelateExpectsRelation and identifies
+    // the un-consumed member's 1-based declaration position (member 1) as a call
+    // the relate-solve cannot verify.
+    let skip_diags: Vec<&Diagnostic> = solution
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::RelateExpectsRelation))
+        .collect();
+    assert_eq!(
+        skip_diags.len(),
+        1,
+        "expected exactly one RelateExpectsRelation diagnostic, got: {:?}",
+        solution.diagnostics
+    );
+    let skip = skip_diags[0];
+    assert_eq!(
+        skip.severity,
+        Severity::Error,
+        "the un-consumed-member diagnostic must be Error severity, got {:?}",
+        skip.severity
+    );
+    assert!(
+        skip.message.contains("member 1"),
+        "the diagnostic must identify the un-consumed member's 1-based declaration \
+         position (member 1), got: {:?}",
+        skip.message
+    );
+    assert!(
+        skip.message.contains("cannot verify"),
+        "the diagnostic must say the relate-solve cannot verify the member, got: {:?}",
+        skip.message
+    );
+
+    // (d) the report is about the skipped member, nothing else.
+    assert!(
+        !skip.message.contains("concentric") && !skip.message.contains("flush"),
+        "the un-consumed-member diagnostic must not name the consumable relations, \
+         got: {:?}",
+        skip.message
+    );
+
+    // (e) diagnosing the skip does not disturb the solve that DID run.
+    assert_eq!(
+        solution.driving, 2,
+        "concentric + flush are still the driving set, unaffected by the skip"
+    );
+    assert!(
+        matches!(solution.poses.get("bolt"), Some(Value::Frame { .. })),
+        "the bolt must still receive a solved Frame despite the skip diagnostic"
     );
 }
 
