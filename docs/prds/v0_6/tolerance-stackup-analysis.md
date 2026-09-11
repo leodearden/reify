@@ -91,9 +91,12 @@ GR-040 preserved: no method-call syntax (`x.foo()`); all analysis is free-functi
 **Substrate that already exists** (each verified in-tree):
 - `reify eval` value-cell printing — `reify-cli/src/main.rs:350` (`cmd_eval` prints
   `id = value` for every top-level cell, sorted).
-- `eval_builtin` free-function dispatch chain — `reify-stdlib/src/lib.rs:47`; analysis arm
-  pattern at `analysis::eval_analysis` (`reify-stdlib/src/analysis.rs:12`), returning
-  `Value::from_real_scalar`, `Value::List`, `Value::Map`.
+- `eval_builtin` free-function dispatch chain — `reify-stdlib/src/lib.rs:47`; each analysis
+  builtin registers as a `BindingKind::EvalBuiltin` row in
+  `crates/reify-builtins/src/registry.rs`, with the eval arm bound in the exhaustive
+  `crates/reify-stdlib/src/registry_dispatch.rs::dispatch` match over `EvalBuiltinId` (task
+  #6001 α; the former `analysis::eval_analysis` name-string dispatch arm no longer exists),
+  returning `Value::from_real_scalar`, `Value::List`, `Value::Map`.
 - `Value::Map(BTreeMap<Value,Value>)`, `Value::List`, `Value::Scalar` (dimensioned) —
   `reify-ir/src/value.rs:366+`. The multi-field result is a `Value::Map` keyed by string
   (deterministic `BTreeMap` ordering, so `reify eval` prints stable output).
@@ -207,8 +210,14 @@ G6 cautionary precedents (esc-3453 guessed-5%, esc-3770 impossible-exactness) de
 
 ### 4.1 Builtin signatures (Rust side, `reify-stdlib/src/stackup.rs`)
 
+Each name below registers as a `BindingKind::EvalBuiltin` row in
+`crates/reify-builtins/src/registry.rs`, with its eval kernel bound by an arm in the
+exhaustive `crates/reify-stdlib/src/registry_dispatch.rs::dispatch` match over
+`EvalBuiltinId` (task #6001 α) — not the retired `eval_analysis` name-string dispatch arm
+this section originally named as the pattern to mirror; see that module's existing
+Analysis-family rows for a worked example.
+
 ```text
-eval_stackup(name, args) -> Option<Value>     // dispatch arm, mirrors eval_analysis
   "stackup_worst_case"  (chain: List<Contributor>)                        -> Map
   "stackup_rss"         (chain: List<Contributor>, sigma_level?: Real=3)  -> Map
   "monte_carlo_stackup" (chain: List<Contributor>,
