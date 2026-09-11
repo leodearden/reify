@@ -603,9 +603,14 @@ measured and, more importantly, what its closure does *not* buy.
    (0.082–0.180s, measured §7) and `arm` is a byte-level no-op once the pin is in place.
 
    **Known gap, left deliberately.** The merge-spec lane is not covered: dark-factory's
-   `acquire_spec_lane` (`git_ops.py:5923`) calls `_seed_warm_lane(lane, '--reset-in-place')` at
-   `:6076`, at an indent common to BOTH its create and its reset branch, so a merge-spec acquire is
-   **always** `--reset-in-place` and never reaches the block. That is harmless for this defence,
+   `acquire_spec_lane` (in `orchestrator/src/orchestrator/git_ops.py`) calls
+   `_seed_warm_lane(lane, '--reset-in-place')` at an indent common to BOTH its create-once and its
+   reset branch, so a merge-spec acquire is **always** `--reset-in-place` and never reaches the
+   block. Cited by SYMBOL deliberately: this claim carried `git_ops.py:5923` / `:6076` when it was
+   measured on 2026-08-30, and both had drifted by 2026-09-11 (`:5949` / `:6102`) — twelve days,
+   26 lines, and the whole reason task 7045 existed. The function name plus the both-branches
+   indent is what actually pins it, and it survives any refactor that does not change the
+   behaviour described. Re-measured 2026-09-11: still holds. That is harmless for this defence,
    which is why the gate was left as-is rather than widened: the pin is a property of the **one
    shared `.git/config`**, not of a lane, so any acquire that pins it pins it for every lane
    including the spec lane — and task-lane acquires dominate by volume. It would matter for a
