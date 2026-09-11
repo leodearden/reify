@@ -67,6 +67,7 @@ import {
   extractGateInputs,
   findEditableParams,
   formatFailures,
+  observeThenExtras,
 } from "./railLengtheningGate.mjs";
 
 type Failure = {
@@ -1223,5 +1224,122 @@ describe("checkRailLengtheningGate — (o) the four rows fold into ONE verdict",
     }) as Verdict;
     expect(verdict.failures).toEqual([]);
     expect(verdict.ok).toBe(true);
+  });
+});
+
+describe("observeThenExtras — (p) the READ ORDER contract the driver cannot state", () => {
+  /**
+   * WHY THIS EXISTS AT ALL. An object literal passed as an ARGUMENT is fully
+   * evaluated — its `await`s included — BEFORE the callee runs. So
+   *
+   *     gradePhase(phase, subject, {sourceCanonical: await readSourceCanonical(…)})
+   *
+   * issues `reify_open_file` -> `reify_save_file` -> `reify_open_file` BEFORE
+   * `observePhase`'s reads, and `handle_reify_open_file` re-reads the file from
+   * disk (`open_path_into_engine`, debug_server.rs:1525). That turns PRD §7 B1
+   * — "the viewport and property panel follow WITHOUT a file reload" — into a
+   * tautology, silently, in the direction that PASSES. `observeThenExtras` is
+   * the seam that makes the order a value CI can execute rather than a comment
+   * in a file CI can never run.
+   */
+  const trace: string[] = [];
+  const recorded = (tag: string, value: unknown) => async () => {
+    trace.push(`${tag}:start`);
+    // A REAL suspension, not a bare `return`: an implementation that merely
+    // calls the two thunks in source order and awaits both at the end still
+    // interleaves here, and must fail.
+    await Promise.resolve();
+    trace.push(`${tag}:end`);
+    return value;
+  };
+
+  it("resolves `observe` FULLY before `gatherExtras` is so much as invoked", async () => {
+    trace.length = 0;
+    await observeThenExtras(recorded("observe", BASELINE), recorded("extras", {}));
+    expect(trace).toEqual(["observe:start", "observe:end", "extras:start", "extras:end"]);
+  });
+
+  it("merges the resolved extras OVER the observation, the shape gradePhase produced", async () => {
+    const merged = (await observeThenExtras(
+      async () => AFTER_RAIL_SPAN,
+      async () => ({ requires: ["fieldCoverage"], fieldCoverage: { stale: true } }),
+    )) as Record<string, unknown>;
+    expect(merged).toMatchObject({
+      phase: "after-rail-span",
+      requires: ["fieldCoverage"],
+      fieldCoverage: { stale: true },
+    });
+    // Merged OVER, so an extra wins a key collision — that is how a phase
+    // re-reads a field the observation also carries.
+    expect(
+      ((await observeThenExtras(
+        async () => ({ phase: "baseline", source: "old" }),
+        async () => ({ source: "new" }),
+      )) as Record<string, unknown>).source,
+    ).toBe("new");
+  });
+
+  it("leaves the observation untouched when there are no extras (`undefined`)", async () => {
+    expect(await observeThenExtras(async () => BASELINE, undefined)).toEqual(BASELINE);
+    expect((checkRailLengtheningGate(await observeThenExtras(async () => BASELINE)) as Verdict).ok).toBe(
+      true,
+    );
+  });
+
+  it("REFUSES a plain object — the disarmed spelling — and reds the run instead", async () => {
+    const disarmed = (await observeThenExtras(async () => AFTER_RAIL_SPAN, {
+      requires: ["fieldCoverage"],
+      fieldCoverage: { stale: true },
+    } as never)) as Record<string, unknown>;
+    // NOT merged: re-introducing the literal form must not quietly keep working.
+    expect(disarmed.requires).toBeUndefined();
+    expect(disarmed.fieldCoverage).toBeUndefined();
+
+    const verdict = checkRailLengtheningGate(disarmed) as Verdict;
+    expect(verdict.ok).toBe(false);
+    const [failure, ...rest] = forGate(verdict.failures, "read-order");
+    expect(rest).toEqual([]);
+    expect(failure).toMatchObject({
+      gate: "read-order",
+      tool: "railLengtheningGate",
+      field: "extras",
+      observed: "object",
+      expected: "a thunk — see observeThenExtras",
+    });
+  });
+
+  it("surfaces a REJECTING thunk as a record, not as an exception", async () => {
+    const out = await observeThenExtras(
+      async () => AFTER_RAIL_SPAN,
+      async () => {
+        throw new Error("store_state went away");
+      },
+    );
+    const verdict = checkRailLengtheningGate(out) as Verdict;
+    expect(forGate(verdict.failures, "read-order")).toHaveLength(1);
+    expect(forGate(verdict.failures, "read-order")[0]!.field).toBe("extras");
+  });
+
+  it("surfaces a non-thunk `observe` as a record naming THAT argument", async () => {
+    const verdict = checkRailLengtheningGate(await observeThenExtras(null as never)) as Verdict;
+    expect(forGate(verdict.failures, "read-order")).toHaveLength(1);
+    expect(forGate(verdict.failures, "read-order")[0]!.field).toBe("observe");
+  });
+
+  it("never rejects, for ANY pair of arguments", async () => {
+    const hostile = [null, undefined, 0, "", [], {}, { error: "boom" }, Symbol("x")];
+    for (const observe of hostile) {
+      for (const extras of hostile) {
+        const out = await observeThenExtras(observe as never, extras as never);
+        expect(out === null || typeof out !== "object").toBe(false);
+        expect(() => formatFailures((checkRailLengtheningGate(out) as Verdict).failures)).not.toThrow();
+      }
+    }
+  });
+
+  it("renders the read-order record by naming the reload it would have hidden", async () => {
+    const disarmed = await observeThenExtras(async () => AFTER_RAIL_SPAN, {} as never);
+    const line = formatFailures(forGate((checkRailLengtheningGate(disarmed) as Verdict).failures, "read-order"))[0]!;
+    expect(line).toContain("reify_open_file");
   });
 });
