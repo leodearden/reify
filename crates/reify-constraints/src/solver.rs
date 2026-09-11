@@ -102,7 +102,7 @@ struct SolveMeta {
 pub struct DimensionalSolver;
 
 /// Extract the DimensionVector from a Type, defaulting to DIMENSIONLESS.
-pub(crate) fn dimension_of(ty: &Type) -> DimensionVector {
+fn dimension_of(ty: &Type) -> DimensionVector {
     match ty {
         Type::Scalar { dimension } => *dimension,
         _ => DimensionVector::DIMENSIONLESS,

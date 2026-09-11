@@ -7,7 +7,7 @@
 mod classifier;
 mod cpsat;
 mod decompose;
-pub mod dual_jacobian;
+mod dual_jacobian;
 pub mod relate_solve;
 mod registry;
 pub mod sketch;
@@ -47,15 +47,15 @@ pub use sketch::{
     SketchEntityDef, SketchEntityId, SketchEntityKind, SketchSlotKind, SketchSolveResult,
     SketchSystem, SketchValueField, SolvedSketchEntity,
 };
-// Task #6672 (solver-unification ε): the forward-mode AD adapter, published at
-// the crate root so η (#6675), μ (#6680) and λ (#6679) name
-// `reify_constraints::residual_jacobian` rather than reaching into the module.
+// Task #6672 (solver-unification ε): the forward-mode AD adapter.  The module
+// is private and the crate root is the ONLY path to it, so
+// `reify_constraints::residual_jacobian` is not merely the preferred spelling
+// — it is the reachable one.  `Jacobian` names `reify_expr` types in its
+// public shape (`BranchRecord`, `KinkSite`); a consumer reads those from
+// reify-expr, which η (#6675), μ (#6680) and λ (#6679) all depend on anyway.
+// Passing them through a second crate root is a surface to add when a consumer
+// asks for it, not before.
 pub use dual_jacobian::{Jacobian, JacobianError, residual_jacobian};
-// λ (#6679) reads the branch vocabulary through ONE import site rather than
-// depending on reify-expr's module layout.
-pub use reify_expr::{
-    BranchChoice, BranchEntry, BranchRecord, KinkKind, KinkSite, NonDifferentiable, ReductionKind,
-};
 pub use solver::DimensionalSolver;
 // γ cost_robustness_tradeoff (task #4791): re-exported so integration tests can
 // compute the λ=0 Chebyshev-centre reference independently of the tradeoff blend

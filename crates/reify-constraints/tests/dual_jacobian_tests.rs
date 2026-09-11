@@ -20,7 +20,7 @@ use reify_expr::{EvalContext, NonDifferentiable, eval_expr};
 use reify_ir::{AutoParam, BinOp, CompiledExpr, Value, ValueMap};
 use reify_test_support::builders::expr::{binop, fn_call, literal, value_ref_typed};
 
-use reify_constraints::dual_jacobian::residual_jacobian;
+use reify_constraints::residual_jacobian;
 
 const ENT: &str = "model";
 
