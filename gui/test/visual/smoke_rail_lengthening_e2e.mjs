@@ -216,10 +216,10 @@ function requireLiveRead(phase, diagnosis) {
  * every phase into a reload test.
  *
  * That holds ACROSS the phase, not just inside this function, which is why
- * `gradePhase` routes through `observeThenExtras` rather than taking an object:
- * a phase's extras are gathered only once this returns. The two enforcers are
- * `observeThenExtras` (./railLengtheningGate.mjs, runtime) and
- * `awaited-extras-literal` (./smokeDriverConventions.ts, source-level, CI).
+ * `gradePhase` routes through `observeThenExtras` (./railLengtheningGate.mjs) —
+ * whose docblock derives why — rather than taking an object: a phase's extras
+ * are gathered only once this returns. Its source-level twin is
+ * `awaited-extras-literal` (./smokeDriverConventions.ts).
  *
  * @returns {Promise<{inputs: object, verdict: {ok: boolean, failures: object[]}}>}
  */
@@ -274,12 +274,11 @@ async function observePhase(phase, subject) {
  * phase exercises.
  *
  * `gatherExtras` is a THUNK, not an object, and the sequencing lives in
- * `observeThenExtras` (./railLengtheningGate.mjs) rather than here: an object
- * literal in this argument position would be evaluated — its awaits included —
- * BEFORE this function is entered, hoisting its reads above observePhase's and
- * reloading the file from disk in the middle of them. See observePhase's READ
- * ORDER IS LOAD-BEARING paragraph, and ./smokeDriverConventions.ts's
- * `awaited-extras-literal`, which is what stops the literal coming back.
+ * `observeThenExtras` (./railLengtheningGate.mjs) rather than here — its
+ * docblock is where the read-order rule and its consequence for PRD §7 B1 are
+ * derived. See also observePhase's READ ORDER IS LOAD-BEARING paragraph above,
+ * and ./smokeDriverConventions.ts's `awaited-extras-literal`, which is what
+ * stops the literal spelling coming back.
  *
  * The extras are merged into the inputs rather than checked separately so the
  * verdict stays ONE `{ok, failures}` — the driver has a single decision seam and
@@ -384,12 +383,7 @@ async function main() {
     await waitForIdle('open');
 
     // A THUNK, never an object literal — here and at every gradePhase call
-    // below. A literal's awaits run before gradePhase is entered, which puts
-    // these reads above observePhase's and (for any phase that gathers
-    // sourceCanonical) reloads the file from disk between them. observePhase's
-    // READ ORDER IS LOAD-BEARING paragraph is the invariant; observeThenExtras
-    // enforces it at runtime and ./smokeDriverConventions.ts's
-    // `awaited-extras-literal` stops the literal form coming back.
+    // below; see gradePhase's docblock above.
     log('Grading the baseline…');
     const baseline = await gradePhase('baseline', subject, async () => ({
       requires: ['fieldCoverage'],

@@ -1575,18 +1575,14 @@ describe("checkRailLengtheningGate — (o) the four rows fold into ONE verdict",
 
 describe("observeThenExtras — (p) the READ ORDER contract the driver cannot state", () => {
   /**
-   * WHY THIS EXISTS AT ALL. An object literal passed as an ARGUMENT is fully
-   * evaluated — its `await`s included — BEFORE the callee runs. So
+   * THE RULE: a phase's extra readings are taken only AFTER its own, and the
+   * seam takes a thunk rather than an object so the caller cannot spell it
+   * otherwise. Why the order decides PRD §7 B1 at all — and why getting it wrong
+   * fails silently, in the direction that PASSES — is derived once, on
+   * `observeThenExtras` in `./railLengtheningGate.mjs`.
    *
-   *     gradePhase(phase, subject, {sourceCanonical: await readSourceCanonical(…)})
-   *
-   * issues `reify_open_file` -> `reify_save_file` -> `reify_open_file` BEFORE
-   * `observePhase`'s reads, and `handle_reify_open_file` re-reads the file from
-   * disk (`open_path_into_engine`, debug_server.rs:1525). That turns PRD §7 B1
-   * — "the viewport and property panel follow WITHOUT a file reload" — into a
-   * tautology, silently, in the direction that PASSES. `observeThenExtras` is
-   * the seam that makes the order a value CI can execute rather than a comment
-   * in a file CI can never run.
+   * What this block adds is that the rule is a VALUE CI can execute, not a
+   * comment in a driver CI can never run.
    */
   const trace: string[] = [];
   const recorded = (tag: string, value: unknown) => async () => {

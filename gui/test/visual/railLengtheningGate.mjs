@@ -395,10 +395,9 @@ export function formatFailures(failures) {
       case "read-order":
         return (
           `${failurePath(f)} was ${describeValue(f.observed)}, expected ${describeValue(f.expected)} ` +
-          `— an object literal in argument position is evaluated, its awaits included, BEFORE the ` +
-          `callee runs, so those reads would precede the phase's own and the reify_open_file among ` +
-          `them would reload the file from disk (debug_server.rs:1525), making PRD §7 B1's ` +
-          `"without a file reload" a tautology`
+          `— this phase's extra readings were NOT sequenced after its own, so PRD §7 B1's ` +
+          `"without a file reload" was never tested (see observeThenExtras in ` +
+          `railLengtheningGate.mjs for why the order decides the row)`
         );
       default:
         return `${failurePath(f)}: unrecognised gate ${describeValue(f.gate)} (observed ${describeValue(f.observed)})`;
@@ -944,11 +943,17 @@ function readOrderMarker(field, observed) {
  * viewport and property panel follow WITHOUT a file reload") passes no matter
  * what the AI write did. The failure is silent and in the direction that PASSES.
  *
- * `observePhase`'s READ ORDER IS LOAD-BEARING paragraph in
- * `./smoke_rail_lengthening_e2e.mjs` states that invariant; this function is
- * where it is ENFORCED, because a driver needs a live reify-gui to run at all
- * and this module is the only half of the gate CI can execute. Heuristic 10:
- * enforced where it can be, stated where it must be.
+ THIS DOCBLOCK IS THE ONE HOME of that reasoning. Five other sites depend on it
+ * — `formatFailures`' `read-order` message, this module's suite, the driver's
+ * `observePhase`/`gradePhase`, `./smokeDriverConventions.ts`'s
+ * `awaited-extras-literal` and `docs/debug-mcp-recipe.md` §2 — and each states
+ * the RULE it enforces and points back here for the mechanism, rather than
+ * re-deriving it. One derivation, six enforcement points.
+ *
+ * This function is where the rule is ENFORCED at runtime, because a driver needs
+ * a live reify-gui to run at all and this module is the only half of the gate CI
+ * can execute. `awaited-extras-literal` catches the source spelling; neither is
+ * complete alone. Heuristic 10: enforced where it can be, stated where it must be.
  *
  * NEVER REJECTS, for any pair of arguments — a rejecting thunk, a non-thunk, a
  * symbol — because the caller holding the result is a live driver whose job is

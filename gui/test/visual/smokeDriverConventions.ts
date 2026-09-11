@@ -27,16 +27,14 @@
  * unguarded chain independently (tasks 5827, 5883, 5884), so it is a shape the
  * next driver will reach for too.
  *
- * WHY THE THIRD ONE IS A CONVENTION AND NOT A CODE REVIEW NOTE. An object
- * literal passed as an ARGUMENT is fully evaluated — its `await`s included —
- * BEFORE the callee runs. So `gradePhase(phase, subject, {sourceCanonical: await
- * readSourceCanonical(…)})` issues that chain's `reify_open_file` ->
- * `reify_save_file` -> `reify_open_file` ahead of the phase's own reads, and the
- * first of those re-reads the file from disk (`open_path_into_engine`,
- * debug_server.rs:1525). Every reading the phase then takes describes a freshly
- * reloaded engine, so PRD §7 B1 — the viewport following an AI edit WITHOUT a
- * file reload — passes whatever the write did. `observeThenExtras` in
- * `./railLengtheningGate.mjs` is the runtime half; this is the source half.
+ * WHY THE THIRD ONE IS A CONVENTION AND NOT A CODE REVIEW NOTE. Spelling
+ * `gradePhase`'s extras as an object literal hoists every `await` inside it
+ * above the phase's own reads, and one of them reloads the file from disk — so
+ * PRD §7 B1 (the viewport following an AI edit WITHOUT a file reload) passes
+ * whatever the write did, silently, in the direction that PASSES. The mechanism
+ * is derived once, on `observeThenExtras` in `./railLengtheningGate.mjs`, which
+ * is the RUNTIME half of the same rule; this is the SOURCE half, and neither is
+ * complete alone.
  *
  * WHY A SOURCE-LEVEL CHECK IS THE ONLY SIGNAL. A driver needs a live reify-gui
  * (WebKit WebView + OCCT) to do anything at all, so CI can never execute one and
@@ -84,11 +82,11 @@ import { VISUAL_DIR, partitionVisualMjs } from "./sharedModuleLoad.js";
  * `STORE_STATE_READ`).
  *
  * `awaited-extras-literal` — the driver spells `gradePhase`'s extras as an object
- * literal, so every `await` inside it runs BEFORE the phase's own reads and the
- * `reify_open_file` among them reloads the file from disk, making PRD §7 B1's
- * "without a file reload" pass vacuously. Keyed on the literal opening in that
- * argument position: extras hoisted to a variable first reorder identically and
- * are not seen at all (see `AWAITED_EXTRAS_LITERAL`).
+ * literal, whose `await`s run BEFORE the phase's own reads and so make PRD §7
+ * B1's "without a file reload" pass vacuously (derived on `observeThenExtras` in
+ * `./railLengtheningGate.mjs`). Keyed on the literal opening in that argument
+ * position: extras hoisted to a variable first reorder identically and are not
+ * seen at all (see `AWAITED_EXTRAS_LITERAL`).
  */
 export type SmokeDriverViolationCode =
   | "inline-open-file"

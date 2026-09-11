@@ -359,15 +359,11 @@ describe("findSmokeDriverConventionViolations — the post-open `store_state` di
 });
 
 describe("findSmokeDriverConventionViolations — `gradePhase`'s extras argument", () => {
-  // One case per spelling of the literal. An object literal passed as an
-  // ARGUMENT is fully evaluated — its `await`s included — BEFORE the callee
-  // runs, so a `{sourceCanonical: await readSourceCanonical(…)}` in this
-  // position issues `reify_open_file` -> `reify_save_file` -> `reify_open_file`
-  // ahead of the phase's own reads, and the first of those reloads the file
-  // from disk (`open_path_into_engine`, debug_server.rs:1525). PRD §7 B1 — the
-  // viewport following WITHOUT a file reload — then passes whatever the write
-  // did. Perfectly valid JavaScript; fails only live, only silently, only in
-  // the direction that PASSES.
+  // One case per spelling of the literal. Why the literal form breaks PRD §7 B1
+  // is derived once, on `observeThenExtras` in `./railLengtheningGate.mjs`; what
+  // matters here is that each spelling is perfectly valid JavaScript that fails
+  // only live, only silently, and only in the direction that PASSES — which is
+  // why a source-level check has to catch it before it ever runs.
   it.each([
     [
       "the one-line literal spelling",
