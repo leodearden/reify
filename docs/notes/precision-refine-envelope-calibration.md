@@ -434,6 +434,85 @@ misses the other.
 near-ties at 0.15, 0.16 and 0.18 mm. The trough at 0.135 mm is not walked — it is the one
 rung in this bracket that is unambiguously far from the leaders.
 
+
+**Stage B — the 0.001 mm fine walk**, across the five sub-brackets Stage A flagged. A
+fourth column is added here: the **deficit** `δ = d − a`. At these magnitudes `a` prints
+as `X.XXXe-4`, so the display quantum is exactly 1e-7 m and δ is an integer count of
+quanta — a sharper lens than the ratio, because `a/d` compresses the whole interesting
+range into its last two digits while δ reads it directly.
+
+| d | a (e-4 m) | δ (quanta) | a/d | note |
+|---|---|---|---|---|
+| 0.118 mm | 1.175 | 5 | 0.9958 | |
+| 0.119 mm | 1.183 | 7 | 0.9941 | |
+| 0.120 mm | 1.197 | 3 | 0.9975 | 6545's peak |
+| 0.121 mm | 1.183 | 27 | 0.9777 | |
+| 0.122 mm | 1.174 | 46 | 0.9623 | |
+| 0.143 mm | 1.429 | 1 | 0.9993 | |
+| **0.144 mm** | 1.440 | **0** | **1.0000** | `a` = `d` to 4 s.f. |
+| **0.145 mm** | 1.450 | **0** | **1.0000** | `a` = `d` to 4 s.f. |
+| 0.146 mm | 1.451 | 9 | 0.9938 | |
+| 0.147 mm | 1.468 | 2 | 0.9986 | |
+| 0.148 mm | 1.476 | 4 | 0.9973 | |
+| 0.149 mm | 1.479 | 11 | 0.9926 | |
+| 0.150 mm | 1.495 | 5 | 0.9967 | |
+| 0.151 mm | 1.507 | 3 | 0.9980 | |
+| 0.152 mm | 1.512 | 8 | 0.9947 | |
+| 0.158 mm | 1.567 | 13 | 0.9918 | |
+| 0.159 mm | 1.585 | 5 | 0.9969 | |
+| 0.160 mm | 1.595 | 5 | 0.9969 | |
+| 0.161 mm | 1.605 | 5 | 0.9969 | |
+| 0.162 mm | 1.617 | 3 | 0.9981 | |
+| 0.178 mm | 1.771 | 9 | 0.9949 | |
+| 0.179 mm | 1.775 | 15 | 0.9916 | |
+| 0.180 mm | 1.795 | 5 | 0.9972 | plateau with 0.181 |
+| 0.181 mm | 1.795 | 15 | 0.9917 | identical `a` |
+| 0.182 mm | 1.789 | 31 | 0.9830 | |
+
+**Cross-check.** The five rungs in [0.118, 0.122] mm were measured in a separate earlier
+session, on the same binary but before any commit in this block, and returned 0.9958 /
+0.9941 / 0.9975 / 0.9777 / 0.9623. This stage reproduces all five exactly. They are
+re-measured here, not copied.
+
+**`a` is not monotone in `d`.** Requesting a *coarser* precision can yield a *smaller*
+deviation: 0.120 mm → 1.197e-4 but 0.121 mm → 1.183e-4, and 0.181 mm → 1.795e-4 but
+0.182 mm → 1.789e-4. Two different `d` can also return identical `a` (0.119 mm and
+0.121 mm both read 1.183e-4). Any reasoning that assumes `a` rises with `d` — including
+any bisection that assumes it — is unsound on this class.
+
+**Shape: no single period, and at least three distinct local behaviours.** Within
+[0.143, 0.152] mm — the one bracket walked contiguously across 0.010 mm — the ratio has
+local maxima at 0.144–0.145 mm, 0.147 mm and 0.151 mm, i.e. spacings of **0.002 and
+0.004 mm**. They do not recur on a regular interval, so these samples do **not** exhibit a
+period, and none is asserted. That is a real difference from the sphere (§1.2), whose two
+branches alternate on a clean ~0.006 mm period; this class is not a two-branch staircase,
+and the sphere's "period" has no direct analogue here. The three behaviours visible:
+
+* **Exact plateau** — 0.180 and 0.181 mm return byte-identical `a` = 1.795e-4, so `a` is
+  locally constant while `d` varies. Inside a plateau the ratio *falls* as `d` rises, so
+  its maximum sits at the plateau's **lower** edge.
+* **Unit-slope tracking** — 0.159, 0.160 and 0.161 mm hold δ constant at 5 quanta while
+  `a` rises in exact 1e-7 m steps with `d`. Here `a = d − c` for fixed `c`, so the ratio
+  `1 − c/d` *rises* as `d` rises and its maximum sits at the segment's **upper** edge.
+* **Sharp sawtooth** — δ runs 3 → 27 → 46 quanta across 0.120 → 0.122 mm, an order of
+  magnitude of change in two steps.
+
+Because the ratio's maximum sits at a *lower* edge in the first regime and an *upper* edge
+in the second, there is no single direction to search, and this is why Stage C bisects
+each candidate individually rather than applying one rule to all of them.
+
+*Hypothesis (not established by these samples):* an interleaved u/v subdivision, in which
+two independent facet-count staircases beat against each other, would produce exactly this
+— irregular maxima spacing and locally varying behaviour, rather than the single period a
+one-dimensional staircase gives. Distinguishing it would require walking the control net's
+u and v spans independently, which this task does not do.
+
+**The δ = 0 rungs, and what Stage C must ask of them.** At 0.144 mm and 0.145 mm the
+deficit reaches the display floor: `a` equals `d` to all four significant figures printed.
+0.143 mm returns a different `a` (1.429e-4), so if 0.144 mm sits on a plateau, that
+plateau's lower edge lies in (0.143, 0.144] mm — and **any `d` below 0.144 mm that still
+returns 1.440e-4 yields a ratio strictly above 1**. That is the one measurement in reach
+that could settle the K = 1 question above the display floor, and it is Stage C's target.
 **Determinism and datum gates.** Every probe in this block passed the §0 Caveat-2 datum
 gate: the harness extracts `a` only from the `deviation <X> m` capture and emits a literal
 `NO-DATUM` token when that capture is empty, so a non-realization cannot enter a table as a
