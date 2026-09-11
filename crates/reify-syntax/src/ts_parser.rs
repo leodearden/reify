@@ -5051,13 +5051,18 @@ impl<'a> Lowering<'a> {
     /// the arity of the enclosing call and re-label every argument after it:
     /// `plain(1, a.b.c(), 3)` measured as a TWO-argument `FunctionCall` before
     /// this was fixed, with `3` sliding into position 1. That matters even
-    /// though the enclosing parse always carries an error, because
-    /// `reify_compiler`'s `forward_parse_errors` downgrades every parse error to
-    /// a WARNING — so a library consumer that compiles and reads diagnostics
-    /// sees the mis-arity'd call with no error at all. The slot is filled with
-    /// `ExprKind::Undef`, whose documented job is exactly this (it absorbs the
-    /// type cascade via `Type::Error`), and any label the argument carried is
-    /// preserved so `args`/`arg_names` stay length-matched and aligned.
+    /// though the enclosing parse always carries an error: the lowered AST is
+    /// observable independently of the diagnostics, so a consumer that inspects
+    /// it without bailing on the error list still reads the mis-arity'd call.
+    /// This is a lowering-local contract — it does not rest on how any
+    /// downstream crate grades the accompanying diagnostic. (Task #5392 later
+    /// made `reify_compiler`'s `forward_parse_errors` push an ERROR rather than
+    /// the WARNING this comment once cited as the motivating hazard; the
+    /// invariant is unchanged, because it never depended on that severity.)
+    /// The slot is filled with `ExprKind::Undef`, whose documented job is exactly
+    /// this (it absorbs the type cascade via `Type::Error`), and any label the
+    /// argument carried is preserved so `args`/`arg_names` stay length-matched
+    /// and aligned.
     ///
     /// The placeholder is pushed ONLY when the failed lowering also pushed a
     /// DIAGNOSTIC. A `None` with no diagnostic is a silent skip — a `line_comment`
