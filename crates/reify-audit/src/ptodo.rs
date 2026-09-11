@@ -2273,11 +2273,14 @@ mod tests {
     // §8.1 deferral-prose matching — has_deferral_prose (lane δ-A)
     // -------------------------------------------------------------------
 
-    /// Verbatim rationale substrings from the real evidence sites the δ-A
-    /// allow-attribute lane exists to surface. Pinning the exact in-tree source
-    /// text (rather than a paraphrase) keeps the user-observable signal covered
-    /// at the unit level: if a refactor stops matching any of these, the lane
-    /// has silently stopped reporting the debt it was built for.
+    /// Verbatim rationale substrings from the δ-A allow-attribute evidence
+    /// sites, pinned rather than paraphrased so a refactor that narrows the
+    /// matcher fails here instead of silently retiring the lane.
+    ///
+    /// The first two are HISTORICAL — #6934 removed both forms from the tree —
+    /// and pin the matcher's GRAMMAR, which is load-bearing precisely when no
+    /// live instance exists. The two after them are the forms live in the tree
+    /// today, so "real evidence site" stays backed by something.
     #[test]
     fn deferral_prose_positives() {
         // WAS the δ-A rationale at crates/reify-eval/src/engine_build.rs:12891,
@@ -2295,6 +2298,17 @@ mod tests {
         // tree.
         assert!(has_deferral_prose(
             "production wiring deferred to task 4050 (in-realization conversion executor)"
+        ));
+        // LIVE δ-A rationale at crates/reify-eval/src/engine_build.rs:13746 —
+        // the successor cite #6934 re-pointed the #4744 attribute above onto.
+        assert!(has_deferral_prose(
+            "production wiring pending #4746 (hex/wedge Phase A activation: emits this diagnostic at the dispatch_volume_mesh production edge)"
+        ));
+        // LIVE δ-A rationale, the lane's most-replicated in-tree form (8 sites
+        // in engine_build.rs). Unlike both literals above it cites canonically:
+        // `pending` runs straight into `#6371` with no intervening `task `.
+        assert!(has_deferral_prose(
+            "T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)"
         ));
         // Guard 2 is scoped to the bytes adjacent to the NEEDLE, not to any
         // backtick on the line: a rationale that code-spans a symbol name next

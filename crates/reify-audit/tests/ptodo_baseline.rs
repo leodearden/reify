@@ -12,15 +12,19 @@
 //!   until task #6087 added the §8.1 lane δ-A recognizer — an
 //!   `#[allow(…dead_code…)]` attribute whose trailing rationale defers the
 //!   work. That lane surfaced a pre-existing population of 14 findings which
-//!   fingerprint (line-number-erased, deduped) to the 5 committed entries, and
-//!   they were seeded in the same diff as a SHRINK-ONLY grandfather set.
-//!   §6.6's ratchet cannot grow, so those entries can only be burned down: when
-//!   an underlying comment is re-pointed at a live task or the deferred work
-//!   lands, its baseline line is deleted. Every seeded entry was hand-inspected
-//!   as a genuine deferral; none is a false positive. That seed spanned three
-//!   of §8.3's kinds (one `orphaned`, one `malformed-cite`, three `untracked`);
-//!   task #6934 then burned down all three structural entries at source, so the
-//!   committed set is now 6 entries, every one `orphaned`.
+//!   fingerprint (line-number-erased, deduped) to 5 entries, seeded in the same
+//!   diff as a SHRINK-ONLY grandfather set. Every seeded entry was
+//!   hand-inspected as a genuine deferral; none is a false positive.
+//!
+//!   §6.6's ratchet cannot grow under ordinary work, so an entry can only be
+//!   burned down: when its underlying comment is re-pointed at a live task or
+//!   the deferred work lands, its baseline line is deleted. The one sanctioned
+//!   growth is §6.6's same-diff seeding rule — a NEW LANE seeds its
+//!   pre-existing population in the commit that adds the lane, as #6103 did for
+//!   δ-B. So today's composition is NOT the seed's minus removals; read it from
+//!   the file, never reconstructed from this paragraph. It currently holds 6
+//!   entries, every one `orphaned` — #6934 burned the last `malformed-cite` and
+//!   `untracked` entries down at source.
 //!
 //! (A′) **`validate_*`** — always-on, hermetic unit tests that drive crafted
 //!   content through the shared `validate_baseline_content` validator, so the
