@@ -2164,9 +2164,15 @@ fn realized_cylinder_mesh_covers_its_own_aabb() {
 ///   (1) no `Severity::Error` diagnostics — a clean realize + adaptive solve;
 ///   (2) the LOCALIZED-lane Info diagnostic is present and the 4902 uniform-grid
 ///       one is NOT — i.e. the lane selector chose the realized lane;
-///   (3) `convergence_status` is `NotConverged { reason: MaxIterations }` — the
-///       budget is deliberately built so the iteration cap, not the accuracy
-///       target and not `max_dofs`, is what terminates the loop;
+///   (3) `convergence_status` is `NotConverged`, the dof ceiling provably did
+///       not bind (the reason is `MaxIterations` or `Stalled`, never `MaxDofs`),
+///       and the full refinement budget was consumed — exactly one mark-driven
+///       refine. WHICH of those two reasons reports the stop is deliberately NOT
+///       claimed here: the loop's termination precedence puts the stall gate
+///       above the iteration cap, so that discrimination is a ~1% numeric band
+///       over two real gmsh remeshes rather than a categorical fact. It is
+///       pinned deterministically instead by `stall_pre_empts_the_iteration_cap`
+///       in `reify-solver-elastic`'s `adaptive_refinement_tests.rs` (task 7414);
 ///   (4) `global_relative_energy_error` is finite, > 0 and <= 1.0;
 ///   (5) the localized diagnostic's reported POST-refine element count is
 ///       strictly greater than its PRE-refine count.
@@ -2178,6 +2184,24 @@ fn realized_cylinder_mesh_covers_its_own_aabb() {
 /// with no numeric tolerance band — the same shape as the always-on landed test
 /// in `reify-solver-elastic`'s `aposteriori_validation.rs`, and deliberately not
 /// the shape of its `#[ignore]`d cross-gmsh-version-unstable sibling.
+///
+/// Since task 7414 that "no numeric tolerance band" property is true of the
+/// WHOLE test and not of (5) alone — which is the point of that change, because
+/// this test runs in the shared, oversubscribed merge-verify environment. No
+/// assertion here now turns on a tuned threshold: the enum variants, the refine
+/// count and the element-count inequality are exact; the unreachable accuracy
+/// target and the non-binding dof ceiling carry measured margins of three orders
+/// of magnitude or more; and (4) is a finiteness-and-range sanity check rather
+/// than a tolerance.
+///
+/// Why the discrimination moved rather than being retuned: pre-fix this test
+/// reddened 4 of 20 consecutive idle runs, always with `Stalled`, because the
+/// gate turns on a `g1/g0` ratio measured at 0.8147-0.9013 against a 0.90
+/// threshold — a ~1% band. The run log, its provenance, and the (untested)
+/// hypothesis that the unpinned SEED mesh is the source live in
+/// `docs/notes/adaptive-e2e-seed-mesh-drift-measurement.md`; the seed-pinning
+/// work itself is ticket `tkt_0RTGVY62JW40ZMJDEQWEJRYCSE` and is deliberately
+/// not done here.
 #[cfg(has_gmsh)]
 #[test]
 fn body_adaptive_solve_runs_the_gmsh_realized_localized_lane() {
@@ -2266,7 +2290,7 @@ fn body_adaptive_solve_runs_the_gmsh_realized_localized_lane() {
          realized mesh to the trampoline"
     );
 
-    // ── (3) NotConverged { MaxIterations } ────────────────────────────────────
+    // ── (3) NotConverged, dof ceiling did not bind, refine budget consumed ────
     let status = extract_field(result_val, "convergence_status")
         .expect("ElasticResult must carry a convergence_status field");
     match &status {
@@ -2283,13 +2307,38 @@ fn body_adaptive_solve_runs_the_gmsh_realized_localized_lane() {
                 .map(|(_, v)| v.clone())
                 .expect("NotConverged must carry a `reason` payload field");
             assert!(
-                matches!(&reason, Value::Enum { variant, .. } if variant == "MaxIterations"),
-                "the iteration cap (not max_dofs, not a stall) must be what terminated \
-                 the loop, got reason: {reason:?}"
+                matches!(&reason, Value::Enum { variant, .. }
+                    if variant == "MaxIterations" || variant == "Stalled"),
+                "the refinement budget — and not the accuracy target — must be what \
+                 terminated the loop. `MaxDofs` is deliberately EXCLUDED: this fixture \
+                 peaks at 1002 dofs against a 2_000_000 cap (~2000x), so the dof \
+                 ceiling provably did not bind, and `TargetMissed` is never emitted by \
+                 `run_adaptive_refinement` (see its `BudgetReason` docs). So \
+                 {{MaxIterations, Stalled}} is exactly 'budget exhausted, dof ceiling \
+                 did not bind'. WHICH of those two reports the stop is NOT claimed \
+                 here — see this test's doc comment. got reason: {reason:?}"
             );
         }
         other => panic!("convergence_status must be a Value::Enum, got {other:?}"),
     }
+
+    // The loop consumed its FULL refinement budget (`max_refinement_iterations:
+    // 1`). This — not which gate reported the stop — is the durable claim: it
+    // holds identically under BOTH terminal reasons and carries no numeric
+    // margin whatsoever. At iter 0 `prev_global` is `None`, so the stall gate is
+    // structurally unreachable; `0 >= 1` is false; and the SEED mesh's 360 dofs
+    // are far under the 2_000_000 cap. Exactly one `refine` therefore always
+    // runs.
+    let report = LocalizedReport::parse(&localized.message);
+    assert_eq!(
+        report.refines, 1,
+        "the loop must consume its full `max_refinement_iterations: 1` budget, i.e. \
+         exactly one mark-driven refine. A count of 0 would mean the budget \
+         terminated before any remesh ran and the adaptive lane did no adaptive \
+         work at all; a count above 1 would mean the fixture's budget is no longer \
+         what this test assumes. (diagnostic: {})",
+        localized.message
+    );
 
     // ── (4) a real global relative energy error ───────────────────────────────
     let gree = extract_field(result_val, "global_relative_energy_error")
@@ -2310,41 +2359,98 @@ fn body_adaptive_solve_runs_the_gmsh_realized_localized_lane() {
     );
 
     // ── (5) the refine GREW the mesh — the signature of a real remesh ─────────
-    let (before, after) = parse_localized_element_counts(&localized.message);
     assert!(
-        after > before,
+        report.elements_after > report.elements_before,
         "the mark-driven remesh must strictly grow the element count — this is the \
          end-to-end form of 'the refine step genuinely CONSUMES the marking', and a \
          concentration the uniform fallback structurally cannot report because it \
-         never remeshes. got: {before} -> {after} (diagnostic: {})",
+         never remeshes. got: {} -> {} (diagnostic: {})",
+        report.elements_before,
+        report.elements_after,
         localized.message
     );
 }
 
-/// Parse the `elements {before} -> {after}` pair out of the localized lane's
-/// Info diagnostic.
+/// The three counts the localized lane's Info diagnostic reports about the
+/// remesh it ran, parsed out of that prose in ONE place.
 ///
-/// The wording is settled once at the emission site in `elastic_static.rs` and
-/// asserted against by both the in-crate unit test and this end-to-end test, so
-/// a change to it breaks loudly in one place rather than silently weakening an
-/// assertion here.
+/// Prose is the only carrier: the compute target holds `problem.refine_count`
+/// and the pre/post element counts structurally, but surfaces neither on the
+/// result value, so a caller that wants them has to read the diagnostic. One
+/// struct with one parse keeps that regrettable shape to a single site instead
+/// of one scanner per field. Publishing these as structured result fields would
+/// retire this parser entirely — ticket `tkt_0RTH9SY7VBKY7Y72XT6QJQNKAG`.
+///
+/// What actually guards each marker — the two are NOT equally protected:
+///   - `elements N -> M` is pinned by the in-crate unit test
+///     `adaptive_branch_selects_the_gmsh_realized_lane_when_a_realized_mesh_is_present`
+///     (`elastic_static.rs`), which is always COMPILED and gated only on the
+///     runtime `GMSH_AVAILABLE`. It is also emitted identically by the
+///     `refine_count == 0` wording, and the emission site says so explicitly.
+///   - ` refinement iteration(s)` is pinned by NOTHING except this test, which
+///     needs `cfg(has_gmsh)` at compile time AND `OCCT_AVAILABLE` at runtime.
+///     In a build missing either, a reword of that clause goes unnoticed here.
+///     Adding a `contains` assertion beside the in-crate `elements` one would
+///     close that gap; it is out of task 7414's file scope and filed as ticket
+///     `tkt_0RTH9SY7VBKY7Y72XT6QJQNKAG`.
+///
+/// The refinement marker is deliberately the `(s)` form: the emission site's
+/// `refine_count == 0` arm is worded `0 refinement iterations` and so does NOT
+/// contain it. A budget that terminated before any remesh therefore panics
+/// here rather than parsing to a quiet `0` — the structurally different "no
+/// remesh ran" case is reported as such instead of as a count mismatch.
 #[cfg(has_gmsh)]
-fn parse_localized_element_counts(message: &str) -> (usize, usize) {
-    let tail = message
-        .split("elements ")
-        .nth(1)
-        .unwrap_or_else(|| panic!("localized diagnostic must report `elements N -> M`: {message}"));
-    let (before, rest) = tail
-        .split_once(" -> ")
-        .unwrap_or_else(|| panic!("localized diagnostic must report `elements N -> M`: {message}"));
-    let after: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-    (
-        before
-            .trim()
-            .parse()
-            .unwrap_or_else(|e| panic!("pre-refine element count `{before}` must parse: {e}")),
-        after
-            .parse()
-            .unwrap_or_else(|e| panic!("post-refine element count `{after}` must parse: {e}")),
-    )
+struct LocalizedReport {
+    refines: usize,
+    elements_before: usize,
+    elements_after: usize,
+}
+
+#[cfg(has_gmsh)]
+impl LocalizedReport {
+    const REFINES_MARKER: &'static str = " refinement iteration(s)";
+
+    fn parse(message: &str) -> Self {
+        let count = |digits: &str, what: &str| -> usize {
+            digits.parse().unwrap_or_else(|e| {
+                panic!("localized diagnostic's {what} `{digits}` must parse: {e} — got: {message}")
+            })
+        };
+
+        // The iteration count sits immediately BEFORE its marker, so scan back
+        // off the preceding text and restore reading order.
+        let (before_marker, _) = message.split_once(Self::REFINES_MARKER).unwrap_or_else(|| {
+            panic!(
+                "localized diagnostic must report `N{}`: {message}",
+                Self::REFINES_MARKER
+            )
+        });
+        let reversed: String = before_marker
+            .chars()
+            .rev()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        let refines: String = reversed.chars().rev().collect();
+
+        // Scanned from the whole message, NOT from the text after the
+        // refinement marker: the emission site guarantees this `elements N -> M`
+        // tail under both its wordings, and that independence is the property
+        // its comment relies on.
+        let (elements_before, after_tail) = message
+            .split_once("elements ")
+            .and_then(|(_, counts)| counts.split_once(" -> "))
+            .unwrap_or_else(|| {
+                panic!("localized diagnostic must report `elements N -> M`: {message}")
+            });
+        let elements_after: String = after_tail
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+
+        Self {
+            refines: count(&refines, "refinement-iteration count"),
+            elements_before: count(elements_before.trim(), "pre-refine element count"),
+            elements_after: count(&elements_after, "post-refine element count"),
+        }
+    }
 }
