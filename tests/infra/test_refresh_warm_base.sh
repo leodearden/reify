@@ -847,6 +847,115 @@ assert "J1d: exactly 2 files remain in the reify_kernel_tests group" \
 assert "J1e: a 2-generation group is left entirely intact (keep-2, not keep-1)" \
     bash -c 'test -f "$1/reify_other_crate-aaaaaaaaaaaaaaaa" && test -f "$1/reify_other_crate-bbbbbbbbbbbbbbbb"' _ "$J_DEPS"
 
+# J2 — pin the artefact-name grammar. This is the assertion set that protects
+# the ruled-and-measured 64.8 GiB mechanism from a greedier regex, and it is
+# the discrepancy that reconciles the task's 11,193 groups with the
+# 3,607 + 7,586 split (the 7,586 are all `.dwo` singletons — see J2b).
+J2_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j2-XXXXXX)"
+_TMPDIRS+=("$J2_TMP")
+J2_LANE="$(mk_git_advancing "$J2_TMP")"
+J2_ADV="$J2_LANE/advancing"
+J2_HEAD="$(git -C "$J2_LANE" rev-parse HEAD)"
+mkdir -p "$J2_ADV/debug/deps"
+J2_SRC="$J2_ADV/debug/deps"
+
+# J2a — EXTENSION SPLIT: (stem, ext) are independent groups. Three hashes,
+# each present as BOTH .rlib and .rmeta (six files, one stem). A grouper keyed
+# on stem alone (as of step-2) pools all six and keeps only 2 total; the
+# correct grammar keeps the newest 2 .rlib AND the newest 2 .rmeta
+# independently (4 files survive, not 2).
+echo "rlib a" > "$J2_SRC/libreify_core-aaaaaaaaaaaaaaaa.rlib"
+echo "rmeta a" > "$J2_SRC/libreify_core-aaaaaaaaaaaaaaaa.rmeta"
+touch -d '2026-01-01 00:00:00' "$J2_SRC/libreify_core-aaaaaaaaaaaaaaaa.rlib" "$J2_SRC/libreify_core-aaaaaaaaaaaaaaaa.rmeta"
+echo "rlib b" > "$J2_SRC/libreify_core-bbbbbbbbbbbbbbbb.rlib"
+echo "rmeta b" > "$J2_SRC/libreify_core-bbbbbbbbbbbbbbbb.rmeta"
+touch -d '2026-02-01 00:00:00' "$J2_SRC/libreify_core-bbbbbbbbbbbbbbbb.rlib" "$J2_SRC/libreify_core-bbbbbbbbbbbbbbbb.rmeta"
+echo "rlib c" > "$J2_SRC/libreify_core-cccccccccccccccc.rlib"
+echo "rmeta c" > "$J2_SRC/libreify_core-cccccccccccccccc.rmeta"
+touch -d '2026-03-01 00:00:00' "$J2_SRC/libreify_core-cccccccccccccccc.rlib" "$J2_SRC/libreify_core-cccccccccccccccc.rmeta"
+
+# J2b — .dwo NON-CANDIDATE: split-debuginfo-shaped names, three different
+# leading hashes. Stem-before-last-dot ends "-cgu.09.rcgu" (not "-<16hex>"),
+# so these are never a prune candidate — exactly the boundary a permissive
+# `^(.+)-[0-9a-f]{16}(\..*)?$` would cross, silently changing the measured
+# reclaim.
+echo "dwo 1" > "$J2_SRC/axum-0082f0d2178b90e5.axum.191af5780e3108ae-cgu.09.rcgu.dwo"
+echo "dwo 2" > "$J2_SRC/axum-1111111111111111.axum.191af5780e3108ae-cgu.09.rcgu.dwo"
+echo "dwo 3" > "$J2_SRC/axum-2222222222222222.axum.191af5780e3108ae-cgu.09.rcgu.dwo"
+touch -d '2026-01-01 00:00:00' "$J2_SRC/axum-0082f0d2178b90e5.axum.191af5780e3108ae-cgu.09.rcgu.dwo"
+touch -d '2026-01-02 00:00:00' "$J2_SRC/axum-1111111111111111.axum.191af5780e3108ae-cgu.09.rcgu.dwo"
+touch -d '2026-01-03 00:00:00' "$J2_SRC/axum-2222222222222222.axum.191af5780e3108ae-cgu.09.rcgu.dwo"
+
+# J2c — NON-CONFORMING NAMES NEVER DELETED: no hash at all, and a
+# short/long/uppercase pseudo-hash. Every one survives regardless of mtime.
+echo "readme" > "$J2_SRC/README"
+touch -d '2026-01-01 00:00:00' "$J2_SRC/README"
+echo "plan1" > "$J2_SRC/build-plan-1.json"
+echo "plan2" > "$J2_SRC/build-plan-2.json"
+echo "plan3" > "$J2_SRC/build-plan-3.json"
+touch -d '2026-01-05 00:00:00' "$J2_SRC/build-plan-1.json"
+touch -d '2026-01-10 00:00:00' "$J2_SRC/build-plan-2.json"
+touch -d '2026-01-15 00:00:00' "$J2_SRC/build-plan-3.json"
+echo "short" > "$J2_SRC/foo-abc123.rlib"
+touch -d '2026-01-20 00:00:00' "$J2_SRC/foo-abc123.rlib"
+echo "upper" > "$J2_SRC/foo-AAAABBBBCCCCDDDD"
+touch -d '2026-01-25 00:00:00' "$J2_SRC/foo-AAAABBBBCCCCDDDD"
+echo "long" > "$J2_SRC/foo-0123456789abcdef0.rlib"
+touch -d '2026-01-30 00:00:00' "$J2_SRC/foo-0123456789abcdef0.rlib"
+
+# J2d — DISTINCT UNITS DO NOT MERGE: two extensionless units, three
+# generations each; each keeps exactly 2, proving the group key is the stem
+# and not a global pool.
+echo "a1" > "$J2_SRC/reify_a-1111111111111111"
+echo "a2" > "$J2_SRC/reify_a-2222222222222222"
+echo "a3" > "$J2_SRC/reify_a-3333333333333333"
+touch -d '2026-01-01 00:00:00' "$J2_SRC/reify_a-1111111111111111"
+touch -d '2026-02-01 00:00:00' "$J2_SRC/reify_a-2222222222222222"
+touch -d '2026-03-01 00:00:00' "$J2_SRC/reify_a-3333333333333333"
+echo "b1" > "$J2_SRC/reify_b-4444444444444444"
+echo "b2" > "$J2_SRC/reify_b-5555555555555555"
+echo "b3" > "$J2_SRC/reify_b-6666666666666666"
+touch -d '2026-01-01 00:00:00' "$J2_SRC/reify_b-4444444444444444"
+touch -d '2026-02-01 00:00:00' "$J2_SRC/reify_b-5555555555555555"
+touch -d '2026-03-01 00:00:00' "$J2_SRC/reify_b-6666666666666666"
+
+J2_BASE="$J2_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$J2_ADV" "$J2_BASE" --landed-commit "$J2_HEAD"
+assert "J2: refresh exits 0" test "$RC" -eq 0
+
+J2_GEN="$(readlink "$J2_BASE")"
+J2_DEPS="$J2_GEN/debug/deps"
+
+assert "J2a: newest 2 .rlib survive (bbbb, cccc)" \
+    bash -c 'test -f "$1/libreify_core-bbbbbbbbbbbbbbbb.rlib" && test -f "$1/libreify_core-cccccccccccccccc.rlib"' _ "$J2_DEPS"
+assert "J2a: oldest .rlib pruned (aaaa)" \
+    bash -c 'test ! -f "$1/libreify_core-aaaaaaaaaaaaaaaa.rlib"' _ "$J2_DEPS"
+assert "J2a: newest 2 .rmeta survive (bbbb, cccc)" \
+    bash -c 'test -f "$1/libreify_core-bbbbbbbbbbbbbbbb.rmeta" && test -f "$1/libreify_core-cccccccccccccccc.rmeta"' _ "$J2_DEPS"
+assert "J2a: oldest .rmeta pruned (aaaa)" \
+    bash -c 'test ! -f "$1/libreify_core-aaaaaaaaaaaaaaaa.rmeta"' _ "$J2_DEPS"
+assert "J2a: exactly 4 libreify_core files remain (2 rlib + 2 rmeta, not 2 total)" \
+    bash -c '[ "$(find "$1" -maxdepth 1 -type f -name "libreify_core-*" | wc -l)" -eq 4 ]' _ "$J2_DEPS"
+
+assert "J2b: all three .dwo split-debuginfo shards survive" \
+    bash -c 'n=$(find "$1" -maxdepth 1 -type f -name "axum-*.dwo" | wc -l); [ "$n" -eq 3 ]' _ "$J2_DEPS"
+
+assert "J2c: README (no hash) survives" test -f "$J2_DEPS/README"
+assert "J2c: all three non-conforming build-plan files survive" \
+    bash -c 'test -f "$1/build-plan-1.json" && test -f "$1/build-plan-2.json" && test -f "$1/build-plan-3.json"' _ "$J2_DEPS"
+assert "J2c: short pseudo-hash (6 chars) survives" test -f "$J2_DEPS/foo-abc123.rlib"
+assert "J2c: uppercase pseudo-hash survives" test -f "$J2_DEPS/foo-AAAABBBBCCCCDDDD"
+assert "J2c: long pseudo-hash (17 chars) survives" test -f "$J2_DEPS/foo-0123456789abcdef0.rlib"
+
+assert "J2d: reify_a keeps newest 2 (2222, 3333), prunes oldest (1111)" \
+    bash -c 'test -f "$1/reify_a-2222222222222222" && test -f "$1/reify_a-3333333333333333" && test ! -f "$1/reify_a-1111111111111111"' _ "$J2_DEPS"
+assert "J2d: reify_b keeps newest 2 (5555, 6666), prunes oldest (4444)" \
+    bash -c 'test -f "$1/reify_b-5555555555555555" && test -f "$1/reify_b-6666666666666666" && test ! -f "$1/reify_b-4444444444444444"' _ "$J2_DEPS"
+assert "J2d: exactly 4 reify_a/reify_b files total (2 each, distinct pools)" \
+    bash -c '[ "$(find "$1" -maxdepth 1 -type f \( -name "reify_a-*" -o -name "reify_b-*" \) | wc -l)" -eq 4 ]' _ "$J2_DEPS"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately
 # kept as two independently-reported signals: TRASH2 can realistically only ever
