@@ -383,6 +383,56 @@ and a 3–5× load change. It also validates the apparatus used below — a mism
 here would have indicted the harness rather than the geometry, and the gate is
 genuinely falsifiable: a wrong binary, a stale fixture, the `E_MODULE_PATH_MISMATCH`
 scratch-file trap (§4) or a silent non-realization each fail it loudly.
+
+**Stage A — the 0.005 mm bracket walk over [0.12, 0.18] mm.** The six new midpoints,
+plus a re-probe of all seven published 0.01 mm rungs in the same bracket so the whole
+sweep is one internally consistent session. Ratios by `decimal.Decimal` /
+`ROUND_HALF_UP` at 4 dp throughout (§4):
+
+| d | a (m) | a/d | note |
+|---|---|---|---|
+| 0.12 mm | 1.197e-4 | 0.9975 | reproduces 6545 |
+| 0.125 mm | 1.245e-4 | 0.9960 | new |
+| 0.13 mm | 1.287e-4 | 0.9900 | reproduces 6545 |
+| 0.135 mm | 1.305e-4 | 0.9667 | new — local trough |
+| 0.14 mm | 1.376e-4 | 0.9829 | reproduces 6545 |
+| **0.145 mm** | 1.450e-4 | **1.0000** | new ← highest in Stage A |
+| 0.15 mm | 1.495e-4 | 0.9967 | reproduces 6545 |
+| 0.155 mm | 1.539e-4 | 0.9929 | new |
+| 0.16 mm | 1.595e-4 | 0.9969 | reproduces 6545 |
+| 0.165 mm | 1.638e-4 | 0.9927 | new |
+| 0.17 mm | 1.686e-4 | 0.9918 | reproduces 6545 |
+| 0.175 mm | 1.729e-4 | 0.9880 | new |
+| 0.18 mm | 1.795e-4 | 0.9972 | reproduces 6545 |
+
+All seven re-probed rungs reproduce the 6545 ladder's achieved strings exactly, so the
+six new midpoints interleave a verified ladder rather than a drifting one.
+
+**A midpoint beats the published peak.** 0.145 mm reads `a` = 1.450e-4 against `d` =
+1.45e-4 — a ratio of **1.0000**, above the 0.9975 at 0.12 mm that 6545 recorded as this
+class's best lower bound. That rung lies exactly halfway between two published rungs
+(0.14 mm, 0.9829 and 0.15 mm, 0.9967), neither of which hints at it. The published
+ladder did not merely fail to resolve the oscillation's period; it stepped over the
+highest value in its own bracket.
+
+**0.005 mm does not resolve the structure either.** It is a necessary refinement of the
+6545 ladder's 0.01 mm spine, but not a sufficient one, and this table shows why on its own
+terms. The ratio is non-monotone between every pair of adjacent rungs, and the swing
+between adjacent 0.005 mm rungs reaches 0.0333 (0.9667 at 0.135 mm to 1.0000 at 0.145 mm).
+Meanwhile the five leading values — 0.9967, 0.9969, 0.9972, 0.9975 and 1.0000 — are
+separated from one another by as little as 0.0002. **The between-rung swing is two orders
+of magnitude larger than the gaps between the candidates the sweep is trying to rank**, so
+a 0.005 mm grid cannot establish which of them is the true local maximum, nor that any of
+them is a local maximum at all: each is simply the largest value on whichever grid
+happened to be sampled. This is the §1.2 aliasing trap in its exact form — the sphere's
+branches alternate over ~0.006 mm, and a grid at that same order lands on one branch and
+misses the other.
+
+**Sub-brackets carrying the leaders**, to be walked at 0.001 mm in Stage B: **[0.143,
+0.147] mm** around the new 1.0000; **[0.118, 0.122] mm** around the published 0.9975; and
+**[0.148, 0.152]**, **[0.158, 0.162]** and **[0.178, 0.182] mm** around the three
+near-ties at 0.15, 0.16 and 0.18 mm. The trough at 0.135 mm is not walked — it is the one
+rung in this bracket that is unambiguously far from the leaders.
 ### 1.6 Loft is unreachable from the source language
 
 Two mutually exclusive failure modes with no path between them:
