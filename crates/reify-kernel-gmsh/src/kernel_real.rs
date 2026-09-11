@@ -101,16 +101,22 @@ pub const CLASSIFY_CURVE_ANGLE: f64 = std::f64::consts::FRAC_PI_4;
 
 /// Reclassify the pushed discrete surface into a B-rep region and tet-mesh it.
 ///
-/// Takes and returns nothing because it communicates only through gmsh's
-/// process-global model state: the caller has already pushed the surface
-/// nodes and triangles into the current model, and reads the tets back out
-/// of that same model afterwards. Requires [`init::GMSH_LOCK`] to be held,
-/// like every other gmsh call in this file.
+/// Carries no mesh data in or out because it communicates only through
+/// gmsh's process-global model state: the caller has already pushed the
+/// surface nodes and triangles into the current model, and
+/// [`read_back_tet_mesh`] reads the tets out of that same model afterwards.
+///
+/// The `&MutexGuard` is that state's admission ticket. It is never touched;
+/// it is there so "the caller holds [`init::GMSH_LOCK`]" is a precondition
+/// the compiler checks rather than a comment a later caller can skip
+/// reading — the same enforcement
+/// [`crate::mesh_size_clamp::MeshSizeClampReset`] and
+/// [`crate::log_capture::LogCapture`] use for their own FFI calls.
 ///
 /// Split out from [`GmshKernel::mesh_to_volume`] so this span — seven `?`
 /// sites, and where every interesting meshing failure surfaces — folds
 /// gmsh's captured log into its error at ONE seam rather than seven.
-fn classify_and_mesh_volume() -> Result<(), GeometryError> {
+fn classify_and_mesh_volume(_guard: &std::sync::MutexGuard<'_, ()>) -> Result<(), GeometryError> {
     // Reclassify the discrete surface and build geometry so 3D meshing has
     // a parametric region to fill.
     //
@@ -185,6 +191,103 @@ fn classify_and_mesh_volume() -> Result<(), GeometryError> {
     Ok(())
 }
 
+/// Read the tets gmsh just generated back out of the process-global model.
+///
+/// Companion to [`classify_and_mesh_volume`]: same lock ticket, same model,
+/// and split out for the same reason. Every failure here is gmsh handing
+/// back something inconsistent with the mesh it had just reported building —
+/// precisely the failure whose explanation is in the captured log and not in
+/// the last-error line — so the caller folds this span into that log at the
+/// same single seam.
+fn read_back_tet_mesh(
+    _guard: &std::sync::MutexGuard<'_, ()>,
+    element_order: ElementOrderTag,
+) -> Result<VolumeMesh, GeometryError> {
+    // Element type for readback: P1 = 4 (4-node tet), P2 = 11 (10-node tet).
+    let elem_type = match element_order {
+        ElementOrderTag::P1 => 4,
+        ElementOrderTag::P2 => 11,
+    };
+
+    let (node_tags, coord_buf) = ffi::get_nodes_all()?;
+    // Defend the chunks_exact zip below: if gmsh ever returns mismatched
+    // buffers, surfacing the real readback-stride mismatch beats a
+    // silent prefix-truncation that would later masquerade as an
+    // "unknown node tag" connectivity error.
+    if coord_buf.len() != node_tags.len() * 3 {
+        return Err(GeometryError::OperationFailed(format!(
+            "gmsh get_nodes_all stride mismatch: node_tags.len()={}, \
+             coord_buf.len()={} (expected {} = node_tags.len()*3)",
+            node_tags.len(),
+            coord_buf.len(),
+            node_tags.len() * 3,
+        )));
+    }
+    let (_elem_tags, elem_node_tags) = ffi::get_elements_by_type(elem_type)?;
+    let nodes_per_elem: usize = match element_order {
+        ElementOrderTag::P1 => 4,
+        ElementOrderTag::P2 => 10,
+    };
+    if !elem_node_tags.len().is_multiple_of(nodes_per_elem) {
+        return Err(GeometryError::OperationFailed(format!(
+            "gmsh get_elements_by_type stride mismatch: elem_node_tags.len()={} \
+             is not a multiple of {nodes_per_elem} (expected {nodes_per_elem} \
+             nodes per {element_order:?} tet)",
+            elem_node_tags.len(),
+        )));
+    }
+
+    // Build (gmsh_tag → 0-based local idx) by sorting node tags and
+    // assigning indices in tag order. Vertices are emitted in the same
+    // sorted order so tag-N → index-N once remapped.
+    let mut paired: Vec<(u64, [f64; 3])> = node_tags
+        .iter()
+        .copied()
+        .zip(coord_buf.chunks_exact(3))
+        .map(|(t, c)| (t, [c[0], c[1], c[2]]))
+        .collect();
+    paired.sort_by_key(|(t, _)| *t);
+
+    // HashMap (not BTreeMap): we never iterate `tag_to_idx` in tag order;
+    // the only access is the per-element O(1) lookup below.
+    let mut tag_to_idx: HashMap<u64, u32> = HashMap::with_capacity(paired.len());
+    let mut vertices: Vec<f32> = Vec::with_capacity(paired.len() * 3);
+    for (idx, (tag, xyz)) in paired.iter().enumerate() {
+        // VolumeMesh.tet_indices is u32; if a future huge-mesh regression
+        // pushes the count past 2^32, fail explicitly rather than wrap.
+        let idx_u32 = u32::try_from(idx).map_err(|_| {
+            GeometryError::OperationFailed(format!(
+                "mesh has {} nodes, exceeding the u32 connectivity limit \
+                 of VolumeMesh.tet_indices",
+                paired.len()
+            ))
+        })?;
+        tag_to_idx.insert(*tag, idx_u32);
+        vertices.extend(xyz.iter().map(|&v| v as f32));
+    }
+
+    // Remap connectivity from gmsh tags to 0-based local indices.
+    let mut tet_indices: Vec<u32> = Vec::with_capacity(elem_node_tags.len());
+    for &tag in &elem_node_tags {
+        let idx = *tag_to_idx.get(&tag).ok_or_else(|| {
+            GeometryError::OperationFailed(format!(
+                "gmsh element references unknown node tag {tag} (mesh corruption?)"
+            ))
+        })?;
+        tet_indices.push(idx);
+    }
+
+    Ok(VolumeMesh {
+        vertices,
+        connectivity: VolumeConnectivity::Tet {
+            indices: tet_indices,
+            order: element_order,
+        },
+        normals: None,
+        boundary: None,
+    })
+}
+
 impl GmshKernel {
     /// Construct a new `GmshKernel` with an empty volume-mesh store. The gmsh
     /// library is initialised lazily on the first `mesh_to_volume` call (via
@@ -234,10 +337,10 @@ impl GmshKernel {
     /// failure modes: open / non-manifold input mesh, degenerate triangles,
     /// HXT internal errors.
     ///
-    /// A failure in the classify→tet-mesh span — where those common modes
-    /// surface — carries more than that one line. Since task #6969 the
-    /// message also holds the tail of gmsh's own captured Info/Warning
-    /// stream, via [`crate::log_capture::LogCapture`]:
+    /// A failure anywhere in the gmsh span — classify, tet-mesh, readback —
+    /// carries more than that one line. Since task #6969 the message also
+    /// holds the tail of gmsh's own captured Info/Warning stream, via
+    /// [`crate::log_capture::LogCapture`]:
     /// `gmshLoggerGetLastError` only ever holds the last ERROR, and gmsh's
     /// actual diagnosis is routinely an Info line above it (measured on a
     /// single open triangle — last error `HXT 3D mesh failed`, explanation
@@ -420,101 +523,23 @@ impl GmshKernel {
         let tri_node_tags: Vec<u64> = surface.indices.iter().map(|&i| i as u64 + 1).collect();
         ffi::add_elements_2d(surf_tag, 2, &tri_tags, &tri_node_tags)?;
 
-        // One seam for seven `?` sites: whatever fails inside, the caller
+        // One seam for both gmsh spans below: whatever fails — one of the
+        // mesher's seven `?` sites, or a readback that finds gmsh's output
+        // inconsistent with the mesh it just reported building — the caller
         // gets gmsh's own captured reasoning folded into the message, not
         // just the last-error line.
-        classify_and_mesh_volume().map_err(|e| log_capture.annotate(e))?;
-
-        // Element type for readback: P1 = 4 (4-node tet), P2 = 11 (10-node tet).
-        let elem_type = match element_order {
-            ElementOrderTag::P1 => 4,
-            ElementOrderTag::P2 => 11,
-        };
-
-        let (node_tags, coord_buf) = ffi::get_nodes_all()?;
-        // Defend the chunks_exact zip below: if gmsh ever returns mismatched
-        // buffers, surfacing the real readback-stride mismatch beats a
-        // silent prefix-truncation that would later masquerade as an
-        // "unknown node tag" connectivity error.
-        if coord_buf.len() != node_tags.len() * 3 {
-            return Err(GeometryError::OperationFailed(format!(
-                "gmsh get_nodes_all stride mismatch: node_tags.len()={}, \
-                 coord_buf.len()={} (expected {} = node_tags.len()*3)",
-                node_tags.len(),
-                coord_buf.len(),
-                node_tags.len() * 3,
-            )));
-        }
-        let (_elem_tags, elem_node_tags) = ffi::get_elements_by_type(elem_type)?;
-        let nodes_per_elem: usize = match element_order {
-            ElementOrderTag::P1 => 4,
-            ElementOrderTag::P2 => 10,
-        };
-        if !elem_node_tags.len().is_multiple_of(nodes_per_elem) {
-            return Err(GeometryError::OperationFailed(format!(
-                "gmsh get_elements_by_type stride mismatch: elem_node_tags.len()={} \
-                 is not a multiple of {nodes_per_elem} (expected {nodes_per_elem} \
-                 nodes per {element_order:?} tet)",
-                elem_node_tags.len(),
-            )));
-        }
-
-        // Build (gmsh_tag → 0-based local idx) by sorting node tags and
-        // assigning indices in tag order. Vertices are emitted in the same
-        // sorted order so tag-N → index-N once remapped.
-        let mut paired: Vec<(u64, [f64; 3])> = node_tags
-            .iter()
-            .copied()
-            .zip(coord_buf.chunks_exact(3))
-            .map(|(t, c)| (t, [c[0], c[1], c[2]]))
-            .collect();
-        paired.sort_by_key(|(t, _)| *t);
-
-        // HashMap (not BTreeMap): we never iterate `tag_to_idx` in tag order;
-        // the only access is the per-element O(1) lookup below.
-        let mut tag_to_idx: HashMap<u64, u32> = HashMap::with_capacity(paired.len());
-        let mut vertices: Vec<f32> = Vec::with_capacity(paired.len() * 3);
-        for (idx, (tag, xyz)) in paired.iter().enumerate() {
-            // VolumeMesh.tet_indices is u32; if a future huge-mesh regression
-            // pushes the count past 2^32, fail explicitly rather than wrap.
-            let idx_u32 = u32::try_from(idx).map_err(|_| {
-                GeometryError::OperationFailed(format!(
-                    "mesh has {} nodes, exceeding the u32 connectivity limit \
-                     of VolumeMesh.tet_indices",
-                    paired.len()
-                ))
-            })?;
-            tag_to_idx.insert(*tag, idx_u32);
-            vertices.extend(xyz.iter().map(|&v| v as f32));
-        }
-
-        // Remap connectivity from gmsh tags to 0-based local indices.
-        let mut tet_indices: Vec<u32> = Vec::with_capacity(elem_node_tags.len());
-        for &tag in &elem_node_tags {
-            let idx = *tag_to_idx.get(&tag).ok_or_else(|| {
-                GeometryError::OperationFailed(format!(
-                    "gmsh element references unknown node tag {tag} (mesh corruption?)"
-                ))
-            })?;
-            tet_indices.push(idx);
-        }
+        let volume_mesh = classify_and_mesh_volume(&_guard)
+            .and_then(|()| read_back_tet_mesh(&_guard, element_order))
+            .map_err(|e| log_capture.annotate(e))?;
 
         // Defensive cleanup: clear the model so the next mesh_to_volume call
         // starts from a known-empty state. Errors here are deliberately
-        // ignored — the next call's leading `ffi::clear()?` (line ~120)
-        // covers re-entry, so a hiccup during teardown shouldn't turn a
-        // successfully produced VolumeMesh into a user-visible failure.
+        // ignored — the next call's leading `ffi::clear()?` covers re-entry,
+        // so a hiccup during teardown shouldn't turn a successfully produced
+        // VolumeMesh into a user-visible failure.
         let _ = ffi::clear();
 
-        Ok(VolumeMesh {
-            vertices,
-            connectivity: VolumeConnectivity::Tet {
-                indices: tet_indices,
-                order: element_order,
-            },
-            normals: None,
-            boundary: None,
-        })
+        Ok(volume_mesh)
     }
 
     /// Store a realized [`VolumeMesh`] and return a fresh handle that
