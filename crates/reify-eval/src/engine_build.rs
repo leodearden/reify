@@ -13742,7 +13742,9 @@ mod dispatch_volume_mesh_tests;
 // explicitly — it emits this diagnostic at the `dispatch_volume_mesh`
 // production edge. The cite here was previously task 4744, which is now done
 // and landed WITHOUT wiring this helper. See compute-node-contract.md §6 for
-// the full task history and rejected-alternative rationale.
+// the rejected-alternative rationale (why morph is a §3.2 dispatch producer,
+// not a §3.4 ComputeNode) — not for wiring ownership, which that doc still
+// records under the superseded cite and which this comment states instead.
 #[allow(dead_code)] // production wiring pending #4746 (hex/wedge Phase A activation: emits this diagnostic at the dispatch_volume_mesh production edge)
 pub(crate) fn p2_substitution_diagnostic(
     swept_kind: Option<&SweptKind>,
