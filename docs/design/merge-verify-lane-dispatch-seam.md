@@ -29,8 +29,10 @@ described in prose after the table:
 | `_seed_warm_lane` (`git_ops.py`, `async def _seed_warm_lane(`) | `flock -x -w <_SEED_WARM_LANE_LOCK_WAIT_SECS> -E <_SEED_WARM_LANE_LOCK_TIMEOUT_RC>` — assembled as an argv **list** from those two constants (currently 30 / 124). DF's PRODUCTION code never carries this as a quoted literal, so reify must mirror the VALUES and never pattern-match a string. (DF's own `orchestrator/tests/test_ephemeral_worktree.py` *does* carry the expanded literal, as a test-side assertion — see §3.) | fail-CLOSED at the lock: `rc == _SEED_WARM_LANE_LOCK_TIMEOUT_RC` is logged as a distinct diagnosable timeout ("failing closed rather than risk a torn target/") and returned to callers, which read any non-zero as a seed fault and degrade to a **cold** worktree — fail-soft, the lane is never removed and the scheduler never blocks. No retry inside the method. Same VALUE as the reset row (30) but a **separate** constant since DF 3003 |
 | `GitOps.task_verify_lease` (`git_ops.py`, `async def task_verify_lease(`) — DF task 3027 | 300s (`_TASK_VERIFY_LEASE_WAIT_SECS`), then **holds for the whole task-lane verify** | **fail-OPEN**: logs a WARNING and yields *without* the hold rather than raising. A task verify must never be aborted by its own lane lease, and proceeding unheld is exactly the pre-3027 baseline, so fail-open is non-regressive. No merge-queue disposition is involved on this path at all |
 
-The reset row's defer carries bounds of its own, stated once here rather than
-inside the cell above. Git faults *inside the method body* still raise plain
+The reset row's defer carries **two bounds** of its own, stated once here
+rather than inside the cell above; two *further* bounds on the contended
+family as a whole are stated below, with `LaneLockSelfOwnedLeak` — four in
+total. Git faults *inside the method body* still raise plain
 `RuntimeError` and still resolve `blocked` (deliberate — "so a genuine git
 fault still classifies as blocked"). Continuous contention past
 `MAX_CONTENDED_LEASE_DEFER_SECS` (`merge_queue.py`, 4h) does terminally
@@ -38,8 +40,11 @@ resolve `MergeOutcome('blocked')`, its reason carrying a strictly-increasing
 per-worker cap-out ordinal (`_contended_lease_cap_outs`, rendered `lane
 cap-out #N`) so consecutive cap-outs stay signature-DISTINCT and can never
 re-feed `consecutive_merge_thrash` — closing the false-positive story below.
-That cap is the *only* terminal bound on the defer itself: between attempts
-it is throttled to `CONTENDED_LEASE_DEFER_MIN_PERIOD_SECS` (30s,
+That cap is the *only* terminal bound on the defer itself; the three items
+that close this paragraph — the inter-attempt throttle, the warn streak, and
+the PENDING `req.result` — resolve nothing on their own and are therefore
+**not** among the four. Between attempts the defer is throttled to
+`CONTENDED_LEASE_DEFER_MIN_PERIOD_SECS` (30s,
 `merge_queue.py` — already paid by this row's own 30s wait, so free here —
 the floor exists for `MergeVerifyLeaseHeld`'s zero-wait pre-check, which
 refuses IMMEDIATELY with no wait of its own and would otherwise spin the
