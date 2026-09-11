@@ -61,10 +61,9 @@ pub enum NodeCommitmentOverride {
 
 /// Per-node commitment policy overrides, settable per instance and per type.
 ///
-/// Implements the precedence chain from architecture §7.3:
-///   1. **Instance override** — highest priority; set via [`set_instance`](Self::set_instance)
-///   2. **Type override** — applied by [`NodeKind`]; set via [`set_type`](Self::set_type)
-///   3. **Default** — [`NodeCommitmentOverride::CommitIfSlow`] (lowest priority)
+/// Stores the level-1 (instance) and level-2 (type) slots of the precedence
+/// chain; [`resolve_with_traits`](Self::resolve_with_traits) is the sole
+/// resolution entry point and documents the chain in full.
 #[derive(Clone, Debug, Default)]
 pub struct NodePolicyOverrides {
     instance_overrides: HashMap<NodeId, NodeCommitmentOverride>,
@@ -89,27 +88,6 @@ impl NodePolicyOverrides {
     /// Overwrites any previous value for this kind.
     pub fn set_type(&mut self, kind: NodeKind, override_: NodeCommitmentOverride) {
         self.type_overrides.insert(kind, override_);
-    }
-
-    /// Resolve the effective [`NodeCommitmentOverride`] for `node_id`.
-    ///
-    /// Precedence (highest → lowest):
-    /// 1. Instance override (if set for this exact node)
-    /// 2. Type override (if set for the node's [`NodeKind`])
-    /// 3. [`NodeCommitmentOverride::default()`] (`CommitIfSlow`)
-    ///
-    /// Has no production consumer today: the concurrent scheduler was
-    /// deleted with `concurrent.rs` in c1b8dba3f7 (task ο, #5065); every
-    /// remaining caller is a test.
-    // G-allow: retain-or-remove decision tracked in #7073; no production consumer, scheduler deleted — see doc above
-    pub fn resolve(&self, node_id: &NodeId) -> NodeCommitmentOverride {
-        if let Some(o) = self.instance_overrides.get(node_id) {
-            return *o;
-        }
-        if let Some(o) = self.type_overrides.get(&NodeKind::from(node_id)) {
-            return *o;
-        }
-        NodeCommitmentOverride::default()
     }
 
     /// Resolve the effective [`NodeCommitmentOverride`] for `node_id` using the
@@ -199,7 +177,8 @@ impl NodePolicyOverrides {
     ///
     /// These config selectors fill the "Level 3" slot in the five-level
     /// precedence chain (`docs/prds/v0_3/node-traits-unification.md` §6):
-    /// they populate the same instance/type maps that `resolve()` already reads.
+    /// they populate the same instance/type maps that
+    /// [`resolve_with_traits`](Self::resolve_with_traits) already reads.
     pub fn from_config_overrides(
         entries: &[reify_config::NodePolicyOverride],
     ) -> Result<Self, NodeOverrideConfigError> {
