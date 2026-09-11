@@ -340,10 +340,6 @@ fn second_build_with_unchanged_purpose_and_module_short_circuits_kernel_via_cach
     );
 }
 
-/// Step-11 (failing initially; passes once step-12 wires
-/// `Engine::compute_realization_tolerance_budget(...)` into the
-/// `kernel.tessellate(...)` call site inside `tessellate_from_values`).
-///
 /// Pins that `Engine::tessellate_realizations(&module)` forwards the
 /// per-output demanded tolerance — routed through
 /// `compute_realization_tolerance_budget` against
@@ -351,14 +347,15 @@ fn second_build_with_unchanged_purpose_and_module_short_circuits_kernel_via_cach
 /// instead of the module-level `effective_tessellation_tolerance` default
 /// (`0.0001` SI metres = 0.1 mm).
 ///
-/// Setup mirrors step-5/step-7: an STEPOutput template carries a 1 µm
-/// `RepresentationWithin` body bound, a `MyDesign` template carries a single
-/// named realization producing one `Box` primitive op, and
-/// `manufacturing_purpose("manufacturing", 1e-6)` is activated against
-/// `"MyDesign"`. The engine is constructed with a `MockGeometryKernel`
-/// extended (step-11) with a `tessellate_tolerances: Arc<Mutex<Vec<f64>>>`
-/// recorder; the test grabs the recorder via `tessellate_tolerances_ref()`
-/// before transferring kernel ownership into the engine.
+/// Setup mirrors `build_populates_realization_cache_keyed_on_demanded_tolerance`
+/// / `second_build_with_unchanged_purpose_and_module_short_circuits_kernel_via_cache_hit`:
+/// an STEPOutput template carries a 1 µm `RepresentationWithin` body bound,
+/// a `MyDesign` template carries a single named realization producing one
+/// `Box` primitive op, and `manufacturing_purpose("manufacturing", 1e-6)` is
+/// activated against `"MyDesign"`. `MockGeometryKernel` carries a
+/// `tessellate_tolerances: Arc<Mutex<Vec<f64>>>` recorder, exposed via
+/// `tessellate_tolerances_ref()`; the test grabs the recorder before
+/// transferring kernel ownership into the engine.
 ///
 /// The test calls `engine.tessellate_realizations(&module)` once, then asserts
 /// the recorder contains exactly one entry equal to `1e-6` — the demanded
@@ -368,12 +365,6 @@ fn second_build_with_unchanged_purpose_and_module_short_circuits_kernel_via_cach
 /// triple and the occt-only single-kernel registry, dispatch returns a
 /// 0-conversion plan and `per_stage_tolerance_for_plan` passes the demand
 /// through unchanged — so `budget == 1e-6` exactly.
-///
-/// Today (pre step-12) the tessellate path forwards
-/// `Self::effective_tessellation_tolerance(module)` to `kernel.tessellate`,
-/// so the recorder captures `0.0001` and the assertion FAILS. Once step-12
-/// replaces that argument with the per-realization budget computed via
-/// `compute_realization_tolerance_budget`, the assertion passes.
 #[test]
 fn tessellate_realizations_uses_demanded_tolerance_through_per_stage_budget() {
     let module = CompiledModuleBuilder::new(ModulePath::new(vec![
