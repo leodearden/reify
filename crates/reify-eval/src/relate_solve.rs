@@ -750,17 +750,35 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
         return RelateSolution::default();
     };
 
+    // 1. Build a RelationInstance per relation over the realized datums, paired
+    //    with the source relation each was built from — the ONLY crossing back to
+    //    `scope.relations` (see `ScopeInstances`). Hoisted ahead of the B6
+    //    trace-to-ground short-circuit below (one walk of `scope.relations`, no
+    //    second scan) so an un-consumable relate-block member is diagnosed on
+    //    EVERY exit path — never masked by a floating assembly (task 7050).
+    let built = build_relation_instances(scope, realized);
+    let instances = &built.instances;
+
+    // A relate-block member the solve could not consume (not a geometric relation
+    // call) is diagnosed here — never silently dropped (INV-SF-3, task 7050).
+    let skip_diagnostics: Vec<Diagnostic> = built
+        .skipped
+        .iter()
+        .map(|&source| unconsumable_relation_diagnostic(source, &auto.sub))
+        .collect();
+
     // η trace-to-ground (B6): any `at auto` sub with no path (over the relation
     // operand graph) to a grounded anchor or `self.*` makes the assembly globally
     // float in `self`. Emit the precise global-float error PRE-SOLVE and short-circuit
     // — the SolveSpace solve would otherwise return an opaque under-determined result
-    // instead of "ground a part". Kernel-free: connectivity is purely structural.
+    // instead of "ground a part". Kernel-free: connectivity is purely structural. The
+    // skip diagnostics above ride along on this exit path too (task 7050) — a
+    // floating assembly must not mask an un-consumable relate-block member.
     let floating = trace_to_ground(scope);
     if !floating.is_empty() {
-        return RelateSolution {
-            diagnostics: vec![global_float_diagnostic(&floating)],
-            ..RelateSolution::default()
-        };
+        let mut diagnostics = skip_diagnostics;
+        diagnostics.push(global_float_diagnostic(&floating));
+        return RelateSolution { diagnostics, ..RelateSolution::default() };
     }
 
     let frame_unknown = FrameUnknown {
@@ -778,21 +796,6 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
     // the constraints layer with an explicit seed Pose). The grounded anchor's local
     // datums already encode the target, so identity is the correct witness here.
     let seed = Pose::identity();
-
-    // 1. Build a RelationInstance per relation over the realized datums, paired
-    //    with the source relation each was built from — the ONLY crossing back to
-    //    `scope.relations` (see `ScopeInstances`).
-    let built = build_relation_instances(scope, realized);
-    let instances = &built.instances;
-
-    // A relate-block member the solve could not consume (not a geometric relation
-    // call) is diagnosed here, before the partition — never silently dropped
-    // (INV-SF-3, task 7050).
-    let skip_diagnostics: Vec<Diagnostic> = built
-        .skipped
-        .iter()
-        .map(|&source| unconsumable_relation_diagnostic(source, &frame_unknown.sub))
-        .collect();
 
     // 2. Partition at the witness into driving + redundant; the rank-revealing
     //    tolerance is tied to the solver-convergence tol (design §4).
