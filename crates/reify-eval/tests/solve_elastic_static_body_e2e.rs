@@ -2193,6 +2193,37 @@ fn realized_cylinder_mesh_covers_its_own_aabb() {
 /// target and the non-binding dof ceiling carry measured margins of three orders
 /// of magnitude or more; and (4) is a finiteness-and-range sanity check rather
 /// than a tolerance.
+///
+/// # Recorded measurement (task 7414) — why the discrimination moved
+///
+/// All from warm lane `_lane-29` on main @ a162d26572, one test binary, idle
+/// host, nproc=32.
+///
+/// Pre-fix, this test reddened 4 of 20 consecutive idle runs, every failure
+/// reporting `Stalled`. The task's analysis pass independently measured 3
+/// failures in ~50 runs with the very first run failing, and the task record
+/// carries a merge-verify failure under fleet load.
+///
+/// With `run_adaptive_refinement` temporarily instrumented, 37 runs put the
+/// iteration-over-iteration indicator ratio `g1/g0` in 0.8147-0.9013 against an
+/// `is_stalled` threshold of 0.90 (`STALL_MIN_RELATIVE_DROP = 0.10`). The
+/// highest PASSING ratio was 0.8923 — 0.008 of headroom — and the single
+/// captured failure sat at 0.9013. The seed tet count drifted 257-260 across
+/// runs at a CONSTANT 120 nodes / 360 dofs, so an iteration-0 indicator spread
+/// of ~0.34% amplified to ~8% by iteration 1.
+///
+/// Hypothesis, NOT established fact: the SEED mesh is what is unpinned, because
+/// `reify-kernel-gmsh`'s `kernel_real.rs` hands `MeshingOptions::default()` to
+/// the 3D mesher at both volume-meshing call sites. That default is
+/// `deterministic: false`, which resolves `General.NumThreads` to
+/// `available_parallelism()` under `Mesh.Algorithm3D = 10` (HXT), and no
+/// `Mesh.RandomSeed` is set anywhere in the repo. (Those four are verified
+/// facts about the code; that they are the CAUSE of the drift is the untested
+/// part.) Tracked separately as ticket `tkt_0RTGVY62JW40ZMJDEQWEJRYCSE` and
+/// deliberately not fixed here — pinning the seed is a cross-cutting change to
+/// every `VolumeMesh` realization and needs its own benchmark.
+///
+/// Post-fix, this test passed 25 of 25 consecutive runs in the same lane.
 #[cfg(has_gmsh)]
 #[test]
 fn body_adaptive_solve_runs_the_gmsh_realized_localized_lane() {
