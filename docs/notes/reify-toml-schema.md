@@ -56,9 +56,16 @@ commitment_policy = "only_run_on_final_inputs"
 
 ### Precedence
 
-Override priority (highest → lowest) in `NodePolicyOverrides::resolve`:
-1. Instance override (set_instance)
-2. Type override (set_type) — kind selectors land here
-3. Default (`CommitIfSlow`)
+Override priority (highest → lowest), resolved by
+`NodePolicyOverrides::resolve_with_traits`:
+1. Instance override (`set_instance`)
+2. Type override (`set_type`) — kind selectors land here
+3. Config-file `[[node_overrides]]` — the slot this section documents
+4. Kind+traits default — absent `COMMITTABLE` → `always_cancel_when_stale`,
+   present → `commit_if_slow`
+5. Global fallback — reserved, not implemented
 
-`resolve_with_traits` adds levels 3–5; config-file overrides fill Level 3 per PRD §6.
+Levels 1 and 2 are set programmatically; a `reify.toml` author reaches level 3.
+An entry here therefore overrides the kind+traits default at level 4, but a
+programmatic instance or type override still wins over it. Full chain rationale:
+PRD §6.
