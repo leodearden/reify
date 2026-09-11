@@ -97,16 +97,7 @@ const PIN_CASES: &[PinCase] = &[
 #[test]
 fn pin_parameter_ids_are_printer_scoped_instance_paths() {
     let module = compiled_printer();
-    let printer = module
-        .templates
-        .iter()
-        .find(|t| t.name == "Printer")
-        .unwrap_or_else(|| {
-            panic!(
-                "no template named 'Printer'; templates present: {:?}",
-                module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
-            )
-        });
+    let printer = printer_template(module);
 
     for case in PIN_CASES {
         let located = pin_constraints_by_members(printer, case.member_shape);
@@ -156,9 +147,10 @@ fn pin_parameter_ids_are_printer_scoped_instance_paths() {
 /// (`SubComponentDecl { name, structure_name, .. }`,
 /// crates/reify-compiler/src/types.rs:1080), the same field `build_values`
 /// would need to render its own namespace (gui/src-tauri/src/engine.rs:4897).
-/// Falls back to the raw sub name when unresolvable — e.g. against S1's
-/// placeholder `compiled_printer` stub below, which declares no subs; S5/S6
-/// add the real, asserted namespace correspondence.
+/// Falls back to the raw sub name when unresolvable. S5/S6 add the real,
+/// asserted namespace correspondence (`sub_structure_name`,
+/// `values_namespace_id`); this stays a separate, tolerant, display-only
+/// helper rather than one more caller of those `Option`-returning helpers.
 fn values_namespace_spelling_hint(printer: &TopologyTemplate, scoped_id: &str) -> String {
     let mut parts = scoped_id.splitn(3, '.');
     let _printer_name = parts.next().unwrap_or_default();
@@ -173,28 +165,96 @@ fn values_namespace_spelling_hint(printer: &TopologyTemplate, scoped_id: &str) -
     format!("{type_name}.{member}")
 }
 
-// ── S1 stubs — replaced with real bodies in S2 ──────────────────────────────
+// ── Derivation machinery (S2) ────────────────────────────────────────────────
 
-/// STUB (S1): compiles a trivial placeholder `Printer` structure so the test
-/// above has a template to locate constraints against. Replaced in S2 with
-/// the real `prj/printer_v01/printer.ri` compile, cached in the same
-/// `OnceLock` so the (then expensive) compile still happens once per binary.
+/// The real `prj/printer_v01/printer.ri`, resolved from this crate's manifest
+/// dir. Mirrors the `PRINTER_RI` constant in
+/// `harness_constructor_typing/orientation_constructor_typing_tests.rs:220`
+/// (the existing precedent for gating on a REAL design file), copied verbatim
+/// so the two gates cannot disagree about which file they gate.
+const PRINTER_RI: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../prj/printer_v01/printer.ri");
+
+/// Compiles `PRINTER_RI` with the stdlib prelude exactly once per test
+/// binary — a `OnceLock`, not a per-`#[test]` compile.
+///
+/// COMPILE ONLY: `compile_source_with_stdlib`, never `check_source*`,
+/// `eval_source`, or anything reaching `reify_eval` — printer.ri SIGSEGVs the
+/// engine on the eval/CSG path (#7383), and a crashed test process reds the
+/// whole merge gate.
+///
+/// Deliberately asserts NOTHING about `.diagnostics` here, not even "zero
+/// errors": that criterion belongs to the orientation gate
+/// (`real_printer_ri_emits_zero_infer_warnings`), and inheriting it here
+/// would make this namespace guard red on unrelated compiler warnings. Every
+/// positive assertion in this file is non-vacuous by construction — if the
+/// compile degraded, the pins would not be found and the tests would red
+/// anyway.
 fn compiled_printer() -> &'static CompiledModule {
     static MODULE: std::sync::OnceLock<CompiledModule> = std::sync::OnceLock::new();
-    MODULE.get_or_init(|| reify_test_support::compile_source_with_stdlib("structure Printer {}"))
+    MODULE.get_or_init(|| {
+        let source = std::fs::read_to_string(PRINTER_RI)
+            .unwrap_or_else(|e| panic!("cannot read {PRINTER_RI}: {e}"));
+        reify_test_support::compile_source_with_stdlib(&source)
+    })
 }
 
-/// STUB (S1): always empty regardless of `template`/`members` — this is what
-/// makes `pin_parameter_ids_are_printer_scoped_instance_paths` RED. Real body
-/// (the namespace-agnostic locator) lands in S2.
+/// The top-level `Printer` template of `module`. Panics with the full list of
+/// template names present when absent, so a rename of the top-level
+/// structure reds legibly here rather than via an `unwrap` backtrace.
+fn printer_template(module: &CompiledModule) -> &TopologyTemplate {
+    module.templates.iter().find(|t| t.name == "Printer").unwrap_or_else(|| {
+        panic!(
+            "no template named 'Printer'; templates present: {:?}",
+            module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+        )
+    })
+}
+
+/// The NAMESPACE-AGNOSTIC pin locator — the seam that keeps this guard
+/// non-circular (see module doc). Reads ONLY `ValueCellId::member` off each
+/// constraint's value refs, never `.entity` or the rendered id, so it cannot
+/// encode the assumption under test: member names are identical in both
+/// namespaces, so selecting on them cannot smuggle in the scope half that
+/// actually drifted in esc-5098-6.
+///
+/// A constraint matches when its ref-member set is a SUPERSET of `members`
+/// (a pin's `<`/`>` halves each also reference unrelated cells, e.g.
+/// `o1_pin_slack`) — a shape match, not equality.
 fn pin_constraints_by_members<'a>(
-    _template: &'a TopologyTemplate,
-    _members: &[&str],
+    template: &'a TopologyTemplate,
+    members: &[&str],
 ) -> Vec<&'a CompiledConstraint> {
-    Vec::new()
+    template
+        .constraints
+        .iter()
+        .filter(|c| {
+            let ref_members: std::collections::HashSet<String> = c
+                .expr
+                .collect_value_refs()
+                .into_iter()
+                .map(|id| id.member)
+                .collect();
+            members.iter().all(|m| ref_members.contains(*m))
+        })
+        .collect()
 }
 
-/// STUB (S1): always empty. Real body lands in S2.
-fn constraint_parameter_ids(_c: &CompiledConstraint) -> Vec<String> {
-    Vec::new()
+/// The projection `build_constraints` publishes as `ConstraintData.parameter_ids`
+/// (gui/src-tauri/src/engine.rs:8312, its local `collect_value_refs` wrapper)
+/// — reimplemented here because that wrapper is a private `fn` in the `gui`
+/// crate and cannot be called from `reify-compiler`. The shared primitive
+/// that actually matters, `ValueCellId`'s `Display` impl
+/// (`crates/reify-core/src/identity.rs:134`), IS reused rather than
+/// re-spelled. Sort+dedup are cosmetic for this file's assertions, which
+/// compare membership, not order.
+fn constraint_parameter_ids(c: &CompiledConstraint) -> Vec<String> {
+    let mut ids: Vec<String> = c
+        .expr
+        .collect_value_refs()
+        .into_iter()
+        .map(|id| id.to_string())
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
 }
