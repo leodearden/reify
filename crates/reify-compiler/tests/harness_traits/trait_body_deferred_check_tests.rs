@@ -1,62 +1,24 @@
 //! Trait-body checking is DEFERRED to conformance — and the vacuity trap that
 //! follows from it (task 6143).
 //!
-//! # The measured rule
-//!
 //! Trait-body member expressions are dimension- and member-checked at
-//! **conformance**, not at trait declaration. A trait compiled with **no**
-//! conforming structure emits **zero** error diagnostics no matter how broken
-//! its body is: a dimension-mismatched constraint, a reference to an undefined
-//! member field, and a wrong `let` type annotation all pass silently.
+//! **conformance**, not at trait declaration: a trait with no conforming
+//! structure emits zero error diagnostics however broken its body is. So never
+//! write an absence-of-diagnostic assertion against a bare trait body — it
+//! passes regardless of what the code under test does. Declare a conformer
+//! (`structure def C : T { ... }`), or write the probe as a `structure`.
 //!
-//! # Consequence — the trap
+//! The vacuity condition is precisely "trait body with NO conformer", not
+//! "trait body": a conformed body is fully checkable, so a guard that regressed
+//! there would be loud rather than silent. Hence the pairing invariant every
+//! axis below obeys — a carve-out pin, the conformed non-vacuity guard that
+//! makes its zero-error result a measurement of *deferral* rather than of
+//! *absence*, and a control showing the guard fires on the defect rather than
+//! on the conformer.
 //!
-//! **Never write an absence-of-diagnostic assertion against a bare trait
-//! body.** It passes regardless of what the code under test does, so it pins
-//! nothing and reports green forever. Any such probe must either declare a
-//! conformer (`structure def C : T { ... }`) or be rewritten as a `structure`.
-//!
-//! The vacuity condition is precisely **"trait body with no conformer"** — NOT
-//! "trait body". A conformed trait body is fully checkable, so a guard that
-//! regressed there would be LOUD, not silent. That narrowness is the whole
-//! reason each pin below is written as a PAIR: the conformed half is what
-//! makes the unconformed half's zero-error result a measurement of *deferral*
-//! rather than of *absence*.
-//!
-//! # Measurement provenance
-//!
-//! Measured on `main` at commit 6927f3c0db via
-//! `reify_test_support::compile_source_with_stdlib`, counting
-//! `Severity::Error` diagnostics. Every fixture below reproduces that
-//! measurement through the same entry point. Conformance was found to catch
-//! all three axes — `DimensionMismatch`, `StructureMemberNotFound` and
-//! `TypeMismatchForTraitMember` — so no follow-up task was warranted for the
-//! undefined-field half; these pins are what keep that true.
-//!
-//! # Fixture hazard for future authors
-//!
-//! These tests assert by diagnostic **code**, never by error count. That is
-//! forced, not stylistic:
-//!
-//! - A struct-literal param default (`param bearer : Bearer = Bearer { .. }`)
-//!   emits an unrelated `unknown variant 'Bearer': no enum in scope declares
-//!   it` error (code `None`). Do not try to eliminate it — it is pre-existing
-//!   behaviour outside task 6143's scope, and the code-keyed assertions are
-//!   immune to it.
-//! - An EMPTY struct literal (`Bearer {}`) is a **parse** error, so it is not
-//!   an escape from the above.
-//! - The stdlib alternative (`param material : Material = Steel`) emits
-//!   `UnresolvedName`, so it is not an escape either.
-//!
-//! So no count-based assertion is even *expressible* on the axis-2 fixtures.
-//! Code-keyed assertion is also the strictly stronger pin in general: an
-//! unrelated future diagnostic keeps a bare non-empty check green while the
-//! guard it protects rots away. See
-//! `reify_test_support::assert_error_code_present`.
-//!
-//! Polymorphic-zero coercion (`mass > 0` acquiring the operand's dimension) is
-//! a *separate* rule that interacts with these fixtures but is not re-derived
-//! here; it belongs to `polymorphic_zero_tests.rs`.
+//! Assertions are keyed on `DiagnosticCode`, never on error count: the
+//! conformed fixtures carry an unrelated codeless `unknown variant` error from
+//! their struct-literal param default, which no count-based assertion tolerates.
 
 use reify_core::DiagnosticCode;
 use reify_test_support::{
@@ -64,28 +26,9 @@ use reify_test_support::{
     compile_source_with_stdlib,
 };
 
-// ══════════════════════════════════════════════════════════════════════════════
-// AXIS 1 — DIMENSION MISMATCH (task 6143 step-3)
-//
-// A three-test set, not three independent tests. (a) pins the carve-out — the
-// trap itself. (b) is (a)'s NON-VACUITY GUARD: it proves the same trait body
-// IS checkable, so (a)'s zero-error result reports a real deferral rather than
-// a compiler that has stopped looking. (c) proves (b)'s error is caused by the
-// MISMATCH and not merely by the presence of a conformer.
-//
-// Together they establish that the axis is trait-WITHOUT-CONFORMER vs
-// conformed — NOT trait-vs-structure, as task 6143's description hypothesised.
-// ══════════════════════════════════════════════════════════════════════════════
+// ── AXIS 1: dimension mismatch ──────────────────────────────────────────────
 
-/// A trait body whose constraint compares `Mass` against a `Length` literal
-/// emits ZERO error diagnostics when NO structure conforms to the trait.
-///
-/// This is the carve-out, and the trap: an absence-of-diagnostic assertion
-/// written against this shape passes no matter what the compiler does.
-///
-/// Measured on main @ 6927f3c0db: 0 errors. Its non-vacuity guard is
-/// [`conformed_trait_body_dimension_mismatch_errors`] below — the SAME trait
-/// body, plus a conformer, does error.
+/// Carve-out pin — guarded by [`conformed_trait_body_dimension_mismatch_errors`].
 #[test]
 fn trait_body_without_conformer_is_not_dimension_checked() {
     let source = r#"
@@ -103,16 +46,7 @@ trait Probe {
     );
 }
 
-/// NON-VACUITY GUARD for [`trait_body_without_conformer_is_not_dimension_checked`].
-///
-/// The SAME trait body, plus a conforming structure, DOES emit
-/// `DiagnosticCode::DimensionMismatch`. This is what makes the zero-error
-/// result above a measurement of deferral rather than of absence.
-///
-/// Measured on main @ 6927f3c0db: 1 error, `DimensionMismatch`, message
-/// "dimension mismatch in comparison: Scalar[kg] vs Scalar[m]". The message
-/// text is recorded here (not asserted) so a future reader can tell a
-/// behaviour change from a mere rewording.
+/// Non-vacuity guard for [`trait_body_without_conformer_is_not_dimension_checked`].
 #[test]
 fn conformed_trait_body_dimension_mismatch_errors() {
     let source = r#"
@@ -135,11 +69,8 @@ structure def Conformer : Probe {
     );
 }
 
-/// Proves [`conformed_trait_body_dimension_mismatch_errors`] fires on the
-/// MISMATCH, not merely on the presence of a conformer: the same conformer
-/// shape with a dimensionally-consistent constraint is clean.
-///
-/// Measured on main @ 6927f3c0db: 0 errors.
+/// Control for [`conformed_trait_body_dimension_mismatch_errors`]: the same
+/// conformed shape, dimensionally consistent, is clean.
 #[test]
 fn conformed_trait_body_matching_dimensions_is_clean() {
     let source = r#"
@@ -161,28 +92,13 @@ structure def Conformer : Probe {
     );
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// AXIS 2 — UNDEFINED MEMBER FIELD (task 6143 step-5)
+// ── AXIS 2: undefined member field ──────────────────────────────────────────
 //
-// The half task 6143 flagged as "the more serious" one: a trait body that
-// names a field the struct does not have. Measured answer — conformance DOES
-// catch it (`StructureMemberNotFound`), so no follow-up task was warranted.
-// These pins are what keep that true.
-//
-// Every fixture here uses a USER-DEFINED `Bearer`, deliberately not the stdlib
-// `Material` — `param material : Material = Steel` emits an unrelated
-// `UnresolvedName` (measured), which buys nothing over the `unknown variant`
-// noise it would replace.
-// ══════════════════════════════════════════════════════════════════════════════
+// Fixtures use a user-defined `Bearer` rather than the stdlib `Material`:
+// `param material : Material = Steel` emits an unrelated `UnresolvedName`,
+// which buys nothing over the `unknown variant` noise it would replace.
 
-/// A trait body referencing a member field that does not exist on the struct
-/// emits ZERO error diagnostics when NO structure conforms to the trait.
-///
-/// Same carve-out as [`trait_body_without_conformer_is_not_dimension_checked`],
-/// on the member-resolution axis rather than the dimension axis.
-///
-/// Measured on main @ 6927f3c0db: 0 errors. Its non-vacuity guard is
-/// [`conformed_trait_body_undefined_member_errors`] below.
+/// Carve-out pin — guarded by [`conformed_trait_body_undefined_member_errors`].
 #[test]
 fn trait_body_without_conformer_ignores_undefined_member() {
     let source = r#"
@@ -204,18 +120,7 @@ trait Probe {
     );
 }
 
-/// NON-VACUITY GUARD for [`trait_body_without_conformer_ignores_undefined_member`].
-///
-/// The SAME trait body, plus a conforming structure, DOES emit
-/// `DiagnosticCode::StructureMemberNotFound`.
-///
-/// Measured on main @ 6927f3c0db: present, message
-/// "structure 'Bearer' has no member 'no_such_field'".
-///
-/// MUST assert by code, not by error count: this fixture also carries an
-/// unrelated `unknown variant 'Bearer': no enum in scope declares it` error
-/// (code `None`) emitted by the struct-literal param default. That noise is
-/// pre-existing behaviour outside this task's scope — see the module doc.
+/// Non-vacuity guard for [`trait_body_without_conformer_ignores_undefined_member`].
 #[test]
 fn conformed_trait_body_undefined_member_errors() {
     let source = r#"
@@ -242,13 +147,8 @@ structure def Conformer : Probe {
     );
 }
 
-/// Proves [`conformed_trait_body_undefined_member_errors`] fires on the
-/// UNDEFINED FIELD specifically, not merely on the conformer: the same
-/// conformer with a constraint over an EXISTING member emits no
-/// `StructureMemberNotFound`.
-///
-/// Asserts absence-of-CODE rather than absence-of-errors, so the unrelated
-/// `unknown variant` noise described above cannot falsify it.
+/// Control for [`conformed_trait_body_undefined_member_errors`]: the same
+/// conformer over an EXISTING member emits no `StructureMemberNotFound`.
 #[test]
 fn conformed_trait_body_existing_member_has_no_member_not_found() {
     let source = r#"
@@ -275,18 +175,31 @@ structure def Conformer : Probe {
     );
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// AXIS 3 — WRONG `let` TYPE ANNOTATION (task 6143 step-5)
-//
-// The third row task 6143 listed as unmeasured. Completes the answer: this
-// axis is caught at conformance too, so all three deferred checks are live.
-// ══════════════════════════════════════════════════════════════════════════════
+// ── AXIS 3: wrong `let` type annotation ─────────────────────────────────────
 
-/// A conformed trait body whose `let` declares a type the expression cannot
-/// produce emits `DiagnosticCode::TypeMismatchForTraitMember`.
-///
-/// Measured on main @ 6927f3c0db: present, message "annotation expects
-/// Scalar[m], expression evaluates to Scalar[kg·m^-3]".
+/// Carve-out pin — guarded by [`conformed_trait_body_wrong_let_annotation_errors`].
+#[test]
+fn trait_body_without_conformer_ignores_wrong_let_annotation() {
+    let source = r#"
+structure Bearer {
+    param density : Density = 1kg/m^3
+}
+
+trait Probe {
+    param bearer : Bearer
+    let bad : Length = bearer.density
+}
+"#;
+
+    let module = compile_source_with_stdlib(source);
+
+    assert_no_error_diagnostics(
+        &module.diagnostics,
+        "trait body with no conformer (wrong `let` annotation deferred to conformance)",
+    );
+}
+
+/// Non-vacuity guard for [`trait_body_without_conformer_ignores_wrong_let_annotation`].
 #[test]
 fn conformed_trait_body_wrong_let_annotation_errors() {
     let source = r#"
@@ -310,5 +223,34 @@ structure def Conformer : Probe {
         &module.diagnostics,
         DiagnosticCode::TypeMismatchForTraitMember,
         "conformed trait body with a wrong `let` type annotation",
+    );
+}
+
+/// Control for [`conformed_trait_body_wrong_let_annotation_errors`]: the same
+/// conformed `let` with a MATCHING annotation emits no
+/// `TypeMismatchForTraitMember`.
+#[test]
+fn conformed_trait_body_matching_let_annotation_has_no_type_mismatch() {
+    let source = r#"
+structure Bearer {
+    param density : Density = 1kg/m^3
+}
+
+trait Probe {
+    param bearer : Bearer
+    let ok : Density = bearer.density
+}
+
+structure def Conformer : Probe {
+    param bearer : Bearer = Bearer { density: 1kg/m^3 }
+}
+"#;
+
+    let module = compile_source_with_stdlib(source);
+
+    assert_error_code_absent(
+        &module.diagnostics,
+        DiagnosticCode::TypeMismatchForTraitMember,
+        "conformed trait body with a matching `let` type annotation",
     );
 }
