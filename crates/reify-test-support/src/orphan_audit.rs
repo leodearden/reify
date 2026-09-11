@@ -731,91 +731,54 @@ mod tests {
         );
     }
 
-    /// Blanks out full-line comments ahead of parsing: any line whose first
-    /// non-whitespace character is `#` becomes an empty line. One rule
-    /// covers both the shell prologue and the embedded Python heredoc body —
-    /// both use `#` for comments. A comment line is mapped to `""` rather
-    /// than dropped, so the joined view keeps the same number of lines as
-    /// `source` and any future line-number reporting can use unshifted
-    /// offsets.
-    fn strip_full_line_comments(source: &str) -> String {
-        source
-            .lines()
-            .map(|line| {
-                if line.trim_start().starts_with('#') {
-                    ""
-                } else {
-                    line
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
     /// Hand-rolled parse of an `EXCLUDE_CRATES = {"a", "b"}`-shaped Python
     /// set-literal declaration. No `regex` dependency exists anywhere in this
     /// workspace (checked before writing this test), so a small manual scan
     /// is used instead of pulling one in just for this.
     ///
-    /// Searches a comment-stripped view of `source` (via
-    /// [`strip_full_line_comments`]): a line whose first non-whitespace
-    /// character is `#` is never treated as a declaration, so a comment that
-    /// merely illustrates the declaration in assignment form cannot shadow
-    /// the real one. Exactly one non-comment `EXCLUDE_CRATES = {` occurrence
-    /// is required: zero returns `None` (the caller reports this — it is the
-    /// only site that knows the script path), and MORE THAN ONE is a hard
-    /// `panic!` rather than silently binding the first. Both guards close the
-    /// same hazard from two directions: an identical-contents shadow — a
-    /// commented illustration, or a genuine duplicate/conditionally-redefined
-    /// declaration — would otherwise leave
+    /// A line counts as the declaration only when its first non-whitespace
+    /// text starts with the marker `EXCLUDE_CRATES = {`. A full-line comment
+    /// (`# EXCLUDE_CRATES = {...}`) starts with `#` instead, so it can never
+    /// match; a trailing inline echo of the marker sits after the start of
+    /// its line, so it can't inflate the count either. Exactly one matching
+    /// line is required: zero returns `None` (the caller reports this — it
+    /// already holds the script path for that message), and more than one is
+    /// a hard `panic!` naming `source_label` and the observed count — either
+    /// case would otherwise risk
     /// `exclude_crates_const_matches_audit_script_declaration` passing while
     /// silently pinning the wrong text against the Rust `EXCLUDE_CRATES`
-    /// const, permanently masking real drift. Neither check is redundant;
-    /// neither should be deleted as such.
+    /// const, permanently masking real drift.
     ///
-    /// KNOWN, ACCEPTED limitation: only FULL-LINE comments are stripped — a
-    /// trailing inline `#` comment on an otherwise-code line is not, so
-    /// quoted text after a `#` would still be scanned if it fell inside the
-    /// declaration body. That's fine at this altitude: today's real
-    /// declaration is single-line with no trailing comment.
-    ///
-    /// This limitation has a second, sharper consequence now that the
-    /// uniqueness check exists: a trailing inline comment that happens to
-    /// echo the marker text (e.g. `EXCLUDE_CRATES = {"a"}  # was:
-    /// EXCLUDE_CRATES = {"b","c"}`) would count as a second occurrence and
-    /// hard-`panic!` `exclude_crates_const_matches_audit_script_declaration`
-    /// — a false-alarm merge-gate failure on a purely cosmetic script edit,
-    /// not a silent mis-pin. The panic message names the remediation, so
-    /// this is a fatigue risk, not a correctness gap.
-    ///
-    /// Returns `None` if no `EXCLUDE_CRATES = {` marker is found in the
-    /// stripped view; otherwise returns whatever names it parsed (possibly
-    /// empty), so the caller can distinguish "declaration not found" from
-    /// "declaration found but parsed empty" and fail loudly on the latter
-    /// rather than matching vacuously.
-    fn parse_exclude_crates_declaration(source: &str) -> Option<Vec<String>> {
+    /// Returns `None` if no declaration line is found; otherwise whatever
+    /// names it parsed from that line (possibly empty), so the caller can
+    /// distinguish "declaration not found" from "declaration found but
+    /// parsed empty" and fail loudly on the latter rather than matching
+    /// vacuously.
+    fn parse_exclude_crates_declaration(source: &str, source_label: &str) -> Option<Vec<String>> {
         let marker = "EXCLUDE_CRATES = {";
-        let searchable = strip_full_line_comments(source);
-        let hits: Vec<_> = searchable.match_indices(marker).collect();
-        if hits.is_empty() {
+        let declaration_lines: Vec<&str> = source
+            .lines()
+            .filter(|line| line.trim_start().starts_with(marker))
+            .collect();
+
+        if declaration_lines.is_empty() {
             return None;
         }
-        if hits.len() > 1 {
-            let occurrences = hits.len();
+        if declaration_lines.len() > 1 {
+            let occurrences = declaration_lines.len();
             panic!(
-                "found {occurrences} occurrences of `{marker}` in the source \
-                 being scanned for an EXCLUDE_CRATES declaration — this \
-                 parser cannot tell which declaration is authoritative, and \
-                 silently binding the first would risk permanently pinning \
-                 the wrong text against the Rust EXCLUDE_CRATES const while \
-                 the parity assertion keeps passing. Remove the duplicate \
-                 declaration, or teach this parser which one is \
-                 authoritative."
+                "found {occurrences} occurrences of `{marker}` in \
+                 {source_label} — this parser cannot tell which declaration \
+                 is authoritative, and silently binding the first would risk \
+                 permanently pinning the wrong text against the Rust \
+                 EXCLUDE_CRATES const while the parity assertion keeps \
+                 passing. Remove the duplicate declaration, or teach this \
+                 parser which one is authoritative."
             );
         }
 
-        let after_marker = hits[0].0 + marker.len();
-        let rest = &searchable[after_marker..];
+        let line = declaration_lines[0].trim_start();
+        let rest = &line[marker.len()..];
         let end = rest.find('}')?;
         let body = &rest[..end];
 
@@ -837,34 +800,22 @@ mod tests {
         Some(names)
     }
 
-    /// RED premise (task 7017 step 1): `parse_exclude_crates_declaration`
-    /// takes `source.find(marker)` — the FIRST literal occurrence of
-    /// `EXCLUDE_CRATES = {` anywhere in the source, comment or not — with no
-    /// awareness of shell/Python `#` comments. A full-line comment that
-    /// illustrates the declaration in assignment form (plausible directly
-    /// above the real one — task 6027 already added 9 comment lines right
-    /// above it) would bind instead of the real declaration. Because such an
-    /// illustration would almost certainly carry IDENTICAL contents,
-    /// `exclude_crates_const_matches_audit_script_declaration` would keep
-    /// passing while silently pinning a comment against the Rust const,
-    /// permanently masking any real drift in the actual declaration.
+    /// A full-line `#` comment that illustrates the declaration in
+    /// assignment form (plausible directly above the real one — task 6027
+    /// already added 9 comment lines right above it) never shadows the real
+    /// declaration below it: the parser binds the real one, so
+    /// `exclude_crates_const_matches_audit_script_declaration` keeps
+    /// checking the actual declaration rather than silently pinning a
+    /// comment against the Rust const.
     ///
     /// Exercises BOTH a column-0 comment and an INDENTED one, to pin the rule
     /// as "first non-whitespace character is `#`", not "line starts with
     /// `#`".
-    ///
-    /// Measured RED: today this returns
-    /// `Some(["decoy-from-a-column-zero-comment"])`.
-    ///
-    /// Pure string-in/value-out — no filesystem, git, or subprocess — so
-    /// this deliberately omits this module's
-    /// `Command::new("git")...is_err() { return }` graceful-skip preamble;
-    /// don't add one here by pattern-matching the neighbours above.
     #[test]
     fn parse_exclude_crates_declaration_binds_the_real_declaration_not_a_commented_shadow() {
         let source = "#!/usr/bin/env bash\n# Illustration of what this parser looks for:\n#     EXCLUDE_CRATES = {\"decoy-from-a-column-zero-comment\"}\n    # EXCLUDE_CRATES = {\"decoy-from-an-indented-comment\"}\nEXCLUDE_CRATES = {\"reify-test-support\", \"another-real-crate\"}\n";
 
-        let result = parse_exclude_crates_declaration(source);
+        let result = parse_exclude_crates_declaration(source, "a test fixture");
         assert_eq!(
             result,
             Some(vec![
@@ -872,31 +823,24 @@ mod tests {
                 "another-real-crate".to_string(),
             ]),
             "expected the parser to skip both the column-0 and indented \
-             commented-out shadows and bind the real declaration below them; \
-             today it returns Some([\"decoy-from-a-column-zero-comment\"]) \
-             instead — got: {result:?}"
+             commented-out shadows and bind the real declaration below \
+             them — got: {result:?}"
         );
     }
 
-    /// RED premise (task 7017 step 1): companion to
+    /// Companion to
     /// [`parse_exclude_crates_declaration_binds_the_real_declaration_not_a_commented_shadow`]
-    /// — the other observable face of the same behaviour. When the ONLY
+    /// — the other observable face of the same rule. When the ONLY
     /// occurrence of the marker in the source is inside a full-line comment
-    /// and no real declaration exists anywhere, the parser must report "not
-    /// found" (`None`) so the caller's existing path-naming not-found panic
-    /// fires, rather than silently returning the comment's contents as if
-    /// they were a real declaration.
-    ///
-    /// Measured RED: today this returns `Some(["only-in-a-comment"])`.
-    ///
-    /// Pure string-in/value-out — no filesystem, git, or subprocess — so
-    /// this deliberately omits this module's graceful-skip preamble; don't
-    /// add one here by pattern-matching the neighbours above.
+    /// and no real declaration exists anywhere, the parser reports "not
+    /// found" (`None`) so the caller's path-naming not-found panic fires,
+    /// rather than returning the comment's contents as if they were a real
+    /// declaration.
     #[test]
     fn parse_exclude_crates_declaration_is_not_found_when_only_a_comment_declares_it() {
         let source = "# EXCLUDE_CRATES = {\"only-in-a-comment\"}\n";
 
-        let result = parse_exclude_crates_declaration(source);
+        let result = parse_exclude_crates_declaration(source, "a test fixture");
         assert_eq!(
             result, None,
             "expected None because the only occurrence of the marker is inside \
@@ -904,26 +848,21 @@ mod tests {
         );
     }
 
-    /// RED premise (task 7017 step 3): the helper takes the first literal
-    /// marker occurrence and has no uniqueness check, so a second real
-    /// (non-comment) declaration is silently ignored — the same
-    /// silent-wrong-pin hazard step-1/step-2 close for a commented shadow,
-    /// but for a genuine duplicate or conditionally-redefined declaration,
-    /// which comment-stripping alone does not address.
+    /// Two REAL (non-comment) declarations panic rather than silently
+    /// first-wins binding the first one — the direction the line-anchored
+    /// match above does not otherwise resolve on its own (a genuine
+    /// duplicate or conditionally-redefined declaration).
     ///
     /// Uses `catch_unwind` + `reify_core::panic_payload_to_string` — the
     /// idiom already established by `wrong_tree_with_real_scope_panics`
     /// above — rather than `#[should_panic]`, whose attribute-level
     /// substring match cannot distinguish WHICH panic fired.
-    ///
-    /// Pure string-in/value-out — no filesystem, git, or subprocess — so
-    /// this deliberately omits this module's graceful-skip preamble.
     #[test]
     fn parse_exclude_crates_declaration_panics_on_multiple_declarations() {
         let source = "EXCLUDE_CRATES = {\"first-declaration\"}\nsome other line\nEXCLUDE_CRATES = {\"second-declaration\"}\n";
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            parse_exclude_crates_declaration(source)
+            parse_exclude_crates_declaration(source, "a test fixture")
         }));
 
         let payload = match result {
@@ -943,9 +882,14 @@ mod tests {
              2 declarations in context; got: {message}"
         );
         assert!(
-            message.contains("authoritative"),
-            "panicked, but the message doesn't name the ambiguity (which \
-             declaration is authoritative); got: {message}"
+            message.contains("EXCLUDE_CRATES = {"),
+            "panicked, but the message doesn't name the marker text that was \
+             duplicated; got: {message}"
+        );
+        assert!(
+            message.contains("a test fixture"),
+            "panicked, but the message doesn't name the source being \
+             scanned; got: {message}"
         );
     }
 
@@ -975,14 +919,15 @@ mod tests {
         let source = std::fs::read_to_string(&script_path)
             .unwrap_or_else(|e| panic!("read {script_path:?}: {e}"));
 
-        let declared = parse_exclude_crates_declaration(&source).unwrap_or_else(|| {
-            panic!(
-                "could not find an `EXCLUDE_CRATES = {{...}}` declaration in \
-                 {script_path:?} — has it moved or been reformatted? Update \
-                 parse_exclude_crates_declaration's marker alongside whatever \
-                 changed the script."
-            )
-        });
+        let declared = parse_exclude_crates_declaration(&source, &format!("{script_path:?}"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "could not find an `EXCLUDE_CRATES = {{...}}` declaration in \
+                     {script_path:?} — has it moved or been reformatted? Update \
+                     parse_exclude_crates_declaration's marker alongside whatever \
+                     changed the script."
+                )
+            });
         assert!(
             !declared.is_empty(),
             "parsed an EXCLUDE_CRATES declaration from {script_path:?} but found \
