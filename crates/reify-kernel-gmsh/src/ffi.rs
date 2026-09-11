@@ -20,13 +20,23 @@
 //!
 //! # Diagnostics
 //!
-//! Beyond the lifecycle/mesh-I/O surface above, this module also binds two
-//! diagnostic-only surfaces: the gmsh logger CAPTURE family
+//! Beyond the lifecycle/mesh-I/O surface above, this module binds two more:
+//! the gmsh logger CAPTURE family
 //! ([`logger_start`]/[`logger_get`]/[`logger_stop`]) and
-//! [`get_element_types`], a dim-scoped element-type census. Both exist for
-//! debugging gmsh misbehaviour from Rust, not for production control flow —
-//! they are deliberately test-only consumers (see the `// G-allow:` markers
-//! on each wrapper, which keep a future dead-code sweep from deleting them).
+//! [`get_element_types`], a dim-scoped element-type census.
+//!
+//! [`get_element_types`] exists for debugging gmsh misbehaviour from Rust,
+//! not for production control flow — its only consumer is a test, which is
+//! what the `// G-allow:` marker on it records (that marker is what keeps a
+//! future dead-code sweep from deleting an otherwise unreferenced binding).
+//!
+//! The logger family is production code as of task #6969. It backs
+//! [`crate::log_capture::LogCapture`], which
+//! [`crate::kernel_real::GmshKernel::mesh_to_volume`] arms so a meshing
+//! failure reports gmsh's own diagnosis rather than only the last ERROR
+//! line `gmshLoggerGetLastError` supplies. Those three carry no marker: a
+//! non-test workspace caller is itself the exemption, so a marker claiming
+//! they have none would be both false and redundant.
 //!
 //! Concrete precedent: diagnosing #6200 (`classify_surfaces` at exactly 90°
 //! finding 2 model surfaces instead of 6, HXT building 206 tets while the
@@ -923,8 +933,6 @@ pub fn get_nodes_at_entity(dim: i32, tag: i32) -> Result<(Vec<u64>, Vec<f64>), G
 /// across one `mesh_generate(3)` call with `General.Terminal = 0` — the
 /// capture buffer is a separate switch gmsh keeps regardless of that
 /// option.
-///
-// G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller.
 pub fn logger_start() -> Result<(), GeometryError> {
     gmsh_call!("gmshLoggerStart", ierr, gmshLoggerStart(&mut ierr))
 }
@@ -934,8 +942,6 @@ pub fn logger_start() -> Result<(), GeometryError> {
 /// Measured: calling [`logger_get`] after `logger_stop` returns an empty
 /// `Vec` with `ierr=0` — stopping the logger drains the buffer, it does not
 /// merely pause capture.
-///
-// G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller.
 pub fn logger_stop() -> Result<(), GeometryError> {
     gmsh_call!("gmshLoggerStop", ierr, gmshLoggerStop(&mut ierr))
 }
@@ -952,8 +958,6 @@ pub fn logger_stop() -> Result<(), GeometryError> {
 /// mirroring the free-before-check ordering in [`get_nodes_all`] and
 /// [`get_elements_by_type`] (this avoids leaking the buffers on the `ierr
 /// != 0` path, since `check_ierr` returns early via `?`).
-///
-// G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller.
 pub fn logger_get() -> Result<Vec<String>, GeometryError> {
     let mut log_ptr: *mut *mut c_char = ptr::null_mut();
     let mut log_n: usize = 0;
