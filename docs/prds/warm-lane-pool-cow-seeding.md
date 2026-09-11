@@ -8,7 +8,7 @@
 
 ## 1. Goal — one CoW warm-lane pool that starts every concurrent build warm
 
-Phase 1 (κ, `dark_factory:1692`, **landed**) warms only the *serial* merge-verify lane (`_merge-verify`, reset-in-place, `git.persistent_merge_worktree: true` in `dark-factory-orchestrator.yaml:234`). Every **other** lane on the box still builds cold from an empty `target/`:
+Phase 1 (κ, `dark_factory:1692`, **landed**) warms only the *serial* merge-verify lane (`_merge-verify`, reset-in-place, `git.persistent_merge_worktree: true` in `dark-factory-orchestrator.yaml`). Every **other** lane on the box still builds cold from an empty `target/`:
 
 - **The N concurrent task-dispatch worktrees.** N = the orchestrator's effective task-lane pool size, derived once at startup as `max_concurrent_tasks + spare_warm_lanes` (currently 48 + 8 = **56** — both tunable knobs, *not* hardcoded constants; if either is retuned, the pool tracks it). Each dispatched task agent today gets a fresh `git worktree add` with an empty `target/` and pays a full cold dependency compile before its first scoped verify.
 - **Future merge-speculation slots.** When the merge train runs at depth K>1 (Lever C, `dark-factory/plans/merge-throughput-multihost-verify-prd.md`), each speculative verify slot would today be cold too.
@@ -98,7 +98,7 @@ This is shell/XFS/systemd/orchestrator infrastructure — **no `.ri` grammar sur
 | mtime-normalization makes a seeded fresh-checkout lane skip the rebuild | β/δ | **spike-proven** memo §2/§5 |
 | XFS-reflink reset-in-place is fragmentation/space/perf-stable over cycles | γ | **spike-proven** memo §7 (Q2 SAFE) |
 | `mkfs.xfs -m reflink=1,bigtime=1` on a loopback image over ext4 mounts + reflinks | α | **spike-proven** (the spike ran on `/var/lib/reify-xfs-spike.img`, `reflink=1 bigtime=1`) |
-| Phase-1 warm `_merge-verify` base exists to seed from | β/γ | verified: `dark-factory-orchestrator.yaml:234` + `git_ops.py` 1692 landed; `_merge-verify` on disk |
+| Phase-1 warm `_merge-verify` base exists to seed from | β/γ | verified: `git.persistent_merge_worktree: true` in `dark-factory-orchestrator.yaml` (by key — tracked in reify, so one grep re-checks it) + `git_ops.py` 1692 landed; `_merge-verify` on disk |
 | ext4 `data_lv` has free space for the loopback image | α | verified: `df` → 6.0 TB free on `/media/leo/data_lv_1` |
 | DF task-dispatch worktree provisioning seam exists to re-wire | ζ | `git_ops.py` `_create_merge_worktree`/`create_worktree` family present (the create-worktree path κ already touched) |
 | DF `_MERGE_AHEAD_BOUND` / Lever C `_speculation_slot` seam | η | Lever C PRD present in `dark-factory/plans/`; pipeline pending |
