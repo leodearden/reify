@@ -76,6 +76,10 @@ MCP_URL="http://localhost:8002/mcp"
 # leaning on one large timeout, so raising this only matters if a healthy
 # server routinely takes longer than a few seconds to answer.
 MCP_TIMEOUT="${FUSED_MEMORY_MCP_TIMEOUT:-5}"
+if [[ ! "$MCP_TIMEOUT" =~ ^[0-9]+$ ]]; then
+    echo "FAIL: FUSED_MEMORY_MCP_TIMEOUT must be an integer number of seconds; got '$MCP_TIMEOUT'." >&2
+    exit 1
+fi
 
 # Raw reify-audit binary used by assertion 4's fixture round-trips. Deliberately
 # NOT derived from the hook env var — see the assertion-4 comment block below.
