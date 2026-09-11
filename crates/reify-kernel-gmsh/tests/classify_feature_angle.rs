@@ -34,57 +34,20 @@
 
 #![cfg(has_gmsh)]
 
-use reify_ir::Mesh;
-use reify_kernel_gmsh::{CLASSIFY_CURVE_ANGLE, CLASSIFY_FEATURE_ANGLE, ffi, init};
+use reify_kernel_gmsh::CLASSIFY_FEATURE_ANGLE;
 
 // The box fixture is shared with `tests/fill_metrics_tests.rs` and
 // `tests/volume_fill_fraction.rs` through `tests/common/mod.rs`: this guard and
 // the symptom guard must agree on what "a box" is, or one can go green against
 // geometry the other never meshes.
+//
+// `entity_census` is shared through the same module with
+// `tests/node_attachment_producer.rs` (#6830) — same reason, one dimension up:
+// the two files replayed the identical raw-FFI classify prelude and had to be
+// updated in lockstep. Only the prelude is shared; the assertions below are
+// this guard's own contract and stay here.
 mod common;
-use common::prismatic_box_mesh;
-
-/// Entity census after classify + createGeometry, as `(dim0, dim1, dim2)`.
-///
-/// Replays only the classify half of `GmshKernel::mesh_to_volume`
-/// (`kernel_real.rs`), stopping before surface-loop / volume / `mesh_generate(3)`.
-///
-/// This is a RAW-FFI test, so it MUST hold `init::GMSH_LOCK` itself — unlike
-/// `volume_fill_fraction.rs`, which goes through the public API and would
-/// self-deadlock if it took the lock.
-fn entity_census(surface: &Mesh) -> (usize, usize, usize) {
-    let n_verts = surface.vertices.len() / 3;
-    let n_tris = surface.indices.len() / 3;
-
-    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    init::ensure_initialized();
-
-    ffi::clear().expect("clear");
-    ffi::option_set_number("General.Terminal", 0.0).expect("terminal off");
-    ffi::model_add("reify_6200_classify_census").expect("model_add");
-    let surf_tag = ffi::add_discrete_entity(2, &[]).expect("add_discrete_entity");
-
-    let node_tags: Vec<u64> = (1..=n_verts as u64).collect();
-    let coords_f64: Vec<f64> = surface.vertices.iter().map(|&v| v as f64).collect();
-    ffi::add_nodes_2d(surf_tag, &node_tags, &coords_f64).expect("add_nodes_2d");
-
-    let tri_tags: Vec<u64> = (1..=n_tris as u64).collect();
-    let tri_node_tags: Vec<u64> = surface.indices.iter().map(|&i| i as u64 + 1).collect();
-    ffi::add_elements_2d(surf_tag, 2, &tri_tags, &tri_node_tags).expect("add_elements_2d");
-
-    // The PRODUCTION constants, imported rather than re-typed — see the module
-    // docs for why that matters.
-    ffi::classify_surfaces(CLASSIFY_FEATURE_ANGLE, 1, 1, CLASSIFY_CURVE_ANGLE, 0)
-        .expect("classify_surfaces");
-    ffi::create_geometry(&[]).expect("create_geometry");
-
-    let n0 = ffi::get_entity_tags(0).expect("get_entity_tags(0)").len();
-    let n1 = ffi::get_entity_tags(1).expect("get_entity_tags(1)").len();
-    let n2 = ffi::get_entity_tags(2).expect("get_entity_tags(2)").len();
-
-    let _ = ffi::clear();
-    (n0, n1, n2)
-}
+use common::{entity_census, prismatic_box_mesh};
 
 /// The production feature angle must be strictly BELOW a box's 90° dihedral.
 ///
@@ -117,7 +80,7 @@ fn feature_angle_is_strictly_below_a_right_dihedral() {
 /// all three RED. Measured below 90°: 8 / 14 / 8.
 #[test]
 fn classify_separates_a_box_into_planar_brep_faces() {
-    let (n0, n1, n2) = entity_census(&prismatic_box_mesh(1.0, 1.0, 1.0));
+    let (n0, n1, n2) = entity_census(&prismatic_box_mesh(1.0, 1.0, 1.0), "reify_6200_classify_census");
 
     assert!(
         n2 >= 6,
@@ -145,11 +108,58 @@ fn classify_separates_a_box_into_planar_brep_faces() {
 /// confirming the decomposition is not an artefact of cubic symmetry.
 #[test]
 fn classify_separates_a_slender_box_into_planar_brep_faces() {
-    let (n0, n1, n2) = entity_census(&prismatic_box_mesh(1.0, 0.1, 0.1));
+    let (n0, n1, n2) = entity_census(&prismatic_box_mesh(1.0, 0.1, 0.1), "reify_6200_classify_census");
     assert!(
         n2 >= 6 && n1 >= 12 && n0 >= 8,
         "box 1.0x0.1x0.1 m: census dim0/dim1/dim2 = {n0}/{n1}/{n2}, expected at least \
          8/12/6. A 10:1 box has the same exactly-90° dihedral angles as a cube, so it \
          fails identically at a 90° feature angle (#6200)."
+    );
+}
+
+/// The shared census helper must be self-isolating: two back-to-back
+/// invocations on identical geometry, under DIFFERENT gmsh model names, must
+/// return the identical triple.
+///
+/// This is the precondition that makes ONE definition safe to share across two
+/// test binaries and three call sites. It pins two properties at once:
+///
+/// - **No accumulated gmsh state.** The helper's `ffi::clear()`-first /
+///   `ffi::clear()`-last discipline means invocation *n+1* sees a clean model
+///   database, so a census never depends on what ran before it.
+/// - **`model_name` is purely diagnostic.** `ffi::clear()` runs *before*
+///   `ffi::model_add`, wiping all models, so the name cannot reach the result —
+///   it only labels gmsh's own log output when a census test fails. Passing two
+///   different names and asserting one triple makes that a tested property
+///   rather than a comment.
+///
+/// It also proves the back-to-back call is deadlock-free: each invocation
+/// scopes its own `init::GMSH_LOCK` guard, which drops at return.
+///
+/// Provenance — MEASURED on this branch, not guessed. A scratch probe running
+/// exactly this double invocation returned `welded_a=(8,14,8)
+/// welded_b=(8,14,8)`. The `>= 8/12/6` floor is the same bound
+/// `classify_separates_a_box_into_planar_brep_faces` and
+/// `classify_separates_a_slender_box_into_planar_brep_faces` already assert
+/// (written there as `n2 >= 6 && n1 >= 12 && n0 >= 8`; the tuple order here is
+/// `(n0, n1, n2)` = vertices/curves/surfaces, hence 8/12/6).
+#[test]
+fn entity_census_is_isolated_across_invocations() {
+    let a = entity_census(&prismatic_box_mesh(1.0, 1.0, 1.0), "reify_6830_census_a");
+    let b = entity_census(&prismatic_box_mesh(1.0, 1.0, 1.0), "reify_6830_census_b");
+
+    assert_eq!(
+        a, b,
+        "two censuses of identical geometry disagreed ({a:?} vs {b:?}). Either the helper \
+         leaks gmsh state across invocations (its leading ffi::clear() is not doing its job) \
+         or the diagnostic-only `model_name` argument is reaching the result — both break the \
+         precondition for sharing one census definition across test binaries."
+    );
+    assert!(
+        a.0 >= 8 && a.1 >= 12 && a.2 >= 6,
+        "census dim0/dim1/dim2 = {}/{}/{}, expected at least 8/12/6 for a welded unit cube. \
+         An isolated helper that returns a DEGENERATE census twice would satisfy the equality \
+         above, so this floor pins that both invocations actually classified the box (#6200).",
+        a.0, a.1, a.2
     );
 }
