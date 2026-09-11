@@ -160,10 +160,12 @@ The unified-DAG red-team scoped this out of θ (D8) because the incremental mach
   cannot serve a stale handle") **stays**; only its *expression* changes from "the cache is empty
   after edit" to "the changed cone is evicted, the unaffected cone survives, and no stale handle is
   served." Each superseded test names task 2874 + this PRD's γ so the lineage is traceable.
-- **D6 — Develops behind the `UnifiedDag` flag; ι cutover (#4362) is not a hard prerequisite.**
-  Eviction rides the warm/edit driver paths already landed by 4361/4531. Like the parent's θ, it is
-  built and gated under `feature = "unified-dag"` / `REIFY_BUILD_SCHEDULER=unified`; ι (flip default +
-  delete legacy) is independent.
+- **D6 — Develops against `BuildScheduler::UnifiedDag`; ι cutover (#4362) is not a hard prerequisite.**
+  Eviction rides the warm/edit driver paths already landed by 4361/4531. Like the parent's θ, it
+  targets the runtime `Engine::build_scheduler` field (`BuildScheduler::UnifiedDag`; precedent at
+  `engine_build.rs:~5132`/`~6023`), not the vestigial `unified-dag` Cargo feature — that feature has no
+  remaining active `cfg` users and gates no build (#7126); ι (flip default + delete legacy) is
+  independent.
 - **D7 — `edit_source` value-path driver-homing (#4713) is not a hard prerequisite — and has now
   landed, which only simplifies the picture.** Eviction targets the shared **flush seam**
   (`clear_realization_cache` at both edit entries) and the realization-cache lookup, not the
@@ -231,7 +233,7 @@ contract-lock tests; ε names the two dispatch-count e2es — closing G2's loop.
 | `selective-demand.md` (ε, task 4741, **LANDED**) | **produces-for** | per-realization **input-cone hash** (`upstream_values_hash` on `RealizationNodeData`, recorded by this PRD's α/D1); selective-demand δ consumes it on re-demand as its staleness gate (D3) | **this PRD** (hash producer) | **LANDED** — selective-demand batch (incl. ε=4741) on main |
 | task 4530 (dep-structure rebuild invariant) | consumes | `reverse_index`/`trace_map`/`demand` rebuild after structural re-elaboration | task 4530 | `done` — collection-grow boundary case (§6) relies on it |
 | task 4713 (`edit_source` driver-homing) | soft | the `edit_source` value-eval ordering; eviction sits at the shared flush seam, order-independent | task 4713 | **landed** (`45ff132e20`); **not** a prereq (D7) — both edit paths now uniform |
-| task 4362 (ι cutover) | soft | default-scheduler flip + legacy delete | task 4362 | develops behind the flag (D6) |
+| task 4362 (ι cutover) | soft | default-scheduler flip + legacy delete | task 4362 | not a prereq; targets `BuildScheduler::UnifiedDag` directly (D6) |
 
 Seam ownership is unambiguous: the parent D8 explicitly defers eviction to "a follow-up after
 `RealizationNodeData` result hashing exists" = **this PRD**. The two siblings are complementary
@@ -277,7 +279,10 @@ dependency edges at decompose time per `preferences_cross_prd_deps_real_edges`.
   served geometry content and on hit/miss classification. *grammar_confirmed: true.*
 - **ε — e2e: slider drag re-executes kernel ops only for the affected body.** Multi-body isolating
   fixture; `edit_param` feeding body A → `last_dispatch_count() == ops(A)` (`< all-bodies`);
-  no-realization edit → `== 0`. `#[cfg_attr(not(feature="unified-dag"), ignore)]`. *Modules:*
+  no-realization edit → `== 0`. Pin the scheduler via the `Engine::set_build_scheduler` test seam
+  (test-instrumentation-gated; see `tests/common/differential.rs`'s module header), not a
+  `#[cfg_attr(not(feature="unified-dag"), ignore)]` gate — that Cargo feature has no remaining active
+  `cfg` users and gates no build (#7126). *Modules:*
   `crates/reify-eval/tests/`. *Signal:* **leaf** (the headline integration gate). *grammar_confirmed:
   true.*
 
