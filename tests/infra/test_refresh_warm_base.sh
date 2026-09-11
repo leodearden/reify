@@ -956,6 +956,93 @@ assert "J2d: reify_b keeps newest 2 (5555, 6666), prunes oldest (4444)" \
 assert "J2d: exactly 4 reify_a/reify_b files total (2 each, distinct pools)" \
     bash -c '[ "$(find "$1" -maxdepth 1 -type f \( -name "reify_a-*" -o -name "reify_b-*" \) | wc -l)" -eq 4 ]' _ "$J2_DEPS"
 
+# J3 — scope containment. The prune must reach debug/deps and nothing else;
+# this is the assertion set that keeps a future widening from quietly eating
+# the fingerprint/build/release trees. One fixture advancing dir carries three
+# same-unit generations in each of six locations; only the debug/deps copy
+# (the control) may be pruned.
+_j3_mint_three() {
+    local dir="$1"
+    mkdir -p "$dir"
+    echo "gen1" > "$dir/reify_scope_unit-1111111111111111"
+    echo "gen2" > "$dir/reify_scope_unit-2222222222222222"
+    echo "gen3" > "$dir/reify_scope_unit-3333333333333333"
+    touch -d '2026-01-01 00:00:00' "$dir/reify_scope_unit-1111111111111111"
+    touch -d '2026-02-01 00:00:00' "$dir/reify_scope_unit-2222222222222222"
+    touch -d '2026-03-01 00:00:00' "$dir/reify_scope_unit-3333333333333333"
+}
+
+J3_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j3-XXXXXX)"
+_TMPDIRS+=("$J3_TMP")
+J3_LANE="$(mk_git_advancing "$J3_TMP")"
+J3_ADV="$J3_LANE/advancing"
+J3_HEAD="$(git -C "$J3_LANE" rev-parse HEAD)"
+
+_j3_mint_three "$J3_ADV/debug/deps"          # J3a: the control — pruned to 2
+_j3_mint_three "$J3_ADV/debug/.fingerprint"  # J3b: sibling of deps — untouched
+_j3_mint_three "$J3_ADV/debug/build"         # J3c: sibling of deps — untouched
+_j3_mint_three "$J3_ADV/release/deps"        # J3d: different top-level tree — untouched
+_j3_mint_three "$J3_ADV/debug/deps/nested"   # J3e: depth-2 under deps — untouched
+_j3_mint_three "$J3_ADV/debug"               # J3f: hashed file directly in debug/ — untouched
+
+J3_BASE="$J3_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$J3_ADV" "$J3_BASE" --landed-commit "$J3_HEAD"
+assert "J3: refresh exits 0" test "$RC" -eq 0
+
+J3_GEN="$(readlink "$J3_BASE")"
+
+assert "J3a: debug/deps (the prune target) is pruned to 2 — control proving the instrument fires" \
+    bash -c '[ "$(find "$1/debug/deps" -maxdepth 1 -type f -name "reify_scope_unit-*" | wc -l)" -eq 2 ] && [ ! -f "$1/debug/deps/reify_scope_unit-1111111111111111" ]' _ "$J3_GEN"
+assert "J3b: debug/.fingerprint is untouched — all 3 generations survive" \
+    bash -c '[ "$(find "$1/debug/.fingerprint" -maxdepth 1 -type f -name "reify_scope_unit-*" | wc -l)" -eq 3 ]' _ "$J3_GEN"
+assert "J3c: debug/build is untouched — all 3 generations survive" \
+    bash -c '[ "$(find "$1/debug/build" -maxdepth 1 -type f -name "reify_scope_unit-*" | wc -l)" -eq 3 ]' _ "$J3_GEN"
+assert "J3d: release/deps is untouched — all 3 generations survive (out of scope)" \
+    bash -c '[ "$(find "$1/release/deps" -maxdepth 1 -type f -name "reify_scope_unit-*" | wc -l)" -eq 3 ]' _ "$J3_GEN"
+assert "J3e: debug/deps/nested is untouched — depth-1 only" \
+    bash -c '[ "$(find "$1/debug/deps/nested" -maxdepth 1 -type f -name "reify_scope_unit-*" | wc -l)" -eq 3 ]' _ "$J3_GEN"
+assert "J3f: a hashed file directly in debug/ (not deps/) survives" \
+    bash -c '[ "$(find "$1/debug" -maxdepth 1 -type f -name "reify_scope_unit-*" | wc -l)" -eq 3 ]' _ "$J3_GEN"
+
+# J3g — structural: an advancing dir with NO debug/deps at all refreshes
+# exit 0 and produces a correct base (the graceful-no-op path every existing
+# Block B-I fixture already depends on).
+J3G_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j3g-XXXXXX)"
+_TMPDIRS+=("$J3G_TMP")
+J3G_LANE="$(mk_git_advancing "$J3G_TMP")"
+J3G_ADV="$J3G_LANE/advancing"
+J3G_HEAD="$(git -C "$J3G_LANE" rev-parse HEAD)"
+echo "content" > "$J3G_ADV/unrelated.txt"
+J3G_BASE="$J3G_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$J3G_ADV" "$J3G_BASE" --landed-commit "$J3G_HEAD"
+assert "J3g: refresh with no debug/deps at all exits 0" test "$RC" -eq 0
+assert "J3g: base has advancing content (graceful no-op path)" \
+    bash -c '[ "$(cat "$1/unrelated.txt")" = "content" ]' _ "$J3G_BASE"
+
+# J3h — structural: an EMPTY debug/deps directory refreshes exit 0 and leaves
+# the directory present and empty (no `rm -rf` of the dir itself; the prune
+# removes files, never the container).
+J3H_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j3h-XXXXXX)"
+_TMPDIRS+=("$J3H_TMP")
+J3H_LANE="$(mk_git_advancing "$J3H_TMP")"
+J3H_ADV="$J3H_LANE/advancing"
+J3H_HEAD="$(git -C "$J3H_LANE" rev-parse HEAD)"
+mkdir -p "$J3H_ADV/debug/deps"
+J3H_BASE="$J3H_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$J3H_ADV" "$J3H_BASE" --landed-commit "$J3H_HEAD"
+assert "J3h: refresh with an empty debug/deps exits 0" test "$RC" -eq 0
+J3H_GEN="$(readlink "$J3H_BASE")"
+assert "J3h: debug/deps directory itself still present (not rm -rf'd)" \
+    test -d "$J3H_GEN/debug/deps"
+assert "J3h: debug/deps is empty (no phantom files created)" \
+    bash -c '[ -z "$(find "$1" -maxdepth 1 -type f)" ]' _ "$J3H_GEN/debug/deps"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately
 # kept as two independently-reported signals: TRASH2 can realistically only ever
