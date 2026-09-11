@@ -31,96 +31,19 @@
 //! obtained by first running the existing δ `GroupRatios` golden (the same
 //! fixture as `tensegrity_delta_combined_form_find.rs`) to convergence. `λ` is
 //! a power of two so the gauge change is exact in IEEE-754 (an exponent-field
-//! shift, no mantissa rounding) — the bit-exact covariance assertions below
-//! are therefore checkable with `assert_eq!`, not a tolerance.
+//! shift, no mantissa rounding). The fixed-point-start golden below checks
+//! this bit-exactly (`assert_eq!`); the perturbed-guess grid relaxes to a
+//! tight relative bound instead — see that test's own doc for why.
 
 use reify_solver_elastic::{
     ForceDensitySpec, FreeFormResult, MemberKind, form_find_free_surfaces,
 };
 
-// ---------------------------------------------------------------------------
-// Fixture — the complete triplex (same as the δ combined golden)
-// ---------------------------------------------------------------------------
-
-fn triplex_topology() -> (Vec<(usize, usize)>, Vec<MemberKind>) {
-    let members = vec![
-        (0, 4), (1, 5), (2, 3), // struts
-        (0, 1), (1, 2), (2, 0), // top horizontals
-        (3, 4), (4, 5), (5, 3), // bottom horizontals
-        (0, 3), (1, 4), (2, 5), // verticals
-    ];
-    let kinds = vec![
-        MemberKind::Strut, MemberKind::Strut, MemberKind::Strut,
-        MemberKind::Cable, MemberKind::Cable, MemberKind::Cable,
-        MemberKind::Cable, MemberKind::Cable, MemberKind::Cable,
-        MemberKind::Cable, MemberKind::Cable, MemberKind::Cable,
-    ];
-    (members, kinds)
-}
-
-fn triplex_group_ids() -> Vec<usize> {
-    vec![0, 0, 0, 1, 1, 1, 1, 1, 1, 2, 2, 2]
-}
-
-/// Canonical symmetric T-prism.
-fn canonical_prism() -> Vec<[f64; 3]> {
-    let s = 3.0_f64.sqrt() / 2.0;
-    let h = 1.0_f64;
-    vec![
-        [1.0, 0.0, h], [-0.5, s, h], [-0.5, -s, h],
-        [-0.5, -s, -h], [1.0, 0.0, -h], [-0.5, s, -h],
-    ]
-}
-
-/// Perturbed prism guess, with the fixed `PERTURB` displacement table scaled
-/// by `k` — lets the D3 grid below (see
-/// `free_surfaces_explicit_convergence_from_perturbed_guess_is_gauge_independent`)
-/// probe how far off-symmetry a starting guess can be while still converging.
-/// Mirrors `tensegrity_delta_combined_form_find.rs`'s helper of the same
-/// name/shape. `perturbed_prism_guess()` delegates here at `k = 1.0`, so the
-/// existing gauge-covariance golden above is byte-identical to before this
-/// generalisation.
-fn perturbed_prism_guess_scaled(k: f64) -> Vec<[f64; 3]> {
-    const PERTURB: [[f64; 3]; 6] = [
-        [0.0009, -0.0011, 0.0007],
-        [-0.0013, 0.0006, 0.0010],
-        [0.0012, 0.0008, -0.0009],
-        [-0.0007, -0.0012, 0.0011],
-        [0.0010, -0.0008, -0.0013],
-        [-0.0011, 0.0013, 0.0006],
-    ];
-    canonical_prism()
-        .iter()
-        .zip(PERTURB.iter())
-        .map(|(p, d)| [p[0] + k * d[0], p[1] + k * d[1], p[2] + k * d[2]])
-        .collect()
-}
-
-fn perturbed_prism_guess() -> Vec<[f64; 3]> {
-    perturbed_prism_guess_scaled(1.0)
-}
-
-/// Top {0,1,2} and bottom {3,4,5} membrane triangles.
-fn prism_surfaces() -> Vec<(usize, usize, usize)> {
-    vec![(0, 1, 2), (3, 4, 5)]
-}
-
-/// Closed-form COMBINED self-stress for the triplex + two equilateral membrane
-/// triangles (same derivation, same closed form, as
-/// `tensegrity_delta_combined_form_find.rs::analytic_combined_q`): every
-/// cotangent in the surface stencil is cot(60°) = 1/√3 at the symmetric
-/// realisation, so `Σ_T σ_T·L_T` collapses to a uniform extra edge weight
-/// `w = σ·cot(60°)/2 = σ/(2√3)` on the six horizontal cables, giving
-/// `q_strut = -(√3 + σ/2)`, `q_horiz = 1`, `q_vert = +(√3 + σ/2)`.
-fn analytic_combined_q(sigma: f64) -> Vec<f64> {
-    let a = 3.0_f64.sqrt() + sigma / 2.0;
-    vec![
-        -a, -a, -a, // struts
-        1.0, 1.0, 1.0, // top horizontals
-        1.0, 1.0, 1.0, // bottom horizontals
-        a, a, a, // verticals
-    ]
-}
+mod common;
+use common::{
+    analytic_combined_q, perturbed_prism_guess, perturbed_prism_guess_scaled, prism_surfaces,
+    triplex_group_ids, triplex_topology,
+};
 
 // ---------------------------------------------------------------------------
 // Gauge covariance golden
@@ -249,22 +172,21 @@ fn free_surfaces_explicit_convergence_is_gauge_independent() {
 /// with `q = analytic_combined_q(σ)` and σ itself both scaled by
 /// `λ ∈ {2^20, 2^-20}` against the `λ = 1` solve from the SAME guess. Per
 /// cell: `solve_at_gauge` already asserts `converged` and `nullity == 4`;
-/// this test additionally asserts bit-exact agreement (`max|Δx| == 0.0`,
-/// `assert_eq!`, no tolerance) between each scaled-λ solve and the λ=1 solve
-/// — legitimate because λ is a power of two, an exponent-field shift that
-/// faer's self-adjoint EVD reproduces exactly (identical eigenvectors,
-/// exactly λ-scaled eigenvalues).
+/// this test additionally asserts each scaled-λ solve agrees with the λ=1
+/// solve to within a tight relative bound (`max|Δx| <= 1e-12·max|x|`).
+/// Deliberately a bound rather than `assert_eq!`: λ a power of two makes the
+/// arithmetic bit-reproducible in principle (see `form_find_free.rs`'s unit
+/// tests for that bit-exact contract, and the fixed-point-start golden
+/// above), but pinning 18 bit-exact equalities through many third-party
+/// dense eigendecompositions here would make this e2e golden fragile to an
+/// unrelated faer change rather than a real gauge regression.
 ///
-/// MEASURED RED at two altitudes (task 6413 premise verification): (i)
-/// compile — the crate does not build at all today (E0425 at
-/// `form_find_free.rs:423`, `cannot find function all_node_equilibrium_residual`
-/// — task #6537 added this second (2b) call site after this task's other four
-/// commits were authored, and it still names the renamed-away function); (ii)
-/// semantic — with the pre-existing raw residual restored at :423 (crate
-/// builds, but the (2b) fix not yet applied) this test still fails,
-/// `Err(SearchDidNotConverge)` at λ=2^20 in every one of the 9 cells.
-/// MEASURED GREEN with the one-line (2b) fix: all 9 cells × the 2 non-unity λ
-/// converge with nullity 4 and max|Δx| exactly 0.0.
+/// MEASURED RED (task 6413 premise verification): with the pre-existing raw
+/// residual at the (2b) call site, `Err(SearchDidNotConverge)` at λ=2^20 in
+/// every one of the 9 cells — orders of magnitude away from the bound above,
+/// so no discriminating power is lost by relaxing it. MEASURED GREEN with
+/// the one-line (2b) fix: all 9 cells × the 2 non-unity λ converge with
+/// nullity 4 and max|Δx| exactly 0.0.
 #[test]
 fn free_surfaces_explicit_convergence_from_perturbed_guess_is_gauge_independent() {
     let (members, kinds) = triplex_topology();
@@ -286,15 +208,19 @@ fn free_surfaces_explicit_convergence_from_perturbed_guess_is_gauge_independent(
                     solve_at_gauge(&members, &kinds, &surfaces, &guess, &q_star, sigma, lambda);
 
                 let mut max_dx = 0.0_f64;
+                let mut max_x = 0.0_f64;
                 for (a, b) in r1.nodes.iter().zip(r.nodes.iter()) {
                     for axis in 0..3 {
                         max_dx = max_dx.max((a[axis] - b[axis]).abs());
+                        max_x = max_x.max(a[axis].abs());
                     }
                 }
-                assert_eq!(
-                    max_dx, 0.0,
-                    "[{cell}] {label} recovered geometry must be exactly \
-                     gauge-invariant: max|Δx| = {max_dx:e}",
+                const REL_BOUND: f64 = 1e-12;
+                assert!(
+                    max_dx <= REL_BOUND * max_x,
+                    "[{cell}] {label} recovered geometry must be gauge-invariant \
+                     to within a tight relative bound: max|Δx| = {max_dx:e}, \
+                     max|x| = {max_x:e}",
                 );
             }
         }
