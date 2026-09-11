@@ -784,6 +784,69 @@ assert "I3: refusal advises committing" \
 assert "I4: refusal does NOT advise stashing" \
     bash -c '! printf "%s\n" "$1" | grep -qi "stash"' _ "$ERR_OUT"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block J — superseded hash-generation prune (keep newest 2) (task 7426)
+#
+# scripts/refresh-warm-base.sh prunes superseded cargo hash-generations from
+# <partial>/debug/deps during the refresh, keeping only the newest 2 per
+# (stem, ext) group ordered by mtime. This reclaims the 96.6%-by-bytes prize
+# (extensionless test/bench binaries) on the live warm base while leaving a
+# fallback generation so a lane whose fingerprint misses the single newest
+# survivor does not rebuild cold.
+#
+# J1 — the core N=2 boundary on the extensionless case: three generations of
+# one unit prune to the newest two; a sibling two-generation group is left
+# entirely intact (the property that distinguishes keep-newest-2 from
+# keep-newest-1).
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block J: superseded hash-generation prune (keep newest 2) ---"
+
+J_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j-XXXXXX)"
+_TMPDIRS+=("$J_TMP")
+J_LANE="$(mk_git_advancing "$J_TMP")"
+J_ADV="$J_LANE/advancing"
+J_HEAD="$(git -C "$J_LANE" rev-parse HEAD)"
+mkdir -p "$J_ADV/debug/deps"
+
+# Three hash-generations of ONE unit, extensionless (the 96.6%-by-bytes case:
+# test/bench binaries), distinct non-empty content, distinct mtimes (oldest to
+# newest). No sleeps: mtimes are stamped explicitly via `touch -d` (T8).
+echo "gen1 content" > "$J_ADV/debug/deps/reify_kernel_tests-1111111111111111"
+echo "gen2 content" > "$J_ADV/debug/deps/reify_kernel_tests-2222222222222222"
+echo "gen3 content" > "$J_ADV/debug/deps/reify_kernel_tests-3333333333333333"
+touch -d '2026-01-01 00:00:00' "$J_ADV/debug/deps/reify_kernel_tests-1111111111111111"
+touch -d '2026-02-01 00:00:00' "$J_ADV/debug/deps/reify_kernel_tests-2222222222222222"
+touch -d '2026-03-01 00:00:00' "$J_ADV/debug/deps/reify_kernel_tests-3333333333333333"
+
+# A second unit with only TWO generations — both must survive untouched; this
+# is what distinguishes keep-newest-2 from keep-newest-1 (J1e).
+echo "other gen a" > "$J_ADV/debug/deps/reify_other_crate-aaaaaaaaaaaaaaaa"
+echo "other gen b" > "$J_ADV/debug/deps/reify_other_crate-bbbbbbbbbbbbbbbb"
+touch -d '2026-01-15 00:00:00' "$J_ADV/debug/deps/reify_other_crate-aaaaaaaaaaaaaaaa"
+touch -d '2026-02-15 00:00:00' "$J_ADV/debug/deps/reify_other_crate-bbbbbbbbbbbbbbbb"
+
+J_BASE="$J_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$J_ADV" "$J_BASE" --landed-commit "$J_HEAD"
+assert "J1a: refresh with superseded hash-generations exits 0" test "$RC" -eq 0
+
+J_GEN="$(readlink "$J_BASE")"
+J_DEPS="$J_GEN/debug/deps"
+
+assert "J1b: newest two generations survive (-2222..., -3333...)" \
+    bash -c 'test -f "$1/reify_kernel_tests-2222222222222222" && test -f "$1/reify_kernel_tests-3333333333333333"' _ "$J_DEPS"
+
+assert "J1c: oldest generation is pruned (-1111...)" \
+    bash -c 'test ! -f "$1/reify_kernel_tests-1111111111111111"' _ "$J_DEPS"
+
+assert "J1d: exactly 2 files remain in the reify_kernel_tests group" \
+    bash -c '[ "$(find "$1" -maxdepth 1 -type f -name "reify_kernel_tests-*" | wc -l)" -eq 2 ]' _ "$J_DEPS"
+
+assert "J1e: a 2-generation group is left entirely intact (keep-2, not keep-1)" \
+    bash -c 'test -f "$1/reify_other_crate-aaaaaaaaaaaaaaaa" && test -f "$1/reify_other_crate-bbbbbbbbbbbbbbbb"' _ "$J_DEPS"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately
 # kept as two independently-reported signals: TRASH2 can realistically only ever
