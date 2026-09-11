@@ -596,6 +596,48 @@ probes of the dense walk itself — Stage A onward, `d` ∈ [0.118, 0.182] mm �
 is an observation about where these samples fell, not a bound on where others might. (The
 block's three reproduction-gate runs sit outside that window by construction: the 20 mm
 rung reads 0.8565, deep in the coarse regime.)
+
+**The display-precision wall — and why this result clears it.** The achieved deviation is
+formatted `{achieved:.3e}` at `crates/reify-eval/src/tolerance_combine.rs:460`, which is
+the **only** production site that emits it (the other `.3e` occurrences under `crates/`
+are test assertions, and `reify check`'s usage line offers no `--json` or `--verbose`
+alternative: `reify check [--strict] [--purpose <name>=<binding>]... [--cfg
+<key=value|flag>]... <file>`). Four significant figures is therefore the whole apparatus,
+and it is a hard floor, not a convention this task could dial up.
+
+*Derived.* A reported `a` of `X.XXXe-4` bounds the true value to ± 0.5e-7 m, so a ratio
+carries ± 0.5e-7/`d` — about ± 4.2e-4 at `d` = 0.12 mm, ± 2.8e-4 at 0.18 mm. **Every ratio
+in §1 of this note inherits that bound.** Its sharpest consequence is that a ratio *read
+as 1.0000 cannot by itself settle anything*: Stage B's 0.144 mm and 0.145 mm rungs are
+each consistent with a true ratio anywhere in [0.99965, 1.00035), spanning 1. Had the walk
+stopped at Stage B, its two 1.0000 readings would have been exactly the ambiguous
+non-result this wall predicts, and reporting them as `K = 1` would have been an artifact
+of the formatter.
+
+*What breaks the tie is an asymmetry.* `d` carries **no** uncertainty — it is the
+*request*, an exact input, not a measurement — so only one side of the ratio is fuzzy. On
+a plateau `a` is fixed while `d` moves freely, so driving `d` down inside a plateau raises
+the ratio by an amount set by the **plateau's width**, which is exact, rather than by the
+display precision, which is not. That is why Stage C's bisection could reach a verdict
+where Stage B's grid could not: it converts a display-precision problem into a
+`d`-resolution problem, and `d` resolves arbitrarily.
+
+**Verdict: outcome (b) — the class's true `K` exceeds 1.** At `d` = 0.14386 mm the printed
+ratio is **1.0010**, and the display bound puts the true ratio in [1.000626, 1.001321), an
+interval lying entirely above 1 with its lower end 6 quanta clear of the boundary. This is
+not a marginal reading at the precision floor; it is above the ~1.0005 threshold at which
+the wall stops mattering, and it is corroborated by five further probes above 1 at two
+independent plateau edges (§ Stage C). *Measured*, and reproduced byte-identically on a
+second repetition.
+
+*Derived consequence.* `n` = ⌈log₂ `K`⌉ = **1** for this class, where §3.1 previously
+recorded 0 — the first class in this note for which the achieved deviation is shown to
+exceed the request at all. §1.1 and §3.1 are corrected accordingly.
+
+*And what remains open.* Outcome (b) settles the **direction** — `K` > 1 — because a lower
+bound above 1 settles it. It does not make 1.0010 a proven supremum: that number is still
+the best value found over the plateaus walked, and the true supremum can only be higher.
+The distinction matters downstream and is carried into §3.1 rather than rounded away.
 **Determinism and datum gates.** Every probe in this block passed the §0 Caveat-2 datum
 gate: the harness extracts `a` only from the `deviation <X> m` capture and emits a literal
 `NO-DATUM` token when that capture is empty, so a non-realization cannot enter a table as a
