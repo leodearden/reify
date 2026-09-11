@@ -228,6 +228,7 @@ function normalizeLeaves(rawArgs, warn) {
 // ---------------------------------------------------------------------------
 
 function leafLabelFor(leaf, idx) {
+    if (leaf == null) return `leaf-${idx}`;
     return typeof leaf === "string" ? leaf
         : (leaf.signal || leaf.text || `leaf-${idx}`);
 }
@@ -238,9 +239,11 @@ function leafLabelFor(leaf, idx) {
 //
 // A leaf whose Enumerate/Prove/Adversary/Synthesize stage raised is dropped to
 // null by the pipeline AT ITS ORIGINAL INDEX — leaf_verdicts stays the same
-// length as leaves, with a hole at every dropped position. The label for each
-// hole is therefore just that position's own index; no index arithmetic or
-// tail-position guessing is needed (or correct) to recover it.
+// length as leaves, with a hole at every dropped position. Each hole's own
+// position is therefore always knowable, so — unlike the pre-fix arithmetic —
+// no index guessing is needed to find it. The label AT that position is
+// leafLabelFor(leaves[j], j): the leaf's own signal/text, falling back to the
+// index only when the leaf has neither.
 // ---------------------------------------------------------------------------
 
 function droppedLeafLabels(leaves, leaf_verdicts) {
@@ -524,8 +527,22 @@ REQUIRED by the schema — report 0/0, because nothing was adjudicated):
     // (agent death, malformed output) is dropped to null by the pipeline and
     // filtered out above.  Treating 'could not evaluate' as PASS is a false
     // negative for a verification gate — block instead.
-    const dropped = leaves.length - filtered.length;
+    //
+    // `dropped` has two independent derivations — a length diff and a count of
+    // named holes — that agree as long as leaf_verdicts stays index-aligned
+    // with leaves (the documented pipeline contract above). Take the larger of
+    // the two so a broken contract (e.g. the pipeline compacting instead of
+    // nulling) still fails closed, and say so loudly rather than silently
+    // agreeing on a count while disagreeing on WHICH leaves were dropped.
     const droppedBlocking = droppedLeafLabels(leaves, leaf_verdicts);
+    const droppedByLengthDiff = leaves.length - filtered.length;
+    if (droppedByLengthDiff !== droppedBlocking.length) {
+        log(`WARNING: dropped-leaf accounting disagrees — length-diff says ` // eslint-disable-line no-undef
+            + `${droppedByLengthDiff}, named-holes says ${droppedBlocking.length}. `
+            + `leaf_verdicts may not be index-aligned with leaves; the pipeline `
+            + `contract this aggregation relies on may have changed.`);
+    }
+    const dropped = Math.max(droppedByLengthDiff, droppedBlocking.length);
 
     const anyBlocks = dropped > 0 || filtered.some(v => v.blocks);
     const allBlocking = [
@@ -597,6 +614,7 @@ REQUIRED by the schema — report 0/0, because nothing was adjudicated):
 
     return {
         blocks: anyBlocks,
+        blocking: allBlocking,
         leaf_verdicts: filtered,
         summary,
         disposition,
