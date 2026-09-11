@@ -230,11 +230,23 @@ fn value_eval_template_consumer_reads_minted_selector_finite_eval() {
 
     let cell_id = ValueCellId::new("R3eWidget", "peak");
     let value = result.values.get_or_undef(&cell_id);
-    assert!(
-        !matches!(value, Value::Undef),
-        "R3eWidget.peak must NOT be Value::Undef after Engine::eval — \
-         the same-pass consumer of an in-walk-minted selector must be \
-         re-evaluated after the mint fires; got: {value:?}"
+    // Concrete expected value, not just non-Undef (a wrong-but-non-Undef
+    // result would otherwise pass): `track`'s value is the bare `Real(1.0)`
+    // `seed` passthrough from `r3e_track_test`/`r3e_track_fn` — NOT a
+    // `Value::StructureInstance` — so `track_location_series` (trampoline.rs)
+    // always returns `None` for it, `deviation_series` is always empty, and
+    // the `f64::max` fold over it returns its `0.0` seed unconditionally.
+    // (`read_location_index` DOES resolve `loc`'s `Value::Selector` to index
+    // 0 — it does not reject it — but that resolved index is moot once
+    // `track_location_series` bails on a non-StructureInstance track.)
+    assert_eq!(
+        value,
+        Value::Real(0.0),
+        "R3eWidget.peak must resolve to the concrete peak_deviation_at \
+         result after Engine::eval (a same-pass consumer of an \
+         in-walk-minted selector must be re-evaluated after the mint \
+         fires), not a stale pre-mint Undef or any other wrong-but-non-Undef \
+         value"
     );
 }
 
@@ -256,11 +268,17 @@ fn value_eval_template_consumer_reads_minted_selector_finite_eval_cached() {
 
     let cell_id = ValueCellId::new("R3eWidget", "peak");
     let value = result.eval_result.values.get_or_undef(&cell_id);
-    assert!(
-        !matches!(value, Value::Undef),
-        "R3eWidget.peak must NOT be Value::Undef after Engine::eval_cached — \
-         the same-pass consumer of an in-walk-minted selector must be \
-         re-evaluated after the mint fires; got: {value:?}"
+    // Concrete expected value — see the `eval()` test above for the full
+    // trace of why `track` (a bare `Real`, not a `StructureInstance`) always
+    // makes `peak_deviation_at` yield exactly `Real(0.0)`.
+    assert_eq!(
+        value,
+        Value::Real(0.0),
+        "R3eWidget.peak must resolve to the concrete peak_deviation_at \
+         result after Engine::eval_cached (a same-pass consumer of an \
+         in-walk-minted selector must be re-evaluated after the mint \
+         fires), not a stale pre-mint Undef or any other wrong-but-non-Undef \
+         value"
     );
 }
 
@@ -291,11 +309,17 @@ fn value_eval_template_consumer_reads_minted_selector_finite_after_edit() {
 
     let cell_id = ValueCellId::new("R3eWidget", "peak");
     let value = edit_result.values.get_or_undef(&cell_id);
-    assert!(
-        !matches!(value, Value::Undef),
-        "R3eWidget.peak must NOT be Value::Undef after engine_edit — \
-         the same-pass consumer of an in-walk-minted selector must be \
-         re-evaluated after the mint fires; got: {value:?}"
+    // Concrete expected value — see the `eval()` test above for the full
+    // trace of why `track` (a bare `Real`, not a `StructureInstance`) always
+    // makes `peak_deviation_at` yield exactly `Real(0.0)`.
+    assert_eq!(
+        value,
+        Value::Real(0.0),
+        "R3eWidget.peak must resolve to the concrete peak_deviation_at \
+         result after engine_edit (a same-pass consumer of an \
+         in-walk-minted selector must be re-evaluated after the mint \
+         fires), not a stale pre-mint Undef or any other wrong-but-non-Undef \
+         value"
     );
 }
 
