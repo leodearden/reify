@@ -406,8 +406,15 @@ if [ -d "$_prune_deps" ]; then
     # a second time inside the awk program (SPOT).
     _prune_summary_file="$(mktemp)"
     _PRUNE_SUMMARY_FILE="$_prune_summary_file"  # let the EXIT trap reclaim it on a mid-prune failure
+    # Sort key = mtime DESCENDING (numeric, on the sub-second-precision %T@
+    # field — never lexical, or "...9" would sort before "...10"), then
+    # filename DESCENDING as an explicit tiebreak (-k3,3r; the %s byte-size
+    # field in between is never a sort key). LC_ALL=C pins the filename
+    # comparison so the tiebreak cannot shift with the ambient locale. This
+    # is the ONE place the ordering is expressed; the awk pass below just
+    # counts past the keep threshold over an already-ordered stream.
     find "$_prune_deps" -maxdepth 1 -type f -printf '%T@\t%s\t%f\n' \
-        | sort \
+        | LC_ALL=C sort -t "$(printf '\t')" -k1,1rn -k3,3r \
         | awk -F'\t' -v keep="$_PRUNE_KEEP_GENERATIONS" -v summary_file="$_prune_summary_file" '
             BEGIN { ORS = "\0" }
             {
@@ -428,6 +435,9 @@ if [ -d "$_prune_deps" ]; then
                 # either field, so this never collides (e.g. "foo"+"-bar.rlib"
                 # vs "foo-bar"+".rlib" stay distinct groups).
                 key = stem SUBSEP ext
+                # Input arrives newest-first per the `sort` above, so within
+                # each group list[key,1] is the newest generation, list[key,2]
+                # the next-newest, and so on.
                 n[key]++
                 list[key, n[key]] = fname
                 size[key, n[key]] = fsize
@@ -437,7 +447,9 @@ if [ -d "$_prune_deps" ]; then
                 total_bytes = 0
                 for (key in n) {
                     cnt = n[key]
-                    for (i = 1; i <= cnt - keep; i++) {
+                    # Positions 1..keep are the newest `keep` — kept. Anything
+                    # past the threshold is a victim.
+                    for (i = keep + 1; i <= cnt; i++) {
                         print list[key, i]
                         total_files++
                         total_bytes += size[key, i]
