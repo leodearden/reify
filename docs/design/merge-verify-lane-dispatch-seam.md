@@ -306,8 +306,10 @@ the seam; remediation, if any, is dark-factory's half.
 Speculative dispatch is **not** required to reproduce the failure, and
 provisioning more verify lanes does **not** fix it.
 
-`git.merge_spec_warm_lane_pool: true` has been live since task 4941
-(`dark-factory-orchestrator.yaml:627`). With it, `merge_liveness.py`'s
+`git.merge_spec_warm_lane_pool: true` has been live since task 4941 (in
+`dark-factory-orchestrator.yaml`, cited by KEY rather than line — that file
+is tracked in reify itself, so one grep re-checks it). With it,
+`merge_liveness.py`'s
 `lane_path, warm = await git_ops.acquire_spec_lane(merge_commit)` routes
 SPECULATIVE items to `_spec-N` lanes — **not** to `_merge-verify`. Only the
 serial-head path (`merge_liveness.py`, `await
