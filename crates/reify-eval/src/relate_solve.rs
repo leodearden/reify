@@ -684,10 +684,20 @@ fn global_float_diagnostic(floating: &[String]) -> Diagnostic {
 
 /// The un-consumable-relate-member [`Diagnostic`] (code
 /// [`DiagnosticCode::RelateExpectsRelation`], task 7050) for a `relate {}` member
-/// that is not itself a geometric relation call — e.g. a call to a user-defined
-/// `fn ... -> Relation` wrapper. `source` is the member's 0-based index into
+/// that type-checks to `Type::Relation` — so the compiler's own
+/// `check_relate_relations` accepted it — yet is not a direct geometric-relation
+/// call the solve can build a [`RelationInstance`] from (e.g. an alias to a
+/// `let`-bound Relation, an `if`/`match` yielding one, or a call to a user-defined
+/// `fn ... -> Relation` wrapper). `source` is the member's 0-based index into
 /// `scope.relations`; the message names its 1-based DECLARATION position, so it
 /// reads the way an author counts members in their own source.
+///
+/// Only call this for a `Type::Relation` member (see [`build_relation_instances`]):
+/// a member the compiler already flagged as NOT `Type::Relation` gets an accurate
+/// diagnostic there (`crates/reify-compiler/src/entity.rs`'s
+/// `check_relate_relations`), and must not also draw this one — a second,
+/// differently-worded `RelateExpectsRelation` diagnostic would contradict the first
+/// (anti-cascade, mirroring `check_relate_relations`'s own `Type::Error` skip).
 ///
 /// This replaces a SILENT drop: `build_relation_instances` cannot build a
 /// [`RelationInstance`] for such a member, so without this diagnostic it would
@@ -697,10 +707,11 @@ fn global_float_diagnostic(floating: &[String]) -> Diagnostic {
 fn unconsumable_relation_diagnostic(source: usize, auto_sub: &str) -> Diagnostic {
     let position = source + 1;
     Diagnostic::error(format!(
-        "relate-block member {position} on `{auto_sub}` is not a call to a geometric \
-         relation, so the relate-solve cannot verify it: every `relate {{}}` member \
-         must directly call a geometric relation — a function that RETURNS one \
-         (`fn ... -> Relation`) is not itself a relation call."
+        "relate-block member {position} on `{auto_sub}` is not a direct call to a \
+         geometric relation, so the relate-solve cannot verify it: every `relate \
+         {{}}` member must call a geometric relation directly — a name or \
+         expression that merely evaluates to one, such as a `fn ... -> Relation` \
+         wrapper, is not itself a relation call."
     ))
     .with_code(DiagnosticCode::RelateExpectsRelation)
 }
@@ -850,12 +861,7 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
                 &seed,
                 tol.solver_convergence(),
             );
-            solution.diagnostics.push(conflict_diagnostic(
-                &conflict,
-                scope,
-                &built,
-                &frame_unknown.sub,
-            ));
+            solution.diagnostics.push(conflict_diagnostic(&conflict, &built, &frame_unknown.sub));
             None
         }
         SolveResult::NoProgress { reason } => {
@@ -891,14 +897,12 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
             // produces. Otherwise it is a standalone assertion the geometry violates.
             // Both source-relation reads cross through `built.relation` — the ONLY
             // sanctioned crossing from an instance position back to `scope.relations`.
-            let r_ops = operand_refs(built.relation(scope, i));
+            let r_ops = operand_refs(built.relation(i));
             let colocated: Vec<usize> = partition
                 .driving
                 .iter()
                 .copied()
-                .filter(|&d| {
-                    operand_refs(built.relation(scope, d)).iter().any(|o| r_ops.contains(o))
-                })
+                .filter(|&d| operand_refs(built.relation(d)).iter().any(|o| r_ops.contains(o)))
                 .collect();
 
             if colocated.is_empty() {
@@ -915,7 +919,6 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
                 conflict.push(i);
                 solution.diagnostics.push(conflict_diagnostic(
                     &conflict,
-                    scope,
                     &built,
                     &frame_unknown.sub,
                 ));
@@ -1403,17 +1406,21 @@ pub fn solve_scopes(
 /// relations, paired with the `scope.relations` SOURCE index each was built from
 /// (task 7050).
 ///
-/// `build_relation_instances` skips a relate-block member that isn't a
-/// `CompiledExprKind::FunctionCall` (e.g. a call to a user-defined `fn ... ->
-/// Relation` wrapper — the solve cannot build an instance for it), so `instances`
-/// can be SHORTER than `scope.relations`: the two are addressed by DIFFERENT
-/// indices. `sources[i]` is the one place that mapping is recorded, and
-/// [`ScopeInstances::relation`] is the ONLY sanctioned crossing from an instance
-/// POSITION back to its source relation in `scope.relations` — no other code may
-/// index `scope.relations` with an instance position. Every skipped member's
-/// source index is recorded too ([`skipped`](Self::skipped)), so the skip itself
-/// is diagnosed rather than silently vanishing (task 7050, INV-SF-3).
-struct ScopeInstances {
+/// A relate-block member that is `Type::Relation` (the compiler accepted it) but
+/// isn't a `CompiledExprKind::FunctionCall` — e.g. a call to a user-defined
+/// `fn ... -> Relation` wrapper — is one the solve cannot build an instance for;
+/// `build_relation_instances` records its source index in [`skipped`](Self::skipped)
+/// instead, so `instances` can be SHORTER than `scope.relations` and the two are
+/// addressed by DIFFERENT indices. `sources[i]` is the one place that mapping is
+/// recorded, and [`ScopeInstances::relation`] is the ONLY sanctioned crossing from
+/// an instance POSITION back to its source relation in `scope.relations` — no other
+/// code may index `scope.relations` with an instance position. Borrowing `scope`
+/// here, rather than re-taking it as a parameter on every call, ties that crossing
+/// structurally to the ONE scope the pairing was built from, so a caller cannot
+/// pass a mismatched scope. A member the compiler already flagged as NOT
+/// `Type::Relation` is left to THAT diagnostic (anti-cascade) — it lands in neither
+/// `sources` nor `skipped`.
+struct ScopeInstances<'a> {
     /// The built instances, contiguous and in source order — the shape every
     /// `reify_constraints::relate_solve` entry point (`partition_driving_set`,
     /// `solve_frame`, `max_relation_residual`, `minimal_infeasible_subset`) expects
@@ -1422,18 +1429,21 @@ struct ScopeInstances {
     /// `sources[i]` is the `scope.relations` index `instances[i]` was built from.
     /// Strictly increasing in `i` (both are built from one forward walk of
     /// `scope.relations`), so an instance-position `max` and a `sources`-keyed
-    /// `max` over the same index set always agree.
+    /// `max` over the same index set always agree — `build_relation_instances`
+    /// debug-asserts both this length agreement and the strictly-increasing order.
     sources: Vec<usize>,
-    /// The `scope.relations` source indices of the members that yielded NO
-    /// instance (not a `FunctionCall`) — disjoint from `sources`, together
-    /// covering every index `0..scope.relations.len()` exactly once.
+    /// The `scope.relations` source indices of the `Type::Relation` members that
+    /// yielded NO instance (not a `FunctionCall`) — disjoint from `sources`. A
+    /// non-`Relation` member (already diagnosed by the compiler) is in neither list.
     skipped: Vec<usize>,
+    /// The scope every index above is relative to — see the struct doc.
+    scope: &'a RelateScope,
 }
 
-impl ScopeInstances {
+impl<'a> ScopeInstances<'a> {
     /// The source [`CompiledExpr`] relation `instances[i]` was built from.
-    fn relation<'a>(&self, scope: &'a RelateScope, i: usize) -> &'a CompiledExpr {
-        &scope.relations[self.sources[i]]
+    fn relation(&self, i: usize) -> &'a CompiledExpr {
+        &self.scope.relations[self.sources[i]]
     }
 }
 
@@ -1449,21 +1459,37 @@ impl ScopeInstances {
 /// is `pub(crate)`, so the e2e partition stands on its Jacobian-measured rank alone
 /// (the γ ΔDOF cross-check is exercised in the kernel-free constraints unit tests).
 ///
-/// See [`ScopeInstances`] for how a relate-block member this can't build an
-/// instance for is tracked rather than silently misaligning later reads.
-fn build_relation_instances(scope: &RelateScope, realized: &RealizedDatums) -> ScopeInstances {
+/// A member whose `result_type` isn't `Type::Relation` was already flagged by the
+/// compiler's `check_relate_relations` (`crates/reify-compiler/src/entity.rs`) with
+/// an accurate message — this pass leaves it alone (anti-cascade) rather than
+/// piling a second, potentially contradictory `RelateExpectsRelation` diagnostic on
+/// top. See [`ScopeInstances`] for how a `Type::Relation` member this still can't
+/// build an instance for is tracked rather than silently misaligning later reads.
+fn build_relation_instances<'a>(
+    scope: &'a RelateScope,
+    realized: &RealizedDatums,
+) -> ScopeInstances<'a> {
     let mut instances = Vec::new();
     let mut sources = Vec::new();
     let mut skipped = Vec::new();
     for (source, rel) in scope.relations.iter().enumerate() {
         let Some(instance) = relation_instance(rel, realized) else {
-            skipped.push(source);
+            // Only a `Type::Relation` member is this pass's business (see doc
+            // above) — the compiler already diagnosed anything else.
+            if rel.result_type == Type::Relation {
+                skipped.push(source);
+            }
             continue;
         };
         instances.push(instance);
         sources.push(source);
     }
-    ScopeInstances { instances, sources, skipped }
+    debug_assert_eq!(instances.len(), sources.len(), "instances/sources built in lockstep");
+    debug_assert!(
+        sources.windows(2).all(|w| w[0] < w[1]),
+        "sources must be strictly increasing (built from one forward walk)"
+    );
+    ScopeInstances { instances, sources, skipped, scope }
 }
 
 /// Build ONE relation's [`RelationInstance`] from its compiled expr + the realized
@@ -1631,19 +1657,14 @@ fn describe_operands(rel: &CompiledExpr) -> String {
 /// degrees — and never mentions the solver or libslvs (ζ's diagnostics speak
 /// geometry; θ #4388 renders the polished `reify explain` ledger / spans / badge from
 /// the same data).
-fn conflict_diagnostic(
-    conflict: &[usize],
-    scope: &RelateScope,
-    built: &ScopeInstances,
-    auto_sub: &str,
-) -> Diagnostic {
+fn conflict_diagnostic(conflict: &[usize], built: &ScopeInstances, auto_sub: &str) -> Diagnostic {
     // primary = newest-declared = greatest SOURCE index among the conflict set.
     let primary = conflict.iter().copied().max_by_key(|&i| built.sources[i]).unwrap_or(0);
     let mut others: Vec<usize> = conflict.iter().copied().filter(|&i| i != primary).collect();
     others.sort_unstable();
 
     let primary_name = &built.instances[primary].name;
-    let primary_subjects = describe_operands(built.relation(scope, primary));
+    let primary_subjects = describe_operands(built.relation(primary));
     let primary_demand = describe_demand(&built.instances[primary]);
 
     let mut msg = format!(
