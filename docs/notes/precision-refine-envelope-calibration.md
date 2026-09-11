@@ -983,6 +983,56 @@ done
 **A regime walk** — same loop, with a second `sed` expression rewriting the constructor,
 e.g. `s/torus\(1000mm, 100mm\)/torus(1000mm, 20mm)/`.
 
+**A dense parallel walk** (task #7128) — what the plain ladder above does not cover. Three
+things differ once probes run concurrently and the ratios are read to 4 dp:
+
+```bash
+F=tests/prd-gate/fixtures/pnrg_envelope_nurbs_surface.ri
+# (1) Each d needs its own PARENT dir.  The basename must stay pnrg_envelope_<class>.ri
+#     for the module-path rule above, so concurrent probes sharing one path clobber each
+#     other.  Per §0 Caveat 1 ratios are load-invariant and exact — only wall clocks are
+#     contended — so parallelism cannot corrupt the data, only its timings.  P=4; do not
+#     raise it on a box already oversubscribed.
+probe() {                                       # probe <d>  ->  "<d> <a|NO-DATUM>"
+  local d=$1 dir=/tmp/pnrg7128/$1 b; b=$(basename "$F")
+  mkdir -p "$dir"
+  sed -E "s/#precision\([^)]*\)/#precision($d)/" "$F" > "$dir/$b"
+  grep -q "^#precision($d)\$" "$dir/$b" || { echo "$d SED-FAILED"; return 1; }
+  local a
+  a=$(timeout 240 ./target/release/reify check "$dir/$b" 2>&1 \
+      | grep -oE 'deviation [0-9.e+-]+ m' | head -1 | awk '{print $2}')
+  # (2) NO-DATUM is a sentinel, and it is FATAL for the row — never a number, never 0.
+  #     A §0 Caveat-2 non-realization exits 0 and prints no deviation line, so a harness
+  #     that records the empty grep builds a table of confident false near-zero ratios.
+  echo "$d ${a:-NO-DATUM}"
+}
+export -f probe; export F
+printf '%s\n' 0.143mm 0.14386mm 0.144mm 0.145mm | xargs -P4 -I{} bash -c 'probe {}' \
+  | sort -g | python3 ratio.py
+```
+
+```python
+# ratio.py — (3) ratios via decimal.Decimal with ROUND_HALF_UP at 4 dp.
+# awk '%.4f' is WRONG here: it rounds exact ties DOWN.  The 0.8 mm rung is a live
+# example — 7.658e-4 / 8e-4 = 0.95725 exactly, which awk prints 0.9572 and this
+# prints 0.9573.  One such cell needed its own fix commit in task 6545.
+import sys
+from decimal import Decimal, ROUND_HALF_UP
+for line in sys.stdin:
+    d, a = line.split()
+    if a in ("NO-DATUM", "SED-FAILED"):
+        print(f"{d}\t{a}")
+        continue
+    ratio = Decimal(a) / (Decimal(d.rstrip("m")) / 1000)
+    print(f"{d}\t{a}\t{ratio.quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)}")
+```
+
+To pin a plateau edge rather than grid the interval, bisect `d` downward from a candidate
+to the largest `d` still returning the plateau's `a`, bracketing each edge with a probe on
+*both* sides that returns a different `a` — `a` is not monotone in `d` (§1.5), so an
+unbracketed bisection is unsound. ~10 probes pin one edge; a 1e-4 mm grid over
+[0.12, 0.18] mm would need ~600.
+
 **The cost split** (three vectors; the STL path must go to tmpfs to keep the write term
 bounded):
 
