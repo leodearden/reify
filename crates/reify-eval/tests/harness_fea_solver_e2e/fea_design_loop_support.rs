@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Shared wiring for the FEA-in-the-loop design-optimisation tests in this
-//! harness — the ones that drive a real `solve_elastic_static` inside a real
-//! `DimensionalSolver` cost loop.
+//! Shared wiring for the FEA-in-the-loop tests in this harness — the ones that
+//! drive `@optimized` compute dispatch inside a real `DimensionalSolver` cost
+//! loop, whether through a real `solve_elastic_static` or the edit-path guards'
+//! synthetic stand-in for it.
 //!
 //! Carries no `#[test]` of its own: it exists so the engine construction those
 //! tests need lives in ONE place rather than being copy-pasted per module. The
@@ -10,11 +11,6 @@
 //! INV-FEA-1 single-bundler rule, which `scripts/check-compute-trampoline-registration.sh`
 //! does NOT guard here (its SCOPE_PATHSPECS exclude `tests/`). A second hand-rolled
 //! copy is therefore a copy nothing keeps in step.
-//!
-//! `fea_in_the_loop_producer` (task #4880) also consumes [`fea_loop_engine`] and the
-//! two threshold constants below, rather than constructing its own copies (task #6607
-//! finished the migration task #2930 could not — that module was outside #2930's file
-//! scope).
 
 use reify_constraints::DimensionalSolver;
 use reify_eval::Engine;
