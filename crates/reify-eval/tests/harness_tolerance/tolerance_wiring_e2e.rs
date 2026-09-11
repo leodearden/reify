@@ -1227,7 +1227,7 @@ fn clear_realization_cache_public_api_resets_cache_for_production_callers() {
     );
 }
 
-/// Task 3103, step-3 — pins that the active tolerance scope survives
+/// Task 3103: pins that the active tolerance scope survives
 /// `build()`'s internal eval cycle so callers need no re-activation.
 ///
 /// The canonical user flow is `engine.eval → activate_purpose → engine.build`.
@@ -1284,7 +1284,7 @@ fn eval_then_activate_purpose_then_build_preserves_tolerance_scope_across_intern
     );
 }
 
-/// Task 3176, step-1 (RED) — pins that an anonymous realization (one whose
+/// Task 3176: pins that an anonymous realization (one whose
 /// `RealizationDecl.name == None`, constructed via
 /// `TopologyTemplateBuilder::realization(...)` rather than
 /// `realization_named(...)`) does NOT populate the `RealizationCache` even
@@ -1292,26 +1292,24 @@ fn eval_then_activate_purpose_then_build_preserves_tolerance_scope_across_intern
 ///
 /// **Why anonymous realizations exist in this test only**: the production
 /// compiler always emits `Some(name)` for every `RealizationDecl` it produces
-/// (see `crates/reify-compiler/src/types.rs:848-857`). `None` only arises
+/// (see `RealizationDecl::name` in `crates/reify-compiler/src/types.rs`). `None` only arises
 /// from the `TopologyTemplateBuilder::realization(...)` test-support helper,
 /// which is what this test uses to exercise the anonymous-realization code
 /// path.
 ///
-/// **The asymmetry this test exposes**: before the step-2 fix, the
-/// post-success cache-insert at `engine_build.rs` fires whenever
-/// `demanded_tol.is_some()`, regardless of `realization_name`. But the
-/// cache-hit short-circuit at the top of `execute_realization_ops` requires
-/// BOTH `demanded_tol.is_some()` AND `realization_name.is_some()`. The
-/// result: an anonymous realization populates the cache on the first build
-/// but can never be served from it. On subsequent builds the lookup
-/// short-circuit skips (no name), the kernel re-runs, and the post-success
-/// insert hits `ToleranceBucket::insert`'s partial-order rejection (the
-/// prior entry already satisfies). The cached slot is wasted and the op
-/// chain re-runs every build.
-///
-/// After the step-2 fix tightens the insert gate to match the lookup gate
+/// **The regression this test guards against**: the post-success
+/// cache-insert gate in `execute_realization_ops` matches the cache-hit
+/// short-circuit's lookup gate exactly — both require BOTH
+/// `demanded_tol.is_some()` AND `realization_name.is_some()`
 /// (`if let (Some(tol), Some(_name)) = (demanded_tol, realization_name)`),
-/// this test passes: the anonymous realization never populates the cache.
+/// so an anonymous realization never populates the cache. Were the two
+/// gates to drift apart again, an anonymous realization would populate the
+/// cache on the first build but could never be served from it: the lookup
+/// gate requires a name, so subsequent builds would skip the
+/// short-circuit, the kernel would re-run, and the post-success insert
+/// would hit `ToleranceBucket::insert`'s partial-order rejection (the
+/// prior entry already satisfies) — wasting the cached slot and re-running
+/// the op chain every build.
 ///
 /// Sequence:
 ///   (a) `engine.eval(&module)` → `engine.activate_purpose("manufacturing",
@@ -1375,8 +1373,8 @@ fn anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_re
     );
 
     // (c) Core assertion: the anonymous realization must NOT populate the cache.
-    // Before the step-2 fix the insert fires (demanded_tol.is_some() is
-    // sufficient); after the fix it is skipped (realization_name.is_none()).
+    // The insert gate requires realization_name.is_some() in addition to
+    // demanded_tol.is_some(), so it is skipped here (realization_name.is_none()).
     assert_eq!(
         engine.realization_cache().len(),
         0,
@@ -1403,7 +1401,7 @@ fn anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_re
     );
 }
 
-/// Task 3176, step-4 (GREEN-on-arrival) — end-to-end behavioral pin for the
+/// Task 3176: end-to-end behavioral pin for the
 /// `edit_param → build_snapshot` freshness contract.
 ///
 /// **What this pins**: the existing test
@@ -1420,11 +1418,11 @@ fn anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_re
 /// `build_snapshot` also does NOT call `eval()` (it builds from the existing
 /// snapshot). Additionally, task 3103 (commits cb5c58ff6a → c8e6fe56da) changed
 /// `Engine::eval()` to preserve `active_purpose_bindings` via `mem::take` +
-/// re-inject (engine_eval.rs:1162-1176), so bindings survive even when an
+/// re-inject (`Engine::eval` in `src/engine_eval.rs`), so bindings survive even when an
 /// internal eval round-trip fires. The lifecycle contract is "eval →
 /// activate_purpose → build requires no re-activation" (pinned by
-/// `eval_then_activate_purpose_then_build_preserves_tolerance_scope_across_internal_eval`
-/// at tolerance_wiring_e2e.rs). No re-activation is needed at any point in this
+/// `eval_then_activate_purpose_then_build_preserves_tolerance_scope_across_internal_eval`).
+/// No re-activation is needed at any point in this
 /// test.
 ///
 /// Sequence:
@@ -1480,7 +1478,7 @@ fn edit_param_followed_by_build_snapshot_re_executes_kernel_so_geometry_handle_i
         engine.realization_cache(),
     );
 
-    // (c) Edit a param — clears the realization cache (task 2874, step-18).
+    // (c) Edit a param — clears the realization cache (task 2874).
     // No re-activation needed: edit_param does not call eval(), and
     // build_snapshot does not call eval() either.
     let thickness_id = ValueCellId::new("MyDesign", "thickness");
