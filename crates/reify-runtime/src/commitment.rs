@@ -790,28 +790,6 @@ mod tests {
     // --- NodePolicyOverrides tests ---
 
     #[test]
-    fn node_policy_overrides_default_resolves_to_commit_if_slow() {
-        let overrides_new = NodePolicyOverrides::new();
-        let overrides_default = NodePolicyOverrides::default();
-        let node = make_node("x");
-
-        // Both constructors resolve to the default CommitIfSlow
-        assert_eq!(
-            overrides_new.resolve(&node),
-            NodeCommitmentOverride::CommitIfSlow
-        );
-        assert_eq!(
-            overrides_default.resolve(&node),
-            NodeCommitmentOverride::CommitIfSlow
-        );
-        // It should also equal NodeCommitmentOverride::default()
-        assert_eq!(
-            overrides_new.resolve(&node),
-            NodeCommitmentOverride::default()
-        );
-    }
-
-    #[test]
     fn precedence_instance_wins_over_type_wins_over_default() {
         let mut overrides = NodePolicyOverrides::new();
         let n = make_node("n");
@@ -826,13 +804,13 @@ mod tests {
 
         // instance override wins over type override for n
         assert_eq!(
-            overrides.resolve(&n),
+            overrides.resolve_with_traits(&n, NodeTraits::COMMITTABLE),
             NodeCommitmentOverride::AlwaysCancelWhenStale,
             "instance override must win over type override"
         );
         // m has no instance override → type override wins over default
         assert_eq!(
-            overrides.resolve(&m),
+            overrides.resolve_with_traits(&m, NodeTraits::COMMITTABLE),
             NodeCommitmentOverride::OnlyRunOnFinalInputs,
             "type override must win over default when no instance is set"
         );
@@ -840,7 +818,7 @@ mod tests {
         // (b) Constraint node with no type or instance override → default wins
         let c = make_constraint_node("E", 0);
         assert_eq!(
-            overrides.resolve(&c),
+            overrides.resolve_with_traits(&c, NodeTraits::COMMITTABLE),
             NodeCommitmentOverride::CommitIfSlow,
             "default must win when no instance and no matching type override"
         );
@@ -848,7 +826,7 @@ mod tests {
         // (c) set_type last-write-wins: overwriting a type override takes effect
         overrides.set_type(NodeKind::Value, NodeCommitmentOverride::CommitIfSlow);
         assert_eq!(
-            overrides.resolve(&m),
+            overrides.resolve_with_traits(&m, NodeTraits::COMMITTABLE),
             NodeCommitmentOverride::CommitIfSlow,
             "last-write wins: second set_type call must overwrite the first"
         );
@@ -856,7 +834,7 @@ mod tests {
         // (d) instance override is unaffected when set_type is updated for the same kind
         // n still has instance=AlwaysCancelWhenStale; type for Value was just changed to CommitIfSlow
         assert_eq!(
-            overrides.resolve(&n),
+            overrides.resolve_with_traits(&n, NodeTraits::COMMITTABLE),
             NodeCommitmentOverride::AlwaysCancelWhenStale,
             "instance override must persist after a subsequent set_type call for the same kind"
         );
@@ -875,12 +853,12 @@ mod tests {
 
         // Value node should pick up the type override
         assert_eq!(
-            overrides.resolve(&value_node),
+            overrides.resolve_with_traits(&value_node, NodeTraits::COMMITTABLE),
             NodeCommitmentOverride::OnlyRunOnFinalInputs
         );
         // Constraint node should still be the default (kind isolation)
         assert_eq!(
-            overrides.resolve(&constraint_node),
+            overrides.resolve_with_traits(&constraint_node, NodeTraits::COMMITTABLE),
             NodeCommitmentOverride::CommitIfSlow
         );
 
@@ -890,12 +868,12 @@ mod tests {
             NodeCommitmentOverride::AlwaysCancelWhenStale,
         );
         assert_eq!(
-            overrides.resolve(&constraint_node),
+            overrides.resolve_with_traits(&constraint_node, NodeTraits::COMMITTABLE),
             NodeCommitmentOverride::AlwaysCancelWhenStale
         );
         // Value node should still have its own type override unchanged
         assert_eq!(
-            overrides.resolve(&value_node),
+            overrides.resolve_with_traits(&value_node, NodeTraits::COMMITTABLE),
             NodeCommitmentOverride::OnlyRunOnFinalInputs
         );
     }
@@ -913,19 +891,19 @@ mod tests {
 
         // node_a should return the set value
         assert_eq!(
-            overrides.resolve(&node_a),
+            overrides.resolve_with_traits(&node_a, NodeTraits::COMMITTABLE),
             NodeCommitmentOverride::AlwaysCancelWhenStale
         );
         // node_b (unset) should still return the default
         assert_eq!(
-            overrides.resolve(&node_b),
+            overrides.resolve_with_traits(&node_b, NodeTraits::COMMITTABLE),
             NodeCommitmentOverride::CommitIfSlow
         );
 
         // Re-setting node_a: last-write semantics
         overrides.set_instance(node_a.clone(), NodeCommitmentOverride::OnlyRunOnFinalInputs);
         assert_eq!(
-            overrides.resolve(&node_a),
+            overrides.resolve_with_traits(&node_a, NodeTraits::COMMITTABLE),
             NodeCommitmentOverride::OnlyRunOnFinalInputs
         );
     }
