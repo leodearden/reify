@@ -2266,7 +2266,7 @@ fn body_adaptive_solve_runs_the_gmsh_realized_localized_lane() {
          realized mesh to the trampoline"
     );
 
-    // ── (3) NotConverged { MaxIterations } ────────────────────────────────────
+    // ── (3) NotConverged, dof ceiling did not bind, refine budget consumed ────
     let status = extract_field(result_val, "convergence_status")
         .expect("ElasticResult must carry a convergence_status field");
     match &status {
@@ -2283,13 +2283,37 @@ fn body_adaptive_solve_runs_the_gmsh_realized_localized_lane() {
                 .map(|(_, v)| v.clone())
                 .expect("NotConverged must carry a `reason` payload field");
             assert!(
-                matches!(&reason, Value::Enum { variant, .. } if variant == "MaxIterations"),
-                "the iteration cap (not max_dofs, not a stall) must be what terminated \
-                 the loop, got reason: {reason:?}"
+                matches!(&reason, Value::Enum { variant, .. }
+                    if variant == "MaxIterations" || variant == "Stalled"),
+                "the refinement budget — and not the accuracy target — must be what \
+                 terminated the loop. `MaxDofs` is deliberately EXCLUDED: this fixture \
+                 peaks at 1002 dofs against a 2_000_000 cap (~2000x), so the dof \
+                 ceiling provably did not bind, and `TargetMissed` is never emitted by \
+                 `run_adaptive_refinement` (see its `BudgetReason` docs). So \
+                 {{MaxIterations, Stalled}} is exactly 'budget exhausted, dof ceiling \
+                 did not bind'. WHICH of those two reports the stop is NOT claimed \
+                 here — see this test's doc comment. got reason: {reason:?}"
             );
         }
         other => panic!("convergence_status must be a Value::Enum, got {other:?}"),
     }
+
+    // The loop consumed its FULL refinement budget (`max_refinement_iterations:
+    // 1`). This — not which gate reported the stop — is the durable claim: it
+    // holds identically under BOTH terminal reasons and carries no numeric
+    // margin whatsoever. At iter 0 `prev_global` is `None`, so the stall gate is
+    // structurally unreachable; `0 >= 1` is false; and n_dofs is 360 against a
+    // 2_000_000 cap. Exactly one `refine` therefore always runs.
+    assert_eq!(
+        parse_localized_refine_count(&localized.message),
+        1,
+        "the loop must consume its full `max_refinement_iterations: 1` budget, i.e. \
+         exactly one mark-driven refine. A count of 0 would mean the budget \
+         terminated before any remesh ran and the adaptive lane did no adaptive \
+         work at all; a count above 1 would mean the fixture's budget is no longer \
+         what this test assumes. (diagnostic: {})",
+        localized.message
+    );
 
     // ── (4) a real global relative energy error ───────────────────────────────
     let gree = extract_field(result_val, "global_relative_energy_error")
