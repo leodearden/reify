@@ -23,9 +23,22 @@
 //! `tests/tensegrity_t2_stability.rs`. The two `src/` ones sit inside a
 //! `#[cfg(test)] mod tests` and are unreachable from another crate; the three
 //! `tests/` ones ARE reachable — reify-solver-elastic already dev-deps
-//! reify-test-support — and [`triplex_node_coords`] exists as the raw-coordinate
-//! seam they can collapse onto without any dependency change. Recording that
-//! surface here replaces the note the force-density gauge used to carry.
+//! reify-test-support — and `triplex_node_coords` below exists as the
+//! raw-coordinate seam they can collapse onto without any dependency change.
+//!
+//! Harness-side, three `harness_fea_solver_e2e` siblings still carry their own
+//! byte-identical private `node`/`length` pair — `tensegrity_membrane_load.rs`,
+//! `tensegrity_pavilion_e2e.rs` and `tensegrity_t1a_form_find.rs` — as does the
+//! `#[cfg(test)] mod tests` of `crates/reify-stdlib/src/tensegrity.rs`, which
+//! already dev-deps this crate. Each pair is [`crate::values::point3`] /
+//! [`crate::values::meters`] re-spelled, so every one of those collapses is
+//! mechanical; they are unfinished only because those files lie outside the
+//! locked scope of the change that created this module, which collapsed the
+//! gauge, T1b, δ and T3b copies. The three harness ones are tracked as #7286.
+//!
+//! Recording both surfaces here replaces the note the force-density gauge used
+//! to carry, which tracked that harness-side `node`/`length` family alongside
+//! the fixture itself.
 //!
 //! The two axes on which the three harness copies genuinely differed are
 //! preserved rather than normalised away, because both are load-bearing:
@@ -87,17 +100,18 @@ const TRIPLEX_TOP_Z: f64 = 1.0;
 /// top triangle (nodes 0, 1, 2) at [`TRIPLEX_TOP_Z`] and azimuth 120°·i, bottom
 /// triangle (nodes 3, 4, 5) at `bottom_z` and azimuth 120°·i + 30°.
 ///
-/// SEAM, kept `pub` deliberately even though nothing outside this crate calls it
-/// yet: reify-solver-elastic's five `canonical_prism()` copies are exactly this
-/// value in exactly this `Vec<[f64; 3]>` shape (see the module header), and its
-/// three `tests/` copies can collapse onto this function without a dependency
-/// change. [`triplex_nodes`] is the `Value`-form counterpart for consumers that
-/// need dimensioned coordinates.
+/// SEAM for reify-solver-elastic's five `canonical_prism()` copies, which are
+/// exactly this value in exactly this `Vec<[f64; 3]>` shape (see the module
+/// header); its three `tests/` copies can collapse onto this function without a
+/// dependency change. PRIVATE until that lands: widening it costs nothing in the
+/// diff that brings the first caller, and until then a `pub` with no consumer
+/// only enlarges the interface this crate carries into reify-audit's build
+/// graph. `triplex_nodes` is the `Value`-form counterpart.
 ///
 /// `bottom_z` is a parameter, not a constant, because the pre-existing fixtures
 /// genuinely disagreed on it — gauge and T1b use `0.0`, δ uses `-1.0`. Silently
 /// picking one would change the geometry a solve converges from.
-pub fn triplex_node_coords(bottom_z: f64) -> Vec<[f64; 3]> {
+fn triplex_node_coords(bottom_z: f64) -> Vec<[f64; 3]> {
     // `.to_radians()` is `self * (PI / 180.0)`; the contract tests below pin
     // that it agrees bit-for-bit with the explicit `* (PI / 180.0)` spelling the
     // superseded T1b/δ copies used, so this collapse is not a numerical change.
@@ -114,12 +128,13 @@ pub fn triplex_node_coords(bottom_z: f64) -> Vec<[f64; 3]> {
 /// [`crate::values::point3`], so each node is a `Value::Point` of three
 /// LENGTH-dimensioned SI-metre `Value::Scalar`s.
 ///
-/// SEAM, kept `pub` deliberately: today every consuming suite goes through
-/// [`canonical_triplex_tensegrity`] / [`tall_triplex_tensegrity`] and needs only
-/// the assembled structure, but a suite that wants the bare node list — to
-/// perturb it, or to build a non-`Tensegrity` structure over the same geometry —
-/// should reach for this rather than re-deriving the ring math.
-pub fn triplex_nodes(bottom_z: f64) -> Vec<Value> {
+/// SEAM, private for the same reason as `triplex_node_coords`: every consuming
+/// suite today goes through [`canonical_triplex_tensegrity`] /
+/// [`tall_triplex_tensegrity`] and needs only the assembled structure. A suite
+/// that wants the bare node list — to perturb it, or to build a non-`Tensegrity`
+/// structure over the same geometry — should reach for this rather than
+/// re-deriving the ring math, and widen it here in that same diff.
+fn triplex_nodes(bottom_z: f64) -> Vec<Value> {
     triplex_node_coords(bottom_z).into_iter().map(|[x, y, z]| point3(x, y, z)).collect()
 }
 
@@ -203,12 +218,21 @@ pub fn tall_triplex_tensegrity(surfaces: Option<Value>) -> Value {
     triplex_tensegrity_at(-1.0, surfaces)
 }
 
-/// Both membrane end caps of the triplex: the top cap over nodes 0, 1, 2 and the
-/// bottom cap over nodes 3, 4, 5. The top cap spans the three FREE nodes of the
-/// anchored solve, so it genuinely enters `D_ff` rather than sitting inertly on
-/// the anchored side.
+/// Both membrane end caps of the triplex, as raw index rows: the top cap over
+/// nodes 0, 1, 2 and the bottom cap over nodes 3, 4, 5 (= [`TRIPLEX_ANCHORS`]).
+/// The top cap spans the three FREE nodes of the anchored solve, so it genuinely
+/// enters `D_ff` rather than sitting inertly on the anchored side.
+///
+/// A const, not just the lowered [`triplex_caps`] `Value`, so that a consumer's
+/// per-surface array can be sized `[_; TRIPLEX_CAPS.len()]` — then adding a cap
+/// here is a compile error at that call site rather than a length mismatch
+/// surfacing from inside the solver at runtime.
+pub const TRIPLEX_CAPS: [[i64; 3]; 2] = [[0, 1, 2], [3, 4, 5]];
+
+/// [`TRIPLEX_CAPS`] lowered to the nested-`Int`-list form the `surfaces` field
+/// takes.
 pub fn triplex_caps() -> Value {
-    index_lists(&[[0, 1, 2], [3, 4, 5]])
+    index_lists(&TRIPLEX_CAPS)
 }
 
 /// Group ids in [`TRIPLEX_MEMBERS`] order: the three struts to group 0, the six
@@ -542,35 +566,173 @@ mod tests {
         assert_eq!(tall_fields.get("surfaces"), Some(&triplex_caps()));
     }
 
-    /// The remaining literal goldens, in one place. Each is a value the
-    /// superseded copies agreed on byte-for-byte, so this is the lockstep-edit
-    /// site if the fixture is ever deliberately changed.
+    /// The scalar pins of the index space. These three are literals restated, and
+    /// that is all they can be — there is nothing to derive a chosen count from.
+    /// The member ORDER, by contrast, is pinned relationally by
+    /// `canonical_triplex_tensegrity_lowers_the_kernel_topology`, and the grouping
+    /// and caps by the three tests below, so none of those is restated here.
     #[test]
     fn triplex_fixture_goldens() {
         assert_eq!(TRIPLEX_STRUTS, 3, "the first three members are the struts");
         assert_eq!(TRIPLEX_ANCHORS, [3i64, 4, 5], "the bottom triangle is the anchored set");
+        assert_eq!(TRIPLEX_MEMBERS.len(), 12, "3 struts + 9 cables");
+    }
+
+    /// A `Value::List` of `Value::Int`, strictly. The `Int` variant is part of the
+    /// contract rather than incidental: the kernel reads group ids as integers and
+    /// indexes the seed list by them.
+    fn int_list(v: &Value, what: &str) -> Vec<i64> {
+        match v {
+            Value::List(items) => items
+                .iter()
+                .map(|item| match item {
+                    Value::Int(i) => *i,
+                    other => panic!("{what}: expected a Value::Int entry, got {other:?}"),
+                })
+                .collect(),
+            other => panic!("{what}: expected a Value::List, got {other:?}"),
+        }
+    }
+
+    /// A `Value::List` of `Value::Real`, strictly: seed ratios are DIMENSIONLESS
+    /// relative ratios, so a dimensioned `Value::Scalar` here would be a different
+    /// input to the free-standing solve and must not pass silently.
+    fn real_list(v: &Value, what: &str) -> Vec<f64> {
+        match v {
+            Value::List(items) => items
+                .iter()
+                .map(|item| match item {
+                    Value::Real(r) => *r,
+                    other => panic!("{what}: expected a Value::Real entry, got {other:?}"),
+                })
+                .collect(),
+            other => panic!("{what}: expected a Value::List, got {other:?}"),
+        }
+    }
+
+    /// How [`triplex_group_ids`] and [`triplex_seeds`] have to fit together for the
+    /// free-standing solve to be well posed: one id per member, ids that are exactly
+    /// the seed list's own index range, and the strut/cable sign contract the gauge
+    /// re-asserts downstream on the solved force densities.
+    #[test]
+    fn triplex_group_ids_index_the_seeds_and_honour_the_sign_contract() {
+        let groups = int_list(&triplex_group_ids(), "triplex_group_ids");
+        let seeds = real_list(&triplex_seeds(), "triplex_seeds");
+
         assert_eq!(
+            groups.len(),
             TRIPLEX_MEMBERS.len(),
-            12,
-            "3 struts + 9 cables; the order itself is pinned by \
-             canonical_triplex_tensegrity_lowers_the_kernel_topology"
+            "one group id per member, in TRIPLEX_MEMBERS order"
+        );
+
+        let mut distinct = groups.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(
+            distinct,
+            (0..seeds.len() as i64).collect::<Vec<_>>(),
+            "group ids must be exactly 0..triplex_seeds().len(): the kernel indexes the seed \
+             list BY group id, so a gap or an out-of-range id is a dimension error there"
+        );
+
+        for (m, &g) in groups.iter().enumerate() {
+            let (j, k) = TRIPLEX_MEMBERS[m];
+            let seed = seeds[g as usize];
+            let (kind, sign_ok) =
+                if m < TRIPLEX_STRUTS { ("strut", seed < 0.0) } else { ("cable", seed > 0.0) };
+            assert!(
+                sign_ok,
+                "{kind} {m} ({j},{k}) is in group {g}, whose seed is {seed}: struts must seed \
+                 compressive (< 0) and cables tensile (> 0)"
+            );
+        }
+    }
+
+    /// A group is a SYMMETRY class of the prism, which is what fixes WHICH members
+    /// share an id — the counting above cannot tell a horizontals/verticals swap from
+    /// the real grouping. Congruent members have equal length, and the three classes
+    /// have pairwise different lengths, so the partition is recoverable from the
+    /// geometry alone.
+    #[test]
+    fn triplex_groups_are_the_symmetry_classes_of_the_prism() {
+        let groups = int_list(&triplex_group_ids(), "triplex_group_ids");
+        let coords = triplex_node_coords(CANONICAL_BOTTOM_Z);
+        let member_len = |m: usize| {
+            let (j, k) = TRIPLEX_MEMBERS[m];
+            let (a, b) = (coords[j], coords[k]);
+            ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+        };
+
+        let mut classes = groups.clone();
+        classes.sort_unstable();
+        classes.dedup();
+        let representative: Vec<f64> = classes
+            .iter()
+            .map(|&g| {
+                let first = groups.iter().position(|&x| x == g).expect("class is inhabited");
+                member_len(first)
+            })
+            .collect();
+
+        for (m, &g) in groups.iter().enumerate() {
+            let want = representative[classes.iter().position(|&c| c == g).unwrap()];
+            let (j, k) = TRIPLEX_MEMBERS[m];
+            assert!(
+                (member_len(m) - want).abs() < 1e-12,
+                "member {m} ({j},{k}) is in group {g} but its length {} differs from that \
+                 group's {want} — members sharing a force density must be congruent",
+                member_len(m)
+            );
+        }
+
+        for (a, la) in representative.iter().enumerate() {
+            for (b, lb) in representative.iter().enumerate().skip(a + 1) {
+                assert!(
+                    (la - lb).abs() > 1e-9,
+                    "groups {} and {} are both {la}-long, so the grouping does not distinguish \
+                     two genuinely different member families",
+                    classes[a],
+                    classes[b]
+                );
+            }
+        }
+    }
+
+    /// The caps are the prism's two RINGS, read off the geometry instead of restated:
+    /// they partition the node set, each lies in one z plane, cap 0 is the FREE top
+    /// ring (so the cap enters `D_ff` rather than sitting inertly on the anchored
+    /// side) and cap 1 is exactly the anchored set.
+    #[test]
+    fn triplex_caps_are_the_prisms_two_rings() {
+        let coords = triplex_node_coords(CANONICAL_BOTTOM_Z);
+
+        let mut covered: Vec<i64> = TRIPLEX_CAPS.concat();
+        covered.sort_unstable();
+        assert_eq!(
+            covered,
+            (0..coords.len() as i64).collect::<Vec<_>>(),
+            "the caps must partition the node set — every node in exactly one ring"
+        );
+
+        for cap in TRIPLEX_CAPS {
+            let z = coords[cap[0] as usize][2];
+            for &n in &cap {
+                assert_bits_eq(
+                    coords[n as usize][2],
+                    z,
+                    &format!("cap {cap:?}: node {n} must share the ring's z plane"),
+                );
+            }
+        }
+
+        assert_bits_eq(
+            coords[TRIPLEX_CAPS[0][0] as usize][2],
+            TRIPLEX_TOP_Z,
+            "cap 0 must be the TOP ring: its three nodes are the free ones of the anchored solve",
         );
         assert_eq!(
-            triplex_caps(),
-            index_lists(&[[0, 1, 2], [3, 4, 5]]),
-            "top cap over nodes 0,1,2 and bottom cap over nodes 3,4,5"
-        );
-        assert_eq!(
-            triplex_group_ids(),
-            Value::List(
-                [0i64, 0, 0, 1, 1, 1, 1, 1, 1, 2, 2, 2].into_iter().map(Value::Int).collect()
-            ),
-            "3 struts then 6 horizontals then 3 verticals, in TRIPLEX_MEMBERS order"
-        );
-        assert_eq!(
-            triplex_seeds(),
-            Value::List(vec![Value::Real(-1.0), Value::Real(1.0), Value::Real(1.0)]),
-            "one seed per group, in group-id order: compressive, tensile, tensile"
+            TRIPLEX_CAPS[1], TRIPLEX_ANCHORS,
+            "cap 1 must be the bottom ring, which is exactly the anchored set"
         );
     }
 }

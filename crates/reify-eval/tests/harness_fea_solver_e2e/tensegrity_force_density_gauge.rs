@@ -31,14 +31,17 @@ use reify_test_support::point3;
 // ONE definition, in `reify_test_support::tensegrity_fixtures`. This suite uses the
 // unit-height variant, `canonical_triplex_tensegrity`.
 use reify_test_support::tensegrity_fixtures::{
-    TRIPLEX_ANCHORS, TRIPLEX_MEMBERS, TRIPLEX_STRUTS, canonical_triplex_tensegrity, index_lists,
-    tensegrity, triplex_caps,
+    TRIPLEX_ANCHORS, TRIPLEX_CAPS, TRIPLEX_MEMBERS, TRIPLEX_STRUTS, canonical_triplex_tensegrity,
+    index_lists, tensegrity, triplex_caps,
 };
 
-/// Base force densities in `TRIPLEX_MEMBERS` order; signs honour the hard contract
-/// (struts q < 0, cables q > 0). Verticals are 2, not 1, on purpose: at q = 1
-/// everywhere `D_ff` has zero row sums and is exactly singular.
-const BASE_Q: [f64; 12] = [-1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0];
+/// Base force densities in `TRIPLEX_MEMBERS` order — one per member, which is why
+/// the length is taken from that list rather than written out: a member added there
+/// then fails to compile HERE instead of reaching the solver as a length mismatch.
+/// Signs honour the hard contract (struts q < 0, cables q > 0). Verticals are 2, not
+/// 1, on purpose: at q = 1 everywhere `D_ff` has zero row sums and is exactly singular.
+const BASE_Q: [f64; TRIPLEX_MEMBERS.len()] =
+    [-1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0];
 
 /// The line-only triplex prism — the canonical geometry carrying a PRESENT but
 /// EMPTY `surfaces` field, which is what this suite has always handed the
@@ -47,8 +50,13 @@ fn prism_tensegrity() -> Value {
     canonical_triplex_tensegrity(Some(Value::List(vec![])))
 }
 
+/// The tent's triangle fan: one triangle per anchored corner, each hinged on the
+/// free interior node 0. A const so `solve_membrane`'s per-surface σ array is sized
+/// from it rather than from a second literal that has to agree by hand.
+const TENT_TRIS: [[i64; 3]; 4] = [[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1]];
+
 /// "Tent" membrane: 4 anchored corners plus one free off-plane interior node,
-/// fanned by 4 triangles, no struts/cables. Mirrors the kernel's `tent_membrane()`
+/// fanned by [`TENT_TRIS`], no struts/cables. Mirrors the kernel's `tent_membrane()`
 /// golden — reused solely to reach the NON-EMPTY `surface_stresses` echo branch.
 /// Stays local because it is that golden rather than the triplex; only its
 /// assembly is shared.
@@ -60,7 +68,7 @@ fn membrane_tensegrity() -> Value {
         point3(-1.0, 0.0, 0.0), // 3: anchor
         point3(0.0, -1.0, 0.0), // 4: anchor
     ];
-    let tris = index_lists(&[[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1]]);
+    let tris = index_lists(&TENT_TRIS);
     tensegrity(nodes, Value::List(vec![]), Value::List(vec![]), Some(tris))
 }
 
@@ -102,7 +110,8 @@ fn solve_at(q: &[f64]) -> PersistentMap<String, Value> {
 /// Anchored SURFACES solve of the tent membrane at one isotropic σ per triangle
 /// (no struts/cables ⇒ an empty `force_densities`).
 fn solve_membrane(sigma: f64) -> PersistentMap<String, Value> {
-    let inputs = [membrane_tensegrity(), reals(&[]), ints(1..=4), reals(&[sigma; 4])];
+    let inputs =
+        [membrane_tensegrity(), reals(&[]), ints(1..=4), reals(&[sigma; TENT_TRIS.len()])];
     solve_with(reify_eval::compute_targets::form_find::solve_form_find_trampoline, &inputs)
 }
 
@@ -117,7 +126,7 @@ fn solve_combined(q: &[f64], sigma: f64) -> PersistentMap<String, Value> {
         canonical_triplex_tensegrity(Some(triplex_caps())),
         reals(q),
         ints(TRIPLEX_ANCHORS),
-        reals(&[sigma; 2]),
+        reals(&[sigma; TRIPLEX_CAPS.len()]),
     ];
     solve_with(reify_eval::compute_targets::form_find::solve_form_find_trampoline, &inputs)
 }
