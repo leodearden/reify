@@ -756,13 +756,16 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
     // datums already encode the target, so identity is the correct witness here.
     let seed = Pose::identity();
 
-    // 1. Build a RelationInstance per relation over the realized datums.
-    let instances = build_relation_instances(scope, realized);
+    // 1. Build a RelationInstance per relation over the realized datums, paired
+    //    with the source relation each was built from — the ONLY crossing back to
+    //    `scope.relations` (see `ScopeInstances`).
+    let built = build_relation_instances(scope, realized);
+    let instances = &built.instances;
 
     // 2. Partition at the witness into driving + redundant; the rank-revealing
     //    tolerance is tied to the solver-convergence tol (design §4).
     let partition =
-        partition_driving_set(&instances, &frame_unknown, &seed, tol.solver_convergence());
+        partition_driving_set(instances, &frame_unknown, &seed, tol.solver_convergence());
 
     let mut solution = RelateSolution {
         spent: partition.spent,
@@ -805,7 +808,7 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
             // geometry, never libslvs internals. No placement, so the remainder is
             // not verified.
             let conflict = minimal_infeasible_subset(
-                &instances,
+                instances,
                 &partition.driving,
                 &frame_unknown,
                 &seed,
@@ -814,7 +817,7 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
             solution.diagnostics.push(conflict_diagnostic(
                 &conflict,
                 scope,
-                &instances,
+                &built,
                 &frame_unknown.sub,
             ));
             None
@@ -850,13 +853,15 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
             // a lone assertion. Render the minimal conflict set + geometric magnitudes
             // + newest-primary (step-16), the same diagnostic an infeasible driving set
             // produces. Otherwise it is a standalone assertion the geometry violates.
-            let r_ops = operand_refs(&scope.relations[i]);
+            // Both source-relation reads cross through `built.relation` — the ONLY
+            // sanctioned crossing from an instance position back to `scope.relations`.
+            let r_ops = operand_refs(built.relation(scope, i));
             let colocated: Vec<usize> = partition
                 .driving
                 .iter()
                 .copied()
                 .filter(|&d| {
-                    operand_refs(&scope.relations[d]).iter().any(|o| r_ops.contains(o))
+                    operand_refs(built.relation(scope, d)).iter().any(|o| r_ops.contains(o))
                 })
                 .collect();
 
@@ -875,7 +880,7 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
                 solution.diagnostics.push(conflict_diagnostic(
                     &conflict,
                     scope,
-                    &instances,
+                    &built,
                     &frame_unknown.sub,
                 ));
             }
@@ -1358,6 +1363,38 @@ pub fn solve_scopes(
         .collect()
 }
 
+/// The [`RelationInstance`]s [`build_relation_instances`] builds from a scope's
+/// relations, paired with the `scope.relations` SOURCE index each was built from
+/// (task 7050).
+///
+/// `build_relation_instances` skips a relate-block member that isn't a
+/// `CompiledExprKind::FunctionCall` (e.g. a call to a user-defined `fn ... ->
+/// Relation` wrapper — the solve cannot build an instance for it), so `instances`
+/// can be SHORTER than `scope.relations`: the two are addressed by DIFFERENT
+/// indices. `sources[i]` is the one place that mapping is recorded, and
+/// [`ScopeInstances::relation`] is the ONLY sanctioned crossing from an instance
+/// POSITION back to its source relation in `scope.relations` — no other code may
+/// index `scope.relations` with an instance position.
+struct ScopeInstances {
+    /// The built instances, contiguous and in source order — the shape every
+    /// `reify_constraints::relate_solve` entry point (`partition_driving_set`,
+    /// `solve_frame`, `max_relation_residual`, `minimal_infeasible_subset`) expects
+    /// and returns POSITIONS into.
+    instances: Vec<RelationInstance>,
+    /// `sources[i]` is the `scope.relations` index `instances[i]` was built from.
+    /// Strictly increasing in `i` (both are built from one forward walk of
+    /// `scope.relations`), so an instance-position `max` and a `sources`-keyed
+    /// `max` over the same index set always agree.
+    sources: Vec<usize>,
+}
+
+impl ScopeInstances {
+    /// The source [`CompiledExpr`] relation `instances[i]` was built from.
+    fn relation<'a>(&self, scope: &'a RelateScope, i: usize) -> &'a CompiledExpr {
+        &scope.relations[self.sources[i]]
+    }
+}
+
 /// Build a [`RelationInstance`] per relation in `scope`, resolving each operand to
 /// its realized datum (or trailing scalar magnitude) for the partition / solve.
 ///
@@ -1369,27 +1406,29 @@ pub fn solve_scopes(
 /// order-sensitive). `nominal_delta_dof` is `None`: `reify_compiler::relation_delta_dof`
 /// is `pub(crate)`, so the e2e partition stands on its Jacobian-measured rank alone
 /// (the γ ΔDOF cross-check is exercised in the kernel-free constraints unit tests).
-fn build_relation_instances(
-    scope: &RelateScope,
-    realized: &RealizedDatums,
-) -> Vec<RelationInstance> {
-    scope
-        .relations
-        .iter()
-        .filter_map(|rel| relation_instance(rel, realized))
-        .collect()
+///
+/// See [`ScopeInstances`] for how a relate-block member this can't build an
+/// instance for is tracked rather than silently misaligning later reads.
+fn build_relation_instances(scope: &RelateScope, realized: &RealizedDatums) -> ScopeInstances {
+    let mut instances = Vec::new();
+    let mut sources = Vec::new();
+    for (source, rel) in scope.relations.iter().enumerate() {
+        let Some(instance) = relation_instance(rel, realized) else {
+            continue;
+        };
+        instances.push(instance);
+        sources.push(source);
+    }
+    ScopeInstances { instances, sources }
 }
 
 /// Build ONE relation's [`RelationInstance`] from its compiled expr + the realized
 /// datums, or `None` when the expr is not a relation call.
 ///
-/// Extracted from [`build_relation_instances`] (behaviour-preserving) so the
-/// zero-auto static arm can walk `scope.relations` with `enumerate()` and keep each
-/// entry's SOURCE index. That matters: `build_relation_instances` `filter_map`s
-/// non-`FunctionCall` members away, so its output can be SHORTER than
-/// `scope.relations` and the two are not index-aligned in general. The auto-ful path
-/// indexes both by the same `i`; that is a latent bug there, filed separately, and
-/// deliberately not changed here.
+/// Both [`build_relation_instances`] and the zero-auto static arm walk
+/// `scope.relations` with `enumerate()` through this, keeping each entry's SOURCE
+/// index: a `None` here means the instance list is SHORTER than `scope.relations`,
+/// so the two are never index-aligned by position.
 fn relation_instance(rel: &CompiledExpr, realized: &RealizedDatums) -> Option<RelationInstance> {
     let CompiledExprKind::FunctionCall { function, args } = &rel.kind else {
         return None;
@@ -1538,10 +1577,12 @@ fn describe_operands(rel: &CompiledExpr) -> String {
 
 /// Build the geometric conflict [`Diagnostic`] for a minimal conflict set (ζ step-16).
 ///
-/// `conflict` are the source indices (into `scope.relations` / `instances`) of the
-/// mutually-inconsistent relations. The NEWEST-declared member — the highest source
-/// index, since the flat relation set preserves source/declaration order — is flagged
-/// as the **primary** conflict (PRD §7.1: newest member is the likely culprit). The
+/// `conflict` are INSTANCE positions (into `built.instances` — what
+/// [`minimal_infeasible_subset`] and the redundant-remainder `colocated` check both
+/// return) of the mutually-inconsistent relations. The NEWEST-declared member — the
+/// greatest SOURCE index ([`ScopeInstances::relation`]'s `built.sources`), since the
+/// flat relation set preserves source/declaration order — is flagged as the
+/// **primary** conflict (PRD §7.1: newest member is the likely culprit). The
 /// explanation is purely geometric — each relation's demand + its magnitude in mm /
 /// degrees — and never mentions the solver or libslvs (ζ's diagnostics speak
 /// geometry; θ #4388 renders the polished `reify explain` ledger / spans / badge from
@@ -1549,17 +1590,17 @@ fn describe_operands(rel: &CompiledExpr) -> String {
 fn conflict_diagnostic(
     conflict: &[usize],
     scope: &RelateScope,
-    instances: &[RelationInstance],
+    built: &ScopeInstances,
     auto_sub: &str,
 ) -> Diagnostic {
-    // primary = newest-declared = highest source index.
-    let primary = conflict.iter().copied().max().unwrap_or(0);
+    // primary = newest-declared = greatest SOURCE index among the conflict set.
+    let primary = conflict.iter().copied().max_by_key(|&i| built.sources[i]).unwrap_or(0);
     let mut others: Vec<usize> = conflict.iter().copied().filter(|&i| i != primary).collect();
     others.sort_unstable();
 
-    let primary_name = &instances[primary].name;
-    let primary_subjects = describe_operands(&scope.relations[primary]);
-    let primary_demand = describe_demand(&instances[primary]);
+    let primary_name = &built.instances[primary].name;
+    let primary_subjects = describe_operands(built.relation(scope, primary));
+    let primary_demand = describe_demand(&built.instances[primary]);
 
     let mut msg = format!(
         "conflicting relations on `{auto_sub}`: `{primary_name}` requires \
@@ -1568,8 +1609,8 @@ fn conflict_diagnostic(
     for &o in &others {
         msg.push_str(&format!(
             ", but `{}` requires them {}",
-            instances[o].name,
-            describe_demand(&instances[o]),
+            built.instances[o].name,
+            describe_demand(&built.instances[o]),
         ));
     }
     msg.push_str(&format!(
@@ -1585,8 +1626,9 @@ fn conflict_diagnostic(
 /// Tries each driving PAIR (the smallest non-trivial conflict) via a re-solve: the
 /// first pair that is still [`SolveResult::Infeasible`] on its own is returned as the
 /// minimal conflict set. If no pair is infeasible (a conflict that genuinely needs
-/// ≥3 relations), falls back to the whole driving set. Returns source indices (into
-/// `scope.relations` / `instances`). Bounded by the driving-set size, which is `≤ 6`
+/// ≥3 relations), falls back to the whole driving set. Returns INSTANCE positions
+/// (into `instances`) — [`conflict_diagnostic`] is the one place that crosses them
+/// back to their source relations. Bounded by the driving-set size, which is `≤ 6`
 /// for a single Frame unknown — the pairwise search is cheap.
 fn minimal_infeasible_subset(
     instances: &[RelationInstance],
