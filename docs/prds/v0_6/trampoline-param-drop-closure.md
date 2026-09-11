@@ -298,6 +298,14 @@ params from the C1 `ignored` set to `honored`, which is what an `ignored` entry'
 #7178 is now `done`; #7081 and #6097 were amended to cite #7263, and the two superseded Graphiti
 ownership edges were temporally invalidated as of the transfer rather than rewritten. Via esc-7305-1.)*
 
+*(SEQUENCING WARNING for leaf η, the task that lands the `reify-audit --pattern PDROP` gate.
+Check each row's owner status BEFORE emitting its allowlist entry. C4c makes it a gate FAILURE
+for "any allowlist entry whose owning task is absent, `done` or cancelled", so a row whose owner
+has reached a terminal status between this table being written and η landing will red main the
+moment η arrives — for doing exactly what this table says. Omit such a row rather than
+add-then-immediately-burn-it-down. Surfaced via esc-7074-5 against `ElasticOptions.mesh_size`
+/ **#7074**, but the hazard applies to every "owner live" row above, not just that one.)*
+
 ## 8. Pre-conditions
 
 None blocking. `reify-audit` already exposes a per-pattern module family
