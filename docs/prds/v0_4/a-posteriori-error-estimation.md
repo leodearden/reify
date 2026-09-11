@@ -78,6 +78,83 @@ Seven active tasks plus one deferred bookmark. Tasks gate on v0.3 FEA kernel com
 
 **Deferred bookmark**: MMG3D mesher swap (v0.4.x). Switch criterion: if a typical refinement loop spends >30% of wallclock in remeshing under Gmsh, swap to MMG3D's local-remesh path.
 
+## Implementation status (2026-09)
+
+A dated note on where the eval-side wiring actually stands, because the
+mesher-facing half of this PRD landed in two stages and the interim stage was
+deliberately, honestly, *not* adaptive.
+
+- **Loop control (decomposition #2) lives in `reify-solver-elastic`**
+  (`adaptive.rs`): the `AdaptiveProblem` trait, `run_adaptive_refinement`,
+  Dörfler marking at θ = 0.5, budget + stall termination. It is mesher-agnostic
+  by construction — the caller supplies `refine`.
+
+- **Task #4902 threaded that loop into `reify-eval`'s `solve_elastic_static`
+  with a MESH-FREE UNIFORM refine step**, labelled as non-adaptive rather than
+  dressed up as adaptive (ratified esc-4902-83, option D). Two constraints
+  forced it: production `reify-eval` is gmsh-build-free (#4743 makes
+  `reify-kernel-gmsh` a dev-dep), and the synthetic `nx×1×nz` box that path
+  builds has no closed surface `Mesh` for `refine_marked_elements` to remesh
+  from. The marked set was computed correctly and then discarded; each
+  iteration simply doubled the grid on every axis.
+
+- **Task #4909 closes that interim.** Eval-side refinement is now genuinely
+  mark-driven on the *realized* `body : Solid` path opened by #4870: the
+  Dörfler set reaches `refine_marked_elements` (decomposition #4's
+  size-field-driven local refinement), which remeshes under a per-element size
+  field. Refinement is localized to the marked region rather than applied
+  uniformly.
+
+### Where the surface comes from, and why
+
+`refine_marked_elements` needs the closed surface its volume mesh was meshed
+from. On the realized path no such `Mesh` reaches the consumer: a
+`RealizationReadHandle` structurally carries exactly ONE `RealizedContent`
+variant, and for `solver::elastic_static` that variant is the `VolumeMesh`.
+Adding a second (surface) realization demand was rejected — it would mean
+changing `reify-ir` / `reify-compute-contract` / the engine's realization
+plumbing, a blast radius far outside a wiring task, on a content-hashed and
+bincode-cached type.
+
+Instead the boundary is **reconstructed from the realized tet mesh's own free
+faces** (`reify_solver_elastic::volume_refine::boundary_surface_mesh`). This is
+not merely the cheaper route, it is the tighter one: the size field is
+transferred onto the surface by a nearest-vertex scan, so a boundary whose
+vertices are a bit-equal SUBSET of the volume mesh's makes every lookup a
+distance-0 identity — strictly better than an independently tessellated surface
+of the same solid, which would share no vertices with the tet mesh at all.
+
+### Fallback
+
+The gmsh-realized lane is selected at RUNTIME on
+`reify_solver_elastic::GMSH_AVAILABLE`, never on a `cfg` (a cfg emitted by the
+gmsh crate's build script does not propagate to dependents, so a cfg gate would
+read false on every host). It also requires a realized mesh, an extractable
+boundary, and the absence of selector-resolved BCs — those are node INDEX sets
+resolved against the pre-refinement mesh, and a remesh preserves no index.
+Any unmet precondition, or a `RefineError` raised at runtime, falls back to
+#4902's uniform lane with a Warning naming the reason. An `adaptive: true`
+request never degrades to a failed solve because the gmsh lane could not run.
+
+### Still open
+
+Decomposition **#7 (validation suite / analytical convergence study)** is NOT
+closed by #4909, which deliberately asserts no convergence *rate*: its
+localization assertions are strict inequalities on element counts and on
+before/after sizes at a fixed physical position. Adaptive-vs-uniform log-log
+rate validation remains task #3002's remit.
+
+Also note: `displacement` / `stress` / `max_von_mises` and the other primary
+result fields still reflect the INITIAL seed mesh; only `convergence_status`,
+`global_relative_energy_error` and `error_indicator` reflect the refinement
+loop. That is #4902's ratified v1 contract, surfaced to callers as an Info
+diagnostic, and re-deriving the primary fields from the refined mesh would move
+the §7a resample grid that #4910 depends on.
+
+> This PRD edit rides task #4909's branch through the merge queue rather than
+> committing direct-to-main: #4909 is a mixed code+docs change, so the
+> docs-only fast path does not apply to it.
+
 ## Test plan
 
 Validation rests on convergence-study cases with known analytical answers or established benchmark singularities:
