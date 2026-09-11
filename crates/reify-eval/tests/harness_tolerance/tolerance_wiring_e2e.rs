@@ -406,28 +406,29 @@ fn tessellate_realizations_uses_demanded_tolerance_through_per_stage_budget() {
     );
 }
 
-/// Step-13 (locks the partial-order semantics on the realization-cache
-/// integration: a tighter demand cannot be served by a looser cached entry).
+/// Pins the partial-order semantics on the realization-cache integration: a
+/// tighter demand cannot be served by a looser cached entry.
 ///
-/// The `RealizationCache::lookup` rule (`cached_tol ≤ requested_tol`)
-/// implements the "tighter satisfies looser" contract pinned at
-/// `realization_cache.rs:101-116`: a cache populated at 1e-6 satisfies a
-/// later request at any `tol ≥ 1e-6` (looser-or-equal), but a request at
-/// `tol < 1e-6` (tighter) MUST miss because the cached representation is
-/// at 1e-6 precision — insufficient for the tighter consumer. This test
-/// pins that the cache integration honours that rule end-to-end through
-/// `Engine::execute_realization_ops`'s cache-hit short-circuit (step-8).
+/// The `cached_tol ≤ requested_tol` rule enforced by `RealizationCache::lookup`
+/// (`src/realization_cache.rs`) implements the "tighter satisfies looser"
+/// contract: a cache populated at 1e-6 satisfies a later request at any
+/// `tol ≥ 1e-6` (looser-or-equal), but a request at `tol < 1e-6` (tighter)
+/// MUST miss because the cached representation is at 1e-6 precision —
+/// insufficient for the tighter consumer. This test pins that the cache
+/// integration honours that rule end-to-end through the cache-hit
+/// short-circuit in `Engine::execute_realization_ops`.
 ///
-/// Setup mirrors step-7 except a SECOND `manufacturing_tighter` purpose at
-/// 1e-9 m is compiled into the same module. After the first `build()` (with
-/// `manufacturing` at 1e-6 active) the cache is populated at
-/// `("MyDesign", BRep, 1e-6)`. We then deactivate `manufacturing`, activate
-/// `manufacturing_tighter` (which substitutes a fresh 1e-9 m
-/// `RepresentationWithin` constraint at the same subject), and run `build()`
-/// again. The second build's pre-`check()` precompute computes
-/// `demanded_tol = Some(1e-9)` (the tightest contributor across the active
-/// scope), threads that into `execute_realization_ops`, and the cache lookup
-/// at `("MyDesign", BRep, 1e-9)` MISSES the cached `1e-6` entry — kernel
+/// Setup mirrors `second_build_with_unchanged_purpose_and_module_short_circuits_kernel_via_cache_hit`
+/// except a SECOND `manufacturing_tighter` purpose at 1e-9 m is compiled
+/// into the same module. After the first `build()` (with `manufacturing` at
+/// 1e-6 active) the cache is populated at `("MyDesign", BRep, 1e-6)`. We
+/// then deactivate `manufacturing`, activate `manufacturing_tighter` (which
+/// substitutes a fresh 1e-9 m `RepresentationWithin` constraint at the same
+/// subject), and run `build()` again. The second build's pre-`check()`
+/// precompute computes `demanded_tol = Some(1e-9)` (the tightest
+/// contributor across the active scope), threads that into
+/// `execute_realization_ops`, and the cache lookup at
+/// `("MyDesign", BRep, 1e-9)` MISSES the cached `1e-6` entry — kernel
 /// re-executes the realization ops, growing `kernel.operations()`.
 ///
 /// The post-second-build `kernel.operations()` count must therefore strictly
@@ -436,14 +437,12 @@ fn tessellate_realizations_uses_demanded_tolerance_through_per_stage_budget() {
 /// counts are equal — the cache is incorrectly serving a tighter request
 /// from a looser cached entry, breaking the partial-order contract.
 ///
-/// Step-14 (verification-only impl) confirms that no new wiring is needed:
-/// the bucket lookup primitive already enforces `cached_tol ≤ requested_tol`,
-/// and the engine wiring threads the requested tolerance to the bucket's
-/// lookup unchanged. If this test FAILS today, the bug is in the
-/// step-6 / step-8 wiring's cache-key value plumbing (stale `demanded_tol`
-/// captured across builds) — investigate at the precompute site
-/// (`tessellate_realizations` / `build`) and at the cache-lookup site at the
-/// top of `execute_realization_ops`.
+/// The partial-order rule is enforced by the bucket lookup primitive
+/// itself; the engine threads the requested tolerance to it unchanged. A
+/// failure here therefore means the cache-key value plumbing has broken
+/// (stale `demanded_tol` captured across builds) — investigate at the
+/// precompute site (`tessellate_realizations` / `build`) and at the
+/// cache-lookup site at the top of `execute_realization_ops`.
 #[test]
 fn cache_lookup_misses_when_purpose_changes_demanded_tolerance() {
     let module = CompiledModuleBuilder::new(ModulePath::new(vec![
@@ -505,7 +504,7 @@ fn cache_lookup_misses_when_purpose_changes_demanded_tolerance() {
          Got ops_after_first={}, ops_after_second={} — equal counts indicate \
          the cache served a tighter request from a looser cached entry, \
          violating the partial-order contract pinned by \
-         `RealizationCache::lookup` (realization_cache.rs:101-116) and \
+         `RealizationCache::lookup` (`src/realization_cache.rs`) and \
          `ToleranceBucket::lookup`.",
         ops_after_first,
         ops_after_second,
