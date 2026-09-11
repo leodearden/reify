@@ -289,15 +289,24 @@ fn realize_operand_datums_yields_concrete_pose_independent_local_datums() {
 // `crates/reify-eval/src/relate_solve.rs` — RED-by-missing-symbol (the file fails to
 // compile against the absent function/type).
 
-/// The §1 `Bolt`/`Plate` structures + a `BoltPlate` scope whose `relate{}` block
-/// holds the two §1 driving relations (concentric + flush) plus one extra `third`
-/// relation. Pure test data — the B2 redundant-remainder + B3 conflict variants.
-/// Built from the SAME self-contained primitives as
+/// The §1 `Bolt`/`Plate` structures + a `BoltPlate` scope whose `relate {}` block
+/// holds exactly `members`, in declaration order — optionally preceded by a
+/// top-level `fn` declaration (`extra_fn`, e.g. a `Relation`-typed wrapper like
+/// `fn mate(a: Axis, b: Axis) -> Relation { concentric(a, b) }`). Pure test data —
+/// the ONE fixture builder every bolt_plate-shaped relate-solve test in this file
+/// is built from (SPOT: `Bolt`/`Plate`/`BoltPlate` is written exactly once). Built
+/// from the SAME self-contained primitives as
 /// `examples/geometric_relations/bolt_plate.ri`.
-fn bolt_plate_with_third(third: &str) -> String {
+fn bolt_plate_scope_source(extra_fn: Option<&str>, members: &[&str]) -> String {
+    let extra_fn = match extra_fn {
+        Some(f) => format!("{f}\n\n"),
+        None => String::new(),
+    };
+    let relate_block: Vec<String> = members.iter().map(|m| format!("        {m}")).collect();
+    let relate_block = relate_block.join("\n");
     format!(
         r#"
-structure Bolt {{
+{extra_fn}structure Bolt {{
     let shank = cylinder(3mm, 20mm)
     let shank_axis : Axis = shank.axis
     let seat = rectangle(12mm, 12mm)
@@ -316,12 +325,26 @@ structure BoltPlate {{
     sub bolt : Bolt at auto
     sub plate : Plate
     relate {{
-        concentric(bolt.shank_axis, plate.hole_axis)
-        flush(bolt.seat_plane, plate.top_plane)
-        {third}
+{relate_block}
     }}
 }}
 "#
+    )
+}
+
+/// The §1 `Bolt`/`Plate` structures + a `BoltPlate` scope whose `relate{}` block
+/// holds the two §1 driving relations (concentric + flush) plus one extra `third`
+/// relation. Pure test data — the B2 redundant-remainder + B3 conflict variants.
+/// A thin wrapper over [`bolt_plate_scope_source`] — byte-identical to its
+/// pre-generalization body, so every existing call site is unaffected.
+fn bolt_plate_with_third(third: &str) -> String {
+    bolt_plate_scope_source(
+        None,
+        &[
+            "concentric(bolt.shank_axis, plate.hole_axis)",
+            "flush(bolt.seat_plane, plate.top_plane)",
+            third,
+        ],
     )
 }
 
