@@ -257,19 +257,12 @@ structure Parent {
 /// together must compile with ZERO Error-severity diagnostics — this pins the
 /// "diagnostics accept at/aux cleanly" acceptance criterion.
 ///
-/// Doubles as this crate's attributable staleness guard for `#6992`
-/// (MEASUREMENT 2: a `tree-sitter-reify/src/parser.c` generated from one
-/// grammar left sitting beside a `grammar.js` from another). reify-compiler has
-/// no tree-sitter dependency at all — verified in its Cargo.toml — so it cannot
-/// probe the linked parser the way reify-syntax's
-/// `linked_parser_exposes_the_indexer_clause_fields` does; the only reachable
-/// signal is the `reify_test_support::compile_source_with_stdlib` family this
-/// file already uses. Hence the `_allow_parse_errors` variant: the plain helper
-/// routes through `parse_with_stdlib_or_panic` and **panics** on a parse error,
-/// so under a stale parser this would ABORT with a raw `parse errors: [...]`
-/// dump naming nothing — while every other test in the file aborted the same
-/// way at the same instant. Forwarding parse diagnostics instead turns that into
-/// one assertion that names the cause and the remedy.
+/// The `_allow_parse_errors` helper is deliberate: the plain one panics inside
+/// `parse_with_stdlib_or_panic`, so a parse failure aborts with a raw
+/// `parse errors: [...]` dump instead of reaching the assertion below.
+/// reify-syntax's `linked_parser_exposes_the_indexer_clause_fields` is the
+/// attributable signal for a stale parser.c (`#6992`); this test only needs to
+/// stay legible when that is red.
 #[test]
 fn valid_at_and_aux_compile_clean() {
     let source = r#"structure Child {
@@ -281,8 +274,6 @@ structure Parent {
     sub plate : Child at transform3(orient_identity(), vec3(10mm, 0mm, 0mm))
     aux sub jig : Child at transform3(orient_identity(), vec3(30mm, 0mm, 0mm))
 }"#;
-    // Forwards parse errors as diagnostics rather than panicking, so a stale
-    // parser reaches the assertion below instead of aborting inside the helper.
     let compiled = reify_test_support::compile_source_with_stdlib_allow_parse_errors(source);
 
     let errors: Vec<_> = compiled
@@ -292,15 +283,9 @@ structure Parent {
         .collect();
     assert!(
         errors.is_empty(),
-        "valid at/aux usage must produce zero Error diagnostics; got: {:?}\n\n\
-         Before treating this as a compiler regression, rule out `#6992`: \
-         tree-sitter-reify/src/parser.c is a GENERATED, gitignored artifact, and \
-         a parser.c left over from a different grammar.js turns the \
-         `sub … at <pose>` surface every test in this file rests on into a parse \
-         error that surfaces here as an opaque compile failure. Run \
-         `scripts/tree-sitter-generate.sh --force` and re-run. If reify-syntax's \
-         `linked_parser_exposes_the_indexer_clause_fields` is also red, the \
-         parser is the cause, not this crate.",
+        "valid at/aux usage must produce zero Error diagnostics; got: {:?}\n\
+         (if reify-syntax's `linked_parser_exposes_the_indexer_clause_fields` is \
+         also red, a stale tree-sitter parser.c is the cause, not this crate)",
         errors
     );
 }

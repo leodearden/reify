@@ -514,7 +514,7 @@ fn non_indexed_subs_lower_to_none_binder_and_domain() {
 /// handed is eight lowering assertions failing on absent
 /// `index_binder`/`index_domain` — a defect that reads as if it lives in
 /// `lower_sub`. `#6992`'s MEASUREMENT 1 is that exact confusion, found against
-/// grammar.js:846 (the indexer clause this file exists for).
+/// the indexer clause this file exists for.
 ///
 /// So this probes the parser DIRECTLY rather than through lowering. It is the
 /// one test here that can distinguish "the grammar's contract changed" from
@@ -527,9 +527,9 @@ fn non_indexed_subs_lower_to_none_binder_and_domain() {
 ///
 /// `field_id_for_name` answers only "is this name in the language's field
 /// table", and the table is the union over the WHOLE grammar. Both names are
-/// used elsewhere — `field('domain', $.type_expr)` at grammar.js:314 and
-/// `field('binder', $.identifier)` in `field_binding` at grammar.js:1391, the
-/// latter landed by `0b2868f522`, which PREDATES the indexer clause
+/// used elsewhere — `field('domain', $.type_expr)` on `field_definition` and
+/// `field('binder', $.identifier)` on `field_binding`, the latter landed by
+/// `0b2868f522`, which PREDATES the indexer clause
 /// (`56f398dd11`). So a parser.c generated from a grammar without the indexer
 /// clause still reports both ids as `Some`, and a field-id-only guard would sit
 /// green through precisely the staleness it was written to catch. The
@@ -543,10 +543,10 @@ fn linked_parser_exposes_the_indexer_clause_fields() {
         This is the `#6992` signature: tree-sitter-reify/src/parser.c is a \
         GENERATED, gitignored artifact, and nothing in this crate can tell a \
         grammar regression from a parser.c that was never regenerated for the \
-        grammar.js on disk. If grammar.js still declares the indexer clause \
-        (grammar.js:846), the parser is stale — run \
-        `scripts/tree-sitter-generate.sh --force` and re-run this test before \
-        looking anywhere else.";
+        grammar.js on disk. If grammar.js still declares the optional \
+        `[binder in domain]` clause on `sub_declaration`, the parser is stale — \
+        run `scripts/tree-sitter-generate.sh --force` and re-run this test \
+        before looking anywhere else.";
 
     // (1) The cheap signal: the field NAMES exist in the linked language.
     //
@@ -588,8 +588,9 @@ fn linked_parser_exposes_the_indexer_clause_fields() {
         assert!(
             sub.child_by_field_name(field).is_some(),
             "the linked parser parsed the indexed sub but exposes no `{field}` \
-             child on `sub_declaration` — the indexer clause at grammar.js:846 \
-             is absent from the compiled parser.\nCST: {}{STALE_PARSER}",
+             child on `sub_declaration` — the optional `[binder in domain]` \
+             clause on that rule is absent from the compiled parser.\n\
+             CST: {}{STALE_PARSER}",
             sub.to_sexp()
         );
     }
