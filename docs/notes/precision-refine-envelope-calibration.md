@@ -529,6 +529,15 @@ file, so the rep exercises the whole path, not just the kernel. Wall clocks vari
 substantially with load (the sweeps below ran between 122 and 424 1-min loadavg); no
 achieved value did, which is §0 Caveat 1's standing distinction holding at this
 resolution too.
+
+*Stage B:* the eight leading rungs were re-run for a second repetition — the top five by
+ratio (0.144, 0.145, 0.143, 0.162, 0.147 mm), unconditionally every rung whose ratio
+rounds to ≥ 0.999, and 0.151, 0.120 and 0.180 mm besides — and all eight returned
+**byte-identical achieved strings**. Zero divergence. This gate carries more weight than
+Stage A's: these are the rungs the block's conclusions rest on, and the two at δ = 0 sit
+exactly on the K = 1 boundary, where a single unreproducible digit in the last printed
+place would flip the verdict rather than perturb it. Both returned 1.440e-4 and 1.450e-4
+again.
 ### 1.6 Loft is unreachable from the source language
 
 Two mutually exclusive failure modes with no path between them:
