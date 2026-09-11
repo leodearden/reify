@@ -603,20 +603,13 @@ pub fn assert_no_diagnostic(diagnostics: &[Diagnostic], severity: Severity, cont
 /// cause a panic. Use [`assert_no_diagnostics`] instead when all severities
 /// must be absent.
 ///
-/// # Vacuity hazard: bare trait bodies
+/// # Vacuity hazard
 ///
-/// A `trait` body compiled with NO conforming structure emits zero error
-/// diagnostics no matter how broken it is — dimension mismatches, undefined
-/// member fields and wrong `let` annotations are all deferred to conformance.
-/// So an assertion of absence against a bare trait body passes unconditionally
-/// and tests nothing. Declare a conformer (`structure def C : T { ... }`), or
-/// write the probe as a `structure`.
-///
-/// The executable statement of this rule lives in
-/// `crates/reify-compiler/tests/harness_traits/trait_body_deferred_check_tests.rs`
-/// (`trait_body_without_conformer_is_not_dimension_checked` and its
-/// non-vacuity guard `conformed_trait_body_dimension_mismatch_errors`); that
-/// module's doc has the full rule and the measurement provenance.
+/// An assertion of absence is vacuous wherever the compiler defers checking —
+/// notably a `trait` body with no conforming structure, which emits nothing
+/// however broken it is. The rule and its executable pins live with
+/// `trait_body_without_conformer_is_not_dimension_checked` in reify-compiler's
+/// trait harness.
 ///
 /// # Panics
 /// Panics if any `Severity::Error` diagnostic is present. The panic message
@@ -642,14 +635,6 @@ pub fn assert_no_error_diagnostics(diagnostics: &[Diagnostic], context: &str) {
 ///
 /// `context` is a short label that appears in the panic message to identify
 /// which compilation or evaluation phase failed — e.g. `"compile"`, `"guard block"`.
-///
-/// # Vacuity hazard: bare trait bodies
-///
-/// Same trap as [`assert_no_error_diagnostics`], and being stricter about
-/// severity does not escape it: a bare trait body emits nothing at all, so
-/// this assertion is equally vacuous there. See that helper's `Vacuity
-/// hazard` section, and the pins it names in
-/// `crates/reify-compiler/tests/harness_traits/trait_body_deferred_check_tests.rs`.
 ///
 /// # Panics
 /// Panics if `diagnostics` is non-empty. The panic message includes `context`
@@ -678,11 +663,9 @@ pub fn assert_no_diagnostics(diagnostics: &[Diagnostic], context: &str) {
 /// protect rots away silently.
 ///
 /// This is not only the stronger pin, it is sometimes the only expressible
-/// one. The trait-conformance fixtures in
-/// `crates/reify-compiler/tests/harness_traits/trait_body_deferred_check_tests.rs`
-/// must supply a struct-typed param via a struct-literal default, which emits
-/// an unavoidable unrelated `unknown variant` error; no count-based assertion
-/// can be written against them at all, whereas a code-keyed one is immune.
+/// one: a fixture that must supply a struct-typed param via a struct-literal
+/// default emits an unavoidable unrelated `unknown variant` error, so no
+/// count-based assertion can be written against it at all.
 ///
 /// Severity is filtered FIRST: a Warning carrying `code` does not satisfy this.
 ///
@@ -1044,6 +1027,20 @@ pub fn members_of(result: &reify_eval::EvalResult, entity: &str) -> Vec<String> 
 mod tests {
     use crate::fixtures::bracket_source;
     use reify_core::{Diagnostic, DiagnosticCode, Severity};
+
+    /// Run `f` and return the message it panicked with.
+    ///
+    /// `#[should_panic(expected = ...)]` matches exactly ONE substring, which
+    /// otherwise forces a second byte-identical test per expectation. Capturing
+    /// the message instead lets one test assert every substring that makes a
+    /// panic diagnosable. Reuses `reify_core::panic_payload_to_string` rather
+    /// than open-coding the downcast chain.
+    fn panic_message(f: impl FnOnce()) -> String {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+            Ok(()) => panic!("expected a panic, but the call returned normally"),
+            Err(payload) => reify_core::panic_payload_to_string(payload.as_ref()),
+        }
+    }
 
     /// Build a `reify_eval::EvalResult` from the only two fields these unit
     /// tests ever vary. `EvalResult` derives no `Default`, so keeping its
@@ -1843,10 +1840,7 @@ mod tests {
     // Task 6143. These two are the code-keyed counterpart to the
     // absence-of-diagnostic helpers above. The cases below pin the property
     // that motivates them: an *unrelated* error code must not influence
-    // either verdict. A count-based or "some error"/"no errors" assertion
-    // cannot express that, and the trait-conformance fixtures in
-    // `crates/reify-compiler/tests/harness_traits/trait_body_deferred_check_tests.rs`
-    // carry exactly such unavoidable unrelated errors.
+    // either verdict, which no count-based assertion can express.
 
     /// `assert_error_code_present` passes when an Error-severity diagnostic
     /// carries the requested code, even alongside unrelated errors.
@@ -1911,53 +1905,43 @@ mod tests {
         );
     }
 
-    /// `assert_error_code_absent` panics when a matching Error IS present.
-    /// Panic message must include both the `context` label and the observed
-    /// offending diagnostic's message.
+    /// `assert_error_code_absent` panics when a matching Error IS present, and
+    /// the message carries BOTH the `context` label and the offending
+    /// diagnostic, so a failure is diagnosable without a rerun.
     #[test]
-    #[should_panic(expected = "existing member")]
-    fn test_assert_error_code_absent_panics_on_match_reports_context() {
-        let diags = vec![
-            Diagnostic::error("structure 'Bearer' has no member 'no_such_field'")
-                .with_code(DiagnosticCode::StructureMemberNotFound),
-        ];
-        super::assert_error_code_absent(
-            &diags,
-            DiagnosticCode::StructureMemberNotFound,
-            "existing member",
-        );
+    fn test_assert_error_code_absent_panic_names_context_and_offender() {
+        let message = panic_message(|| {
+            let diags = vec![
+                Diagnostic::error("structure 'Bearer' has no member 'no_such_field'")
+                    .with_code(DiagnosticCode::StructureMemberNotFound),
+            ];
+            super::assert_error_code_absent(
+                &diags,
+                DiagnosticCode::StructureMemberNotFound,
+                "existing member",
+            );
+        });
+        assert!(message.contains("existing member"), "{message}");
+        assert!(message.contains("no_such_field"), "{message}");
     }
 
-    /// Companion to the test above: the panic message names the offending
-    /// diagnostic, not just the code, so a failure is diagnosable without a
-    /// rerun.
+    /// `assert_error_code_present` panics when only an UNRELATED code fired,
+    /// and names the errors it DID observe alongside the `context` label, so an
+    /// author can see what happened instead of the expected code.
     #[test]
-    #[should_panic(expected = "no_such_field")]
-    fn test_assert_error_code_absent_panic_names_offending_diagnostic() {
-        let diags = vec![
-            Diagnostic::error("structure 'Bearer' has no member 'no_such_field'")
-                .with_code(DiagnosticCode::StructureMemberNotFound),
-        ];
-        super::assert_error_code_absent(
-            &diags,
-            DiagnosticCode::StructureMemberNotFound,
-            "existing member",
-        );
-    }
-
-    /// Companion to `test_assert_error_code_present_panics_on_empty`: the
-    /// present-helper's panic also names the errors it DID observe, so an
-    /// author can see what fired instead of the expected code.
-    #[test]
-    #[should_panic(expected = "unrelated noise")]
     fn test_assert_error_code_present_panic_lists_observed_errors() {
-        let diags =
-            vec![Diagnostic::error("unrelated noise").with_code(DiagnosticCode::UnresolvedName)];
-        super::assert_error_code_present(
-            &diags,
-            DiagnosticCode::DimensionMismatch,
-            "conformed trait body",
-        );
+        let message = panic_message(|| {
+            let diags = vec![
+                Diagnostic::error("unrelated noise").with_code(DiagnosticCode::UnresolvedName),
+            ];
+            super::assert_error_code_present(
+                &diags,
+                DiagnosticCode::DimensionMismatch,
+                "conformed trait body",
+            );
+        });
+        assert!(message.contains("conformed trait body"), "{message}");
+        assert!(message.contains("unrelated noise"), "{message}");
     }
 
     // ── get_let_expr_in_template ────────────────────────────────────────────
