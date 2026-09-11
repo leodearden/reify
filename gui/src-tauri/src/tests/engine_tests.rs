@@ -1525,20 +1525,16 @@ fn get_source_location_returns_source_location_info() {
     assert_eq!(loc.file_path, "bracket.ri");
 }
 
-/// The GUI export happy path — and, since task 6190, the C2 negative that bounds the
-/// η refusal's blast radius (PRD C2 / §3.1(f)).
+/// The GUI export happy path — and, since task 6190, the C2 negative bounding the η
+/// refusal's blast radius (PRD C2 / §3.1(f)).
 ///
-/// Plain `bracket_source()` declares no `RepresentationWithin`, so the shared helper
-/// returns `None` and the export must proceed byte-for-byte as it did before the gate
-/// landed. PRD §4.6's closing rationale — "a module with no `RepresentationWithin`
-/// never enters any of this — the required negative signal" — is what makes that
-/// `None` case load-bearing: an over-broad gate would break every existing GUI export
-/// and none of the η positives below would catch it. The CLI surface pins the same
-/// property as `build_dash_o_still_exports_a_module_without_a_bound`
+/// Plain `bracket_source()` declares no `RepresentationWithin`, so the gate must leave
+/// this path exactly as it was: an over-broad gate would break every existing GUI
+/// export and none of the η positives below would catch it. Byte equality rather than
+/// `!is_empty()` also catches a regression that silently emptied the artifact instead
+/// of refusing it. The CLI pins the same property as
+/// `build_dash_o_still_exports_a_module_without_a_bound`
 /// (`crates/reify-cli/tests/harness_cli/cli_representation_within.rs:589`).
-///
-/// The payload equality (rather than `!is_empty()`) is what also catches a regression
-/// that silently emptied the artifact instead of refusing it.
 #[test]
 fn export_end_to_end() {
     let checker = SimpleConstraintChecker;
@@ -1558,43 +1554,51 @@ fn export_end_to_end() {
     assert_eq!(
         std::fs::read(&path).expect("exported file should be readable"),
         b"MOCK_EXPORT_DATA",
-        "an UNBOUNDED design must still export the mock kernel's payload byte-for-byte \
-         — the η refusal must not fire for a design that declares no bound"
+        "an UNBOUNDED design must still export the mock kernel's payload byte-for-byte"
     );
 }
 
 // --- eta export refusal: the GUI surface (task 6190) ---
 //
 // PRD `docs/prds/v0_6/precision-nominal-representation-guarantee.md`, C-SURFACE (2).
-// `EngineSession::export` is the single chokepoint both GUI export callers reach.
-// That claim is PINNED, not asserted here: `commands_tests.rs` drives the refusal
-// through `commands::export_impl` (the Tauri command) and through
-// `TauriToolContext::export` (the MCP debug surface), so a future refactor that gave
-// either its own build path goes red rather than silently reopening the bypass.
+// `EngineSession::export` is the single chokepoint every GUI export caller reaches.
+// There are THREE of them: `commands::export_impl` (the Tauri command the frontend
+// calls), `mcp_context::TauriToolContext::export` (the MCP tool context) and
+// `debug_server::reify_export_on_engine_and_refresh_baseline` (the `reify_export` AI
+// write tool). That all three delegate is PINNED rather than asserted — one refusal
+// test per caller lives in `commands_tests.rs`, so a refactor giving any of them its
+// own build path goes red instead of silently reopening the bypass.
 //
-// The C2 negative bounding this gate's blast radius is `export_end_to_end` directly
-// above — the unbounded happy path, which the gate must leave untouched.
+// Two properties recur across those tests and are argued once, here:
+//
+//  * `starts_with`, never `contains`. Every site moves the shared helper's message
+//    VERBATIM (`EngineSession::export` returns `diag.message`; `export_impl` is
+//    `and_then(identity)`; the MCP context is `map_err(ToolError::EngineError)`; the
+//    write tool propagates with `?`), so no site legitimately wraps it — and
+//    `contains` would stay green under precisely the `"Build error: {}"` regression
+//    these assertions exist to catch, which pushes the stable `E_*` token off the
+//    front of a string the callers surface unmodified.
+//  * The C2 negative bounding the gate's blast radius is `export_end_to_end` directly
+//    above — the unbounded happy path, which the gate must leave untouched. It is not
+//    restated as a standalone test: a twin of that body would have to be kept in step
+//    with it, and both would be pinning the one export-success contract.
 
-/// [`bracket_source`] plus a non-circular checker structure declaring the bound.
+/// [`bracket_source`] plus a non-circular checker structure declaring the bound, so
+/// the DECLARED BOUND is the ONLY delta between the case [`export_end_to_end`] exports
+/// green and the refused cases below. This is the CLI's
+/// `representation_within_satisfied.ri` idiom (geometry-owning structure + a separate
+/// `structure XCheck { param subject : X  constraint RepresentationWithin(subject,
+/// <bound>) }`) grafted onto that source.
 ///
-/// This is the CLI's `representation_within_satisfied.ri` idiom (a structure owning
-/// the geometry + a separate `structure XCheck { param subject : X  constraint
-/// RepresentationWithin(subject, <bound>) }`) grafted onto the geometry-bearing
-/// source that [`export_end_to_end`] already exports successfully — so the ONLY
-/// delta between the passing case and the refused case is the declared bound.
+/// The `1mm` is not a threshold and must not be retuned against an achieved deviation:
+/// η refuses on module shape alone, before any deviation is measured, so it fires
+/// identically for any bound.
 ///
-/// The `1mm` value carries no measured meaning and must not be retuned against an
-/// achieved deviation: η's refusal is a STATIC module-shape decision taken before
-/// any deviation is measured, so it fires identically for any bound.
-///
-/// `pub(super)` so `commands_tests.rs` shares this ONE definition rather than
-/// carrying a verbatim twin: two copies means a future `RepresentationWithin` /
-/// `param subject` syntax change can be applied to one and not the other, silently
-/// breaking the "the declared bound is the ONLY delta" invariant this doc asserts.
-/// The canonical home would be `crate::tests::test_helpers` (or
-/// `reify_test_support::fixtures`, next to `bracket_source`); both are outside task
-/// 6190's lock footprint, so the fixture is hosted with the bulk of the η cluster and
-/// can be relocated by whoever next touches those files.
+/// `pub(super)` so `commands_tests.rs` shares this ONE definition — a per-file twin
+/// lets a future `RepresentationWithin` / `param subject` syntax change reach one copy
+/// and not the other, silently voiding the "only delta" invariant above. The canonical
+/// home is `crate::tests::test_helpers` (or `reify_test_support::fixtures`, beside
+/// `bracket_source`); both are outside task 6190's lock footprint.
 pub(super) fn bounded_bracket_source() -> String {
     format!(
         "{}\n\nstructure BracketCheck {{\n    param subject : Bracket = Bracket()\n    constraint RepresentationWithin(subject, 1mm)\n}}\n",
@@ -1606,11 +1610,9 @@ pub(super) fn bounded_bracket_source() -> String {
 /// `RepresentationWithin` bound the export path cannot demonstrate it honours must
 /// REFUSE, not write the artifact and report success (PRD §1.1).
 ///
-/// The op-count assertion is the PRD §6 gate-cost property asserted STRUCTURALLY:
-/// the refusal must short-circuit before realization, and
-/// `tests/infra/test_no_new_wallclock_upper_bounds.sh` forbids expressing that as a
-/// wall clock. `load_from_source` already realizes, so the baseline is non-zero —
-/// snapshot it, never assert zero.
+/// The op-count assertion is PRD §6's gate-cost property asserted STRUCTURALLY, since
+/// `tests/infra/test_no_new_wallclock_upper_bounds.sh` forbids a wall clock.
+/// `load_from_source` already realizes, so snapshot the baseline, never assert zero.
 #[test]
 fn export_refuses_a_module_declaring_an_unenforced_representation_bound() {
     let checker = SimpleConstraintChecker;
@@ -1637,12 +1639,7 @@ fn export_refuses_a_module_declaring_an_unenforced_representation_bound() {
     );
     assert!(
         err.starts_with(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
-        "the refusal must LEAD with the stable E_* token the CLI surface also emits, so \
-         both surfaces can be pinned against the same exported const. `starts_with`, not \
-         `contains`: the message is returned VERBATIM, so a future refactor routing the \
-         refusal through the `\"Build error: {{}}\"` arm — which would push the token off \
-         the front of a string both GUI callers surface unmodified — has to go red here; \
-         got: {err}"
+        "the refusal must LEAD with the stable E_* token; got: {err}"
     );
     assert!(
         !path.exists(),
@@ -1650,21 +1647,16 @@ fn export_refuses_a_module_declaring_an_unenforced_representation_bound() {
     );
     assert_eq!(
         ops_after, ops_before,
-        "the refusal must precede realization — no geometry op may be dispatched by a \
-         refused export (PRD §6 gate-cost rule, asserted structurally rather than as a \
-         wall clock)"
+        "a refused export must dispatch no geometry op — the refusal has to precede \
+         realization"
     );
 }
 
-/// The refusal gates the WRITE, not merely the return value.
-///
-/// Mirrors `build_dash_o_refusal_does_not_overwrite_an_existing_file`
+/// The refusal gates the WRITE, not merely the return value: `EngineSession::export`
+/// calls `std::fs::write(path, &data)`, which truncates on open, so a refusal bolted on
+/// downstream of the build would still destroy whatever sits at the target before
+/// refusing. Mirrors `build_dash_o_refusal_does_not_overwrite_an_existing_file`
 /// (`crates/reify-cli/tests/harness_cli/cli_representation_within.rs:511`).
-/// `EngineSession::export` calls `std::fs::write(path, &data)` inside its
-/// `Some(data)` arm, so a refusal implemented as a diagnostic bolt-on downstream of
-/// the build would still truncate whatever sits at the target before refusing.
-/// Seeding sentinel bytes and requiring them back byte-for-byte is what
-/// distinguishes a real write-gate from that.
 #[test]
 fn export_refusal_does_not_overwrite_an_existing_file() {
     const SENTINEL: &[u8] = b"pre-existing bytes that must survive a refused export";
@@ -1686,21 +1678,15 @@ fn export_refusal_does_not_overwrite_an_existing_file() {
         .expect_err("a bounded design must be refused at the GUI export boundary");
     assert!(
         err.starts_with(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
-        "the refusal must LEAD with the stable E_* token (returned verbatim); got: {err}"
+        "the refusal must LEAD with the stable E_* token; got: {err}"
     );
     assert_eq!(
         std::fs::read(&target).expect("the export target must still exist"),
         SENTINEL,
         "a refused export must NOT truncate or overwrite a pre-existing file at the \
-         target — the refusal has to gate the write itself, not ride the diagnostic \
-         stream after `std::fs::write` has already run"
+         target"
     );
 }
-
-// The C2 negative for this cluster is `export_end_to_end` above: the unbounded happy
-// path, strengthened to assert the payload byte-for-byte. It is not restated here as a
-// second test — a verbatim twin of that body would have to be kept in step with it, and
-// the export-success contract is the thing both would be pinning.
 
 // --- Source-map consistency after load/update ---
 

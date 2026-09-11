@@ -499,13 +499,16 @@ fn end_to_end_export_via_impl() {
     assert!(path.exists(), "exported file should exist");
 }
 
-/// η / C-SURFACE (2) at the FRONTEND-visible surface (task 6190).
-///
-/// `commands::export_impl` is the Tauri command the frontend calls; it delegates to
-/// `EngineSession::export`, which is where the gate lives. This test exists to PROVE
-/// that delegation rather than assert it — it would go red if a future refactor gave
-/// `export_impl` its own build path, which is exactly the multi-site drift task 6170
-/// was chartered to eliminate.
+// --- η export refusal: the three callers of the `EngineSession::export` chokepoint
+// (task 6190) ---
+//
+// The gate lives in `EngineSession::export`; these tests PROVE — rather than assert —
+// that every GUI export caller reaches it, so a refactor giving one its own build path
+// goes red instead of silently reopening the bypass. The shared rationale for the
+// `starts_with` assertions, and the enumeration of the three callers, is argued once in
+// the η cluster header in `engine_tests.rs`.
+
+/// Caller 1 of 3 — `commands::export_impl`, the Tauri command the frontend calls.
 #[test]
 fn export_impl_refuses_a_module_declaring_an_unenforced_representation_bound() {
     use crate::commands::export_impl;
@@ -521,10 +524,7 @@ fn export_impl_refuses_a_module_declaring_an_unenforced_representation_bound() {
     );
     assert!(
         err.starts_with(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
-        "the message reaching the frontend must LEAD with the stable E_* token — it is \
-         returned verbatim, not wrapped in a \"Build error:\" prefix that would push the \
-         token off the front. `starts_with`, not `contains`, so that wrapping is what \
-         goes red; got: {err}"
+        "the message reaching the frontend must LEAD with the stable E_* token; got: {err}"
     );
     assert!(
         !path.exists(),
@@ -532,20 +532,16 @@ fn export_impl_refuses_a_module_declaring_an_unenforced_representation_bound() {
     );
 }
 
-/// η / C-SURFACE (2) at the MCP debug surface — the second of the two GUI export
-/// callers that delegate to the `EngineSession::export` chokepoint (task 6190).
+/// Caller 2 of 3 — `mcp_context::TauriToolContext::export`, the MCP tool context.
 ///
-/// Companion to `export_impl_refuses_…` above, and load-bearing for a reason that
-/// test cannot cover: `TauriToolContext::export` returns `Result<bool, ToolError>`,
-/// so the natural-looking refactor of folding the refusal into `Ok(false)` would
-/// report a REFUSED export to the MCP debug client as a completed one, with the
-/// diagnostic dropped entirely. This pins the mapping — `Err(ToolError::EngineError)`
-/// carrying the message verbatim, never `Ok(_)`.
+/// Load-bearing for a reason caller 1 cannot cover: this one returns
+/// `Result<bool, ToolError>`, so folding the refusal into `Ok(false)` would report a
+/// REFUSED export to the MCP client as a completed one with the diagnostic dropped.
+/// The `match` pins that mapping, not just the message text.
 ///
-/// It lives here beside the `export_impl` delegation proof rather than in
-/// `mcp_context_tests.rs` (its topical home) because that file is outside task 6190's
-/// lock footprint; keeping both delegation proofs together also lets a reader diff the
-/// two surfaces' contracts side by side.
+/// Sited here rather than in its topical home `mcp_context_tests.rs`, which is outside
+/// task 6190's lock footprint; co-locating all three proofs also lets a reader diff the
+/// surfaces' contracts side by side.
 #[test]
 fn export_via_mcp_context_refuses_a_module_declaring_an_unenforced_representation_bound() {
     use crate::mcp_context::TauriToolContext;
@@ -564,9 +560,7 @@ fn export_via_mcp_context_refuses_a_module_declaring_an_unenforced_representatio
         ToolError::EngineError(msg) => assert!(
             msg.starts_with(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
             "the refusal must reach the MCP client as an EngineError LEADING with the \
-             stable E_* token — `map_err(ToolError::EngineError)` moves the engine's \
-             message verbatim, so `starts_with` is what a wrapping regression trips on; \
-             got: {msg}"
+             stable E_* token; got: {msg}"
         ),
         other => panic!(
             "a refused export must map to ToolError::EngineError (the engine's own \
@@ -576,6 +570,51 @@ fn export_via_mcp_context_refuses_a_module_declaring_an_unenforced_representatio
     assert!(
         !path.exists(),
         "NO file may be created at the export target for a refused export (PRD §1.1)"
+    );
+}
+
+/// Caller 3 of 3 — `debug_server::reify_export_on_engine_and_refresh_baseline`, the
+/// engine-routing core of the `reify_export` AI write tool.
+///
+/// Its own test (`debug_server::tests::write_tools::reify_export_writes_a_non_empty_file`)
+/// covers success only, so without this the third caller's delegation would be the one
+/// unpinned leg of the chokepoint claim. `#[cfg(feature = "gui")]` because
+/// `crate::debug_server` is gated on that feature.
+///
+/// The refusal must also leave the delta baseline untouched: the seam's
+/// `compute_delta` sits after the `?`, so a refused write commits no new state.
+#[cfg(feature = "gui")]
+#[tokio::test]
+async fn reify_export_tool_refuses_a_module_declaring_an_unenforced_representation_bound() {
+    use crate::debug_server::reify_export_on_engine_and_refresh_baseline;
+
+    let engine = Arc::new(Mutex::new(make_loaded_session_from(&bounded_bracket_source())));
+    let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+        std::sync::Mutex::new(None);
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ai_bounded.step");
+
+    let err = reify_export_on_engine_and_refresh_baseline(
+        &engine,
+        &last_state,
+        "step",
+        path.to_str().unwrap(),
+    )
+    .await
+    .expect_err("the reify_export write tool must surface the η refusal, not report success");
+    assert!(
+        err.starts_with(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+        "the refusal must reach the AI client LEADING with the stable E_* token; got: {err}"
+    );
+    assert!(
+        !path.exists(),
+        "NO file may be created at the export target for a refused export (PRD §1.1)"
+    );
+    assert!(
+        last_state.lock().unwrap().is_none(),
+        "a refused export must not refresh the delta baseline — the seam's compute_delta \
+         runs only after a successful write"
     );
 }
 
