@@ -2280,13 +2280,19 @@ mod tests {
     /// has silently stopped reporting the debt it was built for.
     #[test]
     fn deferral_prose_positives() {
-        // crates/reify-eval/src/engine_build.rs:12891 — the δ-A rationale, and
-        // the one cited-orphaned site this task delivers end-to-end.
+        // WAS the δ-A rationale at crates/reify-eval/src/engine_build.rs:12891,
+        // and the one cited-orphaned site #6087 delivered end-to-end, until
+        // #6934 re-cited that attribute from done-#4744 to live-#4746. Pinned
+        // VERBATIM for the same grammar-not-tree reason.
         assert!(has_deferral_prose(
             "production wiring pending task #4744 (volume-mesh-realization-and-morph-wiring)"
         ));
-        // crates/reify-eval/src/engine_build.rs:2199 — δ-A rationale (legacy
-        // `task 4050` cite form; the cite grammar is not this function's job).
+        // WAS the δ-A rationale at crates/reify-eval/src/engine_build.rs:2199
+        // (legacy `task 4050` cite form; the cite grammar is not this
+        // function's job), as measured for #6087, until #6934 deleted that
+        // attribute, the wiring having already landed. The literal below stays
+        // pinned VERBATIM regardless: it pins the matcher's GRAMMAR, not the
+        // tree.
         assert!(has_deferral_prose(
             "production wiring deferred to task 4050 (in-realization conversion executor)"
         ));

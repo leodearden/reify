@@ -17,10 +17,10 @@
 //!   §6.6's ratchet cannot grow, so those entries can only be burned down: when
 //!   an underlying comment is re-pointed at a live task or the deferred work
 //!   lands, its baseline line is deleted. Every seeded entry was hand-inspected
-//!   as a genuine deferral; none is a false positive. Three kinds are
-//!   represented, per §8.3's lane-independent taxonomy: one `orphaned` (cites a
-//!   `done` task), one `malformed-cite` (the legacy `task NNNN` form), and three
-//!   `untracked` (no cite at all).
+//!   as a genuine deferral; none is a false positive. That seed spanned three
+//!   of §8.3's kinds (one `orphaned`, one `malformed-cite`, three `untracked`);
+//!   task #6934 then burned down all three structural entries at source, so the
+//!   committed set is now 6 entries, every one `orphaned`.
 //!
 //! (A′) **`validate_*`** — always-on, hermetic unit tests that drive crafted
 //!   content through the shared `validate_baseline_content` validator, so the
