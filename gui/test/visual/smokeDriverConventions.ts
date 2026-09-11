@@ -1,16 +1,21 @@
 /**
  * The structural conventions the live `smoke_*.mjs` e2e drivers must follow —
- * today, two of them: a driver never re-implements the `open_file` retry policy
- * (task 5857), and a driver never reads the post-open `store_state` payload it
- * binds as `storeAfterOpen` without first diagnosing it (task 5884).
+ * today, three of them: a driver never re-implements the `open_file` retry
+ * policy (task 5857), never reads the post-open `store_state` payload it binds
+ * as `storeAfterOpen` without first diagnosing it (task 5884), and never passes
+ * an object literal as `gradePhase`'s extras argument (task 5098).
  *
- * THAT SECOND WORDING IS DELIBERATELY NARROWER than the rule a reader would
- * state from the rationale below ("never read a post-open `store_state` payload
- * undiagnosed"), because the narrow one is what actually ships: the check keys
- * on the conventional `storeAfterOpen` binding and its `?.editor` read, and sees
- * no other spelling of either. `STORE_STATE_READ` and `STORE_STATE_DIAG` below
- * each state what they leave unseen and why that gap errs toward a missed
- * violation; the header states the shipped rule so the two cannot drift.
+ * THE SECOND AND THIRD WORDINGS ARE DELIBERATELY NARROWER than the rules a
+ * reader would state from the rationales below. "Never read a post-open
+ * `store_state` payload undiagnosed" is wider than what ships: the check keys on
+ * the conventional `storeAfterOpen` binding and its `?.editor` read, and sees no
+ * other spelling of either. "Never let a phase's extras be gathered before its
+ * observation" is wider than what ships too: the check keys on the object
+ * literal opening in `gradePhase`'s third argument position, and an extras
+ * object hoisted to a variable first reorders identically and goes unseen.
+ * `STORE_STATE_READ`, `STORE_STATE_DIAG` and `AWAITED_EXTRAS_LITERAL` below each
+ * state what they leave unseen and why that gap errs toward a missed violation;
+ * the header states the shipped rules so the two cannot drift.
  *
  * WHY THE SECOND ONE IS A CONVENTION AND NOT A CODE REVIEW NOTE. An in-band
  * `{error: '<msg>'}` envelope is TRUTHY, so the `!storeAfterOpen?.editor?.…`
@@ -21,6 +26,17 @@
  * folds that envelope into a named failure first. Four drivers wrote the same
  * unguarded chain independently (tasks 5827, 5883, 5884), so it is a shape the
  * next driver will reach for too.
+ *
+ * WHY THE THIRD ONE IS A CONVENTION AND NOT A CODE REVIEW NOTE. An object
+ * literal passed as an ARGUMENT is fully evaluated — its `await`s included —
+ * BEFORE the callee runs. So `gradePhase(phase, subject, {sourceCanonical: await
+ * readSourceCanonical(…)})` issues that chain's `reify_open_file` ->
+ * `reify_save_file` -> `reify_open_file` ahead of the phase's own reads, and the
+ * first of those re-reads the file from disk (`open_path_into_engine`,
+ * debug_server.rs:1525). Every reading the phase then takes describes a freshly
+ * reloaded engine, so PRD §7 B1 — the viewport following an AI edit WITHOUT a
+ * file reload — passes whatever the write did. `observeThenExtras` in
+ * `./railLengtheningGate.mjs` is the runtime half; this is the source half.
  *
  * WHY A SOURCE-LEVEL CHECK IS THE ONLY SIGNAL. A driver needs a live reify-gui
  * (WebKit WebView + OCCT) to do anything at all, so CI can never execute one and
@@ -66,8 +82,18 @@ import { VISUAL_DIR, partitionVisualMjs } from "./sharedModuleLoad.js";
  * `store_state` outage. Keyed on that exact binding and field, not on the
  * payload shape: another spelling of either is not seen at all (see
  * `STORE_STATE_READ`).
+ *
+ * `awaited-extras-literal` — the driver spells `gradePhase`'s extras as an object
+ * literal, so every `await` inside it runs BEFORE the phase's own reads and the
+ * `reify_open_file` among them reloads the file from disk, making PRD §7 B1's
+ * "without a file reload" pass vacuously. Keyed on the literal opening in that
+ * argument position: extras hoisted to a variable first reorder identically and
+ * are not seen at all (see `AWAITED_EXTRAS_LITERAL`).
  */
-export type SmokeDriverViolationCode = "inline-open-file" | "undiagnosed-store-state";
+export type SmokeDriverViolationCode =
+  | "inline-open-file"
+  | "undiagnosed-store-state"
+  | "awaited-extras-literal";
 
 /**
  * One convention a driver source breaks.
@@ -153,6 +179,38 @@ const STORE_STATE_READ = /\bstoreAfterOpen\s*\?\.\s*editor\b/;
 const STORE_STATE_DIAG = /\bdescribeRpcFailure\s*\(\s*storeAfterOpen\b/;
 
 /**
+ * `gradePhase`'s third argument OPENING AS AN OBJECT LITERAL, however spaced.
+ *
+ * POSITIVE-PRESENCE, like `INLINE_OPEN_FILE` and unlike the `store_state` pair,
+ * and matched against the COMMENT-STRIPPED source — which is what makes
+ * `stripComments`' blind spots err the way this module requires: a blanked span
+ * hides a real call site (a MISSED violation) and can never turn a compliant
+ * driver into a false alarm.
+ *
+ * THE COMPLIANT SPELLING IS ONE CHARACTER AWAY. Migration produces
+ * `gradePhase(p, s, async () => ({…}))`, which opens with `(` exactly where the
+ * literal opens with `{`, so this matches the brace and nothing else. The
+ * `[^,]*` runs cannot cross a comma, which is what keeps a two-argument call and
+ * `gradePhase`'s own declaration out of reach. Pinned in both directions in
+ * `./smokeDriverConventions.test.ts`.
+ *
+ * THE HOISTING GAP, stated rather than papered over, exactly as
+ * {@link STORE_STATE_READ} and {@link STORE_STATE_DIAG} state theirs:
+ *
+ *     const extras = {fieldCoverage: await rpc('engine_state')};
+ *     await gradePhase(phase, subject, extras);
+ *
+ * reorders IDENTICALLY — the awaits still run before `gradePhase` is entered —
+ * and this regex sees nothing, because seeing it would mean following the
+ * binding, which means parsing. It is accepted because it errs toward a MISSED
+ * violation, and because the RUNTIME half covers it whatever the spelling:
+ * `observeThenExtras` (`./railLengtheningGate.mjs`) refuses any non-thunk extras
+ * and parks a `read-order` record that reds the live run. Source-level and
+ * runtime are two halves of one rule; neither is complete alone.
+ */
+const AWAITED_EXTRAS_LITERAL = /\bgradePhase\s*\(\s*[^,]*,\s*[^,]*,\s*\{/;
+
+/**
  * Every convention `source` breaks, as a driver in this directory.
  *
  * Returns a list; `[]` means compliant. A LIST rather than a boolean on purpose:
@@ -193,6 +251,15 @@ export function findSmokeDriverConventionViolations(source: string): SmokeDriver
       message:
         "reads `storeAfterOpen.editor` without first diagnosing the `store_state` RPC " +
         "via `describeRpcFailure` from ./smokeDriverGuards.mjs",
+    });
+  }
+  if (AWAITED_EXTRAS_LITERAL.test(code)) {
+    violations.push({
+      code: "awaited-extras-literal",
+      message:
+        "passes `gradePhase`'s extras as an object literal, whose awaits run BEFORE the phase's " +
+        "own reads — gather them in an `async () => ({…})` thunk so `observeThenExtras` from " +
+        "./railLengtheningGate.mjs can sequence them",
     });
   }
   return violations;

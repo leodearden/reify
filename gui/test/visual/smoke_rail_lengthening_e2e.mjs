@@ -56,6 +56,7 @@ import {
   checkRailLengtheningGate,
   extractGateInputs,
   formatFailures,
+  observeThenExtras,
 } from './railLengtheningGate.mjs';
 import { makeDebugRpc } from './rpcEnvelope.mjs';
 import { describeRpcFailure, openFileWithRetry } from './smokeDriverGuards.mjs';
@@ -194,6 +195,12 @@ function requireLiveRead(phase, diagnosis) {
  * assertion rather than a tautology. Moving the open earlier would silently turn
  * every phase into a reload test.
  *
+ * That holds ACROSS the phase, not just inside this function, which is why
+ * `gradePhase` routes through `observeThenExtras` rather than taking an object:
+ * a phase's extras are gathered only once this returns. The two enforcers are
+ * `observeThenExtras` (./railLengtheningGate.mjs, runtime) and
+ * `awaited-extras-literal` (./smokeDriverConventions.ts, source-level, CI).
+ *
  * @returns {Promise<{inputs: object, verdict: {ok: boolean, failures: object[]}}>}
  */
 async function observePhase(phase, subject) {
@@ -243,13 +250,21 @@ async function observePhase(phase, subject) {
  * Observe the live state and grade it, folding in whatever extra PRD rows this
  * phase exercises.
  *
- * `extras` is merged into the inputs rather than checked separately so the
+ * `gatherExtras` is a THUNK, not an object, and the sequencing lives in
+ * `observeThenExtras` (./railLengtheningGate.mjs) rather than here: an object
+ * literal in this argument position would be evaluated — its awaits included —
+ * BEFORE this function is entered, hoisting its reads above observePhase's and
+ * reloading the file from disk in the middle of them. See observePhase's READ
+ * ORDER IS LOAD-BEARING paragraph, and ./smokeDriverConventions.ts's
+ * `awaited-extras-literal`, which is what stops the literal coming back.
+ *
+ * The extras are merged into the inputs rather than checked separately so the
  * verdict stays ONE `{ok, failures}` — the driver has a single decision seam and
  * a single place where a record becomes English, which is the whole point of
  * keeping the decision in ./railLengtheningGate.mjs.
  */
-async function gradePhase(phase, subject, extras = {}) {
-  const inputs = { ...(await observePhase(phase, subject)), ...extras };
+async function gradePhase(phase, subject, gatherExtras) {
+  const inputs = await observeThenExtras(() => observePhase(phase, subject), gatherExtras);
   const verdict = checkRailLengtheningGate(inputs);
   console.log(`  graded '${phase}': ok=${verdict.ok}`);
   return { inputs, verdict };
@@ -345,11 +360,18 @@ async function main() {
     log('Waiting for the engine to finish realizing printer_v01…');
     await waitForIdle('open');
 
+    // A THUNK, never an object literal — here and at every gradePhase call
+    // below. A literal's awaits run before gradePhase is entered, which puts
+    // these reads above observePhase's and (for any phase that gathers
+    // sourceCanonical) reloads the file from disk between them. observePhase's
+    // READ ORDER IS LOAD-BEARING paragraph is the invariant; observeThenExtras
+    // enforces it at runtime and ./smokeDriverConventions.ts's
+    // `awaited-extras-literal` stops the literal form coming back.
     log('Grading the baseline…');
-    const baseline = await gradePhase('baseline', subject, {
+    const baseline = await gradePhase('baseline', subject, async () => ({
       requires: ['fieldCoverage'],
       fieldCoverage: await rpc('engine_state'),
-    });
+    }));
     requirePhase('baseline', baseline.verdict);
 
     // ── Edit 1: the rails overrun the frame ─────────────────────────────────
@@ -361,14 +383,19 @@ async function main() {
     // store_state and demand_dispatch are all read BEFORE reify_open_file, so
     // the lengthened geometry and the moved cell are observed on state the
     // engine already held. Nothing reloaded the file to produce them.
-    log('Grading after-y-rail (B1 live sync, B2 on-disk, B3 coverage, the pin flip)…');
-    const afterYRail = await gradePhase('after-y-rail', subject, {
-      requires: ['sourceCanonical', 'fieldCoverage'],
-      sourceCanonical: await readSourceCanonical('after-y-rail', subject, {
-        [Y_RAIL_LEN_CELL]: '1100mm',
-      }),
+    // READ-ONLY EXTRAS FIRST, and B2 LAST — the ordering this phase is built
+    // around. readSourceCanonical WRITES DISK (reify_save_file), and watcher.rs
+    // is a pure path/time trailing-edge debouncer (DEBOUNCE_DURATION = 100ms,
+    // :17) with NO content hashing, so even a byte-identical save fires a
+    // reload. Interposed between B5's two readings it would make B5 measure
+    // churn from the SAVE as well as from the AI write — a second cause under
+    // one verdict. So: grade B1/B3 and the pin flip on reads alone, settle B5,
+    // and only then touch disk for B2.
+    log('Grading after-y-rail (B1 live sync, B3 coverage, the pin flip)…');
+    const afterYRail = await gradePhase('after-y-rail', subject, async () => ({
+      requires: ['fieldCoverage'],
       fieldCoverage: await rpc('engine_state'),
-    });
+    }));
     requirePhase('after-y-rail', afterYRail.verdict);
 
     // ── B5: the FS watcher re-fires on the write, and must change nothing ────
@@ -376,11 +403,21 @@ async function main() {
     await sleep(WATCHER_DEBOUNCE_MS * WATCHER_DEBOUNCE_MARGIN);
     await waitForIdle('the watcher re-read');
     const reReadInputs = await observePhase('after-y-rail', subject);
-    const settled = await gradePhase('after-y-rail', subject, {
+    const settled = await gradePhase('after-y-rail', subject, async () => ({
       requires: ['idempotentReload'],
       idempotentReload: { before: afterYRail.inputs, after: reReadInputs },
-    });
+    }));
     requirePhase('after-y-rail (post-debounce)', settled.verdict);
+
+    // ── B2: the edit landed in the SOURCE, and saving it changes nothing ─────
+    log('Grading after-y-rail B2 (the literal is on disk, and the save is a no-op)…');
+    const onDisk = await gradePhase('after-y-rail', subject, async () => ({
+      requires: ['sourceCanonical'],
+      sourceCanonical: await readSourceCanonical('after-y-rail', subject, {
+        [Y_RAIL_LEN_CELL]: '1100mm',
+      }),
+    }));
+    requirePhase('after-y-rail (B2 on disk)', onDisk.verdict);
 
     // ── Edit 2: the frame catches up ────────────────────────────────────────
     log(`Setting ${RAIL_SPAN_CELL} to 1100mm via reify_set_parameter…`);
@@ -390,15 +427,18 @@ async function main() {
     // The rail-span pin returns to Satisfied, travel_avail reads 810mm, and the
     // ToolDock pin goes Violated — a REQUIRED cascade, not a tolerated one. See
     // RAIL_GATE_PHASES: this phase's expectations encode all three.
+    // No settle step follows this phase, so B2's disk write has no B5 reading to
+    // sit between and the thunk alone suffices — but the same ordering holds:
+    // inside the thunk these reads still come after observePhase's.
     log('Grading after-rail-span (the pin recovers, travel_avail 810, ToolDock cascades)…');
-    const afterRailSpan = await gradePhase('after-rail-span', subject, {
+    const afterRailSpan = await gradePhase('after-rail-span', subject, async () => ({
       requires: ['sourceCanonical', 'fieldCoverage'],
       sourceCanonical: await readSourceCanonical('after-rail-span', subject, {
         [Y_RAIL_LEN_CELL]: '1100mm',
         [RAIL_SPAN_CELL]: '1100mm',
       }),
       fieldCoverage: await rpc('engine_state'),
-    });
+    }));
     requirePhase('after-rail-span', afterRailSpan.verdict);
 
     // ── B7: two refusals, neither of which may touch disk ───────────────────
@@ -409,14 +449,19 @@ async function main() {
     // that only ever exercised one would not notice the other path losing its
     // atomicity.
     log('Attempting two writes that must be REFUSED, leaving disk byte-identical…');
+    // The two attempts stay OUTSIDE the thunk, deliberately. They are the only
+    // extras in this file that WRITE rather than read, and the phase observation
+    // must post-date them: a refusal that corrupted the engine shows up in the
+    // cells and pins graded below, which it could not if the observation were
+    // taken first. The thunk then carries pure data, so nothing is hoisted.
     const rejections = [
       await attemptRefusedWrite('after-rail-span', subject, X_RAIL_LEN_CELL, '900mm'),
       await attemptRefusedWrite('after-rail-span', subject, RAIL_SPAN_CELL, '45deg'),
     ];
-    const refused = await gradePhase('after-rail-span', subject, {
+    const refused = await gradePhase('after-rail-span', subject, async () => ({
       requires: ['rejectionAtomicity'],
       rejectionAtomicity: rejections,
-    });
+    }));
     requirePhase('after-rail-span (B7 rejections)', refused.verdict);
   } finally {
     // Removed whatever happened above, so a crashed run leaves no half-edited
