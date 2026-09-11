@@ -15,7 +15,8 @@
 #![cfg(has_gmsh)]
 
 use reify_ir::GeometryError;
-use reify_kernel_gmsh::log_capture::{MAX_APPENDED_LOG_LINES, annotated};
+use reify_kernel_gmsh::log_capture::{LogCapture, MAX_APPENDED_LOG_LINES, annotated};
+use reify_kernel_gmsh::{ffi, init};
 
 /// Unwrap the `OperationFailed` payload, or fail naming what came back.
 fn operation_failed_message(err: GeometryError) -> String {
@@ -141,4 +142,58 @@ fn a_non_operation_failed_error_passes_through_unchanged() {
         ),
         other => panic!("annotated must not change the error variant, got: {other:?}"),
     }
+}
+
+/// The guard's whole observable contract, through its public surface only:
+/// `annotate` reads the LIVE capture (not an empty list), and `drop` stops
+/// it (not "the test remembered to").
+///
+/// Deliberately does NOT touch `"General.Terminal"`: capture is independent
+/// of it — see `ffi::logger_start`'s measurement and
+/// `ffi_smoke_tests::gmsh_logger_captures_mesh_generate_output_even_with_terminal_silenced`
+/// — so this test needs no option-restoring guard of its own and leaves no
+/// process-global option behind. It is the only test in this file that takes
+/// `GMSH_LOCK`; the `annotated` cases above are pure.
+#[test]
+fn log_capture_guard_folds_captured_lines_into_the_error_and_stops_on_drop() {
+    // Recover from a poisoned lock the way `mesh_to_volume` does: the
+    // `ffi::clear()` below wipes any half-built model a panicked prior test
+    // left behind.
+    let guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    init::ensure_initialized();
+    ffi::clear().expect("ffi::clear failed");
+
+    let annotated_err = {
+        let capture = LogCapture::armed(&guard);
+        ffi::model_add("log_capture_guard").expect("ffi::model_add failed");
+        // MEASURED: `mesh_generate(1)` on an empty model emits 3 Info lines
+        // ("Meshing 1D...", "Done meshing 1D (Wall …)", "0 nodes 0
+        // elements") in ~0ms, so the guard's read is exercised with no
+        // geometry fixture and no meshing cost.
+        ffi::mesh_generate(1).expect("ffi::mesh_generate(1) failed");
+        capture.annotate(GeometryError::OperationFailed("boom".into()))
+    };
+
+    let msg = operation_failed_message(annotated_err);
+    assert!(
+        msg.contains("boom"),
+        "annotate must keep the caller's message; got: {msg}",
+    );
+    assert!(
+        msg.contains("Info: Meshing 1D"),
+        "annotate must drain the LIVE capture, not format an empty list; got: {msg}",
+    );
+
+    // Still under GMSH_LOCK, after the guard dropped. `logger_stop` both
+    // stops capture AND drains the buffer, so an empty read here is the
+    // direct witness that `drop` fired: without it those 3+ lines would
+    // still be buffered and would surface as some later caller's diagnosis.
+    let leftover = ffi::logger_get().expect("ffi::logger_get failed");
+    assert!(
+        leftover.is_empty(),
+        "dropping LogCapture must stop and drain the capture; {} lines left: {leftover:?}",
+        leftover.len(),
+    );
+
+    ffi::clear().expect("ffi::clear failed (cleanup)");
 }
