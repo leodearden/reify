@@ -525,30 +525,17 @@ pub fn form_find_free_surfaces(
 }
 
 /// Equilibrium-residual convergence tolerance for the free-standing cotangent
-/// fixed point, applied RELATIVE to `D`'s own magnitude (task 6413, twin of
-/// task 6119's anchored-path fix). The iteration stops once
-/// `‖D·x‖∞ / (1+scale) / d_scale` drops below this, where `d_scale = ‖D‖∞` —
-/// the honest free-standing fixed-point signal, additionally normalised so
-/// the bound is GAUGE-free, not just coordinate-scale-free.
+/// fixed point, applied RELATIVE to `D`'s own magnitude so convergence is
+/// gauge-free as well as coordinate-scale-free — see
+/// [`all_node_equilibrium_residual_relative`] for the residual and why it is
+/// normalised this way.
 ///
-/// `D_combined = CᵀQC + Σ_T σ_T·L_T` is exactly linear in the force
-/// densities `q` and the surface stresses `σ`, so an ABSOLUTE bound on the
-/// un-normalised residual makes convergence depend on the gauge: the same
-/// structure at `q` and at `λ·q` could take a different iteration count,
-/// land on different coordinates, or fail to converge outright — task
-/// 6413's reported defect. Dividing by `d_scale` cancels that one factor of
-/// `λ` exactly, since numerator and denominator each scale linearly with
-/// the gauge.
-///
-/// CALIBRATED, not guessed, so this change RE-ANCHORS rather than loosens
-/// the bound: `d_scale` MEASURED at `7.895` at the δ `GroupRatios` golden's
-/// converged state (`tensegrity_delta_combined_form_find.rs`), so the
-/// previous absolute `1e-10` corresponds to a relative `1.267e-11`. This
-/// relative `1e-11` is therefore ~1.27× TIGHTER (absolute stop ~`7.9e-11`)
-/// than the previous bound, and stays ~12.7× below that golden's
-/// independently-checked `EQUIL_TOL = 1e-9`. It is also the same value task
-/// 6119 chose for the anchored path's `SURFACE_EQUILIBRIUM_REL_TOL`, keeping
-/// the two paths consistent.
+/// CALIBRATED, not guessed: `d_scale` measured at `7.895` at the δ
+/// `GroupRatios` golden's converged state
+/// (`tensegrity_delta_combined_form_find.rs`), so the previous absolute
+/// `1e-10` corresponds to a relative `1.267e-11`; this `1e-11` is therefore
+/// ~1.27× tighter and stays ~12.7× below that golden's independently-checked
+/// `EQUIL_TOL = 1e-9`.
 const FREE_SURFACE_EQUILIBRIUM_REL_TOL: f64 = 1e-11;
 
 /// Iteration cap for the free-standing cotangent fixed point. Mirrors γ's
@@ -590,30 +577,26 @@ fn assemble_surface_matrix(
     Ok(s)
 }
 
-/// ALL-node equilibrium residual `‖D·x‖∞ / (1+scale) / d_scale` — the
+/// ALL-node equilibrium residual `‖D·x‖∞ / (d_scale·(1+scale))` — the
 /// free-standing fixed-point signal, scaled by the coordinate magnitude AND
 /// by `d_scale = ‖D‖∞` (over ALL rows: unlike the anchored kernel's
 /// `free_equilibrium_residual_relative`, every node is free in the
-/// free-standing case, so there is no free-row restriction to apply), so the
-/// bound is both coordinate-scale-free AND GAUGE-free (task 6413, twin of
-/// task 6119). `D_combined = CᵀQC + Σ_T σ_T·L_T` is exactly linear in the
-/// force densities `q` and the surface stresses `σ`, so normalising only by
-/// coordinate scale would make convergence depend on the gauge; dividing by
-/// `d_scale` cancels that factor exactly, since numerator and denominator
-/// both scale linearly with a uniform q/σ rescaling. See
-/// [`FREE_SURFACE_EQUILIBRIUM_REL_TOL`]'s doc for the calibration that keeps
-/// this in a known, auditable relationship to the previous absolute bound.
+/// free-standing case, so there is no free-row restriction to apply). `D` is
+/// exactly linear in the force densities `q` and the surface stresses `σ`,
+/// so normalising only by coordinate scale would make convergence depend on
+/// the overall gauge; dividing by `d_scale` cancels that factor exactly,
+/// since numerator and denominator both scale linearly with a uniform q/σ
+/// rescaling. See [`FREE_SURFACE_EQUILIBRIUM_REL_TOL`]'s doc for the
+/// calibration that keeps this in a known, auditable relationship to the
+/// previous absolute bound.
 ///
-/// `d_scale <= 0` (including NaN, which fails the `d_scale_positive` bind)
-/// returns `f64::INFINITY` rather than dividing by zero: a node block
-/// touched by neither a member nor a triangle has every row of `D`
-/// identically zero, so `resid` above is vacuously 0 — not because
-/// equilibrium was reached, but because nothing acts on the node at all.
-/// Returning `INFINITY` forces the fixed point to keep iterating (and
-/// ultimately report `SearchDidNotConverge` when nothing can act on the
-/// node) instead of breaking out at iteration 0 and echoing the caller's
-/// unsolved initial guess back as a "converged" result (task 6413, mirroring
-/// task 6119's identical guard on the anchored path).
+/// `d_scale <= 0` returns `f64::INFINITY` rather than dividing by zero: `D`
+/// identically zero across every row makes the numerator vacuously 0 — not
+/// because equilibrium was reached, but because nothing acts on any node at
+/// all. Returning `INFINITY` forces the fixed point to keep iterating (and
+/// ultimately report `SearchDidNotConverge`) instead of breaking out at
+/// iteration 0 and echoing the caller's unsolved initial guess back as a
+/// "converged" result.
 #[allow(clippy::needless_range_loop)] // `axis` indexes nodes[j][axis] inside the j-sum
 fn all_node_equilibrium_residual_relative(d: &Mat<f64>, nodes: &[[f64; 3]]) -> f64 {
     let n = nodes.len();
@@ -644,16 +627,11 @@ fn all_node_equilibrium_residual_relative(d: &Mat<f64>, nodes: &[[f64; 3]]) -> f
         }
         d_scale = d_scale.max(row);
     }
-    let d_scale_positive = d_scale > 0.0;
-    if !d_scale_positive {
+    if d_scale <= 0.0 {
         return f64::INFINITY;
     }
 
-    // Dividing by d_scale (in addition to the coordinate scale) is what makes
-    // this criterion gauge-invariant: D — and therefore both resid and
-    // d_scale — scale linearly with a uniform q/σ rescaling, so the ratio is
-    // exactly unchanged (task 6413).
-    resid / (1.0 + scale) / d_scale
+    resid / (d_scale * (1.0 + scale))
 }
 
 /// Combined-D geometry recovery used by [`form_find_group_ratios_combined`]: it
@@ -709,6 +687,7 @@ fn form_find_explicit_combined_relaxed(
         eigenvalues: raw.eigenvalues,
         eigenvectors: raw.eigenvectors,
         nullity: 4,
+        max_mag: raw.max_mag,
     };
 
     let nodes = recover_coordinates(nodes_guess, &spectrum)?;
@@ -790,6 +769,11 @@ fn form_find_group_ratios_combined(
 
     // Objective: Σ λ² over the SEARCH_TARGET_NULLITY smallest eigenvalues of the
     // COMBINED D = line_D(q) + surface_mat. surface_mat is a fixed additive term.
+    // Deliberately UN-normalised, unlike combined_eig_gap_objective's
+    // normalised_eig_gap: `reference_group` already gauge-fixes this search, so
+    // there is no gauge factor to cancel, and normalising would perturb the
+    // OBJ_TOL / coordinate-descent stop thresholds below for no benefit this
+    // path needs (task 6413 design decision).
     let objective = |group_mag: &[f64]| -> f64 {
         let q = assemble_group_q(members.len(), group_ids, &group_sign, group_mag);
         let mut d = assemble_force_density_matrix(n, members, &q);
@@ -902,25 +886,12 @@ fn form_find_group_ratios_combined(
 /// Eigenvalue-gap objective for the free-standing combined fixed point: the
 /// sum of squares of the `SEARCH_TARGET_NULLITY` smallest-|λ| eigenvalues of
 /// `D_combined = CᵀQC + Σ_T σ_T·L_T` at force densities `q` and geometry `x`,
-/// each NORMALISED by `max_mag = max|λ_i|` over the full spectrum (task
-/// 6413) so the objective is GAUGE-invariant: under a uniform `q → λ·q`,
-/// `σ → λ·σ` rescaling every eigenvalue of `D` scales by `λ`, so an
-/// un-normalised sum-of-squares would scale by `λ²` and drive
-/// [`combined_geometry_descent_step`]'s finite-difference gradient — and
-/// therefore its backtracking line search — to different accept/reject
-/// decisions depending on the force-density/stress scale (task 6413's
-/// reported defect). Dividing each eigenvalue by `max_mag` (which also
-/// scales by `λ`) cancels that factor exactly, making the gradient
-/// gauge-invariant too, so the SAME `geo_step` produces the SAME
-/// displacement regardless of gauge.
-///
-/// `max_mag <= 0` (including NaN, which fails the `max_mag_positive` bind)
-/// returns `0.0`: an identically-zero `D` (or an all-zero spectrum) has no
-/// spectral gap left to close, so a perfect (zero) score is the honest
-/// answer — unlike [`all_node_equilibrium_residual_relative`]'s vacuous-zero
-/// hazard, this objective is not itself the outer loop's convergence gate
-/// (the residual is), so there is no equivalent risk of prematurely
-/// signalling convergence.
+/// normalised via [`normalised_eig_gap`] so the objective is GAUGE-invariant:
+/// under a uniform `q → λ·q`, `σ → λ·σ` rescaling every eigenvalue of `D`
+/// scales by `λ`, so an un-normalised sum-of-squares would scale by `λ²` and
+/// drive [`combined_geometry_descent_step`]'s finite-difference gradient —
+/// and therefore its backtracking line search — to different accept/reject
+/// decisions depending on the force-density/stress scale.
 ///
 /// The line-only `D` is geometry-independent and rank-deficient by 4 for a whole
 /// *affine family* of realisations. The membrane cotangent weights DO depend on
@@ -944,24 +915,40 @@ fn combined_eig_gap_objective(
                     d[(i, j)] += surface_mat[(i, j)];
                 }
             }
-            let spec = classify_spectrum(&d, NULLITY_REL_TOL);
-            let max_mag = spec
-                .eigenvalues
-                .iter()
-                .map(|v| v.abs())
-                .fold(0.0_f64, f64::max);
-            let max_mag_positive = max_mag > 0.0;
-            if !max_mag_positive {
-                return 0.0;
-            }
-            spec.eigenvalues
-                .iter()
-                .take(SEARCH_TARGET_NULLITY)
-                .map(|v| (v / max_mag) * (v / max_mag))
-                .sum()
+            normalised_eig_gap(&classify_spectrum(&d, NULLITY_REL_TOL))
         }
         Err(_) => f64::INFINITY,
     }
+}
+
+/// Sum of `(λ/max_mag)²` over the `SEARCH_TARGET_NULLITY` smallest-|λ|
+/// eigenvalues of `spec` — the gauge-invariant score
+/// [`combined_eig_gap_objective`] reports. Dividing by `spec.max_mag` (which
+/// scales by `λ` exactly as every other eigenvalue does under a uniform
+/// gauge change) cancels the `λ²` scaling a raw sum-of-squares would carry,
+/// so the finite-difference gradient taken of this score is gauge-invariant
+/// too.
+///
+/// `max_mag <= 0` returns `0.0` rather than dividing by zero: an
+/// identically-zero `D` (or an all-zero spectrum) has no spectral gap left
+/// to close, so a perfect (zero) score is the honest answer — unlike
+/// [`all_node_equilibrium_residual_relative`]'s vacuous-zero hazard, this
+/// objective is not itself the outer loop's convergence gate (the residual
+/// is), so there is no equivalent risk of prematurely signalling
+/// convergence.
+///
+/// NOT used by `form_find_group_ratios_combined`'s own eigenvalue-gap
+/// search, which deliberately keeps the un-normalised `Σλ²` form — see the
+/// comment on its `objective` closure for why.
+fn normalised_eig_gap(spec: &SpectrumClassification) -> f64 {
+    if spec.max_mag <= 0.0 {
+        return 0.0;
+    }
+    spec.eigenvalues
+        .iter()
+        .take(SEARCH_TARGET_NULLITY)
+        .map(|v| (v / spec.max_mag) * (v / spec.max_mag))
+        .sum()
 }
 
 /// One backtracking gradient-descent step on [`combined_eig_gap_objective`] over
@@ -1374,6 +1361,13 @@ struct SpectrumClassification {
     /// Number of eigenvalues whose magnitude is below the relative tolerance —
     /// the nullity of `D`.
     nullity: usize,
+    /// Largest eigenvalue magnitude in the spectrum (`max|λ|`) — the same
+    /// value used internally for the nullity threshold (`rel_tol · max_mag`).
+    /// Exposed so a caller that needs a gauge normaliser (e.g.
+    /// [`normalised_eig_gap`]) reads the identical number rather than
+    /// re-folding the spectrum, which could otherwise drift from the
+    /// threshold's own value.
+    max_mag: f64,
 }
 
 /// Assemble the full `N×N` force-density matrix `D = Cᵀ Q C` for the whole
@@ -1454,6 +1448,7 @@ fn classify_spectrum(d: &Mat<f64>, rel_tol: f64) -> SpectrumClassification {
         eigenvalues,
         eigenvectors,
         nullity,
+        max_mag,
     }
 }
 
@@ -2833,6 +2828,39 @@ mod tests {
         assert_eq!(
             nstep1, nstep_up,
             "descent-step next step size must be exactly gauge-invariant: step(1)={nstep1:e} step(λ)={nstep_up:e}",
+        );
+    }
+
+    #[test]
+    fn combined_eig_gap_objective_of_all_zero_d_is_zero_not_infinity() {
+        // The sibling guard on the residual
+        // (all_node_equilibrium_residual_of_all_zero_d_is_infinity_not_vacuous_zero)
+        // returns INFINITY because the residual IS the outer loop's
+        // convergence gate. This objective is NOT a convergence gate — only
+        // the descent step's line-search score — so an identically-zero D
+        // (no spectral gap left to close) is honestly a perfect score, and
+        // the guarded branch must return 0.0: returning INFINITY here would
+        // instead make the line search reject every trial.
+        let (members, _kinds) = triplex_topology();
+        let surfaces = prism_surfaces();
+        let x = canonical_prism();
+        let zero_q = vec![0.0; members.len()];
+        let zero_sigmas = vec![0.0; surfaces.len()];
+
+        let obj = combined_eig_gap_objective(6, &members, &zero_q, &surfaces, &zero_sigmas, &x);
+        assert_eq!(obj, 0.0, "all-zero D must score a perfect 0.0, got {obj}");
+
+        // With g0 == 0.0 the finite-difference gradient is also all-zero (D
+        // stays identically zero at every FD-perturbed geometry too, since
+        // both q and sigma are zero regardless of x), so the backtracking
+        // search can find no strictly-downhill trial and must return the
+        // geometry unchanged — pinning the claim that a premature "perfect"
+        // score cannot masquerade as progress.
+        let (next, _next_step) =
+            combined_geometry_descent_step(6, &members, &zero_q, &surfaces, &zero_sigmas, &x, 1e-2);
+        assert_eq!(
+            next, x,
+            "descent step must leave geometry unchanged when the objective is already 0.0",
         );
     }
 }
