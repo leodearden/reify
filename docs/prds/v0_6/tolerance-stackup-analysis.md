@@ -66,10 +66,8 @@ dispatch), so the engine-integration-norm §3 sub-check does **not** apply — t
 stdlib builtins on the `eval_builtin` dispatch chain (`reify-stdlib/src/lib.rs:225`), exactly
 like `von_mises` / `safety_factor` (`reify-stdlib/src/analysis.rs:27`, reached from the
 `eval_builtin` arm at `lib.rs:253`). That dispatch chain is the existing, catalogued surface;
-this PRD adds one arm (`stackup::eval_stackup`). **Pending #6001** (builtin-signature-registry
-leaf α; in flight on `task/6001`, unlanded as of 2026-09-11) that chain is *not* retired — it
-gains a registry-first `registry_dispatch::try_dispatch` hop ahead of the surviving family
-dispatchers, `stackup::eval_stackup` among them; §4.1 carries both shapes.
+this PRD adds one arm (`stackup::eval_stackup`). Pending #6001 that chain is *not* retired; §4.1
+states the post-#6001 shape and carries this file's single re-point obligation.
 
 ---
 
@@ -98,13 +96,8 @@ GR-040 preserved: no method-call syntax (`x.foo()`); all analysis is free-functi
 - `eval_builtin` free-function dispatch chain — `reify-stdlib/src/lib.rs:225`; analysis-arm
   pattern at `analysis::eval_analysis` (`reify-stdlib/src/analysis.rs:27`, dispatched from the
   arm at `lib.rs:253`), returning `Value::from_real_scalar`, `Value::List`, `Value::Map`.
-  **Pending #6001** (in flight on `task/6001`, unlanded as of 2026-09-11): each analysis builtin
-  instead registers as a `BindingKind::EvalBuiltin` row in
-  `crates/reify-builtins/src/registry.rs`, with its eval arm bound in the exhaustive
-  `crates/reify-stdlib/src/registry_dispatch.rs::dispatch` match over `EvalBuiltinId`, and
-  `analysis::eval_analysis`'s own arm goes away, as does `parse::eval_parse`'s — those two
-  families are the only ones migrated off the chain there; the rest of the chain stays (§4.1)
-  — re-point when it lands.
+  Pending #6001 the `analysis` and `parse` families migrate off this chain onto registry rows;
+  the rest of it, including everything this PRD adds, stays. Shape and re-point obligation: §4.1.
 - `Value::Map(BTreeMap<Value,Value>)`, `Value::List`, `Value::Scalar` (dimensioned) —
   `reify-ir/src/value.rs:993+` (`Scalar` at `:999`, `List` at `:1017`, `Map` at `:1101`).
   The multi-field result is a `Value::Map` keyed by string
@@ -234,10 +227,12 @@ kernel bound by an arm in the exhaustive `crates/reify-stdlib/src/registry_dispa
 match over `EvalBuiltinId`. Measured on `task/6001` @3100d29849, only parse + analysis have
 migrated (7 `EvalBuiltinId` variants) and **no stackup name is a row** — so the dispatch-arm
 shape above is what this PRD's builtins get under #6001 as it stands, and registering them as
-rows instead would be a separate, later migration. Re-check when #6001 lands.
+rows instead would be a separate, later migration. Re-check when #6001 lands. **This paragraph
+is this file's single #6001 re-point site** — §1, §2, §7.1 and RESOLVED DECISIONS defer here
+rather than restating it.
 
 ```text
-eval_stackup(name, args) -> Option<Value>     // arm on the eval_builtin chain; see §4.1
+eval_stackup(name, args) -> Option<Value>     // arm on the eval_builtin chain (lib.rs:225)
   "stackup_worst_case"  (chain: List<Contributor>)                        -> Map
   "stackup_rss"         (chain: List<Contributor>, sigma_level?: Real=3)  -> Map
   "monte_carlo_stackup" (chain: List<Contributor>,
@@ -346,7 +341,7 @@ The decomposition is a vertical slice (§8) with a final integration-gate exampl
 
 | # | Seam | Producer side | Consumer side |
 |---|---|---|---|
-| 7.1 | builtin ↔ eval dispatch | `eval_stackup` returns `Some(Value::Map)` for each name, `None` for unknown (so `eval_builtin` falls through). Unchanged by #6001 as it stands: no stackup name is an `EvalBuiltinId` row on `task/6001` @3100d29849, so `eval_stackup` stays on the chain and a name-keyed `None` remains the signal. *Only if* these names are later registered as rows does the producer-side signal become the exhaustive `EvalBuiltinId` match **failing to compile** for a row with no arm | `eval_builtin("stackup_rss", …)` (`lib.rs:225` chain) routes to it and yields the Map; an unknown stackup-ish name ⇒ `Value::Undef`. Unchanged by #6001 — the consumer-side observable is the same under either shape |
+| 7.1 | builtin ↔ eval dispatch | `eval_stackup` returns `Some(Value::Map)` for each name, `None` for unknown (so `eval_builtin` falls through). Unchanged by #6001 (§4.1); *only if* these names are later registered as rows does the producer-side signal become the exhaustive `EvalBuiltinId` match **failing to compile** for a row with no arm | `eval_builtin("stackup_rss", …)` (`lib.rs:225` chain) routes to it and yields the Map; an unknown stackup-ish name ⇒ `Value::Undef`. Unchanged by #6001 — the consumer-side observable is the same under either shape (§4.1) |
 | 7.2 | stdlib `.ri` ↔ builtin | a `Contributor`/`contributor(...)` value is a Map with the §4.1 keys | the builtin reads the map; a malformed map ⇒ `E_StackupDimMismatch` + `Value::Undef` |
 | 7.3 | math ↔ hand-calc (RSS/worst-case) | builtins compute per §3.1/§3.2 | a 3-part golden `.ri` evaluated by `reify eval` prints `worst_case_band`, `rss_sigma` equal to hand-computed values to 1e-12 |
 | 7.4 | MC determinism | `monte_carlo_stackup` uses the vendored seeded PRNG | two evals at the same seed print bit-identical `mc_sigma`/`mc_mean`; a different seed differs; convergence: MC-σ within 2% of RSS-σ at samples=100k (derived SE basis §3.3) |
@@ -500,10 +495,9 @@ override:
 
 - Builtins live in a **new `reify-stdlib/src/stackup.rs`**, dispatched via a new
   `stackup::eval_stackup` arm in `eval_builtin` (`lib.rs:225`) — mirrors `analysis.rs` exactly.
-  #6001 landing does not by itself supersede the *dispatch-mechanism* half — stackup stays on
-  the chain there (§4.1); only a later migration of these names to `EvalBuiltinId` rows would.
-  What is decided here and holds under either shape is that the builtins get their own
-  `stackup.rs` rather than being folded into `analysis.rs`.
+  What is decided here, and holds under either dispatch shape, is that the builtins get their own
+  `stackup.rs` rather than being folded into `analysis.rs`. #6001 does not supersede that; for
+  the dispatch shape under it, see §4.1.
   **Zero contact** with the kernel-tolerance budget machinery (§0).
 - Observable surface is **`reify eval`** value-cell printing (no new CLI subcommand needed).
 - Result is a **`Value::Map`** (deterministic key order, self-describing).
