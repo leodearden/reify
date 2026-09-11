@@ -63,14 +63,34 @@ OUTPUTS="grammar.json node-types.json parser.c"
 # present-but-failing hasher would be indistinguishable from a genuinely stale
 # file.  Fail closed and LOUD instead: this script's job is to keep "changed"
 # and "could not tell" apart.
+#
+# The RETRY matters as much as the fail-closed direction, and is the same
+# 3-attempt / 100ms-linear-backoff ladder ts_hash_file and build_support.rs's
+# `sha256_of` both run.  The hasher can be on PATH and still fail one call — a
+# transient fork/EMFILE spike under the parallel-cargo load this host routinely
+# builds at.  Without the retry that spike propagates all the way out: a
+# 3.6 s generate that SUCCEEDED loses its attestation, and the next run pays
+# another full regeneration for a fault that was over in milliseconds.
 _hash_one() {
-    local _raw _hash
-    if ! _raw=$(compute_sha256 "$1" 2>/dev/null); then
-        return 1
-    fi
-    _hash=$(printf '%s\n' "$_raw" | awk '{print $1}')
-    [ -n "$_hash" ] || return 1
-    printf '%s\n' "$_hash"
+    local _attempt _raw _hash
+    for _attempt in 1 2 3; do
+        # stderr suppressed per attempt so a retry that later SUCCEEDS stays
+        # quiet; the caller emits the single authoritative diagnostic.
+        if _raw=$(compute_sha256 "$1" 2>/dev/null); then
+            _hash=$(printf '%s\n' "$_raw" | awk '{print $1}')
+            if [ -n "$_hash" ]; then
+                printf '%s\n' "$_hash"
+                return 0
+            fi
+        fi
+        # Plain `if`, not `[ ... ] && sleep`: as the last statement in the loop
+        # body the short-circuit form would make the function's exit status
+        # depend on arithmetic rather than on the explicit `return 1` below.
+        if [ "$_attempt" -lt 3 ]; then
+            sleep "0.$_attempt"
+        fi
+    done
+    return 1
 }
 
 # _render_outputs_manifest
@@ -253,10 +273,23 @@ done
 # Attest what was just generated: the grammar hash, then the output manifest.
 # $STAMP_FILE still receives the bare 64-hex hash with no trailing newline,
 # byte-identical to what it has always held.
+#
+# NEVER FATAL, and the outputs are never touched here — the same call
+# build_support.rs's `write_shell_stamps` makes for the identical condition.
+# The outputs above were generated and existence-verified; only their
+# attestation failed, which leaves them UNPROVEN, and both _stamp_is_current
+# and build.rs's needs_generate read unproven as STALE.  So the next run
+# self-heals at the cost of one regeneration.  Deleting a good parser.c and
+# exiting 1 instead would turn a transient hasher fault into a hard failure of
+# every caller (build.rs, hooks/project-checks, verify) — a far worse trade
+# than the regeneration.  Both stamps go, not just the one that failed: a
+# grammar stamp with no manifest beside it is exactly the unproven state
+# intended, while a surviving pair could vouch for bytes nothing verified.
 if ! _write_stamps; then
-    echo "ERROR: generated outputs could not be attested; removing them" >&2
-    _cleanup_partial_outputs
-    exit 1
+    echo "WARNING: generated outputs could not be attested; leaving them" \
+         "unstamped (the next run will regenerate)" >&2
+    rm -f "$STAMP_FILE" "$OUTPUTS_STAMP_FILE" \
+          "src/.tmp-$$-grammar_hash" "src/.tmp-$$-generated_outputs"
 fi
 
 # Lock released automatically when script exits (fd 9 is closed).

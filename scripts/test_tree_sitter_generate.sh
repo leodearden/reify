@@ -21,6 +21,14 @@ source "$SCRIPT_DIR/lib.sh"
 [ -f "$ROOT/tests/infra/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found"; exit 1; }
 source "$ROOT/tests/infra/test_helpers.sh"
 
+# ts_outputs_manifest_check — the ONE test-side verifier for
+# .generated_outputs.stamp, shared with tests/infra/test_tree_sitter_pipeline.sh.
+# The manifest has two writers (this script's target and build_support.rs); it
+# must not also grow a verifier per test file, or each would accept only the
+# shape its own writer emits.
+[ -f "$ROOT/tests/infra/ts_outputs_manifest_lib.sh" ] || { echo "ERROR: ts_outputs_manifest_lib.sh not found"; exit 1; }
+source "$ROOT/tests/infra/ts_outputs_manifest_lib.sh"
+
 # Ensure parser.c + stamp are restored on exit.
 trap '"$GENERATE_SCRIPT" --force >/dev/null 2>&1 || true' EXIT
 
@@ -57,27 +65,15 @@ assert "stamp hash matches grammar.js sha256" \
 assert "outputs manifest exists after generation" \
     test -f "$OUTPUTS_STAMP_FILE"
 
-manifest_rels=$(awk '{print $2}' "$OUTPUTS_STAMP_FILE" 2>/dev/null || echo "")
-assert "outputs manifest names exactly the three generated outputs, sorted" \
-    env RELS="$manifest_rels" bash -c '[ "$RELS" = "grammar.json
-node-types.json
-parser.c" ]'
-
-# The `-f` guard keeps an ABSENT manifest a reported FAIL rather than a hard
-# abort: under `set -euo pipefail` a redirect from a missing file kills the whole
-# script, so the remaining 40-odd assertions would never run.
-manifest_ok=true
-if [ -f "$OUTPUTS_STAMP_FILE" ]; then
-    while read -r _recorded _rel; do
-        [ -n "$_rel" ] || continue
-        _actual=$(compute_sha256 "$TS_DIR/src/$_rel" | awk '{print $1}')
-        [ "$_recorded" = "$_actual" ] || manifest_ok=false
-    done < "$OUTPUTS_STAMP_FILE"
-else
-    manifest_ok=false
-fi
-assert "every outputs-manifest hash matches the file on disk" \
-    test "$manifest_ok" = true
+# ONE verifier, checking BOTH the name set and every hash, and shared with
+# tests/infra/test_tree_sitter_pipeline.sh so the two writers of this format
+# cannot each be graded by their own grader.  It is also the reason this is not
+# an inline loop any more: `_actual=$(compute_sha256 ... )` unguarded propagated
+# an unhashable output's exit status under `set -euo pipefail` and killed the
+# suite mid-run, so the remaining 40-odd assertions never executed and the
+# failure was reported as a script crash rather than as this assertion.
+assert "outputs manifest names the three outputs, each matching its file on disk" \
+    ts_outputs_manifest_check "$TS_DIR/src"
 
 # ── Test 2: staleness check skips generation when up to date ───────
 echo ""

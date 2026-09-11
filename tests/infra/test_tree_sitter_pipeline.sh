@@ -30,6 +30,14 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/plan_capture_lib.sh" ] || { echo "ERROR: plan_capture_lib.sh not found at $SCRIPT_DIR/plan_capture_lib.sh"; exit 1; }
 source "$SCRIPT_DIR/plan_capture_lib.sh"
 
+# ts_outputs_manifest_lib.sh — ts_sha256 and the ONE test-side verifier for
+# .generated_outputs.stamp, shared with scripts/test_tree_sitter_generate.sh so
+# the manifest's two writers (shell and Rust) are checked by one oracle.
+# Safe to source here despite run_tests' `declare -F | awk '/test_/'` discovery:
+# that file defines no function whose name contains `test_`, and says so.
+[ -f "$SCRIPT_DIR/ts_outputs_manifest_lib.sh" ] || { echo "ERROR: ts_outputs_manifest_lib.sh not found at $SCRIPT_DIR/ts_outputs_manifest_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/ts_outputs_manifest_lib.sh"
+
 TS_DIR="$REPO_ROOT/tree-sitter-reify"
 
 # The out-of-build freshness guard (task #5629 / esc-5392-1).  A build script that
@@ -181,7 +189,7 @@ provision_fixture_parser_c() {
 }
 
 # --- Guard Helper ---
-# run_guarded_cargo_check <out_file> <cmd...>
+# run_guarded_cargo_check [--skip-on-unresolved] <out_file> <cmd...>
 # Runs <cmd...>, capturing combined stdout+stderr to <out_file>.
 # Returns a tri-state code safe under `set -euo pipefail`:
 #   0 — success              (caller continues to parser.c existence checks)
@@ -191,16 +199,28 @@ provision_fixture_parser_c() {
 # Uses `|| rc=$?` to capture cmd's GENUINE exit code, shielding it from
 # `set -e` (the established codebase idiom; see test_portable_timeout.sh:212).
 #
-# DEPENDENCY RESOLUTION IS AN ENVIRONMENT GAP, NOT A DEFECT (#6992 amendment
-# pass). mk_ts_build_fixture writes a standalone crate outside the workspace,
-# with no Cargo.lock and `cc = "1"` as a build-dependency, and builds it
-# --offline — so resolution succeeds only if the host's shared registry cache
-# already holds a compatible cc 1.x. Mapping only exit 124 to SKIP made such a
-# host report a defect in this pipeline, which is exactly the inconsistency
-# require_tree_sitter_cli and the `SKIP: no hasher` arms exist to avoid. The
-# patterns below are cargo resolver/registry diagnostics; a compile error from
-# build.rs cannot produce them, so this cannot mask a real failure.
+# --skip-on-unresolved IS OPT-IN, AND MUST STAY THAT WAY (#6992 amendment pass).
+# It adds one arm: a cargo resolver/registry diagnostic maps to SKIP rather than
+# FAIL. That is right ONLY for the mk_ts_build_fixture callers, which write a
+# standalone crate outside the workspace, with no Cargo.lock and `cc = "1"` as a
+# build-dependency, and build it --offline — so resolution succeeds only if the
+# host's shared registry cache already holds a compatible cc 1.x, and a host
+# without it has an environment gap, not a defect (the inconsistency
+# require_tree_sitter_cli and the `SKIP: no hasher` arms exist to avoid).
+#
+# It is WRONG for the callers that run against the REAL workspace
+# (`-p tree-sitter-reify --manifest-path $REPO_ROOT/Cargo.toml`), which have a
+# committed Cargo.lock and no --offline: there, `no matching package` / `failed
+# to select a version` mean a genuinely broken manifest or lockfile, and a
+# blanket arm would print SKIP and return 0 over exactly the breakage those
+# tests exist to catch. Hence the flag rather than a shared arm — the default
+# stays the pre-existing 0/1/124 tri-state.
 run_guarded_cargo_check() {
+    local skip_on_unresolved=false
+    if [ "${1:-}" = "--skip-on-unresolved" ]; then
+        skip_on_unresolved=true
+        shift
+    fi
     local out_file="$1"; shift
     local rc=0
     "$@" >"$out_file" 2>&1 || rc=$?
@@ -209,7 +229,7 @@ run_guarded_cargo_check() {
     elif [ "$rc" -eq 124 ]; then
         echo "  SKIP: cargo check timed out after 300 s (cold/contended-cache environment)"
         return 2
-    elif grep -qE 'no matching package|failed to select a version|registry index was not found|not found in registry|failed to download|attempting to make an HTTP request' "$out_file"; then
+    elif [ "$skip_on_unresolved" = true ] && grep -qE 'no matching package|failed to select a version|registry index was not found|not found in registry|failed to download|attempting to make an HTTP request' "$out_file"; then
         echo "  SKIP: cargo could not resolve dependencies offline (host registry cache lacks them)"
         return 2
     else
@@ -477,22 +497,6 @@ ts_masked_path_dir() {
     printf '%s' "$shim"
 }
 
-# ts_sha256 <file>
-#
-# Bare sha256 of one file. Mirrors portable_sha256 (scripts/lib_portable.sh)
-# rather than sourcing it: run_tests discovers cases by matching 'test_' against
-# every `declare -F` line, so sourcing a library here would run any of ITS
-# functions whose name happens to contain that substring.
-ts_sha256() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$1" | awk '{print $1}'
-    elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 "$1" | awk '{print $1}'
-    else
-        return 1
-    fi
-}
-
 # mk_ts_generate_fixture
 #
 # A throwaway root holding a copy of scripts/ and a minimal tree-sitter-reify/,
@@ -526,55 +530,26 @@ ts_generate_grammar_stamp() {
 
 # ts_assert_outputs_manifest_matches_disk <src-dir>
 #
-# The ONE verifier for `.generated_outputs.stamp`: it exists and is non-empty,
-# it names EXACTLY the three EXPECTED_OUTPUTS sorted by relpath, and every
-# recorded hash equals the sha256 of the bytes sitting in <src-dir> RIGHT NOW.
+# This suite's adapter onto `ts_outputs_manifest_check` — the ONE test-side
+# verifier for `.generated_outputs.stamp`, which lives in
+# tests/infra/ts_outputs_manifest_lib.sh so that scripts/test_tree_sitter_generate.sh
+# checks the shell-written manifest with the very same code this suite checks the
+# build.rs-written one with. (See that file's header for why one verifier over
+# two writers is the point.)
 #
-# Shared deliberately (SPOT). The manifest has two independent renderers —
-# `_render_outputs_manifest` in scripts/tree-sitter-generate.sh and
-# `outputs_manifest_render` in tree-sitter-reify/build_support.rs — and a
-# per-site verifier would let one of them drift into a shape only its own test
-# accepts. One verifier, both writers.
-#
-# Nothing a COMMENT can satisfy: the subject is the manifest's bytes on disk,
-# not the source text of whatever wrote them.
+# The adapter is the tri-state translation: a host with no hasher cannot verify
+# anything, and must SKIP rather than report a defect in the pipeline.
 #
 # Deliberately NOT named test_* — run_tests discovers cases by matching 'test_'
 # against the whole `declare -F` line, so any helper carrying that substring
 # would be executed as a test case.
 ts_assert_outputs_manifest_matches_disk() {
-    local src="$1" stamp="$1/.generated_outputs.stamp"
-    assert_file_nonempty "$stamp" || return 1
-
-    local expected_rels="grammar.json
-node-types.json
-parser.c"
-    local actual_rels
-    actual_rels=$(awk '{print $2}' "$stamp")
-    if [ "$actual_rels" != "$expected_rels" ]; then
-        echo ""
-        echo "  ASSERTION FAILED: manifest must name exactly the three generated outputs, sorted"
-        echo "  manifest: $stamp"
-        echo "  --- expected ---"; printf '%s\n' "$expected_rels"
-        echo "  --- actual ---";   printf '%s\n' "$actual_rels"
-        return 1
-    fi
-
-    local rel recorded actual
-    while read -r recorded rel; do
-        [ -n "$rel" ] || continue
-        actual=$(ts_sha256 "$src/$rel") || {
-            echo ""; echo "  SKIP: no sha256sum/shasum on PATH"; return 0
-        }
-        if [ "$recorded" != "$actual" ]; then
-            echo ""
-            echo "  ASSERTION FAILED: manifest hash for $rel does not match the file on disk"
-            echo "  manifest: $stamp"
-            echo "  recorded: $recorded"
-            echo "  actual:   $actual"
-            return 1
-        fi
-    done < "$stamp"
+    local rc=0
+    ts_outputs_manifest_check "$1" || rc=$?
+    case "$rc" in
+        0|2) return 0 ;;   # 2 = no hasher; the SKIP line is already printed
+        *)   return 1 ;;
+    esac
 }
 
 # mk_ts_build_fixture <grammar-variant-file> [crate-subdir]
@@ -1117,6 +1092,49 @@ test_timeout_guard_passes_on_exit_0() {
     if [ "$rc" -ne 0 ]; then
         echo ""
         echo "  ASSERTION FAILED: expected run_guarded_cargo_check to return 0 (SUCCESS) on exit 0, got $rc"
+        return 1
+    fi
+}
+
+test_timeout_guard_fails_on_unresolved_without_optin() {
+    # Regression guard (`#6992` amendment pass): a cargo resolver diagnostic is a
+    # hard FAIL by DEFAULT. The real-workspace callers here
+    # (`-p tree-sitter-reify --manifest-path $REPO_ROOT/Cargo.toml`) have a
+    # committed Cargo.lock and no --offline, so `no matching package` there means
+    # a broken manifest or lockfile — the very breakage those tests exist to
+    # catch. If this case ever goes green at 2, that breakage now reports SKIP
+    # and returns 0.
+    local out rc
+    out=$(mktemp)
+    CLEANUP_ACTIONS+=("rm -f '$out'")
+    rc=0
+    run_guarded_cargo_check "$out" \
+        bash -c 'echo "error: no matching package named \`cc\` found" >&2; exit 101' \
+        >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -ne 1 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: expected 1 (FAIL) for an unresolved-dependency"
+        echo "  diagnostic with no --skip-on-unresolved opt-in, got $rc"
+        return 1
+    fi
+}
+
+test_timeout_guard_skips_on_unresolved_when_opted_in() {
+    # The other half: WITH the opt-in, the same output is an environment gap.
+    # Only the mk_ts_build_fixture callers pass the flag — they build a
+    # standalone crate --offline with no Cargo.lock, so resolution depends on
+    # what the host's shared registry cache happens to hold.
+    local out rc
+    out=$(mktemp)
+    CLEANUP_ACTIONS+=("rm -f '$out'")
+    rc=0
+    run_guarded_cargo_check --skip-on-unresolved "$out" \
+        bash -c 'echo "error: no matching package named \`cc\` found" >&2; exit 101' \
+        >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -ne 2 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: expected 2 (SKIP) for an unresolved-dependency"
+        echo "  diagnostic under --skip-on-unresolved, got $rc"
         return 1
     fi
 }
@@ -3536,6 +3554,95 @@ STUB
     done
 }
 
+test_generate_keeps_its_outputs_when_attestation_fails() {
+    # (`#6992` amendment pass) A hasher that fails on ONE file must not cost the
+    # run its outputs.
+    #
+    # _write_stamps used to be both FATAL and DESTRUCTIVE: one failed hash ran
+    # _cleanup_partial_outputs — deleting parser.c, grammar.json, node-types.json
+    # AND both stamps — then exited 1. So a multi-second `tree-sitter generate`
+    # that had already SUCCEEDED was thrown away, and every caller (build.rs,
+    # hooks/project-checks, verify) hard-failed, over a fault that is transient by
+    # nature: a fork/EMFILE spike spawning the hasher under the parallel-cargo
+    # load this host routinely builds at. _hash_one's retry ladder absorbs the
+    # ordinary spike; this pins what happens when even the retries lose.
+    #
+    # UNPROVEN is already the safe state. Outputs with no manifest beside them
+    # are read as STALE by _stamp_is_current here and by build.rs's
+    # needs_generate, so the next run regenerates unprompted. Deleting a good
+    # parser.c buys nothing that leaving it unstamped does not already buy.
+    # build_support.rs's write_shell_stamps makes the identical call ("Never
+    # fatal") for the identical condition.
+    require_tree_sitter_cli || return 0
+
+    local fix
+    fix=$(mk_ts_generate_fixture) || return 1
+
+    # A sha256sum that fails for parser.c ONLY, delegating every other file to
+    # the real binary. Scoping it to one file is load-bearing: a hasher that
+    # fails for EVERY file aborts at the script's `GRAMMAR_HASH=$(compute_sha256
+    # grammar.js | ...)` line under `set -euo pipefail`, long before anything is
+    # generated, and so never reaches the path under test. portable_sha256
+    # prefers sha256sum whenever it resolves, so shadowing that one name is
+    # enough — shasum is never consulted.
+    local real_sha shim
+    real_sha=$(command -v sha256sum) || {
+        echo "  SKIP: no sha256sum on PATH"; return 0
+    }
+    shim=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$shim'")
+    cat > "$shim/sha256sum" <<STUB
+#!/bin/sh
+for a in "\$@"; do
+    case "\$a" in *parser.c) exit 1 ;; esac
+done
+exec "$real_sha" "\$@"
+STUB
+    chmod +x "$shim/sha256sum"
+
+    local out rc=0
+    out=$( export PATH="$shim:$PATH"
+           bash "$fix/scripts/tree-sitter-generate.sh" --force 2>&1 ) || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: an unhashable output must not fail the run (exit $rc)"
+        echo "  --- script output ---"; printf '%s\n' "$out"; echo "  --- end ---"
+        return 1
+    fi
+
+    local f
+    for f in parser.c grammar.json node-types.json; do
+        if [ ! -s "$fix/tree-sitter-reify/src/$f" ]; then
+            echo ""
+            echo "  ASSERTION FAILED: src/$f was destroyed by a failed attestation"
+            echo "  The generate SUCCEEDED; only the stamp write did not."
+            echo "  --- script output ---"; printf '%s\n' "$out"; echo "  --- end ---"
+            return 1
+        fi
+    done
+
+    # Non-vacuity: the run must actually have taken the failure path, not
+    # silently hashed parser.c after all. Both stamps gone is that evidence —
+    # and it is also the contract, since a surviving stamp would vouch for bytes
+    # nothing verified.
+    local st
+    for st in "$(ts_generate_grammar_stamp "$fix")" "$(ts_generate_outputs_stamp "$fix")"; do
+        if [ -f "$st" ]; then
+            echo ""
+            echo "  ASSERTION FAILED: $st survived an attestation that could not hash"
+            echo "  the outputs — it vouches for bytes nothing verified."
+            return 1
+        fi
+    done
+
+    if ! printf '%s\n' "$out" | grep -q 'could not be attested'; then
+        echo ""
+        echo "  ASSERTION FAILED: the run must say the outputs went unattested"
+        echo "  --- script output ---"; printf '%s\n' "$out"; echo "  --- end ---"
+        return 1
+    fi
+}
+
 test_build_rs_repairs_a_parser_from_another_grammar() {
     # THE END-TO-END REPRODUCTION, and the one shape shared logic cannot fake: a
     # real cargo build, a real stale parser.c, in a warm-lane-shaped tree.
@@ -3558,7 +3665,7 @@ test_build_rs_repairs_a_parser_from_another_grammar() {
 
     local cargo_out guard_rc=0
     cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
-    run_guarded_cargo_check "$cargo_out" timeout 300 \
+    run_guarded_cargo_check --skip-on-unresolved "$cargo_out" timeout 300 \
         cargo build --offline --manifest-path "$fix/Cargo.toml" || guard_rc=$?
     if [ "$guard_rc" -eq 2 ]; then return 0; fi
     if [ "$guard_rc" -ne 0 ]; then return 1; fi
@@ -3593,7 +3700,7 @@ test_build_rs_repairs_a_parser_from_another_grammar() {
     touch "$fix/grammar.js"
 
     guard_rc=0
-    run_guarded_cargo_check "$cargo_out" timeout 300 \
+    run_guarded_cargo_check --skip-on-unresolved "$cargo_out" timeout 300 \
         cargo build --offline --manifest-path "$fix/Cargo.toml" || guard_rc=$?
     if [ "$guard_rc" -eq 2 ]; then return 0; fi
     if [ "$guard_rc" -ne 0 ]; then return 1; fi
@@ -3682,7 +3789,7 @@ test_build_rs_repairs_a_parser_from_another_grammar() {
     mtime_before=$(ts_mtime "$fix/src/parser.c") || return 1
 
     guard_rc=0
-    run_guarded_cargo_check "$cargo_out" timeout 300 \
+    run_guarded_cargo_check --skip-on-unresolved "$cargo_out" timeout 300 \
         cargo build --offline --manifest-path "$fix/Cargo.toml" || guard_rc=$?
     if [ "$guard_rc" -eq 2 ]; then return 0; fi
     if [ "$guard_rc" -ne 0 ]; then return 1; fi
@@ -3735,7 +3842,7 @@ test_build_rs_repairs_a_parser_from_another_grammar() {
     mtime_before=$(ts_mtime "$fix/src/parser.c") || return 1
 
     guard_rc=0
-    run_guarded_cargo_check "$cargo_out" timeout 300 \
+    run_guarded_cargo_check --skip-on-unresolved "$cargo_out" timeout 300 \
         cargo build --offline --manifest-path "$fix/Cargo.toml" || guard_rc=$?
     if [ "$guard_rc" -eq 2 ]; then return 0; fi
     if [ "$guard_rc" -ne 0 ]; then return 1; fi
@@ -3820,7 +3927,7 @@ test_shell_written_manifest_satisfies_build_rs() {
 
     local cargo_out guard_rc=0
     cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
-    run_guarded_cargo_check "$cargo_out" timeout 300 \
+    run_guarded_cargo_check --skip-on-unresolved "$cargo_out" timeout 300 \
         cargo build --offline --manifest-path "$crate/Cargo.toml" || guard_rc=$?
     if [ "$guard_rc" -eq 2 ]; then return 0; fi
     if [ "$guard_rc" -ne 0 ]; then return 1; fi
@@ -3861,7 +3968,7 @@ test_build_rs_restores_a_deleted_parser_c() {
 
     local cargo_out guard_rc=0
     cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
-    run_guarded_cargo_check "$cargo_out" timeout 300 \
+    run_guarded_cargo_check --skip-on-unresolved "$cargo_out" timeout 300 \
         cargo build --offline --manifest-path "$fix/Cargo.toml" || guard_rc=$?
     if [ "$guard_rc" -eq 2 ]; then return 0; fi
     if [ "$guard_rc" -ne 0 ]; then return 1; fi
@@ -3876,7 +3983,7 @@ test_build_rs_restores_a_deleted_parser_c() {
     rm -f "$fix/src/parser.c"
 
     guard_rc=0
-    run_guarded_cargo_check "$cargo_out" timeout 300 \
+    run_guarded_cargo_check --skip-on-unresolved "$cargo_out" timeout 300 \
         cargo build --offline --manifest-path "$fix/Cargo.toml" || guard_rc=$?
     if [ "$guard_rc" -eq 2 ]; then return 0; fi
     if [ "$guard_rc" -ne 0 ]; then return 1; fi
