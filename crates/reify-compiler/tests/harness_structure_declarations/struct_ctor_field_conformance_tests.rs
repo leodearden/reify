@@ -979,8 +979,7 @@ structure def Root {
 /// which MATCHES the `Point3<Length>` param exactly, so the rule is consulted
 /// and is silent because it AGREES — not because the arg is exempt from it.
 /// This is therefore the fixture that would notice the rule starting to reject
-/// args whose dimensions agree. (It was written as a placeholder carve-out
-/// before task 5344 `3c4ee5e9ac`; see the block comment above.)
+/// args whose dimensions agree.
 ///
 /// Its counterparts at the same arm are
 /// [`point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch`]
@@ -2812,26 +2811,14 @@ structure def Root {
 /// `dimensionless_quantity_point_param_rejects_dimensioned_point_arg`
 /// (`conformance/mod.rs`), which constructs the `Type::Point` itself and so
 /// BYPASSES the whole inference chain. That chain is what makes the claim true:
-/// task 5344 (`3c4ee5e9ac`) claimed `point3` / `point2` into the math
-/// construction family, so `math_fn_result_type`'s collapsed
-/// `"vec3" | "vec2" | "point3" | "point2"` arm now returns a real
-/// `Type::Point { n, quantity }` with the quantity taken from the FIRST argument.
-/// The same reasoning the `Matrix` fixture states about `matrix_shape` applies
-/// here, one arm over.
+/// `math_fn_result_type`'s collapsed `"vec3" | "vec2" | "point3" | "point2"` arm
+/// returns a real `Type::Point { n, quantity }`, the quantity taken from the
+/// FIRST argument. The same reasoning the `Matrix` fixture states about
+/// `matrix_shape` applies here, one arm over.
 ///
-/// It also retired, by demonstration, the premise that "no `.ri` source can
-/// produce a dimensioned `Type::Point` arg" — expired since 5344 landed. The
-/// sites that still asserted it were corrected by task 6436; none are
-/// outstanding.
-///
-/// **Scope fence, discharged.** This fixture pins the cell task 6159 itself
-/// ruled and measured. Converting the pre-existing `Point`-arm probes (task
-/// 5465's) to `.ri` fixtures was left to task 6436 and is now done — see
-/// [`point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch`]
-/// (reject), [`point2_arg_at_point3_param_warns_arity_arg_type_mismatch`]
-/// (arity) and [`point3_dimensionless_at_dimensioned_point_param_stays_clean`]
-/// (accept), which together give this arm the same three-cell `.ri` seam the
-/// `Vector` arm has.
+/// It also demonstrates that a dimensioned `Type::Point` arg IS reachable from
+/// `.ri` source — see the *Point / Vector quantity-slot convention* section of
+/// `crates/reify-core/src/ty.rs` for why, ruled there and not restated here.
 #[test]
 fn point3_dimensioned_at_dimensionless_point_param_warns_arg_type_mismatch() {
     // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
@@ -2976,13 +2963,11 @@ structure def Root {
 /// param spelling and `point3(1kg, 0kg, 0kg)` genuinely compiles and types as
 /// `Type::Point { n: 3, quantity: Scalar[kg] }`.
 ///
-/// **This fixture passes on arrival, and that is its point.** The capability
-/// landed with task 5344 (`3c4ee5e9ac`), which claimed `point3` / `point2` into
-/// `math_fn_result_type`'s collapsed `"vec3" | "vec2" | "point3" | "point2"`
-/// arm. It exists so that "a dimensioned `Type::Point` arg is unreachable from
-/// `.ri` source" — an erasure premise several rationale blocks around the
-/// `Point` probes once rested on — is held dead by a test rather than by prose,
-/// and so cannot be re-asserted from prose alone.
+/// **This fixture passes on arrival, and that is its point.** It exists so that
+/// "a dimensioned `Type::Point` arg is unreachable from `.ri` source" — an
+/// erasure premise the rationale blocks around the `Point` probes once rested on
+/// — is held dead by a test rather than by prose, and so cannot be re-asserted
+/// from prose alone.
 #[test]
 fn point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch() {
     // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
@@ -3004,6 +2989,59 @@ fn point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch() {
         "Scalar[m]",
         "Scalar[kg]",
         "Point3<Length> ← Point3<Mass>",
+    );
+}
+
+const SRC_POINT3_CROSS_DIMENSION_VIA_LET: &str = r#"module test.point3_cross_dimension_via_let
+structure def Anchor { param origin : Point3<Length> }
+structure def Root {
+    let p = point3(1kg, 0kg, 0kg)
+    let a = Anchor(origin: p)
+}
+"#;
+
+/// THE VALUE-CELL ROUTE into the `Point` arm: the same cross-dimension cell as
+/// the fixture directly above, but reached through a `let` binding rather than a
+/// direct call at the arg position.
+///
+/// This is the route the `Type::Point` arm's comment in `conformance/mod.rs`
+/// names as the reason its tolerance lives INSIDE the arm rather than as an
+/// arg-side `CompiledExpr` skip: an arg-side skip sees a `FunctionCall`, so it
+/// would MISS the resulting `ValueRef`, and only the type-level walker reaches
+/// it. That is a behavioural claim about a second entry point, and this fixture
+/// is what holds it — neither the direct-call fixture above nor the hand-built
+/// `Type` probe in `conformance/mod.rs` exercises it, so without this one the
+/// value-cell route could go silent with the whole suite green.
+///
+/// MEASURED at HEAD `2c449f5d6e`: exactly one `ArgTypeMismatch` [Warning] —
+/// "argument 'origin' has quantity 'Scalar[kg]' but param 'origin' requires
+/// quantity 'Scalar[m]'", identical to the direct-call twin. Zero compile
+/// errors, so the `let` cell genuinely persists a `Type::Point { n: 3, quantity:
+/// Scalar[kg] }` rather than degrading to a placeholder.
+///
+/// **Not a duplicate of the twin above — measured.** An instrumented run of the
+/// walker's non-literal fallback shows the two fixtures arrive with DIFFERENT
+/// `CompiledExprKind`s at the same `Point3<Length>` param: `FunctionCall`
+/// (`std::point3`) for the twin, `ValueRef(Root.p)` here. Both carry
+/// `Point { n: 3, quantity: Scalar[kg] }`, so the `let` does not inline and the
+/// value cell does not erase.
+#[test]
+fn point3_cross_dimension_via_let_at_dimensioned_point_param_warns_arg_type_mismatch() {
+    // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
+    // Load-bearing as on the direct-call twin, and once more here: a `let` whose
+    // initialiser failed to compile emits zero ctor-conformance diagnostics.
+    let module = compile_source_with_stdlib(SRC_POINT3_CROSS_DIMENSION_VIA_LET);
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    assert_single_quantity_conflict_warning_in(
+        &module,
+        "origin",
+        "Scalar[m]",
+        "Scalar[kg]",
+        "Point3<Length> ← Point3<Mass> reached through a `let` value cell",
     );
 }
 

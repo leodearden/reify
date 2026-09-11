@@ -210,10 +210,7 @@
 //! `Matrix<3,3,MomentOfInertia>` is spelled `List<List<Real>>` at every corpus
 //! site; and a `Field`'s slots always erase to `Field<Real, Real>`, which is what
 //! produced the false warnings that arm's comment records.  Neither route exists
-//! on the param side, where the slot is always written out.  (These are the same
-//! two entries the `general_leaf_param_family_is_validated` doc lists under
-//! *Handled by dedicated shape-based arms instead* in `conformance/mod.rs`;
-//! the two lists must stay consistent.)
+//! on the param side, where the slot is always written out.
 //!
 //! There used to be a THIRD, listed first: `point3(…)` is an eval-builtin with no
 //! `.ri` return type, so its calls arrive as `Scalar[m]` / `Int` placeholders.
