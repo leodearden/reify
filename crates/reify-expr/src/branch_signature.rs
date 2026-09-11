@@ -65,6 +65,27 @@ pub const CALLEE_MARKER: u16 = u16::MAX;
 /// their distinctness and their position above every structural index.
 pub const DEPENDENT_MARKER: u16 = u16::MAX - 1;
 
+/// The index of the first position at which two ordered sequences diverge,
+/// counting "one ran out" as a divergence — or `None` when they are equal.
+///
+/// [`BranchRecord::differs_from`] and `reify_constraints::Jacobian::
+/// differs_from` are the same walk at two levels: entries within a record, and
+/// records within a Jacobian.  Both stop at the first mismatch, and both treat
+/// the longer side's next element as the divergence when one runs out.  Stated
+/// once, because two independent spellings of it would drift silently: the
+/// symptom is λ missing a real alternation, or manufacturing one that never
+/// happened.
+///
+/// The returned index is always held by at least one of the two slices.
+pub fn first_divergence<T: PartialEq>(a: &[T], b: &[T]) -> Option<usize> {
+    for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+        if x != y {
+            return Some(i);
+        }
+    }
+    if a.len() == b.len() { None } else { Some(a.len().min(b.len())) }
+}
+
 /// Where a kink sits in the expression tree: the structural child-index path
 /// from the residual root.
 ///
@@ -290,18 +311,17 @@ impl BranchRecord {
     /// choice differs, and also when one record simply has an entry the other
     /// lacks — in which case the site named is the extra entry's own.
     pub fn differs_from(&self, other: &BranchRecord) -> Option<KinkSite> {
-        for (a, b) in self.entries.iter().zip(other.entries.iter()) {
-            if a != b {
-                return Some(a.site.clone());
-            }
-        }
-        // One ran out first: the next entry of the longer record is the
-        // divergence.
-        match self.entries.len().cmp(&other.entries.len()) {
-            std::cmp::Ordering::Greater => Some(self.entries[other.entries.len()].site.clone()),
-            std::cmp::Ordering::Less => Some(other.entries[self.entries.len()].site.clone()),
-            std::cmp::Ordering::Equal => None,
-        }
+        let i = first_divergence(&self.entries, &other.entries)?;
+        // Whichever record holds index `i`.  When both do they disagree there,
+        // and `self`'s entry is the one named — the same side the traversal
+        // order makes primary.  When only one does, the other ran out and the
+        // extra entry IS the divergence.
+        let entry = self
+            .entries
+            .get(i)
+            .or_else(|| other.entries.get(i))
+            .expect("first_divergence returns an index at least one side holds");
+        Some(entry.site.clone())
     }
 
     /// A stable, order-sensitive key for this branch set.

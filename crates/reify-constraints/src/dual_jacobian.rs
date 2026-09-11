@@ -53,7 +53,7 @@
 
 use reify_expr::{
     BranchRecord, DEPENDENT_MARKER, DualEnv, KinkSite, NonDifferentiable, Seeds, Tangent,
-    eval_dual_with_env, jacobian_row_with_env,
+    eval_dual_with_env, first_divergence, jacobian_row_with_env,
 };
 use reify_core::ValueCellId;
 use reify_ir::{AutoParam, CompiledExpr, CompiledFunction, ValueMap};
@@ -100,28 +100,23 @@ impl Jacobian {
     /// functions, so their rows are not two samples of one — which is exactly
     /// when η must contract its trust region rather than trust a secant.
     pub fn differs_from(&self, other: &Jacobian) -> Option<(usize, KinkSite)> {
-        for (i, (a, b)) in self.branch_records.iter().zip(other.branch_records.iter()).enumerate() {
-            if let Some(site) = a.differs_from(b) {
-                return Some((i, site));
+        // The same "first position at which two ordered sequences diverge" rule
+        // `BranchRecord::differs_from` applies to entries, applied here to rows
+        // — one statement of it, in `reify_expr::first_divergence`.
+        let row = first_divergence(&self.branch_records, &other.branch_records)?;
+        let site = match (self.branch_records.get(row), other.branch_records.get(row)) {
+            (Some(a), Some(b)) => a
+                .differs_from(b)
+                .expect("records at a divergent row must disagree with each other"),
+            // Different row counts are a different PROBLEM, not a branch flip.
+            // The extra row's first kink is the closest thing to a site; when
+            // that row is smooth there is none, and `root` stands in.
+            (Some(r), None) | (None, Some(r)) => {
+                r.entries().first().map(|e| e.site.clone()).unwrap_or_else(KinkSite::root)
             }
-        }
-        // Different row counts are a different PROBLEM, not a branch flip, so
-        // there is no site to name; report the first row only one side has.
-        let (longer, n) = if self.branch_records.len() > other.branch_records.len() {
-            (self, other.branch_records.len())
-        } else if other.branch_records.len() > self.branch_records.len() {
-            (other, self.branch_records.len())
-        } else {
-            return None;
+            (None, None) => unreachable!("first_divergence returns an index one side holds"),
         };
-        Some((
-            n,
-            longer.branch_records[n]
-                .entries()
-                .first()
-                .map(|e| e.site.clone())
-                .unwrap_or_else(KinkSite::root),
-        ))
+        Some((row, site))
     }
 }
 

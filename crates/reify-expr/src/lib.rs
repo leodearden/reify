@@ -23,7 +23,7 @@ mod sanitize;
 // reach it without knowing the module layout.
 pub use branch_signature::{
     BranchChoice, BranchEntry, BranchRecord, CALLEE_MARKER, DEPENDENT_MARKER, KinkKind, KinkSite,
-    ReductionKind,
+    ReductionKind, first_divergence,
 };
 pub use dual::{DualValue, Tangent};
 pub use dual_eval::{
