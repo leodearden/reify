@@ -370,10 +370,14 @@ ok "Reflink copy complete (gen ${_next_gen})."
 
 # Step 3b: prune superseded cargo hash-generations from the staging copy.
 #
-# Keeps only the newest _PRUNE_KEEP_GENERATIONS (by mtime) per group under
-# debug/deps, where a group is the set of filenames sharing a stem after
-# stripping a trailing `-<16 lowercase hex>` extra-filename suffix (cargo's
-# hashed-artefact naming). Reclaims the bulk of the warm base's bytes (mostly
+# Keeps only the newest _PRUNE_KEEP_GENERATIONS (by mtime) per (stem, ext)
+# group under debug/deps, where a group is the set of filenames sharing a
+# stem AND an extension after stripping a trailing `-<16 lowercase hex>`
+# extra-filename suffix (cargo's hashed-artefact naming) — e.g. libfoo-<hash>.rlib
+# and libfoo-<hash>.rmeta are independent groups, never pooled together, and a
+# split-debuginfo shard like axum-<hash>.axum.<hash>-cgu.09.rcgu.dwo never
+# matches at all (its stem-before-last-dot does not end in `-<16hex>`) so it
+# is never a candidate. Reclaims the bulk of the warm base's bytes (mostly
 # extensionless test/bench binaries); N=2 rather than N=1 is a deliberate
 # ruling that keeps a fallback generation so a lane whose fingerprint misses
 # the single newest survivor does not rebuild cold — not a tunable, so no CLI
@@ -391,13 +395,24 @@ if [ -d "$_prune_deps" ]; then
         | awk -F'\t' -v keep="$_PRUNE_KEEP_GENERATIONS" '
             BEGIN { ORS = "\0" }
             {
+                # Split on the FINAL dot only (last dot, never the first, never
+                # a greedy multi-dot extension): ext = ".<suffix>" when fname
+                # contains a dot, else "". This is the one normative copy of
+                # the hashed-artefact grammar (SPOT) — the stem must match
+                # ^(.+)-[0-9a-f]{16}$ exactly: 16 lowercase-hex chars, anchored
+                # both ends, so a short/long/uppercase pseudo-hash never matches.
                 fname = $2
                 base_no_ext = fname
                 sub(/\.[^.]*$/, "", base_no_ext)
+                ext = substr(fname, length(base_no_ext) + 1)
                 if (base_no_ext !~ /^.+-[0-9a-f]{16}$/) next
                 stem = substr(base_no_ext, 1, length(base_no_ext) - 17)
-                n[stem]++
-                list[stem, n[stem]] = fname
+                # Group key = stem SUBSEP ext — SUBSEP ("\034") cannot occur in
+                # either field, so this never collides (e.g. "foo"+"-bar.rlib"
+                # vs "foo-bar"+".rlib" stay distinct groups).
+                key = stem SUBSEP ext
+                n[key]++
+                list[key, n[key]] = fname
             }
             END {
                 for (key in n) {
