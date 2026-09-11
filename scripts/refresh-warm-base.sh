@@ -37,6 +37,26 @@
 #      Fail-closed: no swap on refusal.
 #   2. Symlink-gen staging: build <base_dir>.gen.<N>.partial via
 #      cp -a --reflink=always (fail-closed — P2), rename to <base_dir>.gen.<N>.
+#   2b.Prune superseded hash-generations: within <base_dir>.gen.<N>.partial's
+#      debug/deps, group depth-1 regular files by (stem, ext) after stripping
+#      a trailing `-<16 hex>` extra-filename suffix (cargo's hashed-artefact
+#      naming); keep the newest _PRUNE_KEEP_GENERATIONS (=2) by mtime, delete
+#      the rest. N=2, not N=1: N=1 reclaims more but leaves no fallback
+#      generation, so a lane whose fingerprint misses the single survivor
+#      rebuilds cold — the exact cost the warm base exists to avoid. mtime,
+#      not .fingerprint: .fingerprint is a strict superset of deps (cargo
+#      GCs neither tree), so a fingerprint-keyed filter cannot remove
+#      anything BY CONSTRUCTION — do not reinstate that rule. LOAD-BEARING
+#      PRECONDITION: mtime is only a valid ordering signal because nothing
+#      stamps artefact mtimes today (seed-warm-lane.sh's bulk stamp targets
+#      sources, not target/; this script stamps no artefacts either) — if
+#      that ever changes, re-measure the live base's mtime spread before
+#      trusting this rule again. debug/.fingerprint is NOT pruned in
+#      lockstep (116 MB against 204 GiB; pruning it restores no liveness
+#      signal). Sited BEFORE the partial→gen rename below, so a failed
+#      prune costs only the .partial, which the EXIT trap already sweeps.
+#      Scope: base only (never a task lane, never _merge-verify); debug/deps
+#      only — release/ and debug/build are untouched.
 #   3. Bootstrap (first refresh): if <base_dir> is a pre-existing real dir,
 #      rename it to a retired gen dir first (never rename-over-populated).
 #   4. Write per-gen authoritative landed-commit stamp: <base_dir>.gen.<N>.basecommit

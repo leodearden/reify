@@ -25,6 +25,10 @@
 #   D — in-flight clone independence: clone dir untouched after refresh (B6)
 #   E — base self-description stamps: .rustflags and .invocation written after swap
 #   F — --check-frag defrag signal: verdict token + extent count, read-only
+#   G — basecommit provenance: per-gen .basecommit stamp == --landed-commit, reaped with its gen
+#   H — buildroot provenance: per-gen .buildroot stamp == realpath(advancing worktree root)
+#   I — WIP refusal: advancing worktree with tracked WIP is refused; wording advises committing, never stashing
+#   J — superseded hash-generation prune: keep newest 2 per (stem, ext) under debug/deps, scope-contained, deterministic under mtime ties
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 #
