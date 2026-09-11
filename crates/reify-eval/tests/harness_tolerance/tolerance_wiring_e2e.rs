@@ -4,7 +4,7 @@
 //! and short-circuit keyed on demanded tolerance, and
 //! `per_stage_tolerance_for_plan` consumption from the realization loop.
 //! Originally filed under task 2874; the file has since accreted pins from
-//! tasks 3103, 3176 and 4152 as well.
+//! several follow-up tasks — each test's doc names its own.
 //!
 //! Imports use the established test fixture surface
 //! (`reify_test_support::{make_engine, step_input_template, step_output_template,
@@ -577,7 +577,6 @@ fn per_stage_tolerance_for_plan_governs_tolerance_budget_for_two_stage_dispatch_
     // site instead, mirroring the borrowed-registry pattern.
     let single_borrow: BTreeMap<String, &CapabilityDescriptor> =
         single.iter().map(|(k, v)| (k.clone(), v)).collect();
-    //
     // Use `Engine::budget_available_set()` — the public helper that wraps
     // `BUDGET_QUERY_TRIPLE_V02.2` — so a future change to the underlying
     // slice is caught here automatically without requiring cross-crate access
@@ -1299,9 +1298,9 @@ fn eval_then_activate_purpose_then_build_preserves_tolerance_scope_across_intern
 ///
 /// **The regression this test guards against**: the post-success
 /// cache-insert gate in `execute_realization_ops` matches the cache-hit
-/// short-circuit's lookup gate exactly — both require BOTH
-/// `demanded_tol.is_some()` AND `realization_name.is_some()`
-/// (`if let (Some(tol), Some(_name)) = (demanded_tol, realization_name)`),
+/// short-circuit's lookup gate exactly — both gates are
+/// `is_terminal_realization && let (Some(tol), Some(_name)) =
+/// (demanded_tol, realization_name)`,
 /// so an anonymous realization never populates the cache. Were the two
 /// gates to drift apart again, an anonymous realization would populate the
 /// cache on the first build but could never be served from it: the lookup
@@ -1373,8 +1372,9 @@ fn anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_re
     );
 
     // (c) Core assertion: the anonymous realization must NOT populate the cache.
-    // The insert gate requires realization_name.is_some() in addition to
-    // demanded_tol.is_some(), so it is skipped here (realization_name.is_none()).
+    // The insert gate requires is_terminal_realization and
+    // realization_name.is_some() in addition to demanded_tol.is_some(), so
+    // it is skipped here (realization_name.is_none()).
     assert_eq!(
         engine.realization_cache().len(),
         0,
