@@ -14,7 +14,10 @@
 #          --task, {id}, and --pre-done (per design §11.1).
 #   (2.6) That first token is the pre-done WRAPPER, not the raw reify-audit
 #          binary — only the wrapper runs the REFUSE-mode freshness guard.
-#   3. The fused-memory MCP endpoint at :8002 is responsive.
+#   3. The fused-memory MCP endpoint at :8002 is responsive (retried a few
+#      times before failing; the final diagnostic distinguishes a refused
+#      connection [service down] from a timeout [service busy] rather than
+#      conflating them, per task 7061).
 #
 # Exits 0 on success (all assertions pass).
 # Exits 1 on first failed assertion (with a descriptive error message).
@@ -47,10 +50,14 @@ Asserts: (1) env var set in fused-memory service, (2) binary executable,
          (2.5) env value contains --task {id} --pre-done template tokens,
          (2.6) hook first token is reify-audit-predone-wrapper.sh (not the
                raw binary, which bypasses the freshness guard),
-         (3) fused-memory MCP endpoint responsive,
+         (3) fused-memory MCP endpoint responsive (retried; refused vs timed
+               out get distinct diagnostics),
          (4a/4b) RAW binary round-trip with seeded fixtures (known-pass +
                known-fail), against $REIFY_AUDIT_BIN rather than the hook target.
 Exits 0 on success, 1 on failure.
+
+Environment overrides:
+  FUSED_MEMORY_MCP_TIMEOUT   curl max-time in seconds per attempt (default: 5)
 USAGE
 }
 
@@ -62,7 +69,13 @@ fi
 SERVICE="fused-memory"
 ENV_VAR="FUSED_MEMORY_PREDONE_HOOK_REIFY"
 MCP_URL="http://localhost:8002/mcp"
-MCP_TIMEOUT=5
+# Per-attempt curl budget, overridable consistently with
+# scripts/reify-audit-predone-wrapper.sh's FUSED_MEMORY_MCP_TIMEOUT (default
+# 10 there; 5 here since this is a foreground operator check, not a hot-path
+# hook). Assertion 3 below retries several attempts at this budget rather than
+# leaning on one large timeout, so raising this only matters if a healthy
+# server routinely takes longer than a few seconds to answer.
+MCP_TIMEOUT="${FUSED_MEMORY_MCP_TIMEOUT:-5}"
 
 # Raw reify-audit binary used by assertion 4's fixture round-trips. Deliberately
 # NOT derived from the hook env var — see the assertion-4 comment block below.
@@ -175,20 +188,61 @@ if [[ "$(basename "$binary")" != "$WRAPPER_BASENAME" ]]; then
 fi
 
 # ── Assertion 3: fused-memory MCP endpoint is responsive ─────────────────────
+# Retries before failing, and distinguishes curl's "connection refused" (7)
+# from "timed out" (28) on the final diagnostic: these warrant OPPOSITE
+# operator responses. Refused means the service is down (check status).
+# Timed out means it accepted the connection but stalled -- observed in
+# practice (task 7061) as fused-memory answering instantly on immediate
+# re-probe under fleet load -- and must NOT steer anyone toward restarting the
+# fleet-wide MCP server on a momentary stall.
 echo "smoke-predone-hook: probing MCP endpoint at $MCP_URL..."
 
 initialize_payload='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke-test","version":"0.1"}}}'
 
-http_response=$(curl -s -o /tmp/smoke-predone-mcp-resp.json -w "%{http_code}" \
-    --max-time "$MCP_TIMEOUT" \
-    -X POST "$MCP_URL" \
-    -H "Content-Type: application/json" \
-    -H "Accept: application/json, text/event-stream" \
-    -d "$initialize_payload" 2>/dev/null) || {
-    echo "FAIL: curl to $MCP_URL failed (connection refused or timeout)." >&2
-    echo "      Check: systemctl --user status $SERVICE" >&2
+MCP_PROBE_ATTEMPTS=3
+MCP_PROBE_BACKOFF_SECS=1
+
+curl_exit=0
+http_response=""
+attempt=1
+while [[ "$attempt" -le "$MCP_PROBE_ATTEMPTS" ]]; do
+    http_response=$(curl -s -o /tmp/smoke-predone-mcp-resp.json -w "%{http_code}" \
+        --max-time "$MCP_TIMEOUT" \
+        -X POST "$MCP_URL" \
+        -H "Content-Type: application/json" \
+        -H "Accept: application/json, text/event-stream" \
+        -d "$initialize_payload" 2>/dev/null) && curl_exit=0 || curl_exit=$?
+
+    [[ "$curl_exit" -eq 0 ]] && break
+
+    if [[ "$attempt" -lt "$MCP_PROBE_ATTEMPTS" ]]; then
+        echo "smoke-predone-hook: MCP probe attempt $attempt/$MCP_PROBE_ATTEMPTS failed (curl exit $curl_exit); retrying in ${MCP_PROBE_BACKOFF_SECS}s..." >&2
+        sleep "$MCP_PROBE_BACKOFF_SECS"
+    fi
+    attempt=$((attempt + 1))
+done
+
+if [[ "$curl_exit" -ne 0 ]]; then
+    case "$curl_exit" in
+        7)
+            echo "FAIL: curl to $MCP_URL failed: connection refused (curl exit 7), after $MCP_PROBE_ATTEMPTS attempts." >&2
+            echo "      This means fused-memory is DOWN or not listening on :8002." >&2
+            echo "      Check: systemctl --user status $SERVICE" >&2
+            ;;
+        28)
+            echo "FAIL: curl to $MCP_URL timed out (curl exit 28), after $MCP_PROBE_ATTEMPTS attempts of ${MCP_TIMEOUT}s each." >&2
+            echo "      This means fused-memory ACCEPTED the connection but did not answer in" >&2
+            echo "      time -- a busy/stalled service, not necessarily a down one. Do NOT" >&2
+            echo "      restart $SERVICE on a timeout alone: re-run this script, or raise the" >&2
+            echo "      per-attempt budget with FUSED_MEMORY_MCP_TIMEOUT=<seconds>." >&2
+            ;;
+        *)
+            echo "FAIL: curl to $MCP_URL failed (curl exit $curl_exit), after $MCP_PROBE_ATTEMPTS attempts." >&2
+            echo "      Check: systemctl --user status $SERVICE" >&2
+            ;;
+    esac
     exit 1
-}
+fi
 
 if [[ "$http_response" != "200" ]]; then
     echo "FAIL: fused-memory MCP endpoint at $MCP_URL returned HTTP $http_response (expected 200)." >&2

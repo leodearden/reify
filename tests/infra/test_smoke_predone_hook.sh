@@ -128,6 +128,15 @@ make_raw_audit_stub
 # server. The smoke script captures curl's STDOUT as the HTTP status code
 # (-w "%{http_code}") and separately greps the -o file for a JSON-RPC body, so
 # the stub must honour BOTH channels.
+#
+# REIFY_TEST_CURL_FAIL_COUNT/REIFY_TEST_CURL_FAIL_EXIT let a test simulate a
+# transient (or persistent) probe failure: the stub fails with the given exit
+# code for the first N invocations (tracked via REIFY_TEST_CURL_COUNTER_FILE,
+# since each retry is a separate process) and then succeeds as normal. This is
+# the hermetic gate for the smoke script's retry-and-discriminate behaviour
+# (task 7061): a stub that fails 1 attempt then succeeds proves retry recovery;
+# one that always fails with exit 7 vs 28 proves the diagnostic branches on
+# "connection refused" vs "timed out" instead of conflating them.
 make_curl_stub() {
     cat > "$STUB_DIR/curl" << 'STUB_EOF'
 #!/usr/bin/env bash
@@ -138,6 +147,19 @@ for _arg in "$@"; do
     [ "$_prev" = "-o" ] && _out="$_arg"
     _prev="$_arg"
 done
+
+_fail_count="${REIFY_TEST_CURL_FAIL_COUNT:-0}"
+if [ "$_fail_count" -gt 0 ]; then
+    _counter_file="${REIFY_TEST_CURL_COUNTER_FILE:-/dev/null}"
+    _n=0
+    [ -f "$_counter_file" ] && _n="$(cat "$_counter_file")"
+    _n=$((_n + 1))
+    [ "$_counter_file" != "/dev/null" ] && echo "$_n" > "$_counter_file"
+    if [ "$_n" -le "$_fail_count" ]; then
+        exit "${REIFY_TEST_CURL_FAIL_EXIT:-7}"
+    fi
+fi
+
 [ -n "$_out" ] && printf '{"jsonrpc":"2.0","id":1,"result":{}}\n' > "$_out"
 printf '%s' "${REIFY_TEST_HTTP_CODE:-200}"
 exit 0
@@ -154,15 +176,25 @@ make_curl_stub
 # The calls log is truncated per run so each check reads only its own run's
 # stub invocations.
 CALLS_FILE="$TMPROOT/calls.log"
+CURL_COUNTER_FILE="$TMPROOT/curl-counter"
 
+# REIFY_TEST_CURL_FAIL_COUNT / REIFY_TEST_CURL_FAIL_EXIT are read from the
+# CALLER's environment (set inline as `VAR=val run_smoke ...`) so existing
+# callers that don't set them keep the curl stub's default "never fails"
+# behaviour; the counter file is reset every run so each check's retry count
+# starts fresh.
 run_smoke() {
     local _env_value="$1"
     local _out_file="$TMPROOT/smoke.out"
     local rc=0
     : > "$CALLS_FILE"
+    rm -f "$CURL_COUNTER_FILE"
     env \
         REIFY_TEST_HOOK_ENV_VALUE="$_env_value" \
         REIFY_TEST_CALLS_FILE="$CALLS_FILE" \
+        REIFY_TEST_CURL_COUNTER_FILE="$CURL_COUNTER_FILE" \
+        REIFY_TEST_CURL_FAIL_COUNT="${REIFY_TEST_CURL_FAIL_COUNT:-0}" \
+        REIFY_TEST_CURL_FAIL_EXIT="${REIFY_TEST_CURL_FAIL_EXIT:-7}" \
         REIFY_AUDIT_BIN="$STUB_DIR/reify-audit-raw" \
         PATH="$STUB_DIR:$PATH" \
         bash "$SMOKE" >"$_out_file" 2>&1 || rc=$?
@@ -263,5 +295,62 @@ assert "wrapper stub received NO --tasks-file invocation" \
 # wired, the smoke script must run clean to completion.
 assert "fully-stubbed correct wiring exits 0" \
     bash -c '[ "$1" -eq 0 ]' -- "$SMOKE_RC"
+
+# ==============================================================================
+# Check 4: a transient MCP stall clears on retry -- must NOT be reported as a
+# failure (task 7061: a probe that stalls once and answers on re-probe is not
+# an outage).
+# ==============================================================================
+echo ""
+echo "--- Check 4: transient MCP failure recovers via retry ---"
+
+REIFY_TEST_CURL_FAIL_COUNT=1 REIFY_TEST_CURL_FAIL_EXIT=28 \
+    run_smoke "$STUB_DIR/reify-audit-predone-wrapper.sh --task {id} --pre-done"
+
+assert "transient failure is retried and the run still succeeds" \
+    bash -c '[ "$1" -eq 0 ]' -- "$SMOKE_RC"
+
+assert "a retried attempt is logged" \
+    bash -c 'printf %s "$1" | grep -qi "retry"' -- "$SMOKE_OUT"
+
+# ==============================================================================
+# Check 5: persistent connection-refused (curl exit 7) names the DOWN
+# condition and points at systemctl status -- the correct remedy when the
+# service really is unreachable.
+# ==============================================================================
+echo ""
+echo "--- Check 5: persistent connection-refused points at systemctl status ---"
+
+REIFY_TEST_CURL_FAIL_COUNT=99 REIFY_TEST_CURL_FAIL_EXIT=7 \
+    run_smoke "$STUB_DIR/reify-audit-predone-wrapper.sh --task {id} --pre-done"
+
+assert "persistent connection-refused exits non-zero" \
+    bash -c '[ "$1" -ne 0 ]' -- "$SMOKE_RC"
+
+assert "connection-refused diagnostic names connection refused" \
+    bash -c 'printf %s "$1" | grep -qi "connection refused"' -- "$SMOKE_OUT"
+
+assert "connection-refused diagnostic points at systemctl status" \
+    bash -c 'printf %s "$1" | grep -q "systemctl --user status"' -- "$SMOKE_OUT"
+
+# ==============================================================================
+# Check 6: persistent timeout (curl exit 28) must NOT steer an operator toward
+# a fused-memory restart -- the service is up but busy, per task 7061's
+# measured false-positive (fused-memory healthy, re-probe succeeded in 0.023s).
+# ==============================================================================
+echo ""
+echo "--- Check 6: persistent timeout does not suggest a service restart ---"
+
+REIFY_TEST_CURL_FAIL_COUNT=99 REIFY_TEST_CURL_FAIL_EXIT=28 \
+    run_smoke "$STUB_DIR/reify-audit-predone-wrapper.sh --task {id} --pre-done"
+
+assert "persistent timeout exits non-zero" \
+    bash -c '[ "$1" -ne 0 ]' -- "$SMOKE_RC"
+
+assert "timeout diagnostic names timed out" \
+    bash -c 'printf %s "$1" | grep -qi "timed out"' -- "$SMOKE_OUT"
+
+assert "timeout diagnostic does NOT point at systemctl status" \
+    bash -c '! printf %s "$1" | grep -q "systemctl --user status"' -- "$SMOKE_OUT"
 
 test_summary
