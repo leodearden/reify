@@ -553,3 +553,138 @@ fn shift_at_an_eigenvalue_is_not_a_failure_on_the_dense_path() {
         "BT5 at σ=0.5",
     );
 }
+
+// ---------------------------------------------------------------------------
+// BT4 — provenance is honest in BOTH directions (C5)
+//
+// All three cases are on Fixture A, on the dense path, where the answer is
+// EXACT: `gevd_real` yields the whole spectrum, so "does an eigenvalue lie
+// strictly between 0 and σ and fail to come back?" is decidable, not estimated.
+// ---------------------------------------------------------------------------
+
+/// **BT4(a).** σ below λ₁ ⟹ nothing was skipped, and `modes[0]` is still the
+/// genuine first mode.
+///
+/// Fixture A, n_modes=2, σ=0.1 — below λ₁=0.2, so the open interval (0, 0.1)
+/// contains no eigenvalue at all. The selected pair is still {0.2, 0.25}.
+///
+/// The `eigenvalues[0] == ` the σ=0 first mode assertion is the exact condition
+/// ε (#7262) keys its `critical_load` / `safety_factor_buckling` /
+/// `first_frequency` refusal on: when this holds the helpers are correct and
+/// must NOT refuse.
+#[test]
+fn provenance_below_lambda_one_reports_nothing_skipped() {
+    let (k, b) = fixture_a();
+    let base = EigenSolverOptions {
+        n_modes: 2,
+        tol: 1e-12,
+        max_iters: 1000,
+        sigma: 0.0,
+    };
+
+    let unshifted = solve_eigen_dense(&k, &b, base.clone());
+    let shifted = solve_eigen_dense(&k, &b, EigenSolverOptions { sigma: 0.1, ..base });
+
+    assert_matches_closed_form(&shifted.eigenvalues, &[0.2, 0.25], 1e-12, "BT4(a) at σ=0.1");
+    assert_eq!(
+        shifted.shift, 0.1,
+        "BT4(a): the σ used must be reported as 0.1"
+    );
+    assert!(
+        !shifted.shift_skipped_modes,
+        "BT4(a): C5 violated — σ=0.1 lies below λ₁=0.2, so the open interval (0, 0.1) \
+         contains no eigenvalue and nothing can have been skipped; got true",
+    );
+    assert!(
+        (shifted.eigenvalues[0] - unshifted.eigenvalues[0]).abs() < 1e-12,
+        "BT4(a): modes[0] at σ=0.1 is {:.15} but the σ=0 first mode is {:.15} — a shift \
+         below λ₁ must leave the first mode intact",
+        shifted.eigenvalues[0],
+        unshifted.eigenvalues[0],
+    );
+}
+
+/// **BT4(b).** σ above λ₁ ⟹ modes WERE skipped.
+///
+/// Fixture A, n_modes=2, σ=0.6. The selected set is {1/3, 0.5}, so 0.2 and 0.25
+/// both lie strictly between 0 and σ and are both absent — `modes[0]` is
+/// 1/3, which is NOT the first mode, and a helper that reported it as one would
+/// be wrong in the unconservative direction.
+#[test]
+fn provenance_above_lambda_one_reports_skipped() {
+    let (k, b) = fixture_a();
+    let result = solve_eigen_dense(
+        &k,
+        &b,
+        EigenSolverOptions {
+            n_modes: 2,
+            tol: 1e-12,
+            max_iters: 1000,
+            sigma: 0.6,
+        },
+    );
+
+    assert_matches_closed_form(
+        &result.eigenvalues,
+        &[1.0 / 3.0, 0.5],
+        1e-12,
+        "BT4(b) at σ=0.6",
+    );
+    assert_eq!(
+        result.shift, 0.6,
+        "BT4(b): the σ used must be reported as 0.6"
+    );
+    assert!(
+        result.shift_skipped_modes,
+        "BT4(b): C5 violated — 0.2 and 0.25 lie strictly between 0 and σ=0.6 and are \
+         absent from the returned set {:?}; got false",
+        result.eigenvalues,
+    );
+}
+
+/// **BT4(c).** The sharp case: C5 counts ABSENCE from the returned set, not
+/// position relative to σ.
+///
+/// Fixture A, n_modes=3, σ=0.3. Distances are
+/// {1/3: 0.033, 0.25: 0.05, 0.2: 0.1, 0.5: 0.2, 1.0: 0.7}, so the selected set
+/// is {1/3, 0.25, 0.2}, presented as [0.2, 0.25, 1/3].
+///
+/// 0.2 and 0.25 DO lie strictly below σ=0.3 — and `shift_skipped_modes` must
+/// still be **false**, because both are RETURNED. This is the case that
+/// separates C5's "absent from the returned set" from a naive "any eigenvalue
+/// below σ" count, and it is the defect most likely to be coded by mistake: the
+/// naive version reports `true` here and would make ε (#7262) refuse a result
+/// whose first mode is perfectly present.
+#[test]
+fn provenance_counts_absence_not_position() {
+    let (k, b) = fixture_a();
+    let result = solve_eigen_dense(
+        &k,
+        &b,
+        EigenSolverOptions {
+            n_modes: 3,
+            tol: 1e-12,
+            max_iters: 1000,
+            sigma: 0.3,
+        },
+    );
+
+    assert_matches_closed_form(
+        &result.eigenvalues,
+        &[0.2, 0.25, 1.0 / 3.0],
+        1e-12,
+        "BT4(c) at σ=0.3",
+    );
+    assert_order_ascending_by_abs_lambda(&result.eigenvalues, "BT4(c) at σ=0.3");
+    assert_eq!(
+        result.shift, 0.3,
+        "BT4(c): the σ used must be reported as 0.3"
+    );
+    assert!(
+        !result.shift_skipped_modes,
+        "BT4(c): C5 violated — 0.2 and 0.25 lie below σ=0.3 but are both RETURNED in \
+         {:?}, so nothing was skipped; reporting true here means the implementation is \
+         counting position relative to σ instead of absence from the returned set",
+        result.eigenvalues,
+    );
+}
