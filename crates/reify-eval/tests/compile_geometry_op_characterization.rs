@@ -91,6 +91,15 @@ fn lit_len(v: f64) -> CompiledExpr {
     CompiledExpr::literal(Value::length(v), reify_core::Type::length())
 }
 
+/// Build a `CompiledExpr` literal from an ANGLE-dimensioned scalar (SI radians).
+///
+/// The angle-bearing args of `rotate` / `rotate_around` / `revolve` / `arc`
+/// require a dimensioned Angle since PRD 3 leaf γ — a bare literal in those
+/// positions is now rejected at eval, exactly as a bare length already was.
+fn lit_angle(radians: f64) -> reify_ir::CompiledExpr {
+    reify_ir::CompiledExpr::literal(reify_ir::Value::angle(radians), reify_core::Type::angle())
+}
+
 /// Build a `CompiledExpr` literal wrapping a `Value::Transform` (quaternion
 /// `[w,x,y,z]` rotation + SI-metre `[tx,ty,tz]` translation).
 ///
@@ -1562,7 +1571,7 @@ fn transform_case(k: TransformKind) -> CompiledGeometryOp {
             ("ax".to_string(), lit(0.0)),
             ("ay".to_string(), lit(0.0)),
             ("az".to_string(), lit(1.0)),
-            ("angle".to_string(), lit(1.0)),
+            ("angle".to_string(), lit_angle(1.0)),
         ],
         TransformKind::Scale => vec![("factor".to_string(), lit(2.0))],
         // Only the PIVOT is LENGTH-semantic (task 5623); ax/ay/az/angle stay
@@ -1574,7 +1583,7 @@ fn transform_case(k: TransformKind) -> CompiledGeometryOp {
             ("ax".to_string(), lit(0.0)),
             ("ay".to_string(), lit(0.0)),
             ("az".to_string(), lit(1.0)),
-            ("angle".to_string(), lit(1.0)),
+            ("angle".to_string(), lit_angle(1.0)),
         ],
         TransformKind::ApplyTransform => vec![(
             "transform".to_string(),
@@ -2675,7 +2684,7 @@ fn sweep_case(k: SweepKind) -> CompiledGeometryOp {
                 ("ax".to_string(), lit(0.0)),
                 ("ay".to_string(), lit(0.0)),
                 ("az".to_string(), lit(1.0)),
-                ("angle".to_string(), lit(1.0)),
+                ("angle".to_string(), lit_angle(1.0)),
                 // Only the axis ORIGIN is LENGTH-semantic (task 5623);
                 // ax/ay/az/angle stay on `lit`. Golden unchanged.
                 ("ox".to_string(), lit_len(0.0)),
@@ -3028,8 +3037,8 @@ fn curve_case(k: CurveKind) -> CompiledGeometryOp {
             ("cy".to_string(), lit_len(0.0)),
             ("cz".to_string(), lit_len(0.0)),
             ("radius".to_string(), lit_len(0.01)),
-            ("start_angle".to_string(), lit(0.0)),
-            ("end_angle".to_string(), lit(1.0)),
+            ("start_angle".to_string(), lit_angle(0.0)),
+            ("end_angle".to_string(), lit_angle(1.0)),
             ("ax".to_string(), lit(0.0)),
             ("ay".to_string(), lit(0.0)),
             ("az".to_string(), lit(1.0)),

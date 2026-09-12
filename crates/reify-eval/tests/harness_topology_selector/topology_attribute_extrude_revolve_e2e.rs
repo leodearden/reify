@@ -181,6 +181,15 @@ fn real_literal(v: f64) -> CompiledExpr {
     CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar())
 }
 
+/// Build a `CompiledExpr` literal from an ANGLE-dimensioned scalar (SI radians).
+///
+/// The angle-bearing args of `rotate` / `rotate_around` / `revolve` / `arc`
+/// require a dimensioned Angle since PRD 3 leaf γ — a bare literal in those
+/// positions is now rejected at eval, exactly as a bare length already was.
+fn angle_literal(radians: f64) -> reify_ir::CompiledExpr {
+    reify_ir::CompiledExpr::literal(reify_ir::Value::angle(radians), reify_core::Type::angle())
+}
+
 /// Build a synthesised `CompiledModule` with two ops:
 /// (0) a LineSegment curve (a non-primitive whose primitive-seeding step
 ///     is a no-op, so the table only carries our injected sweep entries);
@@ -237,7 +246,7 @@ fn revolve_module() -> reify_compiler::CompiledModule {
             ("ax".into(), real_literal(0.0)),
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(1.0)),
-            ("angle".into(), real_literal(std::f64::consts::PI)),
+            ("angle".into(), angle_literal(std::f64::consts::PI)),
         ],
     )
 }

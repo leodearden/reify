@@ -15,6 +15,15 @@ use reify_eval::SweptKind;
 use reify_ir::{ExportFormat, Value};
 use reify_test_support::*;
 
+/// Build a `CompiledExpr` literal from an ANGLE-dimensioned scalar (SI radians).
+///
+/// The angle-bearing args of `rotate` / `rotate_around` / `revolve` / `arc`
+/// require a dimensioned Angle since PRD 3 leaf γ — a bare literal in those
+/// positions is now rejected at eval, exactly as a bare length already was.
+fn angle_literal(radians: f64) -> reify_ir::CompiledExpr {
+    reify_ir::CompiledExpr::literal(reify_ir::Value::angle(radians), reify_core::Type::angle())
+}
+
 /// (a) Extrude-only realization populates the table with a single
 /// `SweptKind::Extrude` keyed by the realization's final handle.
 ///
@@ -324,7 +333,7 @@ fn engine_swept_kind_table_records_revolve_realization() {
             ("ax".into(), real_literal(0.0)),
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(1.0)),
-            ("angle".into(), real_literal(std::f64::consts::FRAC_PI_2)),
+            ("angle".into(), angle_literal(std::f64::consts::FRAC_PI_2)),
         ],
     };
 

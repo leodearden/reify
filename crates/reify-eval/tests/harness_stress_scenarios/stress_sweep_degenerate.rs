@@ -16,6 +16,15 @@ use reify_core::{ModulePath, Severity, Type};
 use reify_ir::{ExportFormat, GeometryOp, Value};
 use reify_test_support::*;
 
+/// Build a `CompiledExpr` literal from an ANGLE-dimensioned scalar (SI radians).
+///
+/// The angle-bearing args of `rotate` / `rotate_around` / `revolve` / `arc`
+/// require a dimensioned Angle since PRD 3 leaf γ — a bare literal in those
+/// positions is now rejected at eval, exactly as a bare length already was.
+fn angle_literal(radians: f64) -> reify_ir::CompiledExpr {
+    reify_ir::CompiledExpr::literal(reify_ir::Value::angle(radians), reify_core::Type::angle())
+}
+
 // ---------------------------------------------------------------------------
 // step-13: zero_extrude_distance — failing test
 // ---------------------------------------------------------------------------
@@ -129,7 +138,7 @@ fn revolve_720_degrees() {
             ("ax".into(), real_literal(0.0)),
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(1.0)), // z-axis
-            ("angle".into(), real_literal(angle_720_rad)),
+            ("angle".into(), angle_literal(angle_720_rad)),
         ],
     };
 
@@ -310,7 +319,7 @@ fn negative_revolve_angle_is_valid() {
             ("ax".into(), real_literal(0.0)),
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(1.0)), // z-axis
-            ("angle".into(), real_literal(angle_neg_180_rad)), // NEGATIVE angle — clockwise
+            ("angle".into(), angle_literal(angle_neg_180_rad)), // NEGATIVE angle — clockwise
         ],
     };
 

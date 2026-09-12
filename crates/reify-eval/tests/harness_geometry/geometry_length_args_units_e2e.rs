@@ -147,17 +147,21 @@ fn translate_bare_component_drops_op_dimensioned_builds() {
 
 #[test]
 fn rotate_around_bare_pivot_drops_op_dimensioned_builds() {
-    // The axis `0, 0, 1` and the angle stay BARE in BOTH forms — they are a
-    // dimensionless unit vector and PRD 3's angle respectively, and the
-    // dimensioned control's zero-diagnostic assertion is what pins that.
+    // The axis `0, 0, 1` stays BARE in BOTH forms — a dimensionless unit
+    // vector, and the dimensioned control's zero-diagnostic assertion is what
+    // pins that. The ANGLE is now dimensioned in both arms: PRD 3 leaf γ gates
+    // it, so a bare angle here would fire γ's Error inside THIS file's LENGTH
+    // signal — including in the dimensioned control, whose whole assertion is
+    // that it emits none. Migrating only the bare arm would present γ's gate
+    // as a task-5623 length regression.
     assert_length_gate(
         "rotate_around",
         "px",
         r#"structure def BareRotateAround {
-            let s = rotate_around(box(10mm, 10mm, 10mm), 5, 0, 0, 0, 0, 1, 1.5707963267948966)
+            let s = rotate_around(box(10mm, 10mm, 10mm), 5, 0, 0, 0, 0, 1, 1.5707963267948966rad)
         }"#,
         r#"structure def DimRotateAround {
-            let s = rotate_around(box(10mm, 10mm, 10mm), 5mm, 0mm, 0mm, 0, 0, 1, 1.5707963267948966)
+            let s = rotate_around(box(10mm, 10mm, 10mm), 5mm, 0mm, 0mm, 0, 0, 1, 1.5707963267948966rad)
         }"#,
         |op| matches!(op, GeometryOp::RotateAround { .. }),
     );
@@ -169,10 +173,10 @@ fn revolve_bare_axis_origin_drops_op_dimensioned_builds() {
         "revolve",
         "ox",
         r#"structure def BareRevolve {
-            let s = revolve(rectangle(20mm, 10mm), -10, 0, 0, 0.0, 1.0, 0.0, 6.283185307179586)
+            let s = revolve(rectangle(20mm, 10mm), -10, 0, 0, 0.0, 1.0, 0.0, 6.283185307179586rad)
         }"#,
         r#"structure def DimRevolve {
-            let s = revolve(rectangle(20mm, 10mm), -10mm, 0mm, 0mm, 0.0, 1.0, 0.0, 6.283185307179586)
+            let s = revolve(rectangle(20mm, 10mm), -10mm, 0mm, 0mm, 0.0, 1.0, 0.0, 6.283185307179586rad)
         }"#,
         |op| matches!(op, GeometryOp::Revolve { .. }),
     );
@@ -199,10 +203,10 @@ fn arc_bare_center_drops_op_dimensioned_builds() {
         "arc",
         "cx",
         r#"structure def BareArc {
-            let w = arc(0, 0, 0, 10, 0.0, 1.5707963267948966, 0, 0, 1)
+            let w = arc(0, 0, 0, 10, 0.0rad, 1.5707963267948966rad, 0, 0, 1)
         }"#,
         r#"structure def DimArc {
-            let w = arc(0mm, 0mm, 0mm, 10mm, 0.0, 1.5707963267948966, 0, 0, 1)
+            let w = arc(0mm, 0mm, 0mm, 10mm, 0.0rad, 1.5707963267948966rad, 0, 0, 1)
         }"#,
         |op| matches!(op, GeometryOp::Arc { .. }),
     );

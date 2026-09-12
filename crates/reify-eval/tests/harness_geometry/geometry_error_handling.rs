@@ -12,6 +12,15 @@ use reify_ir::{
 };
 use reify_test_support::*;
 
+/// Build a `CompiledExpr` literal from an ANGLE-dimensioned scalar (SI radians).
+///
+/// The angle-bearing args of `rotate` / `rotate_around` / `revolve` / `arc`
+/// require a dimensioned Angle since PRD 3 leaf γ — a bare literal in those
+/// positions is now rejected at eval, exactly as a bare length already was.
+fn angle_literal(radians: f64) -> reify_ir::CompiledExpr {
+    reify_ir::CompiledExpr::literal(reify_ir::Value::angle(radians), reify_core::Type::angle())
+}
+
 // ---------------------------------------------------------------------------
 // Shared helper: build a CompiledModule with fixed params and optional ops
 // ---------------------------------------------------------------------------
@@ -1667,7 +1676,7 @@ fn build_revolve_degenerate_axis_emits_diagnostic() {
             ("ax".into(), real_literal(0.0)),
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(0.0)),
-            ("angle".into(), real_literal(std::f64::consts::PI)),
+            ("angle".into(), angle_literal(std::f64::consts::PI)),
         ],
     };
 
@@ -1743,7 +1752,7 @@ fn build_revolve_zero_angle_emits_diagnostic() {
             ("ax".into(), real_literal(0.0)),
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(1.0)),
-            ("angle".into(), real_literal(0.0)),
+            ("angle".into(), angle_literal(0.0)),
         ],
     };
 
@@ -2334,7 +2343,7 @@ fn build_revolve_angle_just_below_threshold_rejected() {
             ("ax".into(), real_literal(0.0)),
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(1.0)),
-            ("angle".into(), real_literal(1e-13)),
+            ("angle".into(), angle_literal(1e-13)),
         ],
     };
 
@@ -2391,7 +2400,7 @@ fn build_revolve_angle_negative_just_below_threshold_rejected() {
             ("ax".into(), real_literal(0.0)),
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(1.0)),
-            ("angle".into(), real_literal(-1e-13)),
+            ("angle".into(), angle_literal(-1e-13)),
         ],
     };
 

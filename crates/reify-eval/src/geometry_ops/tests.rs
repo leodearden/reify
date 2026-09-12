@@ -2189,7 +2189,7 @@
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
-                ("angle".into(), literal_f64(std::f64::consts::FRAC_PI_2)),
+                ("angle".into(), literal_angle(std::f64::consts::FRAC_PI_2)),
             ],
         };
 
@@ -2978,7 +2978,7 @@
             ("ax", literal_f64(0.0)),
             ("ay", literal_f64(0.0)),
             ("az", literal_f64(1.0)),
-            ("angle", literal_f64(std::f64::consts::PI)),
+            ("angle", literal_angle(std::f64::consts::PI)),
         ];
 
         for omit in ["ox", "oy", "oz", "ax", "ay", "az", "angle"] {
@@ -3206,7 +3206,7 @@
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(0.0)),
-                ("angle".into(), literal_f64(std::f64::consts::PI)),
+                ("angle".into(), literal_angle(std::f64::consts::PI)),
             ],
         };
 
@@ -3251,7 +3251,7 @@
                 ("ax".into(), literal_f64(f64::NAN)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(0.0)),
-                ("angle".into(), literal_f64(std::f64::consts::PI)),
+                ("angle".into(), literal_angle(std::f64::consts::PI)),
             ],
         };
 
@@ -3294,7 +3294,7 @@
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
-                ("angle".into(), literal_f64(1e-15)),
+                ("angle".into(), literal_angle(1e-15)),
             ],
         };
 
@@ -3338,7 +3338,7 @@
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
-                ("angle".into(), literal_f64(std::f64::consts::TAU)),
+                ("angle".into(), literal_angle(std::f64::consts::TAU)),
             ],
         };
 
@@ -3850,7 +3850,7 @@
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(1.0)),
                 // az deliberately omitted
-                ("angle".into(), literal_f64(1.0)),
+                ("angle".into(), literal_angle(1.0)),
             ],
         };
 
@@ -8706,7 +8706,7 @@
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
-                ("angle".into(), literal_f64(std::f64::consts::PI)),
+                ("angle".into(), literal_angle(std::f64::consts::PI)),
             ],
         };
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -9542,7 +9542,7 @@
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
                 // ANGLE is PRD 3's, never ours → stays bare.
-                ("angle".into(), literal_f64(std::f64::consts::FRAC_PI_2)),
+                ("angle".into(), literal_angle(std::f64::consts::FRAC_PI_2)),
             ],
         }
     }
@@ -9647,7 +9647,7 @@
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
                 // ANGLE is PRD 3's, never ours → stays bare.
-                ("angle".into(), literal_f64(std::f64::consts::PI)),
+                ("angle".into(), literal_angle(std::f64::consts::PI)),
             ],
         }
     }
@@ -9754,7 +9754,7 @@
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(0.0)),
-                ("angle".into(), literal_f64(std::f64::consts::PI)),
+                ("angle".into(), literal_angle(std::f64::consts::PI)),
             ],
         };
 
@@ -10002,8 +10002,8 @@
                 ("cz".into(), c[2].clone()),
                 ("radius".into(), c[3].clone()),
                 // ANGLES are PRD 3's, never ours → stay bare.
-                ("start_angle".into(), literal_f64(0.0)),
-                ("end_angle".into(), literal_f64(1.0)),
+                ("start_angle".into(), literal_angle(0.0)),
+                ("end_angle".into(), literal_angle(1.0)),
                 // Axis DIRECTION is a dimensionless unit vector → stays bare.
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(0.0)),
@@ -12298,7 +12298,7 @@
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
-                ("angle".into(), literal_f64(std::f64::consts::PI)),
+                ("angle".into(), literal_angle(std::f64::consts::PI)),
                 // "ox" deliberately omitted — drives Result<_, String> API
             ],
         };
