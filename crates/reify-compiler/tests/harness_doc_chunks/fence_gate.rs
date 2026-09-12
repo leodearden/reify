@@ -2038,6 +2038,55 @@ fn every_chunk_is_reachable_through_the_mcp_tool() {
     );
 }
 
+/// Every floor in `REIFY_FENCE_FLOORS` must EQUAL its file's live count, not
+/// merely sit at or under it.
+///
+/// `assert_corpus_is_not_vacuous` asserts `live >= floor`, and its completeness
+/// loop asserts that a file carrying `reify` fences HAS an entry. Neither looks
+/// at the entry's VALUE, so an entry may be arbitrarily SLACK — and slack is not
+/// a safety margin. Every fence above a floor is protected by nothing: a later
+/// task can retag it, the per-file floor still passes, and the corpus-wide
+/// backstop goes slack by exactly the same amount because it is the SUM of this
+/// table. That is precisely the hollowing the table exists to prevent,
+/// reappearing one level up.
+///
+/// The EXACT-count rule is imported, not invented: the sibling suite's
+/// `reify_tagged_fences_in_geometry_chunk_compile` sets its own floor "to the
+/// EXACT live count per the re-measurement protocol ... a floor under live is
+/// the measured incident that protocol exists to prevent, not a safety margin"
+/// (`geometry_chunk_smoke.rs:1100`).
+#[test]
+fn reify_fence_floors_are_exact_not_slack() {
+    let corpus = corpus();
+    assert_corpus_is_not_vacuous(&corpus);
+
+    for (stem, floor) in REIFY_FENCE_FLOORS {
+        let doc = corpus.iter().find(|doc| doc.stem == *stem).unwrap_or_else(|| {
+            panic!(
+                "REIFY_FENCE_FLOORS records a floor of {floor} for `{stem}`, but \
+                 {CHUNKS_DIR} holds no `{stem}.md`. The chunk was renamed or deleted \
+                 without the table following, so that floor now guards nothing at all."
+            )
+        });
+        let live = doc.bare_reify_fences();
+        assert_eq!(
+            live,
+            *floor,
+            "{} carries {live} fence(s) tagged EXACTLY `reify` while REIFY_FENCE_FLOORS \
+             records {floor}. Entries here are EXACT live counts, never lower bounds: the \
+             {} fence(s) above the floor are guarded by nothing — retagging them to \
+             `reify-fragment` leaves this floor satisfied, and the corpus-wide backstop \
+             (the SUM of this table) goes slack by the same amount, so that many \
+             documented examples stop being compiled with no test going red. Re-measure \
+             and record the live count in the SAME diff that changes a fence tag. \
+             Lowering an entry deliberately is legitimate; drifting under one is the \
+             incident this test exists to report.",
+            doc.label,
+            live.saturating_sub(*floor)
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // CROSS-HARNESS PIN
 //
