@@ -20,6 +20,10 @@
 #   gui/src-tauri          -> Rust+GUI, OCCT-clean (RUN_OCCT_GATE=0)
 #   Cargo.lock / unknown   -> conservative gate (RUN_OCCT_GATE=1)
 #   MERGE_HEAD present     -> forces --scope all regardless of stage
+#   vitest lane            -> tsc/npm-ci run whenever RUN_GUI=1, but `npm test`
+#                             runs only when RUN_GUI_VITEST=1: a frontend-read
+#                             path changed, or the affected-crate closure
+#                             reaches reify-gui (or is unavailable) — task 7427
 
 set -euo pipefail
 
@@ -2235,5 +2239,63 @@ echo "--- Scenario EX-1n: NESTED examples/<dir>/*.ri staged -> same classificati
 plan_for staged examples/auto/probe.ri
 assert "EX-1n: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (case glob * spans /)" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1'
+
+# ---------------------------------------------------------------------------
+# GV-* (task 7427): the vitest lane is gated on the affected-crate closure.
+#
+# RUN_GUI = rust|gui made EVERY Rust change pay the full node lane — npm ci
+# twice, tsc, and the whole vitest suite. tsc stays unconditional (the GUI
+# consumes generated Rust->TS bindings, so any Rust change can break it), but
+# vitest now runs only when something the frontend actually reads changed:
+# a frontend-read path (GUI_PATH_SIGNAL), or an affected-crate closure that
+# reaches reify-gui — the same predicate, one implementation, that task 6268's
+# gui-feature nextest pass uses.
+#
+# The closure must be driven hermetically here: FIX_B has no cargo workspace,
+# so `cargo metadata` always fails and affected_crates() always returns the ALL
+# sentinel. plan_for_branch_env supplies REIFY_AFFECTED_CRATES_OVERRIDE.
+# The two override values used below are pinned against the REAL repo by
+# tests/infra/test_affected_crates_lib.sh (reify-doc's closure excludes
+# reify-gui; reify-eval's includes it), so they cannot drift into fiction.
+#
+# The header field is APPENDED after RUN_OCCT_GATE, never inserted — the same
+# convention scripts/verify.sh documents for the adjacent `closure=` field.
+# Each assertion below matches the full RUN_RUST=… RUN_GUI=… RUN_OCCT_GATE=…
+# RUN_GUI_VITEST=… run, so a reordering fails here too.
+# ---------------------------------------------------------------------------
+
+# The gui block's own inner chain, distinguished from the sidecar block's
+# (which ends `npm run typecheck:test'`). The trailing quote is what pins
+# "typecheck ran and nothing followed it".
+_GUI_LANE_WITH_VITEST="cd gui && .*npm ci && npm run typecheck && npm test'"
+_GUI_LANE_TSC_ONLY="cd gui && .*npm ci && npm run typecheck'"
+
+echo ""
+echo "--- Scenario GV-1: crate OUTSIDE reify-gui's cone -> tsc yes, vitest NO ---"
+plan_for_branch_env "REIFY_AFFECTED_CRATES_OVERRIDE=reify-cli reify-doc reify-doc-build reify-eval" \
+    crates/reify-doc/src/lib.rs
+assert "GV-1: RUN_GUI_VITEST=0 appended after RUN_OCCT_GATE (RUN_RUST=1 RUN_GUI=1 kept)" \
+    _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0 RUN_GUI_VITEST=0'
+assert "GV-1: gui typecheck still runs (generated bindings)" \
+    plan_has "$_GUI_LANE_TSC_ONLY"
+assert "GV-1: vitest skipped — no npm test anywhere in the plan" \
+    plan_lacks 'npm test'
+
+echo ""
+echo "--- Scenario GV-2: crate INSIDE reify-gui's cone -> full npm ci && typecheck && test ---"
+plan_for_branch_env "REIFY_AFFECTED_CRATES_OVERRIDE=reify-eval reify-gui reify-cli" \
+    crates/reify-eval/src/lib.rs
+assert "GV-2: RUN_GUI_VITEST=1 (reify-gui ∈ closure)" \
+    _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
+assert "GV-2: gui lane carries the full npm ci && typecheck && test chain" \
+    plan_has "$_GUI_LANE_WITH_VITEST"
+
+echo ""
+echo "--- Scenario GV-3: frontend change, no Rust at all -> vitest runs ---"
+plan_for_branch_env "" gui/src/App.tsx
+assert "GV-3: RUN_RUST=0 RUN_GUI=1 RUN_GUI_VITEST=1 (a frontend-read path changed)" \
+    _check_scope_header 'RUN_RUST=0 RUN_GUI=1 RUN_OCCT_GATE=0 RUN_GUI_VITEST=1'
+assert "GV-3: gui lane carries npm test" \
+    plan_has "$_GUI_LANE_WITH_VITEST"
 
 test_summary
