@@ -1335,6 +1335,64 @@ mod tests {
         );
     }
 
+    // ── scalar_si ─────────────────────────────────────────────────────────
+    //
+    // Task #6524. `scalar_si` projects the SI magnitude out of a
+    // `Value::Scalar` and panics on anything else. The cases below pin the
+    // three properties the nine hand-written copies it replaces each relied
+    // on: the exact magnitude comes back, the panic is diagnosable, and the
+    // dimension is deliberately not inspected.
+
+    /// `scalar_si` returns the `si_value` field verbatim.
+    ///
+    /// `assert_eq!` on the f64 is deliberate: the helper only projects a
+    /// field out and does no arithmetic, so there is no rounding to tolerate
+    /// and an approximate comparison would weaken the pin.
+    #[test]
+    fn scalar_si_returns_si_magnitude_of_scalar() {
+        let value = reify_ir::Value::Scalar {
+            si_value: 0.007,
+            dimension: reify_core::DimensionVector::LENGTH,
+        };
+        assert_eq!(
+            super::scalar_si(&value, "gain"),
+            0.007,
+            "scalar_si must return si_value unchanged",
+        );
+    }
+
+    /// A non-`Scalar` value panics with a message naming BOTH the caller's
+    /// `what` label and the value that was actually there — the two facts
+    /// that make the failure diagnosable without a rerun, and the two each
+    /// replaced copy provided. Asserting both is why `panic_message` is used
+    /// here instead of `#[should_panic(expected = ..)]`.
+    #[test]
+    fn scalar_si_panics_naming_label_and_observed_value() {
+        let message = panic_message(|| {
+            let _ = super::scalar_si(&reify_ir::Value::Undef, "E.__connector_0.gain");
+        });
+        assert!(message.contains("E.__connector_0.gain"), "{message}");
+        assert!(message.contains("Undef"), "{message}");
+    }
+
+    /// The helper projects the magnitude and does NOT validate the dimension:
+    /// a non-LENGTH `Scalar` returns its `si_value` just the same. Every call
+    /// site being replaced matches `{ si_value, .. }`, so this is their
+    /// behaviour today; a caller needing a dimension check must assert it
+    /// separately.
+    #[test]
+    fn scalar_si_ignores_dimension() {
+        let value = reify_ir::Value::Scalar {
+            si_value: 2.5e6,
+            dimension: reify_core::DimensionVector::PRESSURE,
+        };
+        assert_eq!(
+            super::scalar_si(&value, "material.e1"),
+            2.5e6,
+            "dimension must not affect the projected magnitude",
+        );
+    }
+
     /// assert_no_eval_errors should not panic when the result has no diagnostics.
     #[cfg(feature = "eval-helpers")]
     #[test]
