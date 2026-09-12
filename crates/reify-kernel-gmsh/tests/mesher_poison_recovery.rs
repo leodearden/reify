@@ -133,3 +133,93 @@ fn mesh_to_volume_never_returns_ok_with_zero_tets() {
         );
     }
 }
+
+/// A failed SIBLING mesher must leave `mesh_to_volume` fully usable — not
+/// merely loud.
+///
+/// The strong form of `mesh_to_volume_never_returns_ok_with_zero_tets`
+/// above: that test accepts an `Err` as satisfying its contract, because a
+/// loud failure is at least honest. This one requires a real mesh, which is
+/// what a caller who did nothing wrong is entitled to. The four meshers in
+/// this crate share ONE process-global gmsh mesher, so a failure in one that
+/// degrades another is a cross-mesher defect, not a local one.
+#[test]
+fn a_failed_sibling_mesher_leaves_mesh_to_volume_usable() {
+    let poisoning = refine_volume_with_size_field(
+        &unmeshable_open_triangle(),
+        &[0.5, 0.5, 0.5],
+        &MeshingOptions::default(),
+        ElementOrderTag::P1,
+    );
+    let err = poisoning.expect_err(
+        "an open triangle bounds no volume; refine_volume_with_size_field must report a failure",
+    );
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("gmshModelMeshGenerate"),
+        "this test's premise is that the sibling fails AT THE MESHER, not at an \
+         earlier preflight guard; got: {msg}"
+    );
+
+    let recovered = GmshKernel::new()
+        .mesh_to_volume(
+            &unit_cube_mesh(),
+            &MeshingOptions::default(),
+            ElementOrderTag::P1,
+        )
+        .expect(
+            "a closed unit cube must still mesh after a SIBLING mesher failed — the \
+             meshers share one process-global gmsh mesher, so a sibling's failure \
+             must not reach this caller at all",
+        );
+    let tets = recovered
+        .tet_indices()
+        .expect("a P1 volume mesh must carry tet_indices");
+    assert!(
+        !tets.is_empty(),
+        "the cube meshed to ZERO tets after a SIBLING mesher failed: the sibling's \
+         failure left the shared mesher unusable",
+    );
+}
+
+/// …and the reverse direction: a failed `mesh_to_volume` must leave the
+/// sibling meshers usable.
+///
+/// This is the test that stops the fix from being one-way. Measured before
+/// this task, `refine_volume_with_size_field` returned `Ok` with zero tets
+/// after an unrelated `mesh_to_volume` failure — the same silent wrong
+/// answer, reached through a different door. It is fixed only by wrapping
+/// the sibling's own `mesh_generate` call, not by anything done to
+/// `mesh_to_volume`.
+#[test]
+fn a_failed_mesh_to_volume_leaves_the_sibling_meshers_usable() {
+    let poisoning = GmshKernel::new().mesh_to_volume(
+        &unmeshable_open_triangle(),
+        &MeshingOptions::default(),
+        ElementOrderTag::P1,
+    );
+    poisoning.expect_err("an open triangle bounds no volume; mesh_to_volume must report a failure");
+
+    // The unit cube has 8 vertices, and this entry point requires one size
+    // hint per surface vertex.
+    let recovered = refine_volume_with_size_field(
+        &unit_cube_mesh(),
+        &[0.5; 8],
+        &MeshingOptions::default(),
+        ElementOrderTag::P1,
+    )
+    .expect(
+        "a closed unit cube must still refine after mesh_to_volume failed — the \
+         meshers share one process-global gmsh mesher, so a failure in either \
+         direction is a cross-mesher defect",
+    );
+    let tets = recovered
+        .tet_indices()
+        .expect("a P1 volume mesh must carry tet_indices");
+    assert!(
+        !tets.is_empty(),
+        "the cube refined to ZERO tets after mesh_to_volume failed, and did so \
+         SILENTLY: this sibling has no zero-result guard of its own, so the empty \
+         mesh reached the caller as a plain Ok",
+    );
+}
