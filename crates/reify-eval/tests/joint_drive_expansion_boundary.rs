@@ -1975,6 +1975,84 @@ fn mwhole_bt4_merged_whole_assembly_cost_is_strictly_below_the_frozen_baseline()
     );
 }
 
+/// BT4b — BOTH merged autos land ON the ROBUSTNESS-FLOORED lower bound: the
+/// cost_min-fixture twin of
+/// [`bt5b_merged_auto_lands_on_the_robustness_floored_lower_bound`].
+///
+/// # RED/GREEN — this test is EXPECTED TO PASS ON ARRIVAL
+///
+/// Nothing is broken here; it is a characterization / anti-rot pin, not a
+/// RED-first driver, and its value is prospective. `whole_model_cost_min.ri`'s
+/// header republishes its MERGED figures as first-hand observations (task
+/// #5939), and refreshing figures while leaving them unpinned is precisely
+/// what let them rot the first time. BT4(i)/(ii) above cannot close that gap:
+/// both are purely COMPARATIVE against the frozen cascade, and both the stale
+/// `0.0275` total and the actual `2.75e-9` sit far below the frozen `70.00` —
+/// so neither can discriminate one sub-frozen value from another. That is the
+/// same blind spot BT-5b was added to close for the sibling fixture.
+///
+/// # Achievability — DERIVED, not guessed
+///
+/// Both children are bracketed `>= 0.0`, so both sit in the SAME regime: the
+/// robustness margin `m = max(REL_MARGIN × |0.0|, ABS_FLOOR_SI)` degenerates
+/// to `ABS_FLOOR_SI` at a zero bracket, putting each auto at
+/// [`floored_lo`]`(0.0)`. `line_cost = unit_cost × quantity_produced` is
+/// strictly increasing in each auto, so the cost-minimising direction drives
+/// each one onto its OWN floored lower bound rather than past it. Rule and
+/// constants: the "Robustness floor (task #4789 α)" block
+/// (`synthesise_floor_constraints` / `robustness_margin_for`, `REL_MARGIN`,
+/// `ABS_FLOOR_SI`) in `crates/reify-constraints/src/solver.rs`; the closed
+/// form itself lives on [`floored_lo`] and is not re-derived here.
+///
+/// TWO children at ONE bracket, so — unlike BT-5b — there is no second regime
+/// to exercise. The RELATIVE-margin arm is already owned by BT-5b(b) and by
+/// solver.rs's own `derive_intervals_floor_slack_shapes`, and is not
+/// duplicated here.
+///
+/// # Not a house-norm violation
+///
+/// BT4(i)/(ii)'s house norm forbids a precise CONVERGED value or a TUNED
+/// tolerance at the `.ri` layer. These pins are different in kind, for the
+/// reason BT-5b's own "Not a house-norm violation" section gives: the expected
+/// value is DERIVED from `REL_MARGIN` / `ABS_FLOOR_SI` through the shared
+/// [`floored_lo`] helper and only THEN confirmed against observation — never
+/// tuned to match an unknown output. BT4(i)/(ii)'s comparative assertions are
+/// left untouched.
+#[test]
+fn mwhole_bt4b_both_merged_autos_land_on_the_robustness_floored_lower_bound() {
+    // Reuses `mwhole_halves`'s memoized merged solve instead of compiling and
+    // solving the example a second time — its `OnceLock` guarantees this is
+    // the SAME `EvalResult` BT4(i)/(ii) assert against, not a second one that
+    // could in principle diverge from it.
+    let merged = &mwhole_halves().0;
+
+    // ONE expected value for BOTH children, computed once: they share the
+    // `>= 0.0` bracket, so "the same rule at both children" is proven by
+    // construction rather than by two independently typed-in constants.
+    let expected = floored_lo(0.0);
+
+    for structure in ["Plate", "Spacer"] {
+        let auto_id = ValueCellId::new(structure, "quantity_produced");
+        let merged_q = scalar_si(merged, &auto_id, "merged");
+
+        // Pinned against `floored_lo(0.0)` itself — not merely `> 0.0` — so a
+        // regression landing the auto at ~0+eps (the floor mechanism not
+        // firing at all, e.g. `synthesise_floor_constraints` skipped or the
+        // clamp reverting to the raw `0.0` bracket) FAILS here. Tolerance
+        // 1e-12 has ample margin: the clamp snaps exactly onto the synthesised
+        // bound, leaving a diff at f64-noise level.
+        assert!(
+            (merged_q - expected).abs() <= 1e-12,
+            "BT4b [{structure}]: this child's merged auto must land at the \
+             ABSOLUTE-floor lower bound floored_lo(0.0) = {expected} — `m = \
+             max(REL_MARGIN × |0.0|, ABS_FLOOR_SI)` degenerates to \
+             `ABS_FLOOR_SI` at a zero bracket, and cost-min drives the auto \
+             onto it. Got merged_q={merged_q} (diff {}).",
+            (merged_q - expected).abs(),
+        );
+    }
+}
+
 /// BT3 core — the cross-scope SURFACE-SPELLING read (`self.plate.line_cost`,
 /// as a design author would write inside `CostAssembly`) surfaces the
 /// CO-SOLVED value — not a frozen one, and not `Undef`.
