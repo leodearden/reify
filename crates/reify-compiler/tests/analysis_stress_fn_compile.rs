@@ -8,10 +8,17 @@
 //!   `principal_stresses(stress)` → `List<Scalar<PRESSURE>>` (NOT Tensor)
 //!   `stress_invariants(stress)` → `StructureRef("StressInvariants")` (NOT Tensor)
 //!
-//! Without the `is_analysis_typed_fn` arm in `expr.rs`, all three would drift
-//! to the first-arg `Tensor<Pressure>` type — the `NoUserFunctions` fallback.
+//! Without a name-keyed ladder arm, all three would drift to the first-arg
+//! `Tensor<Pressure>` type — the `NoUserFunctions` fallback.
 //!
-//! Tests are RED until step-4 wires the arm into the `NoUserFunctions` ladder.
+//! Typing source, since registry α (task #6001): `expr.rs`'s `NoUserFunctions`
+//! ladder consults `crates/reify-compiler/src/builtin_registry.rs`
+//! `registry_result_type`, which answers off the `Family::Analysis` rows in
+//! `crates/reify-builtins/src/registry.rs` (`VonMises`, `MaxShear`,
+//! `PrincipalStresses`, `SafetyFactor`, `StressInvariants`). These tests were
+//! first written RED for task #2884 step-4, against the pre-registry state;
+//! that step's `is_analysis_typed_fn` arm is what α deleted and replaced with
+//! the single registry arm, and they pass GREEN through it today.
 
 mod common;
 use common::compile_with_stdlib_helper;
@@ -82,7 +89,8 @@ fn cell_type(module: &reify_compiler::CompiledModule, member: &str) -> Type {
 /// `von_mises(stress)` on a `Tensor<PRESSURE>` must compile-type as
 /// `Scalar<PRESSURE>` — NOT the first-arg `Tensor<PRESSURE>` drift.
 ///
-/// RED until step-4 wires `is_analysis_typed_fn` into `expr.rs`.
+/// Written RED for task #2884 step-4; GREEN today through the registry
+/// arm described in the module header.
 #[test]
 fn von_mises_cell_type_is_scalar_pressure() {
     let module = compile_fixture();
@@ -99,7 +107,8 @@ fn von_mises_cell_type_is_scalar_pressure() {
 /// `principal_stresses(stress)` on a `Tensor<PRESSURE>` must compile-type as
 /// `List(Scalar<PRESSURE>)` — NOT the first-arg `Tensor<PRESSURE>` drift.
 ///
-/// RED until step-4 wires `is_analysis_typed_fn` into `expr.rs`.
+/// Written RED for task #2884 step-4; GREEN today through the registry
+/// arm described in the module header.
 #[test]
 fn principal_stresses_cell_type_is_list_scalar_pressure() {
     let module = compile_fixture();
@@ -116,7 +125,8 @@ fn principal_stresses_cell_type_is_list_scalar_pressure() {
 /// `stress_invariants(stress)` on a `Tensor<PRESSURE>` must compile-type as
 /// `StructureRef("StressInvariants")` — NOT the first-arg `Tensor<PRESSURE>` drift.
 ///
-/// RED until step-4 wires `is_analysis_typed_fn` into `expr.rs`.
+/// Written RED for task #2884 step-4; GREEN today through the registry
+/// arm described in the module header.
 #[test]
 fn stress_invariants_cell_type_is_structure_ref() {
     let module = compile_fixture();
@@ -131,9 +141,10 @@ fn stress_invariants_cell_type_is_structure_ref() {
 /// `max_shear(stress)` on a `Tensor<PRESSURE>` must compile-type as
 /// `Scalar<PRESSURE>` — NOT the first-arg `Tensor<PRESSURE>` drift.
 ///
-/// Pins that the newly-wired `is_analysis_typed_fn` arm in `expr.rs` fixes
-/// `max_shear`'s compile type (it previously drifted to `Tensor<PRESSURE>`
-/// via the `NoUserFunctions` fallback, mirroring the `von_mises` bug).
+/// Pins that the registry's `MaxShear` row fixes `max_shear`'s compile type
+/// (it previously drifted to `Tensor<PRESSURE>` via the `NoUserFunctions`
+/// fallback, mirroring the `von_mises` bug). Task #2884 step-4 first fixed it
+/// with an `is_analysis_typed_fn` arm; registry α replaced that arm.
 #[test]
 fn max_shear_cell_type_is_scalar_pressure() {
     let module = compile_fixture();
