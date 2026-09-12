@@ -1031,11 +1031,8 @@ mod tests {
     /// (e2) The whole-cache flush behind `Engine::clear_realization_cache`
     /// empties the cache without touching the lifetime counter.
     ///
-    /// This is the structural half of the monotonicity invariant: `clear` can
-    /// only reach `buckets`, so there is no save/restore dance at the call site
-    /// that a later edit could reorder or forget. Reseating to
-    /// `RealizationCache::new()` — the shape this replaced — would zero the
-    /// counter on every `edit_param`/`edit_source`.
+    /// This is the structural half of the monotonicity invariant; see
+    /// [`RealizationCache::clear`] for why it holds by construction.
     #[test]
     fn clear_empties_the_cache_but_preserves_realization_entries() {
         let mut cache = RealizationCache::<u32>::new();
