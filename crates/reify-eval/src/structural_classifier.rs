@@ -648,6 +648,25 @@ mod tests {
         (old, new)
     }
 
+    /// A one-element `List<Geometry>` value, tagged so two calls with different
+    /// `tag`s compare UNEQUAL.
+    ///
+    /// Models what a `List<Geometry>` cell actually holds: sub-handles built by
+    /// `topology_selectors::make_sub_handle`, whose `upstream_values_hash` is
+    /// composed from the PARENT's. Since `Value::GeometryHandle`'s `PartialEq`
+    /// keys on `(realization_ref, upstream_values_hash)`, such a list differs on
+    /// EVERY tick even when the selected faces are identical — which is why a
+    /// `Param`-kind one vetoed 100% of ticks before task 7016.
+    fn face_handle_list(realization_entity: &str, tag: u8) -> reify_ir::Value {
+        use reify_core::RealizationNodeId;
+        use reify_ir::{GeometryHandleId, Value};
+        Value::List(vec![Value::GeometryHandle {
+            realization_ref: RealizationNodeId::new(realization_entity, 0),
+            upstream_values_hash: [tag; 32],
+            kernel_handle: Some(GeometryHandleId(1)),
+        }])
+    }
+
     // ── Step-1: classify_cell baseline behavior ────────────────────────────
 
     #[test]
@@ -694,6 +713,28 @@ mod tests {
         let id = ValueCellId::new("Part", "body");
         let g = graph_with_cell(&id, Type::Geometry);
         assert_eq!(classify_cell(&g, &id), ParameterClass::Dimensional);
+    }
+
+    #[test]
+    fn classify_cell_list_geometry_returns_dimensional() {
+        // Task 7016: a `List<Geometry>` value is realization OUTPUT for the same
+        // reason a bare handle is, so the same whitelist entry applies. See
+        // `classify_cell`'s "Type::Geometry and Rule 4" for the ruling and
+        // [`face_handle_list`] for the every-tick-diff mechanism.
+        //
+        // `graph_with_cell` hardcodes `ValueCellKind::Param`, which is exactly
+        // the LEAF kind at issue: leaf scoping (task 6643) admits the derived
+        // `Let` half already, so only Rule 4's whitelist can admit this one.
+        let id = ValueCellId::new("Part", "faces");
+        let g = graph_with_cell(&id, Type::List(Box::new(Type::Geometry)));
+        assert_eq!(
+            classify_cell(&g, &id),
+            ParameterClass::Dimensional,
+            "task 7016: a List<Geometry> holds sub-handles whose \
+             upstream_values_hash composes from the parent's, so it differs on \
+             every tick even when the selected faces are unchanged — Rule 4's \
+             conservative default must not classify it Structural"
+        );
     }
 
     #[test]
@@ -1642,6 +1683,41 @@ mod tests {
             "task 6643: a derived List<Geometry> `let` (resolved selector / \
              adjacent_faces) must not veto a dimensional tick; the Param-kind \
              half of that shape and the list-LENGTH question remain #7016's"
+        );
+    }
+
+    /// RED (7016): the `Param`-kind half of that same shape — the LEAF that
+    /// #6643's leaf scoping deliberately left vetoing.
+    ///
+    /// Reachable, not hypothetical: `build_param_value_cell_decl`
+    /// (`reify-compiler/src/entity.rs`) passes `cell_type` straight through and
+    /// the only param-position type rejection is `Type::Keyed`, so
+    /// `param faces: List<Geometry> = adjacent_faces(body, ...)` registers a
+    /// `Param` leaf — pinned by the compiler's own
+    /// `boundary8_empty_list_geometry_is_clean`. Being a leaf, it still reaches
+    /// Rule 4, so only the whitelist can admit it.
+    #[test]
+    fn stage_a_eligible_param_leaf_list_geometry_diff_returns_true() {
+        let leaf = ValueCellId::new("MorphDerivedLet", "faces");
+        let g1 = graph_with_dim_leaf_and(
+            &leaf,
+            Type::List(Box::new(Type::Geometry)),
+            ValueCellKind::Param,
+        );
+        let g2 = g1.clone();
+        let (v1, v2) = dim_tick_values(
+            &leaf,
+            face_handle_list("MorphDerivedLet", 1),
+            face_handle_list("MorphDerivedLet", 2),
+        );
+
+        assert!(
+            stage_a_eligible(&g1, &g2, &v1, &v2),
+            "task 7016: a Param-kind List<Geometry> cell IS a leaf, so the walk \
+             still consults Rule 4 for it — and its sub-handles' \
+             upstream_values_hash composes from the parent's, so it differed (and \
+             so vetoed) on every tick regardless of whether the selected faces \
+             changed"
         );
     }
 
