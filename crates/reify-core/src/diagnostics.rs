@@ -2672,6 +2672,90 @@ pub enum DiagnosticCode {
     /// has no effect.  The solve continues with kernel defaults (this is advisory,
     /// not an error).
     BucklingOptionUnsupported,
+    /// Origin: `crates/reify-eval/src/compute_targets/buckling.rs` and
+    /// `crates/reify-eval/src/modal_ops.rs`, via the shift-honoring solve paths
+    /// (leaves γ #7260 and δ #7261).  Minted here unemitted by leaf α (#7258) so
+    /// the two sibling wiring leaves do not both edit this file (PRD §10 α).
+    ///
+    /// Canonical message form — ONE template with an OPTIONAL count, never two
+    /// drifting messages (PRD §5.4 precision limit):
+    /// `"W_ShiftSkippedModes: the shift sigma = <σ> skipped [<N> ]mode(s) below it; the result is a window around sigma, not the bottom of the spectrum"`.
+    ///
+    /// Emitted as a `Severity::Warning` (PRD-prose mnemonic `W_ShiftSkippedModes`)
+    /// when a shifted solve reports `EigenSolverResult.shift_skipped_modes == true`
+    /// — i.e. some eigenvalue of the pencil lies strictly between zero and σ and is
+    /// absent from the returned set.
+    ///
+    /// Advisory, not an error: inspecting a frequency band around σ is a
+    /// legitimate use, so a user who never asks "what is the first mode?" is
+    /// warned once and otherwise unobstructed.  Refusal lands on the incorrect
+    /// USE instead — see `FirstModeNotInShiftedResult`.
+    ///
+    /// The count is optional because the two implementations differ in precision:
+    /// the dense path computes the whole spectrum via QZ and counts exactly, while
+    /// the Lanczos path's Cholesky/LU discriminator yields only a boolean (an exact
+    /// count would need an inertia-revealing LDL^T that faer's sparse LU does not
+    /// expose).  Omitting the count is always correct; including it is only correct
+    /// on the dense path.
+    ///
+    /// References: PRD `docs/prds/v0_6/shift-invert-eigensolve.md` §5.4, contract
+    /// clause C5, and boundary test BT4.
+    ShiftSkippedModes,
+    /// Origin: `crates/reify-solver-elastic/src/eigensolve.rs`, the shift-invert
+    /// `K − σB` factorization dispatch (leaf β #7259).  Minted here unemitted by
+    /// leaf α (#7258).
+    ///
+    /// Canonical message form:
+    /// `"E_ShiftAtEigenvalue: the shift sigma = <σ> lies on an eigenvalue of the pencil, so K − sigma·B is singular; move sigma off the eigenvalue"`.
+    ///
+    /// Emitted as a `Severity::Error` (PRD-prose mnemonic `E_ShiftAtEigenvalue`)
+    /// when the shifted factorization detects a singular or numerically degenerate
+    /// `K − σB`.  Detection is two-part, because faer's
+    /// `LuError::SymbolicSingular` reports only STRUCTURAL rank deficiency —
+    /// partial-pivot LU on a numerically tiny pivot returns `Ok` and yields
+    /// garbage: (1) the symbolic-singular error directly, and (2) a
+    /// post-factorization guard on the recovered spectrum (non-finite λ, or a
+    /// back-substitution residual above the documented threshold).
+    ///
+    /// NO automatic perturbation is performed.  Nudging σ and continuing is
+    /// exactly the silent-substitution class this PRD exists to close; if
+    /// perturbation is ever wanted it arrives as an explicit opt-in knob, never as
+    /// a default.  The message therefore names the offending σ and tells the author
+    /// to move it.
+    ///
+    /// This code has no counterpart on the DENSE path: `solve_eigen_dense` never
+    /// forms `K − σB` (σ is a sort key there, not a factorization), so contract
+    /// clause C6 is satisfied vacuously and σ on an eigenvalue is a well-posed
+    /// selection rather than a failure.
+    ///
+    /// References: PRD `docs/prds/v0_6/shift-invert-eigensolve.md` §5.3, contract
+    /// clause C6, and boundary test BT5.
+    ShiftAtEigenvalue,
+    /// Origin: the three `modes[0]` helpers — `critical_load`,
+    /// `safety_factor_buckling` (`crates/reify-eval/src/compute_targets/buckling.rs`)
+    /// and `first_frequency` (`crates/reify-eval/src/modal_ops.rs`) — once leaf ε
+    /// (#7262) converts them from pure `.ri` bodies to `@optimized` trampolines.
+    /// Minted here unemitted by leaf α (#7258).
+    ///
+    /// Canonical message form:
+    /// `"E_FirstModeNotInShiftedResult: <helper> cannot answer 'what is the first mode?' — the solve used shift sigma = <σ>, which skipped mode(s) below it, so the first mode is not in the result"`.
+    ///
+    /// Emitted as a `Severity::Error` (PRD-prose mnemonic
+    /// `E_FirstModeNotInShiftedResult`) when one of those helpers is handed a
+    /// result whose C5 provenance says modes were skipped.  Without the refusal the
+    /// helper returns the multiplier of whichever mode was nearest σ, which is
+    /// HIGHER than the true first mode — the unconservative direction: a column
+    /// reported to hold 160 kN that buckles at 41 kN, or a fundamental reported at
+    /// 300 Hz that is really at 30 Hz.
+    ///
+    /// The refusal mechanism is a coded Error, NOT `Value::Undef`: `Undef` is the
+    /// silent-failure sentinel (INV-SF-1), which is the opposite of the loudness
+    /// this PRD is for.  Per INV-SF-2 an `Error` exits `reify eval` non-zero, so the
+    /// wrong number can never reach a report.
+    ///
+    /// References: PRD `docs/prds/v0_6/shift-invert-eigensolve.md` §5.4, contract
+    /// clause C5, and boundary test BT4.
+    FirstModeNotInShiftedResult,
     /// Origin: `crates/reify-compiler/src/diagnostics.rs::dup_member_key_error`,
     /// wired into the keyed-sub pre-pass in
     /// `crates/reify-compiler/src/entity.rs` (`MemberDecl::Sub` arm).
