@@ -34,5 +34,13 @@
 //! it is the natural next absorption, shrinking the baseline ratchet by one more row, and
 //! is left alone here only because it is outside #5344's file scope.
 
+#[path = "harness_constructor_typing/math_construction_signatures_tests.rs"]
+mod math_construction_signatures_tests;
+#[path = "harness_constructor_typing/math_signatures.rs"]
+mod math_signatures;
+#[path = "harness_constructor_typing/math_transcendental_signatures.rs"]
+mod math_transcendental_signatures;
 #[path = "harness_constructor_typing/orientation_constructor_typing_tests.rs"]
 mod orientation_constructor_typing_tests;
+#[path = "harness_constructor_typing/parse_length_signatures.rs"]
+mod parse_length_signatures;
