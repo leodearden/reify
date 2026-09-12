@@ -260,7 +260,7 @@ pub(crate) enum LengthArg {
     /// The argument evaluated to `Value::Undef` — not YET resolved (an
     /// unresolved param, or a `ValueMap` cell still empty during a partial /
     /// fixpoint build), as opposed to *wrong*. No diagnostic was pushed
-    /// (quiet degradation, matching `resolve_scalar_dim_arg`).
+    /// (quiet degradation, matching [`resolve_spec_arg`]'s `Undefined` arm).
     Unresolved,
     /// The argument is missing, non-finite, or defined-but-not-a-LENGTH (a bare
     /// `Real`/`Int` or a wrong-dimension `Scalar`). Exactly one diagnostic
@@ -10327,7 +10327,9 @@ fn resolve_vec3_arg(
 /// dimension + type name, with the hint hard-wired to `None` — is what lets
 /// [`resolve_length_scalar_arg`] share the ONE canonical `length_spec()` with
 /// the pattern/mirror chokepoint [`eval_named_arg_length`], so both LENGTH
-/// rejection paths emit identical text (task 5214 amendment).
+/// rejection paths emit identical text (task 5214 amendment). PRD 3 leaf β
+/// made [`resolve_angle_scalar_arg`] share `angle_spec()` the same way, so
+/// BOTH readers now name a canonical spec and neither can mint its own wording.
 fn resolve_spec_arg(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
@@ -10359,9 +10361,10 @@ fn resolve_spec_arg(
             // migration this leaf does not own. The promotion is filed as a
             // follow-up rather than smuggled in with the code.
             //
-            // Structurally this covers Contract C's `resolve_length_scalar_arg`,
-            // the arbitrary-dimension `resolve_scalar_dim_arg`, and the hint-less
-            // ANGLE spec that PRD 3 will later give a migration hint.
+            // Structurally this covers both spec-backed scalar readers —
+            // Contract C's `resolve_length_scalar_arg` and its ANGLE sibling
+            // `resolve_angle_scalar_arg`, which since PRD 3 leaf β shares the
+            // canonical `angle_spec()` and so renders a migration hint here too.
             diagnostics.push(
                 Diagnostic::warning(rej.message(builtin, arg_name))
                     .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
@@ -10371,40 +10374,23 @@ fn resolve_spec_arg(
     }
 }
 
-/// [`resolve_spec_arg`] for a dimension that has no canonical `ArgSpec`
-/// constructor of its own: builds an inline hint-less spec from `expected_dim`
-/// + `type_name`.
-fn resolve_scalar_dim_arg(
-    expr: &reify_ir::CompiledExpr,
-    values: &reify_ir::ValueMap,
-    expected_dim: reify_core::DimensionVector,
-    type_name: &'static str,
-    builtin: &str,
-    arg_name: &str,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Option<f64> {
-    resolve_spec_arg(
-        expr,
-        values,
-        &crate::arg_acceptance::ArgSpec {
-            type_name,
-            dimension: expected_dim,
-            migration_hint: None,
-        },
-        builtin,
-        arg_name,
-        diagnostics,
-    )
-}
-
 /// Resolve an ANGLE-dimensioned scalar arg to its SI value (radians).
 /// EVALUATES the arg expr (task ε): an inline dimensioned-angle literal, a
 /// `ValueRef → ANGLE Scalar` (let-bound `let tol = 1deg`), or an angle-typed
 /// arithmetic expression all WORK. A `Value::Undef` (missing cell, etc.)
 /// degrades quietly; a defined-but-wrong value (wrong dimension, non-Scalar)
-/// pushes exactly one `Severity::Warning` naming `builtin`/`arg_name`. Pins the
-/// ANGLE dimension for the angular-tolerance args of `faces_by_normal` /
+/// pushes exactly one `Severity::Warning` naming `builtin`/`arg_name` — and,
+/// since PRD 3 leaf β, the repair instruction minted by `angle_spec()`. Pins
+/// the ANGLE dimension for the angular-tolerance args of `faces_by_normal` /
 /// `edges_parallel_to`.
+///
+/// Shares the ONE canonical `arg_acceptance::angle_spec()` with every other
+/// angle-bearing position, exactly as [`resolve_length_scalar_arg`] shares
+/// `length_spec()` — previously this path reached `resolve_spec_arg` through an
+/// arbitrary-dimension indirection that built its own inline `ArgSpec` with
+/// `migration_hint: None`, so an angle rejection told the author what was wrong
+/// but never how to fix it, while the LENGTH sibling did. That indirection had
+/// no other caller and died with the fix.
 fn resolve_angle_scalar_arg(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
@@ -10412,11 +10398,10 @@ fn resolve_angle_scalar_arg(
     arg_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<f64> {
-    resolve_scalar_dim_arg(
+    resolve_spec_arg(
         expr,
         values,
-        reify_core::DimensionVector::ANGLE,
-        "Angle",
+        &crate::arg_acceptance::angle_spec(),
         builtin,
         arg_name,
         diagnostics,
