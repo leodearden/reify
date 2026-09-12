@@ -758,16 +758,10 @@ impl Engine {
     /// **What this method does NOT reset**: the cache's
     /// [`realization_entries`](crate::realization_cache::RealizationCache::realization_entries)
     /// counter, surfaced as [`CacheStats::realization_entries`](crate::CacheStats::realization_entries).
-    /// It is a monotonic count of realizations PERFORMED over the engine's
-    /// lifetime, not of entries currently resident, so it deliberately survives
-    /// the flush (task 4152) — `clear` empties the buckets in place and cannot
-    /// reach the counter, so this holds by construction rather than by a
-    /// save/restore convention here. Since `edit_param` and `edit_source` both
-    /// flush here, resetting it would zero the metric on every edit. Pinned by
-    /// `realization_entries_survives_clear_realization_cache` in
-    /// `tests/tolerance_wiring_e2e.rs` and by
-    /// `clear_empties_the_cache_but_preserves_realization_entries` in
-    /// `src/realization_cache.rs`.
+    /// It is a monotonic count of realizations PERFORMED over the engine's lifetime, not of
+    /// entries currently resident, so it deliberately survives this flush (task 4152). Why
+    /// that holds by construction, and the tests that pin it, are documented at
+    /// [`RealizationCache::clear`](crate::realization_cache::RealizationCache::clear).
     ///
     /// Pinned by `clear_realization_cache_public_api_resets_cache_for_production_callers`
     /// in `tests/tolerance_wiring_e2e.rs`.
