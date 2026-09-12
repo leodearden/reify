@@ -28,8 +28,6 @@
 //! `CTOR_FIELD_CONFORMANCE_SEVERITY` knob as the α surface, so they are part of
 //! the ctor-conformance code set below and δ flips them with everything else.
 
-mod common;
-
 use reify_compiler::CompiledModule;
 use reify_core::diagnostics::DiagnosticCode;
 use reify_core::{
@@ -888,7 +886,7 @@ fn ctor_conformance_label_span_anchors_at_ctor_call_site() {
 /// compile with ZERO ctor-conformance diagnostics AND no compile errors.
 #[test]
 fn fea_pressure_smoke_example_has_no_ctor_conformance_diagnostics() {
-    const FEA_SMOKE: &str = include_str!("../../../examples/fea_pressure_smoke.ri");
+    const FEA_SMOKE: &str = include_str!("../../../../examples/fea_pressure_smoke.ri");
     let module = compile_source_with_stdlib(FEA_SMOKE);
     let diags = ctor_conformance_diags(&module);
     assert!(
@@ -2092,7 +2090,7 @@ fn g_i7_hint_is_absent_for_the_already_promoted_families() {
 /// literal reify's compound-unit grammar does not accept.
 ///
 /// The literal is read back out of the real diagnostic, and round-tripped
-/// through `common::stdlib_param_si_value` — the same oracle
+/// through `crate::common::stdlib_param_si_value` — the same oracle
 /// `compound_unit_resolution_tests.rs` uses, which drives the compiler's actual
 /// unit-resolution path. Nothing here re-implements the derivation, so the test
 /// cannot agree with a broken implementation by construction.
@@ -2130,7 +2128,7 @@ fn g_migration_hint_example_round_trips_for_every_named_dimension() {
             continue;
         };
 
-        let (_si_value, resolved) = common::stdlib_param_si_value(type_name, &example);
+        let (_si_value, resolved) = crate::common::stdlib_param_si_value(type_name, &example);
         assert_eq!(
             resolved, *dim,
             "{label}: example literal `{example}` resolves to {resolved}, not to the \
