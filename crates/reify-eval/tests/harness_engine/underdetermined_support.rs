@@ -22,9 +22,8 @@
 //! Fixture sources and the assertions over them likewise stay with the module
 //! whose signal they pin.
 
-use reify_core::{DiagnosticCode, Severity, ValueCellId};
+use reify_core::{Severity, ValueCellId};
 use reify_eval::{Engine, EvalResult};
-use reify_ir::Value;
 use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_with_stdlib};
 
 /// Compile + eval `src` through the REAL `SolverRegistry::production()`, and
@@ -74,41 +73,39 @@ pub fn eval_through_production_registry(src: &str, what: &str) -> EvalResult {
 ///
 /// An UNRESOLVED auto surfaces as `Value::Undef`, which is precisely the silent
 /// failure both calling modules exist to report legibly rather than let a
-/// zero-diagnostic count wave through. The panic names both ways an α auto
-/// reaches this state, because a caller cannot tell them apart from the value
-/// alone:
+/// zero-diagnostic count wave through. Two ways an α auto reaches that state,
+/// which a caller cannot tell apart from the value alone:
 ///
 ///   * LAYER 1 dropped the constraint that pins it, so it entered the
 ///     `ResolutionProblem` with no residual at all; or
 ///   * the decomposition returned no component holding it.
 ///
+/// Whether `W_UNDERDETERMINED` also fires depends on the SHAPE, so do not read
+/// a quiet eval as a healthy one: layer 4 suppresses the warning once its own
+/// probes see the auto as pinned, which for a PARENT-side `let` the forward
+/// closure alone already does. That is the silent-`Undef` case. For a
+/// CHILD-side `let` the closure does not, and layer 4 stays loud. The value
+/// assertion is the only signal that holds in both.
+///
 /// The `what` label is the caller's, and is where fixture-specific context
 /// belongs — see each module's header for the failure it is pinning.
+///
+/// The shape projection itself is `reify_test_support::scalar_si`; this adapter
+/// adds only the cell lookup (task #6524).
 pub fn scalar_si(result: &EvalResult, id: &ValueCellId, what: &str) -> f64 {
-    match result.values.get(id) {
-        Some(Value::Scalar { si_value, .. }) => *si_value,
-        other => panic!(
-            "expected a resolved Scalar for {id:?} in the {what} eval; got \
-             {other:?}. `Undef` means the auto was never solved: either layer \
-             1 dropped the constraint that pins it (so it reached the solver \
-             with no residual), or the decomposition returned no component for \
-             it. Whether `W_UNDERDETERMINED` also fires depends on the SHAPE, \
-             so do not read a quiet eval as a healthy one: layer 4 suppresses \
-             the warning once its own probes see the auto as pinned, which for \
-             a PARENT-side `let` the forward closure alone already does. That \
-             is the silent-`Undef` case. For a CHILD-side `let` the closure \
-             does not, and layer 4 stays loud. The value assertion is the only \
-             signal that holds in both",
-        ),
-    }
+    let Some(value) = result.values.get(id) else {
+        panic!(
+            "no value cell {id:?} exists at all in the {what} eval. This is a \
+             DIFFERENT failure from an unresolved `Undef`: the cell was never \
+             created, so the binding site itself is missing rather than merely \
+             unsolved",
+        )
+    };
+    reify_test_support::scalar_si(value, what)
 }
 
 /// Every `Underdetermined`-coded diagnostic on this eval, matched by CODE
 /// rather than by substring on the rendered `W_UNDERDETERMINED` text.
 pub fn underdetermined(result: &EvalResult) -> Vec<&reify_core::Diagnostic> {
-    result
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
-        .collect()
+    reify_test_support::underdetermined_diags(&result.diagnostics)
 }
