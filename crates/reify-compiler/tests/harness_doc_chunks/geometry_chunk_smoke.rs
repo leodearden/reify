@@ -197,6 +197,23 @@ fn rounded_box_compiles() {
     assert_compiles("rounded_box", "rounded_box(20mm, 20mm, 10mm, 3mm)");
 }
 
+#[test]
+fn half_space_compiles() {
+    // geometry.md's "Solid Primitives" block documents the exactly-6-arg
+    // `half_space(px, py, pz, nx, ny, nz)` form (geometry.rs:1680,
+    // `PrimitiveKind::HalfSpace`) — the first Bounded=false producer.
+    //
+    // Mixed-dimension convention, same split `revolve_compiles` below pins:
+    // args 0-2 are a POINT on the boundary plane, a Length position, so they
+    // take `mm` literals; args 3-5 are the OUTWARD NORMAL pointing toward the
+    // retained material — a direction whose magnitude is irrelevant and which
+    // the compiler does not unit-check — so they take dimensionless literals,
+    // to avoid implying a direction vector carries a length unit. Arity alone
+    // does not constrain this split, which is why it is pinned here.
+    // Grounding site: examples/half_space.ri.
+    assert_compiles("half_space", "half_space(0mm, 0mm, 0mm, 0, 0, 1)");
+}
+
 // --- 2D profiles (geometry.md "2D profiles" block) ---
 
 #[test]
@@ -316,6 +333,120 @@ fn polygon_compiles() {
     // document the variadic flat coordinate-pairs form
     // `polygon(x1, y1, x2, y2, ...)` (>= 6 args, even count; geometry.rs:1570).
     assert_compiles("polygon", "polygon(0mm, 0mm, 10mm, 0mm, 5mm, 10mm)");
+}
+
+// --- GD&T tolerance zones (geometry.md "GD&T Tolerance Zones" block) ---
+//
+// Four zone constructors that produce a tolerance-zone Solid rather than a
+// primitive. Their arities are checked by the compiler, but their argument
+// DIMENSIONS and ORDER are not — so each form below is a transcription of an
+// already-compiling call site (`examples/tolerancing/gdt_zones.ri`,
+// `crates/reify-eval/tests/zone_constructors_e2e.rs`,
+// `crates/reify-compiler/tests/harness_physical_modeling/zone_slab_compile_tests.rs`),
+// concretized to literals, rather than a signature read off the arm alone.
+
+#[test]
+fn zone_slab_compiles() {
+    // geometry.md's "GD&T Tolerance Zones" block documents the 2-arg
+    // `zone_slab(face, width)` form. Routed as a Modify extension
+    // (geometry.rs:2622 → geometry_modify.rs:86,
+    // `compile_modify_2arg(ModifyKind::ZoneSlab, "width")`), so arg 0 is a
+    // geometry TARGET — a face/profile, not a solid — offset ±width/2 and
+    // capped into a slab. Grounding site: zone_slab_compile_tests.rs's
+    // `zone_slab_lowers_to_modify_zone_slab`.
+    assert_compiles("zone_slab", "zone_slab(rectangle(40mm, 20mm), 2mm)");
+}
+
+#[test]
+fn zone_cylinder_compiles() {
+    // geometry.md documents the exactly-2-arg `zone_cylinder(axis, width)`
+    // form (geometry.rs:2241). Arg 0 is an axis WIRE (its own length sets the
+    // cylinder extent — there is deliberately no length argument); `width` is
+    // the Ø-zone DIAMETER, lowered to Sweep{Pipe} with radius = width * 0.5.
+    // Grounding site: examples/tolerancing/gdt_zones.ri's `cyl_zone` cell.
+    assert_compiles(
+        "zone_cylinder",
+        "zone_cylinder(line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 20mm), 8mm)",
+    );
+}
+
+#[test]
+fn zone_annulus_compiles() {
+    // geometry.md documents the exactly-4-arg
+    // `zone_annulus(axis, nominal_radius, width, length)` form
+    // (geometry.rs:2288) — Difference(Pipe(axis, R + w/2), Pipe(axis, R − w/2)).
+    // Arg 3 `length` is accepted and validated, but the swept extent still
+    // comes from the axis wire (ratified L2 esc-4476-88 Option A), so the
+    // 4-arg spelling must be pinned even though the argument is unused.
+    // Grounding site: examples/tolerancing/gdt_zones.ri's `ann_zone` cell.
+    assert_compiles(
+        "zone_annulus",
+        "zone_annulus(line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 20mm), 20mm, 4mm, 20mm)",
+    );
+}
+
+#[test]
+fn zone_profile_compiles() {
+    // geometry.md documents the exactly-2-arg `zone_profile(solid, width)`
+    // form (geometry.rs:2355) — Difference(Thicken(solid, +w/2),
+    // Thicken(solid, −w/2)) via OCCT Thicken. Arg 0 is a SOLID here (unlike
+    // zone_slab's face). Grounding site: examples/tolerancing/gdt_zones.ri's
+    // `prof_zone` cell.
+    assert_compiles("zone_profile", "zone_profile(box(10mm, 10mm, 10mm), 1mm)");
+}
+
+// --- Free-form & implicit surfaces (geometry.md block of that name) ---
+
+#[test]
+fn nurbs_surface_compiles() {
+    // geometry.md's "Free-form & Implicit Surfaces" block documents the
+    // exactly-6-arg `nurbs_surface(control_points, weights, u_knots, v_knots,
+    // u_degree, v_degree)` form (geometry.rs:2639, `SurfaceKind::Nurbs`).
+    //
+    // The NESTING is the part arity cannot pin, and it differs per argument:
+    // control_points is a nested (u-major × v) grid of point3(...), weights a
+    // matching nested grid of reals, but u_knots/v_knots are FLAT clamped knot
+    // vectors and the degrees are bare integers. Transcribed from the
+    // already-evaluating bilinear patch at
+    // crates/reify-eval/tests/nurbs_surface_e2e.rs's `NURBS_SURFACE_BBOX_SOURCE`.
+    assert_compiles(
+        "nurbs_surface",
+        "nurbs_surface(\
+         [[point3(0mm,0mm,0mm),point3(0mm,10mm,0mm)],[point3(10mm,0mm,0mm),point3(10mm,10mm,5mm)]], \
+         [[1.0,1.0],[1.0,1.0]], [0,0,1,1], [0,0,1,1], 1, 1)",
+    );
+}
+
+#[test]
+fn isosurface_bare_compiles() {
+    // geometry.md documents the 1-arg `isosurface(grid)` form
+    // (geometry.rs:2670, `check_arg_count_at_least(..., 1)`). The grid operand
+    // is resolved via geom_ref(0); a BRep/Mesh operand is voxelized first.
+    // Grounding site: examples/multi_kernel/voxel_to_mesh.ri's `shell` cell.
+    assert_compiles("isosurface_bare", "isosurface(box(10mm, 10mm, 10mm))");
+}
+
+#[test]
+fn isosurface_with_named_options_compiles() {
+    // geometry.md documents the labelled 3-arg form
+    // `isosurface(grid, iso: level, adaptive: flag)`, and 3 as the maximum
+    // arity (geometry.rs:2680 errors above 3). This test pins that the
+    // labelled spelling COMPILES and that 3 args are accepted — NOT that the
+    // labels are enforced. They are not: like every geometry constructor the
+    // arm binds positionally (2nd arg -> `iso`, 3rd -> `adaptive`), so
+    // `iso:` / `adaptive:` are the recommended spelling for the slot rather
+    // than a checked name. Their absence in the bare form above defers to the
+    // eval-lowering defaults (iso_level = 0.0, adaptive = false) rather than
+    // being defaulted at compile time.
+    // Grounding site: geometry.rs's unit test
+    // `compile_geometry_call_isosurface_named_3arg_carries_iso_and_adaptive`.
+    // No worked example anywhere passes `adaptive:` —
+    // examples/multi_kernel/voxel_to_mesh_iso.ri grounds the 2-arg `iso:`
+    // spelling only — so that unit test is the 3-arg form's only grounding site.
+    assert_compiles(
+        "isosurface_with_named_options",
+        "isosurface(box(10mm, 10mm, 10mm), iso: 3mm, adaptive: true)",
+    );
 }
 
 // --- Interference & clearance oracle: chunk <-> compiler-registry guard ---

@@ -74,7 +74,21 @@ torus(major_radius, minor_radius)                    -> Solid
 wedge(width, depth, height, top_width)               -> Solid
 tube(outer_radius, inner_radius, height)             -> Solid   // outer cylinder minus inner cylinder
 rounded_box(width, depth, height, corner_r)          -> Solid   // box with the 4 vertical edges rounded
+half_space(px, py, pz, nx, ny, nz)                   -> Solid   // UNBOUNDED — Bounded = false
 ```
+
+`half_space` is the one primitive that is not a finite body: `(px, py, pz)` is a point **on** the
+boundary plane (a Length position, so `mm` literals), and `(nx, ny, nz)` is the **outward normal**
+pointing toward the side whose material is retained — a direction, so plain dimensionless numbers,
+not lengths. Because the result has `Bounded = false` it cannot be used where a Bounded shape is
+required; intersect it with a finite solid to get a bounded result usable for export and
+mass-property queries:
+
+```
+intersection(half_space(0mm, 0mm, 0mm, 0, 0, 1), box(40mm, 40mm, 40mm))
+```
+
+Worked example: `examples/half_space.ri`.
 
 `rounded_box` requires `corner_r > 0` and `2*corner_r < min(width, depth)`; violations are a compile-time error when the args are constant literals (including constant arithmetic like `10mm + 15mm`). A param-driven `corner_r` that violates the constraint at runtime is **not** caught statically — it fails at evaluation with an opaque kernel error instead of a diagnostic.
 
@@ -234,6 +248,102 @@ crates/reify-cli/tests/harness_cli/cli_check.rs::check_rejects_bare_scalar_mirro
 the REMAINING exit-code claims are UNPINNED prose (nothing else in these harnesses runs the CLI)
 and the residual is tracked in `docs/prds/v0_6/check-diagnostic-truthfulness.md`. Full
 PINNED/UNPINNED inventory: the `units` chunk.
+
+
+## GD&T Tolerance Zones
+
+Constructors that build a geometric-tolerance zone as a real `Solid`, so a zone can be
+intersected, differenced and measured like any other body. Every one takes its zone extent
+as a **width**, and every one centres the zone on the geometry it is given (`±width/2`):
+
+```
+zone_slab(face, width)                                 -> Solid   // face offset ±width/2, capped into a slab
+zone_cylinder(axis, width)                             -> Solid   // Ø-zone about an axis wire; width is the DIAMETER
+zone_annulus(axis, nominal_radius, width, length)      -> Solid   // annular shell at nominal_radius ± width/2
+zone_profile(solid, width)                             -> Solid   // surface-profile shell, ±width/2 about the solid
+```
+
+`zone_slab` takes a **face or 2D profile** as its first argument — not a solid — and offsets it
+`±width/2`, capping the result into a centred slab. (`zone_profile` is the solid-input sibling.)
+
+`zone_cylinder`'s `width` is the zone **diameter**, not its radius: it lowers to a pipe sweep with
+`radius = width * 0.5`. There is deliberately **no length argument** — the axis wire's own length
+sets the cylinder extent, so control the zone's length by controlling the wire.
+
+`zone_annulus` lowers to the difference of two pipe sweeps along the axis: an outer sweep of
+radius `nominal_radius + width/2` minus an inner one of radius `nominal_radius − width/2`. Its
+fourth argument, `length`, is accepted and validated but does **not** drive the result: as with
+`zone_cylinder`, the swept extent comes from the axis wire. Pass it for signature completeness,
+and size the wire to size the zone.
+
+`zone_profile` lowers to the difference of two OCCT thicken results — the solid thickened by
+`+width/2` minus the same solid thickened by `−width/2` — giving a shell that straddles the input
+solid's surface. It has no closed-form volume; expect roughly `surface_area × width`, and query
+the realized solid rather than computing it by hand.
+
+Worked example of all four: `examples/tolerancing/gdt_zones.ri`.
+
+## Free-form & Implicit Surfaces
+
+Two constructors that build geometry from data rather than from a parametric shape —
+a NURBS patch from an explicit control net, and a marching-cubes body from a voxel grid:
+
+```
+nurbs_surface(control_points, weights, u_knots, v_knots, u_degree, v_degree)  -> Surface
+isosurface(grid)                                     -> Solid  // marching cubes, iso = 0.0
+isosurface(grid, iso: level)                         -> Solid
+isosurface(grid, iso: level, adaptive: flag)         -> Solid
+```
+
+`nurbs_surface`'s six arguments do **not** all have the same shape. `control_points` is a
+**nested** (u-major × v) list of `point3(...)`, and `weights` is a matching nested list of reals;
+but `u_knots`/`v_knots` are **flat** clamped knot vectors, and `u_degree`/`v_degree` are plain
+integers. A bilinear patch (degree 1 × 1, clamped knots `[0,0,1,1]`):
+
+```
+nurbs_surface(
+    [[point3(0mm,0mm,0mm),point3(0mm,10mm,0mm)],[point3(10mm,0mm,0mm),point3(10mm,10mm,5mm)]],
+    [[1.0,1.0],[1.0,1.0]],
+    [0,0,1,1],
+    [0,0,1,1],
+    1,
+    1
+)
+```
+
+A free-form NURBS patch is neither Closed nor Planar, so it is **not** a valid profile for
+`extrude`/`revolve`/`sweep`/`loft` — passing one inline emits `GeometryProfileRequired`.
+
+`isosurface` extracts a surface by marching cubes from a Voxel-repr `grid` operand; a BRep or Mesh
+operand is voxelized first (Mesh→Voxel on OpenVDB) and surfaced back Voxel→Mesh.
+
+Its **type** is `Solid`, not a bare mesh handle: the compiler infers the result Bounded, Watertight
+and Connected, so it composes with the boolean operations and the export paths like any other solid
+body. A mesh is only its internal repr — the Voxel→Mesh step above is part of the lowering, not
+something you write.
+
+`iso` and `adaptive` are **optional** trailing arguments, and at most 3 arguments are accepted.
+Omitting them is not the same as passing a default at the call site: they are left unset and
+resolved during evaluation lowering to `iso = 0.0` and `adaptive = false`.
+
+`iso` is a **Length**, not a bare number — write it with a unit, as the worked example does
+(`iso: 3mm`); it is decoded to SI metres for marching cubes. `adaptive` is a **Bool**.
+
+The `iso:`/`adaptive:` labels written above are the **recommended spelling** — they name the slot at
+the call site and keep a bare `true` from reading as a mystery flag — but they are **not checked**.
+Like every geometry constructor, `isosurface` binds its arguments **positionally**, in source order:
+2nd argument → `iso`, 3rd → `adaptive`. Two consequences:
+
+- `isosurface(grid, level)` compiles to exactly the same thing as `isosurface(grid, iso: level)`.
+- **`adaptive` cannot be passed without `iso`.** `isosurface(grid, adaptive: flag)` is accepted, and
+  binds `flag` into the **iso** slot. Compilation is silent about it, but evaluation is not: a Bool
+  is not a Length, so it warns `isosurface: 'iso' argument evaluated to a non-numeric value —
+  defaulting to 0.0`, and `adaptive` stays `false` because nothing reached its slot. Pass the iso
+  level explicitly — `isosurface(grid, iso: level, adaptive: flag)` — whenever you want the adaptive
+  flag.
+
+Worked examples: `examples/multi_kernel/voxel_to_mesh.ri` and
+`examples/multi_kernel/voxel_to_mesh_iso.ri`.
 
 
 ## Interference & Clearance Queries
