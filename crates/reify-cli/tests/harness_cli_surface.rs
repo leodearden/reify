@@ -11,15 +11,20 @@
 //! `tests/infra/harness-layout-baseline.manifest` grandfather row (SUPERSEDED — Leo
 //! 2026-07-22, esc-5056-11: the baseline is a shrinking ratchet, not an allow-list to grow).
 //!
-//! THE SEAM. These are the tests that exercise the `reify` executable's external surface —
-//! how it is linked, what argv and help output it accepts and prints, and the machine-facing
-//! protocols and interchange formats it speaks over stdio — none of which evaluates a `.ri`
-//! design.
+//! THE SEAM is a rule you can check, not a theme you have to judge: a test belongs here iff
+//! it consumes NONE of the shared `tests/common/` helpers. `grep -rn 'common::'
+//! crates/reify-cli/tests/harness_cli_surface/` is empty today and must stay empty. That
+//! rule is also what the split buys — this root deliberately has NO `mod common;`, so the
+//! 312-line external include stays charged to `harness_cli` alone instead of being compiled
+//! into a second unit and counted twice under the C2 cap (measured: `external_files = 0`).
 //!
-//! That thematic seam is mechanically corroborated: it is exactly the set that needs none of
-//! the shared `tests/common/` `.ri`-fixture helpers, so this root deliberately has NO
-//! `mod common;` and the 312-line external include stays charged to `harness_cli` alone
-//! rather than being compiled into a second unit and counted twice under the C2 cap.
+//! What the rule selects, descriptively: the tests that exercise the `reify` executable's
+//! external surface — how it is linked, what argv and help output it accepts and prints, and
+//! the machine-facing protocols and interchange formats it speaks over stdio. Several
+//! members DO drive a `.ri` fixture through that surface (`mcp_integration` and `cli_cache`
+//! both run `tests/fixtures/bracket.ri`), so "evaluates no `.ri` design" is NOT the
+//! criterion and never was: both harnesses share `tests/fixtures/`, which costs nothing
+//! under C2 — it counts only `.rs` files reached by a `mod` / `#[path]` declaration.
 //!
 //! Layout-only (invariant I3): no `#[test]` fn is added, removed or renamed by this split,
 //! and every module keeps its stem, so each `<file>::<test>` module path — and thus every

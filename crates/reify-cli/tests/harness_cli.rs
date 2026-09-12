@@ -11,21 +11,21 @@
 //!
 //! Task #7365 carved the external-surface family out to the sibling
 //! `harness_cli_surface.rs` under rule (a) — the SPLIT remedy, never a CAP_LINES bump.
-//! The seam: that root holds the tests that exercise the `reify` executable's external
-//! surface (its linkage, its argv/help surface, and the machine-facing protocols and
-//! interchange formats it speaks over stdio), none of which evaluates a `.ri` design;
-//! this root retains the `.ri`-fixture-driven tests and therefore keeps `mod common;`.
-//! Measured: 17954 (190 root + 17452 across 83 module files + 312 external) -> 13475
-//! (175 + 12988 across 76 + 312 external), against CAP_LINES = 20000.
+//! The seam is `tests/common/`: a test that consumes the shared helpers stays here, one that
+//! consumes none of them went there — which is why this root keeps `mod common;` and that
+//! one has none. Both roots still share the `tests/fixtures/` `.ri` tree; a `.ri` file is
+//! not a seam signal and costs nothing under C2. Provenance and the pre-split measurement
+//! are stated once, in that root's header. No post-split line count is hand-copied here:
+//! `tests/infra/test_harness_kloc_cap.sh` measures both roots live on every run, which is
+//! the only figure that cannot go stale.
 //!
 //! `mod common;` below is bare (no `#[path]`): crate-root directory-relative resolution
 //! finds the retained `tests/common/mod.rs` from here, so the shared CLI test helpers
 //! compile ONCE for the whole harness instead of once per former binary (the PRD §3
 //! "dedup common" bonus). Each moved file's own `mod common;` was rewritten to
-//! `use crate::common;`, leaving its `common::foo()` call sites unchanged. That is also
-//! why #7365's seam was drawn where it was: no member of `harness_cli_surface` consumes
-//! `tests/common/`, so the 312-line include stays charged to exactly one root under the
-//! C2 cap rather than being compiled — and counted — twice.
+//! `use crate::common;`, leaving its `common::foo()` call sites unchanged. Keeping it to one
+//! root is what #7365's seam protects: the 312-line include is charged once under the C2 cap
+//! rather than being compiled — and counted — twice.
 
 mod common;
 
