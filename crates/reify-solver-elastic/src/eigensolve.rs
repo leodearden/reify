@@ -323,6 +323,42 @@ impl MetricOp for SparseMetricOp<'_> {
 }
 
 // ---------------------------------------------------------------------------
+// Shift-contract rules: SELECTION (C2) and ORDER (C3)
+//
+// These are two different rules and no implementation may conflate them
+// (PRD §5.2).  They are separate, separately named functions precisely so the
+// two are not expressible as one tangled comparator: `select_nearest_to_shift`
+// decides WHICH eigenvalues come back, `order_by_abs_lambda` decides in WHAT
+// ORDER they are presented.  Conflating them turns a 300 Hz band inspection
+// into the mode table 301, 298, 310, 295 instead of 295, 298, 301, 310.
+//
+// Both sorts are STABLE and keyed via `total_cmp`, so equidistant eigenvalues
+// resolve deterministically from gevd's own index order — the crate's
+// determinism suite depends on it.
+// ---------------------------------------------------------------------------
+
+/// **C2 — Selection.** Reorder `pairs` so its first `n_take` entries are the
+/// eigenvalues nearest σ, and return that `n_take`.
+///
+/// The tail beyond `n_take` is left in place (still sorted by |λ − σ|) rather
+/// than dropped: it is the *unselected* set, which the C5 provenance
+/// computation needs.
+fn select_nearest_to_shift(pairs: &mut [(f64, usize)], sigma: f64, n_modes: usize) -> usize {
+    pairs.sort_by(|a, b| (a.0 - sigma).abs().total_cmp(&(b.0 - sigma).abs()));
+    pairs.len().min(n_modes)
+}
+
+/// **C3 — Order.** Sort a selected set ascending by |λ|.
+///
+/// Absolute, not signed, which is the pre-PRD convention preserved unchanged:
+/// with negative eigenvalues present λ=−2 still sorts before λ=+3.  Shared by
+/// both implementations (SPOT) so the Lanczos path's presentation order cannot
+/// drift from the dense path's.
+fn order_by_abs_lambda(pairs: &mut [(f64, usize)]) {
+    pairs.sort_by(|a, b| a.0.abs().total_cmp(&b.0.abs()));
+}
+
+// ---------------------------------------------------------------------------
 // Dense path
 // ---------------------------------------------------------------------------
 
@@ -422,10 +458,15 @@ pub fn solve_eigen_dense(
         })
         .collect();
 
-    // Sort ascending by |λ|; stable sort preserves relative order of equal |λ|.
-    pairs.sort_by(|a, b| a.0.abs().total_cmp(&b.0.abs()));
-
-    let n_take = pairs.len().min(opts.n_modes);
+    // C2 then C3, in that order and never fused (see the helper block above).
+    //
+    // C1 (σ=0 is the identity) needs NO `if sigma == 0.0` branch: `λ − 0.0 == λ`
+    // bit-exactly in IEEE-754 for every finite λ, so at σ=0 the selection sort
+    // IS the pre-PRD `|λ|` sort, the prefix is the same slice, and a STABLE
+    // re-sort of an already-|λ|-ascending prefix is a no-op.  Same faer calls in
+    // the same order, so the buckling and modal goldens pass bit-for-bit.
+    let n_take = select_nearest_to_shift(&mut pairs, opts.sigma, opts.n_modes);
+    order_by_abs_lambda(&mut pairs[..n_take]);
     let eigenvalues: Vec<f64> = pairs[..n_take].iter().map(|&(lam, _)| lam).collect();
 
     let mut eigenvectors = Mat::<f64>::zeros(n, n_take);
@@ -630,8 +671,11 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
         })
         .collect();
 
-    // Sort ascending by |λ| (stable).
-    pairs.sort_by(|a, b| a.0.abs().total_cmp(&b.0.abs()));
+    // C3 via the shared helper (SPOT).  SELECTION is deliberately NOT re-run
+    // here: this path's converged set is the output of the UNSHIFTED operator,
+    // so re-selecting it by |λ − σ| would be wrong until #7259 makes the
+    // operator itself honor σ.
+    order_by_abs_lambda(&mut pairs);
 
     let n_take = pairs.len().min(opts.n_modes);
     // Track what the caller actually receives: converged iff we hand back
