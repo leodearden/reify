@@ -151,12 +151,13 @@ trait Plastic : Flexible {
 // physical body, inheriting volume, centroid, and mass.
 // thermal_conductivity (W/(m·K), ThermalConductivity alias — tightened by #3115),
 // max_service_temp (K, Temperature alias — tightened from Real by task α).
-// thermal_conductivity keeps its 0W/(m*K) quantity form.
-// DIMENSIONED-ZERO CONVENTION — docs/notes/dimensioned-zero-coercion.md.
+// thermal_conductivity's `> 0W/(m*K)` keeps its dimensioned RHS by choice —
+// the coercion below would accept a bare `0` here too.
 trait ThermallyConductive : Physical {
     param thermal_conductivity : ThermalConductivity
     param max_service_temp : Temperature
     constraint thermal_conductivity > 0W/(m*K)
+    // DIMENSIONED-ZERO CONVENTION — docs/notes/dimensioned-zero-coercion.md.
     constraint max_service_temp > 0
 }
 
