@@ -1,41 +1,36 @@
 /**
  * The constraint-verdict wire-token extraction over gui/src-tauri/src/engine.rs
- * (task 6723, PRD-4 β).
+ * (task 6723, PRD-4 β). The contract these tokens obey is canonical on
+ * `ConstraintData.status` in gui/src-tauri/src/types.rs.
  *
- * WHY THIS MODULE EXISTS — i.e. why the tokens are READ FROM RUST SOURCE
- * rather than hardcoded as lower-case literals in the consuming test.
+ * WHY THE TOKENS ARE READ FROM RUST SOURCE rather than hardcoded as lower-case
+ * literals in the consuming test: ~60 existing frontend fixtures hand-author the
+ * lower-case token, which is exactly why the vitest suite stayed green for as
+ * long as the engine emitted PascalCase — each side only ever asserted that it
+ * agreed with ITSELF. A hardcoded literal here would faithfully recreate that
+ * lying fixture, so ./constraintVerdictParity.test.ts builds its payload from
+ * whatever `extractVerdictTokens(readEngineSource())` returns: the producer's
+ * real bytes drive the consumer, which is what makes the pin two-way.
  *
- * `ConstraintData.status` is produced in Rust and consumed in TypeScript, and
- * the two sides silently disagreed on its casing for a long time: the engine
- * emitted `"Satisfied"`/`"Violated"`/`"Indeterminate"` while every frontend
- * consumer (ConstraintPanel's STATUS_PRIORITY/statusIcon/statusTitle,
- * StatusBar's constraintSummary, ChatPanel's hasViolatedConstraints, and the
- * `[data-status="…"]` CSS selectors) compared against lower-case.  Both suites
- * were green throughout, because ~60 frontend fixtures hand-author the
- * lower-case token and the Rust tests pin the PascalCase one.  Each side
- * asserted only that it agreed with ITSELF.
+ * SCAFFOLDING, NOT PERMANENT ARCHITECTURE. This module exists only because
+ * `status` crosses the wire as an untyped `String` produced by a hand-written
+ * mapping. A serde-derived `ConstraintStatus` enum (`#[serde(rename_all =
+ * "lowercase")]`, `From<Satisfaction>`) plus the matching TypeScript union would
+ * make the casing DERIVED rather than hand-written, and re-introducing the drift
+ * a compile error. When that lands, this module, ./constraintVerdictTokens.test.ts
+ * and the source-reading half of ./constraintVerdictParity.test.ts should be
+ * DELETED, not maintained. The narrowing is filed as follow-up work (see
+ * `ConstraintData.status` in ../types.ts).
  *
- * A hardcoded lower-case literal in the parity fixture would recreate exactly
- * that lying fixture.  So `constraintVerdictParity.test.ts` builds its payload
- * from whatever `extractVerdictTokens(readEngineSource())` returns — the
- * producer's real bytes drive the consumer, which is what makes the pin
- * two-way.  If somebody re-capitalises the Rust tokens, the extracted values
- * change and the frontend assertions red immediately.
- *
- * WHERE IT LIVES.  gui/tsconfig.json is `include: ["src"]`, so a module under
- * gui/src/__tests__/ is inside tsc's strict program.  Following the
- * ./toolDefNames.ts precedent, a non-suite helper lives here with no `.test.`
- * segment so vitest's default include does not collect it as a suite, and the
- * module is vitest-free: pure functions plus a plain read, with every `expect`
- * in the importing `.test.ts` files.
- *
- * The pure function takes a source STRING rather than doing its own I/O, which
- * is what lets ./constraintVerdictTokens.test.ts pin every match form from a
- * string literal with no on-disk fixture.
+ * WHERE IT LIVES. gui/tsconfig.json is `include: ["src"]`, so a module under
+ * gui/src/__tests__/ is inside tsc's strict program. Following the
+ * ./toolDefNames.ts precedent it has no `.test.` segment (vitest's default
+ * include does not collect it as a suite) and is vitest-free: pure functions
+ * plus a plain read, with every `expect` in the importing `.test.ts`. Taking a
+ * source STRING rather than doing its own I/O is what lets the unit suite pin
+ * every match form from a string literal, with no on-disk fixture.
  */
-import { readFileSync } from 'node:fs';
-import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readTauriSrc } from './tauriSource';
 
 /** The three variants of `reify_constraints::Satisfaction`. */
 export type SatisfactionVariant = 'Satisfied' | 'Violated' | 'Indeterminate';
@@ -55,15 +50,10 @@ export const SATISFACTION_VARIANTS: readonly SatisfactionVariant[] = [
 /**
  * Extract the wire token each `Satisfaction` variant is serialised as.
  *
- * The pattern deliberately spans BOTH shapes engine.rs has worn:
- *
- *   - the two duplicated `match entry.satisfaction { … }` blocks that existed
- *     in `build_constraints` and `surface_geometry_derived_cells` before task
- *     6723, and
- *   - the single `satisfaction_token()` helper those two collapsed into.
- *
- * Both are `Satisfaction::Variant => "token"` arms, so the extraction survives
- * its own refactor unchanged.  The Indeterminate GUARD comparisons in
+ * The pattern matches `Satisfaction::Variant => "token"` match arms wherever
+ * they appear, so it is indifferent to how many functions carry them and
+ * survives a refactor of the producer unchanged; arms that AGREE collapse to one
+ * entry per variant.  The Indeterminate GUARD comparisons in
  * `surface_geometry_derived_cells` route through `satisfaction_token(
  * Satisfaction::Indeterminate)` — a call, not a match arm — so they are never
  * captured here and cannot contribute a phantom token.
@@ -111,16 +101,9 @@ export function extractVerdictTokens(rustSource: string): Map<SatisfactionVarian
 /**
  * Read gui/src-tauri/src/engine.rs, the sole producer of `ConstraintData.status`.
  *
- * The `fileURLToPath` + `path.dirname` + `path.resolve` idiom is carried over
- * from ./toolDefNames.ts:133-136 (which documents why naive URL-relative `..`
- * math over-shoots). Segment count here:
- *
- *   <gui>/src/__tests__/constraintVerdictTokens.ts
- *              ^^^^^^^^   (dirname = __tests__/)
- *         ^^^               (..     = src/)
- *   ^^^^^                   (..     = gui/)
+ * Shares its path computation with `readDebugServerSource` (./toolDefNames.ts)
+ * via `readTauriSrc`.
  */
 export function readEngineSource(): string {
-  const dir = path.dirname(fileURLToPath(import.meta.url));
-  return readFileSync(path.resolve(dir, '..', '..', 'src-tauri', 'src', 'engine.rs'), 'utf-8');
+  return readTauriSrc('engine.rs');
 }

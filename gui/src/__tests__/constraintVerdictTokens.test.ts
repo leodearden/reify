@@ -3,10 +3,7 @@
  *
  * Every case below runs against SYNTHETIC Rust-source string literals — no
  * on-disk fixture — mirroring ./toolDefNames.test.ts.  That keeps the pattern
- * semantics pinned independently of whatever engine.rs happens to contain
- * today, and in particular pins BOTH the pre-6723 two-match-block shape and
- * the post-6723 single-`satisfaction_token`-helper shape, so the extraction is
- * proven to survive its own refactor.
+ * semantics pinned independently of whatever engine.rs happens to contain today.
  *
  * COVERAGE BOUNDARY.  The real cross-language drift guard — "the token the
  * engine emits is the token the frontend renders" — lives ONLY in
@@ -42,47 +39,23 @@ describe('extractVerdictTokens', () => {
     });
   });
 
-  it('extracts from the two-duplicated-match-block form (pre-6723 engine.rs)', () => {
-    // The exact shape build_constraints and surface_geometry_derived_cells
-    // carried before this task collapsed them: two byte-identical blocks.
+  it('reports tokens VERBATIM, and collapses repeated arms that agree', () => {
+    // The helper never normalises: casing is exactly what makes this defect
+    // detectable, so folding it here would destroy the signal. And a variant may
+    // legitimately be matched more than once — arms that AGREE collapse to one
+    // entry, which is what keeps the ambiguity throw below specific to DRIFT.
     const src = `
-      let status = match entry.satisfaction {
-          Satisfaction::Satisfied => "Satisfied",
-          Satisfaction::Violated => "Violated",
-          Satisfaction::Indeterminate => "Indeterminate",
-      };
+      Satisfaction::Satisfied => "Satisfied",
+      Satisfaction::Violated => "Violated",
+      Satisfaction::Indeterminate => "Indeterminate",
       // … several hundred lines away …
-      c.status = match new_sat {
-          Satisfaction::Satisfied => "Satisfied",
-          Satisfaction::Violated => "Violated",
-          Satisfaction::Indeterminate => "Indeterminate",
-      }
-      .to_string();
+      Satisfaction::Satisfied => "Satisfied",
     `;
-    // Two agreeing copies collapse to one entry per variant — not an error.
     expect(Object.fromEntries(extractVerdictTokens(src))).toStrictEqual({
       Satisfied: 'Satisfied',
       Violated: 'Violated',
       Indeterminate: 'Indeterminate',
     });
-  });
-
-  it('reports the tokens verbatim — PascalCase and lower-case alike', () => {
-    // The helper never normalises. Casing is exactly what makes this defect
-    // detectable, so folding it here would destroy the signal.
-    const pascal = `
-      Satisfaction::Satisfied => "Satisfied",
-      Satisfaction::Violated => "Violated",
-      Satisfaction::Indeterminate => "Indeterminate",
-    `;
-    expect(extractVerdictTokens(pascal).get('Satisfied')).toBe('Satisfied');
-
-    const lower = `
-      Satisfaction::Satisfied => "satisfied",
-      Satisfaction::Violated => "violated",
-      Satisfaction::Indeterminate => "indeterminate",
-    `;
-    expect(extractVerdictTokens(lower).get('Satisfied')).toBe('satisfied');
   });
 
   it('spans arbitrary whitespace around `=>` (the `\\s*` in the pattern)', () => {
