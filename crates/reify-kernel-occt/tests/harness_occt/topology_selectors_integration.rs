@@ -323,10 +323,10 @@ fn shared_edges_with_out_of_range_face_index_returns_query_failed() {
 fn topology_selectors_on_fused_two_box_solid_match_known_geometry() {
     // Build two 10x10x10 boxes; translate the second by +10 along X so it
     // abuts the first; union them. The resulting solid has a deterministic
-    // topology: 10 outer faces (each of top/bottom/front/back is split along
-    // X=10 into two sub-faces; plus the two end faces at X=0 and X=20). The
-    // shared interior face at X=10 collapses, contributing only the seam
-    // edges to the outer topology.
+    // topology: the shared interior face at X=10 collapses, and since task
+    // 7054 the coplanar sub-face pairs it left on top/bottom/front/back are
+    // merged by `ShapeUpgrade_UnifySameDomain`, so the union is a plain
+    // 20x10x10 prism with 6 faces.
     let mut kernel = OcctKernel::new();
     let box_a = kernel
         .execute(&GeometryOp::Box {
@@ -358,11 +358,14 @@ fn topology_selectors_on_fused_two_box_solid_match_known_geometry() {
         .expect("Union should succeed");
     let fused_id = fused.id;
 
-    // Verified empirically: two abutting 10x10x10 boxes fused yield exactly
-    // 10 outer faces. We probe the boundary (index 10 must be out-of-range,
-    // index 9 must be in-range) instead of using a brittle string-match
-    // helper.
-    const EXPECTED_FACES: usize = 10;
+    // Since task 7054 every boolean result is run through
+    // `ShapeUpgrade_UnifySameDomain`, so the four pairs of coplanar sub-faces
+    // this fuse used to leave either side of the X=10 seam are merged: two
+    // abutting 10x10x10 boxes genuinely ARE a 20x10x10 prism, and 6 is its
+    // true face count (the pre-unification 10 was an artefact of the seam).
+    // Every assertion below keys off this constant and stays valid at 6 — a
+    // 6-face box has 4 neighbours per face, satisfying the >=3 check.
+    const EXPECTED_FACES: usize = 6;
     for face in 0..EXPECTED_FACES {
         let r = kernel.query(&GeometryQuery::AdjacentFaces {
             shape: fused_id,
@@ -392,11 +395,12 @@ fn topology_selectors_on_fused_two_box_solid_match_known_geometry() {
         ),
     }
 
-    // Each face of this solid touches at least 3 other faces: the two end
-    // faces (X=0 and X=20) are bordered by 4 sub-faces each; every split
-    // sub-face is bordered by an end face, two perpendicular sub-faces, and
-    // its co-planar partner across the X=10 seam — also 4 neighbors. So
-    // every face should have >=3 neighbors as a generous lower bound.
+    // Every face of a rectangular prism touches exactly 4 others (all but the
+    // one opposite it), so >=3 neighbors is a generous lower bound. Before
+    // task 7054's unification this held for a different reason — the end faces
+    // were bordered by 4 sub-faces each and every split sub-face by an end
+    // face, two perpendicular sub-faces and its coplanar partner across the
+    // X=10 seam, also 4 — so the bound survives the face-count change intact.
     let neighbors: Vec<std::collections::HashSet<i64>> = (0..EXPECTED_FACES)
         .map(|i| neighbors_of(&kernel, fused_id, i))
         .collect();

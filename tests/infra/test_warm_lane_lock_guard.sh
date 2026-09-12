@@ -9,10 +9,13 @@
 #
 #   What a reader of THIS file needs: the script under test is an availability
 #   oracle dark-factory consults BEFORE dispatching a verify onto a warm lane,
-#   because a lock timeout on that lane's inode is classified `merge_error` —
-#   terminal, escalated. So the properties pinned below are the ones a consumer
-#   depends on: the exit code, the sentinel grammar, the lock-path derivation,
-#   the fail-open degradation, and non-mutation of pool state.
+#   because dispatching into a contended lane costs DF the full bounded wait
+#   on that lane's inode plus the requeue and re-dispatch cycle that follows
+#   it. How DF classifies that timeout is DF-owned and stated in the seam doc's
+#   §1 acquirer table, not here — this header carried a copy of it that went
+#   stale. So the properties pinned below are the ones a consumer depends on:
+#   the exit code, the sentinel grammar, the lock-path derivation, the
+#   fail-open degradation, and non-mutation of pool state.
 #
 #   What is deliberately NOT pinned: any end-to-end merge-queue outcome. That
 #   half is dark-factory's and is not reachable from a reify worktree (seam

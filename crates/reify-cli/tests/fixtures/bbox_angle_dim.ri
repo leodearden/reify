@@ -1,0 +1,23 @@
+// bbox_angle_dim.ri — CLI eval fixture: an Angle-valued bbox corner is rejected.
+//
+// A bounding box is spatial by construction (task 6081), so both corners must be
+// `Point3<Length>`. `point3` is dimension-POLYMORPHIC at eval, so
+// `point3(0deg, 0deg, 0deg)` really does reach the `bbox` arm — where it used to
+// SUCCEED, because the only gate was "both corners agree". It now returns
+// Value::Undef, and the post-Undef geometry diagnose hook must emit on stderr:
+//   error: bbox: min argument expects Point3<Length>, got Point3<Angle> ...
+//
+// Lives in tests/fixtures/ (NOT examples/) since it intentionally triggers a
+// runtime Error diagnostic.
+//
+// Declares its module explicitly: without it, `reify eval` also emits
+// W_MODULE_DECL_MISSING ("expected `module bbox_angle_dim`"), whose text
+// contains the substring "bbox" and would independently supply half the
+// assertion anchor in cli_bbox_eval.rs. Hence the decl here plus a single
+// contiguous anchor there (the lesson task 6155 recorded on affine_scale_dim.ri).
+
+module bbox_angle_dim
+
+structure def BboxAngleDim {
+    let b = bbox(point3(0deg, 0deg, 0deg), point3(10deg, 20deg, 30deg))
+}

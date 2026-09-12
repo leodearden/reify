@@ -72,22 +72,49 @@ fn it_grade_factor(grade: i64) -> Option<f64> {
     }
 }
 
-/// Parse `iso_it_tolerance` arguments, returning `(grade, min_mm, max_mm)`.
+/// Parse `iso_it_tolerance` arguments, returning `(min_mm, max_mm, grade)`.
 ///
-/// Requires exactly 3 args: `Value::Int(grade)`, two finite LENGTH scalars.
+/// Requires exactly 3 args, subject-first: two finite LENGTH scalars
+/// (`nominal_min`, `nominal_max`) then `Value::Int(grade)`. The tuple mirrors
+/// the public argument order so one convention holds end-to-end.
 /// Returns `None` on wrong arity or wrong types; the size/range validity gate
 /// is applied separately in `iso_it_tolerance` (and reused by `diagnose`).
-fn parse_iso_well_typed(args: &[Value]) -> Option<(i64, f64, f64)> {
+fn parse_iso_well_typed(args: &[Value]) -> Option<(f64, f64, i64)> {
     if args.len() != 3 {
         return None;
     }
-    let grade = match &args[0] {
+    let min_si = validate_dimensioned_scalar(&args[0], DimensionVector::LENGTH)?;
+    let max_si = validate_dimensioned_scalar(&args[1], DimensionVector::LENGTH)?;
+    let grade = match &args[2] {
         Value::Int(n) => *n,
         _ => return None,
     };
-    let min_si = validate_dimensioned_scalar(&args[1], DimensionVector::LENGTH)?;
-    let max_si = validate_dimensioned_scalar(&args[2], DimensionVector::LENGTH)?;
-    Some((grade, min_si * 1e3, max_si * 1e3))
+    Some((min_si * 1e3, max_si * 1e3, grade))
+}
+
+/// Detect the superseded grade-first spelling
+/// `iso_it_tolerance(grade, nominal_min, nominal_max)`.
+///
+/// True iff the args are exactly `(Value::Int, LENGTH scalar, LENGTH scalar)` —
+/// the order ratified by #4265 and superseded by #6091's subject-first flip.
+///
+/// This shape is *internally consistent but mis-ordered*: no subject-first call
+/// can produce it (arg-0 would be a LENGTH scalar), so it can only have come
+/// from a pre-flip call site. That makes it diagnosable rather than merely
+/// ill-typed, which is why `diagnose` checks it BEFORE `parse_iso_well_typed`'s
+/// `?` early-return. Without this arm a stale call site fails completely
+/// silently: the builtin returns `Undef`, `diagnose` returns `None`, nothing
+/// reaches the diagnostic sink, and `reify eval` prints a bare `cell = undef`
+/// at exit 0 with nothing on stderr to say why.
+///
+/// Deliberately NOT matched: `(Int, LENGTH, Int)` (i.e.
+/// `iso_it_envelope_invalid_arg_types_are_undef`'s "nominal_min as Int" case),
+/// which is genuinely ill-typed under both orders and stays a plain `None`.
+fn is_legacy_grade_first_shape(args: &[Value]) -> bool {
+    args.len() == 3
+        && matches!(&args[0], Value::Int(_))
+        && validate_dimensioned_scalar(&args[1], DimensionVector::LENGTH).is_some()
+        && validate_dimensioned_scalar(&args[2], DimensionVector::LENGTH).is_some()
 }
 
 /// Validate that a nominal size range is within the supported ISO 286-1 envelope.
@@ -104,13 +131,16 @@ fn iso_size_in_envelope(min_mm: f64, max_mm: f64) -> bool {
     min_mm > 0.0 && max_mm > 0.0 && min_mm <= max_mm && max_mm <= 500.0
 }
 
-/// Compute ISO 286-1 standard tolerance (IT grade) for a given grade and size range.
+/// Compute ISO 286-1 standard tolerance (IT grade) for a nominal size range and grade.
+///
+/// Subject-first: `iso_it_tolerance(nominal_min, nominal_max, grade)` — the
+/// feature being toleranced leads, the grade qualifying it trails.
 ///
 /// Formula: D = √(min_mm · max_mm), i = 0.45·∛D + 0.001·D, tol = factor·i.
 /// Returns the tolerance as a finite LENGTH scalar in SI metres, or `Value::Undef`
 /// for unsupported grades, wrong arg types, or out-of-envelope sizes.
 fn iso_it_tolerance(args: &[Value]) -> Value {
-    let (grade, min_mm, max_mm) = match parse_iso_well_typed(args) {
+    let (min_mm, max_mm, grade) = match parse_iso_well_typed(args) {
         Some(t) => t,
         None => return Value::Undef,
     };
@@ -184,11 +214,16 @@ fn effective_tolerance_zone(args: &[Value]) -> Value {
 /// - valid in-envelope calls to `iso_it_tolerance`
 /// - any call to `effective_tolerance_zone`
 /// - ill-typed args (wrong arity, wrong types) — parse_iso_well_typed returns None
-///   and the `?` early-exits the function
+///   and the `?` early-exits the function — EXCEPT the legacy grade-first shape
+///   below, which is recognised ahead of that early-return
 ///
-/// Returns `Some(Diagnostic)` for out-of-envelope but well-typed calls to
-/// `iso_it_tolerance` (grade outside IT5–IT18 or nominal size outside
-/// `(0, 500mm]` or inverted/zero range).
+/// Returns `Some(Diagnostic)` (both `Severity::Error`) for:
+/// - out-of-envelope but well-typed calls to `iso_it_tolerance` (grade outside
+///   IT5–IT18, or nominal size outside `(0, 500mm]`, or an inverted/zero range)
+///   — `E_TolerancingOutOfEnvelope`
+/// - the superseded grade-first spelling `(grade, nominal_min, nominal_max)`
+///   — `E_TolerancingLegacyArgOrder`, an actionable migration message in place
+///   of a silent `Undef` (see `is_legacy_grade_first_shape`)
 ///
 /// Note: the diagnostic is code-less (`Diagnostic::error` sets `code: None`).
 /// Adding a `DiagnosticCode` variant would expand the change to `reify-core` and
@@ -197,7 +232,23 @@ fn effective_tolerance_zone(args: &[Value]) -> Value {
 pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
     match name {
         "iso_it_tolerance" => {
-            let (grade, min_mm, max_mm) = parse_iso_well_typed(args)?;
+            // Superseded grade-first spelling. Checked BEFORE the well-typed
+            // decode's `?`, which would otherwise discard this shape as merely
+            // "ill-typed" and leave the caller with a silent `Undef`.
+            if is_legacy_grade_first_shape(args) {
+                // No tracker id in the message text: this string reaches a `.ri`
+                // author's stderr, and `#6091` is unresolvable outside this repo.
+                // The provenance lives in `is_legacy_grade_first_shape`'s doc
+                // comment; what makes the message ACTIONABLE is the correct order,
+                // which it spells twice.
+                return Some(Diagnostic::error(
+                    "E_TolerancingLegacyArgOrder: iso_it_tolerance is subject-first \u{2014} \
+                     iso_it_tolerance(nominal_min, nominal_max, grade). The grade-first \
+                     spelling iso_it_tolerance(grade, nominal_min, nominal_max) is no \
+                     longer supported; move the grade to the last argument.",
+                ));
+            }
+            let (min_mm, max_mm, grade) = parse_iso_well_typed(args)?;
             let in_env =
                 it_grade_factor(grade).is_some() && iso_size_in_envelope(min_mm, max_mm);
             if in_env {
@@ -376,7 +427,7 @@ mod tests {
         // IT6 @ Ø18–30: D=√(18·30)=23.238, ∛D=2.8537, i=1.3074, ×10=13.074 µm
         let result = crate::eval_builtin(
             "iso_it_tolerance",
-            &[Value::Int(6), len(0.018), len(0.030)],
+            &[len(0.018), len(0.030), Value::Int(6)],
         );
         // Must be a finite LENGTH scalar
         let result_um = um(&result);
@@ -389,7 +440,7 @@ mod tests {
         // IT7 @ Ø30–50: D=√(30·50)=38.730, ∛D=3.3819, i=1.5606, ×16=24.969 µm
         let result = crate::eval_builtin(
             "iso_it_tolerance",
-            &[Value::Int(7), len(0.030), len(0.050)],
+            &[len(0.030), len(0.050), Value::Int(7)],
         );
         let result_um = um(&result);
         assert_rel_close(result_um, 24.969, 5e-3, "IT7@30-50 µm within 0.5%");
@@ -401,7 +452,7 @@ mod tests {
         // IT8 @ Ø6–10: D=√(6·10)=7.746, ∛D=1.9786, i=0.89814, ×25=22.453 µm
         let result = crate::eval_builtin(
             "iso_it_tolerance",
-            &[Value::Int(8), len(0.006), len(0.010)],
+            &[len(0.006), len(0.010), Value::Int(8)],
         );
         let result_um = um(&result);
         assert_rel_close(result_um, 22.453, 5e-3, "IT8@6-10 µm within 0.5%");
@@ -421,7 +472,7 @@ mod tests {
         assert!(
             crate::eval_builtin(
                 "iso_it_tolerance",
-                &[Value::Int(4), len(0.018), len(0.030)]
+                &[len(0.018), len(0.030), Value::Int(4)]
             )
             .is_undef(),
             "IT4 should return Undef (below IT5)"
@@ -434,7 +485,7 @@ mod tests {
         assert!(
             crate::eval_builtin(
                 "iso_it_tolerance",
-                &[Value::Int(19), len(0.018), len(0.030)]
+                &[len(0.018), len(0.030), Value::Int(19)]
             )
             .is_undef(),
             "IT19 should return Undef (above IT18)"
@@ -447,7 +498,7 @@ mod tests {
         assert!(
             crate::eval_builtin(
                 "iso_it_tolerance",
-                &[Value::Int(7), len(0.5), len(0.6)]
+                &[len(0.5), len(0.6), Value::Int(7)]
             )
             .is_undef(),
             "nominal size > 500mm should return Undef"
@@ -460,7 +511,7 @@ mod tests {
         assert!(
             crate::eval_builtin(
                 "iso_it_tolerance",
-                &[Value::Int(7), len(0.050), len(0.030)]
+                &[len(0.050), len(0.030), Value::Int(7)]
             )
             .is_undef(),
             "inverted range min>max should return Undef"
@@ -473,7 +524,7 @@ mod tests {
         assert!(
             crate::eval_builtin(
                 "iso_it_tolerance",
-                &[Value::Int(7), len(0.0), len(0.010)]
+                &[len(0.0), len(0.010), Value::Int(7)]
             )
             .is_undef(),
             "zero nominal size should return Undef"
@@ -482,20 +533,20 @@ mod tests {
 
     #[test]
     fn iso_it_envelope_invalid_arg_types_are_undef() {
-        // grade as Value::Real → Undef
+        // grade (slot 2) as Value::Real → Undef
         assert!(
             crate::eval_builtin(
                 "iso_it_tolerance",
-                &[Value::Real(7.0), len(0.018), len(0.030)]
+                &[len(0.018), len(0.030), Value::Real(7.0)]
             )
             .is_undef(),
             "grade as Real should return Undef"
         );
-        // nominal_min as Value::Int → Undef (not a LENGTH scalar)
+        // nominal_min (slot 0) as Value::Int → Undef (not a LENGTH scalar)
         assert!(
             crate::eval_builtin(
                 "iso_it_tolerance",
-                &[Value::Int(7), Value::Int(18), len(0.030)]
+                &[Value::Int(18), len(0.030), Value::Int(7)]
             )
             .is_undef(),
             "nominal_min as Int should return Undef"
@@ -507,7 +558,7 @@ mod tests {
         // IT5 is the lowest supported grade → must return a finite LENGTH scalar
         let r = crate::eval_builtin(
             "iso_it_tolerance",
-            &[Value::Int(5), len(0.018), len(0.030)],
+            &[len(0.018), len(0.030), Value::Int(5)],
         );
         assert!(is_finite_length_scalar(&r), "IT5 should return finite LENGTH scalar");
     }
@@ -517,7 +568,7 @@ mod tests {
         // IT18 is the highest supported grade → must return a finite LENGTH scalar
         let r = crate::eval_builtin(
             "iso_it_tolerance",
-            &[Value::Int(18), len(0.018), len(0.030)],
+            &[len(0.018), len(0.030), Value::Int(18)],
         );
         assert!(is_finite_length_scalar(&r), "IT18 should return finite LENGTH scalar");
     }
@@ -527,7 +578,7 @@ mod tests {
         // max_mm = 500mm exactly → within envelope, must return a finite LENGTH scalar
         let r = crate::eval_builtin(
             "iso_it_tolerance",
-            &[Value::Int(7), len(0.4), len(0.5)],
+            &[len(0.4), len(0.5), Value::Int(7)],
         );
         assert!(
             is_finite_length_scalar(&r),
@@ -546,7 +597,7 @@ mod tests {
         // IT6 @ Ø1–3 mm: passes the envelope gate; result is extrapolated.
         let r = crate::eval_builtin(
             "iso_it_tolerance",
-            &[Value::Int(6), len(0.001), len(0.003)],
+            &[len(0.001), len(0.003), Value::Int(6)],
         );
         assert!(
             is_finite_length_scalar(&r),
@@ -563,7 +614,7 @@ mod tests {
         use reify_core::Severity;
         let d = super::diagnose(
             "iso_it_tolerance",
-            &[Value::Int(4), len(0.018), len(0.030)],
+            &[len(0.018), len(0.030), Value::Int(4)],
         );
         let diag = d.expect("IT4 grade out-of-envelope should return Some(Diagnostic)");
         assert_eq!(
@@ -579,7 +630,7 @@ mod tests {
         use reify_core::Severity;
         let d = super::diagnose(
             "iso_it_tolerance",
-            &[Value::Int(7), len(0.5), len(0.6)],
+            &[len(0.5), len(0.6), Value::Int(7)],
         );
         let diag = d.expect("size > 500mm should return Some(Diagnostic)");
         assert_eq!(
@@ -594,7 +645,7 @@ mod tests {
         // Valid in-envelope call → None
         let d = super::diagnose(
             "iso_it_tolerance",
-            &[Value::Int(6), len(0.018), len(0.030)],
+            &[len(0.018), len(0.030), Value::Int(6)],
         );
         assert!(d.is_none(), "valid in-envelope call should return None");
     }
@@ -687,7 +738,7 @@ mod tests {
         // min=50mm > max=30mm → out-of-envelope (inverted), well-typed → Some(Error)
         let d = super::diagnose(
             "iso_it_tolerance",
-            &[Value::Int(7), len(0.050), len(0.030)],
+            &[len(0.050), len(0.030), Value::Int(7)],
         );
         let diag = d.expect("inverted range should return Some(Diagnostic)");
         assert_eq!(
@@ -704,7 +755,7 @@ mod tests {
         // min=0 → non-positive → out-of-envelope, well-typed → Some(Error)
         let d = super::diagnose(
             "iso_it_tolerance",
-            &[Value::Int(7), len(0.0), len(0.010)],
+            &[len(0.0), len(0.010), Value::Int(7)],
         );
         let diag = d.expect("zero nominal size should return Some(Diagnostic)");
         assert_eq!(
@@ -718,7 +769,7 @@ mod tests {
     #[test]
     fn diagnose_iso_it_wrong_arity_returns_none() {
         // 2 args → parse_iso_well_typed returns None → diagnose returns None (not an error).
-        let d = super::diagnose("iso_it_tolerance", &[Value::Int(7), len(0.018)]);
+        let d = super::diagnose("iso_it_tolerance", &[len(0.018), len(0.030)]);
         assert!(d.is_none(), "wrong arity should return None (not a diagnosable error)");
     }
 
@@ -771,6 +822,155 @@ mod tests {
         assert!(
             crate::eval_builtin("nominal", &[len(1e-4), len(2e-5)]).is_undef(),
             "nominal() with 2 args should return Undef"
+        );
+    }
+
+    // ─── 6091 step-1: RED tests for the subject-first argument order ──────────
+    //
+    // The 2026-08-07 ruling flips `iso_it_tolerance` from grade-first
+    // `(grade, nominal_min, nominal_max)` to subject-first
+    // `(nominal_min, nominal_max, grade)` — the subject of the call is the
+    // feature being toleranced, not the grade that qualifies it.
+
+    /// The ruling's literal signal: `iso_it_tolerance(6mm, 10mm, 7)`.
+    ///
+    /// Expected value is derived from the implemented ISO 286-1 formula
+    /// (`iso_it_tolerance` above), not guessed: D = √(6·10) = 7.745967 mm,
+    /// ∛D = 1.978588, i = 0.45·1.978588 + 0.001·7.745967 = 0.898111 µm,
+    /// tol = 16·i = 14.3698 µm — matching the ruling's recorded probe of
+    /// 0.0000143 m for IT7.
+    ///
+    /// Deliberately NO `.round() == published-cell` assertion: the published
+    /// ISO 286-1 IT7 @ Ø6–10 cell is 15 µm while the formula yields 14.37
+    /// (rounds to 14). The three published-cell round-checks above only cover
+    /// cells where formula and table agree; this one does not, and that
+    /// table-vs-formula divergence is already documented by
+    /// `iso_it_tolerance_sub_3mm_accepted_but_unvalidated`.
+    #[test]
+    fn iso_it_tolerance_subject_first_it7_6_10mm() {
+        let r = crate::eval_builtin(
+            "iso_it_tolerance",
+            &[len(0.006), len(0.010), Value::Int(7)],
+        );
+        assert!(
+            is_finite_length_scalar(&r),
+            "subject-first (nominal_min, nominal_max, grade) must evaluate to a \
+             finite LENGTH scalar, got {:?}",
+            r
+        );
+        assert_rel_close(um(&r), 14.3698, 5e-3, "IT7@6-10 subject-first µm within 0.5%");
+    }
+
+    /// The anti-regression half of the ruling: the old grade-first spelling must
+    /// no longer silently work. Arg-0 is a bare `Value::Int`, not a LENGTH
+    /// scalar, so `validate_dimensioned_scalar` rejects it and
+    /// `parse_iso_well_typed` returns `None` → `Value::Undef`.
+    #[test]
+    fn iso_it_tolerance_grade_first_spelling_is_undef() {
+        assert!(
+            crate::eval_builtin(
+                "iso_it_tolerance",
+                &[Value::Int(7), len(0.030), len(0.050)]
+            )
+            .is_undef(),
+            "the legacy grade-first spelling must return Undef, not silently work"
+        );
+    }
+
+    /// `diagnose` shares the one decode point, so it must keep classifying
+    /// out-of-envelope calls under the new order: IT4 is well-typed but below
+    /// IT5 → `Some(Diagnostic)` with `Severity::Error`.
+    ///
+    /// Severity alone would duplicate `diagnose_iso_it_grade4_out_of_envelope_
+    /// returns_error` (same args, same single assertion), so this test pins the
+    /// MESSAGE instead — which the severity-only siblings never do at this
+    /// layer, and which is what discriminates the two Error-producing arms of
+    /// `diagnose` from each other. Specifically: a well-typed subject-first
+    /// out-of-envelope call must get `E_TolerancingOutOfEnvelope`, NOT the
+    /// `E_TolerancingLegacyArgOrder` migration error — i.e. the legacy-shape
+    /// arm must not swallow a legitimately-ordered call.
+    #[test]
+    fn diagnose_iso_it_subject_first_out_of_envelope_returns_error() {
+        use reify_core::Severity;
+        let d = super::diagnose(
+            "iso_it_tolerance",
+            &[len(0.018), len(0.030), Value::Int(4)],
+        );
+        let diag = d.expect(
+            "subject-first IT4 (out of envelope, well-typed) should return Some(Diagnostic)",
+        );
+        assert_eq!(
+            diag.severity,
+            Severity::Error,
+            "out-of-envelope diagnostic should be Error severity under subject-first order"
+        );
+        assert!(
+            diag.message.contains("E_TolerancingOutOfEnvelope"),
+            "subject-first out-of-envelope call must carry the envelope error tag, got: {}",
+            diag.message
+        );
+        assert!(
+            !diag.message.contains("E_TolerancingLegacyArgOrder"),
+            "a correctly-ordered subject-first call must NOT be misclassified as the \
+             legacy grade-first spelling, got: {}",
+            diag.message
+        );
+    }
+
+    /// The legacy grade-first spelling `(grade, nominal_min, nominal_max)` is
+    /// well-formed-but-mis-ordered, so `diagnose` must surface an actionable
+    /// migration Error rather than the silent `Undef` an ill-typed call gets.
+    ///
+    /// Before this arm, `parse_iso_well_typed(args)?` early-returned `None` on
+    /// the very first line of `diagnose`, so `emit_undef_builtin_diagnostics`
+    /// pushed nothing and `reify eval` printed `cell = undef` at exit 0 with an
+    /// empty stderr — the same class of silent failure the CLI gate's
+    /// anti-`undef` assertions exist to catch. This also closes the previously
+    /// untested `diagnose`-on-a-legacy-shape path.
+    #[test]
+    fn diagnose_iso_it_legacy_grade_first_shape_returns_migration_error() {
+        use reify_core::Severity;
+        // The exact arg vector `iso_it_tolerance_grade_first_spelling_is_undef`
+        // pins as Undef at the evaluator layer — this is its diagnostic half.
+        let d = super::diagnose(
+            "iso_it_tolerance",
+            &[Value::Int(7), len(0.030), len(0.050)],
+        );
+        let diag =
+            d.expect("legacy grade-first shape should return Some(Diagnostic), not None");
+        assert_eq!(
+            diag.severity,
+            Severity::Error,
+            "legacy grade-first spelling should be diagnosed at Error severity"
+        );
+        assert!(
+            diag.message.contains("E_TolerancingLegacyArgOrder"),
+            "legacy-order diagnostic must carry its own error tag, got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("iso_it_tolerance(nominal_min, nominal_max, grade)"),
+            "the diagnostic must spell the correct subject-first order so it is \
+             actionable without reading the source, got: {}",
+            diag.message
+        );
+    }
+
+    /// The legacy-shape arm must stay narrow: `(Int, LENGTH, Int)` is ill-typed
+    /// under BOTH orders (it is `iso_it_envelope_invalid_arg_types_are_undef`'s
+    /// "nominal_min as Int" case, not a pre-flip call site), so it must keep
+    /// returning `None` rather than being mislabelled a migration problem.
+    #[test]
+    fn diagnose_iso_it_genuinely_ill_typed_shape_still_returns_none() {
+        let d = super::diagnose(
+            "iso_it_tolerance",
+            &[Value::Int(18), len(0.030), Value::Int(7)],
+        );
+        assert!(
+            d.is_none(),
+            "an ill-typed (Int, LENGTH, Int) call is not the legacy grade-first \
+             spelling and must not be diagnosed as one, got: {:?}",
+            d.map(|x| x.message)
         );
     }
 }

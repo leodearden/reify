@@ -89,7 +89,16 @@ function buildPolylinePoints(
 
 // ---------------------------------------------------------------------------
 // AutoResolvePanel — surfaces `param x = auto` loop iteration progress
-// (Task 2967). Conditionally mounted by App.tsx when autoResolve.active.
+// (Task 2967). Mounted by App.tsx on DATA — `autoResolve.iterations.length > 0`
+// — not on `autoResolve.active`, so a completed loop stays readable instead of
+// vanishing the instant it lands. The panel therefore renders for both a running
+// and a finished loop, and says which via `data-loop-state` on its root.
+//
+// Everything it draws is gated on having enough samples to draw honestly: with
+// fewer than 2 plottable points it renders a note saying what is known rather
+// than an empty axis frame. That is not a corner case — it is what production
+// emits today (`emit_auto_resolve_if_any` sends one iteration per check, with
+// no `driving_metric_value` at all).
 // ---------------------------------------------------------------------------
 
 export interface AutoResolvePanelProps {
@@ -102,6 +111,15 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
       ? props.state.iterations[props.state.iterations.length - 1]
       : null,
   );
+
+  /**
+   * Whether the loop is still running or has landed — the single source for
+   * BOTH the root's `data-loop-state` attribute and the visible chip's text.
+   * Derived once rather than spelled out at each use: the CSS keys the chip's
+   * colour off the root attribute, so a second copy of the ternary could drift
+   * the chip's *label* out of step with its own colour and with the root.
+   */
+  const loopState = () => (props.state.active ? 'running' : 'complete');
 
   /**
    * Driving metric name — invariant across the loop. Reads from the O(1) cached
@@ -150,7 +168,14 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
   });
 
   return (
-    <div class={styles.panel} data-testid="auto-resolve-panel">
+    <div
+      class={styles.panel}
+      data-testid="auto-resolve-panel"
+      // A completed loop persists on screen, so "Iteration N" alone is
+      // ambiguous between still-running and finished. Say which — and expose it
+      // on the root so the CSS can colour the chip below off a single attribute.
+      data-loop-state={loopState()}
+    >
       <header class={styles.panelHeader} data-testid="panel-title-auto-resolve">
         <Show
           when={props.state.iterations.length > 0}
@@ -160,6 +185,9 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
             Iteration {props.state.iterations.length}
           </span>
         </Show>
+        <span class={styles.loopState} data-testid="auto-resolve-loop-state">
+          {loopState()}
+        </span>
       </header>
 
       {/* ── Parameters section ──────────────────────────────────────────── */}
@@ -214,8 +242,13 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
           <div class={styles.sectionLabel}>Parameters over time</div>
           <For each={sparklineData()}>
             {({ cellId, series }) => {
+              // Decided per ROW, not per section: a loop where one parameter has
+              // a real trace and another is null-filtered down to a single point
+              // must still draw the trace it has.
               const hasLine = series.length >= 2;
-              // Build points in sparkline SVG coordinate space (SPARK_W × SPARK_H)
+              // Build points in sparkline SVG coordinate space (SPARK_W × SPARK_H).
+              // Only computed on the drawn path — the Show below subsumes the
+              // old inner guard.
               const pts = hasLine
                 ? buildPolylinePoints(
                     series.map((p) => p.x),
@@ -227,22 +260,44 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
                   )
                 : '';
               return (
-                <div class={styles.sparklineRow}>
+                <div class={styles.sparklineRow} data-testid="auto-resolve-sparkline-row">
                   <span class={styles.sparklineCellId}>{cellId}</span>
-                  <svg
-                    class={styles.sparkline}
-                    width={SPARK_W}
-                    height={SPARK_H}
-                    data-testid="auto-resolve-sparkline"
+                  <Show
+                    when={hasLine}
+                    fallback={
+                      <Show
+                        when={series.length === 1}
+                        fallback={
+                          <span
+                            class={styles.emptyNote}
+                            data-testid="auto-resolve-sparkline-no-data"
+                          >
+                            no samples
+                          </span>
+                        }
+                      >
+                        <span
+                          class={styles.singleSampleNote}
+                          data-testid="auto-resolve-sparkline-single-sample"
+                        >
+                          single sample
+                        </span>
+                      </Show>
+                    }
                   >
-                    <Show when={hasLine}>
+                    <svg
+                      class={styles.sparkline}
+                      width={SPARK_W}
+                      height={SPARK_H}
+                      data-testid="auto-resolve-sparkline"
+                    >
                       <polyline
                         class={styles.sparklineLine}
                         fill="none"
                         points={pts}
                       />
-                    </Show>
-                  </svg>
+                    </svg>
+                  </Show>
                 </div>
               );
             }}
@@ -251,6 +306,30 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
 
         {/* ── Line chart section ───────────────────────────────────────── */}
         <section class={styles.chartSection}>
+          {/* A 300×200 axis frame with nothing plotted on it is a lie about the
+              data. Draw the chart only when there are 2+ finite samples; below
+              that, say what is actually known. */}
+          <Show
+            when={chartPoints().length >= 2}
+            fallback={
+              <Show
+                when={chartPoints().length === 1}
+                fallback={
+                  <div class={styles.emptyNote} data-testid="auto-resolve-chart-no-data">
+                    No driving-metric samples reported.
+                  </div>
+                }
+              >
+                <div
+                  class={styles.singleSampleNote}
+                  data-testid="auto-resolve-chart-single-sample"
+                >
+                  {chartMetricName() ?? 'driving metric'}: {chartPoints()[0]?.y} — single
+                  sample, no trend to plot yet.
+                </div>
+              </Show>
+            }
+          >
           <svg
             class={styles.chart}
             width={CHART_W}
@@ -278,22 +357,21 @@ export const AutoResolvePanel: Component<AutoResolvePanelProps> = (props) => {
                 {chartMetricName()}
               </text>
             </Show>
-            {/* Polyline — only when 2+ data points */}
-            <Show when={chartPoints().length >= 2}>
-              <polyline
-                class={styles.chartLine}
-                fill="none"
-                points={buildPolylinePoints(
-                  chartPoints().map((p) => p.x),
-                  chartPoints().map((p) => p.y),
-                  PLOT_X1,
-                  PLOT_X2,
-                  PLOT_Y1,
-                  PLOT_Y2,
-                )}
-              />
-            </Show>
+            {/* Polyline — the enclosing Show already guarantees 2+ data points */}
+            <polyline
+              class={styles.chartLine}
+              fill="none"
+              points={buildPolylinePoints(
+                chartPoints().map((p) => p.x),
+                chartPoints().map((p) => p.y),
+                PLOT_X1,
+                PLOT_X2,
+                PLOT_Y1,
+                PLOT_Y2,
+              )}
+            />
           </svg>
+          </Show>
         </section>
       </Show>
     </div>

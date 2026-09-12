@@ -6,9 +6,11 @@ replaces. They are reference material for authoring designs, not designs
 themselves — nothing here is meant to be a useful part.
 
 **Everything in this directory is compile-gated.** `examples/` is walked
-recursively by `crates/reify-compiler/tests/examples_smoke.rs`, so every file
-here must parse and compile with the stdlib prelude at zero Error severity, and
-is additionally evaluated by the corpus-wide eval gates in `crates/reify-eval/`.
+recursively by
+`crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`, so
+every file here must parse and compile with the stdlib prelude at zero Error
+severity, and is additionally evaluated by the corpus-wide eval gates in
+`crates/reify-eval/`.
 A file that cannot reach a clean compile does **not** belong here — an exemplar
 that does not work is worse than no exemplar. Do not add a `SKIP_SET` entry to
 exempt one.
@@ -19,7 +21,11 @@ or pinned `Indeterminate` with a documented reason — never `Violated`. See
 that file's module doc for the full contract (bidirectional allowlist
 checking; why this is not a `SKIP_SET`). E.g. `clearance_oracle.ri`'s two
 geometry-consumer constraints are pinned Indeterminate on this gate's pure
-value-eval surface by design — see its row below.
+value-eval surface by design — see its row below. That surface is kernel-less
+(`Engine::new(.., None)`), so it is NOT the surface `reify check` runs: since
+task 5748 the CLI realizes geometry and resolves those same two constraints.
+The gate pinning them Indeterminate and the CLI reporting them OK are both
+correct — read every Indeterminate here as "on a kernel-less engine".
 
 ## How to use this index
 
@@ -38,7 +44,7 @@ probes".
 Verify both with:
 
 ```sh
-cargo test -p reify-compiler --test examples_smoke
+cargo test -p reify-compiler --test harness_compilation_surface examples_smoke::
 ```
 
 ## Idioms
@@ -47,8 +53,9 @@ cargo test -p reify-compiler --test examples_smoke
 |---|---|---|
 | `negation.ri` | Unary minus is a first-class prefix operator on dimensioned and dimensionless values, and composes in operand position. | `0mm - x` / `x * -1` as a sign-flip workaround. |
 | `hollow_primitives.ri` | `tube(outer_r, inner_r, height)` (base at z=0; needs `inner_r < outer_r`) and `cylinder_centered(radius, height)` for hollow and origin-centred solids. `box_centered` is an op-identical alias for `box`. | `difference(cylinder(R,h), cylinder(r,h))`; a manual `translate(..., -h/2)` to centre a cylinder. |
-| `symmetry_mirror.ri` | `mirror` returns a reflected **copy** — `union(g, mirror(g, plane_yz(0mm)))`. Plane ctors take exactly one offset arg; the 7-arg scalar form needs a dimensioned origin, and `reify check` will not tell you when it doesn't. | Authoring both halves of a symmetric part by hand. |
+| `symmetry_mirror.ri` | `mirror` returns a reflected **copy** — `union(g, mirror(g, plane_yz(0mm)))`. Plane ctors take exactly one offset arg; the 7-arg scalar form needs a dimensioned origin, and `reify check` now rejects it when it doesn't. | Authoring both halves of a symmetric part by hand. |
 | `bolt_circle.ri` | 4-arg value form `circular_pattern(g, axis_z(point3(...)), n, 360deg)`; the angle is the **total sweep** (step = total/count), and `axis_*` takes exactly one `point3`. | Placing each hole by hand at a computed angle; the older 9-arg scalar form. |
-| `clearance_oracle.ri` | `intersects(a,b)` / `distance(a,b)` on **let-bound** geometry answers collision and gap exactly. Eval/build only — `reify check` reports these INDETERMINATE, which is expected. | Confirming clearances by eyeballing the viewport, or hand-computing a gap from params. |
+| `clearance_oracle.ri` | `intersects(a,b)` / `distance(a,b)` on **let-bound** geometry answers collision and gap exactly, including **full containment** — a nested solid reads `intersects = true` / `distance = 0 m`, not a positive gap, so `not fouls` covers nesting. `reify check` realizes geometry and answers these too, so gate clearance under it; only a kernel-less surface — an OCCT-less build, or the in-process corpus gate — reports them INDETERMINATE. | Confirming clearances by eyeballing the viewport, or hand-computing a gap from params. |
 | `discrete_choice.ri` | Binary +-1 choice pending CP-SAT: `param s : Real = auto(free)` + `constraint s * s == 1`. `auto` is legal only as a binding **value** — `auto s : Real` is a parse error. Strict `auto` goes undef here (two roots defeat the uniqueness re-solve). | Hard-coding one alternative and hand-editing the file to try the other. |
 | `angle_crossings.ri` | An angle reading of an **arc-measure** ratio is an explicit crossing: `* 1rad` to enter Angle, `/ 1rad` to leave — always the no-space literal (`1 rad` is a parse error). Arc length is `r * theta / 1rad`; `omega = 2*pi * f * 1rad` is the separate 2π rad/cycle class. A *trigonometric* ratio needs no crossing — `atan`/`atan2`/`asin`/`acos` and the geometry `angle` queries return Angle directly. | `let theta : Angle = s / r` and `let arc : Length = r * theta` — both hard errors; unannotated, `r * theta` silently yields `m·rad` instead of a Length. Also `* 1rad` on a trigonometric ratio: it compiles and gives a *different* angle. |
+| `dimensioned_arguments.ri` | **Why a part comes out 1000x too big**, and **what units geometry arguments take**: every length-semantic argument carries one — `box(20mm, 20mm, 10mm)`, never `box(20, 20, 10)`. A bare number is **rejected**, not read as metres and not read as millimetres (bare `0` included). `20mm`, `2cm` and `0.02m` are one value, not three. Dimensionless slots — axis-direction components, `scale` factors, repeat counts — stay **bare**, and that half is an authoring rule you uphold, not one the compiler enforces. Gate on `reify eval`: a green `reify check` is not the same answer. | `box(20, 20, 10)` written hoping bare numbers mean mm — a silent 1000x scale error, had it been accepted. |

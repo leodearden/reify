@@ -12,8 +12,8 @@
 //   - structure def MassProperties        (mass, com, inertia, origin;
 //                                          constraint mass >= 0kg)
 //   - trait JointForceValue               (marker for force payload variants)
-//   - structure def ScalarForce           : JointForceValue (magnitude : Real)
-//   - structure def ScalarTorque          : JointForceValue (magnitude : Real)
+//   - structure def ScalarForce           : JointForceValue (magnitude : Force)
+//   - structure def ScalarTorque          : JointForceValue (magnitude : Torque)
 //   - structure def CylForce              : JointForceValue (components : List<Real>)
 //   - structure def PlanarForce           : JointForceValue (components : List<Real>)
 //   - structure def SphereForce           : JointForceValue (components : List<Real>)
@@ -22,9 +22,14 @@
 //   - structure def TrajectorySample      (t, values, vels, accels)
 //   - structure def MotionTrajectory      (mechanism, samples)
 //
-// Module placement: registered last in `stdlib_loader.rs` after `std.process`.
-// Hard dependencies: `std.units` (Mass / Length / Time) and `std.trajectory`
-// (for the `JointValue` alias used by TrajectorySample).
+// Module placement: see the ordering notes on the `std.dynamics` entry in
+// `stdlib_loader.rs` (`std.kinematic` and `std.ports` must precede) —
+// encoding note 3 below covers the `Frame3`/`origin` half of that
+// constraint. The last-module slot belongs to `std.determinacy.purposes`,
+// pinned by crates/reify-compiler/tests/stdlib_loader_tests.rs::std_determinacy_purposes_is_last_stdlib_module.
+// Hard dependencies: all four are load-bearing — `std.units`, `std.trajectory`,
+// `std.kinematic`, and `std.ports` — see the same `std.dynamics` entry in
+// `stdlib_loader.rs` for what each supplies.
 //
 // Encoding notes:
 //   1. `JointForceValue` is a marker trait + refining structures. This is
@@ -44,9 +49,11 @@
 //      `mechanism : Real`, `Pose3 = Real`, and JointLimit.joint : Real.
 //      Retargeting each placeholder propagates the type tightening to every
 //      consumer without touching structure_def bodies.
-//   4. `constraint mass >= 0kg`: RHS is the dimensioned-zero literal `0kg` (NOT
-//      `0`): a bare 0 is Type::Real and dimension-incompatible with a Mass-typed
-//      LHS (esc-3115 rule; cf. ZVShaper `> 0Hz` in trajectory.ri). The PSD
+//   4. `constraint mass >= 0kg`: the dimensioned-zero literal `0kg` is retained
+//      because it reads as an explicit mass bound, not because it is required —
+//      a bare `0` compiles too, and the rewrite covers `>=` as much as `>`.
+//      DIMENSIONED-ZERO CONVENTION — docs/notes/dimensioned-zero-coercion.md
+//      (cf. ZVShaper `> 0Hz` in trajectory.ri, same convention). The PSD
 //      inertia check (negative eigenvalue) is a Rust hook in reify-eval (see
 //      dynamics_psd.rs) because no DSL expression form can compute eigenvalues.
 
@@ -73,7 +80,8 @@
 // Declarative constraint:
 //   `constraint mass >= 0kg` fires at ctor time via SIR-α
 //   check_constraints_against_templates machinery (task 3540, landed). No further
-//   plumbing needed. RHS is `0kg` (dimensioned-zero literal) per esc-3115.
+//   plumbing needed. RHS is `0kg` by the convention stated in header decision 4
+//   above.
 structure def MassProperties {
     param mass : Mass
     param com : Point3<Length>
@@ -81,10 +89,10 @@ structure def MassProperties {
     param origin : Frame3
 
     // Non-negativity guard: mass must be physically valid at construction.
-    // The RHS is `0kg` (dimensioned-zero literal per esc-3115 — a bare `0`
-    // is Type::Real and dimension-incompatible with Mass). PSD inertia is
-    // enforced by the reify-eval Rust hook (dynamics_psd.rs) since no DSL
-    // expression form can compute eigenvalues.
+    // The RHS is `0kg` by the convention stated in header decision 4 above (an
+    // explicit mass bound reads better; a bare `0` would compile too). PSD
+    // inertia is enforced by the reify-eval Rust hook (dynamics_psd.rs) since
+    // no DSL expression form can compute eigenvalues.
     constraint mass >= 0kg
 }
 
@@ -142,24 +150,41 @@ trait JointForceValue { }
 // ── JointForceValue variants ──────────────────────────────────────────────
 
 // ScalarForce — single-axis joint force (PRD §4.1, 1-DOF linear joint).
-// The `magnitude` is a dimensionless Real so the caller can supply any
-// SI-unit value; unit tracking is the η dispatcher's responsibility
-// (per PRD §4.2 arity/unit conventions).
+// The `magnitude` is a DIMENSIONED quantity (`Force`, i.e. newtons), not a
+// bare Real: unit correctness is carried by the type itself rather than being
+// tracked out-of-band by the η dispatcher (task 6098). Reading the field into
+// arithmetic is dimension-checked in both directions — `f.magnitude + 1.0N`
+// type-checks, `f.magnitude + 1.0` is a dimension mismatch. The η dispatcher
+// mints the field as a newton-dimensioned scalar to match
+// (crates/reify-stdlib/src/dynamics/eval.rs, `joint_force_value`).
+//
+// Spell the constructor argument dimensioned too — `ScalarForce(magnitude:
+// 2.5N)`. LIMITATION (not a TODO — no owning cite required here): constructor
+// ARGUMENTS are not dimension-checked today, so a bare `ScalarForce(magnitude:
+// 2.5)` is accepted silently by the compiler; it then leaves an undimensioned
+// value in the field, which evaluates to `undef` with an OpContractViolation
+// as soon as the field is read into dimensioned arithmetic. Construction-site
+// strictness is owned by
+// docs/prds/v0_6/dimensioned-construction-strictness.md; eval-side reader
+// gating by docs/prds/v0_6/dimension-checked-readers.md.
 //
 // LIST<REAL> NOTE: fixed-array syntax `[Real;N]` is unsupported in the
 // grammar (no ArrayType in ts_parser; no `param x : [..]` precedent in
-// stdlib). Scalar variants use a single Real; multi-component variants
-// (CylForce/PlanarForce/SphereForce) use List<Real>. Per PRD §4.2 the
-// per-kind arity is shape-validated by the η dispatcher.
+// stdlib). Multi-component variants (CylForce/PlanarForce/SphereForce) use
+// List<Real>. Per PRD §4.2 the per-kind arity is shape-validated by the η
+// dispatcher.
 structure def ScalarForce : JointForceValue {
-    param magnitude : Real
+    param magnitude : Force
 }
 
 // ScalarTorque — single-axis joint torque (PRD §4.1, 1-DOF rotary joint).
-// Same encoding rationale as ScalarForce; distinct type-tag so the η
-// dispatcher can distinguish force from torque without reading magnitude units.
+// Same encoding rationale as ScalarForce, with `magnitude : Torque` (N·m/rad).
+// The distinct type-tag still lets the η dispatcher tell force from torque
+// nominally; the dimensioned magnitudes now make the two non-unifiable in
+// arithmetic as well. `Torque` carries an Angle⁻¹ slot and is deliberately
+// distinct from Energy (J = N·m) — never spell it as Force·Length.
 structure def ScalarTorque : JointForceValue {
-    param magnitude : Real
+    param magnitude : Torque
 }
 
 // CylForce — cylindrical-joint force (PRD §4.1, 2-DOF: linear + rotary).

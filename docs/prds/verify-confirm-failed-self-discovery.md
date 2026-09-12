@@ -2,6 +2,10 @@
 
 **Status: authored 2026-07-24 (task 5368, re-scoped design-only 2026-07-24 by the L2 escalation-watcher, esc-5368-2 option B — produce a design, do not implement blind). Evidence base: this document's own §3 (live empirical verification against the installed `cargo-nextest 0.9.136`, AND live reading of dark-factory's already-landed consumer code, `main@e534de4553` in `/home/leo/src/dark-factory`). Program milestone: none on the reify side; on the DF side this is the missing cross-project precondition `docs/prds/offline-deep-test-lane-worker.md` calls **ζ**'s dependency (informally "ζ's job" in `offline_lane.py`'s own comments — see §1). Shape: cross-repo protocol seam, reusing `verify-retry-failed-only`'s subset-consumption primitive under opposite subset-construction ownership (self-discovered, not DF-supplied) — output-contract-first, unlike its sibling.**
 
+**Those dark-factory `path:line` anchors are dated provenance at the pinned
+`main@e534de4553` above — evidence, not live breadcrumbs.** Do not re-anchor them; DF main
+has moved since, so grep the symbol named beside each one to find the code today.
+
 Cross-repo pattern (CLAUDE.md): **reify ships the primitive, dark-factory wires the invocation.** Unusually for this pattern, **DF's side of the invocation is already fully built and already calling this flag in production** (§1) — reify is the last missing leaf.
 
 ---

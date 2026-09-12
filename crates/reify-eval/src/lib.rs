@@ -51,6 +51,12 @@ mod realization_read_gamma;
 mod realization_read_test_support;
 pub(crate) mod realize_solid_sdf;
 pub use engine_compute::ComputeDispatchRegistry;
+// `pub(crate)`, not `pub`: `OptimizedComputeDispatcher`'s only constructor
+// (`from_engine`) is `pub(crate)` by design, so a `pub` re-export would name a type
+// no external crate can ever build. Re-exported at all only so this crate's own
+// engine_eval.rs / engine_edit.rs can reach it as `crate::OptimizedComputeDispatcher`
+// alongside the other engine items they import (task #4880).
+pub(crate) use engine_compute::OptimizedComputeDispatcher;
 // task A (#4934): ComputeFn/ComputeOutcome/DispatchError/RealizationReadHandle/
 // RealizedContent/StructuredComputeDetail moved to the OCCT-free
 // reify-compute-contract foundation crate; re-exported here so the
@@ -572,6 +578,38 @@ pub struct Engine {
     /// role (task 2170).
     #[allow(dead_code)]
     last_diff_value_cells: Option<crate::engine_edit::ValueCellDiff>,
+    /// The set of realizations whose INPUT-cone hash has moved since their
+    /// last EXECUTION, recomputed by the most recent ACCEPTED `edit_param` /
+    /// `edit_source` — selective-realization-eviction PRD task β (#4729).
+    ///
+    /// # Cumulative until execution, not per-edit (amend, review round 1)
+    ///
+    /// Each accepted edit recomputes the set from scratch, but it compares
+    /// against α's stored `input_cone_hash`, which means "the input cone as of
+    /// the last execution". So a realization edited but not yet rebuilt stays
+    /// reported across subsequent unrelated edits, and only a real execution
+    /// (α's write in `execute_realization_ops`) retires it — β is deliberately
+    /// read-only w.r.t. the stored hash so that stays true. A REJECTED edit
+    /// mutates nothing and therefore leaves the prior record intact: both
+    /// entry points reset this field only AFTER their fallible guards. See
+    /// `edit_param_reports_only_the_realization_whose_input_cone_moved`
+    /// (third assertion) and
+    /// `rejected_edit_param_does_not_wipe_the_changed_realization_record`.
+    ///
+    /// Produced by `engine_edit::compute_changed_realizations` (which
+    /// recomputes the GHR-β input-cone fold against the post-edit context
+    /// and compares it to α's stored `RealizationNodeData.input_cone_hash`),
+    /// and consumed by the SUBSEQUENT build — which is why
+    /// `reset_per_build_state` classifies it MUST-SURVIVE rather than
+    /// resetting it. Task γ (#4730) reads it to replace the two wholesale
+    /// `clear_realization_cache()` flushes with keyed eviction.
+    ///
+    /// Always present and module-private with no cfg gate — the same shape
+    /// as `last_dispatch_count` — so the `engine_edit.rs` write sites need
+    /// no cfg-gating. Read by callers through the
+    /// `#[cfg(any(test, feature = "test-instrumentation"))]` accessor
+    /// `Engine::last_changed_realizations()` in `engine_admin.rs`.
+    last_changed_realizations: std::collections::HashSet<reify_core::RealizationNodeId>,
     /// Count of param-override rejections due to `TypeKindMismatch` during the
     /// most recent `eval()` or `eval_cached()` call. Reset to 0 at the start
     /// of each call. Incremented inside `emit_param_override_rejection_warning`
@@ -878,16 +916,21 @@ pub struct Engine {
     /// `Engine` *as long as the inputs are value-stable*.
     ///
     /// **Auto-invalidation hook points (task 2874, steps 17-20)**: `edit_param`
-    /// and `edit_source` reset the cache to a fresh `RealizationCache::new()`
-    /// near function entry, mirroring the established `feature_tag_table` /
-    /// `topology_attribute_table` reset-at-hook-point pattern
-    /// (engine_build.rs:531/406). After an edit, the next `build()` /
-    /// `build_snapshot()` cold-misses on every realization and re-populates
-    /// the cache from kernel execution. The reset is conservative — the
-    /// engine cannot prove which cached entries survive a given edit without
-    /// per-cell input-cone analysis we do not currently maintain — so the
-    /// entire cache is flushed on every edit regardless of whether the
-    /// edited cell participates in any realization's input cone.
+    /// and `edit_source` delegate to [`Engine::clear_realization_cache`](Engine::clear_realization_cache)
+    /// near function entry, mirroring the `topology_attribute_table`
+    /// reset-at-hook-point pattern (`TopologyAttributeTable::default()`
+    /// reset in `Engine::reset_per_build_state`, engine_build.rs). That
+    /// mutator flushes the existing cache in place via
+    /// [`RealizationCache::clear`] (task 4152) rather than
+    /// reseating it to a fresh `RealizationCache::new()` (see that method's
+    /// doc for why an in-place clear rather than a reseat). After an edit,
+    /// the next `build()` / `build_snapshot()` cold-misses on every
+    /// realization and re-populates the cache from kernel execution. The
+    /// reset is conservative — the engine cannot prove which cached entries
+    /// survive a given edit without per-cell input-cone analysis we do not
+    /// currently maintain — so the entire cache is flushed on every edit
+    /// regardless of whether the edited cell participates in any
+    /// realization's input cone.
     ///
     /// **Public escape hatch (task 2874, step-22)**: production callers can
     /// also flush the cache explicitly via
@@ -1064,6 +1107,25 @@ pub struct Engine {
     /// Mirrors the `capture_undef_causes` / `set_capture_undef_causes` pattern:
     /// default-false, always-present field, setter in `engine_admin.rs`.
     capture_repr_tol: bool,
+    /// Whether the geometry kernel(s) this engine holds DECLARED the ability to
+    /// produce a BRep representation — i.e. at least one `(_, ReprKind::BRep)`
+    /// pair on the picked adapter's `CapabilityDescriptor`.
+    ///
+    /// Recorded at CONSTRUCTION by the inventory-driven constructors
+    /// (`Engine::with_registered_kernel` / `with_registered_kernels*`), which
+    /// are the only sites that still hold the `KernelRegistration` records the
+    /// capability lives on. This exists because `with_registered_kernel`
+    /// forwards through `with_prelude`, which files the picked adapter under
+    /// the synthetic [`Engine::DEFAULT_KERNEL_NAME`] key rather than its real
+    /// registry name — so the adapter's declared capability is NOT recoverable
+    /// afterwards by keying the static registry on `geometry_kernels`' names
+    /// (task 6169 review round: that lookup misses on every shipped binary).
+    ///
+    /// `None` means "not recorded" — the caller-supplied-kernel seam
+    /// (`Engine::new` / `with_prelude` with `Some(kernel)`), where the adapter
+    /// has declared nothing. [`Engine::has_repr_capable_kernel`] falls back to
+    /// its benefit-of-the-doubt scan there; see that method for why.
+    repr_capable_kernel: Option<bool>,
     /// Per-cell `UndefCause` map from the most recent `eval()` call.
     ///
     /// Rebuilt from scratch on each `eval()` call when `capture_undef_causes`
@@ -1266,6 +1328,30 @@ pub const W_STEP_AP242_FALLBACK: &str = "W_STEP_AP242_FALLBACK";
 /// Embedded in the diagnostic message so callers can match on it without a typed
 /// variant.
 pub const W_3MF_NO_MATERIALS: &str = "W_3MF_NO_MATERIALS";
+
+/// Machine-stable error code for the export refusal raised when a module
+/// declares a `RepresentationWithin` bound the export path cannot demonstrate it
+/// honours (task η, PRD
+/// `docs/prds/v0_6/precision-nominal-representation-guarantee.md` §1.1 /
+/// C-SURFACE (2)). Built by
+/// [`crate::tolerance_combine::unenforced_representation_bound_diagnostic`] and
+/// emitted from BOTH export surfaces — `reify build -o <file>` and
+/// [`Engine::build_outputs_with_result`].
+///
+/// This is the message-embedded TWIN of the typed
+/// [`reify_core::DiagnosticCode::RepresentationBoundUnenforcedOnExport`], and
+/// both are needed: the typed code serves programmatic consumers and the unit
+/// tests (which match on `Diagnostic.code`, so rewording the message cannot
+/// break them), while this string serves the CLI integration tests, which spawn
+/// the binary as a subprocess and observe only captured stderr TEXT — they have
+/// no access to the typed code and would otherwise have to pin arbitrary prose.
+///
+/// Unlike [`I_DISPLAY_OUTPUT_DEFERRED`] / [`W_STEP_AP242_FALLBACK`] /
+/// [`W_3MF_NO_MATERIALS`] above, this code is NOT string-only: their stated
+/// reason for skipping a typed variant ("which would touch the out-of-scope
+/// `reify-core` crate") does not apply here, because `reify-core` is in η's
+/// scope and the variant was minted alongside this const.
+pub const E_REPR_BOUND_UNENFORCED_ON_EXPORT: &str = "E_REPR_BOUND_UNENFORCED_ON_EXPORT";
 
 /// One file artifact produced by the occurrence-driven export driver
 /// [`Engine::build_outputs`] (io-export δ).
@@ -2131,10 +2217,14 @@ mod tests {
     // ── Engine structure_registry prelude population (task 3540 / step-11) ───
 
     /// `Engine::new()` must populate `structure_registry` from the prelude
-    /// modules. `Steel_AISI_1045` is a `structure def : ElasticMaterial` in
-    /// `crates/reify-compiler/stdlib/materials_fea.ri`, so after construction
-    /// it must be interned with its declared trait bound, default version 1,
+    /// modules. `Steel_AISI_1045` is a `structure def : DampedMaterial + Visual`
+    /// in `crates/reify-compiler/stdlib/materials_fea.ri`, so after construction
+    /// it must be interned with its DECLARED trait bounds, default version 1,
     /// and a declaration-order `field_layout`. Unknown names resolve to `None`.
+    ///
+    /// `declared_trait_bounds` is declared-only: `ElasticMaterial` is absent
+    /// from the vec after task α (#6877) even though the preset still satisfies
+    /// it transitively via `DampedMaterial : ElasticMaterial + Damped`.
     #[test]
     fn engine_new_populates_structure_registry_from_prelude() {
         use reify_test_support::mocks::MockConstraintChecker;
@@ -2153,8 +2243,8 @@ mod tests {
         );
         assert_eq!(
             meta.declared_trait_bounds,
-            vec!["ElasticMaterial".to_string(), "Visual".to_string()],
-            "structure def Steel_AISI_1045 : ElasticMaterial + Visual (Visual added by task γ #4762)"
+            vec!["DampedMaterial".to_string(), "Visual".to_string()],
+            "structure def Steel_AISI_1045 : DampedMaterial + Visual (Damped mixin added by task α #6877)"
         );
 
         // field_layout preserves materials_fea.ri declaration order.

@@ -11,6 +11,7 @@ import { createSelection } from './selection';
 import { FeaModeToolbar } from './FeaModeToolbar';
 import { bakeColours } from './colormap';
 import { computeScalarRange } from './scalarRange';
+import { channelUnit } from './channelTags';
 import { pickDefaultScalarChannel } from './defaultScalarChannel';
 import { feaToolbarChannels } from './feaToolbarChannels';
 import type { ViewportStore, CameraState, FeaModeStore } from '../stores';
@@ -117,12 +118,22 @@ export function Viewport(props: ViewportProps) {
     return s ? computeScalarRange(props.meshes, s.state.channel) : null;
   });
 
+  // FEA toolbar channel dropdown options. The whole policy — base list,
+  // 'errorIndicator' extension, current-channel seed and PREFERRED_FEA_CHANNELS
+  // scan — is one pure function owned by ./feaToolbarChannels (task 5669, moved
+  // here → there by 5828); see its docstring for the rationale. The store's
+  // current channel is threaded in so the rendered <select> can never desync
+  // from the store.
+  const feaChannelOptions = createMemo(() =>
+    feaToolbarChannels(props.meshes, props.feaModeStore?.state.channel),
+  );
+
   onMount(() => {
     const rect = containerRef.getBoundingClientRect();
     const width = rect.width || 800;
     const height = rect.height || 600;
 
-    const { scene, camera, renderer, resize, adjustClipping, grid, axes, axisLabels, disposeAxisLabels } = createScene(canvasRef, width, height);
+    const { scene, camera, renderer, resize, adjustClipping, fitHelpers, grid, axes, axisLabels, disposeAxisLabels } = createScene(canvasRef, width, height);
     const controls = createControls(camera, renderer.domElement);
     const meshManager = createMeshManager(scene);
     const wireManager = createWireManager(scene);
@@ -378,6 +389,16 @@ export function Viewport(props: ViewportProps) {
       }
       adjustClipping(bounds);
 
+      // Size the grid/axes/label helpers to the SAME bounds (#6588). The helpers are
+      // built at absolute sizes tuned for the ~10 m CAD default scene noted below;
+      // without this call a sub-metre .ri model sits inside a 20 m grid whose far
+      // lines converge into a dark horizon band, and a 2 m axes triad that draws a
+      // hard diagonal across every part in frame. Sharing one Box3 with
+      // adjustClipping is deliberate: helper sizing and camera framing must agree on
+      // one measurement, including the ghost meshes folded in above. The effect
+      // already ends with requestRender(), so no extra invalidation is needed.
+      fitHelpers(bounds);
+
       if (!hasAutoFit && meshManager.getSceneMeshes().size > 0) {
         selection.fitToView();
         hasAutoFit = true;
@@ -555,12 +576,17 @@ export function Viewport(props: ViewportProps) {
         <FeaModeToolbar
           store={props.feaModeStore!}
           viewportId={props.viewportId}
-          availableChannels={feaToolbarChannels(props.meshes)}
+          availableChannels={feaChannelOptions()}
           onLockCurrent={() => {
             const r = activeScalarRange();
             if (r) props.feaModeStore!.lockCurrent(r.min, r.max);
           }}
           maxValue={activeScalarRange()?.max ?? null}
+          unitLabel={
+            props.feaModeStore
+              ? channelUnit(props.meshes, props.feaModeStore.state.channel)
+              : null
+          }
           convergence={props.feaConvergence ?? undefined}
         />
       </Show>

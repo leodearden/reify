@@ -503,6 +503,272 @@ fn fabrication_lane_reports_names_that_exist_nowhere() {
     );
 }
 
+/// The `allow-missing-reason:` verdict must not be narrowed by any
+/// MENTION-SIDE filter.
+///
+/// `fabrication_findings` reports a malformed marker keyed on a name, and the
+/// obvious way to find that name is to read `chunk_call_mentions`' output for
+/// the marked line. That coupling is a trap: every filter #5647 added there
+/// (`.`/`@` left delimiter, `RI_KEYWORDS`, file-scoped `ri_declared_name`,
+/// elided `(...)`) can drop the ONLY call-shaped token on a marked line, and a
+/// marker that yields no name yields no finding. The erosion is silent — the
+/// lane reports clean, nothing goes RED — and `allow-missing-reason:` is one of
+/// the four categories #5480 hard-gates, so PRD design decision 7's guarantee
+/// that "the escape hatch can never become un-reviewable" would quietly stop
+/// holding as the mention side got more precise.
+///
+/// One case per filter. Each chunk also documents `extrude`, which is the only
+/// name in the fixture's registry, so the omission lane stays quiet and the
+/// assertion below sees the marker verdict alone.
+#[test]
+fn reasonless_marker_survives_every_mention_side_filter() {
+    for (filter, chunk, expected_name) in [
+        (
+            "RI_KEYWORDS membership (`auto` is a value literal, spec §2.10:207)",
+            "# Params\n\n- `auto(free)` <!-- pdoccover:allow -->\n\
+             - `extrude(profile, height)` — real.\n",
+            "auto",
+        ),
+        (
+            "`@` left delimiter (ad-hoc port/region designator, spec §D5)",
+            "# Connect\n\n- `pipe@region(outer)` <!-- pdoccover:allow -->\n\
+             - `extrude(profile, height)` — real.\n",
+            "region",
+        ),
+        (
+            "`.` left delimiter (member access)",
+            "# Query\n\n- `solid.volume()` <!-- pdoccover:allow -->\n\
+             - `extrude(profile, height)` — real.\n",
+            "volume",
+        ),
+        (
+            "elided `(...)` argument list (metavariable)",
+            "# Geometry\n\n- `primitive(...)` <!-- pdoccover:allow -->\n\
+             - `extrude(profile, height)` — real.\n",
+            "primitive",
+        ),
+        (
+            "file-scoped `ri_declared_name` (declared elsewhere in this chunk)",
+            "# Traits\n\n```\nfn make_default() -> Self\n```\n\
+             - `make_default(x)` <!-- pdoccover:allow -->\n\
+             - `extrude(profile, height)` — real.\n",
+            "make_default",
+        ),
+    ] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write_file(
+            root,
+            FIX_UNITS,
+            "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[\n    \"extrude\",\n];\n",
+        );
+        write_file(root, FIX_STDLIB_CHUNK, chunk);
+
+        let h = Harness::new(&[FIX_UNITS, FIX_STDLIB_CHUNK]);
+        let findings = reify_audit::pdoccover::check(&h.ctx(root));
+
+        let got: Vec<(&str, &str)> = findings
+            .iter()
+            .map(|f| (finding_category(f), finding_name(f)))
+            .collect();
+        assert_eq!(
+            got,
+            vec![("allow-missing-reason", expected_name)],
+            "[{filter}] a reasonless marker must stay reportable even though \
+             this filter drops the only call-shaped token on its line. If this \
+             is RED, `fabrication_findings`' pre-pass has been re-coupled to \
+             `chunk_call_mentions`' narrowed output and the escape hatch is \
+             now un-reviewable on those lines. Got {findings:?}"
+        );
+    }
+}
+
+/// A reasonless marker on a line the mention side drops must still SUBSUME the
+/// fabrication verdict for that name elsewhere in the same file — the
+/// precedence rule and the filter-independence rule have to hold together, not
+/// just one at a time.
+#[test]
+fn reasonless_marker_on_a_filtered_line_still_subsumes_the_fabrication() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write_file(
+        root,
+        FIX_UNITS,
+        "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[\n    \"extrude\",\n];\n",
+    );
+    // `ghost_op(...)` is elided on the MARKED line (filter 5 drops it) and
+    // plain two lines below, where it is a live fabrication.
+    write_file(
+        root,
+        FIX_STDLIB_CHUNK,
+        "# Stdlib\n\n- `ghost_op(...)` <!-- pdoccover:allow -->\n\
+         - `ghost_op(x)` — plain mention, no marker.\n\
+         - `extrude(profile, height)` — real.\n",
+    );
+
+    let h = Harness::new(&[FIX_UNITS, FIX_STDLIB_CHUNK]);
+    let findings = reify_audit::pdoccover::check(&h.ctx(root));
+
+    let got: Vec<(&str, &str)> = findings
+        .iter()
+        .map(|f| (finding_category(f), finding_name(f)))
+        .collect();
+    assert_eq!(
+        got,
+        vec![("allow-missing-reason", "ghost_op")],
+        "exactly one finding, and it must be the malformed marker: the marker \
+         is the defect to fix, and reporting the fabrication as well would \
+         charge one mistake twice. Got {findings:?}"
+    );
+    assert!(
+        findings[0].summary.contains(&format!("{FIX_STDLIB_CHUNK}:3")),
+        "the summary must cite the MARKER's line (3), not the plain mention's \
+         (4) — line 3 is the one the reader has to edit; got {:?}",
+        findings[0].summary
+    );
+}
+
+/// One reasonless marker is ONE defect and costs exactly ONE
+/// `allow-missing-reason:` finding — the count never depends on how the marked
+/// line happens to be written.
+///
+/// The counterpart to `reasonless_marker_survives_every_mention_side_filter`:
+/// that test proves the RAW harvest keeps a marker reportable when the filters
+/// drop its only token, and every one of its five fixtures carries exactly one
+/// call-shaped token. This one covers what the raw harvest ALTERED — a marked
+/// line with SEVERAL shapes. Keying the report by name would make the module's
+/// own canonical example, `translate(primitive(...), 0, 0, -h/2)`, cost two
+/// findings and `f(g(h(x)))` three, inflating one of the four categories #5480
+/// hard-gates by an amount no one chose. `fabrication_findings` therefore keys
+/// the REPORT by marker LINE and names it after the LEFTMOST call shape.
+///
+/// Case (b) pins the other half of "per line": two markers sharing a
+/// representative name are two defects and two findings, each citing its own
+/// line, because each line is its own edit — a name-keyed map would collapse
+/// them and leave the second marker invisible.
+#[test]
+fn reasonless_marker_costs_exactly_one_finding_per_marker_line() {
+    for (label, chunk, expected, marker_lines) in [
+        (
+            "multi-shape marker line — the module's canonical `(...)` example",
+            "# Geometry\n\n- `translate(primitive(...), 0, 0, -h/2)` <!-- pdoccover:allow -->\n\
+             - `extrude(profile, height)` — real; keeps the omission lane quiet.\n",
+            vec![("allow-missing-reason", "translate")],
+            vec![3usize],
+        ),
+        (
+            "two markers sharing a representative name — two edits, two findings",
+            "# Stdlib\n\n- `ghost_op(x)` <!-- pdoccover:allow -->\n\
+             - `ghost_op(y)` <!-- pdoccover:allow -->\n\
+             - `extrude(profile, height)` — real; keeps the omission lane quiet.\n",
+            vec![
+                ("allow-missing-reason", "ghost_op"),
+                ("allow-missing-reason", "ghost_op"),
+            ],
+            vec![3usize, 4usize],
+        ),
+    ] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write_file(
+            root,
+            FIX_UNITS,
+            "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[\n    \"extrude\",\n];\n",
+        );
+        write_file(root, FIX_STDLIB_CHUNK, chunk);
+
+        let h = Harness::new(&[FIX_UNITS, FIX_STDLIB_CHUNK]);
+        let findings = reify_audit::pdoccover::check(&h.ctx(root));
+
+        let got: Vec<(&str, &str)> = findings
+            .iter()
+            .map(|f| (finding_category(f), finding_name(f)))
+            .collect();
+        assert_eq!(
+            got, expected,
+            "[{label}] one reasonless marker must cost exactly one finding, \
+             keyed on the LEFTMOST call shape of its line. If this is RED with \
+             EXTRA findings, `fabrication_findings` has gone back to keying the \
+             report by every raw name on the marked line, and the marker count \
+             now tracks incidental line syntax rather than the number of \
+             malformed markers. Got {findings:?}"
+        );
+        for (finding, line) in findings.iter().zip(&marker_lines) {
+            assert!(
+                finding
+                    .summary
+                    .contains(&format!("{FIX_STDLIB_CHUNK}:{line}")),
+                "[{label}] each finding must cite its OWN marker line \
+                 ({line}) — that is the line the reader has to edit; got {:?}",
+                finding.summary
+            );
+        }
+    }
+}
+
+/// The subsumption set is deliberately WIDER than both the reported set and
+/// `chunk_call_mentions`' output — a recorded trade, not a side effect.
+///
+/// `fabrication_findings` keys subsumption on every RAW name of a marked line,
+/// so a marker on `solid.volume()` also swallows the `fabricated-name: volume`
+/// verdict a bare `volume(x)` earns elsewhere in the same file, even though
+/// `.volume(` is never a mention. That is a false NEGATIVE, and this lane's
+/// mention-side filters otherwise never widen in that direction.
+///
+/// It is accepted rather than fixed because the obvious narrowing — subsume
+/// only names that survive the filters on the marked line — re-couples the two
+/// sides and breaks
+/// `reasonless_marker_on_a_filtered_line_still_subsumes_the_fabrication` in the
+/// other direction: a marker whose only shape is filtered would then report the
+/// marker AND the fabrication, charging one mistake twice. The residue is
+/// self-healing (writing the reason body restores the fabrication verdict), the
+/// marked line does textually name the token, and `fabricated-name:` is
+/// report-only for #5480. Pinned so the trade is a decision with a test behind
+/// it — if this goes RED with a `fabricated-name:` finding as well, the
+/// narrowing was made deliberately and the doc comment must move with it.
+#[test]
+fn reasonless_marker_subsumes_a_fabrication_it_names_only_as_a_receiver() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write_file(
+        root,
+        FIX_UNITS,
+        "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[\n    \"extrude\",\n];\n",
+    );
+    // Line 3 names `volume` only as a member-access RECEIVER (filter 1 drops
+    // it, so it is never a mention); line 4 claims it as a free function, which
+    // on its own is a live fabrication.
+    write_file(
+        root,
+        FIX_STDLIB_CHUNK,
+        "# Query\n\n- `solid.volume()` <!-- pdoccover:allow -->\n\
+         - `volume(x)` — unrelated free-function claim.\n\
+         - `extrude(profile, height)` — real; keeps the omission lane quiet.\n",
+    );
+
+    let h = Harness::new(&[FIX_UNITS, FIX_STDLIB_CHUNK]);
+    let findings = reify_audit::pdoccover::check(&h.ctx(root));
+
+    let got: Vec<(&str, &str)> = findings
+        .iter()
+        .map(|f| (finding_category(f), finding_name(f)))
+        .collect();
+    assert_eq!(
+        got,
+        vec![("allow-missing-reason", "volume")],
+        "the marked line's RAW name subsumes the fabrication verdict for the \
+         same name elsewhere in the file, even though the marked line only \
+         names it as a member-access receiver. Documented in \
+         `fabrication_findings`' doc comment as the one place this lane widens \
+         in the false-negative direction. Got {findings:?}"
+    );
+    assert!(
+        findings[0].summary.contains(&format!("{FIX_STDLIB_CHUNK}:3")),
+        "the reported line is the MARKER's (3), not the claim's (4); got {:?}",
+        findings[0].summary
+    );
+}
+
 /// The `allow-missing-reason:` verdict SUBSUMES the fabrication verdict for the
 /// same name in the same file REGARDLESS OF LINE ORDER.
 ///
@@ -1014,10 +1280,15 @@ fn registry_extraction_floor_guard_against_real_units_rs() {
 const CHUNK_MENTION_ANCHORS: &[&str] = &["union", "extrude", "fillet"];
 
 /// Conservative floor on the distinct call-shaped census over the real chunk
-/// corpus. 72 distinct names are extracted on main at the time of writing; the
-/// floor sits far below that so ordinary chunk edits — including whole-file
-/// rewrites of the smaller chunks — never flip this RED. Only an extraction
-/// regression that collapses the census does.
+/// corpus. 93 distinct names, drawn from 12 of the 17 chunk files, are
+/// extracted at HEAD=4fdfd18513 — an ancestor of this commit, so the run is
+/// reproducible from branch history. That is a DATED MEASUREMENT, not an
+/// invariant, and nothing asserts it: the count moves whenever chunk content
+/// or mention-side precision changes, so cite a commit that is actually on
+/// this branch whenever it is re-taken, or state no number at all. The floor
+/// sits far below it, so ordinary chunk edits — including whole-file rewrites
+/// of the smaller chunks — never flip this RED. Only an extraction regression
+/// that collapses the census does.
 const CHUNK_MENTION_FLOOR: usize = 30;
 
 /// The census must span more than one chunk file. A single-file census is the
@@ -1149,6 +1420,86 @@ fn chunk_call_mention_floor_guard_against_real_chunks() {
         "these extracted 'names' are not identifier-shaped: {malformed:?}. \
          A non-call token leaked into the census and would be reported as a \
          fabricated name no chunk edit could ever satisfy."
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #5647 step-3(d): keyword-vs-builtin collision guard
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Every `*_NAMES` registry file this guard reads. Not the fabrication lane's
+/// full oracle — see the guard's doc comment for why that is deliberate.
+///
+/// `units.rs` is the omission census's own source. `math_signatures.rs` is the
+/// other half of the registered-builtin population and is NOT in the omission
+/// census at all: `clamp`, `lerp` and `dot` are real, documented builtins
+/// declared only there (module header, "The existence oracle is deliberately
+/// asymmetric"), so a keyword colliding with one of them would be invisible to
+/// a units.rs-only guard.
+const REGISTRY_CENSUS_SOURCES: &[&str] = &[
+    "crates/reify-compiler/src/units.rs",
+    "crates/reify-compiler/src/math_signatures.rs",
+];
+
+/// `RI_KEYWORDS` must never intersect the registered-builtin census drawn from
+/// [`REGISTRY_CENSUS_SOURCES`]. A token that is BOTH a reserved word and a
+/// registered builtin name would be silently dropped from every chunk claim by
+/// `chunk_call_mentions`'s keyword filter, blinding the fabrication lane to
+/// that builtin — a false negative with no bound, which is exactly the risk of
+/// widening the mention-side filter from `RI_DECL_KEYWORDS` to the full
+/// reserved-word set. Measured empty today (47 keywords against both files'
+/// `*_NAMES` registries). If this ever fails, remove the colliding token from
+/// `RI_KEYWORDS` — do NOT delete this guard.
+///
+/// ## Scope: the `*_NAMES` registries, deliberately NOT the whole oracle
+///
+/// This is a REGISTRY census, not `known_name_index` over
+/// `load_oracle_sources`. Widening it to the latter was measured and rejected:
+/// the oracle deliberately harvests every identifier-shaped quoted literal
+/// under `crates/reify-compiler/src/**` and `crates/reify-stdlib/src/**`, so
+/// keyword STRINGS in the parser's own tables register as "builtins" and the
+/// guard reports ~29 spurious collisions — noise that would get the guard
+/// deleted rather than a keyword removed. The `*_NAMES` registries are the
+/// population where a collision is genuinely actionable, so they are what this
+/// guard covers; a builtin declared outside them is out of its reach and is
+/// covered instead by `ri_keywords_excludes_the_spec_carve_outs` on the
+/// spec-facing side.
+#[test]
+fn ri_keywords_never_collides_with_the_real_registry_census() {
+    let mut census: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for rel in REGISTRY_CENSUS_SOURCES {
+        let path = repo_root().join(rel);
+        let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "the real {rel} must be readable at {}; got: {e}. (If it moved, \
+                 the registered-builtin population moved with it and this \
+                 guard's source list needs updating — do not just drop the \
+                 file from the list.)",
+                path.display()
+            )
+        });
+        let regs = reify_audit::pdoccover::extract_registries(&src);
+        assert!(
+            !regs.is_empty(),
+            "no `*_NAMES` registry was parsed out of {rel}. This guard would \
+             then pass vacuously for that file, so a keyword/builtin collision \
+             in it would go unnoticed. Fix the parse; do not relax this."
+        );
+        census.extend(regs.iter().flat_map(|r| r.entries.iter()).map(|e| e.name.clone()));
+    }
+
+    let collisions: Vec<&str> = reify_audit::pdoccover::RI_KEYWORDS
+        .iter()
+        .copied()
+        .filter(|kw| census.contains(*kw))
+        .collect();
+    assert!(
+        collisions.is_empty(),
+        "{collisions:?} are BOTH RI_KEYWORDS members AND registered builtin \
+         names in the real {REGISTRY_CENSUS_SOURCES:?} census. Every chunk \
+         claim naming one of them is silently dropped by the mention-side \
+         keyword filter, blinding the fabrication lane to that builtin. Remove \
+         the colliding token(s) from RI_KEYWORDS — do NOT delete this guard."
     );
 }
 

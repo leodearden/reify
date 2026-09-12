@@ -178,8 +178,36 @@ trait ImpactResistant : MaterialSpec {
 
 // ── Damping ───────────────────────────────────────────────────────────────────
 
-// damping_ratio: fraction of critical damping (dimensionless).
-// loss_factor: ratio of dissipated to stored energy per cycle (dimensionless).
+// `Damping` is the DATASHEET-SPEC damping trait. It refines `MaterialSpec`,
+// so it belongs to the family a supplier datasheet populates, and it carries
+// BOTH measures a datasheet typically quotes:
+//
+//   damping_ratio: fraction of critical damping (dimensionless).
+//   loss_factor:   ratio of dissipated to stored energy per cycle
+//                  (dimensionless).
+//
+// Real conformer: `examples/drivebelt_trait_bounds.ri:48`.
+//
+// ── NAMING HAZARD — `Damping` (here) vs `Damped` (materials_fea.ri) ─────────
+//
+// `Damped` in `crates/reify-compiler/stdlib/materials_fea.ri` is a DIFFERENT
+// trait for a different job: the CONSTITUTIVE / FEA loss input. It is a
+// free-standing mixin with a single `loss_factor` (η) that the damped-modal
+// solve reads, composed into `trait DampedMaterial : ElasticMaterial + Damped`
+// and used by the four FEA starter materials.
+//
+// Neither trait supersedes the other and NEITHER REFINES THE OTHER — they sit
+// in unrelated families (`MaterialSpec` here, `ConstitutiveLaw` there).
+// Picking one by name alone is the mistake this note exists to prevent: reach
+// for `Damping` when modelling what a datasheet reports, and for `Damped` when
+// supplying the loss input an FEA solve consumes.
+//
+// A structure MAY conform to both. That composes without conflict:
+// `collect_all_requirements` dedups requirements by (name, kind), and both
+// traits spell `loss_factor` as `Real`, so the conformer owes exactly one
+// `loss_factor` member — plus `damping_ratio` and the rest of `MaterialSpec`
+// from this side.
+// (Reciprocal note lives above `trait Damped` in materials_fea.ri.)
 trait Damping : MaterialSpec {
     param damping_ratio : Real // dimensionless
     param loss_factor : Real // dimensionless

@@ -558,7 +558,7 @@ subprojects:
       - "Editing source shows 'Evaluating...' spinner then updated mesh"
       - "Property editor changes propagate to constraints and viewport"
       - "Bidirectional navigation works: viewport click → editor scroll, property double-click → camera fly-to"
-      - "Unit tests pass: npm test (vitest). NOTE: gui-only Rust (--features gui) is NOT covered by the default verify.sh — gate gui-only Rust tests behind #[cfg(feature=gui)] and test manually with LD_LIBRARY_PATH set"
+      - "Unit tests pass: npm test (vitest). gui-only Rust (--features gui) IS executed by verify.sh as of task 5076 (merged 19f0307f30): the test plan emits `cargo nextest run -p reify-gui --features gui` with NO -E filterset, unconditional on the merge gate (--scope all) per task 6030 — so the wholly gui-gated debug_server / event_bus modules genuinely run (911 tests vs 850 without the feature). Do NOT re-file this as a coverage gap. Residual: clippy still runs without --features gui, so gui-gated code is type-checked (cargo check -p reify-gui --features gui --tests) but not lint-checked."
 
     key_decisions:
       - decision: "SolidJS (not React) for the frontend"

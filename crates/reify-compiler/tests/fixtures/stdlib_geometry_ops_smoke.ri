@@ -63,6 +63,7 @@ structure def StdlibGeometryOpsSmoke {
     let sh1  = shell(solid, 1mm)                   // shell(solid, thickness)        [all faces]
     let sh2  = shell(solid, 1mm, 0)                // shell(solid, thickness, face…) [remove face 0]
     let ofs  = offset_solid(solid, 1mm)            // offset_solid(solid, distance)
+    let ofsu = offset_surface(prof, 1mm)           // offset_surface(surface, distance) [prof is a planar face]
     let thk  = thicken(solid, 1mm)                 // thicken(solid, offset)
     let ofc  = offset_curve(curve, 1mm)            // offset_curve(curve, distance)
     let fila = fillet_all(solid, 1mm)              // fillet_all(solid, radius)

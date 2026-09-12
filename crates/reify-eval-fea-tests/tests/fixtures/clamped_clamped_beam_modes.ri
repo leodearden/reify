@@ -1,0 +1,140 @@
+// Modal BC-kind fixture: two FixedSupports must mean CLAMPED-CLAMPED, and two
+// PinnedSupports must mean PINNED-PINNED — on ONE section, in ONE eval, so the
+// two realizations can be compared directly (task 6663).
+//
+// Why this fixture exists (the defect it pins):
+//   `modal_ops::build_dirichlet_bcs` used to discriminate its BC realization on
+//   the support TARGET FACE NAMES ONLY and never read the support KIND, so
+//   `[FixedSupport("x_min"), FixedSupport("x_max")]` and
+//   `[PinnedSupport("x_min"), PinnedSupport("x_max")]` produced a BIT-IDENTICAL
+//   Dirichlet set — both the pinned-pinned one. Measured in the dogfood round:
+//   both returned 391.049 Hz, against the clamped-clamped analytic 900.7 Hz.
+//
+// Section (the dogfood gantry tube): L = 800 mm, square 44.588 × 44.588 mm,
+// E = 110 GPa, ν = 0.3, ρ = 695.39 kg/m³ (a CFRP rolled tube smeared to a solid
+// section of equivalent EI and mass/length).
+//
+// Analytic Euler–Bernoulli fundamentals, fₙ = (βL)²/(2π) · √(E·I / (ρ·A·L⁴)):
+//   pinned-pinned  βL = π        → f₁ ≈ 397.33 Hz
+//   clamped-pinned βL = 3.926602 → f₁ ≈ 620.70 Hz
+//   clamped-clamped βL = 4.730041 → f₁ ≈ 900.70 Hz     (ratio 2.267)
+//
+// The MIXED pair `[FixedSupport("x_min"), PinnedSupport("x_max")]` is the third
+// solve here (task 6663's scope extension): honoring the kind PER FACE must make
+// it a genuine propped cantilever landing on its OWN analytic (λ² = 15.4182),
+// strictly between the pinned-pinned (9.8696) and clamped-clamped (22.3733)
+// answers — not collapsed onto either.
+//
+// NOTE for whoever reads `f1_propped` expecting ≈ 620 Hz: it reads ≈ 141.7 Hz,
+// and that is correct. `PinnedSupport` pins the TRANSVERSE (Z) DOF across x_max,
+// so the LATERAL (Y) direction there is a clamped-free cantilever — analytic
+// 141.53 Hz, below the 620.7 Hz vertical propped mode, hence the fundamental.
+// The two symmetric configurations do not show this because the square section
+// makes their two directions near-degenerate. `modal_analysis_e2e.rs` therefore
+// asserts EVERY band on the Z-dominant family, exactly as the simply-supported
+// e2e in that file already does for the same reason.
+//
+// WHY `n_modes: 4` AND NOT 2 (task 6663 amendment): the section is SQUARE, so
+// each configuration's vertical (Z) and lateral (Y) bending families are nearly
+// degenerate — pinned reads 391.05 (lateral) / 395.22 (vertical), a 1.1% split;
+// fixed reads 887.55 (vertical) / 890.90 (lateral), 0.4%. At `n_modes: 2` the
+// Z-dominant selection in `modal_analysis_e2e.rs` had to pick its answer out of
+// a window holding exactly that one near-degenerate pair, so any solver or mesh
+// perturbation that reordered or mixed the pair would leave it returning the
+// wrong member — or an empty family. Four modes give the selection headroom:
+// MEASURED, every configuration's Z-dominant family then holds TWO members
+// (pinned [395.22, 1558.34], fixed [887.55, 2384.63], propped [616.92,
+// 1955.21]) instead of exactly one, and the low modes come back bit-identical
+// to the `n_modes: 2` run. The cost is nil, because the shift-invert Krylov
+// window is `max(2·n_modes, 32).max(64)` = 64 either way.
+//
+// AUTHORING TRAP — `ModalOptions` argument binding is POSITIONAL: the `name:`
+// labels are cosmetic and the parser binds by DECLARATION order (n_modes,
+// boundary_conditions, damping, sigma, tol, max_iters, reference_direction,
+// element_order). `element_order` is LAST, so every preceding param must be
+// spelled out or `ElementOrder.P2` lands in an earlier slot and the P1 bending
+// lock never lifts. Likewise `modal_analysis` declares
+// `material : ElasticMaterial`, so the material is wrapped as
+// `FEAMaterialInput(material: mat)` and passed as `mi.material`.
+
+structure def CFRP_Rolled_Tube : ElasticMaterial + Visual {
+    param youngs_modulus : Pressure = 110GPa
+    param poisson_ratio : Real = 0.3
+    param density : Density = 695.39kg/m^3
+    param yield_stress : Option<Pressure> = some(600MPa)
+    param appearance : Appearance = Appearance(
+        color: Color(r: 0.15, g: 0.15, b: 0.17),
+        finish: Finish.Satin,
+        metalness: 0.1,
+        roughness: 0.6
+    )
+}
+
+structure ClampedClampedBeamModes {
+    // Geometry: 800 mm span, square 44.588 mm section (width == height).
+    param span : Length = 800mm
+    let h = 44.588mm
+    let h2 = h * 1.0
+
+    let material = CFRP_Rolled_Tube()
+
+    // Wrap in FEAMaterialInput so member-access `.material` has compile-time
+    // type ElasticMaterial (matching the fn param type).
+    let mi = FEAMaterialInput(material: material)
+
+    // The two support KINDS under test, on the SAME two end faces.
+    let fix_min = FixedSupport(target: "x_min")
+    let fix_max = FixedSupport(target: "x_max")
+    let pin_min = PinnedSupport(target: "x_min")
+    let pin_max = PinnedSupport(target: "x_max")
+
+    // Three otherwise-identical ModalOptions differing ONLY in support kind.
+    let opts_fixed = ModalOptions(
+        n_modes: 4,
+        boundary_conditions: [fix_min, fix_max],
+        damping: NoDamping(),
+        sigma: 0.0,
+        tol: 0.000000001,
+        max_iters: 200,
+        reference_direction: vec3(0.0, 0.0, 1.0),
+        element_order: ElementOrder.P2
+    )
+    let opts_pinned = ModalOptions(
+        n_modes: 4,
+        boundary_conditions: [pin_min, pin_max],
+        damping: NoDamping(),
+        sigma: 0.0,
+        tol: 0.000000001,
+        max_iters: 200,
+        reference_direction: vec3(0.0, 0.0, 1.0),
+        element_order: ElementOrder.P2
+    )
+    // The MIXED pair: clamp x_min, prop x_max. Reuses the ALREADY-DECLARED
+    // `fix_min` and `pin_max` cells above, so the only thing separating this
+    // configuration from the other two is which kind sits on which face.
+    let opts_propped = ModalOptions(
+        n_modes: 4,
+        boundary_conditions: [fix_min, pin_max],
+        damping: NoDamping(),
+        sigma: 0.0,
+        tol: 0.000000001,
+        max_iters: 200,
+        reference_direction: vec3(0.0, 0.0, 1.0),
+        element_order: ElementOrder.P2
+    )
+
+    // Distinct length cells per call, mirroring the validated dogfood probe
+    // spelling (/home/leo/.claude/fleet/sessions/dogfood-reify-1519747/probes/
+    // modal_bc_probe.ri) so the three @optimized calls stay distinct ComputeNodes.
+    let span_f = span * 1.0
+    let span_p = span * 1.0
+    let span_x = span * 1.0
+
+    let result_fixed   = modal_analysis(mi.material, span_f, h, h2, opts_fixed)
+    let result_pinned  = modal_analysis(mi.material, span_p, h, h2, opts_pinned)
+    let result_propped = modal_analysis(mi.material, span_x, h, h2, opts_propped)
+
+    let f1_fixed   = first_frequency(result_fixed)
+    let f1_pinned  = first_frequency(result_pinned)
+    let f1_propped = first_frequency(result_propped)
+}

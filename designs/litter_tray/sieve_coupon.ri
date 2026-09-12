@@ -1,0 +1,64 @@
+module sieve_coupon
+
+// Fit-test print coupon #1: the top deck's hex sieve field on a 60 x 60 x 5
+// plate. Print at hole_d = 2.8 / 3.0 / 3.2 and pick the diameter that lets
+// sawdust through while holding the O6 pellets (PETG shrinkage closes holes).
+//
+// Field construction is top_deck.ri's verbatim: two interleaved rectangular
+// grids (B offset by pitch/2 in x and row_step in y; each grid's row pitch is
+// 2*row_step) = hex packing on hole_pitch. An 8 mm solid margin all round.
+
+structure def SieveCoupon : Rigid {
+    param plate_w : Length = 60mm
+    param plate_d : Length = 60mm
+    param floor_t : Length = 5mm            // same as the top deck floor
+
+    // ── Sieve field (swept: hole_d) ─────────────────────────────────────
+    param hole_d     : Length = 3mm         // print 2.8 / 3.0 / 3.2
+    param hole_pitch : Length = 5mm         // hex pitch (web = pitch - hole_d)
+    param margin     : Length = 8mm         // solid ring round the field
+
+    param material : Material = Material(name: "PETG", density: 1270kg/m^3, youngs_modulus: 2.1GPa)
+
+    // ── Derived ─────────────────────────────────────────────────────────
+    let field_x  = plate_w - 2 * margin                   // 44
+    let field_y  = plate_d - 2 * margin                   // 44
+    let row_step = hole_pitch * 0.866                     // hex row spacing
+
+    // Hole counts (feed both the pattern calls and the fit constraints),
+    // top_deck.ri style: literal lets + "grid fits the field" constraints.
+    let nx_a = 9
+    let ny_a = 5
+    let nx_b = 8
+    let ny_b = 5
+    let hole_count = nx_a * ny_a + nx_b * ny_b            // 85
+
+    // Pattern origin (field centred on the plate)
+    let x0a = 0mm - (hole_pitch * (nx_a - 1)) / 2         // -20
+    let y0a = 0mm - (row_step * (ny_a + ny_b - 1)) / 2    // -19.485 (row 0)
+    let x0b = x0a + hole_pitch / 2
+    let y0b = y0a + row_step
+
+    // ── Constraints ─────────────────────────────────────────────────────
+    constraint hole_d < 4mm                               // pellets stay on top
+    constraint hole_d >= 2.5mm                            // sawdust falls through
+    constraint hole_pitch - hole_d >= 1.8mm               // web between holes
+    constraint hole_pitch * (nx_a - 1) + hole_d <= field_x            // grid A fits
+    constraint hole_pitch * (nx_b - 1) + hole_d <= field_x            // grid B fits
+    constraint row_step * (ny_a + ny_b - 1) + hole_d <= field_y       // rows fit
+    constraint margin >= 6mm                              // solid rim to hold
+
+    // ── Geometry ────────────────────────────────────────────────────────
+    aux let plate  = translate(box(plate_w, plate_d, floor_t), 0mm, 0mm, floor_t / 2)
+    // Spacings MUST carry units (a bare number is read as metres, #5318).
+    aux let grid_a = linear_pattern_2d(translate(cylinder(hole_d / 2, floor_t + 2mm), x0a, y0a, -1mm), 1, 0, 0, nx_a, hole_pitch, 0, 1, 0, ny_a, 2 * row_step)
+    aux let grid_b = linear_pattern_2d(translate(cylinder(hole_d / 2, floor_t + 2mm), x0b, y0b, -1mm), 1, 0, 0, nx_b, hole_pitch, 0, 1, 0, ny_b, 2 * row_step)
+    aux let holes  = union_all(grid_a, grid_b)
+    param geometry : Solid = difference(plate, holes)
+
+    // Hand-arithmetic cross-check cells (compare against the surfaced mass).
+    let hole_volume   = hole_count * 3.141592653589793 * (hole_d / 2) * (hole_d / 2) * floor_t
+    let expected_mass = (plate_w * plate_d * floor_t - hole_volume) * material.density
+
+    sub display = DisplayOutput(subject: geometry)
+}

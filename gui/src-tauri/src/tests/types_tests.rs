@@ -67,6 +67,7 @@ fn mesh_data_serializes_with_expected_fields() {
         indices: vec![0, 1, 2],
         normals: Some(vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]),
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -561,6 +562,7 @@ fn serialize_finite_f32_vec_all_finite_values_round_trip() {
         indices: vec![],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -586,6 +588,7 @@ fn serialize_finite_f32_vec_empty_vec_serializes_to_empty_array() {
         indices: vec![],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -606,6 +609,7 @@ fn serialize_finite_f32_vec_nan_causes_error_with_non_finite_and_nan() {
         indices: vec![],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -630,6 +634,7 @@ fn serialize_finite_f32_vec_infinity_causes_error_with_non_finite_and_inf() {
         indices: vec![],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -654,6 +659,7 @@ fn serialize_finite_f32_vec_neg_infinity_causes_error_with_non_finite_and_neg_in
         indices: vec![],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -680,6 +686,7 @@ fn serialize_finite_f32_vec_nan_in_normals_causes_error() {
         indices: vec![0],
         normals: Some(vec![0.0, 0.0, f32::NAN]),
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -713,6 +720,7 @@ fn serialize_finite_f32_vec_non_finite_at_later_position_still_causes_error() {
         indices: vec![],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -1102,6 +1110,7 @@ fn mesh_data_scalar_channels_round_trips() {
         indices: vec![0, 1, 2],
         normals: None,
         scalar_channels: channels,
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -1146,6 +1155,7 @@ fn mesh_data_empty_scalar_channels_omitted_from_wire() {
         indices: vec![],
         normals: None,
         scalar_channels: HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -1160,6 +1170,300 @@ fn mesh_data_empty_scalar_channels_omitted_from_wire() {
     assert!(
         v.get("scalar_channels").is_none(),
         "empty scalar_channels must be omitted from the wire"
+    );
+}
+
+// --- scalar_channel_tags IPC wire tests (task #6185) ---
+
+/// The declared per-channel unit constants and their `ScalarChannelTag`
+/// constructors are the greppable GUI-boundary declaration required by PRD
+/// `angle-dimension-completion` INV-AD-4.  `ANGLE_CHANNEL_UNIT` /
+/// `ScalarChannelTag::angle()` are the landing pad for the first signed Angle
+/// channel (#6164 `.rotation`), so they are pinned here before that producer
+/// exists.
+#[test]
+fn scalar_channel_tag_constructors_declare_pressure_and_angle() {
+    assert_eq!(
+        crate::types::PRESSURE_CHANNEL_UNIT,
+        "Pa",
+        "the declared pressure-channel unit is the SI symbol 'Pa'"
+    );
+    assert_eq!(
+        crate::types::ANGLE_CHANNEL_UNIT,
+        "rad",
+        "the declared angle-channel unit is the SI symbol 'rad'"
+    );
+
+    assert_eq!(
+        ScalarChannelTag::pressure(),
+        ScalarChannelTag {
+            unit: crate::types::PRESSURE_CHANNEL_UNIT.to_string(),
+            signed: false,
+        },
+        "pressure channels are Pa and non-negative (von Mises / error indicator)"
+    );
+    assert_eq!(
+        ScalarChannelTag::angle(),
+        ScalarChannelTag {
+            unit: crate::types::ANGLE_CHANNEL_UNIT.to_string(),
+            signed: true,
+        },
+        "angle channels are radians and CAN be negative"
+    );
+}
+
+/// B8 pin: a mesh carrying BOTH a Pa channel and a **signed** angle channel
+/// serializes its per-channel tags to the wire, and the negative value in the
+/// signed channel survives the round trip unclamped.
+///
+/// The signed channel here is a stand-in for #6164's `.rotation`, which does
+/// not exist yet — υ is deliberately chartered first so that the first signed
+/// Angle channel arrives on a declared wire format rather than as unmarked
+/// clamped radians.
+#[test]
+fn mesh_data_signed_channel_tag_round_trips() {
+    use std::collections::HashMap;
+
+    let mut channels = HashMap::new();
+    channels.insert("vonMises".to_string(), vec![10.0_f32, 20.0, 30.0]);
+    channels.insert("testRotation".to_string(), vec![-0.5_f32, 0.0, 0.25]);
+
+    let mut tags = HashMap::new();
+    tags.insert("vonMises".to_string(), ScalarChannelTag::pressure());
+    tags.insert("testRotation".to_string(), ScalarChannelTag::angle());
+
+    let mesh = MeshData {
+        entity_path: "Test.body".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        indices: vec![0, 1, 2],
+        normals: None,
+        scalar_channels: channels,
+        scalar_channel_tags: tags,
+        displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        element_index: None,
+        vector_channels: std::collections::HashMap::new(),
+        appearance: None,
+    };
+
+    let v = serde_json::to_value(&mesh).expect("serialize should succeed");
+
+    // (a) The tag map reaches the wire with both channels tagged.
+    let tags_json = v
+        .get("scalar_channel_tags")
+        .expect("scalar_channel_tags must be present");
+    assert!(
+        tags_json.is_object(),
+        "scalar_channel_tags must be a JSON object"
+    );
+    assert_eq!(
+        tags_json["vonMises"],
+        serde_json::json!({ "unit": "Pa", "signed": false }),
+        "the Pa channel is tagged unsigned"
+    );
+    assert_eq!(
+        tags_json["testRotation"],
+        serde_json::json!({ "unit": "rad", "signed": true }),
+        "the angle channel is tagged signed"
+    );
+
+    // (b) The NEGATIVE value survives serialization — this is the half of B8
+    //     that the wire format must not clamp.
+    let rot = v["scalar_channels"]["testRotation"]
+        .as_array()
+        .expect("testRotation must be an array");
+    assert_eq!(
+        rot[0].as_f64().unwrap(),
+        -0.5,
+        "a negative value in a signed channel must reach the wire unclamped"
+    );
+
+    // (c) Round trip preserves both the tags and the negative value.
+    let back: MeshData = serde_json::from_value(v).expect("deserialize should succeed");
+    assert_eq!(
+        back.scalar_channel_tags.get("vonMises"),
+        Some(&ScalarChannelTag::pressure())
+    );
+    assert_eq!(
+        back.scalar_channel_tags.get("testRotation"),
+        Some(&ScalarChannelTag::angle())
+    );
+    assert_eq!(
+        back.scalar_channels.get("testRotation").unwrap(),
+        &vec![-0.5_f32, 0.0, 0.25]
+    );
+}
+
+/// An empty `scalar_channel_tags` map is omitted from the wire entirely, so
+/// untagged (non-FEA, pre-tag) meshes stay byte-identical to today's payload.
+#[test]
+fn mesh_data_empty_scalar_channel_tags_omitted_from_wire() {
+    use std::collections::HashMap;
+
+    let mut channels = HashMap::new();
+    channels.insert("vonMises".to_string(), vec![10.0_f32, 20.0, 30.0]);
+
+    let mesh = MeshData {
+        entity_path: "Test.body".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        indices: vec![0, 1, 2],
+        normals: None,
+        scalar_channels: channels,
+        scalar_channel_tags: HashMap::new(),
+        displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        element_index: None,
+        vector_channels: std::collections::HashMap::new(),
+        appearance: None,
+    };
+
+    let v = serde_json::to_value(&mesh).expect("serialize should succeed");
+    assert!(
+        v.get("scalar_channel_tags").is_none(),
+        "an empty scalar_channel_tags map must be omitted from the wire"
+    );
+}
+
+/// Back-compat pin for `#[serde(default)]`: a legacy payload with
+/// `scalar_channels` but no `scalar_channel_tags` key deserializes to an empty
+/// tag map rather than failing.
+#[test]
+fn mesh_data_untagged_channel_deserializes_from_legacy_payload() {
+    let legacy = json!({
+        "entity_path": "Test.body",
+        "vertices": [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        "indices": [0, 1, 2],
+        "normals": null,
+        "scalar_channels": { "vonMises": [10.0, 20.0, 30.0] }
+    });
+
+    let mesh: MeshData =
+        serde_json::from_value(legacy).expect("a legacy untagged payload must deserialize");
+    assert!(
+        mesh.scalar_channel_tags.is_empty(),
+        "a payload without scalar_channel_tags yields an empty tag map"
+    );
+    assert_eq!(
+        mesh.scalar_channels.get("vonMises").unwrap(),
+        &vec![10.0_f32, 20.0, 30.0]
+    );
+}
+
+/// Serialize-time contract: a tag keyed by a channel that does not exist in
+/// `scalar_channels` is an orphan and is rejected before any output is written.
+/// This is what would catch a producer that stamps a tag on a conditional
+/// channel it did not actually insert.
+#[test]
+fn mesh_data_orphan_scalar_channel_tag_errors() {
+    use std::collections::HashMap;
+
+    let mut channels = HashMap::new();
+    channels.insert("vonMises".to_string(), vec![10.0_f32, 20.0, 30.0]);
+
+    let mut tags = HashMap::new();
+    tags.insert("notAChannel".to_string(), ScalarChannelTag::pressure());
+
+    let mesh = MeshData {
+        entity_path: "Test.body".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        indices: vec![0, 1, 2],
+        normals: None,
+        scalar_channels: channels,
+        scalar_channel_tags: tags,
+        displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        element_index: None,
+        vector_channels: std::collections::HashMap::new(),
+        appearance: None,
+    };
+
+    let err = serde_json::to_value(&mesh)
+        .expect_err("an orphan scalar_channel_tags key must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("notAChannel"),
+        "error must name the orphan tag key, got: {msg}"
+    );
+}
+
+/// Serialize-time contract: a channel tagged `signed: false` must not carry a
+/// negative value other than exactly `SCALAR_CHANNEL_OOB_SENTINEL`.  This is
+/// the guard that makes the unsigned claim load-bearing — it is what would
+/// catch a producer mis-tagging a rotation channel as unsigned, which is the
+/// silent-clamp failure this bridge exists to prevent.
+#[test]
+fn mesh_data_unsigned_tag_rejects_negative_non_sentinel() {
+    use std::collections::HashMap;
+
+    let mut channels = HashMap::new();
+    channels.insert("vonMises".to_string(), vec![-1.0_f32, 2.0, -3.5]);
+
+    let mut tags = HashMap::new();
+    tags.insert("vonMises".to_string(), ScalarChannelTag::pressure());
+
+    let mesh = MeshData {
+        entity_path: "Test.body".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        indices: vec![0, 1, 2],
+        normals: None,
+        scalar_channels: channels,
+        scalar_channel_tags: tags,
+        displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        element_index: None,
+        vector_channels: std::collections::HashMap::new(),
+        appearance: None,
+    };
+
+    let err = serde_json::to_value(&mesh)
+        .expect_err("a negative non-sentinel value in an unsigned channel must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("vonMises"),
+        "error must name the offending channel, got: {msg}"
+    );
+}
+
+/// Companion positive case: `SCALAR_CHANNEL_OOB_SENTINEL` is exempted from the
+/// unsigned-negative check by exact equality, so today's OOB-marked von Mises
+/// channels keep serializing.
+#[test]
+fn mesh_data_unsigned_tag_allows_exact_oob_sentinel() {
+    use std::collections::HashMap;
+
+    let mut channels = HashMap::new();
+    channels.insert(
+        "vonMises".to_string(),
+        vec![SCALAR_CHANNEL_OOB_SENTINEL, 2.0, 3.0],
+    );
+
+    let mut tags = HashMap::new();
+    tags.insert("vonMises".to_string(), ScalarChannelTag::pressure());
+
+    let mesh = MeshData {
+        entity_path: "Test.body".to_string(),
+        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        indices: vec![0, 1, 2],
+        normals: None,
+        scalar_channels: channels,
+        scalar_channel_tags: tags,
+        displaced_positions: None,
+        element_kind: None,
+        region_tags: None,
+        element_index: None,
+        vector_channels: std::collections::HashMap::new(),
+        appearance: None,
+    };
+
+    let v = serde_json::to_value(&mesh)
+        .expect("the exact OOB sentinel must remain legal in an unsigned channel");
+    assert_eq!(
+        v["scalar_channels"]["vonMises"][0].as_f64().unwrap(),
+        SCALAR_CHANNEL_OOB_SENTINEL as f64
     );
 }
 
@@ -1180,6 +1484,7 @@ fn serialize_finite_f32_map_nan_causes_error_with_channel_key() {
         indices: vec![],
         normals: None,
         scalar_channels: channels,
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -1215,6 +1520,7 @@ fn serialize_finite_f32_map_infinity_causes_error_with_channel_key() {
         indices: vec![],
         normals: None,
         scalar_channels: channels,
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -1250,6 +1556,7 @@ fn serialize_finite_f32_map_neg_infinity_causes_error_with_channel_key() {
         indices: vec![],
         normals: None,
         scalar_channels: channels,
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -1282,6 +1589,7 @@ fn mesh_data_displaced_positions_some_serializes_to_array() {
         indices: vec![],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: Some(vec![1.0_f32, 2.0, 3.0]),
         element_kind: None,
         region_tags: None,
@@ -1313,6 +1621,7 @@ fn mesh_data_displaced_positions_none_omitted_from_wire() {
         indices: vec![],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -1337,6 +1646,7 @@ fn mesh_data_displaced_positions_round_trips() {
         indices: vec![],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: Some(vec![1.0_f32, 2.0, 3.0]),
         element_kind: None,
         region_tags: None,
@@ -1363,6 +1673,7 @@ fn mesh_data_displaced_positions_nan_causes_error() {
         indices: vec![],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: Some(vec![f32::NAN, 0.0, 0.0]), // 3 floats, length matches
         element_kind: None,
         region_tags: None,
@@ -1396,6 +1707,7 @@ fn mesh_data_omits_new_shell_fields_when_default() {
         indices: vec![0, 1, 2],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -1438,6 +1750,7 @@ fn meshdata_rejects_scalar_channel_with_wrong_length() {
         indices: vec![0, 1, 2],
         normals: None,
         scalar_channels: channels,
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -1468,6 +1781,7 @@ fn meshdata_rejects_displaced_positions_with_wrong_length() {
         indices: vec![0, 1, 2],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: Some(vec![0.1_f32, 0.2, 0.3, 0.4, 0.5, 0.6]), // 6 floats ≠ 9
         element_kind: None,
         region_tags: None,
@@ -1505,6 +1819,7 @@ fn meshdata_rejects_element_kind_with_wrong_length() {
         indices: vec![0, 1, 2, 0, 1, 2],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: Some(vec![0u8]), // length 1, face_count = 2 → mismatch
         region_tags: None,
@@ -1540,6 +1855,7 @@ fn meshdata_rejects_region_tags_with_wrong_length() {
         indices: vec![0, 1, 2, 0, 1, 2],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: Some(vec![100u32]), // length 1, face_count = 2 → mismatch
@@ -1582,6 +1898,7 @@ fn vector_channels_nan_causes_error_with_channel_key() {
         indices: vec![],                // 0 faces; per-vertex len=3 satisfies contract
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -1620,6 +1937,7 @@ fn vector_channels_infinity_causes_error_with_channel_key() {
         indices: vec![],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -1658,6 +1976,7 @@ fn vector_channels_neg_infinity_causes_error_with_channel_key() {
         indices: vec![],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -1705,6 +2024,7 @@ fn meshdata_rejects_vector_channel_with_invalid_length() {
         indices: vec![0, 1, 2],                                          // 1 face
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -1752,6 +2072,7 @@ fn vector_channels_per_face_suffix_enforces_face_count_length() {
         indices: vec![0, 1, 2],                                          // 1 face
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -2067,6 +2388,7 @@ fn mesh_data_element_kind_some_serializes_with_field() {
         indices: vec![0, 1, 2, 0, 1, 2],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: Some(vec![0u8, 1u8]),
         region_tags: None,
@@ -2096,6 +2418,7 @@ fn mesh_data_region_tags_some_serializes_with_field() {
         indices: vec![0, 1, 2, 0, 1, 2],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: Some(vec![100u32, 200u32]),
@@ -2130,6 +2453,7 @@ fn mesh_data_vector_channels_populated_serializes_with_field() {
         indices: vec![0, 1, 2, 0, 1, 2],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -2164,6 +2488,7 @@ fn meshdata_accepts_matching_scalar_channel_length() {
         indices: vec![0, 1, 2],
         normals: None,
         scalar_channels: channels,
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -3043,7 +3368,7 @@ fn value_data_dimension_and_si_value_serialize_and_round_trip() {
         cell_id: "Tank.capacity".to_string(),
         name: "capacity".to_string(),
         value: "7045002.24".to_string(),
-        unit: "mm\u{00B3}".to_string(),
+        unit: "mm^3".to_string(),
         determinacy: "determined".to_string(),
         entity_path: "Tank".to_string(),
         kind: "Let".to_string(),
@@ -3102,6 +3427,7 @@ fn mesh_data_appearance_some_round_trips() {
         indices: vec![0, 1, 2],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -3151,6 +3477,7 @@ fn mesh_data_appearance_none_omitted_and_back_compat() {
         indices: vec![0, 1, 2],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -3455,6 +3782,7 @@ fn mesh_data_element_index_some_serializes_with_field() {
         indices: vec![0, 1, 2, 0, 1, 2],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -3485,6 +3813,7 @@ fn mesh_data_element_index_none_omitted_from_wire() {
         indices: vec![0, 1, 2],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -3515,6 +3844,7 @@ fn mesh_data_element_index_length_mismatch_errors() {
         indices: vec![0, 1, 2, 0, 1, 2],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,

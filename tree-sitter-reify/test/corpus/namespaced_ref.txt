@@ -1,0 +1,437 @@
+================================================================================
+namespaced_ref: qualified type annotation (pp.Pulley)
+================================================================================
+
+structure S {
+  param p : pp.Pulley
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (namespaced_name
+          binding: (identifier)
+          name: (identifier))))))
+
+================================================================================
+namespaced_ref: qualified type as a type argument (List<pp.Pulley>)
+================================================================================
+
+structure S {
+  param q : List<pp.Pulley>
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (parameterized_type
+          name: (identifier)
+          type_args: (type_arg_list
+            (type_expr
+              (namespaced_name
+                binding: (identifier)
+                name: (identifier)))))))))
+
+================================================================================
+namespaced_ref: sub instantiation arm (sub p = pp.Pulley())
+================================================================================
+
+structure S {
+  sub p = pp.Pulley()
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (namespaced_name
+        binding: (identifier)
+        name: (identifier)))))
+
+================================================================================
+namespaced_ref: sub specialization arm (sub h : pp.Pulley)
+================================================================================
+
+structure S {
+  sub h : pp.Pulley
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (namespaced_name
+        binding: (identifier)
+        name: (identifier)))))
+
+================================================================================
+namespaced_ref: sub specialization arm with type args (sub h : pp.Pulley<T>)
+================================================================================
+
+structure S {
+  sub h : pp.Pulley<T>
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (namespaced_name
+        binding: (identifier)
+        name: (identifier))
+      type_args: (type_arg_list
+        (type_expr
+          (identifier))))))
+
+================================================================================
+namespaced_ref: sub collection arm (sub i : List<pp.Pulley>)
+================================================================================
+
+structure S {
+  sub i : List<pp.Pulley>
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (namespaced_name
+        binding: (identifier)
+        name: (identifier)))))
+
+================================================================================
+namespaced_ref control: unqualified structure_name stays an identifier
+================================================================================
+
+structure S {
+  sub j = Plain()
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier))))
+
+================================================================================
+namespaced_ref control: :: type stays a qualified_type (Beam::Material)
+================================================================================
+
+structure S {
+  param n : Beam::Material
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (qualified_type
+          base: (identifier)
+          member: (identifier))))))
+
+================================================================================
+namespaced_ref control: List<Foo> still takes the collection arm (lexer rule #2)
+================================================================================
+
+structure S {
+  sub a : List<Foo>
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier))))
+
+================================================================================
+namespaced_ref: nullary qualified call (pp.Pulley())
+================================================================================
+
+structure S {
+  let f = pp.Pulley()
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (namespaced_call
+        callee: (member_access
+          object: (identifier)
+          member: (identifier))))))
+
+================================================================================
+namespaced_ref: qualified call with a positional argument (pp.compute(1))
+================================================================================
+
+structure S {
+  let e = pp.compute(1)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (namespaced_call
+        callee: (member_access
+          object: (identifier)
+          member: (identifier))
+        (argument_list
+          (number_literal))))))
+
+================================================================================
+namespaced_ref: qualified call with named + positional args (pp.make(a: 1, 2))
+================================================================================
+
+structure S {
+  let g = pp.make(a: 1, 2)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (namespaced_call
+        callee: (member_access
+          object: (identifier)
+          member: (identifier))
+        (argument_list
+          (named_argument
+            name: (identifier)
+            value: (number_literal))
+          (number_literal))))))
+
+================================================================================
+namespaced_ref control: call-less dotted chain stays nested member_access
+================================================================================
+
+structure S {
+  let r = pp.FitClass.Clearance
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (member_access
+        object: (member_access
+          object: (identifier)
+          member: (identifier))
+        member: (identifier)))))
+
+================================================================================
+namespaced_ref control: plain member access is unchanged (obj.width)
+================================================================================
+
+structure S {
+  let s = obj.width
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (member_access
+        object: (identifier)
+        member: (identifier)))))
+
+================================================================================
+namespaced_ref control: unqualified call stays a function_call (plain(1))
+================================================================================
+
+structure S {
+  let t = plain(1)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (function_call
+        name: (identifier)
+        (argument_list
+          (number_literal))))))
+
+================================================================================
+namespaced_ref control: :: access stays a qualified_access (Foo::bar)
+================================================================================
+
+structure S {
+  let u = Foo::bar
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (qualified_access
+        qualifier: (identifier)
+        member: (identifier)))))
+
+================================================================================
+namespaced_ref control: instance-qualified call stays a trait_method_call
+================================================================================
+
+structure S {
+  let v = obj.(Trait::m)(x)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (trait_method_call
+        callee: (instance_qualified_access
+          object: (identifier)
+          qualified: (qualified_access
+            qualifier: (identifier)
+            member: (identifier)))
+        (argument_list
+          (identifier))))))
+
+================================================================================
+namespaced_ref control: Listicle<Foo> still takes the specialization arm (rule #1)
+================================================================================
+
+structure S {
+  sub b : Listicle<Foo>
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier)
+      type_args: (type_arg_list
+        (type_expr
+          (identifier))))))
+
+================================================================================
+namespaced_ref item boundary: a predicate ending `.name` JOINS a following `(` predicate
+================================================================================
+
+constraint def C {
+  a.b
+  (x) > 0
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (constraint_definition
+    name: (identifier)
+    (constraint_def_predicate
+      expr: (binary_expression
+        left: (namespaced_call
+          callee: (member_access
+            object: (identifier)
+            member: (identifier))
+          (argument_list
+            (identifier)))
+        right: (number_literal)))))
+
+================================================================================
+namespaced_ref item boundary control: a predicate ending in a BARE ident joins the same way
+================================================================================
+
+constraint def C {
+  a
+  (x) > 0
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (constraint_definition
+    name: (identifier)
+    (constraint_def_predicate
+      expr: (binary_expression
+        left: (function_call
+          name: (identifier)
+          (argument_list
+            (identifier)))
+        right: (number_literal)))))
+
+================================================================================
+namespaced_ref item boundary: relate's relation_member repeat joins the same way
+================================================================================
+
+structure S {
+  relate {
+    a.b
+    (x)
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (relate_block
+      (relation_member
+        expr: (namespaced_call
+          callee: (member_access
+            object: (identifier)
+            member: (identifier))
+          (argument_list
+            (identifier)))))))

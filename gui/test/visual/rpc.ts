@@ -39,17 +39,18 @@ export type RpcResult<T> =
  * In-band errors (Branches 4 & 5): debug handlers return Ok({error:<string>,...})
  * rather than setting MCP isError. See docs/debug-mcp-contract.md §2a.
  *
- * Branch 3 is POSITIONAL ON PURPOSE — do not "fix" it into a
- * `.find(c => c.type === "image")`. Since #5891 an image response MAY carry a
- * trailing `text` block: an `element_screenshot` that matched more than one
- * element — scoped or not, since a testId can repeat within one pane — appends
- * its pane diagnostics (`viewportId`/`matchCount`) after the
- * image (debug_server.rs `mcp_content_blocks`, which keeps the image at
- * `content[0]` for exactly this reason). This branch deliberately ignores that
- * trailing block. Searching instead of indexing would let a text block win branch
- * 4 ahead of branch 3 and silently change branch precedence — and `./run.ts`
- * feeds `value.data` straight into `Buffer.from(…, "base64")`, so the failure
- * would surface as corrupt PNG bytes, not a type error.
+ * Branch 3 is POSITIONAL ON PURPOSE. Since #5891 an image response MAY carry a
+ * trailing `text` block — a multi-match `element_screenshot` appends its pane
+ * diagnostics after the image — and this branch deliberately ignores it. Do NOT
+ * "fix" that by rewriting `first` to `content.find(c => c.type === "text") ??
+ * content[0]`: it lets branch 4 win ahead of branch 3 and `value.data` goes
+ * missing.
+ *
+ * WHY, the failure it produces, and why an IMAGE-targeted `.find` is a
+ * different and harmless rewrite: docs/debug-mcp-contract.md §2 "JS-side
+ * decoders" → "The §2d divergence — canonical statement". That is the single
+ * home of this rationale; it is not restated here, so this comment cannot drift
+ * out of sync with it. Pinned by ./rpc.test.ts case 4b.
  */
 export function parseRpcResponse<T = unknown>(envelope: unknown): RpcResult<T> {
   const env = envelope as Record<string, unknown>;

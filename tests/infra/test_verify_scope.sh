@@ -74,6 +74,7 @@ make_fixture() {
     cp "$REPO_ROOT/scripts/lib_clock_stop.sh"   "$dir/scripts/lib_clock_stop.sh"
     cp "$REPO_ROOT/scripts/cpu-admit.sh" "$dir/scripts/cpu-admit.sh"
     cp "$REPO_ROOT/scripts/lib_proc_reaper.sh" "$dir/scripts/lib_proc_reaper.sh"
+    cp "$REPO_ROOT/scripts/lib_git_env_scrub.sh" "$dir/scripts/lib_git_env_scrub.sh"
     cp "$REPO_ROOT/scripts/gen-nextest-config.sh" "$dir/scripts/gen-nextest-config.sh"
     cp "$REPO_ROOT/scripts/heavy-test-filter-lib.sh" "$dir/scripts/heavy-test-filter-lib.sh"
     cp "$REPO_ROOT/scripts/verify-pipeline-infra-tests.txt" "$dir/scripts/verify-pipeline-infra-tests.txt"
@@ -131,6 +132,12 @@ plan_has()    { plan_match "$PLAN_OUT" "$1"; }
 plan_lacks()  { ! plan_match "$PLAN_OUT" "$1"; }
 plan_cmdcount() { plan_count_noncomment_lines "$PLAN_OUT"; }
 
+# Negative assertion helper (assert() only checks for success rc, and a
+# `bash -c '! ...'` subshell cannot see sourced shell functions). Mirrors the
+# one in tests/infra/test_plan_capture_lib.sh. Used by the axis-aware
+# narrowing assertions below (#6391).
+refute() { ! "$@"; }
+
 # ---------------------------------------------------------------------------
 # Scenario 1: docs/markdown/yaml only -> nothing heavy
 # ---------------------------------------------------------------------------
@@ -155,20 +162,25 @@ assert "docs/yaml-only: zero command leaves (preamble only)" \
 # 16 command leaves) — which is why both 2026-07-25 PRD sessions split their
 # fixtures out into implementation tasks instead.
 #
-# PG-1/PG-1b are the user-observable signal (RED until step-2). PG-2..PG-5 are
-# CONTROLS: green before AND after, they pin the carve-out as narrow and
+# PG-1's staged case is now ONE cheap PTODO leaf, not a zero-command plan —
+# the PT-* family below (task 6817) owns that user-observable signal (PT-1).
+# PG-1b's branch case stays zero: task 5125's merge-tier-only PTODO stands
+# for --scope branch, which PT-CTRL-BRANCH (beside PG-1b) pins. PG-2..PG-5
+# are CONTROLS: green before AND after, they pin the carve-out as narrow and
 # never-subtracting, so any later widening has to be a deliberate, reviewed
 # act rather than a silent side effect. PG-1b lives with the branch-scope
 # family below (plan_for_branch is not defined until then).
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Scenario PG-1: docs + manifest + NEW prd-gate .ri fixture -> no heavy checks (RED until step-2) ---"
+echo "--- Scenario PG-1: docs + manifest + NEW prd-gate .ri fixture -> no heavy checks, ONE cheap PTODO leaf (task 6817) ---"
 plan_for staged docs/prds/v0_6/foo.md docs/prds/v0_6/foo.capability-manifest.yaml \
     tests/prd-gate/fixtures/new_prd_fixture.ri
 assert "PG-1/docs+fixture: scope decision RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
-assert "PG-1/docs+fixture: zero command leaves (hook completes in seconds — no cargo nextest --workspace)" \
-    test "$(plan_cmdcount)" -eq 0
+assert "PG-1/docs+fixture: exactly one command leaf — the cheap PTODO gate (task 6817), not a re-escalation" \
+    test "$(plan_cmdcount)" -eq 1
+assert "PG-1/docs+fixture: hook still completes in seconds — no cargo nextest --workspace" \
+    plan_lacks 'cargo (test|nextest run) --workspace'
 
 echo ""
 echo "--- Scenario PG-2: Rust-consumed prd-gate fixture -> stays conservative (control, green before AND after) ---"
@@ -294,15 +306,112 @@ assert "PG-RENAME-b: renaming an uncoupled fixture stays RUN_RUST=0 RUN_GUI=0 RU
 # verify.sh, so it survives any refactor of how the list is stored. (a) is
 # deliberately comment-inclusive (a doc-comment mention counts): no
 # code-vs-comment discrimination needed, and it always errs conservative.
-# Today (a) derives 6 paths and (b) is empty.
+#
+#  (a) ESCAPE HATCH — `pg-drift:allow`, the leaf-level sibling of half (b)'s
+#      `pg-drift-dir:allow` (task 6986). GRAMMAR: an inline
+#      `pg-drift:allow — <reason>` ON THE MATCHED LINE drops that line from the
+#      derived set; the reason is required.
+#
+#      WHY IT EXISTS. Erring conservative has one perverse case, and it is the
+#      case BOTH real incidents were: documentation prose that NAMES a
+#      genuinely UNCOUPLED fixture. Comment-inclusiveness makes that sentence
+#      the only thing telling the checker a compiled target reads the file — so
+#      the more carefully an author documents "nothing reads this", the more
+#      likely they are to red the gate. #5540 reddened post-merge verify that
+#      way while documenting solver_unification_tangent_silent_accept.ri; #5371
+#      derived 13 paths against a 12-entry list at branch HEAD a6be4e30a7. The
+#      marker is therefore usable on a line with NO reading test target at all,
+#      which is exactly the point.
+#
+#      REMEDY ORDER when this half reds: FIRST decide whether a compiled target
+#      really reads the fixture. If it does, add <name>.ri to verify.sh's
+#      _RUST_COUPLED_RI_FIXTURES. If it does NOT, mark the line — do not add a
+#      row that is FALSE, and do not reword the prose to avoid spelling the
+#      path (the #5540/#5371 workaround, which degrades the documentation and
+#      is invisible to anyone who has not read the incident).
+#
+#      GOTCHA: the marker must sit ON the matched line. One line above
+#      suppresses nothing, because the filter drops matched LINES.
+#
+#      RESIDUAL, stated as honestly as (b) states its own: the filter drops the
+#      WHOLE line, so a marked line that ALSO names a genuinely coupled fixture
+#      would drop that one too. Accepted — the same granularity
+#      `pg-drift-dir:allow` already has.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Scenario PG-DRIFT: every *.rs-referenced prd-gate fixture still classifies RUN_RUST=1 ---"
-_PG_COUPLED="$(git -C "$REPO_ROOT" grep -h -o -E 'tests/prd-gate/fixtures/[A-Za-z0-9_.-]+\.ri' -- '*.rs' | sort -u || true)"
+# The fixture-LEAF pattern, named like its sibling _PG_DIR_PAT below so the two
+# halves read as one convention.
+_PG_FIX_PAT='tests/prd-gate/fixtures/[A-Za-z0-9_.-]+\.ri'
+# The SINGLE derivation that both the real-repo run below and the synthetic
+# self-tests go through: full matched LINES in, sorted-unique fixture paths out.
+# `-o` lives here rather than on `git grep` so the helper still sees whole
+# lines — the self-tests therefore exercise the production pipeline instead of
+# restating it, and the reviewed-marker filter has somewhere to stand.
+# That filter runs FIRST, before `-o` projects the line away. Its literal is the
+# EXACT `pg-drift:allow`: a shortened `pg-drift` would also swallow half (b)'s
+# reviewed `pg-drift-dir:allow` walks (pinned by the cross-suppression self-test
+# below). Callers keep the `|| true` the surrounding code already uses — under
+# `set -euo pipefail` a `grep` that suppresses every line exits 1, which is now
+# a legitimate outcome rather than a fault.
+_pg_derive() { grep -v 'pg-drift:allow' | grep -o -E "$_PG_FIX_PAT" | sort -u; }
+_PG_COUPLED="$(git -C "$REPO_ROOT" grep -h -E "$_PG_FIX_PAT" -- '*.rs' | _pg_derive || true)"
 # Non-empty FIRST: a broken grep, a moved fixtures dir or a changed pathspec
 # must fail loudly here instead of vacuously passing an empty loop.
 assert "PG-DRIFT: derived coupled-fixture set is NON-EMPTY (guard is not vacuous)" \
     test -n "$_PG_COUPLED"
+# INJECTION self-tests for the reviewed 'pg-drift:allow' escape hatch. All four
+# drive synthetic lines through the SAME _pg_derive helper the real run above
+# uses, so they can never drift from the production pipeline; they live in this
+# '.sh' file while the pathspec is '*.rs', so they can never leak into the real
+# derived set either — the same safety PG-DRIFT-DIR's self-tests below rely on.
+# The worked example throughout is the case BOTH real incidents were:
+# documentation prose asserting that a fixture is UNCOUPLED (#5540, #5371).
+assert "PG-DRIFT: marker self-test — an UNMARKED prose mention IS still derived (the guard must keep biting: this is #5540's 19->20 and #5371's 12->13 delta)" \
+    test "$(printf '%s\n' \
+        '//! see tests/prd-gate/fixtures/pg_drift_marker_probe.ri for the silent-accept case' \
+        | _pg_derive | wc -l || true)" -eq 1
+assert "PG-DRIFT: marker self-test — the SAME line carrying an inline 'pg-drift:allow — <reason>' is NOT derived (reviewed prose about an uncoupled fixture must not force a FALSE _RUST_COUPLED_RI_FIXTURES row)" \
+    test "$(printf '%s\n' \
+        '//! tests/prd-gate/fixtures/pg_drift_marker_probe.ri (pg-drift:allow — reviewed: prose only, no compiled target reads it)' \
+        | _pg_derive | wc -l || true)" -eq 0
+assert "PG-DRIFT: marker self-test — a marker on the PRECEDING line suppresses NOTHING (the filter drops MATCHED lines, so the marker must ride on the matched line itself)" \
+    test "$(printf '%s\n' \
+        '//! pg-drift:allow — reviewed, see below' \
+        '//! see tests/prd-gate/fixtures/pg_drift_marker_probe.ri' \
+        | _pg_derive | wc -l || true)" -eq 1
+assert "PG-DRIFT: marker self-test — the SIBLING 'pg-drift-dir:allow' does NOT cross-suppress half (a) (forces the filter literal to be the exact 'pg-drift:allow'; a shortened 'pg-drift' would silently mute every reviewed directory walk here too)" \
+    test "$(printf '%s\n' \
+        '//! tests/prd-gate/fixtures/pg_drift_marker_probe.ri // pg-drift-dir:allow — reviewed walk' \
+        | _pg_derive | wc -l || true)" -eq 1
+# The allow-marker must not become a blanket mute — the same obligation
+# PG-DRIFT-DIR carries for its own marker below. Two assertions bound it.
+#
+# (A) LEDGER PIN. Count the reviewed mentions, so silently deleting the marked
+# line (or its required reason) is itself a change this guard notices. The
+# count comes from `| grep … | wc -l` on a PIPE, never from `git grep -c`,
+# which prints `path:count` rather than a bare number.
+_PG_ALLOWED_MENTIONS="$(git -C "$REPO_ROOT" grep -h -E "$_PG_FIX_PAT" -- '*.rs' \
+    | grep 'pg-drift:allow' | wc -l || true)"
+assert "PG-DRIFT: exactly one reviewed 'pg-drift:allow' fixture mention is expected in *.rs (tangent_operand_check_tests.rs's uncoupled-probe sentence); found $_PG_ALLOWED_MENTIONS" \
+    test "$_PG_ALLOWED_MENTIONS" -eq 1
+# (B) ABUSE SURFACE. The marker asserts "prose only — nothing compiled reads
+# this", so every marked path must classify RUN_RUST=0 against verify.sh's REAL
+# classifier. A marked basename that IS in _RUST_COUPLED_RI_FIXTURES would mean
+# the marker is hiding a genuinely coupled fixture from the one guard that
+# keeps that list honest, and a later deletion of the row would go unnoticed.
+# The hatch is therefore unusable as a mute in EITHER direction: mark a truly
+# coupled fixture and this reds; leave a stale row behind and this reds.
+# Non-vacuity is supplied by (A) — it guarantees at least one marked line —
+# so do NOT add a redundant `test -n` here.
+_PG_MARKED="$(git -C "$REPO_ROOT" grep -h -E "$_PG_FIX_PAT" -- '*.rs' \
+    | grep 'pg-drift:allow' | grep -o -E "$_PG_FIX_PAT" | sort -u || true)"
+while IFS= read -r _pg_marked_path; do
+    [ -n "$_pg_marked_path" ] || continue
+    plan_for staged "$_pg_marked_path"
+    assert "PG-DRIFT: $_pg_marked_path is 'pg-drift:allow'-marked -> RUN_RUST=0 (the marker says nothing compiled reads it; if that is false the marker is muting a real coupling, and if it is true the fixture must NOT be in verify.sh's _RUST_COUPLED_RI_FIXTURES)" \
+        plan_has 'RUN_RUST=0'
+done <<< "$_PG_MARKED"
 while IFS= read -r _pg_path; do
     [ -n "$_pg_path" ] || continue
     plan_for staged "$_pg_path"
@@ -311,30 +420,173 @@ while IFS= read -r _pg_path; do
 done <<< "$_PG_COUPLED"
 
 echo ""
-echo "--- Scenario PG-DRIFT-DIR: no tracked *.rs walks the fixtures DIRECTORY (the carve-out's load-bearing premise) ---"
+echo "--- Scenario PG-DRIFT-DIR: no tracked *.rs/*.ts walks the fixtures DIRECTORY unreviewed (the carve-out's load-bearing premise) ---"
 # A directory-level use materializes the directory path and then appends the
 # leaf separately, so the character where a `<name>.ri` leaf should be is a
-# string terminator (`"`), a format placeholder (`{`) or a glob (`*`).
-_PG_DIR_PAT='tests/prd-gate/fixtures/?["{*]'
-_PG_DIRREF="$(git -C "$REPO_ROOT" grep -n -E "$_PG_DIR_PAT" -- '*.rs' || true)"
-assert "PG-DRIFT-DIR: no *.rs names the fixtures directory itself (would void 'adding a fixture is inert' — re-examine verify.sh's arm, do NOT just extend _RUST_COUPLED_RI_FIXTURES). Found: ${_PG_DIRREF:-none}" \
+# string terminator (`"` in Rust, `'` in TS), a format placeholder (`{` for
+# Rust's format!, `$` for a TS template literal) or a glob (`*`).
+# The class carries `'` as well as `"` because this now sweeps *.ts, where
+# single-quoted string literals are the house style (task 6435).
+_PG_DIR_PAT='tests/prd-gate/fixtures/?["'"'"'{*$]'
+# A directory walk that has been REVIEWED and deliberately accepted carries a
+# `pg-drift-dir:allow` marker on its own line, on the PTODO `ptodo:allow` model.
+# The marker is required to name a reason, and the grep below drops only lines
+# that carry it — so an unreviewed walk still goes RED.
+_PG_DIRREF="$(git -C "$REPO_ROOT" grep -n -E "$_PG_DIR_PAT" -- '*.rs' '*.ts' \
+    | grep -v 'pg-drift-dir:allow' || true)"
+assert "PG-DRIFT-DIR: no *.rs/*.ts names the fixtures directory itself without a reviewed 'pg-drift-dir:allow' marker (an unreviewed walk voids 'adding a fixture is inert' — re-examine verify.sh's arm, do NOT just extend _RUST_COUPLED_RI_FIXTURES). Found: ${_PG_DIRREF:-none}" \
     test -z "$_PG_DIRREF"
+# The allow-marker must not be a blanket mute: assert the ONE known reviewed
+# walk is still present and still marked, so silently deleting the ledger (or
+# the marker's reason) is itself a change this guard notices.
+_PG_ALLOWED="$(git -C "$REPO_ROOT" grep -h -E "$_PG_DIR_PAT" -- '*.ts' | wc -l)"
+assert "PG-DRIFT-DIR: exactly one reviewed *.ts directory walk is expected (the reifyGrammarCorpus ledger); found $_PG_ALLOWED" \
+    test "$_PG_ALLOWED" -eq 1
 # Non-vacuity for a MUST-BE-EMPTY assertion: an empty result is also exactly
 # what a typo'd pattern or pathspec produces. Self-test the pattern against
 # synthetic lines — the four directory-level idioms must match, and the two
 # benign forms (a well-formed leaf reference, a prose mention) must not.
-assert "PG-DRIFT-DIR: pattern self-test — all 4 directory-walk idioms match (guard is not vacuous)" \
+assert "PG-DRIFT-DIR: pattern self-test — all 7 directory-walk idioms match, Rust and TS (guard is not vacuous)" \
     test "$(printf '%s\n' \
         'let d = Path::new("tests/prd-gate/fixtures");' \
         'let p = base.join("../../tests/prd-gate/fixtures/");' \
         'let p = format!("{}/tests/prd-gate/fixtures/{}", root, name);' \
         'for e in glob("tests/prd-gate/fixtures/*.ri") {}' \
-        | grep -c -E "$_PG_DIR_PAT" || true)" -eq 4
-assert "PG-DRIFT-DIR: pattern self-test — a <name>.ri leaf and a prose mention do NOT match (no nuisance RED)" \
+        "const CORPUS_ROOTS = ['examples', 'tests/prd-gate/fixtures'];" \
+        "readdirSync(join(REPO_ROOT, 'tests/prd-gate/fixtures'))" \
+        'const d = `${repoRoot}/tests/prd-gate/fixtures/${name}`;' \
+        | grep -c -E "$_PG_DIR_PAT" || true)" -eq 7
+assert "PG-DRIFT-DIR: pattern self-test — a <name>.ri leaf (Rust or TS) and a prose mention do NOT match (no nuisance RED)" \
     test "$(printf '%s\n' \
         'let p = root.join("../../tests/prd-gate/fixtures/geometry_let_selector_consumer.ri");' \
         '/// see tests/prd-gate/fixtures/stdlib_ns_mode_member.ri).' \
+        "  'tests/prd-gate/fixtures/arrow_type.ri'," \
+        '// the tests/prd-gate/fixtures directory holds probe data' \
         | grep -c -E "$_PG_DIR_PAT" || true)" -eq 0
+
+echo ""
+echo "--- Scenario PG-DRIFT-GUI: every EXPECTED_CLEAN-pinned prd-gate fixture classifies RUN_GUI=1 ---"
+# The GUI grammar drift ledger (gui/src/__tests__/reifyGrammarCorpus.test.ts)
+# asserts that each pinned path still parses with zero ERROR nodes. Editing a
+# pinned fixture into an unparseable state regresses a committed signal, but the
+# prd-gate arm leaves gui=0 for a fixture that is not RUST-coupled — so under
+# --scope staged/branch the suite that reads it would never run, and on the
+# hook-gated docs commit on `main` there is no later gate. verify.sh's
+# _GUI_COUPLED_RI_FIXTURES closes that; this scenario is what keeps the list
+# honest, exactly as PG-DRIFT does for the Rust side (task 6435).
+_PG_GUI_PINS="$(sed -n '/^const EXPECTED_CLEAN = \[/,/^\];/p' \
+    "$REPO_ROOT/gui/src/__tests__/reifyGrammarCorpus.test.ts" \
+    | grep -o 'tests/prd-gate/fixtures/[A-Za-z0-9_.-]*\.ri' | sort -u || true)"
+# Non-empty FIRST: a renamed ledger file, a changed EXPECTED_CLEAN spelling or a
+# broken sed range must fail loudly here rather than pass an empty loop.
+assert "PG-DRIFT-GUI: derived EXPECTED_CLEAN pin set is NON-EMPTY (guard is not vacuous)" \
+    test -n "$_PG_GUI_PINS"
+while IFS= read -r _pg_gui_path; do
+    [ -n "$_pg_gui_path" ] || continue
+    plan_for staged "$_pg_gui_path"
+    assert "PG-DRIFT-GUI: $_pg_gui_path -> RUN_GUI=1 (pinned in reifyGrammarCorpus.test.ts EXPECTED_CLEAN; must be in verify.sh's _GUI_COUPLED_RI_FIXTURES)" \
+        plan_has 'RUN_GUI=1'
+done <<< "$_PG_GUI_PINS"
+
+# ---------------------------------------------------------------------------
+# Scenario PT-*: cheap PTODO gate on the hook-gated --scope staged path
+# (task 6817).
+#
+# PG-1 (above) pins that a staged, uncoupled tests/prd-gate/fixtures/*.ri
+# keeps RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0 — task 5536's win. But
+# hooks/pre-commit -> hooks/project-checks is the ONLY production caller of
+# `--scope staged`, and until this task that classification produced a
+# ZERO-command plan: `verify.sh all --profile debug --scope staged
+# --include-infra --print-plan` on such a fixture emitted no command leaves
+# at all ("nothing to verify (action=all scope=staged) — no commands in
+# plan", measured on branch tip 9c1bed42a7). That gap is why 108d1d9226's
+# phantom-tracking marker landed on `main` and reddened post-merge
+# verification for every task until 9ebebcec22 reworded it: the PTODO ratchet
+# (tests/infra/test_reify_audit_ptodo.sh) that would have caught it lives only
+# in the MERGE-tier run_all.sh pool (task 5125), and a hook-gated main commit
+# is not a merge.
+#
+# PT-1 is the user-observable signal: the hook-gated path
+# must also run the cheap PTODO ratchet as its own selective-infra leaf,
+# alongside — not instead of — 5536's no-heavy-checks classification.
+# PT-1-vacuity guards the emitted loop's `[ -f "$_vt" ] || continue` from
+# silently no-op'ing on a selected path that doesn't resolve (mirrors
+# VS-coverage above).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario PT-1: staged uncoupled prd-gate .ri fixture -> cheap PTODO gate leaf emitted ---"
+plan_for staged tests/prd-gate/fixtures/new_prd_fixture.ri
+assert "PT-1: plan contains tests/infra/test_reify_audit_ptodo.sh selective leaf" \
+    plan_has 'tests/infra/test_reify_audit_ptodo\.sh'
+assert "PT-1: leaf runs through the selective-infra timeout+bash loop shape" \
+    plan_has 'test_reify_audit_ptodo.*timeout.*bash'
+assert "PT-1: scope decision RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0 unchanged (gate ADDED, not a re-escalation)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
+assert "PT-1: still no cargo test/nextest workspace pass (5536's win preserved)" \
+    plan_lacks 'cargo (test|nextest run) --workspace'
+assert "PT-1: still no cargo clippy (5536's win preserved)" \
+    plan_lacks 'cargo clippy'
+
+echo ""
+echo "--- Scenario PT-1-vacuity: the selected ptodo gate path resolves in the repo (mirrors VS-coverage) ---"
+assert "PT-1-vacuity: tests/infra/test_reify_audit_ptodo.sh exists (the emitted loop's [ -f ] guard would otherwise silently no-op)" \
+    test -f "$REPO_ROOT/tests/infra/test_reify_audit_ptodo.sh"
+
+# ---------------------------------------------------------------------------
+# Scenario PT-DRIFT: the bash extension list in verify.sh's
+# select_cheap_ptodo_gate is a DERIVED COPY of reify-audit's swept-extension
+# set (crates/reify-audit/src/ptodo.rs::is_swept_ext). This scenario
+# re-derives the set from that function's SOURCE on every infra run and
+# asserts every derived member fires the gate (same derive-from-source idiom
+# as PG-DRIFT / PG-DRIFT-GUI above). This is ONE-DIRECTIONAL: it goes RED if
+# is_swept_ext gains an extension verify.sh's list lacks, but nothing here
+# asserts the reverse — verify.sh's list keeping an extension is_swept_ext
+# later drops. That reverse direction is over-selection only (one extra
+# ~3.4s leaf), never a coverage hole, so it is accepted rather than asserted.
+#
+# `docs/pt_probe.<ext>` is used because docs/* is a no-heavy-checks path arm
+# for EVERY extension (Scenario 1 above), which isolates the extension rule
+# from path classification: any gate leaf seen here can only come from
+# select_cheap_ptodo_gate's own extension test.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario PT-DRIFT: every is_swept_ext-derived extension fires the cheap PTODO gate under docs/* ---"
+_PT_EXTS="$(sed -n '/^pub fn is_swept_ext/,/^}/p' "$REPO_ROOT/crates/reify-audit/src/ptodo.rs" \
+    | grep -o 'ends_with("\.[a-z]*")' | sed 's/.*("\.\([a-z]*\)")/\1/' | sort -u)"
+# Non-empty FIRST: a renamed/reshaped is_swept_ext or a broken sed range must
+# fail loudly here rather than vacuously pass an empty loop.
+assert "PT-DRIFT: derived swept-extension set is NON-EMPTY (guard is not vacuous)" \
+    test -n "$_PT_EXTS"
+while IFS= read -r _pt_ext; do
+    [ -n "$_pt_ext" ] || continue
+    plan_for staged "docs/pt_probe.$_pt_ext"
+    assert "PT-DRIFT: docs/pt_probe.$_pt_ext -> cheap PTODO gate leaf emitted (is_swept_ext-derived extension)" \
+        plan_has 'tests/infra/test_reify_audit_ptodo\.sh'
+done <<< "$_PT_EXTS"
+
+# ---------------------------------------------------------------------------
+# Scenario PT-CASE: pins the bash `${_f,,}` case-fold in select_cheap_ptodo_gate
+# against is_swept_ext's `path.to_lowercase()` — an uppercase extension must
+# still fire the gate.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario PT-CASE: staged uppercase .RI still fires the cheap PTODO gate (case-fold parity with is_swept_ext) ---"
+plan_for staged tests/prd-gate/fixtures/Probe.RI
+assert "PT-CASE: plan contains tests/infra/test_reify_audit_ptodo.sh (case-insensitive match)" \
+    plan_has 'tests/infra/test_reify_audit_ptodo\.sh'
+
+# ---------------------------------------------------------------------------
+# Scenario PT-CTRL-DOCS: fence re-asserting Scenario 1's shape under the new
+# rule — a genuinely non-swept docs landing stays a zero-command plan.
+# Control: green before AND after step-4.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario PT-CTRL-DOCS: non-swept docs/*.md + *.yaml stays a zero-command plan (control, green before AND after) ---"
+plan_for staged docs/note.md config/thing.yaml
+assert "PT-CTRL-DOCS: plan lacks the cheap PTODO gate leaf (neither extension is reify-audit-swept)" \
+    plan_lacks 'tests/infra/test_reify_audit_ptodo\.sh'
+assert "PT-CTRL-DOCS: still zero command leaves (5536's win is preserved for a genuinely non-swept docs landing)" \
+    test "$(plan_cmdcount)" -eq 0
 
 # ---------------------------------------------------------------------------
 # Scenario 2: gui/src frontend TS -> GUI only, no cargo
@@ -471,6 +723,7 @@ make_branch_fixture() {
     cp "$REPO_ROOT/scripts/lib_clock_stop.sh"   "$dir/scripts/lib_clock_stop.sh"
     cp "$REPO_ROOT/scripts/cpu-admit.sh" "$dir/scripts/cpu-admit.sh"
     cp "$REPO_ROOT/scripts/lib_proc_reaper.sh" "$dir/scripts/lib_proc_reaper.sh"
+    cp "$REPO_ROOT/scripts/lib_git_env_scrub.sh" "$dir/scripts/lib_git_env_scrub.sh"
     cp "$REPO_ROOT/scripts/gen-nextest-config.sh" "$dir/scripts/gen-nextest-config.sh"
     cp "$REPO_ROOT/scripts/heavy-test-filter-lib.sh" "$dir/scripts/heavy-test-filter-lib.sh"
     cp "$REPO_ROOT/scripts/verify-pipeline-infra-tests.txt" "$dir/scripts/verify-pipeline-infra-tests.txt"
@@ -602,6 +855,21 @@ plan_for_branch docs/prds/v0_6/foo.md docs/prds/v0_6/foo.capability-manifest.yam
 assert "PG-1b/branch docs+fixture: scope decision RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
 assert "PG-1b/branch docs+fixture: zero command leaves (empty plan)" \
+    test "$(plan_cmdcount)" -eq 0
+
+# ---------------------------------------------------------------------------
+# Scenario PT-CTRL-BRANCH: per-task --scope branch lanes are untouched by the
+# cheap PTODO gate (task 6817's selector is keyed on SCOPE=staged only — task
+# 5125's merge-tier-only PTODO stands deliberately for branch scope). Lives
+# here, not beside PT-1/PT-DRIFT above, because plan_for_branch is not
+# defined until this section (mirrors why PG-1b lives here too).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario PT-CTRL-BRANCH: staged->branch twin of PT-1 -> NO cheap PTODO gate leaf, still zero command leaves (control) ---"
+plan_for_branch tests/prd-gate/fixtures/new_prd_fixture.ri
+assert "PT-CTRL-BRANCH: plan lacks the cheap PTODO gate leaf (task 5125's merge-tier-only PTODO stands for --scope branch; the merge gate remains the authority there)" \
+    plan_lacks 'tests/infra/test_reify_audit_ptodo\.sh'
+assert "PT-CTRL-BRANCH: still zero command leaves (--scope branch is untouched by task 6817)" \
     test "$(plan_cmdcount)" -eq 0
 
 # ---------------------------------------------------------------------------
@@ -1277,8 +1545,25 @@ assert "MG-B6a: clippy keeps --workspace (override narrowing defeated by role-gu
     bash -c 'printf "%s\n" "$1" | grep -qE "cargo clippy --workspace"' _ "$PLAN_MG_B6A"
 assert "MG-B6a: ungated tail keeps --workspace (override narrowing defeated by role-guard)" \
     bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace"' _ "$PLAN_MG_B6A"
-assert "MG-B6a: NO -p reify-doc anywhere (override narrowing defeated by role-guard)" \
-    bash -c '! printf "%s\n" "$1" | grep -qE " -p reify-doc"' _ "$PLAN_MG_B6A"
+# Same #6391 hardening as MG-B5: assert the absence ON THE NARROWING AXIS rather
+# than blanket-forbidding a crate name anywhere in the plan. Behaviour-preserving
+# here (a --profile debug merge-gate plan has no ` -p ` on the axis at all), but
+# it removes the twin landmine — MG-B6a was latently safe only because
+# --profile debug emits no release-sensitivity pass.
+#
+# Non-vacuity lower bound, carried over from MG-B5 (#6391): an ABSENCE assertion
+# over a FILTERED line subset is worthless if the filter matches nothing. Without
+# it, a plan_is_narrowing_axis_line model gone stale for the --profile debug shape
+# (say a new flag on the clippy/check/nextest lines tripping the ` --release` or
+# `--features gui` exclusion) would empty the subset and silently retire the guard
+# below, with every assertion still green. MG-B6a's --workspace assertions above
+# mitigate but do not cover this: they are whole-plan greps and never exercise the
+# classifier. >= 2 (clippy + debug nextest) is a lower bound, not an exact count,
+# so adding a narrowable command cannot false-RED it.
+assert "MG-B6a: narrowing axis non-empty (clippy + debug nextest present — the absence assertion below cannot go vacuous)" \
+    test "$(plan_narrowing_axis_count "$PLAN_MG_B6A")" -ge 2
+assert "MG-B6a: narrowing axis carries NO -p selector at all (override narrowing defeated by role-guard)" \
+    refute plan_narrowing_axis_match "$PLAN_MG_B6A" " -p reify-"
 
 # ---------------------------------------------------------------------------
 # Scenario MG-B6b: role=merge force is unconditional (RED until step-2 impl)
@@ -1304,16 +1589,56 @@ assert "MG-B6b: RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (forced full scope, not emp
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_MG_B6B"
 
 # ---------------------------------------------------------------------------
-# Scenario MG-B5: merge gate full; OCCT+release -p axes permitted (GREEN now)
+# Scenario MG-B5: merge gate full; no narrowing ON THE NARROWING AXIS (GREEN now)
 # ---------------------------------------------------------------------------
 # role=merge + --profile both + --scope all: scope=all ignores the override
-# (C1 contract: no branch-diff narrowing). But --profile both LEGITIMATELY
-# emits -p flags on the OCCT gated pass and the release-sensitivity pass.
-# Assert: reify-doc / reify-ir (override sentinels, neither OCCT nor
-# release-sensitive) never appear; POSITIVELY permit the OCCT gated -p and
-# the release-sensitivity -p axes.
+# (C1 contract: no branch-diff narrowing). The assertions below are AXIS-AWARE
+# and SENTINEL-FREE (#6391): they scope WHICH LINES are examined rather than
+# which crate name is forbidden.
+#
+# The NARROWING AXIS is the three verify.sh $AFFECTED_ALL_FLAGS construction
+# sites — see plan_is_narrowing_axis_line in tests/infra/plan_capture_lib.sh for
+# the definition and the site anchors (single source of truth; not restated
+# here). Under scope=all those sites emit `--workspace`, so the whole contract
+# is "the narrowing axis carries NO ` -p ` selector at all" — a statement no
+# crate name appears in, and that no crate joining any declared list can break.
+#
+# WHY IT IS NOT A BLANKET GREP. --profile both legitimately emits ` -p <crate>`
+# on axes the override does NOT narrow: the release-sensitivity nextest pass, the
+# fixed `-p reify-gui --features gui` lines, and the fixed
+# `cargo build --release -p reify-audit/-p reify-cli` pre-builds. The pre-#6391
+# assertion was a whole-plan `! grep -qE " -p <sentinel>"`, which conflated
+# "appeared VIA the narrowing axis" with "appeared AT ALL" and could only be kept
+# green by choosing a sentinel crate that was on none of those axes.
+#
+# WHY THAT SENTINEL RULE WAS NEVER DURABLE. Release-sensitivity is GREP-DERIVED,
+# not declared-by-hand: `release_sensitive_set` (scripts/release-scope-lib.sh)
+# scans crates/ for `#[cfg_attr(debug_assertions, ignore`, `cfg(not(debug_assertions))`
+# and `cfg!(debug_assertions)`. ANY crate can therefore become release-sensitive
+# as an ordinary side effect of someone writing a release-only test — which is
+# exactly what happened to the old sentinel reify-ir, and is part of why task 5166
+# sat in infra-hold 2026-07-20 -> 2026-08-20. A rule of the form "pick a crate on
+# neither list" can be invalidated by an unrelated commit; scoping by axis cannot.
+#
+# The override is now `reify-doc reify-ir` and reify-ir is DELIBERATELY a crate
+# that IS release-sensitive today (scripts/release-sensitive-crates.txt): its
+# ` -p reify-ir` on the release pass is expected, permitted, and no longer
+# confusable with a narrowing leak. That retires the old SENTINEL REQUIREMENT
+# outright rather than re-parameterising it.
+#
+# STILL-LIVE TRAP for any FUTURE prefix-based rework: ` -p reify-doc` is a string
+# PREFIX of ` -p reify-doc-build`, so a per-crate pattern would need an explicit
+# end anchor. The axis-scoped form below sidesteps this by scoping which LINES
+# are grepped instead of tightening the pattern — do not reintroduce a per-crate
+# grep here without solving the prefix problem first. MG-B5-control below is the
+# one place a per-crate pattern IS unavoidable (its job is "THESE override crates
+# reached the axis", which cannot be said crate-agnostically); it solves the trap
+# with an explicit `( |$)` end anchor — see its header before copying its shape.
+#
+# Non-vacuity and classifier drift are covered by Scenario MG-B5-control below,
+# which reruns the SAME fixture and SAME override with only the role/scope varied.
 echo ""
-echo "--- Scenario MG-B5: merge gate full (both profiles); OCCT+release -p permitted, no branch-diff narrowing (GREEN, regression guard) ---"
+echo "--- Scenario MG-B5: merge gate full (both profiles); off-axis -p permitted, narrowing axis carries none (GREEN, regression guard) ---"
 FIX_MG_B5=""
 make_branch_fixture FIX_MG_B5
 git -C "$FIX_MG_B5" checkout -q -b task-branch
@@ -1325,6 +1650,15 @@ git -C "$FIX_MG_B5" commit -q -m "task changes"
 # keeps this capture's release-pass-present assertion below hermetic against
 # the ambient knob)
 PLAN_MG_B5="$(cd "$FIX_MG_B5" && DF_VERIFY_ROLE=merge REIFY_AFFECTED_CRATES_OVERRIDE="reify-doc reify-ir" bash scripts/verify.sh all --profile both --scope all --include-infra --print-plan 2>/dev/null)" || true
+# MG-B5-control (see the scenario below): the SAME fixture and the SAME
+# override, captured here because --scope branch needs task-branch still
+# checked out, and the branch restore immediately below deletes it. Exactly ONE
+# variable differs from the capture above: NO DF_VERIFY_ROLE=merge, so the role-guard
+# that MG-B6a/MG-B6b prove forces scope=all is not armed and narrowing
+# engages. --profile both is retained so the release-sensitivity pass is
+# present in the control too — that is what makes its off-axis drift guard
+# meaningful.
+PLAN_MG_B5_CONTROL="$(cd "$FIX_MG_B5" && REIFY_AFFECTED_CRATES_OVERRIDE="reify-doc reify-ir" bash scripts/verify.sh all --profile both --scope branch --include-infra --print-plan 2>/dev/null)" || true
 git -C "$FIX_MG_B5" checkout -q main
 git -C "$FIX_MG_B5" branch -q -D task-branch
 assert "MG-B5: scope=all in plan header" \
@@ -1335,14 +1669,76 @@ assert "MG-B5: nextest debug tail keeps --workspace (task 4451: OCCT folded in, 
     bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace"' _ "$PLAN_MG_B5"
 assert "MG-B5: nextest --workspace pass has NO --exclude (task 4451: OCCT in pool)" \
     bash -c '! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace.*--exclude"' _ "$PLAN_MG_B5"
-assert "MG-B5: NO -p reify-doc (no branch-diff narrowing in merge gate)" \
-    bash -c '! printf "%s\n" "$1" | grep -qE " -p reify-doc"' _ "$PLAN_MG_B5"
-assert "MG-B5: NO -p reify-ir (no branch-diff narrowing in merge gate)" \
-    bash -c '! printf "%s\n" "$1" | grep -qE " -p reify-ir"' _ "$PLAN_MG_B5"
+# Lower bound, not an exact count: the absence assertion that follows is
+# worthless if the axis filter matches nothing. >= 2 (clippy + debug nextest)
+# so a future added narrowable command cannot false-RED this.
+assert "MG-B5: narrowing axis non-empty (clippy + debug nextest present — absence assertion cannot go vacuous)" \
+    test "$(plan_narrowing_axis_count "$PLAN_MG_B5")" -ge 2
+assert "MG-B5: narrowing axis carries NO -p selector at all (scope=all -> --workspace; C1 no branch-diff narrowing)" \
+    refute plan_narrowing_axis_match "$PLAN_MG_B5" " -p reify-"
+assert "MG-B5: plan DOES carry -p selectors off the narrowing axis (release-sensitivity + fixed reify-audit/reify-cli/gui-feature axes) — permitted, and what the pre-6391 blanket grep wrongly forbade" \
+    plan_offaxis_match "$PLAN_MG_B5" " -p reify-"
 assert "MG-B5: no cargo-test-occt-gated.sh in plan (task 4451: OCCT folded into nextest pool)" \
     bash -c '! printf "%s\n" "$1" | grep -qE "cargo-test-occt-gated\.sh"' _ "$PLAN_MG_B5"
 assert "MG-B5: release-sensitivity pass present with -p reify- (permitted axis: release scope)" \
     bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) .*-p reify-.*--release"' _ "$PLAN_MG_B5"
+
+# ---------------------------------------------------------------------------
+# Scenario MG-B5-control: the non-vacuity + classifier-drift control for MG-B5
+# ---------------------------------------------------------------------------
+# MG-B5 proves an ABSENCE on the narrowing axis. An absence assertion is worth
+# nothing if the axis filter matches no lines, or if the override's crates could
+# never have reached the plan in the first place. This scenario is the positive
+# control: it runs the SAME fixture with the SAME override and varies exactly one
+# thing — the merge role / scope — so narrowing actually engages and the very
+# same ` -p ` selectors MG-B5 asserts are absent show up on the very same axis.
+#
+# (Scenario B2-narrow above used to serve as that control for reify-ir. It no
+# longer covers MG-B5's override, and being a separate fixture with a different
+# profile it was never a single-variable control for it.)
+#
+# The last assertion is the load-bearing one: plan_is_narrowing_axis_line
+# (tests/infra/plan_capture_lib.sh) encodes a MODEL of verify.sh's three
+# $AFFECTED_ALL_FLAGS sites, and a model can go stale. reify-doc is on neither
+# declared list (occt-touching-crates.txt, release-sensitive-crates.txt) and on
+# no fixed axis, so under an active override it can ONLY reach the plan via
+# narrowing. Finding it OFF the axis therefore means verify.sh grew a narrowing
+# site the classifier does not recognise — which would silently turn MG-B5's
+# absence assertion vacuous. This is the behavioural guard that stops that
+# (#6391); it is what MG-B5 and plan_is_narrowing_axis_line's header both point
+# at instead of trusting a comment.
+echo ""
+echo "--- Scenario MG-B5-control: same fixture + same override, narrowing ACTIVE -> the axis DOES carry the override's -p (GREEN, non-vacuity control) ---"
+assert "MG-B5-control: PLAN_MG_B5_CONTROL non-empty (verify.sh exited OK)" \
+    bash -c '[ -n "$1" ]' _ "$PLAN_MG_B5_CONTROL"
+assert "MG-B5-control: NARROW_ACTIVE=1 (narrowing really engaged — the -p presence below is not accidental)" \
+    test "$(plan_narrow_active "$PLAN_MG_B5_CONTROL")" = "1"
+assert "MG-B5-control: narrowing axis LACKS --workspace (it was narrowed, not left full)" \
+    refute plan_narrowing_axis_match "$PLAN_MG_B5_CONTROL" "--workspace"
+# THE PREFIX ANCHOR, and why these three patterns carry `( |$)` while MG-B5's
+# do not. MG-B5 scopes by AXIS and greps the crate-agnostic " -p reify-", so no
+# crate name is load-bearing there. This control cannot do that — its whole job
+# is "THESE override crates reached the axis", so it must name them, which walks
+# straight back into the prefix trap MG-B5's header flags: ` -p reify-doc` is a
+# string PREFIX of ` -p reify-doc-build`, and crates/reify-doc-build is a real
+# crate in this workspace. Unanchored, an off-axis ` -p reify-doc-build` (which
+# reify-doc-build would acquire on the release-sensitivity pass the moment anyone
+# writes a release-only test in it — release sensitivity is GREP-derived, see
+# MG-B5's header) would satisfy the drift guard's pattern and false-RED this
+# scenario for a reason having nothing to do with classifier drift. That is the
+# 2026-07-20 -> 2026-08-20 infra-hold failure mode #6391 exists to retire, so it
+# is closed here rather than left to be rediscovered.
+#
+# `( |$)` is the anchor because plan_narrowing_axis_match / plan_offaxis_match
+# apply `[[ =~ ]]` PER LINE, so `$` binds to end-of-line, not end-of-dump. The
+# ` -p reify-ir` case takes the same anchor for consistency: it has no prefix
+# sibling today, but that is a fact about the current crate list, not a contract.
+assert "MG-B5-control: narrowing axis HAS -p reify-doc (the override DOES reach the axis — MG-B5's absence assertion is not vacuous)" \
+    plan_narrowing_axis_match "$PLAN_MG_B5_CONTROL" ' -p reify-doc( |$)'
+assert "MG-B5-control: narrowing axis HAS -p reify-ir (same override; a release-sensitive crate reaches the axis when narrowing is active)" \
+    plan_narrowing_axis_match "$PLAN_MG_B5_CONTROL" ' -p reify-ir( |$)'
+assert "MG-B5-control: NO -p reify-doc off the narrowing axis (classifier drift guard — reify-doc is on neither declared list and on no fixed axis, so an off-axis hit means verify.sh grew a narrowing site plan_is_narrowing_axis_line does not recognise)" \
+    refute plan_offaxis_match "$PLAN_MG_B5_CONTROL" ' -p reify-doc( |$)'
 
 # ---------------------------------------------------------------------------
 # Scenario MG-hook: pre-merge-commit hook drift guard (GREEN now)
@@ -1353,6 +1749,37 @@ assert "MG-hook: pre-merge-commit calls verify.sh with --scope all" \
     grep -qE 'verify\.sh.*--scope all' "$REPO_ROOT/hooks/pre-merge-commit"
 assert "MG-hook: pre-merge-commit does NOT pass --scope branch or --scope staged" \
     bash -c '! grep -qE "verify\.sh.*--scope (branch|staged)" "$1"' _ "$REPO_ROOT/hooks/pre-merge-commit"
+
+# ---------------------------------------------------------------------------
+# Scenario PT-CTRL-MERGE: DF_VERIFY_ROLE=merge -> the selective ptodo leaf is
+# ABSENT (INV-5 exactly-one, task 5125/6817). Reuses the inline merge-role
+# capture idiom established by MG-B6a/MG-B6b/MG-B5 above (make_branch_fixture
+# + commit on a branch + a bare `DF_VERIFY_ROLE=merge ... --print-plan`
+# capture) rather than a new helper. role=merge forces --scope all before
+# decide_scope even runs (contract C2), so CHANGED_FILES_RAW stays "" and
+# select_cheap_ptodo_gate's own `[ "$SCOPE" = "staged" ]` guard already
+# no-ops; the selective-infra emission block is ALSO unconditionally
+# suppressed under DF_VERIFY_ROLE=merge (verify.sh's add_tool site). Either
+# mechanism alone would suffice; this scenario just pins the observable
+# result — a selective copy here would double-run the ratchet the full
+# run_all.sh pool already runs wholesale at merge.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario PT-CTRL-MERGE: role=merge + --scope staged requested -> scope=all forced, selective ptodo leaf ABSENT (control, INV-5) ---"
+FIX_PT_MERGE=""
+make_branch_fixture FIX_PT_MERGE
+git -C "$FIX_PT_MERGE" checkout -q -b task-branch
+mkdir -p "$FIX_PT_MERGE/tests/prd-gate/fixtures"
+printf 'x\n' > "$FIX_PT_MERGE/tests/prd-gate/fixtures/new_prd_fixture.ri"
+git -C "$FIX_PT_MERGE" add tests/prd-gate/fixtures/new_prd_fixture.ri
+git -C "$FIX_PT_MERGE" commit -q -m "task changes"
+PLAN_PT_MERGE="$(cd "$FIX_PT_MERGE" && DF_VERIFY_ROLE=merge bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan 2>/dev/null)" || true
+git -C "$FIX_PT_MERGE" checkout -q main
+git -C "$FIX_PT_MERGE" branch -q -D task-branch
+assert "PT-CTRL-MERGE: scope=all in plan header (role=merge forces full scope even though --scope staged was requested)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "scope=all"' _ "$PLAN_PT_MERGE"
+assert "PT-CTRL-MERGE: plan lacks the selective ptodo leaf (INV-5 exactly-one — the full run_all.sh pool already runs test_reify_audit_ptodo.sh wholesale at merge; a selective copy would double-run it)" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "tests/infra/test_reify_audit_ptodo\.sh"' _ "$PLAN_PT_MERGE"
 
 # ===========================================================================
 # Background-gate contract guard (task 5210, mirrors T2/C2 for
@@ -1662,5 +2089,84 @@ echo "--- Scenario DS-neg: docs/note.md (unmapped) staged -> no citing infra tes
 plan_for_noinfra staged docs/note.md
 assert "DS-neg: plan lacks test_verify_compile_gate glob (unmapped doc, no selection)" \
     plan_lacks 'test_verify_compile_gate'
+
+# ---------------------------------------------------------------------------
+# Scenario GEC-* (task 6281): docs/gui-event-channels.md is policed by two
+# automated consumers that both read it directly —
+# scripts/check_event_inventory.sh and
+# gui/src/__tests__/eventChannelConsumerCoverage.test.ts (RUN_GUI-gated,
+# task 6236) — neither of which ran on a doc-only diff before this carve-out,
+# since decide_scope's docs/*|*.md catch-all classified it as no-heavy-checks.
+#
+# GEC-pos pins the fix AND its outcome (review round 2 point 4): RUN_RUST=1
+# alone would not prove check_event_inventory.sh runs (that leaf also needs
+# INCLUDE_INFRA=1/DO_LINT=1) — and here it isn't even the mechanism in play,
+# since the Rust-side consumer is reached via the infra-test map instead (see
+# the decide_scope comment). GEC-neg/-neg2 are controls proving the carve-out
+# stays narrow. GEC-RENAME (review round 2 point 2) pins the rename gap.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario GEC-pos: docs/gui-event-channels.md only -> RUN_RUST=0 RUN_GUI=1 (task 6281) ---"
+plan_for staged docs/gui-event-channels.md
+assert "GEC-pos: scope decision RUN_RUST=0 RUN_GUI=1 RUN_OCCT_GATE=0" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=0 RUN_GUI=1 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
+assert "GEC-pos: Rust-side consumer selected via the infra-test map (independent of RUN_RUST)" \
+    plan_has 'tests/infra/test_check_event_inventory.sh'
+assert "GEC-pos: GUI npm block present (carries eventChannelConsumerCoverage.test.ts)" \
+    plan_has 'cd gui &&'
+
+echo ""
+echo "--- Scenario GEC-neg: unrelated docs/*.md file -> stays no heavy checks (control) ---"
+plan_for staged docs/some-other-doc.md
+assert "GEC-neg: scope decision RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
+
+echo ""
+echo "--- Scenario GEC-neg2: docs/gui-event-channels/solver-progress.md (per-channel spec page) -> stays no heavy checks (control) ---"
+# Pins the "exact leaf, not docs/gui-event-channels/*" boundary the arm's
+# comment claims: neither consumer reads the per-channel spec pages under
+# docs/gui-event-channels/ (8 files today) — only prose cites them. A future
+# widening to a `gui-event-channels*` glob would drag the full gate onto
+# every one of those pages; this scenario only stays green while the
+# carve-out is scoped to the single top-level doc.
+plan_for staged docs/gui-event-channels/solver-progress.md
+assert "GEC-neg2: scope decision RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
+
+# ---------------------------------------------------------------------------
+# Scenario GEC-RENAME (task 6281 review round 2): a git mv of
+# docs/gui-event-channels.md itself. `git diff --name-only` prints only a
+# rename's DESTINATION (same measured behaviour as PG-RENAME above), so
+# without decide_scope's rename-source recovery this falls through to the
+# docs/*|*.md catch-all and skips both consumers — worse than the plain-edit
+# gap this task closes, since check_event_inventory.sh hard-exits when
+# docs/gui-event-channels.md goes missing.
+#
+# Needs its own fixture: a rename requires the source to exist at HEAD (see
+# the PG-RENAME comment above for why this can't reuse the shared FIX).
+# ---------------------------------------------------------------------------
+FIX_GECR=""
+make_fixture FIX_GECR
+mkdir -p "$FIX_GECR/docs"
+printf 'seed\n' > "$FIX_GECR/docs/gui-event-channels.md"
+git -C "$FIX_GECR" add docs/gui-event-channels.md
+git -C "$FIX_GECR" commit -q -m "seed GEC-RENAME source"
+
+# plan_for_gec_rename <src> <dst> — stage a rename in FIX_GECR, capture the
+# plan for --scope staged, then restore the index and worktree. Mirrors
+# plan_for_staged_rename above.
+plan_for_gec_rename() {
+    git -C "$FIX_GECR" mv "$1" "$2"
+    capture_print_plan PLAN_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && exec bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan' \
+        _ "$FIX_GECR" || true
+    git -C "$FIX_GECR" reset -q --hard HEAD
+}
+
+echo ""
+echo "--- Scenario GEC-RENAME: git mv of docs/gui-event-channels.md -> RUN_RUST=1 RUN_GUI=1 (source recovered from the R entry) ---"
+plan_for_gec_rename docs/gui-event-channels.md docs/gui-event-channels-v2.md
+assert "GEC-RENAME: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0 (rename source forces rust=1)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
 
 test_summary

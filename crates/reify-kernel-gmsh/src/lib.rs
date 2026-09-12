@@ -36,6 +36,7 @@
 
 pub mod auto_size;
 pub mod cache_key;
+pub mod fill_metrics;
 #[cfg(feature = "mesh-morph")]
 pub mod mesh_boundary;
 pub mod mesh_profile_2d;
@@ -59,6 +60,14 @@ pub mod ffi;
 #[cfg(has_gmsh)]
 pub mod init;
 
+// The shared `Mesh.MeshSizeMin`/`MeshSizeMax` restore discipline — only
+// compiled when has_gmsh is set (it writes through `crate::ffi`, itself
+// has_gmsh-gated). Deliberately NOT re-exported at the crate root: each
+// constant keeps exactly one public path, so a citation cannot drift between
+// two spellings of the same value.
+#[cfg(has_gmsh)]
+pub mod mesh_size_clamp;
+
 // Real kernel (FFI-backed) — only compiled when has_gmsh is set.
 #[cfg(has_gmsh)]
 pub mod kernel_real;
@@ -73,6 +82,12 @@ pub mod kernel;
 pub use kernel::GmshKernel;
 #[cfg(has_gmsh)]
 pub use kernel_real::GmshKernel;
+/// The `classify_surfaces` angles `mesh_to_volume` actually uses. Re-exported
+/// (single definition, in `kernel_real`) so the B-rep census guard in
+/// `tests/classify_feature_angle.rs` pins the production values rather than a
+/// copied literal that could drift away from them (#6200).
+#[cfg(has_gmsh)]
+pub use kernel_real::{CLASSIFY_CURVE_ANGLE, CLASSIFY_FEATURE_ANGLE};
 
 pub use cache_key::volume_mesh_cache_key;
 // MeshSurfaceToVolumeReport is the return type of the cfg(has_gmsh)-gated

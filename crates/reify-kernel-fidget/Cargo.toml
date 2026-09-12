@@ -9,6 +9,13 @@ description = "Fidget SDF-Boolean kernel adapter"
 reify-ir.workspace = true
 reify-core.workspace = true
 inventory.workspace = true
+# Emission half of the C4 kernel LENGTH tripwire (task #5751). The shared
+# classifier/formatters live in `reify-ir`'s `kernel_validation`, but each
+# kernel emits its OWN `tracing::warn!` whose `target:` names the emitting
+# crate — the established house pattern (`reify_kernel_gmsh::repair`,
+# `reify_kernel_manifold::kernel`). `reify-ir` deliberately stays free of
+# `tracing` so the 13+ crates that depend on it gain no new edge.
+tracing.workspace = true
 
 # `default-features = false` excludes `shapes` and `rhai`. Both transitively
 # pull `fidget-shapes`, which fails to compile under fidget 0.4.3 because the

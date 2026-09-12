@@ -9,15 +9,68 @@
 
 use crate::common;
 
+/// Assert that `cell` is BOTH present in eval stdout AND not printed as `undef`.
+///
+/// The two halves are individually insufficient in opposite directions, which is
+/// why they are only ever applied as a pair:
+///
+/// - `contains(cell)` alone stays true against a cell that has regressed to
+///   `undef`. The eval printer emits `println!("{} = {}", id, v)` for undef cells
+///   too and `reify eval` still exits 0 (the root-cause `note:` goes to stderr),
+///   so the cell NAME appears either way. That is the exact blind spot that let a
+///   stale grade-first `iso_it_tolerance` call site survive the #6091
+///   subject-first flip with the whole suite green.
+/// - `!contains("<cell> = undef")` alone passes VACUOUSLY if the cell is renamed,
+///   dropped from the example, or stops being emitted by the printer — leaving
+///   the call site the guard exists to cover unguarded, suite still green.
+///
+/// This is the file's weaker tier, for derived cells whose printed value is NOT a
+/// clean pass-through. Clean values get an exact `contains("<cell> = <value> m")`
+/// pin instead (the nominal_zone / Location / Orientation families below), which
+/// subsumes both halves.
+///
+/// Which tier a cell belongs in is MEASURED, not assumed — measured 2026-08-25 by
+/// running `reify eval` on this example:
+///   it7_width, it7_via_grade  0.000024979887994163098 m  (cube-root result)
+///   fit_maxc                  0.0002499999999999985 m    (not 0.00025)
+///   expanded_zone_mmc         0.0002 m                   (clean)
+///   sym_upper                 0.0101 m                   (clean)
+/// So `fit_maxc` reads as a clean 0.25mm in the example's own comment yet prints
+/// with visible float noise; it belongs in this tier, not the exact-pin tier.
+fn assert_cell_present_and_defined(stdout: &str, stderr: &str, cell: &str, why: &str) {
+    assert!(
+        stdout.contains(cell),
+        "stdout should contain '{cell}' ({why});\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        !stdout.contains(&format!("{cell} = undef")),
+        "{cell} must materialise a real value, not undef ({why}) — an undef here means \
+         a call site or member access feeding it has regressed;\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
 /// Test A: `reify eval examples/tolerancing/std_tolerancing_surface.ri`
 /// exits 0 and stdout shows the MMC-vs-RFS conformance FLIP:
 ///   conforms_mmc = true   (effective zone 0.2mm ≥ 0.15mm under MMC)
 ///   conforms_rfs = false  (effective zone 0.1mm < 0.15mm under RFS)
 ///
-/// Also asserts presence of key cell-name substrings covering each signal family
-/// (ISO grade width, expanded zone, fit max clearance, symmetric upper limit,
-/// surface finish bool).  Anchors on cell NAMES + exact Bool text only —
-/// NOT fragile float formatting (exact numerics are pinned by α/β/γ unit tests).
+/// Also covers each signal family (ISO grade width, expanded zone, fit max
+/// clearance, symmetric upper limit, surface finish bool).
+///
+/// NO assertion in this test is a bare name anchor. A name-only
+/// `contains("<cell>")` is blind to a cell that regressed to `undef`, because the
+/// eval printer prints undef cells and `reify eval` still exits 0 — the blind spot
+/// that let a stale grade-first `iso_it_tolerance` call site survive the #6091
+/// flip with the suite green. Every cell below is therefore in exactly one of two
+/// tiers, chosen by MEASURING its printed value (see
+/// `assert_cell_present_and_defined`):
+///
+/// - exact value pin — `conforms_mmc`/`conforms_rfs`/`finish_ok` (Bool text) and
+///   the clean pass-through scalars: the nominal_zone family, the
+///   Location/Orientation callouts, `expanded_zone_mmc`, `sym_upper`.
+/// - present-and-defined pair — cells whose printed value carries float noise and
+///   whose exact numerics are pinned by the α/β/γ unit tests instead:
+///   `it7_width`, `it7_via_grade` (cube-root results) and `fit_maxc`.
 #[test]
 fn eval_std_tolerancing_surface_example_succeeds() {
     let path = common::example_path("tolerancing/std_tolerancing_surface.ri");
@@ -39,27 +92,62 @@ fn eval_std_tolerancing_surface_example_succeeds() {
     );
 
     // ── ISO tolerance grade (iso_it_tolerance builtin) ────────────────────────
-    assert!(
-        stdout.contains("it7_width"),
-        "stdout should contain 'it7_width' (IT7@Ø30–50 ISO grade cell);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    // Present-and-defined tier: IT7@Ø30–50 is a cube-root result (measured
+    // 0.000024979887994163098 m), so its Display rendering is genuinely fragile in
+    // the way the clean pass-through pins further down are not.  Its exact numeric
+    // is pinned by α's unit test instead.
+    assert_cell_present_and_defined(
+        &stdout,
+        &stderr,
+        "it7_width",
+        "IT7@Ø30–50 ISO grade cell — an undef here means THIS example's call site \
+         no longer matches the builtin's argument decode",
+    );
+    // The other route to the same number: it7_via_grade reads
+    // ISOToleranceGrade.tolerance_value, i.e. the call site inside the *prelude*
+    // (crates/reify-compiler/stdlib/tolerancing.ri) rather than the one in this
+    // example — a distinct call site that the it7_width guard does not reach.
+    // Measured live (equal to it7_width to the last digit) once the prelude was
+    // migrated, which also settles that a non-`pub` prelude structure does fold
+    // its derived let for a user module.
+    assert_cell_present_and_defined(
+        &stdout,
+        &stderr,
+        "it7_via_grade",
+        "ISOToleranceGrade.tolerance_value cell — an undef here means the PRELUDE's \
+         iso_it_tolerance call site has drifted from the builtin's decode",
     );
 
     // ── Effective tolerance zone cell ─────────────────────────────────────────
+    // Exact-pin tier: efz(0.1mm, MMC, 0.1mm) = 0.2mm, a clean sum (measured
+    // 0.0002 m exactly).  This is the scalar behind the `conforms_mmc = true`
+    // flip pinned above, so pinning it turns that Bool from an assertion about an
+    // opaque comparison into one whose operand is nailed down too.
     assert!(
-        stdout.contains("expanded_zone_mmc"),
-        "stdout should contain 'expanded_zone_mmc' (zone size under MMC);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        stdout.contains("expanded_zone_mmc = 0.0002 m"),
+        "stdout should contain 'expanded_zone_mmc = 0.0002 m' (efz(0.1mm, MMC, 0.1mm) zone size under MMC, not undef);\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 
     // ── Fit max clearance (nested DimensionalTolerance in Fit struct) ─────────
-    assert!(
-        stdout.contains("fit_maxc"),
-        "stdout should contain 'fit_maxc' (Fit.max_clearance derived let);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    // Present-and-defined tier, and the one cell here where that is a MEASURED
+    // call rather than an obvious one: the example annotates fit_maxc as a clean
+    // "0.25mm = 2.5e-4 m", but it actually prints 0.0002499999999999985 — the
+    // limit arithmetic inside Fit.max_clearance does not land on the nearest
+    // double to 0.00025.  Pinning that literal would be precisely the fragility
+    // this file's two-tier convention exists to avoid.
+    assert_cell_present_and_defined(
+        &stdout,
+        &stderr,
+        "fit_maxc",
+        "Fit.max_clearance derived let — reads through a nested DimensionalTolerance, \
+         so an undef here means a member access or prelude call site regressed",
     );
 
     // ── Symmetric tolerance upper_limit (DimensionalTolerance derived let) ────
+    // Exact-pin tier: 10mm + 0.1mm = 10.1mm, clean (measured 0.0101 m exactly).
     assert!(
-        stdout.contains("sym_upper"),
-        "stdout should contain 'sym_upper' (symmetric_tolerance upper_limit);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        stdout.contains("sym_upper = 0.0101 m"),
+        "stdout should contain 'sym_upper = 0.0101 m' (symmetric_tolerance upper_limit 10.1mm, not undef);\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 
     // ── Surface finish bool cell (sf.value > 0mm inline expression) ──────────

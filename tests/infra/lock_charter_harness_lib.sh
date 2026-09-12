@@ -104,6 +104,7 @@ stl
 svg
 template
 timer
+tombstones
 toml
 ts
 tsx

@@ -611,9 +611,14 @@ impl std::fmt::Display for ProfileResolveError {
 /// an all-NaN ring that neither [`normalise_ccw`] (`NaN < 0.0` is false) nor
 /// the consumer's `validate_boundary` (`NaN.abs() < 1e-14` is false) rejects —
 /// so the NaN coordinates would reach Gmsh. Only `PolygonProfile` is already
-/// covered upstream (`eval_all_args_to_f64`); its arm is checked here anyway so
-/// the postcondition is a property of this function rather than of each
-/// caller.
+/// covered upstream, by the Contract C LENGTH gate `profile_polygon` routes its
+/// vertex pairs through (task 5661) — a STRONGER cover than the bare finiteness
+/// read it replaced, since it now rejects a bare or wrong-dimension vertex as
+/// well as a non-finite one. Its arm is checked here anyway, and deliberately:
+/// the postcondition is a property of THIS function rather than of each caller,
+/// and `GeometryOp::PolygonProfile` is constructible directly at the IR layer
+/// (`engine_build/tests.rs` does exactly that), bypassing the eval gate
+/// entirely.
 fn profile_sample_2d(op: &GeometryOp) -> Result<Vec<[f64; 2]>, ProfileResolveError> {
     // Extract one extent, mapping both "the Value is not numeric" and "the
     // Value is a non-finite number" onto NonFiniteExtent — at this point the op
@@ -2475,10 +2480,13 @@ mod tests {
 
     #[test]
     fn swept_kind_to_profile_boundary_non_finite_polygon_point_is_rejected() {
-        // PolygonProfile points are pre-checked upstream by
-        // `eval_all_args_to_f64`, but the sampler re-checks so the
+        // PolygonProfile points are pre-checked upstream by the Contract C
+        // LENGTH gate (task 5661), which rejects a non-finite vertex along with
+        // a bare or wrong-dimension one — but the sampler re-checks so the
         // "no non-finite coordinate leaves this function" postcondition holds
-        // for every arm rather than depending on each caller.
+        // for every arm rather than depending on each caller. This fixture
+        // builds the op at the IR layer, which is exactly the path that
+        // bypasses that gate.
         let (ops, handles, kind) = extrude_fixture(GeometryOp::PolygonProfile {
             points: vec![
                 [0.0, 0.0],

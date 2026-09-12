@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use tower_lsp::lsp_types::{
     CompletionItem, CompletionItemKind, Documentation, MarkupContent, MarkupKind, Position, Url,
 };
@@ -148,6 +150,7 @@ pub fn compute_completions_in_context(
             push_keywords(&mut items, TOP_LEVEL_KEYWORDS);
             push_builtins(&mut items);
             push_type_names(&mut items);
+            push_type_alias_names(&mut items, ctx);
             push_entity_names(&mut items, ctx);
         }
         CursorContext::StructureBody { ref structure_name } => {
@@ -155,6 +158,7 @@ pub fn compute_completions_in_context(
             push_keywords(&mut items, EXPR_KEYWORDS);
             push_builtins(&mut items);
             push_type_names(&mut items);
+            push_type_alias_names(&mut items, ctx);
             push_scoped_members(&mut items, ctx, structure_name);
             push_entity_names(&mut items, ctx);
         }
@@ -164,6 +168,7 @@ pub fn compute_completions_in_context(
             push_keywords(&mut items, EXPR_KEYWORDS);
             push_builtins(&mut items);
             push_type_names(&mut items);
+            push_type_alias_names(&mut items, ctx);
             if let Some(name) = structure_name {
                 push_scoped_members(&mut items, ctx, name);
             } else {
@@ -177,6 +182,7 @@ pub fn compute_completions_in_context(
         }
         CursorContext::TypePosition => {
             push_type_names(&mut items);
+            push_type_alias_names(&mut items, ctx);
             push_entity_names(&mut items, ctx);
         }
     }
@@ -217,6 +223,72 @@ fn push_type_names(items: &mut Vec<CompletionItem>) {
             kind: Some(CompletionItemKind::CLASS),
             ..Default::default()
         });
+    }
+}
+
+/// Push user-declared type aliases as CLASS-kind completions.
+///
+/// Iterates the PARSED declarations and keeps only those whose name is also in
+/// `CompiledModule.type_aliases`. That set holds only the OPEN DOCUMENT's own
+/// aliases — prelude-seeded aliases are filtered out by the compiler's
+/// `TypeAliasRegistry::into_compiled` — so the membership test is exactly the
+/// document-scoping filter, and no stdlib alias can leak into the list.
+///
+/// Driving the loop from the parse rather than from `compiled.type_aliases` buys
+/// three things:
+///
+/// 1. **Determinism.** `into_compiled` drains a `HashMap`, so its `Vec` order
+///    varies per process under std's `RandomState`. Source order does not, and
+///    these items carry no `sort_text` to re-impose an order downstream.
+/// 2. **A single signature source.** `format_type_alias_signature` takes the
+///    parsed `reify_ast::TypeAliasDecl`, which is always available here —
+///    keeping the completion `detail` byte-identical to hover with no divergent
+///    fallback. The compiled entry could not feed it: `CompiledTypeAlias`
+///    carries `type_params` as `reify_ir::TypeParam`, not the
+///    `reify_ast::TypeParamDecl` that `format_type_params` consumes, so
+///    rendering from it would need a SECOND, IR-shaped renderer of the same
+///    user-visible grammar — the exact drift this reuse avoids.
+///
+///    Note what is NOT a reason: `type_expr` being `None`. Every entry in
+///    `compiled.type_aliases` has `type_expr == Some(..)`, parameterized or
+///    not — both `resolve_alias_dfs` registration sites clone it
+///    unconditionally (`crates/reify-compiler/src/type_resolution.rs:3790`
+///    and `:3827`) and `into_compiled` carries it through verbatim. The `None`
+///    arm arises only for NON-PARAMETRIC PRELUDE entries built by
+///    `from_compiled_for_prelude`, and those are excluded from
+///    `type_aliases` by `seeded_names`. So `type_expr.is_none()` is not a
+///    parameterized-alias discriminator and must not be used as one.
+/// 3. **O(D + A) instead of O(D × A).** Completion fires per keystroke, and the
+///    previous shape rescanned every declaration once per alias.
+///
+/// Task #6341.
+fn push_type_alias_names(items: &mut Vec<CompletionItem>, ctx: &AnalysisContext) {
+    if ctx.compiled.type_aliases.is_empty() {
+        return;
+    }
+    let mut in_document: HashSet<&str> = ctx
+        .compiled
+        .type_aliases
+        .iter()
+        .map(|a| a.name.as_str())
+        .collect();
+    for decl in &ctx.parsed.declarations {
+        // `remove` doubles as the membership test and the emitted-once guard: a
+        // document that declares the same alias twice (a normal transient state
+        // while editing) parses as two `TypeAlias` decls but compiles to one
+        // entry, and a plain `contains` would offer the name twice. Draining the
+        // set on first use keeps each name to a single item without a second
+        // allocation. Task #6341.
+        if let reify_ast::Declaration::TypeAlias(t) = decl
+            && in_document.remove(t.name.as_str())
+        {
+            items.push(CompletionItem {
+                label: t.name.clone(),
+                kind: Some(CompletionItemKind::CLASS),
+                detail: Some(crate::hover::format_type_alias_signature(t)),
+                ..Default::default()
+            });
+        }
     }
 }
 
@@ -275,8 +347,15 @@ fn push_complex_methods(items: &mut Vec<CompletionItem>) {
 }
 
 /// Keywords that are only valid at the top level (outside structure bodies).
-pub(crate) const TOP_LEVEL_KEYWORDS: &[&str] =
-    &["structure", "occurrence", "import", "fn", "trait", "enum"];
+pub(crate) const TOP_LEVEL_KEYWORDS: &[&str] = &[
+    "structure",
+    "occurrence",
+    "import",
+    "fn",
+    "trait",
+    "enum",
+    "type",
+];
 
 /// Keywords that start declaration lines inside a structure body.
 pub(crate) const BODY_KEYWORDS: &[&str] = &[
@@ -825,21 +904,26 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
         sort_group: "08-coordinate",
     },
     // --- 09-bbox: bounding box ---
+    // A BoundingBox is Length-valued by construction (task 6081), so the two
+    // accessors return `Vector3<Length>` / `Point3<Length>` — not an
+    // unqualified `Vector` / `Point`. `bbox` is the 2-point CONSTRUCTOR; the
+    // one-argument `bbox(solid)` form these entries used to declare is
+    // `bounding_box`'s signature, not this one.
     BuiltinFunctionInfo {
         name: "bbox",
-        signature: "bbox(solid) -> BoundingBox",
-        doc: "Returns the axis-aligned bounding box of a solid.",
+        signature: "bbox(min: Point3<Length>, max: Point3<Length>) -> BoundingBox",
+        doc: "Constructs an axis-aligned bounding box from its min and max corner points.",
         sort_group: "09-bbox",
     },
     BuiltinFunctionInfo {
         name: "bbox_size",
-        signature: "bbox_size(bb: BoundingBox) -> Vector",
+        signature: "bbox_size(bb: BoundingBox) -> Vector3<Length>",
         doc: "Returns the size (width × height × depth) of a bounding box.",
         sort_group: "09-bbox",
     },
     BuiltinFunctionInfo {
         name: "bbox_center",
-        signature: "bbox_center(bb: BoundingBox) -> Point",
+        signature: "bbox_center(bb: BoundingBox) -> Point3<Length>",
         doc: "Returns the centre point of a bounding box.",
         sort_group: "09-bbox",
     },
@@ -1222,6 +1306,25 @@ mod tests {
         );
     }
 
+    /// `type` declares a top-level type alias, so it belongs in TOP_LEVEL_KEYWORDS
+    /// alongside structure/fn/trait/enum. Task #6341.
+    #[test]
+    fn completion_top_level_offers_type_keyword() {
+        let source = "structure Foo {\n    param x: Length = 1mm\n}\n";
+        let items = compute_completions(source, &test_uri(), Position::new(3, 0));
+
+        let keyword_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::KEYWORD))
+            .map(|k| k.label.as_str())
+            .collect();
+
+        assert!(
+            keyword_labels.contains(&"type"),
+            "top-level should include the 'type' keyword, got: {keyword_labels:?}"
+        );
+    }
+
     #[test]
     fn completion_inside_body_excludes_top_level_keywords() {
         let source = reify_test_support::bracket_source();
@@ -1449,6 +1552,146 @@ mod tests {
             var_labels.contains(&"height"),
             "should include Bracket's 'height', got: {:?}",
             var_labels
+        );
+    }
+
+    // --- task #6341: user-declared type aliases in type position ---
+
+    /// An alias declared in the open document completes in type position, with a
+    /// `detail` byte-identical to the hover signature so the two surfaces agree.
+    #[test]
+    fn completion_type_position_includes_user_type_aliases() {
+        let source = "type Speed = Length / Time\nstructure Foo {\n    param x: \n}";
+        // Line 2, col 13 is after "    param x: " — in type position.
+        let items = compute_completions(source, &test_uri(), Position::new(2, 13));
+
+        let alias = items
+            .iter()
+            .find(|i| i.label == "Speed")
+            .unwrap_or_else(|| {
+                panic!(
+                    "type position should offer the user alias 'Speed', got: {:?}",
+                    items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(alias.kind, Some(CompletionItemKind::CLASS));
+        assert_eq!(alias.detail, Some("type Speed = Length / Time".to_string()));
+    }
+
+    /// The document-scoped contract: prelude-seeded aliases are filtered out of
+    /// `compiled.type_aliases`, so completion must not surface them either.
+    /// `Rate`, `HeatCapacity` and `Stress` are real stdlib prelude aliases.
+    #[test]
+    fn completion_type_position_excludes_stdlib_aliases() {
+        let source = "structure Foo {\n    param x: \n}";
+        let items = compute_completions(source, &test_uri(), Position::new(1, 13));
+
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        for stdlib_alias in ["Rate", "HeatCapacity", "Stress"] {
+            assert!(
+                !labels.contains(&stdlib_alias),
+                "stdlib prelude alias '{stdlib_alias}' must not be offered, got: {labels:?}"
+            );
+        }
+    }
+
+    /// Aliases appear everywhere `push_type_names` already runs, not only in
+    /// `TypePosition`.
+    #[test]
+    fn completion_structure_body_includes_user_type_aliases() {
+        let source = "type Speed = Length / Time\nstructure Foo {\n    param x: Length = 1mm\n\n}";
+        // Line 3 is the blank line inside Foo's body.
+        let items = compute_completions(source, &test_uri(), Position::new(3, 0));
+
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(
+            labels.contains(&"Speed"),
+            "structure body should also offer the user alias 'Speed', got: {labels:?}"
+        );
+    }
+
+    /// Order pin. `TypeAliasRegistry::into_compiled` drains a
+    /// `HashMap<String, TypeAliasEntry>`, so iterating `compiled.type_aliases`
+    /// yielded a different order per process under std's `RandomState`, and these
+    /// items set no `sort_text` to re-impose one. Driving the loop from the parse
+    /// makes the order source order. The three names are deliberately ordered so
+    /// source order differs from alphabetical, catching a sort-by-name too.
+    #[test]
+    fn completion_type_aliases_are_offered_in_source_order() {
+        let source = "type Zeta = Length / Time\ntype Alpha = Bool\ntype Mid = Length\n\
+                      structure Foo {\n    param x: \n}";
+        // Line 4, col 13 is after "    param x: " — in type position.
+        let items = compute_completions(source, &test_uri(), Position::new(4, 13));
+
+        let aliases: Vec<&str> = items
+            .iter()
+            .map(|i| i.label.as_str())
+            .filter(|l| matches!(*l, "Zeta" | "Alpha" | "Mid"))
+            .collect();
+        assert_eq!(
+            aliases,
+            vec!["Zeta", "Alpha", "Mid"],
+            "aliases must be offered in source order, not HashMap order"
+        );
+    }
+
+    /// Shadow path. `phase_aliases` SKIPS prelude seeding for any name the user
+    /// redeclares (`crates/reify-compiler/src/compile_builder/aliases_phase.rs`),
+    /// so a user alias that reuses a prelude alias name is registered as
+    /// user-declared and must still be offered — it is never marked into
+    /// `seeded_names` and so is never filtered out of `compiled.type_aliases`.
+    ///
+    /// This is the one boundary the two negative tests above cannot pin: they
+    /// assert "prelude alias absent" using names the user never declares, so if
+    /// the compiler ever DID mark a shadowed name as seeded, the alias would
+    /// silently vanish from completion and hover while every one of those tests
+    /// kept passing (more strongly, even). `Rate` is a real stdlib prelude alias.
+    #[test]
+    fn completion_offers_user_alias_that_shadows_a_prelude_alias() {
+        let source = "type Rate = Length
+structure Foo {
+    param x: 
+}";
+        // Line 2, col 13 is after "    param x: " — in type position.
+        let items = compute_completions(source, &test_uri(), Position::new(2, 13));
+
+        let shadowing: Vec<&CompletionItem> = items.iter().filter(|i| i.label == "Rate").collect();
+        assert_eq!(
+            shadowing.len(),
+            1,
+            "the shadowing user alias 'Rate' must be offered exactly once, got: {:?}",
+            items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+        );
+        assert_eq!(shadowing[0].kind, Some(CompletionItemKind::CLASS));
+        assert_eq!(
+            shadowing[0].detail,
+            Some("type Rate = Length".to_string()),
+            "the shadowing alias must render the USER's body, not the prelude's"
+        );
+    }
+
+    /// A document that declares the same alias twice parses as two `TypeAlias`
+    /// declarations but compiles to a single entry (the compiler emits a
+    /// duplicate-alias diagnostic and keeps one). Since the loop is driven from
+    /// the parse, a plain membership test would push the name twice. Half-typed
+    /// duplicate declarations are a normal transient state while editing, so the
+    /// list must stay free of cosmetic duplicates in an already-erroring buffer.
+    #[test]
+    fn completion_offers_a_duplicated_alias_only_once() {
+        let source = "type Speed = Length / Time
+type Speed = Length
+                      structure Foo {
+    param x: 
+}";
+        // Line 3, col 13 is after "    param x: " — in type position.
+        let items = compute_completions(source, &test_uri(), Position::new(3, 13));
+
+        let speeds = items.iter().filter(|i| i.label == "Speed").count();
+        assert_eq!(
+            speeds,
+            1,
+            "a doubly-declared alias must be offered once, got {speeds} items: {:?}",
+            items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
         );
     }
 
@@ -1927,6 +2170,69 @@ mod tests {
         assert!(
             func_labels.contains(&"bbox_center"),
             "should include 'bbox_center'"
+        );
+    }
+
+    // --- bbox declared signatures are Length-valued (task 6081) ---
+    //
+    // A bounding box is spatial by construction, so the two accessors return
+    // `Vector3<Length>` / `Point3<Length>`, not an unqualified `Vector` /
+    // `Point`. These are the only other USER-VISIBLE declared signatures for
+    // these builtins, so leaving them un-narrowed would reintroduce the exact
+    // static/runtime disagreement the ruling removes, just in another surface.
+    //
+    // `bbox`'s entry also carried a pre-existing ARITY bug: `bbox(solid)` is
+    // `bounding_box`'s signature, not the 2-point constructor's.
+    //
+    // Asserted by CONTENT, not by full-string equality against the table rows.
+    // What this pins is the semantic claim — the declared quantities are
+    // Length-narrowed, and `bbox` is the 2-point constructor. Parameter names,
+    // spacing and arrow rendering are cosmetic, and pinning them would mean a
+    // purely presentational reword reds these tests while saying nothing about
+    // behaviour.
+
+    fn builtin_signature(name: &str) -> &'static str {
+        BUILTIN_FUNCTIONS
+            .iter()
+            .find(|info| info.name == name)
+            .unwrap_or_else(|| panic!("{name:?} must be a registered builtin"))
+            .signature
+    }
+
+    #[test]
+    fn bbox_declared_signatures_are_length_narrowed() {
+        // (builtin, the qualified type its declared signature must carry)
+        for (name, qualified) in [
+            ("bbox", "Point3<Length>"),
+            ("bbox_size", "Vector3<Length>"),
+            ("bbox_center", "Point3<Length>"),
+        ] {
+            let sig = builtin_signature(name);
+            assert!(
+                sig.contains(qualified),
+                "{name}'s declared signature must carry the Length-narrowed \
+                 {qualified}; got: {sig}"
+            );
+            // The pre-narrowing spellings: an unqualified return type, which is
+            // the static/runtime disagreement this ruling removes.
+            assert!(
+                !sig.ends_with("-> Vector") && !sig.ends_with("-> Point"),
+                "{name} must not declare an unqualified Vector/Point return; got: {sig}"
+            );
+        }
+
+        // `bbox` is the 2-point CONSTRUCTOR. Its entry used to declare the
+        // one-argument `bbox(solid)`, which is `bounding_box`'s signature.
+        let bbox_sig = builtin_signature("bbox");
+        let params = bbox_sig
+            .split_once('(')
+            .and_then(|(_, rest)| rest.rsplit_once(')'))
+            .map(|(params, _)| params)
+            .unwrap_or_else(|| panic!("bbox signature must be a call form; got: {bbox_sig}"));
+        assert_eq!(
+            params.split(',').count(),
+            2,
+            "bbox takes two corner points; the 1-arg form is `bounding_box`. got: {bbox_sig}"
         );
     }
 

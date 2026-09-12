@@ -56,29 +56,84 @@
 //! ### Known imprecision — the mention side, not the oracle
 //!
 //! The oracle is broad, but the *mention* side is only syntactically
-//! selective, and that is where the residual noise lives. Two syntactic
-//! filters are applied in [`chunk_call_mentions`] — a name that IS a
-//! [`RI_DECL_KEYWORDS`] member (`Trait::fn(args)`), and the name a `.ri`
-//! declaration line introduces (`fn lateral_area(self)`, `purpose
-//! manufacturing_ready(…)`) — because each is decidable from the line alone
-//! and each can only REMOVE an accusation, never add one.
+//! selective, and that is where the residual noise lives. FIVE syntactic
+//! filters are applied in [`chunk_call_mentions`], each decidable from the
+//! line alone or from the chunk's own declaration set, each able only to
+//! REMOVE an accusation, never add one:
 //!
-//! What survives them needs prose-vs-example-source context, which this
-//! detector deliberately does not model: grammar metavariables
-//! (`predicate(x)`), user-defined names CALLED inside example source
-//! (`Defaultable::make_default()` — note the declaration filter is
-//! declaration-site-scoped, so a name declared and then called in the same
-//! chunk survives on the call), and non-function call-shaped syntax
-//! (`auto(free)`, `@region(…)`). Narrowing THAT is **#5647**. Until it lands
-//! the omission lane is the trustworthy half, which is one more reason the CLI
-//! arm is opt-in — and the reason #5480's gate must leave `fabricated-name:`
-//! report-only (see "δ's gate must key on the OMISSION categories only").
+//! 1. **`.` left delimiter** — `solid.volume()` is member access on a
+//!    value; the lane has no oracle for methods.
+//! 2. **`@` left delimiter** — `pipe@region(outer)` is an ad-hoc port/region
+//!    designator on a value (connect.md:52; docs/reify-language-spec.md:1488,
+//!    §D5); the same rule as (1), a different delimiter for the same shape.
+//! 3. **[`RI_KEYWORDS`] membership** — the language's full reserved-word set
+//!    (spec §2.10), not just declaration keywords: `Trait::fn(args)` reads
+//!    as a call to `fn`, `auto(free)` reads as a call to `auto`; no keyword
+//!    is ever a builtin.
+//! 4. **file-scoped [`ri_declared_name`]** — a name this chunk's own
+//!    example source declares ANYWHERE in it (`fn lateral_area(self)`, or a
+//!    trait body declaring `fn make_default()` a few lines above a call to
+//!    it) is example-local, not a claim that the compiler provides it,
+//!    however far from the declaration the call sits.
+//! 5. **elided `(...)` argument list** — geometry.md:126's
+//!    `translate(primitive(...), 0, 0, -h/2)` names `primitive` as a
+//!    metavariable for "any primitive constructor", not a claim; a fixed
+//!    five-byte compare, deliberately a false negative on a real builtin
+//!    documented only as `fillet(...)`.
 //!
-//! **No residual count is pinned in this comment.** It would be wrong within a
-//! chunk edit, and there is no test behind it (the floor guards deliberately
-//! assert floors, never exact counts — see below). The same caution applies in
-//! the other direction to #5647's own problem statement, whose numbers predate
-//! this filter and whose named example has since left the corpus. Re-measure:
+//! ### What #5647 left behind
+//!
+//! What survives all five needs prose-vs-example-source context that no
+//! syntactic rule can decide. Measured against the real corpus at
+//! HEAD=4fdfd18513 — an ancestor of this commit, so the run below is
+//! reproducible from branch history — exactly two SHAPES survive (not a
+//! count to hold onto — see below):
+//!
+//! - a user-defined name CALLED inside example source that the chunk never
+//!   DECLARES at all (`compute_moi(...)` in traits.md) — arguably a genuine
+//!   defect rather than detector imprecision: the chunk names a function
+//!   that exists nowhere in the compiler or stdlib and gives the reader no
+//!   signal that it is a placeholder;
+//! - a grammar metavariable that is not a reserved word (`predicate` in
+//!   `forall x in collection: predicate(x)`, constraints.md:50-51 — the
+//!   `forall` and `exists` productions both use it; the finding cites the
+//!   first, 50, because the lane dedupes per (file, name)).
+//!
+//! Both are prose-vs-example-source judgements, and this detector must not
+//! make them. Two rejected approaches, both measured rather than assumed,
+//! are recorded here so they are not retried:
+//!
+//! - a fence-vs-prose / markdown-structure context model is forbidden
+//!   outright — it reintroduces the exact silent-blindness failure
+//!   `chunk_call_mention_floor_guard_against_real_chunks` exists to convert
+//!   into a RED test: a blind extractor makes the fabrication lane report
+//!   clean, not RED;
+//! - a "single-character argument" metavariable rule (to catch
+//!   `predicate(x)` specifically) was measured to ALSO drop `determined`,
+//!   `constrained`, `undetermined` and `partially_determined` — FOUR names,
+//!   exactly those of spec §2.10:221's ten-name carve-out that this corpus
+//!   documents in the `f(x)` shape, and every one of them a standard
+//!   library FUNCTION the spec is explicit is not a keyword, so filter 3
+//!   deliberately leaves all four claimable. Blinding the lane to four real
+//!   builtins to win one metavariable is the wrong trade. (`some(spec)` is
+//!   dropped by the rejected rule too, but is NOT part of that cost and
+//!   must not be counted as a fifth: `some` is a §2.10:212 value-literal
+//!   KEYWORD, filter 3 already drops it unconditionally, and
+//!   `ri_keywords_excludes_the_spec_carve_outs` omits it from the carve-out
+//!   list for exactly that reason.)
+//!
+//! Do not add a context-modelling filter to [`chunk_call_mentions`] without
+//! updating this section and the floor guard's anchor set. Because two
+//! false positives remain rather than zero, the omission lane is still the
+//! more trustworthy half, which is one more reason the CLI arm stays
+//! opt-in — and the reason #5480's gate must leave `fabricated-name:`
+//! report-only (see "δ's gate keys on the OMISSION categories only").
+//!
+//! **No residual count is pinned in this comment as an invariant.** The two
+//! SHAPES above are the invariant; any site or count cited is a dated
+//! measurement, not an assertion — it would be wrong within a single chunk
+//! edit, and there is no test behind it (the floor guards deliberately
+//! assert floors, never exact counts — see below). Re-measure:
 //!
 //! ```text
 //! reify-audit --pattern PDOCCOVER --project-root . --no-jcodemunch \
@@ -108,6 +163,9 @@
 //! deliberately NOT honoured. The reason body is mandatory: a reasonless
 //! marker emits `allow-missing-reason:` and confers no exemption, so the
 //! escape hatch can never become un-reviewable (PRD design decision 7).
+//! One malformed marker costs exactly one finding, and it subsumes the
+//! `fabricated-name:` verdict for every name its line mentions — both are
+//! deliberate, and [`fabrication_findings`] is canonical for why.
 //!
 //! ## Scope
 //!
@@ -137,7 +195,7 @@
 //! regenerator calls, sharing [`omission_dispositions`] with [`check`] so a
 //! generated baseline cannot disagree with the ratchet that checks it.
 //!
-//! ### δ's gate must key on the OMISSION categories only, until #5647 lands
+//! ### δ's gate keys on the OMISSION categories only
 //!
 //! Normative for #5480, recorded here because #5480's own text says this
 //! pattern "needs no change" and would otherwise inherit the constraint
@@ -147,18 +205,21 @@
 //! has no ratchet channel at all — it is suppressible only by hand-editing a
 //! `pdoccover:allow` marker onto the mentioning chunk line, one at a time.
 //!
-//! Combine that with the mention-side imprecision documented above — today's
-//! residue on the real corpus is dominated by #5647-class false positives
-//! (grammar metavariables, user names called inside example source,
-//! call-shaped non-function syntax) — and a hard gate over ALL five categories
-//! would land carrying unsuppressable false positives. So δ's gate keys on
-//! `undocumented-name:`, `stale-baseline-entry:`, `stale-allow-entry:` and
-//! `allow-missing-reason:`; `fabricated-name:` stays REPORT-ONLY. Two ways to
-//! lift that, whichever comes first: #5647 narrows the mention side until the
-//! residue is real, or the baseline format grows `path:name` rows and the
-//! disposition logic covers fabrications so the ratchet absorbs them the way it
-//! absorbs omissions. Either is a deliberate decision with a test behind it —
-//! neither is a silent widening of the gate.
+//! #5647 landed the mention-side narrowing described above, but the
+//! conclusion is UNCHANGED: a hard gate over ALL five categories would still
+//! land carrying unsuppressable false positives, because two residual false
+//! positives remain — not zero — and the ratchet's one channel is
+//! name-shaped, so neither `compute_moi` nor `predicate` is suppressible by
+//! baseline. So δ's gate keys on `undocumented-name:`, `stale-baseline-entry:`,
+//! `stale-allow-entry:` and `allow-missing-reason:`; `fabricated-name:` stays
+//! REPORT-ONLY. Two ways to lift that, whichever comes first: a per-line
+//! `pdoccover:allow` marker on each of the two chunk lines (traits.md:9 and
+//! constraints.md:50 — constraints.md:51 repeats the same name, and the
+//! per-(file, name) dedup subsumes it, so one marker settles both), or the
+//! baseline format grows `path:name` rows and the disposition logic covers
+//! fabrications so the ratchet absorbs them the way it absorbs omissions.
+//! Either is a deliberate decision with a test behind it — neither is a
+//! silent widening of the gate.
 //!
 //! ## Both scanners are deliberately format-agnostic
 //!
@@ -167,6 +228,17 @@
 //! headings, fence tags, indented fences, table pipes, bold-prefixed lists,
 //! nested backticks or trailing whitespace, and therefore cannot be broken by
 //! any of them. [`extract_registries`] is line-level for the same reason.
+//!
+//! This still holds with all FIVE mention-side filters in force (see "Known
+//! imprecision" above) — a reader arriving at five filters will reasonably
+//! ask. Every one is either a fixed-length byte test at the mention site
+//! itself (the `.`/`@` left delimiter, the `(...)` elision) or a whole-
+//! `content` set built from the SAME line-level [`ri_declared_name`] grammar
+//! the oracle already uses (the file-scoped declaration filter), or a static
+//! set membership test ([`RI_KEYWORDS`]). None inspects a heading, a fence
+//! tag, a table pipe or any other markdown structure, so a chunk reformat
+//! still cannot break extraction — only a change to the `.ri` grammar these
+//! filters key on could.
 //!
 //! This is a correctness property, not a shortcut. Both lanes are **silent on
 //! failure**: a blind chunk scanner makes the fabrication lane report clean
@@ -1032,6 +1104,60 @@ const RI_DECL_KEYWORDS: &[&str] = &[
     "occurrence",
 ];
 
+/// Every reserved word in the language grammar — mention-side only.
+///
+/// = docs/reify-language-spec.md §2.10 "Keywords (Complete Post-Review List)"
+/// (:191-219) / §17 alphabetical appendix (:2880-2897, "Total: 46 keywords" —
+/// the two forms agree exactly) UNION [`RI_DECL_KEYWORDS`]. `joint` is a
+/// grammar-only keyword that post-dates the spec table.
+///
+/// The superset-of-[`RI_DECL_KEYWORDS`] property is what makes widening the
+/// mention-side filter unable to regress the narrower filter a63c892eea
+/// already shipped — but it is ENFORCED BY TEST, not by construction. This
+/// is a hand-maintained flat literal in which the declaration keywords are
+/// re-typed inline rather than spliced in, so
+/// `ri_keywords_is_a_superset_of_ri_decl_keywords` is the only thing that
+/// will notice a new `RI_DECL_KEYWORDS` entry which was not also added here.
+/// Add to both; do not read the "UNION" above as a mechanism.
+///
+/// DELIBERATELY EXCLUDED, both pinned by tests:
+/// - the spec's "Removed keywords (not part of v0.1)" (`derived`, `require`,
+///   `dimension`, :219) — none is part of the language at all;
+/// - the spec's "Not keywords (standard library functions)" (`determined`,
+///   `constrained`, `undetermined`, `partially_determined`, `point3`,
+///   `vec3`, `point2`, `vec2`, `project`, `geo_equiv`, :221) — these are real
+///   builtins, and admitting them here would silently drop every chunk claim
+///   naming one (`ri_keywords_excludes_the_spec_carve_outs`, and against the
+///   real `units.rs` census, `ri_keywords_never_collides_with_the_real_registry_census`
+///   in tests/pdoccover.rs).
+///
+/// ## A separate const from `RI_DECL_KEYWORDS`, deliberately not unified
+///
+/// `RI_DECL_KEYWORDS` also drives [`ri_declared_name`], which feeds the
+/// existence ORACLE ([`known_name_index`]) for `.ri` stdlib sources. Widening
+/// *that* function to the full reserved-word set would make `let foo`,
+/// `param foo`, `port foo` and `sub foo` parse as declarations of `foo`,
+/// admitting local bindings into the oracle and vouching for names the
+/// compiler never provides — turning the fabrication lane into a
+/// false-negative machine. The mention side has the opposite polarity (a
+/// keyword before `(` is grammar, never a claim), so the wider set is
+/// correct there, and ONLY there. Do not fold the two consts together.
+// G-allow: consumed by chunk_call_mentions in-module, and by the
+// keyword-vs-builtin collision guard in tests/pdoccover.rs — a separate
+// crate, so pub is required.
+pub const RI_KEYWORDS: &[&str] = &[
+    "and", "as", "auto", "chain", "connect", "constraint", "def", "else", "enum", "exists",
+    "false", "field", "fn", "forall", "if", "implies", "import", "in", "let", "map", "match",
+    "maximize", "meta", "minimize", "module", "none", "not", "occurrence", "or", "out", "param",
+    "port", "pub", "purpose", "self", "set", "some", "structure", "sub", "then", "trait", "true",
+    "type", "undef", "unit", "where",
+    // From RI_DECL_KEYWORDS only — a grammar-only keyword that post-dates
+    // the spec table (kept so this const stays a superset; the superset
+    // property is enforced by ri_keywords_is_a_superset_of_ri_decl_keywords,
+    // not by how this literal is written).
+    "joint",
+];
+
 /// Name declared by a `.ri` line, if it is a declaration at all.
 ///
 /// `[pub] <keyword> [def] <name>…`, where the name is the leading identifier
@@ -1128,9 +1254,13 @@ fn in_oracle_scope(path: &str) -> bool {
 /// A mention is an identifier immediately followed by `(` — the shape of a
 /// claim that the compiler provides a callable of that name. Backticked tokens
 /// with no parens are types, modules, units or constants (`Angle`, `std.math`,
-/// `pi`); admitting them would flood the lane with every prose noun. The
-/// left delimiter must not be `.`, because `solid.volume()` is member access
-/// on a value and the fabrication lane has no oracle for methods.
+/// `pi`); admitting them would flood the lane with every prose noun. The left
+/// delimiter must not be `.` or `@`: `solid.volume()` is member access on a
+/// value, and `pipe@region(outer)` (connect.md:52, "The `@` operator creates
+/// ad-hoc ports by designating geometric regions"; docs/reify-language-spec.md:1488,
+/// §D5) is an ad-hoc port/region designator on a value. Both are the same
+/// rule, not a special case for `@`: the lane has no oracle for a selector on
+/// a value, whichever delimiter introduces it, only for free-function claims.
 ///
 /// **Format-agnostic by construction** — a byte walk over each line, with no
 /// awareness of headings, fence tags, indented fences, table pipes,
@@ -1145,84 +1275,167 @@ fn in_oracle_scope(path: &str) -> bool {
 ///
 /// Chunk-side escape: a line carrying a well-formed `pdoccover:allow —
 /// <reason>` documents something deliberately ahead of the implementation, and
-/// its mentions are dropped. A REASONLESS marker drops nothing — the mention
-/// stays visible so the caller can report the malformed marker rather than
-/// silently honour it (PRD design decision 7).
+/// its mentions are dropped. A REASONLESS marker drops nothing here — but do
+/// not rely on that alone to keep it reportable, because the five filters
+/// below can still drop the only call-shaped token on the marked line.
+/// [`fabrication_findings`] therefore derives its `allow-missing-reason:`
+/// verdict from the RAW shapes ([`call_shape_sites`]) rather than from this
+/// function's output, so no filter added here can ever narrow that category
+/// (PRD design decision 7 — the escape hatch can never become un-reviewable).
 ///
-/// ## Declaration sites are not claims
+/// ## The five filters
 ///
-/// Two filters, both syntactic, neither modelling context:
+/// The MODULE HEADER is canonical for the filter set, its numbering and its
+/// rationale ("Known imprecision — the mention side, not the oracle"). The
+/// same five numbers are used here, and only the implementation notes that
+/// do not belong in the header are spelled out — keep it that way rather
+/// than re-deriving the rationale in both places, which is how the two
+/// drifted to different counts once already.
 ///
-/// 1. a name that IS a [`RI_DECL_KEYWORDS`] member — `Trait::fn(args)` in
-///    prose about static dispatch reads as a call to `fn`, and no keyword is
-///    ever a builtin;
-/// 2. the name a line DECLARES, per [`ri_declared_name`] — `fn
-///    lateral_area(self)` or `purpose manufacturing_ready(subject)` inside
-///    example source defines a name, it does not claim the compiler provides
-///    one. Only the declared name is dropped, so a real call in the same line's
-///    body (`fn area(self) { rect_area(w, h) }`) is still a claim.
+/// 1. **`.` left delimiter** and 2. **`@` left delimiter** — one rule with
+///    two delimiters, described above.
+/// 3. **[`RI_KEYWORDS`] membership** — the language's FULL reserved-word set
+///    (spec §2.10), not just the declaration keywords [`ri_declared_name`]
+///    parses with: `Trait::fn(args)` in prose about static dispatch reads as
+///    a call to `fn`, and `auto(free)` reads as a call to `auto`; no keyword
+///    is ever a builtin.
+/// 4. **file-scoped [`ri_declared_name`]** — collected over EVERY line of
+///    `content` in a first pass, so a trait body declaring
+///    `fn make_default()` also suppresses the call to it fifteen lines
+///    below. Reuses the ORACLE lane's own grammar rather than re-deriving
+///    one, so `pub fn`, `purpose` and the two-word `structure def` /
+///    `occurrence def` forms are all covered by a function that already has
+///    tests. A name the content never declares AT ALL is untouched — `fn
+///    area(self) { rect_area(w, h) }` still yields `rect_area` as a claim.
 ///
-/// Both can only REMOVE accusations, never add one, which is the safe
-/// direction for this lane (module header, "the existence oracle is
-/// deliberately asymmetric"). Filter 2 reuses `ri_declared_name` — the oracle
-/// lane's own grammar — rather than re-deriving one, so `pub fn`, `purpose`
-/// and the two-word `structure def` / `occurrence def` forms are all covered
-/// by a function that already has tests.
+///    FILE scope, not CORPUS scope: a name declared in chunk A and called in
+///    chunk B is a cross-chunk reference to a documented API, not an
+///    example-local definition, so `content` (one chunk) is the unit —
+///    corpus scope would let one chunk's throwaway example silently disarm
+///    every other chunk's claims about that name.
+/// 5. **elided `(...)` argument list** — a fixed five-byte compare: the list
+///    must be EXACTLY `(...)`, not `(..)` or `(..., x)`, with no scanning
+///    for a matching close paren and no nesting awareness. That fixed shape
+///    is exactly why geometry.md:126's `translate(primitive(...), 0, 0,
+///    -h/2)` resolves correctly — the outer `(` is followed by
+///    `primitive(...` so `translate` survives, the inner one by exactly
+///    `(...)` so `primitive` is dropped as the metavariable it is.
+///    Deliberately a false NEGATIVE: a real builtin documented only as
+///    `fillet(...)` stops being seen, accepted under this lane's stated
+///    asymmetry ("take the miss"), and backstopped by
+///    `CHUNK_MENTION_ANCHORS` in tests/pdoccover.rs, which goes RED if the
+///    corpus ever drifts wholesale to the elided form.
+///
+/// All five are syntactic, none models context, and every one can only
+/// REMOVE an accusation, never add one — the safe direction for this lane
+/// (module header, "the existence oracle is deliberately asymmetric").
 ///
 /// **Precision beyond that is deliberately deferred.** What remains needs
-/// prose-vs-example-source context — a metavariable (`predicate(x)` in a
-/// grammar production), a user-defined name in an example body
-/// (`compute_moi(...)`), non-function call-shaped syntax (`auto(free)`,
-/// `@region(...)`). That is **#5647**, not this function's contract today. Do
-/// not add a context-modelling filter here without updating that task and the
-/// floor guard's anchor set.
+/// prose-vs-example-source context that no syntactic rule — line-local or
+/// file-scoped — can decide: a grammar metavariable (`predicate(x)` in a
+/// grammar production), and a user-defined name CALLED inside example
+/// source that the chunk never declares AT ALL (`compute_moi(...)`, unlike
+/// the now-handled `make_default`/`scaled` case above). Do not add a
+/// context-modelling filter here without updating the floor guard's anchor
+/// set. See the module header for the full, dated accounting of what
+/// #5647 narrowed.
 ///
 /// Line numbers are 1-based over `str::lines()`, which strips a trailing `\r`,
 /// so CRLF chunks behave identically to LF ones.
 // G-allow: consumed by check() in-module, and by the chunk-path brittle-parse floor guard in tests/pdoccover.rs — a separate crate, so pub is required.
 pub fn chunk_call_mentions(content: &str) -> Vec<(String, usize)> {
+    // Pass 1: every name this chunk's own example source declares, ANYWHERE
+    // in the content — not just on the line currently being scanned in pass
+    // 2. Borrowed from `content`, so no allocation per name.
+    let declared_names: BTreeSet<&str> = content.lines().filter_map(ri_declared_name).collect();
+
     let mut out = Vec::new();
     for (idx, line) in content.lines().enumerate() {
         // A well-formed allow marker suppresses the whole line; a reasonless
-        // one suppresses nothing.
+        // one suppresses nothing here, and is reported by
+        // `fabrication_findings` from the RAW sites instead — so none of the
+        // filters below can hide a malformed marker.
         if allow_marker_reason(line).is_some() {
             continue;
         }
-        // The name this line declares, if it is a `.ri` declaration at all.
-        let declared = ri_declared_name(line);
         let bytes = line.as_bytes();
-        let mut i = 0;
-        while i < bytes.len() {
-            if bytes[i] != b'(' {
-                i += 1;
+        for (name, start, end) in call_shape_sites(line) {
+            // `.foo(` is member access, `@foo(` is an ad-hoc port/region
+            // designator — neither is a builtin call.
+            if start > 0 && matches!(bytes[start - 1], b'.' | b'@') {
                 continue;
             }
-            // Walk back over the identifier immediately preceding the paren.
-            let end = i;
-            let mut start = end;
-            while start > 0 && is_word_byte(bytes[start - 1]) {
-                start -= 1;
-            }
-            i += 1;
-            if start == end {
-                continue; // `(` not preceded by an identifier
-            }
-            // `.foo(` is member access, not a builtin call.
-            if start > 0 && bytes[start - 1] == b'.' {
+            // A reserved word is never a builtin (`Trait::fn(args)`,
+            // `auto(free)`), and a name this CHUNK declares anywhere is
+            // defined by its own example source, not claimed of the
+            // compiler.
+            if RI_KEYWORDS.contains(&name) || declared_names.contains(name) {
                 continue;
             }
-            let name = &line[start..end];
-            if !is_identifier_shaped(name) {
-                continue;
-            }
-            // A declaration keyword is never a builtin (`Trait::fn(args)`), and
-            // the name a declaration line introduces is defined here, not
-            // claimed of the compiler.
-            if RI_DECL_KEYWORDS.contains(&name) || declared == Some(name) {
+            // An argument list that is literally `(...)` is a schematic
+            // placeholder ("any argument of this shape"), not a concrete
+            // call — geometry.md:126's `translate(primitive(...), 0, 0,
+            // -h/2)` names `primitive` as a metavariable, not a claim that
+            // the compiler provides a function literally named `primitive`.
+            // Fixed five-byte compare, no scanning for a matching close
+            // paren, no nesting awareness — deliberately a false NEGATIVE on
+            // a real builtin documented only as `fillet(...)` (module
+            // header, "take the miss").
+            if bytes[end..].starts_with(b"(...)") {
                 continue;
             }
             out.push((name.to_string(), idx + 1));
         }
+    }
+    out
+}
+
+/// Every `ident(` site on one line: `(name, start, end)` byte offsets into
+/// `line`, where `start` is the first byte of the name and `end` the offset of
+/// the `(`.
+///
+/// The raw call SHAPE — the walk-back that finds a name at all, and nothing
+/// else. None of the five narrowing filters [`chunk_call_mentions`] layers on
+/// top is applied here; only [`is_identifier_shaped`], which decides whether
+/// there is a NAME, not whether that name is a claim.
+///
+/// Shared with the reasonless-marker pre-pass in [`fabrication_findings`],
+/// which must see this UNNARROWED view. A malformed `pdoccover:allow` marker
+/// has to stay reportable even when the only call-shaped token on its line is
+/// one the filters drop (`auto(free)`, `pipe@region(x)`,
+/// `translate(primitive(...))`, or a name the chunk declares elsewhere) —
+/// otherwise widening the filters silently shrinks coverage of a category
+/// #5480 hard-gates, and PRD design decision 7's guarantee that "the escape
+/// hatch can never become un-reviewable" quietly stops holding. One function
+/// rather than two walks, so the narrowed and raw views can never disagree
+/// about what a call site IS.
+///
+/// Format-agnostic, like everything else on this path: a byte walk, no
+/// markdown awareness.
+fn call_shape_sites(line: &str) -> Vec<(&str, usize, usize)> {
+    let bytes = line.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'(' {
+            i += 1;
+            continue;
+        }
+        // Walk back over the identifier immediately preceding the paren.
+        let end = i;
+        let mut start = end;
+        while start > 0 && is_word_byte(bytes[start - 1]) {
+            start -= 1;
+        }
+        i += 1;
+        if start == end {
+            continue; // `(` not preceded by an identifier
+        }
+        let name = &line[start..end];
+        if !is_identifier_shaped(name) {
+            continue;
+        }
+        out.push((name, start, end));
     }
     out
 }
@@ -1621,47 +1834,124 @@ fn omission_findings(inputs: &Inputs) -> Vec<Keyed> {
 /// malformed marker entirely. That is a hole in PRD design decision 7's
 /// guarantee that the escape hatch can never become un-reviewable: the marker
 /// would be invisible to the detector purely because of its position.
+///
+/// It is also FILTER-INDEPENDENT, for the same reason. The pre-pass reads
+/// [`call_shape_sites`] — the raw `ident(` shapes — over the marker-carrying
+/// lines, NOT [`chunk_call_mentions`]' narrowed output. Sourcing it from the
+/// narrowed view would couple `allow-missing-reason:` coverage to the
+/// mention-side filters: each filter added there would silently stop reporting
+/// malformed markers on the lines it drops (`auto(free)`, `pipe@region(x)`,
+/// `translate(primitive(...))`, `solid.volume()`, or any name the chunk
+/// declares elsewhere), shrinking a category #5480 hard-gates without anything
+/// going RED. `reasonless_marker_survives_every_mention_side_filter` in
+/// tests/pdoccover.rs pins one case per filter.
+///
+/// ## One marker, one finding — and one wider subsumption set
+///
+/// Reading the RAW shapes means a marked line can offer SEVERAL names, so the
+/// pre-pass keeps two structures with deliberately different shapes, and the
+/// difference is the recorded decision rather than an accident of the raw
+/// harvest:
+///
+/// - **Reporting is keyed by marker LINE.** One malformed marker is one defect
+///   and costs exactly one finding, whatever its line happens to contain: the
+///   representative name is the LEFTMOST call shape on it. Keying the report by
+///   name instead would make `translate(primitive(...), 0, 0, -h/2)` cost two
+///   findings and `f(g(h(x)))` three — a count that varies with how the marked
+///   line is written, in one of the four categories #5480 hard-gates. Two
+///   markers that happen to share a representative name are still two defects
+///   and two findings, each citing its own line, because each is its own edit.
+///   Pinned by `reasonless_marker_costs_exactly_one_finding_per_marker_line`.
+/// - **Subsumption is keyed by every raw NAME on the marked lines**, which is
+///   wider than the reported set and wider than [`chunk_call_mentions`] would
+///   give: a marker on `solid.volume()` also subsumes a `fabricated-name:
+///   volume` verdict for a bare `volume(x)` elsewhere in the same file, even
+///   though `.volume(` is never a mention. That is a false NEGATIVE, the one
+///   place this lane's filters widen in that direction — accepted because the
+///   alternative (subsume only what survives the filters) would re-couple the
+///   two sides and break the guarantee above in the other direction: a marker
+///   whose only shape is filtered would report the marker AND the fabrication,
+///   charging one mistake twice — which is exactly what
+///   `reasonless_marker_on_a_filtered_line_still_subsumes_the_fabrication`
+///   forbids. The residue is self-healing (writing the reason body restores
+///   the fabrication verdict), the marked line does textually name the token,
+///   and `fabricated-name:` is report-only for δ. Pinned by
+///   `reasonless_marker_subsumes_a_fabrication_it_names_only_as_a_receiver`.
+///
+/// Residual, and deliberately left: a reasonless marker on a line with NO
+/// call-shaped token at all still reports nothing, because a finding here is
+/// keyed by NAME and such a line offers none. Reporting it would need a
+/// path:line-keyed channel, which is #5480's baseline-format work, not this
+/// lane's.
 fn fabrication_findings(ctx: &AuditContext<'_>, inputs: &Inputs) -> Vec<Keyed> {
     let known = known_name_index(&load_oracle_sources(ctx, inputs));
 
     let mut out = Vec::new();
     for (path, content) in &inputs.chunk_sources {
-        let lines: Vec<&str> = content.lines().collect();
         let mentions = chunk_call_mentions(content);
 
-        // Pre-pass: name -> FIRST line in this file carrying a reasonless
-        // marker for it. Position-independent, so the marker always wins.
-        let mut reasonless: std::collections::BTreeMap<String, usize> =
-            std::collections::BTreeMap::new();
-        for (name, line_no) in &mentions {
-            let line = lines.get(line_no - 1).copied().unwrap_or("");
-            if allow_marker_present(line) && allow_marker_reason(line).is_none() {
-                reasonless.entry(name.clone()).or_insert(*line_no);
+        // Pre-pass over this file's reasonless markers. Position-independent,
+        // so a marker always wins over a plain mention whatever their order.
+        //
+        // Both structures read the RAW call shapes on marker-carrying lines
+        // (`call_shape_sites`), deliberately NOT `mentions`: every mention-side
+        // filter is free to drop the only call-shaped token on a marked line
+        // (`auto(free)`, `pipe@region(x)`, `translate(primitive(...))`, or a
+        // name the chunk declares elsewhere), and sourcing this pass from the
+        // narrowed view would then make the malformed marker invisible — a
+        // false-clean on a category #5480 hard-gates, and precisely the hole in
+        // PRD design decision 7 that the line-order independence also closes.
+        //
+        // The two shapes differ on purpose (see this function's doc comment):
+        // `reasonless_lines` carries ONE entry per marker LINE — the line and
+        // its LEFTMOST call shape as the representative name — so one malformed
+        // marker costs exactly one finding however many `ident(` tokens its line
+        // happens to hold; `reasonless_names` carries EVERY raw name on those
+        // lines, and is the (deliberately wider) subsumption set.
+        let mut reasonless_lines: Vec<(usize, &str)> = Vec::new();
+        let mut reasonless_names: BTreeSet<&str> = BTreeSet::new();
+        for (idx, line) in content.lines().enumerate() {
+            if !allow_marker_present(line) || allow_marker_reason(line).is_some() {
+                continue;
             }
+            let sites = call_shape_sites(line);
+            if let Some(&(name, _, _)) = sites.first() {
+                reasonless_lines.push((idx + 1, name));
+            }
+            reasonless_names.extend(sites.iter().map(|&(name, _, _)| name));
+        }
+
+        // A reasonless marker suppresses nothing and is itself the defect —
+        // reported once per MARKER LINE, and reported INSTEAD of any
+        // fabrication verdict for any name that line names, so one malformed
+        // marker costs one finding. Emitted independently of the mention walk
+        // below, because the name it is keyed on may not survive into
+        // `mentions` at all. `check()` sorts the whole list, so emitting here
+        // does not fix the reported order.
+        for (marker_line, name) in &reasonless_lines {
+            out.push(keyed(
+                "allow-missing-reason",
+                name,
+                path,
+                format!(
+                    "— `{ALLOW_TOKEN}` at {path}:{marker_line} has no reason body, so it \
+                     grants no exemption; write `{ALLOW_TOKEN} — <reason>` or remove \
+                     the claim",
+                ),
+            ));
         }
 
         let mut seen: BTreeSet<String> = BTreeSet::new();
 
         for (name, line_no) in mentions {
-            // A reasonless marker suppresses nothing and is itself the defect —
-            // reported once per name per file, and reported INSTEAD of any
-            // fabrication verdict, so one malformed marker costs one finding.
-            if let Some(&marker_line) = reasonless.get(&name) {
-                if seen.insert(name.clone()) {
-                    out.push(keyed(
-                        "allow-missing-reason",
-                        &name,
-                        path,
-                        format!(
-                            "— `{ALLOW_TOKEN}` at {path}:{marker_line} has no reason body, so it \
-                             grants no exemption; write `{ALLOW_TOKEN} — <reason>` or remove \
-                             the claim",
-                        ),
-                    ));
-                }
+            // The malformed marker was reported instead, whatever line it sits
+            // on relative to this mention. Keyed on the RAW names of the marked
+            // lines, so this subsumes slightly more than the marker reported —
+            // a documented, self-healing false negative (doc comment, "One
+            // marker, one finding — and one wider subsumption set").
+            if reasonless_names.contains(name.as_str()) {
                 continue;
             }
-
             if known.contains(&name) {
                 continue;
             }
@@ -1731,10 +2021,11 @@ pub fn check(ctx: &AuditContext<'_>) -> Vec<Finding> {
 /// `fabricated-name:` finding cannot be baselined at all — only hand-marked
 /// with `pdoccover:allow`, per chunk line. #5480's hard gate must therefore key
 /// on the omission categories only, leaving `fabricated-name:` report-only
-/// until #5647 narrows the mention side (or until the baseline format grows
-/// `path:name` rows and [`omission_dispositions`] is generalised to cover
-/// fabrications). Module header, "δ's gate must key on the OMISSION categories
-/// only", has the full rationale.
+/// until the baseline format grows `path:name` rows and
+/// [`omission_dispositions`] is generalised to cover fabrications (#5647
+/// narrowed the mention side to two residual shapes; it did not add a
+/// ratchet channel — see [`chunk_call_mentions`]). Module header, "δ's gate
+/// keys on the OMISSION categories only", has the full rationale.
 ///
 /// Reads only what the omission lane needs — [`load_inputs`], not
 /// [`load_oracle_sources`] — so a regenerator run does not pay for the
@@ -3104,6 +3395,59 @@ See the section on booleans (union, difference) below.
         );
     }
 
+    /// `@name(` designates an ad-hoc port on a value, exactly as `.name(`
+    /// designates a member — the fabrication lane has no oracle for either, so
+    /// `@` marks a selector on a value rather than a free-function claim. The
+    /// real `connect.md:48-49` shapes (`docs/reify-language-spec.md:1488`,
+    /// §D5: `@face(...)`/`@region(...)` are selector forms, not builtin
+    /// calls) must yield nothing.
+    #[test]
+    fn mentions_ignore_ad_hoc_port_designator_form() {
+        let content = "\
+connect bracket@face(top_surface) -> plate@face(bottom_surface) : Adhesive
+connect pipe@region(outer_surface, z = 0mm..50mm) -> clamp@region(inner_surface)
+";
+        let hits = chunk_call_mentions(content);
+        assert!(
+            hits.is_empty(),
+            "a leading `@` marks an ad-hoc port designator, not a builtin; got {hits:?}"
+        );
+
+        // Pin the boundary: a BARE `face(...)` with no `@` is still a claim —
+        // spec §D5 tells authors to replace the deprecated `@face("top")`
+        // string form with function-call selectors, so the un-prefixed form
+        // must stay visible to the lane.
+        let bare = chunk_call_mentions("Use `face(top_surface)` to select it.\n");
+        assert_eq!(
+            bare,
+            vec![("face".to_string(), 1)],
+            "an un-prefixed call is still a claim; got {bare:?}"
+        );
+
+        // A line mixing both forms: the outer call is a real claim, the
+        // `@region(...)` designator on its argument is not.
+        let mixed = chunk_call_mentions("let x = translate(pipe@region(outer), 1mm)\n");
+        assert_eq!(
+            mixed,
+            vec![("translate".to_string(), 1)],
+            "only the real call survives; got {mixed:?}"
+        );
+
+        // The BARE, line-initial designator — `docs/reify-language-spec.md:1488`
+        // §D5 states the form as `@region(surface, predicate)`, with no value
+        // to the left of the `@`. It works only because the walk-back leaves
+        // `start == 1` and the `start > 0` guard then admits `bytes[0] == b'@'`
+        // to the delimiter test; nothing else would catch a regression that
+        // reordered those two conditions, so pin it directly.
+        let bare_designator = chunk_call_mentions("@region(surface, predicate)\n");
+        assert!(
+            bare_designator.is_empty(),
+            "a line-initial `@` designator is still a designator — spec §D5's \
+             own spelling of the form must not read as a call to `region`; \
+             got {bare_designator:?}"
+        );
+    }
+
     /// A declaration KEYWORD is never a builtin. `Trait::fn(args)` is the real
     /// `traits.md` shape for explaining static dispatch, and read naively it is
     /// a call to `fn` — which the lane then accused the compiler of not
@@ -3119,6 +3463,93 @@ A `type(x)` or `unit(y)` in prose is grammar, not a call.
             "no RI_DECL_KEYWORDS member is a builtin name; got {:?}",
             chunk_call_mentions(content)
         );
+    }
+
+    /// Non-function call-shaped syntax that reads like a call but is grammar,
+    /// not an API claim. `auto(free)` is the real `parameters.md:13` shape (a
+    /// value literal/keyword, spec §2.10:207); `some(...)` is a language-level
+    /// `Option` constructor intercepted before general function resolution
+    /// (crates/reify-compiler/src/expr.rs:2222-2223, "some() is a
+    /// language-level constructor, not a user-defined function" — `none` gets
+    /// the same treatment at :1522-1523). Neither is ever a builtin the
+    /// compiler could fail to provide.
+    #[test]
+    fn mentions_ignore_grammar_value_literal_forms() {
+        let auto_line =
+            "param wall_thickness : Length = auto(free)      // Free exploration mode\n";
+        assert!(
+            chunk_call_mentions(auto_line).is_empty(),
+            "`auto(...)` is a value literal, not a builtin call; got {:?}",
+            chunk_call_mentions(auto_line)
+        );
+
+        let some_line = "let c : Option<CoatingSpec> = some(spec)\n";
+        assert!(
+            chunk_call_mentions(some_line).is_empty(),
+            "`some(...)` is a language-level Option constructor, not a \
+             builtin call; got {:?}",
+            chunk_call_mentions(some_line)
+        );
+    }
+
+    /// The carve-out that stops [`RI_KEYWORDS`] rotting into a false-negative
+    /// machine. docs/reify-language-spec.md:221 explicitly lists these as
+    /// "Not keywords (standard library functions)" — every one must still be
+    /// extracted as a claim when written call-shaped, and none may be a
+    /// `RI_KEYWORDS` member. The spec's "Removed keywords" (`derived`,
+    /// `require`, `dimension`, :219) are likewise absent — they are not part
+    /// of v0.1 at all, so admitting them as keywords would silently disarm a
+    /// chunk that (incorrectly) still calls them.
+    #[test]
+    fn ri_keywords_excludes_the_spec_carve_outs() {
+        for name in [
+            "determined",
+            "constrained",
+            "undetermined",
+            "partially_determined",
+            "point3",
+            "vec3",
+            "point2",
+            "vec2",
+            "project",
+            "geo_equiv",
+        ] {
+            assert!(
+                !RI_KEYWORDS.contains(&name),
+                "{name:?} is a spec §2.10 standard-library function, not a \
+                 keyword — it must not be in RI_KEYWORDS"
+            );
+            let hits = chunk_call_mentions(&format!("`{name}(x)`\n"));
+            assert_eq!(
+                hits,
+                vec![(name.to_string(), 1)],
+                "{name:?} must still be extracted as a claim when call-shaped; \
+                 got {hits:?}"
+            );
+        }
+
+        for removed in ["derived", "require", "dimension"] {
+            assert!(
+                !RI_KEYWORDS.contains(&removed),
+                "{removed:?} is a REMOVED keyword (spec :219, not part of \
+                 v0.1) — it must not be in RI_KEYWORDS"
+            );
+        }
+    }
+
+    /// `RI_KEYWORDS` must be a strict superset of [`RI_DECL_KEYWORDS`], so
+    /// widening the mention-side filter can never regress the declaration-
+    /// keyword filter a63c892eea already shipped.
+    #[test]
+    fn ri_keywords_is_a_superset_of_ri_decl_keywords() {
+        for kw in RI_DECL_KEYWORDS {
+            assert!(
+                RI_KEYWORDS.contains(kw),
+                "{kw:?} is in RI_DECL_KEYWORDS but not RI_KEYWORDS — the \
+                 widening must never lose a keyword the narrower filter \
+                 already had"
+            );
+        }
     }
 
     /// A `.ri` declaration line DEFINES a name; it does not claim the compiler
@@ -3155,27 +3586,111 @@ A `type(x)` or `unit(y)` in prose is grammar, not a call.
         );
     }
 
-    /// The declaration filter is DECLARATION-SITE-scoped, not name-scoped: the
-    /// same name called elsewhere is still a claim.
+    /// The declaration filter is FILE-scoped — a name declared ANYWHERE in
+    /// this chunk's own content is example-local, wherever in the chunk it is
+    /// later called.
     ///
-    /// This is why the filter removes fewer distinct names than a count of
-    /// declaration sites suggests — `make_default` and `scaled` are declared in
-    /// `traits.md`'s example trait and then CALLED a few lines further down, so
-    /// they survive on the call site. Narrowing that is #5647's prose-vs-
-    /// example-source problem, not a keyword one.
+    /// This is the real `traits.md:77-96` shape: `make_default` and `scaled`
+    /// are declared in the example trait body (:78-79) and then CALLED a few
+    /// lines further down to demonstrate static dispatch (:94-95). A
+    /// declaration-SITE-scoped filter lets both survive on the call, which
+    /// was exactly two of #5647's 7 live fabrication findings.
     #[test]
-    fn mentions_keep_a_declared_name_when_it_is_also_called() {
+    fn mentions_ignore_a_name_declared_anywhere_in_the_chunk() {
         let content = "\
+trait Defaultable {
     fn make_default() -> Length { 10mm }
+    fn scaled(factor : Real) -> Length { 10mm * factor }
+}
+
+**Instance dispatch** — `obj.(Trait::fn)(args)`: resolves to the conformer's associated function (trait default or per-conformer override).
+
+let wetted = pin.(Cylindrical::lateral_area)()
+
+**Static dispatch** — `Trait::fn(args)`: calls a trait-static function directly; no receiver or conformance relationship required.
 
 let gap : Length = Defaultable::make_default()
+let wide : Length = Defaultable::scaled(3.0)
 ";
-        assert_eq!(
-            chunk_call_mentions(content),
-            vec![("make_default".to_string(), 3)],
-            "the declaration at line 1 is dropped; the call at line 3 remains a \
-             claim, reported at its own line"
+        assert!(
+            chunk_call_mentions(content).is_empty(),
+            "make_default and scaled are declared by this chunk's own \
+             example source (lines 2-3); calling them later in the SAME \
+             chunk is not a claim that the compiler provides them; got {:?}",
+            chunk_call_mentions(content)
         );
+
+        // Negative 1: a name only ever CALLED, never declared, in this
+        // content is still a claim.
+        let called_only = chunk_call_mentions("let s = extrude(profile, 10mm)\n");
+        assert_eq!(
+            called_only,
+            vec![("extrude".to_string(), 1)],
+            "a name this content never declares is still a claim; got {called_only:?}"
+        );
+
+        // Negative 2: the filter is per-`content` — a declaration in one
+        // chunk must not suppress a call in another. Corpus scope would let
+        // one chunk's throwaway example silently disarm every other chunk's
+        // claims about that name, an unbounded false-negative amplifier.
+        let declaring_chunk = "fn make_default() -> Length { 10mm }\n";
+        let other_chunk = "let gap : Length = Defaultable::make_default()\n";
+        let _ = chunk_call_mentions(declaring_chunk);
+        let other_hits = chunk_call_mentions(other_chunk);
+        assert_eq!(
+            other_hits,
+            vec![("make_default".to_string(), 1)],
+            "a declaration in one chunk must not suppress a call in a \
+             DIFFERENT chunk; got {other_hits:?}"
+        );
+    }
+
+    /// An argument list that is literally `(...)` is a schematic placeholder
+    /// standing for "any argument of this shape", not a concrete call — the
+    /// real `geometry.md:126` shape `translate(primitive(...), 0, 0, -h/2)`
+    /// names `primitive` as a metavariable for "any primitive constructor",
+    /// not an accusation that the compiler provides a function literally
+    /// named `primitive`.
+    ///
+    /// This is a deliberate false NEGATIVE: a real builtin documented only as
+    /// `fillet(...)` would stop being seen. Accepted under the module's
+    /// stated asymmetry ("take the miss" — module header, "the existence
+    /// oracle is deliberately asymmetric"), and backstopped by
+    /// `CHUNK_MENTION_ANCHORS` in tests/pdoccover.rs, which goes RED if the
+    /// corpus ever drifts wholesale to the elided form.
+    #[test]
+    fn mentions_ignore_elided_argument_list() {
+        let hits = chunk_call_mentions(
+            "When in doubt, prefer the `_centered` variant over a manual \
+             `translate(primitive(...), 0, 0, -h/2)`\n",
+        );
+        assert_eq!(
+            hits,
+            vec![("translate".to_string(), 1)],
+            "the outer call is a real claim; the inner `primitive(...)` is a \
+             metavariable, not a claim; got {hits:?}"
+        );
+
+        // Pin the boundary tightly — only an argument list that is EXACTLY
+        // `...` elides. This is the narrowest and lowest-confidence of the
+        // four rules and must not creep.
+        for (label, line) in [
+            ("empty argument list", "f()\n"),
+            ("... plus a real arg", "f(..., x)\n"),
+            ("single dot", "f(.)\n"),
+            ("double dot", "f(..)\n"),
+            // U+2026 HORIZONTAL ELLIPSIS: the real corpus uses only ASCII
+            // `...`, so the rule stays keyed to that one byte sequence
+            // rather than guessing at Unicode look-alikes.
+            ("unicode ellipsis", "f(…)\n"),
+        ] {
+            let hits = chunk_call_mentions(line);
+            assert_eq!(
+                hits,
+                vec![("f".to_string(), 1)],
+                "[{label}] must still be a claim; got {hits:?}"
+            );
+        }
     }
 
     /// The chunk-side escape hatch: a line carrying a well-formed

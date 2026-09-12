@@ -1,0 +1,22 @@
+// driver-contract PRD, baseline B2: `reify report --bom` prints a costed BOM for a
+// design whose constraint is violated, and exits 0.
+//
+// Measured at main 9a992fc2f2 (2026-08-26), target/debug/reify:
+//   reify check        -> exit 1, "VIOLATED Bolt#constraint[0]"
+//   reify report --bom -> exit 0, prints the line item and "Total: 0.42 USD"
+//
+// Post-fix (leaf κ): report runs check() and exits 1 without emitting a
+// procurement-actionable BOM for a design that does not satisfy its constraints.
+module driver_contract_report_blind_to_violation
+pub structure Bolt : Buy {
+    param supplier : String = "Acme"
+    param part_number : String = "M8-25"
+    param unit_cost : Money = 0.42USD
+    param lead_time : Time = 5s
+    param provenance : Provenance = Provenance(source_tool: "cat", source_version: "1", timestamp: "", tolerance_guarantee: 0.001mm)
+    param length : Length = 25mm
+    constraint length >= 50mm
+}
+pub structure Top {
+    sub b = Bolt()
+}

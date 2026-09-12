@@ -867,6 +867,16 @@ pub fn try_infer_traits_for_function_call_in_env(
             Some(InferredTraits::curve())
         }
 
+        // ─── Surface-offset modify → surface_freeform() (2-D, non-planar) ────
+        // offset_surface (θ, task 4192) takes a surface target and produces a
+        // fresh Surface, so it infers `GeomDim::Surface` — deliberately a
+        // DEDICATED arm, NOT the `combine_modify` arm above, whose
+        // `combine_modify()` hardcodes `GeomDim::Solid` (correct for
+        // `offset_solid`, wrong here). `surface_freeform()` (not `surface()`)
+        // because the input surface is not necessarily planar/closed (e.g. a
+        // nurbs_surface target), so offset_surface can't claim planar=true.
+        "offset_surface" => Some(InferredTraits::surface_freeform()),
+
         // ─── Curve-offset modify → curve() (1-D result) ─────────────────
         // offset_curve (ι, task 4193) takes a curve target and produces a fresh
         // 1-D curve, so it infers `GeomDim::Curve` — deliberately a DEDICATED arm,

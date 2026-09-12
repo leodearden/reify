@@ -628,3 +628,67 @@ export function staleConsumerlessEntries(
     .filter((channel) => !parsed.has(channel))
     .sort();
 }
+
+/**
+ * THE CODE→DOC PIN'S ITERATION SET: the register entries whose row has actually
+ * LANDED as `*(none)*` — `Object.keys(register)` ∩ the channels of every
+ * `explicit-none` row — sorted. This is the set check (f) of
+ * `eventChannelConsumerCoverage.test.ts` iterates.
+ *
+ * The intersection rather than the register itself: an entry whose row has not
+ * yet flipped to `*(none)*` skips, because it pins nothing until the doc cell
+ * asserting the absence lands. See `staleConsumerlessEntries` above for why
+ * that asymmetry is required.
+ *
+ * Third member of the register/row trio, and it owns only the intersection —
+ * both rot directions belong to its neighbours, so (f) never re-reports what
+ * check (e) already covers:
+ *
+ *  - `unregisteredConsumerlessRows` — row with no entry.
+ *  - `staleConsumerlessEntries`     — entry with no row.
+ *  - `landedConsumerlessChannels`   — entry whose row landed. THIS ONE.
+ */
+export function landedConsumerlessChannels(
+  rows: ClassifiedRow[],
+  register: Record<string, string>,
+): string[] {
+  const landed = new Set(rows.filter((r) => r.kind === 'explicit-none').map((r) => r.channel));
+  return Object.keys(register)
+    .filter((channel) => landed.has(channel))
+    .sort();
+}
+
+/**
+ * Every place `source` names `channel` in a registration position, covering
+ * both shapes `gui/src/bridge.ts` uses: the direct `listen<T>('<channel>', ...)`
+ * call (~30 sites) and the `['<channel>', mapper]` tuple entries
+ * `subscribeToClaudeEvents` feeds to a loop over `listen(name, mapper)`
+ * (bridge.ts:457) — a bare `listen('` match would miss the second entirely.
+ * Requiring a `(` or `[` immediately before the quote keeps prose and bare
+ * identifiers out, and the closing `\1` backreference pins the name EXACTLY:
+ * `'chan-suffix'` and `'prefix-chan'` are not registrations of `chan`.
+ *
+ * Deliberately over-broad in one direction, since `(` before the quote matches
+ * ANY call position: `invoke('chan')` counts as a hit too. Callers should
+ * therefore phrase a failure as "names this channel in a registration
+ * position", not "subscribes to it".
+ *
+ * Pure over a caller-supplied `source` string, like the rest of this module —
+ * it does not itself read bridge.ts off disk, so a caller can pass any source
+ * text (real or synthetic-for-a-unit-test).
+ *
+ * Originated as a bespoke helper in `bridge.test.ts` (task 6227, pinning the
+ * `diagnostics` channel only); lifted here (task 6380) so
+ * `eventChannelConsumerCoverage.test.ts` can run the same matcher over every
+ * channel in `DELIBERATELY_CONSUMERLESS`, not just one hardcoded name.
+ */
+export function channelRegistrationsIn(source: string, channel: string): string[] {
+  // Escaped, not interpolated raw: this is an exported helper over an arbitrary
+  // caller-supplied name, and a metacharacter would otherwise throw at
+  // construction (`(`, `[`) or silently wildcard (`.`, `+`, `*`, `?`). Today's
+  // only caller passes parser-derived `[a-z0-9-]+` channels, but that
+  // constraint lives two files away.
+  const escaped = channel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`[([]\\s*(['"\`])${escaped}\\1`, 'g');
+  return [...source.matchAll(pattern)].map((m) => m[0]);
+}

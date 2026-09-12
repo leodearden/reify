@@ -23,13 +23,31 @@
 #                                     TMPDIR, so a caller-private TMPDIR (a common
 #                                     per-lane isolation pattern) cannot fork the
 #                                     lock namespace (task 5145).
-#   REIFY_TEST_SEMAPHORE_WAIT         max seconds to wait for a slot (default 1800), OR
-#                                     the sentinel "unlimited" (case-insensitive) for a
+#   REIFY_TEST_SEMAPHORE_WAIT         max seconds to wait for a slot, OR the sentinel
+#                                     "unlimited" (case-insensitive, THE DEFAULT) for a
 #                                     continuous blocking wait with no deadline (clock-stop
-#                                     mode, PRD §3 option c).  GATED DORMANT (PRD §5 D5):
-#                                     keep FINITE (< verify_command_timeout_secs 7200) in
-#                                     dark-factory-orchestrator.yaml; do NOT flip to unlimited until
-#                                     dark_factory:1916 deploys (task 4838).
+#                                     mode, PRD §3 option c).
+#                                     PRD §5 D5's "keep FINITE until dark_factory:1916
+#                                     deploys (task 4838)" gating is SPENT: the seam
+#                                     deployed 2026-06-27, so a contended wait heartbeats
+#                                     and its span is excluded from
+#                                     verify_command_timeout_secs rather than counting
+#                                     against it.  The default is "unlimited" and NOT a
+#                                     finite number because this value must hold for
+#                                     EVERY caller, not just orchestrator-spawned ones:
+#                                     dark-factory-orchestrator.yaml's verify_env reaches
+#                                     only the verify subprocesses the orchestrator
+#                                     spawns, so while this defaulted to 1800 a manual
+#                                     gate (the /unblock `verify.sh all --scope all
+#                                     --profile both` shape) still burned a finite
+#                                     deadline and exited 75 -- discarding a completed
+#                                     compile -- with no external timeout for the
+#                                     clock-stop markers to pause (task 6393).
+#                                     A finite value is still honoured when set
+#                                     explicitly, which is what every infra test does.
+#                                     PARITY: tests/infra/test_verify_admission_knob_parity.sh
+#                                     requires this default and the verify_env value to
+#                                     MATCH -- retune both together, never one alone.
 #   REIFY_CLOCK_HEARTBEAT_SECS        interval between @@REIFY_CLOCK_HEARTBEAT@@ emissions
 #                                     (default 30s; set to a small value in tests)
 #
@@ -97,7 +115,7 @@ test_semaphore_acquire() {
     local LOCK N WAIT
     LOCK="${REIFY_TEST_SEMAPHORE_LOCK:-$(_test_semaphore_default_lock)}"
     N="${REIFY_TEST_SEMAPHORE_CONCURRENCY:-1}"
-    WAIT="${REIFY_TEST_SEMAPHORE_WAIT:-1800}"
+    WAIT="${REIFY_TEST_SEMAPHORE_WAIT:-unlimited}"
 
     # Validate N is a positive integer.
     case "$N" in

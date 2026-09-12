@@ -169,9 +169,13 @@ structure def BucklingOptions {
 //                displacement takes Length. This retired the former hedge
 //                here, which spelled the codomain `Vector3<Length>` "for
 //                parallelism with displacement fields" and named
-//                `Vector3<Real>` as a merely-hypothetical rigorous encoding;
-//                copying a neighbour's spelling instead of reading what the
-//                field denotes is exactly what the ruling retired.
+//                `Vector3<Real>` as a rigorous-sounding alternative encoding.
+//                `Vector3<Real>` is in fact valid .ri syntax (as of γ/4375;
+//                `Real` and `Dimensionless` resolve to the same dimensionless
+//                scalar quantity slot in dimension position, so the two
+//                spellings are synonyms) — the defect the ruling retired was
+//                semantic, not syntactic: the former spelling copied a
+//                neighbour instead of reading what the field denotes.
 //                The `domain` deliberately KEEPS Length: it indexes sample
 //                positions, and a position is not a direction. In-repo
 //                precedent for a dimensionless Field codomain:

@@ -3439,10 +3439,11 @@ fn argmax_principal_stresses_field_with_partial_nan_skips_nan() {
 /// window is all-NaN (all-out-of-solid FEA sentinel).
 ///
 /// Pins the NaN-skip + all-finite-absent → Undef chain:
-/// `compute_eigenvalues_3x3([NaN; 9])` returns `Some([NaN, NaN, NaN])`,
-/// the selected entry is NaN, the `is_finite()` gate in
-/// `argmax_argmin_index` / `reduce_sampled_extremum` skips every window,
-/// and all four reductions return `Value::Undef`.
+/// `compute_eigenvalues_3x3([NaN; 9])` returns `None` (it fails closed on any
+/// non-finite read entry since task #6376), the projection maps that to
+/// `f64::NAN`, the `is_finite()` gate in `argmax_argmin_index` /
+/// `reduce_sampled_extremum` skips every window, and all four reductions
+/// return `Value::Undef`.
 ///
 /// Mirrors `reductions_on_max_shear_field_all_nan_windows_return_undef`.
 #[test]

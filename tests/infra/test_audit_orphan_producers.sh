@@ -39,7 +39,15 @@ echo "=== audit-orphan-producers.sh collision-detection tests ==="
 # Build hermetic fixture
 # ---------------------------------------------------------------------------
 FIXTURE="$(mktemp -d)"
-cleanup() { rm -rf "$FIXTURE"; }
+# FIXTURE2 (a second, isolated fixture tree for the genuinely-malformed
+# case below) is declared here but only mktemp'd where it is built, further
+# down. ONE trap covers both dirs -- bash EXIT traps do not stack (see
+# tests/infra/test_helpers.sh's own commentary on this), so a second
+# `trap ... EXIT` here would silently replace this one instead of adding
+# to it. cleanup() reads $FIXTURE2 at EXIT time (not at definition time),
+# so it sees whatever mktemp assigns it later; the `-n` guard skips
+# removal while it is still empty, and while set -u is active.
+cleanup() { rm -rf "$FIXTURE"; [ -n "${FIXTURE2:-}" ] && rm -rf "$FIXTURE2"; }
 trap cleanup EXIT
 
 git -C "$FIXTURE" init -q
@@ -52,6 +60,15 @@ pub mod collide_mod;
 pub mod wired;
 pub mod collide_path;
 pub mod turbo;
+pub mod dangling_str;
+pub mod dangling_raw;
+pub mod dangling_comment;
+pub mod dangling_char;
+pub mod dangling_multiline;
+pub mod lifetime_wired;
+pub mod stmt_trailing_comment;
+pub mod comment_header_target;
+pub mod comment_header_probe;
 
 // Private driver — provides a genuine bare-call token for `wired`.
 fn drive_wired() -> i32 { wired() }
@@ -59,6 +76,11 @@ fn drive_wired() -> i32 { wired() }
 fn refer_path() -> u32 { collide_path::HELPER }
 // Private driver — calls turbo only via turbofish NAME::<T>().
 fn drive_turbo() { turbo::<i32>(); }
+// Private driver — genuine bare-call token for `lifetime_wired`, itself
+// lifetime-bearing.  Negative guard: if the literal-aware stripper is ever
+// over-eager and blanks real code between two lifetime ticks, this call
+// site is lost and `lifetime_wired` would wrongly show up as an orphan.
+fn drive_lifetime_wired<'a>(s: &'a str) -> &'a str { lifetime_wired(s) }
 RUST
 
 # collide_mod.rs — fn name collides with its own module name.
@@ -92,6 +114,226 @@ RUST
 # The `::` is followed by `<`, so it must be preserved as a real call.
 cat > "$FIXTURE/crates/reify-fixture/src/turbo.rs" <<'RUST'
 pub fn turbo<T>() {}
+RUST
+
+# dangling_str.rs — a `#[cfg(test)]` mod near the top of the file whose test
+# body holds an unbalanced `{` inside a STRING LITERAL (the exact #6096
+# shape). A raw-text brace counter reads that `{` as a real open brace, so
+# the mask never closes and swallows the guarded pub fn below it.
+cat > "$FIXTURE/crates/reify-fixture/src/dangling_str.rs" <<'RUST'
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn t() {
+        let s = "structure def ZVShaper : Shaper {";
+        assert!(!s.is_empty());
+    }
+}
+
+// G-allow: hermetic fixture for the literal-aware brace counter
+pub fn after_str_guard() -> i32 { 1 }
+RUST
+
+# dangling_raw.rs — same defect, but the unbalanced `{` sits inside a RAW
+# string literal (`r#"..."#`).
+cat > "$FIXTURE/crates/reify-fixture/src/dangling_raw.rs" <<'RUST'
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn t() {
+        let s = r#"structure def X : Y {"#;
+        assert!(!s.is_empty());
+    }
+}
+
+// G-allow: hermetic fixture for the literal-aware brace counter
+pub fn after_raw_guard() -> i32 { 1 }
+RUST
+
+# dangling_comment.rs — same defect, but the unbalanced `{` sits inside a
+# BLOCK COMMENT.
+cat > "$FIXTURE/crates/reify-fixture/src/dangling_comment.rs" <<'RUST'
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn t() {
+        /* sample decl: struct Foo { */
+        assert!(true);
+    }
+}
+
+// G-allow: hermetic fixture for the literal-aware brace counter
+pub fn after_comment_guard() -> i32 { 1 }
+RUST
+
+# dangling_char.rs — same defect, but the unbalanced `{` sits inside a CHAR
+# LITERAL on a line that also carries lifetime syntax (`<'a>`, `&'a`),
+# pinning the lifetime-vs-char-literal disambiguation: the ticks in `<'a>`
+# and `&'a` have no closing `'` at the grammar-implied offset and must NOT be
+# treated as opening a char literal, while `'{'` (closing `'` at offset 2)
+# must.
+cat > "$FIXTURE/crates/reify-fixture/src/dangling_char.rs" <<'RUST'
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn t() {
+        fn f<'a>(s: &'a str) -> char { let _ = '{'; s.chars().next().unwrap() }
+        assert_eq!(f("z"), 'z');
+    }
+}
+
+// G-allow: hermetic fixture for the literal-aware brace counter
+pub fn after_char_guard() -> i32 { 1 }
+RUST
+
+# dangling_multiline.rs — regression guard for the CROSS-LINE half of the
+# stripper's state machine, which the single-line dangling_* fixtures above
+# never exercise: (a) a multi-line raw string whose unbalanced `{` sits on
+# a line BEFORE the closing `"#`, pinning that "raw_string" state (and the
+# hash count) carries from one line to the next rather than resetting at
+# EOL; (b) a nested block comment (`/* outer /* inner { */ still-comment
+# */`), pinning the `block_depth` nesting increment — a non-nesting
+# implementation would treat the FIRST `*/` as the close, which would
+# leave `still-comment */` as stray unmasked code. Both were already
+# correct in the shipped stripper (535/535 real corpus files end
+# brace-balanced in the code view); this fixture is a regression guard,
+# not a bug fix.
+cat > "$FIXTURE/crates/reify-fixture/src/dangling_multiline.rs" <<'RUST'
+#[cfg(test)]
+mod raw_tests {
+    #[test]
+    fn t() {
+        let s = r#"structure def X : Y {
+still inside the raw string
+"#;
+        assert!(!s.is_empty());
+    }
+}
+
+// G-allow: hermetic fixture for cross-line raw-string state carry
+pub fn after_multiline_raw_guard() -> i32 { 1 }
+
+#[cfg(test)]
+mod comment_tests {
+    #[test]
+    fn t() {
+        /* outer /* inner { */ still-comment */
+        assert!(true);
+    }
+}
+
+// G-allow: hermetic fixture for nested block-comment depth counting
+pub fn after_nested_comment_guard() -> i32 { 1 }
+RUST
+
+# lifetime_wired.rs — negative guard.  A genuinely-called pub fn whose own
+# signature carries lifetime syntax and no `#[cfg(test)]` at all.  Paired
+# with the drive_lifetime_wired() caller in lib.rs; see assert_not_orphan
+# below.
+cat > "$FIXTURE/crates/reify-fixture/src/lifetime_wired.rs" <<'RUST'
+pub fn lifetime_wired<'a>(s: &'a str) -> &'a str { s }
+RUST
+
+# stmt_trailing_comment.rs — `#[cfg(test)]` above a SINGLE-STATEMENT item
+# whose `;` is followed by a comment.  mask_cfg_test judges the item's
+# shape (BLOCK_KW_RE + the `;`/`,` suffix test) from the raw line, so the
+# trailing comment defeats `endswith(";")`, `mod` makes it look like a
+# block, and the mask misfires.
+#
+# inner_probe.rs is deliberately NOT created: the audit is a pure text
+# scanner and never resolves module paths, so the dangling `mod
+# inner_probe;` declaration below is intentional fixture content, not a
+# bug for a future reader to "fix".
+cat > "$FIXTURE/crates/reify-fixture/src/stmt_trailing_comment.rs" <<'RUST'
+#[cfg(test)]
+mod inner_probe; // sibling test module — declaration only
+
+// G-allow: hermetic fixture for cfg(test) single-statement header shape
+pub fn after_stmt_guard() -> i32 { 4 }
+RUST
+
+# comment_header_target.rs / comment_header_probe.rs — a `#[cfg(test)]`
+# attribute followed by a BLOCK COMMENT (not a `//` line comment) before the
+# actual item header.  Pre-fix, the skip loop only recognised raw-text `//`
+# and `#[` prefixes, so the block-comment line was mistaken for the item
+# header itself: its blank code view means BLOCK_KW_RE finds nothing there,
+# is_block goes False, and only that ONE line gets masked — leaving the
+# real `mod tests { ... }` body below, including its call to the cross-file
+# target `comment_header_target`, unmasked as ordinary "production" text.
+# Two files (not one), because the audit's caller accounting only counts a
+# reference as "external" when it lives in a DIFFERENT file from the
+# candidate's own declaration (`external = total - per_file[same_file]`) —
+# same reasoning as collide_mod.rs's cross-file `pub mod collide_mod;`
+# reference above.  No G-allow marker: once the test body is correctly
+# masked, comment_header_target has zero real callers and must be flagged
+# as a genuine orphan.
+cat > "$FIXTURE/crates/reify-fixture/src/comment_header_target.rs" <<'RUST'
+pub fn comment_header_target() -> i32 { 9 }
+RUST
+
+cat > "$FIXTURE/crates/reify-fixture/src/comment_header_probe.rs" <<'RUST'
+#[cfg(test)]
+/* explanatory block comment between the attribute and the item header */
+mod tests {
+    #[test]
+    fn t() { comment_header_target(); }
+}
+RUST
+
+# ---------------------------------------------------------------------------
+# Second, isolated fixture: a GENUINELY unbalanced #[cfg(test)] block (a
+# real missing `}` in code, not inside a literal, so no stripper can
+# resolve it). Kept separate from $FIXTURE so the shared fixture -- used
+# by every other assertion in this file -- stays warning-free.
+# ---------------------------------------------------------------------------
+FIXTURE2="$(mktemp -d)"
+git -C "$FIXTURE2" init -q
+mkdir -p "$FIXTURE2/crates/reify-fixture/src"
+
+# unterminated.rs -- the #[cfg(test)] attribute is on line 1; the `mod
+# unterminated {` block it opens never closes.
+cat > "$FIXTURE2/crates/reify-fixture/src/unterminated.rs" <<'RUST'
+#[cfg(test)]
+mod unterminated {
+    #[test]
+    fn t() {}
+// (closing brace deliberately absent — pins the EOF self-check)
+RUST
+
+# unterminated_string_before_cfg_test.rs -- a DIFFERENT failure mode from
+# unterminated.rs above: here the brace count is never even reached. A
+# string literal earlier in the file (in ordinary, non-cfg(test) code)
+# never closes, so strip_literals_and_comments()'s "string" state carries
+# to EOF and every code-view line from that point on is entirely blank.
+# When mask_cfg_test then reaches the #[cfg(test)] below, its item-header
+# test (BLOCK_KW_RE on the blank code view) finds no block keyword, so
+# is_block is False, only the `mod tests {` line itself gets masked, and
+# the real test body -- including its call to the cross-file target
+# `unterminated_string_target` -- leaks in as unmasked "production" text.
+# Because is_block never went True, the brace walk (and its `unclosed`
+# list) never runs at all, so the PRE-EXISTING "mask never closes"
+# self-check stays silent here -- only the lexer-state-at-EOF self-check
+# can catch this case.
+cat > "$FIXTURE2/crates/reify-fixture/src/unterminated_string_before_cfg_test.rs" <<'RUST'
+pub fn precedes_cfg_test() -> i32 {
+    let _s = "this string is never closed;
+    0
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn t() { unterminated_string_target(); }
+}
+RUST
+
+# unterminated_string_target.rs -- defines the fn referenced only from the
+# leaked test body above. A DIFFERENT file from the probe, so a leaked
+# reference counts as an "external" caller (see the audit's
+# `external = total - per_file.get(path_str, 0)` accounting) the same way
+# collide_mod.rs's cross-file `pub mod collide_mod;` reference does.
+cat > "$FIXTURE2/crates/reify-fixture/src/unterminated_string_target.rs" <<'RUST'
+pub fn unterminated_string_target() -> i32 { 5 }
 RUST
 
 # ---------------------------------------------------------------------------
@@ -137,6 +379,80 @@ sys.exit(0)
 PY
 }
 
+# assert_allowed NAME — succeeds iff NAME appears EXACTLY ONCE in allowed[]
+# with callers==0.  Distinguishes "correctly allow-listed" from "invisible
+# because a cfg(test) mask swallowed it", which assert_not_orphan cannot.
+assert_allowed() {
+    local name="$1"
+    local json
+    json="$(audit_json)"
+    python3 - "$json" "$name" <<'PY'
+import json, sys
+data = json.loads(sys.argv[1])
+name = sys.argv[2]
+count = sum(1 for r in data.get("allowed", []) if r["name"] == name and r["callers"] == 0)
+sys.exit(0 if count == 1 else 1)
+PY
+}
+
+# run_audit_capture DIR ERR_FILE [EXTRA_ARGS...] — runs the real audit CLI
+# against DIR (--format json --scope 'crates/reify-*/src', plus any
+# EXTRA_ARGS e.g. --quiet), printing stdout to stdout and writing stderr
+# to ERR_FILE. Separate from audit_json() above, which only captures
+# stdout and discards stderr — the unclosed-mask-warning checks below
+# need both streams, captured separately.
+run_audit_capture() {
+    local dir="$1" err_file="$2"
+    shift 2
+    ( cd "$dir" && bash "$AUDIT" --format json --scope 'crates/reify-*/src' "$@" ) 2>"$err_file"
+}
+
+# assert_stderr_contains DIR SUBSTR [EXTRA_ARGS...] — succeeds iff running
+# the audit against DIR (with any EXTRA_ARGS) emits SUBSTR on stderr.
+assert_stderr_contains() {
+    local dir="$1" substr="$2"
+    shift 2
+    local err rc=0 found=1
+    err="$(mktemp)"
+    run_audit_capture "$dir" "$err" "$@" >/dev/null || rc=$?
+    grep -qF -- "$substr" "$err" && found=0
+    rm -f "$err"
+    return "$found"
+}
+
+# assert_stderr_lacks DIR SUBSTR [EXTRA_ARGS...] — succeeds iff SUBSTR is
+# ABSENT from stderr when the audit runs against DIR.
+assert_stderr_lacks() {
+    local dir="$1" substr="$2"
+    shift 2
+    local err rc=0 absent=1
+    err="$(mktemp)"
+    run_audit_capture "$dir" "$err" "$@" >/dev/null || rc=$?
+    grep -qF -- "$substr" "$err" || absent=0
+    rm -f "$err"
+    return "$absent"
+}
+
+# assert_stdout_valid_json_despite_warning DIR [EXTRA_ARGS...] — succeeds
+# iff the unclosed-mask warning actually fires on stderr (so this assertion
+# fails, rather than passing vacuously, if that warning ever regresses) AND
+# stdout still parses as JSON despite it firing. Pins the stdout-purity
+# contract the nine Rust test binaries (via
+# reify_test_support::run_orphan_audit) depend on.
+assert_stdout_valid_json_despite_warning() {
+    local dir="$1"
+    shift
+    local err rc=0 out
+    err="$(mktemp)"
+    out="$(run_audit_capture "$dir" "$err" "$@")" || rc=$?
+    if ! grep -qF "mask never closes" "$err"; then
+        rm -f "$err"
+        return 1
+    fi
+    rm -f "$err"
+    printf '%s' "$out" | python3 -c "import json,sys; json.load(sys.stdin)" >/dev/null 2>&1
+}
+
 # ---------------------------------------------------------------------------
 # step-1 / step-2: mod-declaration collision
 # ---------------------------------------------------------------------------
@@ -160,6 +476,73 @@ assert "collide_path (referenced only via NAME::Item path qualifier) is flagged 
 
 assert "turbo (called only via turbofish NAME::<T>()) is not orphan" \
     assert_not_orphan turbo
+
+# ---------------------------------------------------------------------------
+# cfg(test) mask: literal/comment-aware brace counting
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- cfg(test) mask: literal/comment-aware brace counting ---"
+
+assert "after_str_guard (dangling { inside a string literal) is allow-listed, not swallowed" \
+    assert_allowed after_str_guard
+
+assert "after_raw_guard (dangling { inside a raw string literal) is allow-listed, not swallowed" \
+    assert_allowed after_raw_guard
+
+assert "after_comment_guard (dangling { inside a block comment) is allow-listed, not swallowed" \
+    assert_allowed after_comment_guard
+
+assert "after_char_guard (dangling { inside a char literal beside a lifetime) is allow-listed, not swallowed" \
+    assert_allowed after_char_guard
+
+assert "lifetime_wired (genuine caller, lifetime-bearing signature) is not orphan" \
+    assert_not_orphan lifetime_wired
+
+assert "after_stmt_guard (single-statement cfg(test) item, trailing comment defeats the ';' suffix test) is allow-listed, not swallowed" \
+    assert_allowed after_stmt_guard
+
+assert "after_multiline_raw_guard (dangling { inside a raw string spanning multiple lines) is allow-listed, not swallowed" \
+    assert_allowed after_multiline_raw_guard
+
+assert "after_nested_comment_guard (dangling { inside a nested block comment) is allow-listed, not swallowed" \
+    assert_allowed after_nested_comment_guard
+
+assert "comment_header_target (block comment between #[cfg(test)] and its item header) is flagged orphan, not hidden by the leaked test body" \
+    assert_orphan comment_header_target
+
+# ---------------------------------------------------------------------------
+# EOF self-check: a genuinely unclosed cfg(test) mask warns on stderr
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- EOF self-check: unclosed cfg(test) mask warns on stderr ---"
+
+assert "unclosed #[cfg(test)] mask (genuine missing brace) warns on stderr, naming file and line" \
+    assert_stderr_contains "$FIXTURE2" "crates/reify-fixture/src/unterminated.rs:1:"
+
+assert "unclosed-mask warning is still emitted with --quiet" \
+    assert_stderr_contains "$FIXTURE2" "crates/reify-fixture/src/unterminated.rs:1:" --quiet
+
+assert "stdout stays valid JSON even though the unclosed-mask warning fires" \
+    assert_stdout_valid_json_despite_warning "$FIXTURE2"
+
+assert "well-formed shared fixture triggers no unclosed-mask warning (no false positives)" \
+    assert_stderr_lacks "$FIXTURE" "mask never closes"
+
+# ---------------------------------------------------------------------------
+# EOF self-check: an open literal/comment lexer state at EOF also warns.
+# A DIFFERENT (and, pre-fix, entirely silent) failure mode from the brace
+# self-check above: see unterminated_string_before_cfg_test.rs's fixture
+# comment for why the "mask never closes" check cannot catch this one.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- EOF self-check: open literal/comment lexer state warns on stderr ---"
+
+assert "unterminated string literal (lexer state still open at EOF) warns on stderr, naming file and state" \
+    assert_stderr_contains "$FIXTURE2" \
+        "crates/reify-fixture/src/unterminated_string_before_cfg_test.rs: literal/comment lexer state string still open at EOF"
+
+assert "well-formed shared fixture triggers no lexer-state-open warning (no false positives)" \
+    assert_stderr_lacks "$FIXTURE" "literal/comment lexer state"
 
 # ---------------------------------------------------------------------------
 test_summary

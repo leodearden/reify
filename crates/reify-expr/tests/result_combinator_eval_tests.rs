@@ -602,14 +602,18 @@ fn map_err_undef_subject_returns_undef() {
 //
 // OVERLOAD NOTE, measured and benign: these fixtures' `arg[0].result_type` is
 // `Enum("Result")`, which can never exact-equal
-// `Applied{name:"Result", args:[T,E]}`, so pass 1 of
-// `find_matching_compiled_function` misses BOTH candidates and pass 2's
-// wildcard takes the first in table order — the `Option<T>` overload, since
-// `std.option_recovery` loads before `std.result`. Observable value is
-// unaffected because each overload pair returns the same positional argument
-// (`{ dflt }` / `{ r }` vs `{ dflt }` / `{ o }`). Pre-existing reify-expr
-// resolution behaviour, out of scope here; recorded so it is not relied on
-// silently.
+// `Applied{name:"Result", args:[T,E]}`, so the exact-equality tier of
+// `find_matching_compiled_function` misses BOTH candidates and the choice falls
+// to the tiers below it. Until #5685 that was the wildcard tier, which took the
+// first in table order — the `Option<T>` overload, since `std.option_recovery`
+// loads before `std.result`. #5685 inserted a constructor-head narrowing tier
+// ahead of it, so the erased `Enum("Result")` subject now selects result.ri's
+// overload. Observable value is unaffected in BOTH regimes because each
+// overload pair returns the same positional argument (`{ dflt }` / `{ r }` vs
+// `{ dflt }` / `{ o }`) — which is exactly why the selection is pinned
+// directly, by `census_pins_which_overload_the_matcher_selects` in
+// crates/reify-expr/tests/prelude_backed_harness_tests.rs, rather than left to
+// be inferred from any value these guards observe.
 //
 // Deliberate REGRESSION LOCKS, not RED-first tests — the same framing
 // `result_fallback_eval_tests.rs` already documents for itself.
@@ -639,7 +643,7 @@ fn e2e_result_unwrap_or_ok_with_stdlib() {
         val_5mm(),
         "e2e: unwrap_or(Ok{{value:5mm}}, 0mm) compiled via stdlib must evaluate to 5mm — \
          if the intercept stops firing, the stdlib `{{ dflt }}` placeholder wins and this \
-         yields 0mm (matched candidate is option_recovery.ri's Option overload; see the \
+         yields 0mm (matched candidate is result.ri's Result overload since #5685; see the \
          OVERLOAD NOTE in the section banner above)"
     );
 }
@@ -676,7 +680,7 @@ fn e2e_result_or_else_err_with_stdlib() {
         "e2e: or_else(Err{{error:\"e\"}}, Ok{{value:7mm}}) compiled via stdlib must evaluate to \
          the alternative Ok{{value:7mm}} — if the intercept stops firing, the stdlib \
          subject-returning placeholder wins and this yields the Err{{error:\"e\"}} subject \
-         (matched candidate is option_recovery.ri's `{{ o }}` Option overload; see the \
+         (matched candidate is result.ri's `{{ r }}` Result overload since #5685; see the \
          OVERLOAD NOTE in the section banner above)"
     );
 }

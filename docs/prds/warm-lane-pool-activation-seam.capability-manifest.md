@@ -4,7 +4,8 @@ Mechanizes G3 + G6 for `docs/prds/warm-lane-pool-activation-seam.md` (decompose 
 One block per **leaf**, binding each capability the task's user-observable signal asserts to
 evidence. Any FAIL value blocks the batch. **Substrate is shell / dark-factory-orchestrator.yaml / systemd /
 cross-repo — the `.ri` grammar/semantic gate is N/A** (host-checks only, same as the parent
-`warm-lane-pool-cow-seeding.md`). All evidence was re-verified against live source on 2026-06-19.
+`warm-lane-pool-cow-seeding.md`). All evidence was re-verified against live source on 2026-06-19. **Any `path:line` written below is dated evidence from that verification, not a live
+breadcrumb** — do not re-anchor it; grep the symbol named beside it to find the code today.
 
 Evidence vocabulary used here:
 - `grep:<file>:<line> wired` — symbol/flag present on main at the named line.
@@ -25,7 +26,7 @@ Evidence vocabulary used here:
 | `seed-warm-lane.sh` accepts a resolved concrete `.gen.N` base + a held `flock -s` (the D8 seam reify ships) | `grep:scripts/seed-warm-lane.sh:10-14 wired` (D8 seam header: caller MUST resolve `<base>/target`→`.gen.N` + hold `flock -s` across the `cp`) | PASS |
 | `refresh-warm-base.sh` honors `--landed-commit` provenance (inv.9) | `grep:scripts/refresh-warm-base.sh:243 wired` (`--landed-commit <sha> is required`); `:252` HEAD-mismatch rejection | PASS |
 | gen-dir base model (`.gen.N` staging + atomic `ln -sfn` flip + reader-refcount GC) reify ships | `grep:scripts/refresh-warm-base.sh:347-376 wired` | PASS |
-| DF consumer entry points exist to modify (`_seed_warm_lane`, `refresh_warm_base`) | `grep:orchestrator/src/orchestrator/git_ops.py:1029,1067 wired` (the two methods R1 edits; currently pass base raw / omit `--landed-commit` — the gap R1 fills) | PASS |
+| DF consumer entry points exist to modify (`_seed_warm_lane`, `refresh_warm_base`) | `grep:orchestrator/src/orchestrator/git_ops.py _seed_warm_lane, refresh_warm_base wired` (the two methods R1 edits; currently pass base raw / omit `--landed-commit` — the gap R1 fills) | PASS |
 
 R1 **is** the producer of its own signal (it writes the DF half). No capability is `producer-downstream`. The reify-side contract it builds against is present-on-main (rows 1–3). No FAIL.
 

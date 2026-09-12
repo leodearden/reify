@@ -202,23 +202,50 @@ pub fn form_find_anchored(
 // Laplace–Beltrami operator) scaled by its surface stress σ, assembled with the
 // identical rank-1 edge pattern the line solve uses for the member q.
 
-/// Equilibrium-residual convergence tolerance for the cotangent fixed point. The
-/// iteration stops once the free-node net force `‖(D·x)_free‖∞ / (1+scale)`
-/// drops below this — the honest physical signal (prestress-only equilibrium),
-/// and the SAME quantity the catenoid integration golden re-checks independently.
-/// Set ~10× below the golden's `1e-9` acceptance bound so a converged solve
-/// clears it with margin.
+/// Equilibrium-residual convergence tolerance for the cotangent fixed point,
+/// applied RELATIVE to `D`'s own magnitude (task 6119). The iteration stops
+/// once `‖(D·x)_free‖∞ / (1+scale) / d_scale` drops below this, where
+/// `d_scale = ‖D‖∞` restricted to the free rows — the honest physical signal
+/// (prestress-only equilibrium), additionally normalised so the bound is
+/// GAUGE-free, not just coordinate-scale-free.
+///
+/// `D` is exactly linear in the force densities `q` and the surface stresses
+/// `σ`, so an ABSOLUTE bound on the un-normalised residual makes convergence
+/// depend on the gauge: the same structure at `q` and at `λ·q` could take a
+/// different iteration count, land on different coordinates, or fail to
+/// converge outright — task 6119's reported defect. Dividing by `d_scale`
+/// cancels that one factor of `λ` exactly, since numerator and denominator
+/// each scale linearly with the gauge. This mirrors [`DEGENERATE_AREA_EPS`]'s
+/// relative (not absolute) triangle-degeneracy test — "so the test is
+/// scale-free" there, "so the test is gauge-free" here; same principle,
+/// applied to the convergence criterion instead of the degeneracy check.
+///
+/// CALIBRATED, not guessed, so this change re-anchors rather than loosens the
+/// bound: `d_scale` at `σ ≈ 1` measures `8.95` / `8.52` / `9.71` on the
+/// 16×3 / 32×6 / 8×2 catenoid meshes (`tensegrity_gamma_membrane_form_find.rs`),
+/// so this relative `1e-11` reproduces the *previous* absolute `1e-10` stop
+/// point to within ~10% (measured stops `8.73e-11` / `8.49e-11` / `8.82e-11`
+/// vs the old `9.91e-11` / `9.97e-11` / `8.82e-11`) — still ~11.5× below the
+/// γ catenoid golden's independently-checked `EQUIL_TOL = 1e-9`
+/// (`tensegrity_gamma_membrane_form_find.rs:318`).
 ///
 /// This replaces the earlier *coordinate-change* criterion: the Picard rate
 /// approaches 1 as the mesh refines, so a machine-epsilon coordinate-change tol
 /// could not be reached within any sane iteration cap on a fine membrane — yet
 /// the residual (what actually matters) is already tiny there. Judging on the
 /// residual directly converges finer meshes honestly.
-const SURFACE_EQUILIBRIUM_TOL: f64 = 1e-10;
+///
+/// SCOPE (task 6119 review): this bound, and the gauge-invariance claim
+/// above, govern the surfaces fixed point's STOP CRITERION only, via
+/// [`free_equilibrium_residual_relative`]. `solve_reduced`'s own post-solve
+/// singularity guard is a separate, pre-existing, mixed absolute/relative
+/// test that is not itself proven gauge-invariant — see that function's doc,
+/// which is shared by the (already gauge-covariant) line-only path too.
+const SURFACE_EQUILIBRIUM_REL_TOL: f64 = 1e-11;
 
 /// Iteration cap for the cotangent fixed point. The Picard iteration converges
 /// linearly with a rate that approaches 1 under mesh refinement, so a fine
-/// membrane can need ~1–2k solves to reach [`SURFACE_EQUILIBRIUM_TOL`]; the cap
+/// membrane can need ~1–2k solves to reach [`SURFACE_EQUILIBRIUM_REL_TOL`]; the cap
 /// is a generous backstop above that, reached only by a pathological /
 /// non-settling input (which then honestly reports `converged == false`). Each
 /// iteration is a single assemble + faer solve (per axis), so the cap bounds
@@ -320,13 +347,16 @@ pub fn form_find_anchored_surfaces(
     for _ in 0..max_iters {
         let d = assemble_d(n, members, q, surfaces, surface_stresses, &current)?;
 
-        // Convergence is judged on the EQUILIBRIUM RESIDUAL of the current
-        // geometry under the freshly-assembled `D` — the honest physical signal
-        // (and the exact quantity the integration golden re-checks). It reuses
-        // the assembly we already need for the solve, so it adds no extra matrix
-        // build. At a force-density fixed point `D(x*)·x*` ≈ 0 on the free rows.
+        // Convergence is judged on the GAUGE-RELATIVE EQUILIBRIUM RESIDUAL of the
+        // current geometry under the freshly-assembled `D` — the honest physical
+        // signal (prestress-only equilibrium), additionally normalised by `D`'s
+        // own magnitude so the stop condition is gauge-free (task 6119; see
+        // SURFACE_EQUILIBRIUM_REL_TOL's doc). It reuses the assembly we already
+        // need for the solve, so it adds no extra matrix build. At a
+        // force-density fixed point `D(x*)·x*` ≈ 0 on the free rows.
         if !surfaces.is_empty()
-            && free_equilibrium_residual(&d, &current, &free_indices) <= SURFACE_EQUILIBRIUM_TOL
+            && free_equilibrium_residual_relative(&d, &current, &free_indices)
+                <= SURFACE_EQUILIBRIUM_REL_TOL
         {
             converged = true;
             break;
@@ -422,6 +452,14 @@ fn assemble_d(
 /// the line and surface entries share it (the surface entry calls it once per
 /// fixed-point iteration). Returns [`FormFindError::SingularReducedStiffness`]
 /// when the reduced system is rank-deficient.
+///
+/// SCOPE: the post-solve guard below — `residual_inf > 1e-6 * (1.0 +
+/// rhs_scale)` — is a MIXED absolute/relative test, so unlike
+/// [`free_equilibrium_residual_relative`]'s stop criterion its effective
+/// strictness varies with a uniform `(q, σ) → (λq, λσ)` rescale (the additive
+/// `1.0` does not scale). Task 6119 made the surfaces fixed point's STOP
+/// criterion gauge-invariant and left this pre-existing guard unchanged, so a
+/// marginal input could still take a different branch at two gauges.
 fn solve_reduced(
     d: &Mat<f64>,
     nodes: &[[f64; 3]],
@@ -482,15 +520,45 @@ fn solve_reduced(
     Ok(out_nodes)
 }
 
-/// Free-node equilibrium residual `‖(D·x)_free‖∞ / (1+scale)` — the prestress-only
-/// net force on the free nodes, scaled by the coordinate magnitude so the bound
-/// is coordinate-scale-free. It is ~0 at a force-density fixed point, so the
-/// cotangent iteration uses it as its convergence signal; it mirrors the
-/// independent check the catenoid integration golden runs (same formula), so the
-/// kernel's stop condition and the test's acceptance bound measure the SAME
-/// quantity.
+/// Free-node equilibrium residual `‖(D·x)_free‖∞ / (1+scale) / d_scale` — the
+/// prestress-only net force on the free nodes, scaled by the coordinate
+/// magnitude AND by `d_scale = ‖D‖∞` restricted to the free rows, so the bound
+/// is both coordinate-scale-free AND GAUGE-free (task 6119): `D` is exactly
+/// linear in the force densities `q` / `σ`, so normalising only by coordinate
+/// scale would make convergence depend on the gauge. It is ~0 at a
+/// force-density fixed point, so the cotangent iteration uses it as its
+/// convergence signal. See [`SURFACE_EQUILIBRIUM_REL_TOL`]'s doc for the
+/// calibration that keeps this in a known, auditable relationship to the
+/// catenoid integration golden's independent (un-normalised) check.
+///
+/// The returned value is a RATIO OF MAXES — `max_i |(D·x)_i| / max_i
+/// ‖D_row_i‖∞` — not a max of per-row ratios, so it stays pinned to the exact
+/// quantity that calibration was measured against. A per-row ratio would be
+/// more scale-consistent on a graded mesh but reports a larger-or-equal
+/// residual, so swapping it in needs its own re-calibration rather than
+/// folding into this change.
+///
+/// Degeneracy is rejected PER-ROW, before a row is folded into `d_scale`'s
+/// max: any free row that is identically zero (that node is touched by
+/// neither a member nor a triangle) or carries a NaN returns `f64::INFINITY`.
+/// An aggregate `max(rows)` check would miss the MIXED case, since a healthy
+/// row keeps the max positive and `f64::max` is NaN-transparent. That matters
+/// because a zero row makes `resid` vacuously 0 for that node — nothing acts
+/// on it at all — so without the rejection the fixed point breaks out at
+/// iteration 0 and echoes the caller's unsolved initial guess back as
+/// "converged". `INFINITY` instead falls through to `solve_reduced`, which
+/// reports `SingularReducedStiffness`.
+///
+/// The `d_scale <= 0.0` check after the loop is the EMPTY-`free_indices`
+/// backstop only (NaN is handled per-row): with no free rows the loop body
+/// never runs, so `d_scale` would keep its `0.0` initialiser and
+/// divide-by-zero into NaN rather than rejecting.
 #[allow(clippy::needless_range_loop)]
-fn free_equilibrium_residual(d: &Mat<f64>, nodes: &[[f64; 3]], free_indices: &[usize]) -> f64 {
+fn free_equilibrium_residual_relative(
+    d: &Mat<f64>,
+    nodes: &[[f64; 3]],
+    free_indices: &[usize],
+) -> f64 {
     let n = nodes.len();
     let mut resid = 0.0_f64;
     for &i in free_indices {
@@ -508,7 +576,35 @@ fn free_equilibrium_residual(d: &Mat<f64>, nodes: &[[f64; 3]], free_indices: &[u
             scale = scale.max(c.abs());
         }
     }
-    resid / (1.0 + scale)
+
+    // d_scale = ‖D‖∞ restricted to the FREE rows — see the guard-and-gauge
+    // rationale in the function doc above. Each row is checked for
+    // degeneracy BEFORE being folded into the max, so a single bad row
+    // rejects regardless of what any other free row looks like.
+    let mut d_scale = 0.0_f64;
+    for &i in free_indices {
+        let mut row = 0.0_f64;
+        for j in 0..n {
+            row += d[(i, j)].abs();
+        }
+        // Per-row rejection — see the function doc for why an aggregate-only
+        // check is insufficient.
+        if row.is_nan() || row <= 0.0 {
+            return f64::INFINITY;
+        }
+        d_scale = d_scale.max(row);
+    }
+    // Empty-free-set backstop — see the function doc. No NaN disjunct: a NaN
+    // row already returned above, so d_scale is a max of finite positives.
+    if d_scale <= 0.0 {
+        return f64::INFINITY;
+    }
+
+    // Dividing by d_scale (in addition to the coordinate scale) is what makes
+    // this criterion gauge-invariant: D — and therefore both resid and
+    // d_scale — scale linearly with a uniform q/σ rescaling, so the ratio is
+    // exactly unchanged (task 6119).
+    resid / (d_scale * (1.0 + scale))
 }
 
 /// Relative threshold below which a triangle is judged degenerate: when
@@ -704,8 +800,11 @@ pub fn form_find_anchored_surfaces_aniso(
     for _ in 0..max_iters {
         let d = assemble_d_aniso(n, members, q, surfaces, surface_prestress, &current)?;
 
+        // Same gauge-relative criterion as form_find_anchored_surfaces (task
+        // 6119) — shared function, so both entry points inherit the fix.
         if !surfaces.is_empty()
-            && free_equilibrium_residual(&d, &current, &free_indices) <= SURFACE_EQUILIBRIUM_TOL
+            && free_equilibrium_residual_relative(&d, &current, &free_indices)
+                <= SURFACE_EQUILIBRIUM_REL_TOL
         {
             converged = true;
             break;
@@ -1599,6 +1698,178 @@ mod tests {
         for (a, b) in surf.nodes.iter().zip(line.nodes.iter()) {
             assert!(max_coord_err(*a, *b) < 1e-12, "node mismatch: {a:?} vs {b:?}");
         }
+    }
+
+    // (e) TASK 6119 — a free node touched by neither a member nor a triangle
+    // leaves its entire free-row block of D identically zero, so the net force
+    // on it is 0 for the vacuous reason that nothing acts on it at all. That
+    // must not be read as "converged": the honest outcome is
+    // SingularReducedStiffness (no path to any anchor), not echoing the
+    // caller's unsolved initial guess back as an "equilibrium".
+    #[test]
+    fn surfaces_solve_rejects_isolated_free_node_instead_of_echoing_it_back() {
+        let nodes = vec![
+            [0.0, 0.0, 0.0], // anchor
+            [1.0, 0.0, 0.0], // anchor
+            [0.0, 1.0, 0.0], // anchor
+            [5.0, 5.0, 5.0], // free node 3 — isolated: no member, no triangle
+        ];
+        let surfaces = vec![(0, 1, 2)];
+        let surface_stresses = vec![1.0];
+        let members: Vec<(usize, usize)> = vec![];
+        let kinds: Vec<MemberKind> = vec![];
+        let q: Vec<f64> = vec![];
+        let anchors = vec![0, 1, 2];
+
+        assert_eq!(
+            form_find_anchored_surfaces(
+                &nodes, &members, &kinds, &q, &surfaces, &surface_stresses, &anchors
+            )
+            .unwrap_err(),
+            FormFindError::SingularReducedStiffness,
+        );
+    }
+
+    // (e2) TASK 6119 REVIEW — the `d_scale` guard exercised by (e)/(g) is a
+    // MAX over free rows, so it only fires when EVERY free row of D is zero.
+    // A free node that IS connected (its own row keeps `d_scale > 0`)
+    // coexisting with an UNRELATED isolated free node must still be
+    // rejected — the aggregate max hides exactly this mixed case. Fixture: a
+    // flat symmetric tent — free node 0 sits at the exact centroid of 4
+    // anchors placed at (±1,0,0)/(0,±1,0), already at equilibrium by
+    // symmetry (the net cotangent force on node 0 is exactly 0) — plus an
+    // unrelated free node 5 touched by neither a member nor a triangle.
+    // REPRODUCED FIRST-HAND against the pre-fix (aggregate) guard: this
+    // returns `Ok(converged=true)` with `nodes[5] == [7.0, 7.0, 7.0]` — the
+    // caller's unsolved initial guess echoed straight back.
+    #[test]
+    fn surfaces_solve_rejects_isolated_free_node_alongside_a_connected_one() {
+        let nodes = vec![
+            [0.0, 0.0, 0.0],  // 0: free — connected, already at equilibrium
+            [1.0, 0.0, 0.0],  // 1: anchor
+            [0.0, 1.0, 0.0],  // 2: anchor
+            [-1.0, 0.0, 0.0], // 3: anchor
+            [0.0, -1.0, 0.0], // 4: anchor
+            [7.0, 7.0, 7.0],  // 5: free — isolated: no member, no triangle
+        ];
+        let surfaces = vec![(0, 1, 2), (0, 2, 3), (0, 3, 4), (0, 4, 1)];
+        let surface_stresses = vec![2.0; surfaces.len()];
+        let members: Vec<(usize, usize)> = vec![];
+        let kinds: Vec<MemberKind> = vec![];
+        let q: Vec<f64> = vec![];
+        let anchors = vec![1, 2, 3, 4];
+
+        assert_eq!(
+            form_find_anchored_surfaces(
+                &nodes, &members, &kinds, &q, &surfaces, &surface_stresses, &anchors
+            )
+            .unwrap_err(),
+            FormFindError::SingularReducedStiffness,
+            "an isolated free node must reject even when another free node is connected",
+        );
+    }
+
+    // (f) TASK 6119 — the criterion itself must be EXACTLY invariant under a
+    // uniform gauge change q → λ·q, σ → λ·σ at a FIXED geometry. `D` is exactly
+    // linear in q and σ, so D_λ = λ·D entrywise; λ = 2^20 is a power of two, so
+    // λ·q and λ·σ are exact in IEEE-754 and D_λ = λ·D holds bit-exactly (not
+    // merely to rounding) — this makes the invariance an arithmetic identity,
+    // checkable with assert_eq! rather than a tolerance. A non-power-of-two λ
+    // would only test the identity to rounding.
+    //
+    // BEFORE task 6119's fix, `free_equilibrium_residual` (as it was then
+    // named) divided only by `(1 + coord_scale)`, which does not depend on
+    // D's magnitude at all, so the λ-scaled residual came out ~λ× the base
+    // residual instead of equal (MEASURED RED: base=1.2243416093590493e0,
+    // λ-scaled=1.2838152273752745e6 — exactly base × 2^20). The rename to
+    // `free_equilibrium_residual_relative` and the added `d_scale` division
+    // are what makes this GREEN.
+    #[test]
+    fn free_equilibrium_residual_is_invariant_under_uniform_force_density_scaling() {
+        const LAMBDA: f64 = 1_048_576.0; // 2^20
+
+        let (nodes, surfaces, anchors) = tent_membrane();
+        // Note: `assemble_d` (unlike the public entry points) does not take
+        // `kinds` — it has no sign contract to enforce — so no MemberKind
+        // value is needed here.
+        let members = [(0usize, 1usize)];
+        let q = [0.7_f64];
+        let sigma = 2.0_f64;
+        let sigmas = vec![sigma; surfaces.len()];
+
+        let mut is_anchor = vec![false; nodes.len()];
+        for &a in &anchors {
+            is_anchor[a] = true;
+        }
+        let free_indices: Vec<usize> = (0..nodes.len()).filter(|&i| !is_anchor[i]).collect();
+
+        let d_base = assemble_d(nodes.len(), &members, &q, &surfaces, &sigmas, &nodes)
+            .expect("non-degenerate fixture");
+        let resid_base = free_equilibrium_residual_relative(&d_base, &nodes, &free_indices);
+
+        let q_scaled: Vec<f64> = q.iter().map(|v| v * LAMBDA).collect();
+        let sigmas_scaled: Vec<f64> = sigmas.iter().map(|v| v * LAMBDA).collect();
+        let d_scaled =
+            assemble_d(nodes.len(), &members, &q_scaled, &surfaces, &sigmas_scaled, &nodes)
+                .expect("non-degenerate fixture");
+        let resid_scaled = free_equilibrium_residual_relative(&d_scaled, &nodes, &free_indices);
+
+        assert_eq!(
+            resid_base, resid_scaled,
+            "criterion must be exactly gauge-invariant: base={resid_base:e} λ-scaled={resid_scaled:e}",
+        );
+    }
+
+    // (g) TASK 6119 — pin BOTH degenerate branches of the PER-ROW `d_scale`
+    // guard, spelled `row.is_nan() || row <= 0.0`. The NaN half is the
+    // load-bearing one: the "obvious" simplification `if row <= 0.0` silently
+    // drops NaN rejection, since every comparison against NaN (including
+    // `<=`) is false — a NaN residual would then run the full iteration cap
+    // and report `converged == false` instead of surfacing the degeneracy
+    // immediately. Calls the private function directly with hand-built
+    // `Mat<f64>` inputs (no `assemble_d` involved), so both branches are
+    // exercised in isolation.
+    #[test]
+    fn free_equilibrium_residual_relative_returns_infinity_on_non_positive_or_nan_d_scale() {
+        let nodes = vec![[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]];
+        let free_indices = [1usize];
+
+        // (a) all-zero free-row block: node 1's row of D is identically zero
+        // (the isolated-free-node shape from test (e), at the criterion
+        // level rather than through the full surfaces solve).
+        let d_zero = Mat::<f64>::zeros(2, 2);
+        let r_zero = free_equilibrium_residual_relative(&d_zero, &nodes, &free_indices);
+        assert_eq!(r_zero, f64::INFINITY, "all-zero free row must reject, got {r_zero}");
+
+        // (b) a free row carrying NaN: node 1's row has a NaN entry.
+        let mut d_nan = Mat::<f64>::zeros(2, 2);
+        d_nan[(1, 0)] = f64::NAN;
+        let r_nan = free_equilibrium_residual_relative(&d_nan, &nodes, &free_indices);
+        assert_eq!(r_nan, f64::INFINITY, "NaN-carrying free row must reject, got {r_nan}");
+
+        // (c) TASK 6119 REVIEW — MIXED case: two free rows, one healthy
+        // (row-sum > 0), one NaN-carrying. The pre-fix AGGREGATE guard tracks
+        // only `d_scale = max(rows)`, and `f64::max` is NaN-transparent (it
+        // returns the non-NaN operand when the other is NaN), so `d_scale`
+        // lands on the healthy row's 8.5 and the guard never fires. This is
+        // NOT redundant with case (b) above: it is what forces the guard to be
+        // per-row, since the AGGREGATE spelling this replaced would leave
+        // `d_scale` on the healthy row and never fire here. Node 0's
+        // coordinates are deliberately non-zero (unlike cases (a)/(b)'s
+        // origin stub) so the healthy row's net force is a clean non-zero
+        // finite number rather than a coincidental 0 — the pre-fix failure is
+        // "got some finite value" (any value), not "got exactly 0".
+        let nodes_mixed = vec![[1.0, 1.0, 1.0], [1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
+        let free_mixed = [1usize, 2usize];
+        let mut d_mixed = Mat::<f64>::zeros(3, 3);
+        d_mixed[(1, 0)] = 8.5; // healthy free row: row-sum = 8.5 > 0
+        d_mixed[(2, 0)] = f64::NAN; // NaN-carrying free row
+        let r_mixed = free_equilibrium_residual_relative(&d_mixed, &nodes_mixed, &free_mixed);
+        assert_eq!(
+            r_mixed,
+            f64::INFINITY,
+            "a NaN-carrying free row must reject even when another free row is healthy, got {r_mixed}",
+        );
     }
 
     // ── ε (task 4416): anisotropic warp/weft NFDM stencil ─────────────────────

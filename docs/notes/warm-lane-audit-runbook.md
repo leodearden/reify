@@ -136,6 +136,14 @@ split, and why only `STRANDED` warns per lane while `REWRITTEN` is counted and o
 *different* diff changes the patch id, and will read `STRANDED`. This is the reason `STRANDED` is
 an investigate-then-escalate signal and never an auto-repair trigger.
 
+**Empty-commit anchors are not a gap in this script.** The standalone `git patch-id` command emits
+no output for a zero-diff commit, but this script never invokes that command — `git cherry`'s own
+internal patch-id computation still treats two empty commits as equivalent (verified empirically
+2026-08-21 against a synthetic empty-commit pair), so an empty-commit anchor whose replay is
+reachable in `HEAD` reads `REWRITTEN` exactly like any other rewritten step. Only a genuinely absent
+empty step — no equivalent commit anywhere in `HEAD`'s history — reads `STRANDED`, which is the
+intended, correct behaviour, not a false positive.
+
 **Trailing HEADROOM line** (table format: one summary line after all per-lane rows; JSON format:
 the `"headroom"` object):
 
@@ -314,6 +322,66 @@ Folding `STRANDED` into the ranked verdict would either hide it beneath `LIVE` o
   implementer both rewrite mid-run. The script **never repairs** what it finds (A1; PRD §9.5
   inv.12).
 
+## "A plan.json done-step commit SHA is dangling / unreachable" — EXPECTED, not a defect
+
+**If you arrived here because a `plan.json` recorded `done` step's commit SHA does not resolve,
+or is not an ancestor of the lane's `HEAD` — stop before escalating.** That observation, by
+itself, is the steady state of a healthy pool, not evidence that recorded work is missing.
+
+**Why.** A warm-lane reclaim, or a requeue / inter-iteration rebase, replays the task branch
+onto a newer `main`. Every replayed commit gets a fresh SHA; `plan.json` was written against the
+pre-replay ones and is never rewritten to match. The recorded SHA going dangling — or failing an
+ancestor check — is the mechanism **working as designed**, not work being lost: `acquire_lane`
+always re-seeds from the base (CLAUDE.md → "Warm lanes").
+
+**The discriminator is patch-id equivalence, never reachability** — see the "`plan_sync` verdicts"
+table above and invariant A6 for the mechanism (`scripts/warm-lane-audit.sh`'s `git cherry`
+invocation) and full verdict semantics; this section does not restate them. Dark-factory's
+equivalent path is `_reconcile_done_step_commits` → `find_equivalent_commit`, which files only
+`severity='info'`.
+
+A **subject-only** match (comparing commit messages instead of patch content) is *not* a
+substitute for patch-id: on one measured branch, subject-matching scored 0/18 where patch-id
+scored 18/18.
+
+**Evidence, dated and attributed — not a threshold, not an expected value, and not a number to
+diff a fresh run against:**
+
+- **Measured 2026-08-19 on the live reify pool:** of 71 tasks holding 530 unique SHAs still on
+  disk, 52 of 71 had at least one dangling SHA and 43 of 71 were all-dangling (43/71 ≈ 61% of
+  tasks all-dangling). Of 27 non-`done` tasks holding 205 dangling SHAs, 204 were patch-id-present
+  on their own branch; the single miss was an **empty commit** — its replayed twin existed with an
+  identical subject, but the standalone `git patch-id` command used for this finer-grained, ad hoc
+  per-SHA sweep emits no output for a zero-diff commit and so could not match it. This script's own
+  `git cherry`-based discriminator does not share that gap (see the empty-commit note by the
+  `plan_sync` verdicts table above). **Zero** real strands. `scripts/warm-lane-audit.sh` reported
+  `plan_stranded=0 plan_rewritten=28 plan_unknown=1 plan_mismatch=0`.
+- **Corpus-wide (dark-factory task 4032 §4, D6/INV-5; corpus measured by dark-factory task
+  3157's 2026-08-05 addendum):** 991 of 1,973 recorded done-step SHAs (50.2%) no longer exist as
+  git objects; a bare `merge-base --is-ancestor` fires on 185 of 200 live task branches (92.5%);
+  and of those 1,973 done steps, **zero** were confirmed "recorded done, work nowhere" — four
+  candidates, all hand-falsified.
+
+  Dark-factory task 4032's own ruling, quoted verbatim: **"SHA UNRESOLVABLE IS AN EXPECTED
+  STATE, NEVER A DEFECT SIGNAL"** and **"DO NOT write a second, parallel reachability
+  mechanism"**. (Its status is `pending` as of this writing — cite it as a ruling/decision
+  record, not as landed code.)
+
+**The `reify-audit` correction** — the specific false belief that keeps getting re-escalated:
+`crates/reify-audit/src/` has **zero** code references to `plan.json`, `.task-meta`, or
+`steps[].commit` (verified 2026-08-19). An escalation claiming "the reify audit sweep would read
+this as phantom-done" is describing a detector **that does not exist**.
+
+**When to escalate anyway.** This section rules out one specific false alarm; it does not mean
+every `plan_sync` reading is safe to ignore. A non-zero `plan_stranded` (the patch is genuinely
+absent) or a `plan_task=MISMATCH` remains an investigate-then-escalate signal — work the triage
+order in "Reading a STRANDED lane" immediately below.
+
+**Re-escalation history.** Independently rediscovered and re-escalated at least three times:
+esc-5344-3; esc-5866-2 through esc-5866-7 (six auto-filed at once); and esc-5937-5/-6/-7, which
+sat at L2 from 2026-08-09 to 2026-08-19 — esc-5937-5 was filed **ten days after** reify task 5876
+had already shipped the detector that answers it.
+
 ## Reading a STRANDED lane
 
 `STRANDED` means: the plan records a `done` step at commit `<sha>`, that object still exists, it is
@@ -409,7 +477,12 @@ Expect `plan_rewritten` to dominate — that is a healthy pool, not a finding. A
 `plan_stranded` is an **investigate-then-escalate** signal, never an auto-repair trigger; work the
 triage order in "Reading a STRANDED lane" above. No measured counts are recorded here on purpose: a
 point-in-time number frozen into a runbook is the frozen-constant antipattern D8/G6 reject — the
-recipe belongs in tracked docs, its output does not.
+recipe belongs in tracked docs, its output does not. That prohibition targets a *live pool's current
+counters* presented as a value a future run is expected to reproduce; it does not reach the dated,
+attributed historical measurements recorded elsewhere in this file (e.g. "Reading a PINNED-heavy
+pool" above, and the evidence in `"A plan.json done-step commit SHA is dangling / unreachable"`
+further above) — those record a past incident or a past measurement for context, never a baseline to
+diff a fresh run against, so they are not the antipattern this sentence rejects.
 
 ## Exit codes
 
@@ -467,7 +540,9 @@ timer unit is wired by this task**; a follow-up may implement one.
 | Full design (α pillar, invariants, boundary tests B1/B2) | `docs/prds/warm-lane-pool-sizing-lifecycle.md` §9.1, §10 |
 | Sizing/budget formula consuming this script's `free_gib`/`budget_gib` | `docs/prds/warm-lane-pool-sizing-lifecycle.md` §9.2 |
 | The landed script (authoritative CLI/behavior) | `scripts/warm-lane-audit.sh` |
+| Provenance of the `plan_sync` / `plan_task` detector | reify task 5876 (esc-5866-8) |
 | Hard/soft-floor admission gating (the script that actually blocks dispatch) | `scripts/warm-lane-disk-guard.sh` |
 | Reclaim primitives this script's classification informs | `scripts/warm-lane-gc.sh`, `scripts/thin-warm-lane.sh` |
 | Pool lifecycle & invariants (acquire/reset/release) | `docs/prds/warm-lane-pool-cow-seeding.md` §9.3/§9.5 |
+| Corpus-wide ruling: an unresolvable done-step SHA is expected, never a defect signal | dark-factory task 4032 §4 (D6/INV-5); corpus measured by dark-factory task 3157's 2026-08-05 addendum |
 | The shared-stash guard `stash_entries` backstops (measured reach, push-direction-only) | `hooks/reference-transaction` header, `tests/infra/test_stash_guard.sh` |

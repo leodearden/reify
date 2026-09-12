@@ -2374,9 +2374,25 @@ mod inverse_dynamics_trampoline_tests {
             };
             assert_eq!(forces.len(), 1, "sample {i}: one joint ⇒ one JointForce");
             let value = field(&forces[0], "JointForce", "value");
+            // `ScalarTorque.magnitude` is declared `: Torque` in
+            // stdlib/dynamics.ri and minted dimensioned by the η dispatcher
+            // (task 6098), so pin the variant AND the dimension here rather
+            // than the old Real-only match this replaces.
             let magnitude = match field(value, "ScalarTorque", "magnitude") {
-                Value::Real(m) => *m,
-                other => panic!("magnitude must be a Real, got {other:?}"),
+                Value::Scalar {
+                    si_value,
+                    dimension,
+                } => {
+                    assert_eq!(
+                        *dimension,
+                        DimensionVector::TORQUE,
+                        "sample {i}: ScalarTorque.magnitude must carry the TORQUE dimension"
+                    );
+                    *si_value
+                }
+                other => panic!(
+                    "sample {i}: magnitude must be a dimensioned Value::Scalar, got {other:?}"
+                ),
             };
             assert!(
                 (magnitude - STATIC_TORQUE).abs() < 1e-6,

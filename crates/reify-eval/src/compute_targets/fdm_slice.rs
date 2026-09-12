@@ -459,17 +459,13 @@ fn export_body_stl(
         Some(mesh) => {
             // Reify geometry is in SI metres, but PrusaSlicer (and the binary-STL
             // convention it follows) interprets STL coordinates as millimetres.
-            // Scale a copy of the mesh m -> mm (×1000) so a 10mm part is presented
-            // as 10mm, not 0.01mm — consistent with the layer_height mm contract.
-            // `indices` are unchanged; `normals` are unit directions needing no
-            // scaling (write_stl_binary recomputes per-facet normals from the
-            // scaled vertices and never reads `mesh.normals`).
-            let scaled = reify_ir::Mesh {
-                vertices: mesh.vertices.iter().map(|&v| v * 1000.0).collect(),
-                indices: mesh.indices.clone(),
-                normals: mesh.normals.clone(),
-            };
-            reify_ir::write_stl_binary(&scaled, &mut f)?;
+            // The metre→millimetre conversion now lives INSIDE `write_stl_binary`
+            // (task #6187), which takes metres and emits millimetres, so this
+            // caller hands it the mesh unscaled: a 10mm part is still presented
+            // as 10mm, consistent with the layer_height mm contract. Do NOT
+            // re-apply a ×1000 here — that would make this path 1,000,000×.
+            // `export_body_stl_scales_metres_to_millimetres` is the guard.
+            reify_ir::write_stl_binary(mesh, &mut f)?;
         }
         // Minimal valid binary STL: 80-byte header + a u32 zero triangle count.
         None => {
@@ -938,10 +934,16 @@ mod tests {
         assert_eq!(undef.layer_height, 0.2, "Undef fallback stays 0.2 mm");
     }
 
-    /// REVIEW-FIX (blocking issue 2/2, robustness_unit_mismatch): `export_body_stl`
-    /// must scale the SI-metre surface mesh to millimetres (×1000) before writing the
-    /// STL PrusaSlicer consumes, since the binary-STL convention is mm. A 0.01 m
-    /// (= 10 mm) triangle must appear as ~10.0 in the written coordinates, not 0.01.
+    /// REVIEW-FIX (blocking issue 2/2, robustness_unit_mismatch): the STL
+    /// PrusaSlicer consumes must carry MILLIMETRES, since the binary-STL
+    /// convention is mm. A 0.01 m (= 10 mm) triangle must appear as ~10.0 in the
+    /// written coordinates, not 0.01.
+    ///
+    /// The ×1000 conversion has since MOVED into `reify_ir::write_stl_binary`
+    /// (task #6187), so `export_body_stl` hands it the SI-metre mesh unscaled
+    /// and these assertions are unchanged. That makes this test the
+    /// DOUBLE-SCALE guard: re-introducing a caller-side ×1000 makes the path
+    /// 1,000,000× and lands here as `max_coord = 10000`.
     /// Platform-independent — no `#[cfg(unix)]` gate.
     #[test]
     fn export_body_stl_scales_metres_to_millimetres() {

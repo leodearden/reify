@@ -22,8 +22,60 @@ refuse) stays correct — but must always leave an observable trace.
 A second family, the **angle-crossing family** (INV-AD-1..4), was
 appended 2026-08-10 from the angle-dimension-completion chartering
 investigation (PRD `docs/prds/v0_6/angle-dimension-completion.md`,
-decision D6). Other invariant families may be appended later; keep
-slugs stable.
+decision D6). A third family, the **declared-surface family**
+(INV-PD-1..2), plus the umbrella principle below, was appended
+2026-08-31 from the trampoline param-drop and result-field vacancy
+censuses (PRDs `docs/prds/v0_6/trampoline-param-drop-closure.md` and
+`docs/prds/v0_6/result-field-vacuity-closure.md`). Other invariant
+families may be appended later; keep slugs stable.
+
+## The umbrella principle — `nothing-vacuous-and-unowned`
+
+> Nothing should exist vacuously and unowned. Ever. Anywhere.
+> — Leo, ratified 2026-08-31.
+
+**Vacuous = declared-but-inert** — no machine reads or dispatches on
+it. NOT empty: `NoDamping {}` / `FlexureJoint {}` are empty but
+load-bearing (nominal type-tag dispatch, the ratified marker idiom of
+`placeholder-type-eradication-ratchet.md`); the pre-closure `Part` was
+empty AND inert. The banned state is the **conjunction** vacuous ∧
+unowned — vacuous-with-a-live-owner is legitimate staged work, and IS
+an allowlist entry in whichever gate covers the surface.
+
+**Three exits per finding, no fourth state:** wire it / delete it /
+allowlist-with-live-owner.
+
+**Checkable design question(s)**: Does this feature declare anything —
+a field, param, type, knob, hook, config key — that no machine reads
+or dispatches on, and if so, which live task owns wiring or deleting
+it? Does it add a new *declarable surface* on which vacuity can
+accumulate — and if so, which detector gates it, or is its census row
+below added marked convention-only?
+
+**The census obligation.** Enforcement must be visible, never
+presumed: every declarable surface is either detector-gated or
+honestly marked convention-only. Unenforced invariants decay in this
+repo (measured twice at the infra layer: the rerere re-armer, the
+hooksPath clobber — see `CLAUDE.md` "Warm lanes"). The Status column
+is mutable by design as detectors land; each owning PRD's close leaf
+refreshes its row. **Adding a detector or a new declarable surface
+requires a census row in the same change.**
+
+| Surface | Gate | Status |
+|---|---|---|
+| trampoline-consumed `structure_def` params | PDROP (`trampoline-param-drop-closure.md`) | chartered |
+| result fields + engine-attached undeclared fields | PVAC (`result-field-vacuity-closure.md`) | chartered |
+| placeholder-typed public signatures | PTYPE (`placeholder-type-eradication-ratchet.md`) | chartered |
+| TODO/stub/ignore owners | PTODO | shipped |
+| dead public symbols | PDEAD | shipped |
+| untested symbols | PUNTESTED | shipped |
+| producer-orphan symbols | P1 | shipped |
+| doc-chunk ↔ registry truth | PDOCCOVER | shipped |
+| `dimensionless_scalar()` reintroduction | PDSSENTINEL | shipped |
+| layer-rule imports | PLAYER | shipped |
+| PRD terminal-status markers | PPRDSTATUS (#6346) | chartered |
+| prose task-promises in doc comments | convention-only — PTODO-grammar-extension bookmark #7098 (filed by `result-field-vacuity-closure.md` ζ) | unenforced |
+| whether a declared knob should exist at all | convention-only — deliberately unaudited (`trampoline-param-drop-closure.md` §11) | unenforced |
 
 ## INV-SF-1 `undef-has-provenance`
 
@@ -126,6 +178,22 @@ a false Violated") — keep the never-false-Violated half; add the
 attributable-reason half. `reify check --strict` promotes indeterminate
 to failure.
 
+**Doctrine (ruled by Leo, 2026-08-26, solver-integration session)**: every
+`Indeterminate` verdict and every undef output carries a typed cause, and
+causes classify as **expected** (the design is declaredly or derivably
+abstract at this point in the workflow) or **unexpected** (a mechanism
+failed to run or deliver — a solve that never ran, a value that never
+flowed, a constraint that never entered the solver problem). Plain
+`reify check` fails on unexpected causes; `--strict` continues to gate
+all indeterminacy. A newly discovered vacuity class is closed by giving
+it a typed cause — never by widening "expected". Delivery vehicles:
+declared-intent-consumption-accounting (#5415–#5421) and
+eradicate-silent-undef (#5399–#5406). An optional author-side
+"abstract here" declaration (complementing a
+no-concrete-constraints-style determinacy predicate) is a candidate
+follow-on that would let authors pin the expected class explicitly; it is
+deliberately optional, not required by the doctrine.
+
 ## INV-SF-5 `placeholders-owned-and-loud`
 
 **Rule**: Every placeholder in tracked source — placeholder-typed public
@@ -216,8 +284,9 @@ helper that asserts an arc measure). It generalizes rulings already
 made in this territory: #6164 (A+ — `ElasticResult.rotation` = curl/2
 is the designated crossing), #6080 (`orient_log` is a genuine
 arc-measure primitive, not a quotient), #6126/#6089 (translation stays
-Length, never swept into angle), #5799 (TORQUE = N·m/rad), and
-#5825→#5844 (moment of inertia carries rad⁻²).
+Length, never swept into angle), #5785 (η — TORQUE = N·m/rad), #5799
+(rotational stiffness re-dimensioned to rad⁻²), and #5825→#5844 (moment
+of inertia carries rad⁻²).
 
 **Registry alias.** `docs/invariants.md` rolls this family up under a
 single row, INV-DIM-1 (Enforcement `doc+test`) — an id-keyed audit
@@ -444,6 +513,74 @@ work is chartered by this family; those siblings are cited by name
 only — their contracts are not restated here. The enforcement
 *direction* this doctrine cites is strict dimension equality
 (units-length-gate-completion D11, #5747).
+
+## Declared-surface family (INV-PD-1..2)
+
+The input and output halves of one contract: a declared surface either
+does what it declares, or names the live task that owns making it do
+so. Both are instances of the umbrella principle above; both are
+declared-not-inferred (inference cannot see indirection — the
+esc-6739-1 aliasing blind spot) and both make owner liveness a gate
+failure mode, not a convention.
+
+## INV-PD-1 `declared-param-reaches-kernel`
+
+**Rule**: Every `param` declared on a structure a trampoline consumes
+is *honored* (its value reaches the kernel and changes the result),
+*declared-ignored* with a live owning task (setting it to a
+non-default value is `E_PARAM_NOT_HONORED`, carrying the owner), or
+*not_applicable* with a one-line reason (`W_PARAM_NOT_APPLICABLE`).
+The three sets are disjoint and their union equals the
+`structure_def`'s param set. Enforcement: `reify-audit --pattern
+PDROP`, which also reds on dead/absent owners.
+
+**Checkable design question(s)**: Does this feature add or consume a
+`structure_def` param its trampoline does not read — and if so, which
+bucket does it declare, and which live task owns the honor? Can a
+caller set a knob and get a plausible-but-wrong number with exit 0?
+
+**Evidence**: the 2026-08-31 drop census — ten answer-changing drops
+(`solve_buckling` discarding required `supports`; `ElasticOptions.max_iter`
+declared 1000, hardcoded 2000; a `force_limit` read on a field no
+`.ri` structure declares; …). Normative contract, census and
+decomposition: `docs/prds/v0_6/trampoline-param-drop-closure.md`
+(C1–C4 there; not restated here).
+
+**House pattern**: #4149's `buckling_unsupported_option_diagnostics` /
+`DiagnosticCode::BucklingOptionUnsupported` — complete within
+`BucklingOptions`, the shape PDROP universalizes.
+
+## INV-PD-2 `result-fields-populated-or-owned`
+
+**Rule**: Every field a Rust producer writes into a `.ri`-declared
+result structure is *populated* (real, sampleable, non-sentinel value
+on the production path), *degraded* (the honest `Undef` form plus a
+recorded reason), or *allowlisted* with a live owning task. The three
+sets are disjoint and their union equals the `structure_def`'s
+declared field set; a written-but-undeclared field is itself a
+finding. A degraded field holds `Undef` (with an `UndefCause` where
+the channel exists, INV-SF-1) — never a plausible well-formed fake.
+Enforcement: `reify-audit --pattern PVAC`, which also reds on
+dead/absent owners.
+
+**Checkable design question(s)**: Does this feature declare a result
+field its producer leaves empty or sentinel — and if so, which bucket,
+and which live task owns populating it? Does it write a field the
+`.ri` does not declare? Can a reader mistake a degraded value for a
+computed one (well-formed empty instead of `Undef`)?
+
+**Evidence**: the 2026-08-31 vacancy census — `ModalResult.part`
+populated by `placeholder_part()` (a well-formed zero-field fake) with
+zero readers and its growth promise citing done #4578; the undeclared
+engine-attached `ModalResult.topology`, always `Undef` on the dims
+path; `mechanism_modal`'s `shape = []` / `participation_mass = 0`
+(#7012 owns the degraded reason). Normative contract, census and
+decomposition: `docs/prds/v0_6/result-field-vacuity-closure.md`
+(C1′–C4′ there; not restated here).
+
+**House pattern**: the tet-result `Undef`-for-unpopulated convention —
+buckling `pre_stress`, `degenerate_modal_result`'s `damping` — is C2′
+promoted to contract.
 
 ## Census seam
 

@@ -164,6 +164,261 @@ else
     check "test_summary prints results line (got: $summary_output)" "false"
 fi
 
+# -- Test (l): assert() survives a mktemp failure and reaches test_summary ----
+# (task 6363). assert()'s fallback path (mktemp fails -> _f="" -> /dev/null
+# redirect) exists so a suite doesn't spuriously die when TMPDIR is
+# unwritable/full. But assert()'s last statement,
+# `[ -n "$_f" ] && rm -f "$_f"`, returns the exit status of that `[ -n ]`
+# test when _f is empty -- i.e. assert() itself returns 1 -- and every
+# caller runs assert as a bare simple command under `set -euo pipefail`, so
+# the shell exits at the very first assertion, before test_summary ever
+# runs. This test forces a REAL mktemp failure and checks the suite reaches
+# a sentinel between two asserts, calls test_summary, prints a "Results:"
+# line, and exits 0.
+#
+# Forced via TMPDIR=/dev/null/nope (the same idiom test_portable_timeout.sh
+# Test 10/11 uses), NOT a `mktemp() { return 1; }` shell-function stub: a
+# stub only shadows mktemp for callers that invoke it as a bare `mktemp`, so
+# it silently stops covering anything the moment assert() is hardened to
+# `command mktemp`, `\mktemp`, or an absolute path -- at which point mktemp
+# would quietly succeed, $_f would be non-empty, and every check below would
+# still pass, but vacuously (exercising the mktemp-succeeds path instead of
+# the fallback this test exists to cover). TMPDIR=/dev/null/nope breaks
+# mktemp itself, so it cannot be bypassed that way.
+#
+# BROKEN_TMPDIR and mktemp_failure_observed are shared with Test (l2) below and
+# the liveness control in Test (l4): ONE definition of each, so the forcing
+# mechanism and the non-vacuity discriminator cannot silently drift out of
+# step with each other across several hand-copied call sites (task 6363
+# amendment).
+BROKEN_TMPDIR=/dev/null/nope
+
+# Reads the captured sub-shell output on stdin. Matches the forced template
+# PATH ($BROKEN_TMPDIR), not the bare word "mktemp" and not mktemp's English
+# message text ("failed to create file..."): Test (l4) below proved the bare
+# word is inert -- it self-matches an assert *description* that merely
+# mentions "mktemp", not just a genuine mktemp failure. The path beats the
+# message text too: it is interpolated by mktemp and never translated, while
+# the message is a translatable coreutils string that a locale probe
+# (LC_ALL=C / en_US.UTF-8 / de_DE.UTF-8) showed varying in its surrounding
+# quote glyphs. Tying the needle to $BROKEN_TMPDIR also keeps needle and
+# forcing-mechanism in lockstep. Task 6363 amendment.
+mktemp_failure_observed() {
+    grep -qF -- "$BROKEN_TMPDIR"
+}
+
+echo ""
+echo "--- Test l: assert() survives mktemp failure, reaches test_summary (task 6363) ---"
+
+rc=0
+mtf_out=$(TMPDIR="$BROKEN_TMPDIR" bash -c "
+    set -euo pipefail
+    source '$HELPER_FILE'
+    assert 'first assert under tmpfile fallback' true
+    echo 'REACHED-SECOND-STATEMENT'
+    assert 'second assert' true
+    test_summary
+" 2>&1) || rc=$?
+
+if [ "$rc" -eq 0 ]; then
+    check "assert survives mktemp failure: test_summary exits 0 (got rc=$rc)" "true"
+else
+    check "assert survives mktemp failure: test_summary exits 0 (got rc=$rc, output: $mtf_out)" "false"
+fi
+
+if echo "$mtf_out" | grep -q "REACHED-SECOND-STATEMENT"; then
+    check "assert survives mktemp failure: suite reaches the statement after the first assert" "true"
+else
+    check "assert survives mktemp failure: suite reaches the statement after the first assert (got: $mtf_out)" "false"
+fi
+
+if echo "$mtf_out" | grep -q "Results: 2 passed, 0 failed"; then
+    check "assert survives mktemp failure: test_summary prints Results line" "true"
+else
+    check "assert survives mktemp failure: test_summary prints Results line (got: $mtf_out)" "false"
+fi
+
+# Non-vacuity control: proves the sub-shell's mktemp genuinely failed (mktemp
+# prints its own "mktemp: failed to create file..." diagnostic to stderr,
+# captured above by the outer `2>&1`), so the three checks just above are
+# known to have exercised the fallback path and not a mktemp-succeeded path
+# that happens to look the same.
+if echo "$mtf_out" | mktemp_failure_observed; then
+    check "assert survives mktemp failure: sub-shell's mktemp genuinely failed (non-vacuity)" "true"
+else
+    check "assert survives mktemp failure: sub-shell's mktemp genuinely failed (non-vacuity) (got: $mtf_out)" "false"
+fi
+
+# -- Test (l2): assert() FAIL branch survives the same mktemp failure --------
+# (task 6363 amendment). Test (l) only exercises the PASS branch under the
+# mktemp-failure fallback. The FAIL branch has its own branch-specific logic
+# -- the `[ -n "$_f" ] && [ -s "$_f" ]` evidence-dump guard, which must be
+# skipped (not error) when $_f is empty, plus the FAIL counter and
+# test_summary's `exit 1` -- none of which Test (l)'s all-PASS run touches.
+# A regression that made the dump guard fire on an empty $_f would either
+# abort before REACHED-AFTER-FAIL (already caught by the same shape of check
+# as Test (l)) or wrongly print a dump marker with nothing to dump.
+echo ""
+echo "--- Test l2: assert() FAIL branch survives mktemp failure, dump guard skips cleanly (task 6363) ---"
+
+rc=0
+mtf_fail_out=$(TMPDIR="$BROKEN_TMPDIR" bash -c "
+    set -euo pipefail
+    source '$HELPER_FILE'
+    assert 'passing assert under tmpfile fallback' true
+    _l2_boom() { printf 'l2 stderr needle\n' >&2; return 1; }
+    assert 'failing assert under tmpfile fallback' _l2_boom
+    echo 'REACHED-AFTER-FAIL'
+    test_summary
+" 2>&1) || rc=$?
+
+# test_summary exits 1 whenever FAIL>0 -- expected here, since the second
+# assert above is deliberately failing. The regression this closes is dying
+# at the assert call itself (before REACHED-AFTER-FAIL / test_summary), not
+# this expected nonzero exit -- the next check distinguishes the two.
+if [ "$rc" -eq 1 ]; then
+    check "assert FAIL under mktemp failure: test_summary still runs and exits 1 (got rc=$rc)" "true"
+else
+    check "assert FAIL under mktemp failure: test_summary still runs and exits 1 (got rc=$rc, output: $mtf_fail_out)" "false"
+fi
+
+if echo "$mtf_fail_out" | grep -q "REACHED-AFTER-FAIL"; then
+    check "assert FAIL under mktemp failure: suite reaches the statement after the failing assert" "true"
+else
+    check "assert FAIL under mktemp failure: suite reaches the statement after the failing assert (got: $mtf_fail_out)" "false"
+fi
+
+if echo "$mtf_fail_out" | grep -qF "  FAIL: failing assert under tmpfile fallback"; then
+    check "assert FAIL under mktemp failure: byte-identical FAIL line still emitted" "true"
+else
+    check "assert FAIL under mktemp failure: byte-identical FAIL line still emitted (got: $mtf_fail_out)" "false"
+fi
+
+if echo "$mtf_fail_out" | grep -q "Results: 1 passed, 1 failed"; then
+    check "assert FAIL under mktemp failure: test_summary prints the correct Results line" "true"
+else
+    check "assert FAIL under mktemp failure: test_summary prints the correct Results line (got: $mtf_fail_out)" "false"
+fi
+
+# The dump guard must be FALSE when $_f is empty, so no captured-output dump
+# is attempted (mechanically, none is even possible: there is no tmpfile).
+if echo "$mtf_fail_out" | grep -qF "assert: captured output"; then
+    check "assert FAIL under mktemp failure: no captured-output dump is attempted (no tmpfile exists) (got: $mtf_fail_out)" "false"
+else
+    check "assert FAIL under mktemp failure: no captured-output dump is attempted (no tmpfile exists)" "true"
+fi
+
+if echo "$mtf_fail_out" | mktemp_failure_observed; then
+    check "assert FAIL under mktemp failure: sub-shell's mktemp genuinely failed (non-vacuity)" "true"
+else
+    check "assert FAIL under mktemp failure: sub-shell's mktemp genuinely failed (non-vacuity) (got: $mtf_fail_out)" "false"
+fi
+
+# -- Test (l3): assert() survives an rm failure on the mktemp-SUCCEEDED path -
+# (task 6363 amendment). Test (l)/(l2) force mktemp itself to fail, so $_f is
+# always empty and `[ -n "$_f" ] && rm -f "$_f"` short-circuits before ever
+# calling rm. A separate failure mode reaches the rm call: mktemp succeeds
+# ($_f is non-empty) but the subsequent `rm -f "$_f"` itself fails -- e.g. a
+# read-only or immutable TMPDIR. `rm -f "$_f"` is the command following the
+# final `&&` in that list, so under `set -e` ITS failure alone used to abort
+# the caller right there, before assert()'s trailing `return 0` was ever
+# reached -- the same class of bug as Test (l), on a different trigger.
+# Stubs `rm` as a shell function (not TMPDIR=/dev/null/nope, which forces
+# mktemp -- not rm -- to fail) to force exactly this path. The stub emits a
+# unique sentinel to stderr before failing so a non-vacuity check below can
+# prove assert() genuinely reached and invoked it -- the same class of
+# defence Test (l)/(l2)'s mktemp_failure_observed control gives the
+# TMPDIR=/dev/null/nope idiom, applied to this test's own stub-based trigger
+# (task 6363 amendment).
+echo ""
+echo "--- Test l3: assert() survives an rm failure after a successful mktemp (task 6363) ---"
+
+rc=0
+rmf_out=$(bash -c "
+    set -euo pipefail
+    source '$HELPER_FILE'
+    rm() { printf 'RM-STUB-INVOKED\n' >&2; return 1; }
+    assert 'first assert with failing rm' true
+    echo 'REACHED-AFTER-RM-FAILURE'
+    test_summary
+" 2>&1) || rc=$?
+
+if [ "$rc" -eq 0 ]; then
+    check "assert survives rm failure: test_summary exits 0 (got rc=$rc)" "true"
+else
+    check "assert survives rm failure: test_summary exits 0 (got rc=$rc, output: $rmf_out)" "false"
+fi
+
+if echo "$rmf_out" | grep -q "REACHED-AFTER-RM-FAILURE"; then
+    check "assert survives rm failure: suite reaches the statement after the assert" "true"
+else
+    check "assert survives rm failure: suite reaches the statement after the assert (got: $rmf_out)" "false"
+fi
+
+if echo "$rmf_out" | grep -q "Results: 1 passed, 0 failed"; then
+    check "assert survives rm failure: test_summary prints the correct Results line" "true"
+else
+    check "assert survives rm failure: test_summary prints the correct Results line (got: $rmf_out)" "false"
+fi
+
+# Non-vacuity control: proves the sub-shell's rm stub was genuinely invoked
+# (not silently bypassed, e.g. by a future hardening of assert()'s rm call to
+# `command rm`/`\rm`/an absolute path -- at which point rm would quietly
+# succeed, and the three checks above would still pass, but vacuously). The
+# sentinel cannot self-match: no assert description or other helper output
+# contains it.
+if echo "$rmf_out" | grep -qF "RM-STUB-INVOKED"; then
+    check "assert survives rm failure: sub-shell's rm stub was genuinely invoked (non-vacuity)" "true"
+else
+    check "assert survives rm failure: sub-shell's rm stub was genuinely invoked (non-vacuity) (got: $rmf_out)" "false"
+fi
+
+# -- Test (l4): mktemp_failure_observed discriminator is live ----------------
+# (task 6363 amendment). The non-vacuity controls in Test (l)/(l2) above can,
+# by construction, only ever report "the fallback path was genuinely
+# exercised" -- indistinguishable from a discriminator that has stopped
+# discriminating anything (e.g. one that would match ANY assert output,
+# broken or not). assert_shared_trash_litter_detector_live
+# (test_helpers.sh:420-459) is the in-repo precedent for closing exactly this
+# gap: prove the checker fires on a synthetic positive AND stays quiet on a
+# clean input, so it cannot silently become a dead instrument. This runs Test
+# (l)'s EXACT sub-shell body twice -- once forced broken via $BROKEN_TMPDIR,
+# once under the ambient (working) TMPDIR where mktemp genuinely succeeds --
+# and checks that mktemp_failure_observed fires on the first and not the
+# second.
+echo ""
+echo "--- Test l4: mktemp_failure_observed discriminator is live, not a dead instrument (task 6363) ---"
+
+_l4_broken_out=$(TMPDIR="$BROKEN_TMPDIR" bash -c "
+    set -euo pipefail
+    source '$HELPER_FILE'
+    assert 'first assert under tmpfile fallback' true
+    echo 'REACHED-SECOND-STATEMENT'
+    assert 'second assert' true
+    test_summary
+" 2>&1) || true
+
+_l4_ok_out=$(bash -c "
+    set -euo pipefail
+    source '$HELPER_FILE'
+    assert 'first assert under tmpfile fallback' true
+    echo 'REACHED-SECOND-STATEMENT'
+    assert 'second assert' true
+    test_summary
+" 2>&1) || true
+
+if echo "$_l4_broken_out" | mktemp_failure_observed; then
+    check "mktemp_failure_observed: fires on a genuinely mktemp-broken run" "true"
+else
+    check "mktemp_failure_observed: fires on a genuinely mktemp-broken run (got: $_l4_broken_out)" "false"
+fi
+
+if echo "$_l4_ok_out" | mktemp_failure_observed; then
+    check "mktemp_failure_observed: stays quiet on a genuinely mktemp-working run (got: $_l4_ok_out)" "false"
+else
+    check "mktemp_failure_observed: stays quiet on a genuinely mktemp-working run" "true"
+fi
+
 # ==============================================================================
 # Test: assert dumps captured output on FAIL (evidence preservation)
 # esc-4959-57: assert() historically discarded the asserted command's
@@ -244,6 +499,125 @@ if [ "$_eb_subshell_result" = "1" ]; then
 else
     check "no-subshell invariant: checker's parent-shell global mutation survives assert (got: $_eb_subshell_result)" "false"
 fi
+
+# ==============================================================================
+# Test: assert sanitizes a MULTI-LINE description (task 6353)
+# assert() historically echoed "  PASS: $desc" / "  FAIL: $desc" with no
+# sanitizing, so lines 2+ of a multi-line description printed at COLUMN 0.
+# dark-factory's slot-timeout/semaphore classifier is `^[ \t]*`-anchored, so a
+# description that interpolates a nested deadline-capable child's COMBINED
+# capture put that child's slot-timeout sentinel at column 0 and misclassified
+# the whole merge verify as semaphore starvation (task 6353; two live sites --
+# test_verify_env_ambient_isolation.sh and run_all_ambient_isolation_lib.sh).
+# The fix is structural, in assert() itself: line 1 stays byte-identical and
+# lines 2+ carry the same `  | ` prefix assert already applies to a failing
+# checker's captured output. `  | ` is a NON-whitespace prefix, which is what
+# actually defeats that anchor -- indentation alone does NOT.
+#
+# These checks use the LOCAL self-hosting check() helper (not assert(), which
+# is the unit under test) and drive assert() through the nested
+# `bash -c "source '$HELPER_FILE'; ..."` idiom used above, so the nested
+# PASS/FAIL counters never pollute this suite's own.
+# ==============================================================================
+
+echo ""
+echo "--- Test: assert prefixes lines 2+ of a multi-line description (6353) ---"
+
+# Sub-check 1: MULTI-LINE FAIL. Every output line after line 1 that came from
+# $desc must begin with the literal `  | `; none may start at column 0. The
+# checker is quiet (no output), so assert's own FAIL dump stays absent and the
+# only multi-line source is $desc itself.
+_ad_fail_out=$(bash -c "
+    source '$HELPER_FILE'
+    _ad_boom() { return 1; }
+    assert \"\$1\" _ad_boom
+" _ "$(printf 'line1\nNEEDLE_L2\nNEEDLE_L3')" 2>&1 || true)
+
+_ad_f_col0="$(printf '%s\n' "$_ad_fail_out" | grep -c '^NEEDLE_L' || true)"
+_ad_f_pfx="$(printf '%s\n' "$_ad_fail_out" | grep -c '^  | NEEDLE_L' || true)"
+_ad_f_l1="$(printf '%s\n' "$_ad_fail_out" | grep -c '^  FAIL: line1$' || true)"
+if [ "${_ad_f_col0:-1}" -eq 0 ] && [ "${_ad_f_pfx:-0}" -eq 2 ] && [ "${_ad_f_l1:-0}" -eq 1 ]; then
+    ok=true
+else
+    ok=false
+fi
+check "6353-a: multi-line FAIL desc keeps line 1 byte-identical and prefixes lines 2+ with '  | ' (col0=$_ad_f_col0 want 0; prefixed=$_ad_f_pfx want 2; line1=$_ad_f_l1 want 1)" "$ok"
+
+# Sub-check 2: MULTI-LINE PASS. The leak fires on a PASSING assertion too
+# (test_slot_timeout_marker.sh's Section E preamble records exactly this --
+# cited by section, not line number, so the cite survives edits there), so
+# fixing only the FAIL branch would leave the channel wide open.
+_ad_pass_out=$(bash -c "
+    source '$HELPER_FILE'
+    assert \"\$1\" true
+" _ "$(printf 'line1\nNEEDLE_L2\nNEEDLE_L3')" 2>&1 || true)
+
+_ad_p_col0="$(printf '%s\n' "$_ad_pass_out" | grep -c '^NEEDLE_L' || true)"
+_ad_p_pfx="$(printf '%s\n' "$_ad_pass_out" | grep -c '^  | NEEDLE_L' || true)"
+_ad_p_l1="$(printf '%s\n' "$_ad_pass_out" | grep -c '^  PASS: line1$' || true)"
+if [ "${_ad_p_col0:-1}" -eq 0 ] && [ "${_ad_p_pfx:-0}" -eq 2 ] && [ "${_ad_p_l1:-0}" -eq 1 ]; then
+    ok=true
+else
+    ok=false
+fi
+check "6353-b: multi-line PASS desc keeps line 1 byte-identical and prefixes lines 2+ with '  | ' (col0=$_ad_p_col0 want 0; prefixed=$_ad_p_pfx want 2; line1=$_ad_p_l1 want 1)" "$ok"
+
+# Sub-check 3: SENTINEL-SHAPED NEEDLE -- the property that actually matters to
+# dark-factory. The token is assembled at runtime from a SPLIT literal so this
+# file never carries the contiguous sentinel: test_slot_timeout_marker.sh scans
+# sibling tests/infra suites for exactly that anchored shape, and this suite's
+# own stdout is re-emitted into the merge-gate verify log, so a literal here
+# would be self-inflicted pollution.
+#
+# NOTE: the captured output is NEVER interpolated into a check description --
+# dumping it would BE the leak this sub-check guards. Counts only.
+_ad_sp='@@REIFY_SLOT_'
+_ad_tok="${_ad_sp}TIMEOUT@@"
+_ad_sent_out=$(bash -c "
+    source '$HELPER_FILE'
+    assert \"\$1\" true
+" _ "$(printf 'sentinel desc\n%sTIMEOUT@@ reason=x slots=1 waited=1800 disposition=soft lock=y' "$_ad_sp")" 2>&1 || true)
+
+_ad_s_anchored="$(printf '%s\n' "$_ad_sent_out" | grep -cE "^[[:blank:]]*${_ad_tok}" || true)"
+_ad_s_present="$(printf '%s\n' "$_ad_sent_out" | grep -cF -- "$_ad_tok" || true)"
+# Non-vacuity first: the token really is in the output, so a zero anchored
+# count means "unanchored", never "absent".
+if [ "${_ad_s_present:-0}" -ge 1 ]; then ok=true; else ok=false; fi
+check "6353-c1: non-vacuity control -- the sentinel token IS present in assert's output (present=$_ad_s_present want >=1)" "$ok"
+
+if [ "${_ad_s_anchored:-1}" -eq 0 ]; then ok=true; else ok=false; fi
+check "6353-c2: a sentinel-shaped line inside \$desc is NOT emitted \`^[[:blank:]]*\`-anchored (anchored=$_ad_s_anchored want 0)" "$ok"
+
+# Sub-check 4: REGRESSION -- single-line byte identity, both branches. Line 1 of
+# assert's output is parsed by test_run_all.sh / dark-factory's cause_hint
+# (run_all.sh's `^[[:space:]]*FAIL:` grep), so the common path must stay
+# byte-for-byte what it was.
+_ad_sl_fail=$(bash -c "
+    source '$HELPER_FILE'
+    _ad_quiet_boom() { return 1; }
+    assert 'boom desc' _ad_quiet_boom
+" 2>&1 || true)
+if [ "$_ad_sl_fail" = "  FAIL: boom desc" ]; then ok=true; else ok=false; fi
+check "6353-d1: single-line FAIL output is byte-identical to '  FAIL: <desc>' (got: $_ad_sl_fail)" "$ok"
+
+_ad_sl_pass=$(bash -c "
+    source '$HELPER_FILE'
+    assert 'ok desc' true
+" 2>&1 || true)
+if [ "$_ad_sl_pass" = "  PASS: ok desc" ]; then ok=true; else ok=false; fi
+check "6353-d2: single-line PASS output is byte-identical to '  PASS: <desc>' (got: $_ad_sl_pass)" "$ok"
+
+# Sub-check 5: REGRESSION -- literal-safety of the single-line path. A desc
+# carrying backslashes and a percent sign must be emitted VERBATIM, proving the
+# common path did not silently switch from `echo "$label$desc"` to a printf
+# FORMAT string (where `%` and `\n` would be interpreted).
+_ad_lit_desc='has \n backslash and 100% pct'
+_ad_lit_out=$(bash -c "
+    source '$HELPER_FILE'
+    assert \"\$1\" true
+" _ "$_ad_lit_desc" 2>&1 || true)
+if [ "$_ad_lit_out" = "  PASS: $_ad_lit_desc" ]; then ok=true; else ok=false; fi
+check "6353-e: single-line desc with backslashes and '%' is emitted verbatim, not as a printf format (got: $_ad_lit_out)" "$ok"
 
 # ==============================================================================
 # Consumer refactoring verification tests

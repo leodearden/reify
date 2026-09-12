@@ -105,7 +105,38 @@
 #       cap must be SPLIT into a second `harness_<subsystem2>.rs`, never
 #       allowed to balloon unbounded — and never accommodated by raising the
 #       cap, which would loosen the C2 ratchet to fit its first offender and
-#       contradict the ratified §3 W1/§7 band.
+#       contradict the ratified §3 W1/§7 band. Parking the overflow in one of
+#       the 7 override binaries instead is likewise refused — see the clause
+#       beside `_HL_OVERRIDE_STEMS` in harness-layout-lib.sh (task #6461).
+#
+#       SUBJECT: harness compile units ONLY. Every OTHER top-level
+#       `tests/*.rs` in these 5 crates — the 7 override binaries and the 348
+#       grandfathered baseline standalones — is UNCAPPED BY DESIGN, not by
+#       omission: the cap is a consolidation-SIZING parameter, and neither is
+#       a consolidation product. Rationale and measured headroom: the clause
+#       beside `_HL_OVERRIDE_STEMS` in harness-layout-lib.sh (task #7004).
+#       Pinned non-vacuously by Section 3c below.
+#
+#       APPROACHING THE CAP IS ITSELF A SIGNAL. A pure pass/fail cap only
+#       speaks on the commit that finally breaks it — by which point the
+#       author owes an unrelated split before their own change can land. So
+#       rule (a) also emits an ADVISORY `reason=approaching-cap` WARN once a
+#       unit passes WARN_PCT% of the cap (see WARN_PCT beside CAP_LINES),
+#       surfacing the squeeze in routine gate output while there is still
+#       headroom to act. Advisory means EXACTLY that: no exit-code change, no
+#       `violations=` increment. The gating half of the signal is the shrinking
+#       `_KLOC_WARN_KNOWN` subset ratchet — a unit may LEAVE the warn set
+#       freely, but a unit ARRIVING in it is red and must be acknowledged in
+#       the same diff. Free departure has a cost, though: the departed unit's
+#       row lingers as a permanently-permissive entry that would wave the unit
+#       back through if it ever grew over the line again. So the ratchet also
+#       emits a NON-GATING `PRUNE:` note for any known row that did not WARN
+#       this run, and DOES red on a row whose file no longer exists on disk at
+#       all — that one is dead by construction, not merely stale, and can only
+#       be produced by the very diff that moved the file. Implemented by
+#       `harness_warn_ratchet_violations`, pinned must-fire/must-not-fire
+#       against hermetic fixtures in Section 4c and driven over the real tree
+#       in Section 5d.
 #
 #       EXTERNAL INCLUDES ARE IN SCOPE. A root may `#[path]`- or bare-`mod`-
 #       include a file that escapes its module dir — in this tree the shared
@@ -133,7 +164,21 @@
 #           HARNESS_KLOC_CAP FAIL crate=<c> file=<path> reason=exceeds-cap lines=<n> cap=<n> root_lines=<n> module_lines=<n> module_files=<n> external_lines=<n> external_files=<n>
 #           HARNESS_KLOC_CAP FAIL crate=<c> file=<path> reason=unsanctioned-standalone
 #           HARNESS_KLOC_CAP PASS crate=<c>
-#           HARNESS_KLOC_CAP SUMMARY crates=<n> violations=<n>
+#           HARNESS_KLOC_CAP SUMMARY crates=<n> violations=<n> warnings=<n>
+#           HARNESS_KLOC_CAP FAIL crate=<c> file=<path> reason=undeclared-member member=<harness_sub/file.rs>
+#           HARNESS_KLOC_CAP PASS crate=<c> scan=undeclared-members roots=<n> members=<n>
+#           HARNESS_KLOC_CAP WARN crate=<c> file=<path> reason=approaching-cap lines=<n> cap=<n> warn_at=<n> pct=<n> root_lines=<n> module_lines=<n> module_files=<n> external_lines=<n> external_files=<n>
+#       (the undeclared-member pair is rule (d)'s and the WARN line is the
+#       advisory tier's; all three are APPENDED here rather than inserted among
+#       the first four, so existing unanchored consumers keep matching — the
+#       same append-don't-insert discipline this rule list already states for
+#       the external breakdown fields, below. `warnings=` is likewise APPENDED
+#       to SUMMARY after `violations=`, for the same reason.)
+#       A WARN is ADVISORY: it never changes the exit code and is never counted
+#       in `violations=`. It carries the SAME five breakdown fields, in the same
+#       order, as `reason=exceeds-cap`, so the three-remedy reading below
+#       applies to it identically — the point being to act on the split while
+#       there is still headroom, not after the gate is already red.
 #       On exceeds-cap, `lines=` is the WHOLE-UNIT total, and the four
 #       breakdown fields decompose it as
 #           lines = root_lines + module_lines + external_lines
@@ -151,6 +196,70 @@
 #       The two external fields are APPENDED after `module_files=`, never
 #       inserted before `lines=`, so existing unanchored consumers of this
 #       grammar keep matching.
+#
+#   (d) NO UNDECLARED MEMBER. Rule (c)'s converse direction, not a fourth
+#       independent axis. A `.rs` file physically present under a harness
+#       root's own `crates/<c>/tests/harness_<subsystem>/` module directory,
+#       with no `mod` declaration reachable anywhere in the root's
+#       transitive mod-graph, is never compiled by rustc: its `#[test]` fns
+#       vanish silently — no compile error, no link error, no test-count
+#       signal — and the tree stays green with strictly LESS coverage than
+#       a reader of the source tree would assume. Section 6 below walks
+#       declaration -> file (does every bare `mod` resolve correctly); rule
+#       (d) walks the CONVERSE direction, file -> declaration (does every
+#       file under the module dir have a reachable declaration at all).
+#       Neither direction subsumes the other: Section 6's own principled
+#       exception — a bare `mod x;` that correctly resolves to a retained
+#       `tests/` sibling — is EXACTLY where a module-dir file of the same
+#       stem (`tests/harness_<subsystem>/x.rs`, left behind mid-move) goes
+#       silently dead, because rustc's crate-root-relative resolution binds
+#       the sibling and never looks at the module-dir file at all. This
+#       mechanizes a hazard already named in a commit message —
+#       46a65f5181: "an unregistered file is never compiled, so its tests
+#       would be silently absent... a vacuous pass" — but never before
+#       enforced by a guard.
+#
+#       REMEDY for a genuine FAIL here, so a developer who hits one is not
+#       left choosing between "delete the file" and reverse-engineering the
+#       parser: either (i) DELETE the orphaned file, if it should never have
+#       been compiled (a stale leftover from a move); or (ii) DECLARE it —
+#           #[cfg(any())]
+#           #[path = "harness_<subsystem>/<file>.rs"]
+#           mod <file>;
+#       — which this rule accepts as declared regardless of cfg state, since
+#       the shared parser (_harness_layout_mod_decls) does not evaluate
+#       `#[cfg(...)]` at all (Section 10's must-not-fire fixture for a
+#       `#[cfg(target_os = "linux")]`-gated member pins exactly this). Use
+#       (ii) for a file that must stay in the module dir but is deliberately
+#       never compiled (e.g. a colocated fixture meant to be read via
+#       `include_str!`, not `mod`-ed in) — a permanently-false `cfg(any())`
+#       is deliberate over some other silent exclusion: it keeps the file's
+#       existence at least VISIBLE to a reader of the root, rather than
+#       structurally invisible to both this rule and rustc.
+#
+#       LANDING PRECONDITION. Like Sections 6-9, rule (d) is a WHOLE-TREE
+#       LIVE scan, not diff-scoped — unlike
+#       scripts/check-harness-baseline-registration.sh's rule (b) analogue,
+#       which is diff-scoped precisely because a whole-tree live scan
+#       re-fires on every innocent downstream rebaser once such drift is on
+#       main (the 5260/5266/5288 thrash scripts/verify.sh's own 5300-gate
+#       comment records). That tradeoff is only sound because the
+#       precondition was actually MEASURED, not assumed: on 4a9f2d6d4c the
+#       live tree held 31 harness roots and 585 module-dir member files
+#       across the 5 consolidatable crates, with 0 undeclared and every
+#       module dir flat (no nested subdirs). Re-measured on task #6121: 32
+#       roots and 589 member files, still 0 undeclared and still flat. Both
+#       figures are historical anchors for the commit named beside them, not
+#       running totals — the roots figure grows as consolidation leaves land.
+#       Of that drift #6121 itself contributed exactly +1 root and +0 member
+#       files: splitting `stress_*` out of harness_fea_solver_e2e into
+#       harness_stress_scenarios MOVED seven files between two module dirs,
+#       adding and removing none, so the member count is invariant under a
+#       split. The +4 members came from other work landed since 4a9f2d6d4c.
+#       Should such drift ever land on
+#       main regardless, this whole-tree scan will re-fire on every
+#       innocent rebaser until it is fixed — the remedy there is to fix the
+#       drift, not to loosen this rule.
 #
 # ===========================================================================
 # THE GRANDFATHER-BASELINE RATCHET (harness-layout-baseline.manifest).
@@ -222,6 +331,53 @@ while IFS= read -r _ov; do OVERRIDE_BINARIES+=("$_ov"); done < <(harness_layout_
 # line count, simplest/conservative; ~20 kLOC = upper end of the §7 band).
 CAP_LINES=20000
 
+# The ADVISORY warn line, as a percentage of the cap. A harness unit above
+# WARN_PCT% of the cap but still under it emits a `reason=approaching-cap`
+# WARN, so the squeeze surfaces in ROUTINE gate output instead of only on the
+# commit that finally breaks the cap.
+#
+# The tier is ADVISORY BY DESIGN: it never changes the exit code and never
+# increments `violations=`. That is not timidity, it is the only shape that
+# could land. At introduction (task #6121) TWO live units were already above a
+# 90% line — harness_fea_solver_e2e at 19429 (97.1%, split by this same task)
+# and crates/reify-syntax/tests/harness_syntax.rs at 18957 (94.8%, outside this
+# task's scope — see _KLOC_WARN_KNOWN below). A GATING warn
+# would therefore have turned the merge gate RED on main the moment it landed,
+# and would have kept re-firing on every innocent downstream rebaser — exactly
+# the failure mode rule (d)'s LANDING PRECONDITION note above warns about.
+# WHICH units warn is instead ratcheted as a shrinking SUBSET (_KLOC_WARN_KNOWN
+# below), so an ARRIVING unit is red while a unit LEAVING the set is free.
+WARN_PCT=90
+
+# Units currently between the WARN line and the cap. A SHRINKING ratchet in
+# the same spirit as harness-layout-baseline.manifest: a unit may LEAVE this
+# list freely (that is progress and must never turn the gate red), but a unit
+# ARRIVING must be added deliberately in the same diff -- which is exactly the
+# "surface the squeeze before it breaks" signal task #6121 added the WARN tier
+# for. harness_syntax.rs measured 18957/20000 = 94.8% as of task #6121; it is
+# listed here because it is outside that task's scope, NOT because it is
+# acceptable — the remedy is still rule (a)'s split, and that split is #7040.
+#
+# THE CITE IS LOAD-BEARING, not decoration. Departure from the warn set is free
+# (a) and the stale-row PRUNE note is advisory (c), so nothing in this guard
+# will ever nag about a listed row again: absent a live pointer to the work it
+# defers, harness_syntax would sit just under the line until it broke the cap —
+# precisely the innocent-author ambush the WARN tier exists to prevent. So when
+# #7040 reaches a terminal state, this row must be re-justified or dropped, not
+# silently re-inherited. A bare `#NNNN` in prose is the repo's citation form and
+# does not itself create a PTODO marker; what the ratchet reds is an UNBACKED
+# tracked-elsewhere CLAIM, which is why an earlier draft of the WARN_PCT comment
+# above was rejected — a cite that resolves to a live task is the fix for that,
+# not an omission.
+#
+# Kept in-script rather than in a new manifest file because this guard already
+# carries its comparable constant sets in-script (_HL_OVERRIDE_STEMS via the
+# shared lib, CAP_LINES, WARN_PCT), so no new file, loader or drift-gate is
+# needed. Enforced as a SUBSET in Section 5d, which also reports the prune
+# direction the subset check is blind to: an advisory `PRUNE:` note for a row
+# that stopped WARNing, and a RED for a row whose file is no longer on disk.
+_KLOC_WARN_KNOWN=( "crates/reify-syntax/tests/harness_syntax.rs" )
+
 # The checked-in grandfather-baseline ratchet (resolved via the shared lib so
 # the REIFY_HARNESS_LAYOUT_BASELINE override is honored identically by both
 # guards; default path is unchanged).
@@ -281,7 +437,13 @@ harness_layout_violations() {
     # below.
 
     # The 7 override binaries (I1) are allow-listed by file stem — never
-    # re-accretion violations. Build the lookup set once per call.
+    # re-accretion violations. Reaching the `continue` below via this set
+    # also means rule (a)'s cap arm above was never reached for this file at
+    # all (its base didn't match `harness_*.rs)`) — so an override stem is
+    # never cap-checked, not merely found under threshold. That is a
+    # deliberate exemption (task #7004; rationale beside `_HL_OVERRIDE_STEMS`
+    # in harness-layout-lib.sh), pinned non-vacuously by Section 3c below.
+    # Build the lookup set once per call.
     local -A _override_set=()
     local _ov
     for _ov in "${OVERRIDE_BINARIES[@]}"; do
@@ -294,16 +456,41 @@ harness_layout_violations() {
         base="$(basename "$f")"
 
         # rule (a): kLOC cap governs the harness_<subsystem>.rs compile units.
+        # The `harness_*.rs)` pattern below is the cap's ONLY gate: a file
+        # whose base does not match it skips this arm entirely and is never
+        # measured against cap_lines, however large it is. The arm's own
+        # `continue` then confines rule (b) below to non-harness files — a
+        # harness root, once cap-checked here, is never also re-accretion-
+        # checked. Section 3c pins the arm's complement non-vacuously: an
+        # over-cap OVERRIDE stem, which never reaches this arm, contributes
+        # zero cap violations in the same scan where an over-cap harness
+        # fires.
         case "$base" in
             harness_*.rs)
                 IFS=' ' read -r lines root_lines module_lines module_files external_lines external_files \
                     <<<"$(harness_layout_unit_lines "$f")" || true
+                # The warn line is DERIVED from the cap passed in, never
+                # hardcoded, so the hermetic fixtures drive synthetic caps
+                # exactly as the live driver drives CAP_LINES — and a future
+                # CAP_LINES change cannot silently decouple the two.
+                local warn_lines=$(( cap_lines * WARN_PCT / 100 ))
                 if [ "$lines" -gt "$cap_lines" ]; then
                     _emit FAIL "crate=$crate" "file=$f" "reason=exceeds-cap" \
                         "lines=$lines" "cap=$cap_lines" \
                         "root_lines=$root_lines" "module_lines=$module_lines" "module_files=$module_files" \
                         "external_lines=$external_lines" "external_files=$external_files"
                     violations=$((violations + 1))
+                elif [ "$lines" -gt "$warn_lines" ]; then
+                    # elif, not a second if: FAIL wins outright, so an over-cap
+                    # unit is never double-reported as both. Carries the SAME
+                    # five breakdown fields in the SAME order as exceeds-cap,
+                    # so rule (c)'s three-remedy reading applies identically —
+                    # and deliberately does NOT touch `violations`.
+                    _emit WARN "crate=$crate" "file=$f" "reason=approaching-cap" \
+                        "lines=$lines" "cap=$cap_lines" "warn_at=$warn_lines" \
+                        "pct=$(( lines * 100 / cap_lines ))" \
+                        "root_lines=$root_lines" "module_lines=$module_lines" "module_files=$module_files" \
+                        "external_lines=$external_lines" "external_files=$external_files"
                 fi
                 continue
                 ;;
@@ -347,8 +534,8 @@ run_harness_layout_scan() {
     local cap="$2"
     shift 2
 
-    local crate_count=0 total_violations=0
-    local pair crate dir crate_out n
+    local crate_count=0 total_violations=0 total_warnings=0
+    local pair crate dir crate_out n w
 
     for pair in "$@"; do
         crate="${pair%%:*}"
@@ -360,10 +547,20 @@ run_harness_layout_scan() {
         crate_out="$(harness_layout_violations "$crate" "$dir" "$baseline" "$cap")" || true
         n="$(printf '%s\n' "$crate_out" | grep -cE '^HARNESS_KLOC_CAP FAIL ' || true)"
         total_violations=$((total_violations + n))
+        # Same idiom, WARN substituted: the warn count is derived from the
+        # detector's own structured output (the contract), exactly as the
+        # violation count is — not from a side channel that could drift.
+        w="$(printf '%s\n' "$crate_out" | grep -cE '^HARNESS_KLOC_CAP WARN ' || true)"
+        total_warnings=$((total_warnings + w))
         printf '%s\n' "$crate_out"
     done
 
-    _emit SUMMARY "crates=$crate_count" "violations=$total_violations"
+    # `warnings=` is APPENDED after `violations=`, never inserted before
+    # `lines=`/`violations=` — the append-don't-insert discipline rule (c)
+    # already states for the external breakdown fields, so existing unanchored
+    # consumers of this grammar keep matching.
+    _emit SUMMARY "crates=$crate_count" "violations=$total_violations" "warnings=$total_warnings"
+    # Return code stays keyed to violations ALONE: a WARN is advisory.
     [ "$total_violations" -eq 0 ]
 }
 
@@ -457,6 +654,127 @@ harness_path_attr_violations() {
         return 1
     fi
     _emit PASS "crate=$crate"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# harness_undeclared_member_violations <crate> <tests_dir>
+#
+# Rule (d) — NO UNDECLARED MEMBER. The CONVERSE of harness_path_attr_violations
+# above: that detector walks declaration -> file (does every bare `mod`
+# resolve correctly); this one walks file -> declaration (does every file
+# physically present under a harness root's own module dir have a reachable
+# `mod` declaration anywhere in the root's mod-graph at all). A `.rs` file
+# under `crates/<c>/tests/harness_<subsystem>/` with no reachable declaration
+# is never compiled by rustc, so its `#[test]` fns vanish silently — no
+# compile error, no link error, no test-count signal. Neither direction
+# subsumes the other.
+#
+# WHY THIS IS A GUARD AND NOT A COMMENT (mirrors harness_path_attr_violations'
+# own header framing). harness_path_attr_violations walks declarations -> files
+# and, BY DESIGN, passes a bare `mod x;` whose crate-root-relative resolution
+# lands on a retained `tests/` sibling (Section 6's principled exception) —
+# that is correct FOR THAT DETECTOR'S QUESTION. But it means a module-dir file
+# of the SAME STEM (`tests/harness_<subsystem>/x.rs`, left behind mid-move, or
+# never removed) is structurally INVISIBLE to it: rustc also resolves the bare
+# `mod x;` to the sibling, so the module-dir file is silently never compiled —
+# no compile error, no link error, no test-count signal, exactly the silent
+# mode that makes prose alone insufficient here too.
+#
+# For every <tests_dir>/harness_<subsystem>.rs root that has a module dir
+# (${root%.rs}; a single-file harness with no module dir has nothing to
+# scan), compares every *.rs file found under that module dir at any depth
+# against harness-layout-lib.sh's harness_layout_declared_members, and flags
+# any file absent from that set. Both sides of the comparison are run through
+# `_harness_layout_norm_path` — the declared set already comes normalized
+# (harness_layout_declared_members' contract), and the `find` result and the
+# <tests_dir> prefix used to derive `member=` are normalized here — so a
+# `#[path]` value written as `./harness_sub/a.rs` or a `..`-round-trip cannot
+# compare unequal to its canonical form and false-fire (the same moddir-prefix
+# hazard harness-layout-lib.sh's header calls out). `member=` is always the
+# canonical, <tests_dir>-relative form (`harness_sub/a.rs`) a developer can
+# paste straight into `#[path = "…"]`, never a `./`- or `..`-bearing echo of
+# whatever form the caller's <tests_dir> or the file's declaration happened to
+# use.
+#
+# Prints one structured FAIL line per violation and returns 1 if <crate> has
+# any. On a clean crate emits ONE aggregate `PASS crate=<c>
+# scan=undeclared-members roots=<n> members=<n>` line and returns 0 — the
+# SAME `crate=<c>` field Section 6's bare per-crate `PASS crate=<c>` carries
+# (task #7042 amendment: an earlier cut of this rule dropped it, which left
+# the archived merge-verify log with N indistinguishable
+# `scan=undeclared-members` lines per run and no way to tell which crate
+# contributed which counts — exactly the log-forensics use case the counts
+# below exist for), PLUS the counts Section 6 has no equivalent of
+# (harness_path_attr_violations reports no comparable per-root/per-file
+# totals). Here the member count is this rule's own non-vacuity witness: a
+# detector that visited every root but silently compared zero member files
+# (a broken find glob, a moddir guard that always `continue`s, an over-broad
+# declared set) would otherwise return 0 just as vacuously as the
+# silent-coverage-loss failure mode this whole rule exists to close, one
+# level up — so the count is emitted into the structured grammar (and hence
+# the archived merge-verify log) rather than left as an internal bash
+# variable a future reader would have to re-derive. `roots=` counts every
+# `harness_*.rs` glob match in <tests_dir> (including a single-file harness
+# with no module dir, which contributes 0 to `members=`); `members=` counts
+# every *.rs file compared under a module dir at any depth, declared or not.
+# Parameterized on <tests_dir> so hermetic fixtures drive it exactly as live.
+#
+# KNOWN LIMITATION (documented in harness-layout-lib.sh's
+# _harness_layout_walk_unit header, not fixed here): the shared walk this
+# rule's declared-member set is built from resolves a decl by the declaring
+# FILE's directory only, with no awareness of inline `mod outer { ... }`
+# block nesting — a decl textually inside such a block reads as declared
+# even where rustc would resolve it under a subdirectory this walk never
+# looks in. No live harness root uses that shape today, so this is a
+# documented latent gap, not a current miscount.
+# ---------------------------------------------------------------------------
+harness_undeclared_member_violations() {
+    local crate="$1"
+    local tests_dir="$2"
+
+    local violations=0 roots=0 members=0
+    local root moddir f member decl tests_dir_norm
+
+    if [ ! -d "$tests_dir" ]; then
+        _emit FAIL "crate=$crate" "dir=$tests_dir" "reason=missing-tests-dir"
+        return 1
+    fi
+
+    _harness_layout_norm_path "$tests_dir"; tests_dir_norm="$_HL_NORM_OUT"
+
+    for root in "$tests_dir"/harness_*.rs; do
+        [ -f "$root" ] || continue          # skip a literal no-match glob
+        roots=$((roots + 1))
+        moddir="${root%.rs}"
+        [ -d "$moddir" ] || continue        # single-file harness: nothing to scan
+
+        # Rebuilt fresh per root: membership is root-scoped, not crate-scoped.
+        # Keys are already normalized (harness_layout_declared_members' own
+        # contract), so only the `find` side below needs normalizing to match.
+        local -A _declared=()
+        while IFS= read -r decl; do
+            [ -n "$decl" ] || continue
+            _declared["$decl"]=1
+        done < <(harness_layout_declared_members "$root")
+
+        # Process substitution (not a pipe) draining to completion — the same
+        # esc-5172-1 SIGPIPE-141 posture harness_layout_unit_lines documents.
+        while IFS= read -r -d '' f; do
+            _harness_layout_norm_path "$f"
+            f="$_HL_NORM_OUT"
+            members=$((members + 1))
+            [ -n "${_declared["$f"]:-}" ] && continue
+            member="${f#"$tests_dir_norm"/}"
+            _emit FAIL "crate=$crate" "file=$root" "reason=undeclared-member" "member=$member"
+            violations=$((violations + 1))
+        done < <(find "$moddir" -type f -name '*.rs' -print0)
+    done
+
+    if [ "$violations" -gt 0 ]; then
+        return 1
+    fi
+    _emit PASS "crate=$crate" "scan=undeclared-members" "roots=$roots" "members=$members"
     return 0
 }
 
@@ -737,6 +1055,130 @@ harness_layout_malformed_rows() {
         "$baseline_file" _harness_layout_row_in_scope
 }
 
+# ---------------------------------------------------------------------------
+# harness_warn_ratchet_violations <scan_output> <root_dir> [known_row]...
+#
+# The CLASSIFIER behind the WARN-set shrinking ratchet: given one scan
+# transcript and the checked-in allow-list of units already known to WARN,
+# decide which rows are red, which are merely stale, and whether the WARN
+# extraction saw anything at all.
+#
+# EXTRACTED so hermetic fixtures can drive it (Section 4c) exactly as the live
+# tree drives it — the same parameterize-on-(dir, data) discipline every other
+# detector in this file already follows, and the reason Sections 1/1b/4/4b can
+# pin must-fire AND must-not-fire behaviour instead of only observing whatever
+# the real tree happens to contain today. That gap was not hypothetical: this
+# rule's gating branches are reachable ONLY when the live tree is already
+# broken, so before this extraction the only way to exercise them was to
+# hand-break a copy of the guard. The exposure grows in exactly the direction
+# the design intends — the moment _KLOC_WARN_KNOWN empties (the stated healthy
+# end state, since a unit may LEAVE the set freely), the subset check goes
+# vacuous and its own non-vacuity pair is satisfied by 0 == 0, so a later
+# regression in the file=/<root_dir> normalisation would leave an ARRIVING unit
+# silently unratcheted behind a green gate.
+#
+# <scan_output> is a run_harness_layout_scan / harness_layout_violations
+# transcript; its WARN lines carry ABSOLUTE file= paths, because the detector is
+# driven with absolute tests dirs. <root_dir> is the prefix stripped to recover
+# the repo-relative form the rows are checked in as, which is what keeps them
+# stable across worktrees. Each <known_row> is one such repo-relative path.
+#
+# Prints one classification line per finding, in this grammar:
+#
+#   UNKNOWN <path>   a unit WARNed and is NOT a known row           GATING
+#   DEAD    <path>   a known row's file is not on disk              GATING
+#   STALE   <path>   a known row is on disk but did not WARN        advisory
+#   PARSED  <n>      file= values recovered from the WARN lines     (non-vacuity)
+#   EMITTED <n>      WARN lines present in <scan_output>            (non-vacuity)
+#
+# Returns 1 if any UNKNOWN or DEAD was emitted (the two GATING classes), else 0.
+# A STALE row alone NEVER fails: gating it would land on whoever shrank a unit
+# rather than on whoever curates the list — the same punish-progress red an
+# equality pin on `warnings=<n>` was rejected for. Section 5d's banner carries
+# the full severity split and the reasoning behind it.
+#
+# DEAD BEATS STALE: a row whose file is missing cannot WARN, so reporting it as
+# merely "no longer warning" would understate it. Existence is checked first.
+#
+# PARSED/EMITTED are REPORTED, not compared here. They are the non-vacuity pair,
+# and they are deliberately derived by two independent passes over the same
+# input (the read loop vs. a fresh `grep -c`) so that a future regression which
+# breaks one and not the other shows up as a mismatch. Which of the two is
+# authoritative is the caller's assert to make, not the classifier's — this
+# function has no opinion about whether zero WARNs is healthy.
+#
+# NOTE the deliberate asymmetry in what touches the disk: the UNKNOWN class is
+# pure string work over <scan_output>, while DEAD/STALE stat <root_dir>/<row>.
+# That is why <root_dir> is a parameter and not $REPO_ROOT — a fixture points it
+# at a tmpdir and gets both halves hermetically.
+# ---------------------------------------------------------------------------
+harness_warn_ratchet_violations() {
+    local scan_output="$1"
+    local root_dir="$2"
+    shift 2
+    local known_rows=()
+    local _r
+    for _r in "$@"; do known_rows+=("$_r"); done
+
+    local warn_lines line f
+    warn_lines="$(printf '%s\n' "$scan_output" | grep -E '^HARNESS_KLOC_CAP WARN ' || true)"
+
+    local live_files=()
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        f="${line#* file=}"
+        f="${f%% *}"
+        live_files+=("${f#"$root_dir/"}")
+    done <<<"$warn_lines"
+
+    local known_set="" live_set=""
+    for _r in ${known_rows[@]+"${known_rows[@]}"}; do known_set="$known_set|$_r|"; done
+    for _r in ${live_files[@]+"${live_files[@]}"}; do live_set="$live_set|$_r|"; done
+
+    local rc=0
+
+    # (a) SUBSET: every live WARN file must be a known member.
+    for _r in ${live_files[@]+"${live_files[@]}"}; do
+        case "$known_set" in
+            *"|$_r|"*) ;;
+            *) printf 'UNKNOWN %s\n' "$_r"; rc=1 ;;
+        esac
+    done
+
+    # (c) PRUNE DIRECTION: dead rows are gating, stale rows are advisory.
+    for _r in ${known_rows[@]+"${known_rows[@]}"}; do
+        if [ ! -f "$root_dir/$_r" ]; then
+            printf 'DEAD %s\n' "$_r"
+            rc=1
+            continue
+        fi
+        case "$live_set" in
+            *"|$_r|"*) ;;
+            *) printf 'STALE %s\n' "$_r" ;;
+        esac
+    done
+
+    # (b) NON-VACUITY pair — see the header for why these are reported, not
+    # compared, and why the two counts are derived by independent passes.
+    printf 'PARSED %s\n' "${#live_files[@]}"
+    printf 'EMITTED %s\n' \
+        "$(printf '%s\n' "$scan_output" | grep -cE '^HARNESS_KLOC_CAP WARN ' || true)"
+
+    return "$rc"
+}
+
+# ---------------------------------------------------------------------------
+# _warn_ratchet_rows <classification_output> <CLASS>
+#
+# Print the <path> field of every `<CLASS> <path>` line of a
+# harness_warn_ratchet_violations transcript. One place that knows the
+# classification grammar's shape, shared by the hermetic Section 4c and the live
+# Section 5d so the two cannot drift into reading it differently.
+# ---------------------------------------------------------------------------
+_warn_ratchet_rows() {
+    printf '%s\n' "$1" | sed -n "s/^$2 //p"
+}
+
 echo "=== Harness-layout contract + anti-re-accretion kLOC-cap drift guard ==="
 
 # Collect every mktemp -d / mktemp path for a SINGLE EXIT cleanup (the
@@ -860,6 +1302,14 @@ assert "1c: clean scan emits no FAIL line" \
 # root) is not a compile unit and must be silently ignored — pins the
 # existing `for f in "$tests_dir"/*.rs` glob behavior against a future
 # rewrite that starts walking directories directly.
+#
+# Rule (d) (Section 10 below) preserves this pin rather than conflicting
+# with it: both harness_layout_violations here and
+# harness_undeclared_member_violations loop `for root in
+# "$tests_dir"/harness_*.rs`, so an orphan dir has no root and is never
+# visited by EITHER rule — there is nothing for rule (d) to compare an
+# orphan dir's files against, and reporting them undeclared would just be
+# this same silent-ignore behavior restated as a false positive.
 _s1c_orphan_dir="$(mktemp -d)"; _TMPDIRS+=("$_s1c_orphan_dir")
 mkdir -p "$_s1c_orphan_dir/harness_orphan"
 awk 'BEGIN { for (i = 0; i < 3; i++) print "// x" }' > "$_s1c_orphan_dir/harness_orphan/x.rs"
@@ -1055,10 +1505,51 @@ _s1e5_tuple="$(harness_layout_unit_lines "$_s1e5_dir/harness_stem.rs")"
 assert "1e: a bare \`mod\` in a non-root non-mod.rs file resolves against the file's STEM dir, in both the .rs and the dir/mod.rs form, and does not bind the containing-dir decoys (total=56 root=2 module=0 files=0 external=54 extfiles=3)" \
     test "$_s1e5_tuple" = "56 2 0 0 54 3"
 
+# --- Regression (task #7042 amendment): `_HL_WALK_VISITED` (declared -gA
+# inside `_harness_layout_walk_unit`) is RESET at the top of every call — "a
+# second call must not inherit the first's visited set" per that function's
+# own header. Nothing exercised that reset until now: dropping the `=()`
+# would make a second same-shell call on a root that shares an external
+# include skip the already-visited file and undercount it, and every fixture
+# above either lives in its own tmpdir (no shared path to leak across) or is
+# invoked via `$(…)` (which forks a SUBSHELL, so any leaked-or-reset state
+# never escapes back to this shell to be observed).
+#
+# Two roots in ONE dir both `#[path]`-include the SAME external file, called
+# via plain output REDIRECTION (`>`), not `$(…)`: a redirected shell-function
+# call runs in THIS shell (no fork), so `_HL_WALK_VISITED`'s global state
+# genuinely persists — or, if the reset regressed, leaks — between the two
+# calls exactly as it would across two `harness_layout_unit_lines` calls in a
+# real caller's loop (e.g. run_harness_layout_scan's per-crate loop, or
+# Section 5b's _s5bc_scan). ---
+_s1e6_dir="$(mktemp -d)"; _TMPDIRS+=("$_s1e6_dir")
+mkdir -p "$_s1e6_dir/common"
+{
+    printf '#[path = "common/shared.rs"]\n'
+    printf 'mod shared;\n'
+} > "$_s1e6_dir/harness_alpha.rs"                                 # root: 2 lines
+{
+    printf '#[path = "common/shared.rs"]\n'
+    printf 'mod shared;\n'
+} > "$_s1e6_dir/harness_beta.rs"                                  # root: 2 lines
+awk 'BEGIN { for (i = 0; i < 9; i++) print "// x" }' > "$_s1e6_dir/common/shared.rs"
+
+_s1e6_out1="$(mktemp)"; _TMPDIRS+=("$_s1e6_out1")
+_s1e6_out2="$(mktemp)"; _TMPDIRS+=("$_s1e6_out2")
+harness_layout_unit_lines "$_s1e6_dir/harness_alpha.rs" > "$_s1e6_out1"
+harness_layout_unit_lines "$_s1e6_dir/harness_beta.rs" > "$_s1e6_out2"
+_s1e6_tuple1="$(cat "$_s1e6_out1")"
+_s1e6_tuple2="$(cat "$_s1e6_out2")"
+
+assert "1e: first same-shell call reports the shared external include (total=11 root=2 module=0 files=0 external=9 extfiles=1)" \
+    test "$_s1e6_tuple1" = "11 2 0 0 9 1"
+assert "1e: a SECOND same-shell call on a different root sharing the same external include still reports it — _HL_WALK_VISITED did not leak across calls (total=11 root=2 module=0 files=0 external=9 extfiles=1)" \
+    test "$_s1e6_tuple2" = "11 2 0 0 9 1"
+
 # --- Coherence: the total is exactly root + module + external in every case. ---
 _s1e_total_coherent() {
     local tuple total root mod files ext extfiles
-    for tuple in "$_s1e_tuple" "$_s1e2_tuple" "$_s1e3_tuple" "$_s1e4_tuple" "$_s1e5_tuple"; do
+    for tuple in "$_s1e_tuple" "$_s1e2_tuple" "$_s1e3_tuple" "$_s1e4_tuple" "$_s1e5_tuple" "$_s1e6_tuple1" "$_s1e6_tuple2"; do
         read -r total root mod files ext extfiles <<<"$tuple"
         [ "$total" -eq $((root + mod + ext)) ] || return 1
     done
@@ -1199,6 +1690,71 @@ assert "3b: missing dir emitted as a structured FAIL line (reason=missing-tests-
     grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate dir=.*does-not-exist reason=missing-tests-dir' "$_s3b_out"
 
 # ===========================================================================
+# Section 3c: rule (a)'s "uncapped by design" claim, pinned NON-VACUOUSLY for
+# BOTH halves — an over-cap OVERRIDE stem AND an over-cap GRANDFATHERED
+# standalone each contribute ZERO violations in the SAME scan where an
+# over-cap harness DOES fire (task #7004). rule (a)'s cap governs
+# harness_<subsystem>.rs compile units ONLY; neither an override binary (I1)
+# nor a grandfathered baseline row (rule b) is a merge product or a sanctioned
+# cap-overflow destination (the clause beside `_HL_OVERRIDE_STEMS` in
+# harness-layout-lib.sh, task #6461/#7004).
+#
+# WHY THIS SECTION EXISTS. Section 3's own override and grandfathered fixtures
+# (tensegrity_t0a.rs and grand.rs above) are each a ONE-LINE file — vacuous
+# against a 20000 cap, since a 1-line file passes whether or not rule (a)
+# applies to either set at all. Without a fixture that puts BOTH an override
+# stem AND a grandfathered row OVER the cap, silently widening rule (a) to
+# either one would leave every assertion in this suite green. Section 3c
+# closes that gap: it proves the cap machinery is live in this exact scan (the
+# harness_over.rs assertion below), then proves the over-cap override AND the
+# over-cap grandfathered standalone are both silent anyway — so the silence is
+# attributable to the exemptions, not to a dead scan or an under-sized
+# fixture.
+# ===========================================================================
+echo ""
+echo "--- Section 3c: an over-cap override stem AND an over-cap grandfathered standalone are exempt from the kLOC cap (non-vacuous) ---"
+
+_s3c_dir="$(mktemp -d)"; _TMPDIRS+=("$_s3c_dir")
+_s3c_baseline="$(mktemp)"; _TMPDIRS+=("$_s3c_baseline")
+# Sole row is grand.rs's OWN grandfather entry (written below) — the override
+# stem's row is deliberately absent, so rule (b) grandfathering cannot
+# account for the override's silence: only the I1 stem allow-list can.
+printf 'crates/synthcrate/tests/grand.rs\n' > "$_s3c_baseline"
+
+# An over-cap harness root in the SAME dir/scan, so the cap machinery is
+# demonstrably live at this size (non-vacuity witness shared by both
+# exemptions checked below — not a restatement of Section 1's own pin).
+awk 'BEGIN { for (i = 0; i < 21000; i++) print "// x" }' > "$_s3c_dir/harness_over.rs"
+# An over-cap OVERRIDE stem. A different stem from Section 3's
+# tensegrity_t0a.rs, so the two sections do not co-vary on one stem.
+awk 'BEGIN { for (i = 0; i < 21000; i++) print "// x" }' > "$_s3c_dir/analytical_validation.rs"
+# An over-cap GRANDFATHERED standalone (rule (b), not I1) — the other half of
+# rule (a)'s "uncapped by design" claim: a baseline row never reaches rule
+# (a)'s cap arm either, since that arm gates on `harness_*.rs)` alone.
+awk 'BEGIN { for (i = 0; i < 21000; i++) print "// x" }' > "$_s3c_dir/grand.rs"
+
+_s3c_out="$(mktemp)"; _TMPDIRS+=("$_s3c_out")
+_s3c_rc=0
+harness_layout_violations synthcrate "$_s3c_dir" "$_s3c_baseline" 20000 \
+    > "$_s3c_out" 2>/dev/null || _s3c_rc=$?
+
+assert "3c: the scan fires (returns 1) — a violation was detected in this dir" \
+    test "$_s3c_rc" -eq 1
+assert "3c: NON-VACUITY — the over-cap harness DOES fire (cap machinery is live at this size)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_over\.rs reason=exceeds-cap lines=21000 cap=20000' "$_s3c_out"
+assert "3c: the over-cap override stem emits NO line naming it at all (exempt, not merely under threshold)" \
+    bash -c '! grep -qE "analytical_validation" "$1"' _ "$_s3c_out"
+assert "3c: the over-cap grandfathered standalone emits NO line naming it at all (exempt, not merely under threshold)" \
+    bash -c '! grep -qE "grand\.rs" "$1"' _ "$_s3c_out"
+
+# `|| true`: grep -c exits 1 on zero matches, which would otherwise abort this
+# script under `set -e` before the assert below gets to judge pass/fail (the
+# `run_harness_layout_scan` / Section 4 `_s4_summary_count` idiom).
+_s3c_fail_count="$(grep -cE '^HARNESS_KLOC_CAP FAIL ' "$_s3c_out" || true)"
+assert "3c: EXACTLY ONE FAIL line total — both the override and the grandfathered standalone contributed zero violations" \
+    test "$_s3c_fail_count" -eq 1
+
+# ===========================================================================
 # Section 4: rule (c) — the aggregate SUMMARY line is machine-parseable, and
 # EVERY emitted line obeys the canonical grammar (not a log-scrape). Drive TWO
 # synthetic crates (one clean, one with a violation) through the aggregating
@@ -1222,17 +1778,282 @@ run_harness_layout_scan "$_s4_baseline" 20000 \
     "cleancrate:$_s4_clean_dir" "dirtycrate:$_s4_dirty_dir" \
     > "$_s4_out" 2>/dev/null || _s4_rc=$?
 
-_s4_summary_count="$(grep -cE '^HARNESS_KLOC_CAP SUMMARY crates=2 violations=1$' "$_s4_out" || true)"
-assert "4: exactly one structured SUMMARY crates=2 violations=1 line" \
+_s4_summary_count="$(grep -cE '^HARNESS_KLOC_CAP SUMMARY crates=2 violations=1 warnings=0$' "$_s4_out" || true)"
+assert "4: exactly one structured SUMMARY crates=2 violations=1 warnings=0 line" \
     test "$_s4_summary_count" -eq 1
 assert "4: aggregate scan returns non-zero when any crate has a violation (rc 1)" \
     test "$_s4_rc" -eq 1
 
 # Non-blank lines that do NOT match the canonical grammar (`|| true`: the
 # clean case is the grep-no-match exit 1).
-_s4_bad="$(grep -vE '^[[:space:]]*$' "$_s4_out" | grep -vE '^HARNESS_KLOC_CAP (PASS|FAIL|SUMMARY) ' || true)"
+_s4_bad="$(grep -vE '^[[:space:]]*$' "$_s4_out" | grep -vE '^HARNESS_KLOC_CAP (PASS|FAIL|WARN|SUMMARY) ' || true)"
 assert "4: every emitted non-empty line matches the canonical HARNESS_KLOC_CAP grammar" \
     test -z "$_s4_bad"
+
+# ===========================================================================
+# Section 4b: rules (a)+(c) — the ADVISORY WARN tier (approaching-cap).
+#
+# A harness unit that is over WARN_PCT% of the cap but still UNDER it emits a
+# `reason=approaching-cap` WARN line, so the squeeze surfaces in ROUTINE gate
+# output rather than only on the commit that finally breaks the cap. The tier
+# is deliberately ADVISORY: it never changes the exit code and never
+# increments `violations=` (a gating WARN would have turned the merge gate RED
+# on main for a unit no single task is scoped to fix — see the WARN_PCT
+# comment beside CAP_LINES).
+#
+# Hermetic mktemp -d fixtures in the Section 1/1b idiom, driven through the
+# aggregating driver so the SUMMARY field is exercised too.
+# ===========================================================================
+echo ""
+echo "--- Section 4b: advisory WARN tier (approaching-cap) ---"
+
+_s4b_baseline="$(mktemp)"; _TMPDIRS+=("$_s4b_baseline")
+: > "$_s4b_baseline"   # empty fixture baseline (rule (a) never consults it)
+
+# --- (a)+(f): a unit at 95% of the passed cap WARNs, and SUMMARY counts it ---
+_s4b_dir="$(mktemp -d)"; _TMPDIRS+=("$_s4b_dir")
+awk 'BEGIN { for (i = 0; i < 19000; i++) print "// x" }' > "$_s4b_dir/harness_warn.rs"
+
+_s4b_out="$(mktemp)"; _TMPDIRS+=("$_s4b_out")
+_s4b_rc=0
+run_harness_layout_scan "$_s4b_baseline" 20000 "synthcrate:$_s4b_dir" \
+    > "$_s4b_out" 2>/dev/null || _s4b_rc=$?
+
+# Fully `^...$`-anchored: WARN must carry the SAME five breakdown fields, in the
+# same order, as `reason=exceeds-cap`, so rule (c)'s three-remedy reading
+# (module_lines dominates -> split; root_lines -> trim; external_lines ->
+# re-home the includer) applies to a WARN identically.
+_s4b_warn_count="$(grep -cE '^HARNESS_KLOC_CAP WARN crate=synthcrate file=.*harness_warn\.rs reason=approaching-cap lines=19000 cap=20000 warn_at=18000 pct=95 root_lines=19000 module_lines=0 module_files=0 external_lines=0 external_files=0$' "$_s4b_out" || true)"
+assert "4b: exactly one fully-anchored WARN line with the same breakdown fields as exceeds-cap" \
+    test "$_s4b_warn_count" -eq 1
+
+# --- (b): a WARN is NOT a violation ---
+assert "4b: a WARNing scan still returns 0 (WARN is advisory, never gating)" \
+    test "$_s4b_rc" -eq 0
+assert "4b: the WARNing crate still emits a structured PASS line" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS crate=synthcrate$' "$_s4b_out"
+assert "4b: a WARN emits no FAIL line" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s4b_out"
+
+# --- (f): SUMMARY gains an APPENDED warnings=<n> field ---
+_s4b_summary_count="$(grep -cE '^HARNESS_KLOC_CAP SUMMARY crates=1 violations=0 warnings=1$' "$_s4b_out" || true)"
+assert "4b: SUMMARY appends warnings= after violations= (crates=1 violations=0 warnings=1)" \
+    test "$_s4b_summary_count" -eq 1
+
+# --- (c): the WARN boundary is STRICTLY GREATER, not >= ---
+_s4b_at_dir="$(mktemp -d)"; _TMPDIRS+=("$_s4b_at_dir")
+awk 'BEGIN { for (i = 0; i < 18000; i++) print "// x" }' > "$_s4b_at_dir/harness_at.rs"
+_s4b_at_out="$(mktemp)"; _TMPDIRS+=("$_s4b_at_out")
+_s4b_at_rc=0
+harness_layout_violations synthcrate "$_s4b_at_dir" "$_s4b_baseline" 20000 \
+    > "$_s4b_at_out" 2>/dev/null || _s4b_at_rc=$?
+assert "4b: a unit EXACTLY at the warn line (18000 = 90% of 20000) emits no WARN (-gt, not -ge)" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP WARN" "$1"' _ "$_s4b_at_out"
+assert "4b: the at-boundary unit still passes cleanly (rc 0)" \
+    test "$_s4b_at_rc" -eq 0
+
+_s4b_over_dir="$(mktemp -d)"; _TMPDIRS+=("$_s4b_over_dir")
+awk 'BEGIN { for (i = 0; i < 18001; i++) print "// x" }' > "$_s4b_over_dir/harness_over.rs"
+_s4b_over_out="$(mktemp)"; _TMPDIRS+=("$_s4b_over_out")
+harness_layout_violations synthcrate "$_s4b_over_dir" "$_s4b_baseline" 20000 \
+    > "$_s4b_over_out" 2>/dev/null || true
+assert "4b: one line ABOVE the warn line (18001) does WARN (the boundary is exercised from both sides)" \
+    grep -Eq '^HARNESS_KLOC_CAP WARN crate=synthcrate file=.*harness_over\.rs reason=approaching-cap lines=18001 cap=20000 warn_at=18000 ' "$_s4b_over_out"
+
+# --- (d): FAIL takes precedence — no double-report for the same file ---
+_s4b_fail_dir="$(mktemp -d)"; _TMPDIRS+=("$_s4b_fail_dir")
+awk 'BEGIN { for (i = 0; i < 20001; i++) print "// x" }' > "$_s4b_fail_dir/harness_overcap.rs"
+_s4b_fail_out="$(mktemp)"; _TMPDIRS+=("$_s4b_fail_out")
+_s4b_fail_rc=0
+harness_layout_violations synthcrate "$_s4b_fail_dir" "$_s4b_baseline" 20000 \
+    > "$_s4b_fail_out" 2>/dev/null || _s4b_fail_rc=$?
+assert "4b: an over-cap unit still FAILs with reason=exceeds-cap" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_overcap\.rs reason=exceeds-cap lines=20001 cap=20000' "$_s4b_fail_out"
+assert "4b: an over-cap unit emits NO WARN line (FAIL wins outright, no double-report)" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP WARN" "$1"' _ "$_s4b_fail_out"
+assert "4b: an over-cap unit still returns 1" \
+    test "$_s4b_fail_rc" -eq 1
+
+# --- (e): the warn line is DERIVED FROM THE CAP PASSED IN, not hardcoded ---
+# Re-drive the SAME 19000-line fixture at cap=10000: it must now FAIL (19000 >
+# 10000), while a 9500-line unit WARNs at warn_at=9000. A hardcoded 18000 would
+# leave the 9500-line unit silent and the WARN tier untestable at any other cap.
+_s4b_cap10_dir="$(mktemp -d)"; _TMPDIRS+=("$_s4b_cap10_dir")
+cp "$_s4b_dir/harness_warn.rs" "$_s4b_cap10_dir/harness_warn.rs"
+awk 'BEGIN { for (i = 0; i < 9500; i++) print "// x" }' > "$_s4b_cap10_dir/harness_small.rs"
+_s4b_cap10_out="$(mktemp)"; _TMPDIRS+=("$_s4b_cap10_out")
+harness_layout_violations synthcrate "$_s4b_cap10_dir" "$_s4b_baseline" 10000 \
+    > "$_s4b_cap10_out" 2>/dev/null || true
+assert "4b: at cap=10000 the 19000-line unit FAILs (exceeds-cap), not WARNs" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_warn\.rs reason=exceeds-cap lines=19000 cap=10000' "$_s4b_cap10_out"
+assert "4b: at cap=10000 the 9500-line unit WARNs with warn_at=9000 (threshold derived from the PASSED cap)" \
+    grep -Eq '^HARNESS_KLOC_CAP WARN crate=synthcrate file=.*harness_small\.rs reason=approaching-cap lines=9500 cap=10000 warn_at=9000 pct=95 ' "$_s4b_cap10_out"
+assert "4b: at cap=10000 the 19000-line unit emits no WARN line" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP WARN .*harness_warn\.rs" "$1"' _ "$_s4b_cap10_out"
+
+# ===========================================================================
+# Section 4c: the WARN-set shrinking RATCHET, hermetically.
+#
+# Section 4b pins the WARN LINE (when a unit warns). This section pins what is
+# DONE with those warns: harness_warn_ratchet_violations, the classifier behind
+# Section 5d — the GATING half of an otherwise advisory tier.
+#
+# WHY IT NEEDS ITS OWN FIXTURES rather than riding on Section 5d's live run:
+# 5d's two RED branches are reachable only when the real tree is already broken,
+# so on a healthy tree the live call exercises neither. Everything else in this
+# guard (Sections 1, 1b, 4, 4b, 10) carries must-fire fixtures for exactly that
+# reason, and the ratchet was the one rule that did not. Worse, the exposure
+# GROWS as the design succeeds: once _KLOC_WARN_KNOWN empties — the stated
+# healthy end state, since departure from the warn set is free — the subset
+# check is vacuous and its non-vacuity pair reads 0 == 0, so a regression in the
+# file=/<root_dir> normalisation would let an ARRIVING unit through unratcheted
+# behind a green gate. These fixtures are what keeps the rule pinned in that
+# end state.
+#
+# Fixtures are synthetic SCAN TRANSCRIPTS (not scans): the classifier's input is
+# text plus a root dir, so there is nothing to gain from generating 19000-line
+# files here — Section 4b already owns the line->WARN half of the contract, and
+# these cases are about what happens AFTER a WARN line exists.
+# ===========================================================================
+echo ""
+echo "--- Section 4c: WARN-set shrinking ratchet (hermetic) ---"
+
+# A synthetic repo root: two harness files that EXIST, and one path deliberately
+# never created (the DEAD case).
+_s4c_root="$(mktemp -d)"; _TMPDIRS+=("$_s4c_root")
+mkdir -p "$_s4c_root/crates/synthcrate/tests"
+: > "$_s4c_root/crates/synthcrate/tests/harness_a.rs"
+: > "$_s4c_root/crates/synthcrate/tests/harness_b.rs"
+_s4c_a="crates/synthcrate/tests/harness_a.rs"
+_s4c_b="crates/synthcrate/tests/harness_b.rs"
+_s4c_gone="crates/synthcrate/tests/harness_gone.rs"
+
+# One canonical WARN line for an ABSOLUTE path — the shape the detector really
+# emits (it is driven with absolute tests dirs), which is what makes the
+# <root_dir>-stripping half of the classifier load-bearing rather than cosmetic.
+_s4c_warn() {
+    printf 'HARNESS_KLOC_CAP WARN crate=synthcrate file=%s reason=approaching-cap lines=19000 cap=20000 warn_at=18000 pct=95 root_lines=19000 module_lines=0 module_files=0 external_lines=0 external_files=0\n' "$1"
+}
+
+# Drive the classifier over $_s4c_scan with the given known rows, capturing both
+# the classification transcript and the rc.
+_s4c_run() {
+    _s4c_rc=0
+    _s4c_out="$(harness_warn_ratchet_violations "$_s4c_scan" "$_s4c_root" "$@")" || _s4c_rc=$?
+}
+
+# Exact-set comparison for one classification class (empty string == no rows).
+_s4c_rows_are() {
+    test "$(_warn_ratchet_rows "$_s4c_out" "$1")" = "$2"
+}
+
+# --- (i) a live WARN absent from the known set is RED ---
+_s4c_scan="$(_s4c_warn "$_s4c_root/$_s4c_a")"
+_s4c_run
+assert "4c: a WARNing unit that is not a known row is classified UNKNOWN (repo-relative)" \
+    _s4c_rows_are UNKNOWN "$_s4c_a"
+assert "4c: an UNKNOWN row makes the ratchet GATING (rc 1)" \
+    test "$_s4c_rc" -eq 1
+
+# --- must-not-fire: the SAME warn, acknowledged in the known set, is green.
+# This is also the normalisation assert: the WARN line carries an ABSOLUTE path
+# and the known row is repo-relative, so it can only match if <root_dir> was
+# actually stripped. ---
+_s4c_run "$_s4c_a"
+assert "4c: the same WARN is silent once its repo-relative row is in the known set" \
+    _s4c_rows_are UNKNOWN ""
+assert "4c: an acknowledged WARN leaves the ratchet green (rc 0)" \
+    test "$_s4c_rc" -eq 0
+assert "4c: an acknowledged, still-warning row is not reported STALE" \
+    _s4c_rows_are STALE ""
+
+# --- normalisation, the other direction: a WARN whose file= is NOT under
+# <root_dir> cannot be silently absorbed — it stays absolute and is still RED,
+# so a broken prefix strip surfaces as an unmatchable path rather than as a
+# vacuous pass. ---
+_s4c_scan="$(_s4c_warn "/elsewhere/$_s4c_a")"
+_s4c_run "$_s4c_a"
+assert "4c: a WARN file= outside <root_dir> keeps its absolute path and stays UNKNOWN" \
+    _s4c_rows_are UNKNOWN "/elsewhere/$_s4c_a"
+assert "4c: the out-of-root WARN is gating (rc 1)" \
+    test "$_s4c_rc" -eq 1
+
+# --- (ii) a known row whose path does not exist is RED ---
+_s4c_scan=""
+_s4c_run "$_s4c_gone"
+assert "4c: a known row whose file is not on disk is classified DEAD" \
+    _s4c_rows_are DEAD "$_s4c_gone"
+assert "4c: a DEAD row makes the ratchet GATING (rc 1)" \
+    test "$_s4c_rc" -eq 1
+assert "4c: DEAD BEATS STALE — a missing row is not ALSO reported as merely stale" \
+    _s4c_rows_are STALE ""
+
+# --- (iii) a known row that exists but did not WARN is ADVISORY ---
+_s4c_scan=""
+_s4c_run "$_s4c_a"
+assert "4c: a known row that exists but emitted no WARN is classified STALE" \
+    _s4c_rows_are STALE "$_s4c_a"
+assert "4c: a STALE row alone NEVER gates (rc 0) — gating it would punish progress" \
+    test "$_s4c_rc" -eq 0
+assert "4c: a STALE row is not also reported DEAD" \
+    _s4c_rows_are DEAD ""
+
+# --- severity mixing: one gating class plus one advisory class in a single run.
+# The advisory row must still be REPORTED (it is the only prune signal there is)
+# while the rc is decided by the gating one alone. ---
+_s4c_scan="$(_s4c_warn "$_s4c_root/$_s4c_b")"
+_s4c_run "$_s4c_a"
+assert "4c: a mixed run reports the arriving unit UNKNOWN" \
+    _s4c_rows_are UNKNOWN "$_s4c_b"
+assert "4c: a mixed run STILL reports the departed row STALE (advisory output is not suppressed by a red)" \
+    _s4c_rows_are STALE "$_s4c_a"
+assert "4c: a mixed run is gating on the UNKNOWN alone (rc 1)" \
+    test "$_s4c_rc" -eq 1
+
+# --- (iv) the healthy END STATE: empty known set, zero WARNs. The subset check
+# is vacuous here BY FACT, and the non-vacuity pair must say so honestly (0 ==
+# 0) rather than by silence. ---
+_s4c_scan="$(printf 'HARNESS_KLOC_CAP PASS crate=synthcrate\nHARNESS_KLOC_CAP SUMMARY crates=1 violations=0 warnings=0\n')"
+_s4c_run
+assert "4c: an empty known set with zero WARNs is green (rc 0)" \
+    test "$_s4c_rc" -eq 0
+assert "4c: the end state emits no classification rows at all" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "^(UNKNOWN|DEAD|STALE) "' _ "$_s4c_out"
+assert "4c: the end state reports PARSED 0" \
+    test "$(_warn_ratchet_rows "$_s4c_out" PARSED)" -eq 0
+assert "4c: the end state reports EMITTED 0" \
+    test "$(_warn_ratchet_rows "$_s4c_out" EMITTED)" -eq 0
+
+# --- NON-VACUITY PAIR: the two counts are derived by independent passes, so
+# pin them against a transcript where the WARN lines are OUTNUMBERED by
+# non-WARN noise. A grep that broadened to `^HARNESS_KLOC_CAP ` would read 5
+# here, and a read loop that dropped entries would read fewer than 2. ---
+# NOTE the explicit `\n` after EVERY field: `$(_s4c_warn …)` loses its trailing
+# newline to command substitution, so a `%s%s` here would splice two WARN lines
+# into one and make this fixture read 1 where it must read 2.
+_s4c_scan="$(printf '%s\n%s\n%s\n%s\n%s\n' \
+    'HARNESS_KLOC_CAP PASS crate=synthcrate' \
+    'HARNESS_KLOC_CAP FAIL crate=synthcrate file=/x/harness_z.rs reason=exceeds-cap lines=20001 cap=20000' \
+    "$(_s4c_warn "$_s4c_root/$_s4c_a")" \
+    "$(_s4c_warn "$_s4c_root/$_s4c_b")" \
+    'HARNESS_KLOC_CAP SUMMARY crates=1 violations=1 warnings=2')"
+_s4c_run "$_s4c_a" "$_s4c_b"
+assert "4c: PARSED counts only WARN lines (2), not the PASS/FAIL/SUMMARY noise around them" \
+    test "$(_warn_ratchet_rows "$_s4c_out" PARSED)" -eq 2
+assert "4c: EMITTED agrees with PARSED on the same mixed transcript (non-vacuity pair)" \
+    test "$(_warn_ratchet_rows "$_s4c_out" EMITTED)" -eq 2
+assert "4c: both WARNing units are acknowledged, so the mixed transcript is green (rc 0)" \
+    test "$_s4c_rc" -eq 0
+
+# --- SHRINKING, not equality: a known set LARGER than the live warn set is
+# green (that is the whole point of a subset ratchet), and the surplus row is
+# surfaced as STALE rather than swallowed. ---
+_s4c_scan="$(_s4c_warn "$_s4c_root/$_s4c_a")"
+_s4c_run "$_s4c_a" "$_s4c_b"
+assert "4c: a known set larger than the live warn set is green (SUBSET, never equality)" \
+    test "$_s4c_rc" -eq 0
+assert "4c: the surplus known row is surfaced as STALE, not silently tolerated" \
+    _s4c_rows_are STALE "$_s4c_b"
 
 # ===========================================================================
 # Section 5: LIVE scan — the guard is GREEN on the real pre-consolidation tree
@@ -1294,7 +2115,8 @@ _live_summary="$(printf '%s\n' "$_live_out" | grep -E '^HARNESS_KLOC_CAP SUMMARY
 # archived log (the 2026-07-20 incident: 4 live violations, zero offender
 # lines captured, four investigations blocked). Gated on failure so a clean
 # run's output is byte-for-byte unchanged.
-if [ "$_live_rc" -ne 0 ] || [ "$_live_summary" != "HARNESS_KLOC_CAP SUMMARY crates=5 violations=0" ]; then
+if [ "$_live_rc" -ne 0 ] || ! printf '%s\n' "$_live_summary" \
+        | grep -qE '^HARNESS_KLOC_CAP SUMMARY crates=5 violations=0 warnings=[0-9]+$'; then
     echo "  ---- Section 5: live scan output (captured, printed on failure) ----"
     printf '%s\n' "$_live_out"
     echo "  ---- Section 5: end live scan output ----"
@@ -1302,8 +2124,14 @@ fi
 
 assert "5: live scan is green on the current tree (rc 0, zero violations)" \
     test "$_live_rc" -eq 0
-assert "5: live SUMMARY line reads exactly crates=5 violations=0" \
-    test "$_live_summary" = "HARNESS_KLOC_CAP SUMMARY crates=5 violations=0"
+# The violations count is pinned to EXACTLY 0; the warnings count is
+# deliberately NOT pinned to a number here. WARN is advisory (it never changes
+# the exit code or `violations=`), and an equality on the count would turn this
+# gate RED the moment an unrelated live unit innocently SHRANK below the WARN
+# line — punishing progress. WHICH units warn is ratcheted as a shrinking
+# SUBSET in Section 5d, which is where an ARRIVING unit is caught.
+assert "5: live SUMMARY line reads crates=5 violations=0 (warn count advisory, ratcheted in 5d)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^HARNESS_KLOC_CAP SUMMARY crates=5 violations=0 warnings=[0-9]+$"' _ "$_live_summary"
 
 # ===========================================================================
 # Section 5b: live non-vacuity — the live measure actually reads module dirs,
@@ -1365,16 +2193,32 @@ assert "5b: at least one live harness has root<500 lines yet aggregate>10000 lin
 # one cause. The non-vacuity check above is what this section actually
 # contributes.
 #
-# HEADROOM (measured, task #5620, 14 live harness units). Attributing the
-# escaping tests/common/ includes (Section 1e) put
-# harness_topology_selector at 21470 = 97 root + 19245 module + 2128 external
-# (`#[path = "common/differential.rs"]`), 7.4% OVER CAP_LINES=20000. Per rule
-# (a)'s own remedy that was resolved by SPLITTING `selective_demand` out into
-# harness_selective_demand — NOT by raising the cap, which would have
-# contradicted the ratified 10-20 kLOC band of PRD §3 W1/§7 and loosened the
-# C2 ratchet to fit its first offender. Post-split the measured max aggregate
-# is 19591 (harness_fea_solver_e2e: 106 root + 19103 module + 382 external),
-# so the tightest live unit now sits ~2% under the cap.
+# HEADROOM (measured, task #5620). Attributing the escaping tests/common/
+# includes (Section 1e) put harness_topology_selector at 21470 = 97 root +
+# 19245 module + 2128 external (`#[path = "common/differential.rs"]`), 7.4%
+# OVER CAP_LINES=20000. Per rule (a)'s own remedy that was resolved by
+# SPLITTING `selective_demand` out into harness_selective_demand — NOT by
+# raising the cap, which would have contradicted the ratified 10-20 kLOC band
+# of PRD §3 W1/§7 and loosened the C2 ratchet to fit its first offender.
+#
+# RE-MEASURED, task #6121 (32 live harness units across the 5 consolidatable
+# crates). harness_fea_solver_e2e had climbed back to 19429 = 107 root + 18931
+# module (43 files) + 391 external, 97.1% of the cap — under it, so the
+# pass/fail cap said nothing, which is precisely the blind spot the advisory
+# WARN tier now covers. Same remedy applied, again a split rather than a cap
+# raise: the `stress_*` group left for harness_stress_scenarios (task #6121),
+# leaving 16118 = 104 root + 15623 module (36 files) + 391 external (80.6%) and
+# a new 3378-line unit (70 root + 3308 module + 0 external, 16.9%). The tightest
+# live unit is now crates/reify-syntax/tests/harness_syntax.rs at 18957 = 148
+# root + 18739 module + 70 external (94.8%) — the sole member of
+# _KLOC_WARN_KNOWN, ratcheted by Section 5d.
+#
+# Every figure in this paragraph is a LIVE `harness_layout_unit_lines` reading:
+# the pre-split one taken at this branch's base (bf5b91d9de), the rest at the
+# amendment commit. They run ~160 lines above the projections task #6121's plan
+# quoted (19265 / 15951) because that plan measured an earlier base and main
+# has since added a 43rd module file to the dir — the split's ~3.3 kLOC delta is
+# unaffected, only the absolute totals moved.
 
 # ===========================================================================
 # Section 5c: live non-vacuity of the EXTERNAL attribution — the out-of-module-
@@ -1397,6 +2241,135 @@ echo "--- Section 5c: live non-vacuity of the external attribution ---"
 
 assert "5c: at least one live harness attributes an out-of-module-dir include (external_files>0 — the walk is wired on the real tree)" \
     test "$_S5BC_EXTERNAL_WIRED" -eq 1
+
+# ===========================================================================
+# Section 5d: the LIVE WARN-set shrinking ratchet — every unit that currently
+# WARNs must be a member of the checked-in _KLOC_WARN_KNOWN set.
+#
+# This is the GATING half of the advisory WARN tier. The WARN line itself never
+# changes the exit code (see WARN_PCT), so on its own it would be pure log
+# noise that a hurried reader scrolls past. The ratchet is what makes it a
+# signal: SUBSET, not equality, so a unit may LEAVE the warn set freely (it
+# shrank — that is progress and must never turn the gate red) while a unit
+# ARRIVING is RED and must be acknowledged in the same diff that pushes it over
+# the line. Same shape as harness-layout-baseline.manifest's own ratchet, whose
+# semantics a reviewer already knows.
+#
+# An equality pin on `warnings=<n>` was deliberately NOT used: it would go red
+# the moment harness_syntax innocently dropped below 90%, punishing progress.
+# Section 5's live SUMMARY assert therefore tolerates any warn COUNT; WHICH
+# units warn is pinned here.
+#
+# SUBSET-ONLY CUTS BOTH WAYS, so (c) below closes the other direction. Because
+# departure is free and silent, a row whose unit dropped back under the line
+# lingers forever as a permanently-permissive entry — and if that unit later
+# grew back over 90%, (a) would wave it through and the "an ARRIVING unit must
+# be acknowledged" property would be lost for that path with nothing on screen
+# saying so. (a) cannot see it (it only inspects live WARNs) and (b) cannot
+# either (it only compares two counts). (c) makes the stale row VISIBLE without
+# making it FATAL, splitting the two failure modes by severity:
+#   - unit still on disk, no longer WARNs -> ADVISORY `PRUNE:` note. Gating
+#     this would re-introduce exactly the punish-progress red the equality pin
+#     was rejected for, and would land on whoever shrank the unit rather than
+#     on whoever curates this list.
+#   - path not on disk at all             -> GATING. Such a row can never WARN
+#     again, so it is dead rather than stale; and the only diff that can create
+#     one is the diff that renamed or deleted the harness, which is precisely
+#     where the row's removal belongs.
+#
+# All three rules above are implemented by harness_warn_ratchet_violations
+# (defined with the other detectors, pinned must-fire/must-not-fire against
+# hermetic fixtures in Section 4c). This section is the LIVE DRIVER only: it
+# supplies the real inputs and renders the operator-facing remedy prose an
+# ARCHIVED merge-verify log has to be readable from. Nothing that decides a
+# verdict lives below this banner.
+#
+# Reuses Section 5's ALREADY-CAPTURED $_live_out — no second live scan. Same
+# one-scan-feeds-two-sections discipline Sections 5b/5c use, and for the same
+# reason: this guard runs on the merge gate and each live unit measured costs
+# real wall clock in a PRD about cutting merge-gate CPU.
+# ===========================================================================
+echo ""
+echo "--- Section 5d: live WARN-set shrinking ratchet ---"
+
+_s5d_class_rc=0
+_s5d_class="$(harness_warn_ratchet_violations "$_live_out" "$REPO_ROOT" \
+    ${_KLOC_WARN_KNOWN[@]+"${_KLOC_WARN_KNOWN[@]}"})" || _s5d_class_rc=$?
+
+mapfile -t _s5d_unknown < <(_warn_ratchet_rows "$_s5d_class" UNKNOWN)
+mapfile -t _s5d_dead    < <(_warn_ratchet_rows "$_s5d_class" DEAD)
+mapfile -t _s5d_stale   < <(_warn_ratchet_rows "$_s5d_class" STALE)
+_s5d_parsed="$(_warn_ratchet_rows "$_s5d_class" PARSED)"
+_s5d_emitted="$(_warn_ratchet_rows "$_s5d_class" EMITTED)"
+
+# Kept for the verbatim dumps below: an operator needs the WHOLE offending WARN
+# line (lines=/pct=/the five breakdown fields), not just the path the classifier
+# returns.
+_s5d_live_warn_lines="$(printf '%s\n' "$_live_out" | grep -E '^HARNESS_KLOC_CAP WARN ' || true)"
+
+# On failure, dump the offending WARN lines verbatim using the Section 5 idiom,
+# so an operator reading an ARCHIVED merge-verify log sees the exact unit and
+# its percentage without re-deriving anything by hand.
+if [ "${#_s5d_unknown[@]}" -ne 0 ]; then
+    echo "  ---- Section 5d: live WARN lines NOT in _KLOC_WARN_KNOWN ----"
+    for _s5d_f in "${_s5d_unknown[@]}"; do
+        printf '%s\n' "$_s5d_live_warn_lines" | grep -F -- "file=$REPO_ROOT/$_s5d_f " || true
+    done
+    echo "  REMEDY: split the unit (rule (a)'s prescribed remedy for a"
+    echo "  module_lines-dominated squeeze), or, if it is genuinely tolerated"
+    echo "  for now, add its repo-relative path to _KLOC_WARN_KNOWN IN THIS DIFF."
+    echo "  ---- Section 5d: end offending WARN lines ----"
+fi
+
+assert "5d: every live WARNing unit is a member of the checked-in _KLOC_WARN_KNOWN set (subset ratchet)" \
+    test "${#_s5d_unknown[@]}" -eq 0
+
+# (b) NON-VACUITY: a regression that made the file= extraction return the empty
+# set would silently turn (a) above into a no-op no matter how many units warn.
+# Pin that the parsed count matches the emitted WARN count — including the
+# healthy zero-warn end state, where both are 0 and (a) is vacuous BY FACT, not
+# by parser breakage.
+assert "5d: the WARN file= extraction parsed exactly as many entries as the live scan emitted (non-vacuity)" \
+    test "$_s5d_parsed" -eq "$_s5d_emitted"
+
+# (c) PRUNE DIRECTION: report known rows that did not WARN this run (advisory)
+# and fail on known rows whose file is gone (gating). See the banner above for
+# why the two are split by severity.
+for _s5d_k in ${_s5d_stale[@]+"${_s5d_stale[@]}"}; do
+    echo "  PRUNE: _KLOC_WARN_KNOWN row '$_s5d_k' emitted no WARN this run — it is"
+    echo "  back under ${WARN_PCT}% of CAP_LINES=${CAP_LINES}. ADVISORY, not a failure:"
+    echo "  drop the row next time this file is touched, so the row cannot silently"
+    echo "  re-admit the unit if it grows back over the line."
+done
+if [ "${#_s5d_stale[@]}" -eq 0 ] && [ "${#_s5d_dead[@]}" -eq 0 ]; then
+    echo "  (prune check: all ${#_KLOC_WARN_KNOWN[@]} _KLOC_WARN_KNOWN row(s) still live-WARN — nothing stale)"
+fi
+
+# Same verbatim-dump idiom as (a): an operator reading an ARCHIVED merge-verify
+# log gets the offending rows without re-deriving anything by hand.
+if [ "${#_s5d_dead[@]}" -ne 0 ]; then
+    echo "  ---- Section 5d: DEAD _KLOC_WARN_KNOWN rows (path not on disk) ----"
+    for _s5d_k in "${_s5d_dead[@]}"; do
+        echo "    $_s5d_k"
+    done
+    echo "  REMEDY: the harness was renamed, split or deleted, so this row can"
+    echo "  never fire again. Drop it — or repoint it at the new path if the unit"
+    echo "  merely moved and is still over the line — IN THE SAME DIFF."
+    echo "  ---- Section 5d: end DEAD rows ----"
+fi
+
+assert "5d: every _KLOC_WARN_KNOWN row names a file that still exists on disk (no dead allowlist rows)" \
+    test "${#_s5d_dead[@]}" -eq 0
+
+# WIRING: the classifier's return code must agree with the gating classes it
+# just emitted. The rc RULE is pinned hermetically in Section 4c; this is the
+# live half — it catches a mis-wired `|| _s5d_class_rc=$?` capture silently
+# swallowing a red, which no assert above would notice because they all read the
+# printed classes rather than the status.
+_s5d_expect_rc=0
+{ [ "${#_s5d_unknown[@]}" -eq 0 ] && [ "${#_s5d_dead[@]}" -eq 0 ]; } || _s5d_expect_rc=1
+assert "5d: the live ratchet's return code agrees with the gating classes it emitted" \
+    test "$_s5d_class_rc" -eq "$_s5d_expect_rc"
 
 # ===========================================================================
 # Section 6: C1 `#[path]` MANDATE — every `mod <ident>;` in a harness root
@@ -1464,17 +2437,30 @@ assert "6: clean harness root emits no FAIL line (precision — no blunt \"alway
 
 # --- LIVE scan: every crates/*/tests dir holding a harness root, on disk. Not
 # scoped to CONSOLIDATABLE_CRATES, so a harness root appearing in any other
-# crate is still covered. ---
+# crate is still covered. ONE pass feeds BOTH this section's #[path]-mandate
+# check AND Section 10's undeclared-member check below (task #7042
+# amendment, the Section 5b/5c pattern — see that pair for the precedent):
+# the two loops were byte-identical over `crates/*/tests` apart from which
+# detector they called and which output they accumulated into, so a single
+# traversal now populates this section's $_s6_live_out/$_s6_live_rc AND
+# Section 10's $_s10_live_out/$_s10_live_rc, plus the ONE shared
+# $_s6s10_live_roots count both sections' non-vacuity asserts read — so the
+# two counts can never silently drift apart. Section 10 below runs no loop
+# of its own; it only asserts on the globals this loop sets. ---
 _s6_live_out="$(mktemp)"; _TMPDIRS+=("$_s6_live_out")
 _s6_live_rc=0
-_s6_live_roots=0
+_s10_live_out="$(mktemp)"; _TMPDIRS+=("$_s10_live_out")
+_s10_live_rc=0
+_s6s10_live_roots=0
 : > "$_s6_live_out"
+: > "$_s10_live_out"
 for _d in "$REPO_ROOT"/crates/*/tests; do
     [ -d "$_d" ] || continue
     compgen -G "$_d/harness_*.rs" > /dev/null || continue
-    _s6_live_roots=$((_s6_live_roots + $(compgen -G "$_d/harness_*.rs" | wc -l)))
+    _s6s10_live_roots=$((_s6s10_live_roots + $(compgen -G "$_d/harness_*.rs" | wc -l)))
     _c="$(basename "$(dirname "$_d")")"
     harness_path_attr_violations "$_c" "$_d" >> "$_s6_live_out" 2>/dev/null || _s6_live_rc=1
+    harness_undeclared_member_violations "$_c" "$_d" >> "$_s10_live_out" 2>/dev/null || _s10_live_rc=1
 done
 
 # Offender lines to the archived log on failure (the Section 5 idiom).
@@ -1487,9 +2473,11 @@ fi
 assert "6: live tree honors the C1 #[path] mandate in every harness root (rc 0)" \
     test "$_s6_live_rc" -eq 0
 # Non-vacuity: the live scan must actually have visited harness roots, or a
-# future glob/layout change would silently turn the assert above into a no-op.
+# future glob/layout change would silently turn the assert above into a
+# no-op. Shared with Section 10's own roots assert below — see the fused-loop
+# comment above.
 assert "6: live scan actually visited harness roots (>= 13 found, non-vacuity)" \
-    test "$_s6_live_roots" -ge 13
+    test "$_s6s10_live_roots" -ge 13
 
 # ===========================================================================
 # Section 7: PRD §6 BT-2 — no repo-resident selector names a PRE-consolidation
@@ -2051,5 +3039,240 @@ assert "9: live baseline has no malformed rows (every data row is a well-formed 
 # is expected to shrink as consolidation proceeds, all the way to 0.
 assert "9: live row-shape scan emits a structured PASS line carrying the data-row count" \
     grep -Eq '^HARNESS_KLOC_CAP PASS scan=baseline-row-shape rows=[0-9]+$' "$_s9_live_out"
+
+# ===========================================================================
+# Section 10: rule (d) — undeclared member (a file physically present under a
+# harness root's own module dir with NO reachable `mod` declaration anywhere
+# in the root's transitive mod-graph). rustc never compiles such a file, so
+# its `#[test]` fns vanish with no compile error, no link error, and no
+# test-count signal — this is the converse of Section 6, which walks
+# declaration -> file; this walks file -> declaration, and neither subsumes
+# the other.
+# ===========================================================================
+echo ""
+echo "--- Section 10: rule (d) — undeclared member (file present, never declared) ---"
+
+# --- must-fire: a module-dir file with no reachable `mod` declaration ---
+_s10_bad_dir="$(mktemp -d)"; _TMPDIRS+=("$_s10_bad_dir")
+mkdir -p "$_s10_bad_dir/harness_synth"
+{
+    printf '#[path = "harness_synth/declared.rs"]\n'
+    printf 'mod declared;\n'
+} > "$_s10_bad_dir/harness_synth.rs"
+printf '#[test]\nfn t() {}\n' > "$_s10_bad_dir/harness_synth/declared.rs"
+printf '#[test]\nfn t() {}\n' > "$_s10_bad_dir/harness_synth/orphan.rs"
+
+_s10_bad_out="$(mktemp)"; _TMPDIRS+=("$_s10_bad_out")
+_s10_bad_rc=0
+harness_undeclared_member_violations synthcrate "$_s10_bad_dir" \
+    > "$_s10_bad_out" 2>/dev/null || _s10_bad_rc=$?
+
+assert "10: a module-dir file with no reachable \`mod\` declaration fires (returns 1)" \
+    test "$_s10_bad_rc" -eq 1
+assert "10: violation emitted as a structured FAIL line (undeclared-member, member named)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_synth\.rs reason=undeclared-member member=harness_synth/orphan\.rs$' "$_s10_bad_out"
+assert "10: the DECLARED member is not named in any FAIL line (precision)" \
+    bash -c '! grep -q "member=harness_synth/declared.rs" "$1"' _ "$_s10_bad_out"
+
+# --- must-not-fire: a member declared TRANSITIVELY, from a nested mod.rs
+# inside the module dir rather than from the root itself. This is the case
+# that rules out a root-only, single-hop declared-members walk: it must not
+# contradict harness_layout_unit_lines, which explicitly counts members "at
+# ANY depth" (its own Section 1c fixture already builds
+# harness_nested/deep/b.rs). rustc resolves a bare `mod` declared in a
+# `mod.rs` against THAT FILE'S OWN directory, so `sub/mod.rs`'s `mod deep;`
+# reaches `sub/deep.rs` without the root ever naming it directly. ---
+_s10_nested_dir="$(mktemp -d)"; _TMPDIRS+=("$_s10_nested_dir")
+mkdir -p "$_s10_nested_dir/harness_synth/sub"
+{
+    printf '#[path = "harness_synth/sub/mod.rs"]\n'
+    printf 'mod sub;\n'
+} > "$_s10_nested_dir/harness_synth.rs"
+printf 'mod deep;\n' > "$_s10_nested_dir/harness_synth/sub/mod.rs"
+printf '#[test]\nfn t() {}\n' > "$_s10_nested_dir/harness_synth/sub/deep.rs"
+
+_s10_nested_out="$(mktemp)"; _TMPDIRS+=("$_s10_nested_out")
+_s10_nested_rc=0
+harness_undeclared_member_violations synthcrate "$_s10_nested_dir" \
+    > "$_s10_nested_out" 2>/dev/null || _s10_nested_rc=$?
+
+assert "10: a member declared transitively via a nested mod.rs is NOT flagged (rc 0)" \
+    test "$_s10_nested_rc" -eq 0
+# roots=1 members=2 pins the count exactly (the Section 8/9 rows=2 idiom):
+# 1 root (harness_synth.rs) and 2 module-dir files compared (sub/mod.rs,
+# sub/deep.rs) — proving the walk actually descended into sub/ rather than
+# vacuously reporting members=0.
+assert "10: transitive-member scan emits a structured PASS line (crate=synthcrate roots=1 members=2)" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS crate=synthcrate scan=undeclared-members roots=1 members=2$' "$_s10_nested_out"
+assert "10: transitive-member scan emits NO FAIL line at all" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s10_nested_out"
+
+# --- must-not-fire: NORMALIZATION — non-canonical but valid #[path] values (a
+# leading "./" and a "../"-round-trip) must resolve to the same member as
+# their canonical form, or a raw-vs-normalized comparison would false-fire. ---
+_s10_norm_dir="$(mktemp -d)"; _TMPDIRS+=("$_s10_norm_dir")
+mkdir -p "$_s10_norm_dir/harness_synth"
+{
+    printf '#[path = "./harness_synth/a.rs"]\n'
+    printf 'mod a;\n'
+    printf '#[path = "harness_synth/../harness_synth/b.rs"]\n'
+    printf 'mod b;\n'
+} > "$_s10_norm_dir/harness_synth.rs"
+printf '#[test]\nfn t() {}\n' > "$_s10_norm_dir/harness_synth/a.rs"
+printf '#[test]\nfn t() {}\n' > "$_s10_norm_dir/harness_synth/b.rs"
+
+_s10_norm_out="$(mktemp)"; _TMPDIRS+=("$_s10_norm_out")
+_s10_norm_rc=0
+harness_undeclared_member_violations synthcrate "$_s10_norm_dir" \
+    > "$_s10_norm_out" 2>/dev/null || _s10_norm_rc=$?
+
+assert "10: non-canonical #[path] forms (./ and ../-round-trip) are NOT flagged (rc 0)" \
+    test "$_s10_norm_rc" -eq 0
+assert "10: normalization scan emits NO FAIL line at all" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s10_norm_out"
+
+# --- must-not-fire: MODDIR BOUNDARY + the live #[cfg] shape. A #[cfg]-gated
+# member (crates/reify-cli/tests/harness_cli.rs:184-186's #[cfg] -> #[path]
+# -> mod ordering) is DECLARED regardless of cfg state, and a bare `mod
+# common;` resolving to a retained tests/ sibling is not a member at all — it
+# resolves OUTSIDE the module dir. ---
+_s10_bound_dir="$(mktemp -d)"; _TMPDIRS+=("$_s10_bound_dir")
+mkdir -p "$_s10_bound_dir/harness_synth" "$_s10_bound_dir/common"
+{
+    printf '#[cfg(target_os = "linux")]\n'
+    printf '#[path = "harness_synth/gated.rs"]\n'
+    printf 'mod gated;\n'
+    printf 'mod common;\n'
+} > "$_s10_bound_dir/harness_synth.rs"
+printf '#[test]\nfn t() {}\n' > "$_s10_bound_dir/harness_synth/gated.rs"
+printf '#[test]\nfn t() {}\n' > "$_s10_bound_dir/common/mod.rs"
+
+_s10_bound_out="$(mktemp)"; _TMPDIRS+=("$_s10_bound_out")
+_s10_bound_rc=0
+harness_undeclared_member_violations synthcrate "$_s10_bound_dir" \
+    > "$_s10_bound_out" 2>/dev/null || _s10_bound_rc=$?
+
+assert "10: a #[cfg]-gated member (#[cfg] then #[path] then mod) is NOT flagged (rc 0)" \
+    test "$_s10_bound_rc" -eq 0
+assert "10: moddir-boundary scan emits NO FAIL line at all" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s10_bound_out"
+
+# --- must-not-fire: SHAPE GUARDS. A single-file harness (no module dir) has
+# nothing to scan; and the Section 1c ORPHAN case (a module dir with no
+# sibling root) is re-driven through rule (d) to confirm it preserves that
+# pin rather than newly firing on it. ---
+_s10_single_dir="$(mktemp -d)"; _TMPDIRS+=("$_s10_single_dir")
+printf '#[test]\nfn t() {}\n' > "$_s10_single_dir/harness_synth.rs"
+
+_s10_single_out="$(mktemp)"; _TMPDIRS+=("$_s10_single_out")
+_s10_single_rc=0
+harness_undeclared_member_violations synthcrate "$_s10_single_dir" \
+    > "$_s10_single_out" 2>/dev/null || _s10_single_rc=$?
+
+assert "10: a single-file harness (no module dir) is NOT flagged (rc 0)" \
+    test "$_s10_single_rc" -eq 0
+# roots=1 members=0 pins that the single root is still counted even though
+# it contributes nothing to members= (no module dir to compare at all).
+assert "10: single-file-harness scan emits a structured PASS line (crate=synthcrate roots=1 members=0)" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS crate=synthcrate scan=undeclared-members roots=1 members=0$' "$_s10_single_out"
+
+_s10_orphan_dir="$(mktemp -d)"; _TMPDIRS+=("$_s10_orphan_dir")
+mkdir -p "$_s10_orphan_dir/harness_orphan"
+awk 'BEGIN { for (i = 0; i < 3; i++) print "// x" }' > "$_s10_orphan_dir/harness_orphan/x.rs"
+
+_s10_orphan_out="$(mktemp)"; _TMPDIRS+=("$_s10_orphan_out")
+_s10_orphan_rc=0
+harness_undeclared_member_violations synthcrate "$_s10_orphan_dir" \
+    > "$_s10_orphan_out" 2>/dev/null || _s10_orphan_rc=$?
+
+assert "10: an orphan module dir with no sibling root is NOT flagged, same pin as 1c (rc 0)" \
+    test "$_s10_orphan_rc" -eq 0
+assert "10: orphan-dir scan emits NO FAIL line at all" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s10_orphan_out"
+
+# --- must-FIRE: SILENT-BIND RESIDUE — the case Section 6 deliberately
+# tolerates. root writes bare `mod x;`, and BOTH a retained tests/ sibling
+# ($dir/x.rs) AND a module-dir file of the same stem ($dir/harness_synth/x.rs)
+# exist. rustc's crate-root-relative resolution binds the SIBLING (Section
+# 6's principled exception, unchanged by this rule), which leaves the
+# module-dir file silently dead — the concrete witness for why rule (d)
+# exists at all. ---
+_s10_bind_dir="$(mktemp -d)"; _TMPDIRS+=("$_s10_bind_dir")
+mkdir -p "$_s10_bind_dir/harness_synth"
+printf 'mod x;\n' > "$_s10_bind_dir/harness_synth.rs"
+printf '#[test]\nfn t() {}\n' > "$_s10_bind_dir/x.rs"
+printf '#[test]\nfn t() {}\n' > "$_s10_bind_dir/harness_synth/x.rs"
+
+_s10_bind_attr_out="$(mktemp)"; _TMPDIRS+=("$_s10_bind_attr_out")
+_s10_bind_attr_rc=0
+harness_path_attr_violations synthcrate "$_s10_bind_dir" \
+    > "$_s10_bind_attr_out" 2>/dev/null || _s10_bind_attr_rc=$?
+assert "10: Section 6's principled sibling exception still holds unchanged (rc 0)" \
+    test "$_s10_bind_attr_rc" -eq 0
+
+_s10_bind_out="$(mktemp)"; _TMPDIRS+=("$_s10_bind_out")
+_s10_bind_rc=0
+harness_undeclared_member_violations synthcrate "$_s10_bind_dir" \
+    > "$_s10_bind_out" 2>/dev/null || _s10_bind_rc=$?
+
+assert "10: the silent-bind residue module-dir file DOES fire (returns 1)" \
+    test "$_s10_bind_rc" -eq 1
+assert "10: silent-bind residue reported as undeclared-member member=harness_synth/x.rs" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_synth\.rs reason=undeclared-member member=harness_synth/x\.rs$' "$_s10_bind_out"
+
+# --- LIVE scan: fused into Section 6's live loop above (task #7042
+# amendment, the Section 5b/5c pattern — see that loop's comment) rather than
+# a second byte-identical traversal of `crates/*/tests` here. $_s10_live_out,
+# $_s10_live_rc and the shared $_s6s10_live_roots are already populated by
+# the time this section runs; nothing below re-scans. This is the
+# WHOLE-TREE-LIVE landing precondition prerequisite pre-1 measured before any
+# code was written (31 roots, 585 module-dir member files, 0 undeclared, on
+# 4a9f2d6d4c): a rule (d) that visited every root but silently compared zero
+# member files (a broken find glob, a moddir guard that always `continue`s,
+# a declared-set that accidentally contains everything) would pass an rc-0 +
+# roots-floor assert VACUOUSLY — the exact silent-failure mode this whole
+# task exists to close, one level up. The member-count floor below guards
+# the guard. ---
+
+# Offender lines to the archived log on failure (the Section 5/6 idiom).
+if [ "$_s10_live_rc" -ne 0 ]; then
+    echo "  ---- Section 10: live undeclared-member scan output (printed on failure) ----"
+    cat "$_s10_live_out"
+    echo "  ---- Section 10: end live scan output ----"
+fi
+
+assert "10: live tree — every harness root declares every module-dir member (rc 0)" \
+    test "$_s10_live_rc" -eq 0
+# Non-vacuity (roots): shared with Section 6's own roots assert above — the
+# SAME fused scan populated both, so this can no longer silently drift from
+# Section 6's count the way two independently-maintained variables could.
+assert "10: live scan actually visited harness roots (>= 13 found, non-vacuity)" \
+    test "$_s6s10_live_roots" -ge 13
+
+# Non-vacuity (members): roots alone are not enough — see the block comment
+# above. harness_undeclared_member_violations emits one aggregate `PASS
+# crate=<c> scan=undeclared-members roots=<n> members=<n>` line PER CALL
+# (i.e. per crate — the same granularity Section 6 is called at, and now
+# carrying the SAME crate= field Section 6's own PASS line does — task #7042
+# amendment, so an operator reading the archived merge-verify log can tell
+# which crate contributed which counts), so the live loop above accumulates
+# one such line per clean crate into $_s10_live_out. Summing their
+# `members=` fields across every crate is the whole-tree member count this
+# rule actually ratchets (585 today, measured on 4a9f2d6d4c — the count only
+# grows as consolidation leaves land, so this is a floor, not a pin,
+# mirroring Sections 8/9's own declared-row floors).
+assert "10: live scan emits the new aggregate PASS grammar (crate=C scan=undeclared-members roots=N members=N)" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS crate=[A-Za-z0-9_-]+ scan=undeclared-members roots=[0-9]+ members=[0-9]+$' "$_s10_live_out"
+
+# `|| true` (the Section 4 idiom, tests/infra/test_harness_kloc_cap.sh:1315):
+# under `set -o pipefail` a legitimate zero-match grep exits 1, and awk's
+# unconditional `END { print sum + 0 }` never masks that — without `|| true`
+# this whole command substitution would abort the script here, before
+# test_summary ever runs (the same class of hazard test_helpers.sh's assert()
+# guards against at its own `rm -f`/`return 0`).
+_s10_live_members="$(grep -E '^HARNESS_KLOC_CAP PASS crate=[A-Za-z0-9_-]+ scan=undeclared-members roots=[0-9]+ members=[0-9]+$' "$_s10_live_out" \
+    | awk -F'members=' '{sum += $2} END {print sum + 0}' || true)"
+assert "10: live scan actually compared >= 300 module-dir member files across all crates (non-vacuity floor, 585 today)" \
+    test "$_s10_live_members" -ge 300
 
 test_summary

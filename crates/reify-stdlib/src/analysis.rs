@@ -113,7 +113,11 @@ fn von_mises(args: &[Value]) -> Value {
 /// minimum principal stresses (ascending eigenvalues of the symmetric stress
 /// tensor: `eigs[2]` and `eigs[0]`).
 ///
-/// Returns `f64::NAN` if eigenvalue decomposition fails (e.g. all-NaN window).
+/// Returns `f64::NAN` if eigenvalue decomposition fails. Since task #6376 that
+/// is a LIVE path, not a defensive-only one: `compute_eigenvalues_3x3` fails
+/// closed to `None` for any non-finite window (out-of-solid FEA sentinel), and
+/// this `None => f64::NAN` arm is what turns that into the NaN sentinel the
+/// downstream `is_finite()` gates already skip.
 ///
 /// `pub` so the formula has a single home — the `max_shear` builtin (below),
 /// AND the cross-crate MaxShear field reduction in
@@ -129,13 +133,43 @@ pub fn compute_max_shear_3x3(d: &[f64]) -> f64 {
     }
 }
 
+/// Ascending total-order comparator for the 3×3 eigenvalue sorts in
+/// [`compute_eigenvalues_3x3`].
+///
+/// `total_cmp` gives a NaN-safe IEEE-754 total order, so the ascending sort
+/// stays panic-free and deterministic regardless of input (INV-FEA-3, task
+/// #6376). Pulled out to a NAMED function — rather than inlined in the sort
+/// closure — so `eig_ascending_cmp_is_a_total_order_on_nan_bearing_values`
+/// can assert THIS exact comparator's total-order postcondition instead of
+/// only re-testing `f64::total_cmp` itself: reverting this body back to
+/// `partial_cmp(..).unwrap_or(Ordering::Equal)` breaks that test.
+///
+/// After the finite guard in [`compute_eigenvalues_3x3`] the inputs here are
+/// already non-NaN, so this is defense-in-depth — it also keeps the two sort
+/// sites clean under the widened `check-nan-safe-ordering.sh` scope with no
+/// escape comment to maintain.
+#[inline]
+fn eig_ascending_cmp(a: &f64, b: &f64) -> std::cmp::Ordering {
+    a.total_cmp(b)
+}
+
 /// Compute eigenvalues of a symmetric 3×3 matrix.
 ///
 /// Uses the closed-form formula optimized for symmetric matrices: two eigenvalues
 /// are computed trigonometrically and the third is recovered from the trace
 /// constraint (trace = λ₁ + λ₂ + λ₃), which avoids precision loss at repeated roots.
 ///
-/// Returns `Some([λ₁, λ₂, λ₃])` sorted ascending.
+/// Returns `Some([λ₁, λ₂, λ₃])` sorted ascending when every entry this
+/// function READS (`d[0]`, `d[1]`, `d[2]`, `d[4]`, `d[5]`, `d[8]`) is finite,
+/// and `None` when any of them is not — the out-of-solid sentinel windows the
+/// FEA elaborator emits are the motivating input. Failing closed here is what
+/// keeps a NaN out of the ascending sort below (INV-FEA-3, task #6376); every
+/// caller already maps `None` to the `f64::NAN` sentinel their downstream
+/// `is_finite()` gates skip.
+///
+/// NO `tracing::warn` on the `None` path, deliberately. A non-finite window is
+/// a DESIGNED sentinel evaluated once per grid point across millions of points,
+/// so logging it would flood rather than inform. Do not "restore" a warn here.
 ///
 /// `pub` for cross-crate reuse from:
 /// - `crates/reify-stdlib/src/fea.rs::envelope_max_principal` — per-grid-point
@@ -176,6 +210,41 @@ pub fn compute_eigenvalues_3x3(d: &[f64]) -> Option<[f64; 3]> {
         d[7]
     );
 
+    // INV-FEA-3 / task #6376 — FAIL CLOSED on a non-finite window.
+    //
+    // Guards exactly the SIX entries this function reads (d[0], d[1], d[2],
+    // d[4], d[5], d[8]), deliberately NOT all nine.  What that scoping buys is
+    // narrower than "the unread lower triangle may be NaN" would suggest,
+    // because the symmetry `debug_assert!` above already rejects most mixed
+    // windows.  Split by what the unread entry actually is:
+    //
+    //   - NaN (e.g. d[1] finite, d[3] = NaN): `tol` is false, so a DEBUG build
+    //     panics in that assert BEFORE reaching this guard.  Six-vs-nine is
+    //     unobservable there, and no test can pin it — it only changes
+    //     RELEASE-build behaviour.
+    //
+    //   - ±Inf (e.g. d[1] = 1.0, d[3] = +Inf): `tol` evaluates
+    //     `inf <= 1e-10 * (1.0 + inf)`, i.e. `inf <= inf`, which is TRUE — the
+    //     assert PASSES, and this guard admits the window in BOTH profiles
+    //     where a nine-entry guard would return None.  That is the live
+    //     behavioural difference, and it is pinned by
+    //     `compute_eigenvalues_3x3_infinite_unread_lower_triangle_is_admitted`.
+    //
+    // So widening this to `d[..9].iter().all(f64::is_finite)` is a behaviour
+    // change, not a simplification — the test above fails if you try.
+    //
+    // Placement is also deliberate — AFTER the symmetry `debug_assert!` above,
+    // so that assert keeps its explicit NaN tolerance for the unread entries.
+    if !d[0].is_finite()
+        || !d[1].is_finite()
+        || !d[2].is_finite()
+        || !d[4].is_finite()
+        || !d[5].is_finite()
+        || !d[8].is_finite()
+    {
+        return None;
+    }
+
     let a00 = d[0];
     let a11 = d[4];
     let a22 = d[8];
@@ -191,7 +260,7 @@ pub fn compute_eigenvalues_3x3(d: &[f64]) -> Option<[f64; 3]> {
     if p1 <= 1e-30 {
         // Matrix is (effectively) diagonal — eigenvalues are the diagonal entries
         let mut eigs = [a00, a11, a22];
-        eigs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        eigs.sort_by(eig_ascending_cmp);
         return Some(eigs);
     }
 
@@ -219,13 +288,20 @@ pub fn compute_eigenvalues_3x3(d: &[f64]) -> Option<[f64; 3]> {
     let eig2 = 3.0 * q - eig1 - eig3;
 
     let mut eigs = [eig1, eig2, eig3];
-    eigs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    eigs.sort_by(eig_ascending_cmp);
     Some(eigs)
 }
 
 /// Compute principal stresses (eigenvalues) of a 3×3 stress tensor.
 ///
-/// Returns a sorted `Value::List` of 3 scalars (ascending order).
+/// Returns a sorted `Value::List` of 3 scalars (ascending order) for a finite
+/// 3×3 matrix argument.
+///
+/// Returns `Value::Undef` — the value ITSELF, not a list of `Undef` — when the
+/// argument is not a 3×3 matrix, and when [`compute_eigenvalues_3x3`] fails
+/// closed because an entry it reads is non-finite (INV-FEA-3, task #6376).
+/// Before that guard the non-finite case produced `List([Undef, Undef, Undef])`;
+/// `principal_stresses_all_nan_tensor_returns_undef` pins the current contract.
 fn principal_stresses(args: &[Value]) -> Value {
     unary(args, |tensor| {
         let (nrows, ncols, d, dim) = match matrix_components_f64(tensor) {
@@ -771,6 +847,207 @@ mod tests {
             "max_shear(all-NaN window) must return Undef without panicking, got {:?}",
             result
         );
+    }
+
+    /// `compute_eigenvalues_3x3` must FAIL CLOSED on a non-finite window:
+    /// any non-finite entry among the six it actually reads
+    /// (`d[0], d[1], d[2], d[4], d[5], d[8]`) yields `None`, not a
+    /// NaN-bearing `Some`. Out-of-solid FEA sentinel windows are the
+    /// motivating input (INV-FEA-3, task #6376).
+    ///
+    /// RED before the guard lands: every one of these four windows returns
+    /// `Some(..)` today — the diagonal branch sorts NaNs straight through and
+    /// the general branch propagates them via `q`/`p`/`phi`.
+    #[test]
+    fn compute_eigenvalues_3x3_non_finite_window_returns_none() {
+        // (a) all-NaN → GENERAL branch: p1 is NaN, so `NaN <= 1e-30` is false.
+        let all_nan = [f64::NAN; 9];
+        assert!(
+            compute_eigenvalues_3x3(&all_nan).is_none(),
+            "all-NaN window must return None, got {:?}",
+            compute_eigenvalues_3x3(&all_nan)
+        );
+
+        // (b) NaN diagonal, zero off-diagonals → DIAGONAL branch (p1 == 0.0).
+        let nan_diag = [
+            f64::NAN,
+            0.0,
+            0.0,
+            0.0,
+            f64::NAN,
+            0.0,
+            0.0,
+            0.0,
+            f64::NAN,
+        ];
+        assert!(
+            compute_eigenvalues_3x3(&nan_diag).is_none(),
+            "NaN-diagonal window must return None, got {:?}",
+            compute_eigenvalues_3x3(&nan_diag)
+        );
+
+        // (c) non-NaN non-finite (+∞) on the diagonal → DIAGONAL branch.
+        let inf_diag = [f64::INFINITY, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 2.0];
+        assert!(
+            compute_eigenvalues_3x3(&inf_diag).is_none(),
+            "+inf-diagonal window must return None, got {:?}",
+            compute_eigenvalues_3x3(&inf_diag)
+        );
+
+        // (d) only ONE entry poisoned, non-zero off-diagonals → GENERAL branch.
+        let partial_nan = [1.0, 4.0, 5.0, 4.0, f64::NAN, 6.0, 5.0, 6.0, 3.0];
+        assert!(
+            compute_eigenvalues_3x3(&partial_nan).is_none(),
+            "single-NaN symmetric window must return None, got {:?}",
+            compute_eigenvalues_3x3(&partial_nan)
+        );
+    }
+
+    /// Pins the SIX-entry SCOPE of the fail-closed guard against a future
+    /// "simplification" to `d[..9].iter().all(f64::is_finite)`.
+    ///
+    /// The window below has every READ entry finite (d[0], d[1], d[2], d[4],
+    /// d[5], d[8]) and `+inf` in the UNREAD lower triangle (d[3]).  It gets
+    /// PAST the symmetry `debug_assert!` — `tol(1.0, inf)` evaluates
+    /// `inf <= 1e-10 * (1.0 + inf)`, i.e. `inf <= inf`, which is true — so
+    /// this exercises the guard itself, in debug and release alike.  A
+    /// nine-entry guard returns `None` here, so widening the guard fails this
+    /// test rather than passing silently.
+    ///
+    /// The NaN-in-the-lower-triangle shape is deliberately NOT tested: `tol`
+    /// is false there, so a debug build panics in the symmetry assert before
+    /// the guard runs, and no test can distinguish six-entry from nine-entry.
+    #[test]
+    fn compute_eigenvalues_3x3_infinite_unread_lower_triangle_is_admitted() {
+        //       d0   d1   d2   d3(unread)     d4   d5   d6   d7   d8
+        let w = [2.0, 1.0, 0.0, f64::INFINITY, 3.0, 0.0, 0.0, 0.0, 4.0];
+        let eigs = compute_eigenvalues_3x3(&w).expect(
+            "an unread lower-triangle +inf must NOT be rejected by the six-entry guard",
+        );
+        assert!(
+            eigs.iter().all(|e| e.is_finite()),
+            "a finite READ window must decompose to finite eigenvalues, got {:?}",
+            eigs
+        );
+        assert!(
+            eigs[0] <= eigs[1] && eigs[1] <= eigs[2],
+            "eigenvalues must be ascending, got {:?}",
+            eigs
+        );
+    }
+
+    /// Positive control for the fail-closed guard: a finite symmetric window
+    /// still decomposes and still comes back ascending.
+    ///
+    /// Asserts ORDERING only, deliberately not eigenvalue magnitudes — the
+    /// magnitudes are already pinned by `principal_stresses_symmetric_tensor`,
+    /// and this control exists solely to prove the guard did not swallow the
+    /// happy path.
+    #[test]
+    fn compute_eigenvalues_3x3_finite_window_still_returns_sorted_some() {
+        // Same tensor as `principal_stresses_symmetric_tensor`:
+        // [[2,1,0],[1,3,1],[0,1,2]].
+        let finite = [2.0, 1.0, 0.0, 1.0, 3.0, 1.0, 0.0, 1.0, 2.0];
+        let eigs = compute_eigenvalues_3x3(&finite)
+            .expect("finite symmetric window must still decompose");
+        assert!(
+            eigs[0] <= eigs[1] && eigs[1] <= eigs[2],
+            "eigenvalues must be ascending, got {:?}",
+            eigs
+        );
+    }
+
+    /// DSL-visible consequence of the fail-closed guard: `principal_stresses`
+    /// on an all-NaN tensor returns `Undef` ITSELF, not `List([Undef; 3])`.
+    ///
+    /// RED before the guard lands: `compute_eigenvalues_3x3` returns
+    /// `Some([NaN; 3])`, so each element sanitizes separately into a list.
+    #[test]
+    fn principal_stresses_all_nan_tensor_returns_undef() {
+        let nan_tensor = make_dimensioned_matrix(
+            &[
+                &[f64::NAN, f64::NAN, f64::NAN],
+                &[f64::NAN, f64::NAN, f64::NAN],
+                &[f64::NAN, f64::NAN, f64::NAN],
+            ],
+            DimensionVector::PRESSURE,
+        );
+        let result = eval_analysis("principal_stresses", &[nan_tensor]).unwrap();
+        assert!(
+            result.is_undef(),
+            "principal_stresses(all-NaN tensor) must be Undef itself, not a List, got {:?}",
+            result
+        );
+    }
+    /// `eig_ascending_cmp` must be a genuine TOTAL ORDER on NaN/±Inf-bearing
+    /// values, not merely "usually right".
+    ///
+    /// Mirrors the sanctioned INV-FEA-3 precedent
+    /// `crates/reify-solver-elastic/src/interpolation.rs`'s
+    /// `centroid_axis_cmp_sorts_nan_bearing_centroids_into_a_valid_total_order`:
+    /// the comparator is a NAMED fn precisely so this test can pin THAT exact
+    /// comparator rather than re-testing `f64::total_cmp`'s own documentation.
+    ///
+    /// Two legs only, deliberately:
+    ///   - `Equal` ONLY on bit-identical values. This leg carries all of the
+    ///     discriminating power: `partial_cmp(..).unwrap_or(Ordering::Equal)`
+    ///     reports `Equal` for every NaN-vs-anything pair, so reverting the
+    ///     comparator body to that fragment breaks exactly this assertion.
+    ///   - sorting under the comparator terminates and comes back
+    ///     non-decreasing — the property the two call sites actually rely on.
+    ///
+    /// The antisymmetry and transitivity legs this test used to carry were
+    /// dropped: both re-verified guarantees that `f64::total_cmp` already
+    /// documents, transitivity cost an O(n³) triple loop over the sample, and
+    /// neither could fail while the `Equal` leg above still passed. Removing
+    /// them left the regression pin's discriminating power unchanged. Do not
+    /// restore them.
+    ///
+    /// RED before the comparator lands: compile error (symbol missing).
+    #[test]
+    fn eig_ascending_cmp_is_a_total_order_on_nan_bearing_values() {
+        use std::cmp::Ordering;
+
+        let sample = [
+            f64::NAN,
+            -0.0,
+            0.0,
+            1.0,
+            -1.0,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            -f64::NAN,
+        ];
+
+        // totality: Equal ONLY for bit-identical values.
+        for a in sample.iter() {
+            for b in sample.iter() {
+                let equal = eig_ascending_cmp(a, b) == Ordering::Equal;
+                assert_eq!(
+                    equal,
+                    a.to_bits() == b.to_bits(),
+                    "Equal must hold exactly on bit-identical values, but \
+                     cmp({a:?}, {b:?}) == {:?} with bits {:#x} vs {:#x}",
+                    eig_ascending_cmp(a, b),
+                    a.to_bits(),
+                    b.to_bits()
+                );
+            }
+        }
+
+        // sorting under this comparator terminates and is non-decreasing.
+        let mut v: Vec<f64> = sample.to_vec();
+        v.sort_by(eig_ascending_cmp);
+        for w in v.windows(2) {
+            assert_ne!(
+                eig_ascending_cmp(&w[0], &w[1]),
+                Ordering::Greater,
+                "sorted sequence must be non-decreasing under the same comparator, \
+                 got {:?} before {:?}",
+                w[0],
+                w[1]
+            );
+        }
     }
 
     // ── rotate_stress_3x3 kernel tests (step-1) ─────────────────────────────

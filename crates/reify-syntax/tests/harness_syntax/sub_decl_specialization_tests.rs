@@ -101,6 +101,8 @@ fn make_sub_with_body(name: &str, body: Option<Vec<MemberDecl>>) -> SubDecl {
         is_aux: false,
         is_priv: false,
         pose_expr: None,
+        index_binder: None,
+        index_domain: None,
         relate_relations: Vec::new(),
         span: dummy_span(),
         content_hash: dummy_hash(),

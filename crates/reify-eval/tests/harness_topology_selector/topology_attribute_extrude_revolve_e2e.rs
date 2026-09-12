@@ -231,9 +231,9 @@ fn revolve_module() -> reify_compiler::CompiledModule {
         "TestRevolve",
         SweepKind::Revolve,
         vec![
-            ("ox".into(), real_literal(0.0)),
-            ("oy".into(), real_literal(0.0)),
-            ("oz".into(), real_literal(0.0)),
+            ("ox".into(), mm_literal(0.0)),
+            ("oy".into(), mm_literal(0.0)),
+            ("oz".into(), mm_literal(0.0)),
             ("ax".into(), real_literal(0.0)),
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(1.0)),

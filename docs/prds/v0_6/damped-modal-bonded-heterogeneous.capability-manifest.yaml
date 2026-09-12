@@ -1,0 +1,267 @@
+prd: docs/prds/v0_6/damped-modal-bonded-heterogeneous.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 6877
+  title: Damped mixin trait + DampedMaterial named intersection + stdlib preset conformance
+  capabilities:
+  - name: mixin-trait-substrate
+    binding: grammar/semantic fixture tests/prd-gate/fixtures/damped_material_mixin_conformance.ri
+      — user trait w/ Real param, multi-parent refinement, conformer, trait-typed
+      param, loss_factor access; reify check exit 0, probed 2026-08-27
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: trait Damped
+      paths:
+      - crates/reify-compiler/stdlib/materials_fea.ri
+      expect: present
+  - name: preset-loss-factor-with-provenance
+    binding: presets carry per-field *_provenance convention today (symbol MaterialPropertyProvenance
+      present in materials_fea.ri); α extends it to loss_factor
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: loss_factor_provenance
+      paths:
+      - crates/reify-compiler/stdlib/materials_fea.ri
+      expect: present
+  - name: naming-hazard-handled
+    binding: 'unrelated `trait Damping : MaterialSpec` pre-exists in materials_mechanical.ri;
+      α adds cross-reference comments both sides, ι disambiguates in discoverability'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: comment-quality judgment; no stable single grep
+- label: β
+  task_id: 6878
+  title: MaterialDamping descriptor + extract_damping arm + additive composition
+  capabilities:
+  - name: descriptor-and-dispatch-arm
+    binding: extract_damping in modal_ops.rs is the single nominal-dispatch consumption
+      point (RayleighDamping arm verified); β adds one arm + the stdlib structure
+      def
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: MaterialDamping
+      paths:
+      - crates/reify-eval/src/modal_ops.rs
+      - crates/reify-compiler/stdlib/modal_analysis.ri
+      expect: present
+  - name: degenerate-exactness-floor
+    binding: 'G6 branch 2: single-material MSE reduces algebraically to ζ=η/2 (all-positive
+      SE sum, no cancellation); asserted 1e-9 relative ≫ fp floor ~1e-12'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: numeric identity asserted by the leaf's own B5/B7 tests
+  - name: loud-rejection-not-silent-zero
+    binding: 'G6 branch 4: MaterialDamping over non-Damped materials must OBSERVABLY
+      reject (coded diagnostic, nonzero exit — INV-SF-2/SF-6); producer: this leaf''s
+      negative test (B8)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: diagnostic code chosen at implementation; the leaf's B8 test observes
+        the rejection fire
+- label: γ
+  task_id: 6879
+  title: classify_material any-source generalization + resolved AnisotropicMaterial
+    {d_local, frame, rho, eta}
+  capabilities:
+  - name: solver-core-generic
+    binding: MaterialField/ConstantField/DiscreteCellField + element_stiffness_*_with_field
+      in reify-solver-elastic, independently unit-tested (assembly_anisotropic.rs,
+      heterogeneous_warmstart_integration.rs) — verified 2026-08-27
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: FieldSourceKind::Analytical
+      paths:
+      - crates/reify-eval/src/compute_targets/elastic_static.rs
+      expect: present
+  - name: resolved-value-gains-rho-eta
+    binding: 'Rust AnisotropicMaterial is {d_local, frame} only today (grep: zero
+      density/rho hits in material_field.rs + assembly/*.rs); extract_density returns
+      0.0 for Value::Field (latent, statics-masked); γ extends the resolved value
+      and fixes the extractor'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: rho
+      paths:
+      - crates/reify-solver-elastic/src/material_field.rs
+      expect: present
+  - name: raw-lambda-boundary-pinned
+    binding: 'rejection-check: tests/prd-gate/fixtures/raw_lambda_material_field_rejected.ri
+      → reify check exit 1 ("unresolved type in lambda param"), probed 2026-08-27;
+      stays red until #6871 (out of scope here)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'fixture stays red BY DESIGN through this PRD; flips on #6871 via #6872, not on γ'
+- label: δ
+  task_id: 6880
+  title: sandwich_material + material_zones declarative constructors + source kind
+  capabilities:
+  - name: field-return-from-pub-fn
+    binding: 'producer precedent: fn_field intercepting-builtin eval arm (#4220);
+      stdlib compose returns a Field from a pub fn body'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: sandwich_material
+      paths:
+      - crates/reify-compiler/stdlib
+      expect: present
+  - name: constructor-rejection-observed
+    binding: 'G6 branch 4: layer-sum/coverage mis-stacks rejected at the constructor
+      (coded diagnostic), observed by δ''s own negative test (B10)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: diagnostic code chosen at implementation; B10 observes the rejection
+  - name: field-source-kinds-enumeration-updated
+    binding: docs/prds/field-source-kinds.md exists; δ updates its enumeration same-diff
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: kind name finalized at implementation; prose update judged at review
+- label: ε
+  task_id: 6881
+  title: Layered synthetic mesh — interface-plane snapping on both dims-overload generators
+  capabilities:
+  - name: synthetic-builders-gmsh-free
+    binding: build_beam_mesh (modal) + synthetic_grid_counts grid (elastic-static)
+      hand-built; gmsh is [dev-dependencies]-only in reify-eval (Cargo.toml verified);
+      FDM dims path already samples per-tet centroids
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: snapping mechanism symbol not yet named; B9 straddle-assertions are
+        the leaf's own tests
+- label: ζ
+  task_id: 6882
+  title: Heterogeneous modal assembly (P2 _with_field + per-element mass) + modal_analysis
+    Field overload
+  capabilities:
+  - name: modal-heterogeneous-gap-real
+    binding: assemble_modal_km calls legacy element_stiffness(&IsotropicElastic) with
+      one global scalar density (code read 2026-08-27); no per-element mass path exists
+      anywhere; ζ builds it on resolved rho (γ)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: with_field
+      paths:
+      - crates/reify-eval/src/modal_ops.rs
+      expect: present
+  - name: p2-with-field-wired-not-mirrorring-p1-statics
+    binding: element_stiffness_p2_with_field exists, bit-verified vs legacy P2, test-only
+      today; elastostatic dims path is P1-only and must not be mirrored (P1 bending
+      lock 9–11% vs P2 ~1%, modal_benchmarks record) — C4 names this explicitly
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: element-order wiring judged by the leaf's B6-adjacent P2 fixture accuracy
+  - name: bi-material-band-floor
+    binding: 'G6 branch 1: 5% band vs composite-EI Euler-Bernoulli, slender L/t≥20
+      P2 fixture; P2 slender precedent −1.6% (SS) / +0.02% (cantilever)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: numeric band asserted by the leaf's own test
+- label: η
+  task_id: 6883
+  title: MSE post-process → Mode.damping_ratio + per-zone SE-share diagnostics
+  capabilities:
+  - name: damping-ratio-slot-exists-and-consumed
+    binding: Mode.damping_ratio declared in stdlib modal_analysis.ri, populated post-eigensolve,
+      consumed by prepare_modal_integrator — MSE is a new value SOURCE for an existing
+      field (verified 2026-08-27)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: value-source change; B5/B6 tests are the mechanical assertion
+  - name: element-matrices-recomputable
+    binding: element stiffness is a pure fn of (order, phys nodes, material); mesh
+      + samples in scope in the modal trampoline; ModalAssembly retains K/M only —
+      per-mode SE recompute is designed-in cost, not an assumed cache
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: architecture fact verified at authoring; no stable grep
+  - name: mse-vs-laminate-band-floor
+    binding: 'G6 branch 1: 10% band on ζ_mode vs closed-form flexural SE split, slender
+      P2 fixture — discretization + shear-share deviation small-single-digit % at
+      λ≥20'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: numeric band asserted by the leaf's own B6 test
+- label: θ
+  task_id: 6884
+  title: Integration exemplar — AFrame-shaped sandwich-damping example (best_practices)
+  capabilities:
+  - name: corpus-gate-exists
+    binding: best_practices_constraint_gate in crates/reify-eval/tests/harness_corpus_gates.rs
+      (#6215) compiles + constraint-gates examples/best_practices/; INDEX.md exists
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: sandwich_material
+      paths:
+      - examples/best_practices
+      expect: present
+  - name: ratio-band-floors-analytic
+    binding: 'G6 branch 1/2: panel pure-bending analytic ≈3.4× (core SE share 8.3–8.6%,
+      independently re-derived), pillar ≈7.8× (fill EI share ≈24%); shear only raises
+      both. Bands panel [3.0, 25], pillar [5, 25]; the spec''s 5–10× deliberately
+      NOT asserted (decision 7)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: bands live in the example's own constraint cells
+- label: ι
+  task_id: 6885
+  title: Docs-truth — chunks + reify-design cheatsheet index + discoverability
+  capabilities:
+  - name: chunk-registry-and-cheatsheet-exist
+    binding: crates/reify-mcp/src/tools/chunks/*.md present; .claude/skills/reify-design/SKILL.md
+      tracked (git ls-files verified)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: MaterialDamping
+      paths:
+      - crates/reify-mcp/src/tools/chunks
+      expect: present
+  - name: cheatsheet-index-line
+    binding: one-line index entry pointing at the corpus example (overlay docs-truth
+      item 3)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: sandwich_material
+      paths:
+      - .claude/skills/reify-design/SKILL.md
+      expect: present
+- label: κ
+  task_id: 6886
+  title: PRD-close — terminal stamp + backfilled IDs + AS-AUTHORED freeze
+  capabilities:
+  - name: terminal-stamp-committed
+    binding: overlay "PRD terminal status" section is the contract; deliverable =
+      Status flip + landed-leaf IDs + freeze header on PRD and manifest
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: SHIPPED
+      paths:
+      - docs/prds/v0_6/damped-modal-bonded-heterogeneous.md
+      expect: present
+- label: μ
+  task_id: 6887
+  title: '[MILESTONE] Assembly-derived material fields — human PRD decision gate'
+  capabilities: []

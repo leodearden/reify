@@ -245,6 +245,57 @@ describe('convertRawMesh', () => {
   });
 });
 
+describe('convertRawMesh \u2014 scalar_channel_tags (task #6185)', () => {
+  it('carries the per-channel unit/dimension tags through as a plain object', () => {
+    const raw: RawMeshData = {
+      entity_path: 'FEA.body',
+      vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+      indices: [0, 1, 2],
+      normals: null,
+      scalar_channels: { vonMises: [10, 20, 30], testRotation: [-0.5, 0, 0.25] },
+      scalar_channel_tags: {
+        vonMises: { unit: 'Pa', signed: false },
+        testRotation: { unit: 'rad', signed: true },
+      },
+    };
+
+    const mesh = convertRawMesh(raw);
+
+    // Plain pass-through \u2014 NOT a typed array, unlike scalar_channels itself.
+    expect(mesh.scalar_channel_tags).toEqual({
+      vonMises: { unit: 'Pa', signed: false },
+      testRotation: { unit: 'rad', signed: true },
+    });
+  });
+
+  it('leaves scalar_channel_tags undefined when absent from raw payload', () => {
+    const raw: RawMeshData = {
+      entity_path: 'Plain.body',
+      vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+      indices: [0, 1, 2],
+      normals: null,
+      scalar_channels: { vonMises: [10, 20, 30] },
+    };
+
+    const mesh = convertRawMesh(raw);
+    expect(mesh.scalar_channel_tags).toBeUndefined();
+  });
+
+  it('preserves a negative value in a signed channel through Float32Array conversion', () => {
+    const raw: RawMeshData = {
+      entity_path: 'FEA.body',
+      vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+      indices: [0, 1, 2],
+      normals: null,
+      scalar_channels: { testRotation: [-0.5, 0, 0.25] },
+      scalar_channel_tags: { testRotation: { unit: 'rad', signed: true } },
+    };
+
+    const mesh = convertRawMesh(raw);
+    expect(mesh.scalar_channels!.testRotation[0]).toBe(-0.5);
+  });
+});
+
 describe('convertRawGuiState', () => {
   it('copies compile_diagnostics from raw to converted state', () => {
     const diag: DiagnosticInfo = {

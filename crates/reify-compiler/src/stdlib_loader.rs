@@ -151,8 +151,14 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
         // for the `stress_invariants` builtin (FEA-5, task 2884). Placed
         // immediately after `std.analysis` (which defines `Stress`/
         // `AnalysisResult`) and before `std.determinacy.purposes` (which
-        // MUST remain last). Zero ordering constraints on neighbouring
-        // modules — it only uses built-in `Real`.
+        // MUST remain last).
+        //
+        // ORDERING CONSTRAINT: `std.fea` MUST follow `std.units`, which
+        // supplies the `Pressure`/`Pressure2`/`Pressure3` aliases its fields
+        // declare (task #6092). Already satisfied — `std.units` is entry [0]
+        // above — so this is a note for whoever reorders next, not a bug. It
+        // previously read "zero ordering constraints … only uses built-in
+        // `Real`", which the retype made false in both clauses.
         ("std.fea", include_str!("../stdlib/fea.ri").to_owned()),
         (
             "std.tolerancing",
@@ -568,8 +574,8 @@ fn assert_no_cross_module_name_collisions(modules: &[CompiledModule]) {
     let mut collisions: Vec<NameCollision> = Vec::new();
 
     // One map for every kind. The key is (kind, dedup_key) so each kind gets its
-    // OWN namespace — `structure def Planar` (kinematic.ri:163) and
-    // `trait Planar {}` (geometry_traits.ri:56) coexist on main today, and a
+    // OWN namespace — `structure def Planar` (kinematic.ri) and
+    // `trait Planar {}` (geometry_traits.ri) coexist on main today, and a
     // kind-agnostic key would force an out-of-scope rename. `dedup_key` is the
     // declared name for every kind except functions (see below).
     let mut seen: HashMap<(&'static str, String), String> = HashMap::new();
@@ -612,9 +618,9 @@ fn assert_no_cross_module_name_collisions(modules: &[CompiledModule]) {
         // CRITICAL: read this vector, never the syntax. `type_aliases` holds
         // MODULE-LEVEL aliases only. Associated types declared inside a
         // trait/structure body (`type MotionValue` in `trait HasMotion`,
-        // kinematic.ri:110,133,151,198) are members of their template and are
-        // correctly absent here. A syntactic scan sees four `MotionValue`s and
-        // panics the real stdlib build immediately.
+        // kinematic.ri) are members of their template and are correctly
+        // absent here. A syntactic scan sees four `MotionValue`s and panics
+        // the real stdlib build immediately.
         for a in module.type_aliases.iter().filter(|a| a.is_pub) {
             record("type alias", a.name.clone(), &a.name, &m);
         }

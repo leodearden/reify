@@ -64,6 +64,20 @@ impl GeometryKernel for SingleKernelHolder {
         }
     }
 
+    /// Delegating override for the whole-file-reload teardown (task 5212).
+    ///
+    /// Required by this impl's delegate-EVERY-method invariant: the trait
+    /// default is a silent no-op, so without this the holder would swallow the
+    /// reload reset and leave the inner kernel's native shapes resident — the
+    /// exact unbounded growth `GeometryKernel::reset` exists to bound. The
+    /// `None` arm reproduces the trait default's no-kernel output (nothing to
+    /// reset).
+    fn reset(&mut self) {
+        if let Some(k) = self.kernel.as_mut() {
+            k.reset();
+        }
+    }
+
     fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
         match self.kernel.as_ref() {
             Some(k) => k.query(query),
@@ -585,6 +599,10 @@ mod tests {
             Ok((Self::handle(), AttributeHistory::None))
         }
 
+        fn reset(&mut self) {
+            self.record("reset");
+        }
+
         fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
             self.record("query");
             Ok(Value::length(0.0))
@@ -715,6 +733,7 @@ mod tests {
         // Invoke every GeometryKernel method through the holder.
         let _ = holder.execute(&op);
         let ewh = holder.execute_with_history(&op);
+        holder.reset();
         let _ = holder.query(&GeometryQuery::Volume(GeometryHandleId(1)));
         let _ = holder.query_many(&[GeometryQuery::Volume(GeometryHandleId(1))]);
         let _ = holder.export(GeometryHandleId(1), ExportFormat::Step, &mut buf);
@@ -768,6 +787,7 @@ mod tests {
         for method in [
             "execute",
             "execute_with_history",
+            "reset",
             "query",
             "query_many",
             "export",

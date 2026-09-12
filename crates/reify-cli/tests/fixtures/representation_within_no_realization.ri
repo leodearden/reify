@@ -1,0 +1,60 @@
+// Fixture: ζ — a RepresentationWithin subject that declares NO realization.
+// Task ζ (6169), cli_representation_within.rs, PRD C-SURFACE 1.
+//
+// The complement of the sibling representation_within_build_surface.ri. Both
+// reach `reify check` with an EMPTY achieved_repr_tol, but for OPPOSITE
+// reasons — and the remedy the user is given must differ accordingly:
+//
+//   sibling (a sphere at #precision(0.3mm))
+//     OCCT build : tessellation measures it  → map non-empty → Satisfied
+//     stub build : no kernel to measure with → map empty     → "build with OCCT"
+//
+//   here (no geometry at all)
+//     OCCT build : a kernel IS live, but there is nothing to tessellate for
+//                  this subject                → map empty
+//     stub build : no kernel either            → map empty
+//
+// On an OCCT-enabled binary this fixture is the shape that made the pre-fix
+// remedy a FALSE statement: it told the user to "build with OCCT" while OCCT
+// was demonstrably live (the sibling fixture reports OK on the very same
+// binary), which is a dead end and the same INV-SF-4 misattribution ζ exists
+// to remove — merely relocated from the operand kinds to the kernel.
+//
+// So MyGeom deliberately has NO realization: the absence is the entire point
+// of the fixture, and giving it any geometry would destroy what it gates.
+//
+// `param subject : MyGeom = MyGeom()` carries a DEFAULT for the same reason as
+// in the sibling: only a *defined* StructureInstance operand reaches the
+// language-level checker's misattributed "operator undefined for these operand
+// kinds" branch, so the default is what lets this fixture independently re-pin
+// C-SURFACE (1) on a second shape.
+//
+// Under `reify check` + OCCT: a kernel is registered but nothing was
+// tessellated for the subject → Indeterminate (C1), explained by a
+// cause-NEUTRAL Info that names neither the kernel nor OCCT → exit 0.
+// Indeterminate is not a failure.
+//
+// Under `reify check` + stub (no OCCT): the map is empty because there is no
+// kernel at all, so that surface legitimately DOES name the kernel. The CLI
+// gate is OCCT-gated for exactly that reason — asserting the negative in stub
+// mode would be wrong.
+//
+// Declares its module explicitly: without it, `reify check` also emits
+// W_MODULE_DECL_MISSING (spec §7.1), and a committed fixture should not carry
+// an avoidable warning.
+
+module representation_within_no_realization
+
+// MyGeom: a named structure type for `subject` to refer to. It carries only a
+// scalar param — no `sphere(..)`, no `let` binding a solid, hence no
+// realization for tessellation to measure.
+structure MyGeom {
+    param x : Real = 1.0
+}
+
+// Checker: declares the RepresentationWithin assertion over a subject that
+// cannot be measured on any surface, because it has nothing to measure.
+structure Checker {
+    param subject : MyGeom = MyGeom()
+    constraint RepresentationWithin(subject, 1mm)
+}
