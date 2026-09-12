@@ -1518,6 +1518,110 @@ mod tests {
         );
     }
 
+    // ── Task 7016: the List<Geometry> arm is SUBORDINATE, and NARROW ─────────
+    //
+    // The trio above guards the bare-`Type::Geometry` arm's ORDERING. These five
+    // do the same job for the `Type::List(Geometry)` arm and add the second
+    // axis that arm needs: its SCOPE. Two plausible mutants, each killed here —
+    // hoisting the arm above Rules 2/3, and relaxing its guard to
+    // `Type::List(_)` (or dropping the one-level restriction). Ruling and
+    // rationale in ONE place: [`classify_cell`]'s "Type::Geometry and Rule 4".
+
+    #[test]
+    fn classify_cell_list_geometry_in_structure_controlling_returns_structural() {
+        let id = ValueCellId::new("Part", "gated_faces");
+        let mut g = graph_with_cell(&id, Type::List(Box::new(Type::Geometry)));
+        g.structure_controlling.insert(id.clone());
+        assert_eq!(
+            classify_cell(&g, &id),
+            ParameterClass::Structural,
+            "task 7016: structure_controlling (Rule 2) must override the \
+             List<Geometry> → Dimensional dispatch (Rule 4). Kills the mutant \
+             that hoists the arm to an early return above the structural \
+             overrides"
+        );
+    }
+
+    #[test]
+    fn classify_cell_list_geometry_as_collection_count_returns_structural() {
+        // Contrived by design, exactly as its bare-Geometry sibling is: the
+        // point is that Rule 3 wins over Rule 4 for EVERY type.
+        let id = ValueCellId::new("Part", "__count_faces");
+        let mut g = graph_with_cell(&id, Type::List(Box::new(Type::Geometry)));
+        g.collection_subs.push(CollectionSubInfo {
+            parent_entity: "Part".to_string(),
+            sub_name: "faces".to_string(),
+            structure_name: "Face".to_string(),
+            count_cell: id.clone(),
+            child_value_cells: vec![],
+        });
+        assert_eq!(
+            classify_cell(&g, &id),
+            ParameterClass::Structural,
+            "task 7016: a collection count_cell (Rule 3) must be Structural for \
+             every cell type, including List<Geometry>. Kills the hoisted-arm \
+             mutant on the Rule 3 path"
+        );
+    }
+
+    #[test]
+    fn stage_a_eligible_structure_controlling_list_geometry_diff_returns_false() {
+        // Covers `stage_a_cell_vetoes`, the PRIVATE predicate `stage_a_eligible`
+        // actually calls — unreachable from the two `classify_cell` guards
+        // above, so without this a mutant that relaxes only the walk would pass
+        // both of them and still be broken.
+        let id = ValueCellId::new("Part", "gated_faces");
+        let mut g1 = graph_with_cell(&id, Type::List(Box::new(Type::Geometry)));
+        g1.structure_controlling.insert(id.clone());
+        let g2 = g1.clone();
+
+        let mut v1 = reify_ir::ValueMap::new();
+        v1.insert(id.clone(), face_handle_list("Part", 1));
+        let mut v2 = reify_ir::ValueMap::new();
+        v2.insert(id.clone(), face_handle_list("Part", 2));
+
+        assert!(
+            !stage_a_eligible(&g1, &g2, &v1, &v2),
+            "task 7016: a structure-controlling List<Geometry> cell must still \
+             veto the tick end-to-end through stage_a_eligible — the Rule 2 \
+             override must hold in stage_a_cell_vetoes too"
+        );
+    }
+
+    #[test]
+    fn classify_cell_list_of_length_returns_structural() {
+        // The sharpest scope-boundary case, and the one most likely to be
+        // "tidied" into the arm later: `List<Length>` is a REAL type here (PRD
+        // §5.2's `displacement_at -> List<Length>`), but it is authored/computed
+        // numeric data, not realization output, so the whitelist's justification
+        // does not transfer to it. Whether it is Dimensional is a separate
+        // question needing its own evidence.
+        let id = ValueCellId::new("Part", "displacements");
+        let g = graph_with_cell(&id, Type::List(Box::new(Type::length())));
+        assert_eq!(
+            classify_cell(&g, &id),
+            ParameterClass::Structural,
+            "task 7016: the widening is List<Geometry>, NOT \"all lists\" — kills \
+             the mutant that relaxes the arm's guard to `Type::List(_)`"
+        );
+    }
+
+    #[test]
+    fn classify_cell_nested_list_geometry_returns_structural() {
+        let id = ValueCellId::new("Part", "face_groups");
+        let g = graph_with_cell(
+            &id,
+            Type::List(Box::new(Type::List(Box::new(Type::Geometry)))),
+        );
+        assert_eq!(
+            classify_cell(&g, &id),
+            ParameterClass::Structural,
+            "task 7016: the arm matches ONE level only — kills the mutant that \
+             recurses into the inner type, for which no producer exists in \
+             units.rs"
+        );
+    }
+
     // ══ Task 6643: Rule 4 is LEAF-SCOPED inside stage_a_eligible's walk ═════
     //
     // Rationale in ONE place: `stage_a_eligible`'s "# The value-diff walk is
