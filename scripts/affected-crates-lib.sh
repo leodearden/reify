@@ -53,17 +53,47 @@ _is_global() {
     return 1
 }
 
-# _is_noncrate <path> — returns 0 (true) if the path is a non-crate file that
-# contributes no crates and must NOT force ALL.
-# Matches: docs/** (documentation), gui/src/** (frontend-only), and
-# tests/infra/** (shell/python infra test scripts — these run as their own
-# verify step and never affect Rust crate compilation or test outcomes, so a
-# tests/infra-only diff must narrow to no crates rather than hitting the C5
-# fail-wide-to-ALL path via an unmappable path).
-_is_noncrate() {
+# _is_inert <path> — returns 0 (true) if the path is documentation or
+# configuration-only: it contributes NO crate AND needs no heavy checks.
+# Matches: docs/**, *.md, *.yaml, *.yml.
+#
+# SPOT (task 7427). This is the SINGLE source for that class, consulted by
+# BOTH consumers that used to carry their own copy:
+#   * _is_noncrate below (the crate-attribution side), and
+#   * scripts/verify.sh's decide_scope (the heavy-check side), whose `*)`
+#     catch-all defers here instead of matching its own glob list.
+# The two lists had drifted — decide_scope matched all four patterns,
+# _is_noncrate only docs/**. The drift was invisible on a pure-docs diff
+# (RUN_RUST=0 skips the closure entirely) but destroyed narrowing on a MIXED
+# one: a top-level *.md riding along with a crate edit was unmappable, so C5
+# widened the whole closure to ALL. tests/infra/test_affected_crates_lib.sh's
+# INERT-SPOT battery pins the two classifications together.
+#
+# decide_scope consults this from INSIDE its `*)` catch-all, never ahead of
+# the case, so its earlier arms still win over this rule — gui/* (a
+# gui/*.md is GUI work), tests/prd-gate/fixtures/*.ri and the
+# docs/gui-event-channels.md carve-out.
+_is_inert() {
     local path="$1"
     case "$path" in
-        docs/*)        return 0 ;;
+        docs/*)                 return 0 ;;
+        *.md|*.yaml|*.yml)      return 0 ;;
+    esac
+    return 1
+}
+
+# _is_noncrate <path> — returns 0 (true) if the path is a non-crate file that
+# contributes no crates and must NOT force ALL.
+# Matches: everything _is_inert covers (documentation/configuration), plus
+# gui/src/** (frontend-only) and tests/infra/** (shell/python infra test
+# scripts — these run as their own verify step and never affect Rust crate
+# compilation or test outcomes, so a tests/infra-only diff must narrow to no
+# crates rather than hitting the C5 fail-wide-to-ALL path via an unmappable
+# path).
+_is_noncrate() {
+    local path="$1"
+    _is_inert "$path" && return 0
+    case "$path" in
         gui/src/*)     return 0 ;;
         tests/infra/*) return 0 ;;
     esac

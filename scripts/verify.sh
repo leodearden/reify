@@ -1387,12 +1387,27 @@ decide_scope() {
                 # widen the heavy-check surface with no matching benefit.
                 gui=1
                 ;;
-            docs/*|*.md|*.yaml|*.yml)
-                : # no heavy checks
-                ;;
             *)
-                # Unrecognised path: be conservative.
-                rust=1; gui=1; gate=1
+                # Inert (documentation / configuration-only) -> no heavy
+                # checks; anything else unrecognised -> be conservative.
+                #
+                # _is_inert (scripts/affected-crates-lib.sh, sourced above) is
+                # the SINGLE source for that class — docs/**, *.md, *.yaml,
+                # *.yml — shared with affected_crates' _is_noncrate, which used
+                # to carry a narrower copy of the same list (task 7427).
+                #
+                # It is consulted HERE, inside the catch-all, and deliberately
+                # NOT hoisted ahead of the case: every arm above must keep
+                # winning over the inert rule — `gui/*` (a gui/*.md or
+                # gui/*.yaml is GUI work), `tests/prd-gate/fixtures/*.ri`
+                # (tasks 5536/6435) and the docs/gui-event-channels.md
+                # carve-out (task 6281), which sits deliberately ahead of this
+                # arm for exactly that reason.
+                if _is_inert "$f"; then
+                    : # no heavy checks
+                else
+                    rust=1; gui=1; gate=1
+                fi
                 ;;
         esac
     done <<< "$_classify"
