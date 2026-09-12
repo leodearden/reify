@@ -660,10 +660,19 @@ The distinction matters downstream and is carried into §3.1 rather than rounded
 **Determinism and datum gates.** Every probe in this block passed the §0 Caveat-2 datum
 gate: the harness extracts `a` only from the `deviation <X> m` capture and emits a literal
 `NO-DATUM` token when that capture is empty, so a non-realization cannot enter a table as a
-number. That sentinel was checked against a live failure before use — a scratch file whose
-basename does not match its `module` declaration exits **0** with `E_MODULE_PATH_MISMATCH`
-and no deviation line, which is exactly the shape §0 Caveat 2 warns about, and the harness
-reported `NO-DATUM` for it rather than an empty field.
+number. That token did not separate a non-realization from a `timeout` kill — both leave
+the capture empty — which is immaterial here because **no** `NO-DATUM` occurred at all, and
+that excludes both causes at once; §4's published recipe splits them anyway, so a walk that
+does hit one can tell which. The sentinel was checked against two live failures before use
+and reported `NO-DATUM` for both rather than an empty field. One is §0 Caveat 2's shape
+exactly — this fixture with its `RepresentationWithin` bound loosened to 50 mm prints
+`OK PnrgNurbsSurfaceCheck#constraint[0]` / `All constraints satisfied.` and **exits 0**,
+with no deviation line anywhere. The other is loud: a scratch file whose basename does not
+match its `module` declaration fails with `E_MODULE_PATH_MISMATCH` on **exit 1**. Both
+leave the capture empty, which is the point — the gate keys on the deviation line being
+present, not on the exit code, so a quiet failure and a loud one are caught alike. (An
+earlier draft of this paragraph credited the module-path mismatch with exiting 0; it was
+re-measured on this lane's binary and exits 1.)
 
 *Stage A:* all six new rungs were re-run for a second repetition — matching the rep count
 §1.5 records for 6545's own sub-0.3 mm rungs — and returned **byte-identical achieved
@@ -1010,17 +1019,23 @@ F=tests/prd-gate/fixtures/pnrg_envelope_nurbs_surface.ri
 #     other.  Per §0 Caveat 1 ratios are load-invariant and exact — only wall clocks are
 #     contended — so parallelism cannot corrupt the data, only its timings.  P=4; do not
 #     raise it on a box already oversubscribed.
-probe() {                                       # probe <d>  ->  "<d> <a|NO-DATUM>"
+probe() {                            # probe <d>  ->  "<d> <a|NO-DATUM|TIMEOUT>"
   local d=$1 dir=/tmp/pnrg7128/$1 b; b=$(basename "$F")
   mkdir -p "$dir"
   sed -E "s/#precision\([^)]*\)/#precision($d)/" "$F" > "$dir/$b"
   grep -q "^#precision($d)\$" "$dir/$b" || { echo "$d SED-FAILED"; return 1; }
-  local a
-  a=$(timeout 240 ./target/release/reify check "$dir/$b" 2>&1 \
-      | grep -oE 'deviation [0-9.e+-]+ m' | head -1 | awk '{print $2}')
-  # (2) NO-DATUM is a sentinel, and it is FATAL for the row — never a number, never 0.
-  #     A §0 Caveat-2 non-realization exits 0 and prints no deviation line, so a harness
-  #     that records the empty grep builds a table of confident false near-zero ratios.
+  local out rc a
+  out=$(timeout 240 ./target/release/reify check "$dir/$b" 2>&1); rc=$?
+  # (2) The failure tokens are FATAL for the row — never a number, never 0 — and they
+  #     must not be merged, because a kill and a non-realization both leave the grep
+  #     empty.  A §0 Caveat-2 non-realization exits 0 and prints no deviation line, so a
+  #     harness that records the empty grep builds a table of confident false near-zero
+  #     ratios.  A `timeout` kill (rc 124) is instead a COST result, and this class's
+  #     "not budget-limited" claim (§1.5) is exactly what a merged token would hide.
+  #     Capturing `out` first is what makes rc readable: inside a pipeline $? is the
+  #     grep's, not reify's.
+  [ "$rc" -eq 124 ] && { echo "$d TIMEOUT"; return 0; }
+  a=$(printf '%s\n' "$out" | grep -oE 'deviation [0-9.e+-]+ m' | head -1 | awk '{print $2}')
   echo "$d ${a:-NO-DATUM}"
 }
 export -f probe; export F
@@ -1037,7 +1052,7 @@ import sys
 from decimal import Decimal, ROUND_HALF_UP
 for line in sys.stdin:
     d, a = line.split()
-    if a in ("NO-DATUM", "SED-FAILED"):
+    if a in ("NO-DATUM", "TIMEOUT", "SED-FAILED"):
         print(f"{d}\t{a}")
         continue
     ratio = Decimal(a) / (Decimal(d.rstrip("m")) / 1000)
@@ -1049,6 +1064,14 @@ to the largest `d` still returning the plateau's `a`, bracketing each edge with 
 *both* sides that returns a different `a` — `a` is not monotone in `d` (§1.5), so an
 unbracketed bisection is unsound. ~10 probes pin one edge; a 1e-4 mm grid over
 [0.12, 0.18] mm would need ~600.
+
+*Checked.* The `probe()` block above was extracted from this file and run verbatim after
+the fact — same lane, same binary, loadavg 149 — and printed `0.143mm 1.429e-4 0.9993`,
+`0.14386mm 1.440e-4 1.0010`, `0.144mm 1.440e-4 1.0000`, `0.145mm 1.450e-4 1.0000` in 26.6 s
+wall at P=4. §1.5's Stage C values therefore reproduce from the *published* recipe in a
+later session, not merely from whatever was typed at the time. The `TIMEOUT` arm was
+exercised by lowering `timeout 240` to `timeout 1` (prints `0.12mm TIMEOUT`, returns 0 so
+`xargs` does not abort) and the `NO-DATUM` arm by the two failures §1.5 records.
 
 **The cost split** (three vectors; the STL path must go to tmpfs to keep the write term
 bounded):
