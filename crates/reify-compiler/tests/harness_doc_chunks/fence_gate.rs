@@ -2118,6 +2118,22 @@ fn sibling_scrape_counts_bare_reify_fences(markdown: &str) -> usize {
         .count()
 }
 
+/// The sibling suite's own anti-vacuity floor on `geometry.md`'s bare
+/// ```` ```reify ```` fences, mirrored here so a retag sweep has to lower TWO
+/// deliberate literals rather than walk under one.
+const SIBLING_GEOMETRY_REIFY_FENCE_FLOOR: usize = 2;
+
+/// Does `markdown` still carry enough bare ```` ```reify ```` fences to keep the
+/// sibling suite's compile subjects?
+///
+/// A named predicate rather than an inline comparison, so the pin below and the
+/// hermetic controls that falsify it share ONE floor. A control that re-spelled
+/// the comparison could drift away from the assertion it claims to exercise,
+/// which is the same class of defect this whole pin exists to catch.
+fn meets_sibling_geometry_reify_floor(markdown: &str) -> bool {
+    sibling_scrape_counts_bare_reify_fences(markdown) >= SIBLING_GEOMETRY_REIFY_FENCE_FLOOR
+}
+
 /// `geometry.md` must keep BOTH of its bare ```` ```reify ```` fences, because
 /// a sibling suite in this same compile unit scrapes for that exact string.
 ///
@@ -2140,22 +2156,23 @@ fn geometry_chunk_retains_bare_reify_fences_for_the_sibling_smoke_suite() {
     let content = read_chunk_file("geometry");
     let label = chunk_label("geometry");
 
-    let parsed_bare_reify = parse_fences(&content)
-        .unwrap_or_else(|e| panic!("{label}: {e}"))
-        .into_iter()
-        .filter(|f| f.tag.as_deref() == Some("reify"))
-        .collect::<Vec<_>>();
-
     assert!(
-        parsed_bare_reify.len() >= 2,
-        "{label} carries only {} fence(s) tagged EXACTLY `reify`, expected at least 2. \
+        meets_sibling_geometry_reify_floor(&content),
+        "{label} carries only {} fence(s) tagged EXACTLY `reify`, expected at least \
+         {SIBLING_GEOMETRY_REIFY_FENCE_FLOOR}. \
          `geometry_chunk_smoke.rs` scrapes this file with `line.trim_end() == \"```reify\"` \
          (:617) and asserts its own `>= 2` floor (:661); dropping below 2 here HOLLOWS that \
          suite rather than failing it — its compile loop just stops visiting the fence. If a \
          fence genuinely stopped compiling standalone, fix the fence or move the sibling \
          suite's subject deliberately; do NOT quietly retag it to `reify-fragment`.",
-        parsed_bare_reify.len()
+        sibling_scrape_counts_bare_reify_fences(&content)
     );
+
+    let parsed_bare_reify = parse_fences(&content)
+        .unwrap_or_else(|e| panic!("{label}: {e}"))
+        .into_iter()
+        .filter(|f| f.tag.as_deref() == Some("reify"))
+        .collect::<Vec<_>>();
 
     let scraped = sibling_scrape_counts_bare_reify_fences(&content);
     assert_eq!(
@@ -2194,5 +2211,29 @@ fn geometry_chunk_retains_bare_reify_fences_for_the_sibling_smoke_suite() {
         0,
         "this module's parser still reported fences tagged `reify` after every one was retagged \
          to `reify-fragment` — the EXACT-match tag contract has regressed to a prefix match"
+    );
+
+    // NEGATIVE CONTROL, PARTIAL — the case the control above cannot reach. A
+    // sweep that empties the file is caught by any floor at all; the damaging
+    // one retags SOME fences and leaves the rest, and a floor set under the live
+    // count accepts exactly that. Same hermetic shape: the real file is never
+    // written.
+    let live = sibling_scrape_counts_bare_reify_fences(&content);
+    let partly_retagged = content.replacen("\n```reify\n", "\n```reify-fragment\n", 2);
+    assert_eq!(
+        sibling_scrape_counts_bare_reify_fences(&partly_retagged) + 2,
+        live,
+        "the partial control did not retag exactly two opening delimiters in {label} — its \
+         `\\n```reify\\n` pattern no longer matches the file the way it assumes, so it is not \
+         exercising the case it names and must be updated with the file"
+    );
+    assert!(
+        !meets_sibling_geometry_reify_floor(&partly_retagged),
+        "retagging two of {label}'s {live} bare ```reify fences to `reify-fragment` still \
+         satisfies SIBLING_GEOMETRY_REIFY_FENCE_FLOOR ({SIBLING_GEOMETRY_REIFY_FENCE_FLOOR}). \
+         A floor under the live count pins nothing above itself: those two fences could be \
+         retagged in any future sweep and this pin — the one test whose whole purpose is \
+         naming that retag as the cause — would stay green. Raise the floor to the sibling \
+         suite's own live count."
     );
 }
