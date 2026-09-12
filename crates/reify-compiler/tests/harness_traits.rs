@@ -48,6 +48,8 @@ mod trait_assoc_type_conformance_tests;
 mod trait_assoc_type_qualified_resolution_tests;
 #[path = "harness_traits/trait_assoc_type_resolution_tests.rs"]
 mod trait_assoc_type_resolution_tests;
+#[path = "harness_traits/trait_body_deferred_check_tests.rs"]
+mod trait_body_deferred_check_tests;
 #[path = "harness_traits/trait_bounds_tests.rs"]
 mod trait_bounds_tests;
 #[path = "harness_traits/trait_conformance_tests.rs"]
