@@ -3,12 +3,13 @@
 //! Task #7040 (PRD docs/prds/merge-gate-compile-cost.md §3 W1 / §5 C1, leaf C-syntax):
 //! splits the lowering family out of `harness_syntax.rs`. The subsystem is the AST half of
 //! reify-syntax — `ts_parser.rs`'s `lower_*` pass (`lower_enum`, `lower_binary_expr`, …),
-//! which turns the tree-sitter CST into `reify_ast` nodes. Every module below is the
-//! AST-level companion of a CST-level `*_grammar_tests` / `*_parser_tests` module that
-//! stayed behind, so the cut runs along the crate's own grammar/CST ↔ lowering seam.
-//! Membership is mechanical rather than curated: this root holds exactly
-//! `harness_syntax/*_lowering_tests.rs` as it stood at the split — a rule a reviewer can
-//! re-derive with one glob.
+//! which turns the tree-sitter CST into `reify_ast` nodes. Membership is mechanical rather
+//! than curated: this root holds exactly `harness_syntax/*_lowering_tests.rs` as it stood
+//! at the split, and no `*_lowering_tests.rs` stayed behind — a rule a reviewer re-derives
+//! with one glob. A same-stem CST-level companion is NOT the membership test and must not
+//! be used as one: only three of the fourteen (`auto_binding_sites`, `numeric_separators`,
+//! `radix_literals`) have a `*_grammar_tests` sibling left in `harness_syntax`, and the
+//! other eleven have no same-stem counterpart there at all. Decide by the glob.
 //!
 //! WHY THIS IS A SEPARATE ROOT FROM `harness_syntax`. Measured before the split,
 //! `harness_syntax` stood at 18957 lines = 94.8% of
@@ -25,7 +26,7 @@
 //! in the guard's own `total root module module_files external external_files` order:
 //!
 //!   harness_syntax           18957 148 18739 63 70 1  ->  14569 134 14365 49 70 1
-//!   harness_syntax_lowering      0   0     0  0  0 0  ->   4468  94  4374 14  0 0
+//!   harness_syntax_lowering      0   0     0  0  0 0  ->   4469  95  4374 14  0 0
 //!
 //! THIS UNIT INCLUDES NOTHING FROM OUTSIDE ITS OWN MODULE DIRECTORY — that is the
 //! load-bearing `external 0 / external_files 0` above, not an incidental one. reify-syntax
