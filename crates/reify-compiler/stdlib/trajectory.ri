@@ -597,8 +597,7 @@ structure def JointLimit : ActuatorLimit {
     // Fires automatically at construction via SIR-α's
     // `check_constraints_against_templates` machinery (task 3540, landed).
     //
-    // Bare `0` coerced to Scalar<Force> at compile time by task-4485/β
-    // polymorphic-zero rewrite (esc-3115-112 resolved).
+    // DIMENSIONED-ZERO CONVENTION — docs/notes/dimensioned-zero-coercion.md.
     //
     // NOTE — explicitly NOT constrained:
     //   `joint : Real` — placeholder for an entity-handle type; no
@@ -669,9 +668,8 @@ structure def RevoluteJointLimit : ActuatorLimit {
 // Dimensional encoding (task 4580 tightening):
 // velocity_limit and acceleration_limit are Scalar<Velocity>/Scalar<Acceleration>
 // (Velocity added to NAMED_DIMENSIONS in task 4580; Force/Acceleration were
-// already named). Their constraints use bare `0` — coerced to the correct
-// Scalar<D> at compile time by task-4485/β polymorphic-zero rewrite
-// (esc-3115-112 resolved).
+// already named). Their constraints use bare `0`.
+// DIMENSIONED-ZERO CONVENTION — docs/notes/dimensioned-zero-coercion.md.
 // vibration_tolerance/max_iters/tol remain dimensionless (plain > 0 / <= 1).
 //
 // Fields:
@@ -729,8 +727,7 @@ structure def TOTSShaper : Shaper {
     // velocity_limit, acceleration_limit: must be strictly positive — a zero or
     // negative kinematic limit is non-physical (the robot cannot move at all if
     // the velocity limit is zero, and a negative limit has no physical meaning).
-    // Bare `0` coerced to Scalar<Velocity> / Scalar<Acceleration> at compile time
-    // by task-4485/β polymorphic-zero rewrite (esc-3115-112 resolved).
+    // DIMENSIONED-ZERO CONVENTION — docs/notes/dimensioned-zero-coercion.md.
     constraint velocity_limit > 0
     constraint acceleration_limit > 0
 
