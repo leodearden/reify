@@ -100,11 +100,27 @@ _is_noncrate() {
     return 1
 }
 
+# _RI_CORPUS_CRATES — the crates whose COMPILED tests read the examples/ .ri
+# corpus, as SEED crates for the reverse closure (task 7427).
+#
+# HOW MEMBERSHIP IS KEPT HONEST: not by hand. RI-CORPUS-DRIFT in
+# tests/infra/test_affected_crates_lib.sh derives the set from the repo's own
+# Rust sources — every crate with a non-comment line naming an
+# `examples/<path>.ri` literal — and asserts DERIVED ⊆ DECLARED. Re-run that
+# test rather than editing this line from memory.
+#
+# SUBSET, not equality, and the asymmetry is deliberate: an extra DECLARED
+# crate only ever WIDENS the closure, which is the direction of error C5
+# already blesses. An UNDECLARED reader is the real regression — its tests
+# would be narrowed AWAY by an edit to the very fixture they read.
+_RI_CORPUS_CRATES="reify-cli reify-compiler reify-eval reify-eval-fea-tests"
+
 # _file_to_crate <path> — map a crate-owned path to its crate name, or print
 # nothing if the path is not under a known crate location.
 # Mapping rules (§5):
 #   crates/<name>/**  -> <name>
 #   gui/src-tauri/**  -> reify-gui
+#   examples/**/*.ri  -> _RI_CORPUS_CRATES (corpus seeds)
 _file_to_crate() {
     local path="$1"
     case "$path" in
@@ -115,6 +131,26 @@ _file_to_crate() {
             ;;
         gui/src-tauri/*)
             echo "reify-gui"
+            ;;
+        examples/*.ri)
+            # A corpus leaf: emit the declared reader crates as ordinary
+            # seeds, so affected_crates feeds them through _reverse_closure
+            # exactly like any other direct crate.
+            #
+            # A bash `case` glob's `*` spans `/`, so this one arm covers the
+            # nested shapes too (examples/auto/*.ri,
+            # examples/ambient_default_material/*.ri, …) — which is most of
+            # the tree.
+            #
+            # Scoped to .ri leaves, NOT to the directory: non-.ri, non-inert
+            # content under examples/ (a .gcode datum, a .gitkeep) has no
+            # declared reader, so it deliberately falls through to the C5
+            # fail-wide arm in affected_crates.
+            # Word-split is the point (one seed per line, the contract every
+            # other arm honours). Safe unquoted: the declared value is a
+            # literal in this file and carries no glob metacharacter.
+            # shellcheck disable=SC2086
+            printf '%s\n' $_RI_CORPUS_CRATES
             ;;
         *)
             # No mapping found.

@@ -1387,6 +1387,23 @@ decide_scope() {
                 # widen the heavy-check surface with no matching benefit.
                 gui=1
                 ;;
+            examples/*.ri)
+                # A corpus leaf (task 7427). affected_crates now maps these
+                # to their declared reader crates instead of C5-widening to
+                # ALL; decide_scope's answer is unchanged from the `*)`
+                # catch-all it used to reach, and each flag is now earned
+                # rather than conservative:
+                #   rust — the corpus gates are compiled Rust test targets
+                #          that open these leaves by path.
+                #   gui  — gui/src/__tests__/reifyGrammarCorpus.test.ts sets
+                #          CORPUS_ROOTS = ['examples', …] and walks the tree
+                #          recursively, so this is a genuine frontend read.
+                #   gate — reify-eval and reify-cli are both declared in
+                #          scripts/occt-touching-crates.txt.
+                # A bash `case` glob's `*` spans `/`, so nested corpus dirs
+                # (examples/auto/, …) land here too.
+                rust=1; gui=1; gate=1
+                ;;
             *)
                 # Inert (documentation / configuration-only) -> no heavy
                 # checks; anything else unrecognised -> be conservative.
