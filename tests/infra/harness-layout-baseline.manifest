@@ -108,9 +108,6 @@ crates/reify-compiler/tests/keyed_forall_lower_tests.rs
 crates/reify-compiler/tests/keyed_sub_resolution_tests.rs
 crates/reify-compiler/tests/lambda_compile_tests.rs
 crates/reify-compiler/tests/list_helper_selector_coercion_tests.rs
-crates/reify-compiler/tests/math_construction_signatures_tests.rs
-crates/reify-compiler/tests/math_signatures.rs
-crates/reify-compiler/tests/math_transcendental_signatures.rs
 crates/reify-compiler/tests/mul_div_operand_guard_tests.rs
 crates/reify-compiler/tests/mul_div_static_runtime_parity.rs
 crates/reify-compiler/tests/multi_load_bracket_example_tests.rs
@@ -121,7 +118,6 @@ crates/reify-compiler/tests/option_compile_tests.rs
 crates/reify-compiler/tests/option_recovery_resolution_tests.rs
 crates/reify-compiler/tests/param_binding_selector_coercion_tests.rs
 crates/reify-compiler/tests/param_default_type_mismatch_tests.rs
-crates/reify-compiler/tests/parse_length_signatures.rs
 crates/reify-compiler/tests/parse_with_stdlib_tests.rs
 crates/reify-compiler/tests/polymorphic_zero_tests.rs
 crates/reify-compiler/tests/prepass_consolidation_tests.rs

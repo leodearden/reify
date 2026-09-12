@@ -46,9 +46,7 @@
 //! Enforcement is PERMISSIVE (PRD §5): task 4352 adds NO new bespoke hard
 //! error. The cell-typing fix is all compile-side — eval was already correct.
 
-mod common;
-
-use common::compile_with_stdlib_helper;
+use crate::common::compile_with_stdlib_helper;
 use reify_compiler::CompiledModule;
 use reify_core::{DimensionVector, Severity, Type, ValueCellId};
 use reify_eval::EvalResult;

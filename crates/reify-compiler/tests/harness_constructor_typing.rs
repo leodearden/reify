@@ -16,23 +16,24 @@
 //!
 //! Explicit `#[path]` is required: this harness root is an integration-test crate root,
 //! where a bare `mod <file>;` would resolve to the sibling `tests/<file>.rs`, not the
-//! `harness_constructor_typing/` subdir. As in harness_doc_chunks.rs /
-//! harness_geometry_kinds.rs — and unlike harness_langcore.rs / harness_patterns.rs — the
-//! shared `common` helper module is deliberately NOT declared here: the absorbed file
-//! declares no `mod` and uses no helper, so declaring it would pull tests/common/mod.rs
-//! into this compile unit for nothing, in a PRD whose whole point is cutting merge-gate
-//! compile cost.
+//! `harness_constructor_typing/` subdir. As in harness_langcore.rs / harness_patterns.rs
+//! — and unlike harness_doc_chunks.rs / harness_geometry_kinds.rs — the shared `common`
+//! helper module IS declared here, once, at the root: three members consume
+//! `compile_with_stdlib_helper`, and declaring it per-member would load the same source
+//! several times in one compile unit, which `clippy::duplicate_mod` rejects under
+//! `-D warnings`. The 391 external lines it charges this unit are paid deliberately.
 //!
-//! Future constructor-family typing locks belong in this unit. The affine family, whose
-//! structural template #5344 mirrored, is NOT among the candidates: it was consolidated
-//! before this task, as `harness_units_materials/affine_constructor_typing_tests.rs`, and
-//! correspondingly holds no baseline row. `datum_constructor_tests.rs` was a second such
-//! precedent until #5694 absorbed it, and its baseline row, into
-//! `harness_physical_modeling/datum_constructor_tests.rs`. The one sibling
-//! constructor-family precedent this crate still carries as a grandfathered standalone
-//! is `tests/math_construction_signatures_tests.rs`;
-//! it is the natural next absorption, shrinking the baseline ratchet by one more row, and
-//! is left alone here only because it is outside #5344's file scope.
+//! Task #5695 (PRD §5 C1, leaf CMP-5) spent this unit's designated next absorption: the
+//! math construction / transcendental / parse-length signature resolvers, which pin the
+//! same `NoUserFunctions` result-type ladder, are members now and hold no baseline row.
+//! Future constructor-family typing locks belong here too. Neither remaining sibling
+//! precedent is a candidate — the affine family, whose structural template #5344
+//! mirrored, was consolidated as `harness_units_materials/affine_constructor_typing_tests.rs`,
+//! and `datum_constructor_tests.rs` as `harness_physical_modeling/datum_constructor_tests.rs`
+//! by #5694; correspondingly neither holds a baseline row.
+
+#[path = "common/mod.rs"]
+mod common;
 
 #[path = "harness_constructor_typing/math_construction_signatures_tests.rs"]
 mod math_construction_signatures_tests;
