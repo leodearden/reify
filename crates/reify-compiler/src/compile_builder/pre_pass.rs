@@ -30,10 +30,18 @@ use crate::type_resolution::convert_type_params;
 /// phase resolves happily against what remains, and the module compiles "clean" with a
 /// different answer.
 ///
-/// This ALIGNS the single-module path with the module-DAG path, which already returns
-/// `Diagnostic::error` and refuses (`module_dag.rs`'s parse-error arms). The two paths
-/// disagreeing was the leak: the same malformed source was refused when imported and
-/// silently accepted when compiled alone.
+/// What the severity buys, stated only as far as it is measured. It ALIGNS the single-module
+/// path with the module-DAG path, which already returns `Diagnostic::error` and refuses
+/// (`module_dag.rs`'s parse-error arms), so the same malformed source is no longer refused
+/// when imported and accepted when compiled alone; and it is real defence-in-depth for
+/// LIBRARY consumers that hand a parse-error-bearing `ParsedModule` straight to `compile*`.
+///
+/// It changes no in-tree PRODUCTION behaviour, because every such surface already gates on
+/// `parsed.errors` and returns BEFORE compiling — `reify-cli`'s two entry points,
+/// `mcp_context.rs`'s three, `gui/src-tauri/src/engine.rs`, and `reify-lsp`'s
+/// `diagnostics.rs`. Those gates are LOAD-BEARING, not made redundant by this severity:
+/// each converts the parse errors itself, so removing one would start showing an editor user
+/// every parse error twice — once converted there, once again as `parse error: …` from here.
 pub(crate) fn forward_parse_errors(ctx: &mut CompilationCtx, parsed: &ParsedModule) {
     for err in &parsed.errors {
         ctx.diagnostics.push(

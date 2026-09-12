@@ -1605,12 +1605,16 @@ impl ParseError {
     /// several such nodes (measured on the 24-broken-function corpus: 22 diagnostics from one
     /// parse), each of which would re-scan the whole source from byte 0.
     ///
-    /// Same output as mapping [`render`](Self::render), one string per input error, in order.
+    /// Same output as mapping [`render`](Self::render), one string per input error, in order —
+    /// by construction, since both go through
+    /// [`render_with_offsets`](Self::render_with_offsets).
     pub fn render_all(errors: &[ParseError], source: &str) -> Vec<String> {
-        // Below two errors the table costs more than it saves — it is itself an O(len(source))
-        // scan, so building it to serve a single lookup just moves the same work.
-        if errors.len() < 2 {
-            return errors.iter().map(|e| e.render(source)).collect();
+        // The only short-circuit worth having: with nothing to render, the table would be a
+        // scan of the whole source for no lookups at all. A SINGLE error is deliberately NOT
+        // special-cased — `render` builds exactly this same table to serve its one lookup, so
+        // forking there would buy nothing and leave two code paths to keep in agreement.
+        if errors.is_empty() {
+            return Vec::new();
         }
         let line_offsets = reify_core::build_line_offsets(source);
         errors
@@ -1791,51 +1795,57 @@ mod parse_error_render_tests {
         }
     }
 
-    /// `render_all` is the loop the CLI and MCP call sites run, and must be indistinguishable
-    /// from mapping `render` — including on the degenerate inputs.
+    /// `render_all` is the loop the CLI and MCP call sites run: empty in, empty out, and the
+    /// spans that have no line to report still degrade rather than panicking.
     ///
-    /// INV-SF-7, task #5392. It short-circuits below two errors (the newline table costs an
-    /// O(len(source)) scan, so building it for a single lookup saves nothing), which makes the
-    /// zero- and one-error cases a genuinely different code path from the batched one.
+    /// INV-SF-7, task #5392. `render_all` has ONE code path — only the empty case returns
+    /// early, and it builds nothing — so agreement with mapping `render` holds by
+    /// construction and is not what needs pinning. What does is the behaviour on the two
+    /// inputs that carry no usable position: an offset past the end of `source` (a stale
+    /// span, or one belonging to a different file) and the prelude sentinel.
     #[test]
-    fn render_all_matches_mapping_render_including_degenerate_inputs() {
+    fn render_all_handles_empty_input_and_locationless_spans() {
         let source = "fn f() -> Int {
   let x = 1
   x
 }
 ";
-        let sentinel = SourceSpan::PRELUDE_SENTINEL_OFFSET as u32;
         let mk = |off: u32, msg: &str| ParseError {
             message: msg.to_string(),
             span: SourceSpan::new(off, off),
         };
 
+        assert!(
+            ParseError::render_all(&[], source).is_empty(),
+            "rendering no errors must yield no strings",
+        );
+
         let errors = vec![
             mk(0, "first"),
             mk(18, "second"),
-            mk(source.len() as u32, "at end"),
-            // Out of range: a stale span, or one belonging to a different file.
+            // Out of range: clamped to the end of the source, never a panic.
             mk(source.len() as u32 + 500, "past end"),
-            mk(sentinel, "prelude"),
+            mk(SourceSpan::PRELUDE_SENTINEL_OFFSET as u32, "prelude"),
         ];
+        let rendered = ParseError::render_all(&errors, source);
 
-        for n in 0..=errors.len() {
-            let slice = &errors[..n];
-            let batched = ParseError::render_all(slice, source);
-            let mapped: Vec<String> = slice.iter().map(|e| e.render(source)).collect();
-            assert_eq!(
-                batched, mapped,
-                "render_all disagrees with mapping render for {n} error(s)",
-            );
-        }
+        assert_eq!(
+            rendered.len(),
+            errors.len(),
+            "render_all must yield one string per input error, in order; got {rendered:?}",
+        );
 
-        // The sentinel must still degrade to the no-user-file-location fallback through the
-        // BATCHED path, not just the single-error one.
-        let all = ParseError::render_all(&errors, source);
-        assert!(
-            all[4].starts_with("1:1:"),
-            "a prelude-sentinel span must render as `1:1:` through render_all too; got {:?}",
-            all[4],
+        // Derived, not hard-coded: the clamp target is whatever the canonical scanning
+        // conversion reports for the end of the source.
+        let (end_line, end_col) = reify_core::byte_offset_to_line_col(source, source.len());
+        assert_eq!(
+            rendered[2],
+            format!("{end_line}:{end_col}: past end"),
+            "an out-of-range offset must clamp to the end of the source",
+        );
+        assert_eq!(
+            rendered[3], "1:1: prelude",
+            "a prelude-sentinel span has no user-file location and must fall back to `1:1`",
         );
     }
 }

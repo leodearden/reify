@@ -170,6 +170,23 @@ fn main() -> ExitCode {
     }
 }
 
+/// Print already-rendered parse errors to stderr and yield the exit code a parse failure
+/// gets, so both entry points cannot drift apart on the prefix or the code.
+///
+/// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+/// Takes the RENDERED `line:col: message` strings rather than the `ParsedModule` they came
+/// from: `reify-cli` does not depend on `reify-ast`, so naming that type in a signature would
+/// have to go through `reify-syntax`'s `pub use reify_ast::*` block, which is marked TRANSIENT
+/// and slated for removal by the PRD task η follow-up. Callers reach the renderer by method
+/// resolution instead, which needs no crate path — and `ParsedModule::render_errors` is where
+/// the reason for rendering the whole list at once is documented.
+fn report_parse_errors(rendered: Vec<String>) -> ExitCode {
+    for error in rendered {
+        eprintln!("Parse error: {error}");
+    }
+    ExitCode::FAILURE
+}
+
 fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitCode> {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -191,15 +208,7 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
     let parsed = reify_compiler::parse_with_stdlib(&source, ModulePath::single(module_name));
 
     if !parsed.errors.is_empty() {
-        // `render_errors`, not a loop over `render`: a single `render` re-scans the source
-        // from byte 0 to turn one byte offset into a line:col, so rendering in a loop costs
-        // O(errors × len(source)). Since #5392 a single malformed file can carry dozens of
-        // parse errors (up to 8 per `ERROR` node, several nodes per file), which is enough for
-        // that to matter; the batched form builds the newline table once. INV-SF-7.
-        for rendered in parsed.render_errors(&source) {
-            eprintln!("Parse error: {rendered}");
-        }
-        return Err(ExitCode::FAILURE);
+        return Err(report_parse_errors(parsed.render_errors(&source)));
     }
 
     let mut compiled = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
@@ -255,15 +264,7 @@ fn parse_and_compile_with_cfg(
     let parsed = reify_compiler::parse_with_stdlib(&source, ModulePath::single(module_name));
 
     if !parsed.errors.is_empty() {
-        // `render_errors`, not a loop over `render`: a single `render` re-scans the source
-        // from byte 0 to turn one byte offset into a line:col, so rendering in a loop costs
-        // O(errors × len(source)). Since #5392 a single malformed file can carry dozens of
-        // parse errors (up to 8 per `ERROR` node, several nodes per file), which is enough for
-        // that to matter; the batched form builds the newline table once. INV-SF-7.
-        for rendered in parsed.render_errors(&source) {
-            eprintln!("Parse error: {rendered}");
-        }
-        return Err(ExitCode::FAILURE);
+        return Err(report_parse_errors(parsed.render_errors(&source)));
     }
 
     // Resolve sibling user imports relative to the entry file's parent dir.
