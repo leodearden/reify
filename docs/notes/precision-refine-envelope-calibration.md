@@ -428,15 +428,16 @@ highest value in its own bracket.
 **0.005 mm does not resolve the structure either.** It is a necessary refinement of the
 6545 ladder's 0.01 mm spine, but not a sufficient one, and this table shows why on its own
 terms. The ratio is non-monotone between every pair of adjacent rungs, and the swing
-between adjacent 0.005 mm rungs reaches 0.0333 (0.9667 at 0.135 mm to 1.0000 at 0.145 mm).
-Meanwhile the five leading values — 0.9967, 0.9969, 0.9972, 0.9975 and 1.0000 — are
-separated from one another by as little as 0.0002. **The between-rung swing is two orders
-of magnitude larger than the gaps between the candidates the sweep is trying to rank**, so
-a 0.005 mm grid cannot establish which of them is the true local maximum, nor that any of
-them is a local maximum at all: each is simply the largest value on whichever grid
-happened to be sampled. This is the §1.2 aliasing trap in its exact form — the sphere's
-branches alternate over ~0.006 mm, and a grid at that same order lands on one branch and
-misses the other.
+between adjacent 0.005 mm rungs reaches 0.0233 (0.9900 at 0.130 mm to 0.9667 at 0.135 mm),
+and across two rungs — 0.010 mm, the 6545 ladder's own step — 0.0333 (0.9667 at 0.135 mm
+to 1.0000 at 0.145 mm). Meanwhile the five leading values — 0.9967, 0.9969, 0.9972, 0.9975
+and 1.0000 — are separated from one another by as little as 0.0002. **The between-rung
+swing is two orders of magnitude larger than the gaps between the candidates the sweep is
+trying to rank**, so a 0.005 mm grid cannot establish which of them is the true local
+maximum, nor that any of them is a local maximum at all: each is simply the largest value
+on whichever grid happened to be sampled. This is the §1.2 aliasing trap in its exact
+form — the sphere's branches alternate over ~0.006 mm, and a grid at that same order lands
+on one branch and misses the other.
 
 **Sub-brackets carrying the leaders**, to be walked at 0.001 mm in Stage B: **[0.143,
 0.147] mm** around the new 1.0000; **[0.118, 0.122] mm** around the published 0.9975; and
@@ -573,7 +574,7 @@ pinning the edge finer would not change it at 4 dp.
 
 **P4 — `a` = 1.428e-4**, walked as a control. It is a *low* plateau, and it shows the
 mechanism cleanly in the direction that does not flatter the result — `a` byte-identical
-across six probes spanning 0.00014 mm while the ratio falls monotonically with rising `d`:
+across seven probes spanning 0.00014 mm while the ratio falls monotonically with rising `d`:
 
 | d | 0.14305 | 0.1431 | 0.14315 | 0.14316 | 0.14317 | 0.14318 | 0.14319 |
 |---|---|---|---|---|---|---|---|
@@ -600,12 +601,12 @@ plus the brackets scanned around them. A dense search raises a lower bound; it c
 prove a supremum over a continuum, and no claim of exhaustiveness is made here. Two
 distinct statements follow, and they should not be conflated: that **`K` > 1 for this
 class is established** — that is a lower-bound claim, and a lower bound above 1 settles
-it — while **the numeric value 1.0010 remains a lower bound** on the true supremum. All 92
-probes of the dense walk itself — Stage A onward, `d` ∈ [0.118, 0.182] mm — lie within
-[0.9623, 1.0010], with no sign of a second branch like the sphere's ~2.07 tread, but that
-is an observation about where these samples fell, not a bound on where others might. (The
-block's three reproduction-gate runs sit outside that window by construction: the 20 mm
-rung reads 0.8565, deep in the coarse regime.)
+it — while **the numeric value 1.0010 remains a lower bound** on the true supremum. All 69
+probes of the dense walk itself (92 runs) — Stage A onward, `d` ∈ [0.118, 0.182] mm — lie
+within [0.9623, 1.0010], with no sign of a second branch like the sphere's ~2.07 tread,
+but that is an observation about where these samples fell, not a bound on where others
+might. (The block's three reproduction-gate runs sit outside that window by construction:
+the 20 mm rung reads 0.8565, deep in the coarse regime.)
 
 **The display-precision wall — and why this result clears it.** The achieved deviation is
 formatted `{achieved:.3e}` at `crates/reify-eval/src/tolerance_combine.rs:460`, which is
@@ -683,13 +684,19 @@ tie-break would surface if one existed; pinning an edge without re-running both 
 sides would have been the weakest link in the chain, and `d_lo` = 0.14386 mm returned
 1.440e-4 both times.
 
-*Totals across the block:* **95 runs over 65 distinct `d` values** — 3 reproduction-gate
-runs, 19 in Stage A (13 rungs, 6 re-run), 33 in Stage B (25 rungs, 8 leaders re-run) and
-40 in Stage C (31 probes, 9 edge probes re-run). Every one emitted the datum line; not a
-single `OK`, `INDETERMINATE` or `NO-DATUM` occurred. No achieved value differed between
-repetitions anywhere in the block, at any stage or resolution. Nothing timed out, so this
-class remains **not budget-limited** at these `d` — the finest probe, 0.14305 mm, is well
-inside the regime 6545 already showed to be affordable.
+*Totals across the block:* **95 runs over 72 probes** — 3 reproduction-gate runs, 19 in
+Stage A (13 rungs, 6 re-run), 33 in Stage B (25 rungs, 8 leaders re-run) and 40 in Stage C
+(31 probes, 9 edge probes re-run); the dense walk alone is 69 probes over 92 runs. Probes
+are not distinct `d` either: several recur across stages — 0.12, 0.145, 0.15, 0.16 and
+0.18 mm between the gate, Stage A and Stage B, and 0.144, 0.145, 0.179 and 0.180 mm between
+Stage B and Stage C — so the distinct-`d` count is smaller again, and neither tally above
+should be read as one. Every run emitted the datum line; not a single `OK`,
+`INDETERMINATE` or `NO-DATUM` occurred. No achieved value differed between repetitions
+anywhere in the block, at any stage or resolution. Nothing timed out, so this class remains
+**not budget-limited** at these `d` — the finest probe in the block, and so by §2.1's
+1/deflection scaling its most expensive, is Stage B's 0.118 mm, well inside the regime 6545
+already showed to be affordable.
+
 ### 1.6 Loft is unreachable from the source language
 
 Two mutually exclusive failure modes with no path between them:
@@ -864,7 +871,7 @@ that `d` is bounded in [1.000626, 1.001321) — an interval lying entirely above
 crossing is established rather than merely not excluded. Per the † note below that value is
 still a lower bound, so the true supremum can only be higher. Even so this changes nothing
 at the cap level: `n = 1` is nowhere near the cap-4 budget, and no plausible reading of this
-class's data approaches K ≈ 16 — all 92 probes of its dense walk lie within [0.9623, 1.0010],
+class's data approaches K ≈ 16 — all 69 probes of its dense walk lie within [0.9623, 1.0010],
 with no second branch like the sphere's ~2.07 tread. Cap 4
 covers K up to 16 at `B = d0` — **7.7× headroom** over the worst thing measured.
 
@@ -874,7 +881,7 @@ unaffordable for these three classes (§1.5, §2.1 caveat 1). The cap is justifi
 
 † Lower bound for a different reason than the row above: nurbs_surface is not
 budget-limited (§1.5) — every rung tried completed well under the 90 s wall: down to
-0.1 mm on 6545's ladder, and across all 95 runs of #7128's dense walk. Task #7128
+0.1 mm on 6545's ladder, and across all 95 runs of #7128's block. Task #7128
 resolved the oscillation an earlier amendment left open (no period; `a` piecewise-constant
 on plateaus ~1e-4 mm wide; the ratio peaking at each plateau's lower edge) and pinned
 **1.0010 at `d` = 0.14386 mm**, which crosses the K = 1 boundary and is what moves
