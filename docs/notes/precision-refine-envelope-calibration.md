@@ -610,11 +610,15 @@ the 20 mm rung reads 0.8565, deep in the coarse regime.)
 
 **The display-precision wall — and why this result clears it.** The achieved deviation is
 formatted `{achieved:.3e}` at `crates/reify-eval/src/tolerance_combine.rs:460`, which is
-the **only** production site that emits it (the other `.3e` occurrences under `crates/`
-are test assertions, and `reify check`'s usage line offers no `--json` or `--verbose`
-alternative: `reify check [--strict] [--purpose <name>=<binding>]... [--cfg
-<key=value|flag>]... <file>`). Four significant figures is therefore the whole apparatus,
-and it is a hard floor, not a convention this task could dial up.
+the **only** site under `crates/` that emits the sampled facet deviation —
+`grep -rn 'sampled facet deviation' crates/*/src/` returns exactly that line plus two
+comments in the same file (:401, :444). (`.3e` itself is common under `crates/` and proves
+nothing — `crates/reify-constraints/src/solver.rs:2531` even binds its own `achieved`; the
+discriminator is the message, not the format spec. And `reify check`'s usage line offers no
+`--json` or `--verbose` alternative: `reify check [--strict] [--purpose
+<name>=<binding>]... [--cfg <key=value|flag>]... <file>`.) Four significant figures is
+therefore the whole apparatus, and it is a hard floor, not a convention this task could
+dial up.
 
 *Derived.* A reported `a` of `X.XXXe-4` bounds the true value to ± 0.5e-7 m, so a ratio
 carries ± 0.5e-7/`d` — about ± 4.2e-4 at `d` = 0.12 mm, ± 2.8e-4 at 0.18 mm. **Every ratio
