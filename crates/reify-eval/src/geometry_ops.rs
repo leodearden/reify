@@ -4071,9 +4071,21 @@ fn pattern_circular(
         // deleted warning also carried NO DiagnosticCode (`Diagnostic::warning`
         // sets `code: None`), an INV-SF-6 violation this removes rather than
         // replicates.
+        // SURFACE NAME, not `kind`. `PatternKind::Circular` Displays as
+        // "circular", so passing `kind` would render "circular: angle argument
+        // expects Angle" at a call the author wrote as `circular_pattern(...)`.
+        // The retired warning hard-coded "circular_pattern", and the compile
+        // layer's slot renders the surface call name too, so `kind` here would
+        // regress the wording AND split it across the two layers.
+        //
+        // `PatternKind::Linear` already Displays as "linear_pattern" (task
+        // 5755); Circular/Mirror/Arbitrary never got that treatment. Fixing the
+        // Display impl is the real repair and is filed as follow-up — it lives
+        // in reify-compiler and would move every other diagnostic that renders
+        // this kind, which is a migration of its own, not a clause of ε.
         let angle = required_angle_value(
             "angle",
-            kind,
+            "circular_pattern",
             args,
             values,
             functions,
@@ -4113,9 +4125,11 @@ fn pattern_circular(
         // The scalar-axis sibling of the value-axis form above: same gate,
         // same task-#1763 reversal, whose rationale is recorded there in full
         // rather than copied here.
+        // Surface name rather than `kind`, for the reason given at the
+        // value-axis form above.
         let angle = required_angle_value(
             "angle",
-            kind,
+            "circular_pattern",
             args,
             values,
             functions,
