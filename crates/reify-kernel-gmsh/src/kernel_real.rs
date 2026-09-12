@@ -147,6 +147,12 @@ impl GmshKernel {
     /// acquisition, model setup, mesh generation, readback). Common
     /// failure modes: open / non-manifold input mesh, degenerate triangles,
     /// HXT internal errors.
+    ///
+    /// Also fails when the mesher reports success but the model holds no
+    /// tetrahedra of the requested element type. An empty `VolumeMesh` is
+    /// never a useful caller outcome, so it is reported rather than
+    /// returned — the output-side counterpart of the empty-input rejection
+    /// this function already performs.
     pub fn mesh_to_volume(
         &self,
         surface: &Mesh,
@@ -411,6 +417,32 @@ impl GmshKernel {
                  is not a multiple of {nodes_per_elem} (expected {nodes_per_elem} \
                  nodes per {element_order:?} tet)",
                 elem_node_tags.len(),
+            )));
+        }
+        // The output-side twin of the empty-INPUT rejection above (see "Reject
+        // empty input outright"). That guard's reasoning — gmsh accepts the
+        // degenerate case and yields "a zero-tet VolumeMesh, which is never a
+        // useful caller outcome" — applies unchanged to the result: an `Ok`
+        // holding no tetrahedra is a wrong answer a caller cannot tell apart
+        // from a right one.
+        //
+        // It must sit AFTER the stride check, not before: an empty buffer
+        // satisfies `is_multiple_of` (0 is a multiple of everything), so this
+        // ordering lets each check fire on exactly its own case — a non-empty,
+        // mis-strided buffer still reaches the stride check.
+        //
+        // Since `mesh_generate` routes through `init::mesh_generate_with_recovery`,
+        // no path measured today reaches here: this is the backstop for the
+        // ones not measured — a future gmsh version, a mesher added later that
+        // forgets the recovery wrapper, an HXT that reports `ierr=0` having
+        // produced nothing at all.
+        if elem_node_tags.is_empty() {
+            return Err(GeometryError::OperationFailed(format!(
+                "gmshModelMeshGenerate reported success but the model holds no \
+                 tetrahedra of element type {elem_type} ({element_order:?}) — \
+                 returning an empty VolumeMesh would be a silent wrong answer. \
+                 Known cause: a mesher left unusable by an earlier failed \
+                 mesh_generate in this process"
             )));
         }
 
