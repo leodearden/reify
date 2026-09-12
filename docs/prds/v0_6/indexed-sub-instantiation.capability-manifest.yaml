@@ -21,8 +21,7 @@ tasks:
   - name: existing-arms-regression-floor
     binding: 'floor CORRECTED by D3 adversary — at decompose time tree-sitter test
       was NOT green on main (218/219, pre-existing imaginary_literal.txt failure
-      #5492, since fixed — corpus green as of re-measurement 2026-09-03: 246/246;
-      corpus not CI-run); floor = 4 committed baselines
+      #5492, since fixed; corpus not CI-run); floor = 4 committed baselines
       tests/prd-gate/fixtures/indexed_sub_{inst,coll,spec}_arm_baseline.ri
       + indexed_sub_forall_range_baseline.ri (all exit 0 / 0 ERROR, re-verified 2026-07-25)
       + reify-syntax suites incl. sub_decl_specialization_body_parser_tests.rs'

@@ -127,9 +127,9 @@ diagnostics carry codes by construction (§3.6).
   2026-07-25). **At decompose time, `tree-sitter test` corpus was NOT green
   on main** (218/219; pre-existing, sub-arm-UNRELATED failure in
   `test/corpus/imaginary_literal.txt` — filed as independent task #5492,
-  since fixed — corpus is green as of re-measurement 2026-09-03: 246/246)
-  and the corpus is not CI-run — α's regression signal is therefore the four
-  committed baselines + the reify-syntax parser suites (incl.
+  since fixed; see the evidence-fixtures paragraph above) and the corpus is
+  not CI-run — α's regression signal is therefore the four committed
+  baselines + the reify-syntax parser suites (incl.
   `crates/reify-syntax/tests/harness_syntax/sub_decl_specialization_body_parser_tests.rs`,
   the List-disambiguation pins), NOT blanket `tree-sitter test` exit 0.
 - `at-clause-grammar-substrate` → PASS. The `at <pose>` clause exists on
