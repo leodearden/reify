@@ -52,6 +52,7 @@ tree-sitter-reify/src/node-types.json
 tree-sitter-reify/src/.grammar_hash.stamp
 tree-sitter-reify/src/.generate.lock
 tree-sitter-reify/src/.generate.lock.d
+tree-sitter-reify/src/.generated_outputs.stamp
 
 # Sidecar build artifacts
 gui/dist/
