@@ -1179,12 +1179,13 @@ impl Engine {
         // OLD geometry and would silently be served by a subsequent
         // `build_snapshot()` cache-hit short-circuit. The reset mirrors the
         // `topology_attribute_table` reset-at-hook-point pattern
-        // (engine_build.rs:531/406): the engine cannot prove which
-        // cached entries survive a given edit without per-cell input-cone
-        // analysis we do not currently maintain, so we conservatively flush
-        // the entire cache on every edit. The next `build()` /
-        // `build_snapshot()` cold-misses on every realization and re-populates
-        // the cache from kernel execution. Pinned by
+        // (`TopologyAttributeTable::default()` reset in
+        // `Engine::reset_per_build_state`, engine_build.rs): the engine
+        // cannot prove which cached entries survive a given edit without
+        // per-cell input-cone analysis we do not currently maintain, so we
+        // conservatively flush the entire cache on every edit. The next
+        // `build()` / `build_snapshot()` cold-misses on every realization
+        // and re-populates the cache from kernel execution. Pinned by
         // `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
         // in `tests/tolerance_wiring_e2e.rs` (task 2874, step-17).
         //
@@ -3210,8 +3211,9 @@ impl Engine {
         // changed) and would silently be served by a subsequent `build()` /
         // `build_snapshot()` cache-hit short-circuit. The reset mirrors the
         // `topology_attribute_table` reset-at-hook-point pattern
-        // (engine_build.rs:531/406) and the parallel reset in
-        // `edit_param`. Pinned by
+        // (`TopologyAttributeTable::default()` reset in
+        // `Engine::reset_per_build_state`, engine_build.rs) and the
+        // parallel reset in `edit_param`. Pinned by
         // `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
         // in `tests/tolerance_wiring_e2e.rs` (task 2874, step-19).
         //
