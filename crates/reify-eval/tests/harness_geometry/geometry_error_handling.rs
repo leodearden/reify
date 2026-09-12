@@ -2467,7 +2467,7 @@ fn build_circular_pattern_missing_count_no_kernel_error() {
             ("ax".into(), real_literal(0.0)),
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(1.0)),
-            ("angle".into(), real_literal(90.0)),
+            ("angle".into(), angle_literal(std::f64::consts::FRAC_PI_2)),
             // count deliberately omitted
         ],
     };
@@ -2529,7 +2529,7 @@ fn build_circular_pattern_missing_axis_no_kernel_error() {
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(1.0)),
             ("count".into(), real_literal(3.0)),
-            ("angle".into(), real_literal(90.0)),
+            ("angle".into(), angle_literal(std::f64::consts::FRAC_PI_2)),
         ],
     };
 

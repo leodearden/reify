@@ -6191,8 +6191,8 @@
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
                 ("count".into(), literal_f64(4.0)),
-                // Use an explicitly-dimensioned angle literal to test the pass-through path.
-                // A bare f64 would now trigger the degrees→radians conversion path instead.
+                // Explicitly dimensioned. Since ε there is no other kind: the
+                // degrees→radians coercion a bare f64 used to get is gone.
                 ("angle".into(), literal_angle(std::f64::consts::FRAC_PI_2)),
             ],
         };
@@ -6239,143 +6239,151 @@
         }
     }
 
-    #[test]
-    fn compile_geometry_op_circular_pattern_bare_f64_converts_to_radians() {
-        let step_handles = vec![GeometryHandleId(42)];
-        let values = ValueMap::new();
-
-        let op = reify_compiler::CompiledGeometryOp::Pattern {
-            kind: reify_compiler::PatternKind::Circular,
+    /// `circular_pattern`'s SCALAR-axis form with `angle` under test. Origin is
+    /// LENGTH (PRD-1's gate), direction stays a bare unit vector (C1 inv. 4).
+    fn circular_pattern_scalar_axis_with_angle(
+        angle: reify_ir::CompiledExpr,
+    ) -> CompiledGeometryOp {
+        CompiledGeometryOp::Pattern {
+            kind: PatternKind::Circular,
             target: GeomRef::Step(0),
             args: vec![
-                // Axis ORIGIN is length-semantic → must be dimensioned Length.
                 ("ox".into(), literal_length(0.0)),
                 ("oy".into(), literal_length(0.0)),
                 ("oz".into(), literal_length(0.0)),
-                // Axis DIRECTION is a dimensionless unit vector → stays bare f64.
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
-                ("count".into(), literal_f64(6.0)),
-                // Bare f64 without unit — should be interpreted as degrees and
-                // converted to radians: 360° → 2π rad.
-                ("angle".into(), literal_f64(360.0)),
+                ("count".into(), literal_f64(4.0)),
+                ("angle".into(), angle),
             ],
-        };
-
-        let result = compile_geometry_op(
-            &op,
-            &values,
-            &step_handles,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-            &mut Vec::new(),
-        );
-        match result {
-            Ok(reify_ir::GeometryOp::CircularPattern { angle, .. }) => {
-                let angle_f64 = angle.as_f64().expect("angle should be numeric");
-                assert!(
-                    (angle_f64 - std::f64::consts::TAU).abs() < 1e-9,
-                    "360.0 (bare f64) should convert to 2π radians, got {}",
-                    angle_f64
-                );
-            }
-            other => panic!("expected Some(CircularPattern), got {:?}", other),
         }
     }
 
-    #[test]
-    fn compile_geometry_op_circular_pattern_bare_int_converts_to_radians() {
-        let step_handles = vec![GeometryHandleId(42)];
-        let values = ValueMap::new();
-
-        // Bare integer 360 — should be interpreted as 360° and converted to 2π rad.
-        let angle_int_expr =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Int(360), reify_core::Type::Int);
-
-        let op = reify_compiler::CompiledGeometryOp::Pattern {
-            kind: reify_compiler::PatternKind::Circular,
+    /// `circular_pattern`'s VALUE-axis form — a single `Value::Axis` arg rather
+    /// than six scalars. A separate eval branch, so it needs its own coverage.
+    fn circular_pattern_value_axis_with_angle(
+        angle: reify_ir::CompiledExpr,
+    ) -> CompiledGeometryOp {
+        let axis = reify_ir::Value::Axis {
+            origin: Box::new(reify_ir::Value::Vector(vec![
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+            ])),
+            direction: Box::new(reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(1.0),
+            ])),
+        };
+        CompiledGeometryOp::Pattern {
+            kind: PatternKind::Circular,
             target: GeomRef::Step(0),
             args: vec![
-                // Axis ORIGIN is length-semantic → must be dimensioned Length.
-                ("ox".into(), literal_length(0.0)),
-                ("oy".into(), literal_length(0.0)),
-                ("oz".into(), literal_length(0.0)),
-                // Axis DIRECTION is a dimensionless unit vector → stays bare f64.
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(1.0)),
-                ("count".into(), literal_f64(6.0)),
-                ("angle".into(), angle_int_expr),
+                (
+                    "axis".into(),
+                    reify_ir::CompiledExpr::literal(
+                        axis,
+                        reify_core::Type::dimensionless_scalar(),
+                    ),
+                ),
+                ("count".into(), literal_f64(4.0)),
+                ("angle".into(), angle),
             ],
-        };
-
-        let result = compile_geometry_op(
-            &op,
-            &values,
-            &step_handles,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-            &mut Vec::new(),
-        );
-        match result {
-            Ok(reify_ir::GeometryOp::CircularPattern { angle, .. }) => {
-                let angle_f64 = angle.as_f64().expect("angle should be numeric");
-                assert!(
-                    (angle_f64 - std::f64::consts::TAU).abs() < 1e-9,
-                    "Int(360) should convert to 2π radians, got {}",
-                    angle_f64
-                );
-            }
-            other => panic!("expected Some(CircularPattern), got {:?}", other),
         }
     }
 
+    /// ε — a BARE `circular_pattern` angle is REJECTED, at BOTH axis forms.
+    ///
+    /// REVERSES task #1763 (done, 2026-04), which ruled that this one builtin
+    /// should read a bare angle as DEGREES per CAD convention. This test
+    /// replaces the three that asserted that ruling —
+    /// `..._bare_f64_converts_to_radians`, `..._bare_int_converts_to_radians`
+    /// and `..._bare_number_emits_deprecation_warning`. Each named a conversion
+    /// that no longer exists, so each is inverted rather than deleted: the
+    /// behaviour they pinned is the behaviour ε removes, and a reader arriving
+    /// from #1763 needs to find that recorded somewhere.
+    ///
+    /// Covers the bare `Int` shape too — the one ε site whose literal is bound
+    /// to a local, which is why a regex sweep over the test corpus cannot see it.
     #[test]
-    fn compile_geometry_op_circular_pattern_bare_number_emits_deprecation_warning() {
+    fn compile_geometry_op_circular_pattern_bare_angle_is_rejected_at_both_axis_forms() {
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
-        let op = reify_compiler::CompiledGeometryOp::Pattern {
-            kind: reify_compiler::PatternKind::Circular,
-            target: GeomRef::Step(0),
-            args: vec![
-                // Axis ORIGIN is length-semantic → must be dimensioned Length.
-                ("ox".into(), literal_length(0.0)),
-                ("oy".into(), literal_length(0.0)),
-                ("oz".into(), literal_length(0.0)),
-                // Axis DIRECTION is a dimensionless unit vector → stays bare f64.
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(1.0)),
-                ("count".into(), literal_f64(6.0)),
-                ("angle".into(), literal_f64(360.0)),
-            ],
-        };
+        for (form, build) in [
+            (
+                "scalar-axis",
+                &circular_pattern_scalar_axis_with_angle
+                    as &dyn Fn(reify_ir::CompiledExpr) -> CompiledGeometryOp,
+            ),
+            ("value-axis", &circular_pattern_value_axis_with_angle),
+        ] {
+            for (label, expr) in [
+                ("bare Real", literal_f64(360.0)),
+                (
+                    "bare Int",
+                    reify_ir::CompiledExpr::literal(
+                        reify_ir::Value::Int(360),
+                        reify_core::Type::Int,
+                    ),
+                ),
+            ] {
+                let mut diagnostics: Vec<Diagnostic> = Vec::new();
+                let result = compile_geometry_op(
+                    &build(expr),
+                    &values,
+                    &step_handles,
+                    &[],
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &mut diagnostics,
+                );
+                assert!(
+                    result.is_err(),
+                    "{form} {label}: must drop the op, got: {result:?}"
+                );
 
-        let _result = compile_geometry_op(
-            &op,
-            &values,
-            &step_handles,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-            &mut diagnostics,
-        );
-
-        let has_degree_warning = diagnostics.iter().any(|d| {
-            d.severity == reify_core::Severity::Warning
-                && (d.message.contains("deg") || d.message.contains("degree"))
-        });
-        assert!(
-            has_degree_warning,
-            "expected a Warning diagnostic about implicit degree conversion, got: {:?}",
-            diagnostics
-        );
+                let rejections = angle_rejections(&diagnostics);
+                assert_eq!(
+                    rejections.len(),
+                    1,
+                    "{form} {label}: exactly ONE rejection; got: {diagnostics:?}"
+                );
+                let rej = rejections[0];
+                assert_eq!(
+                    rej.severity,
+                    reify_core::Severity::Error,
+                    "{form} {label}: was a Warning + exit 0 before ε; got: {rej:?}"
+                );
+                assert_eq!(
+                    rej.code,
+                    Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                    "{form} {label}: the retired warning carried NO code at all \
+                     (INV-SF-6); got: {rej:?}"
+                );
+                for needle in [
+                    "circular_pattern: angle argument expects Angle, got ",
+                    reify_core::units::ANGLE_MIGRATION_HINT,
+                ] {
+                    assert!(
+                        rej.message.contains(needle),
+                        "{form} {label}: message must contain {needle:?}; got: {:?}",
+                        rej.message
+                    );
+                }
+                assert!(
+                    !diagnostics
+                        .iter()
+                        .any(|d| d.message.contains("bare numeric angle")),
+                    "{form} {label}: the deprecation warning must be GONE, not \
+                     merely joined by a rejection; got: {diagnostics:?}"
+                );
+            }
+        }
     }
+
 
     #[test]
     fn compile_geometry_op_circular_pattern_angle_scalar_passes_through() {

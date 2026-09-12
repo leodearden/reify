@@ -2105,34 +2105,6 @@ pub(crate) fn decode_axis(
     Ok((origin_arr, unit_dir))
 }
 
-/// Convert a bare-numeric angle [`reify_ir::Value`] to radians, emitting a
-/// deprecation warning diagnostic.
-///
-/// CAD convention: a bare `Real` or `Int` angle (no unit suffix in source) is
-/// interpreted as degrees and converted to radians.  Values that already carry
-/// an `ANGLE` dimension (from `deg` / `rad` suffixes) pass through unchanged.
-///
-/// Extracted to a shared free function to prevent verbatim duplication between
-/// the value-form and scalar-form branches of the `circular_pattern` eval arm.
-fn resolve_bare_angle(raw: reify_ir::Value, diagnostics: &mut Vec<Diagnostic>) -> reify_ir::Value {
-    let as_deg: Option<f64> = match &raw {
-        reify_ir::Value::Real(v) => Some(*v),
-        reify_ir::Value::Int(i) => Some(*i as f64),
-        _ => None,
-    };
-    if let Some(deg) = as_deg {
-        let rad = deg * std::f64::consts::PI / 180.0;
-        diagnostics.push(Diagnostic::warning(format!(
-            "circular_pattern: bare numeric angle `{}` interpreted as {}°; \
-             use `{}deg` or `{:.6}rad` for explicit units",
-            deg, deg, deg, rad
-        )));
-        reify_ir::Value::angle(rad)
-    } else {
-        raw
-    }
-}
-
 /// Translate a compiled geometry operation into a runtime `GeometryOp` by
 /// evaluating its argument expressions against the current value environment.
 ///
@@ -4081,7 +4053,25 @@ fn pattern_circular(
             format!("missing or non-finite argument 'count' for {}", kind)
         })?;
         let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
-        let raw_angle = eval_named_arg(
+        // TASK #1763 REVERSED HERE (PRD §3.10). #1763 (done, 2026-04) ruled that
+        // `circular_pattern` should accept a BARE angle as DEGREES per CAD
+        // convention. Its mechanism — a shared bare-angle resolver that computed
+        // `deg * PI / 180` and pushed a deprecation warning — is deleted by this
+        // leaf, and this is the slot it served.
+        //
+        // This PRD reverses it, and the reason is not that #1763 was wrong on
+        // its own terms — it is that #1763 was decided PER-BUILTIN, without the
+        // whole-surface view. The result was three contradictory readings of one
+        // literal shape in one binary: `45` meant 45° here, 45 RADIANS at
+        // rotate/revolve/arc, and an outright rejection at the selector `tol`.
+        // Converging on "a bare number is not an angle anywhere" is what makes
+        // the contradiction go away; keeping degrees here could not.
+        //
+        // Do NOT re-derive #1763's argument from scratch and restore this. The
+        // deleted warning also carried NO DiagnosticCode (`Diagnostic::warning`
+        // sets `code: None`), an INV-SF-6 violation this removes rather than
+        // replicates.
+        let angle = required_angle_value(
             "angle",
             kind,
             args,
@@ -4089,9 +4079,7 @@ fn pattern_circular(
             functions,
             meta_map,
             diagnostics,
-        )
-        .ok_or_else(|| format!("missing required argument 'angle' for {}", kind))?;
-        let angle = resolve_bare_angle(raw_angle, diagnostics);
+        )?;
         Ok(reify_ir::GeometryOp::CircularPattern {
             target: target_id,
             axis_origin,
@@ -4122,7 +4110,10 @@ fn pattern_circular(
         let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
         let count_raw = f64_arg("count")?;
         let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
-        let raw_angle = eval_named_arg(
+        // The scalar-axis sibling of the value-axis form above: same gate,
+        // same task-#1763 reversal, whose rationale is recorded there in full
+        // rather than copied here.
+        let angle = required_angle_value(
             "angle",
             kind,
             args,
@@ -4130,9 +4121,7 @@ fn pattern_circular(
             functions,
             meta_map,
             diagnostics,
-        )
-        .ok_or_else(|| format!("missing required argument 'angle' for {}", kind))?;
-        let angle = resolve_bare_angle(raw_angle, diagnostics);
+        )?;
         Ok(reify_ir::GeometryOp::CircularPattern {
             target: target_id,
             axis_origin,

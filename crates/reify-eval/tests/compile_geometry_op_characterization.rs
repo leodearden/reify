@@ -2521,7 +2521,7 @@ fn pattern_case(k: PatternKind) -> CompiledGeometryOp {
             ("ay".to_string(), lit(0.0)),
             ("az".to_string(), lit(1.0)),
             ("count".to_string(), lit(4.0)),
-            ("angle".to_string(), lit(90.0)),
+            ("angle".to_string(), lit_angle(std::f64::consts::FRAC_PI_2)),
         ],
         PatternKind::Mirror => vec![
             // Plane ORIGIN is length-semantic → dimensioned Length (task 5214);
@@ -2568,7 +2568,7 @@ fn pattern_case_value(k: PatternKind) -> CompiledGeometryOp {
         PatternKind::Circular => vec![
             ("axis".to_string(), lit_raw(axis_value([0.01, 0.02, 0.03], [0.0, 0.0, 2.0]))),
             ("count".to_string(), lit(4.0)),
-            ("angle".to_string(), lit(90.0)),
+            ("angle".to_string(), lit_angle(std::f64::consts::FRAC_PI_2)),
         ],
         PatternKind::Mirror => vec![(
             "plane".to_string(),
