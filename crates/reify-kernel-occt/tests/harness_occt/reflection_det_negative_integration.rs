@@ -71,7 +71,22 @@
 //! is immune to the pre-tessellation hazard. This corroborates PRD §3.7's
 //! already-chosen v1 lowering with measured evidence rather than assumption.
 //!
-//! **7. Fixture contract.** Every fixture in this module is a primitive-
+//! **7. A second A-δ-facing finding: OCCT's conical parametrization emits
+//! negative 2D seam parameters.** Probing exported STEP text for baked
+//! negative-x geometry with the obvious literal `CARTESIAN_POINT('',(-` is
+//! UNSOUND. A cone's UNTRANSFORMED, wholly-x>0 source already matches it,
+//! because a conical surface carries pcurve `DEFINITIONAL_REPRESENTATION` /
+//! `SEAM_CURVE` entries whose 2D (u,v) parameters include the −2π periodic
+//! seam wrap. Any future textual STEP probe that keys on a leading `-` must
+//! therefore discriminate 3D model-space points from 2D parameter-space ones
+//! by COORDINATE ARITY (3 vs 2). [`count_3d_points_matching`] is this
+//! module's implementation of that discriminator and carries the measured
+//! per-fixture counts. Recorded at header level because it generalises past
+//! this module: it binds any A-δ (#6618) work that inspects exported STEP
+//! textually, and it is a kernel-behaviour observation of exactly the kind
+//! T17 exists to surface.
+//!
+//! **8. Fixture contract.** Every fixture in this module is a primitive-
 //! derived convex solid positioned wholly at x>0, never a boolean result — a
 //! boolean op returns a `COMPOUND`, and `IsWatertight` hard-returns `false`
 //! for any non-SOLID/COMPSOLID/SHELL shape regardless of actual validity

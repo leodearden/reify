@@ -376,7 +376,7 @@ WARN_PCT=90
 # needed. Enforced as a SUBSET in Section 5d, which also reports the prune
 # direction the subset check is blind to: an advisory `PRUNE:` note for a row
 # that stopped WARNing, and a RED for a row whose file is no longer on disk.
-# harness_occt.rs measured 19005/20000 = 95% at task #6619 (root 154 + 17692
+# harness_occt.rs measured 19020/20000 = 95% at task #6619 (root 154 + 17707
 # across 55 module files + 1159 external via the bare `mod common;`). Listed
 # for the same reason as harness_syntax above and NOT because it is acceptable:
 # the remedy is still rule (a)'s split, and that split is #7466. On bare
