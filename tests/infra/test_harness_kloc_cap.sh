@@ -376,7 +376,16 @@ WARN_PCT=90
 # needed. Enforced as a SUBSET in Section 5d, which also reports the prune
 # direction the subset check is blind to: an advisory `PRUNE:` note for a row
 # that stopped WARNing, and a RED for a row whose file is no longer on disk.
-_KLOC_WARN_KNOWN=( "crates/reify-syntax/tests/harness_syntax.rs" )
+# harness_occt.rs measured 19005/20000 = 95% at task #6619 (root 154 + 17692
+# across 55 module files + 1159 external via the bare `mod common;`). Listed
+# for the same reason as harness_syntax above and NOT because it is acceptable:
+# the remedy is still rule (a)'s split, and that split is #7466. On bare
+# main the unit already measured 17737, 263 lines under the warn line, so the
+# crate was crossing on its next test-bearing commit regardless of #6619.
+_KLOC_WARN_KNOWN=(
+    "crates/reify-syntax/tests/harness_syntax.rs"
+    "crates/reify-kernel-occt/tests/harness_occt.rs"
+)
 
 # The checked-in grandfather-baseline ratchet (resolved via the shared lib so
 # the REIFY_HARNESS_LAYOUT_BASELINE override is honored identically by both
