@@ -9,48 +9,65 @@
 use reify_config::{Manifest, NodeCommitmentPolicy, NodePolicyOverride};
 use reify_core::ValueCellId;
 use reify_eval::cache::NodeId;
-use reify_ir::NodeTraits;
+use reify_ir::{NodeKind, NodeTraits};
 use reify_runtime::commitment::{NodeCommitmentOverride, NodeOverrideConfigError, NodePolicyOverrides};
+
+/// The traits a node carries absent a `NodeTraitMap` entry — what level 4
+/// actually sees for it. This file's claims are all about the config→overrides
+/// boundary rather than about traits, so every node is resolved with its own
+/// kind defaults instead of a hardcoded set: a `Value` node bearing
+/// `COMMITTABLE` (real defaults: `IMMEDIATE`) is a combination production never
+/// produces, and asserting on it reads as contradicting the Q-3 note in
+/// `commitment.rs`.
+fn kind_default_traits(node: &NodeId) -> NodeTraits {
+    NodeKind::from(node).default_traits()
+}
 
 // --- G4 boundary + G2(b) distinguishability ---
 
 #[test]
 fn kind_selector_value_overrides_all_value_nodes() {
+    // `only_run_on_final_inputs` is the one policy no level-4 default can
+    // produce, so both assertions below distinguish "the override applied" from
+    // "the node fell through". The `always_cancel_when_stale` spelling is
+    // covered where it belongs, in reify-config's own
+    // `two_node_overrides_entries_round_trip`.
     let toml = "\
 [[node_overrides]]
 node_id_pattern = \"value\"
-commitment_policy = \"always_cancel_when_stale\"
+commitment_policy = \"only_run_on_final_inputs\"
 ";
     let manifest = Manifest::from_toml_str(toml).expect("manifest must parse");
     let overrides = NodePolicyOverrides::from_config_overrides(manifest.node_overrides())
         .expect("from_config_overrides must succeed for kind selector");
 
-    // Value node → overridden to AlwaysCancelWhenStale
+    // Value node → overridden to OnlyRunOnFinalInputs
     let value_node = NodeId::Value(ValueCellId::new("Bracket", "width"));
     assert_eq!(
-        overrides.resolve_with_traits(&value_node, NodeTraits::COMMITTABLE),
-        NodeCommitmentOverride::AlwaysCancelWhenStale,
+        overrides.resolve_with_traits(&value_node, kind_default_traits(&value_node)),
+        NodeCommitmentOverride::OnlyRunOnFinalInputs,
         "Value kind selector must override all Value nodes"
     );
 
-    // Constraint node → not overridden → default CommitIfSlow (kind isolation)
+    // Constraint node → not overridden → its own level-4 default (kind isolation)
     let constraint_node = NodeId::Constraint(reify_core::ConstraintNodeId::new("Bracket", 0));
     assert_eq!(
-        overrides.resolve_with_traits(&constraint_node, NodeTraits::COMMITTABLE),
-        NodeCommitmentOverride::CommitIfSlow,
+        overrides.resolve_with_traits(&constraint_node, kind_default_traits(&constraint_node)),
+        NodeCommitmentOverride::AlwaysCancelWhenStale,
         "kind selector for Value must not affect Constraint nodes"
     );
 }
 
 #[test]
-fn g2b_default_config_resolves_to_commit_if_slow() {
-    // G2(b) distinguishability: default overrides resolve the same node to CommitIfSlow.
+fn g2b_default_config_resolves_to_the_kind_traits_default() {
+    // G2(b) distinguishability: with no config entries the same node resolves
+    // differently — to its kind+traits default instead of the override above.
     let default_config = NodePolicyOverrides::default();
     let value_node = NodeId::Value(ValueCellId::new("Bracket", "width"));
     assert_eq!(
-        default_config.resolve_with_traits(&value_node, NodeTraits::COMMITTABLE),
-        NodeCommitmentOverride::CommitIfSlow,
-        "default overrides must resolve to CommitIfSlow (no overrides)"
+        default_config.resolve_with_traits(&value_node, kind_default_traits(&value_node)),
+        NodeCommitmentOverride::AlwaysCancelWhenStale,
+        "with no overrides a Value node must fall through to its IMMEDIATE default"
     );
 }
 
@@ -68,25 +85,29 @@ fn instance_selector_overrides_exact_node_and_isolates_siblings() {
     // The targeted node is overridden.
     let width = NodeId::Value(ValueCellId::new("Bracket", "width"));
     assert_eq!(
-        overrides.resolve_with_traits(&width, NodeTraits::COMMITTABLE),
+        overrides.resolve_with_traits(&width, kind_default_traits(&width)),
         NodeCommitmentOverride::OnlyRunOnFinalInputs,
         "instance selector must override the named node"
     );
 
-    // A sibling node resolves to the default (instance isolation).
+    // A sibling node falls through to its level-4 default (instance isolation).
     let height = NodeId::Value(ValueCellId::new("Bracket", "height"));
     assert_eq!(
-        overrides.resolve_with_traits(&height, NodeTraits::COMMITTABLE),
-        NodeCommitmentOverride::CommitIfSlow,
+        overrides.resolve_with_traits(&height, kind_default_traits(&height)),
+        NodeCommitmentOverride::AlwaysCancelWhenStale,
         "instance selector must not affect sibling nodes"
     );
 }
 
 #[test]
-fn config_override_wins_over_traits_default_while_unoverridden_node_follows_traits() {
-    // A config-derived instance override sits at level 1, so it wins whatever the
-    // node's traits are; an unoverridden sibling falls through to the level-4
-    // kind+traits default, whose two branches are the COMMITTABLE-presence test.
+fn config_override_wins_regardless_of_node_traits() {
+    // The one semantic difference the migration to `resolve_with_traits` exposes
+    // at the config boundary: a config entry materialises at level 1, so level 4
+    // is never consulted for that node and the answer is traits-independent.
+    // The trait sets below are deliberately synthetic — spanning both branches
+    // of the COMMITTABLE-presence test plus the node's real defaults — because
+    // traits-independence is the claim. The level-4 branches themselves are
+    // owned by `resolve_with_traits_consults_default_overrides_at_level_4`.
     let entry = NodePolicyOverride {
         node_id_pattern: "Bracket.width".into(),
         commitment_policy: NodeCommitmentPolicy::OnlyRunOnFinalInputs,
@@ -95,23 +116,17 @@ fn config_override_wins_over_traits_default_while_unoverridden_node_follows_trai
         .expect("instance selector must succeed");
 
     let width = NodeId::Value(ValueCellId::new("Bracket", "width"));
-    assert_eq!(
-        overrides.resolve_with_traits(&width, NodeTraits::empty()),
-        NodeCommitmentOverride::OnlyRunOnFinalInputs,
-        "a config override is level 1 and must win regardless of traits"
-    );
-
-    let height = NodeId::Value(ValueCellId::new("Bracket", "height"));
-    assert_eq!(
-        overrides.resolve_with_traits(&height, NodeTraits::COMMITTABLE),
-        NodeCommitmentOverride::CommitIfSlow,
-        "an unoverridden node with COMMITTABLE falls through to level 4 → CommitIfSlow"
-    );
-    assert_eq!(
-        overrides.resolve_with_traits(&height, NodeTraits::empty()),
-        NodeCommitmentOverride::AlwaysCancelWhenStale,
-        "an unoverridden node lacking COMMITTABLE falls through to level 4 → AlwaysCancelWhenStale"
-    );
+    for traits in [
+        NodeTraits::empty(),
+        NodeTraits::COMMITTABLE,
+        kind_default_traits(&width),
+    ] {
+        assert_eq!(
+            overrides.resolve_with_traits(&width, traits),
+            NodeCommitmentOverride::OnlyRunOnFinalInputs,
+            "{traits:?}: a config override is level 1 and must win regardless of traits"
+        );
+    }
 }
 
 // --- unresolvable selector errors ---
@@ -196,7 +211,7 @@ fn duplicate_kind_selector_last_entry_wins() {
 
     let value_node = NodeId::Value(ValueCellId::new("Bracket", "width"));
     assert_eq!(
-        overrides.resolve_with_traits(&value_node, NodeTraits::COMMITTABLE),
+        overrides.resolve_with_traits(&value_node, kind_default_traits(&value_node)),
         NodeCommitmentOverride::OnlyRunOnFinalInputs,
         "last duplicate kind selector must win"
     );
@@ -220,7 +235,7 @@ fn duplicate_instance_selector_last_entry_wins() {
 
     let width = NodeId::Value(ValueCellId::new("Bracket", "width"));
     assert_eq!(
-        overrides.resolve_with_traits(&width, NodeTraits::COMMITTABLE),
+        overrides.resolve_with_traits(&width, kind_default_traits(&width)),
         NodeCommitmentOverride::OnlyRunOnFinalInputs,
         "last duplicate instance selector must win"
     );
