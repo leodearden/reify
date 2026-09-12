@@ -2128,10 +2128,26 @@ fn cmd_eval(args: &[String]) -> ExitCode {
     //
     // Both `eval` and `build` take `&mut self`, so the engine survives the call.
     let (values, diagnostics, engine) = if module_has_geometry(&compiled) {
-        // Geometry-bearing module: route through the kernel-backed build() path so
-        // that run_post_processes/post_process_geometry_queries fires and resolves
-        // geometry-query value cells (mass, centroid, volume, …).
-        // geometry_output is discarded — reify eval is a value inspector only.
+        // Geometry-bearing module: route through the kernel-backed realization
+        // path so that run_post_processes/post_process_geometry_queries fires and
+        // resolves geometry-query value cells (mass, centroid, volume, …).
+        // No geometry is emitted — reify eval is a value inspector only.
+        //
+        // `realize_for_check`, NOT `build()` (task 5318) — the same esc-5748-6
+        // reason `cmd_check` gives at its two sites above: `build()` also runs
+        // the Phase-B product-export walk, and `eval` writes no artifact, so
+        // that walk's EXPORT-ONLY diagnostics are false errors here, and a false
+        // EXIT — the tail of this function returns FAILURE on any
+        // `Severity::Error`. The argument had simply never been carried across
+        // to the other command that discards the artifact.
+        //
+        // Every value cell `build()` resolved here still resolves:
+        // `realize_for_check` differs from `build` in the export walk and in
+        // nothing else (both delegate to `build_with_geometry_output`, which
+        // takes the export as a flag). Pinned, not assumed, by
+        // `cli_gdt_integration_gate::b5_oracle_inside_oracles_agree`, which
+        // asserts the `dev` and `pokeout` oracle CELLS parsed from this
+        // command's stdout rather than merely its exit code.
         let mut engine =
             configured_eval_engine(reify_eval::Engine::with_registered_kernel(Box::new(
                 SimpleConstraintChecker,
@@ -2142,7 +2158,7 @@ fn cmd_eval(args: &[String]) -> ExitCode {
             engine.set_persistent_cache_dir(Some(override_dir.clone()));
         }
         engine.set_capture_undef_causes(true);
-        let result = engine.build(&compiled, reify_ir::ExportFormat::Step);
+        let result = engine.realize_for_check(&compiled);
         (result.values, result.diagnostics, engine)
     } else {
         // Plain numeric module: keep the existing lightweight eval() path so

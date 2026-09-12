@@ -57,10 +57,11 @@ fn build_with_occt(source: &str) -> Option<reify_eval::BuildResult> {
 ///
 /// This is not a convenience: it is the path `reify check` actually takes for
 /// a geometry-bearing module (`cmd_check` selects `realize_for_check` at
-/// `reify-cli/src/main.rs`:1118). `reify check` ONLY — `reify eval` is a
-/// THIRD, separate path and does not come through here; that is what
-/// [`eval_with_occt`] below exists to cover, and mistaking the two is what let
-/// the protected gate `cli_gdt_integration_gate.rs:163` go red unobserved.
+/// `reify-cli/src/main.rs`:1118). `reify check` ONLY — assert the `reify eval`
+/// path through [`eval_with_occt`] below even though the two currently reach
+/// the same entry point, because they are separately changeable CLI commands
+/// and conflating them is what let the protected gate
+/// `cli_gdt_integration_gate.rs:163` go red unobserved.
 /// A design whose boolean legitimately collapses to nothing —
 /// `examples/tolerancing/gdt_oracle_inside.ri` — must stay silent HERE.
 ///
@@ -89,38 +90,29 @@ fn realize_with_occt(source: &str) -> Option<reify_eval::BuildResult> {
 /// (`reify-cli/src/main.rs`:2130-2146).
 ///
 /// MIRROR, and deliberately so: `cmd_eval` is a CLI function this crate cannot
-/// call, so the terminal call below must be kept identical to the terminal
-/// call there. Whoever changes one changes both; this doc comment and the line
-/// reference above are the link.
+/// call, so the terminal call reached below must be kept identical to the
+/// terminal call there. Whoever changes one changes both; this doc comment and
+/// the line reference above are the link.
 ///
-/// `reify eval` is the THIRD path, distinct from the other two helpers here,
-/// and the distinction is exactly what this file previously got wrong:
+/// `reify eval` is the THIRD path, and its distinctness is exactly what this
+/// file previously got wrong — it had helpers for two paths and pins for two
+/// verdicts, and the third path was the one the protected gate runs:
 ///   `reify check` → `Engine::realize_for_check`  — writes nothing, must be SILENT
-///   `reify eval`  → *this helper*                — writes nothing, must be SILENT
+///   `reify eval`  → `Engine::realize_for_check`  — writes nothing, must be SILENT
 ///   `reify build` → `Engine::build(.., Step)`    — WRITES an artifact, must FAIL on an empty one
-/// `cmd_eval` routes through `build()` for the post-processes that resolve the
-/// geometry-query value cells, then discards `geometry_output` under its own
-/// comment "reify eval is a value inspector only" — so it discards the BYTES
-/// but reports the DIAGNOSTICS, including the export-only ones. That is the
-/// defect this helper pins.
 ///
-/// The whole `BuildResult` is handed back, but `geometry_output` is NOT part
-/// of this path's observable surface — `reify eval` prints value cells and
-/// diagnostics and nothing else, so callers must assert on those two only.
+/// `cmd_eval` reached `build()` until task 5318 step-10, for the
+/// post-processes that resolve the geometry-query value cells; it discarded
+/// `geometry_output` under its own comment "reify eval is a value inspector
+/// only" but still REPORTED that walk's export-only diagnostics, and exits
+/// non-zero on any of them. `realize_for_check` runs the same post-processes
+/// and skips only the export walk, so the value cells are unaffected. The two
+/// artifact-free paths therefore CONVERGED on one entry point rather than
+/// coinciding by accident — hence the delegation below instead of a re-spelt
+/// construction. The names stay distinct because the two CLI commands are
+/// independently changeable: if either ever diverges, this is where it shows.
 fn eval_with_occt(source: &str) -> Option<reify_eval::BuildResult> {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return None;
-    }
-
-    let compiled = parse_and_compile_with_stdlib(source);
-
-    let checker = reify_constraints::SimpleConstraintChecker;
-    let mut planner = reify_geometry::SingleKernelHolder::new();
-    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
-    Some(engine.build(&compiled, ExportFormat::Step))
+    realize_with_occt(source)
 }
 
 /// Collect the Error-severity diagnostic messages from a build.
