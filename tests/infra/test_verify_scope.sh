@@ -2298,4 +2298,86 @@ assert "GV-3: RUN_RUST=0 RUN_GUI=1 RUN_GUI_VITEST=1 (a frontend-read path change
 assert "GV-3: gui lane carries npm test" \
     plan_has "$_GUI_LANE_WITH_VITEST"
 
+# The three fixtures above cover the SKIP decision and its two positive
+# routes. GV-4..GV-8 cover the arms they do not reach — every one of which
+# must come out RUNNING the lane, because the whole ladder fails open.
+
+echo ""
+echo "--- Scenario GV-4: C5 unmappable path (ALL sentinel) -> vitest runs ---"
+plan_for_branch_env "" scripts/foo.sh
+assert "GV-4: RUN_GUI_VITEST=1 — a widened closure can never SKIP the lane" \
+    _check_scope_header 'RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
+assert "GV-4: gui lane carries npm test" \
+    plan_has "$_GUI_LANE_WITH_VITEST"
+
+# GV-4b isolates what GV-4 cannot. An unmappable path also takes
+# decide_scope's conservative `*)` catch-all, which sets GUI_PATH_SIGNAL=1 —
+# so GV-4 would pass even if the closure arm were deleted outright. Pairing a
+# crates/** path (GUI_PATH_SIGNAL=0) with a malformed knob routes the decision
+# through closure_reaches_reify_gui's fail-wide arm and nothing else.
+echo ""
+echo "--- Scenario GV-4b: malformed closure knob + crates/** path -> fail WIDE to vitest ---"
+plan_for_branch_env "REIFY_AFFECTED_CRATES_OVERRIDE=   " crates/reify-doc/src/lib.rs
+assert "GV-4b: RUN_GUI_VITEST=1 — a whitespace-only knob is 'unavailable', not 'excludes reify-gui'" \
+    _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0 RUN_GUI_VITEST=1'
+assert "GV-4b: gui lane carries npm test" \
+    plan_has "$_GUI_LANE_WITH_VITEST"
+
+echo ""
+echo "--- Scenario GV-5a: --scope all -> vitest unconditional (C2) ---"
+plan_for all crates/reify-doc/src/lib.rs
+assert "GV-5a: RUN_GUI_VITEST=1 at scope=all — the merge gate never narrows" \
+    _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
+assert "GV-5a: gui lane carries npm test" \
+    plan_has "$_GUI_LANE_WITH_VITEST"
+
+# The same crate GV-1 skips on. DF_VERIFY_ROLE=merge forces --scope all, so
+# the merge gate keeps the lane even for a closure that excludes reify-gui —
+# which is what makes a task-tier skip a LATENCY cost and never a coverage
+# hole.
+echo ""
+echo "--- Scenario GV-5b: DF_VERIFY_ROLE=merge --scope branch (forced to all) -> vitest runs ---"
+plan_for_branch_env "DF_VERIFY_ROLE=merge" crates/reify-doc/src/lib.rs
+assert "GV-5b: RUN_GUI_VITEST=1 under the merge role" \
+    _check_scope_header 'RUN_GUI_VITEST=1'
+assert "GV-5b: gui lane carries npm test" \
+    plan_has "$_GUI_LANE_WITH_VITEST"
+
+# GV-6 — task 6435 regression guard. The _GUI_COUPLED_RI_FIXTURES arm sets
+# gui=1 for exactly one reason: to run the GUI grammar drift ledger for an
+# edit to a fixture it pins. A narrowing that skipped vitest here would delete
+# that task's whole coverage argument while leaving its RUN_GUI=1 assertion
+# (PG-DRIFT-GUI, above) passing. Derived from the same ledger as PG-DRIFT-GUI,
+# so it cannot drift from the real pin set.
+echo ""
+echo "--- Scenario GV-6: EXPECTED_CLEAN-pinned prd-gate fixture -> vitest runs (task 6435) ---"
+_GV6_PIN="$(printf '%s\n' "$_PG_GUI_PINS" | head -1)"
+assert "GV-6: a pinned fixture was derived (guard is not vacuous)" \
+    test -n "$_GV6_PIN"
+plan_for staged "$_GV6_PIN"
+assert "GV-6: $_GV6_PIN -> RUN_RUST=0 RUN_GUI=1 RUN_GUI_VITEST=1 (the ledger is the point of gui=1)" \
+    _check_scope_header 'RUN_RUST=0 RUN_GUI=1 RUN_OCCT_GATE=0 RUN_GUI_VITEST=1'
+assert "GV-6: gui lane carries npm test" \
+    plan_has "$_GUI_LANE_WITH_VITEST"
+
+# GV-7 — task 6268's arm 2, the OVERLOADED empty closure. A tests/infra-only
+# branch diff yields RUN_RUST=1 from decide_scope's conservative catch-all but
+# an EMPTY closure from affected-crates-lib's non-crate allowlist. Cited, not
+# restated: see closure_reaches_reify_gui's arm 2.
+echo ""
+echo "--- Scenario GV-7: tests/infra-only branch diff (empty closure) -> vitest runs ---"
+plan_for_branch_env "" tests/infra/foo.sh
+assert "GV-7: RUN_GUI_VITEST=1 on an empty closure (task 6268 arm 2)" \
+    _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
+assert "GV-7: gui lane carries npm test" \
+    plan_has "$_GUI_LANE_WITH_VITEST"
+
+echo ""
+echo "--- Scenario GV-8: examples/*.ri branch diff -> vitest runs (grammar ledger reads examples/) ---"
+plan_for_branch_env "" examples/foo.ri
+assert "GV-8: RUN_GUI_VITEST=1 for a corpus edit" \
+    _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
+assert "GV-8: gui lane carries npm test" \
+    plan_has "$_GUI_LANE_WITH_VITEST"
+
 test_summary

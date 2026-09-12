@@ -451,6 +451,29 @@ assert "derived examples/*.ri reader crates ⊆ declared _RI_CORPUS_CRATES" \
     _check_derived_subset_of_declared
 
 # ---------------------------------------------------------------------------
+# GV-PREMISE (task 7427): the two crates the vitest-gate fixtures are built on.
+#
+# tests/infra/test_verify_scope.sh's GV-1/GV-2 drive AFFECTED_CLOSURE through
+# REIFY_AFFECTED_CRATES_OVERRIDE, because their throwaway fixture repo has no
+# cargo workspace. Those hand-written override values are only meaningful while
+# they describe reality — so pin the two facts they encode against the REAL
+# repo here, where a real `cargo metadata` runs.
+#
+# The negative holds because the reify-doc -> reify-eval edge is a DEV-dep and
+# the compile-closure model is dev-dep non-transitive — the property the task
+# 4938 section above already covers. If that model ever changes, GV-1 becomes
+# fiction silently; this assertion is what makes it fail loudly instead.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- GV-PREMISE: the reify-doc / reify-eval closures the vitest-gate fixtures assume ---"
+
+assert "reify-doc closure EXCLUDES reify-gui (GV-1's skip premise)" \
+    _check_not_contains reify-gui crates/reify-doc/src/lib.rs
+
+assert "reify-eval closure INCLUDES reify-gui (GV-2's run premise)" \
+    _check_contains reify-gui crates/reify-eval/src/lib.rs
+
+# ---------------------------------------------------------------------------
 # Amendment (code-review follow-up, task 6277): --locked non-mutation check.
 #
 # --locked's whole purpose is refusing to rewrite Cargo.lock rather than
