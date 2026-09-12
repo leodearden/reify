@@ -5634,6 +5634,161 @@
         );
     }
 
+    /// δ RED — `draft.angle` is the R7 raw-`Value` passthrough, and it rejects
+    /// a bare angle at BOTH arities.
+    ///
+    /// ASSERT THE DIAGNOSTIC STRING, NEVER THE EXIT CODE. This input ALREADY
+    /// fails today with "no valid plane handle available for Draft", so `Err`
+    /// is the outcome both before and after δ and only the TEXT distinguishes
+    /// them. The rejection is observable precisely because the angle is read
+    /// ABOVE the plane resolution, so it short-circuits and REPLACES the plane
+    /// error.
+    ///
+    /// BOTH ARITIES, which is the point: PRD §11 Q4 asked δ to gate "both
+    /// modify_draft arms". That premise was REFUTED at decompose — the single
+    /// `angle` binding sits above the `match faces_expr` split, and the 3-arg
+    /// (no faces) and 4-arg (curated faces) forms are mutually-exclusive
+    /// consumers of it. One gate covers both, and this test is what proves it
+    /// rather than asserting it.
+    #[test]
+    fn compile_geometry_op_draft_bare_angle_is_rejected_at_both_arities() {
+        let values = ValueMap::new();
+        // Step(0) resolves (a valid TARGET) but `.last()` is INVALID, so plane
+        // resolution fails. That is what makes the substitution observable:
+        // with this same handle list a DIMENSIONED angle yields the plane
+        // error, and a bare one must REPLACE it.
+        let step_handles = vec![GeometryHandleId(50), GeometryHandleId::INVALID];
+
+        for (arity, extra_args) in [
+            ("3-arg (no faces)", vec![]),
+            (
+                "4-arg (curated faces)",
+                vec![(
+                    "faces".to_string(),
+                    reify_ir::CompiledExpr::literal(
+                        reify_ir::Value::List(vec![]),
+                        reify_core::Type::dimensionless_scalar(),
+                    ),
+                )],
+            ),
+        ] {
+            for (label, angle_expr) in [
+                ("bare Real", literal_f64(5.0)),
+                (
+                    "bare Int",
+                    reify_ir::CompiledExpr::literal(
+                        reify_ir::Value::Int(5),
+                        reify_core::Type::dimensionless_scalar(),
+                    ),
+                ),
+            ] {
+                let mut args = vec![("angle".to_string(), angle_expr)];
+                args.extend(extra_args.iter().cloned());
+                let op = CompiledGeometryOp::Modify {
+                    kind: reify_compiler::ModifyKind::Draft,
+                    target: reify_compiler::GeomRef::Step(0),
+                    args,
+                };
+                let mut diagnostics: Vec<Diagnostic> = Vec::new();
+                let result = compile_geometry_op(
+                    &op,
+                    &values,
+                    &step_handles,
+                    &[],
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &mut diagnostics,
+                );
+                assert!(
+                    result.is_err(),
+                    "{arity} {label}: must drop the op, got: {result:?}"
+                );
+
+                let rejections = angle_rejections(&diagnostics);
+                assert_eq!(
+                    rejections.len(),
+                    1,
+                    "{arity} {label}: exactly ONE rejection; got: {diagnostics:?}"
+                );
+                let rej = rejections[0];
+                assert_eq!(
+                    rej.severity,
+                    reify_core::Severity::Error,
+                    "{arity} {label}: C1 inv. 3 requires Error; got: {rej:?}"
+                );
+                assert_eq!(
+                    rej.code,
+                    Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                    "{arity} {label}: must carry the shared code; got: {rej:?}"
+                );
+                for needle in [
+                    "draft: angle argument expects Angle, got ",
+                    reify_core::units::ANGLE_MIGRATION_HINT,
+                ] {
+                    assert!(
+                        rej.message.contains(needle),
+                        "{arity} {label}: message must contain {needle:?}; got: {:?}",
+                        rej.message
+                    );
+                }
+
+                // The angle error REPLACES the plane error — that substitution
+                // is the whole observable signal, since both states are Err.
+                assert!(
+                    !diagnostics
+                        .iter()
+                        .any(|d| d.message.contains("no valid plane handle")),
+                    "{arity} {label}: the angle gate must short-circuit ABOVE the \
+                     plane resolution; got: {diagnostics:?}"
+                );
+            }
+        }
+    }
+
+    /// δ CONTROL — with a DIMENSIONED angle, no angle diagnostic appears and
+    /// only the pre-existing plane-handle error remains.
+    ///
+    /// This is the achievable form of the PRD's "`5deg` builds" control, which
+    /// is UNACHIEVABLE as written: `draft` is not eval-reachable from `.ri`
+    /// source at all, because `modify_draft` resolves its plane as
+    /// `step_handles.last()` — its own comment calls that a pre-existing
+    /// approximation — and the `.ri` corpus has ZERO `draft(` call sites. That
+    /// defect belongs to `docs/prds/geometry-modify-sweep-completion.md`, NOT
+    /// to this leaf, and δ deliberately does not expand scope to fix it.
+    #[test]
+    fn compile_geometry_op_draft_dimensioned_angle_leaves_only_the_plane_error() {
+        let values = ValueMap::new();
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Draft,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![("angle".to_string(), literal_angle(0.1))],
+        };
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            // Same handle list as the rejection test above: valid target, no
+            // valid plane. The ONLY difference is the angle's dimension.
+            &[GeometryHandleId(50), GeometryHandleId::INVALID],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        let err = result
+            .err()
+            .expect("no valid plane handle — the pre-existing failure δ leaves alone");
+        assert_eq!(
+            err, "no valid plane handle available for Draft",
+            "a dimensioned angle must fall through to the PRE-EXISTING plane \
+             error, untouched by δ"
+        );
+        assert!(
+            angle_rejections(&diagnostics).is_empty(),
+            "a dimensioned angle must produce NO angle diagnostic; got: {diagnostics:?}"
+        );
+    }
+
     // ---- units-length γ (task 5744 step-6): the 3 sweep magnitude slots ----
 
     /// γ's sweep slice, in the same `(kind, &[(arg name, is_length_semantic)])`
