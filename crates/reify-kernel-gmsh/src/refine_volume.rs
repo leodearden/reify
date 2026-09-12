@@ -390,7 +390,9 @@ pub fn refine_volume_with_size_field(
     }
 
     // --- Tet meshing ---
-    ffi::mesh_generate(3)?;
+    // Via `init::mesh_generate_with_recovery`: the mesher is process-global, so
+    // a failure here must not outlive this call. See that function.
+    init::mesh_generate_with_recovery(&_guard, 3)?;
 
     // --- Readback (mirrors mesh_to_volume verbatim) ---
     let elem_type = match order {

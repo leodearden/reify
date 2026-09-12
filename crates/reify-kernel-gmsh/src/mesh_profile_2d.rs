@@ -149,7 +149,11 @@ pub fn mesh_plane_2d(
         ffi::mesh_set_recombine(2, surf_tag, 45.0)?;
     }
 
-    ffi::mesh_generate(2)?;
+    // Via `init::mesh_generate_with_recovery`: the mesher is process-global, so
+    // a failure here must not outlive this call. See that function. Wired for
+    // uniformity with the three 3D sites — no cheap 2D geometry that fails
+    // `mesh_generate(2)` was identified, so this site is NOT test-covered.
+    init::mesh_generate_with_recovery(&_guard, 2)?;
 
     // Readback nodes. The flat coord buffer is stride-3 (x, y, z); we drop
     // the z component (always 0 for a plane surface).

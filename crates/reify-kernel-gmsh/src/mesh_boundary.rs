@@ -691,7 +691,9 @@ fn run_meshing_with_entity_queries(
     let _vol_tag = ffi::geo_add_volume(&[loop_tag])?;
     ffi::geo_synchronize()?;
 
-    ffi::mesh_generate(3)?;
+    // Via `init::mesh_generate_with_recovery`: the mesher is process-global, so
+    // a failure here must not outlive this call. See that function.
+    init::mesh_generate_with_recovery(&_guard, 3)?;
 
     // -----------------------------------------------------------------------
     // Entity-membership queries (must happen BEFORE ffi::clear)
