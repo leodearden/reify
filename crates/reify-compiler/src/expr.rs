@@ -3733,69 +3733,39 @@ fn compile_expr_guarded_with_expected_inner(
                     {
                         // ── The builtin-signature registry (task #6001 α) ──────
                         //
-                        // ONE arm replacing the two family arms this ladder used
-                        // to carry — `is_analysis_typed_fn` (here) and
-                        // `is_parse_typed_fn` (formerly ~75 lines below, after
-                        // the FEA-envelope and field-op arms). Both families'
-                        // signatures now live as rows in `reify-builtins`, and
-                        // `builtin_registry::registry_result_type` is this
-                        // crate's single entry point into that table:
+                        // ONE arm replacing the two family arms this ladder
+                        // used to carry, `is_analysis_typed_fn` (here) and
+                        // `is_parse_typed_fn` (formerly ~75 lines below). Both
+                        // families' signatures are now rows in
+                        // `reify-builtins`, and `builtin_registry` is this
+                        // crate's single entry point into that table; the
+                        // answers are the ones the deleted arms gave, byte for
+                        // byte, since α moves the source of truth and corrects
+                        // nothing (PRD §7.3(6)).
                         //
-                        //   von_mises / max_shear      → Scalar<quantity(arg0)>
-                        //   principal_stresses         → List(Scalar<…>)
-                        //   safety_factor              → dimensionless (pressure cancels)
-                        //   stress_invariants          → StructureRef("StressInvariants")
-                        //   parse_length               → Option<Length>
-                        //   parse_length_r             → Type::Enum("Result")   (PRELUDE, #4035)
-                        //
-                        // Same answers as before, byte for byte — α moves the
-                        // source of truth, it corrects nothing (PRD §7.3(6)).
-                        // Without them the terminal first-arg fallback would
-                        // mis-type `von_mises(stress)` as `Tensor<Pressure>`
-                        // and `parse_length(s)` as `String`, breaking both the
-                        // consumer's `match{Some/None}` check and the eval-time
-                        // `value_type_kind_matches` guard.
-                        //
-                        // **Why folding parse into the analysis position is
-                        // unobservable.** The arms that used to sit between the
-                        // two positions — `is_fea_envelope_query` and
-                        // `is_field_op` — cannot claim a seed name: every
-                        // registry row name is pinned absent from every legacy
-                        // sibling family slice by
+                        // Folding parse into the analysis POSITION is
+                        // unobservable: `units.rs`'s
                         // `registry_row_names_are_disjoint_from_legacy_families`
-                        // in `units.rs` (the registry-derived successor to the
-                        // two per-family disjointness tests §7.3(4) retired).
-                        // So at most one arm can ever match a given name and
-                        // ladder position carries no meaning for these rows.
+                        // pins every row name absent from every legacy sibling
+                        // family slice, so at most one arm can ever claim a
+                        // given name.
                         //
-                        // **Arg TYPES cross the boundary, not `CompiledExpr`s**:
-                        // `reify-builtins` depends on `reify-core` only (PRD
-                        // decision 3) and cannot see `reify-ir`. The projection
-                        // here is the same one the deleted
-                        // `analysis_fn_result_type` did internally.
-                        //
-                        // **Why the `registry_owns` guard.** That projection
-                        // allocates a `Vec<Type>` and deep-clones every arg's
-                        // type (`Type` carries `Box<Type>`/`String` payloads).
-                        // This arm is mid-ladder, so it is reached by nearly
-                        // every call in a program while answering for only the
-                        // registered names — 7 in α — and the family arms it
-                        // replaced were allocation-free slice `contains`
-                        // checks. `registry_owns` is that same name-only test,
-                        // so the miss path stays cheap and the Vec is built
-                        // only once the registry has claimed the name. It is
-                        // exactly `registry_result_type`'s own precondition
-                        // (which calls it), so this is a cost change, not a
-                        // behaviour change — pinned row-derived by
-                        // `harness_builtin_registry`'s
+                        // `registry_owns` guards the `Vec<Type>` projection,
+                        // which allocates and deep-clones every argument type
+                        // on an arm reached by nearly every call in a program.
+                        // It is `registry_result_type`'s own precondition, so
+                        // this is a cost change, not a behaviour change —
+                        // pinned by `harness_builtin_registry`'s
                         // `registry_owns_is_exactly_registry_result_type_s_precondition`.
+                        // The projection itself is needed because
+                        // `reify-builtins` cannot see `reify-ir` (PRD decision
+                        // 3), so arg TYPES cross the boundary, not
+                        // `CompiledExpr`s.
                         //
-                        // The call STAYS a `FunctionCall` (eval untouched,
-                        // dispatched to the existing Rust kernels — via
-                        // `reify-stdlib`'s registry dispatcher after §7.3(3)).
                         // `None` means "not a registry row", so unseeded names
                         // fall through to the arms below exactly as before —
-                        // I-REG-3's pre-ω carve-out.
+                        // I-REG-3's pre-ω carve-out. The call stays a
+                        // `FunctionCall`: eval is untouched.
                         t
                     } else if is_fea_envelope_query(name) {
                         // FEA multi-load-case envelope builtins (task #4629 W2):

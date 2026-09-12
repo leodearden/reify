@@ -630,7 +630,7 @@ mod lint {
     fn every_variant_ident_matches_its_row_name() {
         for id in BuiltinId::iter() {
             let variant = format!("{id:?}");
-            let r = row(id);
+            let r = row_for(id);
             let snake = to_snake_case(&variant);
             if name_group(r.name).len() > 1 {
                 // Overloaded name: two idents, one name — see the doc above.
@@ -665,7 +665,7 @@ mod lint {
              stopped sharing the registry! repetition"
         );
         for id in BuiltinId::iter() {
-            assert_eq!(row(id).id, id, "row({id:?}) must be {id:?}'s own row");
+            assert_eq!(row_for(id).id, id, "row_for({id:?}) must be {id:?}'s own row");
         }
     }
 

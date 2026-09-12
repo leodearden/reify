@@ -1,37 +1,25 @@
 //! `ArgAware` result-type resolvers and the type helpers they are built from.
 //!
-//! Pure `reify_core::Type` algebra. These are compile-time type computation,
-//! never eval — the crate holds no `Value` (PRD decision 3).
+//! Pure `reify_core::Type` algebra — compile-time type computation, never eval
+//! (the crate holds no `Value`; PRD decision 3).
 //!
-//! **Reading the `Ported from` anchors.** The legacy files these helpers came
-//! from were DELETED by this task, so their paths resolve against history, not
-//! the worktree. Every anchor below is stated against **`b42c7dd207`** — main's
-//! tip at the merge, and the last commit in which they existed:
-//!
-//! ```text
-//! git show b42c7dd207:crates/reify-compiler/src/analysis_signatures.rs
-//! ```
-//!
-//! That commit is not merely the newest one available: its
-//! `analysis_signatures.rs` is byte-identical to the copy the #6577 port was
-//! actually read from (verified at step-31), so the anchors name the source
-//! that was ported, not a near approximation of it. The commit is named ONCE,
-//! here — a commit-qualified line number is stable forever, but only if the
-//! reader can tell WHICH commit it counts against.
+//! **`Ported from` anchors.** The legacy files these helpers came from were
+//! DELETED by this task, so every anchor below counts against **`b42c7dd207`**
+//! — main's tip at the merge, the last commit holding them, and (verified at
+//! step-31) byte-identical to the copy the #6577 port was read from:
+//! `git show b42c7dd207:crates/reify-compiler/src/analysis_signatures.rs`.
 
 use reify_core::{DimensionVector, Type};
 
-/// Route the dimensionless case to `Type::dimensionless_scalar()` (NOT `Scalar{DIMENSIONLESS}`).
+/// Route the dimensionless case to `Type::dimensionless_scalar()`, NOT
+/// `Scalar{DIMENSIONLESS}`.
 ///
-/// This matches the eval boundary: a dimensionless result produces
-/// `Value::Real`, and `value_type_kind_matches(Value::Real,
-/// Scalar{DIMENSIONLESS})` is `false` — so a dimensionless arm MUST return
-/// `Type::dimensionless_scalar()` to keep the compile-type and eval-value in agreement.
+/// The eval boundary demands it: a dimensionless result produces `Value::Real`,
+/// and `value_type_kind_matches(Value::Real, Scalar{DIMENSIONLESS})` is `false`.
 ///
-/// Moved verbatim from `crates/reify-compiler/src/signatures_common.rs:26`
-/// (task #6001 α), whose last user disappeared when the analysis family moved
-/// to the registry. `math_signatures.rs` keeps its own bit-identical private
-/// copy; deduping that is τ-numeric's, not α's.
+/// Moved verbatim from `signatures_common.rs:26`, whose last user disappeared
+/// when the analysis family moved to the registry. `math_signatures.rs` keeps a
+/// bit-identical private copy; deduping it is τ-numeric's, not α's.
 pub fn scalar_or_real(dim: DimensionVector) -> Type {
     if dim.is_dimensionless() {
         Type::dimensionless_scalar()
@@ -40,20 +28,16 @@ pub fn scalar_or_real(dim: DimensionVector) -> Type {
     }
 }
 
-/// The quantity dimension carried by a `Tensor` / `Matrix` arg at position
-/// `i`, defaulting to `DIMENSIONLESS` when the arg is absent or not a tensor.
+/// The quantity dimension carried by a `Tensor` / `Matrix` arg at position `i`,
+/// defaulting to `DIMENSIONLESS` when the arg is absent or not a tensor.
 ///
-/// Ported from `crates/reify-compiler/src/analysis_signatures.rs:168` and
-/// re-signatured from `&[CompiledExpr]` to `&[Type]` — reify-builtins cannot
-/// see reify-ir. Same `Tensor|Matrix ⇒ Scalar{dimension}` match, same
-/// DIMENSIONLESS default.
+/// Ported from `analysis_signatures.rs:168`, re-signatured `&[CompiledExpr]` →
+/// `&[Type]` (reify-builtins cannot see reify-ir).
 ///
-/// Deliberately **non-recursive**, and deliberately blind to [`Type::Field`]:
-/// that is [`field_tensor_arg`]'s job. Teaching this helper to look inside a
-/// Field codomain would yield a `Scalar` compile-time type for a call eval
-/// answers with a `Value::Field` — trading a dimension bug for a KIND LIE that
-/// `value_type_kind_matches` (`crates/reify-eval/src/lib.rs:330`) rejects and
-/// `engine_admin.rs` surfaces as `EngineError::TypeKindMismatch`.
+/// Deliberately blind to [`Type::Field`] — that is [`field_tensor_arg`]'s job.
+/// Reaching inside a Field codomain here would give a `Scalar` compile-time
+/// type to a call eval answers with a `Value::Field`: a KIND lie, which
+/// `value_type_kind_matches` rejects as `EngineError::TypeKindMismatch`.
 fn tensor_quantity(args: &[Type], i: usize) -> DimensionVector {
     match args.get(i) {
         Some(Type::Tensor { quantity, .. }) | Some(Type::Matrix { quantity, .. }) => {
@@ -69,26 +53,17 @@ fn tensor_quantity(args: &[Type], i: usize) -> DimensionVector {
 /// The `(domain, element dimension)` of arg `i` when it is a [`Type::Field`]
 /// whose codomain is a 3x3 tensor/matrix of scalars. `None` otherwise.
 ///
-/// Ported from `crates/reify-compiler/src/analysis_signatures.rs:204` (task
-/// #6577) and re-signatured `&[CompiledExpr]` → `&[Type]`, the same
-/// re-signaturing [`tensor_quantity`] already received.
+/// Ported from `analysis_signatures.rs:204` (task #6577), same re-signaturing.
 ///
-/// Deliberately mirrors eval's gate — `analysis::tensor_element_dimension`
-/// (`crates/reify-expr/src/analysis.rs`), reached via `validate_tensor_field` —
-/// so the compile-time type and the `Value::Field` eval produces agree under
-/// `value_type_kind_matches` (`crates/reify-eval/src/lib.rs:330`). The
-/// [`Type::Int`] quantity branch is carried over for the same reason:
-/// `tensor_element_dimension` maps it to `DIMENSIONLESS`.
+/// Mirrors eval's SHAPE gate — `analysis::tensor_element_dimension`, reached
+/// via `validate_tensor_field` — so the compile-time type agrees with the
+/// `Value::Field` eval produces. The [`Type::Int`] branch is carried over for
+/// the same reason: `tensor_element_dimension` maps it to DIMENSIONLESS.
 ///
-/// The mirror covers eval's SHAPE gate only. `validate_tensor_field` also gates
-/// on the `(source, lambda)` pair, admitting `(Analytical | Composed, Lambda)`
-/// and — since task #7129 landed — `(Sampled, SampledField)`, which is the
-/// backing `solve_elastic_static` hands back as `.stress`. A field's source kind
-/// is not a type-level concept, so there is deliberately no counterpart to that
-/// half here. It errs in the safe direction anyway: when the shape matches but
-/// eval declines the pair, eval yields `Value::Undef`, which
-/// `value_type_kind_matches` accepts for ANY type, so the `Type::Field` claim
-/// still holds.
+/// Eval additionally gates on the `(source, lambda)` pair, which is not a
+/// type-level concept and so has no counterpart here. That errs safe: when the
+/// shape matches but eval declines the pair, eval yields `Value::Undef`, which
+/// `value_type_kind_matches` accepts for ANY type.
 fn field_tensor_arg(args: &[Type], i: usize) -> Option<(&Type, DimensionVector)> {
     let Some(Type::Field { domain, codomain }) = args.get(i) else {
         return None;
@@ -115,42 +90,30 @@ fn field_tensor_arg(args: &[Type], i: usize) -> Option<(&Type, DimensionVector)>
 
 /// Reduce arg0, lifting the answer over a `Type::Field` argument.
 ///
-/// Every analysis reduction has the same two-form shape and differs only in how
-/// it turns arg0's element dimension into a result type, so the two forms live
-/// here ONCE and the per-row variation is the `codomain` argument:
+/// Every analysis reduction has the same two-form shape and differs only in the
+/// `codomain` it builds from arg0's element dimension:
 ///
-/// - arg0 is a `Field<D, Tensor<2,3,Q>>`, at exactly `field_argc` arguments →
-///   `Field<D, codomain(Q)>`;
+/// - `Field<D, Tensor<2,3,Q>>` at exactly `field_argc` args → `Field<D, codomain(Q)>`;
 /// - anything else → `codomain(tensor_quantity(arg0))`, the pre-#6577 answer.
 ///
-/// # The `field_argc` gate
+/// **The Field form is a `Field`, not a reduced scalar (task #6577).** Eval does
+/// not reduce a field eagerly — `wrap_tensor_field` wraps it LAZILY and hands
+/// back a `Value::Field` — and `value_type_kind_matches` maps that onto
+/// [`Type::Field`] alone. The consumer half needs no counterpart: `max` / `min`
+/// already reduce a `Type::Field` codomain, so `max(von_mises(stress))` is
+/// still `Scalar<Pressure>`.
 ///
-/// `field_argc` is the argument count at which EVAL dispatches this name onto a
-/// field (`crates/reify-expr/src/lib.rs`'s ladder). Mirroring it keeps the
-/// compiler's claim narrower-or-equal to what eval can honour: outside that
-/// argc, eval reaches `eval_builtin` and yields `Value::Undef`, which
-/// `value_type_kind_matches` accepts for ANY type — so the concrete fall-through
-/// is sound, whereas a `Type::Field` claim there would not be.
-///
-/// This gate is INTERNAL to the resolver and is not an arity diagnostic. The
-/// compiler seam stays arity-INSENSITIVE (`registry_result_type` resolves via
-/// `name_group`, not the argc-keyed `lookup`), so a mis-arity call still reaches
-/// this function and still receives the family's concrete answer — exactly what
-/// the legacy name-only ladder arms did.
-///
-/// # Why the Field form is a `Field` and not a reduced scalar (task #6577)
-///
-/// Eval does not reduce a field eagerly — it wraps it LAZILY and hands back a
-/// `Value::Field` (`crates/reify-expr/src/analysis.rs`, `wrap_tensor_field`) —
-/// and `value_type_kind_matches` (`crates/reify-eval/src/lib.rs:330`) maps a
-/// `Value::Field` onto [`Type::Field`] alone. The consumer half needs no
-/// counterpart: `max` / `min` already reduce a `Type::Field` codomain via
-/// `reduce_field_codomain`, so `max(von_mises(stress))` is still
-/// `Scalar<Pressure>`.
+/// **`field_argc` mirrors EVAL's dispatch condition**, per name, keeping this
+/// claim narrower-or-equal to what eval can honour: outside that argc eval
+/// reaches `eval_builtin` and yields `Value::Undef`, which matches any type, so
+/// the concrete fall-through is sound where a `Field` claim would not be. It is
+/// an internal gate, NOT an arity diagnostic — the compiler seam stays
+/// arity-insensitive, so a mis-arity call still lands here and still gets the
+/// family's concrete answer, exactly as the legacy name-only arms gave it.
 ///
 /// Returns `Some(..)` unconditionally: legacy behaviour never rejected an
-/// argument shape, and α preserves it exactly. Wiring the `None` ⇒
-/// `E_BuiltinArgShape` path is τ-numeric's work (PRD §3 decision 5).
+/// argument shape. Wiring `None` ⇒ `E_BuiltinArgShape` is τ-numeric's (PRD §3
+/// decision 5).
 fn reduce_tensor_arg(
     args: &[Type],
     field_argc: usize,
@@ -170,32 +133,27 @@ fn reduce_tensor_arg(
 /// `von_mises` / `max_shear`: scalar reduction carrying the tensor's quantity.
 ///
 /// A Pressure tensor → `Scalar<Pressure>`; a dimensionless tensor → `Real`; a
-/// Pressure tensor FIELD → `Field<D, Scalar<Pressure>>`. Mirrors `trace` /
-/// `magnitude` in `math_fn_result_type`, and `wrap_tensor_field` for the Field
-/// form.
+/// Pressure tensor FIELD → `Field<D, Scalar<Pressure>>`.
 pub(crate) fn tensor_scalar_reduction(args: &[Type]) -> Option<Type> {
     reduce_tensor_arg(args, 1, scalar_or_real)
 }
 
 /// `principal_stresses`: the same reduction, wrapped in a `List`.
 ///
-/// Mirrors the `eigenvalues` arm in `math_fn_result_type` (matrix → List of
-/// eigenvalues). Over a Field the `List` sits INSIDE the `Field` —
-/// `Field<D, List(Q)>`, not `List(Field<D, Q>)` — because eval samples the field
-/// and each sample is the three eigenvalues (`compute_principal_stresses`,
-/// `crates/reify-expr/src/analysis.rs:239-256`).
+/// Over a Field the `List` sits INSIDE the `Field` — `Field<D, List(Q)>`, not
+/// `List(Field<D, Q>)` — because eval samples the field and each sample is the
+/// three eigenvalues (`compute_principal_stresses`).
 pub(crate) fn tensor_scalar_reduction_list(args: &[Type]) -> Option<Type> {
     reduce_tensor_arg(args, 1, |dim| Type::List(Box::new(scalar_or_real(dim))))
 }
 
 /// `safety_factor`: dimensionless whatever the argument dimensions.
 ///
-/// yield/von_mises cancels, so the codomain discards arg0's dimension entirely —
-/// but the row is [`ResultSpec::ArgAware`](crate::row::ResultSpec::ArgAware)
-/// rather than `Const` because the argument's SHAPE still reaches the answer: a
-/// `Field` argument yields `Field<D, Real>`, since `compute_safety_factor`
-/// (`crates/reify-expr/src/analysis.rs:273-302`) hands back a `Value::Field`
-/// just as the other reductions do.
+/// yield/von_mises cancels, so the codomain discards arg0's dimension — but the
+/// row is [`ResultSpec::ArgAware`](crate::row::ResultSpec::ArgAware) rather than
+/// `Const` because the argument's SHAPE still reaches the answer: a `Field`
+/// argument yields `Field<D, Real>`, `compute_safety_factor` handing back a
+/// `Value::Field` just as the other reductions do.
 pub(crate) fn dimensionless_ratio(args: &[Type]) -> Option<Type> {
     reduce_tensor_arg(args, 2, |_| Type::dimensionless_scalar())
 }

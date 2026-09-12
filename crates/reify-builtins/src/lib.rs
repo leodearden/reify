@@ -69,7 +69,11 @@ pub mod row;
 
 // ── flat root re-exports ─────────────────────────────────────────────────────
 // Flat re-export so consumers write `reify_builtins::BuiltinRow` (etc.)
-// alongside the module-path form `reify_builtins::row::BuiltinRow`.
-pub use registry::{BuiltinId, EvalBuiltinId, artifact_basis_rows, lookup, name_group, row, rows};
+// alongside the module-path form `reify_builtins::row::BuiltinRow`. Nothing
+// re-exported here is spelled `row`: `row` is the MODULE, and the accessor is
+// `row_for(id)`.
+pub use registry::{
+    BuiltinId, EvalBuiltinId, artifact_basis_rows, lookup, name_group, row_for, rows,
+};
 pub use resolvers::scalar_or_real;
 pub use row::{Arity, ArgSlot, Basis, BindingKind, BuiltinRow, Family, ResultSpec};

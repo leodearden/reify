@@ -48,7 +48,7 @@
 //! - `pub enum BuiltinId` — one variant per row, flattened across groups in
 //!   source order.
 //! - `pub enum <KindId>` per group, plus `BuiltinId::<accessor>()`.
-//! - `rows()` / `row(id)` — the row table.
+//! - `rows()` / `row_for(id)` — the row table.
 //! - `lookup(name, argc)` / `name_group(name)` — the ONLY string→builtin
 //!   resolution in the workspace (I-REG-1).
 
@@ -152,7 +152,12 @@ macro_rules! registry {
         /// The row a [`BuiltinId`] was minted for.
         ///
         /// Total by construction — ids and rows come from the same repetition.
-        pub fn row(id: BuiltinId) -> &'static $crate::row::BuiltinRow<BuiltinId> {
+        /// Named `row_for`, not `row`, so it never reads as the `row` MODULE
+        /// this crate also exports.
+        ///
+        /// A linear scan over [`rows`]; see [`lookup`]'s scan-cost note, which
+        /// covers this accessor too.
+        pub fn row_for(id: BuiltinId) -> &'static $crate::row::BuiltinRow<BuiltinId> {
             rows()
                 .iter()
                 .find(|r| r.id == id)
@@ -187,25 +192,28 @@ macro_rules! registry {
         /// workspace. [`name_group`] reads the same [`NAME_INDEX`] — it is a
         /// second ACCESSOR, never a second string map.
         ///
-        /// # Where this runs — BOTH paths, including a per-sample loop
+        /// # Scan cost — the deferral, covering all three accessors
         ///
-        /// Not compile-time-only. PRD §7.3(3) makes
-        /// `reify_stdlib::registry_dispatch::try_dispatch` the FIRST arm of
-        /// `reify_stdlib::eval_builtin`, and that arm's whole body is a
-        /// `lookup(name, args.len())` — so this scan is on the **eval** path
-        /// too. It is not merely on it once per call, either:
-        /// `reify_expr::analysis::sample_unary_analysis_at_point` calls
-        /// `eval_builtin` POINTWISE for `von_mises` / `max_shear` /
-        /// `principal_stresses`, so a field sampled at N points runs this scan
-        /// N times.
+        /// [`lookup`], [`name_group`] and [`row_for`] are each a LINEAR scan,
+        /// and both hot paths pay more than one of them:
         ///
-        /// A linear scan is still deliberate at α's 7 rows — that is a handful
-        /// of `&str` compares per sample, and, sitting at the head of the
-        /// chain, it is cheaper than the family dispatchers it displaced.
-        /// But the deferral is scoped, not open-ended: a hash/phf index becomes
-        /// worth MEASURING once τ grows `NAME_INDEX` past a few dozen rows,
-        /// because the per-sample caller above turns the ~358-row end state
-        /// into ~358 string comparisons per field sample.
+        /// - **eval, per SAMPLE.** PRD §7.3(3) makes
+        ///   `reify_stdlib::registry_dispatch::try_dispatch` the first arm of
+        ///   `eval_builtin`, and its whole body is a `lookup`; and
+        ///   `reify_expr::analysis::sample_unary_analysis_at_point` calls
+        ///   `eval_builtin` POINTWISE, so a field sampled at N points runs the
+        ///   scan N times.
+        /// - **compile, per CALL SITE.** `reify_compiler`'s
+        ///   `builtin_registry::registry_owns` sits mid-ladder and is reached by
+        ///   nearly every `FunctionCall` in a program: one [`name_group`] scan
+        ///   on the (overwhelmingly common) miss, and on a hit a second one plus
+        ///   a [`row_for`] scan over [`rows`].
+        ///
+        /// At α's 7 rows that is a handful of `&str` compares and matches the
+        /// slice `contains` checks it displaced. The deferral is scoped, not
+        /// open-ended: a hash/phf index becomes worth MEASURING once τ grows
+        /// `NAME_INDEX` past a few dozen rows, since the PRD's ~358-row end
+        /// state turns EACH scan above into ~358 comparisons.
         pub fn lookup(name: &str, argc: usize) -> Option<BuiltinId> {
             NAME_INDEX
                 .iter()
@@ -224,6 +232,9 @@ macro_rules! registry {
         ///
         /// Derived from [`NAME_INDEX`] on first call, so PRD open question 2 is
         /// answered "both accessors, one table".
+        ///
+        /// The GROUPS scan is linear, and this is the accessor on the compiler
+        /// ladder's per-call-site path; see [`lookup`]'s scan-cost note.
         pub fn name_group(name: &str) -> &'static [BuiltinId] {
             static GROUPS: ::std::sync::OnceLock<
                 ::std::vec::Vec<(&'static str, ::std::vec::Vec<BuiltinId>)>
@@ -530,9 +541,9 @@ mod tests {
         // Every id resolves to the row that carries it.
         for id in BuiltinId::iter() {
             assert_eq!(
-                fake::row(id).id,
+                fake::row_for(id).id,
                 id,
-                "row({id:?}) must be the row declaring {id:?}"
+                "row_for({id:?}) must be the row declaring {id:?}"
             );
         }
 
