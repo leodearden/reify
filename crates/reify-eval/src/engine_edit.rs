@@ -1190,10 +1190,11 @@ impl Engine {
         // in `tests/tolerance_wiring_e2e.rs` (task 2874, step-17).
         //
         // **Contract-lock (task 2874 step-20)**: this reset is symmetric with
-        // the analogous one in `Engine::edit_source` (engine_edit.rs around
-        // line 1920). Removing either reset, or reordering either function
-        // body so the reset moves AFTER any state mutation that could fail
-        // (which would let a stale cache leak when the edit returns Err),
+        // the analogous one in `Engine::edit_source` (its `Auto-invalidate
+        // the realization cache` comment). Removing either reset, or
+        // reordering either function body so the reset moves AFTER any
+        // state mutation that could fail (which would let a stale cache
+        // leak when the edit returns Err),
         // silently regresses the auto-invalidation hook. Both resets MUST
         // co-exist near function entry; the symmetry is independently pinned
         // by the test pair listed above plus
@@ -3218,10 +3219,11 @@ impl Engine {
         // in `tests/tolerance_wiring_e2e.rs` (task 2874, step-19).
         //
         // **Contract-lock (task 2874 step-20)**: this reset is symmetric with
-        // the analogous one in `Engine::edit_param` (engine_edit.rs around
-        // line 846). Removing either reset, or reordering either function
-        // body so the reset moves AFTER any state mutation that could fail
-        // (which would let a stale cache leak when the edit returns Err),
+        // the analogous one in `Engine::edit_param` (its `Auto-invalidate
+        // the realization cache` comment). Removing either reset, or
+        // reordering either function body so the reset moves AFTER any
+        // state mutation that could fail (which would let a stale cache
+        // leak when the edit returns Err),
         // silently regresses the auto-invalidation hook. Both resets MUST
         // co-exist near function entry; the symmetry is independently pinned
         // by the test pair listed above plus
