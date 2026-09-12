@@ -11,10 +11,10 @@ pub(crate) fn resolve_port_name(expr: &reify_ast::Expr) -> Option<String> {
             // `MemberAccess { object: IndexAccess { Ident("vents"),
             //                                       NumberLiteral(0) },
             //                 member: "inlet" }`. Format as the dotted-bracket
-            // string `"vents[0].inlet"` so the existing dotted-port-name
-            // branches in `compile_connection` (which skip entity-port
-            // lookup and direction checks for refs containing '.') flow
-            // unchanged.
+            // string `"vents[0].inlet"` so the dotted-port-name branches in
+            // `compile_connection` — which skip the own-entity `CompiledPort`
+            // lookup for refs containing '.', and resolve the direction through
+            // `endpoint_direction` instead — flow unchanged.
             reify_ast::ExprKind::IndexAccess {
                 object: inner,
                 index,
@@ -229,6 +229,81 @@ pub(crate) struct ConnectInput<'a> {
     pub(crate) span: SourceSpan,
 }
 
+/// The OWN-ENTITY port name a connect endpoint denotes, if it denotes one.
+///
+/// `p` and `self.p` are one port written two ways, so both resolve here; every
+/// other shape names something outside this entity (`sub.p`, `sub[k].p`) and
+/// yields `None`. Both the undefined-port diagnostic and `endpoint_direction`
+/// route through this single predicate, so the two can never disagree about
+/// which endpoints are the entity's own.
+///
+/// A bare name is returned verbatim even when it carries an indexer (`vents[0]`,
+/// the bare collection-sub reference `resolve_port_name` can produce): that
+/// shape has always been read as an own-port reference and diagnosed as
+/// undefined, and preserving it keeps this refactor behaviour-neutral there.
+fn own_port_name(port_ref: &str) -> Option<&str> {
+    match port_ref.strip_prefix("self.") {
+        Some(rest) => (!rest.contains('.') && !rest.contains('[')).then_some(rest),
+        None => (!port_ref.contains('.')).then_some(port_ref),
+    }
+}
+
+/// Resolve a connect endpoint to the DECLARED direction of the port it names.
+///
+/// Accepted shapes:
+/// * `p` — a port on the entity being compiled; read from `ctx.ports`.
+/// * `self.p` — the same own port named the long way round; resolves identically
+///   to bare `p` (both through `own_port_name`), so writing the dot buys no
+///   escape from this check, nor from the undefined-port check in
+///   `compile_connection`.
+/// * `sub.p` — a port on a sub-component; read from `scope.sub_port_directions`,
+///   which the entity Sub pre-pass populated from that sub's resolved child
+///   template.
+/// * `sub[<idx-or-key>].p` — one element of a collection or keyed sub
+///   (`vents[0].inlet`, `vents["intake"].inlet`, also what `forall` substitution
+///   produces). Every element shares the sub's child template, and the pre-pass
+///   keys on the SUB name, so the indexer suffix is stripped before the lookup.
+///
+/// Splits on the LAST dot rather than the first: a keyed segment may itself
+/// contain one (`vents["a.b"].inlet`), so `rsplit_once` is what isolates the
+/// port name in every shape `resolve_port_name` can produce. Symmetrically, the
+/// indexer is stripped at the FIRST `[`, so a key containing a bracket still
+/// leaves the bare sub name behind.
+///
+/// `None` means "this compile cannot see the port's declaration", NOT "the
+/// direction is Bidi". Callers must decline to check on `None`. Three cases
+/// resolve to `None` today and are left as silent passes deliberately:
+///   * A child structure declared LATER in the module is not yet in
+///     `compiled_templates` when the parent compiles, so the Sub pre-pass never
+///     recorded its ports. Closing this needs a deferred post-pass over the
+///     fully-populated registry, which would either duplicate the direction
+///     match across two phases or move the check to a point where the
+///     `connect_compat_*` literal is already baked and hashed. Deferred to
+///     #7374; `compile_connect_dotted_child_declared_later_unchecked` pins
+///     today's behaviour so the order-dependence cannot change unobserved.
+///   * A dotted endpoint naming a NON-port member (measured: `connect e1.w ->
+///     e2.w` where `w` is a param) compiles clean today. Diagnosing it is a
+///     separate question about what a connect endpoint may legally denote, and
+///     erroring here would break sub-of-sub endpoint refs.
+///   * A MATCH-ARM sub whose arms disagree about a port's direction, or one of
+///     whose arms has an unresolvable child structure. Every arm declares the
+///     same sub NAME, so the pre-pass folds the arms to their intersection and
+///     drops the contested port rather than answering with whichever arm
+///     happened to compile last — see `merge_arm_port_directions` in
+///     `entity.rs`. Arms that AGREE resolve normally and are checked.
+fn endpoint_direction(ctx: &ConnectContext, port_ref: &str) -> Option<reify_core::PortDirection> {
+    if let Some(own) = own_port_name(port_ref) {
+        return ctx
+            .ports
+            .iter()
+            .find(|p| p.name == own)
+            .map(|p| p.direction);
+    }
+    let (base, port) = port_ref.rsplit_once('.')?;
+    let sub = base.split_once('[').map_or(base, |(name, _)| name);
+    ctx.scope.sub_port_directions.get(sub)?.get(port).copied()
+}
+
 /// Compile a single connection (from connect statement or chain desugaring).
 pub(crate) fn compile_connection(
     ctx: &ConnectContext,
@@ -266,15 +341,26 @@ pub(crate) fn compile_connection(
         }
     };
 
-    // Hoist port lookups once — used for both direction checking and auto-matching.
+    // Hoist the own-entity port lookups once — they feed `auto_match_port_members`,
+    // which needs the whole `CompiledPort` and is deliberately own-entity-only.
     let left_compiled = ctx.ports.iter().find(|p| p.name == left_port);
     let right_compiled = ctx.ports.iter().find(|p| p.name == right_port);
-    let left_dir = left_compiled.map(|p| p.direction);
-    let right_dir = right_compiled.map(|p| p.direction);
+    // Directions are resolved separately and more widely: a dotted endpoint has
+    // no `CompiledPort` here, but its declared direction is still knowable.
+    let left_dir = endpoint_direction(ctx, &left_port);
+    let right_dir = endpoint_direction(ctx, &right_port);
 
-    // Bare ident (no dot) that doesn't match any port is undefined
+    // An endpoint that claims one of THIS entity's ports must actually name one.
+    // `own_port_name` accepts bare `p` and `self.p` alike, so a typo is caught in
+    // either spelling — the same symmetry `endpoint_direction` gives the
+    // direction check.
+    let undefined_own_port = |port_ref: &str| {
+        own_port_name(port_ref).is_some_and(|name| !ctx.ports.iter().any(|p| p.name == name))
+    };
+    // Own-entity-only consumers below (auto-match, the asymmetric-LocatedPort
+    // warning) still gate on the endpoint being written bare.
     let is_bare = |name: &str| !name.contains('.');
-    if is_bare(&left_port) && left_dir.is_none() {
+    if undefined_own_port(&left_port) {
         diagnostics.push(
             Diagnostic::error(format!(
                 "undefined port '{}' in connect statement",
@@ -283,7 +369,7 @@ pub(crate) fn compile_connection(
             .with_label(DiagnosticLabel::new(span, "undefined port")),
         );
     }
-    if is_bare(&right_port) && right_dir.is_none() {
+    if undefined_own_port(&right_port) {
         diagnostics.push(
             Diagnostic::error(format!(
                 "undefined port '{}' in connect statement",
@@ -311,7 +397,8 @@ pub(crate) fn compile_connection(
                         false
                     }
                 }
-                _ => true, // Can't check unknown/dotted ports
+                // An endpoint whose port declaration this compile cannot see.
+                _ => true,
             }
         }
         reify_ast::ConnectOp::Reverse => match (left_dir, right_dir) {
@@ -571,7 +658,9 @@ pub(crate) fn compile_connection(
     // Skipping when incompatible avoids a misleading "members do not match" warning when the
     // real problem is direction incompatibility.
     let effective_mappings = if port_mappings.is_empty() {
-        // is_bare guards are defense-in-depth; dotted ports also yield None from the lookup above
+        // The is_bare guards are load-bearing: `compatible` is now decided for
+        // dotted endpoints too, but auto-matching still needs an own-entity
+        // `CompiledPort` on both sides, which a dotted endpoint never has.
         if compatible && is_bare(&left_port) && is_bare(&right_port) {
             auto_match_port_members(left_compiled, right_compiled, diagnostics, span)
         } else {

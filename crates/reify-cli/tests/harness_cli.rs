@@ -53,6 +53,8 @@ mod cli_check;
 mod cli_check_cfg;
 #[path = "harness_cli/cli_check_cfg_example.rs"]
 mod cli_check_cfg_example;
+#[path = "harness_cli/cli_check_connect_direction.rs"]
+mod cli_check_connect_direction;
 #[path = "harness_cli/cli_check_parametric_rate.rs"]
 mod cli_check_parametric_rate;
 #[path = "harness_cli/cli_check_parametric_vec3.rs"]
