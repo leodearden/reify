@@ -646,8 +646,9 @@ structure def RevoluteJointLimit : ActuatorLimit {
 
     // Same physical rationale as JointLimit's: a zero max torque means the
     // joint can exert nothing, and a negative one is non-physical. Bare `0`
-    // is coerced to Scalar<Torque> at compile time by the task-4485/β
-    // polymorphic-zero rewrite, exactly as the prismatic half's is.
+    // coerces to Scalar<Torque> here (Scalar<Force> for the prismatic half).
+    //
+    // DIMENSIONED-ZERO CONVENTION — docs/notes/dimensioned-zero-coercion.md.
     //
     // NOTE — explicitly NOT constrained:
     //   `joint : Real` — placeholder for an entity-handle type; no
@@ -778,12 +779,11 @@ structure def TOTSShaper : Shaper {
 // field to the named dimension when δ lands.
 //
 // The `velocity_limit > 0` / `acceleration_limit > 0` constraints use bare
-// `0`, coerced per-field to Scalar<AngularVelocity> / Scalar<rad·s⁻²> at
-// compile time by the task-4485/β polymorphic-zero rewrite — exactly as
-// TOTSShaper's do. The constraint SOURCE TEXT is therefore byte-identical
-// across the two halves; the per-kind difference lives entirely in the param
-// declarations, which is what makes the coerced literal's dimension worth
-// pinning in the tests.
+// `0`, coerced per-field to Scalar<AngularVelocity> / Rate<AngularVelocity>,
+// exactly as TOTSShaper's do. The constraint SOURCE TEXT is therefore
+// byte-identical across the two halves; the per-kind difference lives
+// entirely in the param declarations.
+// DIMENSIONED-ZERO CONVENTION — docs/notes/dimensioned-zero-coercion.md.
 //
 // TOTSShaper above stays byte-identical as the LINEAR / prismatic half, so no
 // existing caller of it moves.
