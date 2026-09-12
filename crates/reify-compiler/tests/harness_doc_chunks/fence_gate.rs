@@ -1802,8 +1802,8 @@ fn corpus() -> Vec<ChunkDoc> {
 /// is hollowing a passing test rather than failing one, and a slack aggregate
 /// floor permits exactly that: with only a `>= 2` corpus-wide floor, retagging
 /// nine of the eleven fences to `reify-fragment` would drop over 80% of the
-/// gate's compile coverage and leave
-/// `every_reify_tagged_fence_compiles_clean` green.
+/// gate's compile coverage and leave `every_reify_tagged_fence_compiles_clean`
+/// green.
 /// Pinning per file also ATTRIBUTES a loss to the file that took it, instead of
 /// reporting a corpus total that says nothing about where to look.
 ///
@@ -1816,8 +1816,8 @@ fn corpus() -> Vec<ChunkDoc> {
 /// A per-file table that covers only some files is not a ratchet, because the
 /// corpus-wide backstop below sums exactly these floors: a file the table does
 /// not know about can grow three `reify` fences (total 11 → 14) and a later
-/// task can retag all three away (14 → 11) with every assertion still passing, and
-/// three documented examples silently stop being compiled. So
+/// task can retag all three away (14 → 11) with every assertion still passing,
+/// and three documented examples silently stop being compiled. So
 /// `assert_corpus_is_not_vacuous` requires that EVERY file carrying at least
 /// one bare ```` ```reify ```` fence appears here. Adding such a fence to a new
 /// file therefore forces a floor entry in the same diff, which is what makes
@@ -2121,13 +2121,12 @@ fn reify_fence_floors_are_exact_not_slack() {
 ///
 /// A call, not a copy. What this replaced was documented as reproduced VERBATIM
 /// so the two could be seen to drift apart — but it never was verbatim: the real
-/// `reify_tagged_fences` has been tag-parameterized since task 5759
-/// (```` line.trim_end() == format!("```{tag}") ````, at
-/// geometry_chunk_smoke.rs:1052) and
-/// carries an unterminated-fence assert the copy lacked, so the drift-detection
-/// rationale did not hold. Calling it makes this pin exercise the ACTUAL
-/// coupling and turns a rename or signature change over there into a compile
-/// error here rather than silent rot.
+/// `reify_tagged_fences` has been tag-parameterized since task 5759 — its
+/// predicate is ```` line.trim_end() == format!("```{tag}") ````
+/// (`geometry_chunk_smoke.rs:1052`) — and it carries an unterminated-fence
+/// assert the copy lacked, so the drift-detection rationale did not hold.
+/// Calling it makes this pin exercise the ACTUAL coupling and turns a rename or
+/// signature change over there into a compile error here rather than silent rot.
 fn sibling_reify_fence_count(markdown: &str) -> usize {
     reify_tagged_fences(markdown, "reify", &chunk_label("geometry")).len()
 }
@@ -2158,8 +2157,9 @@ fn meets_sibling_geometry_reify_floor(markdown: &str) -> bool {
 /// string and compiles what it finds.
 ///
 /// `reify_tagged_fences` (geometry_chunk_smoke.rs:1042) matches
-/// ```` line.trim_end() == format!("```{tag}") ```` (:1052) — BYTE-EXACT on the whole
-/// info string, so `reify-fragment` / `reify-schematic` can never false-match —
+/// ```` line.trim_end() == format!("```{tag}") ```` (:1052) — BYTE-EXACT on the
+/// whole info string, so `reify-fragment` / `reify-schematic` can never
+/// false-match —
 /// and `reify_tagged_fences_in_geometry_chunk_compile` compiles each hit
 /// VERBATIM (:1159) behind its own `fences.len() >= 4` floor (:1104), which is
 /// that file's EXACT live count.
