@@ -1093,6 +1093,322 @@
         }
     }
 
+    /// Build a one-element named-arg list for the ANGLE ladder tests.
+    fn angle_args(name: &str, expr: reify_ir::CompiledExpr) -> Vec<(String, reify_ir::CompiledExpr)> {
+        vec![(name.to_string(), expr)]
+    }
+
+    /// Drive `required_angle_arg` against a synthetic arg list, returning both
+    /// its result and the diagnostics it pushed.
+    fn run_required_angle_arg(
+        name: &str,
+        args: &[(String, reify_ir::CompiledExpr)],
+    ) -> (Result<f64, String>, Vec<Diagnostic>) {
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = super::required_angle_arg(
+            name,
+            "rotate",
+            args,
+            &values,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        (result, diagnostics)
+    }
+
+    /// Collect the dimension-rejection diagnostics from a run — the ones
+    /// `ArgRejection::message` mints, identified by its own template rather
+    /// than by position, so an unrelated Warning cannot be mistaken for one.
+    fn angle_rejections(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> {
+        diagnostics
+            .iter()
+            .filter(|d| d.message.contains("argument expects Angle, got "))
+            .collect()
+    }
+
+    /// γ (a) ACCEPTED — an ANGLE-dimensioned `Scalar` passes through the whole
+    /// ladder carrying its SI radians, quietly.
+    ///
+    /// `required_angle_value` re-wraps that accepted scalar as an ANGLE
+    /// `Value::Scalar` with the SAME `si_value`, so gating a slot leaves the
+    /// STORED representation — and therefore the kernel read — unchanged. That
+    /// is the property that makes γ/δ/ε one-line swaps at their call sites
+    /// rather than an IR migration.
+    ///
+    /// RED: `required_angle_arg` / `required_angle_value` do not exist yet.
+    #[test]
+    fn required_angle_ladder_accepts_a_dimensioned_angle_quietly() {
+        let args = angle_args("angle", literal_angle(std::f64::consts::FRAC_PI_2));
+        let (result, diagnostics) = run_required_angle_arg("angle", &args);
+        assert_eq!(
+            result,
+            Ok(std::f64::consts::FRAC_PI_2),
+            "an ANGLE Scalar must be Accepted carrying its SI radians"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "the accepted path must push no diagnostics, got: {diagnostics:?}"
+        );
+
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let wrapped = super::required_angle_value(
+            "angle",
+            "rotate",
+            &args,
+            &values,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert_eq!(
+            wrapped,
+            Ok(reify_ir::Value::Scalar {
+                si_value: std::f64::consts::FRAC_PI_2,
+                dimension: reify_core::DimensionVector::ANGLE,
+            }),
+            "the R7 wrapper must re-wrap the ACCEPTED SI radians as an ANGLE \
+             Scalar, leaving the stored representation unchanged"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "the accepted path must push no diagnostics, got: {diagnostics:?}"
+        );
+    }
+
+    /// γ (b) REJECTED — a bare `Real`, a bare `Int` and a wrong-dimension
+    /// `Scalar` each fail, each pushing EXACTLY ONE `Severity::Error`
+    /// diagnostic carrying `DimensionedArgRejected` and `angle_spec()`'s
+    /// wording, hint included.
+    ///
+    /// The Error severity is DELIBERATELY unlike β's Warning-emitting
+    /// `resolve_angle_scalar_arg`, and the difference is in kind: β added a
+    /// hint to a PRE-EXISTING quiet-degrade reader whose callers continue on
+    /// `None`, whereas this is a NEW gate whose callers drop the op. C1
+    /// inv. 3 requires Error/exit 1 here, matching `accept_length_value`.
+    ///
+    /// RED: the ladder does not exist yet.
+    #[test]
+    fn required_angle_arg_rejects_bare_and_wrong_dimension_as_error() {
+        for (label, expr) in [
+            ("bare Real", literal_f64(45.0)),
+            (
+                "bare Int",
+                reify_ir::CompiledExpr::literal(
+                    reify_ir::Value::Int(45),
+                    reify_core::Type::dimensionless_scalar(),
+                ),
+            ),
+            (
+                "wrong-dimension Scalar (LENGTH)",
+                literal_length(0.045),
+            ),
+        ] {
+            let args = angle_args("angle", expr);
+            let (result, diagnostics) = run_required_angle_arg("angle", &args);
+            assert!(
+                result.is_err(),
+                "{label}: must be rejected, got: {result:?}"
+            );
+
+            let rejections = angle_rejections(&diagnostics);
+            assert_eq!(
+                rejections.len(),
+                1,
+                "{label}: exactly ONE rejection diagnostic (no cascade); got: {diagnostics:?}"
+            );
+            let rej = rejections[0];
+            assert_eq!(
+                rej.severity,
+                reify_core::Severity::Error,
+                "{label}: C1 inv. 3 requires the eval-layer angle rejection ITSELF to \
+                 be Error, so `reify eval` exits nonzero through the pure severity \
+                 gate — as `accept_length_value` already does; got: {rej:?}"
+            );
+            assert_eq!(
+                rej.code,
+                Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                "{label}: the shared runtime code rides every ArgSpec rejection \
+                 (INV-SF-6); got: {rej:?}"
+            );
+            for needle in [
+                "rotate",
+                "angle",
+                "argument expects Angle, got ",
+                reify_core::units::ANGLE_MIGRATION_HINT,
+            ] {
+                assert!(
+                    rej.message.contains(needle),
+                    "{label}: message must contain {needle:?}; got: {:?}",
+                    rej.message
+                );
+            }
+        }
+    }
+
+    /// The VALUE-LEVEL core carries the whole contract on its own, so a caller
+    /// that already holds an evaluated `Value` — δ's draft field, ε's pattern
+    /// field — inherits identical wording without going through the named-arg
+    /// lookup. Same reason `accept_length_value` was lifted out of
+    /// `eval_named_arg_length`: one `accept_arg` call, so the two routes cannot
+    /// drift.
+    ///
+    /// RED: the ladder does not exist yet.
+    #[test]
+    fn accept_angle_value_classifies_all_three_states() {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        assert_eq!(
+            super::accept_angle_value(
+                "angle",
+                "draft",
+                &reify_ir::Value::Scalar {
+                    si_value: 0.25,
+                    dimension: reify_core::DimensionVector::ANGLE,
+                },
+                &mut diagnostics,
+            ),
+            Ok(0.25),
+            "an ANGLE Scalar is Accepted at the value layer too"
+        );
+        assert!(diagnostics.is_empty(), "quiet, got: {diagnostics:?}");
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        assert!(
+            super::accept_angle_value(
+                "angle",
+                "draft",
+                &reify_ir::Value::Real(5.0),
+                &mut diagnostics,
+            )
+            .is_err(),
+            "a bare Real is Rejected at the value layer"
+        );
+        let rejections = angle_rejections(&diagnostics);
+        assert_eq!(rejections.len(), 1, "exactly one; got: {diagnostics:?}");
+        assert_eq!(
+            rejections[0].severity,
+            reify_core::Severity::Error,
+            "the value-level route carries the SAME severity as the named-arg \
+             one — one core, one contract; got: {:?}",
+            rejections[0]
+        );
+        assert!(
+            rejections[0].message.starts_with("draft: angle argument"),
+            "the caller's own labels are rendered, not the ladder's; got: {:?}",
+            rejections[0].message
+        );
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        assert_eq!(
+            super::accept_angle_value(
+                "angle",
+                "draft",
+                &reify_ir::Value::Undef,
+                &mut diagnostics,
+            ),
+            Err("argument 'angle' for draft is unresolved (Undef)".to_string()),
+            "Undef takes the distinct unresolved wording at the value layer too"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "Undef is quiet at the VALUE layer — the caller's Err is the signal; \
+             got: {diagnostics:?}"
+        );
+    }
+
+    /// γ (c) UNDEF — an unresolved cell is NOT a dimension rejection and NOT a
+    /// silent continue. It gets its own wording, because claiming "missing or
+    /// non-Angle" for a cell that is merely not yet resolved is actively
+    /// misleading during solver iteration, where Undef cells are expected
+    /// transient state. PRD-1 D10 adopted verbatim (C1 inv. 2, INV-SF-1).
+    ///
+    /// RED: the ladder does not exist yet.
+    #[test]
+    fn required_angle_arg_undef_is_unresolved_not_a_dimension_rejection() {
+        let cell = reify_core::ValueCellId::new("Bracket", "missing");
+        let args = angle_args(
+            "angle",
+            reify_ir::CompiledExpr::value_ref(cell, reify_core::Type::angle()),
+        );
+        let (result, diagnostics) = run_required_angle_arg("angle", &args);
+        assert_eq!(
+            result,
+            Err("argument 'angle' for rotate is unresolved (Undef)".to_string()),
+            "an Undef angle must take the DISTINCT unresolved wording"
+        );
+        assert!(
+            angle_rejections(&diagnostics).is_empty(),
+            "an Undef angle must push no dimension rejection, got: {diagnostics:?}"
+        );
+    }
+
+    /// γ (d) NON-FINITE — a NaN or ±inf ANGLE `Scalar` has the right dimension
+    /// and is still unusable. Mirrors `accept_length_value`'s non-finite arm,
+    /// wording included.
+    ///
+    /// RED: the ladder does not exist yet.
+    #[test]
+    fn required_angle_arg_rejects_non_finite_angles() {
+        for (label, radians) in [
+            ("NaN", f64::NAN),
+            ("+inf", f64::INFINITY),
+            ("-inf", f64::NEG_INFINITY),
+        ] {
+            let args = angle_args("angle", literal_angle(radians));
+            let (result, diagnostics) = run_required_angle_arg("angle", &args);
+            assert!(
+                result.is_err(),
+                "{label}: a non-finite Angle must be rejected, got: {result:?}"
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("evaluated to a non-finite Angle")),
+                "{label}: must take the non-finite arm, mirroring \
+                 `accept_length_value`'s; got: {diagnostics:?}"
+            );
+            assert!(
+                angle_rejections(&diagnostics).is_empty(),
+                "{label}: a non-finite Angle is not a DIMENSION rejection; got: {diagnostics:?}"
+            );
+        }
+    }
+
+    /// γ (e) MISSING — an absent arg inherits `eval_named_arg`'s own missing-arg
+    /// Warning and adds no second diagnostic. That is the anti-cascade contract
+    /// the ladder gets for free by routing its lookup through `eval_named_arg`
+    /// rather than re-deriving an absent-arg policy.
+    ///
+    /// RED: the ladder does not exist yet.
+    #[test]
+    fn required_angle_arg_missing_inherits_the_anti_cascade_warning() {
+        let args = angle_args("not_the_angle", literal_angle(1.0));
+        let (result, diagnostics) = run_required_angle_arg("angle", &args);
+        assert!(
+            result.is_err(),
+            "an absent angle arg must be rejected, got: {result:?}"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "exactly ONE diagnostic for a missing arg — `eval_named_arg`'s own \
+             Warning, with no dimension rejection stacked on top; got: {diagnostics:?}"
+        );
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("missing required geometry argument 'angle'"),
+            "the missing-arg Warning is `eval_named_arg`'s, inherited unchanged; got: {:?}",
+            diagnostics[0].message
+        );
+        assert!(
+            angle_rejections(&diagnostics).is_empty(),
+            "a missing arg must not also produce a dimension rejection; got: {diagnostics:?}"
+        );
+    }
+
     /// Task ε (evaluate-then-accept): `resolve_vec3_arg` now EVALUATES the arg
     /// expr (gaining a `diagnostics` sink + builtin/arg labels). An inline
     /// `Literal(Value::Vector)` AND an inline `vec3(..)` FunctionCall both
