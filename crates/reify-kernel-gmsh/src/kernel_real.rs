@@ -374,8 +374,11 @@ impl GmshKernel {
         let _vol_tag = ffi::geo_add_volume(&[loop_tag])?;
         ffi::geo_synchronize()?;
 
-        // Tet meshing.
-        ffi::mesh_generate(3)?;
+        // Tet meshing. Routed through `init::mesh_generate_with_recovery` so a
+        // failure here stays local: gmsh's mesher is process-global and a
+        // failed generate leaves it silently producing no elements until the
+        // library is recycled. See that function for the measured behaviour.
+        init::mesh_generate_with_recovery(&_guard, 3)?;
 
         // Element type for readback: P1 = 4 (4-node tet), P2 = 11 (10-node tet).
         let elem_type = match element_order {
