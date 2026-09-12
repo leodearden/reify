@@ -421,6 +421,33 @@ pub fn error_diags(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
         .collect()
 }
 
+/// Every `Underdetermined`-coded diagnostic in the slice, matched on the
+/// STRUCTURED code rather than by substring on the rendered
+/// `W_UNDERDETERMINED` text — which is the property that makes this worth
+/// having over an ad-hoc `.contains()`, since the rendered wording is free to
+/// change.
+///
+/// Deliberately severity-BLIND, UNLIKE its neighbours [`collect_errors`] and
+/// [`error_diags`]: a diagnostic carrying the code is returned whatever its
+/// severity. `W_UNDERDETERMINED` is a warning today, so adding a severity
+/// filter here to match the neighbours would silently change what the call
+/// sites detect without going red at the ones that merely count. Pinned by
+/// `underdetermined_diags_is_severity_blind`.
+///
+/// Input order is preserved; call sites read the result positionally.
+///
+/// Canonical replacement for the 13 inline copies in
+/// `reify-eval/tests/underdetermined.rs`, the local `underdetermined_diags` in
+/// `harness_auto_resolution/auto_binding_sites_remaining_resolution.rs`, and
+/// `underdetermined`'s body in `harness_engine/underdetermined_support.rs`
+/// (task #6524; surfaced by task #5467 code review round 3, suggestion 10).
+pub fn underdetermined_diags(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> {
+    diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
+        .collect()
+}
+
 /// Return only the `Severity::Error` diagnostics from a compiled module.
 ///
 /// Convenience wrapper around [`collect_errors`].
