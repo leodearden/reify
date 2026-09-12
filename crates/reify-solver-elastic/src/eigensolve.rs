@@ -10,7 +10,8 @@
 //! This module provides kernel primitives for the generalized symmetric
 //! eigenproblem `K φ = λ M φ`:
 //!
-//! - [`solve_eigen_dense`] — dense QZ path via `faer::linalg::gevd::gevd_real`
+//! - [`solve_eigen_dense`] — dense QZ path via `faer::linalg::gevd::gevd_real`;
+//!   honors `opts.sigma` as a selection key over the full computed spectrum
 //! - [`solve_eigen_shift_invert`] — shift-invert Lanczos via sparse Cholesky +
 //!   `faer::matrix_free::eigen::partial_self_adjoint_eigen`; falls back to
 //!   dense when the Krylov window would exceed the problem dimension.
@@ -34,6 +35,66 @@
 //! The modal-analysis pipeline (task 3819) may call `lanczos_shift_invert`
 //! directly with custom `StiffnessOp`/`MetricOp` implementations (e.g.
 //! matrix-free K, lumped diagonal M) without going through the sparse wrapper.
+//!
+//! # Shift contract (C1–C6)
+//!
+//! Normative source: `docs/prds/v0_6/shift-invert-eigensolve.md` §6. This
+//! section is the written spec both implementations are built against; the
+//! executable form is `tests/eigensolve_shift_contract.rs`.
+//!
+//! [`EigenSolverOptions::sigma`] is the shift **in eigenvalue (λ) space** for
+//! both callers. Unit conversion — a modal caller's frequency, say — is the
+//! CALLER's job, not the eigensolver's (PRD §7 seam table). Handing this
+//! function a shift in any other space is a caller bug it cannot detect.
+//!
+//! - **C1 — σ=0 is the identity.** `sigma == 0.0` produces the same
+//!   eigenvalues, the same order and the same code path as before this PRD.
+//!   STRUCTURAL, not a tolerance: `λ − 0.0 == λ` bit-exactly in IEEE-754 for
+//!   every finite λ (and `|−0.0 − 0.0| == 0.0`), so the selection sort at σ=0
+//!   IS the pre-PRD `|λ|` sort, the selected prefix is the same slice, and a
+//!   STABLE re-sort of an already-`|λ|`-ascending prefix is a no-op. No
+//!   `if sigma == 0.0` branch exists or is needed on the dense path.
+//! - **C2 — Selection.** The returned set is the `n_modes` converged
+//!   eigenvalues with the smallest `|λ − σ|`.
+//! - **C3 — Order.** `eigenvalues` is ascending by `|λ|` — absolute, not
+//!   signed, exactly as before this PRD: λ=−2 still sorts before λ=+3. The
+//!   `eigenvectors` columns are permuted to match.
+//! - **C4 — Back-shift.** Eigenvalues are returned in the original λ space
+//!   (`λ = σ + 1/μ` on the Lanczos path), never in shifted or μ space.
+//! - **C5 — Provenance.** [`EigenSolverResult::shift_skipped_modes`] reports
+//!   whether any eigenvalue of the pencil lies between zero and σ and is absent
+//!   from the returned set; [`EigenSolverResult::shift`] carries the σ used.
+//!   `false` is reported only when ESTABLISHED (a full-spectrum count, or a
+//!   Cholesky success), never assumed. Exact on the dense path, a conservative
+//!   boolean on Lanczos.
+//! - **C6 — Singularity.** A singular or numerically-degenerate `K − σB` is a
+//!   typed failure carrying σ — never a panic, never a silently perturbed
+//!   solve, never a garbage spectrum.
+//!
+//! **C2 and C3 are two different rules and no implementation may conflate
+//! them.** Selection decides WHICH eigenvalues come back; order decides in WHAT
+//! ORDER they are presented. A comparator that fuses them returns the right set
+//! in proximity order, so a 300 Hz band inspection reads as 301, 298, 310, 295
+//! instead of 295, 298, 301, 310 — the right answer in a form an engineer
+//! cannot read (PRD §5.2). They are separate functions here for that reason.
+//!
+//! ## Per-clause implementation status
+//!
+//! | Clause | Dense path ([`solve_eigen_dense`]) | Lanczos path |
+//! |---|---|---|
+//! | C1 | implemented | implemented |
+//! | C2 | implemented | #7259 |
+//! | C3 | implemented (shared helper) | implemented (same helper) |
+//! | C4 | n/a — no shift is ever applied to invert | #7259 |
+//! | C5 | implemented, EXACT | conservative boolean; refined by #7259 |
+//! | C6 | vacuous — no `K − σB` is ever formed | #7259 |
+//!
+//! The dense path honors σ as a SORT-KEY CHANGE AND NOTHING ELSE: `gevd_real`
+//! computes the entire spectrum, so no factorization is formed, `K − σB` never
+//! exists, and no new failure mode is introduced. That is why it lands first
+//! and the Lanczos implementation is held to it. The acceptance criterion for
+//! #7259 is `tests/eigensolve_shift_contract.rs` — its σ≠0 arms instantiate the
+//! harness functions already there, rather than inventing their own.
 //!
 //! # Design decisions
 //!
@@ -114,7 +175,12 @@ pub struct EigenSolverOptions {
     /// `PartialEigenParams.max_restarts`; do not extrapolate the value from
     /// `CgResult::iterations` (which counts inner iterations).
     pub max_iters: usize,
-    /// Shift σ (reserved for shifted-inverse formulation; currently 0.0).
+    /// Spectral shift σ, in eigenvalue (λ) space.
+    ///
+    /// Selects the `n_modes` eigenvalues nearest σ rather than nearest zero.
+    /// Unit conversion is the caller's job — see the module-level
+    /// "Shift contract (C1–C6)" section, which is the normative spec for how
+    /// every path must treat this value.
     pub sigma: f64,
 }
 
@@ -588,9 +654,14 @@ impl<K: StiffnessOp, M: MetricOp> LinOp<f64> for CompositeShiftInvertOp<'_, K, M
 
 /// Shift-invert Lanczos eigensolver over arbitrary SPD operator pairs.
 ///
-/// Solves `K φ = λ M φ` using shift-invert Lanczos (σ = 0).  Finds the
-/// smallest |λ| by maximizing |μ| = 1/|λ| in the Krylov subspace of
-/// `K⁻¹ · M`.
+/// Solves `K φ = λ M φ` using shift-invert Lanczos.  Finds the smallest |λ| by
+/// maximizing |μ| = 1/|λ| in the Krylov subspace of `K⁻¹ · M`.
+///
+/// **Shift contract status:** this path does not yet honor `opts.sigma` — the
+/// `K − σB` assembly, the Cholesky-then-LU dispatch and the C4 back-shift are
+/// task #7259.  It satisfies C1 and C3 today, and reports C5 conservatively at
+/// σ≠0 (it cannot ESTABLISH that nothing was skipped, and C5 forbids assuming
+/// it).  See the module-level "Shift contract (C1–C6)" section.
 ///
 /// This is the generic core — it operates over any [`StiffnessOp`] /
 /// [`MetricOp`] pair without knowledge of the underlying representation
@@ -741,7 +812,12 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
 // Sparse shift-invert wrapper (with dense fallback)
 // ---------------------------------------------------------------------------
 
-/// Solve `K φ = λ B φ` via shift-invert Lanczos (σ = 0).
+/// Solve `K φ = λ B φ` via shift-invert Lanczos.
+///
+/// **Shift contract status:** inherits [`lanczos_shift_invert`]'s — `opts.sigma`
+/// is not yet honored on the Lanczos branch (#7259).  Note the dense fallback
+/// below DOES honor it, so which clauses hold depends on which branch the
+/// problem dimension routes to.
 ///
 /// Factors K via sparse Cholesky, builds [`SparseStiffnessOp`] +
 /// [`SparseMetricOp`] adapters, and delegates to [`lanczos_shift_invert`] for
