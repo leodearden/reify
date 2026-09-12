@@ -1,23 +1,31 @@
 //! Consolidated integration-test harness for the reify-cli crate.
 //!
 //! Task #5274 (PRD docs/prds/merge-gate-compile-cost.md §3 W1 / §5 C1, decomposition
-//! leaf C-cli): folds ALL 73 former standalone `tests/<file>.rs` binaries in this crate
-//! into this single compile unit, cutting 72 merge-gate link units. Layout-only — no
-//! `#[test]` fn is added or removed. Each former file is included as a stem-named module
-//! so its `<file>::<test>` module path (and thus every `test(/^<file>::/)` filterset) still
+//! leaf C-cli): folds the crate's former standalone `tests/<file>.rs` binaries into
+//! consolidated compile units, cutting merge-gate link units. Layout-only — no `#[test]`
+//! fn is added or removed. Each former file is included as a stem-named module so its
+//! `<file>::<test>` module path (and thus every `test(/^<file>::/)` filterset) still
 //! resolves unchanged. Explicit `#[path]` is required: this harness root is an
 //! integration-test crate root, where a bare `mod <file>;` would resolve to the sibling
 //! `tests/<file>.rs`, not the `harness_cli/` subdir.
+//!
+//! Task #7365 carved the external-surface family out to the sibling
+//! `harness_cli_surface.rs` under rule (a) — the SPLIT remedy, never a CAP_LINES bump.
+//! The seam: that root holds the tests that exercise the `reify` executable's external
+//! surface (its linkage, its argv/help surface, and the machine-facing protocols and
+//! interchange formats it speaks over stdio), none of which evaluates a `.ri` design;
+//! this root retains the `.ri`-fixture-driven tests and therefore keeps `mod common;`.
+//! Measured: 17954 (190 root + 17452 across 83 module files + 312 external) -> 13475
+//! (175 + 12988 across 76 + 312 external), against CAP_LINES = 20000.
 //!
 //! `mod common;` below is bare (no `#[path]`): crate-root directory-relative resolution
 //! finds the retained `tests/common/mod.rs` from here, so the shared CLI test helpers
 //! compile ONCE for the whole harness instead of once per former binary (the PRD §3
 //! "dedup common" bonus). Each moved file's own `mod common;` was rewritten to
-//! `use crate::common;`, leaving its `common::foo()` call sites unchanged.
-//!
-//! `rpath_smoke` is linux-only: its former crate-level `#![cfg(target_os = "linux")]` is
-//! hoisted to a `#[cfg(target_os = "linux")]` on its `mod` declaration below, since a
-//! submodule cannot carry a crate-level inner attribute.
+//! `use crate::common;`, leaving its `common::foo()` call sites unchanged. That is also
+//! why #7365's seam was drawn where it was: no member of `harness_cli_surface` consumes
+//! `tests/common/`, so the 312-line include stays charged to exactly one root under the
+//! C2 cap rather than being compiled — and counted — twice.
 
 mod common;
 
@@ -43,8 +51,6 @@ mod cli_build_outputs;
 mod cli_build_verbose;
 #[path = "harness_cli/cli_build_voxel_to_mesh.rs"]
 mod cli_build_voxel_to_mesh;
-#[path = "harness_cli/cli_cache.rs"]
-mod cli_cache;
 #[path = "harness_cli/cli_cache_concurrent_writers.rs"]
 mod cli_cache_concurrent_writers;
 #[path = "harness_cli/cli_check.rs"]
@@ -107,8 +113,6 @@ mod cli_gdt_zones_eval;
 mod cli_generate_eval;
 #[path = "harness_cli/cli_generics_eval.rs"]
 mod cli_generics_eval;
-#[path = "harness_cli/cli_gui.rs"]
-mod cli_gui;
 #[path = "harness_cli/cli_imported_field_eval.rs"]
 mod cli_imported_field_eval;
 #[path = "harness_cli/cli_inspect_node.rs"]
@@ -121,10 +125,6 @@ mod cli_kernel_registry;
 mod cli_keyed_eval;
 #[path = "harness_cli/cli_keyed_forall.rs"]
 mod cli_keyed_forall;
-#[path = "harness_cli/cli_lsp.rs"]
-mod cli_lsp;
-#[path = "harness_cli/cli_lsp_protocol.rs"]
-mod cli_lsp_protocol;
 #[path = "harness_cli/cli_materials_starter_library_golden.rs"]
 mod cli_materials_starter_library_golden;
 #[path = "harness_cli/cli_module_visibility_example.rs"]
@@ -145,8 +145,6 @@ mod cli_reset_per_build_interleaving;
 mod cli_run;
 #[path = "harness_cli/cli_shell_eval.rs"]
 mod cli_shell_eval;
-#[path = "harness_cli/cli_smoke.rs"]
-mod cli_smoke;
 #[path = "harness_cli/cli_spatial_ops_eval.rs"]
 mod cli_spatial_ops_eval;
 #[path = "harness_cli/cli_stackup_3part.rs"]
@@ -183,8 +181,3 @@ mod cli_undef_self_describing;
 mod cli_vc_clearance;
 #[path = "harness_cli/corpus_no_bare_scalar.rs"]
 mod corpus_no_bare_scalar;
-#[path = "harness_cli/mcp_integration.rs"]
-mod mcp_integration;
-#[cfg(target_os = "linux")]
-#[path = "harness_cli/rpath_smoke.rs"]
-mod rpath_smoke;
