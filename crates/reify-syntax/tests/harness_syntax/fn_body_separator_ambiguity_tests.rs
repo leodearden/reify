@@ -59,29 +59,46 @@ fn nested_fault_in_fn_body_is_diagnosed() {
     }
 }
 
-/// The complement of the above, stated structurally: a source that textually contains a fn-body
-/// `let` must not lower to a function whose `let_bindings` are empty AND produce no diagnostic.
+/// The STRUCTURAL complement of the above: a function whose body carries a CST fault must be
+/// REFUSED — absent from `declarations` — not lowered to a plausible-looking declaration that
+/// quietly lost the malformed binding.
+///
+/// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+/// This is the property `lower_function_checked` introduced: the fn arms were the sole member
+/// kind lowered UNGUARDED, so a nested MISSING node evaporated the `let` and left behind a
+/// `Declaration::Function` whose body no longer corresponded to its source. Its sibling above
+/// pins the DIAGNOSTIC half; stating this half as a disjunction with that one ("a diagnostic
+/// was emitted OR the binding survived") would make it unfailable, since the sibling already
+/// asserts the first disjunct outright for this very fixture.
 ///
 /// Kept structural (no eval) deliberately — `reify-syntax`'s dev-deps cannot enable
 /// `reify-test-support`'s `eval-helpers` feature. INV-SF-7's value half is enforced in
 /// `reify-eval`'s `fn_body_separator_value_faithfulness` module.
 #[test]
-fn nested_fault_in_fn_body_does_not_silently_drop_the_binding() {
+fn a_faulty_fn_body_is_refused_rather_than_lowered_without_its_binding() {
     let src = "fn f(x: Int) -> Int { let y = ; x }";
     assert!(src.contains("let "), "fixture must contain a fn-body let");
 
     let module = reify_syntax::parse(src, ModulePath::single("t"));
 
-    let binding_survived = module.declarations.iter().any(|d| match d {
-        Declaration::Function(f) => f.body.as_ref().is_some_and(|b| !b.let_bindings.is_empty()),
-        _ => false,
-    });
+    let lowered: Vec<(&str, usize)> = module
+        .declarations
+        .iter()
+        .filter_map(|d| match d {
+            Declaration::Function(f) => Some((
+                f.name.as_str(),
+                f.body.as_ref().map_or(0, |b| b.let_bindings.len()),
+            )),
+            _ => None,
+        })
+        .collect();
 
     assert!(
-        !module.errors.is_empty() || binding_survived,
-        "INV-SF-7 violated — the source declares a fn-body `let`, but the lowered function \
-         carries NO let bindings and the parse produced NO diagnostics. The binding evaporated \
-         silently: any value computed from this module is unfaithful to its source.\n\
+        lowered.is_empty(),
+        "INV-SF-7 violated — the body of `f` carries a CST fault, so its `let y` binding could \
+         not be lowered; the declaration must therefore be REFUSED rather than pushed without \
+         it. Lowered instead as (name, let_bindings): {lowered:?}. A caller reading this AST \
+         sees a function whose body disagrees with its source.\n\
          source:\n{src}",
     );
 }
@@ -783,3 +800,85 @@ fn an_unanchorable_fault_is_reported_with_a_token_precise_span() {
     }
 }
 
+
+/// A SECOND independently-broken declaration inside ONE collapsed `ERROR` node must get its
+/// own located report, even when neither fault has an fn-body `let` to blame.
+///
+/// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+/// `diagnose_error_node` was rewritten so that one collapsed node is not treated as one fault
+/// — but only on the arm that CAN name a cause. The arm that cannot was capped at a single
+/// report per node, so every later broken declaration inside the same node was still dropped
+/// in silence: the same defect, on the other arm.
+///
+/// The fixture is MEASURED to have teeth. Both `fn`s here are broken by an unterminated `(`,
+/// which recovery collapses — together with the member `let`s between them — into ONE
+/// `ERROR` spanning the whole structure body (asserted below, so a grammar change that starts
+/// splitting them makes this test say so rather than pass vacuously). Neither fault is
+/// anchorable: the nearest preceding `let` in each case is a structure MEMBER binding, which
+/// `LetAnchor::in_fn_body` refuses to blame for a missing `;`. Against the once-per-node
+/// implementation this source produced exactly ONE diagnostic, at bytes 51..52 — `fn h`'s
+/// break, forty bytes later, went entirely unreported.
+///
+/// Asserts one report per broken declaration, not an exact count: how much debris recovery
+/// leaves around each break is a grammar detail this test does not control.
+#[test]
+fn a_second_broken_declaration_in_one_collapsed_node_is_not_dropped() {
+    let source = "structure T {\n  fn g() -> Int { let y = (1 }\n  let a = 3\n  fn h() -> Int { let z = (2 }\n  let b = 4\n}\n";
+
+    // Offsets via `str::find` — never hard-coded (convention from `auto_type_arg_tests.rs`).
+    let second_fn = source.find("fn h").expect("fixture must contain 'fn h'") as u32;
+
+    // Precondition: the two breaks really are fused into ONE `ERROR`. Reported per-node
+    // deduplication is only observable while that holds.
+    let mut ts = make_ts_parser();
+    let tree = ts.parse(source, None).expect("tree-sitter parse failed");
+    let mut outermost = Vec::new();
+    collect_outermost_faults(tree.root_node(), &mut outermost);
+    assert!(
+        outermost.len() == 1 && outermost[0].0 < second_fn && outermost[0].1 > second_fn,
+        "precondition failed — the fixture no longer collapses both broken functions into a \
+         single ERROR node, so it cannot exercise per-node deduplication at all. Outermost \
+         fault nodes: {outermost:?}; `fn h` starts at byte {second_fn}.\nsource:\n{source}",
+    );
+
+    let m = reify_syntax::parse(source, ModulePath::single("t"));
+    let before: Vec<_> = m.errors.iter().filter(|e| e.span.end <= second_fn).collect();
+    let after: Vec<_> = m.errors.iter().filter(|e| e.span.start >= second_fn).collect();
+
+    assert!(
+        !before.is_empty(),
+        "the FIRST broken function produced no located diagnostic.\ngot: {:?}",
+        triples(&m),
+    );
+    assert!(
+        !after.is_empty(),
+        "INV-SF-7 — the second broken function (from byte {second_fn}) produced NO diagnostic: \
+         recovery fused it into the first one's ERROR node and the report was deduplicated \
+         away, leaving a broken declaration silently undiagnosed.\ngot: {:?}",
+        triples(&m),
+    );
+
+    for e in &m.errors {
+        assert!(
+            !e.message.contains('\n'),
+            "diagnostic echoes source rather than describing the fault (mechanism M3): {:?}",
+            (&e.message, e.span.start, e.span.end),
+        );
+    }
+}
+
+/// Byte ranges of the OUTERMOST `ERROR`/`MISSING` nodes in `node`'s subtree — the nodes
+/// `diagnose_error_node` is invoked on, so this is how a test states "recovery collapsed
+/// these breaks into one node" in the terms the production code sees.
+fn collect_outermost_faults(node: tree_sitter::Node<'_>, out: &mut Vec<(u32, u32)>) {
+    if node.is_error() || node.is_missing() {
+        out.push((node.start_byte() as u32, node.end_byte() as u32));
+        return;
+    }
+    if !node.has_error() {
+        return;
+    }
+    for i in 0..node.child_count() {
+        collect_outermost_faults(node.child(i).expect("child index in range"), out);
+    }
+}

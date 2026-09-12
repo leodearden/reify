@@ -105,20 +105,6 @@ fn first_error_or_missing_descendant(node: tree_sitter::Node<'_>) -> Option<tree
     if !node.has_error() {
         return None; // O(1) prune — no error anywhere in this subtree
     }
-    first_fault_strictly_inside(node)
-}
-
-/// As [`first_error_or_missing_descendant`], but never returns `node` itself — it looks
-/// STRICTLY INSIDE the subtree.
-///
-/// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392:
-/// needed when `node` is already known to be an `ERROR`, where the self-match short-circuit
-/// would return the enclosing blob — whose start byte is precisely the whole-declaration
-/// position the diagnostic is trying to get away from. `diagnose_error_node` needs the
-/// innermost fault so it can anchor to the `let` that precedes it.
-///
-/// Returns `None` when no ERROR/MISSING node exists below `node`.
-fn first_fault_strictly_inside(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
     // Iterative pre-order DFS: descend into subtrees that contain an error,
     // skip clean subtrees in O(1), and terminate when we ascend back to `node`.
     let mut cursor = node.walk();
@@ -504,12 +490,14 @@ impl<'a> Lowering<'a> {
         // O(faults × nodes) on the LSP's per-keystroke path.
         let let_anchors = collect_let_anchors(node);
 
-        // Anchoring `let` start bytes already reported; bounded by MAX_DIAGNOSTICS, so a
-        // linear `contains` is cheaper than a set.
-        let mut reported_lets: Vec<usize> = Vec::new();
-        let mut generic_reported = false;
-        let mut emitted = 0usize;
-        let mut suppressed_at: Option<tree_sitter::Node> = None;
+        // Classify every fault before emitting any of it, so the budget can be spent on the
+        // reports worth keeping rather than on whichever faults the walk reached first.
+        // `located` holds `(absorbing let start byte, fault node)` deduplicated per `let`;
+        // `generic` holds the faults no `let` explains, deduplicated per ROW. Both stay in
+        // source order because `faults` is. Each is bounded by `MAX_DIAGNOSTICS` at emission,
+        // and the dedupe keys are few enough that a linear `contains` beats a set.
+        let mut located: Vec<(usize, tree_sitter::Node)> = Vec::new();
+        let mut generic: Vec<tree_sitter::Node> = Vec::new();
 
         for fault in faults {
             // Two conditions must BOTH hold before a missing `;` is a supportable diagnosis.
@@ -534,42 +522,68 @@ impl<'a> Lowering<'a> {
                 .filter(|a| a.in_fn_body && fault.start_position().row > a.row);
             match anchoring_let {
                 Some(let_tok) => {
-                    let anchor = let_tok.start_byte;
-                    if reported_lets.contains(&anchor) {
-                        continue;
+                    if !located.iter().any(|(anchor, _)| *anchor == let_tok.start_byte) {
+                        located.push((let_tok.start_byte, fault));
                     }
-                    if emitted >= MAX_DIAGNOSTICS {
-                        suppressed_at = Some(fault);
-                        break;
-                    }
-                    reported_lets.push(anchor);
-                    self.push_error(
-                        "missing ';' after `let` binding in function body".to_string(),
-                        SourceSpan::new(anchor as u32, fault.start_byte() as u32),
-                    );
-                    emitted += 1;
                 }
-                // No `let` to blame — report the fault itself, span-narrowed and with no source
-                // echo (mechanism M3). At most one such report per `ERROR` node, so unrelated
-                // malformed input does not start emitting a diagnostic per debris node.
+                // No `let` to blame — the fault itself is the report, span-narrowed and with
+                // no source echo (mechanism M3), deduplicated per ROW rather than once per
+                // `ERROR` node. Recovery collapses several independently-broken declarations
+                // into ONE node (see `faults_strictly_inside`), so a once-per-node report
+                // drops every later declaration's break — the same silent-drop defect the
+                // located arm exists to remove, on the arm that has no `let` to blame. A row
+                // is the unit a user edits, so per-row still collapses the debris around a
+                // single break into one report.
                 None => {
-                    if generic_reported {
-                        continue;
+                    let row = fault.start_position().row;
+                    if !generic.iter().any(|f| f.start_position().row == row) {
+                        generic.push(fault);
                     }
-                    if emitted >= MAX_DIAGNOSTICS {
-                        suppressed_at = Some(fault);
-                        break;
-                    }
-                    generic_reported = true;
-                    self.push_error(format!("syntax error in {context}"), self.span(fault));
-                    emitted += 1;
                 }
             }
         }
 
-        if let Some(fault) = suppressed_at {
-            // Anchored at the first SUPPRESSED fault, not at `node`: a whole-node span here
-            // would reintroduce the blob location this method exists to eliminate.
+        // Located reports get FIRST claim on the budget: one that names a cause and points at
+        // the line to edit outranks one that can only say "something is broken here".
+        // Measured on the 24-broken-function corpus
+        // (`a_file_of_broken_functions_is_bounded_and_says_so`): the debris of the first break
+        // fans out across seven rows, so spending the budget in walk order left ONE located
+        // report and seven generic ones — the cap REPLACING the report rather than bounding it.
+        let located_kept = located.len().min(MAX_DIAGNOSTICS);
+        let generic_kept = generic.len().min(MAX_DIAGNOSTICS - located_kept);
+
+        // Re-sorted by position before emission: prioritising by kind is a budget decision,
+        // not a reason to hand a reader diagnostics out of source order. Stable, so faults
+        // sharing a start byte keep their walk order.
+        let mut reports: Vec<(usize, String, SourceSpan)> =
+            Vec::with_capacity(located_kept + generic_kept);
+        for &(anchor, fault) in &located[..located_kept] {
+            reports.push((
+                anchor,
+                "missing ';' after `let` binding in function body".to_string(),
+                SourceSpan::new(anchor as u32, fault.start_byte() as u32),
+            ));
+        }
+        for &fault in &generic[..generic_kept] {
+            reports.push((
+                fault.start_byte(),
+                format!("syntax error in {context}"),
+                self.span(fault),
+            ));
+        }
+        reports.sort_by_key(|(start, _, _)| *start);
+        for (_, message, span) in reports {
+            self.push_error(message, span);
+        }
+
+        // Truncation is announced, and anchored at the EARLIEST fault declined — not at
+        // `node`, whose span is the blob location this method exists to eliminate.
+        let first_declined = located[located_kept..]
+            .iter()
+            .map(|&(_, fault)| fault)
+            .chain(generic[generic_kept..].iter().copied())
+            .min_by_key(|fault| fault.start_byte());
+        if let Some(fault) = first_declined {
             self.push_error(
                 format!("syntax error in {context} (further errors suppressed)"),
                 self.span(fault),
