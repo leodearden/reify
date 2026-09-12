@@ -1186,4 +1186,69 @@ mod tests {
         );
     }
 
+    // ── PRD angle-units-surface-convergence §C1 leaf β: angle_spec() ─────────
+
+    #[test]
+    fn angle_spec_names_the_angle_dimension() {
+        let spec = angle_spec();
+        assert_eq!(spec.type_name, "Angle");
+        assert_eq!(spec.dimension, reify_core::DimensionVector::ANGLE);
+    }
+
+    #[test]
+    fn accept_angle_scalar_returns_accepted() {
+        let value = crate::value::Value::Scalar {
+            si_value: std::f64::consts::FRAC_PI_2,
+            dimension: reify_core::DimensionVector::ANGLE,
+        };
+        assert_eq!(
+            accept_arg(&value, &angle_spec()),
+            Acceptance::Accepted(std::f64::consts::FRAC_PI_2),
+            "an ANGLE scalar must be accepted carrying its SI radians"
+        );
+    }
+
+    #[test]
+    fn accept_bare_real_angle_rejected_with_migration_hint() {
+        // Structural assertion, mirroring the density case: Real must be
+        // Rejected, the hint must be Some, and message() must embed it. The
+        // exact wording is pinned once, at the const in reify-core.
+        let value = crate::value::Value::Real(45.0);
+        match accept_arg(&value, &angle_spec()) {
+            Acceptance::Rejected(rej) => {
+                assert!(
+                    rej.migration_hint.is_some(),
+                    "ArgRejection for a bare Real angle must carry a migration hint"
+                );
+                let hint = rej.migration_hint.unwrap();
+                let msg = rej.message("faces_by_normal", "tol");
+                assert!(
+                    msg.contains(hint),
+                    "message() must embed the migration_hint text; got: {msg:?}"
+                );
+            }
+            other => panic!("Value::Real(45.0) must be Rejected, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn accept_length_scalar_rejected_by_angle_spec() {
+        let value = crate::value::Value::Scalar {
+            si_value: 0.045,
+            dimension: reify_core::DimensionVector::LENGTH,
+        };
+        assert!(
+            matches!(accept_arg(&value, &angle_spec()), Acceptance::Rejected(_)),
+            "a LENGTH scalar must be Rejected at an angle slot (strict-dimension equality)"
+        );
+    }
+
+    #[test]
+    fn accept_undef_angle_returns_undefined() {
+        assert_eq!(
+            accept_arg(&crate::value::Value::Undef, &angle_spec()),
+            Acceptance::Undefined,
+            "Undef must return Undefined at an angle slot too"
+        );
+    }
 }
