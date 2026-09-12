@@ -10,9 +10,7 @@
 //! (c) Exhaustiveness (S5/S6): non-exhaustive matches over a `Type::Applied` discriminant
 //!     still emit the missing-variant diagnostic (DCE D4 preserved for generic enums).
 
-mod common;
-
-use common::compile_with_stdlib_helper;
+use crate::common::compile_with_stdlib_helper;
 use reify_core::{Severity, Type};
 
 // ─── Shared fixtures ─────────────────────────────────────────────────────────

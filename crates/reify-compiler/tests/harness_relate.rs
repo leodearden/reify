@@ -14,9 +14,10 @@
 //! would resolve to a sibling `tests/<file>.rs`, not the `harness_relate/`
 //! subdir (guard: `tests/infra/test_harness_kloc_cap.sh` §6).
 //!
-//! The pre-existing grandfathered `tests/relate_*.rs` standalones are the
-//! natural future members of this unit; folding them in is a layout-only move
-//! left to a dedicated consolidation leaf, not to a task that merely adds a test.
+//! Task #5695 (PRD §5 C1, leaf CMP-5) was that dedicated consolidation leaf: it folded
+//! the grandfathered `relate_block_check_tests`, `relate_threading_tests` and
+//! `relation_check_tests` standalones in and removed their baseline rows. The
+//! designation is spent; this unit now holds the whole subsystem.
 #[path = "harness_relate/relate_block_check_tests.rs"]
 mod relate_block_check_tests;
 #[path = "harness_relate/relate_threading_tests.rs"]
