@@ -891,6 +891,12 @@ fn solve_generalized_eigen(
                 eigenvectors: faer::Mat::<f64>::zeros(n, 0),
                 n_converged: 0,
                 converged: false,
+                shift: opts.sigma,
+                // No spectrum was computed at all here, so `false` cannot be
+                // ESTABLISHED at σ≠0 and C5 forbids assuming it.  At σ=0 the
+                // interval strictly between 0 and 0 is empty, so `false` there
+                // is established.
+                shift_skipped_modes: opts.sigma != 0.0,
             },
             singular_k_over_ceiling: true,
         }

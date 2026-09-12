@@ -148,6 +148,27 @@ pub struct EigenSolverResult {
     /// `true` iff all requested `n_modes` eigenvalues were returned
     /// (`eigenvalues.len() == n_modes`).
     pub converged: bool,
+    /// Whether any eigenvalue of the pencil lies STRICTLY between zero and
+    /// [`shift`](Self::shift) AND is absent from the returned set — i.e.
+    /// whether this result is a *window* around σ rather than the bottom of the
+    /// spectrum (contract clause C5).
+    ///
+    /// Per C5, `false` is only ever reported when it has been ESTABLISHED,
+    /// never assumed.  Like [`n_converged`](Self::n_converged) the basis differs
+    /// per path: the **dense path** computes the whole spectrum via QZ and so
+    /// answers exactly, while the **shift-invert path** has only the
+    /// Cholesky/LU discriminator, which is a conservative boolean (an exact
+    /// count would need an inertia-revealing LDL^T that faer's sparse LU does
+    /// not expose).  At σ=0 every path reports `false`, and that `false` is
+    /// established rather than assumed: the open interval strictly between 0
+    /// and 0 is empty, so no eigenvalue can lie in it.
+    pub shift_skipped_modes: bool,
+    /// The shift σ actually used for this solve (contract clause C5).
+    ///
+    /// Carried on the result so a diagnostic can name the offending σ without
+    /// the caller re-deriving it from its own options.  In eigenvalue (λ) space,
+    /// like [`EigenSolverOptions::sigma`] — unit conversion is the caller's job.
+    pub shift: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -420,6 +441,12 @@ pub fn solve_eigen_dense(
         eigenvectors,
         n_converged: 0,
         converged: n_take == opts.n_modes,
+        shift: opts.sigma,
+        // CONSERVATIVE PLACEHOLDER, not the final semantics: this path has the
+        // whole spectrum in hand and can answer C5 exactly, which step-8 of
+        // task #7258 does via `any_eigenvalue_skipped_between_zero_and_shift`.
+        // Until then it over-reports at σ≠0 rather than assuming `false`.
+        shift_skipped_modes: opts.sigma != 0.0,
     }
 }
 
@@ -625,6 +652,13 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
         eigenvectors,
         n_converged: n_conv,
         converged,
+        shift: opts.sigma,
+        // This path does not yet honor σ — the `K − σB` assembly and the
+        // Cholesky-then-LU dispatch are task #7259 — so at σ≠0 it cannot
+        // ESTABLISH that nothing was skipped and must report conservatively.
+        // C5 forbids assuming `false`.  At σ=0 the interval strictly between 0
+        // and 0 is empty, so `false` there IS established.
+        shift_skipped_modes: opts.sigma != 0.0,
     }
 }
 
