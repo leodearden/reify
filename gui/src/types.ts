@@ -352,13 +352,16 @@ export interface ConstraintData {
   expression: string;
   /**
    * Lower-case verdict token: `"satisfied"`, `"violated"`, or `"indeterminate"`.
-   * This is the canonical wire format — compare against lower-case strings.
-   * Produced solely by `satisfaction_token` in `gui/src-tauri/src/engine.rs`;
-   * pinned two-way by `./__tests__/constraintVerdictParity.test.ts`, which
-   * reads that function's match arms and drives the real components with them.
+   * The contract — sole producer, consumers, closedness — is canonical on the
+   * same field in `gui/src-tauri/src/types.rs`; pinned two-way by
+   * `./__tests__/constraintVerdictParity.test.ts`.
    *
-   * Deliberately typed `string` rather than a union — see task 6723. The
-   * narrowing is a clean follow-up, not a wire-format concern.
+   * Deliberately typed `string` rather than a union (task 6723): narrowing
+   * ripples into ChatPanel's structurally-typed constraint array, five local
+   * `makeConstraint` factories, types.typecheck.ts and bridge.test.ts. Filed as
+   * follow-up work — a serde-derived `ConstraintStatus` enum on the Rust side
+   * plus this union is what retires the source-scraping pin in
+   * `./__tests__/constraintVerdictTokens.ts`.
    */
   status: string;
   label: string | null;

@@ -1190,15 +1190,28 @@ pub struct ValueData {
 pub struct ConstraintData {
     pub node_id: String,
     pub expression: String,
-    /// Lower-case verdict token: `"satisfied"`, `"violated"` or
-    /// `"indeterminate"`. This is the canonical wire format — the TypeScript
-    /// consumers compare against these exact lower-case strings.
+    /// THE WIRE CONTRACT for a constraint verdict, canonical on both sides of
+    /// the IPC boundary (`gui/src/types.ts` mirrors a pointer to it).
+    ///
+    /// Lower-case token: `"satisfied"`, `"violated"` or `"indeterminate"`,
+    /// compared as an exact string by every frontend consumer —
+    /// `ConstraintPanel`'s `STATUS_PRIORITY`/`statusIcon`/`statusTitle`,
+    /// `StatusBar`'s `constraintSummary`, `ChatPanel`'s
+    /// `hasViolatedConstraints`, and the `[data-status="…"]` CSS selectors.
     ///
     /// `engine::satisfaction_token` is the only permitted producer; do not
-    /// hand-write the literal. Pinned by
-    /// `tests/types_tests.rs::constraint_data_status_wire_tokens_are_lowercase_and_closed`
-    /// and, from the consumer side, by
-    /// `gui/src/__tests__/constraintVerdictParity.test.ts`.
+    /// hand-write the literal. Pinned two-way (task 6723): on this side by
+    /// `tests/types_tests.rs::constraint_data_status_wire_tokens_are_lowercase`,
+    /// on the consumer side by `gui/src/__tests__/constraintVerdictParity.test.ts`,
+    /// which reads the producer's own match arms and drives the real components
+    /// with them. Neither half alone suffices: before that task both sides were
+    /// green while disagreeing, each asserting only that it agreed with itself.
+    ///
+    /// The token set is CLOSED at three, enforced by `satisfaction_token`'s
+    /// exhaustive match. PRD §4.2 C2 forbids collapsing the tri-state, and
+    /// `gui-on-demand-measurement.md` routes kernel-MEASURED verdicts through
+    /// this same three-valued `Satisfaction` with measurement state as an
+    /// orthogonal axis — not a fourth status token.
     pub status: String,
     pub label: Option<String>,
     pub parameter_ids: Vec<String>,

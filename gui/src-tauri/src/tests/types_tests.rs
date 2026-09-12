@@ -125,32 +125,18 @@ fn constraint_data_serializes_with_expected_fields() {
     assert_eq!(v["parameter_ids"].as_array().unwrap().len(), 1);
 }
 
-/// THE `ConstraintData.status` WIRE CONTRACT (task 6723).
+/// The producer half of the `ConstraintData.status` wire pin (task 6723). The
+/// contract is documented on that field in `types.rs`; the consumer half is
+/// `gui/src/__tests__/constraintVerdictParity.test.ts`.
 ///
-/// `status` serialises as exactly one of three lower-case tokens —
-/// `"satisfied"` / `"violated"` / `"indeterminate"` — and the set is CLOSED at
-/// those three.
-///
-/// This is the producer half of a two-way pin.  The consumer half is
-/// `gui/src/__tests__/constraintVerdictParity.test.ts`, which reads
-/// `satisfaction_token`'s match arms out of engine.rs and drives them through
-/// the real frontend components.  Neither half alone is sufficient: before this
-/// task both sides were green while disagreeing, because each asserted only
-/// that it agreed with itself.
-///
-/// Note what is driven here: the REAL `engine::build_constraints`, over a
-/// synthetic `CheckResult` (the kernel-free harness from
-/// `engine_tests.rs::build_constraints_sorts_constraints_by_node_id`).  Hand-
-/// building a `ConstraintData` — as the test above deliberately does, for the
-/// field-shape check — would pin the literal this test typed rather than the
-/// token the engine emits, which is exactly the failure mode being closed.
-///
-/// Closedness matters because PRD §4.2 C2 forbids collapsing the tri-state, and
-/// `gui-on-demand-measurement.md` routes kernel-MEASURED verdicts through this
-/// same three-valued `Satisfaction` with measurement state as an orthogonal
-/// axis — not a fourth status token.
+/// What is load-bearing here is WHAT gets driven: the REAL
+/// `engine::build_constraints`, over a synthetic `CheckResult` (the kernel-free
+/// harness from `engine_tests.rs::build_constraints_sorts_constraints_by_node_id`).
+/// Hand-building a `ConstraintData` — as the field-shape test above deliberately
+/// does — would pin the literal this test typed rather than the token the engine
+/// emits, which is exactly the failure mode being closed.
 #[test]
-fn constraint_data_status_wire_tokens_are_lowercase_and_closed() {
+fn constraint_data_status_wire_tokens_are_lowercase() {
     use crate::engine::build_constraints;
     use reify_core::{ConstraintNodeId, ModulePath};
     use reify_eval::{CheckResult, ConstraintCheckEntry};
@@ -167,7 +153,6 @@ fn constraint_data_status_wire_tokens_are_lowercase_and_closed() {
         (Satisfaction::Indeterminate, "indeterminate"),
     ];
 
-    let mut emitted = std::collections::BTreeSet::new();
     for (satisfaction, token) in expected {
         let check = CheckResult {
             values: ValueMap::new(),
@@ -192,25 +177,9 @@ fn constraint_data_status_wire_tokens_are_lowercase_and_closed() {
         assert_eq!(
             v["status"],
             json!(token),
-            "wire contract: Satisfaction::{satisfaction:?} must serialize as {token:?}. \
-             Every frontend consumer (ConstraintPanel's STATUS_PRIORITY/statusIcon, \
-             StatusBar's constraintSummary, ChatPanel's hasViolatedConstraints and the \
-             `[data-status=\"…\"]` CSS selectors) compares against this exact string."
-        );
-
-        emitted.insert(v["status"].as_str().unwrap().to_string());
-    }
-
-    assert_eq!(
-        emitted.len(),
-        3,
-        "the status token set is CLOSED at three distinct values; got {emitted:?}"
-    );
-    for token in &emitted {
-        assert!(
-            !token.chars().any(char::is_uppercase),
-            "wire tokens are lower-case; {token:?} re-introduces the PascalCase desync \
-             that task 6723 removed"
+            "wire contract: Satisfaction::{satisfaction:?} must serialize as {token:?} — \
+             see ConstraintData.status in types.rs for the frontend consumers that \
+             compare against this exact string."
         );
     }
 }
