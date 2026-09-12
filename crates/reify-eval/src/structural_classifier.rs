@@ -339,6 +339,7 @@ pub fn classify_cell(graph: &EvaluationGraph, cell_id: &ValueCellId) -> Paramete
 fn classify_by_type(cell_type: &Type) -> ParameterClass {
     match cell_type {
         Type::Scalar { .. } | Type::Int | Type::Geometry => ParameterClass::Dimensional,
+        Type::List(inner) if **inner == Type::Geometry => ParameterClass::Dimensional,
         _ => ParameterClass::Structural,
     }
 }
