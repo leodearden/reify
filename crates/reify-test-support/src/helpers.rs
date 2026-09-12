@@ -1101,6 +1101,40 @@ pub fn members_of(result: &reify_eval::EvalResult, entity: &str) -> Vec<String> 
     members
 }
 
+/// The SI magnitude of a resolved [`reify_ir::Value::Scalar`].
+///
+/// `what` is a caller-supplied label naming the cell under test; it is the
+/// only fixture-specific context the panic carries, so each call site keeps
+/// the diagnostic wording its own assertion needs. The `dimension` is
+/// deliberately NOT validated — this projects the magnitude and nothing more,
+/// matching every call site it replaces (all of which match
+/// `{ si_value, .. }`). A caller that needs a dimension check must assert it
+/// separately.
+///
+/// `#[track_caller]` keeps the panic's reported location at the test line
+/// rather than inside this file; without it the promotion would be a
+/// diagnostic regression against the inline matches it replaces, which
+/// naturally report at the call site.
+///
+/// Canonical replacement for the verbatim-duplicated
+/// `Value::Scalar { si_value, .. } => *si_value` match in
+/// `harness_auto_resolution/auto_binding_sites_remaining_resolution.rs`,
+/// `harness_auto_resolution/auto_sub_override_resolution.rs`, and
+/// `harness_engine/underdetermined_support.rs` (task #6524; surfaced by task
+/// #5467 code review round 3, suggestion 10).
+///
+/// # Panics
+/// Panics if `value` is not a `Value::Scalar`; the message names both `what`
+/// and the value actually observed. An unresolved `auto` surfaces here as
+/// `Value::Undef`.
+#[track_caller]
+pub fn scalar_si(value: &reify_ir::Value, what: &str) -> f64 {
+    match value {
+        reify_ir::Value::Scalar { si_value, .. } => *si_value,
+        other => panic!("{what}: expected a resolved Value::Scalar, got {other:?}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::fixtures::bracket_source;
