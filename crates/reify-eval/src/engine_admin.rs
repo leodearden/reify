@@ -732,7 +732,7 @@ impl Engine {
     /// hook points pinned by tests
     /// `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
     /// and `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
-    /// in `tests/tolerance_wiring_e2e.rs`). This method is the escape hatch
+    /// in `tests/harness_tolerance/tolerance_wiring_e2e.rs`). This method is the escape hatch
     /// for scenarios that fall OUTSIDE those hook points; it is NOT a
     /// required pre-`build_snapshot` step.
     ///
@@ -764,7 +764,7 @@ impl Engine {
     /// [`RealizationCache::clear`](crate::realization_cache::RealizationCache::clear).
     ///
     /// Pinned by `clear_realization_cache_public_api_resets_cache_for_production_callers`
-    /// in `tests/tolerance_wiring_e2e.rs`.
+    /// in `tests/harness_tolerance/tolerance_wiring_e2e.rs`.
     pub fn clear_realization_cache(&mut self) {
         // Must stay a clear-in-place; never a reseat to `RealizationCache::new()`.
         // See `RealizationCache::clear` for why the lifetime counter's survival
