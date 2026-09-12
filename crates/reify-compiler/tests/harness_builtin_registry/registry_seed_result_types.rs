@@ -1,7 +1,7 @@
 //! The compiler seam of the builtin-signature registry (task #6001 α,
 //! `docs/prds/v0_6/builtin-signature-registry.md`).
 //!
-//! Two layers, deliberately separated:
+//! Three layers, deliberately separated:
 //!
 //! **(a) End-to-end cell types.** One `.ri` fixture binds all 7 α seed calls
 //! and each cell's compile-time type is pinned. These pass BEFORE the swap
@@ -14,6 +14,11 @@
 //! shim over `builtin_registry::registry_result_type` — the crate's single
 //! registry entry point. This layer is the RED signal: `builtin_registry.rs`
 //! does not exist yet, so the binary does not compile.
+//!
+//! **(c) Argument forwarding.** One pin that a `Type::Field` argument crosses
+//! the shim unmodified. The Field CONTRACT itself belongs to `reify-builtins`,
+//! which pins it over the resolvers directly; replaying the matrix here would
+//! make a signature change a three-file edit.
 //!
 //! Built on the `common::compile_with_stdlib_helper` template of
 //! `analysis_stress_fn_compile.rs` (same `cell_type` helper, same
@@ -337,161 +342,47 @@ fn registry_owns_is_exactly_registry_result_type_s_precondition() {
     }
 }
 
-// ── (c) #6577's Field-argument contract, through the registry path ───────────
+// ── (c) #6577's Field-argument contract reaches the resolver ────────────────
 //
 // Carried onto the registry surface when α merged main forward and resolved
 // `analysis_signatures.rs` as DELETE: main had taught `analysis_fn_result_type`
 // a Field prelude (task #6577) inside the very file α deletes, so the registry
-// must reproduce it or the merge silently regresses that task. The end-to-end
-// witness is `harness_geometry_solver::solver_elastic_static_stdlib_compile`'s
-// `von_mises_over_solver_stress_field_types_as_pressure_field`; these pins fix
-// the same contract at the seam, where a failure names the resolver directly.
+// must reproduce it or the merge silently regresses that task.
+//
+// The CONTRACT — which argument shape yields which `Field` answer, per name and
+// per arity — is pinned once, where it is implemented: `reify-builtins`'
+// `resolvers.rs` and `registry.rs` unit tests. The end-to-end witness is
+// `harness_geometry_solver::solver_elastic_static_stdlib_compile`'s
+// `von_mises_over_solver_stress_field_types_as_pressure_field`. What is
+// seam-specific, and therefore pinned HERE, is only that this crate's shim
+// hands the argument types to the resolver unmodified — a `Field` argument in,
+// the resolver's `Field` answer out.
 
-/// The domain of `solve_elastic_static(..).stress` — preserved verbatim into
-/// every Field answer.
-fn field_domain() -> Type {
-    Type::point3(Type::Scalar {
+/// A `Type::Field` argument survives the seam intact.
+///
+/// `registry_result_type` forwards `args` verbatim into the row's `ArgAware`
+/// resolver, so the resolver's Field answer arrives unreduced. A `Scalar` here
+/// would be a kind lie, not merely a dimension slip: eval hands back a
+/// `Value::Field`, and `value_type_kind_matches`
+/// (`crates/reify-eval/src/lib.rs:330`) maps that onto `Type::Field` alone.
+#[test]
+fn registry_result_type_forwards_a_field_argument_to_the_resolver_unmodified() {
+    let domain = Type::point3(Type::Scalar {
         dimension: DimensionVector::LENGTH,
-    })
-}
-
-/// `Field<Point3<Length>, Tensor<2,3,Scalar<PRESSURE>>>`.
-fn pressure_tensor_field() -> Type {
-    Type::Field {
-        domain: Box::new(field_domain()),
+    });
+    let stress_field = Type::Field {
+        domain: Box::new(domain.clone()),
         codomain: Box::new(pressure_tensor()),
-    }
-}
-
-/// `Field<Point3<Length>, codomain>`.
-fn field_of(codomain: Type) -> Type {
-    Type::Field {
-        domain: Box::new(field_domain()),
-        codomain: Box::new(codomain),
-    }
-}
-
-/// `von_mises` / `max_shear` over a Field argument answer with a **`Field`**,
-/// not a reduced scalar.
-///
-/// Eval wraps the field lazily and returns a `Value::Field`
-/// (`crates/reify-expr/src/analysis.rs`, `wrap_tensor_field`), and
-/// `value_type_kind_matches` (`crates/reify-eval/src/lib.rs:330`) maps a
-/// `Value::Field` onto `Type::Field` alone — so a `Scalar` here is a kind lie,
-/// not merely a dimension slip.
-#[test]
-fn registry_result_type_carries_the_field_contract_for_von_mises_and_max_shear() {
-    let f = pressure_tensor_field();
-
-    for name in ["von_mises", "max_shear"] {
-        assert_eq!(
-            registry_result_type(name, std::slice::from_ref(&f)),
-            Some(field_of(scalar_pressure())),
-            "{name}(Field<D, Tensor<2,3,Pressure>>) must type as \
-             Field<D, Scalar<Pressure>> — this is task #6577's contract, which \
-             lived in the file α deletes"
-        );
-    }
-}
-
-/// The concrete-Tensor path is provably unperturbed by the Field prelude.
-///
-/// Restated here at the registry seam as an explicit non-regression lock on the
-/// prelude's insertion point: the prelude fires for `Type::Field` arguments and
-/// for nothing else.
-#[test]
-fn the_field_contract_leaves_the_concrete_tensor_path_untouched() {
-    let t = pressure_tensor();
+    };
 
     assert_eq!(
-        registry_result_type("von_mises", std::slice::from_ref(&t)),
-        Some(scalar_pressure()),
-        "von_mises over a CONCRETE Tensor must still reduce to Scalar<Pressure>"
-    );
-    assert_eq!(
-        registry_result_type("max_shear", std::slice::from_ref(&t)),
-        Some(scalar_pressure()),
-        "max_shear over a CONCRETE Tensor must still reduce to Scalar<Pressure>"
-    );
-}
-
-/// `principal_stresses` at argc 1 over a Field → `Field<D, List(Q)>`.
-///
-/// The `List` sits INSIDE the `Field`: eval samples the field, and each sample
-/// is the three eigenvalues. Mirrors `compute_principal_stresses`
-/// (`crates/reify-expr/src/analysis.rs:239-256`).
-#[test]
-fn registry_result_type_carries_the_field_contract_for_principal_stresses() {
-    assert_eq!(
-        registry_result_type("principal_stresses", &[pressure_tensor_field()]),
-        Some(field_of(Type::List(Box::new(scalar_pressure())))),
-        "principal_stresses(Field<D, Tensor<2,3,Pressure>>) must type as \
-         Field<D, List(Scalar<Pressure>)> — the List sits inside the Field"
-    );
-}
-
-/// `safety_factor` at argc 2 over a Field → `Field<D, Real>`.
-///
-/// Dimensionless in BOTH forms: yield/von_mises cancels pointwise over a field
-/// exactly as it does for a scalar. The result is nonetheless a `Field`, because
-/// eval still hands back a `Value::Field` — which is why the row cannot stay
-/// `ResultSpec::Const`.
-#[test]
-fn registry_result_type_carries_the_field_contract_for_safety_factor() {
-    assert_eq!(
-        registry_result_type(
-            "safety_factor",
-            &[pressure_tensor_field(), scalar_pressure()]
-        ),
-        Some(field_of(Type::dimensionless_scalar())),
-        "safety_factor(Field<D, Tensor<2,3,Pressure>>, Pressure) must type as \
-         Field<D, Real> — dimensionless codomain, but still a Field"
-    );
-}
-
-/// `stress_invariants` deliberately keeps its `StructureRef` under a Field
-/// argument: eval has NO Field arm for that name, so a Field-typed answer here
-/// would be a claim eval cannot honour.
-#[test]
-fn stress_invariants_is_still_a_structure_ref_under_a_field_argument() {
-    assert_eq!(
-        registry_result_type("stress_invariants", &[pressure_tensor_field()]),
-        Some(Type::StructureRef("StressInvariants".to_string())),
-        "stress_invariants has no Field arm in eval's dispatch ladder, so the \
-         registry must keep answering StructureRef"
-    );
-}
-
-/// The Field arm's arity gate, per NAME, through the registry path.
-///
-/// The compiler seam is deliberately arity-INSENSITIVE — `registry_result_type`
-/// resolves via `name_group`, not the argc-keyed `lookup`, because the legacy
-/// ladder arms gated on the name alone (see the module docs on
-/// `builtin_registry.rs`). So a mis-arity call DOES reach the resolver; it is
-/// the resolver's own gate, mirroring eval's dispatch condition, that makes it
-/// fall through to the concrete-tensor answer rather than claiming a `Field`
-/// eval would never produce.
-#[test]
-fn the_field_arm_is_gated_on_each_name_s_own_arity() {
-    let f = pressure_tensor_field();
-
-    for name in ["von_mises", "max_shear"] {
-        assert_eq!(
-            registry_result_type(name, &[f.clone(), scalar_pressure()]),
-            Some(Type::dimensionless_scalar()),
-            "{name} at argc 2 must fall through — eval's Field dispatch gate is \
-             evaluated_args.len() == 1"
-        );
-    }
-    assert_eq!(
-        registry_result_type("principal_stresses", &[f.clone(), scalar_pressure()]),
-        Some(Type::List(Box::new(Type::dimensionless_scalar()))),
-        "principal_stresses at argc 2 must fall through to the concrete List"
-    );
-    assert_eq!(
-        registry_result_type("safety_factor", std::slice::from_ref(&f)),
-        Some(Type::dimensionless_scalar()),
-        "safety_factor at argc 1 must fall through — its Field dispatch gate is \
-         evaluated_args.len() == 2"
+        registry_result_type("von_mises", std::slice::from_ref(&stress_field)),
+        Some(Type::Field {
+            domain: Box::new(domain),
+            codomain: Box::new(scalar_pressure()),
+        }),
+        "von_mises(Field<D, Tensor<2,3,Pressure>>) must type as \
+         Field<D, Scalar<Pressure>> — task #6577's contract, reached through \
+         the compiler's registry seam"
     );
 }
