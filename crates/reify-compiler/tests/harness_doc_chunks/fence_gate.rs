@@ -54,13 +54,17 @@
 //! Two sibling modules in this same compile unit already scrape these chunks,
 //! and they disagreed about what ```` ```reify ```` means:
 //!
-//! - `geometry_chunk_smoke.rs:617` matches ```` line.trim_end() == "```reify"
-//!   ```` — EXACT, so `reify-fragment`/`reify-schematic` can never false-match
-//!   it — compiles each hit VERBATIM (:704), and asserts its own anti-vacuity
-//!   floor of >= 2 such fences (:661). Retagging either of geometry.md's two
-//!   bare ```` ```reify ```` fences would therefore HOLLOW that suite rather
-//!   than fail it loudly. `geometry_chunk_retains_bare_reify_fences_for_the_sibling_smoke_suite`
-//!   below pins that coupling so it cannot happen silently.
+//! - `reify_tagged_fences` (`geometry_chunk_smoke.rs:1042`) matches
+//!   ```` line.trim_end() == format!("```{tag}") ```` (:1052) — BYTE-EXACT on
+//!   the whole info string, so `reify-fragment`/`reify-schematic` can never
+//!   false-match it — and `reify_tagged_fences_in_geometry_chunk_compile`
+//!   compiles each hit VERBATIM (:1159) behind its own anti-vacuity floor of
+//!   `>= 4` (:1104), the EXACT live count of geometry.md's four bare
+//!   ```` ```reify ```` fences. Retagging one therefore fails that suite
+//!   LOUDLY, not silently.
+//!   `geometry_chunk_retains_bare_reify_fences_for_the_sibling_smoke_suite`
+//!   below pins the coupling anyway, so the retag is named as the cause in its
+//!   own diff instead of being diagnosed from a count in another module.
 //! - `enums_chunk_option_smoke.rs:106` selects fences TAG-AGNOSTICALLY via
 //!   `strip_prefix("```")` and WRAPS each body in `structure def OptionDemo
 //!   {{ … }}` (:132). Its comment at :96 explicitly defers tag discipline to
@@ -534,9 +538,10 @@ fn check_markdown(path: &str, content: &str, check: FenceCheck) -> Vec<String> {
 //
 // reify-mcp does NOT depend on reify-compiler, so these files cannot be
 // `include_str!`-ed from here — they are read by path via the
-// `CARGO_MANIFEST_DIR` idiom `examples_smoke.rs` and
-// `geometry_chunk_smoke.rs:333` already use. A wrong path fails loudly at
-// read time rather than silently scanning nothing.
+// `CARGO_MANIFEST_DIR` idiom that
+// `harness_compilation_surface/examples_smoke.rs`'s `EXAMPLES_DIR` (:15) and
+// `geometry_chunk_smoke.rs`'s `CHUNK_PATH` (:351) already use. A wrong path
+// fails loudly at read time rather than silently scanning nothing.
 // ---------------------------------------------------------------------------
 
 const CHUNKS_DIR: &str = concat!(
@@ -1452,7 +1457,7 @@ fn a_reify_fence_with_a_parse_error_is_a_named_violation_not_a_panic() {
 
 /// The violation echoes the fence body, so a failure is fixable without
 /// re-opening the chunk — the same courtesy `assert_module_compiles`
-/// (`geometry_chunk_smoke.rs:105`) already extends.
+/// (`geometry_chunk_smoke.rs:122`) already extends.
 #[test]
 fn the_violation_echoes_the_offending_fence_body() {
     let md = "```reify\n\
@@ -1840,7 +1845,8 @@ const REIFY_INVALID_FENCE_FLOOR: usize = 1;
 /// A gate whose entire purpose is catching omission drift can itself drift into
 /// silence: a parser regression that discovers nothing would leave every loop
 /// below iterating zero times and every check GREEN, protecting nothing. This
-/// is the same defence `geometry_chunk_smoke.rs:661` already carries, applied
+/// is the same defence `reify_tagged_fences_in_geometry_chunk_compile` already
+/// carries for its own scrape (`geometry_chunk_smoke.rs:1104`), applied
 /// to all three axes the checks depend on — files discovered, fences parsed,
 /// and bare ```` ```reify ```` fences actually reached.
 fn assert_corpus_is_not_vacuous(corpus: &[ChunkDoc]) {
