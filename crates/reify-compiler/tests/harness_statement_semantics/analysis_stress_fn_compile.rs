@@ -20,8 +20,7 @@
 //! that step's `is_analysis_typed_fn` arm is what α deleted and replaced with
 //! the single registry arm, and they pass GREEN through it today.
 
-mod common;
-use common::compile_with_stdlib_helper;
+use crate::common::compile_with_stdlib_helper;
 use reify_core::{DimensionVector, Severity, Type};
 
 /// `.ri` fixture: a 3×3 uniaxial Pressure tensor via `matrix([[..Pa..]])`.

@@ -13,8 +13,6 @@
 //! stays inline in the `PressureLoad` ctor field and no `__sel*` cell is minted.
 //! GREENed by step-6 (`phase_hoist_nested_selector_ctors`).
 
-mod common;
-
 use reify_ir::CompiledExprKind;
 
 const SRC: &str = r#"
@@ -49,7 +47,7 @@ fn pressure_face_arg(expr: &reify_ir::CompiledExpr) -> &reify_ir::CompiledExpr {
 
 #[test]
 fn hoist_mints_synthetic_sel_cells_and_rewrites_fields() {
-    let module = common::compile_with_stdlib_helper(SRC);
+    let module = crate::common::compile_with_stdlib_helper(SRC);
     let widget = module
         .templates
         .iter()
