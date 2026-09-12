@@ -769,6 +769,44 @@ plan_for_branch() {
     for f in "$@"; do rm -f "$FIX_B/$f"; done
 }
 
+# plan_for_branch_env <env-assignment> <file...> — plan_for_branch with ONE
+# extra environment variable exported into the --print-plan child.
+#
+# WHY it exists: the throwaway fixture repo has no cargo workspace, so
+# `cargo metadata` always fails there and affected_crates() always returns the
+# ALL sentinel. Any scenario whose assertion depends on the SHAPE of
+# AFFECTED_CLOSURE (a real crate list that does or does not contain reify-gui)
+# must therefore drive it hermetically via REIFY_AFFECTED_CRATES_OVERRIDE —
+# the same knob, for the same reason, as tests/infra/test_scope_boundary.sh's
+# B4P2 captures.
+#
+# <env-assignment> is a single `NAME=value` word handed VERBATIM to env(1) as
+# one argv element, so a value containing spaces (a crate list) needs no
+# quoting dance and no parsing here. Exactly one assignment: passing two would
+# require word-splitting the argument, which a space-bearing value defeats.
+# Pass "" for none (env with no assignment is a plain exec).
+#
+# Capture uses capture_print_plan rather than plan_for_branch's plain $( ),
+# picking up the retry-on-incomplete-capture defense (task #4708) that the
+# cited B4P2 idiom already uses.
+plan_for_branch_env() {
+    local env_assignment="$1"; shift
+    local f
+    git -C "$FIX_B" checkout -q -b task-branch
+    for f in "$@"; do
+        mkdir -p "$FIX_B/$(dirname "$f")"
+        printf 'x\n' > "$FIX_B/$f"
+        git -C "$FIX_B" add "$f"
+    done
+    git -C "$FIX_B" commit -q -m "task changes"
+    capture_print_plan PLAN_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && exec env ${2:+"$2"} bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null' \
+        _ "$FIX_B" "$env_assignment" || true
+    git -C "$FIX_B" checkout -q main
+    git -C "$FIX_B" branch -q -D task-branch
+    for f in "$@"; do rm -f "$FIX_B/$f"; done
+}
+
 # FIX_MOD — shared fixture for the MODIFY-vector (B-KLOC-mod-*) and rename
 # (B-KLOC-rename) scenarios below. An `M` status requires each target file to
 # already exist at the merge-base, so (like B-KLOC-mod-*'s dedicated fixture
