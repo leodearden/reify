@@ -176,7 +176,7 @@ const SKIP_SET: &[(&str, &str)] = &[
 /// solve, which is the whole reason the debt exists rather than the migration
 /// simply having been done. Leaving the entries behind after that lands is
 /// caught by [`ctor_conformance_migration_debt_entries_are_all_live`].
-const CTOR_CONFORMANCE_MIGRATION_DEBT: &[(&str, &str, &str)] = &[
+pub(super) const CTOR_CONFORMANCE_MIGRATION_DEBT: &[(&str, &str, &str)] = &[
     (
         "trajectory/printer_print_envelope.ri",
         "velocity_limit",
@@ -759,20 +759,30 @@ fn param_name_from_ctor_diagnostic(message: &str) -> Option<String> {
     Some(rest[..end].to_owned())
 }
 
-/// Whether `entry` (a [`CTOR_CONFORMANCE_MIGRATION_DEBT`] row) waives `v`.
+/// Whether `entry` (a [`CTOR_CONFORMANCE_MIGRATION_DEBT`] row) waives the site
+/// `(file, param)`.
 ///
 /// Both halves of the key must match: the file AND the param. An entry whose
 /// param does not match — including because extraction returned `None` — waives
 /// nothing.
-fn debt_entry_matches(entry: &(&str, &str, &str), v: &CtorConformanceViolation) -> bool {
-    entry.0 == v.file && v.param.as_deref() == Some(entry.1)
+///
+/// Takes the two key halves rather than a [`CtorConformanceViolation`] so the
+/// sibling `ctor_conformance_corpus_survey` module can apply the SAME rule to a
+/// `SurveySite`, which carries the same pair under different field names. The
+/// rule stays defined exactly once.
+pub(super) fn debt_entry_matches(
+    entry: &(&str, &str, &str),
+    file: &str,
+    param: Option<&str>,
+) -> bool {
+    entry.0 == file && param == Some(entry.1)
 }
 
 /// Whether any debt entry waives `v`.
 fn violation_is_waived(v: &CtorConformanceViolation) -> bool {
     CTOR_CONFORMANCE_MIGRATION_DEBT
         .iter()
-        .any(|entry| debt_entry_matches(entry, v))
+        .any(|entry| debt_entry_matches(entry, &v.file, v.param.as_deref()))
 }
 
 /// Expiry guard: every [`CTOR_CONFORMANCE_MIGRATION_DEBT`] entry must still
@@ -797,7 +807,12 @@ fn ctor_conformance_migration_debt_entries_are_all_live() {
 
     let stale: Vec<String> = CTOR_CONFORMANCE_MIGRATION_DEBT
         .iter()
-        .filter(|entry| !walk.violations.iter().any(|v| debt_entry_matches(entry, v)))
+        .filter(|entry| {
+            !walk
+                .violations
+                .iter()
+                .any(|v| debt_entry_matches(entry, &v.file, v.param.as_deref()))
+        })
         .map(|(file, param, owner)| format!("  {} :: param '{}'  (owner {})", file, param, owner))
         .collect();
 

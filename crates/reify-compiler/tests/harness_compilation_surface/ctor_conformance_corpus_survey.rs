@@ -2583,6 +2583,750 @@ fn survey_corpus_orders_sites_deterministically() {
     );
 }
 
+// ─── γ (task #5305): the files γ migrated to ctor-conformance clean ──────────
+
+/// Repo-relative `.ri` files that task #5305 (γ) migrated to ctor-conformance
+/// clean, pinned so a regression is caught on the merge gate instead of only by
+/// the `#[ignore]`d corpus generator.
+///
+/// Deliberately a two-file pin rather than a corpus walk. The corpus-wide
+/// assertion lives in [`generate_ctor_conformance_corpus_survey`] and stays
+/// `#[ignore]`d because it compiles every tracked `.ri`, ~2.5× the `examples/`
+/// walk (`docs/prds/merge-gate-compile-cost.md`). This pin costs one stdlib
+/// prelude compile plus these files, so the sites γ actually changed become
+/// gate-resident without reversing that landed cost decision.
+///
+/// Matching is on `DiagnosticCode` IDENTITY via [`is_ctor_conformance_code`],
+/// never on message prose. The prose-keyed guard covering the same r3b fixture
+/// in `crates/reify-eval-fea-tests/tests/r3b_modal_selector_displacement.rs` is
+/// deliberately left alone — it is documented code-AGNOSTIC on purpose and keys
+/// on a different pair of params (`alpha` / `beta`).
+///
+/// Both entries reach the walker by DIFFERENT routes, which is why the pin is
+/// worth two files rather than one: the r3b site is a ctor ARG, the
+/// `mv-2-priv-param.ri` site is a D8 param DEFAULT
+/// (`check_param_default_conformance`). One shared assertion covers both because
+/// `survey_corpus` filters on the diagnostic CODE, not on the emitting path.
+const CTOR_CONFORMANCE_PINNED_CLEAN: &[&str] = &[
+    "tests/prd-gate/fixtures/r3b_displacement_at_selector_grammar.ri",
+    "tree-sitter-reify/test/fixtures/mv-2-priv-param.ri",
+];
+
+/// Every [`CTOR_CONFORMANCE_PINNED_CLEAN`] file compiles with ZERO
+/// ctor-conformance diagnostics.
+///
+/// Accumulates across files and panics once, so a run names every regressed site
+/// rather than stopping at the first — the corpus-wide-visibility principle the
+/// sibling gates in this binary already follow.
+///
+/// Coverage is asserted BEFORE the site count, against every way a pinned file
+/// can contribute zero sites WITHOUT being clean:
+///
+/// * it failed to read or parse — `not_surveyed`. Without that check the pin is
+///   satisfied by the file disappearing, or by its grammar breaking.
+/// * it was dropped from the corpus handed in — the `surveyed` count is short.
+/// * it compiled with Error-severity diagnostics — `partial`. [`survey_corpus`]
+///   increments `surveyed` BEFORE it tests for errors, so this third path
+///   satisfies both checks above on its own: a pinned file that regresses into a
+///   compile error may stop contributing sites entirely, because the conformance
+///   walk need never reach the ctor. The generator reports 73 of 684 surveyed
+///   members in `partial` today — neither pinned file among them — so the shape
+///   is live in the corpus and latent here, not hypothetical.
+#[test]
+fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
+    let corpus: Vec<String> = CTOR_CONFORMANCE_PINNED_CLEAN
+        .iter()
+        .map(|p| (*p).to_owned())
+        .collect();
+    let run = survey_corpus(std::path::Path::new(WORKSPACE_ROOT), &corpus);
+
+    assert!(
+        run.not_surveyed.is_empty(),
+        "every pinned file must reach the compile phase, else this pin passes \
+         vacuously; unreachable: {:?}",
+        run.not_surveyed,
+    );
+    assert_eq!(
+        run.surveyed,
+        corpus.len(),
+        "all {} pinned file(s) must be surveyed, only {} were",
+        corpus.len(),
+        run.surveyed,
+    );
+    assert!(
+        run.partial.is_empty(),
+        "every pinned file must compile with NO Error-severity diagnostic, else the \
+         conformance walk may never reach its ctor and this pin passes vacuously; \
+         partial: {:?}\n\n\
+         This is a DIFFERENT defect from the site regression reported below and wants a \
+         different fix: the file no longer COMPILES. Fix the compile error first — the \
+         zero-site result above says nothing about conformance until it does.",
+        run.partial,
+    );
+
+    let offenders: Vec<String> = run
+        .sites
+        .iter()
+        .map(|s| {
+            format!(
+                "  {}:{} :: param '{}'  [{} / {}]  {}",
+                s.file,
+                s.line,
+                s.field.as_deref().unwrap_or("—"),
+                s.code,
+                s.severity,
+                s.message,
+            )
+        })
+        .collect();
+
+    assert!(
+        offenders.is_empty(),
+        "{} ctor-conformance diagnostic(s) in file(s) task #5305 migrated to clean:\n{}\n\n\
+         A pinned file carries no waiver and no owner — that is the point of the pin. \
+         Either the migration was reverted, or a new un-migrated site was added; fix \
+         the site (a ctor argument, or a param default).",
+        offenders.len(),
+        offenders.join("\n"),
+    );
+}
+
+// ─── γ (task #5305): the sites γ deferred, with their owners ─────────────────
+
+/// Per-SITE, owner-attributed deferrals for the ctor-conformance warnings that
+/// survive γ (task #5305) OUTSIDE `examples/`.
+///
+/// Each entry is `(repo_relative_path, param_name, owning_task, why)`.
+///
+/// # These are DELIBERATE before-images. Do not "fix" them.
+///
+/// Every site below is a committed RED before-image for another PRD, and the
+/// conformance violation IS the fixture's content. Several of these files say so
+/// in their own header, verbatim: *"This file must EVAL CLEAN (exit 0) today."*
+/// `dcr_solver_load_dropped_dimensioned.ri` exists for no other purpose than to
+/// show that the units-CORRECT `force: 1000N` contributes exactly ZERO force to
+/// `solve_elastic_static` while the bare control contributes 1000 N. Dimension
+/// the call site and the measurement it encodes is gone.
+///
+/// So these are NOT un-migrated call sites that nobody got around to. That
+/// distinction is the entire reason this table carries a `why` column.
+///
+/// # This is a γ RULING, recorded where it can be checked
+///
+/// PRD §4 D9 assigns the per-case judgment — call-site bug, or wrong declared
+/// field type — to γ. γ ruled: two sites were the call site's fault and are
+/// fixed in this branch (see [`CTOR_CONFORMANCE_PINNED_CLEAN`]); these eleven
+/// are owned elsewhere and are deferred, per the shape
+/// `CTOR_CONFORMANCE_GATE_REMEDY` remedy 3 already mandates on main — *"Add a
+/// per-SITE entry naming the file, the param and the LIVE task that owns
+/// retiring it. Per-site, never per-file, and never without an owner."*
+///
+/// # Retirement
+///
+/// Each entry is deleted by its OWNING task's own diff, exactly as #5847 retires
+/// the two `CTOR_CONFORMANCE_MIGRATION_DEBT` entries. An entry left behind after
+/// its site is retired is caught by the corpus-wide check inside
+/// [`generate_ctor_conformance_corpus_survey`], which reports a stale entry and
+/// an unexplained warning as two different defects.
+///
+/// The `why` column's Greek leaf labels are
+/// `docs/prds/v0_6/dimension-checked-readers.md`'s, kept alongside the `#NNNN`
+/// cite so the attribution stays legible if those cluster tasks are re-split:
+/// γ1/ε/η are #6922, γ2/β/ζ are #6941.
+///
+/// # Sibling of `CTOR_CONFORMANCE_MIGRATION_DEBT`, not a merge of it
+///
+/// That list is `examples/`-keyed BY CONSTRUCTION: its own doc forbids the
+/// repo-relative spelling, and the gate consuming it walks `EXAMPLES_DIR` only.
+/// It cannot name a path under `tests/prd-gate/fixtures/` at all. The two tables
+/// are joined at exactly one place — the disposition resolver — and
+/// [`ctor_conformance_corpus_residual_is_disjoint_from_migration_debt`] keeps
+/// them from ever describing the same site.
+///
+/// # This is NOT `SKIP_SET`
+///
+/// Nothing here is dropped from any walk. Each entry excuses ONE
+/// `(file, param)` pair; every other diagnostic in these files stays unwaived,
+/// and a ctor-conformance diagnostic at a different param in the same file is
+/// an unexplained warning.
+const CTOR_CONFORMANCE_CORPUS_RESIDUAL: &[(&str, &str, &str, &str)] = &[
+    (
+        "tests/prd-gate/fixtures/curvature_rad_literal.ri",
+        "kc",
+        "#6179",
+        "angle-completion leaf α, boundary row B1: CURVATURE is m^-1 pre-α, so the \
+         rad·m^-1 initializer mismatches; the fixture's own header calls that \
+         check-time flip α's signal",
+    ),
+    (
+        "tests/prd-gate/fixtures/dcr_load_ctor_dimension_silent.ri",
+        "force",
+        "#6941",
+        "leaf γ2: PointLoad.force is declared `Real` in fea_multi_case.ri, so the \
+         units-CORRECT `force: 5000N` warns; γ2 retypes the FIELD, and the call site \
+         is already right",
+    ),
+    (
+        "tests/prd-gate/fixtures/dcr_load_ctor_dimension_silent.ri",
+        "traction",
+        "#6941",
+        "leaf γ2: TractionLoad.traction is declared `Real` in fea_multi_case.ri; same \
+         retype, and TractionLoad reaches no solver at all today (INV-SF-3)",
+    ),
+    (
+        "tests/prd-gate/fixtures/dcr_material_dimension_silent.ri",
+        "youngs_modulus",
+        "#6941",
+        "leaf β, boundary row B4: `youngs_modulus: 200mm` is read as 0.2 Pa by \
+         material_field_si, measured 1e12x wrong at exit 0 with zero Error diagnostics",
+    ),
+    (
+        "tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri",
+        "ex",
+        "#6922",
+        "leaf η: `FDMCouponOverride(ex: 2mm)` stores 0.002 m and the dimension-blind \
+         opt_f64 reads it as 0.002 Pa",
+    ),
+    (
+        "tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri",
+        "line_width",
+        "#6922",
+        "leaf η: `AsPrintedOptions(line_width: 0.4)` is read as 0.4 METRES by \
+         field_scalar — a 1000x error on a 0.4mm extrusion",
+    ),
+    (
+        "tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri",
+        "mass",
+        "#6922",
+        "leaf ε: `MassProperties(mass: 2m)` is read as 2.0 kg by the blind cell_f64 \
+         copy, while the dimension-checking cell_mass_f64 sits unused ~300 lines away",
+    ),
+    (
+        "tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri",
+        "target_frequency",
+        "#6941",
+        "leaf ζ: `ZVShaper(target_frequency: 50rad/s)` is stored verbatim as rad·s^-1 \
+         and the Hz->rad/s marshalling then multiplies by 2π — a 6.28x error",
+    ),
+    (
+        "tests/prd-gate/fixtures/dcr_shaper_frequency_dimension_silent.ri",
+        "target_frequency",
+        "#6941",
+        "leaf ζ signal fixture: the same 6.28x error, but CONSUMED via input_shape so \
+         read_scalar_si actually runs — the ctor alone never reaches the reader",
+    ),
+    (
+        "tests/prd-gate/fixtures/dcr_solver_load_dropped_dimensioned.ri",
+        "force",
+        "#6922",
+        "leaf γ1 headline inversion: the units-CORRECT `force: 1000N` contributes \
+         EXACTLY ZERO force to solve_elastic_static (max_von_mises 0, iterations 0) \
+         where the bare control contributes 1000 N",
+    ),
+    (
+        "tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri",
+        "yield_stress",
+        "#6941",
+        "leaf β, boundary row B5: `yield_stress: 310mm` is stored as Some(0.31 m) and \
+         material_field_si reads it as 0.31 Pa, at exit 0 with zero diagnostics",
+    ),
+];
+
+/// The repo-relative prefix of the `examples/` corpus.
+///
+/// [`CTOR_CONFORMANCE_MIGRATION_DEBT`](super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT)
+/// is keyed relative to that directory; every key in THIS module is
+/// repo-relative. This const is the whole of the difference.
+const EXAMPLES_PREFIX: &str = "examples/";
+
+/// Whether a [`CTOR_CONFORMANCE_MIGRATION_DEBT`](super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT)
+/// entry describes the REPO-RELATIVE site `(file, param)`.
+///
+/// The single place the two tables' key forms are bridged. The debt list is
+/// `examples/`-keyed by construction — its own doc forbids the repo-relative
+/// spelling, and the gate that consumes it walks `EXAMPLES_DIR` only — so
+/// neither table can change shape and the join has to happen here. A file
+/// outside `examples/` can never match a debt entry, which is exactly why
+/// [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`] has to exist as a sibling table.
+///
+/// The `(file, param)` matching RULE is not restated here; it is
+/// `examples_smoke`'s `debt_entry_matches`, called through.
+fn debt_entry_describes(entry: &(&str, &str, &str), file: &str, param: Option<&str>) -> bool {
+    file.strip_prefix(EXAMPLES_PREFIX)
+        .is_some_and(|key| super::examples_smoke::debt_entry_matches(entry, key, param))
+}
+
+/// The reason every
+/// [`CTOR_CONFORMANCE_MIGRATION_DEBT`](super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT)
+/// site is deferred.
+///
+/// That table carries no `why` column — it predates this one, and every entry in
+/// it shares one reason — so the reason belongs to the TABLE, not to a row.
+/// Stated here once rather than copied into each rendered row, and deliberately
+/// not added as a fourth column there: #5847 and #5306 are both chartered
+/// against that list by name.
+const MIGRATION_DEBT_WHY: &str = "un-migrated examples/ call site that cannot be dimensioned \
+     in isolation; waived per-site in CTOR_CONFORMANCE_MIGRATION_DEBT and retired by its \
+     owning task's own diff";
+
+/// The `Debug` rendering of `reify_core::Severity::Warning`, which is how
+/// [`SurveySite::severity`] carries it.
+///
+/// Read in exactly ONE place — [`disposition_of`] — so γ's Warning-severity scope
+/// is stated once and every consumer inherits it through the resolver instead of
+/// re-filtering on severity itself.
+const WARNING_SEVERITY: &str = "Warning";
+
+/// γ's per-site ruling on a surveyed site, resolved from the site's measured
+/// severity and the waiver tables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Disposition {
+    /// A live task owns retiring the site. `why` says what breaks if someone
+    /// migrates it here instead.
+    Deferred {
+        owning_task: &'static str,
+        why: &'static str,
+    },
+    /// The site carries a ctor-conformance CODE, but not at Warning severity: it
+    /// is outside γ's signal, and nobody owns retiring it.
+    ///
+    /// Its own variant rather than folded into [`Disposition::Unattributed`],
+    /// because the two call for OPPOSITE actions — an unattributed row is work,
+    /// this is work that does not exist. Folding them told the artifact's reader
+    /// to go fix three deliberate rejection fixtures whose violation IS their
+    /// content.
+    NotApplicable,
+    /// A Warning that no table names: it is actionable, and nobody has claimed it.
+    Unattributed,
+}
+
+impl Disposition {
+    /// The artifact cell for this disposition.
+    ///
+    /// A deferred cell names the owner and the reason so it reads standalone —
+    /// the artifact is consumed one row at a time, and a bare cite would send
+    /// the reader hunting for a table to find out why. The `n/a` cell instead
+    /// stays short and the artifact header explains that class ONCE: it applies
+    /// to whole rows identically, so repeating a paragraph per row would be the
+    /// copy that rots.
+    fn label(self) -> String {
+        match self {
+            Disposition::Deferred { owning_task, why } => {
+                format!("deferred — owned by {owning_task}: {why}")
+            }
+            Disposition::NotApplicable => {
+                "n/a — Error severity, outside the ctor-conformance warning signal: \
+                 nothing to retire"
+                    .to_owned()
+            }
+            Disposition::Unattributed => "unattributed — actionable".to_owned(),
+        }
+    }
+}
+
+/// Resolve `site`'s disposition from [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`] and
+/// [`CTOR_CONFORMANCE_MIGRATION_DEBT`](super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT).
+///
+/// The ONLY place the two tables are unioned. The tables are the single source
+/// of truth and the artifact is a projection of them, so nothing else re-derives
+/// this mapping — including the corpus-wide check in
+/// [`generate_ctor_conformance_corpus_survey`], which calls straight through.
+///
+/// Consultation order is immaterial:
+/// [`ctor_conformance_corpus_residual_is_disjoint_from_migration_debt`] proves
+/// no site can be described by both.
+///
+/// A WARNING whose param could not be recovered is [`Disposition::Unattributed`].
+/// Both tables key on `(file, param)`, so there is nothing to match on, and the
+/// conservative default is the one that does not invent an owner.
+///
+/// # Severity decides SCOPE, before any table is consulted
+///
+/// γ's signal is "zero unwaived ctor-conformance WARNINGS", so a site at any
+/// other severity is [`Disposition::NotApplicable`]. The corpus's Error-severity
+/// ctor-conformance-CODED sites — `bt1_wrong_kind_union.ri`,
+/// `bt6_kind_typed_param.ri`, `raw_lambda_material_field_rejected.ri` — are
+/// deliberate rejection fixtures reached from NON-ctor paths (selector
+/// composition, overload resolution, trait conformance). They work exactly as
+/// intended; giving them an owner would invent work, and leaving them
+/// `Unattributed` told the artifact's reader to go delete three other PRDs'
+/// signals.
+///
+/// Stating that scope HERE rather than as a severity filter at each consumer is
+/// what keeps the artifact's `disposition` column and
+/// [`assert_no_unwaived_ctor_conformance_warnings`] unable to disagree about
+/// which sites the signal even covers.
+///
+/// When δ (#5306) flips `CTOR_FIELD_CONFORMANCE_SEVERITY` to `Error`, this is the
+/// line that moves with it. Until it does, every waiver entry reads as STALE and
+/// the assertion goes RED naming them — loudly re-scoped, never vacuously green.
+fn disposition_of(site: &SurveySite) -> Disposition {
+    if site.severity != WARNING_SEVERITY {
+        return Disposition::NotApplicable;
+    }
+
+    let Some(param) = site.field.as_deref() else {
+        return Disposition::Unattributed;
+    };
+
+    if let Some(&(_, _, owning_task, why)) = CTOR_CONFORMANCE_CORPUS_RESIDUAL
+        .iter()
+        .find(|entry| entry.0 == site.file && entry.1 == param)
+    {
+        return Disposition::Deferred { owning_task, why };
+    }
+
+    if let Some(&(_, _, owning_task)) = super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT
+        .iter()
+        .find(|entry| debt_entry_describes(entry, &site.file, Some(param)))
+    {
+        return Disposition::Deferred {
+            owning_task,
+            why: MIGRATION_DEBT_WHY,
+        };
+    }
+
+    Disposition::Unattributed
+}
+
+/// Panic unless every WARNING-severity ctor-conformance site in `run` is
+/// accounted for by exactly one waiver-table entry, and every entry accounts for
+/// at least one site.
+///
+/// This is γ's actual signal — "zero UNWAIVED ctor-conformance warnings" — made
+/// repeatable instead of asserted once in a commit message.
+///
+/// Both directions are reported together, because they are DIFFERENT defects:
+///
+/// * a site named by NEITHER table is an UNEXPLAINED warning. Someone added an
+///   un-migrated call site, or reverted a migration; γ's invariant is broken.
+/// * an entry matching NO site is STALE. Its owning task landed and the entry
+///   must be deleted in that same diff — exactly the rot
+///   `ctor_conformance_migration_debt_entries_are_all_live` catches for the debt
+///   list, extended to the whole tracked corpus.
+///
+/// # Scoped to Warning severity, but it does not say so itself
+///
+/// The corpus also carries ERROR-severity ctor-conformance-CODED sites —
+/// `bt1_wrong_kind_union.ri`, `bt6_kind_typed_param.ri`,
+/// `raw_lambda_material_field_rejected.ri`. Those are deliberate REJECTION
+/// fixtures reached from non-ctor paths (selector composition, overload
+/// resolution, trait conformance): they are working exactly as intended, they
+/// are not ctor-conformance warnings, and enumerating them as residual would
+/// claim an owner for something nobody needs to retire.
+///
+/// That scope is [`disposition_of`]'s, not this function's: nothing here reads
+/// [`WARNING_SEVERITY`]. Both directions below are decided entirely by the
+/// resolver — `Unattributed` is the unexplained set, `Deferred` is the waived set
+/// — so the artifact's `disposition` column and this assertion cannot disagree
+/// about whether a site is in scope OR about whether it is waived. A severity
+/// filter here as well would be a second, silently divergent copy of the scope
+/// statement.
+fn assert_no_unwaived_ctor_conformance_warnings(run: &SurveyRun) {
+    let unexplained: Vec<String> = run
+        .sites
+        .iter()
+        .filter(|s| disposition_of(s) == Disposition::Unattributed)
+        .map(|s| {
+            format!(
+                "  {}:{} :: param '{}'  {}",
+                s.file,
+                s.line,
+                s.field.as_deref().unwrap_or("—"),
+                s.message,
+            )
+        })
+        .collect();
+
+    // The waived set, by the same resolver that renders the artifact column.
+    // Severity scope rides along rather than being re-stated: only a Warning can
+    // resolve to `Deferred`, so an entry whose only site stopped being a warning
+    // reads as stale — the loud, correct outcome.
+    let waived: Vec<&SurveySite> = run
+        .sites
+        .iter()
+        .filter(|s| matches!(disposition_of(s), Disposition::Deferred { .. }))
+        .collect();
+
+    let stale_residual = CTOR_CONFORMANCE_CORPUS_RESIDUAL.iter().filter_map(|entry| {
+        let matched = waived
+            .iter()
+            .any(|s| s.file == entry.0 && s.field.as_deref() == Some(entry.1));
+        (!matched).then(|| {
+            format!(
+                "  {} :: param '{}'  (owner {}, CTOR_CONFORMANCE_CORPUS_RESIDUAL)",
+                entry.0, entry.1, entry.2,
+            )
+        })
+    });
+    let stale_debt = super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT
+        .iter()
+        .filter_map(|entry| {
+            let matched = waived
+                .iter()
+                .any(|s| debt_entry_describes(entry, &s.file, s.field.as_deref()));
+            (!matched).then(|| {
+                format!(
+                    "  {}{} :: param '{}'  (owner {}, CTOR_CONFORMANCE_MIGRATION_DEBT)",
+                    EXAMPLES_PREFIX, entry.0, entry.1, entry.2,
+                )
+            })
+        });
+    let stale: Vec<String> = stale_residual.chain(stale_debt).collect();
+
+    assert!(
+        unexplained.is_empty() && stale.is_empty(),
+        "the tracked corpus and the waiver tables disagree: {} unexplained \
+         warning(s), {} stale entry/entries.\n\n\
+         UNEXPLAINED — a Warning-severity ctor-conformance site named by NEITHER \
+         CTOR_CONFORMANCE_CORPUS_RESIDUAL nor CTOR_CONFORMANCE_MIGRATION_DEBT:\n{}\n\n\
+         Fix the site. Add a waiver ONLY if a LIVE task genuinely owns retiring it, \
+         and then name that task and say what breaks if it is migrated here instead.\n\n\
+         STALE — a waiver entry matching no live site:\n{}\n\n\
+         The expected case is that the owning task landed: DELETE the entry, in the \
+         same diff that retired the site. TWO other causes make EVERY entry go stale \
+         at once, and neither is fixed by deleting them: param extraction stopped \
+         matching the emitter's `argument '<name>'` wording (fix the extraction), or \
+         `CTOR_FIELD_CONFORMANCE_SEVERITY` was flipped to Error by δ/#5306, which puts \
+         every site outside this Warning-scoped signal (re-scope `disposition_of`, \
+         which is the ONE place that scope is stated).\n\n\
+         Scope comes from `disposition_of`: the corpus's three Error-severity \
+         ctor-conformance-coded sites are deliberate rejection fixtures reached from \
+         non-ctor paths, so they resolve to `n/a` and are neither waived nor counted \
+         here.",
+        unexplained.len(),
+        stale.len(),
+        if unexplained.is_empty() {
+            "  (none)".to_owned()
+        } else {
+            unexplained.join("\n")
+        },
+        if stale.is_empty() {
+            "  (none)".to_owned()
+        } else {
+            stale.join("\n")
+        },
+    );
+}
+
+/// True when `cite` is the repo's canonical `#NNNN` task-cite form.
+///
+/// Greek-letter aliases (`task ε`), PRD-relative indices (`task-5`) and prose
+/// forms (`task 6941`) all resolve to `malformed-cite` under the repo's
+/// TODO-citation convention, and a malformed cite is liveness-checkable by
+/// nothing — which is the whole value of naming an owner.
+fn is_canonical_task_cite(cite: &str) -> bool {
+    cite.strip_prefix('#')
+        .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Every [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`] entry names a file that exists and
+/// is a `.ri`.
+///
+/// Mirrors `ctor_conformance_migration_debt_entries_exist_under_examples_dir`:
+/// cheap, and it separates a MIS-TYPED path from an ALREADY-RETIRED site. Both
+/// would otherwise surface only as the corpus-wide staleness failure inside the
+/// `#[ignore]`d generator, which reads as "already retired" and invites deleting
+/// an entry that is still load-bearing.
+#[test]
+fn ctor_conformance_corpus_residual_entries_name_existing_ri_files() {
+    for (path, param, owner, _why) in CTOR_CONFORMANCE_CORPUS_RESIDUAL {
+        assert!(
+            path.ends_with(".ri"),
+            "CTOR_CONFORMANCE_CORPUS_RESIDUAL entry '{path}' (param '{param}', owner \
+             {owner}) is not a `.ri` path"
+        );
+        let full = std::path::Path::new(WORKSPACE_ROOT).join(path);
+        assert!(
+            full.exists(),
+            "CTOR_CONFORMANCE_CORPUS_RESIDUAL entry '{path}' (param '{param}', owner \
+             {owner}) does not exist under {WORKSPACE_ROOT}"
+        );
+    }
+}
+
+/// Every [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`] entry names its owner in the
+/// canonical `#NNNN` cite form.
+///
+/// A deferral without a liveness-checkable owner is a permanent hole dressed up
+/// as a temporary one — the failure mode `CTOR_CONFORMANCE_GATE_REMEDY`'s remedy
+/// 3 forbids by name ("never without an owner").
+#[test]
+fn ctor_conformance_corpus_residual_entries_cite_a_canonical_task() {
+    let malformed: Vec<String> = CTOR_CONFORMANCE_CORPUS_RESIDUAL
+        .iter()
+        .filter(|(_, _, owner, _)| !is_canonical_task_cite(owner))
+        .map(|(path, param, owner, _)| format!("  {path} :: param '{param}'  (owner {owner})"))
+        .collect();
+
+    assert!(
+        malformed.is_empty(),
+        "CTOR_CONFORMANCE_CORPUS_RESIDUAL has {} entry/entries whose owner is not a \
+         canonical `#NNNN` task cite:\n{}\n\n\
+         A Greek-letter leaf label, a PRD-relative index or a `task NNNN` prose form is \
+         a malformed cite: nothing can liveness-check it. Put the leaf label in the \
+         `why` column and the task id in the owner column.",
+        malformed.len(),
+        malformed.join("\n"),
+    );
+}
+
+/// [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`] is sorted and duplicate-free on
+/// `(path, param)`.
+///
+/// Sorted so a reader can find a site and a diff shows one line per change;
+/// duplicate-free because the disposition resolver takes the FIRST match, so a
+/// second entry for the same site would be silently unreachable — including one
+/// naming a different owner.
+#[test]
+fn ctor_conformance_corpus_residual_is_sorted_and_duplicate_free() {
+    let keys: Vec<(&str, &str)> = CTOR_CONFORMANCE_CORPUS_RESIDUAL
+        .iter()
+        .map(|(path, param, _, _)| (*path, *param))
+        .collect();
+
+    let mut sorted = keys.clone();
+    sorted.sort_unstable();
+    assert_eq!(
+        keys, sorted,
+        "CTOR_CONFORMANCE_CORPUS_RESIDUAL must be sorted on (path, param)"
+    );
+
+    let mut deduped = sorted.clone();
+    deduped.dedup();
+    assert_eq!(
+        sorted, deduped,
+        "CTOR_CONFORMANCE_CORPUS_RESIDUAL must carry at most one entry per \
+         (path, param); a second entry for the same site is unreachable"
+    );
+}
+
+/// [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`] and
+/// [`CTOR_CONFORMANCE_MIGRATION_DEBT`](super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT)
+/// describe DISJOINT sites.
+///
+/// The two tables are siblings, not a merge: one site described in both would
+/// drift, and the resolver would have to pick a winner between two owners.
+/// Compared after normalising the two key forms through
+/// [`debt_entry_describes`], never by eyeballing the spellings.
+#[test]
+fn ctor_conformance_corpus_residual_is_disjoint_from_migration_debt() {
+    let overlap: Vec<String> = CTOR_CONFORMANCE_CORPUS_RESIDUAL
+        .iter()
+        .filter(|(path, param, _, _)| {
+            super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT
+                .iter()
+                .any(|entry| debt_entry_describes(entry, path, Some(param)))
+        })
+        .map(|(path, param, owner, _)| format!("  {path} :: param '{param}'  (owner {owner})"))
+        .collect();
+
+    assert!(
+        overlap.is_empty(),
+        "these site(s) are described by BOTH CTOR_CONFORMANCE_CORPUS_RESIDUAL and \
+         CTOR_CONFORMANCE_MIGRATION_DEBT:\n{}\n\n\
+         Pick one. CTOR_CONFORMANCE_MIGRATION_DEBT owns sites under examples/, because \
+         the gate that consumes it walks EXAMPLES_DIR only and its keys are relative to \
+         that directory. CTOR_CONFORMANCE_CORPUS_RESIDUAL owns everything else.",
+        overlap.join("\n"),
+    );
+}
+
+/// Every [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`] entry says WHY it is deferred.
+///
+/// The owner cite says who retires the site; the `why` says what would break if
+/// someone "fixed" it instead. These fixtures are measured before-images whose
+/// violation IS their content, so a reader who meets one without that sentence
+/// has every reason to migrate it and delete another PRD's signal.
+#[test]
+fn ctor_conformance_corpus_residual_entries_say_why() {
+    for (path, param, owner, why) in CTOR_CONFORMANCE_CORPUS_RESIDUAL {
+        assert!(
+            !why.trim().is_empty(),
+            "CTOR_CONFORMANCE_CORPUS_RESIDUAL entry '{path}' :: param '{param}' (owner \
+             {owner}) carries no reason; an unexplained deferral reads as an oversight"
+        );
+    }
+}
+
+/// Expiry guard, GATE-RESIDENT: every [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`] entry
+/// must still name a live site that [`disposition_of`] defers.
+///
+/// The `examples/`-keyed sibling has had this at gate cadence since α
+/// (`ctor_conformance_migration_debt_entries_are_all_live`). Without the same
+/// guard here, this table's only staleness check lives inside the `#[ignore]`d
+/// [`generate_ctor_conformance_corpus_survey`]: when #6941 lands and retires its
+/// six sites, the entries would rot until someone remembered to run an ignored
+/// test — and a waiver that outlives its site is a permanent hole in the gate at a
+/// `(file, param)` pair nobody is looking at any more. The four sibling hygiene
+/// tests cannot see it: path existence, cite form, sort order and disjointness are
+/// all satisfied by an entry whose site is gone.
+///
+/// # Cost
+///
+/// The entries name SEVEN distinct files, so this compiles seven `.ri` members
+/// plus the cached stdlib prelude — the same order as
+/// [`pinned_clean_files_emit_no_ctor_conformance_diagnostic`], and nowhere near
+/// the 689-member corpus walk that keeps the generator `#[ignore]`d per
+/// `docs/prds/merge-gate-compile-cost.md`. Deduplication assumes the table's
+/// sortedness (its own test) only as an OPTIMISATION: an unsorted table compiles a
+/// file twice, which costs time and cannot produce a false pass.
+///
+/// # `partial` is tolerated here, unlike the clean pin
+///
+/// These files are RED before-images, and `curvature_rad_literal.ri` carries
+/// Error-severity diagnostics TODAY (its own header says so) — a partially
+/// compiled member still contributes its ctor sites. No vacuity follows: this
+/// assertion needs the sites to be PRESENT, so a file that stops contributing them
+/// turns its entries stale and reds this test BY NAME. `not_surveyed` is still
+/// asserted, not because it could hide a pass, but because "this fixture no longer
+/// parses" and "this site was retired" want opposite fixes.
+#[test]
+fn ctor_conformance_corpus_residual_entries_are_all_live() {
+    let mut corpus: Vec<String> = CTOR_CONFORMANCE_CORPUS_RESIDUAL
+        .iter()
+        .map(|(path, _, _, _)| (*path).to_owned())
+        .collect();
+    corpus.dedup();
+    let run = survey_corpus(std::path::Path::new(WORKSPACE_ROOT), &corpus);
+
+    assert!(
+        run.not_surveyed.is_empty(),
+        "every file named by CTOR_CONFORMANCE_CORPUS_RESIDUAL must reach the compile \
+         phase, else its entries cannot be checked at all; unreachable: {:?}\n\n\
+         These are committed before-images for other PRDs: a read or parse failure here \
+         means the fixture was moved, renamed or broken, NOT that its site was retired.",
+        run.not_surveyed,
+    );
+
+    let stale: Vec<String> = CTOR_CONFORMANCE_CORPUS_RESIDUAL
+        .iter()
+        .filter(|entry| {
+            !run.sites.iter().any(|s| {
+                s.file == entry.0
+                    && s.field.as_deref() == Some(entry.1)
+                    && matches!(disposition_of(s), Disposition::Deferred { .. })
+            })
+        })
+        .map(|(path, param, owner, _)| format!("  {path} :: param '{param}'  (owner {owner})"))
+        .collect();
+
+    assert!(
+        stale.is_empty(),
+        "CTOR_CONFORMANCE_CORPUS_RESIDUAL has {} stale entry/entries — each defers no \
+         live site:\n{}\n\n\
+         The expected case is that the owning task landed and retired the site: DELETE \
+         the entry, in that same diff. Two other causes stale MANY entries at once and \
+         are fixed by neither deleting them nor touching the fixtures: param extraction \
+         stopped matching the emitter's `argument '<name>'` wording (fix the \
+         extraction), or `CTOR_FIELD_CONFORMANCE_SEVERITY` was flipped to Error by \
+         δ/#5306, which puts every site outside this Warning-scoped signal (re-scope \
+         `disposition_of`, the one place that scope is stated).",
+        stale.len(),
+        stale.join("\n"),
+    );
+}
+
 // ─── step 11/12: markdown rendering ─────────────────────────────────────────
 
 /// The EXACT command that regenerates the artifact, committed inside it.
@@ -2616,6 +3360,13 @@ fn opt_cell(value: Option<&String>) -> String {
     }
 }
 
+/// The header key that introduces the drift disclosure.
+///
+/// One spelling, so the renderer and the tests asserting on its presence — and
+/// on its ABSENCE, which is the stronger claim — cannot disagree about what a
+/// disclosure looks like.
+const DRIFT_DISCLOSURE_KEY: &str = "**Drifted `.ri` since the anchor:**";
+
 /// Render the survey artifact.
 ///
 /// Follows the house convention for a generated markdown artifact set by
@@ -2629,7 +3380,11 @@ fn opt_cell(value: Option<&String>) -> String {
 /// freshness gate would go red on every γ commit and would be driven to an
 /// EMPTY artifact the moment γ reaches its stated signal, destroying the very
 /// census that sized it. So the base commit SHA is stamped instead.
-fn render_survey(run: &SurveyRun, base_commit: &str) -> String {
+///
+/// That stamp is the merge base, never the branch tip ([`survey_stamp`]). When
+/// tracked `.ri` have drifted from it, they are NAMED in the header rather than
+/// refused, so the snapshot stays honest by disclosure ([`SurveyStamp`]).
+fn render_survey(run: &SurveyRun, stamp: &SurveyStamp) -> String {
     use std::fmt::Write as _;
 
     let mut md = String::new();
@@ -2637,7 +3392,7 @@ fn render_survey(run: &SurveyRun, base_commit: &str) -> String {
 
     // ── header ──────────────────────────────────────────────────────────────
     md.push_str("# Struct-ctor field-type conformance — corpus survey\n\n");
-    let _ = writeln!(md, "**Base commit:** `{base_commit}`");
+    let _ = writeln!(md, "**Base commit:** `{}`", stamp.anchor);
     let _ = writeln!(
         md,
         "**Tool:** `crates/reify-compiler/tests/harness_compilation_surface/ctor_conformance_corpus_survey.rs`"
@@ -2652,6 +3407,27 @@ fn render_survey(run: &SurveyRun, base_commit: &str) -> String {
         run.not_surveyed.len(),
         run.partial.len()
     );
+
+    // Rendered ONLY when something drifted: an undrifted run must carry no
+    // disclosure at all, so the artifact grows no permanent "0 files drifted"
+    // row and two undrifted runs stay byte-comparable.
+    if !stamp.drifted_ri.is_empty() {
+        let _ = write!(
+            md,
+            "\n\
+            {DRIFT_DISCLOSURE_KEY} {n} tracked `.ri` differ between the anchor and the\n\
+            commit surveyed, so for those files the anchor names OLDER bytes than the rows\n\
+            below describe. They are disclosed rather than refused because they are\n\
+            COMMITTED: each is reachable from the surveyed commit, so a reader can read back\n\
+            exactly what was swept. (Uncommitted bytes are reachable from no commit, which\n\
+            is why a dirty tree is refused outright instead — see `stamp_decision`.)\n\
+            \n",
+            n = stamp.drifted_ri.len(),
+        );
+        for path in &stamp.drifted_ri {
+            let _ = writeln!(md, "- `{}`", cell(path));
+        }
+    }
 
     md.push_str(
         "\n\
@@ -2692,11 +3468,32 @@ fn render_survey(run: &SurveyRun, base_commit: &str) -> String {
           a non-identifier, identifier not followed by `(`, span out of range, …), so no\n\
           prose here has to guess a cause on a reader's behalf.\n\
         \n\
+        The **`disposition` column is γ's RULING**, projected from the site's measured\n\
+        severity and the two per-site waiver tables (`CTOR_CONFORMANCE_CORPUS_RESIDUAL`\n\
+        in the generator, `CTOR_CONFORMANCE_MIGRATION_DEBT` in the sibling\n\
+        `examples_smoke.rs`) rather than typed here. It has three states, and they call\n\
+        for three DIFFERENT actions:\n\
+        \n\
+        - **`deferred`** names the LIVE task that owns retiring the site, and the reason\n\
+        migrating it here would destroy something — most of these are committed RED\n\
+        before-images whose violation IS the fixture's content. Leave them alone.\n\
+        - **`n/a`** carries a ctor-conformance CODE but at **Error** severity, which is\n\
+        outside the zero-ctor-conformance-warnings signal entirely. Every such row today\n\
+        is a deliberate REJECTION fixture reached from a NON-ctor path (selector\n\
+        composition, overload resolution, trait conformance): the rejection IS the\n\
+        behaviour under test. **Not actionable, and not residual either** — it carries no\n\
+        owner because it needs none, and reading it as unclaimed work would send you to\n\
+        delete another PRD’s signal.\n\
+        - **`unattributed`** is a warning claimed by nobody: that is the actionable\n\
+        state, and after γ the corpus holds none.\n\
+        \n\
         The **`hint` column is ADVISORY**, derived purely from the (expected, found)\n\
         type pair. It is **not** a D9 ruling. PRD §4 D9 defines the split between class\n\
         (1) *call-site bug* and class (2) *wrong declared field type* as \"per-case\n\
-        judgment … whichever is the actual bug\" and assigns it to **γ**; β does not\n\
-        pre-empt it. What β does decide mechanically is the `owner` grouping below.\n\
+        judgment … whichever is the actual bug\" and assigns it to **γ**. γ has now\n\
+        ruled, and the ruling is the `disposition` column beside the hint: where the two\n\
+        disagree, the disposition wins. What β decided mechanically is the `owner`\n\
+        grouping below.\n\
         \n\
         ## Format (PRD §10 Q6)\n\
         \n\
@@ -2732,9 +3529,10 @@ fn render_survey(run: &SurveyRun, base_commit: &str) -> String {
             ),
             Owner::NonFea => md.push_str(
                 "The recovered name IS a `structure def` declared in the corpus or the stdlib,\n\
-                 and it is not FEA-owned. D9's per-case judgment applies: fix the call site or\n\
-                 the declared field type, whichever is the actual bug — γ's ruling, recorded in\n\
-                 γ's diff. **This is the group to size γ against.**\n\n\
+                 and it is not FEA-owned. D9's per-case judgment applied here, and **γ has\n\
+                 now ruled every Warning row in this group** — read the `disposition` column.\n\
+                 A site γ judged a call-site bug was fixed and is simply absent below; a site γ\n\
+                 deferred names the LIVE task that owns retiring it.\n\n\
                  That check is against ONE GLOBAL namespace — *some* corpus or stdlib file\n\
                  declares the name, not necessarily one this row's file can see. See named\n\
                  limitation 3 below before treating a row here as actionable.\n\n",
@@ -2763,13 +3561,13 @@ fn render_survey(run: &SurveyRun, base_commit: &str) -> String {
             continue;
         }
         md.push_str(
-            "| site | def | def source | field | expected | found | code | severity | hint (advisory) | message |\n\
-             |---|---|---|---|---|---|---|---|---|---|\n",
+            "| site | def | def source | field | expected | found | code | severity | hint (advisory) | disposition (γ ruling) | message |\n\
+             |---|---|---|---|---|---|---|---|---|---|---|\n",
         );
         for s in group {
             let _ = writeln!(
                 md,
-                "| `{}:{}` | {} | {} | {} | {} | {} | `{}` | {} | {} | {} |",
+                "| `{}:{}` | {} | {} | {} | {} | {} | `{}` | {} | {} | {} | {} |",
                 cell(&s.file),
                 s.line,
                 opt_cell(s.def.as_ref()),
@@ -2780,6 +3578,7 @@ fn render_survey(run: &SurveyRun, base_commit: &str) -> String {
                 cell(&s.code),
                 cell(&s.severity),
                 cell(&remedy_hint(s.expected.as_deref(), s.found.as_deref())),
+                cell(&disposition_of(s).label()),
                 cell(&s.message),
             );
         }
@@ -2926,7 +3725,7 @@ fn render_survey_states_a_site_count_that_equals_the_rendered_rows() {
             synth_site("b.ri", 7, "Widget", "label", Owner::NonFea),
         ],
     };
-    let md = render_survey(&run, "deadbeef");
+    let md = render_survey(&run, &SurveyStamp::at("deadbeef"));
 
     // The stated count is COMPUTED, never typed — that is the task's
     // "site count stated" signal, and it must equal the rows actually drawn.
@@ -2963,7 +3762,7 @@ fn render_survey_states_a_site_count_that_equals_the_rendered_rows() {
         partial: vec![],
         sites: every_class,
     };
-    let md = render_survey(&run, "deadbeef");
+    let md = render_survey(&run, &SurveyStamp::at("deadbeef"));
     assert_eq!(
         rendered_site_rows(&md),
         run.sites.len(),
@@ -3007,7 +3806,7 @@ fn render_survey_groups_by_d9_owner_with_fea_first_and_marked_do_not_fix() {
             unresolved,
         ],
     };
-    let md = render_survey(&run, "cafe1234");
+    let md = render_survey(&run, &SurveyStamp::at("cafe1234"));
 
     // Anchor every ordering probe on the rendered `### <title>` heading, never on
     // a bare substring: the artifact's own `## Format` prose mentions "FEA"
@@ -3093,8 +3892,8 @@ fn render_survey_orders_rows_deterministically_within_a_group() {
     sorted.sort_by(|a, b| (&a.file, a.line, &a.field).cmp(&(&b.file, b.line, &b.field)));
 
     assert_eq!(
-        render_survey(&mk(shuffled), "sha"),
-        render_survey(&mk(sorted), "sha"),
+        render_survey(&mk(shuffled), &SurveyStamp::at("sha")),
+        render_survey(&mk(sorted), &SurveyStamp::at("sha")),
         "rows must render in (file, line, field) order regardless of input order"
     );
 }
@@ -3111,7 +3910,7 @@ fn render_survey_escapes_pipes_and_newlines_so_a_message_cannot_break_the_table(
         partial: vec![],
         sites: vec![site],
     };
-    let md = render_survey(&run, "sha");
+    let md = render_survey(&run, &SurveyStamp::at("sha"));
 
     let row = md
         .lines()
@@ -3153,7 +3952,7 @@ fn render_survey_writes_an_em_dash_for_every_unrecoverable_cell() {
         partial: vec![],
         sites: vec![site],
     };
-    let md = render_survey(&run, "sha");
+    let md = render_survey(&run, &SurveyStamp::at("sha"));
     let row = md
         .lines()
         .find(|l| l.starts_with("| `a.ri:1`"))
@@ -3183,7 +3982,7 @@ fn render_survey_writes_an_em_dash_for_every_unrecoverable_cell() {
         "no cell may be rendered empty: {row:?}"
     );
     assert!(
-        cells[10].starts_with("E_CTOR_ARITY:"),
+        cells[11].starts_with("E_CTOR_ARITY:"),
         "the raw message must still be carried verbatim: {row:?}"
     );
 }
@@ -3197,7 +3996,7 @@ fn render_survey_renders_the_zero_site_case_explicitly() {
         partial: vec![],
         sites: vec![],
     };
-    let md = render_survey(&run, "sha");
+    let md = render_survey(&run, &SurveyStamp::at("sha"));
     assert!(
         md.contains("**Sites:** 0"),
         "the count must still be stated"
@@ -3235,7 +4034,7 @@ fn render_survey_reports_the_recovery_reason_instead_of_asserting_a_cause() {
         partial: vec![],
         sites: vec![site],
     };
-    let md = render_survey(&run, "sha");
+    let md = render_survey(&run, &SurveyStamp::at("sha"));
 
     assert!(
         md.contains(DefOrigin::SpanNotIdentifier.label()),
@@ -3255,11 +4054,103 @@ fn render_survey_reports_the_recovery_reason_instead_of_asserting_a_cause() {
         partial: vec![],
         sites: vec![synth_site("b.ri", 2, "Widget", "label", Owner::NonFea)],
     };
-    let md = render_survey(&recovered, "sha");
+    let md = render_survey(&recovered, &SurveyStamp::at("sha"));
     assert!(
         md.contains(DefOrigin::CallSiteAnchor.label()),
         "a recovered def must still say HOW it was recovered:\n{md}"
     );
+}
+
+#[test]
+fn render_survey_names_every_drifted_ri_without_disturbing_the_anchor() {
+    // The disclosure's whole job: a reader must be able to see WHICH files the
+    // anchor no longer describes, by name, without running git. Machine-derived
+    // from the same `git diff --name-only` read the header stamps — no path
+    // here is hand-typed, the same rule every other row in this artifact lives
+    // under.
+    let run = one_site_run();
+    let drifted = SurveyStamp {
+        anchor: "cafe1234".to_owned(),
+        drifted_ri: vec![
+            "tests/prd-gate/fixtures/one.ri".to_owned(), // pg-drift:allow — synthetic drift path; no such fixture exists and nothing compiled reads one.ri
+            "tree-sitter-reify/test/fixtures/two.ri".to_owned(),
+        ],
+    };
+    let md = render_survey(&run, &drifted);
+
+    assert!(
+        md.contains(DRIFT_DISCLOSURE_KEY),
+        "a drifted stamp must disclose; got:\n{md}"
+    );
+    for path in &drifted.drifted_ri {
+        assert!(
+            md.contains(path.as_str()),
+            "the disclosure must name {path} — a path it drops is a path no \
+             reader can know about; got:\n{md}"
+        );
+    }
+    assert!(
+        md.contains(&format!("{} tracked", drifted.drifted_ri.len())),
+        "the stated count must be COMPUTED from the disclosed list, never \
+         typed; got:\n{md}"
+    );
+    // Drift discloses; it never re-anchors. Read through the same parser the
+    // gate-resident ancestry guard uses, so this pins the line that guard reads.
+    assert_eq!(
+        parse_stamped_base_commit(&md),
+        Some("cafe1234"),
+        "the merge base stays THE stamped anchor — a rewritable branch tip must \
+         never be promoted into that line; got:\n{md}"
+    );
+}
+
+#[test]
+fn render_survey_omits_the_disclosure_entirely_when_nothing_drifted() {
+    // The undrifted run is the common one, and it must render EXACTLY what it
+    // rendered before the disclosure existed: no "0 files drifted" noise row,
+    // so two runs generated on `main` stay byte-comparable with each other.
+    let run = one_site_run();
+    let without = render_survey(&run, &SurveyStamp::at("cafe1234"));
+    assert!(
+        !without.contains(DRIFT_DISCLOSURE_KEY),
+        "an undrifted stamp must render no disclosure at all; got:\n{without}"
+    );
+
+    // …and the disclosure is purely ADDITIVE: it is inserted, and changes not
+    // one byte above or below itself. Asserted as prefix/suffix identity rather
+    // than by eyeballing the two renderings.
+    let with = render_survey(
+        &run,
+        &SurveyStamp {
+            anchor: "cafe1234".to_owned(),
+            drifted_ri: vec!["tests/prd-gate/fixtures/one.ri".to_owned()], // pg-drift:allow — same synthetic path as above
+        },
+    );
+    let at = with
+        .find(DRIFT_DISCLOSURE_KEY)
+        .expect("the drifted rendering must carry the disclosure key");
+    assert_eq!(
+        &with[..at],
+        &without[..at],
+        "everything ABOVE the disclosure must be byte-identical either way"
+    );
+    assert!(
+        with.ends_with(&without[at..]),
+        "everything BELOW the disclosure must be byte-identical either way"
+    );
+}
+
+/// A one-site run: the smallest thing that renders every section of the
+/// artifact, for tests whose subject is the header rather than the rows.
+#[cfg(test)]
+fn one_site_run() -> SurveyRun {
+    SurveyRun {
+        total: 1,
+        surveyed: 1,
+        not_surveyed: vec![],
+        partial: vec![],
+        sites: vec![synth_site("a.ri", 3, "Widget", "label", Owner::NonFea)],
+    }
 }
 
 #[test]
@@ -3274,7 +4165,7 @@ fn render_survey_carries_the_regeneration_command_and_the_coverage_section() {
         partial: vec![("multi.ri".to_owned(), "compile-error".to_owned())],
         sites: vec![synth_site("a.ri", 1, "W", "f", Owner::NonFea)],
     };
-    let md = render_survey(&run, "sha");
+    let md = render_survey(&run, &SurveyStamp::at("sha"));
 
     assert!(
         md.contains("## How to regenerate"),
@@ -3295,6 +4186,172 @@ fn render_survey_carries_the_regeneration_command_and_the_coverage_section() {
         assert!(
             md.contains(name) && md.contains(reason),
             "the coverage section must list {name} with reason {reason}:\n{md}"
+        );
+    }
+}
+
+/// The header label of the disposition column, and the one place the tests read
+/// it from — so a row's disposition is located BY COLUMN NAME rather than by a
+/// hard-coded index that silently shifts when a column is inserted.
+#[cfg(test)]
+const DISPOSITION_COLUMN: &str = "disposition (γ ruling)";
+
+/// The disposition cell of the site row anchored at `row_anchor`.
+#[cfg(test)]
+fn disposition_cell(md: &str, row_anchor: &str) -> String {
+    let header = md
+        .lines()
+        .find(|l| l.starts_with("| site |"))
+        .unwrap_or_else(|| panic!("the site table header must be rendered:\n{md}"));
+    let idx = header
+        .split('|')
+        .map(str::trim)
+        .position(|c| c == DISPOSITION_COLUMN)
+        .unwrap_or_else(|| {
+            panic!("the site table header must carry a `{DISPOSITION_COLUMN}` column:\n{header}")
+        });
+    let row = md
+        .lines()
+        .find(|l| l.starts_with(row_anchor))
+        .unwrap_or_else(|| panic!("no site row anchored at {row_anchor:?}:\n{md}"));
+    row.split('|')
+        .map(str::trim)
+        .nth(idx)
+        .unwrap_or_else(|| panic!("row {row:?} has no cell at the disposition index {idx}"))
+        .to_owned()
+}
+
+/// Every site row carries a disposition RESOLVED FROM THE TABLES.
+///
+/// PRD §4 D9 requires γ to record each of its choices in the survey artifact.
+/// Recording them as hand-written prose would rot the moment a table entry moves
+/// or an owning task lands, so the artifact projects the tables instead: the
+/// tables are the single source, and this column is a view of them.
+///
+/// Driven entirely by SYNTHETIC sites, like every other renderer test here — no
+/// corpus compile, and no assertion on the committed artifact's own text, which
+/// would be a documentation meta-test.
+///
+/// # Degrades to the table-free rows when a table drains
+///
+/// The two table-keyed rows borrow the FIRST live entry of each table, so no key
+/// is copied here and an individual retirement cannot stale this test. Draining a
+/// table EMPTY is the terminal success state of this whole effort, though — the
+/// last engineer to delete a residual row must not be greeted by a red gate for
+/// having finished the work — so each table-keyed half is skipped with a printed
+/// reason, exactly as the `git_is_available` probes in this module skip. The rows
+/// that depend on NO table entry (unattributed, unkeyable, `n/a`) always run, so
+/// the renderer's projection keeps real coverage after both tables are gone.
+#[test]
+fn render_survey_resolves_each_site_disposition_from_the_tables() {
+    let mut unkeyable = synth_site("no_param.ri", 4, "Widget", "ignored", Owner::Unknown);
+    unkeyable.field = None;
+    // A ctor-conformance CODE at Error severity: a deliberate rejection fixture,
+    // keyable by param yet owned by nobody. Synthetic rather than borrowed from
+    // the corpus, and deliberately NOT in either table, so it proves severity
+    // alone decides the `n/a` state.
+    let mut rejection = synth_site("rejection_fixture.ri", 5, "union", "faces", Owner::NonFea);
+    rejection.severity = "Error".to_owned();
+    rejection.code = "SelectorKindMismatch".to_owned();
+
+    let mut sites = vec![
+        synth_site("not_in_any_table.ri", 3, "Widget", "label", Owner::NonFea),
+        unkeyable,
+        rejection,
+    ];
+
+    let residual = CTOR_CONFORMANCE_CORPUS_RESIDUAL.first();
+    let debt = super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT.first();
+    let debt_path = debt.map(|(key, _, _)| format!("{EXAMPLES_PREFIX}{key}"));
+    if let Some((path, param, _, _)) = residual {
+        sites.push(synth_site(path, 1, "Widget", param, Owner::NonFea));
+    }
+    if let (Some((_, param, _)), Some(path)) = (debt, debt_path.as_deref()) {
+        sites.push(synth_site(path, 2, "TOTSShaper", param, Owner::NonFea));
+    }
+    let n = sites.len();
+    let md = render_survey(
+        &SurveyRun {
+            total: n,
+            surveyed: n,
+            not_surveyed: vec![],
+            partial: vec![],
+            sites,
+        },
+        &SurveyStamp::at("sha"),
+    );
+
+    for (anchor, what) in [
+        ("| `not_in_any_table.ri:3`", "a site named by neither table"),
+        (
+            "| `no_param.ri:4`",
+            "a site whose param could not be recovered, so no table can key it",
+        ),
+    ] {
+        let unattributed = disposition_cell(&md, anchor);
+        assert!(
+            unattributed.contains("unattributed"),
+            "{what} must render as unattributed — the conservative default. Reading \
+             as deferred would attribute an owner nobody assigned; got \
+             {unattributed:?}"
+        );
+        assert!(
+            !unattributed.contains('#'),
+            "{what} must name no owner at all; got {unattributed:?}"
+        );
+    }
+
+    // The third state, and the one the `why` column exists to protect: an
+    // Error-severity row must NOT read as unclaimed work.
+    let rejection_cell = disposition_cell(&md, "| `rejection_fixture.ri:5`");
+    assert!(
+        rejection_cell.starts_with("n/a"),
+        "an Error-severity ctor-conformance-coded site must render as `n/a` — it is \
+         outside the warning signal and nobody owns retiring it; got {rejection_cell:?}"
+    );
+    assert!(
+        !rejection_cell.contains("unattributed") && !rejection_cell.contains('#'),
+        "an `n/a` row must neither read as actionable nor name an owner: it is a \
+         deliberate rejection fixture, so both would send a reader to delete another \
+         PRD's signal; got {rejection_cell:?}"
+    );
+
+    // A deferred cell must be a visible deferral, not merely a bare cite.
+    if let Some((residual_path, _, residual_owner, residual_why)) = residual {
+        let residual_cell = disposition_cell(&md, &format!("| `{residual_path}:1`"));
+        assert!(
+            residual_cell.contains("deferred")
+                && residual_cell.contains(&format!("owned by {residual_owner}")),
+            "a deferred site must SAY it is deferred and who owns it, so the cell \
+             reads on its own; got {residual_cell:?}"
+        );
+        assert!(
+            residual_cell.contains(&cell(residual_why)),
+            "a CTOR_CONFORMANCE_CORPUS_RESIDUAL site must render its recorded reason \
+             beside the owner, so a reader meets the deferral and its justification in \
+             the same cell; why {residual_why:?}, got {residual_cell:?}"
+        );
+    } else {
+        println!(
+            "skipped: CTOR_CONFORMANCE_CORPUS_RESIDUAL is empty — every owner has \
+             landed, so there is no residual row to project"
+        );
+    }
+
+    if let (Some((_, _, debt_owner)), Some(debt_path)) = (debt, debt_path.as_deref()) {
+        let debt_cell = disposition_cell(&md, &format!("| `{debt_path}:2`"));
+        assert!(
+            debt_cell.contains("deferred") && debt_cell.contains(&format!("owned by {debt_owner}")),
+            "a CTOR_CONFORMANCE_MIGRATION_DEBT site must render THAT table's owner as a \
+             visible deferral. The debt list is keyed relative to `examples/` and this \
+             row is repo-relative, so a miss here means the two key forms stopped being \
+             bridged and every examples/ site silently reads as unattributed; owner \
+             {debt_owner}, got {debt_cell:?}"
+        );
+    } else {
+        println!(
+            "skipped: CTOR_CONFORMANCE_MIGRATION_DEBT is empty — every owner has \
+             landed, so there is no examples/-keyed row to project"
         );
     }
 }
@@ -3356,8 +4413,9 @@ fn git_read(args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
 
-/// The commit stamped into the artifact header — `git merge-base main HEAD`,
-/// deliberately NOT `git rev-parse HEAD`.
+/// Read the git state the header will state: the commit stamped as the anchor
+/// — `git merge-base main HEAD`, deliberately NOT `git rev-parse HEAD` — plus
+/// any tracked `.ri` that has drifted from it.
 ///
 /// A task-branch tip is a commit the merge machinery can, and demonstrably did,
 /// rewrite. The first committed survey stamped `a0d0899874…`, the pre-rebase
@@ -3376,12 +4434,14 @@ fn git_read(args: &[&str]) -> String {
 ///
 /// Panics rather than stamping any state that would make that header dishonest;
 /// the decision itself is [`stamp_decision`], which is pure and gate-resident.
+/// Drifted `.ri` are the one git fact that does NOT panic — they are committed,
+/// so the header discloses them by name instead ([`SurveyStamp`]).
 ///
 /// For the reader: only THIS function — which runs solely inside the
 /// `#[ignore]`d generator — depends on a `main` ref existing. The gate-resident
 /// guard `committed_survey_stamps_a_commit_that_is_an_ancestor_of_head`
 /// deliberately does not, so a checkout without `main` cannot red the gate.
-fn base_commit() -> String {
+fn survey_stamp() -> SurveyStamp {
     let anchor = git_read(&["merge-base", "main", "HEAD"]);
     // `--untracked-files=no` is deliberate: `git ls-files` never surfaces an
     // untracked file, so an untracked scratch file cannot change one row of the
@@ -3415,7 +4475,7 @@ fn base_commit() -> String {
 fn generate_ctor_conformance_corpus_survey() {
     let corpus = tracked_ri_corpus();
     let run = survey_corpus(std::path::Path::new(WORKSPACE_ROOT), corpus);
-    let rendered = render_survey(&run, &base_commit());
+    let rendered = render_survey(&run, &survey_stamp());
     let out = survey_output_path();
     std::fs::write(&out, &rendered)
         .unwrap_or_else(|e| panic!("cannot write survey to {}: {e}", out.display()));
@@ -3429,6 +4489,11 @@ fn generate_ctor_conformance_corpus_survey() {
         run.partial.len(),
         out.display()
     );
+
+    // Asserted AFTER the write, deliberately: a failing run still leaves a
+    // regenerated artifact on disk, so the operator can read the disposition
+    // column to see which sites the panic is talking about.
+    assert_no_unwaived_ctor_conformance_warnings(&run);
 }
 
 #[test]
@@ -3491,20 +4556,65 @@ fn survey_output_path_honours_the_scratch_override() {
 /// exactly 40 lowercase hexadecimal characters.
 const FULL_SHA_LEN: usize = 40;
 
+/// What the artifact header states about the git state it was generated from.
+///
+/// Two kinds of fact, treated differently ON PURPOSE, and the discriminator is
+/// REACHABILITY rather than severity:
+///
+/// * uncommitted bytes are reachable from NO commit, so no wording in a header
+///   could let a reader reconstruct what was actually surveyed — a refusal is
+///   the only way the snapshot claim stays honest. [`stamp_decision`] refuses,
+///   and likewise refuses an anchor that is not a resolved object name, which
+///   names nothing at all;
+/// * drifted tracked `.ri` ARE committed and reachable from the surveyed
+///   commit, so NAMING them in full makes the header honest without refusing.
+///   They are disclosed here instead.
+///
+/// Refusing the drift case would also be unsatisfiable exactly where the
+/// artifact expects to be re-run: its own header names γ as the task that will
+/// legitimately invalidate it, and γ's diff IS `.ri` migrations — so the branch
+/// chartered to regenerate the survey could never regenerate it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SurveyStamp {
+    /// The commit the header names — `git merge-base main HEAD`; see
+    /// [`survey_stamp`] for why never the branch tip.
+    anchor: String,
+    /// Tracked `.ri` differing between [`Self::anchor`] and the surveyed
+    /// commit, verbatim from `git diff --name-only <anchor> HEAD -- '*.ri'`.
+    ///
+    /// Empty is the ordinary case and renders NOTHING, so an undrifted artifact
+    /// carries no disclosure at all — no permanent "0 files drifted" row, and
+    /// runs generated on `main` stay byte-comparable with each other.
+    drifted_ri: Vec<String>,
+}
+
+impl SurveyStamp {
+    /// The undrifted shape: an anchor that describes the surveyed corpus exactly.
+    fn at(anchor: &str) -> Self {
+        Self {
+            anchor: anchor.to_owned(),
+            drifted_ri: Vec::new(),
+        }
+    }
+}
+
 /// Decide whether the git state just read may be stamped into the artifact
 /// header — or whether stamping it would make that header lie.
 ///
 /// Pure by construction, so the decision is gate-resident and unit-tested with
-/// no git state at all; the three reads that feed it live in [`base_commit`],
+/// no git state at all; the three reads that feed it live in [`survey_stamp`],
 /// behind the `#[ignore]`d generator. Same split this module uses throughout.
 ///
 /// * `anchor` — `git merge-base main HEAD`, the commit the header will name.
 /// * `dirty` — `git status --porcelain --untracked-files=no`.
 /// * `ri_drift` — `git diff --name-only <anchor> HEAD -- '*.ri'`.
 ///
+/// The first two can REFUSE; `ri_drift` never does — it is disclosed. See
+/// [`SurveyStamp`] for the reachability argument that splits them.
+///
 /// Whitespace-only input is an EMPTY read: git writes a trailing newline even
 /// when it has nothing to report.
-fn stamp_decision(anchor: &str, dirty: &str, ri_drift: &str) -> Result<String, String> {
+fn stamp_decision(anchor: &str, dirty: &str, ri_drift: &str) -> Result<SurveyStamp, String> {
     let anchor = anchor.trim();
     if anchor.len() != FULL_SHA_LEN || !anchor.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')) {
         return Err(format!(
@@ -3524,16 +4634,15 @@ fn stamp_decision(anchor: &str, dirty: &str, ri_drift: &str) -> Result<String, S
         ));
     }
 
-    let ri_drift = ri_drift.trim();
-    if !ri_drift.is_empty() {
-        return Err(format!(
-            "refusing to stamp {anchor}: tracked .ri files differ between it and \
-             the commit being surveyed, so the anchor would not describe the \
-             corpus rendered below it. Drifted:\n{ri_drift}"
-        ));
-    }
-
-    Ok(anchor.to_owned())
+    Ok(SurveyStamp {
+        anchor: anchor.to_owned(),
+        drifted_ri: ri_drift
+            .lines()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(str::to_owned)
+            .collect(),
+    })
 }
 
 #[test]
@@ -3544,7 +4653,7 @@ fn stamp_decision_accepts_a_resolved_anchor_over_a_clean_tree() {
     let anchor = "a46387d1f58fb469ed226cc0f2bfbaafa7cf63be";
     assert_eq!(
         stamp_decision(anchor, "", ""),
-        Ok(anchor.to_owned()),
+        Ok(SurveyStamp::at(anchor)),
         "a resolved anchor over a clean, undrifted tree is exactly what the \
          header is allowed to claim"
     );
@@ -3552,7 +4661,7 @@ fn stamp_decision_accepts_a_resolved_anchor_over_a_clean_tree() {
     // whitespace-only read is an EMPTY read — not a refusal.
     assert_eq!(
         stamp_decision(anchor, "\n", "  \n"),
-        Ok(anchor.to_owned()),
+        Ok(SurveyStamp::at(anchor)),
         "whitespace-only git output means clean; it must not be read as dirty"
     );
 }
@@ -3585,21 +4694,50 @@ fn stamp_decision_refuses_a_dirty_tree_and_names_what_is_dirty() {
 }
 
 #[test]
-fn stamp_decision_refuses_when_a_tracked_ri_drifted_from_the_anchor() {
-    // The anchor is an honest description of the surveyed corpus only while no
-    // tracked `.ri` differs between the anchor and the commit swept. If one
-    // does, the header would name a commit whose corpus is not the one in the
-    // table below it.
+fn stamp_decision_discloses_a_drifted_tracked_ri_rather_than_refusing() {
+    // A tracked `.ri` differing between the anchor and the commit swept makes
+    // the anchor an INCOMPLETE description of the surveyed corpus — not an
+    // unrecoverable one. The drifted bytes are COMMITTED and reachable from the
+    // surveyed commit, so naming every one of them makes the header fully
+    // honest; a refusal would additionally be unsatisfiable on the one branch
+    // this artifact names as its expected invalidator, whose whole diff is
+    // `.ri` migrations.
     let anchor = "a46387d1f58fb469ed226cc0f2bfbaafa7cf63be";
-    let err = stamp_decision(anchor, "", "examples/one.ri\nexamples/two.ri\n")
-        .expect_err("drifted tracked .ri must refuse to stamp");
-    for path in ["examples/one.ri", "examples/two.ri"] {
-        assert!(
-            err.contains(path),
-            "the refusal must name every drifted path — {path} is missing \
-             from: {err}"
-        );
-    }
+    let stamp = stamp_decision(anchor, "", "examples/one.ri\nexamples/two.ri\n")
+        .expect("a committed .ri drift is disclosed, never refused");
+    assert_eq!(
+        stamp.anchor, anchor,
+        "drift must not promote the surveyed tip: the merge base stays THE \
+         anchor, because a branch tip is rewritable and this one is not"
+    );
+    assert_eq!(
+        stamp.drifted_ri,
+        vec!["examples/one.ri".to_owned(), "examples/two.ri".to_owned()],
+        "every drifted path git reported must survive into the disclosure, in \
+         git's own order and spelling — the disclosure is machine-generated, so \
+         a path it drops is a path no reader can know about"
+    );
+}
+
+#[test]
+fn stamp_decision_still_refuses_an_unreachable_state_even_alongside_drift() {
+    // The discriminator between refusing and disclosing is REACHABILITY, never
+    // "how much changed" — so drift, which is disclosable, must not soften
+    // either refusal it travels with. Uncommitted bytes are reachable from no
+    // commit and an unresolved anchor names no commit at all; in both cases no
+    // wording in the header could let a reader reconstruct what was surveyed.
+    let anchor = "a46387d1f58fb469ed226cc0f2bfbaafa7cf63be";
+    let err = stamp_decision(anchor, " M docs/prds/x.md\n", "examples/one.ri\n")
+        .expect_err("a dirty tree refuses whether or not a tracked .ri drifted");
+    assert!(
+        err.contains("docs/prds/x.md"),
+        "the refusal must still name what is dirty; got: {err}"
+    );
+    assert!(
+        stamp_decision("HEAD", "", "examples/one.ri\n").is_err(),
+        "an anchor that is not a resolved object name refuses whether or not a \
+         tracked .ri drifted"
+    );
 }
 
 #[test]
@@ -3678,11 +4816,11 @@ fn committed_survey_stamps_a_commit_that_is_an_ancestor_of_head() {
     // three git calls — so unlike the `#[ignore]`d generator this belongs here.
     //
     // ORDERING DEPENDENCY: this guard stays green across future rebases ONLY
-    // because `base_commit()` stamps `git merge-base main HEAD` rather than the
+    // because `survey_stamp()` stamps `git merge-base main HEAD` rather than the
     // branch tip. Adding it while the anchor was still a branch tip would
     // convert every rebase of this branch into a merge-blocking red.
     //
-    // Unlike `base_commit()`, nothing here needs a `main` ref to exist.
+    // Unlike `survey_stamp()`, nothing here needs a `main` ref to exist.
     //
     // SKIP, not fail, when git cannot be spawned: every assertion below is a
     // question put to git, and "there is no git" is not an answer about the
