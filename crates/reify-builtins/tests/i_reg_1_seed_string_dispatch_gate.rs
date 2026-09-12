@@ -300,12 +300,48 @@ fn blank(bytes: &mut [u8], a: usize, b: usize) {
     }
 }
 
+/// One past the closing `'` when a char literal starts at `at`, or `None` when
+/// the quote opens a LIFETIME (`'static`, `&'a str`) instead — the two shapes a
+/// `'` can begin, distinguished by whether a closing quote follows one char.
+///
+/// Multi-byte chars (`'é'`) are measured by UTF-8 lead-byte width rather than
+/// assumed one byte wide, so their closing quote is consumed and cannot open a
+/// spurious literal over the code that follows.
+fn char_literal_end(raw: &[u8], at: usize) -> Option<usize> {
+    let n = raw.len();
+    let first = at + 1;
+    if first >= n {
+        return None;
+    }
+    if raw[first] == b'\\' {
+        // An escape's payload can itself be a quote (`'\''`) or run several
+        // bytes (`'\u{7b}'`), so step over the payload byte and then find the
+        // real closing quote.
+        let mut j = first + 2;
+        while j < n && raw[j] != b'\'' {
+            j += 1;
+        }
+        return (j < n).then_some(j + 1);
+    }
+    let width = match raw[first] {
+        b if b < 0x80 => 1,
+        b if b >> 5 == 0b110 => 2,
+        b if b >> 4 == 0b1110 => 3,
+        _ => 4,
+    };
+    let close = first + width;
+    (close < n && raw[close] == b'\'').then_some(close + 1)
+}
+
 /// Blank every comment, and collect every simple string literal at code level.
 ///
 /// Raw strings (`r"…"`, `r#"…"#`) are blanked wholesale rather than collected:
 /// in a `src/` file they carry embedded `.ri` fixture text, never Rust pattern
 /// syntax, and leaving them intact would let a fixture that happens to contain
 /// `"von_mises" =>` trip the gate.
+///
+/// Char literals are blanked too (see [`char_literal_end`]), because a brace or
+/// quote inside one is not a brace or quote to any walk over the result.
 ///
 /// Not a full Rust lexer — it handles line/block comments (block comments
 /// nest, as in Rust), simple and raw string literals, and char literals /
@@ -404,19 +440,19 @@ fn strip_comments_and_collect_literals(src: &str) -> (Vec<u8>, Vec<StrLit>) {
                 });
             }
             b'\'' => {
-                // A char literal (`'a'`, `'\n'`) or a lifetime (`'static`).
-                // Only the former can hide a `"`; either way, stepping past a
-                // char literal is enough and a lifetime is left as code.
-                if i + 2 < n && raw[i + 1] == b'\\' {
-                    let mut j = i + 2;
-                    while j < n && raw[j] != b'\'' {
-                        j += 1;
+                // A char literal (`'a'`, `'\n'`, `'{'`) or a lifetime
+                // (`'static`). A char literal is BLANKED, not merely stepped
+                // past: one char can never hold a seed name, but it can hold a
+                // BRACE, and every brace-balancing walk here reads the stripped
+                // buffer, so an intact `'{'` steers those walks off the real
+                // nesting. A lifetime has no closing quote and stays code —
+                // `is_shared_str_slice` reads `&'static str` from this buffer.
+                match char_literal_end(raw, i) {
+                    Some(end) => {
+                        blank(&mut bytes, i, end);
+                        i = end;
                     }
-                    i = (j + 1).min(n);
-                } else if i + 2 < n && raw[i + 2] == b'\'' {
-                    i += 3;
-                } else {
-                    i += 1;
+                    None => i += 1,
                 }
             }
             _ => i += 1,
@@ -517,9 +553,12 @@ fn attr_gates_test_code(attr: &str) -> bool {
 /// Handles both shapes an attribute can gate: a braced item (`mod tests { … }`,
 /// `fn … { … }`) is blanked through its matching `}`, and a brace-less item
 /// (`use …;`) through its `;`. Operates on the comment-stripped buffer, so a
-/// brace inside a comment cannot unbalance the count; every byte inside a
-/// string literal is skipped using the collected literal spans, so neither a
-/// brace nor attribute TEXT sitting there can steer either walk.
+/// brace inside a comment cannot unbalance the count, and a brace inside a CHAR
+/// literal is already blanked there; every byte inside a STRING literal is
+/// skipped using the collected literal spans, so neither a brace nor attribute
+/// TEXT sitting in one of those three places can steer either walk. The claim
+/// is exactly that: a brace the stripped buffer still shows outside a collected
+/// literal span is taken at face value.
 fn mask_cfg_test_blocks(code: &mut [u8], lits: &[StrLit]) {
     // Byte-level membership mask, built once: the naive
     // "is `pos` inside any literal?" scan is O(bytes x literals), which on a
@@ -1761,6 +1800,85 @@ fn dispatch(name: &str) -> u8 {
         vec![("von_mises".to_string(), SiteKind::MatchArm)],
         "the `#[cfg(test)]` TEXT is a string literal in production code, not an \
          attribute — masking on it blanks the following item out of the scan"
+    );
+}
+
+/// A brace in a CHAR literal is not a brace — the same defect the test above
+/// closes for string literals, one token different.
+///
+/// `strip_comments_and_collect_literals` used to step PAST a char literal
+/// without blanking it or collecting it, so `'{'` and `'}'` reached every
+/// brace-balancing walk as real braces while `in_literal` (string spans only)
+/// reported them as code. Both directions were measured on the real tree
+/// before the fix:
+///
+/// - SILENT, pinned by the first fixture: a lone `'{'` in a test-gated item
+///   never lets the count return to 0, so `mask_cfg_test_blocks` runs `end` to
+///   `code.len()` and blanks the whole remainder of the file out of the scan.
+///   The gate then reports zero sites and PASSES over code it never read.
+/// - LOUD, pinned by the second: a lone `'}'` closes the count early, leaving
+///   the tail of a `#[cfg(test)]` item in the scan — test code reported as a
+///   production violation.
+///
+/// Inert on today's tree only by luck: the 26 char-literal braces under
+/// `crates/*/src` are all balanced pairs (`strip_prefix('{')` …
+/// `strip_suffix('}')`). A tree-wide differential over the unfixed pass
+/// diverges on 32 of 541 files — `crates/reify-kernel-occt/src/lib.rs` masked
+/// 6,898 bytes where a char-literal-aware pass masks 178,853 (its
+/// `rest.find([',', '}'])` calls) — so the balance is a coincidence, not an
+/// invariant, and one lone `'{'` added above a `#[cfg(test)]` boundary flips
+/// the gate to failing open.
+#[test]
+fn a_brace_in_a_char_literal_is_not_a_brace() {
+    fn seed_match_arms(src: &str) -> Vec<String> {
+        let (mut code, lits) = strip_comments_and_collect_literals(src);
+        mask_cfg_test_blocks(&mut code, &lits);
+        let names: BTreeSet<String> = ["von_mises"].into_iter().map(str::to_string).collect();
+        let lit_end_at = literal_start_index(code.len(), &lits);
+        lits.iter()
+            .filter(|l| names.contains(&l.content) && code[l.start] == b'"')
+            .filter(|l| match_arm_head(&code, &lit_end_at, l.end) == ArmHead::Arm)
+            .map(|l| l.content.clone())
+            .collect()
+    }
+
+    let unbalanced_open = r###"
+#[cfg(test)]
+fn opens(c: char) -> bool {
+    c == '{'
+}
+
+fn dispatch(name: &str) -> u8 {
+    match name {
+        "von_mises" => 1,
+        _ => 0,
+    }
+}
+"###;
+    assert_eq!(
+        seed_match_arms(unbalanced_open),
+        vec!["von_mises".to_string()],
+        "a `'{{'` inside a test-gated item must not unbalance the mask — \
+         letting it run to EOF hides every production site behind it and the \
+         gate passes over an unscanned file"
+    );
+
+    let unbalanced_close = r###"
+#[cfg(test)]
+fn closes(c: char, name: &str) -> u8 {
+    if c == '}' {
+        return 9;
+    }
+    match name {
+        "von_mises" => 1,
+        _ => 0,
+    }
+}
+"###;
+    assert!(
+        seed_match_arms(unbalanced_close).is_empty(),
+        "a `'}}'` inside a test-gated item must not end the mask early — the \
+         arm it exposes is test code, and reporting it is a false violation"
     );
 }
 
