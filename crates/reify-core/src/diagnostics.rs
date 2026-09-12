@@ -6061,6 +6061,65 @@ mod tests {
         assert_eq!(s, "\"BucklingOptionUnsupported\"");
     }
 
+    // --- §5.3/§5.4 shift-invert DiagnosticCode tests (task α, #7258) ---
+    // Three new shift-contract codes, minted here unemitted: γ (#7260) and δ
+    // (#7261) emit them, β (#7259) raises `ShiftAtEigenvalue`.  Mirrors the
+    // `diagnostic_code_shell_extract_variants_constructible` + `_serde_pascal_case`
+    // pattern: construct via `Diagnostic::{warning,error}(...).with_code(code)`
+    // (code and severity round-trip) and assert PascalCase serde wire strings.
+
+    /// The advisory shift code carries `Severity::Warning` and the two refusal
+    /// codes carry `Severity::Error`, per PRD §5.3/§5.4.  The severity split is
+    /// the behavioural contract worth pinning: `W_ShiftSkippedModes` must leave
+    /// band inspection legal, while `E_ShiftAtEigenvalue` and
+    /// `E_FirstModeNotInShiftedResult` must exit `reify eval` non-zero (INV-SF-2).
+    ///
+    /// The `Debug` repr is intentionally not asserted — the neighbouring
+    /// `BucklingOptionUnsupported` block documents that as deliberately unpinned
+    /// cosmetic output with no consumer contract.
+    ///
+    /// RED: the three variants do not exist → compile fail.
+    /// GREEN after step-2 adds them to `DiagnosticCode`.
+    #[test]
+    fn diagnostic_code_shift_variants_constructible() {
+        use super::Severity;
+
+        let warn = Diagnostic::warning("x").with_code(DiagnosticCode::ShiftSkippedModes);
+        assert_eq!(warn.severity, Severity::Warning);
+        assert_eq!(warn.code, Some(DiagnosticCode::ShiftSkippedModes));
+
+        let errors = [
+            DiagnosticCode::ShiftAtEigenvalue,
+            DiagnosticCode::FirstModeNotInShiftedResult,
+        ];
+        for code in errors {
+            let d = Diagnostic::error("x").with_code(code);
+            assert_eq!(d.severity, Severity::Error, "severity mismatch for {code:?}");
+            assert_eq!(d.code, Some(code), "code mismatch for {code:?}");
+        }
+    }
+
+    /// Under `feature = "serde"`, each shift-contract code serializes to its
+    /// PascalCase wire string (from `rename_all = "PascalCase"`).  These are the
+    /// wire identifiers the capability manifest binds, so they are pinned here
+    /// rather than left to follow a future rename of the Rust identifier.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_shift_variants_serde_pascal_case() {
+        let cases = [
+            (DiagnosticCode::ShiftSkippedModes, "\"ShiftSkippedModes\""),
+            (DiagnosticCode::ShiftAtEigenvalue, "\"ShiftAtEigenvalue\""),
+            (
+                DiagnosticCode::FirstModeNotInShiftedResult,
+                "\"FirstModeNotInShiftedResult\"",
+            ),
+        ];
+        for (code, expected) in cases {
+            let s = serde_json::to_string(&code).unwrap();
+            assert_eq!(s, expected, "serde mismatch for {code:?}");
+        }
+    }
+
     // --- §7 shell-extract DiagnosticCode tests (task ε, #3837) ---
     // Six new PRD §7 extraction-failure codes.  Mirrors the
     // `diagnostic_code_stackup_variants_constructible` + `_serde_pascal_case`
