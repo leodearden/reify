@@ -21,9 +21,7 @@
 //! Note: `mm` is a built-in unit (hardcoded in `units.rs::unit_to_scalar`), so
 //! `compile_source` (no stdlib) correctly resolves `5mm` to `Scalar{LENGTH}`.
 
-mod common;
-
-use common::expect_binop;
+use crate::common::expect_binop;
 use reify_core::{DiagnosticCode, Severity, Type};
 use reify_ir::BinOp;
 use reify_test_support::{compile_source, errors_only};

@@ -1173,7 +1173,7 @@ fn circular_pattern_slot_names_the_surface_builtin_not_the_lowered_kind() {
 /// The task-6862 regression fixture: `fn beam<Q: Dimension>(l: Scalar<Q>) -> Solid`
 /// whose body passes `l` straight into two LENGTH compile slots (`circle` arg0
 /// radius, `extrude` arg1 distance), instantiated at `beam(10mm)`.
-const DIM_KINDED_LENGTH_SLOT: &str = include_str!("fixtures/dim_kinded_length_slot.ri");
+const DIM_KINDED_LENGTH_SLOT: &str = include_str!("../fixtures/dim_kinded_length_slot.ri");
 
 /// SIGNAL — a dimension-kinded generic fn parameter used at a slotted LENGTH
 /// argument is CORRECT user code and must compile clean.
