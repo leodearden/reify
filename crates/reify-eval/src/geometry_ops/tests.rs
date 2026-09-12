@@ -1061,6 +1061,15 @@
                 "(d) names expected Angle, got: {:?}",
                 diags[0].message
             );
+            assert!(
+                diags[0]
+                    .message
+                    .contains(reify_core::units::ANGLE_MIGRATION_HINT),
+                "(d) the rejection must carry the repair instruction — angle_spec()'s \
+                 shared hint, referenced as the const so this cannot drift from the \
+                 spelling; got: {:?}",
+                diags[0].message
+            );
         }
 
         // (e) Undef (missing cell ValueRef) → None, 0 diagnostics (quiet).
