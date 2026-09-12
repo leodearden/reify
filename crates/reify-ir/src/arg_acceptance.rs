@@ -138,12 +138,17 @@
 //!
 //! Deliberately NOT gated, and not a residual: unit-vector DIRECTIONS
 //! (`ax`/`ay`/`az`, `nx`/`ny`/`nz`, and `extrude_infinite`'s `dx`/`dy`/`dz`),
-//! instance COUNTS, dimensionless scale FACTORS, and every ANGLE — angles are
-//! `docs/prds/v0_6/angle-units-surface-convergence.md`'s by seam-table decree,
-//! so gating one here would be a scope violation, not an improvement. That PRD
-//! reuses the SAME `DimensionedArgRejected` code rather than minting a
-//! per-dimension sibling, so no ANGLE row will ever appear in this table's
-//! residual list — only in that PRD's. `half_space` is the one builtin whose
+//! instance COUNTS, and dimensionless scale FACTORS.
+//!
+//! ANGLES are gated too, but they are NOT rows of the table above. They have
+//! their own spec here — [`angle_spec`] — owned by
+//! `docs/prds/v0_6/angle-units-surface-convergence.md` by seam-table decree,
+//! and the positions it governs are enumerated on that function rather than
+//! here. That PRD reuses the SAME `DimensionedArgRejected` code rather than
+//! minting a per-dimension sibling, so an angle position is still tracked in
+//! ITS residual list and never in this one; which list a newly-added argument
+//! belongs to is decided by its dimension, not by its file.
+//! `half_space` is the one builtin whose
 //! args STRADDLE the boundary: its `px`/`py`/`pz` POINT is gated (above) while
 //! its `nx`/`ny`/`nz` outward NORMAL stays bare, mirroring the `ax`/`ay`/`az`
 //! vs `ox`/`oy`/`oz` split already drawn for the circular pattern.
@@ -311,6 +316,43 @@ pub fn length_spec() -> ArgSpec {
 /// `TractionLoad.traction`.
 ///
 /// `migration_hint` is intentionally `None` — see the section banner above.
+/// Returns the [`ArgSpec`] for an ANGLE-semantic builtin argument: a
+/// `Value::Scalar` with `DimensionVector::ANGLE` (radians). Mirrors
+/// [`length_spec`].
+///
+/// Two families of position share this spec:
+///
+/// - the PRODUCER angles — `rotate`'s and `rotate_around`'s rotation angle,
+///   `revolve`'s sweep angle, `arc`'s `start_angle` and `end_angle`, `draft`'s
+///   draft angle and `circular_pattern`'s total sweep;
+/// - the SELECTOR tolerances — the `tol` of the four directional face
+///   selectors (`faces_by_normal` and siblings), which is an angular tolerance
+///   rather than a length.
+///
+/// A bare `Value::Real`/`Int` in one of these positions is silently read as SI
+/// **radians** by `Value::as_f64`, so an author writing `45` meaning 45° gets
+/// 45 radians — the ≈57× analogue of the 10-vs-10mm 1000× hazard `length_spec`
+/// documents. `circular_pattern` is the one position where the bare reading
+/// was DEGREES instead, which is precisely why it cannot stay bare: two
+/// neighbouring angle slots disagreeing on what a bare number means is the
+/// hole this spec closes. See PRD
+/// `docs/prds/v0_6/angle-units-surface-convergence.md` (leaves β/γ/δ/ε).
+///
+/// Example rendered rejection:
+/// `"faces_by_normal: tol argument expects Angle, got Real; pass a dimensioned angle such as \`45deg\` or \`1.5rad\`"`
+///
+/// The rendered rejection for a dimensionless `Scalar` reads "...expects
+/// Angle, got dimensionless Scalar" — [`value_short_label`]'s existing wording,
+/// deliberately NOT overridden here, so the angle text stays uniform with the
+/// LENGTH one rather than growing a per-dimension special case.
+pub fn angle_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "Angle",
+        dimension: reify_core::DimensionVector::ANGLE,
+        migration_hint: Some(reify_core::units::ANGLE_MIGRATION_HINT),
+    }
+}
+
 pub fn pressure_spec() -> ArgSpec {
     ArgSpec {
         type_name: "Pressure",
