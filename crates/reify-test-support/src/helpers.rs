@@ -2114,6 +2114,73 @@ mod tests {
         assert!(message.contains("unrelated noise"), "{message}");
     }
 
+    // ── underdetermined_diags ─────────────────────────────────────────────
+    //
+    // Task #6524. Unlike its neighbours `collect_errors` / `error_diags`,
+    // this one filters on the structured CODE alone and is severity-blind.
+    // The cases below pin that difference, because the 21 call sites it
+    // replaces all depend on it.
+
+    /// Only `Underdetermined`-coded diagnostics come back. An unrelated code
+    /// is excluded, and so is a CODELESS (`code: None`) diagnostic — the
+    /// filter is `== Some(..)`, which is the precise behaviour of every copy
+    /// being replaced.
+    #[test]
+    fn underdetermined_diags_selects_only_underdetermined_code() {
+        let diags = vec![
+            Diagnostic::warning("auto `bore` is not pinned")
+                .with_code(DiagnosticCode::Underdetermined),
+            Diagnostic::error("unresolved name").with_code(DiagnosticCode::UnresolvedName),
+            Diagnostic::warning("codeless noise"),
+        ];
+        let under = super::underdetermined_diags(&diags);
+        assert_eq!(under.len(), 1, "got {under:#?}");
+        assert_eq!(under[0].message, "auto `bore` is not pinned");
+    }
+
+    /// The filter is severity-BLIND: an Error carrying the code is returned
+    /// just as a Warning is.
+    ///
+    /// This helper lands directly beside `collect_errors` / `error_diags`,
+    /// which DO filter `Severity::Error`, so a future editor harmonising the
+    /// neighbours could add one here — silently changing what 21 call sites
+    /// detect. `W_UNDERDETERMINED` is a warning today, so such a change would
+    /// not even go red at the sites that merely count it.
+    #[test]
+    fn underdetermined_diags_is_severity_blind() {
+        let diags = vec![
+            Diagnostic::error("escalated underdetermined")
+                .with_code(DiagnosticCode::Underdetermined),
+            Diagnostic::warning("plain underdetermined")
+                .with_code(DiagnosticCode::Underdetermined),
+        ];
+        let under = super::underdetermined_diags(&diags);
+        assert_eq!(
+            under.len(),
+            2,
+            "both severities must be returned — this filter is code-keyed \
+             only, unlike its collect_errors neighbour; got {under:#?}",
+        );
+    }
+
+    /// Input order is preserved. Several call sites read the result
+    /// positionally (`instance_path_underdetermined_e2e` maps it into a
+    /// `Vec<&str>` for comparison), so ordering is a relied-upon contract
+    /// rather than an accident of `.filter().collect()`.
+    #[test]
+    fn underdetermined_diags_preserves_input_order() {
+        let diags = vec![
+            Diagnostic::warning("first").with_code(DiagnosticCode::Underdetermined),
+            Diagnostic::warning("second").with_code(DiagnosticCode::Underdetermined),
+            Diagnostic::warning("third").with_code(DiagnosticCode::Underdetermined),
+        ];
+        let messages: Vec<&str> = super::underdetermined_diags(&diags)
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(messages, vec!["first", "second", "third"]);
+    }
+
     // ── get_value_cell_in ─────────────────────────────────────────────────
     // get_value_cell_in, get_let_expr_in_template, get_let_expr_in, and
     // get_let_expr all resolve through the shared lookup_value_cell walk, so
