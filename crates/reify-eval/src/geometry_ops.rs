@@ -3684,16 +3684,26 @@ fn transform_rotate(
             }
         }
     } else {
-        let mut f64_arg = |name: &str| -> Result<f64, String> {
-            eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
-                .ok_or_else(|| {
-                    format!("missing or non-finite argument '{}' for {}", name, kind)
-                })
+        // The axis DIRECTION is a dimensionless unit vector and stays bare
+        // (C1 inv. 4); the ANGLE is gated. The closure is SCOPED so its
+        // `diagnostics` borrow ends before the gate runs — that is what keeps
+        // the ax/ay/az-then-angle read order, and so the diagnostic order,
+        // exactly as it was.
+        let axis = {
+            let mut f64_arg = |name: &str| -> Result<f64, String> {
+                eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+                    .ok_or_else(|| {
+                        format!("missing or non-finite argument '{}' for {}", name, kind)
+                    })
+            };
+            [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?]
         };
+        let angle_rad =
+            required_angle_arg("angle", kind, args, values, functions, meta_map, diagnostics)?;
         Ok(reify_ir::GeometryOp::Rotate {
             target: target_id,
-            axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
-            angle_rad: f64_arg("angle")?,
+            axis,
+            angle_rad,
         })
     }
 }
@@ -3756,19 +3766,26 @@ fn transform_rotate_around(
         meta_map,
         diagnostics,
     )?;
-    // The axis is a dimensionless unit vector and `angle` is PRD 3's, not
-    // ours — both stay on the bare-accepting path.
-    let mut f64_arg = |name: &str| -> Result<f64, String> {
-        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| {
-                format!("missing or non-finite argument '{}' for {}", name, kind)
-            })
+    // The axis is a dimensionless unit vector and stays on the bare-accepting
+    // path (C1 inv. 4). The ANGLE is gated as of PRD 3 leaf γ; its closure is
+    // SCOPED so the borrow ends before the gate runs, preserving the read and
+    // diagnostic order.
+    let axis = {
+        let mut f64_arg = |name: &str| -> Result<f64, String> {
+            eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+                .ok_or_else(|| {
+                    format!("missing or non-finite argument '{}' for {}", name, kind)
+                })
+        };
+        [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?]
     };
+    let angle_rad =
+        required_angle_arg("angle", kind, args, values, functions, meta_map, diagnostics)?;
     Ok(reify_ir::GeometryOp::RotateAround {
         target: target_id,
         point,
-        axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
-        angle_rad: f64_arg("angle")?,
+        axis,
+        angle_rad,
     })
 }
 
@@ -4450,21 +4467,25 @@ fn sweep_revolve(
     // before the direction's magnitude check.
     let axis_origin =
         required_length_origin3(kind, args, values, functions, meta_map, diagnostics)?;
-    let mut f64_arg = |name: &str| -> Result<f64, String> {
-        eval_named_arg_f64(
-            name,
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        )
-        .ok_or_else(|| {
-            format!("missing or non-finite argument '{}' for {}", name, kind)
-        })
+    // Axis DIRECTION only — a dimensionless unit vector, un-gated (C1 inv. 4).
+    // SCOPED so the borrow ends before the angle gate below.
+    let axis_dir = {
+        let mut f64_arg = |name: &str| -> Result<f64, String> {
+            eval_named_arg_f64(
+                name,
+                kind,
+                args,
+                values,
+                functions,
+                meta_map,
+                diagnostics,
+            )
+            .ok_or_else(|| {
+                format!("missing or non-finite argument '{}' for {}", name, kind)
+            })
+        };
+        [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?]
     };
-    let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
     let mag = axis_dir.iter().map(|x| x * x).sum::<f64>().sqrt();
     if !mag.is_finite() || mag < GEOMETRY_EPSILON {
         diagnostics.push(Diagnostic::warning(format!(
@@ -4474,7 +4495,12 @@ fn sweep_revolve(
         )));
         return Err(format!("revolve axis has degenerate magnitude: {}", mag));
     }
-    let angle_rad = f64_arg("angle")?;
+    // The DIMENSION gate runs BEFORE the degeneracy check below, deliberately:
+    // a bare `0` is both bare and degenerate, and reporting it as "angle is
+    // degenerate" would send the author to fix the wrong thing. Pinned by
+    // `compile_geometry_op_revolve_bare_zero_reports_units_not_degeneracy`.
+    let angle_rad =
+        required_angle_arg("angle", kind, args, values, functions, meta_map, diagnostics)?;
     if angle_rad.abs() < DEGENERATE_ANGLE_RAD {
         diagnostics.push(Diagnostic::warning(format!(
             "revolve dropped: angle={} rad is degenerate \
@@ -4843,26 +4869,36 @@ fn curve_arc(
         diagnostics,
     )?;
     let center = [cx, cy, cz];
-    let mut f64_arg = |name: &str| -> Result<f64, String> {
-        eval_named_arg_f64(
-            name,
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        )
-        .ok_or_else(|| {
-            format!("missing or non-finite argument '{}' for {}", name, kind)
-        })
+    // Both ANGLES are gated (PRD 3 leaf γ) and read FIRST, which is also their
+    // existing source order — so the diagnostic order is unchanged. The axis
+    // DIRECTION stays bare (C1 inv. 4) behind a scoped closure.
+    let start_angle =
+        required_angle_arg("start_angle", kind, args, values, functions, meta_map, diagnostics)?;
+    let end_angle =
+        required_angle_arg("end_angle", kind, args, values, functions, meta_map, diagnostics)?;
+    let axis = {
+        let mut f64_arg = |name: &str| -> Result<f64, String> {
+            eval_named_arg_f64(
+                name,
+                kind,
+                args,
+                values,
+                functions,
+                meta_map,
+                diagnostics,
+            )
+            .ok_or_else(|| {
+                format!("missing or non-finite argument '{}' for {}", name, kind)
+            })
+        };
+        [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?]
     };
     Ok(reify_ir::GeometryOp::Arc {
         center,
         radius,
-        start_angle: f64_arg("start_angle")?,
-        end_angle: f64_arg("end_angle")?,
-        axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
+        start_angle,
+        end_angle,
+        axis,
     })
 }
 
