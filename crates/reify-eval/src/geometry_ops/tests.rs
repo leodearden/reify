@@ -2970,8 +2970,9 @@
         // remain present so that f64_arg? short-circuits on (and diagnoses)
         // only the omitted arg under test.
         let full_args: Vec<(&'static str, reify_ir::CompiledExpr)> = vec![
-            // Axis origin is LENGTH-semantic (task 5623); the axis vector
-            // and angle below stay bare. Fans out to all 7 loop iterations.
+            // Axis origin is LENGTH-semantic (task 5623) and the angle is
+            // ANGLE-semantic (PRD 3 leaf γ); only the axis vector stays bare.
+            // Fans out to all 7 loop iterations.
             ("ox", literal_length(0.0)),
             ("oy", literal_length(0.0)),
             ("oz", literal_length(0.0)),
@@ -5645,10 +5646,11 @@
     ///
     ///   * `extrude_infinite`'s `dx`/`dy`/`dz` are a dimensionless DIRECTION —
     ///     [`compile_geometry_op_extrude_infinite_bare_direction_still_accepted`].
-    ///   * `revolve`'s `angle` belongs to
-    ///     `docs/prds/v0_6/angle-units-surface-convergence.md` (PRD 3) —
-    ///     [`compile_geometry_op_revolve_length_origin_bare_axis_angle_accepted`],
-    ///     whose "BARE angle emits NO diagnostic" half is exactly that lock.
+    ///   * `revolve`'s `angle` belonged to
+    ///     `docs/prds/v0_6/angle-units-surface-convergence.md` (PRD 3), which
+    ///     GATED it in leaf γ (task 5779) —
+    ///     [`compile_geometry_op_revolve_length_origin_bare_axis_dimensioned_angle_accepted`]
+    ///     now locks the surviving half, that the bare AXIS stays un-gated.
     ///
     /// Both are CITED here rather than duplicated: a second copy of a negative
     /// lock is a second thing to forget to update.
@@ -9143,8 +9145,9 @@
     //
     // Each family's ACCEPTED test stays hand-written below: those assert
     // distinct SI values into distinct IR fields (the field-ordering pins) and
-    // genuinely differ per builtin, including the deliberately BARE angle /
-    // direction neighbours that lock this task's scope boundary.
+    // genuinely differ per builtin, including the deliberately BARE direction
+    // neighbours that lock this task's scope boundary. (The angle neighbours
+    // were part of that boundary until PRD 3 leaf γ gated them.)
     // ---------------------------------------------------------------------------
 
     /// One length-gated builtin, as data: everything the shared rejection
@@ -9561,21 +9564,21 @@
         assert_length_gated(ROTATE_AROUND_GATE);
     }
 
-    /// Locks the split AND the scope boundary: a `Length` pivot with a BARE
-    /// dimensionless axis and a BARE angle is the fully clean path and must
-    /// emit NO diagnostic at all.
+    /// Locks the split: a `Length` pivot with a BARE dimensionless axis and a
+    /// DIMENSIONED angle is the fully clean path and must emit NO diagnostic.
     ///
-    /// The bare-angle half is binding scope protection, not decoration. PRD 1
-    /// gates NO angle position; `rotate_around`'s rotation angle belongs to
-    /// `docs/prds/v0_6/angle-units-surface-convergence.md` (PRD 3) by
-    /// seam-table decree, and gating it here would be a scope violation. The
-    /// boundary is one careless edit away — it sits immediately beside a gated
-    /// triple — so it is encoded as a passing test rather than a comment.
+    /// The angle half was, until PRD 3 leaf γ (task 5779), a scope lock in the
+    /// OPPOSITE direction — it asserted a BARE angle emitted nothing, because
+    /// PRD 1 gated no angle position and `rotate_around`'s belonged to PRD 3
+    /// by seam-table decree. γ IS that PRD, and it gated this angle, so the
+    /// lock is inverted rather than deleted: what still needs protecting is
+    /// the AXIS, whose dimensionless components sit one careless edit away
+    /// from a gated triple and must stay bare (C1 inv. 4).
     ///
     /// Distinct components also pin the px/py/pz → `point` ORDERING against a
     /// transposed assembly.
     #[test]
-    fn compile_geometry_op_rotate_around_length_point_bare_axis_angle_accepted() {
+    fn compile_geometry_op_rotate_around_length_point_bare_axis_dimensioned_angle_accepted() {
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
 
@@ -9609,13 +9612,13 @@
             }
             other => panic!(
                 "expected Ok(RotateAround) for a Length pivot with a bare axis and \
-                 a bare angle, got {:?}",
+                 a dimensioned angle, got {:?}",
                 other
             ),
         }
         assert!(
             diagnostics.is_empty(),
-            "a Length pivot + dimensionless axis + BARE angle is the fully clean \
+            "a Length pivot + BARE dimensionless axis + dimensioned angle is the \
              path and must emit NO diagnostic at all — in particular the angle \
              must NOT be gated here (that is PRD 3's scope); got: {:?}",
             diagnostics
@@ -9666,15 +9669,18 @@
         assert_length_gated(REVOLVE_GATE);
     }
 
-    /// Locks the split AND the scope boundary: a `Length` origin with a BARE
-    /// dimensionless axis and a BARE angle is the fully clean path and must
-    /// emit NO diagnostic at all. The bare-angle half is binding scope
-    /// protection — `revolve`'s angle belongs to
-    /// `docs/prds/v0_6/angle-units-surface-convergence.md` (PRD 3), not here.
+    /// Locks the split: a `Length` origin with a BARE dimensionless axis and a
+    /// DIMENSIONED angle is the fully clean path and must emit NO diagnostic.
+    ///
+    /// Inverted by PRD 3 leaf γ (task 5779) for the same reason as its
+    /// `rotate_around` sibling above: the angle half used to assert that a BARE
+    /// angle emitted nothing, on the premise that `revolve`'s angle was PRD 3's
+    /// and not PRD 1's to gate. γ is PRD 3. The surviving lock is the AXIS,
+    /// which stays dimensionless (C1 inv. 4).
     ///
     /// Distinct components also pin the ox/oy/oz → `axis_origin` ORDERING.
     #[test]
-    fn compile_geometry_op_revolve_length_origin_bare_axis_angle_accepted() {
+    fn compile_geometry_op_revolve_length_origin_bare_axis_dimensioned_angle_accepted() {
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
 
@@ -9707,15 +9713,15 @@
             }
             other => panic!(
                 "expected Ok(Revolve) for a Length origin with a bare axis and a \
-                 bare angle, got {:?}",
+                 dimensioned angle, got {:?}",
                 other
             ),
         }
         assert!(
             diagnostics.is_empty(),
-            "a Length origin + dimensionless axis + BARE angle is the fully clean \
-             path and must emit NO diagnostic at all — in particular the angle \
-             must NOT be gated here (that is PRD 3's scope); got: {:?}",
+            "a Length origin + BARE dimensionless axis + dimensioned angle is the \
+             fully clean path and must emit NO diagnostic at all — in particular \
+             the bare AXIS must not be gated (C1 inv. 4); got: {:?}",
             diagnostics
         );
     }
