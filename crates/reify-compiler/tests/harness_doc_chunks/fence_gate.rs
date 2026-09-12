@@ -1780,13 +1780,23 @@ fn corpus() -> Vec<ChunkDoc> {
 }
 
 /// The PER-FILE bare-```` ```reify ```` floor: every chunk carrying at least
-/// one such fence after this task's retag sweep, with the count MEASURED then.
+/// one such fence, each entry EQUAL to that file's live count.
+///
+/// EXACT, not a lower bound, and that is a standing obligation rather than a
+/// snapshot of what was measured once. An entry set under live is no safety
+/// margin: the fences above it are guarded by nothing, because retagging them
+/// leaves the floor satisfied while the corpus-wide backstop below — the SUM of
+/// these entries — goes slack by the same amount. Any diff that changes a fence
+/// TAG therefore re-measures the file it touched and records the new count
+/// here; `reify_fence_floors_are_exact_not_slack` enforces it and names the file
+/// that drifted.
 ///
 /// A single corpus-wide floor is not enough. The sweep's one silent-damage mode
 /// is hollowing a passing test rather than failing one, and a slack aggregate
 /// floor permits exactly that: with only a `>= 2` corpus-wide floor, retagging
-/// six of the eight fences to `reify-fragment` would drop 75% of the gate's
-/// compile coverage and leave `every_reify_tagged_fence_compiles_clean` green.
+/// nine of the eleven fences to `reify-fragment` would drop over 80% of the
+/// gate's compile coverage and leave
+/// `every_reify_tagged_fence_compiles_clean` green.
 /// Pinning per file also ATTRIBUTES a loss to the file that took it, instead of
 /// reporting a corpus total that says nothing about where to look.
 ///
@@ -1798,8 +1808,8 @@ fn corpus() -> Vec<ChunkDoc> {
 ///
 /// A per-file table that covers only some files is not a ratchet, because the
 /// corpus-wide backstop below sums exactly these floors: a file the table does
-/// not know about can grow three `reify` fences (total 8 → 11) and a later task
-/// can retag all three away (11 → 8) with every assertion still passing, and
+/// not know about can grow three `reify` fences (total 11 → 14) and a later
+/// task can retag all three away (14 → 11) with every assertion still passing, and
 /// three documented examples silently stop being compiled. So
 /// `assert_corpus_is_not_vacuous` requires that EVERY file carrying at least
 /// one bare ```` ```reify ```` fence appears here. Adding such a fence to a new
@@ -1807,7 +1817,7 @@ fn corpus() -> Vec<ChunkDoc> {
 /// the aggregate check unable to mask a loss.
 const REIFY_FENCE_FLOORS: &[(&str, usize)] = &[
     ("enums", 2),
-    ("geometry", 2),
+    ("geometry", 4),
     ("purposes", 1),
     ("traits", 3),
     ("units", 1),
