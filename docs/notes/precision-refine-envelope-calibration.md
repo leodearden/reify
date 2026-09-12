@@ -291,7 +291,7 @@ re-running `reify check`; the committed file itself stays pinned at 20 mm:
 | 0.15 mm | 1.495e-4 | 0.9967 | |
 | 0.14 mm | 1.376e-4 | 0.9829 | |
 | 0.13 mm | 1.287e-4 | 0.9900 | |
-| **0.12 mm** | 1.197e-4 | **0.9975** | ← highest measured |
+| **0.12 mm** | 1.197e-4 | **0.9975** | ← highest on this ladder — superseded by the #7128 dense walk below (1.0010 at 0.14386 mm) |
 | 0.1 mm | 9.342e-5 | 0.9342 | |
 
 The 20 mm row reproduces the `1.713e-2` excerpted above exactly, confirming this ladder
