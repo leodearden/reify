@@ -120,11 +120,9 @@ impl<V> RealizationCache<V> {
     ///   (one that returns `true`, i.e. genuinely realized and cached new geometry).
     ///   Never decremented — not by [`remove`](Self::remove), not by
     ///   [`clear_entity`](Self::clear_entity), and not by the whole-cache
-    ///   [`clear`](Self::clear) behind `clear_realization_cache()` (which
-    ///   `edit_param`/`edit_source` perform on every edit, so a reset-on-flush
-    ///   counter would be useless for cross-edit measurement). No method on this
-    ///   type can lower the count — the monotonicity is structural, not a
-    ///   convention imposed on call sites.
+    ///   [`clear`](Self::clear). No method on this type can lower the count. See
+    ///   [`clear`](Self::clear) for why that survives the whole-cache flush by
+    ///   construction.
     /// - **Terminal only.** Plain [`insert`](Self::insert) — the intermediate
     ///   cross-kernel conversion path — is deliberately NOT counted. Conversion
     ///   intermediates are steps *within* one realization, not realizations.
