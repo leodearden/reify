@@ -2178,8 +2178,7 @@ mod tests {
         let diags = vec![
             Diagnostic::error("escalated underdetermined")
                 .with_code(DiagnosticCode::Underdetermined),
-            Diagnostic::warning("plain underdetermined")
-                .with_code(DiagnosticCode::Underdetermined),
+            Diagnostic::warning("plain underdetermined").with_code(DiagnosticCode::Underdetermined),
         ];
         let under = super::underdetermined_diags(&diags);
         assert_eq!(
