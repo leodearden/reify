@@ -429,15 +429,32 @@ pub(crate) fn accept_length_value(
     }
 }
 
+/// The SINGLE owner of the UNRESOLVED-argument wording, shared by every gated
+/// dimension.
+///
+/// An `Undef` argument gets its own sentence rather than the dimension
+/// rejection's: asserting "missing or non-Length" for a cell that is merely not
+/// yet resolved is actively misleading during solver iteration, where Undef
+/// cells are expected transient state. PRD-1 decision D10; the ANGLE gate
+/// (PRD 3 leaf γ) adopts it verbatim so the two PRDs' chokepoints behave
+/// identically (INV-SF-1), which is only true by construction if there is one
+/// sentence rather than one per dimension.
+fn unresolved_arg_message(
+    name: impl std::fmt::Display,
+    kind_label: impl std::fmt::Display,
+) -> String {
+    format!(
+        "argument '{}' for {} is unresolved (Undef)",
+        name, kind_label
+    )
+}
+
 /// The SINGLE owner of the caller-facing `Err` wording for a LENGTH-semantic
 /// argument (decision D9) — previously copy-pasted at six call sites, now
 /// minted here and here only, for BOTH arities of the named-arg route
-/// ([`required_length_arg`] and [`optional_length_value`]).
-///
-/// An `Unresolved` argument gets its own message: asserting "missing or
-/// non-Length" for a cell that is merely not yet resolved is actively
-/// misleading during solver iteration, where Undef cells are expected transient
-/// state.
+/// ([`required_length_arg`] and [`optional_length_value`]). The `Unresolved`
+/// row delegates to [`unresolved_arg_message`], which every gated dimension
+/// shares.
 fn length_arg_to_result(
     state: LengthArg,
     name: &str,
@@ -445,10 +462,7 @@ fn length_arg_to_result(
 ) -> Result<f64, String> {
     match state {
         LengthArg::Length(si) => Ok(si),
-        LengthArg::Unresolved => Err(format!(
-            "argument '{}' for {} is unresolved (Undef)",
-            name, kind_label
-        )),
+        LengthArg::Unresolved => Err(unresolved_arg_message(name, kind_label)),
         LengthArg::Invalid => Err(format!(
             "missing or non-Length argument '{}' for {}",
             name, kind_label
@@ -577,6 +591,131 @@ pub(crate) fn required_length_value(
         diagnostics,
     )
     .map(|[v]| v)
+}
+
+/// The VALUE-LEVEL core of the ANGLE gate: classify an already-evaluated
+/// `Value` as a finite ANGLE, and push the rejection diagnostic when it is not.
+///
+/// The arm-for-arm counterpart of [`accept_length_value`], sharing the same
+/// `accept_arg` classifier, the same `Diagnostic::error(..).with_code(..)`
+/// rejection shape and the same `Undef`-is-not-`Invalid` distinction — so an
+/// angle rejection and a length rejection differ only where their `ArgSpec`s
+/// differ, which is the whole point of contract C1.
+///
+/// # Why `Result<f64, String>` and not an `AngleArg` three-state enum
+///
+/// [`LengthArg`] exists to serve the VARIADIC route: a coordinate stream has to
+/// report EVERY failing member in one pass with `Unresolved`-beats-a-later-
+/// `Invalid` precedence, which needs the two failure states kept apart until
+/// the whole set has been classified. ANGLE has no variadic consumer — there is
+/// no angle stream and no angle grid, and every angle-bearing position in the
+/// language is a single named slot. A parallel `AngleArg` whose two failure
+/// states no caller ever inspects separately would be shape borrowed from a
+/// requirement that does not exist here. This is recorded so a later reader
+/// does not "restore symmetry" and reintroduce it.
+fn accept_angle_value(
+    name: impl std::fmt::Display + Copy,
+    kind_label: impl std::fmt::Display + Copy,
+    value: &reify_ir::Value,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<f64, String> {
+    use crate::arg_acceptance::{Acceptance, accept_arg, angle_spec};
+
+    match accept_arg(value, &angle_spec()) {
+        Acceptance::Accepted(si) if si.is_finite() => Ok(si),
+        Acceptance::Accepted(_) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "argument '{}' for {} evaluated to a non-finite Angle",
+                name, kind_label
+            )));
+            Err(format!(
+                "non-finite Angle argument '{}' for {}",
+                name, kind_label
+            ))
+        }
+        Acceptance::Undefined => Err(unresolved_arg_message(name, kind_label)),
+        Acceptance::Rejected(rej) => {
+            // SEVERITY: Error, as contract C1 invariant 3 requires, so
+            // `reify eval` exits nonzero through the pure severity gate at
+            // `reify-cli/src/main.rs` (INV-SF-2). This mirrors
+            // `accept_length_value`'s promoted arm rather than β's
+            // `resolve_angle_scalar_arg`, which stays a Warning: β added a hint
+            // to a PRE-EXISTING reader whose callers continue on `None`, while
+            // every caller of this one drops the op.
+            diagnostics.push(
+                Diagnostic::error(rej.message(&kind_label.to_string(), &name.to_string()))
+                    .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
+            );
+            Err(format!(
+                "missing or non-Angle argument '{}' for {}",
+                name, kind_label
+            ))
+        }
+    }
+}
+
+/// The named-arg route into the ANGLE gate, for a REQUIRED angle slot:
+/// `rotate` / `rotate_around` / `revolve`'s angle, `arc`'s `start_angle` and
+/// `end_angle` (PRD 3 leaf γ), `draft`'s angle (leaf δ) and
+/// `circular_pattern`'s (leaf ε).
+///
+/// The lookup goes through [`eval_named_arg`], so the missing-arg Warning and
+/// its anti-cascade contract are INHERITED rather than re-derived — a missing
+/// angle produces exactly one Warning and no dimension rejection stacked on it.
+fn required_angle_arg(
+    name: &str,
+    kind_label: impl std::fmt::Display + Copy,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<f64, String> {
+    let Some(value) = eval_named_arg(
+        name,
+        kind_label,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    ) else {
+        // `eval_named_arg` has already named the culprit; adding a dimension
+        // rejection here would be the cascade that contract forbids.
+        return Err(format!(
+            "missing or non-Angle argument '{}' for {}",
+            name, kind_label
+        ));
+    };
+    accept_angle_value(name, kind_label, &value, diagnostics)
+}
+
+/// As [`required_angle_arg`], re-wrapped as an ANGLE `Value::Scalar`.
+///
+/// The ANGLE counterpart of [`required_length_value`], and the R7 raw-`Value`
+/// route the angle-bearing `reify_ir::GeometryOp` FIELDS take — `Draft`'s angle
+/// (leaf δ) and `CircularPattern`'s (leaf ε). It re-wraps the ACCEPTED SI
+/// radians, so the stored representation the kernel reads is unchanged by the
+/// check and gating such a slot stays a one-line swap of its `eval_arg` read.
+fn required_angle_value(
+    name: &str,
+    kind_label: impl std::fmt::Display + Copy,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::Value, String> {
+    required_angle_arg(
+        name,
+        kind_label,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .map(reify_ir::Value::angle)
 }
 
 /// The GROUP form of [`required_length_value`]: read a whole set of
@@ -927,10 +1066,7 @@ fn accept_variadic_length_args(
                     out[i] = si;
                     None
                 }
-                LengthArg::Unresolved => Some(format!(
-                    "argument '{}' for {} is unresolved (Undef)",
-                    display, label
-                )),
+                LengthArg::Unresolved => Some(unresolved_arg_message(display, label)),
                 LengthArg::Invalid => Some(format!(
                     "missing or non-Length argument '{}' for {}",
                     display, label
@@ -1066,10 +1202,7 @@ fn accept_length_point3<N: std::fmt::Display + Copy>(
                 *slot = si;
                 None
             }
-            LengthArg::Unresolved => Some(format!(
-                "argument '{}' for {} is unresolved (Undef)",
-                name, kind_label
-            )),
+            LengthArg::Unresolved => Some(unresolved_arg_message(name, kind_label)),
             LengthArg::Invalid => Some(format!(
                 "missing or non-Length argument '{}' for {}",
                 name, kind_label
