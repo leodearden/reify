@@ -38,6 +38,11 @@
 #      "WHAT PROVES WHAT" note on that block)
 #  16. (task 6292) argv coverage: _reverse_closure invokes cargo metadata
 #      with --offline alongside task 6277's --locked
+#  17. (task 7427) INERT-SPOT: the inert class (docs/**, *.md, *.yaml, *.yml)
+#      is ONE list shared with verify.sh's decide_scope, so a mixed
+#      crate + top-level *.md diff narrows to the crate-alone closure
+#      instead of C5-widening to ALL — while an unmappable NON-inert path
+#      still widens
 
 set -euo pipefail
 
@@ -116,6 +121,49 @@ echo "--- C5: unmappable path forces ALL ---"
 
 assert "unmappable path -> ALL" \
     test "$(affected_crates some/unknown/place.zzz)" = "ALL"
+
+# ---------------------------------------------------------------------------
+# INERT-SPOT (task 7427): the inert class is ONE list, shared with decide_scope.
+#
+# scripts/verify.sh's decide_scope has always treated `docs/*|*.md|*.yaml|*.yml`
+# as needing no heavy checks, while _is_noncrate's inert arm was `docs/*` alone.
+# The disagreement is invisible on a pure-docs diff (RUN_RUST=0 skips the
+# closure entirely) but destroys narrowing on a MIXED one: a single top-level
+# *.md riding along with a crate edit is unmappable, so C5 fires and the whole
+# closure widens to ALL. These assertions pin the two classifications together.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- INERT-SPOT: the inert class matches decide_scope's (docs/**, *.md, *.yaml, *.yml) ---"
+
+_check_mixed_md_not_ALL() {
+    local out
+    out="$(affected_crates crates/reify-doc/src/lib.rs README.md)"
+    [ "$out" != "ALL" ]
+}
+assert "crate + top-level README.md is NOT the ALL sentinel" _check_mixed_md_not_ALL
+
+_check_mixed_md_equals_crate_alone() {
+    local with_md without_md
+    with_md="$(affected_crates crates/reify-doc/src/lib.rs README.md)"
+    without_md="$(affected_crates crates/reify-doc/src/lib.rs)"
+    echo "with README.md: [$with_md]"
+    echo "crate alone:    [$without_md]"
+    [ "$with_md" = "$without_md" ]
+}
+assert "an inert *.md contributes nothing: closure equals the crate-alone closure" \
+    _check_mixed_md_equals_crate_alone
+
+assert "top-level *.yaml -> empty (not ALL)" \
+    test -z "$(affected_crates dark-factory-orchestrator.yaml)"
+
+assert "top-level *.md -> empty (not ALL)" \
+    test -z "$(affected_crates CLAUDE.md)"
+
+# Fail-wide is narrowed, not weakened: an unmappable NON-inert path still
+# C5-widens. scripts/verify.sh is the sharpest case — a verify-pipeline
+# artifact whose blast radius is the whole workspace.
+assert "unmappable non-inert path still forces ALL (C5 preserved)" \
+    test "$(affected_crates scripts/verify.sh)" = "ALL"
 
 # ---------------------------------------------------------------------------
 # Step 7: direct-set printing — crate-mapped paths emit the crate name
