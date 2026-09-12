@@ -3356,11 +3356,30 @@ fn modify_draft(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
-    let angle = eval_arg("angle")?;
+    // δ BREADCRUMB: this ONE read is the whole gate, deliberately. PRD §11 Q4
+    // asked for "both modify_draft arms" (the no-faces and curated-faces
+    // constructions below), but that premise was REFUTED at decompose: this
+    // binding sits ABOVE the `match faces_expr` split and the two arms are
+    // mutually-exclusive CONSUMERS of it, not two reads. Gating here covers
+    // both arities; gating at the two constructions would be the same check
+    // written twice.
+    //
+    // It also stays ABOVE the plane resolution below, which is what makes δ
+    // observable at all: `draft` cannot reach eval from `.ri` source today, so
+    // every input fails either way and only the diagnostic TEXT changes. The
+    // angle rejection SHORT-CIRCUITS and replaces the plane error.
+    //
+    // The `eval_arg` closure this replaced had exactly one caller — this line —
+    // so it died with the change rather than lingering as a one-use wrapper.
+    let angle = required_angle_value(
+        "angle",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     // plane is resolved via step_handles.last() (a pre-existing approximation —
     // plane_xy yields a Value::Plane, not a sub-op; the full plane-handle plumbing
     // fix is out of scope for δ). Filter INVALID so a preceding compile failure
@@ -3698,8 +3717,15 @@ fn transform_rotate(
             };
             [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?]
         };
-        let angle_rad =
-            required_angle_arg("angle", kind, args, values, functions, meta_map, diagnostics)?;
+        let angle_rad = required_angle_arg(
+            "angle",
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        )?;
         Ok(reify_ir::GeometryOp::Rotate {
             target: target_id,
             axis,
@@ -3779,8 +3805,15 @@ fn transform_rotate_around(
         };
         [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?]
     };
-    let angle_rad =
-        required_angle_arg("angle", kind, args, values, functions, meta_map, diagnostics)?;
+    let angle_rad = required_angle_arg(
+        "angle",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     Ok(reify_ir::GeometryOp::RotateAround {
         target: target_id,
         point,
@@ -4499,8 +4532,15 @@ fn sweep_revolve(
     // a bare `0` is both bare and degenerate, and reporting it as "angle is
     // degenerate" would send the author to fix the wrong thing. Pinned by
     // `compile_geometry_op_revolve_bare_zero_reports_units_not_degeneracy`.
-    let angle_rad =
-        required_angle_arg("angle", kind, args, values, functions, meta_map, diagnostics)?;
+    let angle_rad = required_angle_arg(
+        "angle",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     if angle_rad.abs() < DEGENERATE_ANGLE_RAD {
         diagnostics.push(Diagnostic::warning(format!(
             "revolve dropped: angle={} rad is degenerate \
@@ -4872,10 +4912,24 @@ fn curve_arc(
     // Both ANGLES are gated (PRD 3 leaf γ) and read FIRST, which is also their
     // existing source order — so the diagnostic order is unchanged. The axis
     // DIRECTION stays bare (C1 inv. 4) behind a scoped closure.
-    let start_angle =
-        required_angle_arg("start_angle", kind, args, values, functions, meta_map, diagnostics)?;
-    let end_angle =
-        required_angle_arg("end_angle", kind, args, values, functions, meta_map, diagnostics)?;
+    let start_angle = required_angle_arg(
+        "start_angle",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
+    let end_angle = required_angle_arg(
+        "end_angle",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     let axis = {
         let mut f64_arg = |name: &str| -> Result<f64, String> {
             eval_named_arg_f64(

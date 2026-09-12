@@ -1937,8 +1937,10 @@ fn draft_plane_invalid_sentinel_causes_compile_failure() {
         args: vec![
             // "target" arg (not used for target_id resolution — that comes from `target` field)
             ("target".into(), mm_literal(10.0)),
-            // "angle" arg must evaluate to a Value so the `eval_arg("angle")?` succeeds
-            ("angle".into(), real_literal(5.0)),
+            // The angle must PASS δ's gate, so that the PLANE resolution is what
+            // this test observes failing. A bare literal would now be rejected
+            // first and the assertion below would hold for the wrong reason.
+            ("angle".into(), angle_literal(5.0)),
             // "plane" arg is in args but not used for plane resolution (step_handles.last() is used)
             ("plane".into(), real_literal(0.0)),
         ],

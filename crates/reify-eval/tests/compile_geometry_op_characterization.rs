@@ -1787,7 +1787,7 @@ fn modify_case(k: ModifyKind) -> CompiledGeometryOp {
         ModifyKind::Shell => vec![("thickness".to_string(), lit_len(0.002))],
         // `Draft`'s `angle` stays BARE: it is an ANGLE position owned by
         // `docs/prds/v0_6/angle-units-surface-convergence.md`, not by this leaf.
-        ModifyKind::Draft => vec![("angle".to_string(), lit(0.1))],
+        ModifyKind::Draft => vec![("angle".to_string(), lit_angle(0.1))],
         ModifyKind::Thicken => vec![("offset".to_string(), lit_len(0.003))],
         ModifyKind::ZoneSlab => vec![("width".to_string(), lit_len(0.01))],
         ModifyKind::OffsetSolid => vec![("distance".to_string(), lit_len(0.002))],
@@ -2091,9 +2091,53 @@ fn modify_golden(k: ModifyKind) -> &'static str {
             50,
         ),
         faces: [],
-        angle: Real(
-            0.1,
-        ),
+        angle: Scalar {
+            si_value: 0.1,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
         plane: GeometryHandleId(
             50,
         ),

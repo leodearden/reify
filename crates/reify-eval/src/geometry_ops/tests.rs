@@ -5225,13 +5225,17 @@
     /// γ's modify slice, each as `(kind, &[(arg name, is_length_semantic)])` in
     /// the op's own arg order.
     ///
-    /// The `bool` is the SLICE BOUNDARY made data: `true` marks a slot this leaf
-    /// gates, `false` marks one it must leave alone. Only `Draft` carries a
-    /// `false` entry — its `angle` is an ANGLE position owned by
+    /// The `bool` is the SLICE BOUNDARY made data: `true` marks a LENGTH slot
+    /// this leaf gates, `false` marks one it must leave alone. Only `Draft`
+    /// carries a `false` entry — its `angle` is an ANGLE position owned by
     /// `docs/prds/v0_6/angle-units-surface-convergence.md` by seam-table decree,
-    /// so gating it HERE would be a scope violation, not an improvement. It sits
-    /// in this table rather than in prose so an over-broad edit fails
-    /// `compile_geometry_op_draft_angle_stays_on_the_bare_path` below.
+    /// so gating it as a LENGTH here would be a scope violation. The datum still
+    /// reads "not this leaf's"; what changed is that PRD 3 leaf δ has since
+    /// gated it as an ANGLE, so "not gated" and "not gated HERE" are no longer
+    /// the same statement. It sits in this table rather than in prose so an
+    /// over-broad edit fails
+    /// `compile_geometry_op_draft_bare_angle_is_rejected_and_dimensioned_is_stored`
+    /// below.
     ///
     /// `Fillet` is here even though step-2 gated its `radius` ahead of the
     /// other seven: the e2e file
@@ -5581,35 +5585,68 @@
         }
     }
 
-    /// NEGATIVE SCOPE LOCK: `draft`'s `angle` must STAY on the bare-accepting
-    /// path after the seven magnitudes are gated.
+    /// `draft`'s `angle` is GATED, and is stored re-wrapped as an ANGLE
+    /// `Scalar`.
     ///
-    /// Every ANGLE position in the geometry surface — `draft.angle`, `revolve`'s
-    /// angle, `circular_pattern`'s angle — belongs to
-    /// `docs/prds/v0_6/angle-units-surface-convergence.md` by seam-table decree.
-    /// Gating one here would be a SCOPE VIOLATION, not an improvement: it would
-    /// ship half of that PRD's surface with none of its migration, and split the
-    /// angle rollout across two leaves that cannot be reviewed together.
+    /// INVERTED by PRD 3 leaf δ (task 5780). This was a NEGATIVE SCOPE LOCK
+    /// asserting the exact opposite — that a bare `Real` angle must still
+    /// compile `Ok` and be stored as the bare `Real` it was written as, on the
+    /// grounds that "re-wrapping it as an ANGLE `Scalar` would be just as wrong
+    /// as rejecting it". That was correct while `draft.angle` belonged to
+    /// another PRD and gating it here would have shipped half a surface with
+    /// none of its migration. δ IS that PRD's leaf for this slot, so both
+    /// halves of the old claim are now false, and flipping them IS the fix.
+    ///
+    /// Preserved deliberately: the STORED-representation assertion. It was the
+    /// sharper half of the old lock and it is the sharper half of the new one —
+    /// it just points the other way. A migrator working uniformly down the
+    /// bucket-2 table would have retyped this fixture's `literal_f64(0.1)` to
+    /// `literal_angle(0.1)`, which would have left the test green while
+    /// silently deleting δ's own boundary assertion.
     ///
     /// `draft` is the only modify kind with an angle slot, and it sits in
-    /// [`GAMMA_MODIFY_SLOTS`] with `is_length = false` so the boundary is DATA.
-    /// This test is what makes that datum load-bearing: a bare `Real` angle must
-    /// still yield `Ok` with the angle stored as the bare `Real` it was written
-    /// as — re-wrapping it as an ANGLE `Scalar` would be just as wrong as
-    /// rejecting it.
+    /// [`GAMMA_MODIFY_SLOTS`] with `is_length = false`. That datum still says
+    /// "not a LENGTH", which remains true — it is now an ANGLE rather than
+    /// un-gated.
     #[test]
-    fn compile_geometry_op_draft_angle_stays_on_the_bare_path() {
+    fn compile_geometry_op_draft_bare_angle_is_rejected_and_dimensioned_is_stored() {
         let values = ValueMap::new();
         let step_handles = gamma_modify_step_handles();
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
-        let op = CompiledGeometryOp::Modify {
-            kind: reify_compiler::ModifyKind::Draft,
-            target: reify_compiler::GeomRef::Step(0),
-            args: vec![("angle".to_string(), literal_f64(0.1))],
-        };
+        // (a) BARE — rejected, where it previously compiled Ok.
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &CompiledGeometryOp::Modify {
+                kind: reify_compiler::ModifyKind::Draft,
+                target: reify_compiler::GeomRef::Step(0),
+                args: vec![("angle".to_string(), literal_f64(0.1))],
+            },
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_err(),
+            "a bare draft angle must now drop the op; got: {result:?}"
+        );
+        assert_eq!(
+            angle_rejections(&diagnostics).len(),
+            1,
+            "exactly one angle rejection; got: {diagnostics:?}"
+        );
+
+        // (b) DIMENSIONED — compiles, and the stored Value is an ANGLE Scalar
+        // carrying the same SI radians. The gate classifies; it never converts.
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let compiled = compile_geometry_op(
-            &op,
+            &CompiledGeometryOp::Modify {
+                kind: reify_compiler::ModifyKind::Draft,
+                target: reify_compiler::GeomRef::Step(0),
+                args: vec![("angle".to_string(), literal_angle(0.1))],
+            },
             &values,
             &step_handles,
             &[],
@@ -5617,20 +5654,20 @@
             &HashMap::new(),
             &mut diagnostics,
         )
-        .expect(
-            "draft's angle is PRD 3's (angle-units-surface-convergence), not \
-             this leaf's — a bare Real angle must still compile",
-        );
+        .expect("a dimensioned draft angle must compile");
 
         assert_eq!(
             gamma_modify_stored_slot(&compiled, "angle"),
-            reify_ir::Value::Real(0.1),
-            "the draft angle must be stored as the bare Real it was written as, \
-             neither rejected nor re-wrapped as a dimensioned Scalar"
+            reify_ir::Value::Scalar {
+                si_value: 0.1,
+                dimension: reify_core::DimensionVector::ANGLE,
+            },
+            "the draft angle must be stored as a re-wrapped ANGLE Scalar — the \
+             R7 raw-Value route keeps the kernel's read shape unchanged"
         );
         assert!(
             diagnostics.is_empty(),
-            "a bare draft angle must push ZERO diagnostics; got: {diagnostics:?}"
+            "a dimensioned draft angle must push ZERO diagnostics; got: {diagnostics:?}"
         );
     }
 
