@@ -1018,11 +1018,15 @@ fn joint_drive_halves() -> &'static (EvalResult, EvalResult) {
 /// `effective_constraints` clamp (`derive_param_intervals` / `resolve_bounds`)
 /// in `crates/reify-constraints/src/solver.rs`.
 ///
-/// A genuine seed-return convergence gap IS documented elsewhere:
-/// `examples/continuous_cost_min.ri`'s header records `solve_core` actually
-/// returning its initially-feasible SEED rather than a unique convergent
-/// point (PRD §9 Q2, "no fix required") — but that account does not support
-/// a seed return HERE; this model's clamp is the robustness floor instead.
+/// Nor is there a live seed return anywhere else to appeal to. The one
+/// account of one — `examples/continuous_cost_min.ri`'s "Why auto(free), not
+/// strict auto" section — records it in the PAST tense, as the PRE-#5618
+/// eval-layer behaviour: `solve_core` used to return its initially-feasible
+/// seed rather than a unique convergent point, and since task #5618 that
+/// example converges to `2.040mm`, its own floored bound. The only documented
+/// seed return has therefore been retired at the source, and it never
+/// described this model in the first place.
+///
 /// BT-5b, below in this file, is the test that pins this model's floored
 /// value executably, and it is exactly why the house norm puts precise-argmin
 /// assertions at the `reify-constraints` layer with explicitly bounded autos and
