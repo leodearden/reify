@@ -1873,7 +1873,8 @@ fn mwhole_halves() -> &'static (EvalResult, EvalResult) {
 /// the DECLARING TEMPLATE (`ValueCellId::new(&structure.name, &param.name)`);
 /// the instance-path spelling (e.g. `CostAssembly.plate.quantity_produced`)
 /// is never written for a solver-resolved auto in EITHER half — the same gap
-/// `bt5_...` documents at :1014-1019.
+/// `bt5_...` documents in its own `// STRUCTURE-KEYED, not instance-path`
+/// body comment, at the top of that test.
 ///
 /// RED until `examples/whole_model_cost_min.ri` exists and both children's
 /// boxes/unit_costs are tuned to produce a live, non-degenerate gap.
