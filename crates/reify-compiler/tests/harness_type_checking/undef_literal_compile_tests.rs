@@ -16,7 +16,7 @@
 //! `CompiledExpr::literal(Value::Undef, Type::Error)`.
 //!
 //! User-observable signal:
-//!   `cargo test -p reify-compiler --test undef_literal_compile_tests`
+//!   `cargo test -p reify-compiler --test harness_type_checking -- undef_literal_compile_tests::`
 
 use reify_core::Type;
 use reify_ir::{BinOp, CompiledExprKind, Value};

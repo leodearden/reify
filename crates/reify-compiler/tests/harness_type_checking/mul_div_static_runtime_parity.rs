@@ -443,7 +443,8 @@ fn is_ledgered_divergence(op: BinOp, lt: &Type, rt: &Type) -> bool {
 /// were manually verified while authoring this fn, then reverted):
 /// - Comment out the `(BinOp::Div, Type::Int, Type::Int)` row in
 ///   `EXEMPTION_LEDGER` above and re-run
-///   `cargo test -p reify-compiler --test mul_div_static_runtime_parity` —
+///   `cargo test -p reify-compiler --test harness_type_checking --
+///   mul_div_static_runtime_parity::` —
 ///   `int_int_nondivisible_division_is_a_ledgered_divergence` goes RED at
 ///   its own `is_ledgered_divergence` assertion ("Div(Int, Int) must be
 ///   present in EXEMPTION_LEDGER"), proving the ledger lookup is

@@ -7,7 +7,7 @@
 //! RED until step-2 adds the keyed branch in `resolve_forall_elements`.
 //!
 //! User-observable signal:
-//!   cargo test -p reify-compiler --test keyed_forall_lower_tests
+//!   cargo test -p reify-compiler --test harness_statement_semantics -- keyed_forall_lower_tests::
 
 use reify_ir::{BinOp, CompiledExprKind};
 use reify_test_support::{compile_source, errors_only};

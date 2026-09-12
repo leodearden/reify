@@ -23,7 +23,7 @@
 //! after step-2 replaces the stub with the real fold.
 //!
 //! User-observable signal:
-//!   `cargo test -p reify-compiler --test string_interp_lowering_tests`
+//!   `cargo test -p reify-compiler --test harness_statement_semantics -- string_interp_lowering_tests::`
 
 use reify_core::{Severity, Type};
 use reify_expr::{EvalContext, eval_expr};

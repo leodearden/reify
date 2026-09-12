@@ -23,7 +23,7 @@
 //! PRD whose whole point is cutting merge-gate compile cost.
 //!
 //! Future kind-family public-API locks belong in this unit. The designated next
-//! absorption, `tests/modify_kind_public_api.rs` (task 2238), is spent: task #5695 (PRD
+//! absorption, `modify_kind_public_api` (task 2238), is spent: task #5695 (PRD
 //! §5 C1, leaf CMP-5) folded it in as `harness_geometry_kinds/modify_kind_public_api.rs`
 //! and removed its baseline row.
 
