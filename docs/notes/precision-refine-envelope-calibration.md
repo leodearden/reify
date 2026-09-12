@@ -876,8 +876,9 @@ unaffordable for these three classes (§1.5, §2.1 caveat 1). The cap is justifi
 budget-limited (§1.5) — every rung tried completed well under the 90 s wall: down to
 0.1 mm on 6545's ladder, and across all 95 runs of #7128's dense walk. Task #7128
 resolved the oscillation an earlier amendment left open (no period; `a` piecewise-constant
-on plateaus ~1e-4 mm wide; the ratio peaking at each plateau's lower edge) and pinned **1.0010 at `d` = 0.14386 mm**, which crosses the K = 1 boundary and is
-what moves `required n` from 0 to 1. The value stays a lower bound — four plateau edges of
+on plateaus ~1e-4 mm wide; the ratio peaking at each plateau's lower edge) and pinned
+**1.0010 at `d` = 0.14386 mm**, which crosses the K = 1 boundary and is what moves
+`required n` from 0 to 1. The value stays a lower bound — four plateau edges of
 very many were pinned, and a dense search cannot prove a supremum over a continuum — so the
 true K can only be *higher* than 1.0010. That does not disturb the cap: `n = 1` is nowhere
 near the cap-4 budget, and no plausible reading of this class's data approaches K ≈ 16.
