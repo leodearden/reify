@@ -16,10 +16,12 @@ Fields: `max_depth` (default 6), `max_cross_product_size` (default 100 000).
 
 ## `[[node_overrides]]`
 
-Array-of-tables. Each entry declares a per-node commitment-policy override that
-fills the "Level 3" slot in the five-level precedence chain
-(`docs/prds/v0_3/node-traits-unification.md` §6; implemented in
-`crates/reify-runtime/src/commitment.rs`).
+Array-of-tables. Each entry declares a per-node commitment-policy override —
+"Level 3" of the five-level precedence chain
+(`docs/prds/v0_3/node-traits-unification.md` §6), read by
+`NodePolicyOverrides::resolve_with_traits` in
+`crates/reify-runtime/src/commitment.rs`. See **Precedence** below for how an
+entry materialises today.
 
 ### Fields
 
@@ -56,16 +58,24 @@ commitment_policy = "only_run_on_final_inputs"
 
 ### Precedence
 
-Override priority (highest → lowest), resolved by
+Override priority (highest → lowest), in PRD §6's numbering, resolved by
 `NodePolicyOverrides::resolve_with_traits`:
-1. Instance override (`set_instance`)
-2. Type override (`set_type`) — kind selectors land here
-3. Config-file `[[node_overrides]]` — the slot this section documents
-4. Kind+traits default — absent `COMMITTABLE` → `always_cancel_when_stale`,
-   present → `commit_if_slow`
-5. Global fallback — reserved, not implemented
+1. Instance override — the `set_instance` map
+2. Type override — the `set_type` map, where kind selectors land
+3. Config-file `[[node_overrides]]` — reserved; not yet a distinct slot
+4. Kind+traits default (`default_overrides`) — absent `COMMITTABLE` →
+   `always_cancel_when_stale`, present → `commit_if_slow`
+5. Hard default — `commit_if_slow`, `NodeCommitmentOverride`'s `Default`
 
-Levels 1 and 2 are set programmatically; a `reify.toml` author reaches level 3.
-An entry here therefore overrides the kind+traits default at level 4, but a
-programmatic instance or type override still wins over it. Full chain rationale:
-PRD §6.
+Level 3 has no branch in `resolve_with_traits` today (task 3578 owns it), and
+level 5 is a floor rather than a branch: level 4 always returns, so nothing
+falls past it.
+
+Until level 3 lands, `from_config_overrides` materialises each entry straight
+into the level-1 or level-2 map — an instance selector becomes a `set_instance`
+entry, a kind selector a `set_type` entry. A config entry is therefore
+indistinguishable from a programmatic override of the same granularity: they
+share one map, so the last write wins and neither source outranks the other.
+What a `reify.toml` author can rely on is the rest of the chain — an entry beats
+the kind+traits default at level 4, and an instance selector beats a kind
+selector. Full chain rationale: PRD §6.

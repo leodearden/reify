@@ -10,9 +10,10 @@
 //! accepts a pre-built candidate gated set and does NOT import
 //! `NodePolicyOverrides` from `reify-runtime`.  The dependency arrow is
 //! `reify-runtime → reify-eval → reify-types`, so importing from `reify-runtime`
-//! would introduce a cycle.  A runtime-layer caller computes the candidate
-//! gated set via `NodePolicyOverrides::resolve_with_traits` and feeds it to
-//! these helpers.
+//! would introduce a cycle.  A runtime-layer caller *would* compute the
+//! candidate gated set via `NodePolicyOverrides::resolve_with_traits` and feed
+//! it to these helpers; no such caller exists yet — see the retention note
+//! below for the named future consumer.
 //!
 //! ## Why this module is retained without a caller
 //!
