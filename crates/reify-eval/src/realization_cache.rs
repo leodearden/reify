@@ -150,7 +150,15 @@ impl<V> RealizationCache<V> {
     /// [`realization_entries`](Self::realization_entries) survives it without
     /// any save/restore dance at the call site. Reseating the whole struct to
     /// [`RealizationCache::new`] instead would zero the counter — that is
-    /// exactly what this method exists to make impossible.
+    /// exactly what this method exists to make impossible. Because
+    /// `edit_param` / `edit_source` flush on every edit, a reset-on-flush
+    /// counter would be zeroed constantly and useless for cross-edit
+    /// measurement.
+    ///
+    /// Pinned by `clear_empties_the_cache_but_preserves_realization_entries`
+    /// below in this file and by
+    /// `realization_entries_survives_clear_realization_cache` in
+    /// `tests/harness_tolerance/tolerance_wiring_e2e.rs`.
     pub fn clear(&mut self) {
         self.buckets.clear();
     }
