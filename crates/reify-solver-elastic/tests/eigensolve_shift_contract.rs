@@ -42,6 +42,7 @@
 //! `shift_invert_and_dense_agree_on_80dof_synthetic_pair`). The tolerances here
 //! are therefore a measured precedent, not a guess.
 
+use faer::Mat;
 use faer::sparse::{SparseRowMat, Triplet};
 use reify_solver_elastic::eigensolve::{
     EigenSolverOptions, EigenSolverResult, solve_eigen_dense, solve_eigen_shift_invert,
@@ -332,4 +333,223 @@ fn implementations_agree_at_shift() {
     );
 
     assert_implementations_agree(&dense, &lanczos, 1e-8, "BT2 fixture C at σ=0");
+}
+
+// ---------------------------------------------------------------------------
+// Eigenvector residual helper (ported from eigensolve_synthetic.rs)
+//
+// Pins the C3 column permutation to the eigenvalue permutation: an
+// implementation that reorders `eigenvalues` without reordering the matching
+// eigenvector columns passes an eigenvalue-only assertion and fails this one.
+// ---------------------------------------------------------------------------
+
+/// `y = M · x` for a `SparseRowMat` (CSR), by iterating stored entries.
+fn csr_matvec(m: &SparseRowMat<usize, f64>, x: &[f64]) -> Vec<f64> {
+    let n = m.nrows();
+    assert_eq!(x.len(), m.ncols());
+    let m_ref = m.as_ref();
+    let m_sym = m_ref.symbolic();
+    let mut y = vec![0.0_f64; n];
+    for (i, y_i) in y.iter_mut().enumerate() {
+        let cols = m_sym.col_idx_of_row_raw(i);
+        let vals = m_ref.val_of_row(i);
+        let mut acc = 0.0_f64;
+        for (col_idx, &val) in cols.iter().zip(vals.iter()) {
+            acc += val * x[*col_idx];
+        }
+        *y_i = acc;
+    }
+    y
+}
+
+fn l2_norm(v: &[f64]) -> f64 {
+    v.iter().map(|x| x * x).sum::<f64>().sqrt()
+}
+
+/// Assert `‖K φ_i − λ_i B φ_i‖ / ‖K φ_i‖ < tol` for every returned mode.
+fn assert_eigen_residuals(
+    k: &SparseRowMat<usize, f64>,
+    b: &SparseRowMat<usize, f64>,
+    eigenvalues: &[f64],
+    eigenvectors: &Mat<f64>,
+    tol: f64,
+    ctx: &str,
+) {
+    let n = k.nrows();
+    assert_eq!(
+        eigenvectors.nrows(),
+        n,
+        "{ctx}: eigenvector row count mismatch"
+    );
+    assert_eq!(
+        eigenvectors.ncols(),
+        eigenvalues.len(),
+        "{ctx}: eigenvector column count must match eigenvalue count",
+    );
+    for (i, &lam) in eigenvalues.iter().enumerate() {
+        let phi: Vec<f64> = (0..n).map(|row| eigenvectors[(row, i)]).collect();
+        let k_phi = csr_matvec(k, &phi);
+        let b_phi = csr_matvec(b, &phi);
+        let resid: Vec<f64> = k_phi
+            .iter()
+            .zip(b_phi.iter())
+            .map(|(k_, b_)| k_ - lam * b_)
+            .collect();
+        let rel = l2_norm(&resid) / l2_norm(&k_phi).max(f64::MIN_POSITIVE);
+        assert!(
+            rel < tol,
+            "{ctx}: mode[{i}] (λ={lam}) — ‖Kφ − λBφ‖/‖Kφ‖ = {rel:.3e} ≥ tol = {tol:.3e}; \
+             the eigenvector column does not belong to this eigenvalue, so the C3 \
+             column permutation has drifted from the eigenvalue permutation",
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BT3 — selection really moved (C2), and did NOT drag the order with it (C3)
+// ---------------------------------------------------------------------------
+
+/// **BT3.** At a σ above λ₁ the returned set differs from the σ=0 set.
+///
+/// Fixture A, n_modes=2, σ=0.6. Distances |λ − σ| over the exact spectrum
+/// {0.2, 0.25, 1/3, 0.5, 1.0} are {0.4, 0.35, 0.267, 0.1, 0.4}, so C2 selects
+/// the nearest pair {0.5, 1/3} — while σ=0 would select {0.2, 0.25}.
+///
+/// C2 and C3 are asserted SEPARATELY here, because they are two different rules
+/// and no implementation may conflate them (PRD §5.2). The selected pair is
+/// presented in ascending-|λ| order `[1/3, 0.5]`, **not** in proximity order
+/// `[0.5, 1/3]` — a comparator that sorted the output by |λ − σ| would return
+/// the right *set* and still fail this test, which is the point.
+///
+/// The residual assertion pins the eigenvector columns to the same permutation,
+/// so C3 covers the whole result rather than just the eigenvalue vector.
+#[test]
+fn selection_really_moved_above_lambda_one() {
+    let (k, b) = fixture_a();
+    let base = EigenSolverOptions {
+        n_modes: 2,
+        tol: 1e-12,
+        max_iters: 1000,
+        sigma: 0.0,
+    };
+
+    let unshifted = solve_eigen_dense(&k, &b, base.clone());
+    assert_matches_closed_form(
+        &unshifted.eigenvalues,
+        &[0.2, 0.25],
+        1e-12,
+        "BT3 baseline at σ=0",
+    );
+
+    let shifted = solve_eigen_dense(&k, &b, EigenSolverOptions { sigma: 0.6, ..base });
+
+    // C2 — the |λ−σ|-nearest pair came back.
+    assert_matches_closed_form(
+        &shifted.eigenvalues,
+        &[1.0 / 3.0, 0.5],
+        1e-12,
+        "BT3 selection at σ=0.6",
+    );
+    assert_eq!(
+        shifted.shift, 0.6,
+        "BT3: the σ used must be reported as 0.6"
+    );
+
+    // C2 — and it is genuinely a DIFFERENT set from the σ=0 one.
+    for &lam in &shifted.eigenvalues {
+        assert!(
+            !unshifted
+                .eigenvalues
+                .iter()
+                .any(|&u| (u - lam).abs() < 1e-12),
+            "BT3: σ=0.6 returned λ = {lam:.15}, which is also in the σ=0 set {:?} — \
+             the shift did not move the selection",
+            unshifted.eigenvalues,
+        );
+    }
+
+    // C3 — presentation order is ascending |λ|, NOT proximity to σ.
+    assert_order_ascending_by_abs_lambda(&shifted.eigenvalues, "BT3 order at σ=0.6");
+    assert_eq!(
+        shifted.eigenvectors.ncols(),
+        2,
+        "BT3: eigenvector matrix must have one column per returned mode",
+    );
+    assert_eigen_residuals(
+        &k,
+        &b,
+        &shifted.eigenvalues,
+        &shifted.eigenvectors,
+        1e-8,
+        "BT3 at σ=0.6",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// BT5 — σ placed exactly on a known eigenvalue
+// ---------------------------------------------------------------------------
+
+/// **BT5.** σ placed exactly on a known eigenvalue of a small analytic pencil.
+///
+/// On the DENSE path this is **not a failure**: contract clause C6 is satisfied
+/// VACUOUSLY there because no `K − σB` is ever formed — σ is a sort key, not a
+/// factorization — so σ on an eigenvalue is a well-posed selection. What must
+/// hold is that the solve completes, every returned value is finite, and the
+/// eigenvalue σ sits on is the nearest one and therefore comes back.
+///
+/// Fixture A, n_modes=2, σ=0.5 (exactly the eigenvalue 1/2). Distances are
+/// {0.5: 0, 1/3: 0.167, 0.25: 0.25, 0.2: 0.3, 1.0: 0.5}, so C2 selects
+/// {0.5, 1/3}, presented in ascending-|λ| order as `[1/3, 0.5]`.
+///
+/// β (#7259) adds the Lanczos arm against this same fixture, where `K − σB` IS
+/// formed and the C6 **typed failure** (`DiagnosticCode::ShiftAtEigenvalue`,
+/// carrying σ) is the required behaviour — never a panic, never a silently
+/// perturbed solve, never a garbage spectrum.
+#[test]
+fn shift_at_an_eigenvalue_is_not_a_failure_on_the_dense_path() {
+    let (k, b) = fixture_a();
+    let result = solve_eigen_dense(
+        &k,
+        &b,
+        EigenSolverOptions {
+            n_modes: 2,
+            tol: 1e-12,
+            max_iters: 1000,
+            sigma: 0.5,
+        },
+    );
+
+    assert_matches_closed_form(
+        &result.eigenvalues,
+        &[1.0 / 3.0, 0.5],
+        1e-12,
+        "BT5 at σ=0.5 (exactly on an eigenvalue)",
+    );
+    assert_order_ascending_by_abs_lambda(&result.eigenvalues, "BT5 at σ=0.5");
+    assert_eq!(result.shift, 0.5, "BT5: the σ used must be reported as 0.5");
+
+    for (i, &lam) in result.eigenvalues.iter().enumerate() {
+        assert!(
+            lam.is_finite(),
+            "BT5: eigenvalue[{i}] = {lam} is not finite — σ on an eigenvalue must not \
+             produce NaN or inf on the dense path",
+        );
+    }
+    assert!(
+        result
+            .eigenvalues
+            .iter()
+            .any(|&lam| (lam - 0.5).abs() < 1e-12),
+        "BT5: the eigenvalue σ sits on (0.5) is the nearest one and must be returned; \
+         got {:?}",
+        result.eigenvalues,
+    );
+    assert_eigen_residuals(
+        &k,
+        &b,
+        &result.eigenvalues,
+        &result.eigenvectors,
+        1e-8,
+        "BT5 at σ=0.5",
+    );
 }
