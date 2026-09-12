@@ -4,16 +4,12 @@
  * WHAT MAKES THIS "TWO-WAY".  The three constraint statuses in the fixture are
  * NOT typed here as lower-case literals.  They are whatever
  * `extractVerdictTokens(readEngineSource())` reads out of the live
- * gui/src-tauri/src/engine.rs — the producer's real bytes.  Those bytes are
- * then pushed through the REAL wire boundary (`convertRawGuiState`), the REAL
- * reducer (`createEngineStore().initFromState`) and the REAL components
- * (`ConstraintPanel`, `StatusBar`).
- *
- * Hardcoding `'satisfied'` in this fixture would recreate precisely the defect
- * this task fixes: the ~60 existing frontend fixtures all hand-author the
- * lower-case token, so the vitest suite stayed green for as long as the engine
- * emitted PascalCase — it only ever asserted that the frontend agreed with
- * itself.  See ./constraintVerdictTokens.ts's header for the full rationale.
+ * gui/src-tauri/src/engine.rs — the producer's real bytes — pushed through the
+ * REAL wire boundary (`convertRawGuiState`), the REAL reducer
+ * (`createEngineStore().initFromState`) and the REAL components.  Why that,
+ * rather than a hardcoded `'satisfied'`: ./constraintVerdictTokens.ts's header.
+ * The contract itself is canonical on `ConstraintData.status` in
+ * gui/src-tauri/src/types.rs.
  *
  * WHY NO JSX / why this is `.test.ts` and not `.test.tsx`.  Solid components
  * are plain functions returning `JSX.Element`, so `render(() => Panel(props))`
@@ -22,7 +18,7 @@
  */
 import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { createRoot } from 'solid-js';
-import { render } from '@solidjs/testing-library';
+import { render, fireEvent } from '@solidjs/testing-library';
 
 // Mock the bridge wholesale — engineStore subscribes to every channel on
 // creation. Copied from ./engineStore.test.ts:21-43, the established harness.
@@ -51,10 +47,12 @@ vi.mock('../bridge', () => ({
 }));
 
 import { convertRawGuiState } from '../types';
-import type { ConstraintData, RawGuiState, ValueData } from '../types';
+import type { ConstraintData, RawGuiState } from '../types';
 import { createEngineStore } from '../stores/engineStore';
 import { ConstraintPanel } from '../panels/ConstraintPanel';
 import { StatusBar } from '../panels/StatusBar';
+import { ChatPanel } from '../panels/ChatPanel';
+import { createClaudeStore } from '../stores/claudeStore';
 import { extractVerdictTokens, readEngineSource } from './constraintVerdictTokens';
 
 /**
@@ -72,7 +70,6 @@ const INDETERMINATE_ID = 'TriVerdict#constraint[2]';
 
 /** State as the real reducer produced it, shared by every case below. */
 let constraints: Record<string, ConstraintData>;
-let values: Record<string, ValueData>;
 
 beforeAll(() => {
   // (1) The producer's real tokens, read from engine.rs. Never a literal.
@@ -116,13 +113,14 @@ beforeAll(() => {
     const store = createEngineStore();
     store.initFromState(guiState);
     constraints = { ...store.state.constraints };
-    values = { ...store.state.values };
     dispose();
   });
 });
 
 function renderPanel(): HTMLElement {
-  return render(() => ConstraintPanel({ constraints, values })).container;
+  // `values` only feeds the contributing-parameters list of an EXPANDED row,
+  // which no case here opens — passing `{}` keeps that plain.
+  return render(() => ConstraintPanel({ constraints, values: {} })).container;
 }
 
 function badgeFor(container: HTMLElement, nodeId: string): HTMLElement {
@@ -190,5 +188,32 @@ describe('constraint verdict wire contract — the violated-first sort', () => {
       e.getAttribute('data-testid')?.replace('constraint-row-', ''),
     );
     expect(ids).toStrictEqual([VIOLATED_ID, INDETERMINATE_ID, SATISFIED_ID]);
+  });
+});
+
+
+describe('constraint verdict wire contract — ChatPanel gates on the engine’s own tokens', () => {
+  it('offers the "Violated constraints" context only when a violated token is present', () => {
+    // `hasViolatedConstraints` is the consumer whose desync is SILENT: no wrong
+    // glyph, no wrong count — the "Violated constraints" context option simply
+    // never enables, so the affordance goes missing with nothing to see.
+    const violatedOption = (engineConstraints: ConstraintData[]): HTMLButtonElement => {
+      const store = createClaudeStore({
+        onSend: vi.fn(),
+        onAbort: vi.fn(),
+        onPermissionDecision: vi.fn(),
+      });
+      const { container } = render(() => ChatPanel({ store, engineConstraints, diagnostics: [] }));
+      fireEvent.click(container.querySelector<HTMLElement>('[data-testid="context-picker-btn"]')!);
+      const option = [...container.querySelectorAll('button')].find(
+        (b) => b.textContent === 'Violated constraints',
+      );
+      if (!option) throw new Error('the context picker rendered no "Violated constraints" option');
+      return option;
+    };
+
+    expect(violatedOption(Object.values(constraints)).disabled).toBe(false);
+    // Control: the option tracks the predicate rather than being always-enabled.
+    expect(violatedOption([constraints[SATISFIED_ID]]).disabled).toBe(true);
   });
 });
