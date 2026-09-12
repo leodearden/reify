@@ -43,6 +43,11 @@
 #      crate + top-level *.md diff narrows to the crate-alone closure
 #      instead of C5-widening to ALL — while an unmappable NON-inert path
 #      still widens
+#  18. (task 7427) EXAMPLES-CORPUS: examples/**/*.ri (flat and nested) maps
+#      to the declared reader crates instead of C5-widening to ALL, while
+#      non-.ri, non-inert content under examples/ still widens; plus
+#      RI-CORPUS-DRIFT, a derived-⊆-declared guard that keeps the declared
+#      reader list honest against the repo's real Rust sources
 
 set -euo pipefail
 
@@ -335,6 +340,115 @@ _check_mixed_contains_reify_doc() {
     affected_crates tests/infra/test_cpu_load_governance.sh crates/reify-doc/src/lib.rs | grep -qx reify-doc
 }
 assert "mixed tests/infra + crate diff contains reify-doc" _check_mixed_contains_reify_doc
+
+# ---------------------------------------------------------------------------
+# EXAMPLES-CORPUS (task 7427): examples/**/*.ri maps to its reader crates.
+#
+# The examples/ tree is a test CORPUS: compiled Rust test targets walk it and
+# open .ri leaves by path. With no _file_to_crate rule for it, every one of the
+# 264 tracked .ri files was an unmappable path — so the C5 arm fired and an
+# .ri-only edit became the most expensive diff shape in the repo (a full
+# workspace verify for a corpus edit). Mapping it to the declared reader set
+# feeds those seeds through the normal reverse closure instead.
+#
+# Non-.ri, non-inert content under examples/ still takes C5: the mapping is a
+# claim about .ri corpus leaves specifically, not about the directory.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- EXAMPLES-CORPUS: examples/**/*.ri maps to the declared reader crates ---"
+
+_check_examples_ri_not_ALL() {
+    local out
+    out="$(affected_crates examples/foo.ri)"
+    echo "closure: [$out]"
+    [ "$out" != "ALL" ] && [ -n "$out" ]
+}
+assert "examples/*.ri is NOT the ALL sentinel" _check_examples_ri_not_ALL
+
+_check_examples_ri_contains() {
+    # Usage: _check_examples_ri_contains <expected-crate>
+    affected_crates examples/foo.ri | grep -qx "$1"
+}
+assert "examples/*.ri closure contains reify-eval"           _check_examples_ri_contains reify-eval
+assert "examples/*.ri closure contains reify-compiler"       _check_examples_ri_contains reify-compiler
+assert "examples/*.ri closure contains reify-cli"            _check_examples_ri_contains reify-cli
+assert "examples/*.ri closure contains reify-eval-fea-tests" _check_examples_ri_contains reify-eval-fea-tests
+
+# NESTED is the common real shape (examples/auto/, examples/ambient_default_
+# material/, …), and a bash `case` glob's `*` matches `/`, so one arm covers
+# both depths. Asserted as EQUALITY with the flat case so a future rule that
+# accidentally keys on depth cannot pass.
+_check_examples_nested_same_as_flat() {
+    local nested flat
+    nested="$(affected_crates examples/auto/bearing_unsat.ri)"
+    flat="$(affected_crates examples/foo.ri)"
+    echo "nested: [$nested]"
+    echo "flat:   [$flat]"
+    [ "$nested" = "$flat" ]
+}
+assert "nested examples/<dir>/*.ri closure equals the flat one" _check_examples_nested_same_as_flat
+
+assert "examples/README.md -> empty (inert, not ALL)" \
+    test -z "$(affected_crates examples/README.md)"
+
+# Fail-wide PRESERVED for the two real non-.ri, non-inert tracked shapes.
+assert "examples/**/*.gcode still forces ALL (C5 preserved)" \
+    test "$(affected_crates examples/trajectory/test_data/printer_print_envelope.gcode)" = "ALL"
+
+assert "examples/**/.gitkeep still forces ALL (C5 preserved)" \
+    test "$(affected_crates examples/generics/.gitkeep)" = "ALL"
+
+# ---------------------------------------------------------------------------
+# RI-CORPUS-DRIFT: the declared reader set is derived from the repo, not
+# hand-maintained (house pattern; mirrors PG-DRIFT and
+# test_release_scoped_scope.sh).
+#
+# DERIVED ⊆ DECLARED, deliberately a subset and not an equality: an extra
+# DECLARED crate only ever WIDENS the closure, which is the direction of error
+# C5 already blesses. A new corpus reader that nobody declared is the real
+# regression — that crate's tests would be narrowed AWAY by an edit to the
+# very fixture they read.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- RI-CORPUS-DRIFT: every crate whose Rust sources name an examples/*.ri leaf is declared ---"
+
+# _derived_ri_corpus_crates — crates under crates/ with a non-comment Rust
+# source line carrying a literal examples/<path>.ri reference, one per line.
+_derived_ri_corpus_crates() {
+    git -C "$REPO_ROOT" grep -nE 'examples/[A-Za-z0-9_./-]*\.ri' -- 'crates/*/**.rs' \
+        | while IFS= read -r line; do
+            # `path:lineno:code` — split off the prefix to inspect the CODE.
+            local path="${line%%:*}"
+            local code="${line#*:}"; code="${code#*:}"
+            # A pure-comment mention is not a corpus read: skip lines whose
+            # first non-space characters are `//`.
+            local trimmed="${code#"${code%%[![:space:]]*}"}"
+            case "$trimmed" in //*) continue ;; esac
+            # Project the path to its crates/<name>/ component.
+            local rest="${path#crates/}"
+            printf '%s\n' "${rest%%/*}"
+        done | sort -u
+}
+
+_check_derived_subset_of_declared() {
+    local derived missing=""
+    derived="$(_derived_ri_corpus_crates)"
+    echo "derived:  [$(printf '%s' "$derived" | tr '\n' ' ')]"
+    echo "declared: [${_RI_CORPUS_CRATES:-<unset>}]"
+    [ -n "$derived" ] || { echo "derivation produced NOTHING — the grep or the projection broke"; return 1; }
+    local c
+    while IFS= read -r c; do
+        [ -n "$c" ] || continue
+        case " ${_RI_CORPUS_CRATES:-} " in
+            *" $c "*) ;;
+            *) missing+=" $c" ;;
+        esac
+    done <<< "$derived"
+    [ -z "$missing" ] || { echo "UNDECLARED corpus readers:$missing"; return 1; }
+    return 0
+}
+assert "derived examples/*.ri reader crates ⊆ declared _RI_CORPUS_CRATES" \
+    _check_derived_subset_of_declared
 
 # ---------------------------------------------------------------------------
 # Amendment (code-review follow-up, task 6277): --locked non-mutation check.

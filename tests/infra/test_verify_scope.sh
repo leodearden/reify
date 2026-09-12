@@ -2207,4 +2207,33 @@ plan_for_gec_rename docs/gui-event-channels.md docs/gui-event-channels-v2.md
 assert "GEC-RENAME: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0 (rename source forces rust=1)" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
 
+# ---------------------------------------------------------------------------
+# EX-1 (task 7427): examples/**/*.ri keeps today's full classification.
+#
+# The examples/ tree gains a crate MAPPING on the affected_crates side (ALL ->
+# the declared reader closure), but decide_scope's answer must not move: the
+# corpus gates are compiled Rust tests (rust), gui/src/__tests__/
+# reifyGrammarCorpus.test.ts walks examples/ recursively (gui), and both
+# reify-eval and reify-cli are declared OCCT-touching (gate). A control that
+# pins the mapping as never-SUBTRACTING heavy checks.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario EX-1: examples/*.ri staged -> RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (control) ---"
+# Echoes the header line so a FAIL reports the classification it actually saw
+# rather than just "no match".
+_check_scope_header() {
+    printf '%s\n' "$PLAN_OUT" | grep -E '^# scope decision' || echo "(no scope-decision line in PLAN_OUT)"
+    plan_has "$1"
+}
+
+plan_for staged examples/foo.ri
+assert "EX-1: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1" \
+    _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1'
+
+echo ""
+echo "--- Scenario EX-1n: NESTED examples/<dir>/*.ri staged -> same classification ---"
+plan_for staged examples/auto/probe.ri
+assert "EX-1n: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (case glob * spans /)" \
+    _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1'
+
 test_summary
