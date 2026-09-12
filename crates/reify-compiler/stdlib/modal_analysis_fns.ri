@@ -138,26 +138,35 @@ pub fn transient_response(
 // u(t_j) = Σ_i (Φ_i[node]·direction)·mode_coords[i][j] — expanding ONLY the
 // queried node, never the full n_nodes × n_times matrix.
 //
-// Returns `List<Real>` (PRD §5.2) — the scalar displacement projected onto
-// `direction` at each timestep. This is the first `@optimized` fn returning a
-// non-struct value; the ComputeOutcome carries a `Value::List`. `Real` (not a
-// dimensioned `List<Length>`) because the mass-normalized reconstruction Φ·ξ
-// carries the same unrepresentable √mass·length unit algebra `Mode.shape`
-// documents (`Mode.shape` in modal_analysis.ri).
+// Returns `List<Length>` (PRD §5.2) — the physical displacement projected onto
+// `direction` at each timestep, in metres. This is the first `@optimized` fn
+// returning a non-struct value; the ComputeOutcome carries a `Value::List`.
+//
+// Unit algebra (#6094): the mass-normalized mode shapes Φ carry kg^-1/2 and the
+// conjugate modal coordinates ξ carry kg^1/2·m, so the √mass factors CANCEL and
+// the product Φ·ξ is plain metres. Each FACTOR alone stays unrepresentable in
+// Reify's dimension grammar (no SI-root extension), so the intermediate
+// `DisplacementTimeHistory.mode_coords` (ξ) and `Mode.shape` (Φ) deliberately
+// stay `Real`/`Dimensionless` — see their own notes in modal_analysis.ri. Do not
+// generalise the dimensioning here to them.
+//
+// Nothing in the pipeline compares a declared return type against the Value a
+// trampoline emits, so this declaration and the trampoline's emitted series are
+// pinned by two independent tests — retyping one means retyping the other.
 //
 // NOTE: invoked as a FREE function `displacement_at(history, location, direction)`
 // — method-call syntax is not UFCS in Reify, so `history.displacement_at(...)`
 // would not resolve.
 //
 // Placeholder body `[]`: dispatch replaces it once the trampoline is registered
-// (task ι step-10); the empty-list literal infers `List<Real>` against the
+// (task ι step-10); the empty-list literal infers `List<Length>` against the
 // declared return type.
 @optimized("modal::displacement_at")
 pub fn displacement_at(
     history   : DisplacementTimeHistory,
     location  : String,
     direction : Vector3<Dimensionless>
-) -> List<Real> {
+) -> List<Length> {
     []
 }
 
@@ -198,6 +207,6 @@ pub fn displacement_at(
     history   : DisplacementTimeHistory,
     location  : FaceSelector,
     direction : Vector3<Dimensionless>
-) -> List<Real> {
+) -> List<Length> {
     []
 }
