@@ -41,6 +41,25 @@
 //! pair (`dense_recovers_known_spectrum_on_5x5_diagonal_pair` and
 //! `shift_invert_and_dense_agree_on_80dof_synthetic_pair`). The tolerances here
 //! are therefore a measured precedent, not a guess.
+//!
+//! # Gate residency
+//!
+//! This binary is gate-resident from the commit that adds it, deliberately:
+//! `REIFY_HEAVY_NEXTEST_FILTER` excludes only `determinism`,
+//! `analytical_validation` and `modal_benchmarks` from this package, and no
+//! exclusion is added for this one — these are small analytic pencils, and
+//! excluding them would remove the contract harness from the merge gate that β
+//! (#7259) is held to.
+//!
+//! It needs no `.config/nextest.toml` override, and that was MEASURED rather
+//! than assumed (task #7258). Under the repo nextest config the slowest single
+//! test is **3.000 s release / 9.836 s debug** (whole binary: 3.264 s / 9.841 s),
+//! against the `[profile.default]` per-test ceiling of
+//! `slow-timeout = { period = "120s", terminate-after = 10 }` = 1200 s. No
+//! `[[profile.default.overrides]]` block matches `binary(eigensolve_shift_contract)`,
+//! so that default ceiling is what applies. The margin is ~120x on the debug
+//! figure, which is the one taken under ordinary lane contention — ample even
+//! against the worst contention multiplier this repo has recorded.
 
 use faer::Mat;
 use faer::sparse::{SparseRowMat, Triplet};
