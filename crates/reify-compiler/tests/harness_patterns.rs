@@ -24,6 +24,8 @@ mod enum_generic_ir_lowering_tests;
 mod enum_pattern_field_check_tests;
 #[path = "harness_patterns/enum_unknown_type_param_tests.rs"]
 mod enum_unknown_type_param_tests;
+#[path = "harness_patterns/generic_enum_pattern_binder_tests.rs"]
+mod generic_enum_pattern_binder_tests;
 #[path = "harness_patterns/match_arm_decl_group_compile_tests.rs"]
 mod match_arm_decl_group_compile_tests;
 #[path = "harness_patterns/match_arm_decl_group_typing_tests.rs"]
@@ -32,3 +34,5 @@ mod match_arm_decl_group_typing_tests;
 mod match_block_decl_lowering_tests;
 #[path = "harness_patterns/match_compile_tests.rs"]
 mod match_compile_tests;
+#[path = "harness_patterns/variant_construction_check_tests.rs"]
+mod variant_construction_check_tests;

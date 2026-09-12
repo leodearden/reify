@@ -8,6 +8,8 @@
 //! resolves unchanged. Explicit `#[path]` is required: this harness root is an
 //! integration-test crate root, where a bare `mod <file>;` would resolve to the sibling
 //! `tests/<file>.rs`, not the `harness_traits/` subdir.
+#[path = "harness_traits/assoc_type_projection_reduction_tests.rs"]
+mod assoc_type_projection_reduction_tests;
 #[path = "harness_traits/fn_arg_trait_conformance_tests.rs"]
 mod fn_arg_trait_conformance_tests;
 #[path = "harness_traits/fn_enum_param_resolution_tests.rs"]

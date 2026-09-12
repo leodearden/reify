@@ -17,5 +17,11 @@
 //! The pre-existing grandfathered `tests/relate_*.rs` standalones are the
 //! natural future members of this unit; folding them in is a layout-only move
 //! left to a dedicated consolidation leaf, not to a task that merely adds a test.
+#[path = "harness_relate/relate_block_check_tests.rs"]
+mod relate_block_check_tests;
+#[path = "harness_relate/relate_threading_tests.rs"]
+mod relate_threading_tests;
+#[path = "harness_relate/relation_check_tests.rs"]
+mod relation_check_tests;
 #[path = "harness_relate/tangent_operand_check_tests.rs"]
 mod tangent_operand_check_tests;

@@ -30,3 +30,5 @@
 
 #[path = "harness_geometry_kinds/geometry_kind_variant_count.rs"]
 mod geometry_kind_variant_count;
+#[path = "harness_geometry_kinds/modify_kind_public_api.rs"]
+mod modify_kind_public_api;
