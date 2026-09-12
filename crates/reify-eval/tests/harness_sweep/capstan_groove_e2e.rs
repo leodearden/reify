@@ -150,8 +150,10 @@
 //! also the thematically right home — it already carries #5342's
 //! `helix_sweep_e2e`, whose `helix()` spine this design consumes.
 //!
-//! No other gate compiles anything under `prj/`, so this module is currently
-//! also the only regression guard on `dev_capstan.ri` as a whole. That is why
+//! No other gate compiles `dev_capstan.ri` (printer.ri is compiled by
+//! `crates/reify-compiler/tests/harness_constructor_typing/orientation_constructor_typing_tests.rs`
+//! for orientation-inference warnings), so this module is currently the only
+//! regression guard on `dev_capstan.ri` as a whole. That is why
 //! its two FILE-WIDE claims — evaluation Error-freedom (`check_dev_capstan`,
 //! against an enumerated `volume()` exception list) and "constraints ran and
 //! none is violated" (`capstan_design_file_checks_clean_without_a_kernel`) —
