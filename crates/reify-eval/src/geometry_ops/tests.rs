@@ -1094,7 +1094,10 @@
     }
 
     /// Build a one-element named-arg list for the ANGLE ladder tests.
-    fn angle_args(name: &str, expr: reify_ir::CompiledExpr) -> Vec<(String, reify_ir::CompiledExpr)> {
+    fn angle_args(
+        name: &str,
+        expr: reify_ir::CompiledExpr,
+    ) -> Vec<(String, reify_ir::CompiledExpr)> {
         vec![(name.to_string(), expr)]
     }
 
@@ -1406,6 +1409,315 @@
         assert!(
             angle_rejections(&diagnostics).is_empty(),
             "a missing arg must not also produce a dimension rejection; got: {diagnostics:?}"
+        );
+    }
+
+    // ── γ: the five gated producer sites, end to end ────────────────────────
+
+    /// `rotate`'s named-arg form. The Orientation<3> form is a different branch
+    /// that bypasses named args entirely and is NOT gated.
+    fn rotate_with_angle(angle: reify_ir::CompiledExpr) -> CompiledGeometryOp {
+        CompiledGeometryOp::Transform {
+            kind: TransformKind::Rotate,
+            target: GeomRef::Step(0),
+            args: vec![
+                // Axis DIRECTION is a dimensionless unit vector → stays bare.
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("angle".into(), angle),
+            ],
+        }
+    }
+
+    fn rotate_around_with_angle(angle: reify_ir::CompiledExpr) -> CompiledGeometryOp {
+        CompiledGeometryOp::Transform {
+            kind: TransformKind::RotateAround,
+            target: GeomRef::Step(0),
+            args: vec![
+                // Pivot is a point in space → PRD-1's LENGTH gate.
+                ("px".into(), literal_length(0.05)),
+                ("py".into(), literal_length(0.0)),
+                ("pz".into(), literal_length(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("angle".into(), angle),
+            ],
+        }
+    }
+
+    fn revolve_with_angle(angle: reify_ir::CompiledExpr) -> CompiledGeometryOp {
+        CompiledGeometryOp::Sweep {
+            kind: SweepKind::Revolve,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![
+                ("ox".into(), literal_length(0.0)),
+                ("oy".into(), literal_length(0.0)),
+                ("oz".into(), literal_length(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(1.0)),
+                ("az".into(), literal_f64(0.0)),
+                ("angle".into(), angle),
+            ],
+        }
+    }
+
+    fn arc_with_angles(
+        start_angle: reify_ir::CompiledExpr,
+        end_angle: reify_ir::CompiledExpr,
+    ) -> CompiledGeometryOp {
+        CompiledGeometryOp::Curve {
+            kind: CurveKind::Arc,
+            args: vec![
+                ("cx".into(), literal_length(0.0)),
+                ("cy".into(), literal_length(0.0)),
+                ("cz".into(), literal_length(0.0)),
+                ("radius".into(), literal_length(0.01)),
+                ("start_angle".into(), start_angle),
+                ("end_angle".into(), end_angle),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+            ],
+        }
+    }
+
+    /// The five angle-bearing producer positions γ gates, each as
+    /// `(builtin label, arg name, build an op with THIS angle in that slot)`.
+    #[allow(clippy::type_complexity)]
+    fn gamma_angle_sites() -> Vec<(
+        &'static str,
+        &'static str,
+        Box<dyn Fn(reify_ir::CompiledExpr) -> CompiledGeometryOp>,
+    )> {
+        vec![
+            ("rotate", "angle", Box::new(rotate_with_angle)),
+            (
+                "rotate_around",
+                "angle",
+                Box::new(rotate_around_with_angle),
+            ),
+            ("revolve", "angle", Box::new(revolve_with_angle)),
+            (
+                "arc",
+                "start_angle",
+                Box::new(|a| arc_with_angles(a, literal_angle(1.0))),
+            ),
+            (
+                "arc",
+                "end_angle",
+                Box::new(|a| arc_with_angles(literal_angle(0.0), a)),
+            ),
+        ]
+    }
+
+    fn run_compile(
+        op: &CompiledGeometryOp,
+    ) -> (Result<reify_ir::GeometryOp, String>, Vec<Diagnostic>) {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        (result, diagnostics)
+    }
+
+    /// γ POSITIVE — a bare angle at any of the five producer positions is
+    /// rejected, naming the position and carrying the repair hint.
+    ///
+    /// G2 NEGATIVE-ASSERTION MANDATE: every assertion here reads the
+    /// DIAGNOSTIC TEXT. Rejection-by-`is_err` alone would be worthless — each
+    /// of these five arms has pre-existing `Err` paths (a degenerate axis, a
+    /// missing arg, a degenerate revolve angle) that a bare `is_err` cannot
+    /// tell apart from the gate firing.
+    ///
+    /// RED: today all five read through the bare-accepting `eval_named_arg_f64`
+    /// and a bare `45` compiles clean as 45 RADIANS (≈2578°).
+    #[test]
+    fn compile_geometry_op_bare_angle_is_rejected_at_all_five_producer_sites() {
+        for (builtin, arg_name, build) in gamma_angle_sites() {
+            for (label, expr) in [
+                ("bare Real", literal_f64(45.0)),
+                (
+                    "bare Int",
+                    reify_ir::CompiledExpr::literal(
+                        reify_ir::Value::Int(45),
+                        reify_core::Type::dimensionless_scalar(),
+                    ),
+                ),
+            ] {
+                let (result, diagnostics) = run_compile(&build(expr));
+                assert!(
+                    result.is_err(),
+                    "{builtin}.{arg_name} {label}: must drop the op, got: {result:?}"
+                );
+
+                let rejections = angle_rejections(&diagnostics);
+                assert_eq!(
+                    rejections.len(),
+                    1,
+                    "{builtin}.{arg_name} {label}: exactly ONE rejection (no cascade); \
+                     got: {diagnostics:?}"
+                );
+                let rej = rejections[0];
+                assert_eq!(
+                    rej.severity,
+                    reify_core::Severity::Error,
+                    "{builtin}.{arg_name} {label}: C1 inv. 3 requires Error; got: {rej:?}"
+                );
+                assert_eq!(
+                    rej.code,
+                    Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                    "{builtin}.{arg_name} {label}: must carry the shared code; got: {rej:?}"
+                );
+                for needle in [
+                    builtin,
+                    &format!("{arg_name} argument expects Angle, got "),
+                    reify_core::units::ANGLE_MIGRATION_HINT,
+                ] {
+                    assert!(
+                        rej.message.contains(needle),
+                        "{builtin}.{arg_name} {label}: message must contain {needle:?}; \
+                         got: {:?}",
+                        rej.message
+                    );
+                }
+            }
+        }
+    }
+
+    /// γ CONTROL (C1 inv. 4) — a DIMENSIONED angle compiles clean at all five
+    /// positions, with the bare dimensionless axis-direction components
+    /// untouched beside it and the stored `angle_rad` unchanged.
+    ///
+    /// This is the assertion that stops γ from being "reject everything": the
+    /// ax/ay/az unit-vector components in every one of these fixtures stay
+    /// bare, and must keep producing no diagnostic at all.
+    #[test]
+    fn compile_geometry_op_dimensioned_angle_compiles_clean_with_bare_axis() {
+        for (builtin, arg_name, build) in gamma_angle_sites() {
+            let (result, diagnostics) = run_compile(&build(literal_angle(
+                std::f64::consts::FRAC_PI_2,
+            )));
+            assert!(
+                result.is_ok(),
+                "{builtin}.{arg_name}: a dimensioned angle must compile, got: {result:?}"
+            );
+            assert!(
+                diagnostics.is_empty(),
+                "{builtin}.{arg_name}: a dimensioned angle beside BARE ax/ay/az must \
+                 produce no diagnostic — the axis direction is a dimensionless unit \
+                 vector and stays un-gated (C1 inv. 4); got: {diagnostics:?}"
+            );
+        }
+
+        // The stored radians are unchanged by the gate — it classifies, it does
+        // not convert. Checked on the two variants that expose the field.
+        let (result, _) = run_compile(&rotate_with_angle(literal_angle(
+            std::f64::consts::FRAC_PI_2,
+        )));
+        match result {
+            Ok(reify_ir::GeometryOp::Rotate { angle_rad, .. }) => assert_eq!(
+                angle_rad,
+                std::f64::consts::FRAC_PI_2,
+                "the gate must not alter the stored radians"
+            ),
+            other => panic!("expected Rotate, got: {other:?}"),
+        }
+    }
+
+    /// γ UNDEF — an unresolved angle takes the DISTINCT unresolved wording,
+    /// not a dimension rejection, and never a silent continue.
+    #[test]
+    fn compile_geometry_op_undef_angle_is_unresolved_not_a_dimension_rejection() {
+        for (builtin, arg_name, build) in gamma_angle_sites() {
+            let cell = reify_core::ValueCellId::new("Bracket", "missing");
+            let expr = reify_ir::CompiledExpr::value_ref(cell, reify_core::Type::angle());
+            let (result, diagnostics) = run_compile(&build(expr));
+            let err = result.expect_err(&format!(
+                "{builtin}.{arg_name}: an Undef angle must drop the op"
+            ));
+            assert!(
+                err.contains("is unresolved (Undef)"),
+                "{builtin}.{arg_name}: an Undef angle must take the DISTINCT unresolved \
+                 wording, not the missing/wrong-dimension one — claiming an arg is \
+                 missing when it is merely not yet resolved misleads during solver \
+                 iteration (PRD-1 D10); got: {err:?}"
+            );
+            assert!(
+                angle_rejections(&diagnostics).is_empty(),
+                "{builtin}.{arg_name}: Undef is not a DIMENSION rejection; \
+                 got: {diagnostics:?}"
+            );
+        }
+    }
+
+    /// γ ORDERING — `revolve` reads its angle immediately before the
+    /// pre-existing `DEGENERATE_ANGLE_RAD` guard, and the DIMENSION gate must
+    /// fire FIRST. A bare `0` is both bare and degenerate; reporting it as
+    /// "revolve angle is degenerate" would send the author to fix the wrong
+    /// thing, and would also let the gate be trivially satisfied by an error
+    /// it did not produce.
+    #[test]
+    fn compile_geometry_op_revolve_bare_zero_reports_units_not_degeneracy() {
+        let (result, diagnostics) = run_compile(&revolve_with_angle(literal_f64(0.0)));
+        assert!(result.is_err(), "a bare 0 angle must drop the op");
+        assert_eq!(
+            angle_rejections(&diagnostics).len(),
+            1,
+            "the DIMENSION gate must fire first; got: {diagnostics:?}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.message.contains("degenerate")),
+            "a bare 0 must report the units error, NOT degeneracy — the dimension \
+             gate precedes the DEGENERATE_ANGLE_RAD check; got: {diagnostics:?}"
+        );
+
+        // CONTROL: a DIMENSIONED zero angle is still degenerate, so the
+        // pre-existing guard keeps working for the case it was written for.
+        let (result, diagnostics) = run_compile(&revolve_with_angle(literal_angle(0.0)));
+        assert!(result.is_err(), "a dimensioned 0 angle is still degenerate");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("degenerate")),
+            "the DEGENERATE_ANGLE_RAD guard must survive γ for a properly \
+             dimensioned zero; got: {diagnostics:?}"
+        );
+    }
+
+    /// γ BOUNDARY B2b — `revolve_full` must still build.
+    ///
+    /// `reify-compiler`'s geometry lowering injects `Value::angle(TAU)` with
+    /// `Type::angle()` for the full-revolution form, which the new gate
+    /// ACCEPTS. A LENGTH or dimensionless literal there would make every
+    /// `revolve_full(...)` in the language self-reject the instant γ lands, so
+    /// this asserts the shape that file produces rather than trusting it.
+    #[test]
+    fn compile_geometry_op_revolve_full_tau_angle_survives_the_gate() {
+        let (result, diagnostics) = run_compile(&revolve_with_angle(
+            reify_ir::CompiledExpr::literal(
+                reify_ir::Value::angle(std::f64::consts::TAU),
+                reify_core::Type::angle(),
+            ),
+        ));
+        assert!(
+            result.is_ok(),
+            "revolve_full's injected TAU angle must survive the gate, got: {result:?}"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "revolve_full must build with zero angle diagnostics; got: {diagnostics:?}"
         );
     }
 
