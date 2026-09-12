@@ -155,8 +155,9 @@ pub struct EigenSolverResult {
     ///
     /// Per C5, `false` is only ever reported when it has been ESTABLISHED,
     /// never assumed.  Like [`n_converged`](Self::n_converged) the basis differs
-    /// per path: the **dense path** computes the whole spectrum via QZ and so
-    /// answers exactly, while the **shift-invert path** has only the
+    /// per path: [`solve_eigen_dense`] computes the whole spectrum via QZ and so
+    /// answers EXACTLY — it compares source indices between the full spectrum
+    /// and the selected set — while the **shift-invert path** has only the
     /// Cholesky/LU discriminator, which is a conservative boolean (an exact
     /// count would need an inertia-revealing LDL^T that faer's sparse LU does
     /// not expose).  At σ=0 every path reports `false`, and that `false` is
@@ -358,6 +359,29 @@ fn order_by_abs_lambda(pairs: &mut [(f64, usize)]) {
     pairs.sort_by(|a, b| a.0.abs().total_cmp(&b.0.abs()));
 }
 
+/// **C5 — Provenance.** Whether some eigenvalue of the pencil lies STRICTLY
+/// between zero and σ and is absent from the selected set.
+///
+/// Discrimination is on the `usize` source index, never on float equality of λ:
+/// a pencil with a repeated eigenvalue would otherwise report one of the two
+/// copies as "skipped" while its twin was returned.
+///
+/// Both signs of σ are covered, so a negative shift on the reversed-load
+/// buckling side is handled by the same rule rather than a second one.
+///
+/// At σ=0 the open interval is empty, so this is unconditionally `false` with no
+/// branch — C1 preserved, and that `false` is ESTABLISHED rather than assumed.
+fn any_eigenvalue_skipped_between_zero_and_shift(
+    all_pairs: &[(f64, usize)],
+    selected: &[(f64, usize)],
+    sigma: f64,
+) -> bool {
+    all_pairs.iter().any(|&(lam, src_col)| {
+        let between = (0.0 < lam && lam < sigma) || (sigma < lam && lam < 0.0);
+        between && !selected.iter().any(|&(_, sel_col)| sel_col == src_col)
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Dense path
 // ---------------------------------------------------------------------------
@@ -365,8 +389,15 @@ fn order_by_abs_lambda(pairs: &mut [(f64, usize)]) {
 /// Solve the generalized symmetric eigenproblem `K φ = λ B φ` via dense QZ.
 ///
 /// Densifies K and B, calls `faer::linalg::gevd::gevd_real`, recovers
-/// `λ_i = S_re[i] / beta[i]` (skipping near-zero or infinite beta), sorts
-/// ascending by `|λ|`, and returns the smallest `n_modes`.
+/// `λ_i = S_re[i] / beta[i]` (skipping near-zero or infinite beta), then applies
+/// the shift contract's two rules in order: selects the `n_modes` eigenvalues
+/// nearest `opts.sigma` (C2) and presents them ascending by `|λ|` (C3).
+///
+/// Because `gevd_real` yields the ENTIRE spectrum, this path's
+/// `shift_skipped_modes` answer is EXACT — it compares source indices between
+/// the full spectrum and the selected set — whereas the shift-invert path can
+/// only report a conservative boolean from its Cholesky/LU discriminator
+/// (PRD §5.4 precision limit).
 ///
 /// Sets `n_converged = 0` (direct path; no iterative budget consumed).
 /// Sets `converged = (n_take == opts.n_modes)` — `false` only when B is
@@ -466,6 +497,10 @@ pub fn solve_eigen_dense(
     // re-sort of an already-|λ|-ascending prefix is a no-op.  Same faer calls in
     // the same order, so the buckling and modal goldens pass bit-for-bit.
     let n_take = select_nearest_to_shift(&mut pairs, opts.sigma, opts.n_modes);
+    // C5 is EXACT here, so compute it from the whole vector and its selected
+    // prefix while both are still in hand — nothing is re-derived later.
+    let shift_skipped_modes =
+        any_eigenvalue_skipped_between_zero_and_shift(&pairs, &pairs[..n_take], opts.sigma);
     order_by_abs_lambda(&mut pairs[..n_take]);
     let eigenvalues: Vec<f64> = pairs[..n_take].iter().map(|&(lam, _)| lam).collect();
 
@@ -483,11 +518,7 @@ pub fn solve_eigen_dense(
         n_converged: 0,
         converged: n_take == opts.n_modes,
         shift: opts.sigma,
-        // CONSERVATIVE PLACEHOLDER, not the final semantics: this path has the
-        // whole spectrum in hand and can answer C5 exactly, which step-8 of
-        // task #7258 does via `any_eigenvalue_skipped_between_zero_and_shift`.
-        // Until then it over-reports at σ≠0 rather than assuming `false`.
-        shift_skipped_modes: opts.sigma != 0.0,
+        shift_skipped_modes,
     }
 }
 
