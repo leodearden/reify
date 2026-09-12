@@ -13,7 +13,7 @@
 //! Verdict-shaped acceptance (no tuned float tolerance on a response magnitude —
 //! the fixture's projections are exact small integers; equality is discrete by
 //! construction):
-//!   (a) the outcome is a non-Undef, non-empty `List<Real>` with all entries finite;
+//!   (a) the outcome is a non-Undef, non-empty `List<Length>` with all entries finite;
 //!   (b) the Selector-driven series equals the projection at the selector-resolved
 //!       representative node B and NOT the global antinode A (the flip);
 //!   (c) a `String` location still yields the node-A antinode series (3823 preserved).
@@ -228,7 +228,7 @@ fn run_displacement_at(history: &Value, location: Value, direction: Value) -> Ve
     }
 }
 
-/// Read a `List<Real>` value into `Vec<f64>`; panics if the value is not a List
+/// Read a `List<Length>` value into `Vec<f64>`; panics if the value is not a List
 /// (so assertion (a)'s non-Undef contract is enforced at the read site).
 fn read_real_list(v: &Value) -> Vec<f64> {
     match v {
@@ -261,7 +261,7 @@ fn series_approx_eq(a: &[f64], b: &[f64]) -> bool {
 
 /// (a)+(b): a `Selector` `location` resolves to the +Z face's representative node
 /// B=2 (peak within {1,2}), NOT the global antinode A=0. The series is a non-empty,
-/// all-finite `List<Real>` equal to node B's projection and distinct from node A's.
+/// all-finite `List<Length>` equal to node B's projection and distinct from node A's.
 ///
 /// RED today: the Selector falls through `value_inputs[1]`'s `_ => ""` arm →
 /// antinode A → the series equals node A and the flip assertion fails.
