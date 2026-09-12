@@ -273,11 +273,13 @@ module.exports = grammar({
       optional(choice(
         // Destructured: import a.b.{C, D}
         //
-        // The `.` before the brace list is NORMATIVE, per
-        // docs/reify-language-spec.md:2616-2618 §15:
+        // The `.` before the brace list is NORMATIVE, per the `import_path`
+        // production in docs/reify-language-spec.md §15 "Grammar Summary":
         //   import_path ::= module_path ('.' '{' IDENT (',' IDENT)* '}')?
-        // (corroborated by the spec syntax table at :1656 and by identical EBNF
-        // in docs/initial-design/syntax-design-decisions.md:921-922).
+        // (corroborated by that spec's §7.3 "Import Forms" table, row
+        // "Destructured import", and by the identical `import_path` production
+        // in docs/initial-design/syntax-design-decisions.md §11 "Grammar
+        // summary").
         //
         // The COMMENT above was always right; the RULE was the transcription
         // slip — born without the `.` in c3d42aa84b (2026-03-20) and masked for

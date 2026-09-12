@@ -196,16 +196,17 @@ ModulePath {
 }
 
 // ── Imports ──────────────────────────────────────────────
-// Mirrors tree-sitter-reify/grammar.js:258-282. The `String` alternative is
-// retained for the legacy `import "foo.ri"` form.
+// Mirrors tree-sitter-reify/grammar.js's `import_declaration` rule. The
+// `String` alternative is retained for the legacy `import "foo.ri"` form.
 //
 // SETTLED by #5931 — the destructured form's separator is a DOT:
-// `import a.b.{C, D}`, per docs/reify-language-spec.md:2616-2618 §15
+// `import a.b.{C, D}`, per docs/reify-language-spec.md §15 "Grammar Summary"
 // (`import_path ::= module_path ('.' '{' IDENT (',' IDENT)* '}')?`). The
 // tree-sitter RULE, which this port previously followed, sequenced path and
 // items with NO separator; that rule was the transcription slip and has been
-// corrected to match the spec. grammar.js's doc comment (:263) and the lowering
-// at crates/reify-syntax/src/ts_parser.rs were right all along.
+// corrected to match the spec. The doc comment on grammar.js's
+// `import_declaration` rule and the lowering at
+// crates/reify-syntax/src/ts_parser.rs were right all along.
 //
 // DELIBERATE DIVERGENCE from the otherwise-faithful port — read this before
 // "fixing" it. The dot is folded into `ImportItems` as ONE token, the named

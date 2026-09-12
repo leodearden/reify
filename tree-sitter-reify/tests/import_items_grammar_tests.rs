@@ -3,17 +3,19 @@
 //! Task 5931, step-1 (TDD RED): pins the canonical surface syntax for a
 //! destructured import as the DOTTED form `import a.b.{C, D}`.
 //!
-//! Authority: `docs/reify-language-spec.md:2616-2618` §15 ("Grammar Summary —
-//! Complete EBNF grammar incorporating all updates from all documents and
-//! design review resolutions") makes the `'.'` an explicit terminal:
+//! Authority: the `import_path` production in `docs/reify-language-spec.md`
+//! §15 "Grammar Summary" — the section that gives the "[c]omplete EBNF grammar
+//! incorporating all updates from all documents and design review resolutions"
+//! — makes the `'.'` an explicit terminal:
 //!
 //! ```ebnf
 //! import_path ::= module_path ('.' '{' IDENT (',' IDENT)* '}')?
 //!               | module_path '.' TYPE_IDENT
 //! ```
 //!
-//! Corroborated by the spec's own syntax table at `docs/reify-language-spec.md:1656`
-//! and by identical EBNF in `docs/initial-design/syntax-design-decisions.md:921-922`.
+//! Corroborated by that same spec's §7.3 "Import Forms" table (the
+//! "Destructured import" row) and by the identical `import_path` production in
+//! `docs/initial-design/syntax-design-decisions.md` §11 "Grammar summary".
 //!
 //! Until step-4 (the `grammar.js` edit) lands, these are RED — and RED in two
 //! distinct directions, which is the whole point:
@@ -250,7 +252,7 @@ fn spaced_destructured_import_is_a_parse_error() {
         count_error_nodes(root) > 0,
         "`{source}` (space instead of `.`) must produce at least one ERROR node — \
          the canonical destructured form is `import a.b.{{C, D}}` per \
-         docs/reify-language-spec.md:2616-2618 §15; got node kinds: {kinds:?}"
+         docs/reify-language-spec.md §15's `import_path`; got node kinds: {kinds:?}"
     );
 }
 

@@ -355,11 +355,11 @@ describe('reify.grammar snippets — module and import', () => {
 
   /**
    * The destructured import form is SETTLED: the canonical spelling is the
-   * DOTTED `import a.b.{C, D}`, per docs/reify-language-spec.md:2616-2618 §15
-   * (`import_path ::= module_path ('.' '{' IDENT (',' IDENT)* '}')?`), resolved
-   * by #5931. The tree-sitter rule, which previously sequenced path and items
-   * with no separator, was the transcription slip and has been corrected to
-   * match; the two doc comments were right all along.
+   * DOTTED `import a.b.{C, D}`, per docs/reify-language-spec.md §15 "Grammar
+   * Summary" (`import_path ::= module_path ('.' '{' IDENT (',' IDENT)* '}')?`),
+   * resolved by #5931. The tree-sitter rule, which previously sequenced path
+   * and items with no separator, was the transcription slip and has been
+   * corrected to match; the two doc comments were right all along.
    *
    * That is a normative claim, so it is pinned by assertion rather than left in
    * a comment — per docs/legibility/design-invariants.md, as with the `module`
@@ -4691,7 +4691,7 @@ describe('reifyLanguage — fold and indent coverage', () => {
     ConnectBody:
       'structure def F { connect outlet -> inlet { diameter -> diameter, flow_rate -> flow_rate } }',
     // `import a.b.{C, D}` — the canonical DOTTED form settled by #5931 against
-    // docs/reify-language-spec.md:2616-2618 §15. The `.` is part of the
+    // docs/reify-language-spec.md §15's `import_path`. The `.` is part of the
     // opener: `ImportItems` starts at the named `ImportItemsOpen` (`".{"`)
     // token, so `ownBraceInterior`'s literal-`{` scan lands one past the dot —
     // the same `from` the fold assertion for this node expects. The SPACED

@@ -150,8 +150,9 @@ fn parse_destructured_import_single_item() {
 /// The SPACED form `import a.b {C, D}` is NOT Reify and must be a parse error.
 ///
 /// Task 5931. The canonical destructured form is the DOTTED
-/// `import a.b.{C, D}`, per `docs/reify-language-spec.md:2616-2618` §15, which
-/// makes the `'.'` an explicit terminal before the brace list.
+/// `import a.b.{C, D}`, per the `import_path` production in
+/// `docs/reify-language-spec.md` §15 "Grammar Summary", which makes the `'.'`
+/// an explicit terminal before the brace list.
 ///
 /// Read the two tests above with care: they were passing on main for ~5 months
 /// only because tree-sitter ERROR-RECOVERED the stray `.` into a nested
@@ -175,7 +176,7 @@ fn spaced_destructured_import_is_rejected() {
         !parsed.errors.is_empty(),
         "`{source}` (space instead of `.`) must be a parse error — the canonical \
          destructured form is `import a.b.{{C, D}}` per \
-         docs/reify-language-spec.md:2616-2618 §15; got declarations: {:?}",
+         docs/reify-language-spec.md §15's `import_path`; got declarations: {:?}",
         parsed.declarations
     );
 }
