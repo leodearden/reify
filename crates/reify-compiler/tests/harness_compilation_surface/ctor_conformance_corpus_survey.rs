@@ -4072,7 +4072,7 @@ fn render_survey_names_every_drifted_ri_without_disturbing_the_anchor() {
     let drifted = SurveyStamp {
         anchor: "cafe1234".to_owned(),
         drifted_ri: vec![
-            "tests/prd-gate/fixtures/one.ri".to_owned(),
+            "tests/prd-gate/fixtures/one.ri".to_owned(), // pg-drift:allow — synthetic drift path; no such fixture exists and nothing compiled reads one.ri
             "tree-sitter-reify/test/fixtures/two.ri".to_owned(),
         ],
     };
@@ -4123,7 +4123,7 @@ fn render_survey_omits_the_disclosure_entirely_when_nothing_drifted() {
         &run,
         &SurveyStamp {
             anchor: "cafe1234".to_owned(),
-            drifted_ri: vec!["tests/prd-gate/fixtures/one.ri".to_owned()],
+            drifted_ri: vec!["tests/prd-gate/fixtures/one.ri".to_owned()], // pg-drift:allow — same synthetic path as above
         },
     );
     let at = with
