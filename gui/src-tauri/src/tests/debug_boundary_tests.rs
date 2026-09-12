@@ -358,11 +358,17 @@ async fn write_tool_payload_carries_a_flipped_constraint_status() {
     );
     assert_eq!(flipped.status, "Violated");
 
-    // The selector the live gate uses. `parameter_ids` is
-    // `collect_value_refs(expr)`, spelled `{Entity}.{member}` by
-    // `ValueCellId::Display` — the SAME spelling `reify_set_parameter` takes as
-    // its `cell_id`, which is what lets a pin be named by the cells it is about
-    // instead of by its positional `node_id`.
+    // The selector the live gate uses: a pin named by the cells it is about
+    // instead of by its positional `node_id`. `parameter_ids` is
+    // `collect_value_refs(expr)`, an INSTANCE PATH rooted at the declaring
+    // entity — `{Entity}.{member}` for a same-entity `self.x` reference, but
+    // `{Entity}.{sub}.{member}` for a cross-sub `self.s.x` one. Only the former
+    // is also a valid `reify_set_parameter` `cell_id`: that surface resolves
+    // against `compiled.templates[].value_cells`, which is keyed by TYPE.
+    // `bracket` is a flat single-structure fixture, so the two namespaces
+    // coincide HERE and this assertion must not be read as a general rule —
+    // the composed case is derived in `railLengtheningGate.mjs`'s
+    // `PIN_RAIL_SPAN_CELL` docblock and tabulated in docs/debug-mcp-contract.md.
     assert!(
         flipped.parameter_ids.contains(&"Bracket.width".to_string()),
         "the flipped constraint must name the edited cell; parameter_ids: {:?}",
