@@ -83,7 +83,8 @@ edges to 1e-5 mm pins **1.0010 at `d` = 0.14386 mm**, the one measurement in thi
 where achieved *exceeds* requested; the true ratio there lies in [1.000626, 1.001321),
 entirely above 1, so **`K` > 1 is established** for this class. What is still not proven
 is the *value*: a dense search raises a lower bound and cannot prove a supremum over a
-continuum, and only four plateau edges of the very many in [0.12, 0.18] mm were pinned.
+continuum, and only three plateau edges of the very many in [0.12, 0.18] mm were pinned
+(P1–P3; a fourth plateau was walked as a control, with its lower edge left unbracketed).
 So `lower bound` no longer means the structure is un-understood, and never meant a wall
 was hit — it means 1.0010 is a floor that further walking can only raise.
 
@@ -572,9 +573,12 @@ pinning the edge finer would not change it at 4 dp.
 | 0.14495 mm | 1.450e-4 | 1.0003 | `d_lo` ∈ (0.1449, 0.14495] |
 | 0.145 mm | 1.450e-4 | 1.0000 | Stage B's δ = 0 rung |
 
-**P4 — `a` = 1.428e-4**, walked as a control. It is a *low* plateau, and it shows the
+**P4 — `a` = 1.428e-4**, walked as a control, and deliberately **not** counted as a
+pinned edge: no probe below 0.14305 mm returns a different `a`, so its lower edge is
+unbracketed and it fails this section's own test. It is a *low* plateau, and it shows the
 mechanism cleanly in the direction that does not flatter the result — `a` byte-identical
-across seven probes spanning 0.00014 mm while the ratio falls monotonically with rising `d`:
+across seven probes spanning 0.00014 mm while the ratio falls monotonically with rising
+`d`:
 
 | d | 0.14305 | 0.1431 | 0.14315 | 0.14316 | 0.14317 | 0.14318 | 0.14319 |
 |---|---|---|---|---|---|---|---|
@@ -889,10 +893,11 @@ budget-limited (§1.5) — every rung tried completed well under the 90 s wall: 
 resolved the oscillation an earlier amendment left open (no period; `a` piecewise-constant
 on plateaus ~1e-4 mm wide; the ratio peaking at each plateau's lower edge) and pinned
 **1.0010 at `d` = 0.14386 mm**, which crosses the K = 1 boundary and is what moves
-`required n` from 0 to 1. The value stays a lower bound — four plateau edges of
-very many were pinned, and a dense search cannot prove a supremum over a continuum — so the
-true K can only be *higher* than 1.0010. That does not disturb the cap: `n = 1` is nowhere
-near the cap-4 budget, and no plausible reading of this class's data approaches K ≈ 16.
+`required n` from 0 to 1. The value stays a lower bound — three plateau edges of very many
+were pinned (a fourth plateau was walked only as a control), and a dense search cannot
+prove a supremum over a continuum — so the true K can only be *higher* than 1.0010. That
+does not disturb the cap: `n = 1` is nowhere near the cap-4 budget, and no plausible
+reading of this class's data approaches K ≈ 16.
 
 ### 3.2 Cost
 
@@ -923,7 +928,7 @@ classes are still known only as lower bounds (sweep, pipe, spline and nurbs_surf
 one (loft) still has no datum at all, so the extra doubling is still cheap insurance
 against classes this session could not fully pin down — but the reasons now differ: three
 by the 90 s budget wall, and nurbs_surface because a dense search cannot prove a supremum
-over a continuum. Its oscillation is no longer unresolved (§1.5, task #7128); four pinned
+over a continuum. Its oscillation is no longer unresolved (§1.5, task #7128); three pinned
 plateau edges simply are not exhaustiveness. That class has also become the **worked
 example** for the insurance rather than merely a claimant on it: believed to peak at
 0.9975, it was found on denser walking to exceed 1 (1.0010, `n` = 1). A lower-bound row
