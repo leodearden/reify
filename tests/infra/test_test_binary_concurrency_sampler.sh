@@ -554,4 +554,48 @@ SHIM
     '
 
 
+# ---------------------------------------------------------------------------
+# B2 (THE OTHER HALF OF THE RACE — the prefilter IS the stale list).
+#
+# B1's batching is necessary but NOT sufficient.  The `pgrep -f` prefilter walks
+# argv across all of /proc and costs 0.15-0.24 s on this host (2.6 s per pass on
+# the loaded host that produced window 1), so the list it hands back has already
+# decayed before confirmation starts.  Batching the confirmation of a stale list
+# still confirms a stale list, however fast the batch is.  Candidate discovery
+# and confirmation therefore have to be ONE pass over the same snapshot — which
+# is exactly what the observation doc asks for.
+#
+# WHAT THIS ASSERT PINS: the DEFAULT path reads PROC_ROOT itself.  The fixture
+# pid is deliberately ABOVE the host's /proc/sys/kernel/pid_max (4194304), so it
+# can never collide with a live process and the assert can only pass by reading
+# the injected root.  Measured pre-fix value: peak=0 — the default `pgrep -f`
+# prefilters the REAL host, and no real pid has a directory under the fake root.
+#
+# THE SEAM SURVIVES, AS AN OVERRIDE.  REIFY_SAMPLER_PIDS_CMD is still honoured
+# when set (A1-A10d all drive it); unset or empty now means "enumerate
+# PROC_ROOT".  Both branches must feed the SAME batched confirmation, so this
+# suite keeps pinning the code that actually runs beside a gate rather than a
+# test-only branch.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- B2 (race fix): candidate discovery reads PROC_ROOT — no host-wide prefilter on the default path ---"
+
+assert "B2: with REIFY_SAMPLER_PIDS_CMD UNSET, a test binary under the injected PROC_ROOT still counts (peak=1 — discovery must not go via a host-wide pgrep; pre-fix peak=0)" \
+    bash -c '
+        set -eu
+        d=$(mktemp -d); trap "rm -rf \"$d\"" EXIT
+        root="$d/proc"
+        '"$(declare -f _mk_proc _field)"'
+        # 4194305 > /proc/sys/kernel/pid_max (4194304): unreachable as a live pid,
+        # so a pass cannot be an accident of the real host.
+        _mk_proc "$root" 4194305=/home/u/lanes/_lane-9/target/debug/deps/reify_lsp-2f1c9ab4
+        # The parent environment must not leak a PIDS_CMD in — the whole point is
+        # to exercise the branch a real run takes.
+        unset REIFY_SAMPLER_PIDS_CMD
+        out=$(REIFY_SAMPLER_PROC_ROOT="$root" \
+              bash "'"$SAMPLER"'" --duration 0 --interval 0)
+        [ "$(_field "$out" peak)" = "1" ]
+    '
+
+
 test_summary
