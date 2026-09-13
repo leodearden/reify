@@ -1429,7 +1429,7 @@ decide_scope() {
                 # Inert (documentation / configuration-only) -> no heavy
                 # checks; anything else unrecognised -> be conservative.
                 #
-                # _is_inert (scripts/affected-crates-lib.sh, sourced above) is
+                # reify_is_inert_path (scripts/affected-crates-lib.sh, sourced above) is
                 # the SINGLE source for that class — docs/**, *.md, *.yaml,
                 # *.yml — shared with affected_crates' _is_noncrate, which used
                 # to carry a narrower copy of the same list (task 7427).
@@ -1441,7 +1441,7 @@ decide_scope() {
                 # (tasks 5536/6435) and the docs/gui-event-channels.md
                 # carve-out (task 6281), which sits deliberately ahead of this
                 # arm for exactly that reason.
-                if _is_inert "$f"; then
+                if reify_is_inert_path "$f"; then
                     : # no heavy checks
                 else
                     rust=1; gui=1; gate=1

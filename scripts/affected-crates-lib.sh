@@ -17,6 +17,14 @@
 #   affected_crates <file>...  prints the affected workspace crate names
 #                              (sorted, one per line), or the literal ALL.
 #                              Always returns 0.
+#   reify_is_inert_path <path> true iff the path is documentation or
+#                              configuration (docs/**, *.md, *.yaml, *.yml).
+#                              The shared definition of that class; verify.sh's
+#                              decide_scope is its second consumer.
+#
+# Unprefixed names are the declared interface. A leading underscore means
+# private to affected_crates — do not add a consumer outside this file without
+# promoting the helper here first.
 #
 # Sourced by:
 #   scripts/verify.sh           (Phase 2 narrowing)
@@ -53,7 +61,7 @@ _is_global() {
     return 1
 }
 
-# _is_inert <path> — returns 0 (true) if the path is documentation or
+# reify_is_inert_path <path> — returns 0 (true) if the path is documentation or
 # configuration: it needs no heavy checks and belongs to no crate of its own.
 # Matches: docs/**, *.md, *.yaml, *.yml.
 #
@@ -80,7 +88,7 @@ _is_global() {
 # The same precedence keeps decide_scope's other earlier arms winning over
 # this rule too — gui/* (a gui/*.md is GUI work), tests/prd-gate/fixtures/*.ri
 # and the docs/gui-event-channels.md carve-out.
-_is_inert() {
+reify_is_inert_path() {
     local path="$1"
     case "$path" in
         docs/*)                 return 0 ;;
@@ -91,15 +99,15 @@ _is_inert() {
 
 # _is_noncrate <path> — returns 0 (true) if the path is a non-crate file that
 # contributes no crates and must NOT force ALL.
-# Matches: everything _is_inert covers (documentation/configuration), plus
-# gui/src/** (frontend-only) and tests/infra/** (shell/python infra test
+# Matches: everything reify_is_inert_path covers (documentation/configuration),
+# plus gui/src/** (frontend-only) and tests/infra/** (shell/python infra test
 # scripts — these run as their own verify step and never affect Rust crate
 # compilation or test outcomes, so a tests/infra-only diff must narrow to no
 # crates rather than hitting the C5 fail-wide-to-ALL path via an unmappable
 # path).
 _is_noncrate() {
     local path="$1"
-    _is_inert "$path" && return 0
+    reify_is_inert_path "$path" && return 0
     case "$path" in
         gui/src/*)     return 0 ;;
         tests/infra/*) return 0 ;;
@@ -257,8 +265,8 @@ affected_crates() {
     done
 
     # Accumulate the direct crate set from crate-mappable paths.
-    # ATTRIBUTION FIRST, then the non-crate classes (see _is_inert's header for
-    # why that order is the contract on both sides of the SPOT).
+    # ATTRIBUTION FIRST, then the non-crate classes (see reify_is_inert_path's
+    # header for why that order is the contract on both sides of the SPOT).
     local direct=()
     local crate
     for arg in "$@"; do
