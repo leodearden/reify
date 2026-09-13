@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { EditorView } from '@codemirror/view';
-import { applyWorkspaceEdit, applyTextEditsToString, applyWorkspaceEditAcrossFiles, renameCommand } from '../editor/rename';
+import { applyWorkspaceEdit, applyTextEditsToString, applyWorkspaceEditAcrossFiles, renameCommand, workspaceEditTargets } from '../editor/rename';
 import type { RenameClient, RenameUi } from '../editor/rename';
 import type { WorkspaceEdit } from '../editor/lspClient';
 import { flushMacrotasks } from './test-utils';
@@ -166,23 +166,64 @@ describe('applyTextEditsToString', () => {
 // applyWorkspaceEditAcrossFiles — routing orchestrator (DI mocks, no I/O)
 // ---------------------------------------------------------------------------
 
+const ACTIVE_URI = 'file:///proj/main.ri';
+const OPEN_URI = 'file:///proj/lib.ri';
+const CLOSED_URI = 'file:///proj/other.ri';
+
+const EDIT_A = [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } }, newText: 'AAA' }];
+const EDIT_B = [{ range: { start: { line: 1, character: 0 }, end: { line: 1, character: 3 } }, newText: 'BBB' }];
+const EDIT_C = [{ range: { start: { line: 2, character: 0 }, end: { line: 2, character: 3 } }, newText: 'CCC' }];
+
+function makeDeps(openUris: string[] = [ACTIVE_URI, OPEN_URI]) {
+  const applyActive = vi.fn();
+  const applyOpenInactive = vi.fn();
+  const applyClosed = vi.fn();
+  const isOpen = vi.fn((uri: string) => openUris.includes(uri));
+  return { applyActive, applyOpenInactive, applyClosed, isOpen };
+}
+
+// ---------------------------------------------------------------------------
+// workspaceEditTargets — the single reader of the two WorkspaceEdit wire shapes
+// ---------------------------------------------------------------------------
+
+describe('workspaceEditTargets', () => {
+  it('reads a documentChanges edit preserving order and per-entry version', () => {
+    const edit: WorkspaceEdit = {
+      documentChanges: [
+        { textDocument: { uri: OPEN_URI, version: 7 }, edits: EDIT_B },
+        { textDocument: { uri: CLOSED_URI, version: null }, edits: EDIT_C },
+      ],
+    };
+    expect(workspaceEditTargets(edit)).toEqual([
+      { uri: OPEN_URI, version: 7, edits: EDIT_B },
+      { uri: CLOSED_URI, version: null, edits: EDIT_C },
+    ]);
+  });
+
+  it('reads a legacy changes map as one unversioned target per URI', () => {
+    const edit: WorkspaceEdit = { changes: { [ACTIVE_URI]: EDIT_A, [CLOSED_URI]: EDIT_C } };
+    expect(workspaceEditTargets(edit)).toEqual([
+      { uri: ACTIVE_URI, version: null, edits: EDIT_A },
+      { uri: CLOSED_URI, version: null, edits: EDIT_C },
+    ]);
+  });
+
+  it('prefers documentChanges over changes when both are present (LSP precedence)', () => {
+    const edit: WorkspaceEdit = {
+      documentChanges: [{ textDocument: { uri: OPEN_URI, version: 2 }, edits: EDIT_B }],
+      changes: { [ACTIVE_URI]: EDIT_A },
+    };
+    expect(workspaceEditTargets(edit)).toEqual([
+      { uri: OPEN_URI, version: 2, edits: EDIT_B },
+    ]);
+  });
+
+  it('returns no targets for an edit carrying neither representation', () => {
+    expect(workspaceEditTargets({})).toEqual([]);
+  });
+});
+
 describe('applyWorkspaceEditAcrossFiles', () => {
-  const ACTIVE_URI = 'file:///proj/main.ri';
-  const OPEN_URI = 'file:///proj/lib.ri';
-  const CLOSED_URI = 'file:///proj/other.ri';
-
-  const EDIT_A = [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } }, newText: 'AAA' }];
-  const EDIT_B = [{ range: { start: { line: 1, character: 0 }, end: { line: 1, character: 3 } }, newText: 'BBB' }];
-  const EDIT_C = [{ range: { start: { line: 2, character: 0 }, end: { line: 2, character: 3 } }, newText: 'CCC' }];
-
-  function makeDeps(openUris: string[] = [ACTIVE_URI, OPEN_URI]) {
-    const applyActive = vi.fn();
-    const applyOpenInactive = vi.fn();
-    const applyClosed = vi.fn();
-    const isOpen = vi.fn((uri: string) => openUris.includes(uri));
-    return { applyActive, applyOpenInactive, applyClosed, isOpen };
-  }
-
   it('routes the active URI to applyActive', () => {
     const edit: WorkspaceEdit = { changes: { [ACTIVE_URI]: EDIT_A } };
     const deps = makeDeps();
@@ -259,6 +300,42 @@ describe('applyWorkspaceEditAcrossFiles', () => {
     applyWorkspaceEditAcrossFiles(edit, ACTIVE_URI, deps);
     // isOpen should NOT have been consulted for the active URI
     expect(deps.isOpen).not.toHaveBeenCalledWith(ACTIVE_URI);
+  });
+
+  // Task 7118: once the client declares the documentChanges capability the
+  // server stops sending `changes` entirely. An applier that only reads
+  // `changes` would become a silent no-op — rename reporting success while
+  // editing nothing. These pin identical routing for the versioned shape.
+
+  it('routes a documentChanges edit exactly like the equivalent changes edit', () => {
+    const edit: WorkspaceEdit = {
+      documentChanges: [
+        { textDocument: { uri: ACTIVE_URI, version: 4 }, edits: EDIT_A },
+        { textDocument: { uri: OPEN_URI, version: 2 }, edits: EDIT_B },
+        { textDocument: { uri: CLOSED_URI, version: null }, edits: EDIT_C },
+      ],
+    };
+    const deps = makeDeps();
+    applyWorkspaceEditAcrossFiles(edit, ACTIVE_URI, deps);
+    expect(deps.applyActive).toHaveBeenCalledOnce();
+    expect(deps.applyActive).toHaveBeenCalledWith(ACTIVE_URI, EDIT_A);
+    expect(deps.applyOpenInactive).toHaveBeenCalledOnce();
+    expect(deps.applyOpenInactive).toHaveBeenCalledWith(OPEN_URI, EDIT_B);
+    expect(deps.applyClosed).toHaveBeenCalledOnce();
+    expect(deps.applyClosed).toHaveBeenCalledWith(CLOSED_URI, EDIT_C);
+  });
+
+  it('skips a documentChanges entry with an empty edit list', () => {
+    const edit: WorkspaceEdit = {
+      documentChanges: [
+        { textDocument: { uri: ACTIVE_URI, version: 4 }, edits: [] },
+        { textDocument: { uri: CLOSED_URI, version: null }, edits: EDIT_C },
+      ],
+    };
+    const deps = makeDeps();
+    applyWorkspaceEditAcrossFiles(edit, ACTIVE_URI, deps);
+    expect(deps.applyActive).not.toHaveBeenCalled();
+    expect(deps.applyClosed).toHaveBeenCalledWith(CLOSED_URI, EDIT_C);
   });
 });
 
@@ -440,6 +517,50 @@ describe('applyWorkspaceEdit', () => {
       changes: [{ from: 5, to: 10, insert: 'girth' }],
       userEvent: 'rename',
     });
+  });
+
+  // Task 7118: the same silent-no-op regression pin for the single-uri applier.
+
+  it('dispatches a documentChanges edit exactly like the equivalent changes edit', () => {
+    const textEdit = {
+      range: { start: { line: 2, character: 3 }, end: { line: 2, character: 8 } },
+      newText: 'girth',
+    };
+    const edit: WorkspaceEdit = {
+      documentChanges: [{ textDocument: { uri: URI, version: 9 }, edits: [textEdit] }],
+    };
+    const dispatch = vi.fn();
+    const view = makeMockView({ dispatch });
+
+    const result = applyWorkspaceEdit(view, edit, URI);
+
+    expect(result).toBe(true);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(dispatch).toHaveBeenCalledWith({
+      changes: [{ from: 43, to: 48, insert: 'girth' }],
+      userEvent: 'rename',
+    });
+  });
+
+  it('returns false when a documentChanges edit carries no entry for the uri', () => {
+    const edit: WorkspaceEdit = {
+      documentChanges: [
+        {
+          textDocument: { uri: 'file:///other.ri', version: 1 },
+          edits: [
+            {
+              range: { start: { line: 0, character: 0 }, end: { line: 0, character: 4 } },
+              newText: 'girth',
+            },
+          ],
+        },
+      ],
+    };
+    const dispatch = vi.fn();
+    const view = makeMockView({ dispatch });
+
+    expect(applyWorkspaceEdit(view, edit, URI)).toBe(false);
+    expect(dispatch).not.toHaveBeenCalled();
   });
 });
 
