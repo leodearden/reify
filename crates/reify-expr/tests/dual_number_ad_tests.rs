@@ -2427,3 +2427,239 @@ fn mod_at_a_negative_dividend_records_the_truncated_quotient_and_matches_its_tan
         );
     }
 }
+
+// ===========================================================================
+// Review follow-up: a provably constant operand must never veto a row
+// ===========================================================================
+//
+// Every refusal in `dual_eval` is MASKED BY CONTRIBUTION — a partial the chain
+// rule never reads cannot take out a derivative that exists.  The kink
+// builtins' "operand is not a scalar" early-outs were the exception, and
+// `abs` is where that exception bites: `eval_builtin("abs", [Complex])` returns
+// a finite modulus while `Value::Complex::as_f64()` is `None`, so a CONSTANT
+// complex operand made the node `Tangent::None` and condemned the whole row.
+
+#[test]
+fn a_constant_complex_abs_does_not_veto_an_otherwise_differentiable_row() {
+    // r(w) = w − |z|, z a compile-time constant Complex.  |3+4i| = 5, so
+    // r = w − 5 with ∂r/∂w = 1 — nothing about this row is in doubt.
+    let (values, seed_cells) = probe(&[("w", 2.0)]);
+    let z = literal(Value::Complex {
+        re: 3.0,
+        im: 4.0,
+        dimension: DimensionVector::DIMENSIONLESS,
+    });
+    let expr = binop(BinOp::Sub, pref("w"), calln("abs", vec![z]));
+
+    let (primal, row) = jrow(&expr, &values, &seed_cells)
+        .expect("a constant complex operand is not a reason to refuse the row");
+    assert_close(primal, -3.0, "r = 2 − |3+4i| = −3");
+    assert_row_close(&row, &[1.0], "∂r/∂w = 1 regardless of what |z| is");
+}
+
+#[test]
+fn a_seeded_complex_abs_still_refuses_because_it_really_is_unresolved() {
+    // The mirror direction: once the complex operand CONTRIBUTES, `as_f64`
+    // failing is a genuine refusal and must stay one.  `re(..)` is not
+    // differentiated, so a seeded cell holding the Complex is the shape that
+    // reaches `abs` with a live tangent.
+    let mut values = ValueMap::new();
+    values.insert(cell("z"), Value::Complex {
+        re: 3.0,
+        im: 4.0,
+        dimension: DimensionVector::DIMENSIONLESS,
+    });
+    let seed_cells = vec![cell("z")];
+    let expr = calln("abs", vec![pref("z")]);
+
+    let err = jrow(&expr, &values, &seed_cells)
+        .expect_err("a SEEDED complex operand has no scalar tangent to offer");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("non-scalar"),
+        "the refusal must name the seeded non-scalar cell, not a generic fallback: {msg}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// An arity-2 reduction shape `field_reduction_kind` declines still owes an
+// entry — `node_is_kink` positively identified it.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_two_argument_reduction_over_a_non_box_operand_still_records_its_kink() {
+    use reify_expr::{BranchChoice, KinkKind, ReductionKind};
+
+    // `is_bounded_reduction_shaped` claims `("argmax" | "argmin", 2)` to keep
+    // the shape off the seed-independence fast path, precisely so a genuine
+    // extremum selection cannot be swallowed unrecorded.  When the second
+    // operand is not a `BoundingBox`, `field_reduction_kind` declines and
+    // `is_kink_builtin` does not claim arity 2 either — so the call used to
+    // fall through the "neither smooth nor kinky" arm and record NOTHING,
+    // leaving λ (#6679) to read an empty record as "no kink here" for a node
+    // this module itself identified as a kink.
+    let (values, seed_cells) = probe(&[("w", 2.0)]);
+    for (name, kind) in
+        [("argmax", ReductionKind::ArgMax), ("argmin", ReductionKind::ArgMin)]
+    {
+        let expr = calln(name, vec![pref("w"), literal(Value::Real(3.0))]);
+        let ctx = EvalContext::simple(&values);
+        let seeds = Seeds::new(&seed_cells);
+        let mut record = BranchRecord::new();
+        let dual = eval_dual(&expr, &ctx, &seeds, &mut record);
+
+        assert_eq!(dual.value, eval_expr(&expr, &ctx), "{name}: the primal invariant");
+        let entry = record
+            .entries()
+            .iter()
+            .find(|e| e.kind == KinkKind::FieldReduction(kind))
+            .unwrap_or_else(|| {
+                panic!("{name}: an entry is OWED — `node_is_kink` claimed this node")
+            });
+        assert_eq!(
+            entry.choice,
+            BranchChoice::Unresolved,
+            "{name}: no reduction ran, so there is no winning grid node to name"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The callee overlay is the INNER scope: it must shadow the seed columns.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_callee_parameter_cell_colliding_with_a_seed_column_uses_the_call_site_tangent() {
+    // `ValueCellId` has two namespaces that are not disjoint by construction:
+    // a seed is `(entity, auto_param)` while a callee cell is
+    // `(function_name, param_or_let_name)`.  Here the fixture entity is `part`
+    // and the function is also named `part` with a param `x`, so the callee's
+    // parameter cell IS the seed cell — the same collapse onto one
+    // `ValueCellId` as the shadowing defect, one scope out.
+    //
+    // `fn part(x) = x * 2.0` called as `part(3.0 * x)` is 6x, so ∂/∂x = 6.
+    // Resolving the body's `ValueRef` through the SEED column instead of the
+    // overlay yields the unit row and reports 2 — the derivative of the
+    // function, with the argument's chain rule dropped on the floor.
+    let f = user_fn("part", &["x"], vec![], binop(
+        BinOp::Mul,
+        param_ref("part", "x"),
+        literal(Value::Real(2.0)),
+    ));
+    assert_eq!(
+        param_ref("part", "x").collect_value_refs(),
+        vec![cell("x")],
+        "the premise: the callee's parameter cell and the seed cell are the same cell"
+    );
+
+    let (values, seed_cells) = probe(&[("x", 1.5)]);
+    let expr = user_fn_call("part", vec![binop(
+        BinOp::Mul,
+        literal(Value::Real(3.0)),
+        pref("x"),
+    )], dl());
+    assert_ad_matches_cd_with_fns(
+        "part(3x) where part's param cell collides with the seed",
+        &expr,
+        &values,
+        &seed_cells,
+        std::slice::from_ref(&f),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A kink the fast path cannot see: inside a callee body.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_kink_inside_a_seed_independent_callee_body_is_still_recorded() {
+    use reify_expr::KinkKind;
+
+    // `Seeds::subtree_has_kink` walks the CompiledExpr tree, and `walk` cannot
+    // descend into a `UserFunctionCall`'s callee body — a bare `CompiledExpr`
+    // has no access to the function table.  So a seed-independent call whose
+    // body branches satisfied all three fast-path predicates and was handed
+    // wholesale to `eval_expr`, contributing zero entries while a branch
+    // really was selected.  That is the "we did not look" vs "there is no
+    // kink" confusion λ (#6679) may never be handed.
+    let jump = user_fn(
+        "jump",
+        &["q"],
+        vec![],
+        conditional_expr(
+            binop(BinOp::Gt, param_ref("jump", "q"), literal(Value::Real(5.0))),
+            literal(Value::Real(100.0)),
+            literal(Value::Real(200.0)),
+        ),
+    );
+    // `c` is present but NOT seeded, so `jump(c)` is provably seed-independent
+    // and the whole subtree is fast-path eligible on tangents alone.
+    let mut values = ValueMap::new();
+    values.insert(cell("x"), Value::Real(2.0));
+    values.insert(cell("c"), Value::Real(9.0));
+    let seed_cells = vec![cell("x")];
+    let expr = binop(BinOp::Add, pref("x"), user_fn_call("jump", vec![pref("c")], dl()));
+
+    let ctx = EvalContext::new(&values, std::slice::from_ref(&jump));
+    let seeds = Seeds::new(&seed_cells);
+    let mut record = BranchRecord::new();
+    let dual = eval_dual(&expr, &ctx, &seeds, &mut record);
+
+    assert_eq!(dual.value, eval_expr(&expr, &ctx), "the primal invariant");
+    assert_eq!(
+        dual.tangent.materialize(1).unwrap_or_else(|| panic!("differentiable in x")),
+        vec![1.0],
+        "the flat-but-jumping callee contributes no tangent, and vetoes none either"
+    );
+    assert!(
+        record.entries().iter().any(|e| e.kind == KinkKind::Conditional),
+        "the branch inside the callee body must reach the record: {:?}",
+        record.entries()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A `match` whose discriminant refused a tangent must not answer confidently.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_match_over_a_discriminant_that_refused_a_tangent_refuses_the_row() {
+    // `eval_dual_match` never consulted `disc.tangent`.  A `VariantBind` arm
+    // inserts payload VALUES into a child scope but binds no TANGENTS, so each
+    // binder resolves to `Tangent::Zero` and the arm body returns a confident
+    // flat row — while the discriminant's real refusal sits unread in the
+    // first-wins slot and is discarded by the next traversal.
+    //
+    // Reachable here through a SEEDED cell holding a `Value::Enum`: the value
+    // is a legitimate discriminant, and `as_f64()` is `None`, so the read
+    // refuses exactly as a non-scalar seeded cell must.
+    use reify_ir::{CompiledExprKind, CompiledMatchArm, CompiledPattern};
+
+    let mut values = ValueMap::new();
+    values.insert(cell("tag"), Value::Enum {
+        type_name: "Fit".into(),
+        variant: "Loose".into(),
+        payload: vec![],
+    });
+    let seed_cells = vec![cell("tag")];
+    let arms = vec![CompiledMatchArm {
+        patterns: vec![CompiledPattern::wildcard()],
+        body: literal(Value::Real(7.0)),
+    }];
+    let discriminant = pref("tag");
+    let content_hash = ContentHash::of(b"match").combine(discriminant.content_hash);
+    let expr = CompiledExpr {
+        kind: CompiledExprKind::Match { discriminant: Box::new(discriminant), arms },
+        result_type: dl(),
+        content_hash,
+    };
+
+    let err = jrow(&expr, &values, &seed_cells).expect_err(
+        "a discriminant with no tangent cannot yield a confident row for the arm body",
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("non-scalar") || msg.contains("seed-dependent"),
+        "the refusal must name the discriminant, not be swallowed: {msg}"
+    );
+}
