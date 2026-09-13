@@ -3208,4 +3208,162 @@ structure Assembly {
             "an edit with no changes becomes an empty Edits list, never a panic"
         );
     }
+
+    /// `InitializeParams` declaring `workspace.workspaceEdit.documentChanges`.
+    fn versioned_edit_capability(root_uri: Option<Url>) -> InitializeParams {
+        InitializeParams {
+            root_uri,
+            capabilities: ClientCapabilities {
+                workspace: Some(WorkspaceClientCapabilities {
+                    workspace_edit: Some(WorkspaceEditClientCapabilities {
+                        document_changes: Some(true),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    /// The stamped version must be the version the edit was actually computed
+    /// against — i.e. the CURRENT one — not the stale open-time version. Opening
+    /// at 1 and changing to 2 makes those two values distinguishable, so a
+    /// handler that snapshotted versions at the wrong moment reds here.
+    #[tokio::test]
+    async fn rename_stamps_current_document_version_when_client_supports_document_changes() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        server
+            .initialize(versioned_edit_capability(None))
+            .await
+            .unwrap();
+        let uri = open_bracket_source(server).await;
+
+        let source = reify_test_support::bracket_source();
+        server
+            .did_change(DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: uri.clone(),
+                    version: 2,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: source.to_string(),
+                }],
+            })
+            .await;
+
+        let edit = server
+            .rename(rename_params(uri.clone(), 7, 17, "girth"))
+            .await
+            .unwrap()
+            .expect("renaming a width use returns a WorkspaceEdit");
+
+        assert!(
+            edit.changes.is_none(),
+            "a documentChanges-capable client must not also receive the legacy map"
+        );
+        let entries = stamped_entries(&edit);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, uri.to_string());
+        assert_eq!(
+            entries[0].1,
+            Some(2),
+            "the stamp is the version the edit was computed against, not the open-time one"
+        );
+        assert!(!entries[0].2.is_empty(), "the rename edits survive stamping");
+    }
+
+    /// The mixed open/closed case: the open home file carries its version, the
+    /// closed on-disk importer is `None` (content on disk is master).
+    #[tokio::test]
+    async fn rename_marks_closed_disk_importer_unversioned() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+
+        let guard = reify_test_support::prefixed_tempdir("reify-lsp-rename-versioned-");
+        let tmp = guard.path().to_path_buf();
+        let parts_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
+        std::fs::write(tmp.join("parts.ri"), parts_source).unwrap();
+        std::fs::write(
+            tmp.join("other.ri"),
+            "import parts.Hole\nstructure A {\n    sub h = Hole()\n}",
+        )
+        .unwrap();
+
+        let root_uri = Url::from_file_path(&tmp).unwrap();
+        server
+            .initialize(versioned_edit_capability(Some(root_uri)))
+            .await
+            .unwrap();
+
+        let parts_uri = Url::from_file_path(tmp.join("parts.ri")).unwrap();
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: parts_uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: parts_source.to_string(),
+                },
+            })
+            .await;
+
+        let edit = server
+            .rename(rename_params(parts_uri.clone(), 0, 10, "Bore"))
+            .await
+            .unwrap()
+            .expect("rename returns a WorkspaceEdit");
+
+        let entries = stamped_entries(&edit);
+        let open_entry = entries
+            .iter()
+            .find(|(u, _, _)| u == &parts_uri.to_string())
+            .expect("the OPEN parts.ri must be among the targets");
+        assert_eq!(
+            open_entry.1,
+            Some(1),
+            "an open document carries its server-side version"
+        );
+
+        let closed_entry = entries
+            .iter()
+            .find(|(u, _, _)| u.ends_with("other.ri"))
+            .expect("the CLOSED other.ri must be among the targets (disk-walk discovery)");
+        assert_eq!(
+            closed_entry.1, None,
+            "a closed file has no server version — content on disk is master"
+        );
+    }
+
+    /// A client that never declared the capability — every third-party stdio
+    /// editor, and every other rename test in this file — keeps the legacy shape.
+    #[tokio::test]
+    async fn rename_keeps_unversioned_changes_without_capability() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        server
+            .initialize(InitializeParams::default())
+            .await
+            .unwrap();
+        let uri = open_bracket_source(server).await;
+
+        let edit = server
+            .rename(rename_params(uri.clone(), 7, 17, "girth"))
+            .await
+            .unwrap()
+            .expect("renaming a width use returns a WorkspaceEdit");
+
+        assert!(
+            edit.document_changes.is_none(),
+            "an undeclared capability must not receive documentChanges"
+        );
+        assert!(
+            edit.changes.is_some_and(|c| c.contains_key(&uri)),
+            "the legacy changes map is preserved for undeclared clients"
+        );
+    }
 }
