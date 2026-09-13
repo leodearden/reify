@@ -181,7 +181,8 @@ descendants.  That is what was done, and it is why this window reports ONE
 lane's gate rather than the host.  A sandbox-induced zero is a third member of
 the silent-zero family this instrument's header already documents (the
 cwd-induced zero and the never-saw-an-execution-phase zero), and the instrument
-cannot yet tell it from the other two — filed as follow-up from esc-6375-2.
+cannot yet tell it from the other two.  **Tracked as #7500** (filed from
+esc-6375-2).
 
 ## Why window 1 was not conclusive (retained as provenance)
 
@@ -348,4 +349,6 @@ read back as `test-threads = 32`.
 **The one residual.**  The instrument cannot yet distinguish a sandbox-induced
 zero from the two silent zeros it already documents.  That does not affect window
 3 (which is non-zero throughout and states its own scope), and it is filed as
-follow-up from esc-6375-2 rather than left as prose here.
+**#7500** (filed from esc-6375-2) rather than left as prose here — the same
+cite-a-live-task-by-number discipline this section argues for above, applied to
+the residual this round leaves behind.
