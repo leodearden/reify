@@ -200,10 +200,16 @@ impl Seeds {
 /// it.  Without this overlay a function body would look seed-independent and
 /// every user-defined function would differentiate to zero.
 ///
-/// Only NON-zero tangents are stored, so "is this cell bound?" and "does this
-/// cell carry a tangent?" are the same question, and an unbound lookup falls
-/// through to [`Tangent::Zero`] — which is the right answer for a parameter
-/// that genuinely does not move with the seeds.
+/// An *unbound* lookup falls through to [`Tangent::Zero`] — the right answer
+/// for a cell that genuinely does not move with the seeds — but a cell bound
+/// to `Zero` is still stored, because a binding is AUTHORITATIVE over every
+/// earlier binding of the same cell.  Reify lets a `let` shadow a parameter
+/// (a `Shadowing` warning, not an error) and lets two same-named `let`s
+/// coexist with no diagnostic at all, so a cell IS bound more than once; a
+/// skipped zero rebind would leave the shadowed binding's tangent live and
+/// fabricate a non-zero derivative.  "Is this cell bound?" is therefore a
+/// weaker question than "does it carry a tangent?", and only the former gates
+/// the [`DualEnv::carries_tangent`] fast path — erring towards descending.
 #[derive(Default)]
 pub struct DualEnv {
     bindings: HashMap<ValueCellId, Tangent>,
@@ -233,15 +239,17 @@ impl DualEnv {
         DualEnv::default()
     }
 
-    /// Bind `cell` to `tangent`.  A [`Tangent::Zero`] is deliberately NOT
-    /// stored: unbound already means zero.
+    /// Bind `cell` to `tangent`, displacing any earlier binding of the same
+    /// cell — including with a [`Tangent::Zero`], which is what makes a
+    /// shadowing `let` able to FLATTEN the tangent of the parameter or `let`
+    /// it shadows rather than inherit it.
+    ///
+    /// This is also the only binder that can retire a recorded refusal: a cell
+    /// rebound to a real tangent is differentiable again, so its stale cause
+    /// must not outlive it and condemn the read.
     pub fn bind(&mut self, cell: ValueCellId, tangent: Tangent) {
-        if tangent.is_zero() {
-            return;
-        }
-        if self.bindings.insert(cell, tangent).is_none() {
-            self.generation += 1;
-        }
+        self.causes.remove(&cell);
+        self.insert(cell, tangent);
     }
 
     /// Bind `cell` as NON-differentiable, keeping the reason.
@@ -253,7 +261,15 @@ impl DualEnv {
     /// derived cell from condemning rows that never look at it.
     pub fn bind_refused(&mut self, cell: ValueCellId, cause: NonDifferentiable) {
         self.causes.insert(cell.clone(), cause);
-        self.bind(cell, Tangent::None);
+        self.insert(cell, Tangent::None);
+    }
+
+    /// The one write to `bindings`, so the [`DualEnv::generation`] counter
+    /// cannot drift from the key set it describes.
+    fn insert(&mut self, cell: ValueCellId, tangent: Tangent) {
+        if self.bindings.insert(cell, tangent).is_none() {
+            self.generation += 1;
+        }
     }
 
     /// The tangent bound to `cell`, or `None` when it carries no tangent.
@@ -266,12 +282,17 @@ impl DualEnv {
         self.causes.get(cell)
     }
 
-    /// True when no cell carries a tangent.
+    /// True when no cell is bound at all.
     pub fn is_empty(&self) -> bool {
         self.bindings.is_empty()
     }
 
     /// True when `expr` references at least one bound cell.
+    ///
+    /// A cell bound to [`Tangent::Zero`] counts, so this can answer `true` for
+    /// a provably flat expression.  That is a missed fast path, never a wrong
+    /// tangent — and it is what keeps "bindings only ever GROW" true, which is
+    /// what the `carries` memo's permanent-`true` rule rests on.
     ///
     /// Uses `collect_value_refs` rather than `expr.walk` for the reason
     /// [`Seeds::depends_on_seed`] states: the two traversals disagree on

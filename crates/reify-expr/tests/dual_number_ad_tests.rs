@@ -812,6 +812,148 @@ fn a_user_function_let_binding_carries_its_tangent_into_the_result_expression() 
 }
 
 // ---------------------------------------------------------------------------
+// (2b) SHADOWING: a cell bound twice, where the LATER binding wins
+// ---------------------------------------------------------------------------
+//
+// A callee's parameters and its `let` bindings share one namespace of
+// `ValueCellId::new(&func.name, name)` cells, and reify lets a name be bound
+// there more than once: a `let` shadowing a parameter is a `Shadowing`
+// WARNING, and two same-named `let`s carry no diagnostic at all.  `eval_expr`
+// resolves both by overwrite — the later binding wins the primal — so the
+// tangent overlay must resolve them the same way.  A rebind that was skipped
+// because the new tangent is flat would leave the shadowed binding's tangent
+// live and report a FABRICATED non-zero derivative for an expression the
+// primal says does not move at all; the mirror error is a false refusal, a
+// cell poisoned `Tangent::None` staying poisoned after a plain rebind.
+
+/// The tangent a read of `cell` would see: an unbound cell and a cell bound
+/// flat are the same answer at the read site, so this asserts what the
+/// evaluator observes rather than which of the two the binder chose.
+fn visible_tangent(env: &DualEnv, cell: &VCell, width: usize) -> Option<Vec<f64>> {
+    match env.get(cell) {
+        None => Some(vec![0.0; width]),
+        Some(t) => t.materialize(width),
+    }
+}
+
+#[test]
+fn rebinding_a_cell_to_a_flat_tangent_displaces_the_earlier_one() {
+    let mut env = DualEnv::new();
+    let c = VCell::new("f", "a");
+    env.bind(c.clone(), Tangent::from_row(vec![1.0, 2.0]));
+    env.bind(c.clone(), Tangent::Zero);
+    assert_eq!(
+        visible_tangent(&env, &c, 2),
+        Some(vec![0.0, 0.0]),
+        "a flat rebind must be authoritative, not a no-op that leaves the old tangent live"
+    );
+}
+
+#[test]
+fn rebinding_a_refused_cell_to_a_real_tangent_retires_the_refusal() {
+    let mut env = DualEnv::new();
+    let c = VCell::new("f", "a");
+    env.bind(c.clone(), Tangent::None);
+    env.bind(c.clone(), Tangent::from_row(vec![1.0]));
+    assert_eq!(
+        visible_tangent(&env, &c, 1),
+        Some(vec![1.0]),
+        "a cell rebound to a real tangent is differentiable again"
+    );
+}
+
+#[test]
+fn a_let_shadowing_a_parameter_flattens_that_parameters_tangent() {
+    // fn shadow(a) { let a = 5.0; a * 2.0 } — the body never reads the
+    // argument, so the result is 10.0 for every x and ∂/∂x is exactly 0.
+    let f = user_fn(
+        "shadow",
+        &["a"],
+        vec![("a".to_string(), literal(Value::Real(5.0)))],
+        binop(BinOp::Mul, param_ref("shadow", "a"), literal(Value::Real(2.0))),
+    );
+    let (values, seed_cells) = probe(&[("x", 3.0)]);
+    let expr = user_fn_call("shadow", vec![pref("x")], dl());
+    let fns = [f];
+    let ctx = EvalContext::new(&values, &fns);
+    let mut record = BranchRecord::new();
+    let dual = eval_dual(&expr, &ctx, &Seeds::new(&seed_cells), &mut record);
+
+    assert_eq!(dual.value, eval_expr(&expr, &ctx), "the primal invariant holds under shadowing");
+    assert_eq!(dual.value, Value::Real(10.0));
+    assert_eq!(
+        dual.tangent.materialize(1),
+        Some(vec![0.0]),
+        "the shadowing let is seed-independent, so the call is flat in x"
+    );
+}
+
+#[test]
+fn the_later_of_two_same_named_lets_displaces_the_earlier_ones_tangent() {
+    // fn two_lets(a) { let s = a * 3.0; let s = 7.0; s + 1.0 }.  Two lets of
+    // one name emit NO diagnostic, so this shape reaches the evaluator with
+    // nothing upstream having flagged it.
+    let f = user_fn(
+        "two_lets",
+        &["a"],
+        vec![
+            (
+                "s".to_string(),
+                binop(BinOp::Mul, param_ref("two_lets", "a"), literal(Value::Real(3.0))),
+            ),
+            ("s".to_string(), literal(Value::Real(7.0))),
+        ],
+        binop(BinOp::Add, param_ref("two_lets", "s"), literal(Value::Real(1.0))),
+    );
+    let (values, seed_cells) = probe(&[("x", 3.0)]);
+    let expr = user_fn_call("two_lets", vec![pref("x")], dl());
+    let fns = [f];
+    let ctx = EvalContext::new(&values, &fns);
+    let mut record = BranchRecord::new();
+    let dual = eval_dual(&expr, &ctx, &Seeds::new(&seed_cells), &mut record);
+
+    assert_eq!(dual.value, eval_expr(&expr, &ctx), "the primal invariant holds under shadowing");
+    assert_eq!(dual.value, Value::Real(8.0));
+    assert_eq!(
+        dual.tangent.materialize(1),
+        Some(vec![0.0]),
+        "the surviving `s` is the constant one, so the call is flat in x"
+    );
+}
+
+#[test]
+fn a_let_shadowing_a_parameter_leaves_the_rest_of_the_residual_differentiable() {
+    // The contrast that makes the flat column meaningful: the shadowed
+    // parameter must go to zero WITHOUT the row collapsing or refusing, so
+    // the sibling term's real derivative still arrives.  r = shadow(x) + x*x.
+    let f = user_fn(
+        "shadow",
+        &["a"],
+        vec![("a".to_string(), literal(Value::Real(5.0)))],
+        binop(BinOp::Mul, param_ref("shadow", "a"), literal(Value::Real(2.0))),
+    );
+    let (values, seed_cells) = probe(&[("x", 3.0)]);
+    let expr = binop(
+        BinOp::Add,
+        user_fn_call("shadow", vec![pref("x")], dl()),
+        binop(BinOp::Mul, pref("x"), pref("x")),
+    );
+    let fns = [f];
+    let ctx = EvalContext::new(&values, &fns);
+    let mut record = BranchRecord::new();
+    let dual = eval_dual(&expr, &ctx, &Seeds::new(&seed_cells), &mut record);
+
+    assert_eq!(dual.value, eval_expr(&expr, &ctx), "the primal invariant holds under shadowing");
+    assert_eq!(dual.value, Value::Real(19.0));
+    assert_eq!(
+        dual.tangent.materialize(1),
+        Some(vec![6.0]),
+        "only the x*x term moves: ∂r/∂x = 2x = 6"
+    );
+}
+
+
+// ---------------------------------------------------------------------------
 // (3) Nested user-function calls
 // ---------------------------------------------------------------------------
 
