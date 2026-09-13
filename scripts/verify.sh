@@ -3566,12 +3566,15 @@ if [ "${#PLAN[@]}" -eq 0 ]; then
     exit 0
 fi
 
-# The phase boundary the SCOPE CONTRACT in apply_env() names. It cannot be
-# scoped tighter than the whole loop: any plan line containing
-# _VERIFY_NODE_BG_PID is dispatched by a MAIN-SHELL `eval` below, because the
-# backgrounded node lane sets that variable in this shell's scope. So
+# The phase boundary the SCOPE CONTRACT in apply_env() names. ONE export for
+# the whole loop is a deliberate choice, not a forced one: a per-line prefix
+# (LD_LIBRARY_PATH=… eval "$_cmd") does work in bash's default mode — the eval
+# arm still sets _VERIFY_NODE_BG_PID in this shell — but `eval` is a POSIX
+# SPECIAL BUILTIN, so under `set -o posix` the prefix PERSISTS after the
+# command (measured, bash 5.2.21) and would leak the OCCT path into every later
+# line. One export keeps both dispatch arms uniform; its cost is that
 # test_semaphore_acquire/release and reaper_teardown, which interleave with the
-# loop, necessarily run inside the export — a structural floor, not an omission.
+# loop, also run on the OCCT path.
 export LD_LIBRARY_PATH="$_PLAN_LD_LIBRARY_PATH"
 
 for _cmd in "${PLAN[@]}"; do
