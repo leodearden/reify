@@ -191,6 +191,154 @@ fn params_in_declaration_order_still_resolve_at_instance_scope() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// step-3: RED — ordering edges come from the expression that ACTUALLY runs
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// A param supplied by an explicit ctor arg never evaluates its `default_expr` —
+/// the arg is evaluated against the PARENT's `values` instead. Building that
+/// param's dependency trace from the unused `default_expr` therefore invents
+/// edges, and here the invented edge closes a 2-cycle: the sort omits both
+/// cells, they fall into the declaration-order residue, and `p` evaluates
+/// against a `child_values` that has no `q` yet — reproducing, for arg-supplied
+/// instances, exactly the bug this task closes.
+///
+/// `q` is arg-supplied, so the only REAL edge is `p -> q`. Both cells must
+/// resolve to Int(5).
+#[test]
+fn arg_supplied_param_contributes_no_default_expr_edge() {
+    let mut engine = fresh_engine();
+    let module = compile_source(
+        "structure Pair { \
+            param p : Int = q \
+            param q : Int = p \
+        } \
+        structure PairHolder { \
+            sub a = Pair(q: 5) \
+        }",
+    );
+
+    let result = engine.eval(&module);
+
+    assert_eq!(
+        result.values.get(&ValueCellId::new("PairHolder.a", "q")),
+        Some(&Value::Int(5)),
+        "PairHolder.a.q comes from the ctor arg, evaluated in the parent's scope"
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("PairHolder.a", "p")),
+        Some(&Value::Int(5)),
+        "PairHolder.a.p reads `q`, which the ctor arg supplies. An Undef here \
+         means `q`'s unused `default_expr` contributed a phantom `q -> p` edge, \
+         faking a cycle that dumped both cells into the declaration-order residue"
+    );
+}
+
+/// The residue guard for the leg the dependency sort introduced.
+///
+/// `topological_sort` (Kahn) omits cycle members, so a topo-sort-only loop would
+/// DELETE these two cells. They are committed as Undef today, and deleting a
+/// committed cell is a worse member of the same stale-Undef family this task is
+/// fixing — hence the declaration-order residue append.
+///
+/// NON-VACUITY: this test is green both before and after the residue append, so
+/// it was verified by temporarily deleting the append from
+/// `params_in_dependency_order` and observing this test RED (both cells absent),
+/// then restoring it.
+///
+/// The cycle is reported exactly ONCE, by template scope. `unfold.rs` stays
+/// silent deliberately: a second report would double-report a cycle template
+/// scope already owns.
+#[test]
+fn cyclic_param_defaults_are_still_committed_at_instance_scope() {
+    let mut engine = fresh_engine();
+    let module = compile_source(
+        "structure Cyc { \
+            param a : Int = b \
+            param b : Int = a \
+        } \
+        structure CycHolder { \
+            sub s = Cyc() \
+        }",
+    );
+
+    let result = engine.eval(&module);
+
+    for member in ["a", "b"] {
+        let instance_id = ValueCellId::new("CycHolder.s", member);
+        assert_eq!(
+            result.values.get(&instance_id),
+            Some(&Value::Undef),
+            "CycHolder.s.{member} must be PRESENT and Undef. `None` here means \
+             the topological sort dropped the cycle member instead of appending \
+             it to the residue, deleting a cell that was committed before the \
+             dependency-ordering fix"
+        );
+    }
+
+    let cycle_reports: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("circular dependency"))
+        .collect();
+    assert_eq!(
+        cycle_reports.len(),
+        1,
+        "the param cycle must be reported exactly once, by template scope \
+         (`circular dependency in template Cyc: [a, b]`). A second report means \
+         `params_in_dependency_order` grew its own diagnostic and is \
+         double-reporting a cycle template scope already owns. Got: {cycle_reports:?}"
+    );
+}
+
+/// SCOPE BOUNDARY, not a bug report. Green today and expected to stay green.
+///
+/// A param default reading a sibling LET degrades at instance scope the same way
+/// a sibling-param read used to, and ordering params AMONG THEMSELVES provably
+/// cannot fix it: `elaborate_child_params_only` (phase 1) runs entirely before
+/// `elaborate_child_lets_only` (phase 2). Closing it is the instance-scope
+/// analogue of task #4317's template-scope phase unification — a design change,
+/// not a loop-ordering fix — tracked by follow-up ticket
+/// `tkt_0RTKT9B322NQ9VTT2SY6DK5AYN`.
+///
+/// If this arm ever REDS, the sibling-let gap has closed and the assertion
+/// should become an equality against the template cell, like the ones above.
+/// This test exists so the narrow param-only fix cannot be read as closing the
+/// whole class.
+#[test]
+fn param_default_reading_a_sibling_let_still_degrades_at_instance_scope() {
+    let mut engine = fresh_engine();
+    let module = compile_source(
+        "structure Mixed { \
+            let dbl = seed2 * 2 \
+            param p : Int = dbl \
+            param seed2 : Int = 3 \
+        } \
+        structure MixedHolder { \
+            sub a = Mixed() \
+        }",
+    );
+
+    let result = engine.eval(&module);
+
+    assert_eq!(
+        result.values.get(&ValueCellId::new("Mixed", "p")),
+        Some(&Value::Int(6)),
+        "template scope resolves a param default reading a sibling let (#4317)"
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("MixedHolder.a", "p")),
+        Some(&Value::Undef),
+        "CHARACTERIZATION: the sibling-LET half is NOT fixed here. Phase 1 \
+         (`elaborate_child_params_only`) runs entirely before phase 2 \
+         (`elaborate_child_lets_only`), so no ordering of params among \
+         themselves can make `dbl` visible to `p`. Tracked by follow-up ticket \
+         tkt_0RTKT9B322NQ9VTT2SY6DK5AYN. If this now equals the template's \
+         Int(6), that gap has closed and this arm should become an equality \
+         against the template cell"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // shared assertion
 // ──────────────────────────────────────────────────────────────────────────────
 
