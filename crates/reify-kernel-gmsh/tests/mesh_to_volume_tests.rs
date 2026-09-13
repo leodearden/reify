@@ -494,45 +494,22 @@ fn out_of_bounds_index_errors() {
         "error message should mention the out-of-bounds tag and phrasing; got: {msg}"
     );
 }
-
 // Coverage gap: the `surface_tags.is_empty()` branch in
-// `kernel_real::mesh_to_volume` (post-classify_surfaces +
-// post-create_geometry) is intentionally not exercised by an integration
-// test. Empirical investigation showed that the obvious candidate input —
-// a single open triangle — does NOT hit that branch: gmsh's
-// classify_surfaces+create_geometry produces a surface entity even for an
-// open mesh, and the failure surfaces later in `gmshModelMeshGenerate(3)`
-// when HXT cannot 3D-mesh an unclosed region. So an integration test that
-// reliably hits the empty-entities branch isn't reachable from real input
-// geometry. The branch remains as defensive guarding against future
-// gmsh-version changes; verification relies on code review rather than
-// runtime coverage. The other three reviewer-requested validation tests
+// `kernel_real::mesh_to_volume` is not reachable from real input geometry.
+// gmsh's classify_surfaces+create_geometry produces a surface entity even for
+// an open mesh, so the obvious candidate — a single open triangle — sails
+// past that branch and fails later, at `gmshModelMeshGenerate(3)`, when HXT
+// cannot 3D-mesh an unclosed region. The branch stays as defensive guarding
+// against future gmsh-version changes, verified by code review rather than
+// runtime coverage. The three sibling validation tests above
 // (`vertices_length_not_multiple_of_three_errors`,
-// `indices_length_not_multiple_of_three_errors`,
-// `out_of_bounds_index_errors`) cover the preflight validation that does
-// have testable error paths.
+// `indices_length_not_multiple_of_three_errors`, `out_of_bounds_index_errors`)
+// cover the preflight validation that does have testable error paths.
 //
-// This note used to continue: that a failed mesh_generate leaves
-// "thread-local HXT state" surviving `gmshClear()`, and that a test
-// triggering it "pollutes other tests in the same binary". Task #7397
-// corrected both halves.
-//
-// What was actually measured: the damaging state survives `gmshClear()`,
-// and a `gmshFinalize`+`gmshInitialize` cycle clears it. What that state IS
-// was never established — gmsh's sources were not read — so the
-// thread-local-HXT attribution was a guess and is withdrawn.
-//
-// The pollution claim is simply no longer true.
-// `init::mesh_generate_with_recovery` performs that cycle inside the failing
-// call, while `GMSH_LOCK` is still held, at all four of this crate's
-// `mesh_generate` call sites. The poisoned window therefore closes before
-// any other caller — or test — can observe it.
-//
-// Deliberately failing a mesh is now the business of
-// `tests/mesher_poison_recovery.rs`, which does exactly that and asserts the
-// process stays usable afterwards. #7397 asked whether the per-binary
-// isolation could then be dropped: in principle yes, since the poison is no
-// longer observable across calls. It is kept anyway, because that binary is
-// the cohesive home for the tests that fail a mesh on purpose — so a future
-// recovery regression reds one binary whose name states the cause, instead
-// of reddening eight unrelated assertions here.
+// Deliberately failing a mesh is the business of
+// `tests/mesher_poison_recovery.rs`, not this binary — kept separate so that a
+// regression in gmsh's mesher-recovery reds one binary whose name states the
+// cause, instead of reddening unrelated assertions here. A failed
+// `mesh_generate` no longer escapes its own call: `init::mesh_generate_with_recovery`
+// recycles gmsh while `GMSH_LOCK` is still held, at all four of this crate's
+// `mesh_generate` call sites.

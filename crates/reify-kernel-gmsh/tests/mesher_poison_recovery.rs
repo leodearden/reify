@@ -66,9 +66,13 @@ fn a_failed_mesh_to_volume_leaves_the_mesher_usable_for_the_next_caller() {
         .expect_err("an open triangle bounds no volume; mesh_to_volume must report a failure");
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("gmshModelMeshGenerate"),
-        "this test's premise is that the fixture fails AT THE MESHER, not at an \
-         earlier preflight guard; got: {msg}"
+        msg.contains("gmshModelMeshGenerate: ierr="),
+        "this test's premise is that the fixture fails AT THE MESHER itself. The \
+         `ierr=` is load-bearing: `ffi.rs` formats a real FFI failure as \
+         `<symbol>: ierr=<n> (<msg>)`, whereas the zero-tet backstop in \
+         `kernel_real.rs` opens `gmshModelMeshGenerate reported success but ...`. \
+         Matching the bare symbol would let this test pass having poisoned \
+         nothing and exercised no recovery. Got: {msg}"
     );
 
     let recovered = kernel
@@ -94,10 +98,18 @@ fn a_failed_mesh_to_volume_leaves_the_mesher_usable_for_the_next_caller() {
 /// loud `Err` satisfies the contract just as well as a real mesh does; the
 /// only forbidden outcome is a silent empty answer.
 ///
-/// It is driven through a SIBLING mesher because `mesh_to_volume` can no
-/// longer poison itself: `refine_volume_with_size_field` reaches the same
-/// process-global `gmshModelMeshGenerate` and (today) does not yet route
-/// through the recovery wrapper, so it is the remaining way in.
+/// It is driven through `refine_volume_with_size_field` as a REPRESENTATIVE
+/// second entry point into the same process-global mesher — not because that
+/// sibling is unprotected; it routes through the recovery wrapper too. The
+/// failing call and the call under test are deliberately different entry
+/// points, since a caller's exposure to someone else's failed mesh is the
+/// only way this contract can be breached in practice.
+///
+/// `a_failed_sibling_mesher_leaves_mesh_to_volume_usable` below drives the
+/// identical sequence and demands the stronger outcome. Both are kept: when
+/// they disagree — strong red, this one green — the process degraded to
+/// failing LOUDLY, which is a materially different regression from returning
+/// a silent empty mesh, and worth being able to tell apart at a glance.
 #[test]
 fn mesh_to_volume_never_returns_ok_with_zero_tets() {
     let poisoning = refine_volume_with_size_field(
@@ -111,9 +123,10 @@ fn mesh_to_volume_never_returns_ok_with_zero_tets() {
     );
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("gmshModelMeshGenerate"),
-        "this test's premise is that the sibling fails AT THE MESHER, not at an \
-         earlier preflight guard; got: {msg}"
+        msg.contains("gmshModelMeshGenerate: ierr="),
+        "this test's premise is that the sibling fails AT THE MESHER itself — the \
+         `ierr=` distinguishes a real FFI failure from the zero-tet backstop, \
+         whose message also names that symbol; got: {msg}"
     );
 
     let result = GmshKernel::new().mesh_to_volume(
@@ -156,9 +169,10 @@ fn a_failed_sibling_mesher_leaves_mesh_to_volume_usable() {
     );
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("gmshModelMeshGenerate"),
-        "this test's premise is that the sibling fails AT THE MESHER, not at an \
-         earlier preflight guard; got: {msg}"
+        msg.contains("gmshModelMeshGenerate: ierr="),
+        "this test's premise is that the sibling fails AT THE MESHER itself — the \
+         `ierr=` distinguishes a real FFI failure from the zero-tet backstop, \
+         whose message also names that symbol; got: {msg}"
     );
 
     let recovered = GmshKernel::new()
@@ -188,9 +202,13 @@ fn a_failed_sibling_mesher_leaves_mesh_to_volume_usable() {
 /// This is the test that stops the fix from being one-way. Measured before
 /// this task, `refine_volume_with_size_field` returned `Ok` with zero tets
 /// after an unrelated `mesh_to_volume` failure — the same silent wrong
-/// answer, reached through a different door. It is fixed only by wrapping
-/// the sibling's own `mesh_generate` call, not by anything done to
-/// `mesh_to_volume`.
+/// answer, reached through a different door.
+///
+/// What makes it green is the recovery wrapper on the POISONING call, in
+/// `kernel_real.rs`: recovery runs inside the call that failed, while
+/// `GMSH_LOCK` is still held, so the sibling never sees the damaged library
+/// and its own wrapper never runs here. Delete the wrapping in
+/// `kernel_real.rs` and this test reds.
 #[test]
 fn a_failed_mesh_to_volume_leaves_the_sibling_meshers_usable() {
     let poisoning = GmshKernel::new().mesh_to_volume(
@@ -218,8 +236,7 @@ fn a_failed_mesh_to_volume_leaves_the_sibling_meshers_usable() {
         .expect("a P1 volume mesh must carry tet_indices");
     assert!(
         !tets.is_empty(),
-        "the cube refined to ZERO tets after mesh_to_volume failed, and did so \
-         SILENTLY: this sibling has no zero-result guard of its own, so the empty \
-         mesh reached the caller as a plain Ok",
+        "the cube refined to ZERO tets after mesh_to_volume failed: the poisoning \
+         call left the shared mesher unusable for this sibling",
     );
 }
