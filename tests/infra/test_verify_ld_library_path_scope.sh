@@ -499,4 +499,158 @@ assert "PLAN+= appears at exactly the two emitter definitions (add/add_tool) —
 assert "every plain add() site carries a '# ld-ok: <reason>' marker — an unmarked site is presumed a TOOL line and must either use add_tool() or state why it does not need the scrub:$_ADD_UNMARKED_TEXT" \
     test "$_ADD_UNMARKED" -eq 0
 
+# ---------------------------------------------------------------------------
+# Section F: verify.sh's OWN main-shell subprocesses run on the AMBIENT loader
+# path (task 6392).
+#
+# Sections A-E are entirely about PLAN LINES. They say nothing about what
+# verify.sh forks for ITSELF while deciding scope and building the plan — the
+# `git -C "$REPO_ROOT" diff` scope calls, gen-nextest-config.sh, the count-only
+# run_all.sh subset probe, the nextest-availability probe, and the
+# grep/sed/cut/cat/ls/dirname tail inside command substitutions. Task 5730
+# exported the OCCT path process-wide from apply_env(), so all of those
+# inherited the conda prefix.
+#
+# 6392 moves WHEN that export happens, not what it covers: every plan line,
+# cargo or tool, still runs under a process-wide export, so 5730's fail-safe
+# polarity is untouched. apply_env() now only COMPUTES the value; a single
+# export is established between build_plan and the plan-execution loop.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Section F: verify.sh's own subprocesses run on the ambient loader path ---"
+
+# F-1, BEHAVIOURAL. A PATH shim of recording wrappers. Each appends
+# "<tool><TAB><inherited LD_LIBRARY_PATH>" to a log, then execs the REAL binary
+# through $SHIM_DIR/real/<tool> — a symlink resolved HERE, before the shim dir
+# joins PATH, so the exec can never recurse into the wrapper. `bash` and `env`
+# are deliberately NOT shimmed: the probe is invoked through both, and the real
+# PATH stays BEHIND the shim dir because apply_env() sources $HOME/.cargo/env
+# (prior art, read not sourced: tests/infra/nextest_absent_lib.sh:22-53).
+SHIM_DIR="$(mktemp -d "${TMPDIR:-/tmp}/reify-ld-shim-6392.XXXXXX")"
+trap 'rm -rf "$SHIM_DIR"' EXIT INT TERM HUP
+SHIM_LOG="$SHIM_DIR/records.tsv"
+mkdir -p "$SHIM_DIR/bin" "$SHIM_DIR/real"
+: > "$SHIM_LOG"
+
+# One wrapper body for all seven, dispatching on $0's basename — a symlinked
+# script's $0 is the path as INVOKED, never resolved. It lives outside
+# $SHIM_DIR/bin so PATH lookup cannot reach it directly.
+cat > "$SHIM_DIR/wrapper" <<EOF
+#!/usr/bin/env bash
+_t="\${0##*/}"
+printf '%s\t%s\n' "\$_t" "\${LD_LIBRARY_PATH-<UNSET>}" >> '$SHIM_LOG'
+exec '$SHIM_DIR/real'/"\$_t" "\$@"
+EOF
+chmod +x "$SHIM_DIR/wrapper"
+
+for _tool in git grep sed cut dirname cat ls; do
+    _real="$(command -v "$_tool" 2>/dev/null || true)"
+    [ -n "$_real" ] || continue
+    ln -s "$_real"            "$SHIM_DIR/real/$_tool"
+    ln -s "$SHIM_DIR/wrapper" "$SHIM_DIR/bin/$_tool"
+done
+
+# Same ambient pin and invocation envelope as the Section A capture, so these
+# assertions are a function of verify.sh alone (esc-5730-2). DF_VERIFY_ROLE=task
+# is load-bearing: merge/background force --scope all (scripts/verify.sh:877),
+# skipping the very scope-decision git calls this probe exists to observe.
+PATH="$SHIM_DIR/bin:$PATH" env -u REIFY_INFRA_SUITE_ACTIVE LD_LIBRARY_PATH="$LD_AMBIENT_SENTINEL" \
+    DF_VERIFY_ROLE=task REIFY_NEXTEST_PROBE_RETRY_SLEEP=0 \
+    bash "$REPO_ROOT/scripts/verify.sh" test --scope branch --print-plan >/dev/null 2>&1 || true
+
+# Fork-free tally (a redirect, not a pipe — esc-4574-42 house style), with a
+# bounded sample of offenders kept for the failure message.
+_SHIM_TOTAL=0
+_SHIM_GIT=0
+_SHIM_GREP=0
+_SHIM_HOSTILE=0
+_SHIM_SAMPLE=""
+while IFS=$'\t' read -r _tool _val; do
+    _SHIM_TOTAL=$((_SHIM_TOTAL + 1))
+    case "$_tool" in
+        git)  _SHIM_GIT=$((_SHIM_GIT + 1)) ;;
+        grep) _SHIM_GREP=$((_SHIM_GREP + 1)) ;;
+    esac
+    [ "$_val" = "$LD_AMBIENT_SENTINEL" ] && continue
+    _SHIM_HOSTILE=$((_SHIM_HOSTILE + 1))
+    if [ "$_SHIM_HOSTILE" -le 6 ]; then
+        _SHIM_SAMPLE="$_SHIM_SAMPLE
+    $_tool=$_val"
+    fi
+done < "$SHIM_LOG"
+
+# Non-vacuity FIRST: a broken shim or a scope degradation must fail HERE rather
+# than pass an empty enumeration. Every grep record is post-apply_env(), so
+# that count proves the probe reached the phase under test even if --scope
+# branch degraded to all.
+assert "non-vacuity: the PATH shim recorded verify.sh subprocesses at all (>=15; got $_SHIM_TOTAL)" \
+    test "$_SHIM_TOTAL" -ge 15
+assert "non-vacuity: the shim intercepted the scope-decision 'git' calls (>=3; got $_SHIM_GIT)" \
+    test "$_SHIM_GIT" -ge 3
+assert "non-vacuity: the shim reached the post-apply_env() phase — every 'grep' record lives there (>=5; got $_SHIM_GREP)" \
+    test "$_SHIM_GREP" -ge 5
+
+# THE INVARIANT. Equality against the pinned sentinel, not absence of
+# $DEPS_OCCT_LIB: the absent-substring form is trivially true on an OCCT-less
+# host, and equality additionally catches a hardcoded "", a partial scrub, and
+# any other mangling of the operator's loader path (the discipline Section A
+# adopted after esc-5730-2).
+assert "every subprocess verify.sh forks during scope decision and plan construction inherits EXACTLY the ambient loader path — none carries $DEPS_OCCT_LIB or $SNAP_OCCT_LIB ($_SHIM_HOSTILE/$_SHIM_TOTAL hostile):$_SHIM_SAMPLE" \
+    test "$_SHIM_HOSTILE" -eq 0
+
+# F-2, STRUCTURAL. The probe above observes one host, one role, one scope; this
+# half pins the structure that makes the invariant hold everywhere — exactly
+# ONE `export LD_LIBRARY_PATH=` statement, sited at the phase boundary. A second
+# export, or this one drifting back into apply_env(), fails here even on a host
+# the probe cannot exercise.
+#
+# Head-anchored on the whitespace-STRIPPED line, never matched as a substring:
+# _LD_SCRUB (scripts/verify.sh:2066) ASSIGNS plan TEXT carrying that same
+# substring, so counting it would make "exactly one" unsatisfiable and couple
+# this census to an emitter it is not policing. That line starts with
+# `_LD_SCRUB=`, so the head anchor excludes it; comments are skipped likewise.
+_EXPORT_COUNT=0
+_EXPORT_LINE=0
+_EXPORT_LINES=""
+_BUILD_PLAN_COUNT=0
+_BUILD_PLAN_LINE=0
+_PLAN_LOOP_COUNT=0
+_PLAN_LOOP_LINE=0
+_SRC_LINENO=0
+while IFS= read -r _line; do
+    _SRC_LINENO=$((_SRC_LINENO + 1))
+    _t="${_line#"${_line%%[![:space:]]*}"}"
+    case "$_t" in '#'*) continue ;; esac
+    case "$_t" in
+        'export LD_LIBRARY_PATH='*)
+            _EXPORT_COUNT=$((_EXPORT_COUNT + 1))
+            _EXPORT_LINE=$_SRC_LINENO
+            _EXPORT_LINES="${_EXPORT_LINES:+$_EXPORT_LINES,}$_SRC_LINENO"
+            ;;
+        'build_plan')
+            _BUILD_PLAN_COUNT=$((_BUILD_PLAN_COUNT + 1))
+            _BUILD_PLAN_LINE=$_SRC_LINENO
+            ;;
+        'for _cmd in "${PLAN[@]}"; do')
+            _PLAN_LOOP_COUNT=$((_PLAN_LOOP_COUNT + 1))
+            _PLAN_LOOP_LINE=$_SRC_LINENO
+            ;;
+    esac
+done < "$REPO_ROOT/scripts/verify.sh"
+
+_export_at_phase_boundary() {
+    [ "$_EXPORT_LINE" -gt "$_BUILD_PLAN_LINE" ] && [ "$_EXPORT_LINE" -lt "$_PLAN_LOOP_LINE" ]
+}
+
+# Both anchors asserted before the placement they bound, so a rename fails HERE
+# rather than silently vacuifying the comparison.
+assert "non-vacuity: the 'build_plan' invocation appears exactly once in scripts/verify.sh (a rename must fail HERE, not vacuify the placement assertion); got $_BUILD_PLAN_COUNT" \
+    test "$_BUILD_PLAN_COUNT" -eq 1
+assert "non-vacuity: the plan-execution loop header 'for _cmd in \"\${PLAN[@]}\"; do' appears exactly once in scripts/verify.sh (the --print-plan printer's loop uses the \${PLAN[@]+…} form, so it is not miscounted); got $_PLAN_LOOP_COUNT" \
+    test "$_PLAN_LOOP_COUNT" -eq 1
+assert "scripts/verify.sh carries exactly ONE 'export LD_LIBRARY_PATH=' statement — apply_env() must COMPUTE the OCCT path, not export it; got $_EXPORT_COUNT at line(s) ${_EXPORT_LINES:-<none>}" \
+    test "$_EXPORT_COUNT" -eq 1
+assert "the single export sits at the PHASE BOUNDARY — after build_plan (line $_BUILD_PLAN_LINE) and before the plan-execution loop (line $_PLAN_LOOP_LINE) — so scope decision and plan construction fork on the ambient loader path; got line $_EXPORT_LINE" \
+    _export_at_phase_boundary
+
 test_summary
