@@ -11182,6 +11182,132 @@ mod tests {
         }
     }
 
+    // ── `impl Display for Value` Scalar-arm pins (task #6674) ────────────────
+    // The eval-cell render path: `reify eval` reaches this through
+    // `format!("{}", v)`. Before #6674 nothing pinned Display of a
+    // Pressure/Density/Force/dimensionless Scalar at all, so these three tests
+    // are the safety net under the label swap — the first group is the change,
+    // the other two are the fences that prove the swap is LABEL-ONLY.
+
+    /// Curated coherent-SI labels reach the eval cell: every dimension whose
+    /// registry ladder has a scale-1.0 default rung renders that rung's label
+    /// instead of the composed base-SI symbols.
+    #[test]
+    fn display_scalar_renders_curated_unit_labels() {
+        let cases: &[(DimensionVector, f64, &str)] = &[
+            (DimensionVector::FREQUENCY, 50.0, "50 Hz"),
+            (DimensionVector::STIFFNESS, 1000.0, "1000 N/m"),
+            (DimensionVector::PRESSURE, 101_325.0, "101325 Pa"),
+            // The exact magnitude from the tensegrity_t_prism golden, so this
+            // row doubles as a byte-identity witness for that file.
+            (
+                DimensionVector::FORCE,
+                -3.767_734_597_403_026_5,
+                "-3.7677345974030265 N",
+            ),
+            (DimensionVector::MASS_DENSITY, 1050.0, "1050 kg/m^3"),
+            (DimensionVector::ENERGY, 7.0, "7 J"),
+            (DimensionVector::POWER, 9.0, "9 W"),
+        ];
+        for &(dimension, si_value, expected) in cases {
+            let v = Value::Scalar {
+                si_value,
+                dimension,
+            };
+            assert_eq!(
+                format!("{}", v),
+                expected,
+                "Display of a {dimension:?} scalar should render the curated unit label"
+            );
+        }
+    }
+
+    /// The eval cell renders the RAW SI magnitude, full stop. This is the
+    /// acceptance's "no magnitude changes" clause made executable, and the
+    /// standing fence against a later reroute of this arm through
+    /// `resolve_display` / `format_display_number`: a scaled rung, a
+    /// significant-figure rounding, or engineering notation each break a row
+    /// here.
+    #[test]
+    fn display_scalar_never_rescales_or_rounds_the_magnitude() {
+        let cases: &[(DimensionVector, f64, &str)] = &[
+            // Length's registry default rung is SCALED (mm @ 1e-3); adopting
+            // it would render "3 mm" for this value.
+            (DimensionVector::LENGTH, 0.003, "0.003 m"),
+            // Full f64 spelling, byte for byte: a 12-significant-figure
+            // rounding would truncate this.
+            (
+                DimensionVector::LENGTH,
+                0.005_500_000_000_000_000_5,
+                "0.0055000000000000005 m",
+            ),
+            // No engineering notation: this must not become "1×10^-3 mm".
+            (DimensionVector::LENGTH, 0.000_001, "0.000001 m"),
+            // Angle's default rung is deg @ π/180.
+            (DimensionVector::ANGLE, 0.5, "0.5 rad"),
+            // Already byte-identical between the composed and curated forms.
+            (DimensionVector::MASS, 2.0, "2 kg"),
+            (DimensionVector::MONEY, 25.0, "25 USD"),
+        ];
+        for &(dimension, si_value, expected) in cases {
+            let v = Value::Scalar {
+                si_value,
+                dimension,
+            };
+            assert_eq!(
+                format!("{}", v),
+                expected,
+                "Display of a {dimension:?} scalar must render the raw SI magnitude under its raw-SI label"
+            );
+        }
+    }
+
+    /// The arms the curation does NOT reach, and the recursion by which every
+    /// composite value inherits it.
+    #[test]
+    fn display_scalar_fallback_and_composite_arms() {
+        // An UNCURATED dimension keeps the composed base-SI form — middle-dot
+        // separated, ASCII caret exponents, and never a bare "SI" placeholder
+        // (PRD display-unit-preference §4b).
+        let torque = Value::Scalar {
+            si_value: 4.0,
+            dimension: DimensionVector::TORQUE,
+        };
+        assert_eq!(
+            format!("{}", torque),
+            "4 m^2\u{00b7}kg\u{00b7}s^-2\u{00b7}rad^-1",
+            "an uncurated dimension must keep its composed base-SI label"
+        );
+
+        // THE DIMENSIONLESS GUARD. `dimension_unit_label` returns "" here, so
+        // an unguarded swap would emit "1.02 " with a trailing space. A
+        // dimensionless Scalar is reachable in production — the constraint
+        // solver maps non-Type::Scalar auto params onto DIMENSIONLESS and
+        // writes them straight into eval-result cells.
+        let bare = Value::Scalar {
+            si_value: 1.02,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_eq!(
+            format!("{}", bare),
+            "1.02 dimensionless",
+            "a dimensionless scalar must keep the composed \"dimensionless\" word, with no trailing space"
+        );
+
+        // Composite recursion: List/Point/Vector/StructureInstance/Option all
+        // render their elements through this same arm, which is how the eval
+        // goldens inherit the label change.
+        let list = Value::List(vec![Value::Scalar {
+            si_value: 12.0,
+            dimension: DimensionVector::FORCE,
+        }]);
+        assert_eq!(
+            format!("{}", list),
+            "[12 N]",
+            "composite values must inherit the scalar arm's unit label"
+        );
+    }
+
     /// THE PRD-§10 FENCE, the value.rs twin of dimension.rs's
     /// `s1_composed_labels_keep_middot_separator`. Green before task λ (#5788)
     /// and required to STAY green after it: the ENGINEERING-NOTATION formatter
