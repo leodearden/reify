@@ -459,12 +459,10 @@ fn profile_to_value(profile: &MotionProfile) -> Value {
 /// as `Velocity`, `.nominal_temp` as `Temperature`, and the centerline as
 /// `List<Point3<Length>>`. Its parser-side `reify_fdm::Toolpath` stays in
 /// native millimetres for exactly the lossless-fidelity reason this module's
-/// [`Waypoint`] does. (Until task #6301 that surface marshalled undimensioned
-/// `Value::Real` in raw millimetres, so the two payloads really did sit in
-/// opposite regimes; #6301 closed the split rather than widening it.)
+/// [`Waypoint`] does.
 ///
 /// So converting at the projection is THE convention for a DSL-visible
-/// payload, not one pole of a split. It is what lets a design author's
+/// payload. It is what lets a design author's
 /// dimensional arithmetic see the units at all, and it keeps the whole
 /// conversion at one nameable boundary instead of spreading it through
 /// downstream consumers.

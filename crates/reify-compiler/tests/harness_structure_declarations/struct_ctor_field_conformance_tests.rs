@@ -3314,12 +3314,8 @@ fn point3_dimensioned_at_dimensionless_point_param_warns_arg_type_mismatch() {
 /// fixture can hold it: were the `Real` spelling ever to resolve to something
 /// other than `Type::Scalar { dimension: DIMENSIONLESS }`, the sibling above
 /// would stay green while every `Point3<Real>` declaration in the corpus
-/// silently left the ruling.
-///
-/// The exemplar this comment used to name, `stdlib/fdm_slice.ri`'s
-/// `Bead.centerline`, is no longer one: task #6301 retyped it to
-/// `List<Point3<Length>>`. The fixture below is inline and does not read any
-/// `.ri` file, so the claim never depended on that declaration surviving.
+/// silently left the ruling. The fixture is inline and reads no `.ri` file, so
+/// the claim rests on no particular stdlib declaration.
 #[test]
 fn point3_dimensioned_at_real_point_param_warns_arg_type_mismatch() {
     let module = compile_source_with_stdlib(SRC_POINT3_DIMENSIONED_AT_REAL);

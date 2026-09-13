@@ -1032,12 +1032,10 @@ structure def KlipperDialect : GcodeDialect { }
 // field-type ↔ marshalling contract at the top of that file), and its
 // `toolpath_to_value` converts at that projection just as `waypoint_to_value`
 // does here — while its parser-side `Toolpath` stays native for the same
-// lossless-fidelity reason. Until task #6301 the FDM surface was undimensioned
-// `Real` in raw millimetres and the two g-code-derived payloads really did sit
-// in opposite regimes; #6301 closed that split.
+// lossless-fidelity reason.
 //
-// So converting at the projection is THE convention for a DSL-visible payload,
-// not one pole of a split: it is what lets a design author's dimensional
+// So converting at the projection is THE convention for a DSL-visible payload:
+// it is what lets a design author's dimensional
 // arithmetic see the units at all, and it puts the whole conversion at one
 // nameable boundary instead of leaving every consumer to remember which axis
 // is in what.
