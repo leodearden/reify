@@ -2306,7 +2306,7 @@ echo ""
 echo "--- Scenario GV-4: C5 unmappable path (ALL sentinel) -> vitest runs ---"
 plan_for_branch_env "" scripts/foo.sh
 assert "GV-4: RUN_GUI_VITEST=1 — a widened closure can never SKIP the lane" \
-    _check_scope_header 'RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
+    _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
 assert "GV-4: gui lane carries npm test" \
     plan_has "$_GUI_LANE_WITH_VITEST"
 
@@ -2339,7 +2339,7 @@ echo ""
 echo "--- Scenario GV-5b: DF_VERIFY_ROLE=merge --scope branch (forced to all) -> vitest runs ---"
 plan_for_branch_env "DF_VERIFY_ROLE=merge" crates/reify-doc/src/lib.rs
 assert "GV-5b: RUN_GUI_VITEST=1 under the merge role" \
-    _check_scope_header 'RUN_GUI_VITEST=1'
+    _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
 assert "GV-5b: gui lane carries npm test" \
     plan_has "$_GUI_LANE_WITH_VITEST"
 
