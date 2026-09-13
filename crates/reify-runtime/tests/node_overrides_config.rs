@@ -100,31 +100,35 @@ fn instance_selector_overrides_exact_node_and_isolates_siblings() {
 }
 
 #[test]
-fn config_override_wins_regardless_of_node_traits() {
-    // The one semantic difference the migration to `resolve_with_traits` exposes
-    // at the config boundary: a config entry materialises at level 1, so level 4
-    // is never consulted for that node and the answer is traits-independent.
+fn config_kind_override_wins_regardless_of_node_traits() {
+    // The kind-selector half of the boundary: a kind entry materialises into
+    // the level-2 `set_type` map, so level 4 is never consulted and the answer
+    // is traits-independent. The instance half of the same claim is already
+    // pinned as a unit by
+    // `resolve_with_traits_respects_instance_then_type_precedence`; this is the
+    // config path that has no such coverage.
+    //
     // The trait sets below are deliberately synthetic — spanning both branches
     // of the COMMITTABLE-presence test plus the node's real defaults — because
     // traits-independence is the claim. The level-4 branches themselves are
     // owned by `resolve_with_traits_consults_default_overrides_at_level_4`.
     let entry = NodePolicyOverride {
-        node_id_pattern: "Bracket.width".into(),
+        node_id_pattern: "value".into(),
         commitment_policy: NodeCommitmentPolicy::OnlyRunOnFinalInputs,
     };
-    let overrides = NodePolicyOverrides::from_config_overrides(&[entry])
-        .expect("instance selector must succeed");
+    let overrides =
+        NodePolicyOverrides::from_config_overrides(&[entry]).expect("kind selector must succeed");
 
-    let width = NodeId::Value(ValueCellId::new("Bracket", "width"));
+    let value_node = NodeId::Value(ValueCellId::new("Bracket", "width"));
     for traits in [
         NodeTraits::empty(),
         NodeTraits::COMMITTABLE,
-        kind_default_traits(&width),
+        kind_default_traits(&value_node),
     ] {
         assert_eq!(
-            overrides.resolve_with_traits(&width, traits),
+            overrides.resolve_with_traits(&value_node, traits),
             NodeCommitmentOverride::OnlyRunOnFinalInputs,
-            "{traits:?}: a config override is level 1 and must win regardless of traits"
+            "{traits:?}: a config kind override is level 2 and must win regardless of traits"
         );
     }
 }

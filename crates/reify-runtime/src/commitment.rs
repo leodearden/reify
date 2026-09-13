@@ -100,9 +100,12 @@ impl NodePolicyOverrides {
     ///    (reserved slot; owned by GR-007 task 3578, depends_on this task)
     /// 4. **Kind+traits default** — [`default_overrides(kind, traits)`](default_overrides)
     ///    (absent [`NodeTraits::COMMITTABLE`] → `AlwaysCancelWhenStale`; present → `CommitIfSlow`)
-    /// 5. (Future) **Global fallback** — unconditional project default (not yet implemented)
+    /// 5. **Hard default** — PRD §6's floor, `NodeCommitmentOverride::CommitIfSlow`
     ///
-    /// Level 4 subsumes the old hard `CommitIfSlow` default when `traits` are known.
+    /// Neither level 3 nor level 5 has a branch here: level 3 is reserved for
+    /// task 3578, and level 4 always returns, so nothing reaches the level-5
+    /// floor — this resolver never calls `NodeCommitmentOverride::default()`.
+    ///
     /// Its only production consumer is `render_inspection` in the `reify` CLI
     /// binary (the `reify dev inspect-node` subcommand, δ step); unit tests in
     /// this module also exercise it directly.

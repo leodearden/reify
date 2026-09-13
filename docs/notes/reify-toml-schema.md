@@ -48,7 +48,7 @@ yet implemented (future enhancement; noted in `NodePolicyOverrides::from_config_
 
 ```toml
 [[node_overrides]]
-node_id_pattern = "value"
+node_id_pattern = "compute"
 commitment_policy = "always_cancel_when_stale"
 
 [[node_overrides]]
@@ -56,20 +56,26 @@ node_id_pattern = "Bracket.width"
 commitment_policy = "only_run_on_final_inputs"
 ```
 
+Pick a `commitment_policy` that differs from the node's level-4 default (see
+**Precedence**), or the entry is observationally a no-op: `compute` defaults to
+`commit_if_slow`, so the entry above changes something, whereas `value` +
+`always_cancel_when_stale` would not.
+
 ### Precedence
 
-Override priority (highest → lowest), in PRD §6's numbering, resolved by
-`NodePolicyOverrides::resolve_with_traits`:
+Override priority (highest → lowest), in PRD §6's numbering. The chain is owned
+by `NodePolicyOverrides::resolve_with_traits`'s rustdoc; this is the reify.toml
+author's view of it:
 1. Instance override — the `set_instance` map
 2. Type override — the `set_type` map, where kind selectors land
 3. Config-file `[[node_overrides]]` — reserved; not yet a distinct slot
 4. Kind+traits default (`default_overrides`) — absent `COMMITTABLE` →
    `always_cancel_when_stale`, present → `commit_if_slow`
-5. Hard default — `commit_if_slow`, `NodeCommitmentOverride`'s `Default`
+5. Hard default — PRD §6's floor, `commit_if_slow`
 
-Level 3 has no branch in `resolve_with_traits` today (task 3578 owns it), and
-level 5 is a floor rather than a branch: level 4 always returns, so nothing
-falls past it.
+Neither level 3 nor level 5 has a branch in `resolve_with_traits`: level 3 is
+reserved for task 3578, and level 4 always returns, so nothing reaches the
+level-5 floor.
 
 Until level 3 lands, `from_config_overrides` materialises each entry straight
 into the level-1 or level-2 map — an instance selector becomes a `set_instance`
