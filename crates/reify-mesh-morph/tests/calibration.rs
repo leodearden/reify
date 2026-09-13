@@ -302,8 +302,17 @@ fn calibration_fixtures_are_conforming_simplicial_complexes() {
     // scale but does not exercise conformity or handedness there.
     for &n in &[1usize, 2, 3, 4, 5, 8] {
         let (mesh, _surface) = fixtures::bracket(1.0, 0.2, 0.1, n);
-        mesh_asserts::assert_boundary_is_conforming_manifold(&mesh, "bracket", &format!("n={n}"), 2);
-        mesh_asserts::assert_all_tets_have_positive_signed_volume(&mesh, "bracket", &format!("n={n}"));
+        mesh_asserts::assert_boundary_is_conforming_manifold(
+            &mesh,
+            "bracket",
+            &format!("n={n}"),
+            2,
+        );
+        mesh_asserts::assert_all_tets_have_positive_signed_volume(
+            &mesh,
+            "bracket",
+            &format!("n={n}"),
+        );
     }
 
     // bracket fillet_radius sweep at n=4 — a few radii spanning the legal
@@ -333,8 +342,17 @@ fn calibration_fixtures_are_conforming_simplicial_complexes() {
     for &(n_radial, n_through) in &[(4usize, 2usize), (2, 1)] {
         let (mesh, _surface) = fixtures::plate_with_hole(1.0, 0.3, 0.1, n_radial, n_through);
         let case_desc = format!("n_radial={n_radial},n_through={n_through}");
-        mesh_asserts::assert_boundary_is_conforming_manifold(&mesh, "plate_with_hole", &case_desc, 0);
-        mesh_asserts::assert_all_tets_have_positive_signed_volume(&mesh, "plate_with_hole", &case_desc);
+        mesh_asserts::assert_boundary_is_conforming_manifold(
+            &mesh,
+            "plate_with_hole",
+            &case_desc,
+            0,
+        );
+        mesh_asserts::assert_all_tets_have_positive_signed_volume(
+            &mesh,
+            "plate_with_hole",
+            &case_desc,
+        );
     }
 }
 
