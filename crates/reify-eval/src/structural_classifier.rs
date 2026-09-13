@@ -111,7 +111,8 @@ pub fn realization_graph_shape_hash(graph: &EvaluationGraph) -> ContentHash {
 ///    because entity.rs does not backfill `count_cell` for keyed subs. Correct
 ///    by construction and unit-tested; wiring the backfill path activates it.
 /// 4. **Type dispatch** — `Type::Scalar { .. } | Type::dimensionless_scalar() | Type::Int`
-///    → `Dimensional`; `Type::Geometry` → `Dimensional` (task 6635, see below);
+///    → `Dimensional`; `Type::Geometry` (task 6635) and top-level
+///    `Type::List(Type::Geometry)` (task 7016) → `Dimensional`, both see below;
 ///    everything else → `Structural`.
 ///
 /// ## Leaf scoping lives in the walk, not here
@@ -222,45 +223,53 @@ pub fn realization_graph_shape_hash(graph: &EvaluationGraph) -> ContentHash {
 /// mutation guards `classify_cell_geometry_in_structure_controlling_returns_structural`,
 /// `classify_cell_geometry_as_collection_count_returns_structural` and
 /// `stage_a_eligible_structure_controlling_geometry_diff_returns_false` exist to
-/// catch exactly that.
+/// catch exactly that. The `List<Geometry>` arm below carries the same trio.
 ///
-/// ### PARTIALLY-OPEN GAP — `List<Geometry>` (#7016)
+/// ### `List<Geometry>` — the same ruling, exactly one level deep (task 7016)
 ///
-/// The task-6635 whitelist relaxation covers the BARE `Type::Geometry` variant
-/// only. Handle-LIST cells — `Type::List(Box::new(Type::Geometry))` — still
-/// fall into Rule 4's `_ => Structural` default, so `classify_cell` still
-/// reports one as `Structural`.
+/// `Type::List(Box::new(Type::Geometry))` is Dimensional for the reason above
+/// and no other: its elements are sub-handles built by
+/// `topology_selectors::make_sub_handle`, so the list is realization OUTPUT
+/// carrying no independent structural signal. That argument reaches exactly that
+/// variant at exactly the top level — `Set`/`Option`/`Map` of Geometry and
+/// `List<List<Geometry>>` have no producer in `units.rs`, and `List<Length>` (a real
+/// type here: PRD §5.2's `displacement_at`) is authored numeric data rather than
+/// realization output. All keep the `_ => Structural` default, pinned by
+/// `classify_cell_list_of_length_returns_structural` and
+/// `classify_cell_nested_list_geometry_returns_structural`.
 ///
-/// [`stage_a_eligible`]'s walk consults Rule 4 only for LEAF cells, so the
-/// overwhelmingly common `List<Geometry>` shape — `let faces =
-/// adjacent_faces(...)`, a resolved selector, all `ValueCellKind::Let` — does
-/// NOT veto a tick. What #7016 still owns is:
+/// Reachable today, not forward-looking. `adjacent_faces`, `shared_edges`,
+/// `siblings_of_face`, `ancestor_faces_of_edge` and `split`
+/// (`reify-compiler/src/units.rs`) produce the type, as does any `Selector` cell
+/// wrapped in `ResolveSelector`; bare `Type::Selector` cells are unaffected,
+/// their equality being content-hash based and excluding `kernel_handle`. Leaf
+/// scoping (task 6643) already admits the derived shape, so what this arm
+/// carries is the `Param`/`Auto` LEAF: `build_param_value_cell_decl`
+/// (`reify-compiler/src/entity.rs`) passes `cell_type` straight through and the
+/// only param-position type rejection is `Type::Keyed`, so
+/// `param faces: List<Geometry>` is a leaf — compiled clean by the shipped
+/// `boundary8_empty_list_geometry_is_clean` — and `sub h = Holder(items: auto)`
+/// reaches it as `Auto`.
 ///
-/// * a `Param`-kind `List<Geometry>` cell, which IS a leaf and so still meets
-///   Rule 4's whitelist and still vetoes; and
-/// * the undecided design question below — whether a change to the list's
-///   LENGTH should stay Structural.
+/// #### A change to the list's LENGTH defers to Stage B
 ///
-/// Verified reach (2026-08-29): `adjacent_faces`, `shared_edges`,
-/// `siblings_of_face`, `ancestor_faces_of_edge` and `split` are typed
-/// `List<Geometry>` in `reify-compiler/src/units.rs`, and so is any `Selector`
-/// cell wrapped in `ResolveSelector` (`single(...)`, index access). Their values
-/// are `Value::List`s of `Value::GeometryHandle` built by
-/// `topology_selectors::make_sub_handle`, whose `upstream_values_hash` is
-/// composed from the PARENT's hash; since `Value::GeometryHandle`'s `PartialEq`
-/// keys on `(realization_ref, upstream_values_hash)`, those cells differ on
-/// every tick. Bare `Type::Selector` cells are NOT affected — `SelectorValue`
-/// equality is content-hash based and excludes `kernel_handle`.
+/// It is NOT held Structural by a finer Rule 4, on four grounds. (1) Rule 4
+/// cannot see length: this function takes `&Type` and `stage_a_cell_vetoes`
+/// receives no `Value`s at all, so a length rule is a new rule SHAPE, not a
+/// refinement — "keep it Structural" does not PRESERVE that signal, it
+/// approximates it with "always veto", which for a handle list fires on every
+/// tick regardless of length. (2) Task 6643 already admits the identical signal
+/// for the dominant case, a derived `let faces = adjacent_faces(...)` going 3→5
+/// faces; holding the leaf case Structural would make one signal's treatment
+/// depend on `ValueCellKind`. (3) PRD line 34 assigns value-driven topology
+/// crossings to Stage B. (4) Nothing behind the list goes invisible — Rules
+/// 2/3/3b fire first regardless of kind, per (ii) above.
 ///
-/// Deliberately left for a follow-up rather than folded in here, because it is
-/// not a pure restatement of the bare-Geometry argument: a `List<Geometry>`
-/// carries one signal a bare handle does not — its LENGTH — and whether a
-/// length change should stay Structural (finer rule) or defer to Stage B like
-/// everything else (widen `classify_by_type` to
-/// `Type::List(inner) if **inner == Type::Geometry`) is a design decision that
-/// wants its own measured RED→GREEN, not a drive-by amendment. Leaf scoping is
-/// orthogonal to that question. Do not read this note's absence of a fix as
-/// evidence the question was overlooked.
+/// Residual risk is the "convention, not invariant" one above, accepted on the
+/// same terms: `validate_param_override` (`engine_admin.rs`) has no type
+/// whitelist, so an API caller can swap a wholly different handle list into such
+/// a param and Stage A now admits it; Stage B and the morph quality gate are the
+/// nets.
 pub fn classify_cell(graph: &EvaluationGraph, cell_id: &ValueCellId) -> ParameterClass {
     // Rule 1: missing cell → Structural.
     let Some(node) = graph.value_cells.get(cell_id) else {
@@ -326,11 +335,11 @@ pub fn classify_cell(graph: &EvaluationGraph, cell_id: &ValueCellId) -> Paramete
 /// veto a tick?" — see [`stage_a_eligible`]'s "# The value-diff walk is
 /// LEAF-SCOPED".
 ///
-/// `Type::Geometry` is on the whitelist as of task 6635; the `_ => Structural`
-/// conservative default is unchanged — note in particular that
-/// `Type::List(Type::Geometry)` is still caught by it, which is a KNOWN,
-/// partially-open dormancy gap. Rationale, measured evidence and that gap: the
-/// `## Type::Geometry and Rule 4` note on [`classify_cell`].
+/// The whitelist is `Scalar` / `Int` / `Geometry` (task 6635) and
+/// `List<Geometry>` (task 7016, top level only); the `_ => Structural`
+/// conservative default is otherwise unchanged. Rationale, scope boundary and
+/// measured evidence: the `## Type::Geometry and Rule 4` note on
+/// [`classify_cell`].
 ///
 /// This is deliberately NOT a public entry point: callers must go through
 /// [`classify_cell`], which applies the `structure_controlling` /
@@ -1749,15 +1758,14 @@ mod tests {
         );
     }
 
-    /// RED (6643): `Type::List(Type::Geometry)` — the sibling shape #7016 owns.
+    /// RED (6643): `Type::List(Type::Geometry)` — the derived half.
     ///
-    /// SCOPE: this closes only the `ValueCellKind::Let` half — the
-    /// `let faces = adjacent_faces(...)` / resolved-selector shape, which is the
-    /// overwhelmingly common one. #7016 still owns (a) a `Param`-kind
-    /// `List<Geometry>` cell, which is a LEAF and so still meets Rule 4's
-    /// whitelist, and (b) the undecided design question of whether a LENGTH
-    /// change to such a list should stay Structural. Task 6643 does NOT close
-    /// #7016.
+    /// Admitted by leaf SCOPING alone: this is the overwhelmingly common
+    /// `let faces = adjacent_faces(...)` / resolved-selector shape, and the walk
+    /// never consults Rule 4 for a `Let` cell. Its `Param`-kind sibling below is
+    /// admitted by the WHITELIST instead (task 7016), and the two together are
+    /// why the list-LENGTH question defers to Stage B — see `classify_cell`'s
+    /// "`List<Geometry>` — the same ruling, exactly one level deep".
     #[test]
     fn stage_a_eligible_dimensional_tick_with_derived_list_geometry_diff_returns_true() {
         use reify_core::RealizationNodeId;
@@ -1786,8 +1794,8 @@ mod tests {
         assert!(
             stage_a_eligible(&g1, &g2, &v1, &v2),
             "task 6643: a derived List<Geometry> `let` (resolved selector / \
-             adjacent_faces) must not veto a dimensional tick; the Param-kind \
-             half of that shape and the list-LENGTH question remain #7016's"
+             adjacent_faces) must not veto a dimensional tick — by leaf scoping, \
+             independently of task 7016's whitelist entry for the same type"
         );
     }
 
