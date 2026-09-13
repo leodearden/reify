@@ -91,6 +91,17 @@ export function Editor(props: EditorProps) {
   let lspDebounceTimer: ReturnType<typeof setTimeout> | undefined;
   let previousActiveFile: string | null = null;
   const docVersions = createDocumentVersions();
+  /**
+   * The single key form `docVersions` is keyed by: the DECODED `file://` URI.
+   *
+   * One document reaches this component under two spellings — store paths are
+   * decoded (`/proj/hello world.ri`), while URIs minted by the backend's `url`
+   * crate are percent-encoded (`file:///proj/hello%20world.ri`) — and they must
+   * not open separate counters. A split disarms the rename version-skew guard
+   * exactly where it is needed: the guard reads a server-sent URI, finds no
+   * counter under that spelling, and judges every edit fresh.
+   */
+  const versionKey = (uriOrPath: string): string => pathToUri(canonicalizeKey(uriOrPath));
   const fileStates = new Map<string, EditorState>();
   let extensions: Extension[];
   let unlistenDiagnostics: (() => void) | undefined;
@@ -143,6 +154,38 @@ export function Editor(props: EditorProps) {
 
   // Create LSP client for communicating with the in-process LSP server
   const lspClient = createLspClient();
+
+  /** Tell the server about `text`, advancing that document's own version. */
+  const sendDidChange = (uri: string, text: string): Promise<void> =>
+    lspClient
+      .didChange(uri, text, docVersions.next(versionKey(uri)))
+      .catch((err: unknown) => console.error('LSP didChange error:', err));
+
+  /** Drop a pending didChange unsent — the text it described is no longer live. */
+  const cancelPendingLspChange = (): void => {
+    clearTimeout(lspDebounceTimer);
+    lspDebounceTimer = undefined;
+  };
+
+  /**
+   * Send the debounced didChange NOW, or null when the server is already current.
+   *
+   * Requests that must be answered against the text the user is looking at
+   * (rename) call this first. Without it the server answers from text up to
+   * EDITOR_DEBOUNCE_MS old while both sides still agree on the version number —
+   * skew that no version comparison downstream can detect, because the stale
+   * answer is stamped with the version the client itself last sent.
+   *
+   * Returns null when there is nothing pending, so the common case stays
+   * synchronous rather than deferring the caller behind a settled promise.
+   */
+  const flushPendingLspChange = (cmView: EditorView): Promise<void> | null => {
+    if (lspDebounceTimer === undefined) return null;
+    cancelPendingLspChange();
+    const path = props.store.state.activeFile;
+    if (!path) return null;
+    return sendDidChange(pathToUri(path), cmView.state.doc.toString());
+  };
 
   onMount(() => {
     const activeFile = props.store.state.activeFile;
@@ -335,7 +378,7 @@ export function Editor(props: EditorProps) {
           );
           // Notify the LSP server (file may not be LSP-open yet — ignore any error).
           lspClient
-            .didChange(uri, newContent, docVersions.next(uri))
+            .didChange(uri, newContent, docVersions.next(versionKey(uri)))
             .catch((_err: unknown) => {
               /* file may not be didOpen'd in LSP yet — ignore */
             });
@@ -361,6 +404,17 @@ export function Editor(props: EditorProps) {
         },
       });
     };
+
+    // F2 rename, armed with the version-skew guard: the reader hands back the
+    // version last SENT for the document the server named, under the one key
+    // form both sides agree on.
+    const renameF2 = renameCommand(
+      () => currentUri,
+      lspClient,
+      renameUi,
+      applyEditFn,
+      (uri) => docVersions.current(versionKey(uri)),
+    );
 
     // Extract extensions into a shared variable for reuse when creating
     // fresh EditorState instances for newly opened files
@@ -403,10 +457,18 @@ export function Editor(props: EditorProps) {
           // F2 inline rename. prepareRename gates the edit (Invariant-4 refusal),
           // and applying the WorkspaceEdit dispatches one CM change that flows
           // through the updateListener below → markDirty + updateSource + didChange.
+          //
+          // A pending didChange goes out FIRST, and the request waits for it:
+          // rename ranges are only meaningful against the text they were
+          // computed from, and pressing F2 straight after typing is the most
+          // likely way to ask about text the server has not received yet.
           key: 'F2',
-          run: renameCommand(() => currentUri, lspClient, renameUi, applyEditFn, (uri) =>
-            docVersions.current(uri),
-          ),
+          run: (cmView: EditorView) => {
+            const flushed = flushPendingLspChange(cmView);
+            if (!flushed) return renameF2(cmView);
+            void flushed.then(() => renameF2(cmView));
+            return true; // The key is consumed either way.
+          },
           preventDefault: true,
         },
         {
@@ -537,13 +599,13 @@ export function Editor(props: EditorProps) {
               );
             }, EDITOR_DEBOUNCE_MS);
 
-            // Send didChange to LSP (debounced)
-            clearTimeout(lspDebounceTimer);
+            // Send didChange to LSP (debounced). The handle is cleared as the
+            // timer fires so `lspDebounceTimer` means "a change the server has
+            // not seen yet" — what flushPendingLspChange keys off.
+            cancelPendingLspChange();
             lspDebounceTimer = setTimeout(() => {
-              const uri = pathToUri(path);
-              lspClient
-                .didChange(uri, update.state.doc.toString(), docVersions.next(uri))
-                .catch((err: unknown) => console.error('LSP didChange error:', err));
+              lspDebounceTimer = undefined;
+              sendDidChange(pathToUri(path), update.state.doc.toString());
             }, EDITOR_DEBOUNCE_MS);
           }
         }
@@ -585,7 +647,7 @@ export function Editor(props: EditorProps) {
       .then(() => lspClient.initialized())
       .then(() => {
         if (activeFile) {
-          return lspClient.didOpen(currentUri, doc, docVersions.next(currentUri));
+          return lspClient.didOpen(currentUri, doc, docVersions.next(versionKey(currentUri)));
         }
       })
       .catch((_err: unknown) =>
@@ -628,7 +690,7 @@ export function Editor(props: EditorProps) {
 
     // Cancel any pending debounced operations from the previous file
     clearTimeout(debounceTimer);
-    clearTimeout(lspDebounceTimer);
+    cancelPendingLspChange();
 
     // Discard previous-file CmDiagnostics from both channels.  Their from/to
     // offsets were computed against the old document; re-using them after the view
@@ -682,8 +744,8 @@ export function Editor(props: EditorProps) {
     // the numbers in the order their notifications were queued. didClose ends
     // the old document's life on the server, so its counter is dropped with it —
     // a later reopen then starts a fresh sequence at 1, as a new didOpen must.
-    const version = docVersions.next(newUri);
-    docVersions.forget(oldUri);
+    const version = docVersions.next(versionKey(newUri));
+    docVersions.forget(versionKey(oldUri));
     fileOpsPromise = fileOpsPromise
       .then(() => lspClient.didClose(oldUri))
       .then(() => {
@@ -830,7 +892,7 @@ export function Editor(props: EditorProps) {
 
   onCleanup(() => {
     clearTimeout(debounceTimer);
-    clearTimeout(lspDebounceTimer);
+    cancelPendingLspChange();
     // Tear down any open F2 rename overlay (field/message) + its dismiss timer.
     clearRenameOverlay();
     // Mark diagnostics listener as cancelled so that if the listen
