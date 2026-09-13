@@ -145,22 +145,6 @@ impl DocumentStore {
             .filter_map(|(uri, doc)| uri.to_file_path().ok().map(|p| (p, doc.text.clone())))
             .collect()
     }
-
-    /// Return a point-in-time snapshot of every open document's current version.
-    ///
-    /// Taken under the same lock acquisition as [`DocumentStore::snapshot_as_path_map`],
-    /// the returned versions pair exactly with that text snapshot: `update`
-    /// replaces the whole [`DocumentState`], so a version read here can never
-    /// belong to different text than the one read beside it.
-    ///
-    /// Unlike its path-map sibling this keeps non-`file:` URIs — a version
-    /// comparison is meaningful for any open document, however it is addressed.
-    pub fn snapshot_versions(&self) -> HashMap<Url, i32> {
-        self.documents
-            .iter()
-            .map(|(uri, doc)| (uri.clone(), doc.version))
-            .collect()
-    }
 }
 
 #[cfg(test)]
