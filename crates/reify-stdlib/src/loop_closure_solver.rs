@@ -922,6 +922,37 @@ pub enum LoopClosureChain {
 /// `kind = "mechanism"` — i.e. the caller passed something that is not a
 /// Mechanism.
 ///
+/// Does a loop closure's CLOSING side compose the closing joint a SECOND time?
+///
+/// SPOT for the one question two modules ask of a closure record. `chain_a`
+/// always terminates at the closing joint, so an occurrence anywhere in the
+/// closing path means that joint would be resolved on `chain_a` and iterated as
+/// a `free_b` variable on `chain_b` — one joint carrying two independent values.
+/// Its two consumers must agree on the answer:
+///
+/// - [`mechanism_loop_closure_chains`] classifies `true` as
+///   [`LoopClosureChain::Cycle`] (not solver-feedable) and `false` as
+///   [`LoopClosureChain::WellFormed`].
+/// - `snapshot::parent_conflict_closing_body_ids` composes a `false` record's
+///   body off the rigid-tie base frame `T(parent) ∘ pose`, and leaves a `true`
+///   record's body on the default `T(at)`.
+///
+/// Testing the tail instead (`closing_path.last() == closing_joint`) is
+/// strictly weaker and the two consumers diverged on it: it misses the ANCESTOR
+/// case, a parent-conflict edge whose `at` lies on `parent`'s ancestor walk, so
+/// the closing joint occurs mid-walk rather than as a tail marker. That shape is
+/// builder-reachable — see `ancestor_parent_conflict_shape_classifies_as_cycle`
+/// and `snapshot_ancestor_parent_conflict_body_keeps_its_own_frame`.
+///
+/// Accepts either the raw `path_b` or the sentinel-stripped `chain_b`: the
+/// sentinel is a `kind = "world"` Map and never compares equal to a joint.
+pub fn closing_side_repeats_closing_joint(
+    closing_path: &[reify_ir::Value],
+    closing_joint: &reify_ir::Value,
+) -> bool {
+    closing_path.iter().any(|j| j == closing_joint)
+}
+
 /// Returns `Some(vec![])` for a valid open-chain Mechanism (no loop closures).
 /// A missing `loop_closures` field is treated as an empty list as
 /// defense-in-depth against hand-built Mechanism Maps (e.g. test fixtures)
@@ -1017,17 +1048,13 @@ pub fn mechanism_loop_closure_chains(
             None => return None,
         };
 
-        // Classify: Cycle iff the closing joint appears in chain_b AT ALL.
-        // `WellFormed` promises solver-feedability, and a chain_b carrying the
-        // closing joint cannot honour that promise: `extract_loop_closure_chains`
-        // resolves chain_a's copy from bindings/midpoint while chain_b's copy
-        // becomes a `free_b` index, so one joint carries two independent values
-        // at once. That subsumes the 2-body cycle ([j_b, j_a, j_b]), the
-        // self-loop ([j, j]), the ancestor case (parent conflict whose `at` is
-        // also an ancestor of `parent`, one mid-walk occurrence), and any
-        // hand-built pre-7186-shaped pair that still ends chain_b at the
-        // closing joint.
-        let is_cycle = chain_b.iter().any(|j| j == &closing_joint);
+        // Classify through the shared predicate, so the FK-side rigid-tie
+        // selection in `snapshot::parent_conflict_closing_body_ids` cannot
+        // disagree with this branch. `Cycle` subsumes the 2-body cycle
+        // ([j_b, j_a, j_b]), the self-loop ([j, j]), the ancestor case (one
+        // mid-walk occurrence), and any hand-built pre-7186-shaped pair that
+        // still ends chain_b at the closing joint.
+        let is_cycle = closing_side_repeats_closing_joint(&chain_b, &closing_joint);
         let entry = if is_cycle {
             LoopClosureChain::Cycle {
                 chain_a,

@@ -26,7 +26,8 @@ use crate::eval_builtin;
 use crate::joints::{is_driving_joint, is_joint_value, make_nondriving_joint_error};
 use crate::loop_closure::{extract_loop_closure_chains, joint_range_midpoint};
 use crate::loop_closure_solver::{
-    NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure, solve_loop_closure_with_diagnostics,
+    NewtonConfig, NewtonOutcome, StartStrategy, closing_side_repeats_closing_joint,
+    solve_loop_closure, solve_loop_closure_with_diagnostics,
 };
 use crate::mechanism::is_world;
 use crate::resolve_body_mass;
@@ -770,17 +771,26 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
 /// RECORD rather than inferred from a `joint_parents` disagreement; the walk-site
 /// comment records the cycle-body shape that makes the inference unsound.
 ///
-/// **Branch discriminator.** The cycle / self-loop branch of `append_body`
-/// appends the closing joint to `path_b` as a marker, so its `path_b` ENDS at
-/// `closing_joint`. The parent-conflict branch ends `path_b` at the closing
-/// edge's `parent`, or at the synthetic 0-DOF pose link that follows it —
-/// never at `closing_joint`, because the last pre-link entry is `parent` and
-/// the branch fires only when the spanning tree disagrees with it.
+/// **Branch discriminator.** [`closing_side_repeats_closing_joint`] — the SPOT
+/// this shares with `mechanism_loop_closure_chains`, so a record classified
+/// `Cycle` there is never given the rigid-tie frame here. A record qualifies iff
+/// `path_b` does NOT contain `closing_joint` anywhere. Three shapes are
+/// therefore excluded, and each is excluded correctly:
 ///
-/// The one shape where a parent-conflict record ALSO ends `path_b` at the
-/// closing joint is `parent == at` with an identity pose (a self-parented edge
-/// whose `at` already has a different tree parent). Excluding it is harmless:
-/// `T(parent) == T(at)` there, so both compositions agree.
+/// - The cycle / self-loop branch of `append_body`, which appends the closing
+///   joint to `path_b` as a tail marker.
+/// - The ANCESTOR case: a parent-conflict edge whose `at` lies on `parent`'s
+///   ancestor walk, so `path_b` passes THROUGH the closing joint mid-walk
+///   (`body(m,A,j1,world); body(m,B,j2,j1); body(m,C,j1,j2)` → `path_b =
+///   [world, j1, j2]`, `closing_joint = j1`). `mechanism_loop_closure_chains`
+///   calls that pair `Cycle` and never solves it, so there is no enforced
+///   closure frame for a rigid tie to ride on — the body keeps `T(at)`. Testing
+///   `path_b.last()` instead admitted this shape here while the solver rejected
+///   it, and the two modules placed the body differently. Pinned by
+///   `snapshot_ancestor_parent_conflict_body_keeps_its_own_frame`.
+/// - `parent == at` with an identity pose (a self-parented edge whose `at`
+///   already has a different tree parent). Harmless: `T(parent) == T(at)`
+///   there, so both compositions agree.
 ///
 /// Malformed records (non-Map, or missing `body_id` / `closing_joint` /
 /// `path_b`) are skipped rather than rejected — an unrecognised record simply
@@ -797,7 +807,7 @@ fn parent_conflict_closing_body_ids(loop_closures: &[Value]) -> BTreeSet<Value> 
         ) else {
             continue;
         };
-        if path_b.last() != Some(closing_joint) {
+        if !closing_side_repeats_closing_joint(path_b, closing_joint) {
             ids.insert(body_id.clone());
         }
     }
@@ -883,9 +893,11 @@ fn walk_fk(
         // the solve had just enforced.
         //
         // EVERY other body keeps the previous composition byte for byte:
-        // open-chain bodies carry no closure record at all, and cycle /
-        // self-loop bodies carry one that `parent_conflict_closing_body_ids`
-        // excludes.
+        // open-chain bodies carry no closure record at all, and every body
+        // whose record `mechanism_loop_closure_chains` calls `Cycle` — the
+        // cycle / self-loop branch AND the ancestor case — carries one that
+        // `parent_conflict_closing_body_ids` excludes, because both read the
+        // same `closing_side_repeats_closing_joint` predicate.
         let closing_parent = if closing_body_ids.contains(&id) {
             match joint_parents.get(&at) {
                 Some(tree_parent) => match body_map.get(&Value::String("parent".to_string())) {
@@ -3338,6 +3350,166 @@ mod tests {
         assert!(
             (tx_of(2) - 0.3).abs() < 1e-6,
             "body 2 (at jA, tree parent world) tx must be 0.3, got {}",
+            tx_of(2)
+        );
+    }
+
+    /// **The ANCESTOR case must keep its own `at` frame, like every other
+    /// `Cycle`.**
+    ///
+    /// A closing edge can be BOTH a parent conflict AND have its `at` on
+    /// `parent`'s ancestor walk, so `path_b` passes THROUGH the closing joint
+    /// mid-walk instead of ending at it:
+    ///   `body(m0, A, j1, world)` → joint_parents {j1: world}
+    ///   `body(m1, B, j2, j1)`    → joint_parents {j1: world, j2: j1}
+    ///   `body(m2, C, j1, j2)`    → parent conflict (tree parent of j1 is world)
+    /// recording `path_a = [world, j1]`, `path_b = [world, j1, j2]`,
+    /// `closing_joint = j1`.
+    ///
+    /// `mechanism_loop_closure_chains` calls that pair `Cycle` and never solves
+    /// it, so there is no enforced closure frame for a rigid tie to ride on and
+    /// body C must stay on `T(j1)`. Both modules now read
+    /// [`closing_side_repeats_closing_joint`]; a tail-only test
+    /// (`path_b.last() != closing_joint`) admitted this record here while the
+    /// solver rejected it, and body C was composed from `T(j2)` — measured
+    /// tx = 1.5 m against the 0.5 m the joint it is attached to actually reaches.
+    ///
+    /// Sibling of `snapshot_cycle_body_keeps_its_own_frame_after_later_tree_registration`,
+    /// which covers the explicit cycle branch; this one covers the parent-conflict
+    /// branch's ancestor shape, and `ancestor_parent_conflict_shape_classifies_as_cycle`
+    /// (loop_closure_solver.rs) pins the solver-side half of the same record.
+    #[test]
+    fn snapshot_ancestor_parent_conflict_body_keeps_its_own_frame() {
+        // Both prismatic on +X so world translations add and read back directly.
+        // Distinct ranges keep them structurally distinct `Value::Map`s.
+        let j1 = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j2 = eval_builtin(
+            "prismatic",
+            &[
+                axis_x_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(0.0))),
+                    upper: Some(Box::new(Value::length(2.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        let world = eval_builtin("world", &[]);
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[
+                m0,
+                Value::String("solidA".to_string()),
+                j1.clone(),
+                world.clone(),
+            ],
+        );
+        let m2 = eval_builtin(
+            "body",
+            &[
+                m1,
+                Value::String("solidB".to_string()),
+                j2.clone(),
+                j1.clone(),
+            ],
+        );
+        // Closing edge: at = j1 (tree parent world), parent = j2 (whose ancestor
+        // walk passes through j1) — the ancestor shape.
+        let m3 = eval_builtin(
+            "body",
+            &[
+                m2,
+                Value::String("solidC".to_string()),
+                j1.clone(),
+                j2.clone(),
+            ],
+        );
+
+        let mm = match &m3 {
+            Value::Map(m) => m,
+            other => panic!("expected Mechanism Map, got {other:?}"),
+        };
+        assert!(
+            !mm.contains_key(&Value::String("error".to_string())),
+            "fixture must not produce an errored mechanism"
+        );
+        let records = match mm.get(&Value::String("loop_closures".to_string())) {
+            Some(Value::List(l)) => l,
+            other => panic!("expected loop_closures List, got {other:?}"),
+        };
+        assert_eq!(records.len(), 1, "exactly one loop-closure record expected");
+
+        // Fixture precondition: the closing joint occurs in path_b mid-walk,
+        // NOT as its tail — the exact shape the two predicates diverged on.
+        let path_b = match &records[0] {
+            Value::Map(r) => match r.get(&Value::String("path_b".to_string())) {
+                Some(Value::List(p)) => p.clone(),
+                other => panic!("expected path_b List, got {other:?}"),
+            },
+            other => panic!("expected record Map, got {other:?}"),
+        };
+        assert!(
+            path_b.contains(&j1),
+            "ancestor shape: path_b must pass through the closing joint"
+        );
+        assert_ne!(
+            path_b.last(),
+            Some(&j1),
+            "ancestor shape: the closing joint is mid-walk, not path_b's tail"
+        );
+
+        assert!(
+            super::parent_conflict_closing_body_ids(records).is_empty(),
+            "the ancestor record classifies as Cycle, so no body takes the rigid-tie frame"
+        );
+
+        // Bind both joints so the FK readback is deterministic.
+        let bind_1 = eval_builtin("bind", &[j1.clone(), Value::length(0.5)]);
+        let bind_2 = eval_builtin("bind", &[j2.clone(), Value::length(1.0)]);
+        let s = eval_builtin("snapshot", &[m3, Value::List(vec![bind_1, bind_2])]);
+        let smap = match s {
+            Value::Map(m) => m,
+            other => panic!("expected Snapshot Map, got {other:?}"),
+        };
+        let bodies = match smap.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b,
+            other => panic!("expected bodies List, got {other:?}"),
+        };
+        assert_eq!(bodies.len(), 3);
+
+        let tx_of = |i: usize| -> f64 {
+            let b = match &bodies[i] {
+                Value::Map(b) => b,
+                other => panic!("expected body {i} record Map, got {other:?}"),
+            };
+            let wt = b
+                .get(&Value::String("world_transform".to_string()))
+                .unwrap_or_else(|| panic!("body {i} must carry world_transform"));
+            decompose_transform_for_assert(wt).1[0]
+        };
+
+        // Body 0 (A at j1, tree parent world): T(j1) = 0.5.
+        assert!(
+            (tx_of(0) - 0.5).abs() < 1e-6,
+            "body 0 (at j1, tree parent world) tx must be 0.5, got {}",
+            tx_of(0)
+        );
+        // Body 1 (B at j2, tree parent j1): T(j1) ∘ T(j2) = 0.5 + 1.0.
+        assert!(
+            (tx_of(1) - 1.5).abs() < 1e-6,
+            "body 1 (at j2, tree parent j1) tx must be 1.5, got {}",
+            tx_of(1)
+        );
+        // Body 2 (C, the ANCESTOR closing body): T(j1) = 0.5, NOT T(j2) = 1.5.
+        assert!(
+            (tx_of(2) - 0.5).abs() < 1e-6,
+            "body 2 (ancestor closing body at j1) tx must stay on its own frame \
+             0.5, got {} (1.5 means it was admitted as a parent-conflict closing \
+             body and composed from T(j2), disagreeing with the Cycle \
+             classification mechanism_loop_closure_chains gives the same record)",
             tx_of(2)
         );
     }
