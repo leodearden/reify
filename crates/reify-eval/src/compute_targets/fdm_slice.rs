@@ -31,57 +31,6 @@ use reify_ir::{OpaqueState, Value};
 use super::as_printed_material::{field_int, field_real, field_scalar, struct_data, structure};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
-/// Millimetres → SI metres, the inbound half of this module's two-regime split:
-/// `reify_fdm::Toolpath` holds native G-code millimetres (lossless parse
-/// fidelity), the DSL-visible projection built below is SI and dimensioned.
-///
-/// Same name and value as the other two mm→SI boundaries in the FDM stack
-/// (`as_printed_material_r0.rs`, `reify-fdm/src/r0.rs`), so grepping `MM_TO_M`
-/// enumerates all of them. Note the OUTBOUND direction in this same file
-/// deliberately does not use it: the PrusaSlicer boundary scales m→mm by an
-/// explicit `* 1000.0` (see `read_slice_settings`, and the STL write reached
-/// from `export_body_stl`).
-///
-/// That grep argument is load-bearing ACROSS crates — `reify-fdm/src/r0.rs`
-/// has no path to a `reify-eval` constant — but it is the WEAK half for the
-/// same-crate pair: `as_printed_material_r0.rs` is a sibling module of this
-/// one, and the two could share a single `pub(crate) const` in
-/// `compute_targets/mod.rs` (beside the `length` / `point3_length` /
-/// `velocity` / `temperature` builders both modules already call) while every
-/// use site still spells `MM_TO_M` and greps identically. That hoist is
-/// deliberately not done here: it edits `as_printed_material_r0.rs`, outside
-/// #6301's file scope, and is filed as its own follow-up. Recorded at the
-/// constant so the next surveyor reads a claim scoped to what it actually
-/// justifies instead of re-deriving the distinction.
-///
-/// Every other G-code→`Value` marshalling was surveyed under task #6301, and
-/// all of them convert. The last hold-out, `reify-stdlib`'s
-/// `trajectory::gcode_import::waypoint_to_value`, now applies its own
-/// `MM_TO_M` to x/y/z/e and divides the feedrate by
-/// `MM_PER_MIN_PER_M_PER_S`, so with this module converted there is no
-/// unconverted G-code→DSL `Value` seam left in the workspace. The survey's
-/// per-file findings live in #6301's task record rather than here: four of
-/// the five files it characterises are in other crates, so restating them at
-/// this `const` would rot silently.
-const MM_TO_M: f64 = 1.0e-3;
-
-/// G-code feedrate mm·min⁻¹ → SI m·s⁻¹, as the DIVISOR (1e3 millimetres per
-/// metre × 60 seconds per minute), not the reciprocal factor.
-///
-/// Divisor rather than a `1.0 / 60_000.0` constant because dividing is exact for
-/// the round feedrates a slicer emits while multiplying by the rounded
-/// reciprocal is not: `1800.0 * (1.0 / 60_000.0)` is 0.030000000000000002,
-/// `1800.0 / 60_000.0` is exactly 0.03. One divide per bead costs nothing, and
-/// unlike `MM_TO_M` this constant has no cross-file convention to match.
-/// Pinned by `speed_conversion_divides_rather_than_multiplying_a_reciprocal`.
-const MM_PER_MIN_PER_M_PER_S: f64 = 60_000.0;
-
-/// °C → K. Not a free choice: this is the offset the language itself declares
-/// for `degC` (`crates/reify-compiler/stdlib/units.ri`, `pub unit degC :
-/// Temperature = 1 offset 273.15`). Naming it keeps the affine conversion
-/// traceable to that declaration rather than a magic number.
-const DEG_C_TO_K_OFFSET: f64 = 273.15;
-
 /// Marshal a [`Toolpath`] into a `Value::StructureInstance` named `"Toolpath"`
 /// whose `beads` / `layers` Lists hold nested `Bead` / `Layer` structures and
 /// whose `in_layer_adjacency` / `inter_layer_adjacency` Lists hold `(lo, hi)`
@@ -114,6 +63,13 @@ const DEG_C_TO_K_OFFSET: f64 = 273.15;
 /// field types must agree with the list above; `fdm_slice_e2e.rs`'s
 /// `stdlib_bead_and_layer_fields_declare_the_si_dimensioned_regime` is what
 /// keeps the two in agreement.
+///
+/// Each conversion is spelled by the native-unit constructor it needs
+/// (`super::length_mm` / `point3_length_mm` / `velocity_mm_per_min` /
+/// `temperature_deg_c`), so no factor is written at a call site here. The
+/// OUTBOUND direction is separate and deliberately unshared: the PrusaSlicer
+/// boundary scales m→mm by an explicit `* 1000.0` (`read_slice_settings`, and
+/// the STL write reached from `export_body_stl`).
 pub fn toolpath_to_value(tp: &Toolpath) -> Value {
     structure(
         "Toolpath",
@@ -147,23 +103,20 @@ fn bead_to_value(b: &Bead) -> Value {
     let centerline = Value::List(
         b.centerline
             .iter()
-            .map(|p| super::point3_length([p[0] * MM_TO_M, p[1] * MM_TO_M, p[2] * MM_TO_M]))
+            .map(|p| super::point3_length_mm(*p))
             .collect(),
     );
     structure(
         "Bead",
         vec![
             ("centerline", centerline),
-            ("width", super::length(b.width * MM_TO_M)),
-            ("height", super::length(b.height * MM_TO_M)),
+            ("width", super::length_mm(b.width)),
+            ("height", super::length_mm(b.height)),
             ("role", bead_role_value(b.role)),
             ("layer_index", Value::Int(b.layer_index as i64)),
-            ("layer_z", super::length(b.layer_z * MM_TO_M)),
-            (
-                "nominal_temp",
-                super::temperature(b.nominal_temp + DEG_C_TO_K_OFFSET),
-            ),
-            ("speed", super::velocity(b.speed / MM_PER_MIN_PER_M_PER_S)),
+            ("layer_z", super::length_mm(b.layer_z)),
+            ("nominal_temp", super::temperature_deg_c(b.nominal_temp)),
+            ("speed", super::velocity_mm_per_min(b.speed)),
         ],
     )
 }
@@ -180,7 +133,7 @@ fn layer_to_value(l: &Layer) -> Value {
         "Layer",
         vec![
             ("index", Value::Int(l.index as i64)),
-            ("z", super::length(l.z * MM_TO_M)),
+            ("z", super::length_mm(l.z)),
             ("bead_indices", bead_indices),
         ],
     )

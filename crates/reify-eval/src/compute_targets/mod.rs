@@ -354,6 +354,54 @@ pub(crate) fn scalar_list(values: &[f64], dimension: DimensionVector) -> Vec<Val
     values.iter().map(|&v| scalar(v, dimension)).collect()
 }
 
+// ── Native-unit constructors (printer-native → DSL-visible projection) ──────
+//
+// A parser layer stays in the units its source is written in, for lossless
+// fidelity; the DSL-visible projection of that payload is SI and dimensioned.
+// These constructors ARE that projection, so each conversion factor is written
+// once and every call site reads as the unit it is handed.
+
+/// Millimetres → SI metres. Same name and value as the other mm→SI boundaries
+/// in the workspace (`as_printed_material_r0.rs`, `reify-fdm/src/r0.rs`,
+/// `reify-stdlib`'s `trajectory::gcode_import`), so grepping `MM_TO_M`
+/// enumerates all of them — and all of them convert, so no unconverted
+/// G-code→DSL `Value` seam is left (surveyed under task #6301).
+const MM_TO_M: f64 = 1.0e-3;
+
+/// G-code feedrate mm·min⁻¹ → SI m·s⁻¹, as the DIVISOR (1e3 millimetres per
+/// metre × 60 seconds per minute) rather than a rounded reciprocal:
+/// `1800.0 / 60_000.0` is exactly 0.03 where `1800.0 * (1.0 / 60_000.0)` is
+/// 0.030000000000000002. Pinned by `fdm_slice.rs`'s
+/// `speed_conversion_divides_rather_than_multiplying_a_reciprocal`.
+const MM_PER_MIN_PER_M_PER_S: f64 = 60_000.0;
+
+/// °C → K. Not a free choice: this is the offset the language itself declares
+/// for `degC` (`crates/reify-compiler/stdlib/units.ri`, `pub unit degC :
+/// Temperature = 1 offset 273.15`), so the affine conversion stays traceable to
+/// that declaration rather than reading as a magic number.
+const DEG_C_TO_K_OFFSET: f64 = 273.15;
+
+/// A Length Scalar from a native-millimetre measurement.
+pub(crate) fn length_mm(mm: f64) -> Value {
+    length(mm * MM_TO_M)
+}
+
+/// A `Point3<Length>` from native-millimetre coordinates — the shape
+/// `resolve_point3_length_arg` requires of a point passed to a geometry builtin.
+pub(crate) fn point3_length_mm(p: [f64; 3]) -> Value {
+    point3_length([p[0] * MM_TO_M, p[1] * MM_TO_M, p[2] * MM_TO_M])
+}
+
+/// A Velocity Scalar from a G-code feedrate in mm·min⁻¹.
+pub(crate) fn velocity_mm_per_min(mm_per_min: f64) -> Value {
+    velocity(mm_per_min / MM_PER_MIN_PER_M_PER_S)
+}
+
+/// A Temperature Scalar from °C (absolute kelvin out — `degC` is affine).
+pub(crate) fn temperature_deg_c(deg_c: f64) -> Value {
+    temperature(deg_c + DEG_C_TO_K_OFFSET)
+}
+
 /// Register all compute trampolines shipped in this slice.
 ///
 /// Must be called once at engine startup — typically in the same initialisation
