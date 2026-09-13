@@ -295,10 +295,12 @@ fn bracket_fixture_returns_valid_p1_mesh_with_fillet_radius_respected_and_positi
 fn calibration_fixtures_are_conforming_simplicial_complexes() {
     // bracket(1.0, 0.2, 0.1, n) across resolutions. Genus 0 (solid block —
     // the fillet is a concave edge, not a through-hole), so expected
-    // chi = 2 at every n. n=8 (9,936 tets) is deliberately excluded to keep
-    // this test sub-second in a debug build; step-3's count-only check
-    // covers that scale.
-    for &n in &[1usize, 2, 3, 4, 5] {
+    // chi = 2 at every n. n=8 (9,936 tets) is included: it is one of the
+    // two scale points task #6638 consumes, and measured cost is
+    // negligible (O(F) face hashing stays well under the sub-second
+    // budget) — step-3's count-only check pins element count at this
+    // scale but does not exercise conformity or handedness there.
+    for &n in &[1usize, 2, 3, 4, 5, 8] {
         let (mesh, _surface) = fixtures::bracket(1.0, 0.2, 0.1, n);
         mesh_asserts::assert_boundary_is_conforming_manifold(&mesh, "bracket", &format!("n={n}"), 2);
         mesh_asserts::assert_all_tets_have_positive_signed_volume(&mesh, "bracket", &format!("n={n}"));
