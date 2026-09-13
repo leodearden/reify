@@ -1,28 +1,31 @@
-// Fixture: R3b substrate-boundary probe — feeding a TOPOLOGY SELECTOR where
-// `displacement_at` originally accepted only a String location (the 'before'
-// state that proved the eval-path selector->node resolver was unbuilt).
+// Fixture: R3b substrate-boundary probe. Two live, executable guards keep it
+// honest today, rather than this comment:
+//   - parse-shape corpus member (0 ERROR nodes): `EXPECTED_CLEAN` in
+//     gui/src/__tests__/reifyGrammarCorpus.test.ts:5155, and
+//     scripts/verify.sh's `_GUI_COUPLED_RI_FIXTURES` / `_RUST_COUPLED_RI_FIXTURES`;
+//   - ctor-conformance pinned-clean: `CTOR_CONFORMANCE_PINNED_CLEAN` in
+//     crates/reify-compiler/tests/harness_compilation_surface/
+//     ctor_conformance_corpus_survey.rs:2611, asserting zero ctor-conformance
+//     diagnostics on this file.
+// Together they exercise `displacement_at`'s `location : FaceSelector`
+// overload end-to-end: `reify check` on this fixture exits 0.
+//
+// History: originally fed a TOPOLOGY SELECTOR where `displacement_at` accepted
+// only a String location, proving the eval-path selector->node resolver was
+// unbuilt; the R3b resolver landed and `modal_analysis_fns.ri` added the
+// `location : FaceSelector` overload the `top` argument below now resolves
+// against, sharing the String overload's trampoline.
 //
 // PRD: docs/prds/v0_6/value-eval-geometry-addressing.md (Leaf R3b — eval-path
 // selector->node resolver, the re-homed task 4122 deliverable).
-//
-// `displacement_at(history, location, direction)` now has TWO overloads
-// (modal_analysis_fns.ri) — the original `location : String` form and a
-// `location : FaceSelector` form added for R3b — sharing one Rust trampoline.
-// Passing `faces_by_normal(part, dir, tol)` (a FaceSelector) below resolves the
-// FaceSelector overload and typechecks cleanly:
-//
-// MEASURED 2026-09-10 at main c4491cf82ce4d5fbe1c53ecb11eca71a4718f01a with a
-// debug `target/debug/reify`: `reify check` on this fixture exits 0 — the R3b
-// selector->node resolver has landed, so the FaceSelector `top` argument below
-// no longer raises "no matching overload for displacement_at".
 //
 // GRAMMAR caveat (PRD §G2): the signal's literal `+Z` does NOT parse
 // (`Parse error: invalid let`); the faithful direction form is the let-bound
 // `vec3(0.0, 0.0, 1.0)` and the tolerance is an angle literal `1deg`, per
 // examples/kernel_queries/directional_selectors.ri:19 and
-// examples/topology_selectors/fillet_top_edges.ri:43. So this fixture parses
-// with 0 ERROR nodes — overload resolution is a downstream SEMANTIC pass, not
-// the parse stage.
+// examples/topology_selectors/fillet_top_edges.ri:43 — a parse-stage detail,
+// distinct from the overload resolution the two guards above pin at the
+// semantic stage.
 //
 // The history-construction chain (modal_analysis -> transient_response) mirrors
 // examples/modal/transient_step_response.ri so `response` carries the
