@@ -241,8 +241,15 @@ fi
 # The BARE transient-serve form and nothing more. Mirrors α's `Serve::spawn`
 # (`crates/reify-audit/tests/jcodemunch_session_live.rs`):
 #
-#     uvx --python 3.13 --from jcodemunch-mcp==1.108.54 jcodemunch-mcp serve \
-#         --transport streamable-http --host 127.0.0.1 --port <PORT> --watcher=false
+#     env JCODEMUNCH_GIT_ROOT_IDENTITY=0 uvx --python <JC_PYTHON> --from <JC_PIN> \
+#         jcodemunch-mcp serve --transport streamable-http --host 127.0.0.1 \
+#         --port <PORT> --watcher=false
+#
+# Placeholders, not values, and the identity lever shown because SERVE_ARGV
+# really does splice it: an illustration that restated the pin or the
+# interpreter would drift on the next bump with nothing cross-checking it — the
+# same reason the paragraph below forbids restating them. β's sibling example in
+# scripts/jcodemunch-index-reify.sh has the identical shape.
 #
 # `--watcher=false` because the file watcher indexes the whole repo on start and
 # δ needs only the MCP session seam — indexing belongs to β

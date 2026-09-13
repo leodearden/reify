@@ -450,8 +450,14 @@ headroom_note() {
 # The BARE one-shot form and nothing more. All three flags re-verified on the
 # `watch` subparser at the pinned 1.108.54 (server.py:6326-6369):
 #
-#     uvx --from jcodemunch-mcp==1.108.54 jcodemunch-mcp watch <root> --once --no-ai-summaries
+#     env JCODEMUNCH_GIT_ROOT_IDENTITY=0 uvx --python <JC_PYTHON> --from <JC_PIN> \
+#         jcodemunch-mcp watch <root> --once --no-ai-summaries
 #
+# Placeholders, not values: the interpreter and the pin come from the lib (see
+# below), and an illustration that restated them would drift on the next bump
+# with nothing cross-checking it — which is how this example came to omit
+# `--python` entirely while the argv had carried it for a release. δ's sibling
+# example in scripts/with-jcodemunch-serve.sh has the identical shape.
 #
 # NOTHING is ever appended to this array — see the `--paths-from` ban in the
 # header (PRD §4.4). In particular the `index` subcommand is never used: it is
