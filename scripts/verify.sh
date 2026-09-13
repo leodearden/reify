@@ -972,6 +972,10 @@ _jobserver_owner_live() {
     return 0  # LIVE
 }
 
+# The loader path the PLAN-EXECUTION phase runs under: computed by apply_env(),
+# exported once at the phase boundary below (see the SCOPE CONTRACT there).
+_PLAN_LD_LIBRARY_PATH=""
+
 apply_env() {
     if [ -f "$HOME/.cargo/env" ]; then
         # shellcheck disable=SC1091
@@ -1037,24 +1041,29 @@ apply_env() {
 
     # OCCT shared-library search path (mirrors .cargo/run-with-occt.sh).
     #
-    # SCOPE CONTRACT (task 5730, esc-4581-87 / task 5321) — read before touching:
-    # /opt/reify-deps/lib is NOT an OCCT lib dir, it is a whole conda prefix.
-    # Alongside the ~153 libTK* it carries libcrypto.so.3, libcurl.so.4,
+    # SCOPE CONTRACT (tasks 5730/6392, esc-4581-87 / task 5321) — read before
+    # touching: /opt/reify-deps/lib is NOT an OCCT lib dir, it is a whole conda
+    # prefix. Alongside the ~153 libTK* it carries libcrypto.so.3, libcurl.so.4,
     # libexpat.so.1, libz.so.1, libcairo.so.2, libEGL.so.1, libsqlite3.so.0 and
     # hundreds of other system sonames (477 measured 2026-07-28 by intersecting
     # its .so-bearing filenames with /usr/lib/x86_64-linux-gnu — a DATED
     # measurement of unversioned host state that drifts on every environment
     # refresh, not an invariant count). LD_LIBRARY_PATH outranks DT_RUNPATH and
-    # ld.so.cache in the loader search order, so exporting it process-wide is
-    # HOSTILE to every non-Rust subprocess of the gate: it silently substitutes
-    # conda libraries under bare CLI tools. sqlite3 is merely the one that
-    # self-checks its header/source hash and aborts loudly.
+    # ld.so.cache in the loader search order, so it is HOSTILE to every non-Rust
+    # subprocess that inherits it: conda libraries silently substitute under
+    # bare CLI tools. sqlite3 is merely the one that self-checks its
+    # header/source hash and aborts loudly.
     #
-    # The export stays because it is belt-and-braces for the Rust/cargo path
-    # (see the header note above: .cargo/config.toml's `runner` and the
-    # DT_RUNPATH baked into every bin/test binary are the primary mechanisms).
-    # Non-cargo "tool" plan lines are instead emitted via add_tool(), which
-    # prefixes them with a scrub restoring the value captured here.
+    # Hence the value is COMPUTED here and exported only at the PHASE BOUNDARY
+    # (between build_plan and the plan-execution loop). Scope decision and plan
+    # construction — every `git diff`, gen-nextest-config.sh, the run_all.sh
+    # subset probe, and the grep/sed/cut tail — therefore fork on the clean
+    # ambient. The export itself is unchanged in reach: it is belt-and-braces
+    # for the Rust/cargo path (see the header note above: .cargo/config.toml's
+    # `runner` and the DT_RUNPATH baked into every bin/test binary are the
+    # primary mechanisms), and every plan line, cargo or tool, still runs under
+    # it. Non-cargo "tool" plan lines are additionally emitted via add_tool(),
+    # which prefixes them with a scrub restoring the value captured here.
     # REIFY_AMBIENT_LD_LIBRARY_PATH is the SINGLE SOURCE OF TRUTH for that
     # restore, so it must be captured HERE — before either prepend below —
     # or every scrub built from it degrades to a no-op. Restoring the captured
@@ -1064,15 +1073,16 @@ apply_env() {
     export REIFY_AMBIENT_LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
     ENV_LINES+=("export REIFY_AMBIENT_LD_LIBRARY_PATH=${REIFY_AMBIENT_LD_LIBRARY_PATH}")
 
+    _PLAN_LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
     local snap_lib="/snap/freecad/current/usr/lib"
     if [ -d "$snap_lib" ]; then
-        export LD_LIBRARY_PATH="$snap_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        _PLAN_LD_LIBRARY_PATH="$snap_lib${_PLAN_LD_LIBRARY_PATH:+:$_PLAN_LD_LIBRARY_PATH}"
     fi
     local deps_lib="/opt/reify-deps/lib"
     if [ -d "$deps_lib" ] && ls "$deps_lib"/libTKernel.so* >/dev/null 2>&1; then
-        export LD_LIBRARY_PATH="$deps_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        _PLAN_LD_LIBRARY_PATH="$deps_lib${_PLAN_LD_LIBRARY_PATH:+:$_PLAN_LD_LIBRARY_PATH}"
     fi
-    ENV_LINES+=("export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}")
+    ENV_LINES+=("export LD_LIBRARY_PATH=${_PLAN_LD_LIBRARY_PATH:-}")
 }
 apply_env
 
@@ -3555,6 +3565,17 @@ if [ "${#PLAN[@]}" -eq 0 ]; then
     echo "verify.sh: nothing to verify (action=$ACTION scope=$SCOPE) — no commands in plan." >&2
     exit 0
 fi
+
+# The phase boundary the SCOPE CONTRACT in apply_env() names. ONE export for
+# the whole loop is a deliberate choice, not a forced one: a per-line prefix
+# (LD_LIBRARY_PATH=… eval "$_cmd") does work in bash's default mode — the eval
+# arm still sets _VERIFY_NODE_BG_PID in this shell — but `eval` is a POSIX
+# SPECIAL BUILTIN, so under `set -o posix` the prefix PERSISTS after the
+# command (measured, bash 5.2.21) and would leak the OCCT path into every later
+# line. One export keeps both dispatch arms uniform; its cost is that
+# test_semaphore_acquire/release and reaper_teardown, which interleave with the
+# loop, also run on the OCCT path.
+export LD_LIBRARY_PATH="$_PLAN_LD_LIBRARY_PATH"
 
 for _cmd in "${PLAN[@]}"; do
     case "$_cmd" in
