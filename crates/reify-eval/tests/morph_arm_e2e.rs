@@ -656,14 +656,16 @@ fn stage_a_admits_dimensional_tick_with_derived_bool_let_from_compiled_module() 
         "premise: `is_wide` must be Type::Bool — the point is that the production compiler \
          emits a derived cell whose type is NOT on `classify_by_type`'s whitelist"
     );
-    assert!(
-        !matches!(
-            node.cell_type,
-            Type::Scalar { .. } | Type::Int | Type::Geometry
-        ),
-        "premise: `is_wide`'s type must be OFF the Dimensional whitelist \
-         (Scalar | Int | Geometry) — otherwise Rule 4 would admit it on type alone and this \
-         test would prove nothing about leaf scoping"
+    assert_eq!(
+        reify_eval::classify_cell(&graph_before, &is_wide),
+        reify_eval::ParameterClass::Structural,
+        "premise: `is_wide`'s type must be OFF the Dimensional whitelist — otherwise Rule 4 \
+         would admit it on type alone and this test would prove nothing about leaf scoping. \
+         Asked of the REAL whitelist rather than restating it, so it cannot drift: \
+         `classify_cell` is deliberately NOT leaf-scoped, so for this `Let` cell it reports \
+         the pure Rule-4 answer. The neighbouring assertions are what keep it honest — the \
+         `Type::Bool` one pins the exact type, and the `structure_controlling` one below \
+         rules out the Rule-2 path that could make this pass for the wrong reason"
     );
     assert!(
         !graph_before.structure_controlling.contains(&is_wide),
