@@ -1168,3 +1168,116 @@ fn the_reserved_path_segments_are_distinct_and_sit_above_every_structural_child_
         );
     }
 }
+
+// ===========================================================================
+// Review follow-up: the `Unresolved` arms, where the primal is hand-written
+// ===========================================================================
+//
+// `eval_dual_conditional` and `eval_dual_match` are the ONLY places this module
+// writes a primal itself (`DualValue::opaque(Value::Undef)`) instead of taking
+// one from the existing value semantics — which is exactly the "second
+// evaluator" both module headers forbid.  Their five unresolved shapes had no
+// coverage, so nothing checked that the `Undef` they write is the `Undef`
+// `eval_expr` produces.  `run` asserts the primal invariant on every call, so
+// each case below is that check plus the entry λ is owed.
+
+#[test]
+fn a_conditional_on_a_non_boolean_condition_is_undef_and_records_unresolved() {
+    // A numeric condition is a type error: `eval_expr` yields Undef without
+    // evaluating either branch, so neither branch's kinks may appear either.
+    let expr = conditional_expr(vref("x"), call("abs", vec![vref("x")]), vref("x"));
+    let (v, t, rec) = run(&expr, &[("x", Value::Real(2.0))], &["x"]);
+    assert_eq!(v, Value::Undef, "a non-Bool condition is Undef");
+    assert!(t.is_none(), "and Undef carries no tangent — never a plausible zero row");
+    assert_single_entry(&rec, &[], KinkKind::Conditional, BranchChoice::Unresolved, "cond_type");
+}
+
+#[test]
+fn a_conditional_on_an_undef_condition_is_undef_and_records_unresolved() {
+    // `u` is absent from the value map, so the condition is Undef rather than
+    // merely the wrong type — a different arm of the same `match` on the
+    // condition's value.
+    let expr = conditional_expr(vref("u"), vref("x"), vref("x"));
+    let (v, t, rec) = run(&expr, &[("x", Value::Real(2.0))], &["x"]);
+    assert_eq!(v, Value::Undef);
+    assert!(t.is_none());
+    assert_single_entry(&rec, &[], KinkKind::Conditional, BranchChoice::Unresolved, "cond_undef");
+}
+
+#[test]
+fn a_match_over_an_undef_discriminant_short_circuits_before_any_arm() {
+    // §9.2.5 — an undef discriminant is refused before a pattern is tried, so
+    // the arm bodies' kinks must not appear in the record.
+    let expr = match_expr(vref("u"), vec![CompiledMatchArm {
+        patterns: vec![CompiledPattern::wildcard()],
+        body: call("abs", vec![vref("x")]),
+    }]);
+    let (v, t, rec) = run(&expr, &[("x", Value::Real(2.0))], &["x"]);
+    assert_eq!(v, Value::Undef);
+    assert!(t.is_none());
+    assert_single_entry(&rec, &[], KinkKind::Match, BranchChoice::Unresolved, "match_undef");
+}
+
+#[test]
+fn a_match_over_a_non_enum_discriminant_is_undef_and_records_unresolved() {
+    // A `Real` discriminant has no variant tag to select on — a distinct arm
+    // from the undef one above, and one that must not fall through to the
+    // wildcard and answer confidently.
+    let expr = match_expr(vref("x"), vec![CompiledMatchArm {
+        patterns: vec![CompiledPattern::wildcard()],
+        body: literal(Value::Real(7.0)),
+    }]);
+    let (v, t, rec) = run(&expr, &[("x", Value::Real(2.0))], &["x"]);
+    assert_eq!(v, Value::Undef, "a wildcard does not rescue a non-Enum discriminant");
+    assert!(t.is_none());
+    assert_single_entry(&rec, &[], KinkKind::Match, BranchChoice::Unresolved, "match_non_enum");
+}
+
+#[test]
+fn a_match_whose_arms_all_miss_the_variant_is_undef_and_records_unresolved() {
+    // The fallthrough past the arm loop: a real `Value::Enum`, no pattern that
+    // selects it, and no wildcard.
+    let expr = match_expr(vref("m"), vec![CompiledMatchArm {
+        patterns: vec![CompiledPattern::variant("Slow")],
+        body: literal(Value::Real(1.0)),
+    }]);
+    let cells = [("m", enum_value("Fast", vec![])), ("x", Value::Real(2.0))];
+    let (v, t, rec) = run(&expr, &cells, &["x"]);
+    assert_eq!(v, Value::Undef, "no arm selects `Fast`, so there is no value to report");
+    assert!(t.is_none());
+    assert_single_entry(&rec, &[], KinkKind::Match, BranchChoice::Unresolved, "match_no_arm");
+}
+
+// ---------------------------------------------------------------------------
+// A kink whose OPERAND is Undef: no entry is owed, and this says why
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_kink_builtin_with_an_undef_operand_refuses_before_kink_dispatch_and_records_nothing() {
+    // `eval_dual_builtin`'s strict-`Undef` check sits BEFORE kink dispatch —
+    // mirroring `eval_expr`'s own short-circuit, which is load-bearing for the
+    // field-shadow ordering — so `abs(undef)` records no entry even though
+    // `node_is_kink` identifies the node.
+    //
+    // THAT IS THE CONTRACT, not an oversight, and the reason is reachability:
+    // reify propagates `Undef` strictly, so an `Undef` operand makes the whole
+    // residual `Undef` and `jacobian_row` returns `Err` — nothing ever READS
+    // this record.  The same argument `refuse_or_constant`'s doc makes for its
+    // refusing branch.  An entry here would be an entry for a row that does not
+    // exist.
+    let expr = call("abs", vec![vref("u")]);
+    let (v, t, rec) = run(&expr, &[("x", Value::Real(2.0))], &["x"]);
+    assert_eq!(v, Value::Undef, "abs of Undef is Undef");
+    assert!(t.is_none(), "and it carries no tangent");
+    assert!(
+        rec.is_empty(),
+        "no entry is owed for a node whose row cannot exist: {:?}",
+        rec.entries()
+    );
+
+    // The reachability claim, asserted rather than argued: the Undef really does
+    // reach the root of a residual that merely CONTAINS the kink.
+    let nested = binop(BinOp::Add, vref("x"), call("abs", vec![vref("u")]));
+    let (v, _, _) = run(&nested, &[("x", Value::Real(2.0))], &["x"]);
+    assert_eq!(v, Value::Undef, "Undef propagates strictly, so the whole row is refused");
+}

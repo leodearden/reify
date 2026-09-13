@@ -17,7 +17,7 @@
 
 use reify_core::{DimensionVector, Type, ValueCellId};
 use reify_expr::{EvalContext, NonDifferentiable, eval_expr};
-use reify_ir::{AutoParam, BinOp, CompiledExpr, Value, ValueMap};
+use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledFunction, Value, ValueMap};
 use reify_test_support::builders::expr::{binop, fn_call, literal, value_ref_typed};
 
 use reify_constraints::residual_jacobian;
@@ -76,6 +76,7 @@ fn trial_values(
     params: &[AutoParam],
     x: &[f64],
     dependent_cells: &[(ValueCellId, CompiledExpr)],
+    functions: &[CompiledFunction],
 ) -> ValueMap {
     assert_eq!(params.len(), x.len());
     let mut values = base.clone();
@@ -92,7 +93,7 @@ fn trial_values(
     // reference the subject is checked against.
     for (id, expr) in dependent_cells {
         let v = {
-            let ctx = EvalContext::simple(&values);
+            let ctx = EvalContext::new(&values, functions);
             eval_expr(expr, &ctx)
         };
         values.insert(id.clone(), v);
@@ -106,9 +107,10 @@ fn eval_at(
     params: &[AutoParam],
     x: &[f64],
     dependent_cells: &[(ValueCellId, CompiledExpr)],
+    functions: &[CompiledFunction],
 ) -> f64 {
-    let values = trial_values(base, params, x, dependent_cells);
-    let ctx = EvalContext::simple(&values);
+    let values = trial_values(base, params, x, dependent_cells, functions);
+    let ctx = EvalContext::new(&values, functions);
     eval_expr(expr, &ctx).as_f64().expect("residual must be a scalar at the probe point")
 }
 
@@ -121,14 +123,15 @@ fn central_difference(
     x: &[f64],
     j: usize,
     dependent_cells: &[(ValueCellId, CompiledExpr)],
+    functions: &[CompiledFunction],
 ) -> f64 {
     let h = 1e-6_f64 * x[j].abs().max(1e-3);
     let mut plus = x.to_vec();
     plus[j] += h;
     let mut minus = x.to_vec();
     minus[j] -= h;
-    (eval_at(expr, base, params, &plus, dependent_cells)
-        - eval_at(expr, base, params, &minus, dependent_cells))
+    (eval_at(expr, base, params, &plus, dependent_cells, functions)
+        - eval_at(expr, base, params, &minus, dependent_cells, functions))
         / (2.0 * h)
 }
 
@@ -140,10 +143,11 @@ fn assert_row_matches_cd(
     params: &[AutoParam],
     x: &[f64],
     dependent_cells: &[(ValueCellId, CompiledExpr)],
+    functions: &[CompiledFunction],
 ) {
     assert_eq!(row.len(), params.len(), "{label}: every row is exactly auto_params wide");
     for (j, &ad) in row.iter().enumerate() {
-        let cd = central_difference(expr, base, params, x, j, dependent_cells);
+        let cd = central_difference(expr, base, params, x, j, dependent_cells, functions);
         assert!(
             cd.abs() >= 0.1,
             "{label} column {j}: probe point must have |∂r/∂x_j| >= 0.1 in SI units so the \
@@ -253,7 +257,7 @@ fn every_jacobian_entry_agrees_with_central_differences_over_the_same_residuals(
     let (params, residuals, base, x) = two_auto_model();
     let j = jac(&params, &residuals, &base, &x);
     for (i, expr) in residuals.iter().enumerate() {
-        assert_row_matches_cd(&format!("r{i}"), &j.rows[i], expr, &base, &params, &x, &[]);
+        assert_row_matches_cd(&format!("r{i}"), &j.rows[i], expr, &base, &params, &x, &[], &[]);
     }
 }
 
@@ -269,7 +273,7 @@ fn the_reported_residuals_match_ordinary_evaluation_at_the_same_point() {
     let (params, residuals, base, x) = two_auto_model();
     let j = jac(&params, &residuals, &base, &x);
     for (i, expr) in residuals.iter().enumerate() {
-        let expected = eval_at(expr, &base, &params, &x, &[]);
+        let expected = eval_at(expr, &base, &params, &x, &[], &[]);
         assert_eq!(
             j.residuals[i], expected,
             "residual {i}: AD path reported {:?}, ordinary evaluation gives {expected:?}",
@@ -304,7 +308,7 @@ fn an_angle_auto_and_a_length_auto_both_get_correct_si_unit_columns() {
     let x = vec![0.5, 3.0];
     let j = jac(&params, std::slice::from_ref(&expr), &base, &x);
 
-    assert_row_matches_cd("mixed_units", &j.rows[0], &expr, &base, &params, &x, &[]);
+    assert_row_matches_cd("mixed_units", &j.rows[0], &expr, &base, &params, &x, &[], &[]);
     // ∂r/∂a = cos(a)·w ≈ 2.633 per radian; ∂r/∂w = sin(a) ≈ 0.479 per metre.
     assert!((j.rows[0][0] - 0.5_f64.cos() * 3.0).abs() < 1e-9);
     assert!((j.rows[0][1] - 0.5_f64.sin()).abs() < 1e-9);
@@ -417,7 +421,16 @@ fn a_residual_reading_a_derived_cell_gets_a_nonzero_column_for_the_auto_behind_i
         "without a dual-carrying fold this column is exactly 0.0 — the residual would look \
          flat in the very variable it is a function of"
     );
-    assert_row_matches_cd("line_cost", &j.rows[0], &residual, &base, &params, &x, &dependent);
+    assert_row_matches_cd(
+        "line_cost",
+        &j.rows[0],
+        &residual,
+        &base,
+        &params,
+        &x,
+        &dependent,
+        &[],
+    );
     assert!((j.rows[0][0] - 3.0).abs() < 1e-9, "∂r/∂q = unit_cost = 3");
     assert_eq!(j.residuals[0], 3.0, "the primal still comes from the folded value path");
 }
@@ -448,7 +461,7 @@ fn a_chain_of_dependent_cells_propagates_through_every_hop_in_stored_order() {
         "∂r/∂q = 40; got {:?} — a second hop that cannot see the first would give 20",
         j.rows[0][0]
     );
-    assert_row_matches_cd("chain", &j.rows[0], &residual, &base, &params, &x, &dependent);
+    assert_row_matches_cd("chain", &j.rows[0], &residual, &base, &params, &x, &dependent, &[]);
 }
 
 // ---------------------------------------------------------------------------
@@ -936,4 +949,201 @@ fn no_dependent_cells_leaves_the_records_exactly_as_the_non_clustered_path_produ
         [0_u16],
         "root-relative, with no dependent-cell prefix in front of it"
     );
+}
+
+// ===========================================================================
+// Review follow-up: the seam this module exists to BE
+// ===========================================================================
+//
+// Every test above passes `functions: &[]` and `dispatch: None`, so the
+// header's central reuse argument — that routing through
+// `crate::solver::ctx_with`, "the single place a `reify_expr::EvalContext` is
+// constructed in the solver", is what makes user functions and `@optimized`
+// compute dispatch work at the AD seam — was asserted nowhere.  An adapter
+// wiring regression would have been caught one layer below the seam, in
+// reify-expr, or not at all.
+
+use reify_core::ContentHash;
+use reify_ir::{CompiledFnBody, ComputeDispatch};
+
+
+/// A reference to parameter `pname` inside function `fname`'s own scope — the
+/// shape `eval_compiled_function_with_values` binds params under.
+fn param_ref(fname: &str, pname: &str) -> CompiledExpr {
+    CompiledExpr::value_ref(ValueCellId::new(fname, pname), scalar_ty(dl()))
+}
+
+fn user_fn(
+    name: &str,
+    param_names: &[&str],
+    result_expr: CompiledExpr,
+    optimized_target: Option<&str>,
+) -> CompiledFunction {
+    let params: Vec<(String, Type)> =
+        param_names.iter().map(|p| ((*p).to_string(), scalar_ty(dl()))).collect();
+    CompiledFunction {
+        name: name.to_string(),
+        doc: None,
+        is_pub: false,
+        param_defaults: CompiledFunction::no_defaults_for(&params),
+        params,
+        return_type: scalar_ty(dl()),
+        body: CompiledFnBody { let_bindings: vec![], result_expr },
+        content_hash: ContentHash::of(name.as_bytes()),
+        annotations: vec![],
+        optimized_target: optimized_target.map(str::to_string),
+        type_params: vec![],
+    }
+}
+
+/// `fn hyp(a, b) = sqrt(a*a + b*b)`
+fn hyp_fn() -> CompiledFunction {
+    let p = |n: &str| param_ref("hyp", n);
+    user_fn(
+        "hyp",
+        &["a", "b"],
+        call(
+            "sqrt",
+            vec![binop(
+                BinOp::Add,
+                binop(BinOp::Mul, p("a"), p("a")),
+                binop(BinOp::Mul, p("b"), p("b")),
+            )],
+            DimensionVector::DIMENSIONLESS,
+        ),
+        None,
+    )
+}
+
+fn user_call(name: &str, args: Vec<CompiledExpr>) -> CompiledExpr {
+    reify_test_support::builders::expr::user_fn_call(name, args, scalar_ty(dl()))
+}
+
+#[test]
+fn a_user_function_residual_reaches_the_callee_body_through_the_adapter() {
+    // r = hyp(w, h) − 5 at (3, 4): ∂r/∂w = 0.6, ∂r/∂h = 0.8.  The whole point
+    // is the `functions` slice — with an empty one `find_matching_compiled_function`
+    // fails, the primal is Undef and the row refuses, so this test cannot pass
+    // by accident on a broken `ctx_with`.
+    let params = vec![
+        auto("w", DimensionVector::DIMENSIONLESS),
+        auto("h", DimensionVector::DIMENSIONLESS),
+    ];
+    let functions = vec![hyp_fn()];
+    let residual = binop(
+        BinOp::Sub,
+        user_call("hyp", vec![
+            aref("w", DimensionVector::DIMENSIONLESS),
+            aref("h", DimensionVector::DIMENSIONLESS),
+        ]),
+        literal(Value::Real(5.0)),
+    );
+    let base = ValueMap::new();
+    let x = vec![3.0, 4.0];
+
+    let j = residual_jacobian(&params, &[residual.clone()], &base, &x, &[], &functions, None)
+        .expect("a user function of smooth algebra is differentiable");
+    assert_row_matches_cd("hyp", &j.rows[0], &residual, &base, &params, &x, &[], &functions);
+    assert!((j.residuals[0] - 0.0).abs() < 1e-12, "hyp(3,4) − 5 = 0");
+
+    // The premise, asserted rather than assumed: drop the slice and the seam
+    // genuinely stops working.
+    assert!(
+        residual_jacobian(&params, &[residual], &base, &x, &[], &[], None).is_err(),
+        "without `functions` the callee cannot be resolved — so the passing case above \
+         really is the adapter threading it"
+    );
+}
+
+/// Resolves exactly one target, to a constant, so a dispatched call is
+/// distinguishable from an evaluated body.
+struct FixedDispatch;
+
+impl ComputeDispatch for FixedDispatch {
+    fn dispatch(&self, target: &str, _args: &[Value]) -> Option<Value> {
+        (target == "solver::fixed").then_some(Value::Real(40.0))
+    }
+}
+
+#[test]
+fn an_optimized_compute_dispatched_call_is_refused_by_row_not_silently_flattened() {
+    // An `@optimized` body is never traversed, so there is no chain rule and no
+    // honest tangent — ε must refuse the ROW rather than report it flat, which
+    // would tell η the residual does not move in `w` when it does.  This is the
+    // only test that reaches `residual_jacobian`'s `dispatch` parameter at all.
+    let params = vec![auto("w", DimensionVector::DIMENSIONLESS)];
+    // The body is a perfectly differentiable `a * 20`, so a refusal can only
+    // come from the dispatch having fired and made the body unreachable — not
+    // from the body itself being undifferentiable.
+    let functions = vec![user_fn(
+        "fixed",
+        &["a"],
+        binop(BinOp::Mul, param_ref("fixed", "a"), literal(Value::Real(20.0))),
+        Some("solver::fixed"),
+    )];
+    let residual = user_call("fixed", vec![aref("w", DimensionVector::DIMENSIONLESS)]);
+    let base = ValueMap::new();
+    let x = vec![2.0];
+
+    let err = residual_jacobian(
+        &params,
+        &[residual],
+        &base,
+        &x,
+        &[],
+        &functions,
+        Some(&FixedDispatch),
+    )
+    .expect_err("a compute-dispatched call carries no derivative");
+    assert_eq!(err.row, 0);
+    let msg = err.to_string();
+    assert!(
+        msg.contains("optimized"),
+        "the refusal must name the compute dispatch, since that is what η has to act on: {msg}"
+    );
+}
+
+#[test]
+fn two_jacobians_with_different_row_counts_differ_at_the_first_missing_row() {
+    // `Jacobian::differs_from`'s mismatched-row-count arm: a different row count
+    // is a different PROBLEM, not a branch flip, and the extra row's first kink
+    // is the closest thing to a site.  Every other `differs_from` test compares
+    // equal-length Jacobians, so neither this arm nor its `KinkSite::root()`
+    // fallback for a SMOOTH extra row was ever reached.
+    let params = vec![auto("w", DimensionVector::DIMENSIONLESS)];
+    let base = ValueMap::new();
+    let x = vec![2.0];
+    let w = || aref("w", DimensionVector::DIMENSIONLESS);
+    let smooth = binop(BinOp::Mul, w(), literal(Value::Real(3.0)));
+    let kinked = call("abs", vec![w()], DimensionVector::DIMENSIONLESS);
+
+    let one = jac(&params, &[smooth.clone()], &base, &x);
+    let two_smooth = jac(&params, &[smooth.clone(), smooth.clone()], &base, &x);
+    let two_kinked = jac(&params, &[smooth, kinked], &base, &x);
+
+    // Extra row is SMOOTH: it has no entries, so `root` stands in as the site.
+    let (row, site) = one
+        .differs_from(&two_smooth)
+        .expect("a 1-row and a 2-row Jacobian are not two samples of one function");
+    assert_eq!(row, 1, "row 1 is the first index only one side holds");
+    assert_eq!(
+        site,
+        reify_expr::KinkSite::root(),
+        "a smooth extra row has no kink to name, so `root` stands in"
+    );
+
+    // Extra row CARRIES a kink: its first entry's site is named instead.
+    let (row, site) = one.differs_from(&two_kinked).expect("still a row-count divergence");
+    assert_eq!(row, 1);
+    assert_eq!(
+        site,
+        two_kinked.branch_records[1]
+            .entries()
+            .first()
+            .expect("the premise: the `abs` row records an entry")
+            .site,
+        "the extra row's FIRST kink is the site, not `root`"
+    );
+    // Symmetric: the direction of the comparison does not change the answer.
+    assert_eq!(two_kinked.differs_from(&one).map(|(r, _)| r), Some(1));
 }
