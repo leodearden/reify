@@ -2649,8 +2649,10 @@ mod tests {
         // ── 2-prismatic closed-chain mechanism ────────────────────────────────
         // Spanning tree (joint_parents): m1@j_a (parent=world), m2@j_b (parent=world).
         // Closing edge: body(m2, mp_c, j_b, j_a) adds m3 to bodies and appends a
-        // loop_closure record {path_a=[world,j_b], path_b=[world,j_a,j_b],
-        // closing_joint=j_b}.
+        // loop_closure record {path_a=[world,j_b], path_b=[world,j_a],
+        // closing_joint=j_b} — path_b terminates at the closing edge's parent,
+        // and the closing joint is composed on path_a alone.  Same shape as
+        // examples/dynamics/closed_2prismatic_idyn.ri.
         //
         // j_a on +x (range 0–1m), j_b on +x (range 0–2m): different ranges make
         // them structurally distinct Maps so Value::Eq in loop_residual_jacobian_by_joint

@@ -3083,7 +3083,8 @@ mod tests {
             ],
         );
         // Body D: at=jX, parent=jB.  Closing edge — jX is already mapped to jA.
-        // loop_closures records path_a=[world, jA, jX], path_b=[world, jB, jX].
+        // loop_closures records path_a=[world, jA, jX], path_b=[world, jB]:
+        // the closing joint jX is composed on path_a only.
         let m4 = eval_builtin(
             "body",
             &[
@@ -3918,15 +3919,14 @@ mod tests {
             ],
         );
 
-        // Bind jA = 0.5m (driver) AND jX = 0 rad (pin the shared revolute
-        // so it isn't a free var on path_b).  Without binding jX,
-        // `extract_loop_closure_chains` flags BOTH jB and jX-on-path-b as
-        // free indices because chain_b carries every joint that lacks a
-        // direct binding entry — multi-loop coupling that would dedupe
-        // joints shared with path_a is out of v0.2 scope (see plan
-        // design-decisions §4).  Pinning jX gives us a single-free-var
-        // shape that step-9 / step-11 assume, and keeps this test focused
-        // on the carrier shape rather than multi-DOF solver behaviour.
+        // Bind jA = 0.5m (driver) AND jX = 0 rad.  The bind on jX is
+        // load-bearing: jX sits on chain_a ONLY, so its transform is composed
+        // once with nothing on the closing side to oppose it.  Left at its
+        // range midpoint (π/2) it would rotate chain_a's terminal frame out of
+        // reach of the single free prismatic on chain_b, making the closure
+        // infeasible.  Pinning it to 0 rad reduces the closure to the 1-DOF
+        // translation match jA == jB this test is about.  Same rationale as
+        // `snapshot_solves_closed_chain_via_loop_closure_solver`.
         let bind_a = eval_builtin("bind", &[j_a.clone(), Value::length(0.5)]);
         let bind_x = eval_builtin("bind", &[j_x.clone(), Value::angle(0.0)]);
         let s = eval_builtin("snapshot", &[m4, Value::List(vec![bind_a, bind_x])]);
@@ -4978,12 +4978,14 @@ mod tests {
     // fixture is singular, so a variable key set doesn't break any
     // Snapshot-shape assertion.
 
-    /// Closed-chain mechanism with TWO free (unbound) prismatic joints on
-    /// the SAME +X axis sharing one closing joint (`j_x`): body C anchors
-    /// `j_x` to `j_a` (spanning-tree edge), body D re-anchors `j_x` to `j_b`
-    /// (closing edge) — `path_b = [world, j_b, j_x]`. Binding only `j_a`
-    /// leaves BOTH `j_b` and `j_x` free; since both are prismatic on +X,
-    /// their FD Jacobian columns are identical → rank-1 `JᵀJ` →
+    /// Closed-chain mechanism whose CLOSING side carries two free (unbound)
+    /// prismatic joints on the SAME +X axis. The spanning tree is `j_a → world`,
+    /// `j_b → world`, `j_c → j_b`, `j_x → j_a`; body E then re-registers `j_x`
+    /// with `parent = j_c`, recording the closure `path_a = [world, j_a, j_x]`
+    /// / `path_b = [world, j_b, j_c]`. Binding only `j_a` leaves `j_b` and
+    /// `j_c` free — `j_x` is composed on chain_a alone and resolves to its own
+    /// range midpoint — and since both free joints are prismatic on +X their
+    /// FD Jacobian columns are identical → rank-1 `JᵀJ` →
     /// `NewtonOutcome::Singular` at iteration 0 (the same rank-deficiency
     /// mechanism as the proven 6-DOF fixture in
     /// `kinematic_diagnostics_e2e.rs`, scaled down to 2 free vars and
@@ -4993,8 +4995,8 @@ mod tests {
     /// singular signal must therefore survive `snapshot()`'s fallback to
     /// the plain solver for the FK outcome.
     ///
-    /// `j_b`/`j_x` use [`offset_prismatic_x`] at distinct offsets (rather
-    /// than two bare `prismatic(axis_x_unit(), ..)` joints) so they are
+    /// `j_b`/`j_c`/`j_x` use [`offset_prismatic_x`] at distinct offsets (rather
+    /// than bare `prismatic(axis_x_unit(), ..)` joints) so they are
     /// structurally distinct `Value`s: `transform_at`'s `origin ∘
     /// bare_motion` composition makes the offset a constant shift, so the
     /// derivative w.r.t. each joint's own free variable is unaffected and
@@ -5015,15 +5017,12 @@ mod tests {
     /// and chain_b reaches (0.1 + 0.5) + (0.25 + 0.5) = 1.35 m, a 0.05 m
     /// residual, while leaving the FD columns identical.
     ///
-    /// **Task 7186 defect A.** The rank deficiency used to come from the
-    /// closing joint being appended to `path_b` as well: `chain_b` was
-    /// `[j_b, j_x]`, two unbound +X prismatics whose Jacobian columns are
-    /// identical. With the closing joint composed exactly once, `chain_b`
-    /// on that fixture is `[j_b]` alone — a full-rank 6×1 Jacobian, so the
-    /// fixture stopped exhibiting the condition it exists to pin. The two
-    /// identical free columns are therefore re-homed onto a genuine
-    /// two-deep closing-side walk (`j_b → world`, `j_c → j_b`, closing
-    /// `j_x → j_c`), which yields `chain_b = [j_b, j_c]` with both free.
+    /// The closing side needs the genuine two-deep walk `j_b → world`,
+    /// `j_c → j_b` to hold two free columns at all: the closing joint is
+    /// composed on `path_a` only (pinned by
+    /// `parent_conflict_path_b_omits_closing_joint` in mechanism.rs), so a
+    /// one-deep closing side would leave `chain_b = [j_b]` and a full-rank
+    /// 6×1 Jacobian.
     #[test]
     fn snapshot_bakes_is_singular_true_for_rank_deficient_closed_chain() {
         let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);

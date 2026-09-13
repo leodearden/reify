@@ -579,9 +579,23 @@ pub fn extract_loop_closure_chains(
     // That link occurs on chain_b ONLY.  `pose` on a closing call is the
     // transform of the rigid 0-DOF TIE `parent --pose--> at`, so the residual
     // is `T_tree(at) == T(parent) ∘ pose` — one pose, on the closing side.
-    // `path_a` is joint-only (task 7186 review fix 2).  The `EITHER` above is
-    // a property of this resolver, not a shape `append_body` produces: it
-    // means a hand-built chain_a carrying such a link would still resolve.
+    // `path_a` is joint-only (pinned by
+    // `first_recorded_body_pose_stays_out_of_path_a` in mechanism.rs).  The
+    // `EITHER` above is a property of this resolver, not a shape
+    // `append_body` produces: it means a hand-built chain_a carrying such a
+    // link would still resolve.
+    //
+    // **Caveat — an unbound `coupling` in chain_b is UNDER-CONSTRAINED.**
+    // `is_zero_dof_joint` answers for `JointKind::Fixed` alone, so an unbound
+    // coupling lands in `free_b` and Newton iterates it as an INDEPENDENT
+    // variable: its ratio/offset relative to its parent is ignored, and the
+    // parent-tracked value `resolve_joint_value` returns serves only as the
+    // initial seed.  `bind` / `dim` / `sweep` reject that same joint outright
+    // via `make_nondriving_joint_error` ("nondriving_joint", joints.rs); the
+    // closure path does not reject it, it merely fails to enforce the
+    // coupling relation.  Honouring the ratio needs the coupled value
+    // re-derived INSIDE each Newton step, which this resolver — which
+    // computes `vals_b_initial` once, before the solve — cannot express.
     let mut vals_b_initial = Vec::with_capacity(chain_b.len());
     let mut free_b: Vec<usize> = Vec::new();
     for (i, joint) in chain_b.iter().enumerate() {
@@ -641,6 +655,12 @@ fn joint_kind(joint: &Value) -> Option<JointKind> {
 /// Read from the joint Map's declared `kind` rather than inferred from a
 /// resolved `JointValue::Scalar(0.0)`: the fixed sentinel and a genuinely
 /// free prismatic seeded at a 0.0 midpoint are indistinguishable by value.
+///
+/// `JointKind::Coupling` is deliberately NOT included, even though its DOF is
+/// derived rather than independent: excluding it from `free_b` would freeze it
+/// at its seed instead of tracking its parent, which is a different wrong
+/// answer, not a fix. See the coupling caveat in
+/// [`extract_loop_closure_chains`].
 fn is_zero_dof_joint(joint: &Value) -> bool {
     matches!(joint_kind(joint), Some(JointKind::Fixed))
 }
