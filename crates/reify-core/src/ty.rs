@@ -95,17 +95,26 @@
 //! Stating that explicitly matters because the two spellings do NOT carry the
 //! same authorial intent.  Task 5848's ruling is about `Dimensionless`, whereas
 //! `Real` is also the idiomatic "just a raw number" spelling — including for a
-//! number that is a measurement carried in native units.
-//! `crates/reify-compiler/stdlib/fdm_slice.ri`'s `Bead.centerline`
-//! (`List<Point3<Real>>`) is exactly that: its module doc fixes
-//! a marshalling contract in which centerline coordinates are raw G-code
-//! MILLIMETRES, "Hence `Real` / `Point3<Real>` here, not `Length` /
-//! `Point3<Length>`".  The ruling still applies there, and that is the intended
-//! reading rather than a casualty of it: the declaration says these coordinates
-//! are bare numbers, so a `List<Point3<Length>>` arg is a real breach of that
+//! number that is a measurement carried in native units, where a marshalling
+//! contract fixes the unit and the declaration deliberately erases it.  Where
+//! that second reading applies the ruling still applies too, and that is the
+//! intended outcome rather than a casualty of it: the declaration says those
+//! coordinates are bare numbers, so a dimensioned arg is a real breach of the
 //! contract.  What differs is the PREMISE of the rejection — contract-imposed
 //! erasure rather than an assertion of unit-lessness — so anyone tempted to
-//! retype that param must weigh the marshalling contract, not this rule alone.
+//! retype such a param must weigh the marshalling contract, not this rule alone.
+//!
+//! That second reading has no live worked example left.  It used to be
+//! `crates/reify-compiler/stdlib/fdm_slice.ri`'s `Bead.centerline`
+//! (`List<Point3<Real>>`, raw G-code MILLIMETRES fixed by that file's
+//! marshalling contract), which task #6301 retyped to `List<Point3<Length>>`
+//! when it ruled the FDM slice surface SI and dimensioned; no replacement was
+//! found in `stdlib/`, whose other `Real` params are dimensionless by nature
+//! (tolerances, exponents, knockdown ratios, loss factors).  The reading stays
+//! legitimate — it is a claim about authorial intent, which no sweep can rule
+//! out for future code — but weigh a fresh `Real`-for-a-measurement declaration
+//! against #6301's finding first: a unit the `.ri` surface cannot STATE is
+//! exactly how a 1000x disagreement stays invisible.
 //!
 //! **Measured reach, and what that measurement does NOT cover.**  The tightening
 //! landed with zero new diagnostics: every constructor-arg site at a
@@ -115,14 +124,17 @@
 //! and `designs/` are OUTSIDE the measurement and are evidence neither way; the
 //! nearest latent instance there is `prj/printer_v01/printer.ri`'s cardinal-axis
 //! direction `let`s, written under a unit-magnitude `1m` convention and so
-//! genuinely `Length`-dimensioned.  Inside the measured tree the nearest is that
-//! same `fdm_slice.ri` `Bead.centerline`, absent only because the measurement is
-//! over constructor-ARG sites and no `.ri` file constructs a `Bead` today.  If
-//! one ever did it would NOT stay silent, including from a literal `point3(…)`
-//! arg rather than merely a `List<Point3<Length>>`-typed REF — see the expired
-//! premise below for why a `point3(…)` call now carries a real quantity slot,
-//! recovered from its FIRST argument via the weakness task 5889 owns
-//! (`math_signatures.rs`).
+//! genuinely `Length`-dimensioned.  Inside the measured tree the nearest USED to
+//! be that same `fdm_slice.ri` `Bead.centerline`, absent from the count only
+//! because the measurement is over constructor-ARG sites and no `.ri` file
+//! constructs a `Bead` today.  Task #6301 retyped it to `List<Point3<Length>>`,
+//! so it is no longer a latent instance at all — under the new declaration a
+//! dimensioned point arg is what the contract ASKS for.  The mechanism that made
+//! it latent is unchanged and still reaches any `Real`-quantity param: a literal
+//! `point3(…)` arg would NOT stay silent, not merely a
+//! `List<Point3<Length>>`-typed REF — see the expired premise below for why a
+//! `point3(…)` call now carries a real quantity slot, recovered from its FIRST
+//! argument via the weakness task 5889 owns (`math_signatures.rs`).
 //!
 //! The `.ri` fixtures in
 //! `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs` drive

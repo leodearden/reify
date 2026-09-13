@@ -412,7 +412,7 @@ fn prelude_typed_match_arm_sub_member_read_is_typed() {
 /// DIFFERENT prelude structures.
 ///
 /// `AsPrintedOptions` (`stdlib/fdm_as_printed.ri:37`) and `FDMSliceOptions`
-/// (`stdlib/fdm_slice.ri:96`) are the pair because (i) every param of each is
+/// (`stdlib/fdm_slice.ri`) are the pair because (i) every param of each is
 /// defaulted, so the bare `sub s : T` arm form needs no constructor args;
 /// (ii) they SHARE `target_fidelity : Int = 0`, giving the positive half; and
 /// (iii) `line_width : Length` is on `AsPrintedOptions` ONLY, giving the

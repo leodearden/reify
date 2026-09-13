@@ -3307,14 +3307,19 @@ fn point3_dimensioned_at_dimensionless_point_param_warns_arg_type_mismatch() {
 /// `Real` is the SAME CELL as `Dimensionless` — the same fixture, spelled the
 /// other way, end to end.
 ///
-/// `crates/reify-core/src/ty.rs` rules the two exact synonyms at every route into
-/// a quantity slot and measures this cell "identically at `Point3<Real>`, the
-/// `fdm_slice.ri` spelling". That is a claim about `resolve_type_name` and the
-/// dimension-EXPRESSION route in `type_resolution.rs`, not about the conformance
-/// rule, so only a second fixture can hold it: were the `Real` spelling ever to
-/// resolve to something other than `Type::Scalar { dimension: DIMENSIONLESS }`,
-/// the sibling above would stay green while
-/// `stdlib/fdm_slice.ri:43`'s `List<Point3<Real>>` silently left the ruling.
+/// `crates/reify-core/src/ty.rs` rules the two exact synonyms at every route
+/// into a quantity slot, `Point3<Real>` among them. That is a claim about
+/// `resolve_type_name` and the dimension-EXPRESSION route in
+/// `type_resolution.rs`, not about the conformance rule, so only a second
+/// fixture can hold it: were the `Real` spelling ever to resolve to something
+/// other than `Type::Scalar { dimension: DIMENSIONLESS }`, the sibling above
+/// would stay green while every `Point3<Real>` declaration in the corpus
+/// silently left the ruling.
+///
+/// The exemplar this comment used to name, `stdlib/fdm_slice.ri`'s
+/// `Bead.centerline`, is no longer one: task #6301 retyped it to
+/// `List<Point3<Length>>`. The fixture below is inline and does not read any
+/// `.ri` file, so the claim never depended on that declaration surviving.
 #[test]
 fn point3_dimensioned_at_real_point_param_warns_arg_type_mismatch() {
     let module = compile_source_with_stdlib(SRC_POINT3_DIMENSIONED_AT_REAL);
