@@ -807,7 +807,10 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
     // — the silent-substitution class this contract exists to close — and would
     // also make ε (#7262) refuse a result whose first mode is in fact present.
     // A caller that needs σ honored detects the gap with
-    // `result.shift == opts.sigma`; #7259 replaces this with `opts.sigma`.
+    // `result.shift == opts.sigma`; #7259 replaces this with `opts.sigma`, and
+    // when it does it must also add the `opts.sigma.is_finite()` guard this
+    // function's option-contract asserts above deliberately omit — σ is inert
+    // here precisely because it is never read.
     let shift_used = 0.0_f64;
 
     let op = CompositeShiftInvertOp { k_op, m_op, n };
