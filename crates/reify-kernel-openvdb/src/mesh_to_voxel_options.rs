@@ -160,26 +160,56 @@ pub enum VoxelResolutionError {
         variant: &'static str,
     },
 
-    /// The derived voxel is larger than the body's SMALLEST bounding-box
-    /// extent, so the body is thinner than one voxel on that axis.
+    /// The body has ZERO extent on at least one axis, so it encloses no volume
+    /// and has no interior to sample at ANY resolution.
+    ///
+    /// Distinct from [`Self::DegenerateMesh`], which is reserved for the
+    /// conditions [`MeshToVoxelOptions::honest_floor`] rejects (no bounding box
+    /// at all). A tessellated planar face or an open surface body has a
+    /// perfectly good bounding box on two axes and is flat on the third —
+    /// `honest_floor` serves it, and reporting it as a too-coarse request would
+    /// advise "request a finer resolution" when no positive voxel size can ever
+    /// be at or below a zero extent.
+    FlatBody {
+        /// Index of the first zero-extent axis: `0` = x, `1` = y, `2` = z.
+        axis: usize,
+    },
+
+    /// The derived voxel is too coarse to resolve the body's SMALLEST
+    /// bounding-box extent — fewer than [`MIN_FEATURE_VOXELS_ACROSS`] voxels
+    /// would span it.
     ///
     /// The symmetric counterpart of [`Self::DensifyBudgetExceeded`]: that one
     /// catches a request too FINE to afford, this one a request too COARSE to
     /// mean anything. `meshToLevelSet` accepts such a voxel size happily and
-    /// returns a non-null grid, but the body falls between sample planes, so
-    /// the interior never signs negative — the caller would get `Ok(handle)`
-    /// and a silently meaningless SDF, which is the sub-voxel-feature failure
-    /// [`VoxelResolution`] exists to prevent, approached from the other side.
+    /// returns a non-null grid, but the thinnest axis is spanned by too few
+    /// samples for its interior to sign negative — the caller would get
+    /// `Ok(handle)` and a silently meaningless SDF, which is the
+    /// sub-voxel-feature failure [`VoxelResolution`] exists to prevent,
+    /// approached from the other side.
     ///
-    /// The bound is the body's own geometry, not a tuned tolerance: a voxel
-    /// wider than the thinnest extent cannot place even one sample inside the
-    /// body along that axis.
+    /// # Why the bound is `min_extent / MIN_FEATURE_VOXELS_ACROSS`
+    ///
+    /// The body's thinnest extent IS a feature of that size, so it is governed
+    /// by the same interior-signing floor every other feature is: half-thickness
+    /// ≥ 2 × voxel_size, i.e. `voxel_size ≤ min_extent / 4`
+    /// ([`MIN_FEATURE_VOXELS_ACROSS`], whose doc cites the measurement). Using
+    /// that same constant rather than the looser `voxel_size ≤ min_extent` is
+    /// what makes the two request arms agree: `MinFeature(min_extent)` derives
+    /// exactly `min_extent / 4` and lands precisely on the bound, so an explicit
+    /// [`VoxelResolution::TargetVoxelSize`] is admitted on exactly the same
+    /// terms the equivalent [`VoxelResolution::MinFeature`] would be. The looser
+    /// bound admitted the window `(min_extent/4, min_extent]`, which is the very
+    /// `Ok(handle)`-over-an-unsigned-interior outcome this variant exists to
+    /// prevent.
     RequestTooCoarse {
         /// The voxel size the request resolved to (for `MinFeature(t)` this is
         /// the DERIVED `t / MIN_FEATURE_VOXELS_ACROSS`, not `t`).
         requested_voxel_size: f64,
         /// The smallest bounding-box extent it failed to resolve, in the
-        /// mesh's own units.
+        /// mesh's own units. The largest admissible voxel size is
+        /// `min_extent / MIN_FEATURE_VOXELS_ACROSS`, which the
+        /// [`Display`](std::fmt::Display) message spells out.
         min_extent: f64,
     },
 
@@ -207,6 +237,20 @@ pub enum VoxelResolutionError {
     },
 }
 
+/// Human-readable name of a bounding-box axis index, for diagnostics.
+///
+/// Total by construction: `bbox_extents` only ever produces indices 0..3, and
+/// an out-of-range index degrades to its own number rather than panicking in a
+/// `Display` impl.
+fn axis_name(axis: usize) -> String {
+    match axis {
+        0 => "x".to_string(),
+        1 => "y".to_string(),
+        2 => "z".to_string(),
+        other => format!("axis {other}"),
+    }
+}
+
 impl std::fmt::Display for VoxelResolutionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -220,15 +264,23 @@ impl std::fmt::Display for VoxelResolutionError {
                 "invalid VoxelResolution::{variant}({requested}): the requested length \
                  must be finite and strictly positive"
             ),
+            Self::FlatBody { axis } => write!(
+                f,
+                "cannot derive a voxel resolution: the mesh has zero extent along {}, \
+                 so it encloses no volume and no voxel size — however fine — can \
+                 resolve an interior",
+                axis_name(*axis)
+            ),
             Self::RequestTooCoarse {
                 requested_voxel_size,
                 min_extent,
             } => write!(
                 f,
-                "voxel size {requested_voxel_size} exceeds the body's smallest \
-                 bounding-box extent {min_extent}: the body is thinner than one voxel \
-                 on that axis and the grid would resolve nothing; request a finer \
-                 resolution"
+                "voxel size {requested_voxel_size} is too coarse for the body's smallest \
+                 bounding-box extent {min_extent}: {MIN_FEATURE_VOXELS_ACROSS} voxels must \
+                 span the thinnest extent for its interior to sign, so the voxel size must \
+                 be at most {}; request a finer resolution",
+                min_extent / MIN_FEATURE_VOXELS_ACROSS
             ),
             Self::DensifyBudgetExceeded {
                 requested_voxel_size,
@@ -466,20 +518,25 @@ impl MeshToVoxelOptions {
     ///   band width still is.
     /// - [`VoxelResolutionError::InvalidRequest`] — the requested length was
     ///   not finite and strictly positive.
-    /// - [`VoxelResolutionError::RequestTooCoarse`] — the derived voxel is
-    ///   larger than the body's SMALLEST bounding-box extent, so the body is
-    ///   sub-voxel on that axis and the resulting grid would resolve nothing.
+    /// - [`VoxelResolutionError::FlatBody`] — the mesh has zero extent on some
+    ///   axis, so it encloses no volume and no resolution can give it an
+    ///   interior.
+    /// - [`VoxelResolutionError::RequestTooCoarse`] — fewer than
+    ///   [`MIN_FEATURE_VOXELS_ACROSS`] voxels would span the body's SMALLEST
+    ///   bounding-box extent, so that extent's interior could not sign and the
+    ///   resulting grid would be meaningless.
     /// - [`VoxelResolutionError::DensifyBudgetExceeded`] — the request is
     ///   well-formed but the dense grid it implies exceeds
     ///   [`DENSIFY_BUDGET_VOXELS`]. Checked here, pre-FFI, so an impossible
     ///   request costs no `meshToVolume` allocation.
     ///
-    /// The last two apply to the request-driven arms only: the
+    /// The last three apply to the request-driven arms only: the
     /// [`VoxelResolution::HonestFloor`] arm early-returns through
-    /// [`Self::honest_floor`] before either is reached, which is what keeps
+    /// [`Self::honest_floor`] before any of them is reached, which is what keeps
     /// pre-6560 behaviour bit-identical. That matters concretely — the honest
     /// floor is itself coarser than the thinnest extent on a thin plate, and
-    /// tightening it is a behaviour change this seam deliberately does not make.
+    /// serves a flat body rather than refusing it; tightening either is a
+    /// behaviour change this seam deliberately does not make.
     pub fn for_resolution(
         mesh: &Mesh,
         resolution: VoxelResolution,
@@ -521,13 +578,30 @@ impl MeshToVoxelOptions {
         // arms use this tighter one.
         let min_extent = extents[0].min(extents[1]).min(extents[2]);
 
+        // A flat body (a tessellated planar face, an open surface) encloses no
+        // volume, so it has no interior at any resolution. It must be named as
+        // such BEFORE the coarse guard below, whose "request a finer resolution"
+        // advice can never be satisfied against a zero extent. `bbox_extents`
+        // does not catch this — it only rejects when the LONGEST extent is
+        // non-positive — and `honest_floor` serves such a mesh happily, which
+        // is why this is its own arm rather than `DegenerateMesh`.
+        if min_extent <= 0.0 {
+            let axis = extents
+                .iter()
+                .position(|&e| e <= 0.0)
+                .expect("min_extent <= 0.0 implies some axis is <= 0.0");
+            return Err(VoxelResolutionError::FlatBody { axis });
+        }
+
         // Too-COARSE rejection, symmetric to the too-fine budget check below.
-        // A voxel wider than the thinnest extent cannot place a sample inside
-        // the body along that axis, so `meshToLevelSet` returns a non-null grid
-        // whose interior never signs negative — `Ok(handle)` over a silently
-        // meaningless SDF. Rejecting here keeps the two directions of "this
-        // request cannot be served" both loud and both pre-FFI.
-        if voxel_size > min_extent {
+        // The body's thinnest extent is itself a feature of that size, so it is
+        // governed by the same interior-signing floor as any other feature:
+        // MIN_FEATURE_VOXELS_ACROSS voxels must span it. Below that, the grid is
+        // non-null but its interior never signs negative — `Ok(handle)` over a
+        // silently meaningless SDF. Using the same constant the `MinFeature` arm
+        // derives from is what keeps the two request arms mutually consistent:
+        // `MinFeature(min_extent)` lands exactly on this bound.
+        if voxel_size * MIN_FEATURE_VOXELS_ACROSS > min_extent {
             return Err(VoxelResolutionError::RequestTooCoarse {
                 requested_voxel_size: voxel_size,
                 min_extent,
@@ -582,6 +656,9 @@ mod tests {
     // Import the authoritative sentinel — not a hand-copied literal — so this
     // test fails loudly if reify_eval::NO_OPTIONS ever drifts (ESC-3433-117).
     use reify_eval::NO_OPTIONS;
+    // Shared with `tests/mesh_to_voxel_resolution_tests.rs` so the winding
+    // table and the units rationale exist once (`crate::test_fixtures`).
+    use crate::test_fixtures::{box_mesh, plate_100x100x1};
 
     // -----------------------------------------------------------------------
     // honest_floor tests (step-1 RED)
@@ -592,37 +669,6 @@ mod tests {
     //
     // Assertions use geometric inequalities rather than exact float literals
     // to avoid machine-epsilon brittleness.
-
-    /// Helper: build a closed box mesh centred at the origin from ±half extents.
-    /// 8 corner vertices, 12 outward-wound triangles.
-    fn box_mesh(hx: f32, hy: f32, hz: f32) -> Mesh {
-        let v: Vec<f32> = vec![
-            -hx, -hy, -hz, // 0
-             hx, -hy, -hz, // 1
-             hx,  hy, -hz, // 2
-            -hx,  hy, -hz, // 3
-            -hx, -hy,  hz, // 4
-             hx, -hy,  hz, // 5
-             hx,  hy,  hz, // 6
-            -hx,  hy,  hz, // 7
-        ];
-        #[rustfmt::skip]
-        let i: Vec<u32> = vec![
-            // Bottom (-Z)
-            0, 2, 1,  0, 3, 2,
-            // Top (+Z)
-            4, 5, 6,  4, 6, 7,
-            // Front (-Y)
-            0, 1, 5,  0, 5, 4,
-            // Back (+Y)
-            2, 3, 7,  2, 7, 6,
-            // Left (-X)
-            0, 4, 7,  0, 7, 3,
-            // Right (+X)
-            1, 2, 6,  1, 6, 5,
-        ];
-        Mesh { vertices: v, indices: i, normals: None }
-    }
 
     /// A closed 2.0-unit cube (vertices at ±1.0):
     /// - honest_floor returns Some
@@ -826,52 +872,6 @@ mod tests {
     //
     // Pure arithmetic, no FFI: these run in stub builds too.
 
-    /// The shells PRD's own motivating PROPORTIONS
-    /// (`structural-analysis-shells.md`, "Background"): a thin feature 1/100 of
-    /// the part across, which the PRD states as a 1 mm feature in a 100 mm part.
-    /// Axis-aligned box, x,y ∈ [0,100], z ∈ [0,1], the same shape as the plate
-    /// fixture in `tests/dispatcher_integration.rs`.
-    ///
-    /// # Units
-    ///
-    /// The coordinates are model-space lengths (SI metres, per `Mesh::vertices`),
-    /// so this body is literally 100 × 100 × 1 METRES — the PRD's millimetre
-    /// figures written at ×1000 so the arithmetic below stays in round numbers.
-    /// That is sound because the whole resolution policy is scale-invariant
-    /// (`h = longest/64`, `h = t/4`, and the band identity are all ratios), so
-    /// every conclusion drawn here holds verbatim for the real 0.1 × 0.1 × 0.001 m
-    /// part with `MinFeature(0.001)`. It is spelled out because a caller must NOT
-    /// copy `MinFeature(1.0)` for a 1 mm feature: see `VoxelResolution`'s "Units".
-    ///
-    /// Deliberately NOT origin-centred: the real-FFI probe in step-7 depends on
-    /// the z ∈ [0,1] placement.
-    fn plate_100x100x1() -> Mesh {
-        let v: Vec<f32> = vec![
-            0.0, 0.0, 0.0, // 0
-            100.0, 0.0, 0.0, // 1
-            100.0, 100.0, 0.0, // 2
-            0.0, 100.0, 0.0, // 3
-            0.0, 0.0, 1.0, // 4
-            100.0, 0.0, 1.0, // 5
-            100.0, 100.0, 1.0, // 6
-            0.0, 100.0, 1.0, // 7
-        ];
-        let i: Vec<u32> = vec![
-            // Bottom (-Z)
-            0, 2, 1, 0, 3, 2, // Top (+Z)
-            4, 5, 6, 4, 6, 7, // Front (-Y)
-            0, 1, 5, 0, 5, 4, // Back (+Y)
-            2, 3, 7, 2, 7, 6, // Left (-X)
-            0, 4, 7, 0, 7, 3, // Right (+X)
-            1, 2, 6, 1, 6, 5,
-        ];
-        Mesh {
-            vertices: v,
-            indices: i,
-            normals: None,
-        }
-    }
-
     /// A 4 × 4 × 0.3125 thin panel (the `thin_panel` proportions already used
     /// elsewhere in the openvdb suite), centred at the origin.
     fn thin_panel() -> Mesh {
@@ -1042,12 +1042,15 @@ mod tests {
         }
     }
 
-    /// `MIN_FEATURE_VOXELS_ACROSS` is 4.0, and is at least as fine as the
-    /// shells PRD's "≈ thickness/3" — being finer satisfies the gate's
-    /// "resolutions sufficient for".
+    /// `MIN_FEATURE_VOXELS_ACROSS` is at least as fine as the shells PRD's
+    /// "≈ thickness/3" — being finer satisfies the gate's "resolutions
+    /// sufficient for".
+    ///
+    /// The inequality is the whole content: restating the constant's own
+    /// literal would pin nothing a reader of the definition does not already
+    /// see.
     #[test]
     fn min_feature_voxels_across_is_at_least_the_prd_thickness_over_three() {
-        assert_eq!(MIN_FEATURE_VOXELS_ACROSS, 4.0);
         const {
             assert!(
                 MIN_FEATURE_VOXELS_ACROSS >= 3.0,
@@ -1178,14 +1181,14 @@ mod tests {
         );
     }
 
-    /// A request COARSER than the body's thinnest extent is rejected, not
-    /// silently accepted as a grid that resolves nothing.
+    /// A request too COARSE to resolve the body's thinnest extent is rejected,
+    /// not silently accepted as a grid whose interior never signs.
     ///
     /// The symmetric counterpart of the budget guard above: over-budget catches
     /// "too fine to afford", this catches "too coarse to mean anything". Both
     /// are pure Rust and both fire before any FFI allocation.
     #[test]
-    fn for_resolution_rejects_a_request_coarser_than_the_thinnest_extent() {
+    fn for_resolution_rejects_a_request_too_coarse_for_the_thinnest_extent() {
         // (a) A voxel wider than the whole body.
         let cube = box_mesh(1.0, 1.0, 1.0); // 2 x 2 x 2
         match MeshToVoxelOptions::for_resolution(&cube, VoxelResolution::TargetVoxelSize(10.0)) {
@@ -1236,10 +1239,73 @@ mod tests {
                 .is_ok(),
             "MinFeature(0.001) — the 1 mm feature in model-space metres — must succeed"
         );
+
+        // (d) The window between "one voxel across the thinnest extent" and the
+        // interior-signing floor. On the 2-unit cube, h = 1.0 fits INSIDE the
+        // body, yet only 2 voxels span it — half-thickness = 1 voxel, below the
+        // documented "half-thickness >= 2 x voxel_size" floor — so the grid
+        // would be non-null with an interior that never signs. The looser
+        // `h > min_extent` bound admitted exactly this window.
+        match MeshToVoxelOptions::for_resolution(&cube, VoxelResolution::TargetVoxelSize(1.0)) {
+            Err(VoxelResolutionError::RequestTooCoarse { min_extent, .. }) => {
+                assert_eq!(min_extent, 2.0, "the error must name the extent it could not span");
+            }
+            other => panic!(
+                "a voxel that fits inside the thinnest extent but spans it fewer than \
+                 MIN_FEATURE_VOXELS_ACROSS times must still be refused; got {other:?}"
+            ),
+        }
+    }
+
+    /// A body that is FLAT on one axis is named as such, not reported as a
+    /// too-coarse request whose advice can never be followed.
+    ///
+    /// A tessellated planar face or an open surface body passes `bbox_extents`
+    /// (which only rejects when the LONGEST extent is non-positive), so the
+    /// coarse guard would fire for EVERY request however fine — advising
+    /// "request a finer resolution" when no positive voxel size can ever be at
+    /// or below a zero extent. `honest_floor` serves the same mesh, so the two
+    /// arms must not disagree on whether it has a bounding box at all: the
+    /// dedicated variant says the real reason, which is that a flat body
+    /// encloses no volume.
+    #[test]
+    fn for_resolution_names_a_flat_body_rather_than_advising_a_finer_request() {
+        let flat = box_mesh(1.0, 1.0, 0.0); // 2 x 2 x 0 — a planar quad
+
+        assert!(
+            MeshToVoxelOptions::honest_floor(&flat).is_some(),
+            "precondition: honest_floor serves a flat mesh, so this is not DegenerateMesh"
+        );
+
+        for resolution in [
+            VoxelResolution::TargetVoxelSize(0.001),
+            VoxelResolution::TargetVoxelSize(1e-9),
+            VoxelResolution::MinFeature(0.004),
+        ] {
+            let got = MeshToVoxelOptions::for_resolution(&flat, resolution);
+            assert!(
+                matches!(got, Err(VoxelResolutionError::FlatBody { axis: 2 })),
+                "expected Err(FlatBody {{ axis: 2 }}) for {resolution:?} on a z-flat mesh; \
+                 got {got:?}"
+            );
+        }
+
+        let msg = VoxelResolutionError::FlatBody { axis: 2 }.to_string();
+        assert!(
+            msg.contains('z') && !msg.contains("finer"),
+            "the diagnostic must name the flat axis and must NOT advise a finer \
+             resolution, which can never succeed; got {msg:?}"
+        );
     }
 
     /// The coarse guard must not false-positive at its own boundary, and must
     /// not touch `HonestFloor`.
+    ///
+    /// The bound is the interior-signing floor, so the boundary is
+    /// `min_extent / MIN_FEATURE_VOXELS_ACROSS` (0.25 on the plate) — the exact
+    /// voxel size `MinFeature(1.0)` derives, which is what makes an explicit
+    /// `TargetVoxelSize` admitted on the same terms as the equivalent
+    /// `MinFeature`.
     ///
     /// `honest_floor` on the plate yields h = 1.5625 — itself COARSER than the
     /// plate's 1.0 thinnest extent. That is exactly the deficiency this task
@@ -1248,11 +1314,23 @@ mod tests {
     #[test]
     fn coarse_guard_admits_the_boundary_and_never_fires_on_honest_floor() {
         let plate = plate_100x100x1();
+        let boundary = 1.0 / MIN_FEATURE_VOXELS_ACROSS;
 
         assert!(
-            MeshToVoxelOptions::for_resolution(&plate, VoxelResolution::TargetVoxelSize(1.0))
-                .is_ok(),
-            "a voxel exactly equal to the thinnest extent is admitted; the bound is strict"
+            MeshToVoxelOptions::for_resolution(
+                &plate,
+                VoxelResolution::TargetVoxelSize(boundary)
+            )
+            .is_ok(),
+            "a voxel exactly at the interior-signing floor ({boundary}) is admitted; \
+             the bound is non-strict there"
+        );
+        assert_eq!(
+            MeshToVoxelOptions::for_resolution(&plate, VoxelResolution::TargetVoxelSize(boundary))
+                .map(|o| o.voxel_size),
+            MeshToVoxelOptions::for_resolution(&plate, VoxelResolution::MinFeature(1.0))
+                .map(|o| o.voxel_size),
+            "the boundary TargetVoxelSize and the equivalent MinFeature must agree"
         );
 
         let honest = MeshToVoxelOptions::for_resolution(&plate, VoxelResolution::HonestFloor)
@@ -1262,13 +1340,6 @@ mod tests {
             100.0 / VOXELS_PER_LONGEST_AXIS,
             "HonestFloor must early-return unchanged, above the coarse bound and all"
         );
-    }
-
-    /// The Rust-side budget mirrors the C++ `GRID_DENSIFY_MAX_VOXELS`
-    /// (cpp/openvdb_wrapper.h:146): 256M voxels ≈ 1 GiB at 4 bytes/float.
-    #[test]
-    fn densify_budget_matches_the_cpp_ceiling() {
-        assert_eq!(DENSIFY_BUDGET_VOXELS, 256 * 1024 * 1024);
     }
 
     /// A request whose per-axis counts would overflow `i64` under naive
