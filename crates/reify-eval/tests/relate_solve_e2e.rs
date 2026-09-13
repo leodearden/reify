@@ -460,6 +460,76 @@ fn remainder_violated_relation_emits_diagnostic() {
     );
 }
 
+/// amendment (review finding: test-coverage) — the instance→source crossing has a
+/// SECOND consumer besides `conflict_diagnostic_unshifted_by_a_non_call_relate_member`'s
+/// `SolveResult::Infeasible` path: the redundant-remainder `colocated` check just
+/// above (`operand_refs(built.relation(i))` / `operand_refs(built.relation(d))`),
+/// which is exactly what makes `remainder_violated_relation_emits_diagnostic`'s
+/// `perpendicular` diagnostic name `concentric` as the colocated driving relation.
+/// Pre-fix, a leading unconsumable `mate(...)` member would have made that filter
+/// read the wrong source relations — silently turning this B3 conflict into a lone
+/// violated-assertion diagnostic instead (a wrong, non-panicking outcome the
+/// Infeasible-path test alone does not pin). Same shape as that test's
+/// baseline/shifted pair: prepend the unconsumable member and assert the emitted
+/// diagnostic is byte-identical to the unshifted baseline.
+#[test]
+fn remainder_conflict_unshifted_by_a_non_call_relate_member() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping remainder_conflict_unshifted_by_a_non_call_relate_member: \
+             OCCT not available"
+        );
+        return;
+    }
+
+    const MATE_FN: &str = "fn mate(a: Axis, b: Axis) -> Relation { concentric(a, b) }";
+    const MATE_CALL: &str = "mate(bolt.shank_axis, plate.hole_axis)";
+    const CONCENTRIC: &str = "concentric(bolt.shank_axis, plate.hole_axis)";
+    const FLUSH: &str = "flush(bolt.seat_plane, plate.top_plane)";
+    const PERPENDICULAR: &str = "perpendicular(bolt.shank_axis, plate.hole_axis)";
+
+    let baseline_source = bolt_plate_with_third(PERPENDICULAR);
+    let shifted_source =
+        bolt_plate_scope_source(Some(MATE_FN), &[MATE_CALL, CONCENTRIC, FLUSH, PERPENDICULAR]);
+
+    let baseline_solution = solve_bolt_plate(&baseline_source);
+    let shifted_solution = solve_bolt_plate(&shifted_source);
+
+    // The solve itself is unaffected by the leading skipped member.
+    assert_eq!(shifted_solution.driving, 2, "concentric + flush are still the driving set");
+    assert_eq!(
+        shifted_solution.redundant, 1,
+        "perpendicular is still the rank-redundant remainder"
+    );
+
+    // The single Error diagnostic naming the violated remainder relation.
+    let violated_message = |solution: &RelateSolution, label: &str| -> String {
+        let matches: Vec<&str> = solution
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error && d.message.contains("perpendicular"))
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "{label}: expected exactly one Error diagnostic naming `perpendicular`, got: {:?}",
+            solution.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        matches[0].to_string()
+    };
+    let baseline_msg = violated_message(&baseline_solution, "baseline");
+    let shifted_msg = violated_message(&shifted_solution, "shifted");
+
+    // An unconsumable member shifts NOTHING in the `colocated` crossing either —
+    // the redundant-remainder conflict diagnostic is identical to the baseline.
+    assert_eq!(
+        shifted_msg, baseline_msg,
+        "a relate member the solve cannot consume must not change the redundant- \
+         remainder conflict diagnostic"
+    );
+}
+
 // ─── step-15 (OCCT-gated) — conflicting relations fail loud (B3) ──────────────
 //
 // B3 is the §1 bolt-plate scope (concentric + flush drive the bolt coaxial+flush)
