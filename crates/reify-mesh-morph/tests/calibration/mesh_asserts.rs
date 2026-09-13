@@ -48,6 +48,10 @@ pub fn assert_boundary_is_conforming_manifold(
          chunks_exact(4) below would silently drop a trailing partial element",
         tets.len()
     );
+    assert!(
+        !tets.is_empty(),
+        "{fixture_name} {case_desc}: mesh has no tets"
+    );
 
     // Face table keyed on the SORTED vertex triple, counting occurrences
     // across every tet's four faces (omit-one-vertex: {0,1,2} {0,1,3}
@@ -81,6 +85,11 @@ pub fn assert_boundary_is_conforming_manifold(
         .filter(|&(_, count)| count == 1)
         .map(|(face, _)| face)
         .collect();
+    assert!(
+        !boundary_faces.is_empty(),
+        "{fixture_name} {case_desc}: mesh has no boundary faces — the manifold checks below \
+         would pass vacuously"
+    );
 
     // (a) Closed manifold: every boundary edge (undirected, keyed (min,
     // max)) must have degree exactly 2.
