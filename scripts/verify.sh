@@ -1541,10 +1541,19 @@ add_selected_infra_glob() {
 # The SCOPE re-check is not redundant with select_cheap_ptodo_gate's own.
 # That selector is the sole producer of this glob token today and is already
 # staged-only, but a future verify-pipeline-infra-tests.txt row mapping some
-# artifact to this same path would arm the knob on --scope branch, where a
+# artifact to this same path would reach the arm under --scope branch, where a
 # warm-lane stamped target/ makes a rc-125-with-present-binary freshness
-# result the COMMON case and the hard refusal would red every task lane.
-# test_verify_scope.sh's PT-RATCHET-BRANCH holds that line.
+# result the COMMON case and a hard refusal would red every task lane. What
+# the arm produces there is an EMPTY prefix — the same un-armed, byte-identical
+# leaf every other glob gets — and that un-armed branch leaf is what
+# test_verify_scope.sh's PT-RATCHET-BRANCH pins.
+#
+# `if`, not `[ "$SCOPE" = staged ] && printf`: the sole caller assigns this
+# helper's output under `set -euo pipefail`, where a plain assignment's status
+# IS the command substitution's status. A trailing false `&&` test would make
+# the function return 1, abort the enclosing function and the whole script, and
+# emit NO plan at all — a silent rc-1 exit rather than the graceful un-armed
+# leaf this arm is written to produce. An `if` whose condition is false is 0.
 selected_infra_leaf_env() {
     case "$1" in
         tests/infra/test_reify_audit_ptodo.sh)
@@ -1552,7 +1561,10 @@ selected_infra_leaf_env() {
             # skipped ratchet there is a refusal, not a budget-safe degrade.
             # Read by tests/infra/test_reify_audit_ptodo.sh; the name agreement
             # between the two files is pinned by PT-RATCHET-DRIFT.
-            [ "$SCOPE" = "staged" ] && printf 'REIFY_PTODO_RATCHET_REQUIRED=1 ' ;;
+            if [ "$SCOPE" = "staged" ]; then
+                printf 'REIFY_PTODO_RATCHET_REQUIRED=1 '
+            fi
+            ;;
     esac
 }
 
@@ -1760,6 +1772,31 @@ select_harness_kloc_guard
 # than skipping — for ANY skip cause, not just this rc. The degrade itself is
 # left intact, because it is the right behaviour everywhere the knob is not
 # set; only this gate declares the ratchet mandatory.
+#
+# WHAT THAT ARMS, AND WHAT IT DOES NOT. The claim is narrower than "the
+# ratchet can no longer be skipped before a main landing", and the gap is
+# named here rather than left to be rediscovered from the plan. --scope
+# staged has exactly ONE production caller — hooks/project-checks, reached
+# from hooks/pre-commit, which returns early for every branch but `main`. The
+# armed path is therefore a hook-gated `git commit` on main whose staged set
+# includes a swept extension: precisely the 108d1d9226 shape (a docs landing
+# carrying a tests/prd-gate/fixtures/*.ri), which is the incident this
+# selector was written for.
+#
+# The merge tier is NOT armed, and it is the route by which most source
+# reaches main. hooks/pre-merge-commit and scripts/land.sh both run
+# DF_VERIFY_ROLE=merge ... --scope all, where the selective-infra emission
+# block (add_tool site below) is suppressed outright and this file instead
+# runs inside the run_all.sh pool leaf, under REIFY_AUDIT_NO_COLD_BUILD=1.
+# A stale binary there returns guard rc 75 rather than 125 — a different rc
+# reaching the same RATCHET_SKIP=1 and the same green-with-the-ratchet-unrun
+# outcome. The pre-build that feeds that tier asserts the binary EXISTS, not
+# that it is FRESH (see the ERROR(#4624) existence check below), so a cargo
+# no-op against a stamped target/ keeps that state reachable there. Whether
+# the merge tier should also require the ratchet is a decision about
+# REIFY_AUDIT_NO_COLD_BUILD=1 on that pool leaf — a budget question about its
+# 30m wall — which this selector cannot answer and does not claim to; it is
+# filed separately.
 # ---------------------------------------------------------------------------
 select_cheap_ptodo_gate() {
     [ "$SCOPE" = "staged" ] || return 0

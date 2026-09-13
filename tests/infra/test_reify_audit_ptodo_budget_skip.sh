@@ -295,6 +295,17 @@ assert "guard rc 125 + PRESENT binary + REIFY_PTODO_RATCHET_REQUIRED=1 → test_
 assert "exit 1 came from the ratchet-required refusal (diagnostic present)" \
     bash -c "grep -qF 'REIFY_PTODO_RATCHET_REQUIRED=1 — the caller declared the fingerprint ratchet ((a)+(b)) REQUIRED on this path, but it was skipped' '$BS_OUTPUT_REQ'"
 
+# (9b) ...and the refusal's REMEDY is the one that fits THIS rc.  rc 125 comes out
+#      of the rebuild path: reify_audit_guard has already run `cargo build
+#      --release -p reify-audit` and the binary is still judged stale, so the
+#      generic "build a fresh detector" advice is the command that just ran — an
+#      operator who follows it gets a no-op and a second identical refusal while
+#      every `git commit` on main stays blocked.  The rc-125 arm names the mtime
+#      as the thing that failed the check; this pin is what stops the two arms
+#      collapsing back into one generic sentence.
+assert "the rc-125 refusal names the MTIME as the cause, not a rebuild that already ran" \
+    bash -c "grep -qF 'STILL judged stale, so its mtime' '$BS_OUTPUT_REQ'"
+
 # ---------------------------------------------------------------------------
 # Fourth invocation: the opt-in control.  Identical env with the knob removed
 # via `env -u`, proving the refusal is the KNOB's doing and not this fixture's.

@@ -77,8 +77,12 @@
 #     ratchet unrun.  Opt-in and default-off, because that degradation is the
 #     COMMON warm-lane state and must not red every task branch; the one caller
 #     that arms it is scripts/verify.sh's selective-infra leaf for this file
-#     under --scope staged, the last gate before a commit lands on main.  See
-#     the enforcement point after the skip-resolution block below.
+#     under --scope staged — a hook-gated `git commit` on main, which is NOT
+#     the same as "every main landing": the DF_VERIFY_ROLE=merge tier
+#     suppresses that leaf entirely and runs this file from the run_all.sh
+#     pool under REIFY_AUDIT_NO_COLD_BUILD=1, where the same skip stays
+#     reachable through rc 75 (scoped there, not restated here).  See the
+#     enforcement point after the skip-resolution block below.
 # All three are pinned by tests/infra/test_reify_audit_ptodo_budget_skip.sh.
 #
 # RATCHET VACUITY FLOOR (task #6127, rebased onto scan evidence by #6241).  The
@@ -515,7 +519,24 @@ fi
 # (8)-(11).
 # -----------------------------------------------------------------------
 if [ "${REIFY_PTODO_RATCHET_REQUIRED:-0}" = "1" ] && [ "$RATCHET_SKIP" != "0" ]; then
-    echo "test_reify_audit_ptodo.sh: REIFY_PTODO_RATCHET_REQUIRED=1 — the caller declared the fingerprint ratchet ((a)+(b)) REQUIRED on this path, but it was skipped (RATCHET_SKIP=$RATCHET_SKIP, freshness guard rc=$_guard_rc); refusing to report green with the ratchet unrun. Remedy: build a fresh detector with 'cargo build --release -p reify-audit', or unset REIFY_PTODO_RATCHET_REQUIRED to accept the skip." >&2
+    # The remedy is rc-SPECIFIC, and rc 125 is the case this knob was written
+    # for.  That rc comes OUT of the rebuild path: reify_audit_guard has ALREADY
+    # run `cargo build --release -q -p reify-audit` and the binary is still
+    # judged stale, so the generic "build a fresh detector" advice is the very
+    # command that just ran, and an operator who follows it gets a no-op plus a
+    # second identical refusal while every `git commit` on main stays blocked.
+    # What is actually stale there is the MTIME, not the build product: cargo's
+    # fingerprint says up-to-date while the on-disk mtime predates the last
+    # crates/reify-audit commit (a warm-lane seeded target/ with stamped
+    # mtimes).  Every other skip cause (guard rc 75, ptodo-baseline-gen absent
+    # or unavailable) IS a missing/unbuilt artifact, and the generic remedy is
+    # correct for those.
+    if [ "$_guard_rc" -eq 125 ]; then
+        _ratchet_remedy="the freshness guard already ran 'cargo build --release -p reify-audit' and the binary is STILL judged stale, so its mtime — not its content — is what fails the check: force a real relink with 'cargo clean -p reify-audit && cargo build --release -p reify-audit', or, once you have confirmed target/release/{reify-audit,ptodo-baseline-gen} were built from this HEAD, 'touch' them forward"
+    else
+        _ratchet_remedy="build a fresh detector with 'cargo build --release -p reify-audit'"
+    fi
+    echo "test_reify_audit_ptodo.sh: REIFY_PTODO_RATCHET_REQUIRED=1 — the caller declared the fingerprint ratchet ((a)+(b)) REQUIRED on this path, but it was skipped (RATCHET_SKIP=$RATCHET_SKIP, freshness guard rc=$_guard_rc); refusing to report green with the ratchet unrun. Remedy: ${_ratchet_remedy}, or unset REIFY_PTODO_RATCHET_REQUIRED to accept the skip." >&2
     exit 1
 fi
 

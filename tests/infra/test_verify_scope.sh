@@ -654,11 +654,21 @@ echo "--- Scenario PT-RATCHET-DRIFT: the emitted knob name is the one the reader
 # close, one level up. So derive the name from the emitted leaf rather than
 # hand-writing it here, exactly as PT-DRIFT above re-derives the swept-extension
 # set from is_swept_ext's source.
+#
+# The pin matches the READER FORM `${NAME:-`, not a bare mention of the name.
+# That file names the knob several times in prose (its header floor block, the
+# enforcement point's own comment, the refusal diagnostic), so a bare `grep -q
+# "$_PT_REQ_VAR"` is satisfied by a COMMENT — a rename that moved the `if` but
+# left any stale mention behind would keep this green while the emitter and the
+# reader had silently diverged, which is precisely what this scenario exists to
+# catch. Pinning the parameter expansion is not a wording pin: that file runs
+# under `set -u`, where reading an unset knob without a `:-` default is a hard
+# error, so the default form is structural rather than stylistic.
 _PT_REQ_VAR="$(printf '%s\n' "$_PT_REQ_LEAF" | grep -o 'REIFY_[A-Z0-9_]*=' | head -1 | sed 's/=$//')" || true
 assert "PT-RATCHET-DRIFT-vacuity: an env-assignment token was derived from the emitted leaf" \
     test -n "$_PT_REQ_VAR"
-assert "PT-RATCHET-DRIFT: tests/infra/test_reify_audit_ptodo.sh references the emitted knob name ($_PT_REQ_VAR)" \
-    bash -c 'grep -q "$1" "$2/tests/infra/test_reify_audit_ptodo.sh"' _ "$_PT_REQ_VAR" "$REPO_ROOT"
+assert "PT-RATCHET-DRIFT: tests/infra/test_reify_audit_ptodo.sh READS the emitted knob name (\${$_PT_REQ_VAR:-...}), not merely mentions it" \
+    bash -c 'grep -qF "\${$1:-" "$2/tests/infra/test_reify_audit_ptodo.sh"' _ "$_PT_REQ_VAR" "$REPO_ROOT"
 
 # ---------------------------------------------------------------------------
 # Scenario 2: gui/src frontend TS -> GUI only, no cargo
@@ -1006,6 +1016,44 @@ assert "PT-RATCHET-BRANCH-vacuity: a selective-infra leaf WAS emitted under --sc
     test -n "$_PT_BR_LEAF"
 assert "PT-RATCHET-BRANCH: NO plan line carries REIFY_PTODO_RATCHET_REQUIRED (a stamped warm-lane target/ makes rc-125-with-present-binary routine on a task branch)" \
     plan_lacks 'REIFY_PTODO_RATCHET_REQUIRED'
+
+# ---------------------------------------------------------------------------
+# Scenario PT-RATCHET-FUTUREROW: the branch-scope guard inside
+# selected_infra_leaf_env, exercised on the one input that actually reaches it.
+#
+# PT-RATCHET-BRANCH above is a whole-plan negative, and it passes for the
+# uninteresting reason: under --scope branch nothing produces the ptodo glob
+# token at all, so the helper's matching case arm is never entered. The arm
+# exists SOLELY for the case its own comment describes — a future
+# verify-pipeline-infra-tests.txt row mapping some artifact to that exact path,
+# which would feed the token to the helper under branch scope — and until that
+# row exists, no capture in this file distinguishes "the arm declines to arm
+# the knob" from "the arm aborts verify.sh outright". Those are not the same
+# outcome: the helper's output is consumed by a plain assignment under
+# `set -euo pipefail`, so an arm whose last command is a FALSE test returns 1,
+# takes the enclosing function and the whole script down with it, and emits no
+# plan at all.
+#
+# So simulate the row. The fixture's map is a copy, and it is committed on the
+# fixture's main BEFORE the capture (rather than left dirty in the working
+# tree) because --scope branch diffs merge-base(main, HEAD) against the WORKING
+# TREE: a dirty map would enter the changed-file set and select its own guard
+# glob, muddying the capture. The artifact is the same crates/reify-doc path
+# Scenario B2 uses, so the scope classification is one already pinned here.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario PT-RATCHET-FUTUREROW: a mapped infra-map row for the ptodo path under --scope branch -> un-armed leaf, not an aborted plan ---"
+_PT_FR_MAP="scripts/verify-pipeline-infra-tests.txt"
+printf 'crates/reify-doc/src/lib.rs\ttests/infra/test_reify_audit_ptodo.sh\n' >> "$FIX_B/$_PT_FR_MAP"
+git -C "$FIX_B" add "$_PT_FR_MAP"
+git -C "$FIX_B" commit -q -m "simulated future infra-map row"
+plan_for_branch crates/reify-doc/src/lib.rs
+git -C "$FIX_B" reset --hard -q HEAD~1
+_PT_FR_LEAF="$(printf '%s\n' "$PLAN_OUT" | grep 'test_reify_audit_ptodo\.sh' | head -1)" || true
+assert "PT-RATCHET-FUTUREROW-vacuity: the mapped row DID emit a ptodo leaf under --scope branch (so the helper's case arm was really entered, and the plan is not empty)" \
+    test -n "$_PT_FR_LEAF"
+assert "PT-RATCHET-FUTUREROW: that leaf is UN-ARMED (the branch-scope guard declines gracefully; it must not abort the plan)" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "REIFY_PTODO_RATCHET_REQUIRED"' _ "$_PT_FR_LEAF"
 
 # ---------------------------------------------------------------------------
 # Scenario B2: non-OCCT crate branch -> ungated Rust tail, no gated pass
