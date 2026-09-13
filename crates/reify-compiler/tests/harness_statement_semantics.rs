@@ -31,11 +31,17 @@
 //! the third a geometric-relations worked example, the last two annotations and display
 //! style — so this root is a partial catch-all until they move. That move is TRACKED, not
 //! merely disclosed: follow-up ticket `tkt_0RTJNNBDJAP0F0WVG8NGGR42MZ` (filed against
-//! #5695) relocates all five to the diagnostics / annotations harness leaf CMP-6 creates,
-//! and deletes this paragraph with them. It is the sibling of #5694's
-//! `tkt_0RT273RG27CPVNCQXPBHHJEQCA`, which routes `harness_physical_modeling`'s
-//! `m9_error_cases` and `m11_annotations_solver_hint_tests` to that same destination; the
-//! two are expected to land as one change. Landing it is a correction, not a regression.
+//! #5695) relocates all five to `harness_diagnostics_robustness` — the destination leaf
+//! CMP-6 has since created, named here so the ticket is actionable without archaeology —
+//! and deletes this paragraph with them. Its sibling `tkt_0RT273RG27CPVNCQXPBHHJEQCA`
+//! (filed against #5694) is already DISCHARGED: #5696 routed `harness_physical_modeling`'s
+//! `m9_error_cases` and `m11_annotations_solver_hint_tests` out of that root. The two were
+//! expected to land as one change and did NOT: #5696 deliberately left these five alone,
+//! because they are not top-level and so fall outside leaf CMP-6's sweep-up clause, and
+//! because folding them would force a `#[path = "common/mod.rs"] mod common;` onto the
+//! destination root (`analysis_stress_fn_compile` consumes it), charging that unit 391
+//! external lines it currently does not carry. This ticket therefore lands on its own.
+//! Landing it is a correction, not a regression.
 //!
 //! Routing vs. the two sibling roots added by this same leaf — the line is subsystem, not
 //! filename. `harness_type_checking` asks whether an EXPRESSION type-checks and
