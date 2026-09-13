@@ -49,9 +49,11 @@
 //      `mechanism : Real`, `Pose3 = Real`, and JointLimit.joint : Real.
 //      Retargeting each placeholder propagates the type tightening to every
 //      consumer without touching structure_def bodies.
-//   4. `constraint mass >= 0kg`: RHS is the dimensioned-zero literal `0kg` (NOT
-//      `0`): a bare 0 is Type::Real and dimension-incompatible with a Mass-typed
-//      LHS (esc-3115 rule; cf. ZVShaper `> 0Hz` in trajectory.ri). The PSD
+//   4. `constraint mass >= 0kg`: the dimensioned-zero literal `0kg` is retained
+//      because it reads as an explicit mass bound, not because it is required —
+//      a bare `0` compiles too, and the rewrite covers `>=` as much as `>`.
+//      DIMENSIONED-ZERO CONVENTION — docs/notes/dimensioned-zero-coercion.md
+//      (cf. ZVShaper `> 0Hz` in trajectory.ri, same convention). The PSD
 //      inertia check (negative eigenvalue) is a Rust hook in reify-eval (see
 //      dynamics_psd.rs) because no DSL expression form can compute eigenvalues.
 
@@ -78,7 +80,8 @@
 // Declarative constraint:
 //   `constraint mass >= 0kg` fires at ctor time via SIR-α
 //   check_constraints_against_templates machinery (task 3540, landed). No further
-//   plumbing needed. RHS is `0kg` (dimensioned-zero literal) per esc-3115.
+//   plumbing needed. RHS is `0kg` by the convention stated in header decision 4
+//   above.
 structure def MassProperties {
     param mass : Mass
     param com : Point3<Length>
@@ -86,10 +89,10 @@ structure def MassProperties {
     param origin : Frame3
 
     // Non-negativity guard: mass must be physically valid at construction.
-    // The RHS is `0kg` (dimensioned-zero literal per esc-3115 — a bare `0`
-    // is Type::Real and dimension-incompatible with Mass). PSD inertia is
-    // enforced by the reify-eval Rust hook (dynamics_psd.rs) since no DSL
-    // expression form can compute eigenvalues.
+    // The RHS is `0kg` by the convention stated in header decision 4 above (an
+    // explicit mass bound reads better; a bare `0` would compile too). PSD
+    // inertia is enforced by the reify-eval Rust hook (dynamics_psd.rs) since
+    // no DSL expression form can compute eigenvalues.
     constraint mass >= 0kg
 }
 

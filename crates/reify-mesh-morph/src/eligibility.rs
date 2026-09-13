@@ -103,6 +103,11 @@ pub enum Reason {
 ///    ONE place — `reify_eval::classify_cell`'s "Type::Geometry and Rule 4"
 ///    note; do not restate them here.
 ///
+///    "LEAF parameters" is literal: Stage A consults its type whitelist only
+///    for `Param`/`Auto` cells. Canonical rationale, again in ONE place —
+///    `reify_eval::stage_a_eligible`'s "The value-diff walk is LEAF-SCOPED"
+///    note; do not restate it here.
+///
 /// 2. **Realization gate** — if Stage A passes, this function ASSUMES the
 ///    caller has already realized the new B-rep and populated
 ///    `new.topology_attributes`, `new.faces`, `new.edges`, and `new.vertices`

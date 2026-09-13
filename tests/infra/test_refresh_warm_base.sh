@@ -8,6 +8,10 @@
 #              else prints an error + exits 1.
 #   mv       — NOT stubbed; real mv so filesystem postconditions are observable.
 #   xfs_bmap — records argv + emits REIFY_TEST_FRAG_EXTENTS extent rows per file.
+#   rm       — records argv; when REIFY_TEST_PRUNE_RM_FAIL=1, fails a non-recursive
+#              call (the prune stage's own `rm -f`) while a recursive call (the
+#              EXIT trap's `rm -rf` cleanup) always execs the real rm — isolates a
+#              simulated prune-unlink failure from the trap's own cleanup.
 #
 # run_helper captures STDOUT, STDERR, and RC separately:
 #   OUT     — captured stdout from the script
@@ -21,6 +25,10 @@
 #   D — in-flight clone independence: clone dir untouched after refresh (B6)
 #   E — base self-description stamps: .rustflags and .invocation written after swap
 #   F — --check-frag defrag signal: verdict token + extent count, read-only
+#   G — basecommit provenance: per-gen .basecommit stamp == --landed-commit, reaped with its gen
+#   H — buildroot provenance: per-gen .buildroot stamp == realpath(advancing worktree root)
+#   I — WIP refusal: advancing worktree with tracked WIP is refused; wording advises committing, never stashing
+#   J — superseded hash-generation prune: keep newest 2 hash-generations per stem (ranked across every extension that hash has, together) under debug/deps, scope-contained, deterministic under mtime ties
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 #
@@ -121,6 +129,32 @@ done
 exit 0
 STUB_EOF
 chmod +x "$STUB_DIR/xfs_bmap"
+
+# rm stub: record argv; when REIFY_TEST_PRUNE_RM_FAIL=1, fail ONLY a
+# non-recursive invocation (the prune stage's own `xargs -0 rm -f -- <files>`,
+# first arg "-f") while a recursive invocation (the EXIT trap's cleanup
+# `rm -rf "$_p"`, first arg "-rf") always execs the real rm. This isolates
+# "the prune's own unlink failed" from "the trap's cleanup afterward also
+# failed for an unrelated reason" — a filesystem-permission fault (e.g. a
+# write-protected debug/deps) cannot make that distinction: verified
+# empirically that it defeats `rm -rf` identically, since both are the same
+# unlink operation under the same directory permission, which would fail the
+# "no residue" assertion for the wrong reason. Real rm path embedded at
+# stub-creation time (mirrors the cp stub).
+_REAL_RM="$(command -v rm)"
+cat > "$STUB_DIR/rm" << STUB_EOF
+#!/usr/bin/env bash
+echo "rm \$*" >> "\${REIFY_TEST_CALLS_FILE:-/dev/null}"
+if [ "\${REIFY_TEST_PRUNE_RM_FAIL:-}" = "1" ]; then
+    case "\$1" in
+        -*r*) exec "${_REAL_RM}" "\$@" ;;
+    esac
+    echo "rm: SIMULATED failure (REIFY_TEST_PRUNE_RM_FAIL=1)" >&2
+    exit 1
+fi
+exec "${_REAL_RM}" "\$@"
+STUB_EOF
+chmod +x "$STUB_DIR/rm"
 
 # ── run_helper ─────────────────────────────────────────────────────────────────
 # Invokes the script under the stub PATH.
@@ -783,6 +817,618 @@ assert "I3: refusal advises committing" \
 # that reaches for the word again should fail here and be reconsidered.
 assert "I4: refusal does NOT advise stashing" \
     bash -c '! printf "%s\n" "$1" | grep -qi "stash"' _ "$ERR_OUT"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block J — superseded hash-generation prune (keep newest 2) (task 7426)
+#
+# scripts/refresh-warm-base.sh prunes superseded cargo hash-generations from
+# <partial>/debug/deps during the refresh, keeping only the newest 2 HASHES
+# per stem — ranked across every extension that hash has, together, not
+# independently per (stem, ext) — ordered by mtime. This reclaims the
+# 96.6%-by-bytes prize (extensionless test/bench binaries) on the live warm
+# base while leaving a fallback generation so a lane whose fingerprint
+# misses the single newest survivor does not rebuild cold.
+#
+# J1 — the core N=2 boundary on the extensionless case: three generations of
+# one unit prune to the newest two; a sibling two-generation group is left
+# entirely intact (the property that distinguishes keep-newest-2 from
+# keep-newest-1).
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block J: superseded hash-generation prune (keep newest 2) ---"
+
+J_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j-XXXXXX)"
+_TMPDIRS+=("$J_TMP")
+J_LANE="$(mk_git_advancing "$J_TMP")"
+J_ADV="$J_LANE/advancing"
+J_HEAD="$(git -C "$J_LANE" rev-parse HEAD)"
+mkdir -p "$J_ADV/debug/deps"
+
+# Three hash-generations of ONE unit, extensionless (the 96.6%-by-bytes case:
+# test/bench binaries), distinct non-empty content, distinct mtimes (oldest to
+# newest). No sleeps: mtimes are stamped explicitly via `touch -d` (T8).
+echo "gen1 content" > "$J_ADV/debug/deps/reify_kernel_tests-1111111111111111"
+echo "gen2 content" > "$J_ADV/debug/deps/reify_kernel_tests-2222222222222222"
+echo "gen3 content" > "$J_ADV/debug/deps/reify_kernel_tests-3333333333333333"
+touch -d '2026-01-01 00:00:00' "$J_ADV/debug/deps/reify_kernel_tests-1111111111111111"
+touch -d '2026-02-01 00:00:00' "$J_ADV/debug/deps/reify_kernel_tests-2222222222222222"
+touch -d '2026-03-01 00:00:00' "$J_ADV/debug/deps/reify_kernel_tests-3333333333333333"
+
+# A second unit with only TWO generations — both must survive untouched; this
+# is what distinguishes keep-newest-2 from keep-newest-1 (J1e).
+echo "other gen a" > "$J_ADV/debug/deps/reify_other_crate-aaaaaaaaaaaaaaaa"
+echo "other gen b" > "$J_ADV/debug/deps/reify_other_crate-bbbbbbbbbbbbbbbb"
+touch -d '2026-01-15 00:00:00' "$J_ADV/debug/deps/reify_other_crate-aaaaaaaaaaaaaaaa"
+touch -d '2026-02-15 00:00:00' "$J_ADV/debug/deps/reify_other_crate-bbbbbbbbbbbbbbbb"
+
+J_BASE="$J_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$J_ADV" "$J_BASE" --landed-commit "$J_HEAD"
+assert "J1a: refresh with superseded hash-generations exits 0" test "$RC" -eq 0
+
+J_GEN="$(readlink "$J_BASE")"
+J_DEPS="$J_GEN/debug/deps"
+
+assert "J1b: newest two generations survive (-2222..., -3333...)" \
+    bash -c 'test -f "$1/reify_kernel_tests-2222222222222222" && test -f "$1/reify_kernel_tests-3333333333333333"' _ "$J_DEPS"
+
+assert "J1c: oldest generation is pruned (-1111...)" \
+    bash -c 'test ! -f "$1/reify_kernel_tests-1111111111111111"' _ "$J_DEPS"
+
+assert "J1d: exactly 2 files remain in the reify_kernel_tests group" \
+    bash -c '[ "$(find "$1" -maxdepth 1 -type f -name "reify_kernel_tests-*" | wc -l)" -eq 2 ]' _ "$J_DEPS"
+
+assert "J1e: a 2-generation group is left entirely intact (keep-2, not keep-1)" \
+    bash -c 'test -f "$1/reify_other_crate-aaaaaaaaaaaaaaaa" && test -f "$1/reify_other_crate-bbbbbbbbbbbbbbbb"' _ "$J_DEPS"
+
+# J2 — pin the artefact-name grammar. This is the assertion set that protects
+# the ruled-and-measured 64.8 GiB mechanism from a greedier regex, and it is
+# the discrepancy that reconciles the task's 11,193 groups with the
+# 3,607 + 7,586 split (the 7,586 are all `.dwo` singletons — see J2b).
+J2_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j2-XXXXXX)"
+_TMPDIRS+=("$J2_TMP")
+J2_LANE="$(mk_git_advancing "$J2_TMP")"
+J2_ADV="$J2_LANE/advancing"
+J2_HEAD="$(git -C "$J2_LANE" rev-parse HEAD)"
+mkdir -p "$J2_ADV/debug/deps"
+J2_SRC="$J2_ADV/debug/deps"
+
+# J2a — EXTENSION SPLIT: hashes are ranked per stem, across every extension
+# a hash has, together — never independently per (stem, ext), and never
+# pooled across stems. Three hashes, each present as BOTH .rlib and .rmeta
+# (six files, one stem), with mtimes synced per hash across both extensions
+# here: the top-2 ranked hashes keep BOTH their .rlib and .rmeta (4 files
+# survive, not the 2 a stem-only grouper would keep by pooling all six).
+# J2e below exercises the case these synced mtimes cannot: a stem whose
+# per-extension mtime ORDER disagrees across hashes.
+echo "rlib a" > "$J2_SRC/libreify_core-aaaaaaaaaaaaaaaa.rlib"
+echo "rmeta a" > "$J2_SRC/libreify_core-aaaaaaaaaaaaaaaa.rmeta"
+touch -d '2026-01-01 00:00:00' "$J2_SRC/libreify_core-aaaaaaaaaaaaaaaa.rlib" "$J2_SRC/libreify_core-aaaaaaaaaaaaaaaa.rmeta"
+echo "rlib b" > "$J2_SRC/libreify_core-bbbbbbbbbbbbbbbb.rlib"
+echo "rmeta b" > "$J2_SRC/libreify_core-bbbbbbbbbbbbbbbb.rmeta"
+touch -d '2026-02-01 00:00:00' "$J2_SRC/libreify_core-bbbbbbbbbbbbbbbb.rlib" "$J2_SRC/libreify_core-bbbbbbbbbbbbbbbb.rmeta"
+echo "rlib c" > "$J2_SRC/libreify_core-cccccccccccccccc.rlib"
+echo "rmeta c" > "$J2_SRC/libreify_core-cccccccccccccccc.rmeta"
+touch -d '2026-03-01 00:00:00' "$J2_SRC/libreify_core-cccccccccccccccc.rlib" "$J2_SRC/libreify_core-cccccccccccccccc.rmeta"
+
+# J2b — .dwo NON-CANDIDATE: split-debuginfo-shaped names, three different
+# leading hashes. Stem-before-last-dot ends "-cgu.09.rcgu" (not "-<16hex>"),
+# so these are never a prune candidate — exactly the boundary a permissive
+# `^(.+)-[0-9a-f]{16}(\..*)?$` would cross, silently changing the measured
+# reclaim.
+echo "dwo 1" > "$J2_SRC/axum-0082f0d2178b90e5.axum.191af5780e3108ae-cgu.09.rcgu.dwo"
+echo "dwo 2" > "$J2_SRC/axum-1111111111111111.axum.191af5780e3108ae-cgu.09.rcgu.dwo"
+echo "dwo 3" > "$J2_SRC/axum-2222222222222222.axum.191af5780e3108ae-cgu.09.rcgu.dwo"
+touch -d '2026-01-01 00:00:00' "$J2_SRC/axum-0082f0d2178b90e5.axum.191af5780e3108ae-cgu.09.rcgu.dwo"
+touch -d '2026-01-02 00:00:00' "$J2_SRC/axum-1111111111111111.axum.191af5780e3108ae-cgu.09.rcgu.dwo"
+touch -d '2026-01-03 00:00:00' "$J2_SRC/axum-2222222222222222.axum.191af5780e3108ae-cgu.09.rcgu.dwo"
+
+# J2c — NON-CONFORMING NAMES NEVER DELETED: no hash at all, and a
+# short/long/uppercase pseudo-hash. Every one survives regardless of mtime.
+echo "readme" > "$J2_SRC/README"
+touch -d '2026-01-01 00:00:00' "$J2_SRC/README"
+echo "plan1" > "$J2_SRC/build-plan-1.json"
+echo "plan2" > "$J2_SRC/build-plan-2.json"
+echo "plan3" > "$J2_SRC/build-plan-3.json"
+touch -d '2026-01-05 00:00:00' "$J2_SRC/build-plan-1.json"
+touch -d '2026-01-10 00:00:00' "$J2_SRC/build-plan-2.json"
+touch -d '2026-01-15 00:00:00' "$J2_SRC/build-plan-3.json"
+echo "short" > "$J2_SRC/foo-abc123.rlib"
+touch -d '2026-01-20 00:00:00' "$J2_SRC/foo-abc123.rlib"
+echo "upper" > "$J2_SRC/foo-AAAABBBBCCCCDDDD"
+touch -d '2026-01-25 00:00:00' "$J2_SRC/foo-AAAABBBBCCCCDDDD"
+echo "long" > "$J2_SRC/foo-0123456789abcdef0.rlib"
+touch -d '2026-01-30 00:00:00' "$J2_SRC/foo-0123456789abcdef0.rlib"
+
+# J2d — DISTINCT UNITS DO NOT MERGE: two extensionless units, three
+# generations each; each keeps exactly 2, proving the group key is the stem
+# and not a global pool.
+echo "a1" > "$J2_SRC/reify_a-1111111111111111"
+echo "a2" > "$J2_SRC/reify_a-2222222222222222"
+echo "a3" > "$J2_SRC/reify_a-3333333333333333"
+touch -d '2026-01-01 00:00:00' "$J2_SRC/reify_a-1111111111111111"
+touch -d '2026-02-01 00:00:00' "$J2_SRC/reify_a-2222222222222222"
+touch -d '2026-03-01 00:00:00' "$J2_SRC/reify_a-3333333333333333"
+echo "b1" > "$J2_SRC/reify_b-4444444444444444"
+echo "b2" > "$J2_SRC/reify_b-5555555555555555"
+echo "b3" > "$J2_SRC/reify_b-6666666666666666"
+touch -d '2026-01-01 00:00:00' "$J2_SRC/reify_b-4444444444444444"
+touch -d '2026-02-01 00:00:00' "$J2_SRC/reify_b-5555555555555555"
+touch -d '2026-03-01 00:00:00' "$J2_SRC/reify_b-6666666666666666"
+
+J2_BASE="$J2_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$J2_ADV" "$J2_BASE" --landed-commit "$J2_HEAD"
+assert "J2: refresh exits 0" test "$RC" -eq 0
+
+J2_GEN="$(readlink "$J2_BASE")"
+J2_DEPS="$J2_GEN/debug/deps"
+
+assert "J2a: newest 2 .rlib survive (bbbb, cccc)" \
+    bash -c 'test -f "$1/libreify_core-bbbbbbbbbbbbbbbb.rlib" && test -f "$1/libreify_core-cccccccccccccccc.rlib"' _ "$J2_DEPS"
+assert "J2a: oldest .rlib pruned (aaaa)" \
+    bash -c 'test ! -f "$1/libreify_core-aaaaaaaaaaaaaaaa.rlib"' _ "$J2_DEPS"
+assert "J2a: newest 2 .rmeta survive (bbbb, cccc)" \
+    bash -c 'test -f "$1/libreify_core-bbbbbbbbbbbbbbbb.rmeta" && test -f "$1/libreify_core-cccccccccccccccc.rmeta"' _ "$J2_DEPS"
+assert "J2a: oldest .rmeta pruned (aaaa)" \
+    bash -c 'test ! -f "$1/libreify_core-aaaaaaaaaaaaaaaa.rmeta"' _ "$J2_DEPS"
+assert "J2a: exactly 4 libreify_core files remain (2 rlib + 2 rmeta, not 2 total)" \
+    bash -c '[ "$(find "$1" -maxdepth 1 -type f -name "libreify_core-*" | wc -l)" -eq 4 ]' _ "$J2_DEPS"
+
+assert "J2b: all three .dwo split-debuginfo shards survive" \
+    bash -c 'n=$(find "$1" -maxdepth 1 -type f -name "axum-*.dwo" | wc -l); [ "$n" -eq 3 ]' _ "$J2_DEPS"
+
+assert "J2c: README (no hash) survives" test -f "$J2_DEPS/README"
+assert "J2c: all three non-conforming build-plan files survive" \
+    bash -c 'test -f "$1/build-plan-1.json" && test -f "$1/build-plan-2.json" && test -f "$1/build-plan-3.json"' _ "$J2_DEPS"
+assert "J2c: short pseudo-hash (6 chars) survives" test -f "$J2_DEPS/foo-abc123.rlib"
+assert "J2c: uppercase pseudo-hash survives" test -f "$J2_DEPS/foo-AAAABBBBCCCCDDDD"
+assert "J2c: long pseudo-hash (17 chars) survives" test -f "$J2_DEPS/foo-0123456789abcdef0.rlib"
+
+assert "J2d: reify_a keeps newest 2 (2222, 3333), prunes oldest (1111)" \
+    bash -c 'test -f "$1/reify_a-2222222222222222" && test -f "$1/reify_a-3333333333333333" && test ! -f "$1/reify_a-1111111111111111"' _ "$J2_DEPS"
+assert "J2d: reify_b keeps newest 2 (5555, 6666), prunes oldest (4444)" \
+    bash -c 'test -f "$1/reify_b-5555555555555555" && test -f "$1/reify_b-6666666666666666" && test ! -f "$1/reify_b-4444444444444444"' _ "$J2_DEPS"
+assert "J2d: exactly 4 reify_a/reify_b files total (2 each, distinct pools)" \
+    bash -c '[ "$(find "$1" -maxdepth 1 -type f \( -name "reify_a-*" -o -name "reify_b-*" \) | wc -l)" -eq 4 ]' _ "$J2_DEPS"
+
+# J2e — HASH CONSISTENCY across extensions (task 7426 amendment): hashes are
+# ranked per stem, never per (stem, ext) independently, so a kept "fallback
+# generation" is always COMPLETE on every extension it has. Mtimes are
+# deliberately CROSSED between extensions: hash h1's .rlib is the OLDEST of
+# the three but its .rmeta is the NEWEST, and h3's .rlib is the NEWEST but
+# its .rmeta is the OLDEST (h2 sits in the middle on both). Ranking each
+# extension independently (the pre-amendment behaviour) would keep a
+# DIFFERENT hash pair per extension — .rlib survivors {h2, h3}, .rmeta
+# survivors {h1, h2} — silently shipping a fallback generation that is only
+# partially present. Ranking by each hash's max-over-extensions mtime keeps
+# {h1, h3} — identically — on BOTH extensions, and prunes h2 on both.
+J2E_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j2e-XXXXXX)"
+_TMPDIRS+=("$J2E_TMP")
+J2E_LANE="$(mk_git_advancing "$J2E_TMP")"
+J2E_ADV="$J2E_LANE/advancing"
+J2E_HEAD="$(git -C "$J2E_LANE" rev-parse HEAD)"
+mkdir -p "$J2E_ADV/debug/deps"
+J2E_SRC="$J2E_ADV/debug/deps"
+
+echo "h1 rlib"  > "$J2E_SRC/libreify_cross-1111111111111111.rlib"
+echo "h1 rmeta" > "$J2E_SRC/libreify_cross-1111111111111111.rmeta"
+echo "h2 rlib"  > "$J2E_SRC/libreify_cross-2222222222222222.rlib"
+echo "h2 rmeta" > "$J2E_SRC/libreify_cross-2222222222222222.rmeta"
+echo "h3 rlib"  > "$J2E_SRC/libreify_cross-3333333333333333.rlib"
+echo "h3 rmeta" > "$J2E_SRC/libreify_cross-3333333333333333.rmeta"
+touch -d '2026-01-01 00:00:00' "$J2E_SRC/libreify_cross-1111111111111111.rlib"   # h1 rlib: oldest
+touch -d '2026-03-01 00:00:00' "$J2E_SRC/libreify_cross-1111111111111111.rmeta"  # h1 rmeta: newest
+touch -d '2026-02-01 00:00:00' "$J2E_SRC/libreify_cross-2222222222222222.rlib"   # h2 rlib: mid
+touch -d '2026-02-01 00:00:00' "$J2E_SRC/libreify_cross-2222222222222222.rmeta"  # h2 rmeta: mid
+touch -d '2026-03-01 00:00:00' "$J2E_SRC/libreify_cross-3333333333333333.rlib"   # h3 rlib: newest
+touch -d '2026-01-01 00:00:00' "$J2E_SRC/libreify_cross-3333333333333333.rmeta"  # h3 rmeta: oldest
+
+J2E_BASE="$J2E_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$J2E_ADV" "$J2E_BASE" --landed-commit "$J2E_HEAD"
+assert "J2e: refresh with crossed per-extension mtimes exits 0" test "$RC" -eq 0
+
+J2E_GEN="$(readlink "$J2E_BASE")"
+J2E_DEPS="$J2E_GEN/debug/deps"
+
+assert "J2e: surviving .rlib hash set is {h1, h3}" \
+    bash -c 'test -f "$1/libreify_cross-1111111111111111.rlib" && test -f "$1/libreify_cross-3333333333333333.rlib" && test ! -f "$1/libreify_cross-2222222222222222.rlib"' _ "$J2E_DEPS"
+assert "J2e: surviving .rmeta hash set is {h1, h3} — IDENTICAL to .rlib, not ranked independently" \
+    bash -c 'test -f "$1/libreify_cross-1111111111111111.rmeta" && test -f "$1/libreify_cross-3333333333333333.rmeta" && test ! -f "$1/libreify_cross-2222222222222222.rmeta"' _ "$J2E_DEPS"
+assert "J2e: exactly 4 files remain (2 surviving hashes x 2 extensions, h2 fully pruned)" \
+    bash -c '[ "$(find "$1" -maxdepth 1 -type f -name "libreify_cross-*" | wc -l)" -eq 4 ]' _ "$J2E_DEPS"
+
+# J3 — scope containment. The prune must reach debug/deps and nothing else;
+# this is the assertion set that keeps a future widening from quietly eating
+# the fingerprint/build/release trees. One fixture advancing dir carries three
+# same-unit generations in each of six locations; only the debug/deps copy
+# (the control) may be pruned.
+_j3_mint_three() {
+    local dir="$1"
+    mkdir -p "$dir"
+    echo "gen1" > "$dir/reify_scope_unit-1111111111111111"
+    echo "gen2" > "$dir/reify_scope_unit-2222222222222222"
+    echo "gen3" > "$dir/reify_scope_unit-3333333333333333"
+    touch -d '2026-01-01 00:00:00' "$dir/reify_scope_unit-1111111111111111"
+    touch -d '2026-02-01 00:00:00' "$dir/reify_scope_unit-2222222222222222"
+    touch -d '2026-03-01 00:00:00' "$dir/reify_scope_unit-3333333333333333"
+}
+
+J3_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j3-XXXXXX)"
+_TMPDIRS+=("$J3_TMP")
+J3_LANE="$(mk_git_advancing "$J3_TMP")"
+J3_ADV="$J3_LANE/advancing"
+J3_HEAD="$(git -C "$J3_LANE" rev-parse HEAD)"
+
+_j3_mint_three "$J3_ADV/debug/deps"          # J3a: the control — pruned to 2
+_j3_mint_three "$J3_ADV/debug/.fingerprint"  # J3b: sibling of deps — untouched
+_j3_mint_three "$J3_ADV/debug/build"         # J3c: sibling of deps — untouched
+_j3_mint_three "$J3_ADV/release/deps"        # J3d: different top-level tree — untouched
+_j3_mint_three "$J3_ADV/debug/deps/nested"   # J3e: depth-2 under deps — untouched
+_j3_mint_three "$J3_ADV/debug"               # J3f: hashed file directly in debug/ — untouched
+
+J3_BASE="$J3_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$J3_ADV" "$J3_BASE" --landed-commit "$J3_HEAD"
+assert "J3: refresh exits 0" test "$RC" -eq 0
+
+J3_GEN="$(readlink "$J3_BASE")"
+
+assert "J3a: debug/deps (the prune target) is pruned to 2 — control proving the instrument fires" \
+    bash -c '[ "$(find "$1/debug/deps" -maxdepth 1 -type f -name "reify_scope_unit-*" | wc -l)" -eq 2 ] && [ ! -f "$1/debug/deps/reify_scope_unit-1111111111111111" ]' _ "$J3_GEN"
+assert "J3b: debug/.fingerprint is untouched — all 3 generations survive" \
+    bash -c '[ "$(find "$1/debug/.fingerprint" -maxdepth 1 -type f -name "reify_scope_unit-*" | wc -l)" -eq 3 ]' _ "$J3_GEN"
+assert "J3c: debug/build is untouched — all 3 generations survive" \
+    bash -c '[ "$(find "$1/debug/build" -maxdepth 1 -type f -name "reify_scope_unit-*" | wc -l)" -eq 3 ]' _ "$J3_GEN"
+assert "J3d: release/deps is untouched — all 3 generations survive (out of scope)" \
+    bash -c '[ "$(find "$1/release/deps" -maxdepth 1 -type f -name "reify_scope_unit-*" | wc -l)" -eq 3 ]' _ "$J3_GEN"
+assert "J3e: debug/deps/nested is untouched — depth-1 only" \
+    bash -c '[ "$(find "$1/debug/deps/nested" -maxdepth 1 -type f -name "reify_scope_unit-*" | wc -l)" -eq 3 ]' _ "$J3_GEN"
+assert "J3f: a hashed file directly in debug/ (not deps/) survives" \
+    bash -c '[ "$(find "$1/debug" -maxdepth 1 -type f -name "reify_scope_unit-*" | wc -l)" -eq 3 ]' _ "$J3_GEN"
+
+# J3g — structural: an advancing dir with NO debug/deps at all refreshes
+# exit 0 and produces a correct base (the graceful-no-op path every existing
+# Block B-I fixture already depends on).
+J3G_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j3g-XXXXXX)"
+_TMPDIRS+=("$J3G_TMP")
+J3G_LANE="$(mk_git_advancing "$J3G_TMP")"
+J3G_ADV="$J3G_LANE/advancing"
+J3G_HEAD="$(git -C "$J3G_LANE" rev-parse HEAD)"
+echo "content" > "$J3G_ADV/unrelated.txt"
+J3G_BASE="$J3G_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$J3G_ADV" "$J3G_BASE" --landed-commit "$J3G_HEAD"
+assert "J3g: refresh with no debug/deps at all exits 0" test "$RC" -eq 0
+assert "J3g: base has advancing content (graceful no-op path)" \
+    bash -c '[ "$(cat "$1/unrelated.txt")" = "content" ]' _ "$J3G_BASE"
+
+# J3h — structural: an EMPTY debug/deps directory refreshes exit 0 and leaves
+# the directory present and empty (no `rm -rf` of the dir itself; the prune
+# removes files, never the container).
+J3H_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j3h-XXXXXX)"
+_TMPDIRS+=("$J3H_TMP")
+J3H_LANE="$(mk_git_advancing "$J3H_TMP")"
+J3H_ADV="$J3H_LANE/advancing"
+J3H_HEAD="$(git -C "$J3H_LANE" rev-parse HEAD)"
+mkdir -p "$J3H_ADV/debug/deps"
+J3H_BASE="$J3H_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$J3H_ADV" "$J3H_BASE" --landed-commit "$J3H_HEAD"
+assert "J3h: refresh with an empty debug/deps exits 0" test "$RC" -eq 0
+J3H_GEN="$(readlink "$J3H_BASE")"
+assert "J3h: debug/deps directory itself still present (not rm -rf'd)" \
+    test -d "$J3H_GEN/debug/deps"
+assert "J3h: debug/deps is empty (no phantom files created)" \
+    bash -c '[ -z "$(find "$1" -maxdepth 1 -type f)" ]' _ "$J3H_GEN/debug/deps"
+
+# J4a-c — the operator-facing prune summary on stderr: a machine-greppable
+# line naming both the deleted-file count and the reclaimed bytes (the signal
+# an operator reads to apply the E19 stop rule), stdout stays empty (B7), and
+# the no-debug/deps path is non-silent about the (skipped) stage.
+J4_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j4-XXXXXX)"
+_TMPDIRS+=("$J4_TMP")
+J4_LANE="$(mk_git_advancing "$J4_TMP")"
+J4_ADV="$J4_LANE/advancing"
+J4_HEAD="$(git -C "$J4_LANE" rev-parse HEAD)"
+mkdir -p "$J4_ADV/debug/deps"
+echo "gen1 content" > "$J4_ADV/debug/deps/reify_summary_unit-1111111111111111"
+echo "gen2 content" > "$J4_ADV/debug/deps/reify_summary_unit-2222222222222222"
+echo "gen3 content" > "$J4_ADV/debug/deps/reify_summary_unit-3333333333333333"
+touch -d '2026-01-01 00:00:00' "$J4_ADV/debug/deps/reify_summary_unit-1111111111111111"
+touch -d '2026-02-01 00:00:00' "$J4_ADV/debug/deps/reify_summary_unit-2222222222222222"
+touch -d '2026-03-01 00:00:00' "$J4_ADV/debug/deps/reify_summary_unit-3333333333333333"
+# Computed, not hardcoded, so the assertion tracks the fixture's actual content.
+J4_VICTIM_BYTES="$(stat -c %s "$J4_ADV/debug/deps/reify_summary_unit-1111111111111111")"
+J4_BASE="$J4_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$J4_ADV" "$J4_BASE" --landed-commit "$J4_HEAD"
+assert "J4a: refresh exits 0" test "$RC" -eq 0
+assert "J4a: stderr carries a machine-greppable prune summary (prune...deps...files=1)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "prune.*deps.*files=1"' _ "$ERR_OUT"
+assert "J4a: prune summary names the victim bytes (exact victim size; apparent size, not disk actually reclaimed — see script comment)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "victim_bytes=$2([^0-9]|\$)"' _ "$ERR_OUT" "$J4_VICTIM_BYTES"
+assert "J4b: stdout stays empty on the refresh path (B7 contract)" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+
+# J4a2 — the summary aggregate crosses GROUPS correctly. J4a's fixture has
+# exactly one group contributing exactly one victim, which cannot tell a
+# correct cross-group total apart from a per-group count, a last-group-only
+# value, or a max. This fixture has THREE groups (two extensionless stems
+# plus one .rlib/.rmeta pair) each contributing victims, and asserts the
+# EXACT summed files= and victim_bytes= — the awk END loop's aggregation
+# across every stem is otherwise untested as an aggregation.
+J4A2_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j4a2-XXXXXX)"
+_TMPDIRS+=("$J4A2_TMP")
+J4A2_LANE="$(mk_git_advancing "$J4A2_TMP")"
+J4A2_ADV="$J4A2_LANE/advancing"
+J4A2_HEAD="$(git -C "$J4A2_LANE" rev-parse HEAD)"
+mkdir -p "$J4A2_ADV/debug/deps"
+J4A2_SRC="$J4A2_ADV/debug/deps"
+
+# Stem A: 4 extensionless generations, keep 2 -> 2 victims (oldest two).
+echo "a1 victim" > "$J4A2_SRC/reify_agg_a-1111111111111111"
+echo "a2 victim" > "$J4A2_SRC/reify_agg_a-2222222222222222"
+echo "a3 keep"   > "$J4A2_SRC/reify_agg_a-3333333333333333"
+echo "a4 keep"   > "$J4A2_SRC/reify_agg_a-4444444444444444"
+touch -d '2026-01-01 00:00:00' "$J4A2_SRC/reify_agg_a-1111111111111111"
+touch -d '2026-01-02 00:00:00' "$J4A2_SRC/reify_agg_a-2222222222222222"
+touch -d '2026-01-03 00:00:00' "$J4A2_SRC/reify_agg_a-3333333333333333"
+touch -d '2026-01-04 00:00:00' "$J4A2_SRC/reify_agg_a-4444444444444444"
+
+# Stem B: 4 extensionless generations, keep 2 -> 2 victims (oldest two).
+# Deliberately longer content than stem A's so the byte sum cannot pass by
+# accidentally matching a per-group rather than cross-group total.
+echo "b1 victim with longer content than the others" > "$J4A2_SRC/reify_agg_b-5555555555555555"
+echo "b2 victim" > "$J4A2_SRC/reify_agg_b-6666666666666666"
+echo "b3 keep"   > "$J4A2_SRC/reify_agg_b-7777777777777777"
+echo "b4 keep"   > "$J4A2_SRC/reify_agg_b-8888888888888888"
+touch -d '2026-01-01 00:00:00' "$J4A2_SRC/reify_agg_b-5555555555555555"
+touch -d '2026-01-02 00:00:00' "$J4A2_SRC/reify_agg_b-6666666666666666"
+touch -d '2026-01-03 00:00:00' "$J4A2_SRC/reify_agg_b-7777777777777777"
+touch -d '2026-01-04 00:00:00' "$J4A2_SRC/reify_agg_b-8888888888888888"
+
+# Stem C: an .rlib/.rmeta pair, 3 hash-generations, keep 2 -> the oldest HASH
+# loses on BOTH extensions (2 victim files) — also exercises the
+# cross-extension hash-consistency property Block J2e pins.
+echo "c1 rlib victim"  > "$J4A2_SRC/libreify_agg_c-9999999999999999.rlib"
+echo "c1 rmeta victim" > "$J4A2_SRC/libreify_agg_c-9999999999999999.rmeta"
+echo "c2 rlib keep"    > "$J4A2_SRC/libreify_agg_c-aaaaaaaaaaaaaaaa.rlib"
+echo "c2 rmeta keep"   > "$J4A2_SRC/libreify_agg_c-aaaaaaaaaaaaaaaa.rmeta"
+echo "c3 rlib keep"    > "$J4A2_SRC/libreify_agg_c-bbbbbbbbbbbbbbbb.rlib"
+echo "c3 rmeta keep"   > "$J4A2_SRC/libreify_agg_c-bbbbbbbbbbbbbbbb.rmeta"
+touch -d '2026-01-01 00:00:00' "$J4A2_SRC/libreify_agg_c-9999999999999999.rlib" "$J4A2_SRC/libreify_agg_c-9999999999999999.rmeta"
+touch -d '2026-01-02 00:00:00' "$J4A2_SRC/libreify_agg_c-aaaaaaaaaaaaaaaa.rlib" "$J4A2_SRC/libreify_agg_c-aaaaaaaaaaaaaaaa.rmeta"
+touch -d '2026-01-03 00:00:00' "$J4A2_SRC/libreify_agg_c-bbbbbbbbbbbbbbbb.rlib" "$J4A2_SRC/libreify_agg_c-bbbbbbbbbbbbbbbb.rmeta"
+
+# Exact expected totals, computed from the fixture rather than hardcoded —
+# same idiom as J4_VICTIM_BYTES above.
+J4A2_VICTIM_FILES=(
+    "$J4A2_SRC/reify_agg_a-1111111111111111"
+    "$J4A2_SRC/reify_agg_a-2222222222222222"
+    "$J4A2_SRC/reify_agg_b-5555555555555555"
+    "$J4A2_SRC/reify_agg_b-6666666666666666"
+    "$J4A2_SRC/libreify_agg_c-9999999999999999.rlib"
+    "$J4A2_SRC/libreify_agg_c-9999999999999999.rmeta"
+)
+J4A2_EXPECT_FILES="${#J4A2_VICTIM_FILES[@]}"
+J4A2_EXPECT_BYTES=0
+for _f in "${J4A2_VICTIM_FILES[@]}"; do
+    J4A2_EXPECT_BYTES=$(( J4A2_EXPECT_BYTES + $(stat -c %s "$_f") ))
+done
+
+J4A2_BASE="$J4A2_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$J4A2_ADV" "$J4A2_BASE" --landed-commit "$J4A2_HEAD"
+assert "J4a2: refresh with victims spread across 3 groups exits 0" test "$RC" -eq 0
+assert "J4a2: summary files= is the exact cross-group total ($J4A2_EXPECT_FILES), not a per-group count or a max" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "files=$2([^0-9]|\$)"' _ "$ERR_OUT" "$J4A2_EXPECT_FILES"
+assert "J4a2: summary victim_bytes= is the exact sum of every victim's size ($J4A2_EXPECT_BYTES)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "victim_bytes=$2([^0-9]|\$)"' _ "$ERR_OUT" "$J4A2_EXPECT_BYTES"
+
+J4A2_GEN="$(readlink "$J4A2_BASE")"
+J4A2_DEPS="$J4A2_GEN/debug/deps"
+assert "J4a2: stem A kept its newest 2, pruned its oldest 2" \
+    bash -c '[ "$(find "$1" -maxdepth 1 -type f -name "reify_agg_a-*" | wc -l)" -eq 2 ] && test -f "$1/reify_agg_a-3333333333333333" && test -f "$1/reify_agg_a-4444444444444444"' _ "$J4A2_DEPS"
+assert "J4a2: stem B kept its newest 2, pruned its oldest 2" \
+    bash -c '[ "$(find "$1" -maxdepth 1 -type f -name "reify_agg_b-*" | wc -l)" -eq 2 ] && test -f "$1/reify_agg_b-7777777777777777" && test -f "$1/reify_agg_b-8888888888888888"' _ "$J4A2_DEPS"
+assert "J4a2: stem C's losing hash is pruned on BOTH extensions" \
+    bash -c 'test ! -f "$1/libreify_agg_c-9999999999999999.rlib" && test ! -f "$1/libreify_agg_c-9999999999999999.rmeta"' _ "$J4A2_DEPS"
+
+J4C_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j4c-XXXXXX)"
+_TMPDIRS+=("$J4C_TMP")
+J4C_LANE="$(mk_git_advancing "$J4C_TMP")"
+J4C_ADV="$J4C_LANE/advancing"
+J4C_HEAD="$(git -C "$J4C_LANE" rev-parse HEAD)"
+echo "content" > "$J4C_ADV/f.txt"
+J4C_BASE="$J4C_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$J4C_ADV" "$J4C_BASE" --landed-commit "$J4C_HEAD"
+assert "J4c: refresh with no debug/deps exits 0" test "$RC" -eq 0
+assert "J4c: stderr is non-silent about the (skipped) prune stage" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "skip"' _ "$ERR_OUT"
+
+# J4d-f — staging placement (fail-closed): refresh over a PRE-EXISTING base
+# with its own (unpruned) debug/deps generations. The prune reads/writes only
+# the .partial staging copy — the previous generation is never edited in
+# place. A shared flock on the retired gen's lock file (the documented
+# reader-refcount protocol, script Step 6) defers the GC reap so this test
+# can observe gen.1's untouched content instead of racing its removal.
+J4D_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j4d-XXXXXX)"
+_TMPDIRS+=("$J4D_TMP")
+J4D_LANE="$(mk_git_advancing "$J4D_TMP")"
+J4D_ADV="$J4D_LANE/advancing"
+J4D_HEAD="$(git -C "$J4D_LANE" rev-parse HEAD)"
+mkdir -p "$J4D_ADV/debug/deps"
+echo "new1" > "$J4D_ADV/debug/deps/reify_new_unit-7777777777777777"
+echo "new2" > "$J4D_ADV/debug/deps/reify_new_unit-8888888888888888"
+echo "new3" > "$J4D_ADV/debug/deps/reify_new_unit-9999999999999999"
+touch -d '2026-01-01 00:00:00' "$J4D_ADV/debug/deps/reify_new_unit-7777777777777777"
+touch -d '2026-02-01 00:00:00' "$J4D_ADV/debug/deps/reify_new_unit-8888888888888888"
+touch -d '2026-03-01 00:00:00' "$J4D_ADV/debug/deps/reify_new_unit-9999999999999999"
+
+J4D_BASE="$J4D_TMP/base"
+mkdir -p "$J4D_BASE/debug/deps"
+echo "old1" > "$J4D_BASE/debug/deps/reify_old_unit-1111111111111111"
+echo "old2" > "$J4D_BASE/debug/deps/reify_old_unit-2222222222222222"
+echo "old3" > "$J4D_BASE/debug/deps/reify_old_unit-3333333333333333"
+touch -d '2026-01-01 00:00:00' "$J4D_BASE/debug/deps/reify_old_unit-1111111111111111"
+touch -d '2026-02-01 00:00:00' "$J4D_BASE/debug/deps/reify_old_unit-2222222222222222"
+touch -d '2026-03-01 00:00:00' "$J4D_BASE/debug/deps/reify_old_unit-3333333333333333"
+
+# Bootstrap numbering (mirrors Block B8): a pre-existing REAL base dir becomes
+# .gen.1 on the FIRST refresh, and the new gen becomes .gen.2.
+J4D_RETIRED_GEN="${J4D_BASE}.gen.1"
+J4D_RETIRED_LOCK="${J4D_RETIRED_GEN}.lock"
+touch "$J4D_RETIRED_LOCK"
+exec {J4D_LOCK_FD}<>"$J4D_RETIRED_LOCK"
+flock -s "$J4D_LOCK_FD"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$J4D_ADV" "$J4D_BASE" --landed-commit "$J4D_HEAD"
+assert "J4d: refresh over a pre-existing base exits 0" test "$RC" -eq 0
+assert "J4d: retired gen.1 (the old base) still has all 3 of its OWN generations — prune never touched it" \
+    bash -c '[ "$(find "$1" -maxdepth 1 -type f -name "reify_old_unit-*" | wc -l)" -eq 3 ]' _ "$J4D_RETIRED_GEN/debug/deps"
+
+J4D_NEW_GEN="$(readlink "$J4D_BASE")"
+assert "J4e: new gen carries the pruned (2-file) set of the advancing unit" \
+    bash -c '[ "$(find "$1" -maxdepth 1 -type f -name "reify_new_unit-*" | wc -l)" -eq 2 ] && [ ! -f "$1/reify_new_unit-7777777777777777" ]' _ "$J4D_NEW_GEN/debug/deps"
+
+assert "J4f: no <base>.gen.*.partial remains after refresh" \
+    bash -c '_n=0; for _p in "${1}".gen.*.partial; do [ -d "$_p" ] && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$J4D_BASE"
+assert "J4f: <base> is a symlink to a <base>.gen.N dir" \
+    bash -c '[ -L "$1" ] && readlink "$1" | grep -qE "[.]gen[.][0-9]+$"' _ "$J4D_BASE"
+
+# Release the shared lock now that assertions are done (fixture cleanup no
+# longer needs to race the GC this was deferring).
+flock -u "$J4D_LOCK_FD"
+exec {J4D_LOCK_FD}<&-
+
+# J4g — PRUNE FAILURE LEAVES NO RESIDUE. The REIFY_TEST_PRUNE_RM_FAIL=1 rm
+# stub fails only the prune stage's own non-recursive `rm -f` (never the EXIT
+# trap's recursive `rm -rf` cleanup — see the stub's own comment), so the
+# refusal is isolated to the prune's own unlink and the trap's cleanup is
+# genuinely exercised with the real rm.
+J4G_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j4g-XXXXXX)"
+_TMPDIRS+=("$J4G_TMP")
+J4G_LANE="$(mk_git_advancing "$J4G_TMP")"
+J4G_ADV="$J4G_LANE/advancing"
+J4G_HEAD="$(git -C "$J4G_LANE" rev-parse HEAD)"
+mkdir -p "$J4G_ADV/debug/deps"
+echo "g1" > "$J4G_ADV/debug/deps/reify_fail_unit-1111111111111111"
+echo "g2" > "$J4G_ADV/debug/deps/reify_fail_unit-2222222222222222"
+echo "g3" > "$J4G_ADV/debug/deps/reify_fail_unit-3333333333333333"
+touch -d '2026-01-01 00:00:00' "$J4G_ADV/debug/deps/reify_fail_unit-1111111111111111"
+touch -d '2026-02-01 00:00:00' "$J4G_ADV/debug/deps/reify_fail_unit-2222222222222222"
+touch -d '2026-03-01 00:00:00' "$J4G_ADV/debug/deps/reify_fail_unit-3333333333333333"
+J4G_BASE="$J4G_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 REIFY_TEST_PRUNE_RM_FAIL=1 run_helper "$J4G_ADV" "$J4G_BASE" --landed-commit "$J4G_HEAD"
+assert "J4g: prune rm failure makes the refresh exit non-zero" test "$RC" -ne 0
+assert "J4g: <base> not created/advanced after prune failure" test ! -e "$J4G_BASE"
+assert "J4g: no <base>.gen.*.partial residue after prune failure (EXIT trap cleanup)" \
+    bash -c '_n=0; for _p in "${1}".gen.*.partial; do [ -e "$_p" ] && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$J4G_BASE"
+
+# J5 — mtime-tie determinism. NOT a theoretical edge case: measured on the
+# live base, 1 of 3,607 (stem, ext) groups contains duplicate mtimes. Every
+# hash is ranked by (max mtime desc, hash string desc) — both keys explicit,
+# in the hash_newer() comparator (scripts/refresh-warm-base.sh Step 3b) — so
+# the survivor set stays deterministic even when two generations of the same
+# stem tie exactly on mtime.
+J5_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j5-XXXXXX)"
+_TMPDIRS+=("$J5_TMP")
+J5_LANE="$(mk_git_advancing "$J5_TMP")"
+J5_ADV="$J5_LANE/advancing"
+J5_HEAD="$(git -C "$J5_LANE" rev-parse HEAD)"
+mkdir -p "$J5_ADV/debug/deps"
+
+# Three generations of one unit: the two OLDEST tied at an IDENTICAL mtime
+# (touch -d the same timestamp on both), the newest distinct. Content sizes
+# are deliberately swapped relative to filename order — the LEXICALLY
+# SMALLER hash suffix (-1111...) gets the LARGER byte count, and the
+# LEXICALLY LARGER suffix (-2222...) gets the SMALLER byte count — so that
+# "tiebreak by byte size" and "tiebreak by filename" pick DIFFERENT
+# survivors. No sleeps; explicit `touch -d` timestamps only (T8).
+printf '%s' "aaaaa" > "$J5_ADV/debug/deps/reify_tie_unit-1111111111111111"                 # 5 bytes
+printf '%s' "bbbbbbbbbbbbbbbbbbbb" > "$J5_ADV/debug/deps/reify_tie_unit-2222222222222222"  # 20 bytes
+printf '%s' "newest content" > "$J5_ADV/debug/deps/reify_tie_unit-3333333333333333"
+touch -d '2026-01-01 00:00:00' \
+    "$J5_ADV/debug/deps/reify_tie_unit-1111111111111111" \
+    "$J5_ADV/debug/deps/reify_tie_unit-2222222222222222"
+touch -d '2026-03-01 00:00:00' "$J5_ADV/debug/deps/reify_tie_unit-3333333333333333"
+
+J5_BASE="$J5_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$J5_ADV" "$J5_BASE" --landed-commit "$J5_HEAD"
+assert "J5a: refresh with a tied-mtime group exits 0" test "$RC" -eq 0
+
+J5_GEN="$(readlink "$J5_BASE")"
+J5_DEPS="$J5_GEN/debug/deps"
+
+assert "J5a: exactly 2 files remain in the tied group (keep count honoured despite the tie)" \
+    bash -c '[ "$(find "$1" -maxdepth 1 -type f -name "reify_tie_unit-*" | wc -l)" -eq 2 ]' _ "$J5_DEPS"
+assert "J5a: the distinct-newest generation survives" \
+    test -f "$J5_DEPS/reify_tie_unit-3333333333333333"
+
+# J5c — the tiebreak is hash-string desc (mtime desc primary), never an
+# accident of byte size. -2222... is the lexically LARGER of the tied-old
+# pair (both are extensionless, so filename desc and hash desc agree here),
+# so hash_newer() (scripts/refresh-warm-base.sh Step 3b) keeps it and prunes
+# -1111.... Content sizes are deliberately swapped relative to filename
+# order (see the fixture comment above) so a byte-size-based tiebreak would
+# pick the OPPOSITE survivor — pinning that the tiebreak reads the hash,
+# never whatever field happens to sit next in the `find -printf` stream.
+assert "J5c: the lexically-larger tied filename survives (-2222...)" \
+    test -f "$J5_DEPS/reify_tie_unit-2222222222222222"
+assert "J5c: the lexically-smaller tied filename is pruned (-1111...)" \
+    test ! -f "$J5_DEPS/reify_tie_unit-1111111111111111"
+
+# J5b — the survivor SET is deterministic across independent refreshes: a
+# second, byte-identical advancing fixture (same names, same stamped mtimes,
+# same content), built from an independently-created lane so this exercises
+# a genuinely separate `find`/readdir traversal, must produce the same
+# surviving filename set as the first.
+J5B_TMP="$(mktemp -d /tmp/test-refresh-warm-base-j5b-XXXXXX)"
+_TMPDIRS+=("$J5B_TMP")
+J5B_LANE="$(mk_git_advancing "$J5B_TMP")"
+J5B_ADV="$J5B_LANE/advancing"
+J5B_HEAD="$(git -C "$J5B_LANE" rev-parse HEAD)"
+mkdir -p "$J5B_ADV/debug/deps"
+printf '%s' "aaaaa" > "$J5B_ADV/debug/deps/reify_tie_unit-1111111111111111"
+printf '%s' "bbbbbbbbbbbbbbbbbbbb" > "$J5B_ADV/debug/deps/reify_tie_unit-2222222222222222"
+printf '%s' "newest content" > "$J5B_ADV/debug/deps/reify_tie_unit-3333333333333333"
+touch -d '2026-01-01 00:00:00' \
+    "$J5B_ADV/debug/deps/reify_tie_unit-1111111111111111" \
+    "$J5B_ADV/debug/deps/reify_tie_unit-2222222222222222"
+touch -d '2026-03-01 00:00:00' "$J5B_ADV/debug/deps/reify_tie_unit-3333333333333333"
+
+J5B_BASE="$J5B_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$J5B_ADV" "$J5B_BASE" --landed-commit "$J5B_HEAD"
+assert "J5b: second independent refresh of a byte-identical fixture exits 0" test "$RC" -eq 0
+
+J5B_GEN="$(readlink "$J5B_BASE")"
+J5B_DEPS="$J5B_GEN/debug/deps"
+
+assert "J5b: survivor filename SET is identical across two independent refreshes" \
+    bash -c '
+        s1="$(cd "$1" && find . -maxdepth 1 -type f -name "reify_tie_unit-*" -printf "%f\n" | sort)"
+        s2="$(cd "$2" && find . -maxdepth 1 -type f -name "reify_tie_unit-*" -printf "%f\n" | sort)"
+        [ "$s1" = "$s2" ]
+    ' _ "$J5_DEPS" "$J5B_DEPS"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately

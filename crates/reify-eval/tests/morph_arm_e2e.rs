@@ -549,3 +549,262 @@ fn morph_arm_e2e_skipped_without_gmsh() {
          source requires the gmsh tet remesh path"
     );
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Task 6643 — Stage A leaf scoping, through the REAL compile + eval pipeline
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// DELIBERATELY NOT `#[cfg(has_gmsh)]`, and referencing no `reify_kernel_gmsh` /
+// `reify_kernel_occt` symbol. Stage A is pure Rust (see
+// `structural_classifier`'s "## Purity"), so this guard must run in EVERY build
+// profile including a stub build with no kernel at all. That is the task-6635
+// lesson: the Stage-A contract 6635 established was carried only by
+// `cfg(has_gmsh)` e2es, which is why 6635 also had to add an in-crate
+// `reify-mesh-morph` unit test to make the contract enforceable. Staying
+// kernel-free also leaves this binary's gmsh dead-strip / linker-anchor
+// discipline (module doc above) completely undisturbed.
+
+/// Project an engine snapshot's `(Value, DeterminacyState)` entries down to the
+/// bare [`reify_ir::ValueMap`] Stage A consumes.
+///
+/// `Snapshot::values` carries determinacy alongside each value; `ValueMap` is
+/// the value-only view `stage_a_eligible` takes (and the shape
+/// `OwnedBRepSnapshot.values` holds in the production morph path).
+///
+/// Reads the snapshot rather than the `EvalResult` returned by `eval` /
+/// `edit_param`: `Snapshot::values` holds an entry for every cell, whereas
+/// `EvalResult::values` carries a documented partial-map invariant (a `param`
+/// with neither default nor override is omitted). Both sides of the union walk
+/// therefore come from the same total map.
+fn value_map_of(snapshot: &reify_eval::snapshot::Snapshot) -> reify_ir::ValueMap {
+    let mut out = reify_ir::ValueMap::new();
+    for (id, (v, _determinacy)) in snapshot.values.iter() {
+        out.insert(id.clone(), v.clone());
+    }
+    out
+}
+
+/// Task 6643: a purely DIMENSIONAL parameter tick must stay Stage-A eligible
+/// even though the production compiler emitted a DERIVED, non-whitelisted cell
+/// into the ValueMap — proved against a real compiled module, not a synthetic
+/// graph.
+///
+/// The unit tests in `structural_classifier.rs` hand-build the `Let` + `Bool`
+/// shape; this test establishes the previously-unverified fact that the real
+/// compiler actually PRODUCES that shape, and that its value really does differ
+/// on an edit driven only at a numeric leaf. Those are the two premises the
+/// whole dormancy argument rests on.
+///
+/// MEASURED before the step-2 fix, via this exact fixture and engine
+/// configuration: `is_wide` before = `Bool(false)`, after = `Bool(true)`, and
+/// `stage_a_eligible` returned **false** — the every-tick veto, reproduced end
+/// to end. It returns `true` as of the leaf-scoping change.
+///
+/// The fixture is geometry-free by design and `is_wide` is deliberately the
+/// SAME shape as a compiler `__guard_N` cell (`ValueCellKind::Let` +
+/// `Type::Bool`) while NOT being in `structure_controlling` — the discriminator
+/// pinned from the other side by
+/// `structural_classifier::tests::stage_a_eligible_derived_let_guard_cell_diff_returns_false`.
+#[test]
+fn stage_a_admits_dimensional_tick_with_derived_bool_let_from_compiled_module() {
+    use reify_compiler::ValueCellKind;
+    use reify_core::{Type, ValueCellId};
+    use reify_ir::Value;
+
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(include_str!(
+        "fixtures/morph_derived_let.ri"
+    ));
+
+    // Kernel-free engine: `None` for the geometry kernel. The fixture realizes
+    // no geometry, so nothing in this test can depend on OCCT or gmsh.
+    let mut engine = reify_eval::Engine::new(
+        Box::new(reify_test_support::mocks::MockConstraintChecker::new()),
+        None,
+    );
+
+    // (1) Cold evaluation → the "old" side.
+    engine.eval(&compiled);
+    let snapshot_before = engine
+        .snapshot()
+        .expect("eval() must establish an engine snapshot");
+    let graph_before = snapshot_before.graph.clone();
+    let values_before = value_map_of(snapshot_before);
+
+    // (2) PREMISE assertions against the REAL compiled graph. These are the
+    //     genuinely new facts this test establishes — the synthetic unit tests
+    //     assume them.
+    let is_wide = ValueCellId::new("MorphDerivedLet", "is_wide");
+    let node = graph_before
+        .value_cells
+        .get(&is_wide)
+        .expect(
+            "premise: the production compiler must emit `let is_wide = width > depth` as a \
+             value cell reaching the ValueMap — without it there is no derived cell for \
+             Stage A's union walk to trip over",
+        )
+        .clone();
+    assert_eq!(
+        node.kind,
+        ValueCellKind::Let,
+        "premise: `is_wide` must be a DERIVED cell — leaf scoping (PRD \
+         docs/prds/v0_3/mesh-morphing.md line 33) only applies Rule 4's type whitelist to \
+         `Param`/`Auto` LEAVES, so a `Param` here would make this test vacuous"
+    );
+    assert_eq!(
+        node.cell_type,
+        Type::Bool,
+        "premise: `is_wide` must be Type::Bool — the point is that the production compiler \
+         emits a derived cell whose type is NOT on `classify_by_type`'s whitelist"
+    );
+    assert!(
+        !matches!(
+            node.cell_type,
+            Type::Scalar { .. } | Type::Int | Type::Geometry
+        ),
+        "premise: `is_wide`'s type must be OFF the Dimensional whitelist \
+         (Scalar | Int | Geometry) — otherwise Rule 4 would admit it on type alone and this \
+         test would prove nothing about leaf scoping"
+    );
+    assert!(
+        !graph_before.structure_controlling.contains(&is_wide),
+        "premise: `is_wide` must NOT be structure_controlling — it is the same Let+Bool shape \
+         as a compiler `__guard_N` cell, and set membership is the ONLY discriminator between \
+         the two; a guard cell must still veto (Rule 2 runs before the kind match)"
+    );
+
+    // (3) The dimensional tick: width 10mm → 10.5mm, driven at the numeric leaf
+    //     exactly as `Engine::edit_param` is in production.
+    engine
+        .edit_param(
+            ValueCellId::new("MorphDerivedLet", "width"),
+            Value::length(0.0105),
+        )
+        .expect("edit_param must succeed against the MorphDerivedLet.width Length param");
+    let snapshot_after = engine
+        .snapshot()
+        .expect("edit_param must leave an engine snapshot in place");
+    let graph_after = snapshot_after.graph.clone();
+    let values_after = value_map_of(snapshot_after);
+
+    // (4) The mechanism itself: a derived cell is a function of its leaves, so
+    //     it differs on a PURELY DIMENSIONAL edit. This is why one such cell
+    //     anywhere in a design made the morph arm 100% dormant.
+    assert_ne!(
+        values_before.get_or_undef(&is_wide),
+        values_after.get_or_undef(&is_wide),
+        "premise: the derived cell must actually DIFFER across a purely dimensional tick — \
+         that is the mechanism the dormancy class rests on (measured: Bool(false) → Bool(true))"
+    );
+
+    // (5) The contract.
+    assert!(
+        reify_eval::stage_a_eligible(&graph_before, &graph_after, &values_before, &values_after),
+        "task 6643: a dimensional-only tick must be Stage-A eligible even though the \
+         production compiler emitted a differing DERIVED Bool cell — PRD \
+         docs/prds/v0_3/mesh-morphing.md line 33 scopes Stage A to LEAF parameters \
+         (\"the only differing leaves are dimensional\"). This returned false before the \
+         leaf-scoping fix, which is the every-tick veto that kept the morph arm dormant."
+    );
+}
+
+/// Task 6643, the VETO half: a compiler-synthesized `__guard_N`
+/// feature-suppression cell must still make a purely dimensional tick
+/// Stage-A INELIGIBLE — proved against a real compiled module.
+///
+/// The sibling test above proves leaf scoping ADMITS a derived cell. This one
+/// proves it does not admit too much, and it carries the seam the unit test
+/// `structural_classifier::tests::stage_a_eligible_derived_let_guard_cell_diff_returns_false`
+/// can only assume: that the production compiler + `EvaluationGraph::from_templates`
+/// really do route a `where` guard into `graph.structure_controlling`. Without
+/// this test, a future compiler change that emitted a guard outside
+/// `template.guarded_groups` would leave every unit test green while Stage A
+/// silently began admitting feature-suppression flips.
+#[test]
+fn stage_a_vetoes_dimensional_tick_that_flips_a_compiled_guard_cell() {
+    use reify_compiler::ValueCellKind;
+    use reify_core::{Type, ValueCellId};
+    use reify_ir::Value;
+
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(include_str!(
+        "fixtures/morph_derived_let_guarded.ri"
+    ));
+
+    let mut engine = reify_eval::Engine::new(
+        Box::new(reify_test_support::mocks::MockConstraintChecker::new()),
+        None,
+    );
+
+    engine.eval(&compiled);
+    let snapshot_before = engine
+        .snapshot()
+        .expect("eval() must establish an engine snapshot");
+    let graph_before = snapshot_before.graph.clone();
+    let values_before = value_map_of(snapshot_before);
+
+    // (1) PREMISE: the production compiler routed the `where` guard into
+    //     `structure_controlling`, at the Let+Bool shape Rule 2 has to catch.
+    let guard_id = graph_before
+        .structure_controlling
+        .iter()
+        .find(|id| id.member.starts_with("__guard_"))
+        .cloned()
+        .expect(
+            "premise: compiling a `where` block must register a `__guard_N` cell in \
+             graph.structure_controlling — that seam is what makes Rule 2 load-bearing, \
+             and nothing else in this crate pins it",
+        );
+    let guard_node = graph_before
+        .value_cells
+        .get(&guard_id)
+        .expect("premise: the guard cell must also exist in graph.value_cells");
+    assert_eq!(
+        guard_node.kind,
+        ValueCellKind::Let,
+        "premise: a compiler guard cell is DERIVED — this is precisely why leaf scoping \
+         could not be implemented as \"skip all Let cells\""
+    );
+    assert_eq!(
+        guard_node.cell_type,
+        Type::Bool,
+        "premise: a compiler guard cell is Type::Bool — off Rule 4's Dimensional whitelist, \
+         so only Rule 2 keeps it Structural once the kind match is reached"
+    );
+
+    // (2) The same dimensional tick as the sibling test: width 10mm -> 10.5mm.
+    engine
+        .edit_param(
+            ValueCellId::new("MorphDerivedLetGuarded", "width"),
+            Value::length(0.0105),
+        )
+        .expect("edit_param must succeed against the MorphDerivedLetGuarded.width Length param");
+    let snapshot_after = engine
+        .snapshot()
+        .expect("edit_param must leave an engine snapshot in place");
+    let graph_after = snapshot_after.graph.clone();
+    let values_after = value_map_of(snapshot_after);
+
+    // (3) The guard's value really flipped, so the union walk reaches it.
+    assert_ne!(
+        values_before.get_or_undef(&guard_id),
+        values_after.get_or_undef(&guard_id),
+        "premise: the guard's value must DIFFER across the tick — otherwise the walk never \
+         reaches it and the veto below would prove nothing"
+    );
+
+    // (4) The veto must come from the value walk, not from the shape gate —
+    //     otherwise this test would pass even if Rule 2 were dropped.
+    assert_eq!(
+        reify_eval::realization_graph_shape_hash(&graph_before),
+        reify_eval::realization_graph_shape_hash(&graph_after),
+        "the graph shape must be unchanged, so `stage_a_eligible`'s short-circuit does not \
+         mask the per-cell rule this test is about"
+    );
+
+    // (5) The contract.
+    assert!(
+        !reify_eval::stage_a_eligible(&graph_before, &graph_after, &values_before, &values_after),
+        "task 6643 CRITICAL CONSTRAINT: a structure_controlling cell must veto REGARDLESS of \
+         kind. Leaf scoping evaluates Rules 1/2/3/3b before the kind match, so a compiled \
+         feature-suppression toggle stays Structural even though it is a `Let` cell"
+    );
+}

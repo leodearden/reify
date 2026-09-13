@@ -60,6 +60,74 @@ fn load_from_source_returns_gui_state_with_constraints() {
     assert_eq!(state.constraints.len(), 3, "bracket has 3 constraints");
 }
 
+/// A source producing one constraint of each `Satisfaction` verdict (task 6723).
+///
+/// Inline rather than a file under `gui/test/fixtures/`: no Rust test reads that
+/// directory (it serves the debug-MCP `load_fixture` allowlist and the
+/// Playwright/visual harnesses), and the gui-crate convention for a single-use
+/// `.ri` source is an inline `&str` const.
+///
+///   - `width > 10mm`        — Satisfied (80mm > 10mm)
+///   - `thickness > 2mm`     — Violated  (1mm ≯ 2mm). A statically-violated
+///     constraint does not block the load: `ConstraintViolated` never reaches
+///     `Severity::Error` (see `bracket_source_violating`'s tests below).
+///   - `tolerance > 0.1mm`   — Indeterminate. `EngineSession::new` installs no
+///     solver, so `= auto` stays `Value::Undef` and `SimpleConstraintChecker`
+///     returns Indeterminate. The cell is not geometry-derived, so
+///     `surface_geometry_derived_cells`' re-check re-evaluates it to
+///     Indeterminate and leaves it alone — this leg does not flip.
+const TRI_VERDICT_SRC: &str = r#"structure def TriVerdict {
+    param width: Length = 80mm
+    param thickness: Length = 1mm
+    param tolerance: Length = auto
+
+    constraint width > 10mm
+    constraint thickness > 2mm
+    constraint tolerance > 0.1mm
+}"#;
+
+/// End-to-end fidelity of all three verdict tokens on a real load, and the
+/// payload ORDER the GUI receives them in (task 6723).
+///
+/// This is the Rust-side counterpart to
+/// `gui/src/__tests__/constraintVerdictParity.test.ts`, and the source of that
+/// test's fixture ordering: `build_constraints` sorts by `node_id` ascending, so
+/// `TriVerdict#constraint[0]/[1]/[2]` is deterministic and the payload arrives
+/// ✓ / ✗ / ? in that order (PRD-4 §5 B1's signal).
+///
+/// That is the PAYLOAD order, deliberately not the RENDERED order:
+/// `ConstraintPanel`'s `STATUS_PRIORITY` re-sorts violated-first for display, so
+/// the DOM order for this 1/1/1 fixture is ✗, ?, ✓. The frontend test pins both
+/// separately.
+#[test]
+fn load_from_source_emits_all_three_verdict_tokens_in_node_id_order() {
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+
+    let state = session
+        .load_from_source(TRI_VERDICT_SRC, "tri_verdict")
+        .expect("TRI_VERDICT_SRC should load (a violated constraint is not a load error)");
+
+    let observed: Vec<(&str, &str)> = state
+        .constraints
+        .iter()
+        .map(|c| (c.node_id.as_str(), c.status.as_str()))
+        .collect();
+
+    assert_eq!(
+        observed,
+        vec![
+            ("TriVerdict#constraint[0]", "satisfied"),
+            ("TriVerdict#constraint[1]", "violated"),
+            ("TriVerdict#constraint[2]", "indeterminate"),
+        ],
+        "all three verdict tokens must reach the GUI payload lower-case, in \
+         node_id-ascending order"
+    );
+}
+
 #[test]
 fn load_from_source_width_value_is_80mm() {
     let checker = SimpleConstraintChecker;
@@ -1329,7 +1397,7 @@ fn set_parameter_constraints_still_correct() {
     assert_eq!(state.constraints.len(), 3);
     for c in &state.constraints {
         assert_eq!(
-            c.status, "Satisfied",
+            c.status, "satisfied",
             "constraint {} should be satisfied",
             c.node_id
         );
@@ -1411,7 +1479,7 @@ fn constraint_violation_roundtrip() {
         .set_parameter("Bracket.thickness", "1mm")
         .expect("set thickness should succeed");
 
-    let violated = state.constraints.iter().any(|c| c.status == "Violated");
+    let violated = state.constraints.iter().any(|c| c.status == "violated");
     assert!(
         violated,
         "should have at least one violated constraint when thickness=1mm"
@@ -1424,7 +1492,7 @@ fn constraint_violation_roundtrip() {
 
     for c in &state.constraints {
         assert_eq!(
-            c.status, "Satisfied",
+            c.status, "satisfied",
             "constraint {} should be satisfied after restoring thickness",
             c.node_id
         );
@@ -1525,6 +1593,16 @@ fn get_source_location_returns_source_location_info() {
     assert_eq!(loc.file_path, "bracket.ri");
 }
 
+/// The GUI export happy path — and, since task 6190, the C2 negative bounding the η
+/// refusal's blast radius (PRD C2 / §3.1(f)).
+///
+/// Plain `bracket_source()` declares no `RepresentationWithin`, so the gate must leave
+/// this path exactly as it was: an over-broad gate would break every existing GUI
+/// export and none of the η positives below would catch it. Byte equality rather than
+/// `!is_empty()` also catches a regression that silently emptied the artifact instead
+/// of refusing it. The CLI pins the same property as
+/// `build_dash_o_still_exports_a_module_without_a_bound`
+/// (`crates/reify-cli/tests/harness_cli/cli_representation_within.rs:589`).
 #[test]
 fn export_end_to_end() {
     let checker = SimpleConstraintChecker;
@@ -1541,8 +1619,141 @@ fn export_end_to_end() {
     let result = session.export(ExportFormat::Step, &path);
     assert!(result.is_ok(), "export should succeed: {:?}", result.err());
 
-    let data = std::fs::read(&path).expect("exported file should be readable");
-    assert!(!data.is_empty(), "exported file should not be empty");
+    assert_eq!(
+        std::fs::read(&path).expect("exported file should be readable"),
+        b"MOCK_EXPORT_DATA",
+        "an UNBOUNDED design must still export the mock kernel's payload byte-for-byte"
+    );
+}
+
+// --- eta export refusal: the GUI surface (task 6190) ---
+//
+// PRD `docs/prds/v0_6/precision-nominal-representation-guarantee.md`, C-SURFACE (2).
+// `EngineSession::export` is the single chokepoint every GUI export caller reaches.
+// There are THREE of them: `commands::export_impl` (the Tauri command the frontend
+// calls), `mcp_context::TauriToolContext::export` (the MCP tool context) and
+// `debug_server::reify_export_on_engine_and_refresh_baseline` (the `reify_export` AI
+// write tool). That all three delegate is PINNED rather than asserted — one refusal
+// test per caller lives in `commands_tests.rs`, so a refactor giving any of them its
+// own build path goes red instead of silently reopening the bypass.
+//
+// Two properties recur across those tests and are argued once, here:
+//
+//  * `starts_with`, never `contains`. Every site moves the shared helper's message
+//    VERBATIM (`EngineSession::export` returns `diag.message`; `export_impl` is
+//    `and_then(identity)`; the MCP context is `map_err(ToolError::EngineError)`; the
+//    write tool propagates with `?`), so no site legitimately wraps it — and
+//    `contains` would stay green under precisely the `"Build error: {}"` regression
+//    these assertions exist to catch, which pushes the stable `E_*` token off the
+//    front of a string the callers surface unmodified.
+//  * The C2 negative bounding the gate's blast radius is `export_end_to_end` directly
+//    above — the unbounded happy path, which the gate must leave untouched. It is not
+//    restated as a standalone test: a twin of that body would have to be kept in step
+//    with it, and both would be pinning the one export-success contract.
+
+/// [`bracket_source`] plus a non-circular checker structure declaring the bound, so
+/// the DECLARED BOUND is the ONLY delta between the case [`export_end_to_end`] exports
+/// green and the refused cases below. This is the CLI's
+/// `representation_within_satisfied.ri` idiom (geometry-owning structure + a separate
+/// `structure XCheck { param subject : X  constraint RepresentationWithin(subject,
+/// <bound>) }`) grafted onto that source.
+///
+/// The `1mm` is not a threshold and must not be retuned against an achieved deviation:
+/// η refuses on module shape alone, before any deviation is measured, so it fires
+/// identically for any bound.
+///
+/// `pub(super)` so `commands_tests.rs` shares this ONE definition — a per-file twin
+/// lets a future `RepresentationWithin` / `param subject` syntax change reach one copy
+/// and not the other, silently voiding the "only delta" invariant above. The canonical
+/// home is `crate::tests::test_helpers` (or `reify_test_support::fixtures`, beside
+/// `bracket_source`); both are outside task 6190's lock footprint.
+pub(super) fn bounded_bracket_source() -> String {
+    format!(
+        "{}\n\nstructure BracketCheck {{\n    param subject : Bracket = Bracket()\n    constraint RepresentationWithin(subject, 1mm)\n}}\n",
+        bracket_source()
+    )
+}
+
+/// η / C-SURFACE (2) at the GUI export boundary: a design declaring a
+/// `RepresentationWithin` bound the export path cannot demonstrate it honours must
+/// REFUSE, not write the artifact and report success (PRD §1.1).
+///
+/// The op-count assertion is PRD §6's gate-cost property asserted STRUCTURALLY, since
+/// `tests/infra/test_no_new_wallclock_upper_bounds.sh` forbids a wall clock.
+/// `load_from_source` already realizes, so snapshot the baseline, never assert zero.
+#[test]
+fn export_refuses_a_module_declaring_an_unenforced_representation_bound() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    // Clone the recorder BEFORE the kernel is boxed — it is unreachable through the
+    // boxed `dyn GeometryKernel` afterwards (see `MockGeometryKernel::reset_calls_ref`).
+    let ops = kernel.operations_ref();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(&bounded_bracket_source(), "bracket")
+        .expect("the bounded bracket fixture should compile and load");
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bracket.step");
+
+    let ops_before = ops.lock().unwrap().len();
+    let result = session.export(ExportFormat::Step, &path);
+    let ops_after = ops.lock().unwrap().len();
+
+    let err = result.expect_err(
+        "GUI export of a design declaring a RepresentationWithin bound must refuse \
+         (PRD §1.1: refused, not written-and-reported-successful)",
+    );
+    assert!(
+        err.starts_with(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+        "the refusal must LEAD with the stable E_* token; got: {err}"
+    );
+    assert!(
+        !path.exists(),
+        "NO file may be created at the export target for a refused export"
+    );
+    assert_eq!(
+        ops_after, ops_before,
+        "a refused export must dispatch no geometry op — the refusal has to precede \
+         realization"
+    );
+}
+
+/// The refusal gates the WRITE, not merely the return value: `EngineSession::export`
+/// calls `std::fs::write(path, &data)`, which truncates on open, so a refusal bolted on
+/// downstream of the build would still destroy whatever sits at the target before
+/// refusing. Mirrors `build_dash_o_refusal_does_not_overwrite_an_existing_file`
+/// (`crates/reify-cli/tests/harness_cli/cli_representation_within.rs:511`).
+#[test]
+fn export_refusal_does_not_overwrite_an_existing_file() {
+    const SENTINEL: &[u8] = b"pre-existing bytes that must survive a refused export";
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(&bounded_bracket_source(), "bracket")
+        .expect("the bounded bracket fixture should compile and load");
+
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("out.step");
+    std::fs::write(&target, SENTINEL).expect("failed to seed the export target");
+
+    let err = session
+        .export(ExportFormat::Step, &target)
+        .expect_err("a bounded design must be refused at the GUI export boundary");
+    assert!(
+        err.starts_with(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+        "the refusal must LEAD with the stable E_* token; got: {err}"
+    );
+    assert_eq!(
+        std::fs::read(&target).expect("the export target must still exist"),
+        SENTINEL,
+        "a refused export must NOT truncate or overwrite a pre-existing file at the \
+         target"
+    );
 }
 
 // --- Source-map consistency after load/update ---
@@ -6951,7 +7162,7 @@ fn freshness_wires_through_build_gui_state_for_failed_value_cell() {
     let violated_constraints: Vec<_> = state
         .constraints
         .iter()
-        .filter(|c| c.status == "Violated")
+        .filter(|c| c.status == "violated")
         .collect();
 
     assert!(
@@ -19308,7 +19519,7 @@ fn rigid_mass_props_surface_as_determined_on_load() {
 
     let pd = find_moi_principal_constraint(&state);
     assert_eq!(
-        pd.status, "Satisfied",
+        pd.status, "satisfied",
         "the `moi_principal[0] > 0` PD constraint must be Satisfied once \
          moi_principal resolves; got status={:?}",
         pd.status
@@ -19377,7 +19588,7 @@ fn rigid_mass_props_stay_determined_after_warm_edit() {
 
     let pd = find_moi_principal_constraint(&state);
     assert_eq!(
-        pd.status, "Satisfied",
+        pd.status, "satisfied",
         "the `moi_principal[0] > 0` PD constraint must stay Satisfied after the \
          warm edit; got status={:?}",
         pd.status

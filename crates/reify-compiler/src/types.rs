@@ -1749,13 +1749,28 @@ impl PatternKind {
     pub const VARIANT_COUNT: usize = Self::ALL.len();
 }
 
+/// CONTRACT: these labels are USER-FACING, not variant nicknames.
+///
+/// `reify_eval::geometry_ops` interpolates this `Display` as the `kind_label`
+/// of its Contract C diagnostics (`{kind_label}: 'spacing' argument expects
+/// Length, got Int`), so each label MUST be the builtin name the `.ri` author
+/// actually TYPED — the only token they can grep for. Rendering the internal
+/// nickname instead (`linear` for `linear_pattern`) names a symbol that appears
+/// nowhere in their source.
+///
+/// Non-compliant today, and user-reachable on this same surface: `Circular`,
+/// `Arbitrary` — see #6874, which owns the flip, its call-site migration, and
+/// deleting this sentence.
+///
+/// Pinned by `pattern_kind_display` below — change a label there and here
+/// together, and migrate the call sites the change newly rejects (C6).
 impl std::fmt::Display for PatternKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PatternKind::Linear => f.write_str("linear"),
+            PatternKind::Linear => f.write_str("linear_pattern"),
             PatternKind::Circular => f.write_str("circular"),
             PatternKind::Mirror => f.write_str("mirror"),
-            PatternKind::Linear2D => f.write_str("linear_2d"),
+            PatternKind::Linear2D => f.write_str("linear_pattern_2d"),
             PatternKind::Arbitrary => f.write_str("arbitrary"),
         }
     }
@@ -2224,10 +2239,10 @@ mod kind_display_tests {
     #[test]
     fn pattern_kind_display() {
         check(&[
-            (PatternKind::Linear, "linear"),
+            (PatternKind::Linear, "linear_pattern"),
             (PatternKind::Circular, "circular"),
             (PatternKind::Mirror, "mirror"),
-            (PatternKind::Linear2D, "linear_2d"),
+            (PatternKind::Linear2D, "linear_pattern_2d"),
             (PatternKind::Arbitrary, "arbitrary"),
         ]);
     }

@@ -372,12 +372,19 @@ structure def DisplacementTimeHistory {
 // per-node-per-time matrix unless queried):
 fn displacement_at(history: DisplacementTimeHistory,
                    location: LocationId,
-                   direction: Vec3) -> List<Real>
+                   direction: Vec3) -> List<Length>
 ```
 
 The lazy reconstruction avoids materializing the (n_nodes × n_times)
 matrix when only a handful of locations are queried — typical for
 input-shaping iteration.
+
+`mode_coords` above stays `List<List<Real>>`: an isolated modal
+coordinate ξ_i carries units kg^1/2·m (mass-normalized mode shapes
+Φ_i carry kg^-1/2), and Reify's dimension grammar has no SI-root
+extension to express that. `displacement_at`'s reconstruction product
+Φ_i·ξ_i, however, is plain metres — the mass units cancel — so the
+accessor's return type is `Length`, not `Real`.
 
 ### §5.3 — Per-mode ODE solution
 

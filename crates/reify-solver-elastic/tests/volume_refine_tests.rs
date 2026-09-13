@@ -742,3 +742,189 @@ fn avg_tet_edge_in_region_x_ge(vm: &VolumeMesh, threshold: f64) -> f64 {
     }
     if count == 0 { 0.0 } else { total_edge / count as f64 }
 }
+
+// ---------------------------------------------------------------------------
+// step-7/8: the gmsh re-export seam
+// ---------------------------------------------------------------------------
+
+/// `reify-solver-elastic` must re-export the two gmsh symbols its own PUBLIC
+/// refine signatures require, so a downstream crate can call them without
+/// naming `reify_kernel_gmsh::*`.
+///
+/// This closes a pre-existing API gap: `refine_with_size_field` and
+/// `adaptive::refine_marked_elements` both take `&MeshingOptions` in their
+/// public signature, but the crate re-exported neither that type nor the
+/// availability const — so no downstream crate could construct the argument
+/// or runtime-gate on gmsh presence.
+///
+/// It matters because `reify-eval` is FORBIDDEN to name the gmsh crate:
+/// `reify-eval/Cargo.toml` makes `reify-kernel-gmsh` a DEV-dep with a
+/// dead-strip invariant ("DO NOT reference any `reify_kernel_gmsh::*` symbol
+/// from other reify-eval unit or integration tests — doing so would pull
+/// gmsh's `inventory::submit!` into their binaries and break OCCT-only
+/// `kernel_count` / registry-size assertions"). Re-exporting from
+/// `reify-solver-elastic` — a NORMAL dep of reify-eval that already
+/// normal-deps `reify-kernel-gmsh` — keeps that invariant literally true.
+///
+/// The `reify_kernel_gmsh::GMSH_AVAILABLE` reference below is the ONE place
+/// the gmsh path is named, and it is legitimate here: this test lives INSIDE
+/// `reify-solver-elastic`, where gmsh is a normal dep. Its purpose is to pin
+/// that the re-export is the same const and cannot silently drift.
+#[test]
+fn solver_elastic_reexports_the_gmsh_types_its_public_refine_signature_requires() {
+    let options = reify_solver_elastic::MeshingOptions {
+        mesh_size: Some(0.25),
+        deterministic: true,
+        ..Default::default()
+    };
+    assert_eq!(options.mesh_size, Some(0.25));
+    assert!(options.deterministic);
+
+    assert_eq!(
+        reify_solver_elastic::GMSH_AVAILABLE,
+        reify_kernel_gmsh::GMSH_AVAILABLE,
+        "the re-exported availability const must BE the kernel's, not a copy \
+         that can drift from it",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// step-9/10: the extracted boundary must be a USABLE refine surface
+// ---------------------------------------------------------------------------
+
+/// Characteristic edge length of a tet of volume `v`: `(6*v)^(1/3)`.
+///
+/// `6*v` undoes the canonical `V = |det J| / 6`, recovering a length on the
+/// same scale as the mesh's actual element sizes. This is the definition
+/// `aposteriori_validation.rs`'s `characteristic_size_from_volume` uses; the
+/// SAME definition must be used everywhere `current_sizes` is derived, or the
+/// per-element sizes handed to `refine_marked_elements` stop being comparable
+/// across a refine.
+fn characteristic_size_from_volume(v: f64) -> f64 {
+    (6.0 * v).cbrt()
+}
+
+/// `(coords, tets)` of a P1 [`VolumeMesh`], widened to `f64`.
+fn nodes_conns(vm: &VolumeMesh) -> (Vec<[f64; 3]>, Vec<[usize; 4]>) {
+    let coords: Vec<[f64; 3]> = vm
+        .vertices
+        .chunks_exact(3)
+        .map(|c| [c[0] as f64, c[1] as f64, c[2] as f64])
+        .collect();
+    let conns: Vec<[usize; 4]> = vm
+        .tet_indices()
+        .expect("P1 tet mesh")
+        .chunks_exact(4)
+        .map(|c| [c[0] as usize, c[1] as usize, c[2] as usize, c[3] as usize])
+        .collect();
+    (coords, conns)
+}
+
+/// Unsigned volume of the P1 tet `conn` over `nodes`.
+fn tet_volume(nodes: &[[f64; 3]], conn: &[usize; 4]) -> f64 {
+    let p = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]], nodes[conn[3]]];
+    let u = [p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]];
+    let v = [p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]];
+    let w = [p[3][0] - p[0][0], p[3][1] - p[0][1], p[3][2] - p[0][2]];
+    let cross = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
+    (w[0] * cross[0] + w[1] * cross[1] + w[2] * cross[2]).abs() / 6.0
+}
+
+/// **The load-bearing contract of task 4909.**
+///
+/// The boundary EXTRACTED from a gmsh-produced tet mesh — not the original
+/// hand-wound fixture surface — must itself be a usable refine surface: it
+/// has to survive gmsh's `classify_surfaces` + `create_geometry` +
+/// `geo_add_surface_loop` chain and drive a real, mark-driven remesh.
+///
+/// This is what makes the eval-side realized path possible at all. A
+/// `RealizationReadHandle` carries exactly ONE `RealizedContent` variant, and
+/// for `solver::elastic_static` that variant is the `VolumeMesh`, so no
+/// surface `Mesh` reaches the trampoline. Reconstructing the boundary from
+/// the realized tet mesh is the only route that does not require a second
+/// realization demand — and it is also the tighter one, because
+/// `project_volume_to_surface_vertices`' nearest-vertex size transfer then
+/// resolves to a distance-0 identity on bit-equal vertices.
+///
+/// A failure here surfaces as `"no dim=2 entities after classify+create_geometry;
+/// surface may be open or non-manifold"` or `"no corner sizes applied"`.
+#[test]
+fn extracted_boundary_is_a_usable_refine_surface_for_the_mesh_it_came_from() {
+    if !reify_kernel_gmsh::GMSH_AVAILABLE {
+        eprintln!("skipping: libgmsh not available in this build");
+        return;
+    }
+
+    let opts = MeshingOptions {
+        mesh_size: Some(0.5),
+        deterministic: true,
+        ..Default::default()
+    };
+
+    // (1) Seed a volume from a hand-wound closed box surface under a UNIFORM
+    // size field — the `seed_volume_from_surface` recipe. From here on the
+    // hand-wound cube is NEVER used again: everything downstream goes through
+    // the extracted boundary.
+    let cube = unit_cube_mesh();
+    let n_cube_verts = cube.vertices.len() / 3;
+    let volume = reify_kernel_gmsh::refine_volume_with_size_field(
+        &cube,
+        &vec![0.5_f64; n_cube_verts],
+        &opts,
+        ElementOrderTag::P1,
+    )
+    .expect("seeding a volume from the hand-wound cube must succeed");
+
+    let (nodes, conns) = nodes_conns(&volume);
+    let n_before = conns.len();
+    assert!(n_before > 0, "seed volume must have at least one tet");
+
+    // (2) Extract the boundary from the gmsh-produced mesh.
+    let extracted = reify_solver_elastic::boundary_surface_mesh(&volume)
+        .expect("a gmsh-produced P1 tet mesh must have an extractable boundary");
+    assert!(
+        !extracted.indices.is_empty(),
+        "the extracted boundary must not be empty",
+    );
+
+    // (3) Mark a spatially-coherent half of the mesh (x < 0.5) and derive the
+    // per-element characteristic sizes `refine_marked_elements` expects.
+    let current_sizes: Vec<f64> = conns
+        .iter()
+        .map(|c| characteristic_size_from_volume(tet_volume(&nodes, c)))
+        .collect();
+    let marked: Vec<usize> = conns
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| {
+            let cx = c.iter().map(|&n| nodes[n][0]).sum::<f64>() / 4.0;
+            cx < 0.5
+        })
+        .map(|(e, _)| e)
+        .collect();
+    assert!(
+        !marked.is_empty(),
+        "the x < 0.5 half of a unit-cube mesh must contain elements",
+    );
+
+    // (4) The extracted boundary must drive a real remesh that GROWS the mesh.
+    let refined = refine_marked_elements(&extracted, &volume, &marked, &current_sizes, &opts)
+        .expect(
+            "refine_marked_elements must accept the EXTRACTED boundary as its \
+             surface - if this fails with 'no dim=2 entities after \
+             classify+create_geometry' the extracted surface is open or \
+             non-manifold; if with 'no corner sizes applied' the seed is too \
+             coarse for classify_surfaces to find 0D corners",
+        );
+
+    let n_after = refined.tet_indices().expect("refined is tet-only").len() / 4;
+    assert!(
+        n_after > n_before,
+        "a mark-driven remesh through the extracted boundary must strictly \
+         grow the element count: {n_before} -> {n_after}",
+    );
+}

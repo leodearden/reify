@@ -2222,7 +2222,6 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
 /// - Convert { from }                 → `[BRep, Mesh]`
 /// - Primitive* / Curve*              → `[BRep]` (sources; classified to
 ///   document the 'not a Mesh-accepting consumer' decision; step-4 adds arms)
-#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
 fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
     use Operation::*;
     use ReprKind::{BRep, Mesh, Voxel};
@@ -2303,7 +2302,6 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
 /// Unclassified ops (`classify_op_input_reprs` returns `None`) return `false`,
 /// making them conservative: they do not accept Mesh, which forces their
 /// producers to demand BRep.
-#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
 fn op_accepts_repr(op: &Operation, repr: ReprKind) -> bool {
     classify_op_input_reprs(op).is_some_and(|s| s.contains(&repr))
 }
@@ -2317,7 +2315,6 @@ fn op_accepts_repr(op: &Operation, repr: ReprKind) -> bool {
 /// classified with multiple reprs that happen to include Voxel alongside
 /// Mesh/BRep — such an op would NOT be Voxel-only-input and must not force
 /// its producer to Voxel demand.
-#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
 fn op_is_voxel_only_input(op: &Operation) -> bool {
     op_accepts_repr(op, ReprKind::Voxel)
         && !op_accepts_repr(op, ReprKind::Mesh)
@@ -13014,11 +13011,12 @@ where
 // tet seam, T6, and the engine-bridge PRD (δ/ε) respectively.
 //
 // The whole seam is `#[allow(dead_code)]` because its consumer — the
-// engine-bridge mixed solve wiring — is a future task; this mirrors the
-// `dispatch_volume_mesh` G-allow pattern above.
+// engine-bridge mixed solve wiring — is a future task: #6371, "Wire
+// build_mixed_region_mesh (T12 layer-B seam) into a production consumer".
+// This mirrors the `dispatch_volume_mesh` G-allow pattern above.
 
 /// Per-element kind tag in a [`MixedRegionMesh`].
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UnifiedElementKind {
     /// A mid-surface shell element (one per shell triangle, 6 DOF/node).
@@ -13028,7 +13026,7 @@ pub(crate) enum UnifiedElementKind {
 }
 
 /// One element of the unified mixed mesh, referencing unified node ids.
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct UnifiedElement {
     /// Whether this element is meshed as a shell or a tet.
@@ -13040,7 +13038,7 @@ pub(crate) struct UnifiedElement {
 
 /// Unified mixed shell/tet mesh: a single node list, per-element kind tags, and
 /// the shell↔tet interface MPC constraint rows.
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 #[derive(Debug, Clone)]
 pub(crate) struct MixedRegionMesh {
     /// Unified node positions (world, f64). Shell vertices first, then tet
@@ -13224,7 +13222,7 @@ impl std::error::Error for MixedRegionError {}
 /// tet side indexes a node that exists. It does NOT check vertex ORDERING,
 /// element quality, or degeneracy — a gated mesh is well-formed enough for a
 /// downstream consumer to index safely, not necessarily solvable.
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 pub(crate) fn build_mixed_region_mesh(
     shell: &MidSurfaceMesh,
     tet: &VolumeMesh,
@@ -13436,13 +13434,13 @@ pub(crate) fn build_mixed_region_mesh(
 }
 
 /// Dot product of two 3-vectors.
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 /// Squared Euclidean distance between two 3-vectors.
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 fn dist3_sq(a: [f64; 3], b: [f64; 3]) -> f64 {
     let dx = a[0] - b[0];
     let dy = a[1] - b[1];
@@ -13452,7 +13450,7 @@ fn dist3_sq(a: [f64; 3], b: [f64; 3]) -> f64 {
 
 /// Index of the node in `nodes` nearest (Euclidean) to `target`; `None` if
 /// `nodes` is empty. Ties resolve to the lowest index (deterministic).
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 fn nearest_node_index(nodes: &[[f64; 3]], target: [f64; 3]) -> Option<usize> {
     let mut best: Option<(usize, f64)> = None;
     for (i, &p) in nodes.iter().enumerate() {
@@ -13479,7 +13477,7 @@ fn nearest_node_index(nodes: &[[f64; 3]], target: [f64; 3]) -> Option<usize> {
 /// (not one per non-finite node) when any candidate's squared distance was
 /// non-finite, as telemetry for the mis-selection this fallback can still
 /// cause.
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 fn three_nearest_node_indices(nodes: &[[f64; 3]], target: [f64; 3]) -> Vec<usize> {
     // Latches on any non-finite dist3_sq (NaN, or +INFINITY from a non-finite
     // or overflowing coordinate) for the WARN below, and normalizes NaN to
@@ -13739,11 +13737,15 @@ mod dispatch_volume_mesh_tests;
 // below exercise the helper's contract but cannot verify the one-shot guarantee
 // at the call-site level.
 //
-// Not yet wired into the engine's realization pipeline; blocked on task
-// #4744 (volume-mesh-realization-and-morph-wiring §8 task β — morph arm in
-// dispatch_volume_mesh). See compute-node-contract.md §6 for the full task
-// history and rejected-alternative rationale.
-#[allow(dead_code)] // production wiring pending task #4744 (volume-mesh-realization-and-morph-wiring §8 task β)
+// Not yet wired into the engine's realization pipeline; blocked on #4746
+// (hex/wedge Phase A activation), whose WHAT-TO-DO names this helper
+// explicitly — it emits this diagnostic at the `dispatch_volume_mesh`
+// production edge. The cite here was previously task 4744, which is now done
+// and landed WITHOUT wiring this helper. See compute-node-contract.md §6 for
+// the rejected-alternative rationale (why morph is a §3.2 dispatch producer,
+// not a §3.4 ComputeNode) — not for wiring ownership, which that doc still
+// records under the superseded cite and which this comment states instead.
+#[allow(dead_code)] // production wiring pending #4746 (hex/wedge Phase A activation: emits this diagnostic at the dispatch_volume_mesh production edge)
 pub(crate) fn p2_substitution_diagnostic(
     swept_kind: Option<&SweptKind>,
     force_tet: bool,

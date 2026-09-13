@@ -813,6 +813,23 @@ verify_runners:
     ssh_host: leo-laptop
     git_remote: leo-laptop
     config_path: /home/leo/.config/orchestrator/reify-laptop.yaml
+    # INV-2 contract-currency auto-sync (dark_factory task 2884; reify #7470).
+    # Path to the remote's DARK-FACTORY CODE checkout -- the tree whose
+    # 'orchestrator verify-merge' gate this runner executes over ssh. Distinct
+    # from git_remote, which is the PROJECT checkout the merge sha is pushed to.
+    # OPT-IN PER RUNNER: merge_queue.py passes df_remote_checkout=r.df_checkout_path,
+    # and while this was UNSET (until 2026-09-12) sync_if_stale returned
+    # configured=False/ok=True and made ZERO ssh/git calls -- so the laptop could
+    # run merge verifies from an arbitrarily stale DF checkout and nothing benched
+    # it. Measured 2026-09-12 at 752 commits behind the dispatcher (laptop
+    # 39676b3c00, last fetch 09-07, vs workstation 99ca5323be), with no second net
+    # because verify_cross_check_remote_green:false (2026-08-21) adopts a remote
+    # green without a local cross-check. That is not theoretical: task 6934's
+    # head-of-line verify died on the laptop ~10 min in without returning a
+    # verdict and left the merge queue on a dead lease for 66+ min.
+    # Set so a stale checkout is pulled --ff-only + uv sync'd before dispatch, and
+    # a FAILED sync BENCHES the runner instead of silently trusting its verdict.
+    df_checkout_path: /home/leo/src/dark-factory
     enabled: true
 verify_drift_check_every_n_lands: 20
 #
