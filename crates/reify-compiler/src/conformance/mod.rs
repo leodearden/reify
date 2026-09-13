@@ -7,7 +7,8 @@ pub(crate) use sub_component_validation::check_sub_structure_existence;
 use super::*;
 use crate::ambient_defaults::AmbientDefaults;
 use crate::geometry_traits_inference::{
-    GeometryTrait, InferredTraits, LetBindingEnv, infer_traits_for_expr_in_env, infer_traits_for_op,
+    GeometryTrait, InferredTraits, LetBindingEnv, SubRefEnv, infer_traits_for_expr_in_env,
+    infer_traits_for_op_in_env,
 };
 use reify_core::BASE_UNIT_SYMBOLS;
 use std::cell::RefCell;
@@ -2066,8 +2067,10 @@ fn general_leaf_param_family_is_validated(param_type: &Type) -> bool {
 
 /// RAII guard that pops the top entry from an in-flight Vec when dropped.
 ///
-/// Ensures the `push`–`pop` invariant around [`infer_traits_for_expr_in_env`]
-/// in [`RealizationLetEnv::lookup`] is upheld even if the inner call panics.
+/// Ensures the `push`–`pop` invariant around the two recursive calls in
+/// [`RealizationLetEnv::lookup`] — `infer_traits_for_op_in_env` on the
+/// realization arm and `infer_traits_for_expr_in_env` on the value_cells
+/// fallback — is upheld even if the inner call panics.
 /// Used only within `RealizationLetEnv::lookup`.
 struct InFlightGuard<'a> {
     stack: &'a RefCell<Vec<ValueCellId>>,
@@ -2105,19 +2108,31 @@ impl Drop for InFlightGuard<'_> {
 /// under `realization.name = Some("g")`. No chained-ValueRef walk is needed
 /// here.
 ///
+/// # Sibling-realization lookup
+///
+/// A bare geometry operand naming a sibling let lowers to `GeomRef::Sub(name)`
+/// rather than an inlined `GeomRef::Step`, so the realization arm resolves its
+/// op-array through [`SiblingSubEnv`] — otherwise an unbounded producer reached
+/// via a `let` would silently satisfy a `Bounded` slot. Compound keys
+/// (`Sub("<sub>.<member>")`, emitted for cross-sub `self.<sub>.<member>`
+/// references) are deliberately NOT chased: their referent lives on a different
+/// template, so they keep the `InferredTraits::all()` safe default.
+///
 /// # Cycle guard
 ///
-/// The value_cells fallback calls `infer_traits_for_expr_in_env(expr, self)`,
-/// which recurses back into `lookup` for any nested `ValueRef`. Malformed or
-/// forward-referencing IR can produce cycles (`let g = ValueRef(g)`).  Rather
-/// than stack-overflowing, the `in_flight` visited set detects re-entry and
-/// returns `None`; the caller's `unwrap_or(InferredTraits::all())` mechanism
-/// safe-defaults the result.  The realization arm does NOT recurse through
-/// the env (it calls `infer_traits_for_op` instead), so `in_flight` is only
-/// checked on the value_cells path.
+/// BOTH arms recurse back into `lookup`: the realization arm through
+/// `SiblingSubEnv::lookup_sub`, the value_cells fallback through
+/// `infer_traits_for_expr_in_env(expr, self)`. Either can cycle — `let a =
+/// translate(b, ..)` / `let b = translate(a, ..)` is accepted source that forms
+/// a genuine `Sub` 2-cycle, and malformed IR can produce `let g = ValueRef(g)`.
+/// The `in_flight` visited set is therefore checked ONCE, above both arms, and
+/// held across both; re-entry returns `None`, which the caller's
+/// `unwrap_or(InferredTraits::all())` turns into the safe default rather than a
+/// stack overflow.
 struct RealizationLetEnv<'a> {
     templates: &'a HashMap<String, &'a TopologyTemplate>,
-    /// In-flight visited set used to terminate cycles in the value_cells fallback.
+    /// In-flight visited set used to terminate cycles on both lookup paths
+    /// (sibling realizations and the value_cells fallback).
     ///
     /// `RefCell` is required because `LetBindingEnv::lookup` takes `&self`;
     /// changing the trait to `&mut self` would cascade to all other impls.
@@ -2130,13 +2145,34 @@ impl<'a> LetBindingEnv for RealizationLetEnv<'a> {
     fn lookup(&self, id: &ValueCellId) -> Option<InferredTraits> {
         let template = self.templates.get(id.entity.as_str())?;
 
-        // Geometry-let path: realization with matching name.
+        // Cycle guard: if `id` is already being resolved on the current call
+        // stack, return None. Both arms below recurse back into `lookup`, so
+        // the check and the RAII guard sit above both. The caller's
+        // `unwrap_or(InferredTraits::all())` converts None into the safe
+        // default, so a cyclic sibling-let pair or forward-referencing IR
+        // yields `all()` rather than a stack overflow.
+        if self.in_flight.borrow().iter().any(|p| p == id) {
+            return None;
+        }
+        self.in_flight.borrow_mut().push(id.clone());
+        let _guard = InFlightGuard {
+            stack: &self.in_flight,
+        };
+
+        // Geometry-let path: realization with matching name. Its op-array may
+        // carry `GeomRef::Sub(sibling)` operands, resolved through the env.
         if let Some(real) = template
             .realizations
             .iter()
             .find(|r| r.name.as_deref() == Some(id.member.as_str()))
         {
-            return Some(infer_traits_for_op(&real.operations));
+            return Some(infer_traits_for_op_in_env(
+                &real.operations,
+                &SiblingSubEnv {
+                    parent: self,
+                    entity: id.entity.as_str(),
+                },
+            ));
         }
 
         // Non-geometry-let fallback: value_cells Let with a resolved default_expr.
@@ -2144,16 +2180,6 @@ impl<'a> LetBindingEnv for RealizationLetEnv<'a> {
         // above (entity is already narrowed by `templates.get(id.entity.as_str())`,
         // but the explicit check makes the intent self-documenting and adds a
         // cheap guard against any future refactor that reuses cells across templates).
-
-        // Cycle guard: if `id` is already being resolved on the current call stack,
-        // return None.  The caller's `unwrap_or(InferredTraits::all())` in
-        // `infer_traits_for_expr_in_env` converts None into the safe default, so
-        // cycles in malformed or forward-referencing IR yield `all()` rather than
-        // a stack overflow.
-        if self.in_flight.borrow().iter().any(|p| p == id) {
-            return None;
-        }
-
         if let Some(cell) = template.value_cells.iter().find(|vc| {
             vc.id.entity == id.entity
                 && vc.id.member == id.member
@@ -2167,15 +2193,39 @@ impl<'a> LetBindingEnv for RealizationLetEnv<'a> {
             // in-flight guard above terminates any cycle in well-formed or
             // malformed IR before a stack overflow can occur.
             let expr = cell.default_expr.as_ref()?;
-            self.in_flight.borrow_mut().push(id.clone());
-            let _guard = InFlightGuard {
-                stack: &self.in_flight,
-            };
             let result = infer_traits_for_expr_in_env(expr, self);
             return Some(result);
         }
 
         None
+    }
+}
+
+/// A [`SubRefEnv`] that resolves a `GeomRef::Sub(name)` operand to the traits
+/// of the same-template sibling realization or let named `name`.
+///
+/// `entity` is the template whose realization is being inferred, so a bare
+/// sibling name is addressable as `ValueCellId { entity, member: name }` — the
+/// very key [`RealizationLetEnv::lookup`] already takes. Delegating back to it
+/// reuses the geometry-let arm, the `value_cells` fallback and the cycle guard
+/// in one place instead of forking a second resolution path.
+///
+/// Compound keys are declined. `GeomRef::Sub` is overloaded: besides bare
+/// sibling names it also carries `"<sub>.<member>"` for cross-sub
+/// `self.<sub>.<member>` references, whose referent is a realization on a
+/// DIFFERENT template that this env cannot address. A bare identifier can
+/// never contain a dot, so `contains('.')` is an exact discriminator.
+struct SiblingSubEnv<'a, 'b> {
+    parent: &'a RealizationLetEnv<'b>,
+    entity: &'a str,
+}
+
+impl SubRefEnv for SiblingSubEnv<'_, '_> {
+    fn lookup_sub(&self, name: &str) -> Option<InferredTraits> {
+        if name.contains('.') {
+            return None;
+        }
+        self.parent.lookup(&ValueCellId::new(self.entity, name))
     }
 }
 
