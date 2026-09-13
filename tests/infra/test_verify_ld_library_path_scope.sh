@@ -600,9 +600,19 @@ assert "every subprocess verify.sh forks during scope decision and plan construc
 
 # F-2, STRUCTURAL. The probe above observes one host, one role, one scope; this
 # half pins the structure that makes the invariant hold everywhere — exactly
-# ONE `export LD_LIBRARY_PATH=` statement, sited at the phase boundary. A second
-# export, or this one drifting back into apply_env(), fails here even on a host
-# the probe cannot exercise.
+# ONE `export LD_LIBRARY_PATH=` statement, sited at the phase boundary, reading
+# the same variable --print-plan advertises. A second export, or this one
+# drifting back into apply_env(), fails here even on a host the probe cannot
+# exercise.
+#
+# The RHS is pinned because splitting the old single statement into a computed
+# value + a deferred export split what used to be one guarantee into two: what
+# ENV_LINES ADVERTISES (scripts/verify.sh apply_env) and what the plan loop
+# actually RUNS UNDER. Nothing else here binds them — Section A reads ENV_LINES,
+# Section D reads plan TEXT, and F-1 runs under --print-plan, which exits before
+# the export ever executes. So an export retargeted to any other DEFINED
+# variable (`set -u` catches only a typo, never a real name) would drop the OCCT
+# path from every cargo plan line with the whole suite green.
 #
 # Head-anchored on the whitespace-STRIPPED line, never matched as a substring:
 # _LD_SCRUB (scripts/verify.sh:2066) ASSIGNS plan TEXT carrying that same
@@ -612,6 +622,11 @@ assert "every subprocess verify.sh forks during scope decision and plan construc
 _EXPORT_COUNT=0
 _EXPORT_LINE=0
 _EXPORT_LINES=""
+_EXPORT_RHS=""
+_ADVERT_COUNT=0
+_ADVERT_RHS=""
+_ADVERT_PREFIX='ENV_LINES+=("export LD_LIBRARY_PATH='
+_ADVERT_SUFFIX='")'
 _BUILD_PLAN_COUNT=0
 _BUILD_PLAN_LINE=0
 _PLAN_LOOP_COUNT=0
@@ -625,7 +640,13 @@ while IFS= read -r _line; do
         'export LD_LIBRARY_PATH='*)
             _EXPORT_COUNT=$((_EXPORT_COUNT + 1))
             _EXPORT_LINE=$_SRC_LINENO
+            _EXPORT_RHS="${_t#export LD_LIBRARY_PATH=}"
             _EXPORT_LINES="${_EXPORT_LINES:+$_EXPORT_LINES,}$_SRC_LINENO"
+            ;;
+        "$_ADVERT_PREFIX"*)
+            _ADVERT_COUNT=$((_ADVERT_COUNT + 1))
+            _ADVERT_RHS="${_t#"$_ADVERT_PREFIX"}"
+            _ADVERT_RHS="${_ADVERT_RHS%"$_ADVERT_SUFFIX"}"
             ;;
         'build_plan')
             _BUILD_PLAN_COUNT=$((_BUILD_PLAN_COUNT + 1))
@@ -642,6 +663,29 @@ _export_at_phase_boundary() {
     [ "$_EXPORT_LINE" -gt "$_BUILD_PLAN_LINE" ] && [ "$_EXPORT_LINE" -lt "$_PLAN_LOOP_LINE" ]
 }
 
+# Reduce a right-hand side to the single variable it references —
+# "$X" / "${X}" / "${X:-}" / $X all yield X. Anything that is NOT exactly one
+# bare reference (a literal, a concatenation like "$X:/extra") yields "", so it
+# cannot satisfy the SPOT assertion below. Matching by reference rather than by
+# literal text is what keeps this a claim about the two sites AGREEING: a
+# consistent rename of _PLAN_LD_LIBRARY_PATH stays green, retargeting one site
+# alone does not.
+_LD_REF_NAME=""
+_ld_ref_name() {
+    local _r="$1"
+    _LD_REF_NAME=""
+    _r="${_r#\"}"
+    _r="${_r%\"}"
+    case "$_r" in '$'*) _r="${_r#\$}" ;; *) return 0 ;; esac
+    case "$_r" in '{'*'}') _r="${_r#\{}"; _r="${_r%\}}"; _r="${_r%%[-:+=?]*}" ;; esac
+    case "$_r" in '' | *[!A-Za-z0-9_]*) return 0 ;; esac
+    _LD_REF_NAME="$_r"
+}
+_ld_ref_name "$_EXPORT_RHS"
+_EXPORT_REF="$_LD_REF_NAME"
+_ld_ref_name "$_ADVERT_RHS"
+_ADVERT_REF="$_LD_REF_NAME"
+
 # Both anchors asserted before the placement they bound, so a rename fails HERE
 # rather than silently vacuifying the comparison.
 assert "non-vacuity: the 'build_plan' invocation appears exactly once in scripts/verify.sh (a rename must fail HERE, not vacuify the placement assertion); got $_BUILD_PLAN_COUNT" \
@@ -652,5 +696,12 @@ assert "scripts/verify.sh carries exactly ONE 'export LD_LIBRARY_PATH=' statemen
     test "$_EXPORT_COUNT" -eq 1
 assert "the single export sits at the PHASE BOUNDARY — after build_plan (line $_BUILD_PLAN_LINE) and before the plan-execution loop (line $_PLAN_LOOP_LINE) — so scope decision and plan construction fork on the ambient loader path; got line $_EXPORT_LINE" \
     _export_at_phase_boundary
+
+assert "non-vacuity: apply_env() advertises the plan's loader path to --print-plan via exactly one 'ENV_LINES+=(\"export LD_LIBRARY_PATH=' line (a rename or removal must fail HERE, not vacuify the SPOT assertion below); got $_ADVERT_COUNT" \
+    test "$_ADVERT_COUNT" -eq 1
+assert "the phase-boundary export's right-hand side is a SINGLE bare variable reference, not a literal or a concatenation — anything else cannot be bound to what --print-plan advertises; got '${_EXPORT_RHS:-<none>}'" \
+    test -n "$_EXPORT_REF"
+assert "SPOT: the phase-boundary export and the ENV_LINES advertisement read the SAME variable, so what --print-plan promises is what the plan loop actually runs under — retargeting the export at any other DEFINED variable (set -u catches a typo, never a real name) would drop OCCT from every cargo plan line while every other section stayed green; export reads '\$${_EXPORT_REF:-<none>}', ENV_LINES advertises '\$${_ADVERT_REF:-<none>}'" \
+    test "$_EXPORT_REF" = "$_ADVERT_REF"
 
 test_summary
