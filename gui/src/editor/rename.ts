@@ -308,6 +308,42 @@ export interface RenameUi {
 export type ApplyEditFn = (view: EditorView, edit: WorkspaceEdit, activeUri: string) => void;
 
 /**
+ * Request a rename edit that is safe to apply, re-issuing ONCE on version skew.
+ *
+ * An edit whose stamped versions disagree with the client's describes a document
+ * the client no longer holds, so its ranges no longer point at the text they
+ * were computed from. Asking again is the only recovery available from here: the
+ * second request is answered against the version the client has since sent.
+ *
+ * The re-issue is bounded at one. A user typing through the debounced didChange
+ * can invalidate every answer in turn, and an unbounded loop would spin against
+ * them instead of reporting that the rename did not apply.
+ *
+ * Returns null when the server refused the name outright, or when the re-issued
+ * edit was stale too — both mean "apply nothing, tell the user".
+ *
+ * With no `currentVersion` reader nothing is ever judged stale, so the single
+ * request and its answer pass straight through.
+ */
+async function resolveApplicableEdit(
+  client: RenameClient,
+  uri: string,
+  line: number,
+  character: number,
+  newName: string,
+  currentVersion?: DocumentVersionReader,
+): Promise<WorkspaceEdit | null> {
+  const applicable = (edit: WorkspaceEdit | null): boolean =>
+    !!edit && (!currentVersion || staleEditTargets(edit, currentVersion).length === 0);
+
+  const first = await client.rename(uri, line, character, newName);
+  if (!first || applicable(first)) return first ?? null;
+
+  const reissued = await client.rename(uri, line, character, newName);
+  return applicable(reissued) ? reissued : null;
+}
+
+/**
  * Create a CodeMirror Command for F2 rename.
  *
  * Returns a `(view) => boolean` suitable for keymap.of in Editor.tsx. It reads
@@ -325,12 +361,18 @@ export type ApplyEditFn = (view: EditorView, edit: WorkspaceEdit, activeUri: str
  * Always returns true so the F2 key is consumed. Both the prompt-open and
  * apply steps re-check that the URI is still current (and the apply step also
  * checks view.dom.isConnected) so stale applies never corrupt the active buffer.
+ *
+ * `currentVersion`, when supplied, arms the version-skew guard: an edit computed
+ * against a document version the client has already moved past is re-requested
+ * rather than applied (see resolveApplicableEdit). Omitting it leaves the
+ * unguarded behaviour untouched.
  */
 export function renameCommand(
   uriGetter: () => string,
   client: RenameClient,
   ui: RenameUi,
   applyEdit?: ApplyEditFn,
+  currentVersion?: DocumentVersionReader,
 ): (view: EditorView) => boolean {
   return (view: EditorView): boolean => {
     const head = view.state.selection.main.head;
@@ -356,17 +398,19 @@ export function renameCommand(
           target.range,
           target.placeholder,
           (newName: string) => {
-            client
-              .rename(uri, lspLine, lspChar, newName)
+            resolveApplicableEdit(client, uri, lspLine, lspChar, newName, currentVersion)
               .then((edit) => {
                 // The field can outlive the editor, and the user may switch files
                 // while the rename is in flight — never mutate a dead or
                 // now-different view; a stale apply would corrupt the new file.
+                // Checked HERE, after the LAST await, so a re-issued request's
+                // second await window is covered by the same guard.
                 if (!view.dom.isConnected || uriGetter() !== uri) return;
                 if (!edit) {
                   // Server rejected the accepted name (invalid identifier /
-                  // no-op): the field already closed, so surface a transient
-                  // message instead of dropping the rename silently.
+                  // no-op), or every answer it gave was stale: the field already
+                  // closed, so surface a transient message instead of dropping
+                  // the rename silently.
                   ui.showRenameFailed(view);
                   return;
                 }
