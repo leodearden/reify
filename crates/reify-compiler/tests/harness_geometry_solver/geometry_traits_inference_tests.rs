@@ -1268,6 +1268,77 @@ fn infer_traits_for_op_in_env_resolves_sub_ref_through_env() {
     );
 }
 
+/// The `Pattern` arm resolves its `target` through the env too, so an unbounded
+/// sibling stays unbounded under `combine_pattern`.
+///
+/// `env` is threaded through every recursive `infer_op` arm; this pins the one
+/// that no end-to-end case reaches, so a future refactor that drops the `env`
+/// argument on this arm alone reds here rather than silently reverting `Pattern`
+/// operands to the `all()` safe default.
+#[test]
+fn infer_traits_for_op_in_env_resolves_sub_ref_on_pattern_target() {
+    let ops = vec![CompiledGeometryOp::Pattern {
+        kind: PatternKind::Linear,
+        target: GeomRef::Sub("h".to_string()),
+        args: vec![],
+    }];
+    let inferred = infer_traits_for_op_in_env(&ops, &StubSubRefEnv);
+    assert!(
+        !inferred.bounded,
+        "Sub(\"h\") resolves to unbounded_convex() and combine_pattern inherits `bounded` \
+         from its target, so patterning an unbounded sibling must stay unbounded, \
+         got {inferred:?}"
+    );
+    assert_eq!(
+        inferred,
+        combine_pattern(InferredTraits::unbounded_convex()),
+        "the Pattern arm must apply combine_pattern to the RESOLVED operand — no other \
+         propagation rule and no safe-default short-circuit"
+    );
+}
+
+/// The `Sweep` arm infers from `profiles.first()` ONLY, so with the env now
+/// resolving `Sub` operands, a `loft` whose first profile is bounded infers
+/// `bounded=true` however unbounded its later profiles are.
+///
+/// That single-profile approximation is pre-existing — it behaves identically
+/// for inlined `GeomRef::Step` profiles — but chasing `Sub` makes it reachable
+/// on shapes that previously safe-defaulted, so it is recorded here as a known
+/// decision rather than left undocumented. Both orderings are asserted: the
+/// second is the one that fails if `infer_op` ever starts folding every profile.
+#[test]
+fn infer_traits_for_op_in_env_sweep_consults_only_the_first_profile() {
+    let unbounded_first = vec![CompiledGeometryOp::Sweep {
+        kind: SweepKind::Loft,
+        profiles: vec![
+            GeomRef::Sub("h".to_string()),
+            GeomRef::Sub("declined".to_string()),
+        ],
+        args: vec![],
+    }];
+    assert!(
+        !infer_traits_for_op_in_env(&unbounded_first, &StubSubRefEnv).bounded,
+        "first profile Sub(\"h\") resolves to unbounded_convex(), and combine_sweep inherits \
+         `bounded` from the profile, so the loft must infer bounded=false"
+    );
+
+    let unbounded_second = vec![CompiledGeometryOp::Sweep {
+        kind: SweepKind::Loft,
+        profiles: vec![
+            GeomRef::Sub("declined".to_string()),
+            GeomRef::Sub("h".to_string()),
+        ],
+        args: vec![],
+    }];
+    assert!(
+        infer_traits_for_op_in_env(&unbounded_second, &StubSubRefEnv).bounded,
+        "KNOWN APPROXIMATION, asserted deliberately: only profiles.first() is consulted, so \
+         an unbounded profile in any later position is invisible to inference. If a future \
+         change folds every profile, this assertion is the one to flip — and the \
+         end-to-end `loft` behaviour changes with it"
+    );
+}
+
 /// A `GeomRef::Sub(name)` the env DECLINES keeps today's `InferredTraits::all()`
 /// safe-default — the `None` → `all()` collapse is the same convention every
 /// other defensive arm in the module uses.
@@ -1926,6 +1997,25 @@ fn geometry_unbounded_count(source: &str) -> (usize, Vec<String>) {
     (count, rendered)
 }
 
+/// Assert `source` compiles with NO errors at all — which subsumes "emits no
+/// `GeometryUnbounded`" while also failing if the fixture stops compiling for
+/// an unrelated reason (a renamed stdlib builtin, a grammar change).
+///
+/// The weaker `assert_eq!(geometry_unbounded_count(..).0, 0)` passes VACUOUSLY
+/// in that case: the count of a diagnostic that never got a chance to fire is
+/// also 0, so a must-stay-silent test would go green while proving nothing.
+/// Every zero-expected case in this section therefore goes through here, and
+/// `why` carries its per-case rationale into the failure message.
+fn assert_compiles_with_no_geometry_unbounded(source: &str, why: &str) {
+    let (count, diags) = geometry_unbounded_count(source);
+    assert!(
+        diags.is_empty(),
+        "fixture must compile clean, so that its zero GeometryUnbounded count means the \
+         check ran and stayed silent rather than never running at all — {why}. \
+         GeometryUnbounded count: {count}. All errors: {diags:?}"
+    );
+}
+
 /// One hop: `let h = half_space(..)` then `let t = translate(h, ..)`, with `t`
 /// passed to a `param g : Bounded` slot.
 ///
@@ -1947,11 +2037,13 @@ fn translate_of_unbounded_sibling_let_at_bounded_slot_emits_geometry_unbounded()
         }
     "#;
     let (count, diags) = geometry_unbounded_count(source);
-    assert!(
-        count >= 1,
-        "expected a GeometryUnbounded diagnostic for `translate(h, ..)` where `h` is an \
-         unbounded sibling let: the operand lowers to GeomRef::Sub(\"h\") (#4668) and must be \
-         chased through the sibling realization. Got {count}. All diagnostics: {diags:?}"
+    assert_eq!(
+        count, 1,
+        "expected EXACTLY ONE GeometryUnbounded diagnostic for `translate(h, ..)` where `h` \
+         is an unbounded sibling let: the operand lowers to GeomRef::Sub(\"h\") (#4668) and \
+         must be chased through the sibling realization. The fixture has exactly one \
+         geometry slot, so a count above 1 means the chase re-reported one operand. \
+         Got {count}. All diagnostics: {diags:?}"
     );
 }
 
@@ -1975,11 +2067,12 @@ fn two_hop_transform_chain_of_unbounded_sibling_let_emits_geometry_unbounded() {
         }
     "#;
     let (count, diags) = geometry_unbounded_count(source);
-    assert!(
-        count >= 1,
-        "expected a GeometryUnbounded diagnostic for a two-hop sibling-let chain \
+    assert_eq!(
+        count, 1,
+        "expected EXACTLY ONE GeometryUnbounded diagnostic for a two-hop sibling-let chain \
          (h -> t1 -> t2): each hop lowers to its own GeomRef::Sub (#4668), so chasing must \
-         recurse rather than stop at depth 1. Got {count}. All diagnostics: {diags:?}"
+         recurse rather than stop at depth 1 — and must report the one slot once, not once \
+         per hop. Got {count}. All diagnostics: {diags:?}"
     );
 }
 
@@ -2001,11 +2094,12 @@ fn shell_of_unbounded_sibling_let_at_bounded_slot_emits_geometry_unbounded() {
         }
     "#;
     let (count, diags) = geometry_unbounded_count(source);
-    assert!(
-        count >= 1,
-        "expected a GeometryUnbounded diagnostic for `shell(h, ..)` where `h` is an unbounded \
-         sibling let: the Modify arm resolves its target through the same GeomRef::Sub (#4668) \
-         path as Transform. Got {count}. All diagnostics: {diags:?}"
+    assert_eq!(
+        count, 1,
+        "expected EXACTLY ONE GeometryUnbounded diagnostic for `shell(h, ..)` where `h` is an \
+         unbounded sibling let: the Modify arm resolves its target through the same \
+         GeomRef::Sub (#4668) path as Transform, and the fixture has one geometry slot. \
+         Got {count}. All diagnostics: {diags:?}"
     );
 }
 
@@ -2028,12 +2122,10 @@ fn translate_of_bounded_sibling_let_at_bounded_slot_emits_no_geometry_unbounded(
             sub x = Foo(g: t)
         }
     "#;
-    let (count, diags) = geometry_unbounded_count(source);
-    assert_eq!(
-        count, 0,
-        "expected NO GeometryUnbounded for `translate(b, ..)` where `b` is a BOUNDED sibling \
-         let: chasing GeomRef::Sub(\"b\") (#4668) must resolve to box's bounded=true, not \
-         pessimise the operand. Got {count}. All diagnostics: {diags:?}"
+    assert_compiles_with_no_geometry_unbounded(
+        source,
+        "chasing GeomRef::Sub(\"b\") (#4668) must resolve to box's bounded=true, not \
+         pessimise the operand",
     );
 }
 
@@ -2063,12 +2155,10 @@ fn mutually_referential_sibling_lets_terminate_instead_of_overflowing() {
     "#;
     // Reaching the next line at all is the assertion: a missing cycle guard
     // overflows the stack here rather than returning.
-    let (count, diags) = geometry_unbounded_count(source);
-    assert_eq!(
-        count, 0,
+    assert_compiles_with_no_geometry_unbounded(
+        source,
         "a sibling-let cycle must terminate at the in_flight guard and safe-default to \
-         InferredTraits::all() (bounded=true), not invent a diagnostic. Got {count}. \
-         All diagnostics: {diags:?}"
+         InferredTraits::all() (bounded=true), not invent a diagnostic",
     );
 }
 
@@ -2125,12 +2215,11 @@ fn cross_sub_geometry_reference_at_bounded_slot_is_unchanged_by_sub_chasing() {
             sub x = Foo(g: combined)
         }
     "#;
-    let (count, diags) = geometry_unbounded_count(source);
-    assert_eq!(
-        count, 0,
+    assert_compiles_with_no_geometry_unbounded(
+        source,
         "a cross-sub `self.inner.body` reference lowers to the compound key \
          GeomRef::Sub(\"inner.body\"), which #7060 deliberately does NOT chase — behaviour \
-         must be identical to before the fix. Got {count}. All diagnostics: {diags:?}"
+         must be identical to before the fix",
     );
 }
 
@@ -2159,10 +2248,155 @@ fn intersection_of_unbounded_sibling_let_with_box_emits_no_geometry_unbounded() 
             sub x = Foo(g: upper)
         }
     "#;
+    assert_compiles_with_no_geometry_unbounded(
+        source,
+        "intersection with a bounded operand IS bounded, so no GeometryUnbounded may fire \
+         even though `cutter` is unbounded",
+    );
+}
+
+/// (d) Depth termination. Build `let t0 = half_space(..)` followed by `n` hops
+/// of `let t{i} = translate(t{i-1}, ..)`, and pass the last one to a `Bounded`
+/// slot.
+fn sibling_let_chain_source(n: usize) -> String {
+    let mut body = String::from("            let t0 = half_space(0mm, 0mm, 0mm, 0, 0, 1)\n");
+    for i in 1..=n {
+        body.push_str(&format!(
+            "            let t{i} = translate(t{}, 1mm, 0mm, 0mm)\n",
+            i - 1
+        ));
+    }
+    format!(
+        "        structure def Foo {{\n\
+         \x20           param g : Bounded\n\
+         \x20       }}\n\
+         \x20       structure def Top {{\n\
+         {body}\
+         \x20           sub x = Foo(g: t{n})\n\
+         \x20       }}\n"
+    )
+}
+
+/// A sibling-let chain LONGER than `MAX_SIBLING_CHASE_DEPTH` terminates at the
+/// depth cap and safe-defaults, instead of overflowing the stack.
+///
+/// The cycle guard bounds revisits, not chain length: this chain is perfectly
+/// acyclic, so every hop is a fresh `ValueCellId` the `in_flight` membership
+/// check waves through, and the chase recurses once per hop. The compiler's own
+/// `recursion_guard` cap does not cover it either — each let is depth-1 for
+/// `compile_expr`/`compile_geometry_call`, so `MAX_COMPILE_RECURSION_DEPTH`
+/// never fires. MEASURED before the depth cap landed: this source at n=2000
+/// printed `has overflowed its stack / fatal runtime error: stack overflow` and
+/// SIGABRTed the whole test binary.
+///
+/// Like the cycle case, the cap trades the diagnostic for termination: past
+/// 256 hops the chase declines and the operand collapses to
+/// `InferredTraits::all()`, so an unbounded producer at the far end of a
+/// pathological chain goes unreported. That is the deliberate choice — an
+/// uncatchable abort cannot be traded for anything else, and the companion test
+/// below pins that realistic depths are unaffected.
+#[test]
+fn sibling_let_chain_past_the_depth_cap_terminates_instead_of_overflowing() {
+    // Reaching the next line at all is the assertion: without the depth cap
+    // this aborts the process rather than returning.
+    assert_compiles_with_no_geometry_unbounded(
+        &sibling_let_chain_source(2000),
+        "a chain past MAX_SIBLING_CHASE_DEPTH must decline at the cap and safe-default to \
+         InferredTraits::all(), which reports nothing",
+    );
+}
+
+/// The depth cap is a backstop, not a functional regression: a chain well
+/// within `MAX_SIBLING_CHASE_DEPTH` still chases all the way to the unbounded
+/// producer and diagnoses.
+///
+/// 200 hops sits below the 256 cap with headroom for the one `lookup` frame the
+/// slot itself costs. Lower the cap below this and the test reds, which is the
+/// intended signal — it means realistic designs stopped being diagnosed.
+#[test]
+fn sibling_let_chain_within_the_depth_cap_still_emits_geometry_unbounded() {
+    let (count, diags) = geometry_unbounded_count(&sibling_let_chain_source(200));
+    assert_eq!(
+        count, 1,
+        "a 200-hop sibling-let chain is inside MAX_SIBLING_CHASE_DEPTH (256), so chasing must \
+         still reach `t0 = half_space(..)` and report the one Bounded slot exactly once. \
+         Got {count}. All diagnostics: {diags:?}"
+    );
+}
+
+/// (e) A Solid-typed param's geometry DEFAULT is authoritative for trait
+/// inference, at every hop count.
+///
+/// `geometry_realization_names` admits Solid params whose default is a geometry
+/// call, and `compile_entity` lowers that default into a realization next to the
+/// geometry lets — so `GeomRef::Sub("p")` resolves to the DEFAULT's traits, not
+/// to whatever an instantiation might pass for `p`.
+///
+/// This pair documents that #7060 did not invent the policy, it made it
+/// consistent: the direct form already diagnosed before the fix (no `Sub`
+/// involved), and the let-indirected form now agrees with it. Declining
+/// param-sourced realizations would have made `Foo(g: p)` and
+/// `Foo(g: translate(p, ..))` disagree about the same default.
+#[test]
+fn solid_param_default_direct_at_bounded_slot_emits_geometry_unbounded() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            param p : Solid = half_space(0mm, 0mm, 0mm, 0, 0, 1)
+            sub x = Foo(g: p)
+        }
+    "#;
     let (count, diags) = geometry_unbounded_count(source);
     assert_eq!(
-        count, 0,
-        "intersection with a bounded operand IS bounded, so no GeometryUnbounded may fire \
-         even though `cutter` is unbounded. Got {count}. All diagnostics: {diags:?}"
+        count, 1,
+        "PRE-EXISTING behaviour, pinned as the baseline for the indirected case below: an \
+         unbounded param default at a Bounded slot is diagnosed even though an instantiation \
+         could pass bounded geometry. Got {count}. All diagnostics: {diags:?}"
+    );
+}
+
+#[test]
+fn solid_param_default_through_sibling_let_at_bounded_slot_emits_geometry_unbounded() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            param p : Solid = half_space(0mm, 0mm, 0mm, 0, 0, 1)
+            let t = translate(p, 1mm, 0mm, 0mm)
+            sub x = Foo(g: t)
+        }
+    "#;
+    let (count, diags) = geometry_unbounded_count(source);
+    assert_eq!(
+        count, 1,
+        "WIDENED by #7060 and deliberately so: `GeomRef::Sub(\"p\")` (#4668) resolves to the \
+         param's lowered default realization, so the indirected form now agrees with the \
+         direct form pinned above instead of silently passing. Got {count}. \
+         All diagnostics: {diags:?}"
+    );
+}
+
+/// The param-default policy is about the DEFAULT's traits, not about params
+/// being pessimised: a BOUNDED default at a `Bounded` slot stays silent through
+/// the same `GeomRef::Sub` chase.
+#[test]
+fn bounded_solid_param_default_through_sibling_let_emits_no_geometry_unbounded() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            param p : Solid = box(20mm, 20mm, 20mm)
+            let t = translate(p, 1mm, 0mm, 0mm)
+            sub x = Foo(g: t)
+        }
+    "#;
+    assert_compiles_with_no_geometry_unbounded(
+        source,
+        "chasing Sub(\"p\") to a BOUNDED param default must resolve to box's bounded=true — \
+         the param arm reads the default's traits, it does not pessimise params",
     );
 }

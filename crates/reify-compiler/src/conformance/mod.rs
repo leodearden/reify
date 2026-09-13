@@ -2082,6 +2082,31 @@ impl Drop for InFlightGuard<'_> {
     }
 }
 
+/// Maximum sibling-let chase depth in [`RealizationLetEnv::lookup`] before the
+/// env declines and safe-defaults.
+///
+/// A cycle guard bounds REVISITS, not chain LENGTH: `let t1 = translate(t0, ..)`
+/// / `let t2 = translate(t1, ..)` / … is acyclic and recurses once per hop, so
+/// without a depth cap an N-long chain costs N nested `lookup` frames. The
+/// compiler's own [`crate::recursion_guard`] cap does not cover this: it bounds
+/// `compile_expr` / `compile_geometry_call`, and each let in such a chain is
+/// depth-1 for both, so `MAX_COMPILE_RECURSION_DEPTH` never fires here.
+///
+/// Same motivating hazard as `recursion_guard`, and the same uncatchable
+/// failure mode: a stack overflow SIGSEGVs/aborts the process rather than
+/// unwinding, so it must be prevented by a counter, not caught. Measured in a
+/// **debug** build on a `t{i} = translate(t{i-1}, ..)` chain at a `Bounded`
+/// slot: N=800 compiles on the GUI's 2 MiB tokio-worker stack while N=1600
+/// aborts, i.e. ≈1.7 KiB of stack per hop. At 256 the chase spends ≈0.4 MiB —
+/// comfortably inside 2 MiB with room for the compile recursion beneath it.
+///
+/// Deliberately a SEPARATE constant from `MAX_COMPILE_RECURSION_DEPTH` rather
+/// than an alias of it: the two bound different recursions with different
+/// per-frame costs, so tying them would let a future bump on one axis silently
+/// overflow the other. They coincide at 256 today only because the same
+/// "realistic designs nest a few dozen levels" argument applies to both.
+const MAX_SIBLING_CHASE_DEPTH: usize = 256;
+
 /// A `LetBindingEnv` that resolves geometry-typed `let` bindings by looking up
 /// their compiled op-arrays in the parent template's `realizations` list.
 ///
@@ -2118,7 +2143,22 @@ impl Drop for InFlightGuard<'_> {
 /// references) are deliberately NOT chased: their referent lives on a different
 /// template, so they keep the `InferredTraits::all()` safe default.
 ///
-/// # Cycle guard
+/// # Solid params with geometry defaults
+///
+/// `geometry_realization_names` admits Solid-typed PARAMS whose default is a
+/// geometry call, and `compile_entity` lowers that default into a realization
+/// alongside the geometry lets. Chasing therefore treats a param's default as
+/// authoritative for trait inference — `param p : Solid = half_space(..)` at a
+/// `Bounded` slot is diagnosed even though an instantiation could pass bounded
+/// geometry instead. That is the PRE-EXISTING policy of the un-indirected form
+/// (`sub x = Foo(g: p)` already diagnoses, with no `Sub` involved); declining
+/// param-sourced realizations here would make `Foo(g: translate(p, ..))` and
+/// `Foo(g: p)` disagree about the same default. Consistency across hop counts
+/// is the deliberate choice — see
+/// `solid_param_default_*_at_bounded_slot_*` in
+/// `geometry_traits_inference_tests.rs`.
+///
+/// # Cycle and depth guards
 ///
 /// BOTH arms recurse back into `lookup`: the realization arm through
 /// `SiblingSubEnv::lookup_sub`, the value_cells fallback through
@@ -2129,6 +2169,12 @@ impl Drop for InFlightGuard<'_> {
 /// held across both; re-entry returns `None`, which the caller's
 /// `unwrap_or(InferredTraits::all())` turns into the safe default rather than a
 /// stack overflow.
+///
+/// A cycle check bounds revisits but not chain LENGTH, and a long acyclic
+/// sibling-let chain recurses once per hop, so the same Vec's LENGTH is
+/// additionally bounded by [`MAX_SIBLING_CHASE_DEPTH`] — see that constant for
+/// the measured per-hop stack cost and why it is not the compiler's
+/// `MAX_COMPILE_RECURSION_DEPTH`.
 struct RealizationLetEnv<'a> {
     templates: &'a HashMap<String, &'a TopologyTemplate>,
     /// In-flight visited set used to terminate cycles on both lookup paths
@@ -2151,6 +2197,13 @@ impl<'a> LetBindingEnv for RealizationLetEnv<'a> {
         // `unwrap_or(InferredTraits::all())` converts None into the safe
         // default, so a cyclic sibling-let pair or forward-referencing IR
         // yields `all()` rather than a stack overflow.
+        //
+        // Depth guard: `in_flight.len()` IS the current chase depth, so the
+        // same Vec bounds an acyclic-but-long chain, which the cycle check
+        // above cannot see. Same `None` → `all()` collapse.
+        if self.in_flight.borrow().len() >= MAX_SIBLING_CHASE_DEPTH {
+            return None;
+        }
         if self.in_flight.borrow().iter().any(|p| p == id) {
             return None;
         }
