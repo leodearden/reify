@@ -59,30 +59,25 @@
 #      was listed" and "this pid's exe was read".  Test binaries live 0.2-0.8 s,
 #      so candidates that were genuinely running when the sample began were
 #      recorded as vanished by the time their turn came.
-#   2. THE PREFILTER ITSELF.  `pgrep -f` walks argv across all of /proc and cost
-#      0.15-0.24 s here (2.6 s per pass on the loaded host that produced window
-#      1), so the list it returned had already decayed before confirmation
-#      started.  Batching the confirmation of a stale list still confirms a
-#      stale list, however fast the batch is.
+#   2. THE PREFILTER ITSELF.  `pgrep -f` walks argv across all of /proc, so the
+#      list it returned had already decayed before confirmation started.
+#      Batching the confirmation of a stale list still confirms a stale list,
+#      however fast the batch is.
 #
-# MEASURED.  The pre-fix sampler against a batched whole-/proc snapshot on this
-# host (1163 processes, loadavg 94), five rounds alternating within the same
-# second:
+# MEASURED: the pre-fix instrument UNDERCOUNTS a batched whole-/proc snapshot by
+# 35-65%, and the old affordability objection to such a scan (that it degrades
+# from the intended 1 Hz to about 0.05 Hz under load) was an objection to ONE
+# FORK PER PID, which one fork TOTAL removes.  Both A/B series, the method, and
+# the per-pass costs live in
+# docs/notes/nextest-global-pool-concurrency-observation.md -> "Prefilter->confirm
+# race", which is their single owner; they are cited here, not restated, because
+# a measurement copied into three files has already been seen to diverge over
+# which copy is authoritative.
 #
-#       batched snapshot    24  30  27  30  26
-#       pre-fix sampler     14  18  16  17   9
-#
-# A 35-65% UNDERCOUNT.  Window 1's peak=14 in
-# docs/notes/nextest-global-pool-concurrency-observation.md must therefore be
-# read as a FLOOR, not as a bound that held.
-#
-# THE OLD AFFORDABILITY OBJECTION IS SUPERSEDED, also measured.  It held that a
-# whole-/proc scan degraded from the intended 1 Hz to about 0.05 Hz at loadavg
-# 78 — but that was an objection to ONE FORK PER PID, and one fork TOTAL removes
-# it.  On this host at loadavg 94 with 1163 processes a batched whole-/proc pass
-# costs 0.04/0.04/0.22 s, against 0.15-0.24 s for the pgrep prefilter ALONE with
-# a fork per candidate still to come on top.  Discovery and confirmation are now
-# ONE pass over ONE snapshot, which is what a race-free sample requires.
+# ONE consequence belongs here, because it governs how this instrument's own
+# output must be read: that note's window 1 peak=14 is a FLOOR, not a bound that
+# held.  Discovery and confirmation are now ONE pass over ONE snapshot, which is
+# what a race-free sample requires.
 #
 # ---------------------------------------------------------------------------
 # WHY nonzero_samples EXISTS (defect (b), measured).

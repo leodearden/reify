@@ -268,7 +268,17 @@ methods alternating within the same second (loadavg 88.61, 1075 processes):
 
 The fixed sampler tracks an independent batched snapshot; the pre-fix algorithm
 undercounts it by roughly 60%.  An earlier A/B on the same host at loadavg 94
-gave 24/30/27/30/26 against 14/18/16/17/9 — a 35–65% undercount.
+gave 24/30/27/30/26 against 14/18/16/17/9 — a 35–65% undercount.  For cost: a
+batched whole-`/proc` pass took 0.04/0.04/0.22 s there, against 0.15–0.24 s for
+the `pgrep` prefilter *alone* with a fork per candidate still to come on top
+(2.6 s per pass on the loaded window-1 host), which is what supersedes the old
+affordability objection to a whole-`/proc` scan.
+
+**This section is the single owner of those numbers.**  Both
+`scripts/sample-test-binary-concurrency.sh` and the B1 assert in
+`tests/infra/test_test_binary_concurrency_sampler.sh` cite it for the 35–65%
+conclusion rather than restating the series — three copies of one measurement had
+already drifted over which one was authoritative.  Re-derivations belong here.
 
 Fixed by making candidate discovery and confirmation ONE pass over ONE snapshot:
 the default path enumerates `<PROC_ROOT>/*/exe` with a bash glob (readdir only,

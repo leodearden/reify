@@ -495,16 +495,11 @@ assert "A10d: a REIFY_SAMPLER_PIDS_CMD that itself relies on globbing still work
 # so candidates that were genuinely running when the sample began were counted as
 # vanished (A5's benign skip) by the time their turn came.
 #
-# MEASURED, not hypothesised.  The pre-fix sampler was run against a batched
-# whole-/proc snapshot on this host (1163 processes, loadavg 94), five rounds,
-# alternating within the same second:
-#
-#     batched snapshot   24  30  27  30  26
-#     pre-fix sampler    14  18  16  17   9
-#
-# A 35-65% UNDERCOUNT.  That is why window 1's peak=14 in
-# docs/notes/nextest-global-pool-concurrency-observation.md must be read as a
-# FLOOR, not as a bound that held.
+# MEASURED, not hypothesised: the pre-fix sampler undercounts a batched
+# whole-/proc snapshot by 35-65%.  The A/B series and method live in
+# docs/notes/nextest-global-pool-concurrency-observation.md -> "Prefilter->confirm
+# race", which owns those numbers; this assert pins the BEHAVIOUR they justify,
+# in integers that are exact on any host under any load.
 #
 # WHAT THIS ASSERT PINS: ONE CALL COVERS ALL CANDIDATES OF A SAMPLE.  The PATH
 # shim delegates to the real readlink and only THEN destroys the remaining
