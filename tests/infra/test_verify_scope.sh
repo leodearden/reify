@@ -2380,4 +2380,93 @@ assert "GV-8: RUN_GUI_VITEST=1 for a corpus edit" \
 assert "GV-8: gui lane carries npm test" \
     plan_has "$_GUI_LANE_WITH_VITEST"
 
+# ---------------------------------------------------------------------------
+# GV-FAILWIDE-* (task 7427): decide_scope's rename-source fail-wide returns.
+#
+# The rename-source recovery (task 5536) deliberately fails WIDE when its own
+# `git diff --diff-filter=R` fails, rather than silently losing the source
+# side of a renamed fixture. Those two returns are the only decide_scope exits
+# GV-1..GV-8 never reach — every scenario above leaves decide_scope through
+# its normal tail — so the widening tuple they set is untested, and the vitest
+# gate reads a variable they never assign.
+#
+# Driven by a PATH shim that fails ONLY the exact `--diff-filter=R` argument
+# and execs the real binary for everything else — notably the primary
+# --diff-filter=ACMRD diff, which must keep succeeding for the run to reach
+# the vitest gate at all. Same PATH-stub shape as test_seed_warm_lane.sh and
+# test_warm_lane_pool.sh; the shim records each firing so a scenario that
+# silently stopped triggering the arm fails instead of passing vacuously
+# (both fixtures widen for other reasons too, so "vitest ran" alone is not
+# evidence the fail-wide path was taken).
+#
+# Assert on RUN_GUI_VITEST=1, not merely "the run did not abort": an
+# initializer-only fix would leave these returns at GUI_PATH_SIGNAL=0 and
+# reach vitest only via closure_reaches_reify_gui's closure-unavailable arm.
+# The emitted lane is what distinguishes a deliberate widening from that
+# accident.
+# ---------------------------------------------------------------------------
+_FW_SHIM_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_FW_SHIM_DIR")
+_FW_FIRED="$_FW_SHIM_DIR/fired"
+_FW_ERR="$_FW_SHIM_DIR/stderr.log"
+cat > "$_FW_SHIM_DIR/git" << STUB_EOF
+#!/usr/bin/env bash
+for arg in "\$@"; do
+    if [ "\$arg" = "--diff-filter=R" ]; then
+        echo "\$*" >> "$_FW_FIRED"
+        echo "git: simulated rename-source diff failure" >&2
+        exit 3
+    fi
+done
+exec $(command -v git) "\$@"
+STUB_EOF
+chmod +x "$_FW_SHIM_DIR/git"
+
+# _plan_for_staged_shimmed <file...> — plan_for's stage/capture/unstage body
+# with the shim first on PATH and stderr diverted to $_FW_ERR. It cannot just
+# BE plan_for: the C5 WARNING this family asserts on is written to fd 2, which
+# plan_for leaves on the suite's own stderr. PATH is PREPENDED, never
+# replaced, so grep/cut/sort stay resolvable inside verify.sh.
+_plan_for_staged_shimmed() {
+    local f
+    for f in "$@"; do
+        mkdir -p "$FIX/$(dirname "$f")"
+        printf 'x\n' > "$FIX/$f"
+        git -C "$FIX" add "$f"
+    done
+    capture_print_plan PLAN_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && exec env PATH="$2:$PATH" bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan 2>"$3"' \
+        _ "$FIX" "$_FW_SHIM_DIR" "$_FW_ERR" || true
+    git -C "$FIX" reset -q -- . 2>/dev/null || true
+    for f in "$@"; do rm -f "$FIX/$f"; done
+}
+
+echo ""
+echo "--- Scenario GV-FAILWIDE-1: staged rename-source diff fails -> widen, not abort ---"
+rm -f "$_FW_FIRED" "$_FW_ERR"
+_plan_for_staged_shimmed crates/reify-doc/src/lib.rs
+assert "GV-FAILWIDE-1: the shim fired (the fail-wide return was actually taken)" \
+    test -s "$_FW_FIRED"
+assert "GV-FAILWIDE-1: the C5 WARNING is still printed" \
+    bash -c 'grep -q "rename-source diff failed — failing WIDE" "$1"' _ "$_FW_ERR"
+assert "GV-FAILWIDE-1: RUN_GUI_VITEST=1 — failing wide runs the whole lane" \
+    _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
+assert "GV-FAILWIDE-1: gui lane carries npm test" \
+    plan_has "$_GUI_LANE_WITH_VITEST"
+
+# The branch twin. plan_for_branch_env's `env ${2:+"$2"}` hook (pre-1) carries
+# the shim; its capture discards fd 2 by construction, so the WARNING-text
+# assertion lives on the staged scenario above and the shim log is what proves
+# this arm fired.
+echo ""
+echo "--- Scenario GV-FAILWIDE-2: branch rename-source diff fails -> widen, not abort ---"
+rm -f "$_FW_FIRED"
+plan_for_branch_env "PATH=$_FW_SHIM_DIR:$PATH" crates/reify-doc/src/lib.rs
+assert "GV-FAILWIDE-2: the shim fired (the fail-wide return was actually taken)" \
+    test -s "$_FW_FIRED"
+assert "GV-FAILWIDE-2: RUN_GUI_VITEST=1 — failing wide runs the whole lane" \
+    _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
+assert "GV-FAILWIDE-2: gui lane carries npm test" \
+    plan_has "$_GUI_LANE_WITH_VITEST"
+
 test_summary
