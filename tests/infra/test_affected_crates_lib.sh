@@ -42,7 +42,8 @@
 #      is ONE list shared with verify.sh's decide_scope, so a mixed
 #      crate + top-level *.md diff narrows to the crate-alone closure
 #      instead of C5-widening to ALL — while an unmappable NON-inert path
-#      still widens
+#      still widens, and a crate-OWNED *.md/*.yaml still maps to its owning
+#      crate, because attribution outranks the inert class on both sides
 #  18. (task 7427) EXAMPLES-CORPUS: examples/**/*.ri (flat and nested) maps
 #      to the declared reader crates instead of C5-widening to ALL, while
 #      non-.ri, non-inert content under examples/ still widens; plus
@@ -169,6 +170,47 @@ assert "top-level *.md -> empty (not ALL)" \
 # artifact whose blast radius is the whole workspace.
 assert "unmappable non-inert path still forces ALL (C5 preserved)" \
     test "$(affected_crates scripts/verify.sh)" = "ALL"
+
+# Crate ATTRIBUTION outranks the inert class. The inert patterns are
+# suffix-matched and unanchored, so `*.md` also names files a crate OWNS —
+# and 32 of the 33 tracked crates/**/*.{md,yaml,yml} are real compile/test
+# inputs: crates/reify-mcp/src/tools/chunks/*.md are `include_str!`-ed by
+# crates/reify-mcp/src/tools/language_chunks.rs, and
+# crates/reify-doc/tests/snapshots/*.md are fixtures compared by
+# crates/reify-doc/tests/fmt_markdown_tests.rs. Classifying those as "no
+# crate" is the undeclared-reader hazard _RI_CORPUS_CRATES' own prose calls
+# the real regression: the closure drops the very crate whose tests read the
+# edited file. decide_scope has always attributed first (its `crates/*)` arm
+# precedes the `*)` catch-all that consults the inert class); these pin
+# affected_crates to the same precedence, which is what makes the two sides
+# genuinely one classification rather than two that agree on a subset.
+_check_crate_owned_doc_maps_to_owner() {
+    # Usage: <expected-crate> <crate-owned path>
+    local expected="$1" path="$2" out
+    out="$(affected_crates "$path")"
+    echo "$path -> [$(printf '%s' "$out" | tr '\n' ' ')]"
+    printf '%s\n' "$out" | grep -qx "$expected"
+}
+assert "an include_str!-ed crate-owned *.md maps to its owning crate" \
+    _check_crate_owned_doc_maps_to_owner reify-mcp crates/reify-mcp/src/tools/chunks/syntax.md
+assert "a crate-owned snapshot *.md maps to its owning crate" \
+    _check_crate_owned_doc_maps_to_owner reify-doc crates/reify-doc/tests/snapshots/integration_full_v01.single.md
+
+# A crate-owned doc narrows like its crate — it neither vanishes nor widens
+# to ALL. Compared against the UNION of the two crates' own closures rather
+# than a hand-written crate list, so the assertion cannot rot as the
+# dependency graph moves.
+_check_crate_owned_doc_unions() {
+    local mixed expected
+    mixed="$(affected_crates crates/reify-doc/src/lib.rs crates/reify-mcp/src/tools/chunks/syntax.md | sort -u)"
+    expected="$( { affected_crates crates/reify-doc/src/lib.rs
+                   affected_crates crates/reify-mcp/src/lib.rs; } | sort -u)"
+    echo "lib + crate-owned .md: [$(printf '%s' "$mixed"    | tr '\n' ' ')]"
+    echo "union of both crates:  [$(printf '%s' "$expected" | tr '\n' ' ')]"
+    [ "$mixed" != "ALL" ] && [ "$mixed" = "$expected" ]
+}
+assert "crate + another crate's owned *.md equals the union of the two closures" \
+    _check_crate_owned_doc_unions
 
 # ---------------------------------------------------------------------------
 # Step 7: direct-set printing — crate-mapped paths emit the crate name
