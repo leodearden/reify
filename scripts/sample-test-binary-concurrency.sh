@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Sample the HOST-WIDE peak number of concurrently-running Rust test binaries.
 #
-# Task 6018's ACCEPTANCE instrument (the residual deliverable of task 5984
-# carry-over 1, esc-5984-2).  Task 6018 un-narrowed the global nextest pool —
-# `[profile.default] test-threads` went from a fixed 16 to the host CPU count —
-# and the acceptance clause asks for an OBSERVED peak concurrency, not a computed
-# one.  This is that observation's instrument.
+# Task 6018's ACCEPTANCE instrument (residual of task 5984 carry-over 1,
+# esc-5984-2): 6018 un-narrowed the global nextest pool ([profile.default]
+# test-threads: a fixed 16 -> the host CPU count) and its acceptance clause asks
+# for an OBSERVED peak concurrency, not a computed one.
 #
 # Contract guard: tests/infra/test_test_binary_concurrency_sampler.sh.
 #
@@ -21,9 +20,14 @@
 #                   count (default `*/target/*/deps/*`).
 #
 # Emits ONE summary line on stdout; all diagnostics go to stderr.  Exit 0 on an
-# empty host — absence of test binaries is DATA, not an error (this is meant to
-# be launched beside a verify without being coupled to it, so a window that
-# starts early or outlives the run must not fail whatever launched it).
+# empty host — absence of test binaries is DATA, not an error: it is launched
+# beside a verify without being coupled to it, so a window that starts early or
+# outlives the run must not fail whatever launched it.
+#
+# ENVIRONMENT — two injection seams; the contract guard drives both.
+#   REIFY_SAMPLER_PROC_ROOT  the /proc to read (default /proc).
+#   REIFY_SAMPLER_PIDS_CMD   OVERRIDE for candidate discovery.  Unset or empty
+#                            — the default — enumerates <PROC_ROOT>/*/exe.
 #
 # ---------------------------------------------------------------------------
 # WHY THE ARGV MATCH ALONE IS WRONG (defect (a), measured).
@@ -44,13 +48,41 @@
 # test-binary reaper (scripts/lib_proc_reaper.sh:197-205); keeping one definition
 # of "is this process a test binary" across the repo is deliberate.
 #
-# WHY THE PREFILTER IS STILL THERE.  Confirmation is exact but readlink-per-pid
-# over all of /proc is what made the earlier attempt unaffordable: at loadavg 78
-# a whole-/proc scan degraded from the intended 1 Hz to about 0.05 Hz, so the
-# sampler was blind for 20 s at a time — precisely the phase-aliasing that
-# produced defect (b).  The argv prefilter cuts the confirmation set to a handful
-# of pids: measured 0.28 s per pass in this worktree at its then-current load,
-# which makes 1 Hz affordable.  Prefilter for SPEED, confirm for TRUTH.
+# ---------------------------------------------------------------------------
+# WHY THE PREFILTER HAD TO GO (defect (d), measured).
+#
+# That confirmation was originally paid for with ONE readlink FORK PER CANDIDATE,
+# behind a `pgrep -f` argv prefilter.  Both halves leak the same way, and fixing
+# only one leaves the defect intact:
+#
+#   1. PER-CANDIDATE CONFIRMATION.  Every fork widens the gap between "this pid
+#      was listed" and "this pid's exe was read".  Test binaries live 0.2-0.8 s,
+#      so candidates that were genuinely running when the sample began were
+#      recorded as vanished by the time their turn came.
+#   2. THE PREFILTER ITSELF.  `pgrep -f` walks argv across all of /proc and cost
+#      0.15-0.24 s here (2.6 s per pass on the loaded host that produced window
+#      1), so the list it returned had already decayed before confirmation
+#      started.  Batching the confirmation of a stale list still confirms a
+#      stale list, however fast the batch is.
+#
+# MEASURED.  The pre-fix sampler against a batched whole-/proc snapshot on this
+# host (1163 processes, loadavg 94), five rounds alternating within the same
+# second:
+#
+#       batched snapshot    24  30  27  30  26
+#       pre-fix sampler     14  18  16  17   9
+#
+# A 35-65% UNDERCOUNT.  Window 1's peak=14 in
+# docs/notes/nextest-global-pool-concurrency-observation.md must therefore be
+# read as a FLOOR, not as a bound that held.
+#
+# THE OLD AFFORDABILITY OBJECTION IS SUPERSEDED, also measured.  It held that a
+# whole-/proc scan degraded from the intended 1 Hz to about 0.05 Hz at loadavg
+# 78 — but that was an objection to ONE FORK PER PID, and one fork TOTAL removes
+# it.  On this host at loadavg 94 with 1163 processes a batched whole-/proc pass
+# costs 0.04/0.04/0.22 s, against 0.15-0.24 s for the pgrep prefilter ALONE with
+# a fork per candidate still to come on top.  Discovery and confirmation are now
+# ONE pass over ONE snapshot, which is what a race-free sample requires.
 #
 # ---------------------------------------------------------------------------
 # WHY nonzero_samples EXISTS (defect (b), measured).
@@ -94,10 +126,12 @@
 # The split is therefore done ONCE, at parse time, under `set -f`: that
 # suppresses pathname expansion while leaving word-splitting intact, which is
 # exactly the half we need and exactly the half we must keep.  `set +f` restores
-# globbing immediately afterwards — that restore is load-bearing, not cosmetic:
-# REIFY_SAMPLER_PIDS_CMD is a caller-supplied command that may legitimately rely
-# on globbing.  Splitting once rather than per-pid also removes a per-sample cost
-# blowup that contradicted the 0.28 s/pass figure above.
+# globbing immediately afterwards — that restore is load-bearing, not cosmetic,
+# and now doubly so: the DEFAULT candidate discovery is itself a glob over
+# <PROC_ROOT>/*/exe, and REIFY_SAMPLER_PIDS_CMD is a caller-supplied command that
+# may legitimately rely on globbing too.  Splitting once rather than per-pid also
+# removes a per-sample cost blowup, which matters against the per-pass figures
+# recorded under defect (d) above.
 #
 # A whitespace-only --deps-glob is rejected for the same reason: it passes a
 # naive non-empty check but splits to ZERO patterns, after which every sample
@@ -141,10 +175,11 @@ set +f
 [ "${#DEPS_GLOBS[@]}" -gt 0 ] || \
     _die "--deps-glob must contain at least one non-whitespace pattern, got '$DEPS_GLOB'"
 
-# Injection seams (testability; the contract guard drives both).  Defaults are
-# the real host: /proc, and the argv prefilter described above.
+# Injection seams (testability; the contract guard drives both).  PIDS_CMD is an
+# OVERRIDE: unset or empty — the default, and what a real run uses — means
+# enumerate PROC_ROOT itself, with no prefilter (defect (d) above).
 PROC_ROOT="${REIFY_SAMPLER_PROC_ROOT:-/proc}"
-PIDS_CMD="${REIFY_SAMPLER_PIDS_CMD:-pgrep -f 'target/.*/deps/'}"
+PIDS_CMD="${REIFY_SAMPLER_PIDS_CMD:-}"
 
 _host_nproc() {
     local n=""
@@ -158,10 +193,31 @@ _host_nproc() {
 HOST_NPROC="$(_host_nproc)"
 
 # _candidate_pids — the pids to confirm, one per line.  Always succeeds: a
-# candidate source that matches nothing exits non-zero (pgrep does) and that is
-# data, not an error.
+# candidate source that matches nothing is data, not an error.
+#
+# DEFAULT: read PROC_ROOT directly.  A bash glob is readdir only — no fork, no
+# argv walk — so discovery and the confirmation that follows it are one pass over
+# one snapshot.  Non-numeric entries (self, thread-self, net, ...) come through
+# harmlessly: the digits-only filter in _confirmed_count drops them, and their
+# exe targets could not match a */target/*/deps/* pattern anyway.
+#
+# OVERRIDE: REIFY_SAMPLER_PIDS_CMD, evaluated exactly as before.  Both branches
+# feed the SAME batched confirmation, which is what keeps the contract guard
+# pinning the code a real run takes rather than a test-only branch.
 _candidate_pids() {
-    eval "$PIDS_CMD" 2>/dev/null || true
+    if [ -n "$PIDS_CMD" ]; then
+        eval "$PIDS_CMD" 2>/dev/null || true
+        return 0
+    fi
+    local link
+    local -a exes=()
+    shopt -s nullglob
+    exes=( "$PROC_ROOT"/*/exe )
+    shopt -u nullglob
+    for link in "${exes[@]}"; do
+        link="${link%/exe}"
+        printf '%s\n' "${link##*/}"
+    done
 }
 
 # ---------------------------------------------------------------------------
