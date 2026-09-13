@@ -732,6 +732,40 @@ mod tests {
         }
     }
 
+    /// PRD display-unit-preference §4 (final bullet): the curated set grows
+    /// to Frequency and Stiffness, seeded exactly like Force/Energy/Power —
+    /// single-rung coherent-SI ladders (Hz / N/m @ `si_scale: 1.0`,
+    /// `is_default: true`) with no auto-scale posture (§5 excludes them).
+    /// "N/m" is a compound unit EXPRESSION rather than a bare symbol, the
+    /// same shape the Density rung "kg/m^3" already uses.
+    #[test]
+    fn frequency_stiffness_ladders_seeded() {
+        let ladders = unit_ladders();
+        for (dimension, label) in [("Frequency", "Hz"), ("Stiffness", "N/m")] {
+            let l = ladder(&ladders, dimension);
+            assert_eq!(
+                l.units.len(),
+                1,
+                "ladder {dimension:?} should have exactly one rung"
+            );
+            let rung = &l.units[0];
+            assert_eq!(rung.label, label, "{dimension:?} rung label mismatch");
+            assert_eq!(
+                rung.si_scale, 1.0,
+                "{dimension:?} rung si_scale must be 1.0"
+            );
+            assert!(rung.is_default, "{dimension:?} rung must be is_default");
+            assert_eq!(
+                l.derived_unit_name, label,
+                "{dimension:?} derived_unit_name mismatch"
+            );
+            assert_eq!(
+                l.auto_scale, None,
+                "{dimension:?} must be excluded from auto-scaling (auto_scale == None)"
+            );
+        }
+    }
+
     /// Collapsed data-driven replacement for five former per-ladder pin
     /// tests (task #5199 amend, reviewer_comprehensive test_coverage
     /// finding): each hand-copied the same `si_scale`/`is_default`

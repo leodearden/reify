@@ -11065,6 +11065,25 @@ mod tests {
     }
 
     #[test]
+    fn dimension_unit_label_curates_frequency_and_stiffness() {
+        // Task #6674 grows the curated set (PRD display-unit-preference §4,
+        // final bullet) with two more coherent-SI ladders.
+        assert_eq!(dimension_unit_label(&DimensionVector::FREQUENCY), "Hz");
+        assert_eq!(dimension_unit_label(&DimensionVector::STIFFNESS), "N/m");
+        // TRANSLATIONAL_STIFFNESS is the SAME DimensionVector as STIFFNESS
+        // (dimension.rs:625/:633 — the alias row sits after "Stiffness" so
+        // canonical_name() keeps reporting "Stiffness"), so the alias
+        // inherits the curation for free. Stated as behaviour rather than a
+        // name-identity assertion: whichever name the registry is keyed on,
+        // reaching the dimension through the alias must still yield "N/m".
+        assert_eq!(
+            dimension_unit_label(&DimensionVector::TRANSLATIONAL_STIFFNESS),
+            "N/m",
+            "the TranslationalStiffness alias must inherit Stiffness's curated label"
+        );
+    }
+
+    #[test]
     fn format_hover_pressure_scalar_uses_curated_registry_name() {
         let v = Value::Scalar {
             si_value: 101_325.0,
