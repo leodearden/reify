@@ -814,6 +814,47 @@ fn collect_ri_files(
     }
 }
 
+/// Convert a `changes`-shaped [`WorkspaceEdit`] into the versioned
+/// `documentChanges` shape, stamping each target with the document version the
+/// edit was computed against.
+///
+/// `versions` is the caller's snapshot of open-document versions, taken under
+/// the SAME lock acquisition as the text the edit was produced from — that
+/// pairing is what makes the stamp trustworthy. A URI absent from `versions` is
+/// not open on the server, so it is stamped `None`: the LSP signal for "the
+/// content on disk is master", which serializes as JSON `null`.
+///
+/// Exactly one representation survives: `changes` is dropped, so a client can
+/// never read an unversioned copy of the same edit. Entries are sorted by URI
+/// because `changes` is a `HashMap` whose iteration order varies per run, and a
+/// non-deterministic wire response is untestable.
+///
+/// Pure and total — no lock, no I/O, no panic path.
+fn version_stamped_workspace_edit(
+    edit: WorkspaceEdit,
+    versions: &HashMap<Url, i32>,
+) -> WorkspaceEdit {
+    let mut targets: Vec<TextDocumentEdit> = edit
+        .changes
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(uri, edits)| TextDocumentEdit {
+            text_document: OptionalVersionedTextDocumentIdentifier {
+                version: versions.get(&uri).copied(),
+                uri,
+            },
+            edits: edits.into_iter().map(OneOf::Left).collect(),
+        })
+        .collect();
+    targets.sort_by(|a, b| a.text_document.uri.as_str().cmp(b.text_document.uri.as_str()));
+
+    WorkspaceEdit {
+        changes: None,
+        document_changes: Some(DocumentChanges::Edits(targets)),
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::test_support::RecordingSink;
