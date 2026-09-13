@@ -37,10 +37,8 @@ impl crate::Engine {
     /// knows its thinnest feature should use [`Self::realize_solid_sdf_at`]
     /// with [`reify_ir::VoxelResolution::MinFeature`] instead (task 6560); at
     /// the honest floor a 1 mm feature in a 100 mm part is entirely sub-voxel.
-    /// That feature is passed as a MODEL-SPACE length in the mesh's own units
-    /// (SI metres, per `reify_ir::Mesh::vertices`), so the 1 mm feature is
-    /// `MinFeature(0.001)` — see `VoxelResolution`'s "Units" section, which
-    /// spells out why `MinFeature(1.0)` is not it.
+    /// That feature is passed as a model-space length in the mesh's own units —
+    /// see [`reify_ir::VoxelResolution`]'s "Units".
     ///
     /// Degradation paths → `None`: see [`Self::realize_solid_sdf_at`], of which
     /// this is the `HonestFloor` special case. There is exactly one body, so
@@ -699,9 +697,8 @@ mod tests {
     }
 
     /// **Behaviour preservation.** The existing `realize_solid_sdf` entry point
-    /// must forward `HonestFloor`, pinning that `measure_thickness_pair`
-    /// (engine_constraints.rs:1551) and `measure_min_feature`
-    /// (measure_min_feature.rs:46) keep the grid they have always got.
+    /// must forward `HonestFloor`, so every production caller of it keeps the
+    /// grid it has always got.
     #[test]
     fn realize_solid_sdf_forwards_honest_floor() {
         let log: ResolutionLog = Default::default();

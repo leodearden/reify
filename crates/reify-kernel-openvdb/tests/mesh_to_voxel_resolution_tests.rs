@@ -30,8 +30,7 @@ use reify_kernel_openvdb::{
 
 /// `HonestFloor` must behave exactly like plain `ingest_mesh` — same outcome,
 /// same build-mode degradation. This is the pin that keeps every pre-6560
-/// caller (`measure_thickness_pair`, `measure_min_feature`, the conversion
-/// executor's `Voxelize` stage) on the code path it has always taken.
+/// caller on the code path it has always taken.
 #[test]
 fn ingest_mesh_at_resolution_honest_floor_matches_ingest_mesh() {
     let plate = plate_100x100x1();

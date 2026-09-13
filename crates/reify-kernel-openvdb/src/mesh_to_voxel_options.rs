@@ -489,15 +489,11 @@ impl MeshToVoxelOptions {
     ///
     /// # Units
     ///
-    /// Every length here — the `h` of [`VoxelResolution::TargetVoxelSize`],
-    /// the `t` of [`VoxelResolution::MinFeature`], the derived `voxel_size`,
-    /// and the bounding-box extents they are measured against — is a
-    /// MODEL-SPACE length in `mesh`'s own units (SI metres, per
-    /// `reify_ir::Mesh::vertices`). The PRD's millimetre figures must be
-    /// converted before they reach this function: the 1 mm flexure above is
-    /// `MinFeature(0.001)` on a 0.1 m part, giving `h = 0.000_25` m, and the
-    /// policy itself is scale-invariant, so the same arithmetic holds for a
-    /// model whose numbers happen to be written at any other magnitude.
+    /// Every length here — the request's, the derived `voxel_size`, and the
+    /// bounding-box extents they are measured against — is a model-space length
+    /// in `mesh`'s own units. [`VoxelResolution`]'s "Units" is the normative
+    /// statement of what that means and of the 1000× mistake it prevents; the
+    /// policy below is scale-invariant, so no conversion happens here.
     ///
     /// # Per-variant behaviour
     ///

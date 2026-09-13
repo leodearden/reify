@@ -632,11 +632,9 @@ impl GeometryKernel for OpenVdbKernel {
     /// shells PRD's 1 mm flexure in a 100 mm part is entirely sub-voxel at
     /// h = 0.001_5625 m (1.5625 mm). A caller that knows its thinnest feature
     /// should use [`Self::ingest_mesh_at_resolution`] with
-    /// [`VoxelResolution::MinFeature`] instead (task 6560) — passing that
-    /// feature as a MODEL-SPACE length in `mesh`'s own units (SI metres, per
-    /// `Mesh::vertices`), so the 1 mm flexure is `MinFeature(0.001)`. See
-    /// `VoxelResolution`'s "Units" section: `MinFeature(1.0)` asks for a
-    /// 1 metre feature and is rejected on any part smaller than 4 metres.
+    /// [`VoxelResolution::MinFeature`] instead (task 6560), passing that
+    /// feature as a model-space length in `mesh`'s own units — see
+    /// [`VoxelResolution`]'s "Units".
     ///
     /// # Returns
     ///

@@ -4394,10 +4394,8 @@ pub enum VoxelResolution {
     /// [`Self::TargetVoxelSize`] when the caller knows a physical dimension
     /// (a wall thickness, a flexure width) but not a grid spacing.
     ///
-    /// Metres, per the "Units" section above: a 1 mm wall is
-    /// `MinFeature(0.001)`, NOT `MinFeature(1.0)` — the latter asks for a
-    /// 1 metre feature and, on a part smaller than that, yields a voxel
-    /// coarser than the whole body.
+    /// A model-space length, per the "Units" section above: a 1 mm wall is
+    /// `MinFeature(0.001)`, NOT `MinFeature(1.0)`.
     MinFeature(f64),
 }
 
