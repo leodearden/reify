@@ -3143,16 +3143,25 @@ fn format_engineering(mantissa: f64, exponent: i32) -> String {
 /// # Stability — PROVISIONAL public surface
 ///
 /// Widened from a private helper by task λ (#5788, §11 Q2) so task μ can read
-/// the curated raw-SI label across the crate boundary. That consumer has not
-/// landed, so no real call site has yet exercised this signature: the
-/// `&DimensionVector -> Cow<'static, str>` shape is not settled and may change
-/// (or narrow back to `pub(crate)`) once μ shows what it actually needs.
+/// the curated raw-SI label across the crate boundary. Task #6674 then added
+/// the first real consumer — the `Value::Scalar` arm of
+/// [`Display`](std::fmt::Display), which sources the `reify eval` cell's unit
+/// from here — so the `&DimensionVector -> Cow<'static, str>` shape is now
+/// settled as adequate for a label-only caller. That consumer is IN-CRATE,
+/// though: the CROSS-CRATE `pub` widening λ made for μ still has no non-test
+/// caller outside the crate, so the open question is the visibility, not the
+/// signature, and narrowing back to `pub(crate)` remains on the table.
 /// `crates/reify-ir/tests/api_surface.rs` records this under its explicit
 /// `PROVISIONAL SURFACE` banner, NOT in the pinned contract: it records only
 /// that both the flat and module-path spellings resolve, and that file states
 /// outright that narrowing an item below the banner is a normal edit rather
 /// than an API break. Narrowing therefore means deleting that block, not
 /// arguing a contract change.
+///
+/// #6674 pre-empted only the coherent-SI LABEL half of L4 task #5235's eval
+/// call site; #5235 REPLACES this call rather than extending it, and still
+/// owns the `DisplayPreference` plumbing, the Length→mm / Angle→deg MAGNITUDE
+/// change, and the three other surfaces.
 /// In-crate callers wanting the rendered value should keep using
 /// [`Value::format_hover`] / `format_display_pair` / `resolve_display`, which
 /// remain the stable surface.
