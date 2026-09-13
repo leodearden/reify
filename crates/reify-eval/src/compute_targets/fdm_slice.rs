@@ -54,12 +54,15 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 /// constant so the next surveyor reads a claim scoped to what it actually
 /// justifies instead of re-deriving the distinction.
 ///
-/// Every other G-code→`Value` marshalling was surveyed under task #6301 and
-/// found already-converting; the one remaining unconverted seam is
-/// `reify-stdlib`'s `trajectory::gcode_import::waypoint_to_value`, out of scope
-/// here and tracked as #6478. The survey's per-file findings live in those two
-/// task records rather than here: four of the five files it characterises are
-/// in other crates, so restating them at this `const` would rot silently.
+/// Every other G-code→`Value` marshalling was surveyed under task #6301, and
+/// all of them convert. The last hold-out, `reify-stdlib`'s
+/// `trajectory::gcode_import::waypoint_to_value`, now applies its own
+/// `MM_TO_M` to x/y/z/e and divides the feedrate by
+/// `MM_PER_MIN_PER_M_PER_S`, so with this module converted there is no
+/// unconverted G-code→DSL `Value` seam left in the workspace. The survey's
+/// per-file findings live in #6301's task record rather than here: four of
+/// the five files it characterises are in other crates, so restating them at
+/// this `const` would rot silently.
 const MM_TO_M: f64 = 1.0e-3;
 
 /// G-code feedrate mm·min⁻¹ → SI m·s⁻¹, as the DIVISOR (1e3 millimetres per
