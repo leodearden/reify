@@ -593,6 +593,74 @@ assert "PT-CTRL-DOCS: still zero command leaves (5536's win is preserved for a g
     test "$(plan_cmdcount)" -eq 0
 
 # ---------------------------------------------------------------------------
+# Scenarios PT-RATCHET-*: the EMITTER half of REIFY_PTODO_RATCHET_REQUIRED
+# (task 7006).
+#
+# The cheap gate PT-1 pins can still exit GREEN with the ratchet unrun. On the
+# hook-gated --scope staged path REIFY_AUDIT_NO_COLD_BUILD is deliberately
+# unset, so reify_audit_guard degrades to mode=rebuild; when that rebuild is a
+# no-op against an on-disk mtime older than the last crates/reify-audit commit
+# the guard returns 125 with the binary still executable, and
+# test_reify_audit_ptodo.sh sets RATCHET_SKIP=1 — dropping scenarios (a)+(b),
+# the fingerprint ratchet this selector exists to run, while the surviving
+# (c)-(g) hard gate (High-severity only, where phantom-tracking is MEDIUM)
+# still exits 0. The leaf therefore carries REIFY_PTODO_RATCHET_REQUIRED=1,
+# under which that file refuses instead of skipping.
+#
+# A .py path is used because it is BOTH is_swept_ext-swept (so
+# select_cheap_ptodo_gate fires) AND has a row in
+# scripts/verify-pipeline-infra-tests.txt (so select_infra_tests emits a
+# SECOND, sibling selective-infra leaf into the same plan). One capture
+# therefore carries both the armed leaf and an un-armed sibling, which is what
+# makes PT-RATCHET-SCOPE non-vacuous by construction.
+#
+# Each scenario extracts its leaf and asserts NON-EMPTINESS FIRST (the _E_LEAF
+# idiom from test_infra_git_env_isolation.sh Section E): a capture that
+# produced no leaf must fail loudly rather than pass a content pin by accident.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario PT-RATCHET-REQ: staged swept .py -> ptodo gate leaf carries REIFY_PTODO_RATCHET_REQUIRED=1 ---"
+plan_for staged scripts/prd-capability-check.py
+# `|| true`: under `set -euo pipefail` a no-match grep would abort the suite
+# before the vacuity assertion below could report the empty capture.
+_PT_REQ_LEAF="$(printf '%s\n' "$PLAN_OUT" | grep 'test_reify_audit_ptodo\.sh' | head -1)" || true
+assert "PT-RATCHET-REQ-vacuity: a ptodo gate leaf was captured (content pins below are not vacuous)" \
+    test -n "$_PT_REQ_LEAF"
+assert "PT-RATCHET-REQ: the ptodo gate leaf carries REIFY_PTODO_RATCHET_REQUIRED=1 (a skipped ratchet is a hard failure on the main-landing gate)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "REIFY_PTODO_RATCHET_REQUIRED=1"' _ "$_PT_REQ_LEAF"
+
+echo ""
+echo "--- Scenario PT-RATCHET-SCOPE: the knob is PER-LEAF, not ambient across selected infra tests ---"
+# Same capture as PT-RATCHET-REQ. The sibling leaf comes from the .py path's
+# verify-pipeline-infra-tests.txt row, so both leaves exist in ONE plan and the
+# contrast cannot be an artifact of two different runs. This is the assertion
+# that stops a future edit from exporting the knob ahead of the emission loop,
+# which would arm it for EVERY selected infra test — the ambient-leak failure
+# the REIFY_INFRA_SUITE_ACTIVE rationale at verify.sh's emission site argues
+# against.
+_PT_SIB_LEAF="$(printf '%s\n' "$PLAN_OUT" | grep 'test_prd_capability_check' | head -1)" || true
+assert "PT-RATCHET-SCOPE-vacuity: the sibling selective-infra leaf was captured (the .py infra-map row fired)" \
+    test -n "$_PT_SIB_LEAF"
+assert "PT-RATCHET-SCOPE: the sibling leaf does NOT carry REIFY_PTODO_RATCHET_REQUIRED (per-leaf, not exported across the loop)" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "REIFY_PTODO_RATCHET_REQUIRED"' _ "$_PT_SIB_LEAF"
+
+echo ""
+echo "--- Scenario PT-RATCHET-DRIFT: the emitted knob name is the one the reader honours ---"
+# The knob is a contract split across two files pinned by two DIFFERENT tests:
+# this one pins what verify.sh emits, test_reify_audit_ptodo_budget_skip.sh
+# pins what tests/infra/test_reify_audit_ptodo.sh honours. A rename touching
+# only one side leaves BOTH green while the staged gate silently stops
+# requiring the ratchet — the same silent-hole class task 7006 exists to
+# close, one level up. So derive the name from the emitted leaf rather than
+# hand-writing it here, exactly as PT-DRIFT above re-derives the swept-extension
+# set from is_swept_ext's source.
+_PT_REQ_VAR="$(printf '%s\n' "$_PT_REQ_LEAF" | grep -o 'REIFY_[A-Z0-9_]*=' | head -1 | sed 's/=$//')" || true
+assert "PT-RATCHET-DRIFT-vacuity: an env-assignment token was derived from the emitted leaf" \
+    test -n "$_PT_REQ_VAR"
+assert "PT-RATCHET-DRIFT: tests/infra/test_reify_audit_ptodo.sh references the emitted knob name ($_PT_REQ_VAR)" \
+    bash -c 'grep -q "$1" "$2/tests/infra/test_reify_audit_ptodo.sh"' _ "$_PT_REQ_VAR" "$REPO_ROOT"
+
+# ---------------------------------------------------------------------------
 # Scenario 2: gui/src frontend TS -> GUI only, no cargo
 # ---------------------------------------------------------------------------
 echo ""
@@ -913,6 +981,31 @@ assert "PT-CTRL-BRANCH: plan lacks the cheap PTODO gate leaf (task 5125's merge-
     plan_lacks 'tests/infra/test_reify_audit_ptodo\.sh'
 assert "PT-CTRL-BRANCH: still zero command leaves (--scope branch is untouched by task 6817)" \
     test "$(plan_cmdcount)" -eq 0
+
+# ---------------------------------------------------------------------------
+# Scenario PT-RATCHET-BRANCH: the ratchet-required knob is armed for the
+# main-landing gate ONLY, never for a per-task --scope branch lane (task 7006).
+# Lives here rather than beside PT-RATCHET-REQ above for the same reason
+# PT-CTRL-BRANCH does: plan_for_branch is not defined until this section.
+#
+# A swept .py with an infra-map row, so a selective-infra leaf IS emitted under
+# --scope branch and the pin cannot pass merely because the plan is empty.
+# Rationale for the asymmetry: on a warm-lane task branch, seed-warm-lane.sh
+# stamps target/ mtimes older than the last crates/reify-audit commit and
+# cargo's fingerprint makes the rebuild a no-op, so guard rc 125 with a PRESENT
+# binary is the COMMON state there. Arming the knob on branch scope would turn
+# a routine lane condition into a hard RED on every task; the hook-gated
+# --scope staged path is different in kind, being the last gate before a
+# commit lands on main.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario PT-RATCHET-BRANCH: staged->branch twin of PT-RATCHET-REQ -> no ratchet-required knob anywhere in the plan (control) ---"
+plan_for_branch scripts/prd-capability-check.py
+_PT_BR_LEAF="$(printf '%s\n' "$PLAN_OUT" | grep 'test_prd_capability_check' | head -1)" || true
+assert "PT-RATCHET-BRANCH-vacuity: a selective-infra leaf WAS emitted under --scope branch (the negative pin below is not vacuous)" \
+    test -n "$_PT_BR_LEAF"
+assert "PT-RATCHET-BRANCH: NO plan line carries REIFY_PTODO_RATCHET_REQUIRED (a stamped warm-lane target/ makes rc-125-with-present-binary routine on a task branch)" \
+    plan_lacks 'REIFY_PTODO_RATCHET_REQUIRED'
 
 # ---------------------------------------------------------------------------
 # Scenario B2: non-OCCT crate branch -> ungated Rust tail, no gated pass
