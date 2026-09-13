@@ -2970,43 +2970,18 @@ pub(crate) fn compile_entity(
                 // reusing the same M3 resolution path as `param m : Length = auto` (§4.4 invariant).
                 // An untyped `let m = auto` is rejected: a solver cell needs a declared type.
                 if let Some(free) = extract_auto_free(&let_decl.value) {
-                    let mut cell_type = match &let_decl.type_expr {
-                        None => {
-                            diagnostics.push(
-                                Diagnostic::error(
-                                    "auto let binding requires a type annotation: \
-                                     use `let <name> : <Type> = auto`",
-                                )
-                                .with_label(DiagnosticLabel::new(
-                                    let_decl.span,
-                                    "missing type annotation for auto let",
-                                )),
-                            );
-                            continue;
-                        }
-                        Some(type_expr) => {
-                            match resolve_type_expr_with_aliases(
-                                type_expr,
-                                &type_param_names,
-                                alias_registry,
-                                diagnostics,
-                                structure_names,
-                                trait_names,
-                            ) {
-                                Some(t) => t,
-                                None => continue, // error already emitted by resolver
-                            }
-                        }
-                    };
-
-                    // Reject `Keyed<T>` in a let value position (esc-3930-295, task 3931 γ):
-                    // poisoned to `Type::Error` so no Keyed value cell reaches the eval graph.
-                    reject_keyed_value_position(
-                        &mut cell_type,
+                    let Some(cell_type) = resolve_auto_let_cell_type(
                         &let_decl.name,
+                        let_decl.type_expr.as_ref(),
                         let_decl.span,
+                        &type_param_names,
+                        alias_registry,
+                        structure_names,
+                        trait_names,
                         diagnostics,
-                    );
+                    ) else {
+                        continue;
+                    };
 
                     let id = ValueCellId::new(entity_name, &let_decl.name);
                     let visibility = if let_decl.is_pub {
@@ -6757,6 +6732,65 @@ pub(crate) fn build_param_value_cell_decl(
             span,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Auto-let cell-type resolution (shared by the top-level `MemberDecl::Let`
+// auto branch in this file and the guarded one in guards.rs, task #6888).
+// Sits beside `build_param_value_cell_decl` for the same reason it exists: a
+// binding site that hand-rolls its own auto lowering is exactly how the
+// guarded let arm came to drop the `auto` silently.
+// ---------------------------------------------------------------------------
+
+/// Resolve the declared type of an `auto` let binding.
+///
+/// An auto let is a solver cell, so its type must come from the declared
+/// annotation — there is no initializer to infer one from. `None` means no
+/// cell should be minted at all, in two cases:
+///   * no annotation → the mandatory-annotation error is emitted here;
+///   * unresolvable annotation → the resolver has already emitted.
+///
+/// A `Keyed<T>` annotation is poisoned to `Type::Error` rather than suppressed,
+/// so the cell is still minted and no Keyed value reaches the eval graph.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn resolve_auto_let_cell_type(
+    name: &str,
+    type_expr: Option<&reify_ast::TypeExpr>,
+    span: SourceSpan,
+    type_param_names: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Type> {
+    let Some(type_expr) = type_expr else {
+        diagnostics.push(
+            Diagnostic::error(
+                "auto let binding requires a type annotation: \
+                 use `let <name> : <Type> = auto`",
+            )
+            .with_label(DiagnosticLabel::new(
+                span,
+                "missing type annotation for auto let",
+            )),
+        );
+        return None;
+    };
+
+    let mut cell_type = resolve_type_expr_with_aliases(
+        type_expr,
+        type_param_names,
+        alias_registry,
+        diagnostics,
+        structure_names,
+        trait_names,
+    )?;
+
+    // Reject `Keyed<T>` in a let value position (esc-3930-295, task 3931 γ):
+    // poisoned to `Type::Error` so no Keyed value cell reaches the eval graph.
+    reject_keyed_value_position(&mut cell_type, name, span, diagnostics);
+
+    Some(cell_type)
 }
 
 // ---------------------------------------------------------------------------
