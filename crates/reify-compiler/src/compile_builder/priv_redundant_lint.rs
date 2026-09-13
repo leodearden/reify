@@ -302,6 +302,95 @@ structure S {
         );
     }
 
+    // --- recursion-set discriminator: keyed sub entries ---
+
+    /// The overrides of the single keyed entry of the single `sub` member in
+    /// `members`, asserting the keyed lowering on the way through.
+    ///
+    /// NON-VACUITY guard shared by the two keyed tests below, in the same spirit
+    /// as the hand-rolled guards in the sub-body and port-body tests above: a
+    /// `priv` member the parser hoisted into `SubDecl.body` — or up to top level
+    /// — would already be found by a pre-existing recursion site, so it would
+    /// discriminate nothing.
+    fn single_keyed_entry_overrides(members: &[reify_ast::MemberDecl]) -> &[reify_ast::MemberDecl] {
+        let subs: Vec<_> = members
+            .iter()
+            .filter_map(|m| match m {
+                reify_ast::MemberDecl::Sub(s) => Some(s),
+                _ => None,
+            })
+            .collect();
+        let sub = match subs.as_slice() {
+            [s] => *s,
+            other => panic!("fixture must contain exactly one Sub member, got {other:#?}"),
+        };
+        assert!(
+            sub.body.is_none(),
+            "the keyed form must lower with `body: None`, got {:#?}",
+            sub.body
+        );
+        match sub.keyed_members.as_slice() {
+            [entry] => &entry.overrides,
+            other => panic!("fixture must lower to exactly one keyed entry, got {other:#?}"),
+        }
+    }
+
+    /// `priv let` inside a keyed sub entry's overrides is found.
+    ///
+    /// `sub p : Foo { "a" => { … } }` lowers its overrides into
+    /// `SubDecl.keyed_members[].overrides` with `body: None`, so this is a
+    /// recursion site distinct from the `SubDecl.body` test above — and the one
+    /// the pass was blind to before task 6958.
+    #[test]
+    fn priv_let_inside_keyed_sub_overrides_is_detected() {
+        let members = parse_first_structure_members(
+            r#"structure S { sub p : Foo { "a" => { priv let x = 1 } } }"#,
+        );
+        let overrides = single_keyed_entry_overrides(&members);
+        assert!(
+            overrides
+                .iter()
+                .any(|m| matches!(m, reify_ast::MemberDecl::Let(l) if l.is_priv)),
+            "the `priv let` must live INSIDE keyed_members[0].overrides, got {overrides:#?}"
+        );
+
+        let redundant = priv_redundant_diags(&members);
+        assert_eq!(
+            redundant.len(),
+            1,
+            "expected 1 PrivRedundant for `priv let` inside a keyed sub entry, got {}: {:?}",
+            redundant.len(),
+            messages(&redundant)
+        );
+        assert_eq!(redundant[0].severity, Severity::Error);
+        assert!(redundant[0].message.contains("E_PRIV_REDUNDANT"));
+    }
+
+    /// `priv constraint` inside a keyed sub entry's overrides is found — the
+    /// sibling predicate arm, over the same recursion site.
+    #[test]
+    fn priv_constraint_inside_keyed_sub_overrides_is_detected() {
+        let members = parse_first_structure_members(
+            r#"structure S { param t : Real = 1  sub p : Foo { "a" => { priv constraint t > 0 } } }"#,
+        );
+        let overrides = single_keyed_entry_overrides(&members);
+        assert!(
+            overrides
+                .iter()
+                .any(|m| matches!(m, reify_ast::MemberDecl::Constraint(c) if c.is_priv)),
+            "the `priv constraint` must live INSIDE keyed_members[0].overrides, got {overrides:#?}"
+        );
+
+        let redundant = priv_redundant_diags(&members);
+        assert_eq!(
+            redundant.len(),
+            1,
+            "expected 1 PrivRedundant for `priv constraint` inside a keyed sub entry, got {}: {:?}",
+            redundant.len(),
+            messages(&redundant)
+        );
+    }
+
     // --- depth bound ---
 
     /// `structure S { param flag …  where … { where … { … priv let deep = 1 } } }`

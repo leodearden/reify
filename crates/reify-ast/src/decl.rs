@@ -2182,8 +2182,8 @@ mod has_test_annotation_tests {
 #[cfg(test)]
 mod member_test_fixtures {
     use super::{
-        Expr, GuardedGroupDecl, LetDecl, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MemberDecl,
-        ParamDecl, PortDecl, SubDecl,
+        Expr, GuardedGroupDecl, KeyedSubMemberEntry, LetDecl, MatchArmDeclArmDecl,
+        MatchArmDeclGroupDecl, MemberDecl, ParamDecl, PortDecl, SubDecl,
     };
     use crate::ast::ExprKind;
     use reify_core::{ContentHash, PortDirection, SourceSpan};
@@ -2341,6 +2341,32 @@ mod member_test_fixtures {
             derivation: None,
             span: SourceSpan::new(0, 1),
             content_hash: ContentHash(0),
+        }
+    }
+
+    /// Build a keyed-block `SubDecl` by hand — `sub <name> : Foo { "k" => { … } }`.
+    ///
+    /// The keyed counterpart of [`sub_with_body`]: each `(key, overrides)` pair
+    /// becomes one `KeyedSubMemberEntry`, and `body` stays `None` because
+    /// `lower_sub` makes the two forms mutually exclusive (see the doc on
+    /// `SubDecl.keyed_members`). `param_overrides` stays empty on purpose: a
+    /// `"k" => { area = 5mm }` param ASSIGNMENT lowers THERE, never into
+    /// `overrides`, so it is not a `MemberDecl` any walker could reach.
+    pub(super) fn sub_with_keyed_members(
+        name: &str,
+        entries: Vec<(&str, Vec<MemberDecl>)>,
+    ) -> SubDecl {
+        SubDecl {
+            keyed_members: entries
+                .into_iter()
+                .map(|(key, overrides)| KeyedSubMemberEntry {
+                    key: key.to_string(),
+                    overrides,
+                    param_overrides: Vec::new(),
+                    span: SourceSpan::new(0, 1),
+                })
+                .collect(),
+            ..sub_with_body(name, None)
         }
     }
 }
@@ -2620,9 +2646,14 @@ mod member_recursion_set_tests {
 
     /// One uniquely-named `param` (each carrying a default span, so
     /// `find_param_default_span` is assertable too) planted in each of the
-    /// five nested member bodies the walkers disagree on, plus one top-level
+    /// six nested member bodies the walkers disagree on, plus one top-level
     /// marker. Shared across all four entry points so a single fixture pins
-    /// the full 4-entry-point × 6-marker reachability table.
+    /// the full 4-entry-point × 7-marker reachability table.
+    ///
+    /// `marker_keyed` is the second shape of the SAME cell as `marker_sub`: a
+    /// sub carries its specialization overrides either in `body` or in
+    /// `keyed_members[].overrides`, never both, so every recursion set must
+    /// answer both identically.
     fn build_reachability_fixture() -> Vec<MemberDecl> {
         vec![
             param("marker_top", (0, 40), Some((10, 14))),
@@ -2646,6 +2677,10 @@ mod member_recursion_set_tests {
                 "A",
                 param("marker_arm", (500, 540), Some((510, 514))),
             )]),
+            MemberDecl::Sub(sub_with_keyed_members(
+                "keyed_sub",
+                vec![("a", vec![param("marker_keyed", (600, 640), Some((610, 614)))])],
+            )),
         ]
     }
 
@@ -2693,6 +2728,12 @@ mod member_recursion_set_tests {
             "MatchArmDeclGroup arms are always recursed; tags={tags:?}"
         );
         assert!(
+            tags.contains(&"param:marker_keyed".to_string()),
+            "SubDecl.keyed_members[].overrides IS recursed into by \
+             walk_specialization_scope_members — a keyed entry's overrides is a \
+             specialization body (spec §8.7); tags={tags:?}"
+        );
+        assert!(
             !tags.contains(&"param:marker_port".to_string()),
             "PortDecl.members must NOT be recursed by walk_specialization_scope_members; tags={tags:?}"
         );
@@ -2720,6 +2761,16 @@ mod member_recursion_set_tests {
             .iter()
             .position(|t| t == "match_arm_group")
             .expect("MatchArmDeclGroup container itself must be visited");
+
+        let keyed_sub_idx = tags
+            .iter()
+            .position(|t| t == "sub:keyed_sub")
+            .expect("keyed Sub container itself must be visited");
+        let marker_keyed_idx = tags.iter().position(|t| t == "param:marker_keyed").unwrap();
+        assert!(
+            keyed_sub_idx < marker_keyed_idx,
+            "parent-before-children: keyed Sub container must precede its entry's override param"
+        );
 
         let marker_sub_idx = tags.iter().position(|t| t == "param:marker_sub").unwrap();
         let marker_then_idx = tags.iter().position(|t| t == "param:marker_then").unwrap();
@@ -2763,6 +2814,12 @@ mod member_recursion_set_tests {
             find_named_member_span(&fixture, "marker_sub").is_none(),
             "find_named_member_span must NOT reach into SubDecl.body"
         );
+        assert!(
+            find_named_member_span(&fixture, "marker_keyed").is_none(),
+            "find_named_member_span must NOT reach into SubDecl.keyed_members[].overrides \
+             either — a keyed entry's overrides specialize a CHILD instance, exactly as \
+             SubDecl.body does, so the same blindness is the correct contract"
+        );
     }
 
     #[test]
@@ -2786,6 +2843,12 @@ mod member_recursion_set_tests {
             "find_param_default_span must NOT reach into SubDecl.body"
         );
         assert_eq!(
+            find_param_default_span(&fixture, "marker_keyed"),
+            None,
+            "find_param_default_span must NOT reach into SubDecl.keyed_members[].overrides — \
+             a default found there belongs to a different entity than the caller's cell_id names"
+        );
+        assert_eq!(
             find_param_default_span(&fixture, "marker_port"),
             None,
             "find_param_default_span must NOT reach into PortDecl.members"
@@ -2807,6 +2870,7 @@ mod member_recursion_set_tests {
         for marker in [
             "marker_top",
             "marker_sub",
+            "marker_keyed",
             "marker_port",
             "marker_then",
             "marker_else",
@@ -2828,15 +2892,53 @@ mod member_recursion_set_tests {
             .iter()
             .position(|t| t == "port:nested_port")
             .expect("Port container itself must be visited");
+        let keyed_sub_idx = tags
+            .iter()
+            .position(|t| t == "sub:keyed_sub")
+            .expect("keyed Sub container itself must be visited");
         let marker_sub_idx = tags.iter().position(|t| t == "param:marker_sub").unwrap();
+        let marker_keyed_idx = tags.iter().position(|t| t == "param:marker_keyed").unwrap();
         let marker_port_idx = tags.iter().position(|t| t == "param:marker_port").unwrap();
         assert!(
             sub_idx < marker_sub_idx,
             "parent-before-children: Sub container must precede its nested param; tags={tags:?}"
         );
         assert!(
+            keyed_sub_idx < marker_keyed_idx,
+            "parent-before-children: keyed Sub container must precede its entry's override \
+             param; tags={tags:?}"
+        );
+        assert!(
             port_idx < marker_port_idx,
             "parent-before-children: Port container must precede its body param; tags={tags:?}"
+        );
+    }
+
+    /// A keyed sub with TWO entries reaches BOTH entries' overrides, in
+    /// declaration order.
+    ///
+    /// Every table above carries a SINGLE-entry keyed sub, so a `.first()`-shaped
+    /// partial descent would satisfy all of them. This is the assertion that
+    /// refuses it.
+    #[test]
+    fn walk_all_member_bodies_visits_every_keyed_entry_in_declaration_order() {
+        let members = vec![MemberDecl::Sub(sub_with_keyed_members(
+            "keyed",
+            vec![
+                ("a", vec![param("marker_entry0", (0, 40), None)]),
+                ("b", vec![param("marker_entry1", (100, 140), None)]),
+            ],
+        ))];
+        let mut tags = Vec::new();
+        walk_all_member_bodies(&members, &mut |m| tags.push(tag(m)));
+        assert_eq!(
+            tags,
+            vec![
+                "sub:keyed".to_string(),
+                "param:marker_entry0".to_string(),
+                "param:marker_entry1".to_string(),
+            ],
+            "every keyed entry's overrides must be walked, in declaration order"
         );
     }
 
@@ -2978,36 +3080,39 @@ mod member_walker_contract_tests {
         assert_eq!(
             MemberRecursionSet::SPECIALIZATION_SCOPE,
             MemberRecursionSet {
-                sub_body: true,
+                sub_overrides: true,
                 port_body: false
             },
-            "walk_specialization_scope_members recurses SubDecl.body, not PortDecl.members"
+            "walk_specialization_scope_members recurses a sub's specialization overrides \
+             (body or keyed entries), not PortDecl.members"
         );
         assert_eq!(
             MemberRecursionSet::NAMED_MEMBER_LOOKUP,
             MemberRecursionSet {
-                sub_body: false,
+                sub_overrides: false,
                 port_body: true
             },
-            "find_named_member_span recurses PortDecl.members, not SubDecl.body"
+            "find_named_member_span recurses PortDecl.members, not a sub's specialization \
+             overrides"
         );
         assert_eq!(
             MemberRecursionSet::PARAM_DEFAULT_LOOKUP,
             MemberRecursionSet {
-                sub_body: false,
+                sub_overrides: false,
                 port_body: false
             },
-            "find_param_default_span recurses neither SubDecl.body nor PortDecl.members"
+            "find_param_default_span recurses neither a sub's specialization overrides nor \
+             PortDecl.members"
         );
         assert_eq!(
             MemberRecursionSet::ALL_MEMBER_BODIES,
             MemberRecursionSet {
-                sub_body: true,
+                sub_overrides: true,
                 port_body: true
             },
             "walk_all_member_bodies (priv_redundant_lint.rs's E_PRIV_REDUNDANT walk) is the \
-             MAXIMAL set: it recurses BOTH SubDecl.body and PortDecl.members, because a \
-             `let`/`constraint` can carry `priv` in either body"
+             MAXIMAL set: it recurses BOTH a sub's specialization overrides and \
+             PortDecl.members, because a `let`/`constraint` can carry `priv` in either body"
         );
         assert_ne!(
             MemberRecursionSet::SPECIALIZATION_SCOPE,
@@ -3031,7 +3136,7 @@ mod member_walker_contract_tests {
         assert_ne!(
             MemberRecursionSet::ALL_MEMBER_BODIES,
             MemberRecursionSet::NAMED_MEMBER_LOOKUP,
-            "ALL_MEMBER_BODIES also descends into SubDecl.body"
+            "ALL_MEMBER_BODIES also descends into a sub's specialization overrides"
         );
         assert_ne!(
             MemberRecursionSet::ALL_MEMBER_BODIES,
@@ -3049,7 +3154,7 @@ mod member_walker_contract_tests {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum DescendKind {
         Always,
-        IfSubBody,
+        IfSubOverrides,
         IfPortBody,
         Never,
     }
@@ -3060,7 +3165,7 @@ mod member_walker_contract_tests {
             MemberDecl::Let(_) => DescendKind::Never,
             MemberDecl::Constraint(_) => DescendKind::Never,
             MemberDecl::ConstraintInst(_) => DescendKind::Never,
-            MemberDecl::Sub(_) => DescendKind::IfSubBody,
+            MemberDecl::Sub(_) => DescendKind::IfSubOverrides,
             MemberDecl::Minimize(_) => DescendKind::Never,
             MemberDecl::Maximize(_) => DescendKind::Never,
             MemberDecl::GuardedGroup(_) => DescendKind::Always,
@@ -3101,11 +3206,24 @@ mod member_walker_contract_tests {
 
     #[test]
     fn walk_members_recursion_matches_declared_classification() {
-        let nesting_variants: [NestingVariant; 4] = [
+        let nesting_variants: [NestingVariant; 5] = [
             (
                 "Sub",
                 || MemberDecl::Sub(sub_with_body("s", Some(vec![param("marker", (0, 40), None)]))),
-                DescendKind::IfSubBody,
+                DescendKind::IfSubOverrides,
+            ),
+            // The keyed form of the SAME cell: `sub s : Foo { "a" => { … } }`.
+            // Classified identically on purpose — one flag answers both shapes,
+            // so no set can be body-yes/keyed-no.
+            (
+                "KeyedSub",
+                || {
+                    MemberDecl::Sub(sub_with_keyed_members(
+                        "s",
+                        vec![("a", vec![param("marker", (0, 40), None)])],
+                    ))
+                },
+                DescendKind::IfSubOverrides,
             ),
             (
                 "Port",
@@ -3149,7 +3267,7 @@ mod member_walker_contract_tests {
             for (set_name, set) in recursion_sets {
                 let expected_reach = match expected_kind {
                     DescendKind::Always => true,
-                    DescendKind::IfSubBody => set.sub_body,
+                    DescendKind::IfSubOverrides => set.sub_overrides,
                     DescendKind::IfPortBody => set.port_body,
                     DescendKind::Never => false,
                 };
