@@ -69,6 +69,15 @@ pub struct ServerState {
     /// Explicit stdlib path from `initializationOptions.stdlibPath`.
     /// When `None`, goto_definition falls back to the dev-mode heuristic.
     pub stdlib_path: Option<PathBuf>,
+    /// Whether the client declared `workspace.workspaceEdit.documentChanges`.
+    ///
+    /// Decides which of the two `WorkspaceEdit` representations `rename` emits:
+    /// the versioned `documentChanges` array when true, the legacy unversioned
+    /// `changes` map otherwise. Exactly one is ever populated. `false` is the
+    /// LSP default for an unstated client capability, and reify-lsp also runs
+    /// as a stdio server for arbitrary third-party editors (`reify lsp`), so
+    /// silence must keep the legacy shape.
+    pub client_supports_document_changes: bool,
 }
 
 impl ServerState {
@@ -108,6 +117,7 @@ impl ReifyLanguageServer {
                 last_published_diagnostics: HashMap::new(),
                 workspace_root: None,
                 stdlib_path: None,
+                client_supports_document_changes: false,
             })),
             eval_state: Arc::new(Mutex::new(EvalState::new())),
             sink,
@@ -141,10 +151,21 @@ impl LanguageServer for ReifyLanguageServer {
             .and_then(|opts| opts.get("stdlibPath"))
             .and_then(|v| v.as_str())
             .map(PathBuf::from);
+        // Only an explicit `true` opts the client into versioned documentChanges;
+        // an absent capability is the LSP default (false) and keeps the legacy
+        // `changes` map that third-party stdio editors rely on.
+        let supports_document_changes = params
+            .capabilities
+            .workspace
+            .as_ref()
+            .and_then(|w| w.workspace_edit.as_ref())
+            .and_then(|we| we.document_changes)
+            == Some(true);
         {
             let mut state = self.state.write().await;
             state.workspace_root = workspace_root;
             state.stdlib_path = stdlib_path;
+            state.client_supports_document_changes = supports_document_changes;
         }
 
         Ok(InitializeResult {
