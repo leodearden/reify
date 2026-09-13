@@ -2263,3 +2263,133 @@ describe('PRIMARY-selection guard integration (task #5361)', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Per-document LSP versions (task 7118)
+// ---------------------------------------------------------------------------
+//
+// Asserted through the wire — the didOpen/didChange payloads on the invoke mock
+// — rather than any Editor internal, so the tests pin the contract the server
+// (and the rename version-skew guard) actually sees.
+
+const FILE1_URI = 'file:///project/src/bracket.ri';
+const FILE2_URI = 'file:///project/src/mount.ri';
+
+type LspVersionCall = { method: string; uri?: string; version?: number };
+
+/**
+ * Record every LSP notification's method/uri/version off the invoke mock.
+ * `responses` supplies canned JSON payloads for request methods (initialize is
+ * always answered, since Editor parses its result).
+ */
+function captureLspVersionCalls(responses: Record<string, unknown> = {}): LspVersionCall[] {
+  const calls: LspVersionCall[] = [];
+  mockInvoke.mockImplementation(async (_cmd: string, args: any) => {
+    const method = (args as any)?.method as string;
+    if (!method) return undefined as any;
+    const params = JSON.parse((args as any)?.params ?? '{}');
+    calls.push({
+      method,
+      uri: params?.textDocument?.uri,
+      version: params?.textDocument?.version,
+    });
+    if (method === 'initialize') return JSON.stringify({ capabilities: {} });
+    if (method in responses) return JSON.stringify(responses[method]);
+    return undefined as any;
+  });
+  return calls;
+}
+
+/** The most recent call of `method` for `uri` (versions are per document). */
+function lastCallFor(calls: LspVersionCall[], method: string, uri: string): LspVersionCall | undefined {
+  return [...calls].reverse().find((c) => c.method === method && c.uri === uri);
+}
+
+describe('Editor LSP per-document versions (task 7118)', () => {
+  it('each document carries its own version sequence across didOpen/didChange', async () => {
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file1.path);
+    const calls = captureLspVersionCalls();
+
+    render(() => <Editor store={store} />);
+    const view = getEditorView(screen.getByTestId('editor-container'));
+
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didOpen', FILE1_URI)).toBeDefined();
+    });
+    expect(lastCallFor(calls, 'textDocument/didOpen', FILE1_URI)!.version).toBe(1);
+
+    // Edit the active file and let the debounce fire → file1 advances to 2.
+    view.dispatch({ changes: { from: 0, insert: '// edit\n' } });
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS);
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didChange', FILE1_URI)).toBeDefined();
+    });
+    expect(lastCallFor(calls, 'textDocument/didChange', FILE1_URI)!.version).toBe(2);
+
+    // Switch to file2: its didOpen opens ITS OWN sequence at 1. The single
+    // shared counter this replaces would have sent 3 here.
+    store.setActiveFile(file2.path);
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didOpen', FILE2_URI)).toBeDefined();
+    });
+    expect(lastCallFor(calls, 'textDocument/didOpen', FILE2_URI)!.version).toBe(1);
+  });
+
+  it('a rename into an open-but-inactive buffer bumps only that buffer version', async () => {
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file1.path);
+    const calls = captureLspVersionCalls({
+      'textDocument/prepareRename': {
+        range: { start: { line: 0, character: 10 }, end: { line: 0, character: 15 } },
+        placeholder: 'Mount',
+      },
+      // The server's edit lands entirely in the INACTIVE open buffer. version is
+      // null because the server never had that document opened (disk is master).
+      'textDocument/rename': {
+        documentChanges: [
+          {
+            textDocument: { uri: FILE2_URI, version: null },
+            edits: [
+              {
+                range: { start: { line: 0, character: 10 }, end: { line: 0, character: 15 } },
+                newText: 'Mounting',
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    render(() => <Editor store={store} />);
+    const view = getEditorView(screen.getByTestId('editor-container'));
+
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didOpen', FILE1_URI)).toBeDefined();
+    });
+
+    view.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { key: 'F2', bubbles: true }));
+    await vi.waitFor(() => {
+      expect(document.querySelector('[data-testid="rename-field"]')).not.toBeNull();
+    });
+    const renameField = document.querySelector('[data-testid="rename-field"]') as HTMLInputElement;
+    renameField.value = 'Mounting';
+    renameField.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+    // The inactive buffer's didChange opens ITS sequence at 1 — the server has
+    // never seen a didOpen for it, so nothing earlier can be claimed.
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didChange', FILE2_URI)).toBeDefined();
+    });
+    expect(lastCallFor(calls, 'textDocument/didChange', FILE2_URI)!.version).toBe(1);
+
+    // The active document is untouched by that bump: its next didChange is 2,
+    // the successor of its own didOpen — not a continuation of a shared counter.
+    view.dispatch({ changes: { from: 0, insert: '// edit\n' } });
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS);
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didChange', FILE1_URI)).toBeDefined();
+    });
+    expect(lastCallFor(calls, 'textDocument/didChange', FILE1_URI)!.version).toBe(2);
+  });
+});
