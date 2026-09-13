@@ -129,6 +129,48 @@ export function workspaceEditTargets(edit: WorkspaceEdit): WorkspaceEditTarget[]
   }));
 }
 
+/**
+ * Reads the version the client last SENT to the server for `uri`.
+ *
+ * `undefined` means the client never tracked that URI — not that it is at
+ * version zero.
+ */
+export type DocumentVersionReader = (uri: string) => number | undefined;
+
+/**
+ * URIs whose edits were computed against a document version the client no
+ * longer holds.
+ *
+ * A URI is stale only on DEMONSTRATED disagreement — both versions known and
+ * different. Every other combination is not-stale by construction:
+ *
+ *  - `version === null` — the server does not have this document open, so the
+ *    content on disk is master and there is no version to compare. Refusing
+ *    here would reject every legitimate cross-file rename touching a closed
+ *    file, and it is also the whole of the legacy unversioned `changes` shape.
+ *  - client version `undefined` — the client never tracked this URI, so
+ *    staleness is unknowable rather than proven. Refusing here would break the
+ *    closed-file and inactive-buffer sinks.
+ *
+ * This detects exactly the race it is named for: the server computed these
+ * edits against version N, and the client has since sent M. It does NOT detect
+ * local edits still inside the `didChange` debounce window — that distinct
+ * hazard stays covered by `lspRangeToCmRange` returning null for out-of-range
+ * ranges, which this guard sits in front of rather than replacing.
+ */
+export function staleEditTargets(
+  edit: WorkspaceEdit,
+  currentVersion: DocumentVersionReader,
+): string[] {
+  return workspaceEditTargets(edit)
+    .filter(({ uri, version }) => {
+      if (version === null) return false;
+      const held = currentVersion(uri);
+      return held !== undefined && held !== version;
+    })
+    .map(({ uri }) => uri);
+}
+
 export interface WorkspaceEditDeps {
   /** Returns true when `uri` is currently open in an editor buffer. */
   isOpen(uri: string): boolean;
