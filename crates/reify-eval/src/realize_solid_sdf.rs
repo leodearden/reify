@@ -11,6 +11,14 @@
 // subject is already realized; γ runs the same recipe β's executor runs
 // (`execute_realization_ops` Voxelize stage) directly.
 
+/// Chordal tolerance handed to the source kernel's `tessellate` for the
+/// BRep→Mesh stage of the recipe, in the model's own units (SI metres).
+///
+/// A fixed value, independent of the caller's [`reify_ir::VoxelResolution`] —
+/// see the "Known limitation" section on [`crate::Engine::realize_solid_sdf_at`]
+/// for why it cannot be derived here and what closing that needs.
+const TESSELLATION_CHORD_TOLERANCE: f64 = 0.0001;
+
 impl crate::Engine {
     /// Turn an already-realized BRep solid into a CPU-resident queryable SDF.
     ///
@@ -78,9 +86,33 @@ impl crate::Engine {
     ///
     /// Paths 1-4 are ENVIRONMENT failures, where an anonymous `None` is the
     /// honest answer. Path 5 is a CALLER failure — the request itself could not
-    /// be served — so its `Err` is logged at `warn` (target
+    /// be served — so it is logged at `warn` (target
     /// `reify_eval::realize_solid_sdf`) before being dropped, keeping a rejected
-    /// request distinguishable from a build with no OpenVDB in it.
+    /// request distinguishable from a build with no OpenVDB in it. The two are
+    /// separated by the REQUEST, which is all this layer can see: a
+    /// [`reify_ir::VoxelResolution::HonestFloor`] ingest carries no caller
+    /// choice to blame, so its `Err` degrades silently like paths 1-4, while a
+    /// request-driven ingest logs the error it actually got without presuming
+    /// which of the two it was.
+    ///
+    /// # Known limitation — the tessellation tolerance is not derived from `resolution`
+    ///
+    /// The BRep→Mesh stage uses a fixed [`TESSELLATION_CHORD_TOLERANCE`],
+    /// independent of `resolution`, and the voxel grid can only resolve detail
+    /// the mesh already carries. At the shells working point in real model
+    /// space (a 0.1 m part, `MinFeature(0.001)` ⇒ h = 2.5e-4 m) that tolerance
+    /// is already ≈ 40 % of a voxel, and a finer request resolves tessellation
+    /// FACETS rather than geometry — silently, since nothing errors.
+    ///
+    /// Deriving it here is not possible as the crates are layered: it needs the
+    /// voxel size the request resolves to, and that mapping is KERNEL policy
+    /// (`MeshToVoxelOptions::for_resolution`). `reify-eval` cannot name
+    /// `reify-kernel-openvdb` — the adapter → eval dependency direction is
+    /// deliberately inverted (see that crate's `Cargo.toml` dev-dep rationale)
+    /// — so duplicating the policy here would be a SPOT violation across a
+    /// crate boundary. Closing it needs a kernel-side seam reporting that voxel
+    /// size; filed as a follow-up of task 6560, "Derive the BRep→Mesh chord
+    /// tolerance from the VoxelResolution request".
     // The resolution-carrying entry point is reached today only through
     // `realize_solid_sdf`'s `HonestFloor` delegation; reify-shell-extract T1
     // (structural-analysis-shells.md, "Decomposition plan" → the
@@ -130,32 +162,38 @@ impl crate::Engine {
             "realize_solid_sdf_at: demanding Voxel realization of subject solid"
         );
 
-        // Tessellate BRep→Mesh
+        // Tessellate BRep→Mesh. The tolerance does not track `resolution` — see
+        // this method's "Known limitation".
         let mesh = self
             .geometry_kernels
             .get(&source)?
-            .tessellate(brep_id, 0.0001)
+            .tessellate(brep_id, TESSELLATION_CHORD_TOLERANCE)
             .ok()?;
 
         // Ingest Mesh→Voxel at the requested resolution.
         //
-        // Unlike the guards above — which are ENVIRONMENT failures, where an
-        // anonymous `None` is honest — an `Err` here is a CALLER failure: the
-        // requested resolution was malformed, coarser than the body, or beyond
-        // the kernel's dense-grid budget. The kernel builds an actionable
-        // diagnostic naming the offending value; log it before degrading, so a
-        // rejected request is distinguishable from "OpenVDB is not built in".
+        // A request-driven resolution is a caller CHOICE, so an `Err` under one
+        // is worth a diagnostic: it may be the request itself that could not be
+        // served (malformed, too coarse, over budget), and the kernel's message
+        // names the offending value. Under `HonestFloor` there is no caller
+        // choice to report — the only possible causes are the same environment
+        // failures the guards above degrade anonymously for — so that arm stays
+        // quiet rather than blaming a resolution nobody asked for. The message
+        // names the error and stops there; this layer cannot tell a rejected
+        // request from a raw FFI failure and must not claim to.
         let voxel = self
             .geometry_kernels
             .get_mut(openvdb_name)?
             .ingest_mesh_at_resolution(&mesh, resolution)
             .inspect_err(|e| {
-                tracing::warn!(
-                    target: "reify_eval::realize_solid_sdf",
-                    ?resolution,
-                    error = %e,
-                    "ingest_mesh_at_resolution rejected the requested resolution"
-                );
+                if !matches!(resolution, reify_ir::VoxelResolution::HonestFloor) {
+                    tracing::warn!(
+                        target: "reify_eval::realize_solid_sdf",
+                        ?resolution,
+                        error = %e,
+                        "ingest_mesh_at_resolution failed for the requested resolution"
+                    );
+                }
             })
             .ok()?;
 
