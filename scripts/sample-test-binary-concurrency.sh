@@ -157,24 +157,44 @@ _host_nproc() {
 }
 HOST_NPROC="$(_host_nproc)"
 
+# _candidate_pids — the pids to confirm, one per line.  Always succeeds: a
+# candidate source that matches nothing exits non-zero (pgrep does) and that is
+# data, not an error.
+_candidate_pids() {
+    eval "$PIDS_CMD" 2>/dev/null || true
+}
+
 # ---------------------------------------------------------------------------
-# _confirmed_count — one sample.  Prefilter for speed, confirm for truth.
+# _confirmed_count — one sample.  ONE batched confirmation, never one per pid.
 #
-# The prefilter is allowed to fail (pgrep exits 1 when nothing matches; a
-# candidate may also exit between the two steps, leaving no <root>/<pid>) — both
-# are normal, not errors, so every step is guarded and the function always
-# succeeds with a count on stdout.
+# Candidate discovery may legitimately yield nothing (a host with no test
+# binaries), and any candidate may exit before it is confirmed, leaving no
+# <root>/<pid> — both are normal, not errors, so every step is guarded and the
+# function always succeeds with a count on stdout.
+#
+# The confirmation is a SINGLE multi-operand `readlink`: it prints one line per
+# resolvable operand, silently omits the unresolvable ones, and exits 1 if any
+# failed.  That omission IS the "a vanished pid is skipped, not fatal" contract
+# (A5) — now satisfied structurally rather than by a per-pid guard — and the
+# single invocation is what closes the prefilter->confirm race (defect (d), B1).
+# `xargs -0` keeps it ARG_MAX-safe on a pathological host; on a realistic one
+# (~1200 processes) the whole set is a single batch.
 # ---------------------------------------------------------------------------
 _confirmed_count() {
-    local pids pid exe glob n=0 matched
-    pids="$(eval "$PIDS_CMD" 2>/dev/null || true)"
+    local pids pid exe glob resolved n=0 matched
+    local -a links=()
+    pids="$(_candidate_pids)"
     [ -n "$pids" ] || { printf '%s' 0; return 0; }
     while IFS= read -r pid; do
         case "${pid:-}" in (''|*[!0-9]*) continue ;; esac
-        # Race: the process may have exited since the prefilter listed it, in
-        # which case its whole directory is gone and readlink yields nothing.
-        # Permission denied (a pid we cannot inspect) lands here identically.
-        exe="$(readlink "$PROC_ROOT/$pid/exe" 2>/dev/null || echo "")"
+        links+=( "$PROC_ROOT/$pid/exe" )
+    done <<EOF
+$pids
+EOF
+    [ "${#links[@]}" -gt 0 ] || { printf '%s' 0; return 0; }
+    resolved="$(printf '%s\0' "${links[@]}" | xargs -0 readlink 2>/dev/null || true)"
+    [ -n "$resolved" ] || { printf '%s' 0; return 0; }
+    while IFS= read -r exe; do
         [ -n "$exe" ] || continue
         matched=0
         # Iterate the pre-split ARRAY, never the raw string (defect (c)).  The
@@ -187,7 +207,7 @@ _confirmed_count() {
         done
         [ "$matched" -eq 1 ] && n=$((n + 1))
     done <<EOF
-$pids
+$resolved
 EOF
     printf '%s' "$n"
 }
