@@ -1945,13 +1945,11 @@ closure_reaches_reify_gui() {
 #                              see that predicate for SCOPE=all and its
 #                              fail-wide arms.
 #   REIFY_GUI_RETRY_SPECS      a caller ASKED for named vitest specs to be
-#                              re-run (dark-factory's narrowed retry).  An
-#                              explicit request is evidence about the frontend
-#                              that no path or closure test can see, and
-#                              dropping it would report green having never run
-#                              them.  Non-empty is the whole test: a malformed
-#                              value still runs the full suite via the loud
-#                              §4.3 fallback at the forwarding site.
+#                              re-run (dark-factory's narrowed retry).
+#                              Non-empty is the whole test: a malformed value
+#                              still runs the full suite via the loud §4.3
+#                              fallback at the forwarding site.  Why a request
+#                              counts as evidence: contract C7.
 #
 # So the ONLY shape that skips vitest is a RUN_RUST=1 branch/staged diff with a
 # real crate closure that excludes reify-gui and no spec request.  A Rust-only
@@ -1962,10 +1960,9 @@ if [ "$RUN_GUI" -eq 1 ] && { [ "$GUI_PATH_SIGNAL" -eq 1 ] || [ -n "${REIFY_GUI_R
     RUN_GUI_VITEST=1
 fi
 # A scope with no node lane at all (RUN_GUI=0) can still swallow a retry
-# request, since the route above is conjoined with RUN_GUI.  Say so loudly
-# rather than passing green in silence — the same direction as the
-# invalid-value warning at the forwarding site.  The observed flags are
-# printed, not narrated, so the line cannot outlive the gate that produced it.
+# request, since the route above is conjoined with RUN_GUI.  Warn rather than
+# pass in silence, and print the observed flags rather than narrating them, so
+# the line cannot outlive the gate that produced it.
 if [ -n "${REIFY_GUI_RETRY_SPECS:-}" ] && [ "$RUN_GUI_VITEST" -eq 0 ]; then
     echo "verify.sh: WARNING — REIFY_GUI_RETRY_SPECS is set but this run emits no vitest lane (RUN_GUI=$RUN_GUI RUN_GUI_VITEST=0); the requested specs will NOT run" >&2
 fi
