@@ -62,15 +62,24 @@
 # scenario is skipped, and an unguarded `test_summary` would print "0 passed,
 # 0 failed" and exit 0.  run_all.sh grades on exit code alone, so that is a
 # hard gate reporting green having asserted nothing — the exact failure mode
-# this file's partition was written to prevent.  Two floors close it:
+# this file's partition was written to prevent.  Three floors close it:
 #   * a guard rc outside {0,75} with the binary ABSENT aborts LOUD immediately
 #     (a broken toolchain, not a budget-safe skip).  With the binary PRESENT
 #     it degrades to RATCHET_SKIP=1 and falls through instead, so (c)+(d)+(e)
 #     still run — see the rc-125 branch below for why the two cases differ
 #     (#5962 review);
 #   * the $RAN tracker refuses to exit 0 unless at least one scenario block
-#     actually executed.
-# Both are pinned by tests/infra/test_reify_audit_ptodo_budget_skip.sh.
+#     actually executed;
+#   * REIFY_PTODO_RATCHET_REQUIRED=1 (#7006) refuses ANY resolved skip of the
+#     ratchet, closing the residual the bullet above leaves open: a PRESENT
+#     binary keeps (c)-(g) running, but that gate is High-severity only while
+#     phantom-tracking is MEDIUM, so a degraded run still exits green with the
+#     ratchet unrun.  Opt-in and default-off, because that degradation is the
+#     COMMON warm-lane state and must not red every task branch; the one caller
+#     that arms it is scripts/verify.sh's selective-infra leaf for this file
+#     under --scope staged, the last gate before a commit lands on main.  See
+#     the enforcement point after the skip-resolution block below.
+# All three are pinned by tests/infra/test_reify_audit_ptodo_budget_skip.sh.
 #
 # RATCHET VACUITY FLOOR (task #6127, rebased onto scan evidence by #6241).  The
 # scenario-(a)-level analogue of the block above: that floor stops a run which
@@ -471,6 +480,43 @@ if [ "${RATCHET_SKIP}" = "0" ]; then
         echo "test_reify_audit_ptodo.sh: ptodo-baseline-gen unavailable — skipping ratchet" >&2
         RATCHET_SKIP=1
     fi
+fi
+
+# -----------------------------------------------------------------------
+# REIFY_PTODO_RATCHET_REQUIRED — the caller declares the ratchet mandatory.
+#
+# Every branch above resolves a SKIP of the fingerprint ratchet into a run
+# that still exits 0 on the strength of the staleness-tolerant (c)-(g) hard
+# gate.  That gate is High-severity only, while phantom-tracking is MEDIUM,
+# so on the hook-gated `--scope staged` main-landing path — where
+# REIFY_AUDIT_NO_COLD_BUILD is deliberately unset and a no-op rebuild against
+# a stamped target/ mtime yields guard rc 125 with the binary still
+# executable — the gate can report green having never run the ratchet.  A
+# caller that cannot tolerate that sets this knob; scripts/verify.sh sets it
+# on exactly the one selective-infra leaf it emits for this file under
+# --scope staged.
+#
+# Stated ONCE, over the RESOLVED RATCHET_SKIP, rather than as an arm inside
+# any one branch: all four skip causes (guard rc 75; guard rc 125 with an
+# executable binary; ptodo-baseline-gen absent under REIFY_AUDIT_NO_COLD_BUILD;
+# ptodo-baseline-gen unavailable) are the same hole, and a fifth added later
+# is covered here without touching this check.  The knob's contract reads
+# "the ratchet ran, or this is red" — not "one rc was refused".
+#
+# `${VAR:-0}" = "1"` as elsewhere in this file: unset/empty/0/true all leave
+# the default OFF, so every existing caller (run_all.sh's merge tier, warm-lane
+# branch verifies, manual runs) behaves exactly as before.
+#
+# Placement is load-bearing: this fires before any fixture is minted and
+# before any scenario runs, so the refusal is cheap and its meta-test needs no
+# real detector.  The branch that set RATCHET_SKIP has already printed its own
+# cause line, so this names the refusal rather than restating the cause.
+# Pinned by tests/infra/test_reify_audit_ptodo_budget_skip.sh, assertions
+# (8)-(11).
+# -----------------------------------------------------------------------
+if [ "${REIFY_PTODO_RATCHET_REQUIRED:-0}" = "1" ] && [ "$RATCHET_SKIP" != "0" ]; then
+    echo "test_reify_audit_ptodo.sh: REIFY_PTODO_RATCHET_REQUIRED=1 — the caller declared the fingerprint ratchet ((a)+(b)) REQUIRED on this path, but it was skipped (RATCHET_SKIP=$RATCHET_SKIP, freshness guard rc=$_guard_rc); refusing to report green with the ratchet unrun. Remedy: build a fresh detector with 'cargo build --release -p reify-audit', or unset REIFY_PTODO_RATCHET_REQUIRED to accept the skip." >&2
+    exit 1
 fi
 
 BASELINE="$REPO_ROOT/crates/reify-audit/ptodo-baseline.txt"
