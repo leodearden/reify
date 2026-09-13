@@ -3109,9 +3109,12 @@ build_plan() {
     # (tests/infra/test_reify_audit_ptodo.sh scenario (a): ptodo-baseline-gen's
     # live fingerprints vs. crates/reify-audit/ptodo-baseline.txt via
     # comm -23). The ratchet is severity-blind — fingerprint = {path}
-    # :: {kind} :: {text} — so it reds on a new PTODO fingerprint of
-    # any kind, broader than a severity-scoped check, not narrower. A
-    # change touching only product source (no verify-pipeline artifact
+    # :: {kind} :: {text} — so it reds on a new fingerprint at any
+    # severity, broader than a severity-scoped check on that axis. It
+    # is narrower in reach on another axis, though: ptodo-baseline-gen
+    # fingerprints only path-keyed source-marker findings, so the
+    # task-id-keyed inverse lane never enters the ratchet at all (§8.4).
+    # A change touching only product source (no verify-pipeline artifact
     # from scripts/verify-pipeline-infra-tests.txt) that introduces
     # a new PTODO fingerprint now passes per-task verify and is only
     # caught at the merge gate — later feedback than before, but merge
@@ -3121,10 +3124,11 @@ build_plan() {
     # the full rationale. docs/prds/reify-audit-ptodo-detector.md §8.4
     # (commit e5b9341413) is the canonical source for this framing;
     # CLAUDE.md's "TODO citation convention" section holds the current
-    # summary. select_cheap_ptodo_gate (above) now runs this same ratchet on
-    # the --scope staged hook path (task 6817); the --scope branch per-task
-    # lanes here stay uncovered, a possible follow-up if per-task PTODO
-    # latency proves costly in practice.
+    # summary. select_cheap_ptodo_gate (above) selects this same ratchet
+    # on the --scope staged hook path whenever a swept-extension file is
+    # staged (task 6817; see that block for the RATCHET_SKIP residual);
+    # the --scope branch per-task lanes here stay uncovered, a possible
+    # follow-up if per-task PTODO latency proves costly in practice.
     #
     # FAIL-FAST: emitted BEFORE add_test_passes (task #4448).
     #
