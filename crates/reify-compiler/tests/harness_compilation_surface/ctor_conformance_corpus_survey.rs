@@ -678,7 +678,7 @@ fn ctor_type_name_at_returns_none_rather_than_guessing() {
 /// # Two copies is NOT the floor — it is where this task's lock set stopped
 ///
 /// A *third* copy lives in
-/// `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`
+/// `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs`
 /// (its local `is_ctor_conformance_code`), which is a separate test binary and
 /// so cannot reach this `#[path]` module. That copy is still lock-step by
 /// convention, with no drift guard — the exact failure mode collapsing the

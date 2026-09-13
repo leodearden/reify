@@ -27,9 +27,7 @@
 //! propagates `Scalar<Q^N>`), and that an un-annotated `determinant` produces
 //! no error at all.
 
-mod common;
-
-use common::compile_with_stdlib_helper;
+use crate::common::compile_with_stdlib_helper;
 use reify_compiler::CompiledModule;
 use reify_core::{DimensionVector, Severity, Type, ValueCellId};
 use reify_eval::EvalResult;

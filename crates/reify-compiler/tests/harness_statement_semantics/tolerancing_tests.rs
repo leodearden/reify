@@ -2891,9 +2891,10 @@ structure def Probe {
 // scripts/check-harness-baseline-registration.sh), and grandfathering a new
 // harness-layout-baseline.manifest row is SUPERSEDED — the manifest is a
 // shrinking ratchet, not an allow-list to grow. This file is the compiler-level
-// home of stdlib/tolerancing.ri's tests and is already baselined, so folding
-// the gate in adds ZERO compile units, which is the outcome the contract
-// exists to produce. Kept in its own `mod` so the gate's helpers stay off this
+// home of stdlib/tolerancing.ri's tests and is itself a member of the
+// harness_statement_semantics compile unit (task #5695, leaf CMP-5, which also
+// removed its baseline row), so folding the gate in adds ZERO compile units,
+// which is the outcome the contract exists to produce. Kept in its own `mod` so the gate's helpers stay off this
 // 2.8-kLOC file's top-level namespace and its tests keep a distinct
 // `mirror_gate::<test>` filter path.
 mod mirror_gate {

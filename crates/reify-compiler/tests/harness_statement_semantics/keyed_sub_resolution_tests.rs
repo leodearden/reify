@@ -5,7 +5,7 @@
 //! Step-5 (resolution) and step-9/step-11 (diagnostics) extend this file.
 //!
 //! User-observable signal:
-//!   cargo test -p reify-compiler --test keyed_sub_resolution_tests
+//!   cargo test -p reify-compiler --test harness_statement_semantics -- keyed_sub_resolution_tests::
 
 use reify_core::{Severity, Type};
 use reify_ir::{CompiledExprKind, MemberKey, Value};

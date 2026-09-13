@@ -669,7 +669,8 @@ fn smoke_one(path: &Path, rel_key: &str, failures: &mut Vec<(String, String)>) {
 /// the α corpus gate and the β survey cannot drift apart (task #5304). It used to
 /// be a hand-written copy kept in sync by convention.
 ///
-/// A third copy remains in `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`
+/// A third copy remains in
+/// `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs`
 /// — a separate test binary, which this `#[path]` module cannot reach. That is
 /// NOT a floor: the `reify-test-support` hop that would collapse all three
 /// already exists and is already used by both files. It was left for follow-up

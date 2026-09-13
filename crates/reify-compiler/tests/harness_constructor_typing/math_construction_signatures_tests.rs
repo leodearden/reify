@@ -13,9 +13,7 @@
 //! Modeled on `parametric_vector_point_resolution_tests.rs` — the
 //! `compile_with_stdlib_helper` + `template.value_cells[..].cell_type` scaffold.
 
-mod common;
-
-use common::compile_with_stdlib_helper;
+use crate::common::compile_with_stdlib_helper;
 use reify_core::{Severity, Type};
 
 /// A structure whose four `let` members are the construction-builtin calls.
