@@ -3103,20 +3103,28 @@ build_plan() {
     # full pool runs exactly once, at merge; per-task lanes get the cheap selective
     # subset below instead (exactly-one invariant, INV-5).
     #
-    # TRADE-OFF, accepted deliberately (task 5125 review): this also moves the
-    # reify-audit PTODO hard gate (CLAUDE.md's untracked/orphaned/bare-ignore
-    # gate) from per-task feedback to merge-time-only feedback, since that gate
-    # lives inside the run_all.sh pool (tests/infra/test_reify_audit_ptodo*.sh).
-    # A change that touches only product source (no verify-pipeline artifact
-    # from scripts/verify-pipeline-infra-tests.txt) and introduces an orphaned
-    # TODO now passes its per-task verify and is only caught at the merge gate —
-    # later feedback than before, but merge still blocks landing on main, so
-    # this is a latency trade-off, not a coverage gap. It is the direct fix for
-    # the M-way run_all pool contention above (INV-5); see this task's plan
-    # design_decisions for the full rationale. A cheap per-task-only PTODO
-    # precheck (skipping the other ~102 run_all tests) is a possible follow-up
-    # if per-task PTODO latency proves costly in practice — not implemented
-    # here to keep this task's fix scoped to the tiering mechanism itself.
+    # TRADE-OFF, accepted deliberately (task 5125 review): this also
+    # moves the PTODO fingerprint ratchet from per-task feedback to
+    # merge-time-only feedback, since it lives inside the run_all.sh pool
+    # (tests/infra/test_reify_audit_ptodo.sh scenario (a): ptodo-baseline-gen's
+    # live fingerprints vs. crates/reify-audit/ptodo-baseline.txt via
+    # comm -23). The ratchet is severity-blind — fingerprint = {path}
+    # :: {kind} :: {text} — so it reds on a new PTODO fingerprint of
+    # any kind, broader than a severity-scoped check, not narrower. A
+    # change touching only product source (no verify-pipeline artifact
+    # from scripts/verify-pipeline-infra-tests.txt) that introduces
+    # a new PTODO fingerprint now passes per-task verify and is only
+    # caught at the merge gate — later feedback than before, but merge
+    # still blocks landing on main, so this is a latency trade-off, not
+    # a coverage gap. It is the direct fix for the M-way run_all pool
+    # contention above (INV-5); see this task's plan design_decisions for
+    # the full rationale. docs/prds/reify-audit-ptodo-detector.md §8.4
+    # (commit e5b9341413) is the canonical source for this framing;
+    # CLAUDE.md's "TODO citation convention" section holds the current
+    # summary. select_cheap_ptodo_gate (above) now runs this same ratchet on
+    # the --scope staged hook path (task 6817); the --scope branch per-task
+    # lanes here stay uncovered, a possible follow-up if per-task PTODO
+    # latency proves costly in practice.
     #
     # FAIL-FAST: emitted BEFORE add_test_passes (task #4448).
     #
