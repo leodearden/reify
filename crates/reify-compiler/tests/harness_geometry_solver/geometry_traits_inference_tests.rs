@@ -2036,3 +2036,133 @@ fn translate_of_bounded_sibling_let_at_bounded_slot_emits_no_geometry_unbounded(
          pessimise the operand. Got {count}. All diagnostics: {diags:?}"
     );
 }
+
+// ─── Regression locks for the #7060 Sub-chasing fix ────────────────────────
+
+/// (a) Cycle termination. Two sibling lets that name each other compile on main
+/// today — `let a = translate(b, ..)` / `let b = translate(a, ..)` lowers to
+/// `a = [Xform(.., Sub("b"))]` / `b = [Xform(.., Sub("a"))]`, a genuine 2-cycle
+/// in the sibling-let graph (#4668). Chasing those Subs without a visited set
+/// recurses forever.
+///
+/// This test asserts only that compilation RETURNS and safe-defaults. It is the
+/// executable proof of the `in_flight` guard's relocation above the realization
+/// arm: remove that guard and this does not fail, it aborts the whole test
+/// binary with a stack overflow.
+#[test]
+fn mutually_referential_sibling_lets_terminate_instead_of_overflowing() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            let a = translate(b, 1mm, 0mm, 0mm)
+            let b = translate(a, 1mm, 0mm, 0mm)
+            sub x = Foo(g: a)
+        }
+    "#;
+    // Reaching the next line at all is the assertion: a missing cycle guard
+    // overflows the stack here rather than returning.
+    let (count, diags) = geometry_unbounded_count(source);
+    assert_eq!(
+        count, 0,
+        "a sibling-let cycle must terminate at the in_flight guard and safe-default to \
+         InferredTraits::all() (bounded=true), not invent a diagnostic. Got {count}. \
+         All diagnostics: {diags:?}"
+    );
+}
+
+/// (b) Compound cross-sub keys are still not chased.
+///
+/// `GeomRef::Sub` is overloaded: besides bare sibling names (#4668) it also
+/// carries `"<sub>.<member>"` for cross-sub `self.<sub>.<member>` references,
+/// whose referent lives on a DIFFERENT template. The consumer's `contains('.')`
+/// carve-out declines those, and a declined name collapses to the `all()` safe
+/// default here — so cross-sub behaviour is exactly what it was before #7060.
+///
+/// Op shape mirrors the lowering pinned by
+/// `harness_type_checking::boolean_arg_cross_sub_diagnostic_tests::
+/// boolean_op_with_working_path_cross_sub_arg_lowers_without_diagnostic`.
+#[test]
+fn compound_cross_sub_key_declined_by_env_keeps_safe_default() {
+    let ops = vec![
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![],
+        },
+        CompiledGeometryOp::Boolean {
+            op: BooleanOp::Union,
+            left: GeomRef::Sub("inner.body".to_string()),
+            right: GeomRef::Step(0),
+        },
+    ];
+    // StubSubRefEnv declines every name but "h", standing in for the consumer
+    // declining every name containing a dot.
+    assert_eq!(
+        infer_traits_for_op_in_env(&ops, &StubSubRefEnv),
+        InferredTraits::bounded_only(),
+        "a compound cross-sub key must collapse to all() (making Union(all, Box) = \
+         bounded_only), identical to the pre-#7060 behaviour — #7060 chases bare sibling \
+         names only and must not widen into cross-entity resolution"
+    );
+}
+
+/// (b, end to end) The cross-sub source shape itself is behaviourally untouched:
+/// a `self.<sub>.<member>` geometry reference at a `Bounded` slot still emits no
+/// `GeometryUnbounded`, because its compound `GeomRef::Sub` key is not chased.
+#[test]
+fn cross_sub_geometry_reference_at_bounded_slot_is_unchanged_by_sub_chasing() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Inner {
+            let body = half_space(0mm, 0mm, 0mm, 0, 0, 1)
+        }
+        structure def Top {
+            sub inner = Inner()
+            let combined = union(self.inner.body, box(20mm, 20mm, 20mm))
+            sub x = Foo(g: combined)
+        }
+    "#;
+    let (count, diags) = geometry_unbounded_count(source);
+    assert_eq!(
+        count, 0,
+        "a cross-sub `self.inner.body` reference lowers to the compound key \
+         GeomRef::Sub(\"inner.body\"), which #7060 deliberately does NOT chase — behaviour \
+         must be identical to before the fix. Got {count}. All diagnostics: {diags:?}"
+    );
+}
+
+/// (c) #6449 widening lock. `intersection(cutter, box(..))` where `cutter` is an
+/// unbounded sibling let IS bounded, so the `Bounded` slot must stay silent.
+///
+/// Green today for a reason that is about to change: boolean operands still
+/// inline as `GeomRef::Step`, so this never touches the #7060 chasing path. Once
+/// #6449 converts bare-ident boolean operands to `GeomRef::Sub` — the same
+/// lowering transform/modify already use (#4668) — `cutter` becomes a chased Sub
+/// and `combine_intersection` is what must keep this green by masking the
+/// unbounded operand against the bounded one.
+///
+/// Landing #7060 first is what stops #6449 from silently widening the dropped
+/// diagnostic; this test is the executable half of that claim, and must be
+/// re-read (not merely re-run) when #6449 lands.
+#[test]
+fn intersection_of_unbounded_sibling_let_with_box_emits_no_geometry_unbounded() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            let cutter = half_space(0mm, 0mm, 0mm, 0, 0, 1)
+            let upper = intersection(cutter, box(20mm, 20mm, 20mm))
+            sub x = Foo(g: upper)
+        }
+    "#;
+    let (count, diags) = geometry_unbounded_count(source);
+    assert_eq!(
+        count, 0,
+        "intersection with a bounded operand IS bounded, so no GeometryUnbounded may fire \
+         even though `cutter` is unbounded. Got {count}. All diagnostics: {diags:?}"
+    );
+}
