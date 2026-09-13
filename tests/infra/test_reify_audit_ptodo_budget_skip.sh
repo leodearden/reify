@@ -50,16 +50,33 @@
 #   (7) the shim cargo marker IS present — cost expectation deliberately
 #       inverted here, proving the rebuild path ran (rc 125, not rc 75)
 #
-# Only the ABSENT half of the rc-125 branch is refused; with the binary PRESENT
-# it degrades to RATCHET_SKIP=1 so the (c)+(d)+(e) hard gate still runs.  See the
-# PARTITION NOTE below.
+# Only the ABSENT half of the rc-125 branch is refused unconditionally; with the
+# binary PRESENT it degrades to RATCHET_SKIP=1 so the (c)+(d)+(e) hard gate still
+# runs.  That degradation is what the third and fourth invocations bound.
 #
-# PARTITION NOTE: this covers only the ABSENT-binary case, under both guard
-# rcs.  The PRESENT-but-stale case remains a graceful exit-0 skip under EITHER
-# rc — scenarios (c)+(d)+(e) still run against the stale binary, so the run does
-# assert something — and is covered by
-# tests/infra/test_reify_audit_ptodo_orphan_hardgate.sh, which passes a stale
-# COPY and still expects exit 0.  Do not "unify" the two expectations.
+# Assertions — third and fourth invocations (#7006): guard rc 125 with the binary
+# PRESENT, the cell this file's partition previously left uncovered.  The skip is
+# sound for the (c)-(g) hard gate but silently drops the fingerprint ratchet, and
+# that gate is High-severity only while phantom-tracking is MEDIUM — so on the
+# hook-gated --scope staged main-landing path the run can exit green with the
+# ratchet never having run.  REIFY_PTODO_RATCHET_REQUIRED=1 is the caller's
+# declaration that the ratchet is not optional there:
+#   (8)  with the knob armed, test_reify_audit_ptodo.sh exits 1
+#   (9)  its output carries the ratchet-required refusal diagnostic, so a stub
+#        detector failing (c)-(g) on its own merits cannot satisfy (8)
+#   (10) with the knob UNSET, the rc-125 PRESENT-binary branch still fires and
+#        still degrades to a skip — non-vacuity for (9) and (11)
+#   (11) ...and emits no refusal, so the knob is genuinely opt-in
+#
+# PARTITION NOTE: the ABSENT-binary case is covered here under both guard rcs,
+# and so is the PRESENT-but-stale case under the knob.  What is NOT covered here
+# is the PRESENT-but-stale DEFAULT (knob unset), which remains a graceful exit-0
+# skip under EITHER rc — scenarios (c)+(d)+(e) still run against the stale binary,
+# so the run does assert something.  That cell is
+# tests/infra/test_reify_audit_ptodo_orphan_hardgate.sh's, which passes a stale
+# COPY and still expects exit 0; (10)+(11) pin only the diagnostics, never an exit
+# code, precisely so the two files do not race over one contract.  Do not "unify"
+# the expectations.
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -221,5 +238,97 @@ assert "exit 1 came from the rc-125 floor's absent-binary branch (refusal diagno
 #     budget-safe skip (rc 75), so (5)+(6) really did pin the other floor.
 assert "shim cargo WAS invoked — the rebuild path ran, so this was rc 125 not rc 75 (marker file present)" \
     bash -c "[ -f '$BS_MARKER' ]"
+
+# ---------------------------------------------------------------------------
+# Third and fourth invocations: guard rc 125 with the binary PRESENT — the
+# partition cell the PARTITION NOTE above records as uncovered here.
+#
+# On the hook-gated `--scope staged` main-landing path REIFY_AUDIT_NO_COLD_BUILD
+# is deliberately unset, so the guard degrades to mode=rebuild.  When that
+# rebuild is a legitimate no-op — cargo's fingerprint says up-to-date — against
+# an on-disk mtime still older than the last crates/reify-audit commit (a
+# warm-lane seeded target/ with stamped mtimes), the guard returns 125 while the
+# binary stays executable, and test_reify_audit_ptodo.sh sets RATCHET_SKIP=1.
+# The fingerprint ratchet ((a)+(b)) then never runs while the (c)-(g) hard gate,
+# which is High-severity only, still exits green — so a MEDIUM phantom-tracking
+# marker can ride a main landing past a green gate.  REIFY_PTODO_RATCHET_REQUIRED=1
+# is the caller's declaration that the ratchet is not optional on this path.
+#
+# Fixture: a two-line executable stub with a year-2000 mtime.  reify_audit_is_stale
+# only STATS the binary (portable_mtime plus a `-f` presence check,
+# scripts/reify-audit-freshness.sh:190-233) and never executes it, so the stub
+# reproduces present-but-stale exactly — no real detector, no sqlite3, no real
+# cargo.  The enforcement point under test fires before any fixture is minted or
+# scenario runs, so the stub's uselessness as a detector costs nothing.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Invoking test_reify_audit_ptodo.sh with a PRESENT-but-stale binary, ratchet REQUIRED ---"
+
+BS_STALE_BIN="$BS_META_TMPDIR/stale-reify-audit"
+cat > "$BS_STALE_BIN" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$BS_STALE_BIN"
+touch -t 200001010000 "$BS_STALE_BIN"
+
+BS_OUTPUT_REQ="$BS_META_TMPDIR/ptodo-output-ratchet-required"
+set +e
+env -u REIFY_AUDIT_NO_COLD_BUILD \
+    REIFY_AUDIT_BIN="$BS_STALE_BIN" \
+    REIFY_PTODO_RATCHET_REQUIRED=1 \
+    PATH="$BS_META_TMPDIR:$PATH" \
+    bash "$PTODO_TEST" >"$BS_OUTPUT_REQ" 2>&1
+BS_EXIT_REQ=$?
+set -e
+
+# (8) A caller that declared the ratchet REQUIRED must not get a green run in
+#     which the ratchet was skipped.
+assert "guard rc 125 + PRESENT binary + REIFY_PTODO_RATCHET_REQUIRED=1 → test_reify_audit_ptodo.sh exits 1" \
+    bash -c "[ '$BS_EXIT_REQ' -eq 1 ]"
+
+# (9) ...and for THAT reason — the same discrimination rationale as (2) and (6),
+#     and load-bearing here rather than merely prudent: this invocation points the
+#     hard gate at a stub that is not a detector, so several (c)-(g) scenarios fail
+#     on their own merits and would satisfy (8) by themselves.  Only the fixed-string
+#     match ties the exit code to the ratchet-required refusal.
+assert "exit 1 came from the ratchet-required refusal (diagnostic present)" \
+    bash -c "grep -qF 'REIFY_PTODO_RATCHET_REQUIRED=1 — the caller declared the fingerprint ratchet ((a)+(b)) REQUIRED on this path, but it was skipped' '$BS_OUTPUT_REQ'"
+
+# ---------------------------------------------------------------------------
+# Fourth invocation: the opt-in control.  Identical env with the knob removed
+# via `env -u`, proving the refusal is the KNOB's doing and not this fixture's.
+#
+# Deliberately asserts NOTHING about the exit status.  A stub is not a detector,
+# so scenarios (c)-(g) run and fail on their own merits; the exit code carries no
+# information about the knob either way.  The default-off exit-0 contract for a
+# REAL present-but-stale binary is already fenced by
+# tests/infra/test_reify_audit_ptodo_orphan_hardgate.sh, which passes a stale COPY
+# and still expects exit 0 — that file must stay green, and is not restated here.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Invoking test_reify_audit_ptodo.sh with a PRESENT-but-stale binary, knob UNSET ---"
+
+BS_OUTPUT_OPTIN="$BS_META_TMPDIR/ptodo-output-ratchet-optional"
+set +e
+env -u REIFY_AUDIT_NO_COLD_BUILD -u REIFY_PTODO_RATCHET_REQUIRED \
+    REIFY_AUDIT_BIN="$BS_STALE_BIN" \
+    PATH="$BS_META_TMPDIR:$PATH" \
+    bash "$PTODO_TEST" >"$BS_OUTPUT_OPTIN" 2>&1
+set -e
+
+# (10) Non-vacuity for (9) and (11): this env really does reach the
+#      rc-125-with-present-binary branch, rather than some earlier exit that would
+#      make the knob's absence trivially undetectable.  Fixed-string match on that
+#      branch's own message, and deliberately NOT the shared "freshness guard
+#      failed (rc=" prefix, which the ABSENT sibling branch also emits.
+assert "knob UNSET → the rc-125 PRESENT-binary branch still fires (degrades to a skip)" \
+    bash -c "grep -qF 'skipping the precision-sensitive ratchet' '$BS_OUTPUT_OPTIN'"
+
+# (11) ...and the refusal is absent, so the knob is genuinely opt-in.  Without
+#      this, (9) would be satisfied by an unconditional refusal that broke every
+#      existing caller.
+assert "knob UNSET → no ratchet-required refusal (default-off)" \
+    bash -c "! grep -qF 'REIFY_PTODO_RATCHET_REQUIRED=1 — the caller declared the fingerprint ratchet ((a)+(b)) REQUIRED on this path, but it was skipped' '$BS_OUTPUT_OPTIN'"
 
 test_summary
