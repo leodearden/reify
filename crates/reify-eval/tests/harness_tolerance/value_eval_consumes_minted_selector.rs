@@ -22,7 +22,7 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_core::identity::ValueCellId;
 use reify_core::VersionId;
 use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, Engine, RealizationReadHandle};
-use reify_ir::{OpaqueState, Value};
+use reify_ir::{OpaqueState, Value, ValueMap};
 use reify_test_support::compile_source_with_stdlib;
 
 /// Fixture: Widget with a NAMED `body` param (Solid = box) + let-bound dir/tol
@@ -146,10 +146,10 @@ fn value_eval_consumer_reads_minted_selector_finite_after_edit() {
 // `peak_deviation_at` has NO `.ri` declaration, so it resolves through the
 // undeclared-intrinsic path (`NoUserFunctions` → `FunctionCall` →
 // `eval_builtin`, see trajectory.ri's "delegate-to-undeclared-name" section)
-// with no static arg-type check. `peak_deviation_at` (reify-stdlib
-// trampoline.rs) never inspects `track`'s content — a resolved Selector `loc`
-// always yields `Real(0.0)` — so the ONLY way `peak` can be `Value::Undef` is
-// a stale pre-mint read of `loc` that was never re-evaluated.
+// with no static arg-type check. The ONLY way `peak` can be `Value::Undef` is
+// a stale pre-mint read of `loc` that was never re-evaluated (see
+// `assert_peak_resolved`'s doc comment below for the concrete resolved-value
+// derivation).
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// R3e fixture: `R3eWidget` mirrors `WIDGET_SRC` (named `body` param + `loc`
@@ -212,28 +212,27 @@ fn r3e_track_fn(
 }
 
 /// Shared assertion for the `peak = peak_deviation_at(track, loc)` consumer
-/// shape used by every R3e/R3f test below: `track` is always the bare
+/// shape used by every R3e/R3f test below. `track` is always the bare
 /// `Value::Real` `seed` passthrough from `r3e_track_fn` (registered as both
 /// `"test::r3e_track"` and `"test::r3f_track"`), never a
-/// `Value::StructureInstance`. `track_location_series` (trampoline.rs)
-/// requires a `StructureInstance` track and returns `None` otherwise,
-/// REGARDLESS of the location index — so `deviation_series` is always empty
-/// and `peak_deviation_at`'s `.fold(0.0_f64, f64::max)` always returns its
-/// `0.0` seed. This holds even though `read_location_index` resolves a
-/// `Value::Selector` `loc` to index 0 rather than rejecting it (R3c, task
-/// #4655) — the bail is one level down, in `track_location_series`, not
-/// `read_scalar_si` rejecting the selector.
-///
+/// `Value::StructureInstance`, so `track_location_series` (trampoline.rs)
+/// always bails on it and `peak_deviation_at` returns its zero fold seed —
 /// `Value::Undef` (a stale pre-mint `loc`) and `Value::Real(0.0)` are
-/// consequently the only two values `peak` can take with this bare-`Real`
-/// track: pinning the exact `0.0` regression-guards `peak_deviation_at`'s own
-/// fold-seed/bail behavior (mutation-tested: flipping the seed to `999.0`
-/// turns every `peak_deviation_at`-consuming test in this file red — task
-/// #4907's plan) rather than `read_location_index`'s selector-content
-/// handling, which a bare-`Real` track can never exercise — that would need
-/// a `StructureInstance`-shaped track fixture (follow-up, not this task).
-fn assert_peak_resolved(value: &Value, context: &str) {
-    assert_eq!(value, &Value::Real(0.0), "{context}, not a stale pre-mint Undef");
+/// consequently the only two outcomes `peak` can reach with this fixture.
+///
+/// `peak == Real(0.0)` alone can't distinguish a genuine post-mint
+/// resolution from any other `peak_deviation_at` bail path, which returns
+/// the same zero seed — so this also asserts `loc` itself resolved to a
+/// `Value::Selector`.
+fn assert_peak_resolved(values: &ValueMap, structure_name: &str, context: &str) {
+    let peak = values.get_or_undef(&ValueCellId::new(structure_name, "peak"));
+    assert_eq!(peak, Value::Real(0.0), "{context}");
+
+    let loc = values.get_or_undef(&ValueCellId::new(structure_name, "loc"));
+    assert!(
+        matches!(loc, Value::Selector(_)),
+        "{context} — loc must resolve to a Value::Selector, got {loc:?}"
+    );
 }
 
 /// `Engine::eval` (kernel-free, no build) must yield a non-Undef value for
@@ -253,11 +252,9 @@ fn value_eval_template_consumer_reads_minted_selector_finite_eval() {
     engine.register_compute_fn("test::r3e_track", r3e_track_fn as ComputeFn);
     let result = engine.eval(&compiled);
 
-    let cell_id = ValueCellId::new("R3eWidget", "peak");
-    let value = result.values.get_or_undef(&cell_id);
-    // Derivation: see `assert_peak_resolved`'s doc comment above.
     assert_peak_resolved(
-        &value,
+        &result.values,
+        "R3eWidget",
         "R3eWidget.peak must resolve to the concrete peak_deviation_at \
          result after Engine::eval (a same-pass consumer of an \
          in-walk-minted selector must be re-evaluated after the mint fires)",
@@ -280,11 +277,9 @@ fn value_eval_template_consumer_reads_minted_selector_finite_eval_cached() {
     engine.register_compute_fn("test::r3e_track", r3e_track_fn as ComputeFn);
     let result = engine.eval_cached(&compiled, VersionId(1));
 
-    let cell_id = ValueCellId::new("R3eWidget", "peak");
-    let value = result.eval_result.values.get_or_undef(&cell_id);
-    // Derivation: see `assert_peak_resolved`'s doc comment above.
     assert_peak_resolved(
-        &value,
+        &result.eval_result.values,
+        "R3eWidget",
         "R3eWidget.peak must resolve to the concrete peak_deviation_at \
          result after Engine::eval_cached (a same-pass consumer of an \
          in-walk-minted selector must be re-evaluated after the mint fires)",
@@ -327,11 +322,9 @@ fn value_eval_template_consumer_reads_minted_selector_finite_after_edit() {
         .edit_param(width_id, Value::length(0.012))
         .expect("edit_param must succeed after eval");
 
-    let cell_id = ValueCellId::new("R3eWidget", "peak");
-    let value = edit_result.values.get_or_undef(&cell_id);
-    // Derivation: see `assert_peak_resolved`'s doc comment above.
     assert_peak_resolved(
-        &value,
+        &edit_result.values,
+        "R3eWidget",
         "R3eWidget.peak must resolve to the concrete peak_deviation_at \
          result after engine_edit (a same-pass consumer of an \
          in-walk-minted selector must be re-evaluated after the mint fires)",
@@ -407,16 +400,9 @@ fn value_eval_geometry_let_consumer_reads_minted_selector_finite_eval() {
     engine.register_compute_fn("test::r3f_track", r3e_track_fn as ComputeFn);
     let result = engine.eval(&compiled);
 
-    let cell_id = ValueCellId::new("R3fWidget", "peak");
-    let value = result.values.get_or_undef(&cell_id);
-    // Derivation: see `assert_peak_resolved`'s doc comment above (R3e
-    // section) — `track` here is the very same bare-`Real` `r3e_track_fn`
-    // passthrough, just registered under `"test::r3f_track"`, so the
-    // mechanism is identical to R3e's: `track_location_series` bails on the
-    // non-`StructureInstance` track, NOT `read_scalar_si` rejecting the
-    // resolved selector.
     assert_peak_resolved(
-        &value,
+        &result.values,
+        "R3fWidget",
         "R3fWidget.peak must resolve to the concrete peak_deviation_at \
          result after Engine::eval (a same-pass consumer of a \
          geometry-LET-backed selector must be re-evaluated after the \
@@ -439,11 +425,9 @@ fn value_eval_geometry_let_consumer_reads_minted_selector_finite_eval_cached() {
     engine.register_compute_fn("test::r3f_track", r3e_track_fn as ComputeFn);
     let result = engine.eval_cached(&compiled, VersionId(1));
 
-    let cell_id = ValueCellId::new("R3fWidget", "peak");
-    let value = result.eval_result.values.get_or_undef(&cell_id);
-    // Derivation: see `assert_peak_resolved`'s doc comment above.
     assert_peak_resolved(
-        &value,
+        &result.eval_result.values,
+        "R3fWidget",
         "R3fWidget.peak must resolve to the concrete peak_deviation_at \
          result after Engine::eval_cached (a same-pass consumer of a \
          geometry-LET-backed selector must be re-evaluated after the \
@@ -502,11 +486,9 @@ fn value_eval_geometry_let_consumer_reads_minted_selector_finite_after_source_ed
         .edit_source(&compiled)
         .expect("edit_source must succeed after eval");
 
-    let cell_id = ValueCellId::new("R3fWidget", "peak");
-    let value = edit_result.values.get_or_undef(&cell_id);
-    // Derivation: see `assert_peak_resolved`'s doc comment above.
     assert_peak_resolved(
-        &value,
+        &edit_result.values,
+        "R3fWidget",
         "R3fWidget.peak must resolve to the concrete peak_deviation_at \
          result after engine_edit (edit_source) (a same-pass consumer of a \
          geometry-LET-backed selector must be re-evaluated after the \
