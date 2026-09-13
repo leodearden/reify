@@ -54,7 +54,7 @@ _is_global() {
 }
 
 # _is_inert <path> — returns 0 (true) if the path is documentation or
-# configuration-only: it contributes NO crate AND needs no heavy checks.
+# configuration: it needs no heavy checks and belongs to no crate of its own.
 # Matches: docs/**, *.md, *.yaml, *.yml.
 #
 # SPOT (task 7427). This is the SINGLE source for that class, consulted by
@@ -69,10 +69,17 @@ _is_global() {
 # widened the whole closure to ALL. tests/infra/test_affected_crates_lib.sh's
 # INERT-SPOT battery pins the two classifications together.
 #
-# decide_scope consults this from INSIDE its `*)` catch-all, never ahead of
-# the case, so its earlier arms still win over this rule — gui/* (a
-# gui/*.md is GUI work), tests/prd-gate/fixtures/*.ri and the
-# docs/gui-event-channels.md carve-out.
+# DELIBERATELY NOT ANCHORED, because BOTH consumers place crate ATTRIBUTION
+# ahead of it — decide_scope through its `crates/*)` arm, affected_crates
+# through _file_to_crate in its accumulation loop — so a crate-OWNED *.md
+# (reify-mcp's include_str!-ed chunks, reify-doc's snapshot fixtures) is
+# never reached by this predicate on either side and keeps mapping to its
+# owning crate. That shared attribute-first precedence IS the SPOT; it is
+# recorded here once rather than restated at each call site.
+#
+# The same precedence keeps decide_scope's other earlier arms winning over
+# this rule too — gui/* (a gui/*.md is GUI work), tests/prd-gate/fixtures/*.ri
+# and the docs/gui-event-channels.md carve-out.
 _is_inert() {
     local path="$1"
     case "$path" in
@@ -245,16 +252,17 @@ affected_crates() {
     done
 
     # Accumulate the direct crate set from crate-mappable paths.
+    # ATTRIBUTION FIRST, then the non-crate classes (see _is_inert's header for
+    # why that order is the contract on both sides of the SPOT).
     local direct=()
     local crate
     for arg in "$@"; do
-        if _is_noncrate "$arg"; then
-            # Non-crate path: skip, contributes nothing.
-            continue
-        fi
         crate="$(_file_to_crate "$arg")"
         if [ -n "$crate" ]; then
             direct+=("$crate")
+        elif _is_noncrate "$arg"; then
+            # Non-crate path: skip, contributes nothing.
+            continue
         else
             # C5: unmappable path — fail wide.
             echo ALL
