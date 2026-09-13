@@ -17,10 +17,6 @@
 //! This pass does not walk members itself — it delegates to
 //! [`reify_ast::walk_all_member_bodies`], which owns both the recursion set and
 //! the depth bound ([`reify_ast::MAX_MEMBER_NESTING_DEPTH`]).
-//!
-//! One gap survives that delegation: no reify-ast walker descends into a sub's
-//! keyed entries, so a `priv let` inside `sub p : Foo { "a" => { … } }` is not
-//! reported.  Longstanding, and unchanged by the delegation.
 
 use reify_ast::{Declaration, MemberDecl, ParsedModule, walk_all_member_bodies};
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel};
