@@ -175,6 +175,22 @@ set +f
 [ "${#DEPS_GLOBS[@]}" -gt 0 ] || \
     _die "--deps-glob must contain at least one non-whitespace pattern, got '$DEPS_GLOB'"
 
+# Preflight the two external tools the batched confirmation depends on, for the
+# same reason the --deps-glob guards above exist: every failure of that one
+# invocation collapses into an empty result, then `confirmed=0`, then a summary
+# line byte-for-byte indistinguishable from a genuine INCONCLUSIVE window (a
+# missing `xargs` yields peak=0 samples=1 nonzero_samples=0 and exit 0 —
+# measured with a stub that exits 127).  Batching made that blast radius the
+# WHOLE sample, where a per-candidate readlink lost one pid; `xargs` is also a
+# dependency this script did not previously have.  Die loudly here instead: the
+# missing-tool case is fully in this script's control, unlike the residual
+# "present but every operand denied" case (sandbox/ptrace, task #7500).
+for _tool in readlink xargs; do
+    command -v "$_tool" >/dev/null 2>&1 || \
+        _die "$_tool not found on PATH — required for the batched exe confirmation"
+done
+unset _tool
+
 # Injection seams (testability; the contract guard drives both).  PIDS_CMD is an
 # OVERRIDE: unset or empty — the default, and what a real run uses — means
 # enumerate PROC_ROOT itself, with no prefilter (defect (d) above).
@@ -192,32 +208,48 @@ _host_nproc() {
 }
 HOST_NPROC="$(_host_nproc)"
 
-# _candidate_pids — the pids to confirm, one per line.  Always succeeds: a
-# candidate source that matches nothing is data, not an error.
+# _candidate_exe_links — the <PROC_ROOT>/<pid>/exe links to confirm, one per
+# line.  Always succeeds: a candidate source that matches nothing is data, not
+# an error.
+#
+# IT YIELDS LINK PATHS, NOT PIDS, because that is what the confirmation consumes.
+# An earlier shape had the default branch strip each globbed path back to a bare
+# pid only for _confirmed_count to re-assemble it — a lossy round-trip that
+# existed solely to make the production path speak the pid-shaped vocabulary of
+# the test-only override seam, and that split the "one pass over one snapshot"
+# property across two functions.
 #
 # DEFAULT: read PROC_ROOT directly.  A bash glob is readdir only — no fork, no
 # argv walk — so discovery and the confirmation that follows it are one pass over
-# one snapshot.  Non-numeric entries (self, thread-self, net, ...) come through
-# harmlessly: the digits-only filter in _confirmed_count drops them, and their
-# exe targets could not match a */target/*/deps/* pattern anyway.
+# one snapshot, and the glob already holds exactly the paths needed.  Non-numeric
+# entries (self, thread-self, ...) come through harmlessly: their exe targets
+# resolve to this script's own helper processes, which cannot match a
+# */target/*/deps/* pattern.
 #
-# OVERRIDE: REIFY_SAMPLER_PIDS_CMD, evaluated exactly as before.  Both branches
-# feed the SAME batched confirmation, which is what keeps the contract guard
-# pinning the code a real run takes rather than a test-only branch.
-_candidate_pids() {
+# OVERRIDE: REIFY_SAMPLER_PIDS_CMD still speaks PIDS — the natural thing for a
+# caller to produce — so its lines are mapped to links here, and the digits-only
+# filter lives here too, where the untrusted input actually is.  Both branches
+# converge on the SAME batched confirmation, which is what keeps the contract
+# guard pinning the code a real run takes rather than a test-only branch.
+_candidate_exe_links() {
     if [ -n "$PIDS_CMD" ]; then
-        eval "$PIDS_CMD" 2>/dev/null || true
+        local pids pid
+        pids="$(eval "$PIDS_CMD" 2>/dev/null || true)"
+        [ -n "$pids" ] || return 0
+        while IFS= read -r pid; do
+            case "${pid:-}" in (''|*[!0-9]*) continue ;; esac
+            printf '%s\n' "$PROC_ROOT/$pid/exe"
+        done <<EOF
+$pids
+EOF
         return 0
     fi
-    local link
     local -a exes=()
     shopt -s nullglob
     exes=( "$PROC_ROOT"/*/exe )
     shopt -u nullglob
-    for link in "${exes[@]}"; do
-        link="${link%/exe}"
-        printf '%s\n' "${link##*/}"
-    done
+    [ "${#exes[@]}" -gt 0 ] || return 0
+    printf '%s\n' "${exes[@]}"
 }
 
 # ---------------------------------------------------------------------------
@@ -234,18 +266,20 @@ _candidate_pids() {
 # (A5) — now satisfied structurally rather than by a per-pid guard — and the
 # single invocation is what closes the prefilter->confirm race (defect (d), B1).
 # `xargs -0` keeps it ARG_MAX-safe on a pathological host; on a realistic one
-# (~1200 processes) the whole set is a single batch.
+# (~1200 processes) the whole set is a single batch.  Both tools are preflighted
+# at startup, so an empty result here means the operands were unresolvable — not
+# that the confirmation never ran.
 # ---------------------------------------------------------------------------
 _confirmed_count() {
-    local pids pid exe glob resolved n=0 matched
+    local candidates link exe glob resolved n=0 matched
     local -a links=()
-    pids="$(_candidate_pids)"
-    [ -n "$pids" ] || { printf '%s' 0; return 0; }
-    while IFS= read -r pid; do
-        case "${pid:-}" in (''|*[!0-9]*) continue ;; esac
-        links+=( "$PROC_ROOT/$pid/exe" )
+    candidates="$(_candidate_exe_links)"
+    [ -n "$candidates" ] || { printf '%s' 0; return 0; }
+    while IFS= read -r link; do
+        [ -n "$link" ] || continue
+        links+=( "$link" )
     done <<EOF
-$pids
+$candidates
 EOF
     [ "${#links[@]}" -gt 0 ] || { printf '%s' 0; return 0; }
     resolved="$(printf '%s\0' "${links[@]}" | xargs -0 readlink 2>/dev/null || true)"
