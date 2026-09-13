@@ -118,15 +118,29 @@ INFO: nextest test-binary concurrency: peak=51 samples=1034 nonzero_samples=827 
 
 ### The distribution, not just the peak
 
-`peak` is a maximum, so record the shape it came from:
+`peak` is a maximum, so record the shape it came from.  Re-derived from the
+window's raw per-sample stderr log (one `confirmed=` line per sample) rather than
+retyped — that log is transient, under `/tmp`, so this table is the durable
+record of it:
 
 | confirmed test binaries | samples |
 |---|---|
 | 0 | 207 |
-| 1–23 | 217 |
+| 1–23 | 260 |
 | 24–31 | 535 |
 | exactly 32 | 28 |
-| 34, 36, 44, 51 | 1 each |
+| 33–51 | 4 |
+| **all** | **1034** |
+
+The bins are contiguous and exhaustive, and they reconcile with the summary line
+at the top of this section on both of its fields: they sum to 1034 = `samples`,
+and the four nonzero bins sum to 827 = `nonzero_samples`.  That reconciliation is
+the point of stating the total — it makes a future transcription slip in this
+table self-detecting.  (The `1–23` cell read 217 as first published, which is
+exactly the kind of slip meant; corrected here from the log.)
+
+In the top bin the only values observed were **34, 36, 44 and 51, one sample
+each** — no sample landed on 33.
 
 The sustained plateau is 24–32 with a hard shoulder at **exactly 32**, the
 generated `test-threads`.  Only **4 of 1034** samples exceed it, and the two
