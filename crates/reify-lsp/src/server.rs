@@ -3067,4 +3067,104 @@ structure Assembly {
             reparsed.errors
         );
     }
+
+    // --- task 7118: versioned WorkspaceEdit.documentChanges ---
+
+    /// Unwrap a `DocumentChanges` into the `(uri, version, edits)` triples a
+    /// test wants to assert on, failing loudly on the resource-operation
+    /// variant the stamper never produces.
+    fn stamped_entries(edit: &WorkspaceEdit) -> Vec<(String, Option<i32>, Vec<TextEdit>)> {
+        match edit
+            .document_changes
+            .as_ref()
+            .expect("document_changes present")
+        {
+            DocumentChanges::Edits(edits) => edits
+                .iter()
+                .map(|e| {
+                    let texts = e
+                        .edits
+                        .iter()
+                        .map(|one| match one {
+                            OneOf::Left(t) => t.clone(),
+                            OneOf::Right(a) => a.text_edit.clone(),
+                        })
+                        .collect();
+                    (
+                        e.text_document.uri.to_string(),
+                        e.text_document.version,
+                        texts,
+                    )
+                })
+                .collect(),
+            DocumentChanges::Operations(_) => {
+                panic!("rename never emits resource operations")
+            }
+        }
+    }
+
+    fn text_edit(line: u32, new_text: &str) -> TextEdit {
+        TextEdit {
+            range: Range::new(Position::new(line, 0), Position::new(line, 4)),
+            new_text: new_text.to_string(),
+        }
+    }
+
+    #[test]
+    fn version_stamped_workspace_edit_stamps_known_versions_and_sorts_by_uri() {
+        let uri_a = Url::parse("file:///a.ri").unwrap();
+        let uri_b = Url::parse("file:///b.ri").unwrap();
+        let edit_a = text_edit(0, "Alpha");
+        let edit_b = text_edit(3, "Beta");
+
+        // Insert b BEFORE a so a HashMap-order pass-through could not produce
+        // the sorted result by accident.
+        let mut changes = HashMap::new();
+        changes.insert(uri_b.clone(), vec![edit_b.clone()]);
+        changes.insert(uri_a.clone(), vec![edit_a.clone()]);
+
+        // Only a.ri is open on the server; b.ri's content on disk is master.
+        let versions = HashMap::from([(uri_a.clone(), 3)]);
+
+        let stamped = version_stamped_workspace_edit(
+            WorkspaceEdit {
+                changes: Some(changes),
+                ..Default::default()
+            },
+            &versions,
+        );
+
+        assert!(
+            stamped.changes.is_none(),
+            "exactly one representation is emitted — the legacy map must be dropped"
+        );
+        let entries = stamped_entries(&stamped);
+        assert_eq!(
+            entries.iter().map(|(u, _, _)| u.as_str()).collect::<Vec<_>>(),
+            vec![uri_a.as_str(), uri_b.as_str()],
+            "entries are URI-sorted, not in HashMap iteration order"
+        );
+        assert_eq!(entries[0].1, Some(3), "an open document carries its version");
+        assert_eq!(
+            entries[1].1, None,
+            "a document not open on the server is unversioned (disk is master)"
+        );
+        assert_eq!(
+            entries[0].2,
+            vec![edit_a],
+            "the original TextEdits pass through unchanged"
+        );
+        assert_eq!(entries[1].2, vec![edit_b]);
+    }
+
+    #[test]
+    fn version_stamped_workspace_edit_maps_empty_changes_to_empty_edits() {
+        let stamped = version_stamped_workspace_edit(WorkspaceEdit::default(), &HashMap::new());
+
+        assert!(stamped.changes.is_none());
+        assert!(
+            stamped_entries(&stamped).is_empty(),
+            "an edit with no changes becomes an empty Edits list, never a panic"
+        );
+    }
 }
