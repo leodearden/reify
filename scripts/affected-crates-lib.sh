@@ -114,13 +114,18 @@ _is_noncrate() {
 # tests/infra/test_affected_crates_lib.sh derives the set from the repo's own
 # Rust sources — every crate with a non-comment line naming an
 # `examples/<path>.ri` literal — and asserts DERIVED ⊆ DECLARED. Re-run that
-# test rather than editing this line from memory.
+# test rather than editing this line from memory. Its derivation sweeps EVERY
+# workspace member's Rust sources, `gui/src-tauri/**` included: reify-gui
+# `include_str!`s corpus leaves at COMPILE time, and is declared here directly
+# rather than left to arrive transitively through the reify-eval seed — that
+# incidental dep edge is precisely what this seed set exists to stop the design
+# from depending on.
 #
 # SUBSET, not equality, and the asymmetry is deliberate: an extra DECLARED
 # crate only ever WIDENS the closure, which is the direction of error C5
 # already blesses. An UNDECLARED reader is the real regression — its tests
 # would be narrowed AWAY by an edit to the very fixture they read.
-_RI_CORPUS_CRATES="reify-cli reify-compiler reify-eval reify-eval-fea-tests"
+_RI_CORPUS_CRATES="reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui"
 
 # _file_to_crate <path> — map a crate-owned path to its crate name, or print
 # nothing if the path is not under a known crate location.

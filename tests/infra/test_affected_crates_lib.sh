@@ -454,10 +454,19 @@ assert "examples/**/.gitkeep still forces ALL (C5 preserved)" \
 echo ""
 echo "--- RI-CORPUS-DRIFT: every crate whose Rust sources name an examples/*.ri leaf is declared ---"
 
-# _derived_ri_corpus_crates — crates under crates/ with a non-comment Rust
-# source line carrying a literal examples/<path>.ri reference, one per line.
+# _derived_ri_corpus_crates — workspace crates with a non-comment Rust source
+# line carrying a literal examples/<path>.ri reference, one per line.
+#
+# The pathspec must cover EVERY workspace member's Rust sources, not just the
+# ones under `crates/`. `reify-gui` lives at gui/src-tauri/ and is a real
+# corpus reader (`include_str!("../../../examples/fea_multi_case_bracket.ri")`
+# in debug_server.rs, plus further reads in its test modules); a `crates/`-only
+# pathspec cannot see it, so the guard would pass green over an undeclared
+# reader. The projection below mirrors _file_to_crate's §5 rules — the same two
+# path->crate arms — so derivation and mapping cannot drift apart.
 _derived_ri_corpus_crates() {
-    git -C "$REPO_ROOT" grep -nE 'examples/[A-Za-z0-9_./-]*\.ri' -- 'crates/*/**.rs' \
+    git -C "$REPO_ROOT" grep -nE 'examples/[A-Za-z0-9_./-]*\.ri' \
+            -- 'crates/*/**.rs' 'gui/src-tauri/**.rs' \
         | while IFS= read -r line; do
             # `path:lineno:code` — split off the prefix to inspect the CODE.
             local path="${line%%:*}"
@@ -466,9 +475,16 @@ _derived_ri_corpus_crates() {
             # first non-space characters are `//`.
             local trimmed="${code#"${code%%[![:space:]]*}"}"
             case "$trimmed" in //*) continue ;; esac
-            # Project the path to its crates/<name>/ component.
-            local rest="${path#crates/}"
-            printf '%s\n' "${rest%%/*}"
+            # Project the path to its owning crate (§5 rules).
+            case "$path" in
+                gui/src-tauri/*)
+                    printf '%s\n' "reify-gui"
+                    ;;
+                crates/*)
+                    local rest="${path#crates/}"
+                    printf '%s\n' "${rest%%/*}"
+                    ;;
+            esac
         done | sort -u
 }
 
