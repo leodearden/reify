@@ -264,30 +264,6 @@ fn assert_compiles_clean(src: &str, what: &str) {
     );
 }
 
-/// Assert `src` is REJECTED with a `ParamDefaultTypeMismatch` whose message
-/// mentions the dimension token `token`.
-///
-/// The escape hatch for types the binding check itself does not descend into:
-/// the rejection message spells the initializer type out, so a deliberate
-/// wrong-dimension binding turns an otherwise-invisible element dimension into
-/// an observable string. Deliberately matches the DIMENSION TOKEN only
-/// (`Scalar[m]`), not a full rendered type: the surrounding spelling
-/// (`Point3<…>`, the ordering of the two types in the message) is the
-/// diagnostic renderer's presentation choice, and pinning it would turn a
-/// cosmetic renderer change into a fake unit-regime failure.
-fn assert_rejection_mentions_dimension(src: &str, token: &str, what: &str) {
-    let errors = compile_errors(src);
-    assert!(
-        errors.iter().any(|(code, msg)| *code
-            == Some(DiagnosticCode::ParamDefaultTypeMismatch)
-            && msg.contains(token)),
-        "{what}: expected a ParamDefaultTypeMismatch whose message mentions the \
-         dimension token `{token}`. Either the field lost its dimension, OR the \
-         diagnostic's type renderer changed how it spells that dimension — check \
-         the second before concluding the first. Got: {errors:?}"
-    );
-}
-
 /// Read the DECLARED type of `<template>.<member>` straight off the compiled
 /// prelude, so an expectation below is an exact `Type` equality rather than a
 /// guess about how the diagnostic renderer spells a dimension.
@@ -338,6 +314,18 @@ fn assert_param_default_type_mismatch(src: &str, what: &str) {
     );
 }
 
+/// Assert `src` is REJECTED with at least one `DimensionMismatch` — the code the
+/// comparison guard emits for two scalar operands of different dimensions.
+fn assert_dimension_mismatch(src: &str, what: &str) {
+    let errors = compile_errors(src);
+    assert!(
+        errors
+            .iter()
+            .any(|(code, _)| *code == Some(DiagnosticCode::DimensionMismatch)),
+        "{what}: expected a DimensionMismatch error, got: {errors:?}"
+    );
+}
+
 /// The stdlib `Bead` / `Layer` field types declare the SAME unit regime that
 /// `toolpath_to_value` marshals into — SI and dimensioned.
 ///
@@ -351,6 +339,12 @@ fn assert_param_default_type_mismatch(src: &str, what: &str) {
 /// `nominal_temp` / `Layer.z` — are pinned directly and in both directions: the
 /// positive half fails if a field stops being its own dimension, the negative
 /// half fails if it reverts to bare `Real`.
+///
+/// One field, `width`, additionally carries the USE the header of
+/// `fdm_slice.ri` justifies the whole regime by: `bead.width > 0.1mm`
+/// typechecks. Dimensional arithmetic reaches the comparison guard rather than
+/// the param-default check, so no binding-shaped assertion above covers it, and
+/// its own negative control (`> 0.1kg`) keeps that half from passing vacuously.
 ///
 /// `centerline` is not reachable through that mechanism: the
 /// `ParamDefaultTypeMismatch` check inspects neither List element types nor
@@ -377,14 +371,11 @@ fn assert_param_default_type_mismatch(src: &str, what: &str) {
 /// distinction an equality against the declared type makes and a
 /// variant-shaped or renderer-prose check does not.
 ///
-/// The one field-level claim still resting on diagnostic prose is the
-/// SECONDARY `centerline[0]` observation (`assert_rejection_mentions_dimension`
-/// with `Scalar[m]`), retained because it exercises the rejection surface
-/// rather than the declaration; it is no longer this field's only pin.
-/// Executable centerline coverage also lives on the marshaller side:
-/// `fdm_slice.rs`'s `assert_point3_length` and its
-/// `gcode_text_marshals_into_the_si_regime_end_to_end` per-coordinate LENGTH
-/// check.
+/// No claim here rests on diagnostic prose: every assertion is either an exact
+/// declared-type equality or a diagnostic CODE. Executable centerline coverage
+/// also lives on the marshaller side: `fdm_slice.rs`'s `assert_point3_length`
+/// and its `gcode_text_marshals_into_the_si_regime_end_to_end` per-coordinate
+/// LENGTH check.
 ///
 /// Pure compile-level: no OCCT, no PrusaSlicer, no beads — so unlike the two
 /// tests above it carries no `OCCT_AVAILABLE` / `slicer_on_path` guard and runs
@@ -446,6 +437,14 @@ fn stdlib_bead_and_layer_fields_declare_the_si_dimensioned_regime() {
         "Bead.width must no longer satisfy a bare Real param",
     );
     assert_param_default_type_mismatch(
+        "structure P { param h : Real = Bead().height }",
+        "Bead.height must no longer satisfy a bare Real param",
+    );
+    assert_param_default_type_mismatch(
+        "structure P { param z : Real = Bead().layer_z }",
+        "Bead.layer_z must no longer satisfy a bare Real param",
+    );
+    assert_param_default_type_mismatch(
         "structure P { param s : Real = Bead().speed }",
         "Bead.speed must no longer satisfy a bare Real param",
     );
@@ -466,6 +465,19 @@ fn stdlib_bead_and_layer_fields_declare_the_si_dimensioned_regime() {
         "a Mass param must never accept a Bead width",
     );
 
+    // The USE the regime exists for: dimensional arithmetic on a marshalled
+    // field. `fdm_slice.ri`'s header justifies the whole change by "`bead.width
+    // > 0.1mm` simply works", and a comparison goes through the comparison
+    // guard rather than the param-default check, so nothing above observes it.
+    assert_compiles_clean(
+        "structure P { param ok : Bool = Bead().width > 0.1mm }",
+        "a Length comparison on Bead.width typechecks",
+    );
+    assert_dimension_mismatch(
+        "structure P { param bad : Bool = Bead().width > 0.1kg }",
+        "comparing Bead.width against a Mass must be rejected",
+    );
+
     // `centerline` — the one field whose type actually gates usability
     // (`resolve_point3_length_arg` rejects bare-`Real` components). No binding
     // half above can see it, so it is pinned DIRECTLY off the prelude instead:
@@ -482,15 +494,11 @@ fn stdlib_bead_and_layer_fields_declare_the_si_dimensioned_regime() {
          `resolve_point3_length_arg`, and no binding-shaped assertion can see it"
     );
     // Secondary observation on the same field, kept because it exercises a
-    // DIFFERENT surface — that a wrong-dimension read THROUGH `centerline[0]`
-    // is rejected at all, and that the rejection names the element dimension a
-    // design author would see. Weaker than the equality above (a substring of
-    // rendered diagnostic prose, so a renderer change reds it spuriously), so
-    // it is deliberately no longer the only pin on this field.
-    assert_rejection_mentions_dimension(
+    // DIFFERENT surface: that a wrong-dimension read THROUGH `centerline[0]`
+    // is rejected at all, rather than only that the declaration is right.
+    assert_param_default_type_mismatch(
         "structure P { param m : Mass = Bead().centerline[0] }",
-        "Scalar[m]",
-        "a wrong-dimension read through Bead.centerline[0] names Scalar[m]",
+        "a Mass param must never accept a Bead centerline point",
     );
 
     // The scalar fields get the same direct treatment, so each one is pinned
