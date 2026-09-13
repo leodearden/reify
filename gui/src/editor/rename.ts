@@ -92,6 +92,43 @@ export function applyTextEditsToString(
  * without CodeMirror or Tauri — exactly like the existing RenameClient/RenameUi
  * injection pattern.
  */
+/**
+ * One document's worth of a WorkspaceEdit, flattened out of whichever wire
+ * representation the server used.
+ *
+ * `version` is the document version the server computed these edits against, or
+ * `null` when the server did not state one (the legacy `changes` map, or a file
+ * not open on the server whose content on disk is master).
+ */
+export interface WorkspaceEditTarget {
+  uri: string;
+  version: number | null;
+  edits: TextEdit[];
+}
+
+/**
+ * Read a WorkspaceEdit's per-document edits out of either wire representation.
+ *
+ * The SINGLE reader of that wire shape: `documentChanges` takes precedence over
+ * `changes` per the LSP spec, and every consumer — both appliers and the
+ * staleness check — goes through here so the precedence rule cannot drift
+ * between them.
+ */
+export function workspaceEditTargets(edit: WorkspaceEdit): WorkspaceEditTarget[] {
+  if (edit.documentChanges) {
+    return edit.documentChanges.map((entry) => ({
+      uri: entry.textDocument.uri,
+      version: entry.textDocument.version,
+      edits: entry.edits,
+    }));
+  }
+  return Object.entries(edit.changes ?? {}).map(([uri, edits]) => ({
+    uri,
+    version: null,
+    edits,
+  }));
+}
+
 export interface WorkspaceEditDeps {
   /** Returns true when `uri` is currently open in an editor buffer. */
   isOpen(uri: string): boolean;
@@ -119,10 +156,7 @@ export function applyWorkspaceEditAcrossFiles(
   activeUri: string,
   deps: WorkspaceEditDeps,
 ): void {
-  const changes = edit.changes;
-  if (!changes) return;
-
-  for (const [uri, edits] of Object.entries(changes)) {
+  for (const { uri, edits } of workspaceEditTargets(edit)) {
     if (!edits || edits.length === 0) continue;
 
     if (uri === activeUri) {
@@ -144,16 +178,16 @@ export function applyWorkspaceEditAcrossFiles(
  * non-overlapping name-token edits). All edits are dispatched together so the
  * rename is a single atomic, undo-able operation.
  *
- * Returns false WITHOUT dispatching when the edit carries no changes for `uri`
- * (absent `changes` map, missing key, or empty list) — the caller can treat that
- * as "nothing to apply".
+ * Returns false WITHOUT dispatching when the edit carries no edits for `uri`
+ * (neither representation present, no target for that URI, or an empty list) —
+ * the caller can treat that as "nothing to apply".
  */
 export function applyWorkspaceEdit(
   view: EditorView,
   edit: WorkspaceEdit,
   uri: string,
 ): boolean {
-  const edits = edit.changes?.[uri];
+  const edits = workspaceEditTargets(edit).find((t) => t.uri === uri)?.edits;
   if (!edits || edits.length === 0) return false;
 
   const doc = view.state.doc;

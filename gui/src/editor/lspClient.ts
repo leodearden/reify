@@ -74,9 +74,31 @@ export interface TextEdit {
   newText: string;
 }
 
-/** An LSP WorkspaceEdit. Reify's rename only ever populates `changes`. */
+/**
+ * Edits to ONE document, stamped with the version they were computed against.
+ *
+ * `version` is `null` when the document is not open on the server — the LSP
+ * signal that the content on disk is master, so there is no version to compare.
+ */
+export interface TextDocumentEdit {
+  textDocument: { uri: string; version: number | null };
+  edits: TextEdit[];
+}
+
+/**
+ * An LSP WorkspaceEdit in either of its two representations.
+ *
+ * Reify's rename emits exactly ONE of them, chosen by the capability this
+ * client declares at `initialize`: the versioned `documentChanges` when
+ * `workspace.workspaceEdit.documentChanges` is declared, the unversioned
+ * `changes` map otherwise. Both fields are optional because a third-party
+ * server may answer either way; per the LSP spec `documentChanges` wins when
+ * both are present. Read them through `workspaceEditTargets` rather than
+ * directly, so that precedence rule lives in one place.
+ */
 export interface WorkspaceEdit {
   changes?: { [uri: string]: TextEdit[] };
+  documentChanges?: TextDocumentEdit[];
 }
 
 /** Result of a successful prepareRename: the token range + its current name. */
