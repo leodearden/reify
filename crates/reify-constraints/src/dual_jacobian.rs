@@ -242,12 +242,13 @@ pub fn residual_jacobian(
 ///
 /// # Why EVERY cell's record, not just the bound ones
 ///
-/// A cell's record is collected whether or not its tangent is bound.
-/// [`DualEnv::bind`] deliberately drops a `Tangent::Zero`, but a zero-tangent
-/// cell can still flip a branch and JUMP its value — `if q > 5 then 100 else
-/// 200` is flat on both sides and discontinuous between them, which is
-/// precisely the point η must not secant across.  Collecting only bound cells
-/// would miss exactly the case the record exists to catch.
+/// A cell's record is collected whether or not its tangent is bound.  The fold
+/// below binds no `Tangent::Zero` — at the residual root, unbound and
+/// zero-bound resolve identically — but a zero-tangent cell can still flip a
+/// branch and JUMP its value: `if q > 5 then 100 else 200` is flat on both
+/// sides and discontinuous between them, which is precisely the point η must
+/// not secant across.  Collecting only bound cells would miss exactly the case
+/// the record exists to catch.
 ///
 /// # Deliberate over-reporting
 ///
@@ -276,14 +277,14 @@ pub fn residual_jacobian(
 /// - An empty `dependent_cells` returns an empty overlay, and an empty overlay
 ///   is indistinguishable from no overlay at all — so every non-clustered solve
 ///   takes exactly the path it took before.
-/// - The fold must NEVER bind an auto param's own cell.  An auto's tangent is
-///   its seed column `e_j`, and `Seeds` resolves it before the overlay is even
-///   consulted; binding it here would be dead at best and, if the resolution
-///   order ever changed, would silently replace a basis vector with a computed
-///   one.  Membership already excludes autos by construction, so this is a
-///   backstop against upstream DRIFT — enforced rather than assumed, because a
-///   clobbered auto column is silent: the solver would report a solved value
-///   for a direction it never actually probed.
+/// - The fold must NEVER bind an auto param's own cell.  An auto's tangent IS
+///   its seed column `e_j`, and the overlay OUTRANKS the seed columns — it is
+///   the inner scope, so a callee's parameter can shadow an outer seed — which
+///   means binding an auto here would not be dead, it would silently replace
+///   that basis vector with a computed one.  Membership already excludes autos
+///   by construction, so this is a backstop against upstream DRIFT — enforced
+///   rather than assumed, because a clobbered auto column is silent: the solver
+///   would report a solved value for a direction it never actually probed.
 fn fold_dependent_duals(
     values: &ValueMap,
     auto_params: &[AutoParam],
