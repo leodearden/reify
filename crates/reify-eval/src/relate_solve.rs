@@ -689,8 +689,12 @@ fn global_float_diagnostic(floating: &[String]) -> Diagnostic {
 /// call the solve can build a [`RelationInstance`] from (e.g. an alias to a
 /// `let`-bound Relation, an `if`/`match` yielding one, or a call to a user-defined
 /// `fn ... -> Relation` wrapper). `source` is the member's 0-based index into
-/// `scope.relations`; the message names its 1-based DECLARATION position, so it
-/// reads the way an author counts members in their own source.
+/// `scope.relations`; the message names its 1-based DECLARATION position — the
+/// diagnostic's only localiser. It does not also name a sub: which sub(s) a member
+/// touches can't generally be read back out of a non-`FunctionCall` expr the way
+/// [`operand_refs`] reads a driving relation's (an earlier revision hard-coded the
+/// scope's first auto sub regardless of the member; dropped as inaccurate —
+/// amendment review finding: diagnostic-accuracy).
 ///
 /// Only call this for a `Type::Relation` member (see [`build_relation_instances`]):
 /// a member the compiler already flagged as NOT `Type::Relation` gets an accurate
@@ -699,19 +703,23 @@ fn global_float_diagnostic(floating: &[String]) -> Diagnostic {
 /// differently-worded `RelateExpectsRelation` diagnostic would contradict the first
 /// (anti-cascade, mirroring `check_relate_relations`'s own `Type::Error` skip).
 ///
-/// This replaces a SILENT drop: `build_relation_instances` cannot build a
-/// [`RelationInstance`] for such a member, so without this diagnostic it would
-/// vanish from every downstream pass with no trace — an INV-SF-3 violation
+/// Replaces a SILENT drop with the INV-SF-3 diagnostic
 /// (`docs/legibility/design-invariants.md:130`: a declaration is either consumed by
-/// a solve/verify pass this run, or generates a diagnostic naming why not).
-fn unconsumable_relation_diagnostic(source: usize, auto_sub: &str) -> Diagnostic {
+/// a solve/verify pass this run, or generates a diagnostic naming why not) — but
+/// only for scopes that reach this function at all. A relate scope with no `at
+/// auto` sub never calls it (`solve_scopes`'s qualifying filter, and this file's
+/// own early return, both skip such a scope before any relation is inspected), so
+/// the same authoring mistake there is still silently dropped; closing that gap
+/// belongs to the compiler's `check_relate_relations`, which sees every relate
+/// block regardless of auto subs (amendment review finding: architecture).
+fn unconsumable_relation_diagnostic(source: usize) -> Diagnostic {
     let position = source + 1;
     Diagnostic::error(format!(
-        "relate-block member {position} on `{auto_sub}` is not a direct call to a \
-         geometric relation, so the relate-solve cannot verify it: every `relate \
-         {{}}` member must call a geometric relation directly — a name or \
-         expression that merely evaluates to one, such as a `fn ... -> Relation` \
-         wrapper, is not itself a relation call."
+        "relate-block member {position} is not a direct call to a geometric \
+         relation, so the relate-solve cannot verify it: every `relate {{}}` \
+         member must call a geometric relation directly — a name or expression \
+         that merely evaluates to one, such as a `fn ... -> Relation` wrapper, is \
+         not itself a relation call."
     ))
     .with_code(DiagnosticCode::RelateExpectsRelation)
 }
@@ -762,11 +770,11 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
     };
 
     // 1. Build a RelationInstance per relation over the realized datums, paired
-    //    with the source relation each was built from — the ONLY crossing back to
-    //    `scope.relations` (see `ScopeInstances`). Hoisted ahead of the B6
-    //    trace-to-ground short-circuit below (one walk of `scope.relations`, no
-    //    second scan) so an un-consumable relate-block member is diagnosed on
-    //    EVERY exit path — never masked by a floating assembly (task 7050).
+    //    with the source relation each was built from (see `ScopeInstances`).
+    //    Hoisted ahead of the B6 trace-to-ground short-circuit below so an
+    //    un-consumable relate-block member is diagnosed on EVERY exit path — never
+    //    masked by a floating assembly (task 7050) — even though the float path
+    //    below then discards the built instances unused.
     let built = build_relation_instances(scope, realized);
     let instances = &built.instances;
 
@@ -775,7 +783,8 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
     let skip_diagnostics: Vec<Diagnostic> = built
         .skipped
         .iter()
-        .map(|&source| unconsumable_relation_diagnostic(source, &auto.sub))
+        .copied()
+        .map(unconsumable_relation_diagnostic)
         .collect();
 
     // η trace-to-ground (B6): any `at auto` sub with no path (over the relation
@@ -895,8 +904,6 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
             // a lone assertion. Render the minimal conflict set + geometric magnitudes
             // + newest-primary (step-16), the same diagnostic an infeasible driving set
             // produces. Otherwise it is a standalone assertion the geometry violates.
-            // Both source-relation reads cross through `built.relation` — the ONLY
-            // sanctioned crossing from an instance position back to `scope.relations`.
             let r_ops = operand_refs(built.relation(i));
             let colocated: Vec<usize> = partition
                 .driving
@@ -1426,11 +1433,9 @@ struct ScopeInstances<'a> {
     /// `solve_frame`, `max_relation_residual`, `minimal_infeasible_subset`) expects
     /// and returns POSITIONS into.
     instances: Vec<RelationInstance>,
-    /// `sources[i]` is the `scope.relations` index `instances[i]` was built from.
-    /// Strictly increasing in `i` (both are built from one forward walk of
-    /// `scope.relations`), so an instance-position `max` and a `sources`-keyed
-    /// `max` over the same index set always agree — `build_relation_instances`
-    /// debug-asserts both this length agreement and the strictly-increasing order.
+    /// `sources[i]` is the `scope.relations` index `instances[i]` was built from,
+    /// strictly increasing in `i` — `build_relation_instances` debug-asserts both
+    /// that and its length agreement with `instances`.
     sources: Vec<usize>,
     /// The `scope.relations` source indices of the `Type::Relation` members that
     /// yielded NO instance (not a `FunctionCall`) — disjoint from `sources`. A
@@ -1520,6 +1525,10 @@ fn relation_instance(rel: &CompiledExpr, realized: &RealizedDatums) -> Option<Re
                 datum: scalar,
             });
         }
+        // An arg decoding as neither is silently absent from `operands` — a
+        // per-operand gap distinct from the whole-member skip in
+        // `build_relation_instances`, and not recorded in `skipped`
+        // (follow-up, not this task — amendment review finding: robustness).
     }
     Some(RelationInstance {
         name: function.name.clone(),
@@ -1692,9 +1701,9 @@ fn conflict_diagnostic(conflict: &[usize], built: &ScopeInstances, auto_sub: &st
 /// first pair that is still [`SolveResult::Infeasible`] on its own is returned as the
 /// minimal conflict set. If no pair is infeasible (a conflict that genuinely needs
 /// ≥3 relations), falls back to the whole driving set. Returns INSTANCE positions
-/// (into `instances`) — [`conflict_diagnostic`] is the one place that crosses them
-/// back to their source relations. Bounded by the driving-set size, which is `≤ 6`
-/// for a single Frame unknown — the pairwise search is cheap.
+/// (into `instances`), the same shape [`conflict_diagnostic`] expects. Bounded by
+/// the driving-set size, which is `≤ 6` for a single Frame unknown — the pairwise
+/// search is cheap.
 fn minimal_infeasible_subset(
     instances: &[RelationInstance],
     driving: &[usize],
