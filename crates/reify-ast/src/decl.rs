@@ -2824,6 +2824,109 @@ mod member_recursion_set_tests {
         );
     }
 
+    /// A KEYED sub handed to `walk_specialization_scope_members` as the scope
+    /// ROOT has its entries' overrides walked.
+    ///
+    /// A code path distinct from the table above: that fixture reaches its keyed
+    /// sub through `walk_members`' recursive `Sub` arm, whereas this one hands a
+    /// keyed sub straight to the root entry point, which reads the sub's
+    /// override lists itself. A keyed ROOT was a silent no-op until both paths
+    /// shared `sub_override_bodies`. As with the body form, the root sub itself
+    /// is not visited — the walk is over its scope's members.
+    #[test]
+    fn walk_specialization_scope_members_visits_keyed_entry_overrides() {
+        let sub = sub_with_keyed_members(
+            "scope",
+            vec![("a", vec![param("marker_keyed_root", (0, 40), None)])],
+        );
+        let mut tags = Vec::new();
+        walk_specialization_scope_members(&sub, &mut |m| tags.push(tag(m)));
+        assert_eq!(
+            tags,
+            vec!["param:marker_keyed_root".to_string()],
+            "a keyed sub IS a specialization-scope root — one scope per entry (spec §8.7)"
+        );
+    }
+
+    /// Every keyed entry is its own scope root, in declaration order.
+    ///
+    /// Guards against a `.first()`-shaped partial fix at the root entry point;
+    /// the single-entry test above cannot tell the two apart.
+    #[test]
+    fn walk_specialization_scope_members_visits_every_keyed_entry_in_source_order() {
+        let sub = sub_with_keyed_members(
+            "scope",
+            vec![
+                ("a", vec![param("marker_entry0", (0, 40), None)]),
+                ("b", vec![param("marker_entry1", (100, 140), None)]),
+            ],
+        );
+        let mut tags = Vec::new();
+        walk_specialization_scope_members(&sub, &mut |m| tags.push(tag(m)));
+        assert_eq!(
+            tags,
+            vec![
+                "param:marker_entry0".to_string(),
+                "param:marker_entry1".to_string(),
+            ],
+            "every keyed entry opens its own scope, walked in declaration order"
+        );
+    }
+
+    /// Widening the sub cell to the keyed shape must NOT widen the port cell.
+    ///
+    /// `SPECIALIZATION_SCOPE` still carries `port_body: false`, so a port
+    /// DECLARED inside a keyed entry's overrides is visited — that is the member
+    /// spec §8.7's forbidden-decl rule reports — while its BODY stays unwalked.
+    #[test]
+    fn walk_specialization_scope_members_keyed_entry_does_not_widen_the_port_cell() {
+        let sub = sub_with_keyed_members(
+            "scope",
+            vec![(
+                "a",
+                vec![port(
+                    "nested_port",
+                    vec![param("marker_in_port", (0, 40), None)],
+                )],
+            )],
+        );
+        let mut tags = Vec::new();
+        walk_specialization_scope_members(&sub, &mut |m| tags.push(tag(m)));
+        assert_eq!(
+            tags,
+            vec!["port:nested_port".to_string()],
+            "the port container is visited, its body is NOT — the keyed widening touches \
+             only the sub_overrides cell"
+        );
+    }
+
+    /// A sub carrying NEITHER override shape visits nothing.
+    ///
+    /// The walker is itself the "is this a specialization-scope root?"
+    /// discriminator, which is what lets the compiler's
+    /// `find_specialization_scopes` hand it every `MemberDecl::Sub` unguarded
+    /// rather than re-deriving the answer from `body.is_some()` in a second
+    /// crate.
+    #[test]
+    fn walk_specialization_scope_members_is_a_no_op_for_a_sub_with_no_overrides() {
+        let mut tags = Vec::new();
+        walk_specialization_scope_members(&sub_with_body("bare", None), &mut |m| tags.push(tag(m)));
+        assert!(
+            tags.is_empty(),
+            "a bare instantiation / collection / bare-colon-no-body sub opens no \
+             specialization scope; tags={tags:?}"
+        );
+
+        let mut keyed_tags = Vec::new();
+        walk_specialization_scope_members(&sub_with_keyed_members("empty", vec![]), &mut |m| {
+            keyed_tags.push(tag(m));
+        });
+        assert!(
+            keyed_tags.is_empty(),
+            "a sub with an empty keyed list opens no scope either; tags={keyed_tags:?}"
+        );
+    }
+
     #[test]
     fn find_named_member_span_reachability_table() {
         let fixture = build_reachability_fixture();
@@ -3006,6 +3109,40 @@ mod member_recursion_set_tests {
         assert!(
             !names_beyond_limit.contains(&"deep_param".to_string()),
             "walk_specialization_scope_members: a param beyond MAX_MEMBER_NESTING_DEPTH must be cut off"
+        );
+
+        // A KEYED root is bounded identically. Each keyed entry is its own
+        // scope root, so the depth counter resets per entry exactly as it does
+        // for a body root — existing semantics, and the keyed shape must not
+        // change it.
+        let mut keyed_at_limit = Vec::new();
+        walk_specialization_scope_members(
+            &sub_with_keyed_members("s", vec![("a", at_limit.clone())]),
+            &mut |m| {
+                if let MemberDecl::Param(p) = m {
+                    keyed_at_limit.push(p.name.clone());
+                }
+            },
+        );
+        assert!(
+            keyed_at_limit.contains(&"deep_param".to_string()),
+            "walk_specialization_scope_members: a param at exactly MAX_MEMBER_NESTING_DEPTH \
+             inside a keyed entry must be reached"
+        );
+
+        let mut keyed_beyond_limit = Vec::new();
+        walk_specialization_scope_members(
+            &sub_with_keyed_members("s", vec![("a", beyond_limit.clone())]),
+            &mut |m| {
+                if let MemberDecl::Param(p) = m {
+                    keyed_beyond_limit.push(p.name.clone());
+                }
+            },
+        );
+        assert!(
+            !keyed_beyond_limit.contains(&"deep_param".to_string()),
+            "walk_specialization_scope_members: a param beyond MAX_MEMBER_NESTING_DEPTH \
+             inside a keyed entry must be cut off"
         );
 
         assert!(
