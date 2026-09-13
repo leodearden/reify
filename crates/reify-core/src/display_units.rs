@@ -406,10 +406,15 @@ pub fn ascii_label_spelling(label: &str) -> Option<String> {
 ///
 /// Each dimension's `is_default` entry is numerically identical to the unit
 /// `DimensionVector::to_display_units` already chooses for that dimension
-/// (Length→mm, Area→mm^2, Volume→mm^3, Angle→deg; Mass/Pressure/Density and the
-/// single-rung Force/Energy/Power ladders fall through `to_display_units`'s
-/// unscaled fallback branch, so their defaults are the coherent-SI base unit
-/// — kg, Pa, kg/m^3, N, J, W — at `si_scale: 1.0`).
+/// (Length→mm, Area→mm^2, Volume→mm^3, Angle→deg; Mass/Pressure/Density and
+/// the single-rung Force/Energy/Power/Frequency/Stiffness ladders fall through
+/// `to_display_units`'s unscaled fallback branch, so their defaults are the
+/// coherent-SI base unit — kg, Pa, kg/m^3, N, J, W, Hz, N/m — at
+/// `si_scale: 1.0`).
+///
+/// Stiffness's "N/m" is a compound unit EXPRESSION, not a bare symbol
+/// (`unit_symbol_to_si("N/m")` is `None`), exactly like the Density rung
+/// "kg/m^3".
 pub fn unit_ladders() -> Vec<DimensionLadder> {
     vec![
         DimensionLadder {
@@ -592,9 +597,13 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
         },
         // Single-rung coherent-SI ladders (PRD display-unit-preference §4):
         // seed the curated derived-unit name over the existing
-        // DimensionVector::FORCE/ENERGY/POWER consts. One is_default rung
-        // satisfies the every_ladder_has_exactly_one_default guard; §5
-        // assigns them no auto-scale posture (auto_scale = None).
+        // DimensionVector::FORCE/ENERGY/POWER/FREQUENCY/STIFFNESS consts. One
+        // is_default rung satisfies the every_ladder_has_exactly_one_default
+        // guard; §5 assigns them no auto-scale posture (auto_scale = None).
+        // §4's final bullet names Frequency and Stiffness explicitly and
+        // blesses growing the curated set to them; Stiffness is keyed on
+        // "Stiffness" (canonical_name's first-match answer for kg·s⁻²), never
+        // the "TranslationalStiffness" alias, which would be unreachable.
         DimensionLadder {
             dimension: "Force".to_string(),
             derived_unit_name: "N".to_string(),
@@ -621,6 +630,26 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
             auto_scale: None,
             units: vec![UnitOption {
                 label: "W".to_string(),
+                si_scale: 1.0,
+                is_default: true,
+            }],
+        },
+        DimensionLadder {
+            dimension: "Frequency".to_string(),
+            derived_unit_name: "Hz".to_string(),
+            auto_scale: None,
+            units: vec![UnitOption {
+                label: "Hz".to_string(),
+                si_scale: 1.0,
+                is_default: true,
+            }],
+        },
+        DimensionLadder {
+            dimension: "Stiffness".to_string(),
+            derived_unit_name: "N/m".to_string(),
+            auto_scale: None,
+            units: vec![UnitOption {
+                label: "N/m".to_string(),
                 si_scale: 1.0,
                 is_default: true,
             }],
@@ -895,16 +924,16 @@ mod tests {
             );
         }
 
-        // Structural include/exclude partition: exactly these four dimensions
+        // Structural include/exclude partition: exactly these six dimensions
         // are excluded from auto-scaling (auto_scale == None). Pinning the
         // count alongside the named set closes both directions without
         // coupling to constructor order.
         let excluded_count = ladders.iter().filter(|l| l.auto_scale.is_none()).count();
         assert_eq!(
-            excluded_count, 4,
-            "exactly four ladders should be excluded from auto-scaling (auto_scale == None)"
+            excluded_count, 6,
+            "exactly six ladders should be excluded from auto-scaling (auto_scale == None)"
         );
-        for dimension in ["Angle", "Force", "Energy", "Power"] {
+        for dimension in ["Angle", "Force", "Energy", "Power", "Frequency", "Stiffness"] {
             assert_eq!(
                 ladder(&ladders, dimension).auto_scale,
                 None,
@@ -957,6 +986,8 @@ mod tests {
             (crate::DimensionVector::FORCE, 250.0),
             (crate::DimensionVector::ENERGY, 1500.0),
             (crate::DimensionVector::POWER, 750.0),
+            (crate::DimensionVector::FREQUENCY, 50.0),
+            (crate::DimensionVector::STIFFNESS, 1000.0),
         ];
 
         for &(dim, si_value) in cases {
@@ -1032,7 +1063,15 @@ mod tests {
     fn auto_scaled_posture_gate_keeps_excluded_and_default_off_dims_static() {
         let ladders = unit_ladders();
         for dimension in [
-            "Angle", "Force", "Energy", "Power", "Mass", "Pressure", "Density",
+            "Angle",
+            "Force",
+            "Energy",
+            "Power",
+            "Frequency",
+            "Stiffness",
+            "Mass",
+            "Pressure",
+            "Density",
         ] {
             let l = ladder(&ladders, dimension);
             for si_value in magnitude_sweep(-12, 12) {
