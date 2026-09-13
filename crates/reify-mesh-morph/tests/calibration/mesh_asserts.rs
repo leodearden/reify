@@ -69,16 +69,19 @@ pub fn assert_boundary_is_conforming_manifold(
     // task repairs: no face may be shared by more than two tets (an
     // over-shared interior face). See the doc comment above for why this
     // check alone is insufficient to catch a block-interface non-conformity.
-    let mut face_count_histogram: HashMap<usize, usize> = HashMap::new();
-    for &count in face_count.values() {
-        *face_count_histogram.entry(count).or_insert(0) += 1;
+    // The histogram is only needed on the failure path, so build it lazily
+    // rather than on every call.
+    if !face_count.values().all(|&count| count <= 2) {
+        let mut face_count_histogram: HashMap<usize, usize> = HashMap::new();
+        for &count in face_count.values() {
+            *face_count_histogram.entry(count).or_insert(0) += 1;
+        }
+        panic!(
+            "{fixture_name} {case_desc}: a face is shared by more than two tets — \
+             face-occurrence histogram {face_count_histogram:?} (every face may occur at most \
+             twice: once if boundary, twice if interior)"
+        );
     }
-    assert!(
-        face_count.values().all(|&count| count <= 2),
-        "{fixture_name} {case_desc}: a face is shared by more than two tets — \
-         face-occurrence histogram {face_count_histogram:?} (every face may occur at most \
-         twice: once if boundary, twice if interior)"
-    );
 
     let boundary_faces: Vec<[u32; 3]> = face_count
         .into_iter()
@@ -103,17 +106,19 @@ pub fn assert_boundary_is_conforming_manifold(
             *edge_degree.entry(key).or_insert(0) += 1;
         }
     }
-    let mut degree_histogram: HashMap<usize, usize> = HashMap::new();
-    for &deg in edge_degree.values() {
-        *degree_histogram.entry(deg).or_insert(0) += 1;
+    // As above: the histogram is only needed to compose the failure message.
+    if !edge_degree.values().all(|&deg| deg == 2) {
+        let mut degree_histogram: HashMap<usize, usize> = HashMap::new();
+        for &deg in edge_degree.values() {
+            *degree_histogram.entry(deg).or_insert(0) += 1;
+        }
+        panic!(
+            "{fixture_name} {case_desc}: boundary is not a closed manifold — edge-degree \
+             histogram {degree_histogram:?} (every boundary edge must be degree 2); a non-2 \
+             degree means an interface quad's two triangulations failed to cancel (bisected \
+             along different diagonals from each side)"
+        );
     }
-    assert!(
-        edge_degree.values().all(|&deg| deg == 2),
-        "{fixture_name} {case_desc}: boundary is not a closed manifold — edge-degree \
-         histogram {degree_histogram:?} (every boundary edge must be degree 2); a non-2 \
-         degree means an interface quad's two triangulations failed to cancel (bisected \
-         along different diagonals from each side)"
-    );
 
     // (b) Single component: degree-2-everywhere plus a matching Euler
     // characteristic is still satisfiable by a disjoint union of manifolds
@@ -186,17 +191,14 @@ pub fn assert_all_tets_have_positive_signed_volume(
 ) {
     let tets = mesh.tet_indices().unwrap();
     for (i, tet) in tets.chunks_exact(4).enumerate() {
-        let p: Vec<[f64; 3]> = tet
-            .iter()
-            .map(|&idx| {
-                let v = idx as usize;
-                [
-                    mesh.vertices[v * 3] as f64,
-                    mesh.vertices[v * 3 + 1] as f64,
-                    mesh.vertices[v * 3 + 2] as f64,
-                ]
-            })
-            .collect();
+        let p: [[f64; 3]; 4] = std::array::from_fn(|k| {
+            let v = tet[k] as usize;
+            [
+                mesh.vertices[v * 3] as f64,
+                mesh.vertices[v * 3 + 1] as f64,
+                mesh.vertices[v * 3 + 2] as f64,
+            ]
+        });
         let e1 = [p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]];
         let e2 = [p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]];
         let e3 = [p[3][0] - p[0][0], p[3][1] - p[0][1], p[3][2] - p[0][2]];
