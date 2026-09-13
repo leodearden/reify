@@ -660,6 +660,35 @@ if [ "$TEST_THREADS_SET" -eq 1 ]; then
         echo "verify.sh: ERROR — invalid --test-threads '$TEST_THREADS' (want positive integer)" >&2; exit 64 ;;
     esac
 fi
+
+# THE CLI --test-threads SEAM (task 6375).  gen-nextest-config.sh is the ONE
+# place the derived global pool exists, so it is the one place that can refuse a
+# CLI value which would silently RAISE that pool (nextest's CLI --test-threads
+# outranks --config-file); its header carries the three-way contract.
+#
+# REIFY_NEXTEST_CLI_TEST_THREADS reaches it as a PER-INVOCATION env prefix at
+# each of the two generation sites below, and is deliberately NOT exported.  An
+# export would be process-global for the whole run and inherited by every child
+# — including the infra suites verify.sh itself executes, several of which drive
+# this very generator and pin a pool of their own, and which an inherited value
+# reds (measured: `REIFY_NEXTEST_CLI_TEST_THREADS=2 bash
+# tests/infra/test_occt_gated_scope.sh` goes from 61/0 to 59 passed / 2 FAILED).
+# The prefix reaches the one consumer and nothing else.
+#
+# No TEST_THREADS_SET guard is needed at those sites: an empty value is the
+# unset-flag default and falls through the generator's '' case arm as a no-op,
+# while a set one carries the ^[1-9][0-9]*$ guarantee the validation block above
+# just established, so neither needs re-validating.  Passing it at the
+# invocation rather than here also keeps --print-plan free of any new subprocess,
+# leaving the plan the pure, hermetic oracle the infra suites drive.
+#
+# Because the generator can now legitimately REFUSE (exit 64) and verify.sh runs
+# under `set -euo pipefail`, without a message of its own the run would abort
+# with nothing but the generator's stderr line and no indication of who died.
+_die_nextest_config() {
+    echo "verify.sh: ERROR — gen-nextest-config.sh refused to generate the nextest config (exit $1); its diagnostic is immediately above" >&2
+    exit "$1"
+}
 DF_VERIFY_ROLE="${DF_VERIFY_ROLE:-task}"
 # Role-based PROFILE default: when no explicit --profile was given and the
 # orchestrator merge path stamps DF_VERIFY_ROLE=merge, default to 'both' so
@@ -2263,7 +2292,10 @@ emit_nextest_pass() {
             # Produces a full copy of .config/nextest.toml with the occt cap rewritten
             # to the resolved env value; removed by _verify_cleanup on EXIT.
             if [ -z "$_NEXTEST_CONFIG_FILE" ]; then
-                _NEXTEST_CONFIG_FILE="$("$SCRIPT_DIR/gen-nextest-config.sh")"
+                # Per-invocation prefix, never an export — see "THE CLI
+                # --test-threads SEAM" beside _die_nextest_config.
+                _NEXTEST_CONFIG_FILE="$(REIFY_NEXTEST_CLI_TEST_THREADS="$TEST_THREADS" "$SCRIPT_DIR/gen-nextest-config.sh")" \
+                    || _die_nextest_config "$?"
             fi
             _cfg_path="$_NEXTEST_CONFIG_FILE"
         fi
@@ -2722,7 +2754,10 @@ add_test_passes() {
                 _gui_cfg_path="${TMPDIR:-/tmp}/reify-nextest-occt.<print-plan-placeholder>"
             else
                 if [ -z "$_NEXTEST_CONFIG_FILE" ]; then
-                    _NEXTEST_CONFIG_FILE="$("$SCRIPT_DIR/gen-nextest-config.sh")"
+                    # Per-invocation prefix, never an export — see "THE CLI
+                    # --test-threads SEAM" beside _die_nextest_config.
+                    _NEXTEST_CONFIG_FILE="$(REIFY_NEXTEST_CLI_TEST_THREADS="$TEST_THREADS" "$SCRIPT_DIR/gen-nextest-config.sh")" \
+                        || _die_nextest_config "$?"
                 fi
                 _gui_cfg_path="$_NEXTEST_CONFIG_FILE"
             fi
