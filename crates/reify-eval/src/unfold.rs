@@ -1310,7 +1310,81 @@ fn eval_child_expr(
     reify_expr::eval_expr(expr, &ctx)
 }
 
+/// The Param cells of `child_template` in dependency order, so a default that
+/// reads a sibling param sees it already in `child_values`.
+///
+/// Same [`extract_dependency_trace`] + [`topological_sort`] pair
+/// [`elaborate_child_lets_only`] uses for lets. `run_unified_pass_seeded` counts
+/// only in-seed predecessors, so a read naming a let, a global, or another
+/// entity contributes no edge and needs no filtering here.
+///
+/// [`topological_sort`] (Kahn) reports a cycle by OMISSION. Cyclic params are
+/// therefore appended afterwards in declaration order rather than dropped:
+/// measured on this branch, `structure Inner3 { param a = b  param b = a }`
+/// instantiated under a sub commits BOTH cells as `Undef` today, and dropping
+/// them would delete cells that exist — a worse member of the same stale-Undef
+/// family this ordering fix belongs to. The cycle is already reported once by
+/// template scope (`circular dependency in template Inner3: [a, b]`), so this
+/// site stays silent rather than double-reporting, the mistake
+/// [`phase15_cycle_members`]' doc comment was written to prevent.
+fn params_in_dependency_order<'t>(
+    child_template: &'t TopologyTemplate,
+) -> Vec<&'t reify_compiler::ValueCellDecl> {
+    let param_cells: Vec<&reify_compiler::ValueCellDecl> = child_template
+        .value_cells
+        .iter()
+        .filter(|c| c.kind == ValueCellKind::Param)
+        .collect();
+
+    let cells_by_node: HashMap<NodeId, &reify_compiler::ValueCellDecl> = param_cells
+        .iter()
+        .map(|c| (NodeId::Value(c.id.clone()), *c))
+        .collect();
+    // Two param cells of one template cannot share a member name, so the map is
+    // a bijection with `param_cells`. Fires loud in debug/test builds; in
+    // release a collision would silently drop a cell from the sort and the
+    // residue append below would still commit it, in declaration order.
+    debug_assert_eq!(
+        cells_by_node.len(),
+        param_cells.len(),
+        "params_in_dependency_order: duplicate param member name in template {}",
+        child_template.name,
+    );
+
+    let node_ids: HashSet<NodeId> = cells_by_node.keys().cloned().collect();
+    let traces: HashMap<NodeId, DependencyTrace> = cells_by_node
+        .iter()
+        .map(|(nid, cell)| {
+            let trace = cell
+                .default_expr
+                .as_ref()
+                .map(extract_dependency_trace)
+                .unwrap_or_default();
+            (nid.clone(), trace)
+        })
+        .collect();
+
+    let sorted = topological_sort(&node_ids, &traces);
+    let sorted_set: HashSet<&NodeId> = sorted.iter().collect();
+
+    let mut ordered: Vec<&reify_compiler::ValueCellDecl> = sorted
+        .iter()
+        .filter_map(|nid| cells_by_node.get(nid).copied())
+        .collect();
+    ordered.extend(
+        param_cells
+            .iter()
+            .filter(|c| !sorted_set.contains(&NodeId::Value(c.id.clone())))
+            .copied(),
+    );
+    ordered
+}
+
 /// Phase 1: Evaluate and store only the param cells for a child instance.
+///
+/// Params are visited in dependency order ([`params_in_dependency_order`]), so a
+/// default that reads a sibling param — whatever order the two are declared in —
+/// sees that sibling already in `child_values`.
 ///
 /// Returns the template-scoped child_values map (params only) for use in phase 2.
 /// All param values are also written to the global `values`, `snapshot`, journal, and cache.
@@ -1337,11 +1411,7 @@ fn elaborate_child_params_only<'f>(
     // decline below), deliberately not a general drain for this sink.
     let runtime_sink = RefCell::new(Vec::new());
     let containment = NoContainment;
-    for cell in &child_template.value_cells {
-        if cell.kind != ValueCellKind::Param {
-            continue;
-        }
-
+    for cell in params_in_dependency_order(child_template) {
         let member = &cell.id.member;
         let scoped_id = ValueCellId::new(scoped_entity, member);
 
@@ -1424,33 +1494,36 @@ fn elaborate_child_params_only<'f>(
             // closes, the gate flips to true and this site starts reporting,
             // which is the point of wiring it now.
             //
-            // DECLARATION-ORDER CAVEAT. Unlike phase 2, which walks
-            // `sorted_child_lets` in dependency order, THIS loop is plain
-            // declaration order over `child_template.value_cells`, and the
-            // Auto-precedence branch above `continue`s without inserting at all.
-            // So for a param default that reads a SIBLING param declared after
-            // it, the gate compares `None` (instance, not yet inserted) against
-            // `Some(v)` (global) and returns `Unreusable` purely because of
-            // declaration order — not because anything is instance-specific.
-            //
-            // The DECLINE is free: the registered-target gate is unconditionally
-            // false here, so nothing is reported. #6750 flips that gate, and
+            // SIBLING-PARAM READS. This loop walks `params_in_dependency_order`,
+            // so a default that reads a sibling PARAM finds it already in
+            // `child_values` whatever order the two are declared in. The gate no
+            // longer compares `None` (instance) against `Some(v)` (global) for a
+            // purely positional reason, and the value no longer degrades to
+            // `Undef` while the template cell holds the evaluated default —
+            // which is what the older claim here, that the fallback
+            // `eval_child_expr` recovers the missing read from `snapshot.values`,
+            // wrongly asserted was already true. Both halves are pinned by
             // `instance_scope_optimized_param_default_reading_a_later_sibling_is_silent`
-            // (tests/compute_dispatch_registry.rs) reds when it does — that is
-            // the point at which this loop must be ordered by dependency
-            // (reusing `phase15_node_traces` + `topological_sort` as phase 2
-            // does), not the point at which to weaken the gate.
+            // (tests/compute_dispatch_registry.rs) and by
+            // tests/instance_scope_param_default_order.rs.
             //
-            // The VALUE is a DIFFERENT matter, and the earlier claim here — that
-            // the fallback `eval_child_expr` recovers the missing read from
-            // `snapshot.values` — is MEASURED FALSE by that same test: the
-            // instance cell degrades to `Undef` while the template cell holds
-            // the evaluated default. That gap is NOT this gate's: the test's
-            // plain, non-`@optimized` control degrades identically without ever
-            // reaching `resolve_optimized_instance_cell`. It is a pre-existing
-            // property of visiting params in declaration order, filed as ticket
-            // `tkt_0RTGVFCMK9K695TCM0WK00FCP9` (not cited as `#NNNN` because the
+            // The Auto-precedence branch above still `continue`s without
+            // inserting, so an Auto-overridden sibling read still sees `None` —
+            // that is the branch working as designed, not an ordering gap.
+            //
+            // STILL OPEN: a default that reads a sibling LET. Ordering params
+            // among themselves cannot reach it, because this whole function runs
+            // before `elaborate_child_lets_only`; closing it is the instance-scope
+            // analogue of task #4317's template-scope phase unification. Measured
+            // and pinned by `param_default_reading_a_sibling_let_still_degrades_at_instance_scope`
+            // (tests/instance_scope_param_default_order.rs), filed as ticket
+            // `tkt_0RTKT9B322NQ9VTT2SY6DK5AYN` (not cited as `#NNNN` because the
             // curator assigns the task id asynchronously).
+            //
+            // The DECLINE remains free: the registered-target gate is
+            // unconditionally false here, so nothing is reported. #6750 flips
+            // that gate, and what it then reports will name a genuine input
+            // difference rather than declaration order.
             if let OptimizedInstanceResolution::Unreusable { target, cause } = &resolution {
                 report_optimized_instance_decline(
                     diagnostics,
