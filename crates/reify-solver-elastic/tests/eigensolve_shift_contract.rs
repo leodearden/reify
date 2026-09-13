@@ -13,9 +13,15 @@
 //! against **these same functions** rather than inventing its own acceptance.
 //!
 //! The reusable, solver-agnostic pieces are [`assert_order_ascending_by_abs_lambda`]
-//! (C3) and [`assert_implementations_agree`] (the BT2 body: C2 set agreement, C3
-//! order, C5 provenance). Adding β's σ≠0 coverage is a one-line instantiation of
-//! the latter, not a new harness.
+//! (C3) and [`assert_implementations_agree`] (the BT2 body: C2 multiset
+//! agreement, C3 order, C5 provenance). Adding β's σ≠0 coverage is a one-line
+//! instantiation of the latter, not a new harness.
+//!
+//! BT2 has no test of its own in leaf α. Its definition is "dense and Lanczos at
+//! the same σ≠0 return the same eigenvalue multiset", and α cannot instantiate
+//! that — the Lanczos path does not honor σ until β. Its σ=0 arm therefore runs
+//! inside BT1, on the two results BT1 has already solved, rather than under a
+//! name that promises a shift it does not apply.
 //!
 //! # Which solver path each fixture exercises (PRD §5.5 trap)
 //!
@@ -34,8 +40,12 @@
 //!   `solve_eigen_shift_invert` genuinely runs **Lanczos** here rather than
 //!   falling back to dense — which is what makes it the cross-implementation
 //!   fixture.
+//! - **Fixture D** — 5×5 indefinite diagonal pair (K = diag(−2, −0.5, 1, 3, 4),
+//!   B = I), spectrum = K's diagonal. n=5, so **dense path only**. A and C are
+//!   both positive-definite, and a positive-definite pencil cannot reach the
+//!   negative half of the contract at all; D exists for exactly that half.
 //!
-//! Both fixtures and the 1e-12 / 1e-8 tolerances are ported from the landed
+//! Fixtures A and C and the 1e-12 / 1e-8 tolerances are ported from the landed
 //! `crates/reify-solver-elastic/tests/eigensolve_synthetic.rs`, where they are
 //! already measured against this same `gevd_real` / `partial_self_adjoint_eigen`
 //! pair (`dense_recovers_known_spectrum_on_5x5_diagonal_pair` and
@@ -53,13 +63,18 @@
 //!
 //! It needs no `.config/nextest.toml` override, and that was MEASURED rather
 //! than assumed (task #7258). Under the repo nextest config the slowest single
-//! test is **3.000 s release / 9.836 s debug** (whole binary: 3.264 s / 9.841 s),
-//! against the `[profile.default]` per-test ceiling of
+//! test is **1.146 s debug** (whole binary: 1.162 s over 10 tests), against the
+//! `[profile.default]` per-test ceiling of
 //! `slow-timeout = { period = "120s", terminate-after = 10 }` = 1200 s. No
 //! `[[profile.default.overrides]]` block matches `binary(eigensolve_shift_contract)`,
-//! so that default ceiling is what applies. The margin is ~120x on the debug
-//! figure, which is the one taken under ordinary lane contention — ample even
-//! against the worst contention multiplier this repo has recorded.
+//! so that default ceiling is what applies, leaving a ~1000x margin on the debug
+//! figure — the one taken under ordinary lane contention, and ample against the
+//! worst contention multiplier this repo has recorded.
+//!
+//! (The pre-amendment measurement was 3.000 s release / 9.836 s debug for the
+//! slowest test. Folding BT2's σ=0 arm into BT1 removed a duplicate 80-DOF QZ
+//! and a duplicate 80-DOF Lanczos solve, so the release figure above is a valid
+//! upper bound without a re-measure: the change only removes work.)
 
 use faer::Mat;
 use faer::sparse::{SparseRowMat, Triplet};
@@ -109,6 +124,36 @@ fn fixture_c() -> (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>) {
     (k, b)
 }
 
+/// Fixture D: K = diag(−2, −0.5, 1, 3, 4), B = I (5×5). Dense path only.
+///
+/// The INDEFINITE fixture. A and C are both strictly positive-definite pencils,
+/// so neither can reach the negative-λ half of the contract: the `sigma < λ < 0`
+/// disjunct of the C5 predicate, and C3's absolute-value order (which only
+/// differs from a signed order when both signs are present). B = I makes the
+/// pencil's eigenvalues exactly K's diagonal, so the arithmetic stays closed-form.
+///
+/// Not hypothetical: `buckling_kernel` assembles a `neg_sigma` geometric
+/// stiffness for the reversed-load case, which is precisely an indefinite pencil.
+fn fixture_d() -> (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>) {
+    let diag = fixture_d_spectrum();
+    let n = diag.len();
+    let k_trips: Vec<Triplet<usize, usize, f64>> = diag
+        .iter()
+        .enumerate()
+        .map(|(i, &d)| Triplet::new(i, i, d))
+        .collect();
+    let b_trips: Vec<Triplet<usize, usize, f64>> =
+        (0..n).map(|i| Triplet::new(i, i, 1.0)).collect();
+    let k = SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap();
+    let b = SparseRowMat::try_new_from_triplets(n, n, &b_trips).unwrap();
+    (k, b)
+}
+
+/// Fixture D's spectrum, in the diagonal's own order (NOT a contract order).
+fn fixture_d_spectrum() -> [f64; 5] {
+    [-2.0, -0.5, 1.0, 3.0, 4.0]
+}
+
 /// Closed-form smallest 5 eigenvalues of the 80-DOF Laplacian:
 /// `λ_k = 2(1 − cos(kπ/81))` for k=1..=5.
 fn fixture_c_expected_5() -> [f64; 5] {
@@ -147,11 +192,20 @@ fn assert_order_ascending_by_abs_lambda(eigenvalues: &[f64], ctx: &str) {
 /// eigenvalue *set* to `tol`, the same C3 order, and the same C5 provenance
 /// boolean.
 ///
-/// Set agreement is checked as a **bidirectional nearest-match**, deliberately
-/// order-insensitive, so it tests C2 (which eigenvalues came back) without
-/// silently re-testing C3 (what order they came back in). C3 is then asserted
-/// separately on each result. One direction alone would accept a multiset
-/// mismatch such as `{1, 1}` vs `{1, 2}`; both directions reject it.
+/// Set agreement is a genuine **multiset** comparison: both eigenvalue vectors
+/// are sorted into scratch copies by signed λ and compared element-wise within
+/// `tol`. That is order-insensitive, so it tests C2 (which eigenvalues came
+/// back) without silently re-testing C3 (what order they came back in) — C3 is
+/// asserted separately on each result below.
+///
+/// A nearest-match scan in both directions would be weaker and is deliberately
+/// not used: it is a Hausdorff-style check, and Hausdorff distance is blind to
+/// multiplicity. `{1, 1, 2}` and `{1, 2, 2}` have the same length and every
+/// element of each has an exact counterpart in the other, so a bidirectional
+/// scan accepts them. Repeated and near-repeated eigenvalues are exactly where
+/// a shift-invert selection bug duplicates a mode, and β (#7259) instantiates
+/// this function as its σ≠0 acceptance criterion — so the check has to be able
+/// to see that.
 fn assert_implementations_agree(
     res_a: &EigenSolverResult,
     res_b: &EigenSolverResult,
@@ -166,29 +220,20 @@ fn assert_implementations_agree(
         res_b.eigenvalues,
     );
 
-    // C2 — same set, order-insensitive, both directions.
-    let nearest = |lam: f64, other: &[f64]| -> f64 {
-        other
-            .iter()
-            .map(|&m| (lam - m).abs())
-            .fold(f64::INFINITY, f64::min)
+    // C2 — same multiset, order-insensitive.
+    let sorted = |v: &[f64]| -> Vec<f64> {
+        let mut s = v.to_vec();
+        s.sort_by(f64::total_cmp);
+        s
     };
-    for &lam in &res_a.eigenvalues {
-        let d = nearest(lam, &res_b.eigenvalues);
+    let (sa, sb) = (sorted(&res_a.eigenvalues), sorted(&res_b.eigenvalues));
+    for (i, (&x, &y)) in sa.iter().zip(sb.iter()).enumerate() {
         assert!(
-            d < tol,
-            "{ctx}: C2 violated — λ = {lam:.15} from implementation a has no counterpart \
-             within {tol:.3e} in b (nearest is {d:.3e} away); a = {:?}, b = {:?}",
-            res_a.eigenvalues,
-            res_b.eigenvalues,
-        );
-    }
-    for &lam in &res_b.eigenvalues {
-        let d = nearest(lam, &res_a.eigenvalues);
-        assert!(
-            d < tol,
-            "{ctx}: C2 violated — λ = {lam:.15} from implementation b has no counterpart \
-             within {tol:.3e} in a (nearest is {d:.3e} away); a = {:?}, b = {:?}",
+            (x - y).abs() < tol,
+            "{ctx}: C2 violated — sorted eigenvalue[{i}] is {x:.15} in implementation a \
+             but {y:.15} in b, {:.3e} apart ≥ tol = {tol:.3e}; a = {:?}, b = {:?} \
+             (sorted: {sa:?} vs {sb:?})",
+            (x - y).abs(),
             res_a.eigenvalues,
             res_b.eigenvalues,
         );
@@ -314,44 +359,23 @@ fn sigma_zero_is_the_identity_on_both_implementations() {
              strictly between 0 and 0 is empty",
         );
     }
-}
 
-// ---------------------------------------------------------------------------
-// BT2 — cross-implementation agreement (C2 + C3 + C5)
-// ---------------------------------------------------------------------------
-
-/// **BT2.** Dense and Lanczos, on a pencil sized to be solvable both ways, return
-/// the same eigenvalue set to solver tolerance, the same C3 order and the same C5
-/// provenance boolean.
-///
-/// Instantiated here at σ=0, which is the only shift both implementations honor
-/// in leaf α: the Lanczos path does not honor σ until β (#7259) lands the
-/// `K − σB` assembly and the Cholesky-then-LU dispatch. β adds its σ≠0 arms by
-/// calling [`assert_implementations_agree`] with a non-zero σ — the acceptance
-/// criterion is this function, not a new one written there.
-///
-/// The 1e-8 tolerance is the one the landed
-/// `shift_invert_and_dense_agree_on_80dof_synthetic_pair` already measures for
-/// this exact pair.
-#[test]
-fn implementations_agree_at_shift() {
-    let (k, b) = fixture_c();
-    let opts = EigenSolverOptions {
-        n_modes: 5,
-        tol: 1e-10,
-        max_iters: 1000,
-        sigma: 0.0,
-    };
-    let dense = solve_eigen_dense(&k, &b, opts.clone());
-    let lanczos = solve_eigen_shift_invert(&k, &b, opts);
-
-    assert!(
-        lanczos.n_converged > 0,
-        "BT2 must exercise Lanczos (n_converged > 0); got 0, which means routing fell \
-         through to the dense fallback and this test would be comparing dense to dense",
-    );
-
-    assert_implementations_agree(&dense, &lanczos, 1e-8, "BT2 fixture C at σ=0");
+    // BT2 at σ=0, on the two results already in hand.
+    //
+    // BT2 proper is "dense and Lanczos at the same σ≠0 return the same
+    // eigenvalue multiset", and no σ≠0 arm can exist in leaf α: the Lanczos path
+    // does not honor σ until β (#7259) lands the `K − σB` assembly and the
+    // Cholesky-then-LU dispatch. Its σ=0 arm belongs here rather than in a test
+    // of its own named for a shift it does not apply — and re-solving this
+    // 80-DOF pencil both ways a second time to assert a strict superset of what
+    // is already asserted above would be pure gate cost.
+    //
+    // β adds the real BT2 by calling `assert_implementations_agree` with a
+    // non-zero σ. The acceptance criterion is that function, not a new one
+    // written there. The 1e-8 tolerance is the one the landed
+    // `shift_invert_and_dense_agree_on_80dof_synthetic_pair` already measures
+    // for this exact pair.
+    assert_implementations_agree(&dense_c, &lanczos_c, 1e-8, "BT2 fixture C at σ=0");
 }
 
 // ---------------------------------------------------------------------------
@@ -706,4 +730,198 @@ fn provenance_counts_absence_not_position() {
          counting position relative to σ instead of absence from the returned set",
         result.eigenvalues,
     );
+}
+
+// ---------------------------------------------------------------------------
+// BT4(d)/(e) + C3 — the negative half of the contract, on Fixture D
+//
+// Fixtures A and C are strictly positive pencils, so between them they cannot
+// execute the `sigma < λ < 0` disjunct of the C5 predicate at all, and cannot
+// tell C3's absolute-value order apart from a signed one. Both claims are made
+// explicitly in the implementation's own rustdoc, so both are pinned here.
+// ---------------------------------------------------------------------------
+
+/// **C3 on an indefinite pencil.** Presentation order is ascending `|λ|`, which
+/// is NOT ascending λ once both signs are present.
+///
+/// Fixture D, n_modes=3, σ=0. Distances from zero are
+/// {−0.5: 0.5, 1: 1, −2: 2, 3: 3, 4: 4}, so C2 selects {−0.5, 1, −2} and C3
+/// presents them as `[−0.5, 1, −2]` — the +1 ahead of the −2, which is the
+/// module rustdoc's "λ=−2 still sorts before λ=+3" convention in the one
+/// direction a positive-definite fixture can never show. A signed sort would
+/// return `[−2, −0.5, 1]` and pass every other test in this file.
+#[test]
+fn order_is_by_absolute_value_not_signed_value() {
+    let (k, b) = fixture_d();
+    let result = solve_eigen_dense(
+        &k,
+        &b,
+        EigenSolverOptions {
+            n_modes: 3,
+            tol: 1e-12,
+            max_iters: 1000,
+            sigma: 0.0,
+        },
+    );
+
+    assert_matches_closed_form(
+        &result.eigenvalues,
+        &[-0.5, 1.0, -2.0],
+        1e-12,
+        "C3 on indefinite Fixture D at σ=0",
+    );
+    assert_order_ascending_by_abs_lambda(&result.eigenvalues, "C3 on indefinite Fixture D");
+    assert_eigen_residuals(
+        &k,
+        &b,
+        &result.eigenvalues,
+        &result.eigenvectors,
+        1e-8,
+        "C3 on indefinite Fixture D at σ=0",
+    );
+}
+
+/// **BT4(d).** A NEGATIVE σ with a skipped mode on the negative side.
+///
+/// Fixture D, n_modes=1, σ=−2.5. Distances are
+/// {−2: 0.5, −0.5: 2, 1: 3.5, 3: 5.5, 4: 6.5}, so C2 selects {−2}. Both −2 and
+/// −0.5 lie strictly between σ=−2.5 and 0, and −0.5 did NOT come back — so
+/// `shift_skipped_modes` must be `true`.
+///
+/// This is the only case in the suite that executes the `sigma < λ < 0` half of
+/// the C5 predicate. Without it that branch is dead code under test, while the
+/// helper's rustdoc claims a negative shift on the reversed-load buckling side
+/// is handled by the same rule.
+#[test]
+fn provenance_reports_skipped_on_the_negative_side_of_zero() {
+    let (k, b) = fixture_d();
+    let result = solve_eigen_dense(
+        &k,
+        &b,
+        EigenSolverOptions {
+            n_modes: 1,
+            tol: 1e-12,
+            max_iters: 1000,
+            sigma: -2.5,
+        },
+    );
+
+    assert_matches_closed_form(&result.eigenvalues, &[-2.0], 1e-12, "BT4(d) at σ=−2.5");
+    assert_eq!(
+        result.shift, -2.5,
+        "BT4(d): the σ used must be reported as −2.5"
+    );
+    assert!(
+        result.shift_skipped_modes,
+        "BT4(d): C5 violated — λ=−0.5 lies strictly between σ=−2.5 and 0 and is absent \
+         from the returned set {:?}; got false, which means the predicate only looks at \
+         the positive side of zero",
+        result.eigenvalues,
+    );
+}
+
+/// **BT4(e).** A negative σ with nothing skipped — the other direction, so
+/// BT4(d) cannot be passed by a predicate that simply returns `true` whenever
+/// σ < 0.
+///
+/// Fixture D, n_modes=2, σ=−0.25. Distances are
+/// {−0.5: 0.25, 1: 1.25, −2: 1.75, 3: 3.25, 4: 4.25}, so C2 selects {−0.5, 1},
+/// presented as `[−0.5, 1]`. The open interval (−0.25, 0) contains no eigenvalue
+/// at all — −0.5 is outside it, on the far side of σ — so nothing can have been
+/// skipped.
+#[test]
+fn provenance_reports_nothing_skipped_for_a_negative_shift_above_lambda_one() {
+    let (k, b) = fixture_d();
+    let result = solve_eigen_dense(
+        &k,
+        &b,
+        EigenSolverOptions {
+            n_modes: 2,
+            tol: 1e-12,
+            max_iters: 1000,
+            sigma: -0.25,
+        },
+    );
+
+    assert_matches_closed_form(
+        &result.eigenvalues,
+        &[-0.5, 1.0],
+        1e-12,
+        "BT4(e) at σ=−0.25",
+    );
+    assert_order_ascending_by_abs_lambda(&result.eigenvalues, "BT4(e) at σ=−0.25");
+    assert_eq!(
+        result.shift, -0.25,
+        "BT4(e): the σ used must be reported as −0.25"
+    );
+    assert!(
+        !result.shift_skipped_modes,
+        "BT4(e): C5 violated — the open interval (−0.25, 0) contains no eigenvalue of \
+         {:?}, so nothing can have been skipped; got true",
+        fixture_d_spectrum(),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Equidistant σ — the tie-break determinism the selection helper claims
+// ---------------------------------------------------------------------------
+
+/// **Determinism at an equidistant σ.** With σ placed between two eigenvalues
+/// and only one slot to fill, the same call must resolve the same way every
+/// time.
+///
+/// Fixture A, n_modes=1, σ=0.225 — nominally midway between λ=0.2 and λ=0.25.
+/// `select_nearest_to_shift` is documented as a STABLE sort keyed via
+/// `total_cmp`, so equidistant candidates resolve from `gevd`'s own index order
+/// rather than from whichever the comparator happened to visit first; the
+/// crate's determinism suite depends on that.
+///
+/// What is pinned is REPEATABILITY, not which of the two wins: at this σ the two
+/// distances agree only to within a ULP or so (0.2 and 0.225 are not exactly
+/// representable in binary), so asserting a specific winner would be asserting
+/// a rounding detail. Repeatability is the property the helper actually claims,
+/// and it is checked bit-for-bit — on the eigenvector column too, since a
+/// selection that flipped would carry its column with it. The membership
+/// assertion keeps the test from passing vacuously on some third eigenvalue.
+#[test]
+fn equidistant_shift_selects_deterministically() {
+    let (k, b) = fixture_a();
+    let opts = EigenSolverOptions {
+        n_modes: 1,
+        tol: 1e-12,
+        max_iters: 1000,
+        sigma: 0.225,
+    };
+
+    let first = solve_eigen_dense(&k, &b, opts.clone());
+    assert_eq!(
+        first.eigenvalues.len(),
+        1,
+        "equidistant σ: expected exactly one mode, got {:?}",
+        first.eigenvalues,
+    );
+    let lam = first.eigenvalues[0];
+    assert!(
+        (lam - 0.2).abs() < 1e-12 || (lam - 0.25).abs() < 1e-12,
+        "equidistant σ=0.225: the selected eigenvalue must be one of the two nearest \
+         candidates (0.2, 0.25); got {lam:.15}",
+    );
+
+    for run in 1..4 {
+        let again = solve_eigen_dense(&k, &b, opts.clone());
+        assert_eq!(
+            again.eigenvalues, first.eigenvalues,
+            "equidistant σ=0.225: run {run} selected {:?} but the first run selected \
+             {:?} — the tie-break is not deterministic, which breaks the stable-sort \
+             guarantee the determinism suite relies on",
+            again.eigenvalues, first.eigenvalues,
+        );
+        let col_first: Vec<f64> = (0..k.nrows()).map(|r| first.eigenvectors[(r, 0)]).collect();
+        let col_again: Vec<f64> = (0..k.nrows()).map(|r| again.eigenvectors[(r, 0)]).collect();
+        assert_eq!(
+            col_again, col_first,
+            "equidistant σ=0.225: run {run} returned a different eigenvector column for \
+             the same eigenvalue — the column permutation is not deterministic",
+        );
+    }
 }

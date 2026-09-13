@@ -6149,14 +6149,22 @@ mod tests {
     // Three new shift-contract codes, minted here unemitted: γ (#7260) and δ
     // (#7261) emit them, β (#7259) raises `ShiftAtEigenvalue`.  Mirrors the
     // `diagnostic_code_shell_extract_variants_constructible` + `_serde_pascal_case`
-    // pattern: construct via `Diagnostic::{warning,error}(...).with_code(code)`
-    // (code and severity round-trip) and assert PascalCase serde wire strings.
+    // pattern: construct via `Diagnostic::error(...).with_code(code)` (the code
+    // round-trips) and assert PascalCase serde wire strings.  Severity is NOT
+    // asserted here — see the first test's doc comment for why it could not be.
 
-    /// The advisory shift code carries `Severity::Warning` and the two refusal
-    /// codes carry `Severity::Error`, per PRD §5.3/§5.4.  The severity split is
-    /// the behavioural contract worth pinning: `W_ShiftSkippedModes` must leave
-    /// band inspection legal, while `E_ShiftAtEigenvalue` and
-    /// `E_FirstModeNotInShiftedResult` must exit `reify eval` non-zero (INV-SF-2).
+    /// A compile-time EXISTENCE fence for the three shift-contract variants,
+    /// plus a `with_code` round-trip.  That is all it is, and all it claims.
+    ///
+    /// It deliberately does NOT assert the PRD §5.3/§5.4 severity split, because
+    /// it cannot: `Diagnostic::warning` hardcodes `Severity::Warning` and
+    /// `Diagnostic::error` hardcodes `Severity::Error`, while `with_code` only
+    /// sets `code` — so any severity asserted here is a property of the
+    /// constructor this test itself chose, entirely independent of which
+    /// `DiagnosticCode` is attached.  Swapping the codes between the two
+    /// constructors would leave such a test green.  The real severity binding
+    /// lives at the emit sites, and is pinned by the tests landed with them:
+    /// γ (#7260), δ (#7261) and ε (#7262).
     ///
     /// The `Debug` repr is intentionally not asserted — the neighbouring
     /// `BucklingOptionUnsupported` block documents that as deliberately unpinned
@@ -6166,19 +6174,13 @@ mod tests {
     /// GREEN after step-2 adds them to `DiagnosticCode`.
     #[test]
     fn diagnostic_code_shift_variants_constructible() {
-        use super::Severity;
-
-        let warn = Diagnostic::warning("x").with_code(DiagnosticCode::ShiftSkippedModes);
-        assert_eq!(warn.severity, Severity::Warning);
-        assert_eq!(warn.code, Some(DiagnosticCode::ShiftSkippedModes));
-
-        let errors = [
+        let codes = [
+            DiagnosticCode::ShiftSkippedModes,
             DiagnosticCode::ShiftAtEigenvalue,
             DiagnosticCode::FirstModeNotInShiftedResult,
         ];
-        for code in errors {
+        for code in codes {
             let d = Diagnostic::error("x").with_code(code);
-            assert_eq!(d.severity, Severity::Error, "severity mismatch for {code:?}");
             assert_eq!(d.code, Some(code), "code mismatch for {code:?}");
         }
     }
