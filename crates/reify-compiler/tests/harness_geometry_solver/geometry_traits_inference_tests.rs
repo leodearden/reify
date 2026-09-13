@@ -18,10 +18,10 @@
 //! for the inference pipeline.
 
 use reify_compiler::geometry_traits_inference::{
-    EmptyLetEnv, GeomDim, GeometryTrait, InferredTraits, LetBindingEnv, combine_difference,
-    combine_intersection, combine_modify, combine_pattern, combine_sweep, combine_transform,
-    combine_union, infer_primitive, infer_traits_for_expr, infer_traits_for_expr_in_env,
-    infer_traits_for_op,
+    EmptyLetEnv, GeomDim, GeometryTrait, InferredTraits, LetBindingEnv, SubRefEnv,
+    combine_difference, combine_intersection, combine_modify, combine_pattern, combine_sweep,
+    combine_transform, combine_union, infer_primitive, infer_traits_for_expr,
+    infer_traits_for_expr_in_env, infer_traits_for_op, infer_traits_for_op_in_env,
 };
 use reify_compiler::{
     BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PatternKind, PrimitiveKind,
@@ -1221,6 +1221,89 @@ fn infer_traits_for_op_geom_ref_sub_defaults_to_all() {
     ];
     // Sub("x") defaults to all(), combine_union(all, all) = bounded_only
     assert_eq!(infer_traits_for_op(&ops), InferredTraits::bounded_only());
+}
+
+// ─── SubRefEnv: op-array Sub-ref resolution seam (#7060) ────────────────────
+
+/// Test stub for the op-array env seam: resolves the single sibling name `"h"`
+/// to an unbounded half-space trait set, and declines every other name.
+///
+/// Mirrors the `LetBindingEnv` stubs used by the `infer_traits_for_expr_in_env`
+/// tests above — the two entry points share one env idiom.
+struct StubSubRefEnv;
+
+impl SubRefEnv for StubSubRefEnv {
+    fn lookup_sub(&self, name: &str) -> Option<InferredTraits> {
+        match name {
+            "h" => Some(InferredTraits::unbounded_convex()),
+            _ => None,
+        }
+    }
+}
+
+/// A `GeomRef::Sub(name)` the env RESOLVES propagates the referent's real
+/// traits through `combine_transform` (an identity passthrough), so an
+/// unbounded sibling yields `bounded == false` instead of the `all()`
+/// safe-default.
+///
+/// This is the seam that makes the sibling-let → `GeomRef::Sub` lowering
+/// (#4668) visible to trait inference at all.
+#[test]
+fn infer_traits_for_op_in_env_resolves_sub_ref_through_env() {
+    let ops = vec![CompiledGeometryOp::Transform {
+        kind: TransformKind::Translate,
+        target: GeomRef::Sub("h".to_string()),
+        args: vec![],
+    }];
+    let inferred = infer_traits_for_op_in_env(&ops, &StubSubRefEnv);
+    assert!(
+        !inferred.bounded,
+        "Sub(\"h\") resolves through the env to unbounded_convex(); combine_transform is an \
+         identity passthrough, so translate(h, ..) must infer bounded=false, got {inferred:?}"
+    );
+    assert_eq!(
+        inferred,
+        InferredTraits::unbounded_convex(),
+        "combine_transform preserves the operand's full trait set unchanged"
+    );
+}
+
+/// A `GeomRef::Sub(name)` the env DECLINES keeps today's `InferredTraits::all()`
+/// safe-default — the `None` → `all()` collapse is the same convention every
+/// other defensive arm in the module uses.
+#[test]
+fn infer_traits_for_op_in_env_unresolved_sub_ref_keeps_safe_default() {
+    let ops = vec![CompiledGeometryOp::Transform {
+        kind: TransformKind::Translate,
+        target: GeomRef::Sub("nope".to_string()),
+        args: vec![],
+    }];
+    assert_eq!(
+        infer_traits_for_op_in_env(&ops, &StubSubRefEnv),
+        InferredTraits::all(),
+        "an unresolved Sub name must safe-default to all(), not leak a partial trait set"
+    );
+}
+
+/// The env-less `infer_traits_for_op` alias is behaviour-preserving: over the
+/// very op-array that resolves to `bounded=false` under `StubSubRefEnv`, it
+/// still returns `InferredTraits::all()`.
+///
+/// This locks the blast radius of the seam to call sites that explicitly opt in
+/// by passing an env.
+#[test]
+fn infer_traits_for_op_without_env_still_defaults_sub_ref_to_all() {
+    let ops = vec![CompiledGeometryOp::Transform {
+        kind: TransformKind::Translate,
+        target: GeomRef::Sub("h".to_string()),
+        args: vec![],
+    }];
+    assert_eq!(
+        infer_traits_for_op(&ops),
+        InferredTraits::all(),
+        "infer_traits_for_op must stay a thin alias over the empty env: Sub(\"h\") is \
+         unresolvable without an env, so the safe default all() stands"
+    );
 }
 
 /// Empty op array → safe default `InferredTraits::all()`.
