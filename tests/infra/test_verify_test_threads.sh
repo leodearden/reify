@@ -302,13 +302,23 @@ _check_6c() {
 # --print-plan oracle.  There is therefore no behavioural reach from here to the
 # wiring, and the static assert is a considered choice rather than a shortcut.
 # Same sync-comment grep idiom the sibling infra suites use.
+#
+# NOTE ON SHAPE: the match is captured ONCE and then examined, rather than
+# re-grepped through a second pipeline.  `... | grep -q` under `set -o pipefail`
+# is a load-dependent flake: `grep -q` exits at its first match and SIGPIPEs the
+# upstream `grep`, so the PIPELINE reports 141 even though the match succeeded —
+# and whether upstream had already finished writing depends on host load.  It
+# passed on an idle host and failed under a concurrent gate.  The first pipeline
+# below is safe because it ends in a `grep` that reads to EOF; the second check
+# is a herestring, which is not a pipeline at all.
 _check_6d() {
-    local n
-    n=$(grep -vE '^[[:space:]]*#' "$VERIFY" \
-        | grep -cE 'export[[:space:]]+REIFY_NEXTEST_CLI_TEST_THREADS=') || n=0
-    [ "$n" -eq 1 ] || return 1
-    grep -vE '^[[:space:]]*#' "$VERIFY" \
-      | grep -qE 'export[[:space:]]+REIFY_NEXTEST_CLI_TEST_THREADS="?\$\{?TEST_THREADS'
+    local lines
+    lines="$(grep -vE '^[[:space:]]*#' "$VERIFY" \
+             | grep -E 'export[[:space:]]+REIFY_NEXTEST_CLI_TEST_THREADS=')" || lines=""
+    # Exactly ONE site: an empty capture (no wiring) and a multi-line capture
+    # (wired twice) are both failures.
+    case "$lines" in (''|*$'\n'*) return 1 ;; esac
+    grep -qE 'REIFY_NEXTEST_CLI_TEST_THREADS="?\$\{?TEST_THREADS' <<<"$lines"
 }
 
 echo ""

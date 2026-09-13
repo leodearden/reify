@@ -4,9 +4,17 @@ Task 6018 acceptance artifact (residual deliverable of task 5984 carry-over 1,
 esc-5984-2).  Instrument: `scripts/sample-test-binary-concurrency.sh`
 (contract guard: `tests/infra/test_test_binary_concurrency_sampler.sh`).
 
-**Verdict: NOT CONCLUSIVE.  The acceptance clause is NOT discharged by this
-run.**  Read the "What this does and does not show" section before citing any
-number here.
+**Verdict: CONCLUSIVE, by window 3.  The acceptance clause IS discharged.**
+The criterion is `nonzero_samples > 0` **AND** `peak > 16`; window 3 reports
+`peak=51` with `nonzero_samples=827` of 1034 samples (80.0%), taken over a full
+`scripts/verify.sh --scope all --profile both` execution phase with the
+prefilter→confirm race fixed.  It holds with margin: discarding every sample
+above the generated `test-threads` of 32 still leaves `peak=32 > 16`.
+
+Two qualifications travel with that number and must travel with any citation of
+it.  Window 3 is **one lane's gate, not the host** — see "Why this window is not
+host-wide".  And windows 1 and 2 were taken with a materially different
+instrument, so they are floors, not comparable re-runs.
 
 ## Configuration actually in force
 
@@ -24,7 +32,7 @@ Before task 6018 the generated value was 16.  The occt group cap is unchanged
 at 24 and is now a genuine backstop *below* the global (Test 17i pins that
 ordering).
 
-## Window 1 — the only window that observed an execution phase
+## Window 1 — the first window that observed an execution phase
 
 ```
 INFO: nextest test-binary concurrency: peak=14 samples=163 nonzero_samples=12 \
@@ -84,7 +92,7 @@ INFO: nextest test-binary concurrency: peak=51 samples=1034 nonzero_samples=827 
 ```
 
 * **`nonzero_samples` = 827 of 1034 = 80.0%** of the window, against window 1's
-  7.4%.  This is the fraction item 2 of "What a valid re-run needs" asked for:
+  7.4%.  This is the fraction item 2 of "What the valid re-run was" asked for:
   the reading is about the pool, not about the instrument.
 * Window: 2026-09-13 07:29:04 → 07:49:04 +01:00, `--interval 1`, opened on the
   first confirmed test binary rather than on the `cargo nextest run` launch —
@@ -161,12 +169,13 @@ the silent-zero family this instrument's header already documents (the
 cwd-induced zero and the never-saw-an-execution-phase zero), and the instrument
 cannot yet tell it from the other two — filed as follow-up from esc-6375-2.
 
-## What this does and does not show
+## Why window 1 was not conclusive (retained as provenance)
 
 The acceptance criterion is `nonzero_samples > 0` **AND** `peak > 16`.
 Window 1 satisfies the first and fails the second, so it is **not** a
 conclusive observation, and `peak=14` must **not** be reported as "the pool
-stayed under 16".
+stayed under 16".  Window 3 is the observation that discharges the clause; this
+section records why a second attempt was needed at all.
 
 The reason is instrument coverage, not a bound:
 
@@ -176,14 +185,17 @@ The reason is instrument coverage, not a bound:
   by the run being measured — well above the 0.28 s measured on an idle host.
 * The tests in flight were short: the observed per-test times were ~0.2–0.8 s.
 
-*Hypothesis (not measured):* at this churn rate most candidates returned by the
-`pgrep -f` prefilter have already exited by the time `readlink /proc/<pid>/exe`
-confirms them, so the prefilter→confirm gap systematically undercounts.  That
-race is real and is deliberately non-fatal (assert A5), but at ~2.6 s/pass
-against ~0.4 s tests it plausibly dominates.  `peak=14` is therefore best read
-as a **floor**, not a ceiling — it is consistent with a true concurrency of 32
-and equally consistent with one of 14.  Testing this hypothesis requires
-instrument work, not more sampling: tracked as **#6375**.
+When this section was first written it closed on a hypothesis: that the
+prefilter→confirm gap systematically undercounts.  *That hypothesis has since
+been MEASURED and CONFIRMED* (task 6375; see
+"Prefilter→confirm race" under "Instrument defects found after the fact").  At
+this churn rate most candidates returned by the `pgrep -f` prefilter had already
+exited by the time `readlink /proc/<pid>/exe` confirmed them, and the prefilter
+itself — 0.15–0.24 s idle, 2.6 s per pass on this loaded host — was a second,
+independent source of staleness.  Measured undercount: 35–65%.  `peak=14` is
+therefore a **floor**, not a ceiling, and this section's reasoning about window 1
+stands as written.  Window 3 is the conclusive reading; this section is retained
+as the provenance of how it was reached.
 
 ## Instrument defects found after the fact
 
@@ -215,7 +227,7 @@ the instrument, not a revision of the data, and the verdict below is unchanged
 by it.
 
 **Prefilter→confirm race (fixed, task 6375).**  This one is the hypothesis at
-the end of "What this does and does not show", promoted to a measurement.  The
+the end of "Why window 1 was not conclusive", promoted to a measurement.  The
 root cause has TWO halves, and fixing either alone leaves the defect:
 
 1. *Per-candidate confirmation.*  The script forked one `readlink` per candidate
@@ -269,36 +281,57 @@ dropped 2 -> 1 in df commit 712e6230d6) plus the merge role's bypass
 **2 × test-threads** — ~32 before task 6018, ~64 after.  A single lane's
 observed peak is therefore expected at or below 32, not 64.
 
-## What a valid re-run needs
+**Window 3 confirms this for the execution phase, and bounds the exception.**
+That window is a single lane's gate, and its distribution has a hard shoulder at
+exactly 32 with 1030 of 1034 samples at or below it.  Four samples exceeded it
+(34, 36, 44, 51), so "at or below 32" is a statement about the execution phase
+and not an invariant over every instant of a gate; the two largest excursions
+were the window's first two samples, as the gate left compilation.  See window
+3's distribution table for the hypothesis about what those caught.
 
-**Tracked as #6375** — a live task, filed during task 6018's review-amendment
-pass, covering both (a) the re-run over a full execution phase and (b) the
-prefilter→confirm race fix.  Cited here deliberately and by number.  This
-residual is the same one task 5984 carried and that "was tracked nowhere until
-2026-08-05" (esc-5984-2); a prose "see the follow-up below" pointer naming no
-task is how it went missing the first time, and nothing automated would have
-caught it — reify-audit's PTODO gate excludes markdown from its sweep entirely
-(`docs/prds/reify-audit-ptodo-detector.md` §6.8: swept extensions are
-`.rs .ri .sh .py .ts .tsx .js`), so a stale pointer in a doc like this one is
-invisible to it whether or not it carries a marker.  Citing a live task by
-number is the only thing keeping this residual findable.  If #6375 is ever
-closed without a conclusive window, this section — not the task — is the thing
-to re-read.
+## What the valid re-run was (done — task #6375)
 
-1. A window covering a **full** `scripts/verify.sh --scope all --profile both`
-   execution phase, not a scoped 5-crate pass.
-2. `nonzero_samples` at a usable fraction of `samples` — if it comes back in
-   the single-digit-percent range again, the reading is about the instrument,
-   not the pool, regardless of what `peak` says.
-3. Ideally an instrument fix for the prefilter→confirm race (e.g. confirming
-   from a single `/proc` snapshot taken in one pass rather than re-reading per
-   candidate after a slow `pgrep`).
-4. No constraint on **where** the sampler is launched from — it is a host-wide
+**Tracked as #6375** — filed during task 6018's review-amendment pass, covering
+both (a) the re-run over a full execution phase and (b) the prefilter→confirm
+race fix.  Cited here deliberately and by number, and retained now that it is
+done, because this residual is the same one task 5984 carried and that "was
+tracked nowhere until 2026-08-05" (esc-5984-2).  A prose "see the follow-up
+below" pointer naming no task is how it went missing the first time, and nothing
+automated would have caught it — reify-audit's PTODO gate excludes markdown from
+its sweep entirely (`docs/prds/reify-audit-ptodo-detector.md` §6.8: swept
+extensions are `.rs .ri .sh .py .ts .tsx .js`), so a stale pointer in a doc like
+this one is invisible to it whether or not it carries a marker.
+
+What each requirement asked for, and what window 3 delivered:
+
+1. *A window covering a full `scripts/verify.sh --scope all --profile both`
+   execution phase, not a scoped 5-crate pass.*  **Done** — 588 s of
+   debug-profile execution across 662 test binaries plus the start of the
+   release pass, inside a 1200 s window.
+2. *`nonzero_samples` at a usable fraction of `samples`.*  **Done** — 827/1034 =
+   80.0%, against window 1's 7.4%.  The single-digit-percent failure mode this
+   item warned about did not recur.
+3. *An instrument fix for the prefilter→confirm race.*  **Done** — and it needed
+   BOTH halves: batching the confirmation into one multi-operand `readlink` AND
+   dropping the `pgrep` prefilter, because confirming a list that a slow
+   prefilter already made stale still confirms a stale list.  Pinned by asserts
+   B1 and B2.
+4. *No constraint on **where** the sampler is launched from* — it is a host-wide
    instrument and its result is cwd-independent *as of* the fix described under
-   "Instrument defects found after the fact".  But any reading taken with an
-   **earlier copy** of the script must have its cwd checked before it is
-   trusted: if that cwd contained a tree matching the run's `deps_glob`, the
-   reading is a silent zero and is not evidence about anything.
+   "Instrument defects found after the fact".  **This warning still stands and
+   still applies:** any reading taken with an **earlier copy** of the script must
+   have its cwd checked before it is trusted (if that cwd contained a tree
+   matching the run's `deps_glob`, the reading is a silent zero and is not
+   evidence about anything) — and, as of window 3, must also have its **caller's
+   ptrace reach** checked, since a sandboxed caller sees only its own process
+   tree and produces the same shape of silent zero.
 
-Until then the un-narrowing is justified by the config being *read back* as
-`test-threads = 32` (verified) — not by an observed peak.
+The un-narrowing is now justified by an **observed** peak — window 3's
+`peak=51`, with a sustained execution-phase plateau whose shoulder sits exactly
+at the generated `test-threads = 32` — and no longer only by the config being
+read back as `test-threads = 32`.
+
+**The one residual.**  The instrument cannot yet distinguish a sandbox-induced
+zero from the two silent zeros it already documents.  That does not affect window
+3 (which is non-zero throughout and states its own scope), and it is filed as
+follow-up from esc-6375-2 rather than left as prose here.
