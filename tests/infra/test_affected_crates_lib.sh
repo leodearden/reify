@@ -452,21 +452,67 @@ assert "examples/**/.gitkeep still forces ALL (C5 preserved)" \
 # very fixture they read.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- RI-CORPUS-DRIFT: every crate whose Rust sources name an examples/*.ri leaf is declared ---"
+echo "--- RI-CORPUS-DRIFT: every workspace member whose Rust sources read the examples/ corpus is declared ---"
 
-# _derived_ri_corpus_crates — workspace crates with a non-comment Rust source
-# line carrying a literal examples/<path>.ri reference, one per line.
+# _workspace_member_dirs — every workspace member's repo-relative directory and
+# package name, TAB-separated, longest directory first so the prefix match below
+# resolves a nested member to the nearest one.
 #
-# The pathspec must cover EVERY workspace member's Rust sources, not just the
-# ones under `crates/`. `reify-gui` lives at gui/src-tauri/ and is a real
-# corpus reader (`include_str!("../../../examples/fea_multi_case_bracket.ri")`
-# in debug_server.rs, plus further reads in its test modules); a `crates/`-only
-# pathspec cannot see it, so the guard would pass green over an undeclared
-# reader. The projection below mirrors _file_to_crate's §5 rules — the same two
-# path->crate arms — so derivation and mapping cannot drift apart.
+# Read from `cargo metadata`, never hand-listed: a hand-kept pathspec stops
+# meaning "every member" the moment one is added outside `crates/`, which is how
+# this derivation first missed gui/src-tauri (reify-gui `include_str!`s a corpus
+# leaf at compile time) and then tree-sitter-reify. Empty output means
+# `cargo metadata` failed — see the cold-registry preflight above.
+_workspace_member_dirs() {
+    local meta
+    meta="$( cd "$REPO_ROOT" && cargo metadata --format-version 1 --locked --offline 2>/dev/null )" || return 0
+    printf '%s\n' "$meta" | python3 -c '
+import json, os, sys
+meta = json.load(sys.stdin)
+root = os.path.realpath(sys.argv[1])
+members = set(meta["workspace_members"])
+rows = [
+    (os.path.relpath(os.path.dirname(os.path.realpath(p["manifest_path"])), root), p["name"])
+    for p in meta["packages"] if p["id"] in members
+]
+for d, name in sorted(rows, key=lambda r: (-len(r[0]), r[0])):
+    print(f"{d}\t{name}")
+' "$REPO_ROOT"
+}
+
+# _derived_ri_corpus_crates — every workspace member with a non-comment Rust
+# source line naming the examples/ corpus, one package name per line.
+#
+# TWO reader shapes are matched, because the literal one alone left this guard
+# green by coincidence rather than by construction: a named leaf
+# (`include_str!(".../examples/foo.ri")`) AND a directory walk
+# (`collect_files(&root.join("examples"), "ri", …)`, or a path assembled with
+# `format!("examples/{}.ri", …)`, which no `\.ri` pattern can see). A crate that
+# only walked the directory would otherwise be an undeclared reader.
+# OVER-derivation is the safe direction: it can only force a DECLARATION, and an
+# extra declared crate merely widens — the direction of error C5 already blesses.
+#
+# A member with no §5 mapping rule of its own (tree-sitter-reify, which
+# _is_global widens to ALL on its own edits) is still swept and still has to be
+# declared if it ever reads the corpus: an examples/*.ri edit must reach the
+# tests of every crate that opens those bytes, whatever that crate's own edits do.
+_RI_CORPUS_READ_RE='examples/|"examples"'
+
 _derived_ri_corpus_crates() {
-    git -C "$REPO_ROOT" grep -nE 'examples/[A-Za-z0-9_./-]*\.ri' \
-            -- 'crates/*/**.rs' 'gui/src-tauri/**.rs' \
+    local members
+    members="$(_workspace_member_dirs)"
+    [ -n "$members" ] || return 0
+
+    local -a pathspecs=()
+    local -A member_pkg=()
+    local dir pkg
+    while IFS=$'\t' read -r dir pkg; do
+        [ -n "$dir" ] || continue
+        pathspecs+=("$dir/**.rs")
+        member_pkg["$dir"]="$pkg"
+    done <<< "$members"
+
+    git -C "$REPO_ROOT" grep -nE "$_RI_CORPUS_READ_RE" -- "${pathspecs[@]}" \
         | while IFS= read -r line; do
             # `path:lineno:code` — split off the prefix to inspect the CODE.
             local path="${line%%:*}"
@@ -475,16 +521,13 @@ _derived_ri_corpus_crates() {
             # first non-space characters are `//`.
             local trimmed="${code#"${code%%[![:space:]]*}"}"
             case "$trimmed" in //*) continue ;; esac
-            # Project the path to its owning crate (§5 rules).
-            case "$path" in
-                gui/src-tauri/*)
-                    printf '%s\n' "reify-gui"
-                    ;;
-                crates/*)
-                    local rest="${path#crates/}"
-                    printf '%s\n' "${rest%%/*}"
-                    ;;
-            esac
+            # Project the source path onto its owning member: walk up parents
+            # until one is a member directory (longest match wins).
+            local owner="$path"
+            while [ -n "$owner" ] && [ -z "${member_pkg[$owner]:-}" ]; do
+                case "$owner" in */*) owner="${owner%/*}" ;; *) owner="" ;; esac
+            done
+            [ -n "$owner" ] && printf '%s\n' "${member_pkg[$owner]}"
         done | sort -u
 }
 
@@ -493,7 +536,7 @@ _check_derived_subset_of_declared() {
     derived="$(_derived_ri_corpus_crates)"
     echo "derived:  [$(printf '%s' "$derived" | tr '\n' ' ')]"
     echo "declared: [${_RI_CORPUS_CRATES:-<unset>}]"
-    [ -n "$derived" ] || { echo "derivation produced NOTHING — the grep or the projection broke"; return 1; }
+    [ -n "$derived" ] || { echo "derivation produced NOTHING — cargo metadata, the grep or the projection broke"; return 1; }
     local c
     while IFS= read -r c; do
         [ -n "$c" ] || continue
