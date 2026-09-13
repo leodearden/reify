@@ -281,7 +281,20 @@ impl DualEnv {
 
     /// The one write to `bindings`, so the [`DualEnv::generation`] counter
     /// cannot drift from the key set it describes.
+    ///
+    /// It is also where the tangent is CANONICALISED.  Everywhere inside the
+    /// traversal an all-zero row is already collapsed by
+    /// [`Tangent::from_row`], so `is_zero()` means "provably flat" rather than
+    /// "happens to be spelled `Zero`" — and several rules read it that way,
+    /// `pow`'s constant-exponent power rule most sharply.  [`DualEnv::bind`] is
+    /// public, so the overlay is the one door a `Tangent::Scalar(vec![0.0; w])`
+    /// can come through; collapsing it here keeps that equivalence true of
+    /// every tangent in the module rather than of most of them.
     fn insert(&mut self, cell: ValueCellId, tangent: Tangent) {
+        let tangent = match tangent {
+            Tangent::Scalar(row) => Tangent::from_row(row),
+            other => other,
+        };
         if self.bindings.insert(cell, tangent).is_none() {
             self.generation += 1;
         }
@@ -1024,6 +1037,13 @@ fn eval_dual_kleene(
 /// `Scalar ^ Int` is the only dimensioned power the value layer accepts.  Only
 /// a seed-dependent exponent needs the general form, which requires `ln a` and
 /// is therefore restricted to a positive base.
+///
+/// `exponent_is_constant` must be a claim about the exponent's VALUE, not about
+/// how its tangent is spelled: a flat exponent routed through the general form
+/// multiplies a zero `bp` by a NaN `ln a` and loses a finite derivative.  The
+/// caller passes `Tangent::is_zero()`, which carries that meaning because
+/// [`Tangent::from_row`] and [`DualEnv::insert`] between them leave no all-zero
+/// `Tangent::Scalar` anywhere in the module.
 fn pow_tangent(a: f64, b: f64, ap: f64, bp: f64, exponent_is_constant: bool) -> f64 {
     if exponent_is_constant {
         if b == 0.0 {
@@ -1145,7 +1165,7 @@ fn eval_dual_builtin(
         {
             note(record, path, KinkKind::FieldReduction(kind), BranchChoice::Unresolved);
         }
-        let value = crate::eval_expr(expr, ctx);
+        let value = crate::eval_expr(&with_literal_args(expr, &primal_args), ctx);
         return if duals.iter().all(|d| d.tangent.is_zero()) {
             DualValue::constant(value)
         } else {
@@ -1203,6 +1223,46 @@ fn eval_dual_builtin(
         return DualValue::opaque(value);
     }
     combine(value, &duals, &partials, seeds.width())
+}
+
+/// `expr` with every argument replaced by a literal of the primal this
+/// traversal already computed for it.
+///
+/// For a builtin in neither derivative table the primal still has to come from
+/// [`crate::eval_expr`], because `eval_expr` owns a long by-name interception
+/// table — `sample`, `gradient`, `von_mises`, `flat_map`, the field reductions,
+/// `std::__interp_render` by qualified name — and restating that list here is
+/// exactly the defect [`Seeds::depends_on_seed`] declines to commit one level
+/// down.  Handing it the ORIGINAL node, though, makes it re-evaluate arguments
+/// that were just evaluated at the top of [`eval_dual_builtin`], so a chain of
+/// n nested undifferentiated calls — `norm(cross(rotate(cross(..))))` — does
+/// O(n²) argument evaluations for an O(n) tree.
+///
+/// Substituting literals keeps `eval_expr` the single implementation of that
+/// table while making its argument pass O(1) per argument.  Every input the
+/// interception decisions read is preserved: the name, the qualified name, the
+/// arity, the argument VALUES and the result type.  Only the `content_hash`
+/// necessarily changes — it is derived from the substituted children, as any
+/// rebuilt node's must be.
+fn with_literal_args(expr: &CompiledExpr, primal_args: &[Value]) -> CompiledExpr {
+    let CompiledExprKind::FunctionCall { function, args } = &expr.kind else {
+        // Only `eval_dual_builtin` calls this, and only on its own node.
+        return expr.clone();
+    };
+    let literals: Vec<CompiledExpr> = args
+        .iter()
+        .zip(primal_args)
+        .map(|(a, v)| CompiledExpr::literal(v.clone(), a.result_type.clone()))
+        .collect();
+    let mut content_hash = ContentHash::of(function.qualified_name.as_bytes());
+    for lit in &literals {
+        content_hash = content_hash.combine(lit.content_hash);
+    }
+    CompiledExpr {
+        kind: CompiledExprKind::FunctionCall { function: function.clone(), args: literals },
+        result_type: expr.result_type.clone(),
+        content_hash,
+    }
 }
 
 /// Does this argument's tangent reach the result at all?

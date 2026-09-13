@@ -2663,3 +2663,140 @@ fn a_match_over_a_discriminant_that_refused_a_tangent_refuses_the_row() {
         "the refusal must name the discriminant, not be swallowed: {msg}"
     );
 }
+
+// ===========================================================================
+// Review follow-up: the undifferentiated-builtin primal, and the live half of
+// `pow_tangent`
+// ===========================================================================
+
+#[test]
+fn an_undifferentiated_builtin_that_eval_expr_intercepts_by_name_keeps_its_primal() {
+    // For a name in neither derivative table the primal must still come from
+    // `eval_expr`, because `eval_expr` owns a long by-name interception table
+    // (`sample`, `gradient`, `von_mises`, `flat_map`, the field reductions,
+    // `std::__interp_render`) that this module must never restate.  `gradient`
+    // is one of those names and reaches the undifferentiated arm, so it pins
+    // that the arm still routes through the interception rather than straight
+    // to `reify_stdlib::eval_builtin` — which answers `Undef` for a Field.
+    let mut values = ValueMap::new();
+    values.insert(cell("f"), bounded_probe_field());
+    let seed_cells = vec![cell("w")];
+    values.insert(cell("w"), Value::Real(1.0));
+    let expr = calln("gradient", vec![pref("f")]);
+
+    let ctx = EvalContext::simple(&values);
+    let seeds = Seeds::new(&seed_cells);
+    let mut record = BranchRecord::new();
+    let dual = eval_dual(&expr, &ctx, &seeds, &mut record);
+
+    let plain = eval_expr(&expr, &ctx);
+    assert!(
+        !plain.is_undef(),
+        "the premise: `eval_expr` INTERCEPTS `gradient` rather than handing it to \
+         `eval_builtin`, which would answer Undef — without that this test proves nothing"
+    );
+    assert_eq!(dual.value, plain, "the primal invariant across the interception");
+}
+
+#[test]
+fn nested_undifferentiated_builtins_keep_the_primal_invariant() {
+    // Arguments are dual-evaluated before the undifferentiated arm is reached,
+    // so that arm must not re-evaluate them — and substituting the already
+    // computed primals must not change the answer at any nesting depth.
+    let (values, seed_cells) = probe(&[("w", 2.0)]);
+    let inner = calln("vec2", vec![pref("w"), literal(Value::Real(3.0))]);
+    let expr = calln("norm", vec![inner]);
+
+    let ctx = EvalContext::simple(&values);
+    let seeds = Seeds::new(&seed_cells);
+    let mut record = BranchRecord::new();
+    let dual = eval_dual(&expr, &ctx, &seeds, &mut record);
+    assert_eq!(dual.value, eval_expr(&expr, &ctx), "the primal invariant, nested two deep");
+}
+
+// ---------------------------------------------------------------------------
+// `exponent_is_constant` must not be a claim about the tangent's REPRESENTATION
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_all_zero_exponent_row_still_takes_the_constant_exponent_power_rule() {
+    use reify_expr::dual_eval::{DualEnv, jacobian_row_with_env};
+
+    // `Tangent::from_row` collapses an all-zero row to `Tangent::Zero`, so
+    // inside the traversal `is_zero()` and "is provably flat" coincide.
+    // `DualEnv::bind` is PUBLIC and stores what the caller hands it, so the
+    // overlay is the one place a `Tangent::Scalar(vec![0.0; w])` can enter —
+    // and reading `is_zero()` off it asks about the REPRESENTATION rather than
+    // the value.  Answering "the exponent moves" for a provably flat exponent
+    // drives `x ^ k` into the general `a^b·(b'·ln a + b·a'/a)` form, whose
+    // `ln a` is NaN at a NEGATIVE base — turning d/dx (−3)² = −6, a perfectly
+    // finite derivative, into a refusal.
+    let mut values = ValueMap::new();
+    values.insert(cell("x"), Value::Real(-3.0));
+    values.insert(cell("k"), Value::Real(2.0));
+    let seed_cells = vec![cell("x")];
+    let expr = binop(BinOp::Pow, pref("x"), pref("k"));
+
+    let ctx = EvalContext::simple(&values);
+    let seeds = Seeds::new(&seed_cells);
+    let mut env = DualEnv::new();
+    env.bind(cell("k"), Tangent::Scalar(vec![0.0]));
+    let mut record = BranchRecord::new();
+
+    let (primal, row) = jacobian_row_with_env(&expr, &ctx, &seeds, &env, &mut record)
+        .expect("a flat exponent is a CONSTANT exponent, however it is spelled");
+    assert_close(primal, 9.0, "(-3)^2");
+    assert_row_close(&row, &[-6.0], "d/dx x^2 at x = -3 is 2x = -6");
+}
+
+// ---------------------------------------------------------------------------
+// The seeded-exponent branch of `pow_tangent`, which no test reached
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_seeded_exponent_agrees_with_central_differences_in_both_spellings() {
+    // Every `Pow` in this suite had a literal exponent, so
+    // `exponent_is_constant` was always true and the general
+    // `a^b·(b'·ln a + b·a'/a)` form was dead code.  At (2, 3):
+    // ∂/∂x = y·x^(y−1) = 12 and ∂/∂y = x^y·ln x ≈ 5.545, both comfortably
+    // above the 0.1 floor the relative tolerance needs.
+    let (values, seed_cells) = probe(&[("x", 2.0), ("y", 3.0)]);
+    assert_ad_matches_cd(
+        "x ^ y, BinOp spelling, both seeded",
+        &binop(BinOp::Pow, pref("x"), pref("y")),
+        &values,
+        &seed_cells,
+    );
+    assert_ad_matches_cd(
+        "pow(x, y), call spelling, both seeded",
+        &calln("pow", vec![pref("x"), pref("y")]),
+        &values,
+        &seed_cells,
+    );
+}
+
+#[test]
+fn a_seeded_exponent_over_a_negative_base_refuses_in_both_spellings() {
+    // `ln a` does not exist at a negative base, so the general form has no
+    // value to report.  THE POINT IS THAT NEITHER SPELLING RETURNS A ROW: the
+    // two refuse through different channels — the call path's
+    // contribution-masked finiteness guard names the construct and its site,
+    // while the BinOp path's NaN is caught by `jacobian_row`'s root-level
+    // column scan — and that division of labour is deliberate, not a gap.
+    // What would be a defect is one of them answering `Ok` with a NaN in it.
+    let (values, seed_cells) = probe(&[("x", -3.0), ("y", 2.0)]);
+    for (label, expr) in [
+        ("BinOp", binop(BinOp::Pow, pref("x"), pref("y"))),
+        ("call", calln("pow", vec![pref("x"), pref("y")])),
+    ] {
+        match jrow(&expr, &values, &seed_cells) {
+            Err(err) => assert!(
+                !err.to_string().is_empty(),
+                "{label}: the refusal must carry a message η can show"
+            ),
+            Ok((p, row)) => {
+                panic!("{label}: expected a refusal, got primal {p:?} row {row:?}")
+            }
+        }
+    }
+}
