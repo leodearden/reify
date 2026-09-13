@@ -100,7 +100,7 @@ export function applyTextEditsToString(
  * `null` when the server did not state one (the legacy `changes` map, or a file
  * not open on the server whose content on disk is master).
  */
-export interface WorkspaceEditTarget {
+interface WorkspaceEditTarget {
   uri: string;
   version: number | null;
   edits: TextEdit[];
@@ -113,12 +113,17 @@ export interface WorkspaceEditTarget {
  * `changes` per the LSP spec, and every consumer — both appliers and the
  * staleness check — goes through here so the precedence rule cannot drift
  * between them.
+ *
+ * "No version stated" has two spellings on the wire — reify's server always
+ * sends an explicit `null`, but the spec lets a server omit the key — and both
+ * collapse to `null` HERE, so every consumer downstream has exactly one absent
+ * form to test against.
  */
-export function workspaceEditTargets(edit: WorkspaceEdit): WorkspaceEditTarget[] {
+function workspaceEditTargets(edit: WorkspaceEdit): WorkspaceEditTarget[] {
   if (edit.documentChanges) {
     return edit.documentChanges.map((entry) => ({
       uri: entry.textDocument.uri,
-      version: entry.textDocument.version,
+      version: entry.textDocument.version ?? null,
       edits: entry.edits,
     }));
   }
@@ -144,8 +149,10 @@ export type DocumentVersionReader = (uri: string) => number | undefined;
  * A URI is stale only on DEMONSTRATED disagreement — both versions known and
  * different. Every other combination is not-stale by construction:
  *
- *  - `version === null` — the server does not have this document open, so the
- *    content on disk is master and there is no version to compare. Refusing
+ *  - `version === null` — the server stated no version, either explicitly or by
+ *    omitting the key (both normalise to `null` in workspaceEditTargets). It
+ *    does not have this document open, so the content on disk is master and
+ *    there is no version to compare against. Refusing
  *    here would reject every legitimate cross-file rename touching a closed
  *    file, and it is also the whole of the legacy unversioned `changes` shape.
  *  - client version `undefined` — the client never tracked this URI, so
@@ -158,7 +165,7 @@ export type DocumentVersionReader = (uri: string) => number | undefined;
  * hazard stays covered by `lspRangeToCmRange` returning null for out-of-range
  * ranges, which this guard sits in front of rather than replacing.
  */
-export function staleEditTargets(
+function staleEditTargets(
   edit: WorkspaceEdit,
   currentVersion: DocumentVersionReader,
 ): string[] {

@@ -79,9 +79,11 @@ export interface TextEdit {
  *
  * `version` is `null` when the document is not open on the server — the LSP
  * signal that the content on disk is master, so there is no version to compare.
+ * It is optional because a third-party server may spell that same "no version"
+ * by omitting the key; reify's own server always sends an explicit `null`.
  */
 export interface TextDocumentEdit {
-  textDocument: { uri: string; version: number | null };
+  textDocument: { uri: string; version?: number | null };
   edits: TextEdit[];
 }
 
@@ -93,8 +95,9 @@ export interface TextDocumentEdit {
  * `workspace.workspaceEdit.documentChanges` is declared, the unversioned
  * `changes` map otherwise. Both fields are optional because a third-party
  * server may answer either way; per the LSP spec `documentChanges` wins when
- * both are present. Read them through `workspaceEditTargets` rather than
- * directly, so that precedence rule lives in one place.
+ * both are present. rename.ts flattens both shapes through one normalizer
+ * rather than reading these fields directly, so that precedence rule lives in
+ * a single place.
  */
 export interface WorkspaceEdit {
   changes?: { [uri: string]: TextEdit[] };

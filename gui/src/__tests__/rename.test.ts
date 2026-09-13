@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { EditorView } from '@codemirror/view';
-import { applyWorkspaceEdit, applyTextEditsToString, applyWorkspaceEditAcrossFiles, renameCommand, workspaceEditTargets, staleEditTargets } from '../editor/rename';
+import { applyWorkspaceEdit, applyTextEditsToString, applyWorkspaceEditAcrossFiles, renameCommand } from '../editor/rename';
 import type { RenameClient, RenameUi } from '../editor/rename';
 import type { WorkspaceEdit } from '../editor/lspClient';
 import { flushMacrotasks } from './test-utils';
@@ -182,101 +182,6 @@ function makeDeps(openUris: string[] = [ACTIVE_URI, OPEN_URI]) {
   return { applyActive, applyOpenInactive, applyClosed, isOpen };
 }
 
-// ---------------------------------------------------------------------------
-// workspaceEditTargets — the single reader of the two WorkspaceEdit wire shapes
-// ---------------------------------------------------------------------------
-
-describe('workspaceEditTargets', () => {
-  it('reads a documentChanges edit preserving order and per-entry version', () => {
-    const edit: WorkspaceEdit = {
-      documentChanges: [
-        { textDocument: { uri: OPEN_URI, version: 7 }, edits: EDIT_B },
-        { textDocument: { uri: CLOSED_URI, version: null }, edits: EDIT_C },
-      ],
-    };
-    expect(workspaceEditTargets(edit)).toEqual([
-      { uri: OPEN_URI, version: 7, edits: EDIT_B },
-      { uri: CLOSED_URI, version: null, edits: EDIT_C },
-    ]);
-  });
-
-  it('reads a legacy changes map as one unversioned target per URI', () => {
-    const edit: WorkspaceEdit = { changes: { [ACTIVE_URI]: EDIT_A, [CLOSED_URI]: EDIT_C } };
-    expect(workspaceEditTargets(edit)).toEqual([
-      { uri: ACTIVE_URI, version: null, edits: EDIT_A },
-      { uri: CLOSED_URI, version: null, edits: EDIT_C },
-    ]);
-  });
-
-  it('prefers documentChanges over changes when both are present (LSP precedence)', () => {
-    const edit: WorkspaceEdit = {
-      documentChanges: [{ textDocument: { uri: OPEN_URI, version: 2 }, edits: EDIT_B }],
-      changes: { [ACTIVE_URI]: EDIT_A },
-    };
-    expect(workspaceEditTargets(edit)).toEqual([
-      { uri: OPEN_URI, version: 2, edits: EDIT_B },
-    ]);
-  });
-
-  it('returns no targets for an edit carrying neither representation', () => {
-    expect(workspaceEditTargets({})).toEqual([]);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// staleEditTargets — the version-skew guard
-// ---------------------------------------------------------------------------
-
-describe('staleEditTargets', () => {
-  /** A version reader over a fixed uri→version table. */
-  const reader = (table: Record<string, number>) => (uri: string) => table[uri];
-
-  const versioned = (uri: string, version: number | null): WorkspaceEdit => ({
-    documentChanges: [{ textDocument: { uri, version }, edits: EDIT_A }],
-  });
-
-  it('flags a URI whose server version differs from the client version', () => {
-    expect(
-      staleEditTargets(versioned(ACTIVE_URI, 3), reader({ [ACTIVE_URI]: 5 })),
-    ).toEqual([ACTIVE_URI]);
-  });
-
-  it('flags nothing when the versions agree', () => {
-    expect(
-      staleEditTargets(versioned(ACTIVE_URI, 3), reader({ [ACTIVE_URI]: 3 })),
-    ).toEqual([]);
-  });
-
-  it('treats a null server version as not-stale (closed file, disk is master)', () => {
-    expect(
-      staleEditTargets(versioned(CLOSED_URI, null), reader({ [CLOSED_URI]: 9 })),
-    ).toEqual([]);
-  });
-
-  it('treats an untracked client URI as not-stale (staleness is unknowable)', () => {
-    expect(staleEditTargets(versioned(OPEN_URI, 4), reader({}))).toEqual([]);
-  });
-
-  it('flags only the mismatched URI of a multi-file edit', () => {
-    const edit: WorkspaceEdit = {
-      documentChanges: [
-        { textDocument: { uri: ACTIVE_URI, version: 2 }, edits: EDIT_A },
-        { textDocument: { uri: OPEN_URI, version: 1 }, edits: EDIT_B },
-      ],
-    };
-    expect(
-      staleEditTargets(edit, reader({ [ACTIVE_URI]: 2, [OPEN_URI]: 6 })),
-    ).toEqual([OPEN_URI]);
-  });
-
-  it('never flags a legacy unversioned changes edit', () => {
-    const edit: WorkspaceEdit = { changes: { [ACTIVE_URI]: EDIT_A, [OPEN_URI]: EDIT_B } };
-    expect(
-      staleEditTargets(edit, reader({ [ACTIVE_URI]: 5, [OPEN_URI]: 6 })),
-    ).toEqual([]);
-  });
-});
-
 describe('applyWorkspaceEditAcrossFiles', () => {
   it('routes the active URI to applyActive', () => {
     const edit: WorkspaceEdit = { changes: { [ACTIVE_URI]: EDIT_A } };
@@ -390,6 +295,21 @@ describe('applyWorkspaceEditAcrossFiles', () => {
     applyWorkspaceEditAcrossFiles(edit, ACTIVE_URI, deps);
     expect(deps.applyActive).not.toHaveBeenCalled();
     expect(deps.applyClosed).toHaveBeenCalledWith(CLOSED_URI, EDIT_C);
+  });
+
+  it('applies ONLY documentChanges when a server sends both (LSP precedence)', () => {
+    const edit: WorkspaceEdit = {
+      documentChanges: [{ textDocument: { uri: OPEN_URI, version: 2 }, edits: EDIT_B }],
+      changes: { [ACTIVE_URI]: EDIT_A },
+    };
+    const deps = makeDeps();
+    applyWorkspaceEditAcrossFiles(edit, ACTIVE_URI, deps);
+    expect(deps.applyOpenInactive).toHaveBeenCalledOnce();
+    expect(deps.applyOpenInactive).toHaveBeenCalledWith(OPEN_URI, EDIT_B);
+    // The ignored `changes` map targets the ACTIVE uri, so an applier that
+    // merged the two representations — or preferred the legacy one — would
+    // dispatch an unversioned edit into the live buffer here.
+    expect(deps.applyActive).not.toHaveBeenCalled();
   });
 });
 
@@ -1243,6 +1163,98 @@ describe('renameCommand', () => {
     expect(rename).toHaveBeenCalledTimes(2);
     // The now-different buffer must not receive the original file's edits.
     expect(applyEdit).not.toHaveBeenCalled();
+    expect(showRenameFailed).not.toHaveBeenCalled();
+  });
+
+  it('(f) version skew: an untracked URI is judged fresh — applied, never re-issued', async () => {
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion } =
+      makeRenameDeps();
+    prepareRename.mockResolvedValue(GUARD_TARGET);
+    const edit = stampedEdit(4);
+    rename.mockResolvedValue(edit);
+    // The client never tracked this document, so skew is unknowable rather than
+    // proven. Refusing here would break the closed/inactive-file sinks, whose
+    // URIs the client has no counter for at all.
+    currentVersion.mockReturnValue(undefined);
+
+    const applyEdit = vi.fn();
+    const view = guardView();
+    await submitRename(
+      renameCommand(() => URI, client, ui, applyEdit, currentVersion),
+      view,
+      promptNewName,
+    );
+
+    expect(rename).toHaveBeenCalledOnce();
+    expect(applyEdit).toHaveBeenCalledWith(view, edit, URI);
+    expect(showRenameFailed).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A cross-file edit over three documents: the renamed file (tracked, agrees),
+   * a closed importer (no version — disk is master), and a second open buffer
+   * whose version is `openVersion`.
+   */
+  const crossFileEdit = (openVersion: number): WorkspaceEdit => ({
+    documentChanges: [
+      { textDocument: { uri: URI, version: 2 }, edits: [{ range: GUARD_TARGET.range, newText: 'girth' }] },
+      { textDocument: { uri: CLOSED_URI, version: null }, edits: EDIT_C },
+      { textDocument: { uri: OPEN_URI, version: openVersion }, edits: EDIT_B },
+    ],
+  });
+
+  it('(g) version skew: one disagreeing file of a cross-file edit re-issues the whole rename', async () => {
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion } =
+      makeRenameDeps();
+    prepareRename.mockResolvedValue(GUARD_TARGET);
+    const fresh = crossFileEdit(6);
+    rename.mockResolvedValueOnce(crossFileEdit(1)).mockResolvedValueOnce(fresh);
+    currentVersion.mockImplementation(
+      (uri: string) => ({ [URI]: 2, [OPEN_URI]: 6 } as Record<string, number>)[uri],
+    );
+
+    const applyEdit = vi.fn();
+    const view = guardView();
+    await submitRename(
+      renameCommand(() => URI, client, ui, applyEdit, currentVersion),
+      view,
+      promptNewName,
+    );
+
+    // The renamed file agreed and the closed importer is unversioned; the ONE
+    // disagreeing buffer is enough to withhold the whole edit, because applying
+    // it partially would rename a symbol in some files and not others.
+    expect(rename).toHaveBeenCalledTimes(2);
+    expect(applyEdit).toHaveBeenCalledOnce();
+    expect(applyEdit).toHaveBeenCalledWith(view, fresh, URI);
+    expect(showRenameFailed).not.toHaveBeenCalled();
+  });
+
+  it('(h) version skew: an entry that OMITS the version key is not stale', async () => {
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion } =
+      makeRenameDeps();
+    prepareRename.mockResolvedValue(GUARD_TARGET);
+    // reify's server always sends an explicit null, but the spec lets a server
+    // omit the key. Both spell "no version stated", so neither may be read as a
+    // version that happens to differ from the client's.
+    const omitted: WorkspaceEdit = {
+      documentChanges: [
+        { textDocument: { uri: URI }, edits: [{ range: GUARD_TARGET.range, newText: 'girth' }] },
+      ],
+    };
+    rename.mockResolvedValue(omitted);
+    currentVersion.mockReturnValue(2);
+
+    const applyEdit = vi.fn();
+    const view = guardView();
+    await submitRename(
+      renameCommand(() => URI, client, ui, applyEdit, currentVersion),
+      view,
+      promptNewName,
+    );
+
+    expect(rename).toHaveBeenCalledOnce();
+    expect(applyEdit).toHaveBeenCalledWith(view, omitted, URI);
     expect(showRenameFailed).not.toHaveBeenCalled();
   });
 });
