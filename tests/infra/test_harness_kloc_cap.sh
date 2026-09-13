@@ -3141,10 +3141,12 @@ assert "10: normalization scan emits NO FAIL line at all" \
     bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s10_norm_out"
 
 # --- must-not-fire: MODDIR BOUNDARY + the live #[cfg] shape. A #[cfg]-gated
-# member (crates/reify-cli/tests/harness_cli.rs:184-186's #[cfg] -> #[path]
-# -> mod ordering) is DECLARED regardless of cfg state, and a bare `mod
-# common;` resolving to a retained tests/ sibling is not a member at all — it
-# resolves OUTSIDE the module dir. ---
+# member (the `rpath_smoke` declaration in
+# crates/reify-cli/tests/harness_cli_surface.rs — its #[cfg] -> #[path] -> mod
+# ordering; cited by NAME, never by line span, which drifts on every edit to
+# that root) is DECLARED regardless of cfg state, and a bare `mod common;`
+# resolving to a retained tests/ sibling is not a member at all — it resolves
+# OUTSIDE the module dir. ---
 _s10_bound_dir="$(mktemp -d)"; _TMPDIRS+=("$_s10_bound_dir")
 mkdir -p "$_s10_bound_dir/harness_synth" "$_s10_bound_dir/common"
 {

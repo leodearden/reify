@@ -190,7 +190,7 @@ fn drain_bounded(
 /// least make that hang reachable by two named tests (see their doc
 /// comments), rather than proof against it.
 ///
-/// `crates/reify-cli/tests/harness_cli/mcp_integration.rs` is in the same
+/// The sibling `mcp_integration` module in this harness is in the same
 /// exposure class; see #5389. (Deliberately a bare pointer: describing that
 /// file's current internals here would go stale the moment #5389 lands, and
 /// nothing gates it.) This file reimplements the pattern locally rather than
