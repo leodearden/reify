@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { EditorView } from '@codemirror/view';
-import { applyWorkspaceEdit, applyTextEditsToString, applyWorkspaceEditAcrossFiles, renameCommand, workspaceEditTargets } from '../editor/rename';
+import { applyWorkspaceEdit, applyTextEditsToString, applyWorkspaceEditAcrossFiles, renameCommand, workspaceEditTargets, staleEditTargets } from '../editor/rename';
 import type { RenameClient, RenameUi } from '../editor/rename';
 import type { WorkspaceEdit } from '../editor/lspClient';
 import { flushMacrotasks } from './test-utils';
@@ -220,6 +220,60 @@ describe('workspaceEditTargets', () => {
 
   it('returns no targets for an edit carrying neither representation', () => {
     expect(workspaceEditTargets({})).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// staleEditTargets — the version-skew guard
+// ---------------------------------------------------------------------------
+
+describe('staleEditTargets', () => {
+  /** A version reader over a fixed uri→version table. */
+  const reader = (table: Record<string, number>) => (uri: string) => table[uri];
+
+  const versioned = (uri: string, version: number | null): WorkspaceEdit => ({
+    documentChanges: [{ textDocument: { uri, version }, edits: EDIT_A }],
+  });
+
+  it('flags a URI whose server version differs from the client version', () => {
+    expect(
+      staleEditTargets(versioned(ACTIVE_URI, 3), reader({ [ACTIVE_URI]: 5 })),
+    ).toEqual([ACTIVE_URI]);
+  });
+
+  it('flags nothing when the versions agree', () => {
+    expect(
+      staleEditTargets(versioned(ACTIVE_URI, 3), reader({ [ACTIVE_URI]: 3 })),
+    ).toEqual([]);
+  });
+
+  it('treats a null server version as not-stale (closed file, disk is master)', () => {
+    expect(
+      staleEditTargets(versioned(CLOSED_URI, null), reader({ [CLOSED_URI]: 9 })),
+    ).toEqual([]);
+  });
+
+  it('treats an untracked client URI as not-stale (staleness is unknowable)', () => {
+    expect(staleEditTargets(versioned(OPEN_URI, 4), reader({}))).toEqual([]);
+  });
+
+  it('flags only the mismatched URI of a multi-file edit', () => {
+    const edit: WorkspaceEdit = {
+      documentChanges: [
+        { textDocument: { uri: ACTIVE_URI, version: 2 }, edits: EDIT_A },
+        { textDocument: { uri: OPEN_URI, version: 1 }, edits: EDIT_B },
+      ],
+    };
+    expect(
+      staleEditTargets(edit, reader({ [ACTIVE_URI]: 2, [OPEN_URI]: 6 })),
+    ).toEqual([OPEN_URI]);
+  });
+
+  it('never flags a legacy unversioned changes edit', () => {
+    const edit: WorkspaceEdit = { changes: { [ACTIVE_URI]: EDIT_A, [OPEN_URI]: EDIT_B } };
+    expect(
+      staleEditTargets(edit, reader({ [ACTIVE_URI]: 5, [OPEN_URI]: 6 })),
+    ).toEqual([]);
   });
 });
 
