@@ -1048,7 +1048,7 @@ apply_env() {
 apply_env
 
 # ---------------------------------------------------------------------------
-# Scope decision: RUN_RUST / RUN_GUI / RUN_OCCT_GATE
+# Scope decision: RUN_RUST / RUN_GUI / RUN_OCCT_GATE / GUI_PATH_SIGNAL
 # ---------------------------------------------------------------------------
 RUN_RUST=0
 RUN_GUI=0
@@ -1056,6 +1056,10 @@ RUN_GUI=0
 # Still computed (gate=1 when OCCT-touching files change) and printed in the
 # --print-plan header for observability; it no longer gates any test emission.
 RUN_OCCT_GATE=0
+# GUI_PATH_SIGNAL: decide_scope's path-signal half, exported for the vitest gate.
+# Initialized here so no decide_scope exit — present or future — can leave it
+# unbound under `set -u`; every exit that widens sets it to 1 explicitly.
+GUI_PATH_SIGNAL=0
 CHANGED_FILES_RAW=""   # post-.task/ filtered file list; set by decide_scope for branch/staged
 
 # is_occt_crate <crate-name> — true iff the crate is in the declared OCCT set.
@@ -1236,13 +1240,13 @@ decide_scope() {
     if [ "$SCOPE" = "branch" ]; then
         if ! _rsrc="$(git -C "$REPO_ROOT" diff --name-status --diff-filter=R -M "$_MERGE_BASE" | cut -f2)"; then
             echo "verify.sh: WARNING — --scope branch rename-source diff failed — failing WIDE to --scope all (contract C5)" >&2
-            RUN_RUST=1; RUN_GUI=1; RUN_OCCT_GATE=1
+            RUN_RUST=1; RUN_GUI=1; RUN_OCCT_GATE=1; GUI_PATH_SIGNAL=1
             return
         fi
     else
         if ! _rsrc="$(git -C "$REPO_ROOT" diff --cached --name-status --diff-filter=R -M | cut -f2)"; then
             echo "verify.sh: WARNING — --scope staged rename-source diff failed — failing WIDE to --scope all (contract C5)" >&2
-            RUN_RUST=1; RUN_GUI=1; RUN_OCCT_GATE=1
+            RUN_RUST=1; RUN_GUI=1; RUN_OCCT_GATE=1; GUI_PATH_SIGNAL=1
             return
         fi
     fi
