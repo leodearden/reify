@@ -660,6 +660,28 @@ if [ "$TEST_THREADS_SET" -eq 1 ]; then
         echo "verify.sh: ERROR — invalid --test-threads '$TEST_THREADS' (want positive integer)" >&2; exit 64 ;;
     esac
 fi
+
+# Report the CLI value to gen-nextest-config.sh, the ONE place the derived global
+# pool exists, so it can refuse a value that would silently RAISE that pool
+# (nextest's CLI --test-threads outranks --config-file).  Task 6375; contract and
+# three-way behaviour in that script's header.
+#
+# THIS SITE, for two reasons.  It inherits the ^[1-9][0-9]*$ guarantee the block
+# above just established, so it needs no validation of its own; and it adds NO
+# subprocess to --print-plan, leaving the plan the pure, hermetic oracle the
+# infra suites drive.  Guarded on TEST_THREADS_SET so an unset flag exports
+# nothing and the default path is byte-identical.
+if [ "$TEST_THREADS_SET" -eq 1 ]; then
+    export REIFY_NEXTEST_CLI_TEST_THREADS="$TEST_THREADS"
+fi
+
+# gen-nextest-config.sh can now legitimately REFUSE (exit 64).  verify.sh runs
+# under `set -euo pipefail`, so without a message of its own the run would abort
+# with nothing but the generator's stderr line and no indication of who died.
+_die_nextest_config() {
+    echo "verify.sh: ERROR — gen-nextest-config.sh refused to generate the nextest config (exit $1); its diagnostic is immediately above" >&2
+    exit "$1"
+}
 DF_VERIFY_ROLE="${DF_VERIFY_ROLE:-task}"
 # Role-based PROFILE default: when no explicit --profile was given and the
 # orchestrator merge path stamps DF_VERIFY_ROLE=merge, default to 'both' so
@@ -2263,7 +2285,8 @@ emit_nextest_pass() {
             # Produces a full copy of .config/nextest.toml with the occt cap rewritten
             # to the resolved env value; removed by _verify_cleanup on EXIT.
             if [ -z "$_NEXTEST_CONFIG_FILE" ]; then
-                _NEXTEST_CONFIG_FILE="$("$SCRIPT_DIR/gen-nextest-config.sh")"
+                _NEXTEST_CONFIG_FILE="$("$SCRIPT_DIR/gen-nextest-config.sh")" \
+                    || _die_nextest_config "$?"
             fi
             _cfg_path="$_NEXTEST_CONFIG_FILE"
         fi
@@ -2722,7 +2745,8 @@ add_test_passes() {
                 _gui_cfg_path="${TMPDIR:-/tmp}/reify-nextest-occt.<print-plan-placeholder>"
             else
                 if [ -z "$_NEXTEST_CONFIG_FILE" ]; then
-                    _NEXTEST_CONFIG_FILE="$("$SCRIPT_DIR/gen-nextest-config.sh")"
+                    _NEXTEST_CONFIG_FILE="$("$SCRIPT_DIR/gen-nextest-config.sh")" \
+                        || _die_nextest_config "$?"
                 fi
                 _gui_cfg_path="$_NEXTEST_CONFIG_FILE"
             fi
