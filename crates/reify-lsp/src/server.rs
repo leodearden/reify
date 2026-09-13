@@ -847,6 +847,14 @@ fn version_stamped_workspace_edit(
     edit: WorkspaceEdit,
     versions: &HashMap<Url, i32>,
 ) -> WorkspaceEdit {
+    // The `changes`-shaped precondition, enforced rather than merely stated: a
+    // producer that grew a `document_changes` arm (or the resource operations
+    // that share it) would otherwise have its edits dropped here and report a
+    // successful rename that changed nothing.
+    debug_assert!(
+        edit.document_changes.is_none(),
+        "version_stamped_workspace_edit only converts changes-shaped edits"
+    );
     let mut targets: Vec<TextDocumentEdit> = edit
         .changes
         .unwrap_or_default()
@@ -3240,10 +3248,15 @@ structure Assembly {
         }
     }
 
-    /// The stamped version must be the version the edit was actually computed
-    /// against — i.e. the CURRENT one — not the stale open-time version. Opening
-    /// at 1 and changing to 2 makes those two values distinguishable, so a
-    /// handler that snapshotted versions at the wrong moment reds here.
+    /// The stamp must be the document's CURRENT version, not the open-time one:
+    /// opening at 1 and changing to 2 makes those two values distinguishable,
+    /// so a handler that stamped from a stashed open-time version reds here.
+    ///
+    /// It does NOT pin the handler's read ORDER (versions snapshotted under the
+    /// same lock acquisition as the text, before the `spawn_blocking` join).
+    /// `spawn_blocking` runs to completion before this single-threaded test can
+    /// deliver another notification, so moving the snapshot after the join would
+    /// leave this green; that ordering invariant lives in the handler comment.
     #[tokio::test]
     async fn rename_stamps_current_document_version_when_client_supports_document_changes() {
         let (service, _socket) = test_service();
