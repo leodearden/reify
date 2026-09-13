@@ -544,6 +544,13 @@ impl LanguageServer for ReifyLanguageServer {
         // The workspace_docs (Url, String) list is built inside spawn_blocking
         // because it may need to read closed-importer files from disk.
         let open_docs = state.documents.snapshot_as_path_map();
+        // Task 7118: the version snapshot is taken HERE, under the same lock
+        // acquisition as the text above, so the two provably describe one
+        // instant. Re-reading versions after the join below would stamp a fresh
+        // version onto an edit computed from stale text — the client's guard
+        // would then pass on precisely the skewed edit it exists to reject.
+        let versions = state.documents.snapshot_versions();
+        let stamp_versions = state.client_supports_document_changes;
         drop(state);
 
         let edit = match tokio::task::spawn_blocking(move || {
@@ -573,7 +580,13 @@ impl LanguageServer for ReifyLanguageServer {
                 None
             }
         };
-        Ok(edit)
+        Ok(edit.map(|edit| {
+            if stamp_versions {
+                version_stamped_workspace_edit(edit, &versions)
+            } else {
+                edit
+            }
+        }))
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
