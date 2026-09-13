@@ -264,7 +264,8 @@ impl GeometryKernel for SingleKernelHolder {
     /// seam.
     ///
     /// The `None` arm reproduces the trait default's no-kernel output via the
-    /// shared [`SingleKernelHolder::no_mesh_kernel_error`].
+    /// shared `SingleKernelHolder::no_mesh_kernel_error`, which `ingest_mesh`
+    /// above also calls — so the two arms cannot drift.
     fn ingest_mesh_at_resolution(
         &mut self,
         mesh: &Mesh,

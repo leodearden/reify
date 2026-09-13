@@ -73,7 +73,7 @@ pub fn box_mesh(hx: f32, hy: f32, hz: f32) -> Mesh {
 /// The shells PRD's motivating PROPORTIONS
 /// (`docs/prds/v0_4/structural-analysis-shells.md`, "Background"): a thin
 /// feature 1/100 of the part across, which the PRD states as a 1 mm feature in
-/// a 100 mm part. Spans x,y ∈ [0,100], z ∈ [0,1].
+/// a 100 mm part. Spans `x, y ∈ [0, 100]`, `z ∈ [0, 1]`.
 ///
 /// The coordinates are the PRD's millimetre figures written at ×1000 so the
 /// arithmetic in the tests stays in round numbers; the resolution policy is
