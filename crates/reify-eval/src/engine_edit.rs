@@ -1187,7 +1187,7 @@ impl Engine {
         // `build()` / `build_snapshot()` cold-misses on every realization
         // and re-populates the cache from kernel execution. Pinned by
         // `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
-        // in `tests/tolerance_wiring_e2e.rs` (task 2874, step-17).
+        // (task 2874, step-17).
         //
         // **Contract-lock (task 2874 step-20)**: this reset is symmetric with
         // the analogous one in `Engine::edit_source` (its `Auto-invalidate
@@ -1207,8 +1207,7 @@ impl Engine {
         // so the reset semantics are defined in exactly one place. The
         // public mutator is the same primitive a production caller would
         // invoke for out-of-band cache invalidation — see
-        // `clear_realization_cache_public_api_resets_cache_for_production_callers`
-        // in `tests/tolerance_wiring_e2e.rs`.
+        // `clear_realization_cache_public_api_resets_cache_for_production_callers`.
         self.clear_realization_cache();
         // Reset the test-instrumentation diff snapshot. The "most recent
         // edit_source call" invariant on `Engine::last_diff_value_cells()`
@@ -3216,7 +3215,7 @@ impl Engine {
         // `Engine::reset_per_build_state`, engine_build.rs) and the
         // parallel reset in `edit_param`. Pinned by
         // `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
-        // in `tests/tolerance_wiring_e2e.rs` (task 2874, step-19).
+        // (task 2874, step-19).
         //
         // **Contract-lock (task 2874 step-20)**: this reset is symmetric with
         // the analogous one in `Engine::edit_param` (its `Auto-invalidate
@@ -3236,8 +3235,7 @@ impl Engine {
         // so the reset semantics are defined in exactly one place. The
         // public mutator is the same primitive a production caller would
         // invoke for out-of-band cache invalidation — see
-        // `clear_realization_cache_public_api_resets_cache_for_production_callers`
-        // in `tests/tolerance_wiring_e2e.rs`.
+        // `clear_realization_cache_public_api_resets_cache_for_production_callers`.
         self.clear_realization_cache();
         // selective-realization-eviction β (#4729): the changed-realization
         // set describes exactly ONE edit, so clear it at entry — symmetric
