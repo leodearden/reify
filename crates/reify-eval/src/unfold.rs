@@ -1318,6 +1318,17 @@ fn eval_child_expr(
 /// only in-seed predecessors, so a read naming a let, a global, or another
 /// entity contributes no edge and needs no filtering here.
 ///
+/// Edges come from the expression that will ACTUALLY be evaluated in child
+/// scope, which is why `args` is a parameter. A param named by the ctor args
+/// never evaluates its `default_expr`: the arg is evaluated against the PARENT's
+/// `values` — the same scope asymmetry the `@optimized` wiring comment at the
+/// args arm calls out — so its reads are parent-scoped ids that could never name
+/// a cell of this child's param seed, and it contributes no edge either way.
+/// Taking edges from the unused `default_expr` instead INVENTS dependencies, and
+/// an invented 2-cycle (`param p = q  param q = p` with `q` arg-supplied) sends
+/// both cells into the declaration-order residue below, reproducing for
+/// arg-supplied instances the very bug this ordering closes.
+///
 /// [`topological_sort`] (Kahn) reports a cycle by OMISSION. Cyclic params are
 /// therefore appended afterwards in declaration order rather than dropped:
 /// measured on this branch, `structure Inner3 { param a = b  param b = a }`
@@ -1329,6 +1340,7 @@ fn eval_child_expr(
 /// [`phase15_cycle_members`]' doc comment was written to prevent.
 fn params_in_dependency_order<'t>(
     child_template: &'t TopologyTemplate,
+    args: &[(String, reify_ir::CompiledExpr)],
 ) -> Vec<&'t reify_compiler::ValueCellDecl> {
     let param_cells: Vec<&reify_compiler::ValueCellDecl> = child_template
         .value_cells
@@ -1355,11 +1367,17 @@ fn params_in_dependency_order<'t>(
     let traces: HashMap<NodeId, DependencyTrace> = cells_by_node
         .iter()
         .map(|(nid, cell)| {
-            let trace = cell
-                .default_expr
-                .as_ref()
-                .map(extract_dependency_trace)
-                .unwrap_or_default();
+            // The SAME predicate the loop body uses to pick the args arm, so the
+            // two sites cannot disagree about which params are arg-supplied.
+            let arg_supplied = args.iter().any(|(name, _)| *name == cell.id.member);
+            let trace = if arg_supplied {
+                DependencyTrace::default()
+            } else {
+                cell.default_expr
+                    .as_ref()
+                    .map(extract_dependency_trace)
+                    .unwrap_or_default()
+            };
             (nid.clone(), trace)
         })
         .collect();
@@ -1411,7 +1429,7 @@ fn elaborate_child_params_only<'f>(
     // decline below), deliberately not a general drain for this sink.
     let runtime_sink = RefCell::new(Vec::new());
     let containment = NoContainment;
-    for cell in params_in_dependency_order(child_template) {
+    for cell in params_in_dependency_order(child_template, args) {
         let member = &cell.id.member;
         let scoped_id = ValueCellId::new(scoped_entity, member);
 
