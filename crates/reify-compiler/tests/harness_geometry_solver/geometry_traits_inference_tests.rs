@@ -1903,3 +1903,136 @@ fn intersection_of_extrude_infinite_with_box_at_bounded_slot_emits_no_geometry_u
         geometry_unbounded
     );
 }
+
+// ─── Sibling-let GeomRef::Sub chasing, end to end (#7060) ───────────────────
+//
+// A bare sibling-let geometry operand lowers to `GeomRef::Sub(<name>)` rather
+// than an inlined `GeomRef::Step` (#4668). Before #7060 the inference walker
+// safe-defaulted every `Sub` to `InferredTraits::all()`, so an unbounded
+// producer reached through a `let` silently satisfied a `Bounded` slot while
+// the identical inline shape diagnosed correctly. These cases pin the
+// end-to-end behaviour in both directions.
+
+/// Count the `GeometryUnbounded` diagnostics a source produces, returning the
+/// full error list alongside so a failure message can show what DID fire.
+fn geometry_unbounded_count(source: &str) -> (usize, Vec<String>) {
+    let compiled = compile_source_with_stdlib(source);
+    let all_diags = errors_only(&compiled);
+    let count = all_diags
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GeometryUnbounded))
+        .count();
+    let rendered = all_diags.iter().map(|d| format!("{d:?}")).collect();
+    (count, rendered)
+}
+
+/// One hop: `let h = half_space(..)` then `let t = translate(h, ..)`, with `t`
+/// passed to a `param g : Bounded` slot.
+///
+/// `t` lowers to `[Transform { Translate, target: Sub("h") }]` via the #4668
+/// sibling-let pre-check. `combine_transform` is an identity passthrough, so
+/// once the `Sub("h")` operand resolves to `half_space`'s `bounded=false` the
+/// slot must be diagnosed — exactly as the inline `Foo(g: half_space(..))`
+/// form already is.
+#[test]
+fn translate_of_unbounded_sibling_let_at_bounded_slot_emits_geometry_unbounded() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            let h = half_space(0mm, 0mm, 0mm, 0, 0, 1)
+            let t = translate(h, 1mm, 0mm, 0mm)
+            sub x = Foo(g: t)
+        }
+    "#;
+    let (count, diags) = geometry_unbounded_count(source);
+    assert!(
+        count >= 1,
+        "expected a GeometryUnbounded diagnostic for `translate(h, ..)` where `h` is an \
+         unbounded sibling let: the operand lowers to GeomRef::Sub(\"h\") (#4668) and must be \
+         chased through the sibling realization. Got {count}. All diagnostics: {diags:?}"
+    );
+}
+
+/// Two hops: `h` → `let t1 = translate(h, ..)` → `let t2 = translate(t1, ..)`,
+/// with `t2` at the `Bounded` slot.
+///
+/// Each hop is its own realization holding a `GeomRef::Sub` back to the
+/// previous one, so this fails if resolution stops at depth 1 rather than
+/// recursing through the sibling-let chain (#4668).
+#[test]
+fn two_hop_transform_chain_of_unbounded_sibling_let_emits_geometry_unbounded() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            let h = half_space(0mm, 0mm, 0mm, 0, 0, 1)
+            let t1 = translate(h, 1mm, 0mm, 0mm)
+            let t2 = translate(t1, 0mm, 1mm, 0mm)
+            sub x = Foo(g: t2)
+        }
+    "#;
+    let (count, diags) = geometry_unbounded_count(source);
+    assert!(
+        count >= 1,
+        "expected a GeometryUnbounded diagnostic for a two-hop sibling-let chain \
+         (h -> t1 -> t2): each hop lowers to its own GeomRef::Sub (#4668), so chasing must \
+         recurse rather than stop at depth 1. Got {count}. All diagnostics: {diags:?}"
+    );
+}
+
+/// Modify family: `let s = shell(h, 1mm)` at the `Bounded` slot.
+///
+/// `shell` lowers to `CompiledGeometryOp::Modify`, a different `infer_op` arm
+/// from `Transform`, so this pins that the `GeomRef::Sub` (#4668) chasing is a
+/// property of `infer_geom_ref` rather than of one op variant.
+#[test]
+fn shell_of_unbounded_sibling_let_at_bounded_slot_emits_geometry_unbounded() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            let h = half_space(0mm, 0mm, 0mm, 0, 0, 1)
+            let s = shell(h, 1mm)
+            sub x = Foo(g: s)
+        }
+    "#;
+    let (count, diags) = geometry_unbounded_count(source);
+    assert!(
+        count >= 1,
+        "expected a GeometryUnbounded diagnostic for `shell(h, ..)` where `h` is an unbounded \
+         sibling let: the Modify arm resolves its target through the same GeomRef::Sub (#4668) \
+         path as Transform. Got {count}. All diagnostics: {diags:?}"
+    );
+}
+
+/// False-positive guard: a BOUNDED sibling let must stay silent.
+///
+/// `let b = box(..)` / `let t = translate(b, ..)` lowers to the identical
+/// `GeomRef::Sub("b")` (#4668) shape as the must-fire cases above. Chasing it
+/// resolves to `box`'s `bounded=true`, so the slot is satisfied and NO
+/// diagnostic may be emitted. This is what distinguishes chasing the Sub from
+/// pessimising it.
+#[test]
+fn translate_of_bounded_sibling_let_at_bounded_slot_emits_no_geometry_unbounded() {
+    let source = r#"
+        structure def Foo {
+            param g : Bounded
+        }
+        structure def Top {
+            let b = box(20mm, 20mm, 20mm)
+            let t = translate(b, 1mm, 0mm, 0mm)
+            sub x = Foo(g: t)
+        }
+    "#;
+    let (count, diags) = geometry_unbounded_count(source);
+    assert_eq!(
+        count, 0,
+        "expected NO GeometryUnbounded for `translate(b, ..)` where `b` is a BOUNDED sibling \
+         let: chasing GeomRef::Sub(\"b\") (#4668) must resolve to box's bounded=true, not \
+         pessimise the operand. Got {count}. All diagnostics: {diags:?}"
+    );
+}
