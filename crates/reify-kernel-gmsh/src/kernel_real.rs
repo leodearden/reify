@@ -407,44 +407,7 @@ impl GmshKernel {
             )));
         }
         let (_elem_tags, elem_node_tags) = ffi::get_elements_by_type(elem_type)?;
-        let nodes_per_elem: usize = match element_order {
-            ElementOrderTag::P1 => 4,
-            ElementOrderTag::P2 => 10,
-        };
-        if !elem_node_tags.len().is_multiple_of(nodes_per_elem) {
-            return Err(GeometryError::OperationFailed(format!(
-                "gmsh get_elements_by_type stride mismatch: elem_node_tags.len()={} \
-                 is not a multiple of {nodes_per_elem} (expected {nodes_per_elem} \
-                 nodes per {element_order:?} tet)",
-                elem_node_tags.len(),
-            )));
-        }
-        // The output-side twin of the empty-INPUT rejection above (see "Reject
-        // empty input outright"). That guard's reasoning — gmsh accepts the
-        // degenerate case and yields "a zero-tet VolumeMesh, which is never a
-        // useful caller outcome" — applies unchanged to the result: an `Ok`
-        // holding no tetrahedra is a wrong answer a caller cannot tell apart
-        // from a right one.
-        //
-        // It must sit AFTER the stride check, not before: an empty buffer
-        // satisfies `is_multiple_of` (0 is a multiple of everything), so this
-        // ordering lets each check fire on exactly its own case — a non-empty,
-        // mis-strided buffer still reaches the stride check.
-        //
-        // Since `mesh_generate` routes through `init::mesh_generate_with_recovery`,
-        // no path measured today reaches here: this is the backstop for the
-        // ones not measured — a future gmsh version, a mesher added later that
-        // forgets the recovery wrapper, an HXT that reports `ierr=0` having
-        // produced nothing at all.
-        if elem_node_tags.is_empty() {
-            return Err(GeometryError::OperationFailed(format!(
-                "gmshModelMeshGenerate reported success but the model holds no \
-                 tetrahedra of element type {elem_type} ({element_order:?}) — \
-                 returning an empty VolumeMesh would be a silent wrong answer. \
-                 Known cause: a mesher left unusable by an earlier failed \
-                 mesh_generate in this process"
-            )));
-        }
+        init::verify_tet_readback("mesh_to_volume", &elem_node_tags, element_order)?;
 
         // Build (gmsh_tag → 0-based local idx) by sorting node tags and
         // assigning indices in tag order. Vertices are emitted in the same

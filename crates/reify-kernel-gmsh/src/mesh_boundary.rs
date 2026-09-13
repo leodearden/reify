@@ -763,16 +763,13 @@ fn run_meshing_with_entity_queries(
         ElementOrderTag::P2 => 11,
     };
     let (_elem_tags, elem_node_tags) = ffi::get_elements_by_type(elem_type)?;
-    let nodes_per_elem: usize = match element_order {
-        ElementOrderTag::P1 => 4,
-        ElementOrderTag::P2 => 10,
-    };
-    if !elem_node_tags.len().is_multiple_of(nodes_per_elem) {
+    if let Err(e) = init::verify_tet_readback(
+        "mesh_surface_to_volume_with_attribution",
+        &elem_node_tags,
+        element_order,
+    ) {
         let _ = ffi::clear();
-        return Err(GeometryError::OperationFailed(format!(
-            "gmsh element stride mismatch: elem_node_tags.len()={} not multiple of {nodes_per_elem}",
-            elem_node_tags.len()
-        )));
+        return Err(e);
     }
 
     // Sort by tag → assign local indices

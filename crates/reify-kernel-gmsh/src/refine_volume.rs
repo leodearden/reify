@@ -399,10 +399,6 @@ pub fn refine_volume_with_size_field(
         ElementOrderTag::P1 => 4,
         ElementOrderTag::P2 => 11,
     };
-    let nodes_per_elem: usize = match order {
-        ElementOrderTag::P1 => 4,
-        ElementOrderTag::P2 => 10,
-    };
 
     let (out_node_tags, coord_buf) = ffi::get_nodes_all()?;
     if coord_buf.len() != out_node_tags.len() * 3 {
@@ -415,13 +411,7 @@ pub fn refine_volume_with_size_field(
         )));
     }
     let (_elem_tags, elem_node_tags) = ffi::get_elements_by_type(elem_type)?;
-    if !elem_node_tags.len().is_multiple_of(nodes_per_elem) {
-        return Err(GeometryError::OperationFailed(format!(
-            "refine_volume_with_size_field: get_elements_by_type stride mismatch: \
-             elem_node_tags.len()={} not multiple of {nodes_per_elem}",
-            elem_node_tags.len(),
-        )));
-    }
+    init::verify_tet_readback("refine_volume_with_size_field", &elem_node_tags, order)?;
 
     let mut paired: Vec<(u64, [f64; 3])> = out_node_tags
         .iter()

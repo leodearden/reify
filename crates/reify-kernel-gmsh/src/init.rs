@@ -20,11 +20,16 @@
 //! re-initialize must be an inseparable pair or that cached fact becomes a
 //! lie.
 //!
+//! [`verify_tet_readback`] is the other half of that ownership. A broken
+//! mesher's characteristic output is an EMPTY element buffer, so every entry
+//! point that meshes a volume reads its tets back through one shared check
+//! rather than three near-identical copies of it.
+//!
 //! Only compiled when `cfg(has_gmsh)` is set by `build.rs`.
 
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use reify_ir::GeometryError;
+use reify_ir::{ElementOrderTag, GeometryError};
 
 use crate::ffi;
 
@@ -79,14 +84,23 @@ pub fn ensure_initialized() {
 /// Same idiom, and the same "purely for its lifetime" phrasing, as
 /// [`crate::mesh_size_clamp::MeshSizeClampReset::armed`].
 ///
-/// # Panics
+/// # Aborts
 ///
-/// If `gmshInitialize` fails after a successful `gmshFinalize`, leaving the
-/// library finalized while [`ensure_initialized`]'s `OnceLock` still records
-/// "initialized" — every later gmsh call in the process would then be
-/// undefined. This is the stance `ensure_initialized` already takes for its
-/// own `gmshInitialize` failure, for the same reason: a process-fatal
-/// condition the upper-layer engine cannot meaningfully recover from.
+/// If `gmshInitialize` fails after a successful `gmshFinalize`, this aborts
+/// the process. gmsh is then finalized while [`ensure_initialized`]'s
+/// `OnceLock` still records "initialized", so every later gmsh call in the
+/// process is undefined.
+///
+/// A panic would not contain that, which is why this is deliberately not the
+/// stance [`ensure_initialized`] takes for its own `gmshInitialize` failure.
+/// That panic leaves state consistent — the `OnceLock` cell stays unset, gmsh
+/// stays uninitialized, a retry re-attempts init — whereas this one unwinds
+/// holding [`GMSH_LOCK`], and every entry point in this crate deliberately
+/// recovers from a poisoned lock (`unwrap_or_else(|e| e.into_inner())`), so
+/// the next caller would walk straight into the finalized library instead of
+/// being stopped. The unwind is unsound in its own right: it drops
+/// [`crate::mesh_size_clamp::MeshSizeClampReset`], whose `Drop` calls back
+/// into gmsh to restore the size clamp.
 pub fn mesh_generate_with_recovery(
     _guard: &MutexGuard<'_, ()>,
     dim: i32,
@@ -105,8 +119,14 @@ pub fn mesh_generate_with_recovery(
              later meshing calls in this process may silently produce no elements)"
         )));
     }
-    ffi::initialize()
-        .expect("gmshInitialize failed while recovering from a failed gmshModelMeshGenerate");
+    if let Err(init_err) = ffi::initialize() {
+        eprintln!(
+            "reify-kernel-gmsh: gmshInitialize failed while recovering from a failed \
+             gmshModelMeshGenerate ({init_err}); gmsh is finalized but still recorded as \
+             initialized, so every later gmsh call would be undefined — aborting"
+        );
+        std::process::abort();
+    }
 
     // `gmshInitialize` resets the process-global option table, so without
     // this the next caller's leading `ffi::clear()` prints "Info: Clearing
@@ -117,4 +137,58 @@ pub fn mesh_generate_with_recovery(
     let _ = ffi::option_set_number("General.Terminal", 0.0);
 
     Err(original)
+}
+
+/// Rejects a tet readback that cannot be a real mesh.
+///
+/// Every entry point in this crate that meshes a volume calls
+/// `gmshModelMeshGetElementsByType` and then walks the returned buffer flat,
+/// so both ways that buffer can be unusable are checked here instead of being
+/// re-derived at each of them:
+///
+///   - a length that is not a whole number of tets, which would silently
+///     mis-slice the connectivity into plausible nonsense; and
+///   - an EMPTY buffer, which would become an `Ok` `VolumeMesh` holding no
+///     tetrahedra — a wrong answer no caller can tell from a right one.
+///
+/// The emptiness half is the output-side twin of the empty-INPUT rejection in
+/// [`crate::GmshKernel::mesh_to_volume`]: gmsh accepts the degenerate case and
+/// yields a zero-tet mesh, which is never a useful caller outcome. Stating it
+/// once, here, is what keeps that invariant uniform across the three
+/// readbacks rather than enforced in whichever of them was edited last.
+///
+/// Since every `mesh_generate` in this crate routes through
+/// [`mesh_generate_with_recovery`], no path measured today reaches the empty
+/// case. It is the backstop for the ones not measured: a future gmsh version,
+/// a mesher added later that forgets the recovery wrapper, an HXT that
+/// reports `ierr=0` having produced nothing at all.
+///
+/// `caller` names the entry point in the error message — three of them share
+/// this check, and the buffer says nothing about where it came from.
+pub fn verify_tet_readback(
+    caller: &str,
+    elem_node_tags: &[u64],
+    element_order: ElementOrderTag,
+) -> Result<(), GeometryError> {
+    let nodes_per_elem: usize = match element_order {
+        ElementOrderTag::P1 => 4,
+        ElementOrderTag::P2 => 10,
+    };
+    if !elem_node_tags.len().is_multiple_of(nodes_per_elem) {
+        return Err(GeometryError::OperationFailed(format!(
+            "{caller}: gmsh get_elements_by_type stride mismatch: \
+             elem_node_tags.len()={} is not a multiple of {nodes_per_elem} \
+             (expected {nodes_per_elem} nodes per {element_order:?} tet)",
+            elem_node_tags.len(),
+        )));
+    }
+    if elem_node_tags.is_empty() {
+        return Err(GeometryError::OperationFailed(format!(
+            "{caller}: gmshModelMeshGenerate reported success but the model holds \
+             no {element_order:?} tetrahedra — returning an empty VolumeMesh would \
+             be a silent wrong answer. Known cause: a mesher left unusable by an \
+             earlier failed mesh_generate in this process"
+        )));
+    }
+    Ok(())
 }
