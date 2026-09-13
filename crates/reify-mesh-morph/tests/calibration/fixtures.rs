@@ -236,16 +236,15 @@ pub fn plate_with_hole(
 /// The three blocks' local axes are aligned so the whole mesh is a
 /// conforming simplicial complex: every interior triangular face is shared
 /// by exactly two tets, and the boundary is a closed, orientable, genus-0
-/// manifold. At `n=4` that boundary is 248 vertices / 738 edges / 492
-/// triangles (`V - E + F = 2`), with every boundary edge at degree exactly
-/// 2 (measured). This is load-bearing, not cosmetic: it is what makes the
-/// P1 FEA displacement field continuous across the block interfaces (a
-/// non-conforming interface leaves the two sides' linear interpolants
-/// disagreeing in the interior of each shared quad), and it is what would
-/// let a boundary extractor hand a volume mesher a watertight input. Two
-/// places encode it, both carrying their derivation inline: the polar
-/// zone's half-turn corner ordering and arm 2's wedge-prism corner order.
-/// The executable contract is
+/// manifold (Euler characteristic `V - E + F = 2`), with every boundary
+/// edge at degree exactly 2. This is load-bearing, not cosmetic: it is
+/// what makes the P1 FEA displacement field continuous across the block
+/// interfaces (a non-conforming interface leaves the two sides' linear
+/// interpolants disagreeing in the interior of each shared quad), and it
+/// is what would let a boundary extractor hand a volume mesher a
+/// watertight input. Two places encode it, both carrying their derivation
+/// inline: the polar zone's half-turn corner ordering and arm 2's
+/// wedge-prism corner order. The executable contract is
 /// `calibration.rs::calibration_fixtures_are_conforming_simplicial_complexes`.
 ///
 /// ## Element count (P1)
@@ -430,10 +429,8 @@ pub fn bracket(
     // polar block's radial axis runs OPPOSITE the arms' — so the untwisted
     // (a, k_r) ordering bisected every interface quad the other way from
     // the arm sharing it. Reversing both in-plane axes realigns the radial
-    // axis while keeping orientation: exactly this half turn. Measured
-    // before this fix, at n=4: chi=40 (not 2), 89 boundary edges at degree
-    // 4 (not 0), 636 boundary faces (not 492); after: chi=2, 0 degree-4
-    // edges, 492 boundary faces — see
+    // axis while keeping orientation: exactly this half turn. Conformity
+    // (chi = 2) is pinned by
     // `calibration.rs::calibration_fixtures_are_conforming_simplicial_complexes`.
     let polar_label = |kz: usize, a: usize, k_r: usize| -> (&'static str, usize, usize) {
         if a == n_a {
@@ -520,22 +517,19 @@ pub fn bracket(
                 if i == n_r && j == 0 {
                     // Wedge: corners (n_r, 0), (n_r, 1), (n_r+1, 1). The
                     // corner ORDER is forced by face conformity, not by
-                    // winding (the "CCW-from-+z winding rotates
-                    // differently" justification this replaces was wrong).
-                    // A 3-tet prism split makes its first corner low on
-                    // BOTH quad faces, its last high on BOTH, and its
-                    // middle one mixed — so the order alone determines both
-                    // interior diagonals. Arm 2's two interior quads are
-                    // `{(n_r,0),(n_r,1)}` (shared with hex `i=n_r-1, j=0`,
-                    // bisected `(n_r,0)_bottom — (n_r,1)_top`) and
-                    // `{(n_r,1),(n_r+1,1)}` (shared with hex `i=n_r, j=1`,
-                    // bisected `(n_r,1)_bottom — (n_r+1,1)_top`); only THIS
-                    // order reproduces both — every cyclic rotation misses
-                    // one. That order traverses CW from +z, hence the
-                    // first-two-vertex swap on every tet below: a swap
-                    // changes the vertex ORDER, never the vertex SET, so
-                    // the four faces (and the conformity this establishes)
-                    // are untouched while the volume stays positive.
+                    // winding. A 3-tet prism split makes its first corner
+                    // low on BOTH quad faces, its last high on BOTH, and
+                    // its middle one mixed, so the order alone determines
+                    // both interior diagonals. Arm 2's two interior quads
+                    // are `{(n_r,0),(n_r,1)}` (shared with hex `i=n_r-1,
+                    // j=0`) and `{(n_r,1),(n_r+1,1)}` (shared with hex
+                    // `i=n_r, j=1`); only this order reproduces both —
+                    // every cyclic rotation misses one. That order
+                    // traverses CW from +z, hence the first-two-vertex
+                    // swap on every tet below: a swap changes vertex
+                    // ORDER, never the vertex SET, so the four faces (and
+                    // the conformity this establishes) are untouched while
+                    // the volume stays positive.
                     let p0_b = look(arm2_label(kz, n_r, 0));
                     let p1_b = look(arm2_label(kz, n_r, 1));
                     let p2_b = look(arm2_label(kz, n_r + 1, 1));

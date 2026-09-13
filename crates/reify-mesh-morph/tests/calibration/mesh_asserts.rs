@@ -16,10 +16,8 @@ use std::collections::{HashMap, HashSet};
 /// The boundary checks (edge-degree, single-component connectivity, and
 /// Euler characteristic) are the load-bearing ones: a face-multiplicity
 /// check alone ("no face is shared by more than two tets") is GREEN on a
-/// non-conforming mesh — e.g. measured on main for `bracket` at n=4, the
-/// face-occurrence histogram is `{1: 636, 2: 2322}` — nothing occurs 3+
-/// times. A block-interface non-conformity defect produces EXTRA
-/// once-occurring faces, not over-shared ones: an interface quad is
+/// non-conforming mesh, because a block-interface defect produces EXTRA
+/// once-occurring faces, not over-shared ones — an interface quad is
 /// bisected along one diagonal by the block on one side and along the
 /// OTHER diagonal by the block on the other side, so the two
 /// triangulations carry different sorted vertex keys, never cancel, and
@@ -29,11 +27,9 @@ use std::collections::{HashMap, HashSet};
 /// fixture's genus) are what catch that. Single-component connectivity is
 /// checked too, because degree-2-everywhere plus a matching chi is still
 /// satisfiable by a disjoint union (e.g. sphere ⊔ torus has
-/// chi = 2 + 0 = 2). The face-multiplicity check below is included as
-/// well, as a cheap guard against a DIFFERENT future regression (a
-/// generator bug that over-shares a face 3+ times) — it would not by
-/// itself have caught the defect this task repairs, which is why it is not
-/// the only check here.
+/// chi = 2 + 0 = 2). The face-multiplicity check below is kept as a cheap
+/// guard against a different regression: a generator bug that over-shares
+/// a face 3+ times.
 pub fn assert_boundary_is_conforming_manifold(
     mesh: &reify_ir::VolumeMesh,
     fixture_name: &str,
@@ -184,6 +180,11 @@ pub fn assert_boundary_is_conforming_manifold(
 /// exercises exactly one configuration (n=4, fillet_radius=0.1), so this
 /// helper is swept across the same n/radius resolutions the conformity
 /// check above sweeps, pinning conformity and handedness together.
+///
+/// This is a deliberate independent re-derivation of the
+/// `CORNER_EDGE_INDICES[0]` convention, not a call into `quality_check`:
+/// it names the offending tet's index and prints its determinant on
+/// failure, which `QualityVerdict::HardFail` does not guarantee.
 pub fn assert_all_tets_have_positive_signed_volume(
     mesh: &reify_ir::VolumeMesh,
     fixture_name: &str,
