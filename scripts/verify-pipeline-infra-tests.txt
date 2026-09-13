@@ -357,6 +357,17 @@ scripts/lib_jcodemunch_pin.sh    tests/infra/test_jcodemunch_index_reify.sh
 # which is precisely why it needs the row.
 crates/reify-audit/tests/jcodemunch_session_live.rs    tests/infra/test_with_jcodemunch_serve.sh
 
+# Task 6929: the SUT-AGNOSTIC half of the two suites above — the lib-value
+# extractors and the per-consumer structural/refusal guards, shared so a change
+# whose subject is single-definition site does not ship its own guard as a
+# copy-paste pair. Editing it changes what BOTH suites assert, so both rows are
+# load-bearing for the same exact-string-equality reason as the two
+# scripts/lib_jcodemunch_pin.sh rows above. Precedent for a tests/infra path in
+# column 1: tests/infra/govtest_slice_reaper_lib.sh and
+# tests/infra/run_all_ambient_isolation_lib.sh, both already registered here.
+tests/infra/jcodemunch_pin_guard_lib.sh    tests/infra/test_with_jcodemunch_serve.sh
+tests/infra/jcodemunch_pin_guard_lib.sh    tests/infra/test_jcodemunch_index_reify.sh
+
 # Task 6320: the merge-worker trivial-pass oracle and its static manifest had
 # NO row here at all, so a guard-only or manifest-only task-scope verify
 # selected ZERO infra poles (select_infra_tests() matches artifact paths

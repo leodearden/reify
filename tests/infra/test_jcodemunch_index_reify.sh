@@ -36,6 +36,15 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# The SUT-AGNOSTIC half of the invocation-triple guard, shared with δ's suite
+# (tests/infra/test_with_jcodemunch_serve.sh): the lib-value extractors and the
+# per-consumer structural/refusal guards. It defines JC_PIN_LIB_FILE. Each suite
+# keeps its OWN argv harness, since reading a CONSTRUCTED --dry-run argv means
+# running that suite's own SUT.
+[ -f "$SCRIPT_DIR/jcodemunch_pin_guard_lib.sh" ] || { echo "ERROR: jcodemunch_pin_guard_lib.sh not found at $SCRIPT_DIR/jcodemunch_pin_guard_lib.sh"; exit 1; }
+# shellcheck source=tests/infra/jcodemunch_pin_guard_lib.sh
+source "$SCRIPT_DIR/jcodemunch_pin_guard_lib.sh"
+
 JC_INDEX="$REPO_ROOT/scripts/jcodemunch-index-reify.sh"
 
 # The PRODUCTION identity this script exists to maintain, recomputed
@@ -550,24 +559,18 @@ argv_word_absent() {
 # copies. The sibling suite tests/infra/test_with_jcodemunch_serve.sh owns δ's
 # and α's halves; each suite cross-checks against its OWN SUT's constructed
 # argv, so neither has to execute the other's script.
-JC_PIN_LIB_FILE="$REPO_ROOT/scripts/lib_jcodemunch_pin.sh"
-
-# ONE awk with an `exit` and no pipeline — a `… | head -n1` would be an
-# early-closing consumer under `set -euo pipefail`. It emits NOTHING when it
-# does not match, and the caller refuses that emptiness through the suite's own
-# require_nonempty rather than comparing "" against "" and reporting agreement.
-jc_pin_lib() {
-    [ -f "$JC_PIN_LIB_FILE" ] || return 0
-    awk '/^JC_PIN=/ { sub(/^[^"]*"/, ""); sub(/".*$/, ""); print; exit }' "$JC_PIN_LIB_FILE"
-}
-
-# The interpreter's half of the same extractor pair, same shape and same
-# emptiness contract.
-jc_python_lib() {
-    [ -f "$JC_PIN_LIB_FILE" ] || return 0
-    awk '/^JC_PYTHON=/ { sub(/^[^"]*"/, ""); sub(/".*$/, ""); print; exit }' "$JC_PIN_LIB_FILE"
-}
-
+# The lib's own values come from jc_lib_pin_requirement / jc_lib_python in
+# tests/infra/jcodemunch_pin_guard_lib.sh, sourced at the top of this file
+# alongside JC_PIN_LIB_FILE. Both emit NOTHING when they do not match, and every
+# caller below refuses that emptiness through this suite's own require_nonempty
+# rather than comparing "" against "" and reporting agreement.
+#
+# jc_lib_pin_REQUIREMENT, not jc_lib_pin_version: β's argv carries the whole
+# `jcodemunch-mcp==<v>` requirement string, and δ's suite compares the bare
+# version out of its argv. The two accessors are named for what they return
+# precisely because one `jc_pin_lib` meaning both was a trap for anyone copying
+# a call between the sibling suites.
+#
 # β's interpreter comes out of the CONSTRUCTED argv POSITIONALLY — the token
 # FOLLOWING `--python` — the same extractor shape the sibling suite uses for δ
 # (tests/infra/test_with_jcodemunch_serve.sh's jc_python_delta). Read through a
@@ -585,7 +588,7 @@ jc_python_beta_argv() {
 # sourcing plumbing that has to deliver it.
 b9_argv_agrees_with_lib() {
     local root="$1" pin
-    pin="$(jc_pin_lib)" || true
+    pin="$(jc_lib_pin_requirement)" || true
     require_nonempty "JC_PIN defined by $JC_PIN_LIB_FILE" "$pin" || return 1
     argv_has "$root" "$pin"
 }
@@ -603,7 +606,7 @@ b9_argv_agrees_with_lib() {
 # agreement between a lib value of "3.1" and an argv carrying "3.13".
 b9_python_agrees_with_lib() {
     local root="$1" want got
-    want="$(jc_python_lib)" || true
+    want="$(jc_lib_python)" || true
     require_nonempty "JC_PYTHON defined by $JC_PIN_LIB_FILE" "$want" || return 1
     got="$(jc_python_beta_argv "$root")" || true
     require_nonempty "the interpreter following --python in β's constructed argv" "$got" || return 1
@@ -623,38 +626,24 @@ b9_python_agrees_with_lib() {
 # sources the lib — it was green the moment the lib was created. What needs
 # pinning is that the lib is the SOLE definition site AND that its value reaches
 # the argv. Neither half is sufficient alone.
-b9_beta_defines_no_triple() {
-    local v hit rc=0
-    for v in JC_PIN JC_PYTHON JC_IDENTITY_ENV; do
-        hit="$(grep -n "^$v=" "$JC_INDEX" || true)"
-        if [ -n "$hit" ]; then
-            printf 'β still defines %s itself:\n  %s\n' "$v" "$hit" >&2
-            rc=1
-        fi
-    done
-    if [ "$rc" -ne 0 ]; then
-        printf '  The triple has ONE definition site — scripts/lib_jcodemunch_pin.sh (#6454).\n  β must SOURCE it, never re-declare it.\n' >&2
-    fi
-    return "$rc"
-}
+#
+# Both checkers are the shared, SUT-parameterised ones from
+# tests/infra/jcodemunch_pin_guard_lib.sh, so this is the SAME check δ's suite
+# runs against its own script rather than a copy-pasted twin of it — which, in a
+# change whose whole subject is single-definition site, is the least it can be.
+b9_beta_defines_no_triple() { jc_guard_defines_no_triple "$JC_INDEX"; }
+b9_beta_sources_the_lib()   { jc_guard_sources_the_lib "$JC_INDEX"; }
 
-# The guarded-source shape, not merely a `source`: scripts/verify.sh:347-352 is
-# the repo's canonical spelling, and the `[ ! -f … ]` half is what turns a
-# missing or renamed lib into an error naming the file instead of an unbound
-# variable failing deep inside argv construction.
-b9_beta_sources_the_lib() {
-    local src_line guard_line
-    src_line="$(grep -n '^[[:space:]]*source .*lib_jcodemunch_pin\.sh' "$JC_INDEX" || true)"
-    if [ -z "$src_line" ]; then
-        printf 'β never sources scripts/lib_jcodemunch_pin.sh\n  Expected the canonical guarded-source shape (cf. scripts/verify.sh:347-352).\n' >&2
-        return 1
-    fi
-    guard_line="$(grep -n '\[ ! -f .*lib_jcodemunch_pin\.sh' "$JC_INDEX" || true)"
-    if [ -z "$guard_line" ]; then
-        printf 'β sources the lib but carries no [ ! -f … ] existence guard:\n  %s\n' "$src_line" >&2
-        return 1
-    fi
-    return 0
+# The REFUSAL, executed rather than grepped: a lib-less copy of β must exit
+# non-zero, print nothing on stdout, and name the missing file on stderr. The
+# spelling of the existence check is deliberately NOT asserted — `[ ! -f … ]`,
+# `[[ ! -r … ]]` and a `command -v`-style resolution are equally correct, and a
+# grep for one of them both reds a working rewrite and passes a guard placed
+# AFTER the source, where it protects nothing.
+b9_beta_refuses_without_lib() {
+    local d
+    d="$(mk_tmpdir)" || return 1
+    jc_guard_refuses_without_lib "$JC_INDEX" "$d"
 }
 
 # argv_subcommand_is <root> <expected> — the token immediately after the
@@ -1255,13 +1244,17 @@ else
         argv_word_absent "$ARGV_ROOT" index
 fi
 
-# Deliberately OUTSIDE the ARGV_ROOT guard above: these two read β's SOURCE, not
-# its argv, so a failed mktemp must not silently take the single-definition
-# coverage with it.
+# Deliberately OUTSIDE the ARGV_ROOT guard above: none of these three needs β's
+# --dry-run argv, so a failed mktemp must not silently take the
+# single-definition coverage with it. (The refusal probe runs a lib-less COPY of
+# β in its own scratch dir and refuses an unusable one, so it carries its own
+# emptiness guard.)
 assert "β defines none of JC_PIN/JC_PYTHON/JC_IDENTITY_ENV itself (single definition site)" \
     b9_beta_defines_no_triple
-assert "β sources scripts/lib_jcodemunch_pin.sh behind an existence guard" \
+assert "β sources scripts/lib_jcodemunch_pin.sh" \
     b9_beta_sources_the_lib
+assert "β with no lib beside it refuses: non-zero, silent on stdout, names the file on stderr" \
+    b9_beta_refuses_without_lib
 
 # -- Test 11: run summary and exit propagation -------------------------------
 # Driven by a stub indexer through the REIFY_JC_INDEXER_CMD seam, so the two
