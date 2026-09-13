@@ -57,8 +57,6 @@ mod half_space_compile_tests;
 mod imperial_units_tests;
 #[path = "harness_physical_modeling/m11_annotations_solver_hint_tests.rs"]
 mod m11_annotations_solver_hint_tests;
-#[path = "harness_physical_modeling/m9_error_cases.rs"]
-mod m9_error_cases;
 #[path = "harness_physical_modeling/material_struct_tests.rs"]
 mod material_struct_tests;
 #[path = "harness_physical_modeling/nominal_marker_typing_tests.rs"]

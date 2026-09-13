@@ -42,6 +42,8 @@ mod diagnostic_coverage_checkpoint;
 mod guard_compilation;
 #[path = "harness_diagnostics_robustness/implicit_conversion_tests.rs"]
 mod implicit_conversion_tests;
+#[path = "harness_diagnostics_robustness/m9_error_cases.rs"]
+mod m9_error_cases;
 #[path = "harness_diagnostics_robustness/multi_load_bracket_example_tests.rs"]
 mod multi_load_bracket_example_tests;
 #[path = "harness_diagnostics_robustness/multi_load_case_stdlib_tests.rs"]
