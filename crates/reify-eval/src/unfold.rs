@@ -1331,13 +1331,15 @@ fn eval_child_expr(
 ///
 /// [`topological_sort`] (Kahn) reports a cycle by OMISSION. Cyclic params are
 /// therefore appended afterwards in declaration order rather than dropped:
-/// measured on this branch, `structure Inner3 { param a = b  param b = a }`
-/// instantiated under a sub commits BOTH cells as `Undef` today, and dropping
-/// them would delete cells that exist — a worse member of the same stale-Undef
-/// family this ordering fix belongs to. The cycle is already reported once by
-/// template scope (`circular dependency in template Inner3: [a, b]`), so this
+/// `structure Cyc { param a = b  param b = a }` instantiated under a sub
+/// commits BOTH cells as `Undef`, and dropping them would delete cells that
+/// exist — a worse member of the same stale-Undef family this ordering fix
+/// belongs to. The cycle is already reported once, by template scope, so this
 /// site stays silent rather than double-reporting, the mistake
-/// [`phase15_cycle_members`]' doc comment was written to prevent.
+/// [`phase15_cycle_members`]' doc comment was written to prevent. Both halves
+/// are pinned by `cyclic_param_defaults_are_still_committed_at_instance_scope`
+/// (tests/instance_scope_param_default_order.rs), whose message says what a
+/// missing cell would mean.
 fn params_in_dependency_order<'t>(
     child_template: &'t TopologyTemplate,
     args: &[(String, reify_ir::CompiledExpr)],
