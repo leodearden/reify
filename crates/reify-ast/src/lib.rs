@@ -49,5 +49,5 @@ pub use decl::{
     TraitBoundRef, TraitDecl, TypeAliasDecl, TypeParamDecl, UnitDecl, VariantPayload, WhereClause,
     classify_number_literal, find_named_member_span, find_param_default_expr,
     find_param_default_span, has_test_annotation,
-    walk_specialization_scope_members,
+    walk_all_member_bodies, walk_specialization_scope_members,
 };
