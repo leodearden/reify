@@ -15,15 +15,12 @@
 //! # Walk coverage
 //!
 //! This pass does not walk members itself — it delegates to
-//! [`reify_ast::walk_all_member_bodies`], the MAXIMAL member-recursion set,
-//! because the question it asks ("does any `let`/`constraint` anywhere under
-//! this declaration carry `priv`?") admits no exception.  WHICH optional bodies
-//! that descends into is declared as data on reify-ast's `MemberRecursionSet`
-//! table; read it there rather than from a second copy here, because a second
-//! copy is exactly the drift surface that consolidation removed.
+//! [`reify_ast::walk_all_member_bodies`], which owns both the recursion set and
+//! the depth bound ([`reify_ast::MAX_MEMBER_NESTING_DEPTH`]).
 //!
-//! Depth is bounded by [`reify_ast::MAX_MEMBER_NESTING_DEPTH`], which the shared
-//! walker owns.
+//! One gap survives that delegation: no reify-ast walker descends into a sub's
+//! keyed entries, so a `priv let` inside `sub p : Foo { "a" => { … } }` is not
+//! reported.  Longstanding, and unchanged by the delegation.
 
 use reify_ast::{Declaration, MemberDecl, ParsedModule, walk_all_member_bodies};
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel};
@@ -54,13 +51,9 @@ pub(crate) fn lint_module(parsed: &ParsedModule, diagnostics: &mut Vec<Diagnosti
 /// [`reify_ast::walk_all_member_bodies`]; this function contributes only the
 /// per-member predicate.
 fn lint_members(members: &[MemberDecl], diagnostics: &mut Vec<Diagnostic>) {
-    // The `_ => {}` arm below is a Let/Constraint PREDICATE, not a
-    // recursion-set decision — the same distinction `find_named_member_span_depth`
-    // documents in reify-ast's decl.rs. A newly added `MemberDecl` variant is
-    // now classified in exactly ONE place, `walk_members`'s wildcard-free
-    // match, which fails to COMPILE until that classification is made. Before
-    // this delegation, THIS file's own `_` arm silently defaulted a new variant
-    // to "never descended into".
+    // `_ => {}` is this pass's PREDICATE — "not a priv let/constraint" — and
+    // not a recursion decision: reify-ast's walker owns which bodies are
+    // descended into, and classifies a new `MemberDecl` variant there.
     walk_all_member_bodies(members, &mut |member| match member {
         MemberDecl::Let(l) if l.is_priv => {
             diagnostics.push(
@@ -90,9 +83,10 @@ fn lint_members(members: &[MemberDecl], diagnostics: &mut Vec<Diagnostic>) {
 
 #[cfg(test)]
 mod tests {
+    use reify_ast::MAX_MEMBER_NESTING_DEPTH;
     use reify_core::{Diagnostic, DiagnosticCode, ModulePath, Severity};
 
-    use super::lint_members;
+    use super::{lint_members, lint_module};
 
     /// Parse `source` as a module and extract the first structure's member list.
     ///
@@ -243,10 +237,8 @@ structure S {
 "#;
         let members = parse_first_structure_members(source);
 
-        // NON-VACUITY: the `priv let` must really be NESTED in the sub's body.
-        // If the parser hoisted it to top level this test would pass under
-        // EVERY recursion set and silently lose the discriminating power it
-        // exists for.
+        // NON-VACUITY: a `priv let` the parser hoisted to top level would be
+        // found under EVERY recursion set, discriminating nothing.
         let sub = match members.as_slice() {
             [reify_ast::MemberDecl::Sub(s)] => s,
             other => panic!("fixture must lower to exactly one Sub member, got {other:#?}"),
@@ -287,8 +279,7 @@ structure S {
 "#;
         let members = parse_first_structure_members(source);
 
-        // NON-VACUITY: as above — the `priv let` must really be nested inside
-        // `PortDecl.members`, or this test discriminates nothing.
+        // NON-VACUITY: as above, for `PortDecl.members`.
         let port = match members.as_slice() {
             [reify_ast::MemberDecl::Port(p)] => p,
             other => panic!("fixture must lower to exactly one Port member, got {other:#?}"),
@@ -323,17 +314,11 @@ structure S {
         format!("structure S {{ param flag : Real = 1  {inner} }}")
     }
 
-    /// A `priv let` at exactly the nesting bound is reported; one level deeper
-    /// is cut off.
-    ///
-    /// Pins the depth-32 cutoff behaviourally, so the bound survives being
-    /// re-homed from this module's own constant onto the shared walker's
-    /// `reify_ast::MAX_MEMBER_NESTING_DEPTH`.
     /// Depth of the actual `where`-nesting chain in `members`.
     ///
-    /// NON-VACUITY guard for the test below: without it, a fixture the parser
-    /// silently truncated would report 0 diagnostics and be indistinguishable
-    /// from a genuine depth cutoff.
+    /// NON-VACUITY guard for the test below: a fixture the parser silently
+    /// truncated would report 0 diagnostics and be indistinguishable from a
+    /// genuine depth cutoff.
     fn guarded_nesting_depth(members: &[reify_ast::MemberDecl]) -> usize {
         members
             .iter()
@@ -347,27 +332,37 @@ structure S {
             .unwrap_or(0)
     }
 
+    /// A `priv let` at exactly [`MAX_MEMBER_NESTING_DEPTH`] levels of nesting
+    /// is reported; one level deeper is cut off.
+    ///
+    /// The bound belongs to reify-ast's walker; what this pins is that the lint
+    /// inherits it end-to-end, from `.ri` source through the parser to the
+    /// emitted diagnostic.
     #[test]
     fn nesting_beyond_max_depth_is_cut_off() {
-        let at_limit = parse_first_structure_members(&nested_where_source(32));
-        let beyond_limit = parse_first_structure_members(&nested_where_source(33));
+        let at_limit =
+            parse_first_structure_members(&nested_where_source(MAX_MEMBER_NESTING_DEPTH));
+        let beyond_limit =
+            parse_first_structure_members(&nested_where_source(MAX_MEMBER_NESTING_DEPTH + 1));
         assert_eq!(
             guarded_nesting_depth(&at_limit),
-            32,
-            "the 32-level fixture must really nest 32 deep"
+            MAX_MEMBER_NESTING_DEPTH,
+            "the at-limit fixture must really nest {MAX_MEMBER_NESTING_DEPTH} deep"
         );
         assert_eq!(
             guarded_nesting_depth(&beyond_limit),
-            33,
-            "the 33-level fixture must really nest 33 deep — a truncated parse \
-             would make the cutoff assertion below vacuous"
+            MAX_MEMBER_NESTING_DEPTH + 1,
+            "the beyond-limit fixture must really nest one deeper than \
+             {MAX_MEMBER_NESTING_DEPTH} — a truncated parse would make the \
+             cutoff assertion below vacuous"
         );
 
         let redundant = priv_redundant_diags(&at_limit);
         assert_eq!(
             redundant.len(),
             1,
-            "a `priv let` at exactly 32 levels of nesting must be reported, got {}: {:?}",
+            "a `priv let` at exactly {MAX_MEMBER_NESTING_DEPTH} levels of nesting must be \
+             reported, got {}: {:?}",
             redundant.len(),
             messages(&redundant)
         );
@@ -376,10 +371,86 @@ structure S {
         assert_eq!(
             redundant.len(),
             0,
-            "a `priv let` at 33 levels of nesting is beyond the bound and must be \
-             cut off, got {}: {:?}",
+            "a `priv let` one level beyond {MAX_MEMBER_NESTING_DEPTH} must be cut off, \
+             got {}: {:?}",
             redundant.len(),
             messages(&redundant)
+        );
+    }
+
+    // --- lint_module's declaration-level fan-out ---
+
+    /// `lint_module` reaches each declaration kind it dispatches on: a trait, an
+    /// occurrence, a purpose body, and a structure nested inside that purpose.
+    ///
+    /// Every other test here calls `lint_members` directly, so without this one
+    /// a dropped fan-out arm — forgetting `p.structures`, say — reaches no
+    /// assertion at all. One `priv let` per site, so a missing arm is a missing
+    /// diagnostic rather than a changed count nobody can attribute.
+    #[test]
+    fn lint_module_reaches_every_dispatched_declaration_kind() {
+        let source = r#"
+trait T {
+    priv let in_trait = 1
+}
+occurrence def O {
+    priv let in_occurrence = 2
+}
+purpose P(subject : Structure) {
+    priv let in_purpose = 3
+    structure NestedInPurpose {
+        priv let in_purpose_structure = 4
+    }
+}
+"#;
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture must parse cleanly, got {:?}",
+            parsed.errors
+        );
+
+        // NON-VACUITY: the fixture must really exercise all four arms. A parse
+        // that dropped a declaration, or hoisted the nested structure to top
+        // level, would make the count below agree for the wrong reason.
+        let kinds: Vec<&str> = parsed
+            .declarations
+            .iter()
+            .map(|d| match d {
+                reify_ast::Declaration::Trait(_) => "trait",
+                reify_ast::Declaration::Occurrence(_) => "occurrence",
+                reify_ast::Declaration::Purpose(_) => "purpose",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            ["trait", "occurrence", "purpose"],
+            "fixture must lower to exactly one trait, one occurrence and one purpose"
+        );
+        let purpose = match &parsed.declarations[2] {
+            reify_ast::Declaration::Purpose(p) => p,
+            other => panic!("expected Purpose, got {other:?}"),
+        };
+        assert_eq!(
+            purpose.structures.len(),
+            1,
+            "the nested structure must stay INSIDE the purpose, not be hoisted"
+        );
+
+        let mut diags = Vec::new();
+        lint_module(&parsed, &mut diags);
+        let redundant: Vec<&Diagnostic> = diags
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::PrivRedundant))
+            .collect();
+        assert_eq!(
+            redundant.len(),
+            4,
+            "expected one PrivRedundant per dispatched declaration kind (trait, \
+             occurrence, purpose body, purpose-nested structure), got {}: {:?}",
+            redundant.len(),
+            redundant.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
 
