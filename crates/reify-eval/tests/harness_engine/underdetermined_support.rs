@@ -68,8 +68,8 @@ pub fn eval_through_production_registry(src: &str, what: &str) -> EvalResult {
     result
 }
 
-/// The SI magnitude of a resolved `Scalar` cell, or a panic naming what was
-/// actually there.
+/// The SI magnitude of a resolved `Scalar` cell, or a panic naming the cell,
+/// the eval it came from, and what was actually there.
 ///
 /// An UNRESOLVED auto surfaces as `Value::Undef`, which is precisely the silent
 /// failure both calling modules exist to report legibly rather than let a
@@ -88,10 +88,17 @@ pub fn eval_through_production_registry(src: &str, what: &str) -> EvalResult {
 /// assertion is the only signal that holds in both.
 ///
 /// The `what` label is the caller's, and is where fixture-specific context
-/// belongs — see each module's header for the failure it is pinning.
+/// belongs — see each module's header for the failure it is pinning. Several
+/// callers probe SEVERAL cells under ONE label, so the panic carries `id` as
+/// well: without it a red CI log cannot say which of them was `Undef`, and the
+/// condensed reason travels with it because a doc comment is not in front of
+/// whoever reads that log.
 ///
 /// The shape projection itself is `reify_test_support::scalar_si`; this adapter
-/// adds only the cell lookup (task #6524).
+/// adds the cell lookup, that id-bearing label, and a distinct failure for a
+/// cell ABSENT from the map — a binding site that was never created rather than
+/// one left unsolved (task #6524).
+#[track_caller]
 pub fn scalar_si(result: &EvalResult, id: &ValueCellId, what: &str) -> f64 {
     let Some(value) = result.values.get(id) else {
         panic!(
@@ -101,11 +108,79 @@ pub fn scalar_si(result: &EvalResult, id: &ValueCellId, what: &str) -> f64 {
              unsolved",
         )
     };
-    reify_test_support::scalar_si(value, what)
+    reify_test_support::scalar_si(
+        value,
+        &format!(
+            "{id:?} in the {what} eval (an `Undef` here means the auto was \
+             never solved — layer 1 dropped the constraint that pins it, or \
+             the decomposition returned no component for it; layer 4 can stay \
+             quiet about that, so a zero-warning eval is not a healthy one)"
+        ),
+    )
 }
 
 /// Every `Underdetermined`-coded diagnostic on this eval, matched by CODE
 /// rather than by substring on the rendered `W_UNDERDETERMINED` text.
 pub fn underdetermined(result: &EvalResult) -> Vec<&reify_core::Diagnostic> {
     reify_test_support::underdetermined_diags(&result.diagnostics)
+}
+
+/// Run `f` and return the message it panicked with. `#[should_panic]` matches
+/// ONE substring, and the test below asserts several per panic.
+fn panic_message(f: impl FnOnce()) -> String {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(()) => panic!("expected a panic, but the call returned normally"),
+        Err(payload) => reify_core::panic_payload_to_string(payload.as_ref()),
+    }
+}
+
+/// `scalar_si`'s two failure modes stay distinguishable, and BOTH name the
+/// cell.
+///
+/// Naming the cell is load-bearing rather than decorative: callers probe
+/// several cells under one `what` (`instance_path_underdetermined_e2e` reads
+/// four under `"let-indirected"`), so a message carrying only the label cannot
+/// say which one failed without a rerun.
+///
+/// The absent-cell branch is this adapter's own — the shared helper never sees
+/// that case — and it reports a missing binding site, which is a different
+/// defect from an auto the solver never pinned.
+#[test]
+fn scalar_si_panics_name_the_cell_and_separate_absent_from_unresolved() {
+    let result = reify_test_support::eval_source(
+        r#"
+structure Probe {
+    param bore : Length = 10mm
+    let gap : Length = auto
+}
+"#,
+    );
+
+    // Non-vacuity: this eval really does resolve a cell, so the failures below
+    // are those cells' and not an empty map's.
+    let _ = scalar_si(&result, &ValueCellId::new("Probe", "bore"), "probe");
+
+    let absent = panic_message(|| {
+        scalar_si(&result, &ValueCellId::new("Probe", "typo"), "probe");
+    });
+    assert!(absent.contains("typo"), "must name the cell: {absent}");
+    assert!(
+        absent.contains("exists at all"),
+        "an absent cell must read as a missing binding site, not as an \
+         unsolved one: {absent}",
+    );
+
+    let unresolved = panic_message(|| {
+        scalar_si(&result, &ValueCellId::new("Probe", "gap"), "probe");
+    });
+    assert!(
+        unresolved.contains("gap"),
+        "must name the cell: {unresolved}"
+    );
+    assert!(unresolved.contains("Undef"), "{unresolved}");
+    assert!(
+        unresolved.contains("never solved"),
+        "why an `Undef` appears must reach the failure output, not only the \
+         doc comment: {unresolved}",
+    );
 }
