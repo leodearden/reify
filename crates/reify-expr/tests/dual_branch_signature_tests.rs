@@ -35,10 +35,10 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use reify_core::{ContentHash, DimensionVector, Type, ValueCellId};
-use reify_expr::branch_signature::{BranchChoice, BranchRecord, KinkKind, ReductionKind};
-use reify_expr::dual::Tangent;
-use reify_expr::dual_eval::{Seeds, eval_dual};
-use reify_expr::{EvalContext, eval_expr};
+use reify_expr::{
+    BranchChoice, BranchRecord, EvalContext, KinkKind, ReductionKind, Seeds, Tangent, eval_dual,
+    eval_expr,
+};
 use reify_ir::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledMatchArm, CompiledPattern, FieldSourceKind,
     InterpolationKind, SampledField, SampledGridKind, Value, ValueMap,
@@ -544,8 +544,14 @@ fn mod_as_a_binop_records_its_quotient_cell_and_carries_the_one_minus_k_tangent(
 }
 
 #[test]
-fn mod_as_a_builtin_records_the_same_quotient_cell() {
-    // The stdlib `mod` binding is Int-only.  7 mod 3 = 1 with quotient cell 2.
+fn mod_as_an_int_builtin_records_its_own_quotient_cell() {
+    // The stdlib `mod` binding is Int-only, so this spelling cannot be run on
+    // the BinOp sibling's `(2.0, 1.5)` operands and the two tests compare
+    // NOTHING with each other — each pins one spelling's own quotient cell.
+    // The genuine cross-spelling check, on operands both spellings accept, is
+    // `mod_at_a_negative_dividend_records_the_truncated_quotient_and_matches_its_tangent`
+    // in `dual_number_ad_tests.rs`, which is also where trunc and floor part
+    // company.  7 mod 3 = 1 with quotient cell 2.
     let expr = call("mod", vec![vref("n"), literal(Value::Int(3))]);
     let (v, t, rec) = run(&expr, &[("n", Value::Int(7))], &["n"]);
     assert_eq!(v, Value::Int(1));
@@ -843,9 +849,31 @@ fn signature_key_of_an_empty_record_is_reachable_and_distinct_from_a_populated_o
     let smooth = binop(BinOp::Mul, vref("x"), vref("x"));
     let empty = record_of(&smooth, &[("x", Value::Real(2.0))], &["x"]);
     assert!(empty.is_empty());
-    let populated = record_of(&call("abs", vec![vref("x")]), &[("x", Value::Real(2.0))], &["x"]);
+    // The kink is NESTED — `neg(abs(x))` puts it at child index 0, not at the
+    // root — so the site reported below is the one carried by the only entry
+    // either record holds.  A root-sited kink would have let an implementation
+    // that returned `KinkSite::root()` unconditionally on a length mismatch
+    // pass this identically.
+    let populated =
+        record_of(&neg(call("abs", vec![vref("x")])), &[("x", Value::Real(2.0))], &["x"]);
+    let nested_site = populated
+        .entries()
+        .first()
+        .expect("the premise: `neg(abs(x))` records one entry")
+        .site
+        .clone();
+    assert_ne!(nested_site, reify_expr::KinkSite::root(), "the premise: it is not root-sited");
     assert_ne!(empty.signature_key(), populated.signature_key());
-    assert_eq!(empty.differs_from(&populated), Some(reify_expr::branch_signature::KinkSite::root()));
+    assert_eq!(
+        empty.differs_from(&populated),
+        Some(nested_site.clone()),
+        "the side that ran out contributes nothing, so the EXTRA entry is the divergence"
+    );
+    assert_eq!(
+        populated.differs_from(&empty),
+        Some(nested_site),
+        "and the relation is symmetric in the site it names"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1087,7 +1115,7 @@ fn an_unresolvable_bounded_reduction_records_unresolved_rather_than_vanishing() 
 
 #[test]
 fn the_reserved_path_segments_are_distinct_and_sit_above_every_structural_child_index() {
-    use reify_expr::branch_signature::{CALLEE_MARKER, DEPENDENT_MARKER};
+    use reify_expr::{CALLEE_MARKER, DEPENDENT_MARKER, RESERVED_PATH_SEGMENTS};
 
     assert_ne!(
         CALLEE_MARKER, DEPENDENT_MARKER,
@@ -1098,14 +1126,20 @@ fn the_reserved_path_segments_are_distinct_and_sit_above_every_structural_child_
     // the reserved region cannot be walked into by counting upwards.
     assert_eq!(CALLEE_MARKER, u16::MAX, "the callee marker is the top of the range");
     assert_eq!(DEPENDENT_MARKER, u16::MAX - 1, "and the dependent marker sits directly below it");
-    // Taken over the reserved SET rather than pairwise: a third marker added
-    // to `branch_signature` belongs in this array, and once it is there this
-    // assertion is what notices that the reserved region grew.
-    const RESERVED: [u16; 2] = [CALLEE_MARKER, DEPENDENT_MARKER];
+    // Taken over the set `branch_signature` EXPORTS, not a copy written here: a
+    // third marker added there lands in `RESERVED_PATH_SEGMENTS` and this is
+    // what then notices that the index space available to structural children
+    // has shrunk.  A local literal could not — it would keep agreeing with
+    // itself.
     assert_eq!(
-        RESERVED.iter().copied().min().expect("the reserved set is non-empty"),
+        RESERVED_PATH_SEGMENTS.iter().copied().min().expect("the reserved set is non-empty"),
         u16::MAX - 1,
         "exactly two values are reserved — a third would silently shrink the index space"
+    );
+    assert!(
+        RESERVED_PATH_SEGMENTS.contains(&CALLEE_MARKER)
+            && RESERVED_PATH_SEGMENTS.contains(&DEPENDENT_MARKER),
+        "the exported set must hold both markers, or the floor above is about the wrong set"
     );
 
     // The behavioural half: a real kink at a real child index must land well

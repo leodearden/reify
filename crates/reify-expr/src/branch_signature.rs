@@ -65,6 +65,14 @@ pub const CALLEE_MARKER: u16 = u16::MAX;
 /// their distinctness and their position above every structural index.
 pub const DEPENDENT_MARKER: u16 = u16::MAX - 1;
 
+/// Every reserved segment, so the set has ONE statement rather than a count
+/// restated wherever someone reasons about it.
+///
+/// A third marker is added here, and that is what makes
+/// `the_reserved_path_segments_are_distinct_and_sit_above_every_structural_child_index`
+/// notice that the index space available to structural children has shrunk.
+pub const RESERVED_PATH_SEGMENTS: [u16; 2] = [CALLEE_MARKER, DEPENDENT_MARKER];
+
 /// The index of the first position at which two ordered sequences diverge,
 /// counting "one ran out" as a divergence — or `None` when they are equal.
 ///

@@ -351,9 +351,13 @@ fn a_residual_with_an_unsupported_seed_dependent_construct_refuses_by_row() {
         "expected UnsupportedKind, got {:?}",
         err.cause
     );
+    // `contains("residual 1")`, not `contains('1')`: the cause renders the
+    // expression PATH (`[0, 0]`, `[1]`), so a bare '1' is satisfied by a digit
+    // from the path and the assertion would pass unchanged if `fmt` dropped
+    // `self.row` entirely.
     assert!(
-        err.to_string().contains('1'),
-        "the row index must survive into the message η shows the user: {err}"
+        err.to_string().contains("residual 1"),
+        "the row INDEX must survive into the message η shows the user: {err}"
     );
 }
 

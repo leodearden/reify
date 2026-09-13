@@ -3,9 +3,10 @@
 //!
 //! Design reference: `docs/prds/v0_6/geometry-algebra-solver-unification.md`
 //! §7.7 ("Derivatives — three sources").  This file is a *separate test
-//! binary*, so it exercises only the *published public surface* of
-//! `reify_expr::dual` / `reify_expr::dual_eval`, which is exactly the surface
-//! the downstream consumers see: η (#6675, the Gauss-Newton/LM step and its
+//! binary*, so it exercises only the *published public surface* — the
+//! `reify_expr` crate ROOT, which since the AD modules were made private is the
+//! only path to them, so this is exactly the surface the downstream consumers
+//! see: η (#6675, the Gauss-Newton/LM step and its
 //! `‖Jᵀr‖` certificate), μ (#6680, the reduced gradient) and λ (#6679, kink
 //! chatter detection).
 //!
@@ -45,10 +46,7 @@ fn assert_close(actual: f64, expected: f64, what: &str) {
 // evaluator has been forked, which is the thing this task is forbidden to do.
 
 use reify_core::{DimensionVector, Type, ValueCellId};
-use reify_expr::branch_signature::BranchRecord;
-use reify_expr::dual::Tangent;
-use reify_expr::dual_eval::{Seeds, eval_dual};
-use reify_expr::{EvalContext, eval_expr};
+use reify_expr::{BranchRecord, EvalContext, Seeds, Tangent, eval_dual, eval_expr};
 use reify_ir::{BinOp, CompiledExpr, Value, ValueMap};
 use reify_test_support::builders::expr::{binop, literal, neg, value_ref_typed};
 
@@ -563,7 +561,7 @@ fn cos_tangent_agrees_with_central_differences() {
 
 #[test]
 fn tan_tangent_agrees_with_central_differences() {
-    assert_unary_builtin("tan", 0.7); // d/dx = sec²(0.7) ≈ 1.690
+    assert_unary_builtin("tan", 0.7); // d/dx = sec²(0.7) ≈ 1.7094
 }
 
 #[test]
@@ -593,7 +591,7 @@ fn cosh_tangent_agrees_with_central_differences() {
 
 #[test]
 fn tanh_tangent_agrees_with_central_differences() {
-    assert_unary_builtin("tanh", 0.7); // d/dx = 1 − tanh²(0.7) ≈ 0.637
+    assert_unary_builtin("tanh", 0.7); // d/dx = 1 − tanh²(0.7) ≈ 0.63474
 }
 
 #[test]
@@ -1169,7 +1167,7 @@ fn unbounded_user_function_recursion_yields_undef_and_no_tangent_rather_than_a_s
 // construct responsible, which η turns into a tier-2 refusal instead of
 // stalling on a gradient it has no reason to trust.
 
-use reify_expr::dual_eval::{NonDifferentiable, jacobian_row};
+use reify_expr::{NonDifferentiable, jacobian_row};
 
 fn jrow(
     expr: &CompiledExpr,
@@ -1375,7 +1373,7 @@ fn jacobian_row_rejects_a_non_finite_tangent_even_when_the_primal_is_finite() {
 
 #[test]
 fn every_non_differentiable_variant_display_names_the_offending_construct() {
-    use reify_expr::branch_signature::KinkSite;
+    use reify_expr::KinkSite;
     // Each variant is paired with the ONE thing its message must carry for η's
     // tier-2 refusal to be actionable without the surrounding code.  A
     // prose-length proxy (`len() > 20`) would pass for any sentence at all; the
@@ -1428,7 +1426,7 @@ fn every_non_differentiable_variant_display_names_the_offending_construct() {
 
 use std::sync::atomic::AtomicBool;
 
-use reify_expr::dual_eval::{DualEnv, jacobian_row_with_env};
+use reify_expr::{DualEnv, jacobian_row_with_env};
 use reify_ir::{InterpolationKind, SampledField, SampledGridKind};
 
 /// A 1-D sampled field over x ∈ {0, 1, 2, 3} with data {5, 9, 2, 7}.
@@ -2720,7 +2718,7 @@ fn nested_undifferentiated_builtins_keep_the_primal_invariant() {
 
 #[test]
 fn an_all_zero_exponent_row_still_takes_the_constant_exponent_power_rule() {
-    use reify_expr::dual_eval::{DualEnv, jacobian_row_with_env};
+    use reify_expr::{DualEnv, jacobian_row_with_env};
 
     // `Tangent::from_row` collapses an all-zero row to `Tangent::Zero`, so
     // inside the traversal `is_zero()` and "is provably flat" coincide.

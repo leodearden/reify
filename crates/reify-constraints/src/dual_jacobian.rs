@@ -314,7 +314,10 @@ fn fold_dependent_duals(
         if auto_params.iter().any(|p| &p.id == id) {
             debug_assert!(
                 false,
-                "fold_dependent_duals: dependent cell {id:?} collides with an auto param —                  reify-eval's `build_dependent_cells` excludes autos by construction, so this                  means upstream membership drifted. Skipping the entry to keep the auto's seed                  column."
+                "fold_dependent_duals: dependent cell {id:?} collides with an auto param — \
+                 reify-eval's `build_dependent_cells` excludes autos by construction, so this \
+                 means upstream membership drifted. Skipping the entry to keep the auto's seed \
+                 column."
             );
             continue;
         }
@@ -323,9 +326,15 @@ fn fold_dependent_duals(
         // necessarily the same one, because both come from the same evaluator
         // over the same map.
         //
-        // The cell is evaluated against the RUNNING overlay, so chaining
-        // composes for free: a later cell's prefix block already contains the
-        // branches taken by whatever it read.
+        // The cell is evaluated against the RUNNING overlay, so TANGENT chaining
+        // composes for free.  Records do NOT nest, and the distinction matters:
+        // evaluating cell k reads an earlier cell j as a `ValueRef`, taking j's
+        // VALUE from `values` and j's TANGENT from `env` without re-traversing
+        // j's expression — so j's kinks live ONLY under `[DEPENDENT_MARKER, j]`.
+        // Each cell contributes its own kinks under its own prefix exactly once,
+        // and the prelude is their union in stored order.  A reader who took a
+        // later block to be self-contained could prune an earlier one and lose
+        // it.
         let mut record = BranchRecord::new();
         let dual = eval_dual_with_env(expr, &ctx, seeds, &env, &mut record);
         let prefix = [DEPENDENT_MARKER, k as u16];

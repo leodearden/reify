@@ -5,11 +5,11 @@
 #![allow(clippy::mutable_key_type)]
 
 mod analysis;
-pub mod branch_signature;
+mod branch_signature;
 mod calculus;
 mod complex;
-pub mod dual;
-pub mod dual_eval;
+mod dual;
+mod dual_eval;
 mod field_reductions;
 pub mod interp;
 pub mod kleene;
@@ -18,12 +18,16 @@ pub mod sampled;
 mod sampled_fd;
 mod sanitize;
 
-// Task #6672 (solver-unification ε): the forward-mode AD surface, re-exported
-// flat so `reify-constraints` — and later η (#6675), μ (#6680) and λ (#6679) —
-// reach it without knowing the module layout.
+// Task #6672 (solver-unification ε): the forward-mode AD surface.  The three
+// modules are PRIVATE and these flat re-exports are the only path to them, so
+// `reify_expr::Tangent` is not merely the preferred spelling over
+// `reify_expr::dual::Tangent` — it is the reachable one, and consumers (η
+// #6675, μ #6680, λ #6679) cannot drift into using both for the same type.
+// Same reasoning, and the same shape, as `reify_constraints`' private
+// `dual_jacobian`.
 pub use branch_signature::{
-    BranchChoice, BranchEntry, BranchRecord, CALLEE_MARKER, DEPENDENT_MARKER, KinkKind, KinkSite,
-    ReductionKind, first_divergence,
+    BranchChoice, BranchEntry, BranchRecord, CALLEE_MARKER, DEPENDENT_MARKER,
+    RESERVED_PATH_SEGMENTS, KinkKind, KinkSite, ReductionKind, first_divergence,
 };
 pub use dual::{DualValue, Tangent};
 pub use dual_eval::{
