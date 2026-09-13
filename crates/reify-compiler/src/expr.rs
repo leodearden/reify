@@ -5625,9 +5625,14 @@ fn compile_expr_guarded_with_expected_inner(
             }
         }
         reify_ast::ExprKind::Auto { .. } => {
-            // Auto expressions should not appear inside compile_expr — they are
-            // handled at the param compilation level. If we reach here, emit an
-            // Undef literal as a safe fallback.
+            // `auto` is consumed at its DECLARATION sites, never as an ordinary
+            // expression: the `build_param_value_cell_decl` and
+            // `resolve_auto_let_cell_type` callers in entity.rs, guards.rs and
+            // connect.rs each read it via `extract_auto_free` before any expression
+            // compilation happens. Reaching this arm therefore means `auto` appeared
+            // somewhere that is not a binding site; the Undef literal is the
+            // anti-cascade fallback for that case (the diagnostic for the reachable
+            // shapes is E_AUTO_NOT_AT_BINDING_SITE, emitted at those sites).
             CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar())
         }
         reify_ast::ExprKind::Conditional {

@@ -211,7 +211,35 @@ pub(crate) fn register_guarded_names<'a>(
                     scope.register(&let_decl.name, Type::Geometry);
                     known_geometry_lets.insert(let_decl.name.as_str());
                 } else {
-                    scope.register(&let_decl.name, Type::dimensionless_scalar());
+                    // An `auto` let has no initializer to infer a type from, so its
+                    // declared annotation is the only type it will ever carry — resolve
+                    // it here, exactly as the `Param` branch above does (task #6888).
+                    // Without this, a constraint written INSIDE the same block type-checks
+                    // against the placeholder: `compile_block_guard` installs the real
+                    // member types only after the whole branch — constraints included —
+                    // has been compiled. Every other guarded let keeps the placeholder;
+                    // its initializer supplies the type in `compile_guarded_members`.
+                    //
+                    // Diagnostics go to a throwaway sink (entity.rs #4702 pattern): the
+                    // real pass resolves the same annotation and owns the missing- and
+                    // unresolvable-annotation errors, so emitting here would double them.
+                    let declared_auto_type = extract_auto_free(&let_decl.value).and_then(|_| {
+                        let mut throwaway = Vec::new();
+                        resolve_auto_let_cell_type(
+                            &let_decl.name,
+                            let_decl.type_expr.as_ref(),
+                            let_decl.span,
+                            type_param_names,
+                            alias_registry,
+                            structure_names,
+                            trait_names,
+                            &mut throwaway,
+                        )
+                    });
+                    scope.register(
+                        &let_decl.name,
+                        declared_auto_type.unwrap_or_else(Type::dimensionless_scalar),
+                    );
                     // Track selector lets so subsequent all-ident compositions
                     // are correctly classified. Mirrors entity.rs pre-pass. (task 4527)
                     if is_selector_expr(&let_decl.value, functions, known_selector_lets) {
@@ -478,6 +506,60 @@ pub(crate) fn compile_guarded_members(
                 if is_geometry_let(&let_decl.value, functions, known_geometry_lets, known_selector_lets) {
                     continue;
                 }
+
+                // Auto-let branch (task #6888), mirroring the `MemberDecl::Param` arm
+                // above: an `auto` let is a solver cell, so its type comes from the
+                // declared annotation and it has no initializer. Reaching the
+                // `compile_expr_guarded` call below instead would lower `auto` through
+                // its anti-cascade `Undef` fallback, silently dropping both the `auto`
+                // and the annotation.
+                if let Some(free) = extract_auto_free(&let_decl.value) {
+                    let Some(cell_type) = resolve_auto_let_cell_type(
+                        &let_decl.name,
+                        let_decl.type_expr.as_ref(),
+                        let_decl.span,
+                        type_param_names,
+                        alias_registry,
+                        structure_names,
+                        trait_names,
+                        diagnostics,
+                    ) else {
+                        continue;
+                    };
+
+                    let visibility = if let_decl.is_pub {
+                        Visibility::Public
+                    } else {
+                        Visibility::Private
+                    };
+
+                    // Lower and validate annotations on this guarded auto let
+                    let lowered_annotations = lower_annotations(&let_decl.annotations, diagnostics);
+                    validate_annotations(&lowered_annotations, "let", diagnostics);
+                    crate::annotations::display::validate_display_dimension(
+                        &lowered_annotations,
+                        &cell_type,
+                        diagnostics,
+                    );
+                    let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
+                    validate_solver_hint_collections(&solver_hints, scope, functions, diagnostics);
+
+                    // Pushing onto the caller-supplied `members` is what makes the else
+                    // branch work too: `compile_block_guard` calls this fn once per
+                    // branch with that branch's own vec.
+                    members.push(ValueCellDecl {
+                        id: ValueCellId::new(entity_name, &let_decl.name),
+                        kind: ValueCellKind::Auto { free },
+                        visibility,
+                        is_aux: let_decl.is_aux,
+                        cell_type,
+                        default_expr: None,
+                        solver_hints,
+                        span: let_decl.span,
+                    });
+                    continue;
+                }
+
                 let mut compiled_expr = {
                     let mut lc = 0u32;
                     compile_expr_guarded(
