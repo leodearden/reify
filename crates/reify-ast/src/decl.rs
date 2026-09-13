@@ -822,15 +822,32 @@ fn sub_override_bodies(sub: &SubDecl) -> impl Iterator<Item = &[MemberDecl]> {
 
 /// Visit every member of a specialization-scope body (spec §8.7).
 ///
-/// A `SubDecl` whose `body.is_some()` opens a specialization scope; this
-/// walker iterates its members, invoking `visitor` on each one. When the
-/// `body` is `None` (bare instantiation or collection form), the walker is
-/// a no-op — those forms are not specialization scopes.
+/// A `SubDecl` opens a specialization scope in either of two shapes, and this
+/// walker iterates the members of each, invoking `visitor` on every one:
+///   * a non-keyed `body` — `sub p : Foo { … }`, one scope; or
+///   * one scope per `keyed_members[]` entry — `sub p : Foo { "a" => { … } }`.
+///
+/// A keyed entry's overrides IS a specialization body, not merely body-like:
+/// the CST node kind of the entry's `overrides` field is literally
+/// `specialization_body`, and `lower_sub` lowers it with the same
+/// `lower_specialization_body_members` it uses for the non-keyed `body`. Per
+/// spec §8.7 a sub-entity instantiated within a parent body has a body that is
+/// a specialization scope, and a keyed entry instantiates one sub-entity per
+/// key. See [`sub_override_bodies`], which owns the two-form union so no caller
+/// re-derives it.
+///
+/// The walker is a no-op only when the sub carries NEITHER shape — a bare
+/// instantiation, a collection, or a bare-colon-no-body sub. Those open no
+/// specialization scope, which makes this function the single discriminator for
+/// "is this a scope root?"; its callers need not re-test the fields.
+///
+/// Each scope is walked from depth 0, so a keyed sub's per-entry scopes are
+/// bounded exactly as a body scope is.
 ///
 /// The traversal itself is `walk_members` driven by
 /// `MemberRecursionSet::SPECIALIZATION_SCOPE`, so this walker recurses into:
-///   * `MemberDecl::Sub(s)` whose `s.body.is_some()` — nested specialization
-///     scopes (spec §8.7 nested-sub criterion).
+///   * `MemberDecl::Sub(s)` that itself carries overrides in either shape —
+///     nested specialization scopes (spec §8.7 nested-sub criterion).
 ///   * `MemberDecl::GuardedGroup(g)` — both `g.members` (the `where { … }`
 ///     branch) and `g.else_members` (the `else { … }` branch). Both branches
 ///     are siblings inside the enclosing specialization scope.
@@ -844,7 +861,7 @@ fn sub_override_bodies(sub: &SubDecl) -> impl Iterator<Item = &[MemberDecl]> {
 /// input — same convention as [`find_named_member_span`].
 ///
 /// **Asymmetry note:** [`find_named_member_span`] DOES recurse into
-/// `PortDecl.members` but does NOT recurse into `SubDecl.body`. These two
+/// `PortDecl.members` but does NOT recurse into a sub's overrides. These two
 /// helpers have divergent contracts that are individually correct but can
 /// surprise callers who infer one from the other. The shared-helper
 /// consolidation that would unify them is now DONE: both are `walk_members`
@@ -871,8 +888,8 @@ pub fn walk_specialization_scope_members<'a, F>(sub: &'a SubDecl, visitor: &mut 
 where
     F: FnMut(&'a MemberDecl),
 {
-    if let Some(body) = sub.body.as_ref() {
-        walk_all(body, MemberRecursionSet::SPECIALIZATION_SCOPE, visitor);
+    for overrides in sub_override_bodies(sub) {
+        walk_all(overrides, MemberRecursionSet::SPECIALIZATION_SCOPE, visitor);
     }
 }
 
