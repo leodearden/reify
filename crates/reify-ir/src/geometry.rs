@@ -10727,24 +10727,22 @@ mod tests {
         }
     }
 
-    /// RED (task 6560, step-1) — the `VoxelResolution` request type and the
-    /// defaulted `GeometryKernel::ingest_mesh_at_resolution` seam.
+    /// RED (task 6560, step-1) — the DEFAULT body of
+    /// `GeometryKernel::ingest_mesh_at_resolution` delegates to
+    /// [`GeometryKernel::ingest_mesh`] with the mesh unmodified, and the method
+    /// stays object-safe.
     ///
-    /// # What this pins
+    /// That is the compile-time contract keeping every other kernel, stub and
+    /// mock in the workspace unchanged: a kernel that cannot honour a
+    /// resolution request simply never overrides the method, and the delegation
+    /// makes the request a no-op rather than a hard error. `OpenVdbKernel` is
+    /// the only kernel that overrides it (task 6560, step-8);
+    /// `reify_geometry::SingleKernelHolder` also overrides it, as a pure
+    /// delegating pass-through (step-12).
     ///
-    /// 1. `VoxelResolution` is a `Debug + Clone + Copy + PartialEq` enum with
-    ///    the three request variants (`HonestFloor`, `TargetVoxelSize(f64)`,
-    ///    `MinFeature(f64)`).
-    /// 2. `ingest_mesh_at_resolution`'s DEFAULT body delegates to
-    ///    [`GeometryKernel::ingest_mesh`], ignoring the resolution.
-    ///
-    /// (2) is the compile-time contract that keeps every other kernel, stub
-    /// and mock in the workspace unchanged: a kernel that cannot honour a
-    /// resolution request simply never overrides the method, and the
-    /// delegation makes the request a no-op rather than a hard error.
-    /// `OpenVdbKernel` is the only kernel that overrides it (task 6560,
-    /// step-8); `reify_geometry::SingleKernelHolder` also overrides it, as a
-    /// pure delegating pass-through (step-12).
+    /// `VoxelResolution`'s own `Copy`/`PartialEq`/`Debug` derives are exercised
+    /// by the bindings and assertions below rather than asserted separately —
+    /// pinning what `#[derive]` expands to would test rustc, not this crate.
     #[test]
     fn ingest_mesh_at_resolution_default_delegates_to_ingest_mesh() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -10788,26 +10786,19 @@ mod tests {
             }
         }
 
-        // (1) The request type itself: Debug + Clone + Copy + PartialEq, three variants.
-        let honest = VoxelResolution::HonestFloor;
+        // One request of each variant. Binding all three by value and reusing
+        // them in the loop below is what keeps `Copy` compile-enforced.
+        let honest: VoxelResolution = VoxelResolution::HonestFloor;
         let target = VoxelResolution::TargetVoxelSize(0.25);
         let feature = VoxelResolution::MinFeature(1.0);
-
-        let copied = honest; // Copy (no move out of `honest`)
-        assert_eq!(copied, honest, "VoxelResolution must be PartialEq + Copy");
-        assert_eq!(target.clone(), VoxelResolution::TargetVoxelSize(0.25));
-        assert_ne!(target, feature, "distinct variants must not compare equal");
         assert_ne!(
             VoxelResolution::MinFeature(1.0),
             VoxelResolution::MinFeature(2.0),
-            "payload must participate in equality"
-        );
-        assert!(
-            format!("{honest:?}").contains("HonestFloor"),
-            "Debug must name the variant"
+            "the payload must participate in equality, or a resolution log \
+             cannot tell two requests apart"
         );
 
-        // (2) The default body delegates to `ingest_mesh`, ignoring the resolution.
+        // The default body delegates to `ingest_mesh`, ignoring the resolution.
         let mut kernel = RecordingIngestKernel {
             ingest_calls: AtomicUsize::new(0),
             last_vertex_len: AtomicUsize::new(0),

@@ -41,6 +41,21 @@ impl SingleKernelHolder {
     pub fn has_kernel(&self) -> bool {
         self.kernel.is_some()
     }
+
+    /// The no-kernel outcome shared by every Mesh-ingest entry point.
+    ///
+    /// `GeometryKernel::ingest_mesh` and
+    /// `GeometryKernel::ingest_mesh_at_resolution` must both reproduce the
+    /// trait default's no-kernel message, which is one string; producing it
+    /// once means the two arms cannot drift, so no test is needed to check
+    /// that they agree. `type_name::<Self>()` resolves to `SingleKernelHolder`
+    /// here exactly as it does in the trait default.
+    fn no_mesh_kernel_error() -> GeometryError {
+        GeometryError::OperationFailed(format!(
+            "{} does not accept Mesh inputs",
+            std::any::type_name::<Self>()
+        ))
+    }
 }
 
 // INVARIANT: `SingleKernelHolder` must delegate EVERY `GeometryKernel` method to
@@ -232,12 +247,7 @@ impl GeometryKernel for SingleKernelHolder {
     fn ingest_mesh(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
         match self.kernel.as_mut() {
             Some(k) => k.ingest_mesh(mesh),
-            // Mirror the trait default's no-kernel message; type_name::<Self>()
-            // resolves to SingleKernelHolder here, exactly as the default would.
-            None => Err(GeometryError::OperationFailed(format!(
-                "{} does not accept Mesh inputs",
-                std::any::type_name::<Self>()
-            ))),
+            None => Err(Self::no_mesh_kernel_error()),
         }
     }
 
@@ -253,8 +263,8 @@ impl GeometryKernel for SingleKernelHolder {
     /// introduced to prevent. Delegating verbatim is the whole point of the
     /// seam.
     ///
-    /// The `None` arm reproduces the trait default's no-kernel output, which
-    /// for an empty holder is `ingest_mesh`'s own message.
+    /// The `None` arm reproduces the trait default's no-kernel output via the
+    /// shared [`SingleKernelHolder::no_mesh_kernel_error`].
     fn ingest_mesh_at_resolution(
         &mut self,
         mesh: &Mesh,
@@ -262,10 +272,7 @@ impl GeometryKernel for SingleKernelHolder {
     ) -> Result<GeometryHandle, GeometryError> {
         match self.kernel.as_mut() {
             Some(k) => k.ingest_mesh_at_resolution(mesh, resolution),
-            None => Err(GeometryError::OperationFailed(format!(
-                "{} does not accept Mesh inputs",
-                std::any::type_name::<Self>()
-            ))),
+            None => Err(Self::no_mesh_kernel_error()),
         }
     }
 
@@ -919,43 +926,29 @@ mod tests {
     /// The `None` arm must reproduce the trait default's no-kernel output.
     ///
     /// Per this impl's delegate-EVERY-method INVARIANT, adding a delegating
-    /// override must not change what an empty holder returns. The trait
-    /// default routes through `self.ingest_mesh`, so an empty holder's
-    /// `ingest_mesh_at_resolution` must produce exactly the error its own
-    /// `ingest_mesh` arm produces — including the `type_name::<Self>()`-derived
-    /// `SingleKernelHolder` prefix, which a hand-written `None` arm can easily
-    /// get wrong (e.g. by hard-coding a different name).
+    /// override must not change what an empty holder returns. Agreement with
+    /// `ingest_mesh` is now structural — both arms call
+    /// `SingleKernelHolder::no_mesh_kernel_error` — so what is left to check is
+    /// that the shared message is the right one, in particular that it carries
+    /// the `type_name::<Self>()`-derived `SingleKernelHolder` prefix rather
+    /// than a hard-coded name.
     #[test]
-    fn ingest_mesh_at_resolution_no_kernel_matches_ingest_mesh() {
+    fn ingest_mesh_at_resolution_no_kernel_names_the_holder() {
         let mut holder = SingleKernelHolder::new();
         let mesh = Mesh { vertices: vec![], indices: vec![], normals: None };
 
-        let at_resolution = holder
+        let err = holder
             .ingest_mesh_at_resolution(&mesh, VoxelResolution::MinFeature(1.0))
             .expect_err("an empty holder must reject mesh ingest");
-        let plain = holder
-            .ingest_mesh(&mesh)
-            .expect_err("an empty holder must reject mesh ingest");
 
-        match (&at_resolution, &plain) {
-            (
-                GeometryError::OperationFailed(at_msg),
-                GeometryError::OperationFailed(plain_msg),
-            ) => {
+        match &err {
+            GeometryError::OperationFailed(msg) => {
                 assert!(
-                    at_msg.contains("does not accept Mesh inputs"),
-                    "unexpected error message: {at_msg}"
-                );
-                assert!(
-                    at_msg.contains("SingleKernelHolder"),
-                    "the message must name the holder via type_name::<Self>(): {at_msg}"
-                );
-                assert_eq!(
-                    at_msg, plain_msg,
-                    "the no-kernel arm must reproduce ingest_mesh's message exactly"
+                    msg.contains("SingleKernelHolder does not accept Mesh inputs"),
+                    "the message must name the holder via type_name::<Self>(): {msg}"
                 );
             }
-            other => panic!("expected two OperationFailed errors, got {other:?}"),
+            other => panic!("expected OperationFailed, got {other:?}"),
         }
     }
 }
