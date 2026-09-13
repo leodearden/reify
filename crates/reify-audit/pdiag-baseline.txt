@@ -14,6 +14,17 @@
 # IN THE SAME COMMIT) are in docs/notes/diagnostic-severity-policy.md §3. The
 # one exception is a pure MOVE or RENAME, where regenerating IS the fix — §3(d).
 #
+# A regeneration is valid for EXACTLY the tree it ran against. Any later
+# rebase, merge, amend or cherry-pick — including one the merge queue performs
+# — is a different tree and invalidates it. Counts below are ABSOLUTE, so a
+# file your branch never touched can drift underneath you. Re-verify on the
+# COMMITTED tree, after the commit and after any such replay:
+#   git status --porcelain    # must be empty
+#   cargo run -p reify-audit --bin pdiag-baseline-gen -- --project-root . \
+#     | diff -u crates/reify-audit/pdiag-baseline.txt -
+# An empty diff is the proof; a green captured before the commit is not. See
+# docs/notes/diagnostic-severity-policy.md §3 "Regeneration is tree-bound".
+#
 # Format: `<repo-relative-path> <count>`, ascending by path, no zero rows.
 crates/reify-compiler/src/annotations.rs 6
 crates/reify-compiler/src/annotations/display.rs 1
@@ -54,7 +65,7 @@ crates/reify-compiler/src/variant_construct.rs 2
 crates/reify-constraints/src/relate_solve.rs 1
 crates/reify-eval/src/compute_targets/bc_resolve.rs 3
 crates/reify-eval/src/compute_targets/buckling_multi_case.rs 8
-crates/reify-eval/src/compute_targets/elastic_static.rs 7
+crates/reify-eval/src/compute_targets/elastic_static.rs 12
 crates/reify-eval/src/compute_targets/fdm_slice.rs 2
 crates/reify-eval/src/compute_targets/form_find.rs 2
 crates/reify-eval/src/compute_targets/membrane_load.rs 1
