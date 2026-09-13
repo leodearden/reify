@@ -2249,7 +2249,7 @@ assert "EX-1n: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (case glob * 
 # vitest now runs only when something the frontend actually reads changed:
 # a frontend-read path (GUI_PATH_SIGNAL), or an affected-crate closure that
 # reaches reify-gui — the same predicate, one implementation, that task 6268's
-# gui-feature nextest pass uses.
+# gui-feature nextest pass uses — or an explicit spec request (GV-9).
 #
 # The closure must be driven hermetically here: FIX_B has no cargo workspace,
 # so `cargo metadata` always fails and affected_crates() always returns the ALL
@@ -2379,6 +2379,26 @@ assert "GV-8: RUN_GUI_VITEST=1 for a corpus edit" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
 assert "GV-8: gui lane carries npm test" \
     plan_has "$_GUI_LANE_WITH_VITEST"
+
+# GV-9 — an explicit spec request is a third route into the lane. dark-factory
+# forwards REIFY_GUI_RETRY_SPECS for a narrowed re-run; on GV-1's own fixture
+# (a real closure that excludes reify-gui) the gate would otherwise drop them
+# and report green having never run the specs it was asked to re-run. Unreachable
+# today only because DF_VERIFY_ROLE=merge forces --scope all (GV-5b), i.e. the
+# safety rested on an invariant enforced in another subsystem; this pins it here.
+#
+# Two env values are needed and plan_for_branch_env carries exactly one, so the
+# specs ride the exported parent environment while the override takes the hook.
+echo ""
+echo "--- Scenario GV-9: REIFY_GUI_RETRY_SPECS on a closure that excludes reify-gui -> vitest runs the specs ---"
+export REIFY_GUI_RETRY_SPECS="src/__tests__/foo.test.ts"
+plan_for_branch_env "REIFY_AFFECTED_CRATES_OVERRIDE=reify-cli reify-doc reify-doc-build reify-eval" \
+    crates/reify-doc/src/lib.rs
+unset REIFY_GUI_RETRY_SPECS
+assert "GV-9: RUN_GUI_VITEST=1 — a requested spec is never silently dropped" \
+    _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0 RUN_GUI_VITEST=1'
+assert "GV-9: the gui lane forwards the requested spec, not a bare npm test" \
+    plan_has "cd gui && .*npm ci && npm run typecheck && npm test -- src/__tests__/foo\.test\.ts'"
 
 # ---------------------------------------------------------------------------
 # GV-FAILWIDE-* (task 7427): decide_scope's rename-source fail-wide returns.

@@ -1952,14 +1952,29 @@ closure_reaches_reify_gui() {
 #   closure_reaches_reify_gui  the affected-crate closure reaches reify-gui —
 #                    which is also true for SCOPE=all (C2, the merge gate stays
 #                    unconditional) and for every closure-unavailable shape.
+#   REIFY_GUI_RETRY_SPECS  a caller ASKED for named vitest specs to be re-run
+#                    (dark-factory's narrowed retry).  An explicit request is
+#                    evidence about the frontend that no path or closure test
+#                    can see, and dropping it would report green having never
+#                    run the specs the caller asked for.  Non-empty is the
+#                    whole test: a malformed value still runs the full suite
+#                    via the loud §4.3 full-fallback at the forwarding site.
 #
 # So the ONLY shape that skips vitest is a RUN_RUST=1 branch/staged diff with a
 # real crate closure that excludes reify-gui.  A Rust-only change outside that
 # cone which nonetheless breaks the frontend is caught at the merge gate —
 # delay ≤ 1 gate, never a coverage hole.
 RUN_GUI_VITEST=0
-if [ "$RUN_GUI" -eq 1 ] && { [ "$GUI_PATH_SIGNAL" -eq 1 ] || closure_reaches_reify_gui; }; then
+if [ "$RUN_GUI" -eq 1 ] && { [ "$GUI_PATH_SIGNAL" -eq 1 ] || [ -n "${REIFY_GUI_RETRY_SPECS:-}" ] || closure_reaches_reify_gui; }; then
     RUN_GUI_VITEST=1
+fi
+# A scope with no node lane at all (RUN_GUI=0) can still swallow a retry
+# request, since the route above is conjoined with RUN_GUI.  Say so loudly
+# rather than passing green in silence — the same direction as the
+# invalid-value warning at the forwarding site.  The observed flags are
+# printed, not narrated, so the line cannot outlive the gate that produced it.
+if [ -n "${REIFY_GUI_RETRY_SPECS:-}" ] && [ "$RUN_GUI_VITEST" -eq 0 ]; then
+    echo "verify.sh: WARNING — REIFY_GUI_RETRY_SPECS is set but this run emits no vitest lane (RUN_GUI=$RUN_GUI RUN_GUI_VITEST=0); the requested specs will NOT run" >&2
 fi
 
 # ---------------------------------------------------------------------------
