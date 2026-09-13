@@ -434,13 +434,8 @@ pub fn error_diags(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
 /// sites detect without going red at the ones that merely count. Pinned by
 /// `underdetermined_diags_is_severity_blind`.
 ///
-/// Input order is preserved; call sites read the result positionally.
-///
-/// Canonical replacement for the 13 inline copies in
-/// `reify-eval/tests/underdetermined.rs`, the local `underdetermined_diags` in
-/// `harness_auto_resolution/auto_binding_sites_remaining_resolution.rs`, and
-/// `underdetermined`'s body in `harness_engine/underdetermined_support.rs`
-/// (task #6524; surfaced by task #5467 code review round 3, suggestion 10).
+/// Input order is preserved; call sites read the result positionally
+/// (task #6524).
 pub fn underdetermined_diags(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> {
     diagnostics
         .iter()
@@ -1133,22 +1128,13 @@ pub fn members_of(result: &reify_eval::EvalResult, entity: &str) -> Vec<String> 
 /// `what` is a caller-supplied label naming the cell under test; it is the
 /// only fixture-specific context the panic carries, so each call site keeps
 /// the diagnostic wording its own assertion needs. The `dimension` is
-/// deliberately NOT validated — this projects the magnitude and nothing more,
-/// matching every call site it replaces (all of which match
-/// `{ si_value, .. }`). A caller that needs a dimension check must assert it
-/// separately.
+/// deliberately NOT validated — this projects the magnitude and nothing more.
+/// A caller that needs a dimension check must assert it separately.
 ///
 /// `#[track_caller]` keeps the panic's reported location at the test line
 /// rather than inside this file; without it the promotion would be a
 /// diagnostic regression against the inline matches it replaces, which
-/// naturally report at the call site.
-///
-/// Canonical replacement for the verbatim-duplicated
-/// `Value::Scalar { si_value, .. } => *si_value` match in
-/// `harness_auto_resolution/auto_binding_sites_remaining_resolution.rs`,
-/// `harness_auto_resolution/auto_sub_override_resolution.rs`, and
-/// `harness_engine/underdetermined_support.rs` (task #6524; surfaced by task
-/// #5467 code review round 3, suggestion 10).
+/// naturally report at the call site (task #6524).
 ///
 /// # Panics
 /// Panics if `value` is not a `Value::Scalar`; the message names both `what`
@@ -1399,10 +1385,9 @@ mod tests {
     // ── scalar_si ─────────────────────────────────────────────────────────
     //
     // Task #6524. `scalar_si` projects the SI magnitude out of a
-    // `Value::Scalar` and panics on anything else. The cases below pin the
-    // three properties the nine hand-written copies it replaces each relied
-    // on: the exact magnitude comes back, the panic is diagnosable, and the
-    // dimension is deliberately not inspected.
+    // `Value::Scalar` and panics on anything else. The cases below pin its
+    // three properties: the exact magnitude comes back, the panic is
+    // diagnosable, and the dimension is deliberately not inspected.
 
     /// `scalar_si` returns the `si_value` field verbatim.
     ///
@@ -1424,9 +1409,9 @@ mod tests {
 
     /// A non-`Scalar` value panics with a message naming BOTH the caller's
     /// `what` label and the value that was actually there — the two facts
-    /// that make the failure diagnosable without a rerun, and the two each
-    /// replaced copy provided. Asserting both is why `panic_message` is used
-    /// here instead of `#[should_panic(expected = ..)]`.
+    /// that make the failure diagnosable without a rerun. Asserting both is
+    /// why `panic_message` is used here instead of
+    /// `#[should_panic(expected = ..)]`.
     #[test]
     fn scalar_si_panics_naming_label_and_observed_value() {
         let message = panic_message(|| {
@@ -1437,10 +1422,8 @@ mod tests {
     }
 
     /// The helper projects the magnitude and does NOT validate the dimension:
-    /// a non-LENGTH `Scalar` returns its `si_value` just the same. Every call
-    /// site being replaced matches `{ si_value, .. }`, so this is their
-    /// behaviour today; a caller needing a dimension check must assert it
-    /// separately.
+    /// a non-LENGTH `Scalar` returns its `si_value` just the same. A caller
+    /// needing a dimension check must assert it separately.
     #[test]
     fn scalar_si_ignores_dimension() {
         let value = reify_ir::Value::Scalar {
@@ -2145,13 +2128,11 @@ mod tests {
     //
     // Task #6524. Unlike its neighbours `collect_errors` / `error_diags`,
     // this one filters on the structured CODE alone and is severity-blind.
-    // The cases below pin that difference, because the 21 call sites it
-    // replaces all depend on it.
+    // The cases below pin that difference, which every call site depends on.
 
     /// Only `Underdetermined`-coded diagnostics come back. An unrelated code
     /// is excluded, and so is a CODELESS (`code: None`) diagnostic — the
-    /// filter is `== Some(..)`, which is the precise behaviour of every copy
-    /// being replaced.
+    /// filter is `== Some(..)`.
     #[test]
     fn underdetermined_diags_selects_only_underdetermined_code() {
         let diags = vec![
@@ -2170,7 +2151,7 @@ mod tests {
     ///
     /// This helper lands directly beside `collect_errors` / `error_diags`,
     /// which DO filter `Severity::Error`, so a future editor harmonising the
-    /// neighbours could add one here — silently changing what 21 call sites
+    /// neighbours could add one here — silently changing what the call sites
     /// detect. `W_UNDERDETERMINED` is a warning today, so such a change would
     /// not even go red at the sites that merely count it.
     #[test]
@@ -2189,10 +2170,9 @@ mod tests {
         );
     }
 
-    /// Input order is preserved. Several call sites read the result
-    /// positionally (`instance_path_underdetermined_e2e` maps it into a
-    /// `Vec<&str>` for comparison), so ordering is a relied-upon contract
-    /// rather than an accident of `.filter().collect()`.
+    /// Input order is preserved. Call sites read the result positionally, so
+    /// ordering is a relied-upon contract rather than an accident of
+    /// `.filter().collect()`.
     #[test]
     fn underdetermined_diags_preserves_input_order() {
         let diags = vec![
