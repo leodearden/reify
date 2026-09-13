@@ -622,13 +622,21 @@ describe('applyWorkspaceEdit', () => {
 // renameCommand — CodeMirror Command factory (cursor → prepareRename → UI)
 // ---------------------------------------------------------------------------
 
-/** Build a mocked rename client + ui from individually-trackable vi.fns. */
+/**
+ * Build a mocked rename client + ui + document-version reader from
+ * individually-trackable vi.fns.
+ *
+ * `currentVersion` defaults to returning undefined (an untracked URI), which is
+ * not-stale by construction — so a test only has to stub it when it is actually
+ * exercising the version-skew guard.
+ */
 function makeRenameDeps() {
   const prepareRename = vi.fn();
   const rename = vi.fn();
   const promptNewName = vi.fn();
   const showCannotRename = vi.fn();
   const showRenameFailed = vi.fn();
+  const currentVersion = vi.fn();
   const client = { prepareRename, rename } as unknown as RenameClient;
   const ui = { promptNewName, showCannotRename, showRenameFailed } as unknown as RenameUi;
   return {
@@ -639,6 +647,7 @@ function makeRenameDeps() {
     promptNewName,
     showCannotRename,
     showRenameFailed,
+    currentVersion,
   };
 }
 
@@ -1048,5 +1057,192 @@ describe('renameCommand', () => {
 
     expect(rename).toHaveBeenCalledWith(URI, 0, 5, 'girth');
     expect(applyEdit).not.toHaveBeenCalled();
+  });
+  // -------------------------------------------------------------------------
+  // version-skew guard (injected currentVersion reader) — step-13 tests
+  // -------------------------------------------------------------------------
+
+  const GUARD_TARGET = {
+    range: { start: { line: 0, character: 5 }, end: { line: 0, character: 10 } },
+    placeholder: 'width',
+  };
+
+  /** A documentChanges WorkspaceEdit over URI, stamped with `version`. */
+  const stampedEdit = (version: number | null): WorkspaceEdit => ({
+    documentChanges: [
+      {
+        textDocument: { uri: URI, version },
+        edits: [{ range: GUARD_TARGET.range, newText: 'girth' }],
+      },
+    ],
+  });
+
+  /** The legacy unversioned shape of the same edit. */
+  const LEGACY_EDIT: WorkspaceEdit = {
+    changes: { [URI]: [{ range: GUARD_TARGET.range, newText: 'girth' }] },
+  };
+
+  /** The mock view the guard tests share (head 5 → lspLine 0, lspChar 5). */
+  const guardView = () =>
+    makeMockView({
+      state: {
+        selection: { main: { head: 5 } },
+        doc: {
+          lineAt: (_pos: number) => ({ number: 1, from: 0, to: 20 }),
+          line: (n: number) => ({ from: (n - 1) * 20, to: (n - 1) * 20 + 15 }),
+        },
+      },
+    });
+
+  /** Drive an F2 command through prepareRename → prompt → submit('girth'). */
+  async function submitRename(
+    command: (view: EditorView) => boolean,
+    view: EditorView,
+    promptNewName: ReturnType<typeof vi.fn>,
+  ): Promise<void> {
+    command(view);
+    await flushMacrotasks();
+    const onSubmit = promptNewName.mock.calls[0][3] as (newName: string) => void;
+    onSubmit('girth');
+    await flushMacrotasks();
+  }
+
+  it('(a) version skew: re-issues the rename ONCE and applies only the fresh edit', async () => {
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion } =
+      makeRenameDeps();
+    prepareRename.mockResolvedValue(GUARD_TARGET);
+    const fresh = stampedEdit(2);
+    // First answer was computed against version 1; the client has since sent 2.
+    rename.mockResolvedValueOnce(stampedEdit(1)).mockResolvedValueOnce(fresh);
+    currentVersion.mockReturnValue(2);
+
+    const applyEdit = vi.fn();
+    const view = guardView();
+    await submitRename(
+      renameCommand(() => URI, client, ui, applyEdit, currentVersion),
+      view,
+      promptNewName,
+    );
+
+    expect(rename).toHaveBeenCalledTimes(2);
+    expect(rename).toHaveBeenNthCalledWith(2, URI, 0, 5, 'girth');
+    // ONLY the fresh edit reaches the buffer — the stale one is never applied.
+    expect(applyEdit).toHaveBeenCalledOnce();
+    expect(applyEdit).toHaveBeenCalledWith(view, fresh, URI);
+    expect(showRenameFailed).not.toHaveBeenCalled();
+  });
+
+  it('(b) version skew: a second stale edit fails the rename — bounded at one retry, zero edits', async () => {
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion } =
+      makeRenameDeps();
+    prepareRename.mockResolvedValue(GUARD_TARGET);
+    // The user keeps typing: every answer is stale.
+    rename.mockResolvedValue(stampedEdit(1));
+    currentVersion.mockReturnValue(2);
+
+    const applyEdit = vi.fn();
+    const view = guardView();
+    await submitRename(
+      renameCommand(() => URI, client, ui, applyEdit, currentVersion),
+      view,
+      promptNewName,
+    );
+
+    // Bounded: exactly two requests, never a third — an unbounded re-issue loop
+    // under a typing user would livelock instead of reporting failure.
+    expect(rename).toHaveBeenCalledTimes(2);
+    expect(applyEdit).not.toHaveBeenCalled();
+    expect(showRenameFailed).toHaveBeenCalledTimes(1);
+    expect(showRenameFailed).toHaveBeenCalledWith(view);
+  });
+
+  it('(c) version skew: an already-fresh edit applies with no retry', async () => {
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion } =
+      makeRenameDeps();
+    prepareRename.mockResolvedValue(GUARD_TARGET);
+    const fresh = stampedEdit(2);
+    rename.mockResolvedValue(fresh);
+    currentVersion.mockReturnValue(2);
+
+    const applyEdit = vi.fn();
+    const view = guardView();
+    await submitRename(
+      renameCommand(() => URI, client, ui, applyEdit, currentVersion),
+      view,
+      promptNewName,
+    );
+
+    expect(rename).toHaveBeenCalledOnce();
+    expect(applyEdit).toHaveBeenCalledOnce();
+    expect(applyEdit).toHaveBeenCalledWith(view, fresh, URI);
+    expect(showRenameFailed).not.toHaveBeenCalled();
+  });
+
+  it('(d) version skew: a legacy unversioned changes edit applies immediately, no retry', async () => {
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion } =
+      makeRenameDeps();
+    prepareRename.mockResolvedValue(GUARD_TARGET);
+    rename.mockResolvedValue(LEGACY_EDIT);
+    // A server that never stamps versions must keep working exactly as before,
+    // whatever the client's own counter says.
+    currentVersion.mockReturnValue(2);
+
+    const applyEdit = vi.fn();
+    const view = guardView();
+    await submitRename(
+      renameCommand(() => URI, client, ui, applyEdit, currentVersion),
+      view,
+      promptNewName,
+    );
+
+    expect(rename).toHaveBeenCalledOnce();
+    expect(applyEdit).toHaveBeenCalledWith(view, LEGACY_EDIT, URI);
+    expect(showRenameFailed).not.toHaveBeenCalled();
+  });
+
+  it('(e) no currentVersion reader: a stale edit applies exactly as it does today', async () => {
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion } =
+      makeRenameDeps();
+    prepareRename.mockResolvedValue(GUARD_TARGET);
+    const stale = stampedEdit(1);
+    rename.mockResolvedValue(stale);
+
+    const applyEdit = vi.fn();
+    const view = guardView();
+    // Reader omitted — every existing caller keeps its current behaviour.
+    await submitRename(renameCommand(() => URI, client, ui, applyEdit), view, promptNewName);
+
+    expect(rename).toHaveBeenCalledOnce();
+    expect(applyEdit).toHaveBeenCalledWith(view, stale, URI);
+    expect(showRenameFailed).not.toHaveBeenCalled();
+    expect(currentVersion).not.toHaveBeenCalled();
+  });
+
+  it('version skew: a file switch during the retry window blocks the fresh apply', async () => {
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion } =
+      makeRenameDeps();
+    prepareRename.mockResolvedValue(GUARD_TARGET);
+    let currentUri = URI;
+    rename
+      .mockResolvedValueOnce(stampedEdit(1))
+      .mockImplementationOnce(() => {
+        // The retry opens a SECOND await window — the user switches files inside it.
+        currentUri = 'file:///other.ri';
+        return Promise.resolve(stampedEdit(2));
+      });
+    currentVersion.mockReturnValue(2);
+
+    const applyEdit = vi.fn();
+    const view = guardView();
+    await submitRename(
+      renameCommand(() => currentUri, client, ui, applyEdit, currentVersion),
+      view,
+      promptNewName,
+    );
+
+    expect(rename).toHaveBeenCalledTimes(2);
+    // The now-different buffer must not receive the original file's edits.
+    expect(applyEdit).not.toHaveBeenCalled();
+    expect(showRenameFailed).not.toHaveBeenCalled();
   });
 });
