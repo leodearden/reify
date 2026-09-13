@@ -34,6 +34,12 @@
 //!   neither tightening may fire where the audit was never shown able to run,
 //!   so the first cannot buy its teeth by reddening supported environments.
 //!
+//! Why the synthetic leg exists: 5605 landed the `.env_remove()` calls the
+//! first leg depends on, so no clean checkout can watch that one go RED any
+//! more. The original RED measurement and the 5605/5698 history are in project
+//! memory: `search(project_id="reify", query="run_orphan_audit replay child
+//! envelope mark skip 5698 repo-root premise probe panic")`.
+//!
 //! None can notice another going vacuous. Retire them together or not at all.
 
 use std::path::Path;
@@ -64,9 +70,8 @@ const TARGET_TEST: &str = "reify_audit_pub_fns_are_g_allow_marked";
 fn reify_audit_pub_fns_are_g_allow_marked() {
     // FIRST statement, above everything that can skip or panic, so the
     // breadcrumb is out regardless of what this run then does. A no-op outside
-    // an envelope-marked replay child; inside one it is the half of the round
-    // trip that lets the spawning entry point observe which mark its own child
-    // actually carried. See `orphan_audit_survives_ambient_hook_git_env`.
+    // an envelope-marked replay child; inside one it is the child's half of the
+    // round trip `orphan_audit_survives_ambient_hook_git_env` relies on.
     common::git_env::announce_replay_mark();
 
     let audit = run_orphan_audit(SCOPE);
@@ -74,21 +79,19 @@ fn reify_audit_pub_fns_are_g_allow_marked() {
     // Defence-in-depth against `run_orphan_audit`'s public contract, which
     // still permits `None`, scoped to the one child where a skip has no
     // innocent reading; the graceful-skip path below is untouched everywhere
-    // else. What this catches and the replay's exit-status assertion cannot: a
-    // skip is a `return`, and libtest has no skipped state, so a skipping child
-    // exits 0 reporting `1 passed` — the replay's status, `passed + ignored ==
-    // listed` and floor checks ALL hold on a run that exercised nothing. Only
-    // the child can tell the two apart, by refusing to skip.
+    // else. What this catches and the replay's own assertions cannot: a skip is
+    // a `return` and libtest has no skipped state, so a skipping child exits 0
+    // reporting `1 passed` — status, `passed + ignored == listed` and floor
+    // checks ALL hold on a run that exercised nothing. Only the child can tell
+    // the two apart, by refusing to skip.
     if audit.is_none() && common::git_env::replay_child_expects_envelope() {
         panic!(
             "run_orphan_audit returned None inside a replay child stamped with \
-             the envelope mark. That mark is stamped only by a parent that ran \
-             this same audit, for this same scope, in this same environment \
-             moments earlier and GOT an envelope — and that parent returns \
-             without spawning any child when it did not. So `python3`/`git`/the \
-             script being absent is not a plausible reading here: what changed \
-             between that run and this one is the ambient hook git environment \
-             this child carries."
+             the envelope mark — stamped only by a parent that got an envelope \
+             for this same scope, in this same environment, moments earlier. So \
+             a missing `python3`/`git`/script is not a plausible reading here: \
+             what changed between that run and this one is the ambient hook git \
+             environment this child carries."
         );
     }
 
@@ -125,30 +128,24 @@ fn reify_audit_pub_fns_are_g_allow_marked() {
 /// green.
 ///
 /// That discrimination is armed by the envelope mark, so the spawn goes through
-/// the entry point whose whole identity IS that mark — this call site does not
-/// get to choose one. The entry point then OBSERVES the mark its own child
-/// carried, via the breadcrumb `reify_audit_pub_fns_are_g_allow_marked` emits
-/// as its first statement. Without that round trip the arming was disarmable in
-/// silence: measured at b92a231c55, stamping [`ReplayMark::Plain`] here instead
-/// left this binary at `6 passed; 0 failed`, byte-identical to the unmutated
-/// tree, because in a real replay child production sanitizes and so the
-/// mark-gated branch is never evaluated at all.
+/// the entry point whose whole identity IS that mark rather than one this call
+/// site picks. Stamping [`ReplayMark::Plain`] here instead leaves this binary
+/// byte-identical to the unmutated tree — in a real replay child production
+/// sanitizes, so the mark-gated branch is never evaluated — which is why that
+/// entry point also OBSERVES the mark its own child reported carrying, via the
+/// breadcrumb `reify_audit_pub_fns_are_g_allow_marked` emits first.
 ///
 /// To check this has not gone vacuous: drop an `env_remove` from
 /// `reify_test_support`'s `sanitize()` and the child exits 101; restoring it
-/// restores GREEN. That is the only way to see it RED — 5605 landed those
-/// calls, so no clean checkout reproduces the original failure, which is why
-/// this is one leg of a trio rather than a lone guard. The original RED
-/// measurement and the 5605/5698 history are in project memory:
-/// `search(project_id="reify", query="run_orphan_audit replay child envelope
-/// mark skip 5698 repo-root premise probe panic")`.
+/// restores GREEN. That mutation is the only way to see this leg RED — see the
+/// module doc.
 ///
 /// Filters on one test NAME rather than `""`: only that test is hazard-exposed,
-/// and an empty filter would also drag the synthetic witness into the child,
-/// where its replay-child precondition now refuses. No other test name here
-/// contains [`TARGET_TEST`] as a substring, so the replay cannot select itself
-/// and the floor of 1 is exact. That floor exists because libtest exits 0 on a
-/// zero-match filter; raise it only alongside widening the filter.
+/// and an empty filter would also drag this file's other spawning tests into
+/// the child, where their replay-child preconditions refuse. No other test name
+/// here contains [`TARGET_TEST`] as a substring, so the replay cannot select
+/// itself and the floor of 1 is exact — libtest exits 0 on a zero-match filter,
+/// so raise that floor only alongside widening the filter.
 #[test]
 fn orphan_audit_survives_ambient_hook_git_env() {
     // EARN the mark before spawning anything: `ReplayMark::Envelope`'s whole
@@ -179,10 +176,10 @@ fn orphan_audit_survives_ambient_hook_git_env() {
 /// only in what the mark claims. The command body is shared with the real
 /// replay via [`common::git_env::replay_child_command`].
 ///
-/// An EMPTY `PATH` makes `reify_test_support::run_orphan_audit`'s FIRST probe,
-/// `Command::new("python3")`, fail with `NotFound` and take its documented skip
-/// path — a SUPPORTED environment, not a broken one, and the caller asserts on
-/// the skip note the child actually emits. Deliberately NOT poisoned with the
+/// An EMPTY `PATH` makes `reify_test_support::run_orphan_audit`'s prerequisite
+/// probes fail with `NotFound`, so it takes its documented skip path — a
+/// SUPPORTED environment, not a broken one, and the caller asserts on the skip
+/// note the child actually emits. Deliberately NOT poisoned with the
 /// hook git environment: the child skips long before it reaches the audit
 /// script, so a decoy would add no signal — what this fixture buys is the
 /// MARK's meaning, not the poison's. Spawn failures are hard failures, since
@@ -205,10 +202,9 @@ fn spawn_child_lacking_audit_prereqs(filters: &[&str], mark: ReplayMark) -> Outp
 /// The regression this pins: a tightening keyed on mere child-ness reddens any
 /// environment lacking the audit's prerequisites — the child skips as designed,
 /// then panics claiming its parent had just run the audit successfully, a
-/// diagnosis its own stderr contradicts one line earlier. The premise is false,
-/// not merely unlucky: the replay only `--list`s the selection in the parent,
-/// so it never learns whether the parent's own run produced an envelope, and
-/// libtest guarantees no ordering between the two tests.
+/// diagnosis its own stderr contradicts one line earlier. That premise is false
+/// rather than unlucky, since the replay only `--list`s the selection in the
+/// parent and so never learns what the parent's own run produced.
 ///
 /// Both halves spawn the SAME target test in the SAME deprived environment via
 /// [`spawn_child_lacking_audit_prereqs`], and differ ONLY in the mark:
@@ -226,24 +222,31 @@ fn spawn_child_lacking_audit_prereqs(filters: &[&str], mark: ReplayMark) -> Outp
 /// fixture; the counts then come from libtest's summary rather than from the
 /// tightening panic's prose, so rewording that panic does not fail this test.
 ///
-/// Covers ONE skip cause, the PATH-deprived one. `run_orphan_audit` has others
-/// (a `repo_root` outside any git work tree, the script absent from disk) —
-/// a bounded claim rather than a hole, since the tightening branches on the
-/// MARK and never on the cause. The work-tree cause is in particular NOT
-/// reachable by pointing the child's `current_dir` at a non-git tempdir:
+/// Covers ONE of `run_orphan_audit`'s skip causes, the PATH-deprived one — a
+/// bounded claim rather than a hole, since the tightening branches on the MARK
+/// and never on the cause. The work-tree cause is in particular NOT reachable
+/// by pointing the child's `current_dir` at a non-git tempdir:
 /// `run_orphan_audit` resolves `repo_root` at compile time from
 /// `env!("CARGO_MANIFEST_DIR")`, so the child's own cwd never enters it.
 #[test]
 fn replay_child_hard_fails_only_when_the_parent_verified_an_envelope() {
-    // The wording `run_orphan_audit`'s prerequisite-probe skip notes share —
-    // NOT every skip note in it, so reordering those probes among themselves
-    // (an empty PATH hides `git` too) moves this test onto another of them
-    // instead of reddening it. A copy of a string that lives in another crate's
-    // `eprintln!`s, so a reword there reddens both halves below instead of
-    // silently un-attributing them. The single-source fix is a `pub const` in
-    // `reify-test-support` that the `eprintln!`s and this test both read; it
-    // needs an edit to `crates/reify-test-support/src/orphan_audit.rs`, outside
-    // this task's lock set, and is filed as #7070.
+    // Same refusal, and for the same reason, as the sibling fixture below: this
+    // test spawns children of its own, so widening the replay filter to select
+    // it must fail on the precondition rather than quietly nest a generation.
+    common::git_env::assert_not_in_replay_child(
+        "replay_child_hard_fails_only_when_the_parent_verified_an_envelope",
+        "it would spawn grandchildren inside an already-nested child for no \
+         signal the outer run does not have",
+    );
+
+    // The wording `run_orphan_audit`'s prerequisite-probe skip notes share, so
+    // reordering those probes among themselves (an empty PATH hides `git` too)
+    // moves this test onto another of them instead of reddening it. A copy of a
+    // string living in another crate's `eprintln!`s: a reword there reddens
+    // both halves below rather than silently un-attributing them. The
+    // single-source fix — a `pub const` in `reify-test-support` that its
+    // `eprintln!`s and this test both read — needs an edit outside this task's
+    // lock set and is filed as #7070.
     const SKIP_MARKER: &str = "skipping orphan audit";
 
     // Literally the same filter the replay harness uses — the module-level
@@ -259,11 +262,9 @@ fn replay_child_hard_fails_only_when_the_parent_verified_an_envelope() {
     assert!(
         plain_stderr.contains(SKIP_MARKER),
         "the deprived child did not report {SKIP_MARKER:?}, so this half is not \
-         exercising the environment it claims: either the fixture's empty PATH \
-         no longer reaches any of `run_orphan_audit`'s prerequisite probes, or \
-         the wording they share was changed (update SKIP_MARKER). Whatever this \
-         child did assert below, it was not about an environment that cannot \
-         run the audit.\n\
+         exercising an environment that cannot run the audit: either its empty \
+         PATH no longer reaches any of `run_orphan_audit`'s prerequisite \
+         probes, or the wording they share changed (update SKIP_MARKER).\n\
          --- child stderr (truncated) ---\n{:.600}",
         plain_stderr,
     );
@@ -272,9 +273,8 @@ fn replay_child_hard_fails_only_when_the_parent_verified_an_envelope() {
         "a replay child stamped with {:?} FAILED (exit {:?}) in an environment \
          that simply lacks the audit's prerequisites. Nothing established that \
          this environment can run the audit, so `run_orphan_audit`'s graceful \
-         skip is the contract — a tightening that fires here turns a supported \
-         environment into a red build and hands the operator a diagnosis its \
-         own stderr contradicts.\n\
+         skip is the contract and a tightening firing here reddens a supported \
+         environment.\n\
          --- child stdout (truncated) ---\n{:.800}\n\
          --- child stderr (truncated) ---\n{:.800}",
         ReplayMark::Plain,
@@ -309,12 +309,10 @@ fn replay_child_hard_fails_only_when_the_parent_verified_an_envelope() {
     );
     assert!(
         !envelope.status.success(),
-        "a replay child stamped with {:?} exited 0 despite skipping the audit. \
-         That mark is stamped only after the parent has SEEN an envelope for \
-         this scope in this environment, so a skip here means the environment \
-         changed underfoot or the sanitizer stopped working — exactly the \
-         condition `reify_audit_pub_fns_are_g_allow_marked`'s tightening exists \
-         to catch. It has lost its teeth: half A's fix has been over-applied.\n\
+        "a replay child stamped with {:?} exited 0 despite skipping the audit — \
+         exactly the condition the tightening exists to catch, since that mark \
+         is stamped only after the parent SAW an envelope for this scope here. \
+         It has lost its teeth: half A's fix has been over-applied.\n\
          --- child stdout (truncated) ---\n{:.800}\n\
          --- child stderr (truncated) ---\n{:.800}",
         ReplayMark::Envelope,
@@ -353,30 +351,24 @@ struct AuditRun {
 /// json` TWICE against one shared [`common::git_env::decoy_repo`]: once with
 /// the hook poison ambient in the child, once with
 /// [`reify_audit::git_env::sanitize`] applied — the canonical sanitizer
-/// production uses, not a hand-rolled removal of the three vars this helper
-/// poisons. Both commands come from ONE closure against ONE decoy, so the
-/// environment is provably the only delta.
+/// production uses, not a hand-rolled removal of the three vars poisoned here.
+/// Both commands come from ONE closure against ONE decoy, so the environment is
+/// provably the only delta.
 ///
 /// Returns `None`, with an explanatory `stderr` note, exactly when
 /// `reify_test_support::run_orphan_audit` declines an envelope for `scope`.
 /// That one call IS the graceful-skip protocol — `python3`/`git` presence,
-/// script-on-disk, `repo_root`-is-a-git-work-tree, `EXCLUDE_CRATES` membership.
-/// Do not re-implement it: its most fragile element is a git diagnostic string
-/// the work-tree probe keys on, and delegating also inherits its LOUD half (a
-/// `git rev-parse` failing for a reason OTHER than "no repository here" panics
-/// rather than skipping). Skipping rather than comparing is the only honest
-/// answer, because every cause of that `None` empties BOTH halves — a caller
-/// comparing them would fail "sanitized is non-empty" while passing "poisoned
-/// is empty", a spurious RED saying nothing about the hazard. The cost is a
+/// script-on-disk, `repo_root`-is-a-git-work-tree, `EXCLUDE_CRATES` membership
+/// — and delegating inherits its LOUD half too, where a `git rev-parse` failing
+/// for a reason OTHER than "no repository here" panics rather than skips.
+/// Skipping rather than comparing is the only honest answer: every cause of
+/// that `None` empties BOTH halves, so a caller comparing them would fail
+/// "sanitized is non-empty" while passing "poisoned is empty". The cost is a
 /// THIRD script run whose envelope is discarded.
 ///
-/// Must NOT be called from inside a replay child: all three runs would repeat
-/// inside an already-nested child, for no signal the outer run does not have.
-/// Refused below rather than left to this comment, so widening the replay
-/// filter fails on the precondition instead of quietly tripling the work.
-///
 /// Asserts nothing: it reports stdout, status and stderr and leaves every
-/// judgement to the caller.
+/// judgement to the caller. Refuses to run inside a replay child, where all
+/// three runs would repeat for no signal the outer run does not have.
 fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(AuditRun, AuditRun)> {
     common::git_env::assert_not_in_replay_child(
         "audit_script_stdout_poisoned_and_sanitized",
@@ -492,9 +484,8 @@ fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(AuditRun, 
 /// really does cure it.
 ///
 /// `orphan_audit_survives_ambient_hook_git_env` guards the PRODUCTION call
-/// site, but task 5605 already landed the `.env_remove()` calls it depends on,
-/// so from a clean checkout there is no longer any way to watch it go RED, and
-/// a guard whose teeth can never be demonstrated decays into one nobody trusts.
+/// site, but no clean checkout can watch it go RED (see the module doc), and a
+/// guard whose teeth can never be demonstrated decays into one nobody trusts.
 /// This test re-demonstrates the hazard's potency synthetically, with no
 /// dependency on the production call site at all.
 ///
@@ -537,22 +528,19 @@ fn hook_git_env_defeats_the_audit_script_and_stripping_it_cures_the_defeat() {
     // `{:.400}` is a Display precision, i.e. a truncating max width: enough of
     // the offending output to diagnose a failure without dumping ~9 KiB.
     //
-    // The sanitized half is asserted FIRST. Both halves are hard assertions, so
-    // ordering no longer decides whether a check runs at all — but it still
-    // decides which diagnosis a reader meets first, and "the script cannot
-    // produce output even unpoisoned" is the more fundamental failure: it
-    // explains an empty poisoned half too, whereas the reverse is not true.
+    // The sanitized half is asserted FIRST because it decides which diagnosis a
+    // reader meets first, and "the script cannot produce output even
+    // unpoisoned" is the more fundamental failure: it explains an empty
+    // poisoned half too, whereas the reverse is not true.
     assert!(
         !sanitized.stdout.trim().is_empty(),
         "stripping GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE did NOT restore the \
-         audit script's output — it emitted nothing (exit {:?}). Stripping \
-         those vars is supposed to be the whole cure, and the environment is \
-         already vetted: `reify_test_support::run_orphan_audit` ran this same \
-         script against this same scope moments ago and got an envelope, or \
-         this test would have skipped. So the difference is something this \
-         test's own two spawns introduce — a mis-sanitized command, or a \
-         `.parent()` walk resolving a different script than the gate vetted. \
-         The stderr below is the script's own account.\n\
+         audit script's output — it emitted nothing (exit {:?}). The \
+         environment is already vetted: `run_orphan_audit` ran this same script \
+         against this same scope moments ago and got an envelope, or this test \
+         would have skipped. So the difference is something this test's own two \
+         spawns introduce — a mis-sanitized command, or a `.parent()` walk \
+         resolving a different script than the gate vetted.\n\
          --- sanitized stdout (truncated) ---\n{:.400}\n\
          --- sanitized stderr (truncated) ---\n{:.400}",
         sanitized.status.code(),
@@ -580,21 +568,18 @@ fn hook_git_env_defeats_the_audit_script_and_stripping_it_cures_the_defeat() {
     // Status and stderr are asserted BEFORE the emptiness they explain. Empty
     // stdout is produced both by the hazard (scan redirected into the empty
     // decoy, script runs to completion, exit 0) and by the script dying before
-    // it scanned anything (exit non-zero) — so the emptiness check alone cannot
-    // attribute the silence to the GIT_DIR/GIT_WORK_TREE redirect, and a broken
-    // fixture would report as a green demonstration of the hazard.
+    // it scanned anything (exit non-zero), so the emptiness check alone would
+    // report a broken fixture as a green demonstration of the hazard.
     assert!(
         poisoned.status.success(),
         "the audit script did not RUN under the hook git environment — it \
-         exited {:?} rather than 0. This test's claim is that the poison \
-         redirects the scan into an empty decoy tree which the script then \
-         reports on normally, NOT that the poison kills the script. A non-zero \
-         exit means the decoy is malformed rather than merely empty (a tempdir \
-         cleaned early, a `git init` that left no usable object store), so the \
-         script's own `git rev-parse --show-toplevel` failed under `set -euo \
-         pipefail` and it aborted before scanning. Fix the fixture — do not \
-         relax this assertion, or the empty stdout below stops meaning \
-         anything.\n\
+         exited {:?} rather than 0. The claim here is that the poison redirects \
+         the scan into an empty decoy tree the script then reports on normally, \
+         NOT that the poison kills it. A non-zero exit means the decoy is \
+         malformed rather than merely empty (a tempdir cleaned early, a `git \
+         init` that left no usable object store), so the script aborted before \
+         scanning. Fix the fixture — relaxing this assertion makes the empty \
+         stdout below stop meaning anything.\n\
          --- poisoned stderr (truncated) ---\n{:.400}",
         poisoned.status.code(),
         poisoned.stderr,
@@ -607,12 +592,11 @@ fn hook_git_env_defeats_the_audit_script_and_stripping_it_cures_the_defeat() {
     assert!(
         poisoned.stderr.contains(NO_SOURCES_MARKER),
         "the audit script exited 0 under the hook git environment but did not \
-         report {NO_SOURCES_MARKER:?} — so it did not take the \
-         scanned-an-empty-tree path this test claims the poison forces it \
-         down, and the empty stdout below has some other cause. Either the \
-         script's no-match reporting changed (update this marker) or the \
-         poison is no longer redirecting the scan (see the two causes in the \
-         next assertion).\n\
+         report {NO_SOURCES_MARKER:?}, so it did not take the \
+         scanned-an-empty-tree path the poison is supposed to force and the \
+         empty stdout below has some other cause. Either the script's no-match \
+         reporting changed (update this marker) or the poison is no longer \
+         redirecting the scan (see the next assertion's two causes).\n\
          --- poisoned stderr (truncated) ---\n{:.400}",
         poisoned.stderr,
     );
@@ -621,17 +605,15 @@ fn hook_git_env_defeats_the_audit_script_and_stripping_it_cures_the_defeat() {
         poisoned.stdout.trim().is_empty(),
         "the hook git environment no longer defeats the audit script: with \
          GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE pointed at an empty decoy repo, the \
-         script still emitted {} byte(s) on stdout (exit {:?}), the same shape the \
-         sanitized run produced. Two possible causes, and they need opposite \
-         responses. (1) This harness regressed and the poison never reached the \
-         child — check that `poison_with_hook_git_env` still applies all three vars \
-         to the POISONED command, and that `decoy_repo` still yields an empty tree; \
-         fix it. (2) The script deliberately hardened itself, e.g. it no longer \
-         resolves its repo root via `git rev-parse --show-toplevel`; then this \
-         hazard is genuinely dead, and the right move is to retire this whole trio \
-         (see this module's doc) together with reify-test-support's `sanitize()`, \
-         rather than to weaken this assertion back into a log line that no passing \
-         run ever shows.\n\
+         script still emitted {} byte(s) on stdout (exit {:?}). Two causes needing \
+         opposite responses. (1) This harness regressed and the poison never \
+         reached the child — check that `poison_with_hook_git_env` still applies \
+         all three vars to the POISONED command and that `decoy_repo` still yields \
+         an empty tree; fix it. (2) The script hardened itself, e.g. it no longer \
+         resolves its repo root via `git rev-parse --show-toplevel`; then the \
+         hazard is dead and the remedy is to retire this whole trio (module doc) \
+         together with reify-test-support's `sanitize()`, never to weaken this \
+         assertion into a log line no passing run shows.\n\
          --- poisoned stdout (truncated) ---\n{:.400}\n\
          --- poisoned stderr (truncated) ---\n{:.400}",
         poisoned.stdout.len(),
@@ -639,95 +621,4 @@ fn hook_git_env_defeats_the_audit_script_and_stripping_it_cures_the_defeat() {
         poisoned.stdout,
         poisoned.stderr,
     );
-}
-
-/// [`common::git_env::libtest_summary_count`] is the single parser both the
-/// replay's non-vacuity checks and
-/// [`replay_child_hard_fails_only_when_the_parent_verified_an_envelope`]'s two
-/// count assertions read child summaries through, so a bug in it surfaces there
-/// as a confusing count mismatch attributed to the child. Pinned over literal
-/// summary lines rather than a spawned child, since these are pure-function
-/// properties; the fixtures carry the trailing `finished in` segment this
-/// toolchain's libtest actually appends, so they drive the exact shape the two
-/// real call sites read.
-#[test]
-fn libtest_summary_count_reads_the_field_it_was_asked_for() {
-    use common::git_env::libtest_summary_count;
-
-    const OK: &str = "test result: ok. 5 passed; 0 failed; 2 ignored; 0 measured; \
-                      30 filtered out; finished in 0.01s";
-    const FAILED: &str = "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; \
-                          3 filtered out; finished in 0.01s";
-
-    // Both summary verdicts parse — the `FAILED.` shape is what half B of the
-    // discrimination test reads, and it differs from `ok.` before the counts.
-    assert_eq!(libtest_summary_count(OK, "passed"), Some(5));
-    assert_eq!(libtest_summary_count(OK, "failed"), Some(0));
-    assert_eq!(libtest_summary_count(OK, "ignored"), Some(2));
-    assert_eq!(libtest_summary_count(FAILED, "passed"), Some(0));
-    assert_eq!(libtest_summary_count(FAILED, "failed"), Some(1));
-
-    // The count is parsed as a NUMBER, so a 21-passing run is not read as the 1
-    // that both `Some(1)` call sites compare against. A substring match on
-    // `"1 passed"` would return `Some(1)` here and silently turn each of those
-    // assertions into a green.
-    const TWENTY_ONE: &str = "test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; \
-                              0 filtered out; finished in 0.01s";
-    assert_eq!(libtest_summary_count(TWENTY_ONE, "passed"), Some(21));
-
-    // A field this parser knows nothing about yields `None`, NOT a count. Both
-    // call sites compare against `Some(1)`, so a misspelled field fails the
-    // assertion rather than reading some neighbouring number.
-    assert_eq!(libtest_summary_count(OK, "pased"), None);
-    assert_eq!(libtest_summary_count(OK, "measured"), Some(0));
-
-    // No summary at all: `None`, which the replay turns into its "could not
-    // find libtest's `test result:` summary" panic.
-    assert_eq!(libtest_summary_count("", "passed"), None);
-    assert_eq!(
-        libtest_summary_count("running 1 test\ntest foo ... ok\n", "passed"),
-        None
-    );
-}
-
-/// The LAST `test result:` line wins — the other property
-/// [`common::git_env::libtest_summary_count`]'s doc claims, and the one that
-/// matters in practice: every replay child is spawned with `--nocapture`, so a
-/// test's own stdout is interleaved with libtest's and can carry the same
-/// prefix.
-///
-/// Not hypothetical for this binary: the child runs
-/// `reify_audit_pub_fns_are_g_allow_marked`, whose failure message embeds the
-/// audit's JSON, and this file's own assertion messages embed truncated child
-/// stdout — which is a real summary line, verbatim, one nesting level down.
-#[test]
-fn libtest_summary_count_takes_the_last_summary_line() {
-    use common::git_env::libtest_summary_count;
-
-    // A decoy `test result:` line emitted by the test's OWN output under
-    // `--nocapture`, ahead of the real summary. Reading the first match would
-    // report the decoy's 99.
-    let interleaved = concat!(
-        "running 1 test\n",
-        "some test echoed a captured child summary:\n",
-        "test result: ok. 99 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; \
-         finished in 0.01s\n",
-        "test reify_audit_pub_fns_are_g_allow_marked ... ok\n",
-        "\n",
-        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; \
-         finished in 0.01s\n",
-    );
-    assert_eq!(libtest_summary_count(interleaved, "passed"), Some(1));
-
-    // libtest indents nothing, but a nested child's summary reaching the parent
-    // through a `--- child stdout ---` block may arrive indented. The parser
-    // trims before matching the prefix, so such a line is still a candidate —
-    // and being LAST is what decides, not indentation.
-    let indented = concat!(
-        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; \
-         finished in 0.01s\n",
-        "    test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; \
-         finished in 0.01s\n",
-    );
-    assert_eq!(libtest_summary_count(indented, "passed"), Some(2));
 }
