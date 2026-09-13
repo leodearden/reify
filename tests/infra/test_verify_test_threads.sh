@@ -260,12 +260,28 @@ _gen_cleanup() {
 # the boundaries stop '64' from satisfying a search for '4' or for '8'.
 _names() { grep -qE "(^|[^0-9])$2([^0-9]|\$)" "$1"; }
 
-# 6a: the default must be byte-identical to today — no diagnostic, path on stdout.
+# 6a: the default must be byte-identical to today — path on stdout, and NOTHING
+# on stderr.
+#
+# The stderr check is an EMPTY-FILE assertion, and deliberately so.  An earlier
+# form here grepped that stderr for the string `REIFY_NEXTEST_CLI_TEST_THREADS`
+# and asserted its absence — which could never fail, under any generator
+# behaviour: the generator's two diagnostics are spelled
+# `gen-nextest-config.sh: ERROR — --test-threads=<N> …` and
+# `gen-nextest-config.sh: note — --test-threads=<N> …`, and neither writes the
+# identifier.  Measured: 0 occurrences on the note branch.  That made 6a a
+# tautology dressed as an assertion — it degenerated to "exit 0 and a file
+# exists".
+#
+# Empty-stderr is also strictly STRONGER than grepping for the two known
+# diagnostics: it reds if the default path starts emitting any OTHER spurious
+# output too, which is exactly the byte-identical-to-today property 6a exists to
+# pin.  Measured as the unset path's actual behaviour: rc 0, 0 bytes of stderr.
 _check_6a() {
     local ok=0
     _gen ""
     if [ "$_GEN_RC" -eq 0 ] && [ -f "${_GEN_OUT:-}" ] \
-       && ! grep -q 'REIFY_NEXTEST_CLI_TEST_THREADS' "$_GEN_ERR"; then ok=1; fi
+       && [ ! -s "$_GEN_ERR" ]; then ok=1; fi
     _gen_cleanup
     [ "$ok" -eq 1 ]
 }
@@ -321,10 +337,46 @@ _check_6d() {
     grep -qE 'REIFY_NEXTEST_CLI_TEST_THREADS="?\$\{?TEST_THREADS' <<<"$lines"
 }
 
+# 6e: THE ENV-LEAK TRIPWIRE — the executable proof of this block's HERMETIC
+# claim, which is otherwise an advertisement rather than a guarantee.
+#
+# THE EXPOSURE IS REAL, NOT HYPOTHETICAL.  scripts/verify-pipeline-infra-tests.txt
+# line 44 maps `scripts/verify.sh -> tests/infra/test_verify_*.sh`, so this suite
+# is selected and executed as a CHILD of a verify.sh run — and verify.sh (~675)
+# now `export`s REIFY_NEXTEST_CLI_TEST_THREADS process-globally whenever
+# --test-threads=N is passed.  A `_gen` branch that merely OMITS an assignment
+# prefix does not unset anything, so that value walks straight into the
+# generator.  Measured against the omit-only form: rc=64 and the ERROR
+# diagnostic, i.e. 6a reds for a reason that has nothing to do with what 6a
+# tests.
+#
+# BOTH knobs are polluted here, not just the subject one.  REIFY_NEXTEST_TEST_THREADS
+# REPLACES the derived `tt` wholesale (gen-nextest-config.sh:315), so an inherited
+# value would silently move the pool off the 8 that 6b and 6c assert exact
+# integers against — a quieter failure than 6c's, and one that would make those
+# asserts wrong rather than red.
+#
+# This is a tripwire, not padding: without it the hermeticity fix in `_gen` can be
+# undone by a future edit with nothing going red.
+_check_6e() {
+    local ok
+    # Subshell: the deliberate pollution must not outlive this assert.
+    ok=$(
+        export REIFY_NEXTEST_CLI_TEST_THREADS=64
+        export REIFY_NEXTEST_TEST_THREADS=1
+        _gen ""
+        _r=0
+        if [ "$_GEN_RC" -eq 0 ] && [ -f "${_GEN_OUT:-}" ] && [ ! -s "$_GEN_ERR" ]; then _r=1; fi
+        _gen_cleanup
+        printf '%s' "$_r"
+    )
+    [ "$ok" = "1" ]
+}
+
 echo ""
 echo "--- Test 6: a forwarded CLI --test-threads must not silently defeat the generated pool ---"
 
-assert "6a: REIFY_NEXTEST_CLI_TEST_THREADS unset -> exit 0, path on stdout, no override diagnostic (default byte-identical to today)" \
+assert "6a: REIFY_NEXTEST_CLI_TEST_THREADS unset -> exit 0, path on stdout, and stderr EMPTY (default byte-identical to today; an earlier grep-for-the-identifier form could never fail)" \
     _check_6a
 
 assert "6b: REIFY_NEXTEST_CLI_TEST_THREADS=4 (<= derived pool 8) -> exit 0, path still printed, stderr names BOTH 4 and 8 (capping below is sanctioned, but visible)" \
@@ -335,6 +387,9 @@ assert "6c: REIFY_NEXTEST_CLI_TEST_THREADS=64 (> derived pool 8) -> non-zero exi
 
 assert "6d: verify.sh exports REIFY_NEXTEST_CLI_TEST_THREADS from \$TEST_THREADS on exactly ONE non-comment line" \
     _check_6d
+
+assert "6e: an INHERITED REIFY_NEXTEST_CLI_TEST_THREADS/REIFY_NEXTEST_TEST_THREADS must not reach the generator — the unset path stays rc 0, path on stdout, empty stderr even when both knobs are exported (this suite runs as a child of verify.sh, which exports the first)" \
+    _check_6e
 
 
 test_summary
