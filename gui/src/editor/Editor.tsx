@@ -24,6 +24,7 @@ import {
   type RenameUi,
   type ApplyEditFn,
 } from './rename';
+import { createDocumentVersions } from './documentVersions';
 import { findUsesCommand, type ReferenceResult } from './references';
 import { createNavHistory } from '../hooks/useNavHistory';
 import type { NavEntry } from '../hooks/useNavHistory';
@@ -89,7 +90,7 @@ export function Editor(props: EditorProps) {
   let debounceTimer: ReturnType<typeof setTimeout> | undefined;
   let lspDebounceTimer: ReturnType<typeof setTimeout> | undefined;
   let previousActiveFile: string | null = null;
-  let lspVersion = 1;
+  const docVersions = createDocumentVersions();
   const fileStates = new Map<string, EditorState>();
   let extensions: Extension[];
   let unlistenDiagnostics: (() => void) | undefined;
@@ -333,9 +334,8 @@ export function Editor(props: EditorProps) {
             console.error('rename: failed to save inactive buffer', err),
           );
           // Notify the LSP server (file may not be LSP-open yet — ignore any error).
-          lspVersion++;
           lspClient
-            .didChange(uri, newContent, lspVersion)
+            .didChange(uri, newContent, docVersions.next(uri))
             .catch((_err: unknown) => {
               /* file may not be didOpen'd in LSP yet — ignore */
             });
@@ -404,7 +404,9 @@ export function Editor(props: EditorProps) {
           // and applying the WorkspaceEdit dispatches one CM change that flows
           // through the updateListener below → markDirty + updateSource + didChange.
           key: 'F2',
-          run: renameCommand(() => currentUri, lspClient, renameUi, applyEditFn),
+          run: renameCommand(() => currentUri, lspClient, renameUi, applyEditFn, (uri) =>
+            docVersions.current(uri),
+          ),
           preventDefault: true,
         },
         {
@@ -538,9 +540,9 @@ export function Editor(props: EditorProps) {
             // Send didChange to LSP (debounced)
             clearTimeout(lspDebounceTimer);
             lspDebounceTimer = setTimeout(() => {
-              lspVersion++;
+              const uri = pathToUri(path);
               lspClient
-                .didChange(pathToUri(path), update.state.doc.toString(), lspVersion)
+                .didChange(uri, update.state.doc.toString(), docVersions.next(uri))
                 .catch((err: unknown) => console.error('LSP didChange error:', err));
             }, EDITOR_DEBOUNCE_MS);
           }
@@ -583,7 +585,7 @@ export function Editor(props: EditorProps) {
       .then(() => lspClient.initialized())
       .then(() => {
         if (activeFile) {
-          return lspClient.didOpen(currentUri, doc, lspVersion);
+          return lspClient.didOpen(currentUri, doc, docVersions.next(currentUri));
         }
       })
       .catch((_err: unknown) =>
@@ -675,8 +677,13 @@ export function Editor(props: EditorProps) {
 
     // Close old document and open new one in the LSP server.
     // Chain off fileOpsPromise to serialize rapid file switches.
-    lspVersion++;
-    const version = lspVersion;
+    //
+    // The version is taken here, not inside the chain, so rapid switches keep
+    // the numbers in the order their notifications were queued. didClose ends
+    // the old document's life on the server, so its counter is dropped with it —
+    // a later reopen then starts a fresh sequence at 1, as a new didOpen must.
+    const version = docVersions.next(newUri);
+    docVersions.forget(oldUri);
     fileOpsPromise = fileOpsPromise
       .then(() => lspClient.didClose(oldUri))
       .then(() => {
