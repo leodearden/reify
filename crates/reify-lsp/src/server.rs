@@ -1036,6 +1036,58 @@ mod tests {
         );
     }
 
+    /// The client's `workspace.workspaceEdit.documentChanges` capability decides
+    /// which edit representation `rename` emits. Only an explicit `Some(true)`
+    /// opts a client in; an absent capability is the LSP default — false — which
+    /// is what keeps every third-party editor (and every existing rename test)
+    /// on the legacy unversioned `changes` map.
+    #[tokio::test]
+    async fn initialize_records_client_document_changes_capability() {
+        async fn flag_after_initialize(params: InitializeParams) -> bool {
+            let (service, _socket) = test_service();
+            let server = service.inner();
+            server.initialize(params).await.unwrap();
+            let state = server.state().read().await;
+            state.client_supports_document_changes
+        }
+
+        fn with_workspace_edit(
+            workspace_edit: WorkspaceEditClientCapabilities,
+        ) -> InitializeParams {
+            InitializeParams {
+                capabilities: ClientCapabilities {
+                    workspace: Some(WorkspaceClientCapabilities {
+                        workspace_edit: Some(workspace_edit),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        }
+
+        let declared = with_workspace_edit(WorkspaceEditClientCapabilities {
+            document_changes: Some(true),
+            ..Default::default()
+        });
+        assert!(
+            flag_after_initialize(declared).await,
+            "documentChanges: true must opt the client into versioned edits"
+        );
+
+        assert!(
+            !flag_after_initialize(InitializeParams::default()).await,
+            "no workspace capabilities at all means the legacy changes map \
+             (third-party stdio editors must not be broken)"
+        );
+
+        let present_but_unset = with_workspace_edit(WorkspaceEditClientCapabilities::default());
+        assert!(
+            !flag_after_initialize(present_but_unset).await,
+            "workspaceEdit present but documentChanges unstated is still false"
+        );
+    }
+
     #[tokio::test]
     async fn initialize_returns_full_sync_capability() {
         let (service, _socket) = test_service();
