@@ -266,6 +266,42 @@ comparison is vacuous: an empty census makes every row look like a deleted
 file, which would otherwise read as an exit-0 all-clear from a run that
 scanned nothing. A green PDIAG has to mean the detector looked.
 
+### Regeneration is tree-bound
+
+A regenerated manifest is valid for **exactly the tree it was run against**.
+Any subsequent rebase, merge, amend or cherry-pick — including one the merge
+queue performs on your behalf — produces a different tree and silently
+invalidates it. This is not an ordering nicety: it is how this detector's own
+"final bootstrap reconciliation" shipped a stale row. That commit regenerated
+the census and committed it, and was then replayed onto a newer base; the tree
+that was measured and the tree that was committed were no longer the same one.
+
+So "regenerate last" is not a sufficient rule — an agent that rebases after
+regenerating still believes it regenerated last. The checkable form is:
+**re-run the census against the committed tree**, after the commit and after
+any replay, and require an empty diff.
+
+```
+git status --porcelain    # must be empty
+cargo run -p reify-audit --bin pdiag-baseline-gen -- --project-root . \
+  | diff -u crates/reify-audit/pdiag-baseline.txt -
+```
+
+The first command establishes that the tree you are measuring is the tree you
+are shipping; the second is the proof. A green captured *before* the commit, or
+before a rebase, says nothing about what lands.
+
+The hazard is not confined to files your branch touches, because the manifest
+stores **absolute** per-file counts rather than a delta against main. Every row
+that drifted under this detector's own branch named a file outside its diff:
+`modal_ops.rs` 18 → 19 → 21 → 25, `geometry_ops.rs` 134 → 136 → 138,
+`auto_type_param_phase.rs` 1 → 2, `elastic_static.rs` 7 → 12.
+
+This is a **bootstrap** hazard, and it is self-limiting. It exists only while
+PDIAG is not yet enforced on `main`: once it is, `main` cannot add a code-less
+site to a baselined file without going red itself, which closes the drift
+source at its origin.
+
 ### Scope — what PDIAG does not scan
 
 The detector sweeps `crates/*/src/**.rs` and `gui/src-tauri/src/**.rs` only,

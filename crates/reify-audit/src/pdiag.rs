@@ -748,6 +748,11 @@ const BASELINE_GEN_BIN: &str = "cargo run -p reify-audit --bin pdiag-baseline-ge
 /// having lost the entire deterrent. Nothing but a direct byte comparison can
 /// see that, and a test can only make it when the constant is reachable —
 /// which it was not while this lived inside `src/bin/pdiag-baseline-gen.rs`.
+///
+/// The tree-bound rule is spelled out here rather than only in the policy doc
+/// because its reader is an agent mid-landing, looking at this file in a diff:
+/// a regeneration replayed onto another base is stale, and the preamble is the
+/// only place that fact travels with the bytes it invalidates.
 pub const BASELINE_HEADER: &str = "\
 # PDIAG baseline — per-file allowance of code-less Diagnostic::error/warning
 # construction sites (INV-SF-6 diagnostics-carry-codes).
@@ -764,6 +769,17 @@ pub const BASELINE_HEADER: &str = "\
 # reviewed `// pdiag:allow — reason` opt-out / fix the sites and shrink the row
 # IN THE SAME COMMIT) are in docs/notes/diagnostic-severity-policy.md §3. The
 # one exception is a pure MOVE or RENAME, where regenerating IS the fix — §3(d).
+#
+# A regeneration is valid for EXACTLY the tree it ran against. Any later
+# rebase, merge, amend or cherry-pick — including one the merge queue performs
+# — is a different tree and invalidates it. Counts below are ABSOLUTE, so a
+# file your branch never touched can drift underneath you. Re-verify on the
+# COMMITTED tree, after the commit and after any such replay:
+#   git status --porcelain    # must be empty
+#   cargo run -p reify-audit --bin pdiag-baseline-gen -- --project-root . \\
+#     | diff -u crates/reify-audit/pdiag-baseline.txt -
+# An empty diff is the proof; a green captured before the commit is not. See
+# docs/notes/diagnostic-severity-policy.md §3 \"Regeneration is tree-bound\".
 #
 # Format: `<repo-relative-path> <count>`, ascending by path, no zero rows.
 ";
