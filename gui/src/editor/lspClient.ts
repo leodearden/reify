@@ -201,11 +201,14 @@ async function lspRequest(method: string, params: unknown): Promise<string> {
 export function createLspClient(): LspClient {
   return {
     async initialize(rootUri?: string): Promise<InitializeResult> {
+      // Declaring documentChanges is what makes the server answer rename with
+      // the VERSIONED representation; without it every edit arrives unversioned
+      // and the client's skew guard has nothing to compare against.
+      const capabilities = { workspace: { workspaceEdit: { documentChanges: true } } };
       // κ (task 4210): forward rootUri so the backend sets workspace_root, which
       // activates cross-file references/rename. Omit the key entirely when no root
-      // is given so the params stay { capabilities: {} } (single-file fallback).
-      const params =
-        rootUri === undefined ? { capabilities: {} } : { rootUri, capabilities: {} };
+      // is given (single-file fallback).
+      const params = rootUri === undefined ? { capabilities } : { rootUri, capabilities };
       const response = await lspRequest('initialize', params);
       return JSON.parse(response) as InitializeResult;
     },
