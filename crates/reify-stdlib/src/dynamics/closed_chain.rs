@@ -209,29 +209,15 @@ pub fn solve_closed_chain(
 ///    along the closing joint's own axis, so keeping the ωy row would
 ///    over-constrain it.
 ///
-///    **Task 7186 note — the original justification no longer holds as
-///    written.** This step used to be justified by "the kinematic Newton
-///    solve zeros the residual in that direction by adjusting the closing
-///    joint's *free coordinate*". That was true only while `append_body`
-///    appended the closing joint to `path_b`, which put it in `chain_b` and
-///    hence made it eligible for `free_b`. Post-7186 the closing joint sits
-///    at the tail of `chain_a` and is resolved from bindings or its range
-///    midpoint; the Newton free coordinates are `chain_b`'s unbound joints
-///    (`free_b`), which never include it. The projection itself is UNCHANGED
-///    and every in-tree expectation still holds — notably
-///    `closed_chain_idyn_e2e.rs::closed_4bar_live_constraint_rank`, which
-///    hand-builds the post-7186 asymmetric chain pair and derives `m_eff = 2`
-///    row by row with ωz absorbed.
-///
-///    Hypothesis (NOT verified here, and deliberately not acted on in 7186):
-///    with the closing joint composed exactly once, a planar N-revolute loop
-///    has 3 independent closure equations, so projecting ωz out may now
-///    remove a genuine constraint row rather than a redundant one. Deciding
-///    that requires re-deriving the GAP-3 rank policy against the corrected
-///    chains, which is a policy change beyond a chain-composition fix; it is
-///    filed as follow-up task #7312. Do not "fix" the rank here without that
-///    derivation — `closed_4bar_live_constraint_rank` asserts `m_eff = 2`
-///    with `assert_eq!` precisely so a silent drift fails loudly.
+///    **This projection is UNVERIFIED against the corrected chains.** It was
+///    justified by the Newton solve adjusting the closing joint's own free
+///    coordinate, which no longer describes the builder: the closing joint is
+///    composed on `chain_a` alone and resolved from bindings or its range
+///    midpoint, so it is never among `free_b`. Projection and in-tree
+///    expectations are unchanged — `closed_chain_idyn_e2e.rs::closed_4bar_live_constraint_rank`
+///    derives `m_eff = 2` row by row with ωz absorbed, under `assert_eq!` so
+///    drift fails loudly — but re-deriving whether ωz is still a redundant row
+///    is task #7312, so do not "fix" the rank here without that derivation.
 ///
 /// 2. **Numerical row reduction** — Gaussian elimination with partial row
 ///    pivoting collects rows whose pivot exceeds `eps`.  Zero rows from step 1

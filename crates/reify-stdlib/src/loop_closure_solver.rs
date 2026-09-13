@@ -859,7 +859,7 @@ fn dof_count_for_balance(kind: crate::loop_closure_value::JointKind) -> usize {
 ///   `chain_b` is also guaranteed NON-EMPTY for a builder-produced record:
 ///   the only shape that would empty it is a closing edge parented to the
 ///   world sentinel, and `append_body` rejects that at build time with
-///   `error = "world_parented_closure"` (task 7186 step-10).
+///   `error = "world_parented_closure"`.
 /// - `Cycle` — the closing joint appears in `chain_b` (once or more).
 ///   Produced by the cycle/self-loop branch of `append_body`, and by the
 ///   ancestor case of the parent-conflict branch. **Not** a valid linear

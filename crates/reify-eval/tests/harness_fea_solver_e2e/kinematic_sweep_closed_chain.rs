@@ -269,8 +269,8 @@ fn sweep_closed_chain_warm_start_e2e() {
         // chain_a tip driver + midpoint(jX); body 2 (at j_b, parent world)
         // carries the solver-driven solved_jB, the chain_b tip.
         //
-        // Body 3 is the CLOSING body (at j_x, parent j_b), and task 7186
-        // review fix 2 changed how `snapshot.rs::walk_fk` composes it: a
+        // Body 3 is the CLOSING body (at j_x, parent j_b), and
+        // `snapshot.rs::walk_fk` composes it specially: a
         // parent-conflict closing body (detected by `joint_parents[at]`
         // disagreeing with `body.parent` — here j_a vs j_b) is composed from
         // `T(body.parent) ∘ pose` = T(j_b), chain_b's terminal frame, under

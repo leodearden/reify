@@ -259,8 +259,8 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
             // stability (the BTreeMap key invariant {bodies, free_values,
             // kind} stays alphabetically consistent across mechanism
             // shapes).
-            // Which bodies take the rigid-tie base frame in the FK walk
-            // (task 7186 review fix 2). Derived once from the closure records
+            // Which bodies take the rigid-tie base frame in the FK walk.
+            // Derived once from the closure records
             // and shared by BOTH walks below — the cold open-chain walk (where
             // it is empty) and the synthesized-bindings re-walk.
             let closing_body_ids = parent_conflict_closing_body_ids(loop_closures);
@@ -767,7 +767,7 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
 ///
 /// `walk_fk` composes exactly these bodies' `pose` off `T(body.parent)` instead
 /// of `T(at)` — the rigid-tie rule `T_tree(at) == T(parent) ∘ pose` that task
-/// 7186 review fix 2 gave a closing edge. Membership is read from the closure
+/// 7186 gave a closing edge. Membership is read from the closure
 /// RECORD rather than inferred from a `joint_parents` disagreement; the walk-site
 /// comment records the cycle-body shape that makes the inference unsound.
 ///
@@ -847,57 +847,41 @@ fn walk_fk(
         let at = body_map.get(&Value::String("at".to_string()))?.clone();
         let pose = body_map.get(&Value::String("pose".to_string()))?.clone();
 
-        // Task 7186 review fix 2 — which frame this body's pose offsets FROM.
+        // Which frame this body's pose offsets FROM.
         //
-        // A body is a PARENT-CONFLICT CLOSING body iff the mechanism's
-        // `loop_closures` list carries a PARENT-CONFLICT record naming its
-        // `id` (`closing_body_ids`, computed by
-        // `parent_conflict_closing_body_ids`) AND `joint_parents` records a
-        // spanning-tree parent for its `at` that DISAGREES with the body's own
-        // `parent` field. That disagreement is exactly the one
-        // `make_body_record`'s doc note (mechanism.rs) describes: on a closing
-        // edge the body record keeps the user-supplied `parent` (user intent)
-        // while the spanning tree keeps the first-recorded edge. Keep the two
-        // comments cross-referencing.
-        //
-        // The record test is the LOAD-BEARING half and the disagreement is a
-        // redundant cross-check, because the disagreement ALONE is not a
-        // sufficient condition. A cycle / self-loop closing body has no
-        // `joint_parents` entry for its `at` **at append time** — but a LATER
-        // open `body()` call at the same `at` inserts one, and it can disagree
-        // with the cycle body's own `parent`:
-        //   body(m, X, jC, jA)  → jC: jA
-        //   body(m, Y, jA, jC)  → cycle branch, inserts nothing
-        //   body(m, Z, jA, world) → jA: world
-        // leaves `joint_parents[jA] = world != Y.parent = jC`. On the
-        // disagreement alone Y would be composed from `T(jC)` (= T(jA) ∘ T(jC))
-        // instead of `T(jA)` — a silently different world transform for a body
-        // whose closure record is a non-solver-feedable `Cycle`. Snapshot world
-        // transforms feed distance / interference queries, so that is the same
-        // wrong-geometry class this fix closes elsewhere.
-        //
-        // For those bodies the base frame is `T(body.parent)`, not `T(at)`,
-        // because `append_body` records the closing edge as a rigid 0-DOF TIE
-        // `parent --pose--> at`: the residual it emits is
+        // A PARENT-CONFLICT CLOSING body offsets from `T(body.parent)`, not
+        // `T(at)`, because `append_body` records the closing edge as a rigid
+        // 0-DOF TIE `parent --pose--> at` whose residual is
         // `T_tree(at) == T(parent) ∘ pose`. Composing `T(parent) ∘ pose` here
-        // makes FK and the residual THE SAME composition — the closing body is
-        // placed on chain_b's terminal frame, which equals chain_a's terminal
-        // `T_tree(at)` precisely when the closure is satisfied. So the body
-        // always rides on a frame the solve actually enforced, and when the
-        // solve does NOT converge it lands on the closure side rather than
-        // somewhere neither chain describes.
+        // makes FK and the residual THE SAME composition: the body is placed on
+        // chain_b's terminal frame, which equals chain_a's terminal
+        // `T_tree(at)` exactly when the closure is satisfied. It therefore
+        // always rides a frame the solve enforced, and on non-convergence
+        // lands on the closure side rather than somewhere neither chain
+        // describes. Offsetting from `T(at)` instead applies `pose` a SECOND
+        // time — it is already inside the residual that placed `at`.
         //
-        // Reading `pose` off `T(at)` instead applied it a SECOND time (it is
-        // already inside the residual that placed `at`): measured on the
-        // rigid-platform fixture, the closing body sat 206.2 mm from the pivot
-        // the solve had just enforced.
+        // The condition is two-part: the body's `id` appears in
+        // `closing_body_ids` AND `joint_parents` records a tree parent for its
+        // `at` that DISAGREES with the body's own `parent`. On a closing edge
+        // the body record keeps user intent while the spanning tree keeps the
+        // first-recorded edge (see `make_body_record`'s doc note in
+        // mechanism.rs — keep the two cross-referencing).
         //
-        // EVERY other body keeps the previous composition byte for byte:
-        // open-chain bodies carry no closure record at all, and every body
-        // whose record `mechanism_loop_closure_chains` calls `Cycle` — the
-        // cycle / self-loop branch AND the ancestor case — carries one that
-        // `parent_conflict_closing_body_ids` excludes, because both read the
-        // same `closing_side_repeats_closing_joint` predicate.
+        // The RECORD test is load-bearing; the disagreement is a redundant
+        // cross-check. The disagreement alone is not sufficient: a cycle body
+        // acquires one RETROACTIVELY when a later open `body()` call registers
+        // a tree parent for its `at`, and composing it off that parent would
+        // silently move a body whose closure is a non-solver-feedable `Cycle`.
+        // Pinned by
+        // `snapshot_cycle_body_keeps_its_own_frame_after_later_tree_registration`.
+        //
+        // EVERY other body keeps the plain `T(at)` composition: open-chain
+        // bodies carry no closure record, and every body whose record
+        // `mechanism_loop_closure_chains` calls `Cycle` — the cycle /
+        // self-loop branch AND the ancestor case — is excluded by
+        // `parent_conflict_closing_body_ids`, because both read the same
+        // `closing_side_repeats_closing_joint` predicate.
         let closing_parent = if closing_body_ids.contains(&id) {
             match joint_parents.get(&at) {
                 Some(tree_parent) => match body_map.get(&Value::String("parent".to_string())) {
@@ -916,7 +900,7 @@ fn walk_fk(
         let base_world = match &closing_parent {
             // The world sentinel is the ONLY parent whose base frame is a bare
             // identity: it contributes no motion of its own. It is never a key
-            // in `joint_parents`, and since task 7186 step-10 the builder
+            // in `joint_parents`, and since the world-parent guard the builder
             // rejects a world-parented closing edge outright with
             // `error = "world_parented_closure"`, so this arm is unreachable
             // from `body()` and survives only for hand-built mechanism Maps.
@@ -952,7 +936,7 @@ fn walk_fk(
             // Calling `joint_world_transform` instead would hit its leading
             // `joint_parents.get(joint)?` and return None, turning the WHOLE
             // mechanism's snapshot into `Value::Undef` — the silent
-            // whole-mechanism failure class the step-10 guard exists to
+            // whole-mechanism failure class the world-parent guard exists to
             // eliminate. Teaching THAT function to treat a missing entry as an
             // implicit world root would unify the two (a SPOT win), but it
             // also changes the `None` arm below, where cycle / self-loop
@@ -3187,8 +3171,8 @@ mod tests {
         // jB_solved + jX_value (jX projects onto +X via its initial frame, so
         // its translation contribution is zero — purely rotational).
         //
-        // **Task 7186 review fix 2 — what this assertion now measures.**
-        // Before that fix the FK walk read `joint_parents` (which records
+        // **What this assertion measures.**
+        // A pre-7186 FK walk read `joint_parents` (which records
         // jX → jA) for EVERY body, so body 3's transform came from chain_a
         // (jA ∘ jX). Now a parent-conflict CLOSING body is composed from
         // `body.parent` instead: T(jB) — chain_b's terminal frame, which is
@@ -3826,7 +3810,7 @@ mod tests {
             "platform tz must be 0.250 m, got {tz}"
         );
 
-        // ── task 7186 review fix 2: the OTHER two bodies ─────────────────
+        // ── the OTHER two bodies ──────────────────────────────────────────
         //
         // Asserting body 0 alone is exactly the gap that hid the defect:
         // `walk_fk` read `pose` as an offset from the body's OWN `at` frame
@@ -3878,13 +3862,13 @@ mod tests {
         }
     }
 
-    /// **Task 7186 review fix 4.** The geometry pin for a closing edge whose
+    /// The geometry pin for a closing edge whose
     /// `parent` is a REAL joint that was never registered as anyone's `at`.
     ///
     /// `mechanism.rs::non_world_parented_closing_edge_still_records` pins that
     /// this shape BUILDS and that its snapshot is not `Undef`; that is a
-    /// liveness check only, and liveness is exactly what let review fix 3 ship
-    /// a 1.1 m mis-placement green. This test pins WHERE the closing body
+    /// liveness check only, and liveness is exactly what once let a 1.1 m
+    /// mis-placement ship green. This test pins WHERE the closing body
     /// lands, which is the property that was actually broken.
     ///
     /// All-prismatic +X so the loop is FEASIBLE and the closing parent has a
@@ -3903,11 +3887,10 @@ mod tests {
     ///
     /// The closing body must ride at `T(j3) ∘ pose` = (1.1, 0, 0) — the same
     /// rigid-tie rule `snapshot_rigid_platform_on_two_posts_closes_with_pose_offset`
-    /// pins for the REGISTERED-parent case. Review fix 3 returned a bare
-    /// identity for this arm, dropping j3's own `transform_at` and landing the
-    /// body at (0, 0, 0): a 1.1 m error returned as a normal Snapshot Map with
-    /// no diagnostic, and a regression against pre-7186, where the walk began
-    /// at `at` and reached 1.1 m.
+    /// pins for the REGISTERED-parent case. Returning a bare identity for this
+    /// arm instead drops j3's own `transform_at` and lands the body at
+    /// (0, 0, 0) — a 1.1 m error returned as a normal Snapshot Map with no
+    /// diagnostic.
     ///
     /// The `chain_transform` parity this arm claims is only honoured by
     /// composing the parent's own transform: `chain_transform([j3])` seeds the

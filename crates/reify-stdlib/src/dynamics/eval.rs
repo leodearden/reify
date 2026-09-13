@@ -2141,7 +2141,7 @@ mod tests {
         );
     }
 
-    /// **Task 7186 step-13 — regression PIN, not a bug fix.** An ERRORED
+    /// **Regression PIN, not a bug fix.** An ERRORED
     /// mechanism must not produce dynamics results on the CLOSED-CHAIN
     /// routing arm either.
     ///
@@ -2171,7 +2171,7 @@ mod tests {
     ///
     /// The fixture builds the reaching shape: a parent-conflict loop closure
     /// on `j_b`, then a world-parented closing edge on `j_c` that errors
-    /// (`error = "world_parented_closure"`, task 7186 step-10) while keeping
+    /// (`error = "world_parented_closure"`) while keeping
     /// the recorded closure. Measured on that mechanism:
     /// `loop_closures.len() == 1`, `bodies.len() == 4`, `error` present —
     /// all three asserted below so the pin cannot go vacuous by the fixture

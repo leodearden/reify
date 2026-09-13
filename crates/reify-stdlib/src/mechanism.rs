@@ -277,8 +277,8 @@ fn identity_transform() -> Value {
 /// consumer — `chain_transform`, `chain_jacobian_fd`,
 /// `loop_residual_jacobian_by_joint` — therefore consumes it with no
 /// signature change, and `extract_loop_closure_chains` resolves it to the
-/// 0-DOF sentinel without making it a solver free variable (task 7186
-/// step-4).
+/// 0-DOF sentinel without making it a solver free variable (see
+/// `is_zero_dof_joint`, loop_closure.rs).
 pub(crate) fn pose_link(pose: &Value) -> Value {
     let mut m = BTreeMap::new();
     m.insert(
@@ -423,8 +423,7 @@ fn make_duplicate_solid_error(mech_map: &BTreeMap<Value, Value>, message: String
 /// error's own discriminator rather than a second error vocabulary.
 ///
 /// The sole caller is the world-parent guard in `append_body`'s
-/// parent-conflict branch (task 7186 review fix 1); the WHY lives at that
-/// call site.
+/// parent-conflict branch; the WHY lives at that call site.
 ///
 /// **The analogy stops short of the diagnostic seam (#7354).**
 /// `reify_eval::engine_eval::detect_mechanism_errors` hardcodes the
@@ -482,8 +481,7 @@ fn make_world_parented_closure_error(mech_map: &BTreeMap<Value, Value>, message:
 ///
 /// On the parent-conflict branch `path_b` — and ONLY `path_b` — may
 /// additionally carry ONE trailing synthetic 0-DOF rigid link
-/// `{ kind: "fixed", origin: <pose> }` (task 7186 defect B, as amended by
-/// review fix 2). It encodes the single meaning of `pose` on a closing
+/// `{ kind: "fixed", origin: <pose> }`. It encodes the single meaning of `pose` on a closing
 /// call: the closing edge is a rigid 0-DOF TIE from `parent` to `at`, so
 /// the residual is `T_tree(at) == T(parent) ∘ pose` and the offset belongs
 /// to the closing side alone. `path_a` is always joint-only. An identity
@@ -603,8 +601,8 @@ fn append_body(
     let skip_jp_insert = if let Some(existing_parent) = joint_parents.get(&at)
         && existing_parent != &parent
     {
-        // Task 7186 review fix 1: reject a CLOSING edge parented to the world
-        // sentinel at build time, before any loop-closure record is built.
+        // Reject a CLOSING edge parented to the world sentinel at build
+        // time, before any loop-closure record is built.
         //
         // Why this shape and no other: `path_b` below is
         // `[world] ++ walk_to_world(joint_parents, parent)`, and
@@ -635,8 +633,9 @@ fn append_body(
         // chain_a, so making it solvable is a solver redesign, not a fix here.
         //
         // Scope: only this world-parent subcase is closed, because it is
-        // decidable from the path shape alone and step-2 (dropping `at` from
-        // `path_b`) made it newly reachable. The GENERAL `free_b.is_empty()`
+        // decidable from the path shape alone — terminating `path_b` at the
+        // closing edge's `parent` is what makes it reachable. The GENERAL
+        // `free_b.is_empty()`
         // case — every chain_b joint directly bound — has the same structural
         // unsolvability but is not statically decidable here; it is the
         // verdict-integrity surface owned by #7185.
@@ -653,65 +652,46 @@ fn append_body(
                     .to_string(),
             );
         }
+        // The two paths meet at the closing joint's OUTPUT frame, and every
+        // term appears on exactly ONE side:
+        //
+        //     path_a:  world → … → existing_parent → at     (spanning tree)
+        //     path_b:  world → … → parent → [pose]          (closing edge)
+        //     residual:  T_tree(at)  ==  T(parent) ∘ pose
+        //
+        // `at` is NOT appended to path_b. A term on both sides does not
+        // cancel: with `T_a = X·A` and `T_b = Y·A` the residual
+        // `log(inv(T_a)·T_b)` has zero set `inv(A)·inv(X)·Y·A = I ⟺ X = Y`,
+        // so `A` CONJUGATES the residual, relocating the closure from the
+        // closing joint's OUTPUT frame to its BASE frame — a whole link away
+        // (pivot C to pivot B on the Grashof 4-bar,
+        // examples/kinematic/relate_mounted_fourbar.ri), leaving a system
+        // with no exact zero for Newton to find. This asymmetric shape is the
+        // one the hand-built reference chains already use:
+        // reify-eval-fea-tests/tests/closed_chain_idyn_e2e.rs (B4) and
+        // reify-eval/tests/relate_mounted_joint_sweep_e2e.rs (B7). Pinned by
+        // `parent_conflict_path_b_omits_closing_joint`.
+        //
+        // `pose` has ONE meaning on a closing call: the closing edge is a
+        // rigid 0-DOF TIE `parent --pose--> at`. So it belongs to path_b
+        // alone, exactly once, at the tail — never decorating a joint
+        // mid-walk, and never on path_a, which is joint-only. A pose on
+        // path_a would equate a body-solid frame against a joint frame: the
+        // residual constrains JOINT frames, and the first-recorded body at
+        // `at` is in general a different body from the closing one, so where
+        // its solid sits says nothing about where the two joint frames must
+        // coincide. Pinned by `first_recorded_body_pose_stays_out_of_path_a`
+        // and `closing_body_pose_enters_path_b`.
+        //
+        // `snapshot::walk_fk` composes a parent-conflict closing body from
+        // `body.parent` so FK applies this same tie exactly once and lands on
+        // the frame the solve enforced.
         let world = make_world_sentinel();
         let mut path_a = vec![world.clone()];
         path_a.extend(walk_to_world(&joint_parents, existing_parent));
         path_a.push(at.clone());
-        // Task 7186 review fix 2: `path_a` carries NO pose link — it is
-        // joint-only, terminating at the closing joint's OUTPUT frame.
-        //
-        // Step-6 pushed `first_body_pose(&bodies, &at)` here. That was
-        // wrong twice over. The residual constrains JOINT frames, and
-        // `first_body_pose` returns the pose of the FIRST-RECORDED body at
-        // `at` — in general a DIFFERENT body from the closing one (in the
-        // `p4_platform` fixture, "post2" rather than "closing"). That pose
-        // places THAT body's own solid; where a third body's solid sits has
-        // no bearing on where the two joint frames must coincide. Composing
-        // it made chain_a's terminal a body-solid frame while chain_b's is a
-        // joint frame plus an edge offset — two different things equated. It
-        // was inert in-tree only because every fixture's first-recorded body
-        // carries the default identity pose. Pinned by
-        // `first_recorded_body_pose_stays_out_of_path_a`.
         let mut path_b = vec![world];
         path_b.extend(walk_to_world(&joint_parents, &parent));
-        // Task 7186 defect A: `at` is deliberately NOT appended here.
-        //
-        // The closing joint's transform belongs to exactly ONE side of the
-        // loop: chain_a reaches the shared pivot through the spanning tree
-        // (…→ existing_parent → at), and chain_b reaches that SAME pivot
-        // through the closing edge's `parent`. Appending `at` to both sides
-        // makes the residual `log(inv(T_a) · T_b)` with `T_a = X·A` and
-        // `T_b = Y·A` — whose zero set is `inv(A)·inv(X)·Y·A = I ⟺ X = Y`.
-        // So `A` does not cancel harmlessly; it CONJUGATES the residual and
-        // relocates the closure from the closing joint's OUTPUT frame to its
-        // BASE frame. On the Grashof 4-bar
-        // (examples/kinematic/relate_mounted_fourbar.ri) that relocation
-        // moves the closure from pivot C to pivot B and makes the system
-        // infeasible by 1.045 mm, so Newton returns a least-squares point
-        // ~1.09 rad away from the analytic assembly.
-        //
-        // The asymmetric shape produced here is the one the in-tree
-        // hand-built reference chains already use:
-        // reify-eval-fea-tests/tests/closed_chain_idyn_e2e.rs (B4) and
-        // reify-eval/tests/relate_mounted_joint_sweep_e2e.rs (B7).
-        //
-        // Task 7186 defect B, as amended by review fix 2. THE SINGLE MEANING
-        // of `pose` on a closing call: the closing edge is a rigid 0-DOF TIE
-        // from `parent` to `at` whose transform is `pose`. So the residual is
-        //
-        //     T_tree(at)  ==  T(parent) ∘ pose
-        //
-        // — chain_a walks the spanning tree to `at`, chain_b walks to
-        // `parent` and then applies the tie. `pose` therefore appears exactly
-        // ONCE, at chain_b's tail, and never decorates a joint mid-walk.
-        //
-        // (Step-6 justified the terminal placement with "that is what
-        // `walk_fk` does". That was measurably wrong for this side: `walk_fk`
-        // read `pose` as an offset from the body's own `at` frame, so the
-        // closing body got its pose applied a SECOND time and landed 206.2 mm
-        // off the frame the solve had just enforced. `walk_fk` now composes a
-        // parent-conflict closing body from `body.parent` to match the rule
-        // above — see its comment in snapshot.rs.)
         if !is_identity_pose(&pose) {
             path_b.push(pose_link(&pose));
         }
@@ -1453,7 +1433,7 @@ mod tests {
     /// rigid link at `path_b`'s tail — the transform of the rigid tie
     /// `parent --pose--> at`, giving the residual
     /// `T_tree(at) == T(parent) ∘ pose`. `path_a` stays joint-only
-    /// (review fix 2; see `first_recorded_body_pose_stays_out_of_path_a`).
+    /// (pinned by `first_recorded_body_pose_stays_out_of_path_a`).
     ///
     /// The pose lands at the path TERMINAL, never interleaved after each
     /// joint: it is the transform of ONE edge — the closing one — not a
@@ -1490,11 +1470,10 @@ mod tests {
         );
 
         let (path_a, path_b) = only_closure_paths(&m2);
-        // Task 7186 review fix 2: this is the PIN that stops the path_a
-        // deletion from over-reaching. Review fix 2 removes the path_a pose
-        // link; the closing call's OWN pose on path_b is the correct half and
-        // must survive unchanged — it is the transform of the rigid 0-DOF tie
-        // `parent --pose--> at` that the residual now encodes.
+        // The PIN that stops the path_a pose-link deletion from
+        // over-reaching: the closing call's OWN pose on path_b is the correct
+        // half and must survive it — that link is the transform of the rigid
+        // 0-DOF tie `parent --pose--> at` the residual encodes.
         assert_eq!(
             path_b,
             Value::List(vec![world.clone(), j_b.clone(), super::pose_link(&pose)]),
@@ -1504,7 +1483,7 @@ mod tests {
             path_a,
             Value::List(vec![world.clone(), j_a.clone(), j_x.clone()]),
             "path_a is joint-only — it never carries a pose link, whatever the \
-             recorded bodies' poses are (task 7186 review fix 2)"
+             recorded bodies' poses are"
         );
     }
 
@@ -1563,10 +1542,9 @@ mod tests {
         }
     }
 
-    /// **Task 7186 review fix 2.** The FIRST-recorded body's pose must stay
-    /// OUT of `path_a`. This directly inverts
-    /// `first_recorded_body_pose_enters_path_a` (step-5/6), which step-12
-    /// deletes as stale.
+    /// The FIRST-recorded body's pose must stay OUT of `path_a`: `path_a` is
+    /// joint-only, and `pose` on a closing call belongs to the closing side
+    /// alone.
     ///
     /// Why the link never belonged there. The residual constrains JOINT
     /// frames: `path_a` descends the spanning tree and terminates at the
@@ -1630,7 +1608,7 @@ mod tests {
         );
     }
 
-    // ── world-parented closing edge is rejected (task 7186 review fix 1) ──
+    // ── world-parented closing edge is rejected ──────────────────────────
 
     /// Build the three-call shape whose closing edge is parented to
     /// `world()`:
@@ -1718,7 +1696,7 @@ mod tests {
         );
     }
 
-    /// **Task 7186 review fix 1 (a).** A closing edge parented to `world()`
+    /// (a) A closing edge parented to `world()`
     /// must be rejected at BUILD time with a loud, actionable error Map.
     ///
     /// Why this is this task's to close: `path_b` is
@@ -1730,7 +1708,7 @@ mod tests {
     /// `strip_world_sentinel` impls reject `len < 2`, so
     /// `extract_loop_closure_chains` returns None and snapshot.rs maps that
     /// to `Value::Undef` for the WHOLE mechanism, with no diagnostic. Before
-    /// step-2 dropped the closing joint from `path_b` this was unreachable
+    /// terminating `path_b` at the closing edge's `parent`, this was unreachable
     /// (`path_b` always ended with `at`), so it is a failure mode this task
     /// introduced.
     ///
@@ -1778,7 +1756,7 @@ mod tests {
         );
     }
 
-    /// **Task 7186 review fix 1 (b).** The 5-arg closing form of the same
+    /// (b) The 5-arg closing form of the same
     /// shape must be rejected identically. This is the case that is strictly
     /// WORSE than the 4-arg `Undef`: a non-identity `pose` appends a
     /// synthetic 0-DOF rigid link, so `path_b == [world, fixed]` (len 2)
@@ -1816,7 +1794,7 @@ mod tests {
         );
     }
 
-    /// **Task 7186 review fix 1 (c).** The negative control that pins the
+    /// (c) The negative control that pins the
     /// rejection's exact boundary: a closing edge whose `parent` is a REAL
     /// joint with no recorded ancestor still records a loop closure and is
     /// NOT rejected. `walk_to_world` pushes such a parent (it stops only at
@@ -1824,7 +1802,7 @@ mod tests {
     /// clears `strip_world_sentinel`, and chain_b carries one real joint so
     /// `free_b` is non-empty and the closure is solvable.
     ///
-    /// This must PASS both before and after the step-10 guard: it is the
+    /// This must PASS both before and after the world-parent guard: it is the
     /// assertion that stops the BUILDER's `is_world(parent)` rejection from
     /// being widened into "parent has no recorded ancestor", which would
     /// over-reject.
@@ -1903,15 +1881,15 @@ mod tests {
             "path_b is [world, parent] — len 2, so strip_world_sentinel accepts it"
         );
 
-        // Task 7186 review fix 3: the claim above is "NOT rejected AND
-        // solvable", so assert the second half too — a build that records the
-        // closure but whose `snapshot()` is `Undef` is the same silent
-        // whole-mechanism failure the step-10 guard exists to eliminate,
-        // just moved one step past the boundary it pins.
+        // The claim above is "NOT rejected AND solvable", so assert the
+        // second half too — a build that records the closure but whose
+        // `snapshot()` is `Undef` is the same silent whole-mechanism failure
+        // the world-parent guard exists to eliminate, just moved one step past
+        // the boundary it pins.
         //
         // LIVENESS ONLY — read "solvable" here as "not Undef", nothing more.
-        // This assertion cannot see WHERE the bodies land, which is how review
-        // fix 3's 1.1 m mis-placement shipped green past this very test. The
+        // This assertion cannot see WHERE the bodies land — a 1.1 m
+        // mis-placement once shipped green past this very test. The
         // placement is pinned separately by
         // `snapshot_closing_edge_on_unregistered_parent_rides_that_parent_frame`
         // (snapshot.rs), on a feasible fixture where it is observable.
