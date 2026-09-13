@@ -196,4 +196,135 @@ assert "verify.sh -h stdout documents the --test-threads flag" \
     bash -c 'bash "$1" -h 2>/dev/null | grep -qF -- "--test-threads"' \
     _ "$VERIFY"
 
+# ---------------------------------------------------------------------------
+# Test 6: a forwarded CLI --test-threads must not silently defeat the generated
+# pool.
+#
+# THE HAZARD, concretely.  verify.sh forwards TEST_THREADS into the emitted
+# nextest line at two sites — emit_nextest_pass (~2248-2249) and the gui-feature
+# pass (~2717-2718).  nextest's CLI --test-threads OUTRANKS --config-file, so a
+# forwarded value silently REPLACES the [profile.default] test-threads pool that
+# scripts/gen-nextest-config.sh derived.  The env route is already closed
+# (verify.sh unconditionally clears TEST_THREADS at ~600), so the CLI flag is the
+# only way a value reaches the pool — and the EXCEEDS case is unreachable by any
+# caller today (dark-factory's offline lane passes 1 or 2).  This is therefore
+# inert-by-default hardening: it enforces the invariant rather than merely
+# logging it, without redding a single live caller.
+#
+# THE ASYMMETRY IS DELIBERATE.  Capping BELOW the derived pool is the sanctioned
+# offline-lane use and must stay legal — visible, but legal.  RAISING the pool
+# above the derivation is the silent defeat, and is refused.
+#
+# WHERE THE COMPARISON LIVES.  In gen-nextest-config.sh, the single place the
+# derived `tt` exists (SPOT); duplicating the derivation inside verify.sh to
+# compare against it would create exactly the lockstep pair the derivation was
+# consolidated to avoid.  The knob matches that script's existing all-env input
+# convention (REIFY_OCCT_NPROC, REIFY_NEXTEST_TEST_THREADS_HARD_CAP, ...).
+#
+# HERMETIC, and compile-free: 6a-6c drive the generator DIRECTLY — pure bash, no
+# cargo, no nextest — with the pool pinned to an exact integer on any host by the
+# script's own testability knobs, so the expectations are literal integers.
+# ---------------------------------------------------------------------------
+GEN="$REPO_ROOT/scripts/gen-nextest-config.sh"
+
+# REIFY_OCCT_NPROC=8 and REIFY_NEXTEST_TEST_THREADS_HARD_CAP=8 make
+# min(HARD_CAP, nproc) = 8 regardless of the real host.  Verified against the
+# emitted config: `test-threads = 8`.
+_TT=8
+
+# _gen <cli-value-or-empty> — run the generator with the pool pinned, leaving the
+# result in _GEN_RC / _GEN_OUT (stdout) / _GEN_ERR (a file holding stderr).
+_gen() {
+    local cli="$1"
+    _GEN_ERR="$(mktemp "${TMPDIR:-/tmp}/reify-gen-err.XXXXXX")"
+    _GEN_RC=0
+    if [ -n "$cli" ]; then
+        _GEN_OUT="$(REIFY_OCCT_NPROC="$_TT" REIFY_NEXTEST_TEST_THREADS_HARD_CAP="$_TT" \
+                    REIFY_NEXTEST_CLI_TEST_THREADS="$cli" \
+                    bash "$GEN" 2>"$_GEN_ERR")" || _GEN_RC=$?
+    else
+        # No assignment prefix at all: the knob must be genuinely UNSET, not empty.
+        _GEN_OUT="$(REIFY_OCCT_NPROC="$_TT" REIFY_NEXTEST_TEST_THREADS_HARD_CAP="$_TT" \
+                    bash "$GEN" 2>"$_GEN_ERR")" || _GEN_RC=$?
+    fi
+}
+
+# The generator mktemps its config; the caller owns cleanup (see its header).
+_gen_cleanup() {
+    [ -z "${_GEN_ERR:-}" ] || rm -f "$_GEN_ERR"
+    { [ -z "${_GEN_OUT:-}" ] || [ ! -f "$_GEN_OUT" ]; } || rm -f "$_GEN_OUT"
+    return 0
+}
+
+# _names <file> <integer> — the diagnostic must name the number, as a number:
+# the boundaries stop '64' from satisfying a search for '4' or for '8'.
+_names() { grep -qE "(^|[^0-9])$2([^0-9]|\$)" "$1"; }
+
+# 6a: the default must be byte-identical to today — no diagnostic, path on stdout.
+_check_6a() {
+    local ok=0
+    _gen ""
+    if [ "$_GEN_RC" -eq 0 ] && [ -f "${_GEN_OUT:-}" ] \
+       && ! grep -q 'REIFY_NEXTEST_CLI_TEST_THREADS' "$_GEN_ERR"; then ok=1; fi
+    _gen_cleanup
+    [ "$ok" -eq 1 ]
+}
+
+# 6b: capping BELOW the pool is sanctioned — visible on stderr, but exit 0 with
+# the path still printed.
+_check_6b() {
+    local ok=0
+    _gen 4
+    if [ "$_GEN_RC" -eq 0 ] && [ -f "${_GEN_OUT:-}" ] \
+       && _names "$_GEN_ERR" 4 && _names "$_GEN_ERR" "$_TT"; then ok=1; fi
+    _gen_cleanup
+    [ "$ok" -eq 1 ]
+}
+
+# 6c: RAISING the pool above the derivation is the silent defeat — refused, and
+# with NOTHING on stdout, because the stdout contract is "prints ONLY the
+# resolved temp file path".
+_check_6c() {
+    local ok=0
+    _gen 64
+    if [ "$_GEN_RC" -ne 0 ] && [ -z "${_GEN_OUT:-}" ] \
+       && _names "$_GEN_ERR" 64 && _names "$_GEN_ERR" "$_TT"; then ok=1; fi
+    _gen_cleanup
+    [ "$ok" -eq 1 ]
+}
+
+# 6d: verify.sh wires the knob at EXACTLY ONE site, from the already-validated
+# $TEST_THREADS.
+#
+# WHY THIS ONE IS A SOURCE-TEXT ASSERT, not a behavioural one.  The generator is
+# invoked only in EXECUTE mode — --print-plan deliberately never spawns it, which
+# is what keeps the plan a pure, hermetic oracle — and this whole suite IS a
+# --print-plan oracle.  There is therefore no behavioural reach from here to the
+# wiring, and the static assert is a considered choice rather than a shortcut.
+# Same sync-comment grep idiom the sibling infra suites use.
+_check_6d() {
+    local n
+    n=$(grep -vE '^[[:space:]]*#' "$VERIFY" \
+        | grep -cE 'export[[:space:]]+REIFY_NEXTEST_CLI_TEST_THREADS=') || n=0
+    [ "$n" -eq 1 ] || return 1
+    grep -vE '^[[:space:]]*#' "$VERIFY" \
+      | grep -qE 'export[[:space:]]+REIFY_NEXTEST_CLI_TEST_THREADS="?\$\{?TEST_THREADS'
+}
+
+echo ""
+echo "--- Test 6: a forwarded CLI --test-threads must not silently defeat the generated pool ---"
+
+assert "6a: REIFY_NEXTEST_CLI_TEST_THREADS unset -> exit 0, path on stdout, no override diagnostic (default byte-identical to today)" \
+    _check_6a
+
+assert "6b: REIFY_NEXTEST_CLI_TEST_THREADS=4 (<= derived pool 8) -> exit 0, path still printed, stderr names BOTH 4 and 8 (capping below is sanctioned, but visible)" \
+    _check_6b
+
+assert "6c: REIFY_NEXTEST_CLI_TEST_THREADS=64 (> derived pool 8) -> non-zero exit, NO path on stdout, stderr names BOTH 64 and 8 (a CLI value may not RAISE the pool above the derivation)" \
+    _check_6c
+
+assert "6d: verify.sh exports REIFY_NEXTEST_CLI_TEST_THREADS from \$TEST_THREADS on exactly ONE non-comment line" \
+    _check_6d
+
+
 test_summary
