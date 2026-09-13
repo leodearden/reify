@@ -60,6 +60,74 @@ fn load_from_source_returns_gui_state_with_constraints() {
     assert_eq!(state.constraints.len(), 3, "bracket has 3 constraints");
 }
 
+/// A source producing one constraint of each `Satisfaction` verdict (task 6723).
+///
+/// Inline rather than a file under `gui/test/fixtures/`: no Rust test reads that
+/// directory (it serves the debug-MCP `load_fixture` allowlist and the
+/// Playwright/visual harnesses), and the gui-crate convention for a single-use
+/// `.ri` source is an inline `&str` const.
+///
+///   - `width > 10mm`        — Satisfied (80mm > 10mm)
+///   - `thickness > 2mm`     — Violated  (1mm ≯ 2mm). A statically-violated
+///     constraint does not block the load: `ConstraintViolated` never reaches
+///     `Severity::Error` (see `bracket_source_violating`'s tests below).
+///   - `tolerance > 0.1mm`   — Indeterminate. `EngineSession::new` installs no
+///     solver, so `= auto` stays `Value::Undef` and `SimpleConstraintChecker`
+///     returns Indeterminate. The cell is not geometry-derived, so
+///     `surface_geometry_derived_cells`' re-check re-evaluates it to
+///     Indeterminate and leaves it alone — this leg does not flip.
+const TRI_VERDICT_SRC: &str = r#"structure def TriVerdict {
+    param width: Length = 80mm
+    param thickness: Length = 1mm
+    param tolerance: Length = auto
+
+    constraint width > 10mm
+    constraint thickness > 2mm
+    constraint tolerance > 0.1mm
+}"#;
+
+/// End-to-end fidelity of all three verdict tokens on a real load, and the
+/// payload ORDER the GUI receives them in (task 6723).
+///
+/// This is the Rust-side counterpart to
+/// `gui/src/__tests__/constraintVerdictParity.test.ts`, and the source of that
+/// test's fixture ordering: `build_constraints` sorts by `node_id` ascending, so
+/// `TriVerdict#constraint[0]/[1]/[2]` is deterministic and the payload arrives
+/// ✓ / ✗ / ? in that order (PRD-4 §5 B1's signal).
+///
+/// That is the PAYLOAD order, deliberately not the RENDERED order:
+/// `ConstraintPanel`'s `STATUS_PRIORITY` re-sorts violated-first for display, so
+/// the DOM order for this 1/1/1 fixture is ✗, ?, ✓. The frontend test pins both
+/// separately.
+#[test]
+fn load_from_source_emits_all_three_verdict_tokens_in_node_id_order() {
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+
+    let state = session
+        .load_from_source(TRI_VERDICT_SRC, "tri_verdict")
+        .expect("TRI_VERDICT_SRC should load (a violated constraint is not a load error)");
+
+    let observed: Vec<(&str, &str)> = state
+        .constraints
+        .iter()
+        .map(|c| (c.node_id.as_str(), c.status.as_str()))
+        .collect();
+
+    assert_eq!(
+        observed,
+        vec![
+            ("TriVerdict#constraint[0]", "satisfied"),
+            ("TriVerdict#constraint[1]", "violated"),
+            ("TriVerdict#constraint[2]", "indeterminate"),
+        ],
+        "all three verdict tokens must reach the GUI payload lower-case, in \
+         node_id-ascending order"
+    );
+}
+
 #[test]
 fn load_from_source_width_value_is_80mm() {
     let checker = SimpleConstraintChecker;
@@ -1329,7 +1397,7 @@ fn set_parameter_constraints_still_correct() {
     assert_eq!(state.constraints.len(), 3);
     for c in &state.constraints {
         assert_eq!(
-            c.status, "Satisfied",
+            c.status, "satisfied",
             "constraint {} should be satisfied",
             c.node_id
         );
@@ -1411,7 +1479,7 @@ fn constraint_violation_roundtrip() {
         .set_parameter("Bracket.thickness", "1mm")
         .expect("set thickness should succeed");
 
-    let violated = state.constraints.iter().any(|c| c.status == "Violated");
+    let violated = state.constraints.iter().any(|c| c.status == "violated");
     assert!(
         violated,
         "should have at least one violated constraint when thickness=1mm"
@@ -1424,7 +1492,7 @@ fn constraint_violation_roundtrip() {
 
     for c in &state.constraints {
         assert_eq!(
-            c.status, "Satisfied",
+            c.status, "satisfied",
             "constraint {} should be satisfied after restoring thickness",
             c.node_id
         );
@@ -7094,7 +7162,7 @@ fn freshness_wires_through_build_gui_state_for_failed_value_cell() {
     let violated_constraints: Vec<_> = state
         .constraints
         .iter()
-        .filter(|c| c.status == "Violated")
+        .filter(|c| c.status == "violated")
         .collect();
 
     assert!(
@@ -19451,7 +19519,7 @@ fn rigid_mass_props_surface_as_determined_on_load() {
 
     let pd = find_moi_principal_constraint(&state);
     assert_eq!(
-        pd.status, "Satisfied",
+        pd.status, "satisfied",
         "the `moi_principal[0] > 0` PD constraint must be Satisfied once \
          moi_principal resolves; got status={:?}",
         pd.status
@@ -19520,7 +19588,7 @@ fn rigid_mass_props_stay_determined_after_warm_edit() {
 
     let pd = find_moi_principal_constraint(&state);
     assert_eq!(
-        pd.status, "Satisfied",
+        pd.status, "satisfied",
         "the `moi_principal[0] > 0` PD constraint must stay Satisfied after the \
          warm edit; got status={:?}",
         pd.status
