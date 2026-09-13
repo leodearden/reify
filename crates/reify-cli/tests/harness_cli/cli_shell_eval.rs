@@ -1,15 +1,15 @@
 /// Integration test: `reify eval examples/shells/thin_walled_bracket.ri`
 /// exits 0, prints a `ThinWalledBracket.max_von_mises` line with a numeric
-/// value in the one-OOM band [1.5e7, 1.5e9] Pa and the SI-base dimension
-/// substring "kg·m^-1·s^-2", and emits no tet-fallback warning.
+/// value in the one-OOM band [1.5e7, 1.5e9] Pa and the curated unit substring
+/// "Pa", and emits no tet-fallback warning.
 ///
 /// Analytical reference: σ = 6·P·L/(b·h²) = 6·20·0.1/(0.02·0.002²) = 1.5×10⁸ Pa.
 ///
 /// `reify eval` prints cells via `Value::Display`:
-///   `Value::Scalar { si_value, dimension }` → "{si_value} {dimension}"
-/// where `dimension` for `PRESSURE` is "kg·m^-1·s^-2" (dimension.rs Display),
-/// NOT the human unit "Pa".  The numeric token is base-SI Pascals, so the band
-/// [1.5e7, 1.5e9] applies directly without any unit conversion.
+///   `Value::Scalar { si_value, dimension }` → "{si_value} {unit label}"
+/// where the label for `PRESSURE` is the registry's curated "Pa" (task #6674).
+/// The magnitude is untouched by that curation — it is still base-SI Pascals,
+/// so the band [1.5e7, 1.5e9] applies directly without any unit conversion.
 ///
 /// OCCT independence: `box(...)` is a deferred GHR-β handle; the flat-plate
 /// shell solve is pure-Rust.  Both `status.success()` and the absence of the
@@ -57,10 +57,12 @@ fn eval_thin_walled_bracket_exits_zero_with_in_band_max_von_mises() {
          [1.5e7, 1.5e9] Pa around σ=6·P·L/(b·h²)=1.5e8.\nLine: {mvm_line:?}"
     );
 
-    // The RHS must contain the SI-base pressure dimension (NOT "Pa").
+    // The RHS must carry the curated pressure unit (task #6674 replaced the
+    // composed SI-base label "kg·m^-1·s^-2" with "Pa"; the magnitude above is
+    // unchanged).
     assert!(
-        rhs.contains("kg\u{00b7}m^-1\u{00b7}s^-2"),
-        "expected SI-base dimension 'kg·m^-1·s^-2' in the RHS of the \
+        rhs.contains("Pa"),
+        "expected the curated pressure unit 'Pa' in the RHS of the \
          max_von_mises line.\nRHS: {rhs:?}"
     );
 

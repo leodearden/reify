@@ -4004,7 +4004,17 @@ impl std::fmt::Display for Value {
                 si_value,
                 dimension,
             } => {
-                write!(f, "{} {}", si_value, dimension)
+                // Label only: si_value stays the raw SI magnitude. The
+                // dimensionless guard is required because
+                // `dimension_unit_label` returns "" there, which would emit a
+                // trailing space where the composed form writes the word
+                // "dimensionless" — the sibling Complex arm below branches on
+                // the same predicate for the same reason.
+                if dimension.is_dimensionless() {
+                    write!(f, "{} {}", si_value, dimension)
+                } else {
+                    write!(f, "{} {}", si_value, dimension_unit_label(dimension))
+                }
             }
             Value::Enum { type_name, variant, .. } => write!(f, "{}::{}", type_name, variant),
             Value::List(items) => {
