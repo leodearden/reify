@@ -2725,7 +2725,10 @@ mod member_recursion_set_tests {
             )]),
             MemberDecl::Sub(sub_with_keyed_members(
                 "keyed_sub",
-                vec![("a", vec![param("marker_keyed", (600, 640), Some((610, 614)))])],
+                vec![(
+                    "a",
+                    vec![param("marker_keyed", (600, 640), Some((610, 614)))],
+                )],
             )),
         ]
     }

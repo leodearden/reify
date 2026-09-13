@@ -19,10 +19,12 @@ use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
 /// Pre-pass entry point: walk every specialization scope in `parsed`.
 ///
 /// Iterates entity-style top-level declarations (Structure, Occurrence,
-/// Trait, Purpose) and visits every `MemberDecl::Sub` whose `body.is_some()`
-/// — those are the spec §8.7 specialization scopes. Each scope is delegated
-/// to [`walk_specialization_scope_members`], which itself recurses into
-/// nested specialization scopes and `where { … } else { … }` branches.
+/// Trait, Purpose) and hands every `MemberDecl::Sub` to
+/// [`walk_specialization_scope_members`], which owns the decision of whether
+/// that sub opens a spec §8.7 specialization scope at all — a non-keyed
+/// `body`, or one scope per `keyed_members[]` entry, or (bare instantiation /
+/// collection / bare-colon-no-body) none. It itself recurses into nested
+/// specialization scopes and `where { … } else { … }` branches.
 ///
 /// For each member visited inside a specialization scope, if
 /// [`forbidden_decl_info`] returns `Some((kind, name, span))`, an
@@ -31,9 +33,9 @@ pub(crate) fn validate_module(parsed: &ParsedModule, diagnostics: &mut Vec<Diagn
     for_each_specialization_member(parsed, &mut |member| {
         // # Traversal ordering
         //
-        // `for_each_specialization_member` delegates each scope's body to
-        // `walk_specialization_scope_members` (from reify-syntax), which uses
-        // a parent-before-children depth-first traversal (`walk_members_depth`).
+        // `for_each_specialization_member` delegates each sub to
+        // `walk_specialization_scope_members` (reify-ast), which uses a
+        // parent-before-children depth-first traversal (`walk_members`).
         // For nested specialization scopes (`sub outer { sub inner { param x } }`):
         //   1. The visitor fires on `inner` (the MemberDecl::Sub) first.
         //   2. The walker then recurses into `inner`'s body and fires on `x`.
@@ -90,8 +92,8 @@ fn forbidden_decl_info(member: &MemberDecl) -> Option<(&'static str, &str, Sourc
 /// can host specialization scopes (Structure / Occurrence / Trait /
 /// Purpose), descending into top-level `where { … } else { … }` branches
 /// to find specialization scopes that live inside a guarded group. For
-/// each `MemberDecl::Sub` whose `body.is_some()`,
-/// [`walk_specialization_scope_members`] is invoked with `visitor`.
+/// each `MemberDecl::Sub`, [`walk_specialization_scope_members`] is invoked
+/// with `visitor`; it is a no-op for a sub that opens no scope.
 ///
 /// Recursion is bounded by [`MAX_MEMBER_NESTING_DEPTH`] to mirror the
 /// convention used elsewhere in the compiler (`shadow_lint`,
@@ -133,8 +135,18 @@ where
     }
 }
 
-/// Recursively scan a member list for `MemberDecl::Sub` with `body.is_some()`,
-/// invoking [`walk_specialization_scope_members`] on each one.
+/// Recursively scan a member list for every `MemberDecl::Sub`, invoking
+/// [`walk_specialization_scope_members`] on each one.
+///
+/// The scope-root decision is deliberately NOT made here — it is delegated to
+/// the walker, which walks a non-keyed `body`, or every keyed entry's
+/// overrides, or nothing at all for a bare instantiation / collection /
+/// bare-colon-no-body sub. One crate owning that decision is what stopped a
+/// keyed sub from being invisible to this pass: this function used to re-derive
+/// it as `body.is_some()`, which is false by construction for the keyed form
+/// (task 6958). Dropping the guard is observably identical for every non-keyed
+/// shape — a sub with no overrides previously fell through to `_ => {}` and now
+/// reaches a walker that visits nothing.
 ///
 /// We descend into `MemberDecl::GuardedGroup.{members, else_members}` so a
 /// specialization scope that lives inside a top-level
@@ -142,11 +154,12 @@ where
 /// shadow_lint.rs:39-43 — guarded-group branches are siblings in the
 /// enclosing scope).
 ///
-/// We do NOT descend into `MemberDecl::Sub.body` here — that is the job of
-/// [`walk_specialization_scope_members`] itself (which recurses through
-/// nested specialization scopes and inner guarded groups under the same
-/// depth bound). Splitting the responsibility keeps the outer "find scope
-/// roots" pass distinct from the inner "walk a scope's members" pass.
+/// We do NOT descend into a sub's overrides here — neither the `body` shape nor
+/// the keyed one — that is the job of [`walk_specialization_scope_members`]
+/// itself (which recurses through nested specialization scopes and inner
+/// guarded groups under the same depth bound). Splitting the responsibility
+/// keeps the outer "find scope roots" pass distinct from the inner "walk a
+/// scope's members" pass.
 fn find_specialization_scopes<F>(members: &[MemberDecl], visitor: &mut F, depth: usize)
 where
     F: FnMut(&MemberDecl),
@@ -156,7 +169,7 @@ where
     }
     for member in members {
         match member {
-            MemberDecl::Sub(s) if s.body.is_some() => {
+            MemberDecl::Sub(s) => {
                 walk_specialization_scope_members(s, visitor);
             }
             MemberDecl::GuardedGroup(g) => {
@@ -728,11 +741,15 @@ structure S {
         );
         let messages: Vec<_> = diagnostics.iter().map(|d| d.message.as_str()).collect();
         assert!(
-            messages.iter().any(|m| m.contains("'param'") && m.contains("'q'")),
+            messages
+                .iter()
+                .any(|m| m.contains("'param'") && m.contains("'q'")),
             "then-branch param must report, got {messages:?}"
         );
         assert!(
-            messages.iter().any(|m| m.contains("'port'") && m.contains("'r'")),
+            messages
+                .iter()
+                .any(|m| m.contains("'port'") && m.contains("'r'")),
             "else-branch port must report, got {messages:?}"
         );
     }
