@@ -224,6 +224,10 @@ assert "verify.sh -h stdout documents the --test-threads flag" \
 # HERMETIC, and compile-free: 6a-6c drive the generator DIRECTLY — pure bash, no
 # cargo, no nextest — with the pool pinned to an exact integer on any host by the
 # script's own testability knobs, so the expectations are literal integers.
+# "Hermetic" here is enforced, not merely claimed: `_gen` scrubs the two inherited
+# pool knobs with `env -u`, and 6e is the tripwire that reds if that scrub is ever
+# removed.  It has to be enforced, because this suite is run as a CHILD of
+# verify.sh and verify.sh exports one of those knobs itself.
 # ---------------------------------------------------------------------------
 GEN="$REPO_ROOT/scripts/gen-nextest-config.sh"
 
@@ -234,18 +238,33 @@ _TT=8
 
 # _gen <cli-value-or-empty> — run the generator with the pool pinned, leaving the
 # result in _GEN_RC / _GEN_OUT (stdout) / _GEN_ERR (a file holding stderr).
+#
+# `env -u` SCRUBS the two knobs that can move the derived `tt`, in BOTH branches.
+# Omitting an assignment prefix does not unset anything, and this suite runs as a
+# child of verify.sh (verify-pipeline-infra-tests.txt:44), which exports
+# REIFY_NEXTEST_CLI_TEST_THREADS process-globally — so an inherited value would
+# otherwise walk straight in.  REIFY_NEXTEST_TEST_THREADS is scrubbed for the same
+# reason and a quieter one: it REPLACES `tt` wholesale
+# (gen-nextest-config.sh:315), which would move the pool off the pinned 8 that 6b
+# and 6c assert exact integers against.  6e is the tripwire that holds this.
+#
+# REIFY_OCCT_NPROC and REIFY_NEXTEST_TEST_THREADS_HARD_CAP need no `-u` because
+# they are assigned explicitly.  NOT `env -i`: that would drop PATH and TMPDIR and
+# change what is under test.  Same idiom the sibling suite already uses against
+# this very generator (tests/infra/test_occt_gated_scope.sh:318/340/376/386/425).
 _gen() {
     local cli="$1"
     _GEN_ERR="$(mktemp "${TMPDIR:-/tmp}/reify-gen-err.XXXXXX")"
     _GEN_RC=0
     if [ -n "$cli" ]; then
-        _GEN_OUT="$(REIFY_OCCT_NPROC="$_TT" REIFY_NEXTEST_TEST_THREADS_HARD_CAP="$_TT" \
-                    REIFY_NEXTEST_CLI_TEST_THREADS="$cli" \
-                    bash "$GEN" 2>"$_GEN_ERR")" || _GEN_RC=$?
+        _GEN_OUT="$(env -u REIFY_NEXTEST_CLI_TEST_THREADS -u REIFY_NEXTEST_TEST_THREADS \
+                        REIFY_OCCT_NPROC="$_TT" REIFY_NEXTEST_TEST_THREADS_HARD_CAP="$_TT" \
+                        REIFY_NEXTEST_CLI_TEST_THREADS="$cli" \
+                        bash "$GEN" 2>"$_GEN_ERR")" || _GEN_RC=$?
     else
-        # No assignment prefix at all: the knob must be genuinely UNSET, not empty.
-        _GEN_OUT="$(REIFY_OCCT_NPROC="$_TT" REIFY_NEXTEST_TEST_THREADS_HARD_CAP="$_TT" \
-                    bash "$GEN" 2>"$_GEN_ERR")" || _GEN_RC=$?
+        _GEN_OUT="$(env -u REIFY_NEXTEST_CLI_TEST_THREADS -u REIFY_NEXTEST_TEST_THREADS \
+                        REIFY_OCCT_NPROC="$_TT" REIFY_NEXTEST_TEST_THREADS_HARD_CAP="$_TT" \
+                        bash "$GEN" 2>"$_GEN_ERR")" || _GEN_RC=$?
     fi
 }
 
