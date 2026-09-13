@@ -66,7 +66,10 @@
 //!   from the returned set; [`EigenSolverResult::shift`] carries the σ used.
 //!   `false` is reported only when ESTABLISHED (a full-spectrum count, or a
 //!   Cholesky success), never assumed. Exact on the dense path, a conservative
-//!   boolean on Lanczos.
+//!   boolean on Lanczos. The PRD's "between zero and σ" wording is implemented
+//!   verbatim and has a known gap on indefinite pencils — see the known-gap
+//!   section on [`EigenSolverResult::shift_skipped_modes`], which must be
+//!   settled before ε (#7262) ships a refusal keyed on the flag.
 //! - **C6 — Singularity.** A singular or numerically-degenerate `K − σB` is a
 //!   typed failure carrying σ — never a panic, never a silently perturbed
 //!   solve, never a garbage spectrum.
@@ -83,11 +86,20 @@
 //! | Clause | Dense path ([`solve_eigen_dense`]) | Lanczos path |
 //! |---|---|---|
 //! | C1 | implemented | implemented |
-//! | C2 | implemented | #7259 |
+//! | C2 | implemented | #7259 — solves at σ=0 until then, and reports `shift: 0.0` |
 //! | C3 | implemented (shared helper) | implemented (same helper) |
 //! | C4 | n/a — no shift is ever applied to invert | #7259 |
-//! | C5 | implemented, EXACT | conservative boolean; refined by #7259 |
+//! | C5 | implemented, EXACT | established `false` at its own σ=0; #7259 |
 //! | C6 | vacuous — no `K − σB` is ever formed | #7259 |
+//!
+//! Staging α before β means [`solve_eigen_shift_invert`] honors σ for n ≤ 64
+//! (dense fallback) and not for larger problems (Lanczos). That divergence is
+//! deliberate but it is **not silent**: [`EigenSolverResult::shift`] reports the
+//! σ a solve actually used, never the σ it was asked for, so
+//! `result.shift == opts.sigma` is a definite caller-side test for whether the
+//! shift was honored. Echoing the request over an unshifted answer would be
+//! correct-looking provenance describing a solve that never happened — the
+//! silent-substitution class this contract exists to close.
 //!
 //! The dense path honors σ as a SORT-KEY CHANGE AND NOTHING ELSE: `gevd_real`
 //! computes the entire spectrum, so no factorization is formed, `K − σB` never
@@ -229,12 +241,42 @@ pub struct EigenSolverResult {
     /// not expose).  At σ=0 every path reports `false`, and that `false` is
     /// established rather than assumed: the open interval strictly between 0
     /// and 0 is empty, so no eigenvalue can lie in it.
+    ///
+    /// # Known gap: an interval rule under an absolute-value order
+    ///
+    /// The predicate is the PRD §6 wording *verbatim* — "between zero and σ" —
+    /// but C3 orders by `|λ|`, so "the first mode" means smallest `|λ|`, and the
+    /// two do not coincide when the pencil is indefinite.  With spectrum
+    /// {−0.1, 0.5, 1.0}, σ=0.6 and `n_modes=1`, C2 selects {0.5}; nothing lies
+    /// in the open interval (0, 0.6) that is absent, so this field is `false` —
+    /// yet the true first mode by `|λ|` is −0.1 and it did NOT come back.
+    /// Consumers that key a refusal on this flag (ε #7262's `critical_load` /
+    /// `safety_factor_buckling` / `first_frequency`) therefore inherit the
+    /// precondition that the pencil has no eigenvalue on the far side of zero
+    /// from σ.  Indefinite pencils are not hypothetical here: `buckling_kernel`
+    /// assembles a `neg_sigma` geometric stiffness for the reversed-load case.
+    ///
+    /// No caller passes σ≠0 today, so the gap is unreachable.  Closing it means
+    /// amending PRD §6 C5 to the predicate that serves the stated purpose —
+    /// "some eigenvalue with `|λ|` strictly less than `min |λ|` over the
+    /// selected set is absent from it", which subsumes the interval rule for
+    /// both signs of σ and is still exact on the dense path — rather than
+    /// diverging from the PRD here.  Tracked as a follow-up; it must be settled
+    /// before ε (#7262) ships a refusal keyed on this field.
     pub shift_skipped_modes: bool,
     /// The shift σ actually used for this solve (contract clause C5).
     ///
     /// Carried on the result so a diagnostic can name the offending σ without
     /// the caller re-deriving it from its own options.  In eigenvalue (λ) space,
     /// like [`EigenSolverOptions::sigma`] — unit conversion is the caller's job.
+    ///
+    /// "Actually used" is load-bearing: this is NOT an echo of
+    /// [`EigenSolverOptions::sigma`], and a path that did not honor the
+    /// requested σ reports the one it did solve at.  The Lanczos path reports
+    /// `0.0` for any request until #7259 makes it honor σ, so
+    /// `result.shift == opts.sigma` is a definite caller-side test for whether
+    /// the shift was applied — and the reason a caller never has to infer it
+    /// from the problem dimension.
     pub shift: f64,
 }
 
@@ -260,6 +302,18 @@ fn check_eigen_options_and_shapes(
         opts.tol.is_finite() && opts.tol > 0.0,
         "EigenSolverOptions.tol = {} must be a finite positive value",
         opts.tol,
+    );
+    // σ is a live selection key (C2), so a non-finite one is a caller bug that
+    // must be loud.  Left unguarded it degrades silently instead: every
+    // `(λ − σ).abs()` is NaN, `total_cmp` orders all NaNs equal so the stable
+    // sort is a no-op, and the caller receives gevd's arbitrary internal order
+    // as if it were the nearest-σ set — well-formed and wrong, which is the
+    // silent-substitution class this contract exists to close.  ±∞ collapses
+    // the same way (every distance is ∞).
+    assert!(
+        opts.sigma.is_finite(),
+        "EigenSolverOptions.sigma = {} must be finite",
+        opts.sigma,
     );
     assert!(
         opts.max_iters >= 1,
@@ -433,7 +487,13 @@ fn order_by_abs_lambda(pairs: &mut [(f64, usize)]) {
 /// copies as "skipped" while its twin was returned.
 ///
 /// Both signs of σ are covered, so a negative shift on the reversed-load
-/// buckling side is handled by the same rule rather than a second one.
+/// buckling side is handled by the same rule rather than a second one.  That is
+/// a statement about the sign of **σ**, not about the sign of λ: an eigenvalue
+/// on the far side of zero from σ is outside the interval by construction and
+/// is never reported here, even when it is the smallest by `|λ|` and absent from
+/// the selected set.  See the known-gap section on
+/// [`EigenSolverResult::shift_skipped_modes`] — this function implements the PRD
+/// §6 wording verbatim, and closing the gap is a PRD amendment, not a local fix.
 ///
 /// At σ=0 the open interval is empty, so this is unconditionally `false` with no
 /// branch — C1 preserved, and that `false` is ESTABLISHED rather than assumed.
@@ -446,6 +506,25 @@ fn any_eigenvalue_skipped_between_zero_and_shift(
         let between = (0.0 < lam && lam < sigma) || (sigma < lam && lam < 0.0);
         between && !selected.iter().any(|&(_, sel_col)| sel_col == src_col)
     })
+}
+
+/// **C5 — Provenance, conservative form.** The answer a path that did not
+/// compute a spectrum it can count must give.
+///
+/// C5 permits `false` only when ESTABLISHED, never assumed, so any path without
+/// the evidence to establish it reports `true` at σ≠0.  At σ=0 `false` IS
+/// established with no evidence needed: the open interval strictly between 0 and
+/// 0 is empty, so no eigenvalue can lie in it.
+///
+/// Exposed (and `pub`) rather than inlined because two crates need the identical
+/// rule — the Lanczos path here and `reify-eval`'s degenerate
+/// `singular_k_over_ceiling` early return, which returns no spectrum at all.
+/// Writing it twice across a crate boundary is how the two drift when #7259
+/// refines the Lanczos discriminator to a real one; this is the single place
+/// that changes.
+#[inline]
+pub fn conservative_shift_provenance(sigma: f64) -> bool {
+    sigma != 0.0
 }
 
 // ---------------------------------------------------------------------------
@@ -659,9 +738,13 @@ impl<K: StiffnessOp, M: MetricOp> LinOp<f64> for CompositeShiftInvertOp<'_, K, M
 ///
 /// **Shift contract status:** this path does not yet honor `opts.sigma` — the
 /// `K − σB` assembly, the Cholesky-then-LU dispatch and the C4 back-shift are
-/// task #7259.  It satisfies C1 and C3 today, and reports C5 conservatively at
-/// σ≠0 (it cannot ESTABLISH that nothing was skipped, and C5 forbids assuming
-/// it).  See the module-level "Shift contract (C1–C6)" section.
+/// task #7259.  It satisfies C1 and C3 today, and reports C5 conservatively (it
+/// cannot ESTABLISH that nothing was skipped, and C5 forbids assuming it).
+/// Until then it solves the UNSHIFTED pencil whatever `opts.sigma` says, and
+/// **says so**: it reports `shift: 0.0` — the σ it actually used — rather than
+/// echoing the request, so `result.shift == opts.sigma` is the caller's test for
+/// whether the shift was honored.  See the module-level "Shift contract (C1–C6)"
+/// section.
 ///
 /// This is the generic core — it operates over any [`StiffnessOp`] /
 /// [`MetricOp`] pair without knowledge of the underlying representation
@@ -714,6 +797,18 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
     );
 
     let n = k_op.n();
+
+    // The σ this solve ACTUALLY uses, which is what `EigenSolverResult::shift`
+    // is documented to report.  #7259 lands the `K − σB` assembly and the
+    // Cholesky-then-LU dispatch; until then this path solves the UNSHIFTED
+    // pencil whatever `opts.sigma` says, so it reports 0.0 rather than echoing
+    // the request.  Echoing σ=0.6 over a bottom-of-the-spectrum answer would be
+    // a correct-looking provenance field describing a solve that never happened
+    // — the silent-substitution class this contract exists to close — and would
+    // also make ε (#7262) refuse a result whose first mode is in fact present.
+    // A caller that needs σ honored detects the gap with
+    // `result.shift == opts.sigma`; #7259 replaces this with `opts.sigma`.
+    let shift_used = 0.0_f64;
 
     let op = CompositeShiftInvertOp { k_op, m_op, n };
 
@@ -798,13 +893,15 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
         eigenvectors,
         n_converged: n_conv,
         converged,
-        shift: opts.sigma,
-        // This path does not yet honor σ — the `K − σB` assembly and the
-        // Cholesky-then-LU dispatch are task #7259 — so at σ≠0 it cannot
-        // ESTABLISH that nothing was skipped and must report conservatively.
-        // C5 forbids assuming `false`.  At σ=0 the interval strictly between 0
-        // and 0 is empty, so `false` there IS established.
-        shift_skipped_modes: opts.sigma != 0.0,
+        shift: shift_used,
+        // Shared with `reify-eval`'s degenerate early return (SPOT): a path that
+        // cannot count what it skipped may not assume `false`.  Here `false` IS
+        // established — the solve ran at σ=0 and the open interval strictly
+        // between 0 and 0 is empty — and it stays correct for the ε (#7262)
+        // consumer, which keys a refusal on this flag: the bottom of the
+        // spectrum genuinely does contain the first mode.  #7259 passes
+        // `opts.sigma` here once the operator honors it.
+        shift_skipped_modes: conservative_shift_provenance(shift_used),
     }
 }
 
@@ -815,9 +912,13 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
 /// Solve `K φ = λ B φ` via shift-invert Lanczos.
 ///
 /// **Shift contract status:** inherits [`lanczos_shift_invert`]'s — `opts.sigma`
-/// is not yet honored on the Lanczos branch (#7259).  Note the dense fallback
-/// below DOES honor it, so which clauses hold depends on which branch the
-/// problem dimension routes to.
+/// is not yet honored on the Lanczos branch (#7259).  The dense fallback below
+/// DOES honor it, so **which σ this entry point actually applies depends on the
+/// problem dimension** until #7259 lands: n ≤ 64 routes dense and honors σ, a
+/// larger problem routes Lanczos and solves at σ=0.  That divergence is not
+/// silent — the returned [`EigenSolverResult::shift`] reports the σ actually
+/// used, so a caller that needs the shift honored tests
+/// `result.shift == opts.sigma` and gets a definite answer either way.
 ///
 /// Factors K via sparse Cholesky, builds [`SparseStiffnessOp`] +
 /// [`SparseMetricOp`] adapters, and delegates to [`lanczos_shift_invert`] for
