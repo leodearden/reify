@@ -534,4 +534,339 @@ mod tests {
             "primary label message must be non-empty"
         );
     }
+
+    // ── task 6958: a keyed entry's overrides IS a specialization scope ───────
+    //
+    // These use REAL `.ri` source through `parse_module` rather than hand-built
+    // AST. The older tests above had no choice — they predate the
+    // `sub … { body }` grammar. The keyed grammar exists and parses cleanly
+    // today, so the end-to-end path is available and is the stronger signal: it
+    // also pins that `lower_sub` really routes these members into
+    // `keyed_members[].overrides` rather than somewhere a hand-built fixture
+    // merely asserts.
+
+    /// Parse `source` (asserting it is error-free) and run `validate_module`.
+    ///
+    /// Hands back the module too, so a test can read real decl spans out of the
+    /// AST instead of hardcoding byte offsets that any edit to the fixture
+    /// string would silently invalidate.
+    fn parse_and_validate(source: &str) -> (ParsedModule, Vec<Diagnostic>) {
+        let parsed = parse_module(source);
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture must parse cleanly, got {:?} for source:\n{source}",
+            parsed.errors
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        validate_module(&parsed, &mut diagnostics);
+        (parsed, diagnostics)
+    }
+
+    /// The keyed entries of the single top-level `sub` in the first structure,
+    /// asserting the keyed lowering on the way through.
+    ///
+    /// NON-VACUITY guard shared by the keyed tests below: a decl the parser
+    /// hoisted into `SubDecl.body` — or up to the structure's top level — would
+    /// be reported by the pre-existing body-form path, so it would discriminate
+    /// nothing.
+    fn keyed_entries(parsed: &ParsedModule) -> &[reify_ast::KeyedSubMemberEntry] {
+        let members: &[MemberDecl] = match &parsed.declarations[0] {
+            Declaration::Structure(s) => &s.members,
+            other => panic!("expected a Structure declaration, got {other:?}"),
+        };
+        let subs: Vec<_> = members
+            .iter()
+            .filter_map(|m| match m {
+                MemberDecl::Sub(sub) => Some(sub),
+                _ => None,
+            })
+            .collect();
+        let sub = match subs.as_slice() {
+            [sub] => *sub,
+            other => panic!("fixture must contain exactly one top-level Sub, got {other:#?}"),
+        };
+        assert!(
+            sub.body.is_none(),
+            "the keyed form must lower with `body: None`, got {:#?}",
+            sub.body
+        );
+        assert!(
+            !sub.keyed_members.is_empty(),
+            "fixture must lower to at least one keyed entry, got {sub:#?}"
+        );
+        &sub.keyed_members
+    }
+
+    /// The span an AST node reports for itself.
+    ///
+    /// Read straight off the decl rather than through `forbidden_decl_info`, so
+    /// the span assertions below check the diagnostic against the AST rather
+    /// than against the very function that produced it.
+    fn declared_span(member: &MemberDecl) -> SourceSpan {
+        match member {
+            MemberDecl::Param(p) => p.span,
+            MemberDecl::Port(p) => p.span,
+            MemberDecl::Sub(s) => s.span,
+            other => panic!("fixture member carries no forbidden-decl span: {other:#?}"),
+        }
+    }
+
+    /// The single override member of the single keyed entry.
+    fn only_override(parsed: &ParsedModule) -> &MemberDecl {
+        match keyed_entries(parsed) {
+            [entry] => match entry.overrides.as_slice() {
+                [member] => member,
+                other => panic!("expected exactly one override member, got {other:#?}"),
+            },
+            other => panic!("expected exactly one keyed entry, got {other:#?}"),
+        }
+    }
+
+    /// `param`, `port`, and `sub` inside a keyed entry's overrides each fire
+    /// exactly one `SpecializationForbiddenDecl` Error naming the kind and the
+    /// decl, with the primary label on the decl's own span.
+    ///
+    /// One table rather than three near-identical tests: the assertions are
+    /// identical per kind, and only the kind/name/source triple varies.
+    #[test]
+    fn validate_module_reports_each_forbidden_decl_kind_inside_a_keyed_entry() {
+        for (kind, name, decl) in [
+            ("param", "q", "param q : Real = 1"),
+            ("port", "q", "port q : MyPort"),
+            ("sub", "c", "sub c : Bar"),
+        ] {
+            let source = format!("structure S {{ sub p : Foo {{ \"a\" => {{ {decl} }} }} }}");
+            let (parsed, diagnostics) = parse_and_validate(&source);
+            let declared = only_override(&parsed);
+
+            assert_eq!(
+                diagnostics.len(),
+                1,
+                "expected exactly one diagnostic for `{decl}` in a keyed entry, got: {diagnostics:?}"
+            );
+            let d = &diagnostics[0];
+            assert_eq!(d.severity, Severity::Error);
+            assert_eq!(d.code, Some(DiagnosticCode::SpecializationForbiddenDecl));
+            assert!(
+                d.message.contains(&format!("'{kind}'")),
+                "message must name the kind '{kind}', got: {:?}",
+                d.message
+            );
+            assert!(
+                d.message.contains(&format!("'{name}'")),
+                "message must name the decl '{name}', got: {:?}",
+                d.message
+            );
+            assert!(!d.labels.is_empty());
+            assert_eq!(
+                d.labels[0].span,
+                declared_span(declared),
+                "primary label span must equal the decl's own span for `{decl}`"
+            );
+        }
+    }
+
+    /// A keyed sub with TWO entries, each holding a forbidden decl, fires TWO
+    /// diagnostics — one per entry. A first-entry-only fix fails here.
+    #[test]
+    fn validate_module_reports_a_forbidden_decl_in_every_keyed_entry() {
+        let source = r#"
+structure S {
+    sub p : Foo {
+        "a" => { param q : Real = 1 }
+        "b" => { param r : Real = 2 }
+    }
+}
+"#;
+        let (parsed, diagnostics) = parse_and_validate(source);
+        assert_eq!(
+            keyed_entries(&parsed).len(),
+            2,
+            "fixture must lower to two keyed entries"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            2,
+            "expected one diagnostic per keyed entry, got: {diagnostics:?}"
+        );
+        assert!(
+            diagnostics[0].message.contains("'q'"),
+            "first diagnostic must name the first entry's param, got: {:?}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[1].message.contains("'r'"),
+            "second diagnostic must name the second entry's param, got: {:?}",
+            diagnostics[1].message
+        );
+    }
+
+    /// A `where … { … } else { … }` guarded group inside a keyed entry is
+    /// recursed into — guarded branches are unconditional in every recursion
+    /// set, so both branches report.
+    #[test]
+    fn validate_module_reports_forbidden_decls_inside_a_guarded_group_in_a_keyed_entry() {
+        let source = r#"
+structure S {
+    param flag : Real = 1
+    sub p : Foo {
+        "a" => {
+            where flag > 0 { param q : Real = 1 } else { port r : MyPort }
+        }
+    }
+}
+"#;
+        let (parsed, diagnostics) = parse_and_validate(source);
+        assert!(
+            matches!(only_override(&parsed), MemberDecl::GuardedGroup(_)),
+            "NON-VACUITY: the entry's single override must be the guarded group itself"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            2,
+            "expected the then-branch param AND the else-branch port, got: {diagnostics:?}"
+        );
+        let messages: Vec<_> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+        assert!(
+            messages.iter().any(|m| m.contains("'param'") && m.contains("'q'")),
+            "then-branch param must report, got {messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("'port'") && m.contains("'r'")),
+            "else-branch port must report, got {messages:?}"
+        );
+    }
+
+    /// `let` and `constraint` inside a keyed entry are PERMITTED (spec §8.7) and
+    /// fire nothing — the widening changes WHERE forbidden decls are looked for,
+    /// never WHICH kinds are forbidden.
+    #[test]
+    fn validate_module_reports_nothing_for_permitted_decls_inside_a_keyed_entry() {
+        let source = r#"
+structure S {
+    param t : Real = 1
+    sub p : Foo {
+        "a" => {
+            let y = 1
+            constraint t > 0
+        }
+    }
+}
+"#;
+        let (parsed, diagnostics) = parse_and_validate(source);
+        let overrides = match keyed_entries(&parsed) {
+            [entry] => &entry.overrides,
+            other => panic!("expected exactly one keyed entry, got {other:#?}"),
+        };
+        assert_eq!(
+            overrides.len(),
+            2,
+            "NON-VACUITY: both permitted members must really be in the entry's overrides, \
+             got {overrides:#?}"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "let and constraint are permitted in a specialization scope, got: {diagnostics:?}"
+        );
+    }
+
+    /// The shape every shipped `.ri` keyed sub actually uses — a per-key param
+    /// ASSIGNMENT — fires nothing.
+    ///
+    /// `lower_sub` routes `"intake" => { area = 5mm }` to the entry's
+    /// `param_overrides`, never to a `MemberDecl::Param`, and §8.7 lists
+    /// parameter assignments as permitted. This is the assertion that keeps the
+    /// widening from reddening `examples/keyed_vents.ri` and its siblings.
+    #[test]
+    fn validate_module_reports_nothing_for_a_keyed_param_assignment() {
+        let source = r#"structure S { sub p : Foo { "intake" => { area = 5mm } } }"#;
+        let (parsed, diagnostics) = parse_and_validate(source);
+        let entry = match keyed_entries(&parsed) {
+            [entry] => entry,
+            other => panic!("expected exactly one keyed entry, got {other:#?}"),
+        };
+        // NON-VACUITY in both directions: the assignment really landed in
+        // `param_overrides`, and really produced no `MemberDecl` at all — so
+        // "zero diagnostics" reports the routing, not an empty fixture.
+        assert_eq!(
+            entry.param_overrides.len(),
+            1,
+            "the `area = 5mm` assignment must lower to param_overrides, got {entry:#?}"
+        );
+        assert!(
+            entry.overrides.is_empty(),
+            "a param ASSIGNMENT must produce no MemberDecl, got {:#?}",
+            entry.overrides
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "a per-key param assignment is permitted (spec §8.7), got: {diagnostics:?}"
+        );
+    }
+
+    /// A keyed sub NESTED inside a body-form scope reports the inner `sub`
+    /// itself AND the forbidden decl inside its keyed overrides.
+    ///
+    /// Green since `walk_members`' recursive `Sub` arm was widened; pinned here
+    /// so the whole keyed story is asserted in one place.
+    #[test]
+    fn validate_module_reports_through_a_keyed_sub_nested_in_a_body_form_scope() {
+        let source = r#"
+structure S {
+    sub outer : Foo {
+        sub inner : Bar {
+            "a" => { param q : Real = 1 }
+        }
+    }
+}
+"#;
+        let (_, diagnostics) = parse_and_validate(source);
+        assert_eq!(
+            diagnostics.len(),
+            2,
+            "expected the inner `sub` AND the param inside its keyed overrides, got: {diagnostics:?}"
+        );
+        assert!(
+            diagnostics[0].message.contains("'sub'") && diagnostics[0].message.contains("'inner'"),
+            "first diagnostic must be the inner sub, got: {:?}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[1].message.contains("'param'") && diagnostics[1].message.contains("'q'"),
+            "second diagnostic must be the leaf param, got: {:?}",
+            diagnostics[1].message
+        );
+    }
+
+    /// A nested `sub c : Bar { param q }` written INSIDE a keyed entry reports
+    /// two diagnostics, outer-first — the same parent-before-children ordering
+    /// the body-form nested test pins.
+    #[test]
+    fn validate_module_reports_both_levels_of_a_sub_nested_inside_a_keyed_entry() {
+        let source = r#"
+structure S {
+    sub p : Foo {
+        "a" => {
+            sub c : Bar { param q : Real = 1 }
+        }
+    }
+}
+"#;
+        let (_, diagnostics) = parse_and_validate(source);
+        assert_eq!(
+            diagnostics.len(),
+            2,
+            "expected the nested `sub` AND its leaf param, got: {diagnostics:?}"
+        );
+        assert!(
+            diagnostics[0].message.contains("'sub'") && diagnostics[0].message.contains("'c'"),
+            "first diagnostic must be the nested sub (outer-first), got: {:?}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[1].message.contains("'param'") && diagnostics[1].message.contains("'q'"),
+            "second diagnostic must be the leaf param, got: {:?}",
+            diagnostics[1].message
+        );
+    }
 }
