@@ -1409,11 +1409,8 @@ decide_scope() {
                 gui=1
                 ;;
             examples/*.ri)
-                # A corpus leaf (task 7427). affected_crates now maps these
-                # to their declared reader crates instead of C5-widening to
-                # ALL; decide_scope's answer is unchanged from the `*)`
-                # catch-all it used to reach, and each flag is now earned
-                # rather than conservative:
+                # A corpus leaf (task 7427). Same answer as the `*)` catch-all
+                # it used to reach, but each flag is now EARNED:
                 #   rust — the corpus gates are compiled Rust test targets
                 #          that open these leaves by path.
                 #   gui  — gui/src/__tests__/reifyGrammarCorpus.test.ts sets
@@ -1428,19 +1425,16 @@ decide_scope() {
             *)
                 # Inert (documentation / configuration-only) -> no heavy
                 # checks; anything else unrecognised -> be conservative.
+                # The class is defined once, by reify_is_inert_path
+                # (scripts/affected-crates-lib.sh, sourced above — see its
+                # header).
                 #
-                # reify_is_inert_path (scripts/affected-crates-lib.sh, sourced above) is
-                # the SINGLE source for that class — docs/**, *.md, *.yaml,
-                # *.yml — shared with affected_crates' _is_noncrate, which used
-                # to carry a narrower copy of the same list (task 7427).
-                #
-                # It is consulted HERE, inside the catch-all, and deliberately
-                # NOT hoisted ahead of the case: every arm above must keep
-                # winning over the inert rule — `gui/*` (a gui/*.md or
-                # gui/*.yaml is GUI work), `tests/prd-gate/fixtures/*.ri`
-                # (tasks 5536/6435) and the docs/gui-event-channels.md
-                # carve-out (task 6281), which sits deliberately ahead of this
-                # arm for exactly that reason.
+                # Consulted HERE, inside the catch-all, and deliberately NOT
+                # hoisted ahead of the case: every arm above must keep winning
+                # over the inert rule — `gui/*` (a gui/*.md or gui/*.yaml is GUI
+                # work), `tests/prd-gate/fixtures/*.ri` (tasks 5536/6435) and
+                # the docs/gui-event-channels.md carve-out (task 6281), which
+                # sits ahead of this arm for exactly that reason.
                 if reify_is_inert_path "$f"; then
                     : # no heavy checks
                 else
@@ -1943,27 +1937,26 @@ closure_reaches_reify_gui() {
 # tsc is UNCONDITIONAL whenever the node lane runs: the frontend consumes
 # generated Rust->TS bindings, so any Rust change can break typechecking.
 # vitest is not — it exercises frontend behaviour, so it earns its ~100-120s
-# only when the frontend could actually have changed:
-#   GUI_PATH_SIGNAL  a changed path is READ BY the frontend (decide_scope set
-#                    it: gui/**, tree-sitter-reify/**, the workspace-global
-#                    manifests, docs/gui-event-channels.md, examples/**/*.ri,
-#                    the prd-gate .ri fixtures pinned in the grammar drift
-#                    ledger, and the conservative catch-all), or
+# only when the frontend could actually have changed.  THREE routes, any one
+# sufficient:
+#   GUI_PATH_SIGNAL            decide_scope classified a changed path as one a
+#                              frontend consumer READS (see its accumulators).
 #   closure_reaches_reify_gui  the affected-crate closure reaches reify-gui —
-#                    which is also true for SCOPE=all (C2, the merge gate stays
-#                    unconditional) and for every closure-unavailable shape.
-#   REIFY_GUI_RETRY_SPECS  a caller ASKED for named vitest specs to be re-run
-#                    (dark-factory's narrowed retry).  An explicit request is
-#                    evidence about the frontend that no path or closure test
-#                    can see, and dropping it would report green having never
-#                    run the specs the caller asked for.  Non-empty is the
-#                    whole test: a malformed value still runs the full suite
-#                    via the loud §4.3 full-fallback at the forwarding site.
+#                              see that predicate for SCOPE=all and its
+#                              fail-wide arms.
+#   REIFY_GUI_RETRY_SPECS      a caller ASKED for named vitest specs to be
+#                              re-run (dark-factory's narrowed retry).  An
+#                              explicit request is evidence about the frontend
+#                              that no path or closure test can see, and
+#                              dropping it would report green having never run
+#                              them.  Non-empty is the whole test: a malformed
+#                              value still runs the full suite via the loud
+#                              §4.3 fallback at the forwarding site.
 #
 # So the ONLY shape that skips vitest is a RUN_RUST=1 branch/staged diff with a
-# real crate closure that excludes reify-gui.  A Rust-only change outside that
-# cone which nonetheless breaks the frontend is caught at the merge gate —
-# delay ≤ 1 gate, never a coverage hole.
+# real crate closure that excludes reify-gui and no spec request.  A Rust-only
+# change outside that cone which nonetheless breaks the frontend is caught at
+# the merge gate — delay ≤ 1 gate, never a coverage hole.
 RUN_GUI_VITEST=0
 if [ "$RUN_GUI" -eq 1 ] && { [ "$GUI_PATH_SIGNAL" -eq 1 ] || [ -n "${REIFY_GUI_RETRY_SPECS:-}" ] || closure_reaches_reify_gui; }; then
     RUN_GUI_VITEST=1
@@ -2707,9 +2700,6 @@ add_test_passes() {
     # ensure-gui-sidecar-placeholder.sh runs first for the same reason it does at the
     # build_plan compile-check: tauri_build::build() validates bundle.externalBin and
     # panics when gui/src-tauri/sidecar/reify-sidecar-<triple> is absent from disk.
-    # The three-arm closure decision described above lives in
-    # closure_reaches_reify_gui (task 6268's logic, extracted to one named
-    # predicate by task 7427 so the vitest lane can read the same answer).
     # The `!= offline` guard stays HERE, at the call site: skipping this pass
     # for the offline role is a property of THIS pass (its plan runs the heavy
     # #[ignore] partition only), not of the closure.

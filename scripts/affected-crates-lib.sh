@@ -63,31 +63,22 @@ _is_global() {
 
 # reify_is_inert_path <path> — returns 0 (true) if the path is documentation or
 # configuration: it needs no heavy checks and belongs to no crate of its own.
-# Matches: docs/**, *.md, *.yaml, *.yml.
+# Matches: docs/**, *.md, *.yaml, *.yml. Contract: §3 "Inert paths are ONE
+# list" in docs/prds/verify-scope-contract.md.
 #
-# SPOT (task 7427). This is the SINGLE source for that class, consulted by
-# BOTH consumers that used to carry their own copy:
-#   * _is_noncrate below (the crate-attribution side), and
-#   * scripts/verify.sh's decide_scope (the heavy-check side), whose `*)`
-#     catch-all defers here instead of matching its own glob list.
-# The two lists had drifted — decide_scope matched all four patterns,
-# _is_noncrate only docs/**. The drift was invisible on a pure-docs diff
-# (RUN_RUST=0 skips the closure entirely) but destroyed narrowing on a MIXED
-# one: a top-level *.md riding along with a crate edit was unmappable, so C5
-# widened the whole closure to ALL. tests/infra/test_affected_crates_lib.sh's
-# INERT-SPOT battery pins the two classifications together.
+# SPOT (task 7427): the single definition of that class, for the two consumers
+# that used to carry their own drifting copies — _is_noncrate below (crate
+# attribution) and scripts/verify.sh's decide_scope (heavy-check selection).
+# tests/infra/test_affected_crates_lib.sh's INERT-SPOT battery pins them
+# together.
 #
-# DELIBERATELY NOT ANCHORED, because BOTH consumers place crate ATTRIBUTION
-# ahead of it — decide_scope through its `crates/*)` arm, affected_crates
-# through _file_to_crate in its accumulation loop — so a crate-OWNED *.md
-# (reify-mcp's include_str!-ed chunks, reify-doc's snapshot fixtures) is
-# never reached by this predicate on either side and keeps mapping to its
-# owning crate. That shared attribute-first precedence IS the SPOT; it is
-# recorded here once rather than restated at each call site.
-#
-# The same precedence keeps decide_scope's other earlier arms winning over
-# this rule too — gui/* (a gui/*.md is GUI work), tests/prd-gate/fixtures/*.ri
-# and the docs/gui-event-channels.md carve-out.
+# The suffix patterns are DELIBERATELY NOT ANCHORED, which is safe only because
+# both consumers place crate ATTRIBUTION ahead of this predicate — decide_scope
+# through its `crates/*)` arm, affected_crates through _file_to_crate in its
+# accumulation loop — so a crate-OWNED *.md never reaches here and keeps mapping
+# to its owning crate. That shared attribute-first precedence is the load-bearing
+# half of the SPOT, and is recorded here rather than at each call site; §5 of the
+# contract records what it protects.
 reify_is_inert_path() {
     local path="$1"
     case "$path" in
@@ -116,23 +107,15 @@ _is_noncrate() {
 }
 
 # _RI_CORPUS_CRATES — the crates whose COMPILED tests read the examples/ .ri
-# corpus, as SEED crates for the reverse closure (task 7427).
+# corpus, as SEED crates for the reverse closure (task 7427). Contract: §3
+# "Corpus mapping" in docs/prds/verify-scope-contract.md.
 #
 # HOW MEMBERSHIP IS KEPT HONEST: not by hand. RI-CORPUS-DRIFT in
-# tests/infra/test_affected_crates_lib.sh derives the set from the repo's own
-# Rust sources — every crate with a non-comment line naming an
-# `examples/<path>.ri` literal — and asserts DERIVED ⊆ DECLARED. Re-run that
-# test rather than editing this line from memory. Its derivation sweeps EVERY
-# workspace member's Rust sources, `gui/src-tauri/**` included: reify-gui
-# `include_str!`s corpus leaves at COMPILE time, and is declared here directly
-# rather than left to arrive transitively through the reify-eval seed — that
-# incidental dep edge is precisely what this seed set exists to stop the design
-# from depending on.
-#
-# SUBSET, not equality, and the asymmetry is deliberate: an extra DECLARED
-# crate only ever WIDENS the closure, which is the direction of error C5
-# already blesses. An UNDECLARED reader is the real regression — its tests
-# would be narrowed AWAY by an edit to the very fixture they read.
+# tests/infra/test_affected_crates_lib.sh sweeps every workspace member's Rust
+# sources and asserts DERIVED ⊆ DECLARED; that block owns the reader shapes it
+# recognises and why the subset direction is the safe one. Re-run it rather than
+# editing this line from memory. Each crate is declared in its own right, never
+# left to arrive transitively through another seed's dep edge.
 _RI_CORPUS_CRATES="reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui"
 
 # _file_to_crate <path> — map a crate-owned path to its crate name, or print
@@ -153,22 +136,13 @@ _file_to_crate() {
             echo "reify-gui"
             ;;
         examples/*.ri)
-            # A corpus leaf: emit the declared reader crates as ordinary
-            # seeds, so affected_crates feeds them through _reverse_closure
-            # exactly like any other direct crate.
-            #
-            # A bash `case` glob's `*` spans `/`, so this one arm covers the
-            # nested shapes too (examples/auto/*.ri,
-            # examples/ambient_default_material/*.ri, …) — which is most of
-            # the tree.
-            #
-            # Scoped to .ri leaves, NOT to the directory: non-.ri, non-inert
-            # content under examples/ (a .gcode datum, a .gitkeep) has no
-            # declared reader, so it deliberately falls through to the C5
-            # fail-wide arm in affected_crates.
-            # Word-split is the point (one seed per line, the contract every
-            # other arm honours). Safe unquoted: the declared value is a
-            # literal in this file and carries no glob metacharacter.
+            # A corpus leaf: emit the declared reader crates as ordinary seeds,
+            # fed through _reverse_closure like any other direct crate. A bash
+            # `case` glob's `*` spans `/`, so nested corpus dirs land here too;
+            # scoped to .ri LEAVES, so non-.ri content under examples/ (a
+            # .gcode datum, a .gitkeep) keeps falling to the C5 fail-wide arm.
+            # Word-split is the point (one seed per line) and is safe: the
+            # declared value is a literal here with no glob metacharacter.
             # shellcheck disable=SC2086
             printf '%s\n' $_RI_CORPUS_CRATES
             ;;

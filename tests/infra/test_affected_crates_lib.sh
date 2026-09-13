@@ -130,13 +130,9 @@ assert "unmappable path -> ALL" \
 
 # ---------------------------------------------------------------------------
 # INERT-SPOT (task 7427): the inert class is ONE list, shared with decide_scope.
-#
-# scripts/verify.sh's decide_scope has always treated `docs/*|*.md|*.yaml|*.yml`
-# as needing no heavy checks, while _is_noncrate's inert arm was `docs/*` alone.
-# The disagreement is invisible on a pure-docs diff (RUN_RUST=0 skips the
-# closure entirely) but destroys narrowing on a MIXED one: a single top-level
-# *.md riding along with a crate edit is unmappable, so C5 fires and the whole
-# closure widens to ALL. These assertions pin the two classifications together.
+# These assertions pin the two classifications together — the mixed
+# crate + top-level *.md diff is the shape the old two-copy version widened to
+# ALL. Contract and cost: §3 of docs/prds/verify-scope-contract.md.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- INERT-SPOT: the inert class matches decide_scope's (docs/**, *.md, *.yaml, *.yml) ---"
@@ -171,19 +167,14 @@ assert "top-level *.md -> empty (not ALL)" \
 assert "unmappable non-inert path still forces ALL (C5 preserved)" \
     test "$(affected_crates scripts/verify.sh)" = "ALL"
 
-# Crate ATTRIBUTION outranks the inert class. The inert patterns are
-# suffix-matched and unanchored, so `*.md` also names files a crate OWNS —
-# and 32 of the 33 tracked crates/**/*.{md,yaml,yml} are real compile/test
-# inputs: crates/reify-mcp/src/tools/chunks/*.md are `include_str!`-ed by
-# crates/reify-mcp/src/tools/language_chunks.rs, and
-# crates/reify-doc/tests/snapshots/*.md are fixtures compared by
-# crates/reify-doc/tests/fmt_markdown_tests.rs. Classifying those as "no
-# crate" is the undeclared-reader hazard _RI_CORPUS_CRATES' own prose calls
-# the real regression: the closure drops the very crate whose tests read the
-# edited file. decide_scope has always attributed first (its `crates/*)` arm
-# precedes the `*)` catch-all that consults the inert class); these pin
-# affected_crates to the same precedence, which is what makes the two sides
-# genuinely one classification rather than two that agree on a subset.
+# Crate ATTRIBUTION outranks the inert class (contract §5). The two fixtures
+# below are chosen because they are real compile/test inputs rather than
+# incidental docs — crates/reify-mcp/src/tools/chunks/*.md are `include_str!`-ed
+# by crates/reify-mcp/src/tools/language_chunks.rs, and
+# crates/reify-doc/tests/snapshots/*.md are compared by
+# crates/reify-doc/tests/fmt_markdown_tests.rs; 32 of the 33 tracked
+# crates/**/*.{md,yaml,yml} are of that kind. Classifying one as "no crate"
+# drops the very crate whose tests read the edited bytes.
 _check_crate_owned_doc_maps_to_owner() {
     # Usage: <expected-crate> <crate-owned path>
     local expected="$1" path="$2" out
