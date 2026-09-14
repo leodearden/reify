@@ -380,7 +380,7 @@ pub struct SubDecl {
     /// Members of the NON-KEYED specialization body, when this `sub` opens
     /// one. `None` for the keyed form (see `keyed_members`) as well as for the
     /// bare instantiation, collection, and bare-colon-no-body forms — so
-    /// `is_none()` is not a "opens no specialization scope" test.
+    /// `is_none()` does not mean "opens no specialization scope".
     ///
     /// Both the grammar (task 3569) and the CST→AST lowering (task 3571) are
     /// wired. `param_assignment` nodes inside the body are currently dropped
