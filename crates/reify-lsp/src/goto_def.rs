@@ -173,25 +173,24 @@ fn resolve_decl_name(
 /// Callers obtain `(name, decl_span)` from
 /// [`crate::analysis::decl_name_and_span`], whose wildcard-free exhaustive match
 /// is what makes same-file go-to-definition uniform across declaration kinds
-/// instead of a per-kind allowlist. They apply the CHEAP discriminators (word
-/// equality; cursor containment in `decl_span`) BEFORE calling this, because
-/// narrowing is a bounded scan over the declaration's text and is worth paying
-/// only for a declaration that already matched.
+/// instead of a per-kind allowlist.
 ///
-/// The narrowing uses [`crate::analysis::name_token_span`] — whole-word, bounded
-/// to the declaration's own span, UTF-8-boundary-snapping. Deliberately NOT
-/// [`find_name_offset_in_decl`], which is a bare substring search and would
-/// match the `n` of `fn` for a declaration named `n`.
+/// Narrowing uses [`crate::analysis::name_token_span`] — whole-word, bounded to
+/// the declaration's own span, UTF-8-boundary-snapping. Deliberately NOT
+/// [`find_name_offset_in_decl`], a bare substring search that matches the `n` of
+/// `fn` for a declaration named `n`. That sibling is on the RENAME write path,
+/// where the same bug rewrites a keyword byte (`structure s` renames to
+/// `Xtructure s`); migrating it onto `name_token_span` changes rename output, so
+/// it is filed as a follow-up rather than fixed under task 6388's
+/// no-rename-change constraint.
 ///
 /// `name_token_span` falls back to a ZERO-WIDTH span at `span.start` when the
-/// name is absent within the declaration span (e.g. a malformed/recovered AST
-/// node). A zero-width `Location` is never a useful jump target, so that case
-/// is mapped back to `None` here.
+/// name is absent within the declaration span (e.g. a recovered AST node). A
+/// zero-width `Location` is never a useful jump target, so that case becomes
+/// `None` here.
 ///
-/// SEPARATE BY DESIGN from [`find_declaration_name_span`]. That helper is the
-/// CROSS-FILE goto-def target *and* the rename/references oracle; widening it
-/// changes rename behaviour, which task 6388 must not do. Two documented
-/// non-goals follow from keeping them apart:
+/// SEPARATE BY DESIGN from [`find_declaration_name_span`], which also feeds
+/// rename/references. Two non-goals follow from keeping them apart:
 /// - a `structure def` nested inside a `purpose` body lives in
 ///   `PurposeDef.structures`, is not a top-level declaration, and is not
 ///   resolved (see `goto_def_purpose_nested_structure_is_not_top_level`);
@@ -352,12 +351,12 @@ fn find_declaration_in_source(source: &str, name: &str, uri: &Url) -> Option<Loc
 /// home declaration token uniformly as a `SourceSpan`, independent of the
 /// `Location`/`uri` packaging that goto-def needs.
 ///
-/// # This helper is the RENAME/REFERENCES oracle, not just a goto-def target
+/// # This helper feeds REFERENCES, not just cross-file goto-def
 ///
-/// It serves CROSS-FILE go-to-definition *and* is consumed by `references.rs`
-/// at three points: the `collect_structure_name_spans` home token
-/// (references.rs:1294), `resolve_cross_file_home` step 2 → `CrossFileHome::Structure`
-/// (:1401), and the cross-file rename producer (:1565).
+/// It serves CROSS-FILE go-to-definition *and* is consumed by three points in
+/// `references.rs`: the `references::collect_structure_name_spans` home token,
+/// `references::resolve_cross_file_home` step 2 → `CrossFileHome::Structure`,
+/// and the cross-file rename producer.
 ///
 /// Its kind list is therefore DELIBERATELY NARROWER than
 /// [`crate::analysis::decl_name_and_span`], which task 6388 introduced as the
@@ -365,23 +364,29 @@ fn find_declaration_in_source(source: &str, name: &str, uri: &Url) -> Option<Loc
 /// The two are separate on purpose, and this one must not be "unified" onto the
 /// other.
 ///
-/// **Adding a kind here is a rename/references change, not a goto-def change.**
-/// The use-site collectors `collect_uses` / `collect_idents_in_expr` walk
-/// `ExprKind::Ident` in EXPRESSIONS only — never type expressions — and
+/// **Adding a kind here changes what the REFERENCE SET reports.** The use-site
+/// collectors `collect_uses` / `collect_idents_in_expr` walk `ExprKind::Ident`
+/// in EXPRESSIONS only — never type expressions — and
 /// `collect_structure_name_spans` adds only `sub _ = Name` construction sites.
 /// So a type-position-only kind (TypeAlias / Unit / Constraint / Joint /
-/// Purpose) admitted here yields a rename that moves the DECLARATION token and
-/// silently misses every use site; because Invariant 5 only checks that edited
-/// buffers re-PARSE clean, such a rename passes validation while leaving the
-/// buffer referencing a name that no longer exists.
+/// Purpose) admitted here makes `compute_references_cross_file` report the
+/// DECLARATION token ALONE, with every type-position use absent. Measured, not
+/// assumed: flipping this call's `include_aliases` to `true` turns that set on
+/// `type Pressure = Force` / `param p : Pressure` from `None` into exactly one
+/// location, the declaration token.
 ///
-/// Measured, not assumed: temporarily adding a `TypeAlias` arm here turns
-/// `compute_references_cross_file` on `type Pressure = Force` /
-/// `param p : Pressure` from `None` into a one-element set holding the
-/// declaration token alone — the `param p : Pressure` use is absent.
+/// RENAME is gated SEPARATELY — by `references::classify_top_level_decl`'s own
+/// allowlist, consulted through `references::is_renameable_cross_file`, which
+/// never consults this helper. Admitting a kind here therefore does not by
+/// itself grant rename; it makes the reference set the incomplete input a later
+/// rename would trust, and Invariant 5 would not catch the result because the
+/// edited buffer still re-parses clean.
 ///
-/// Guarded by `references::tests::
-/// rename_and_references_unaffected_by_same_file_goto_def_declaration_names`.
+/// Both halves are guarded by `references::tests::
+/// rename_and_references_unaffected_by_same_file_goto_def_declaration_names`:
+/// its per-kind refusals pin `classify_top_level_decl`, and its coupling
+/// assertion reds when the reference set becomes non-empty for a kind whose
+/// type-position uses it does not cover.
 pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<SourceSpan> {
     // Prelude-aware parse for AST-shape consistency across reify-lsp;
     // see task 2525.
