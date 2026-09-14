@@ -44,3 +44,115 @@
 //! - `no_stale_undef_invariant_gate::seeded_kind_mismatch_composition_undef_is_unexempted_without_caller_discipline`
 //! - `harness_cache::snapshot_cache_divergence_gate::seeded_divergence_is_reported`
 //! - `harness_cache::snapshot_cache_divergence_gate::seeded_skip_committed_divergence_is_exempted`
+
+use crate::eval_gate_support;
+
+/// Every live corpus `.ri` file, as repo-relative shard keys.
+///
+/// S1-local scaffolding: the real `corpus_files()` lands later in this file and
+/// carries its key alongside the absolute path. Until then this walk is what
+/// gives the range property below real data (299 paths today) instead of three
+/// hand-picked literals.
+fn live_corpus_keys() -> Vec<String> {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest_dir.join("../..").canonicalize().expect("workspace root");
+
+    let mut files = Vec::new();
+    eval_gate_support::collect_ri_files(&manifest_dir.join("tests/fixtures"), &mut files);
+    eval_gate_support::collect_ri_files(&root.join("examples"), &mut files);
+    files.push(root.join("tests/prd-gate/fixtures/geometry_let_selector_consumer.ri"));
+
+    files
+        .iter()
+        .map(|p| {
+            let canonical = p.canonicalize().unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+            canonical
+                .strip_prefix(&root)
+                .unwrap_or(&canonical)
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect()
+}
+
+/// The headline behaviour change task #7431 makes: a corpus file's shard is a
+/// function of the FILE ALONE, not of its position in a sorted corpus listing.
+///
+/// Both pre-unification sweeps keyed their shards `i % CORPUS_SHARD_COUNT` on
+/// the file's index in a sorted discovery walk. That is perfectly balanced but
+/// insert-UNSTABLE: adding, deleting or renaming ONE `.ri` file shifts every
+/// later file by one index and therefore reassigns roughly 23/24 of the corpus
+/// to a different shard. A reproduction recorded as "shard 7 reds" stops being
+/// findable the moment anyone touches the corpus. Hash keying trades a little
+/// balance (quantified in `hash_sharding_partitions_the_corpus_within_measured_bounds`)
+/// for the property that a corpus edit reassigns only the edited file.
+#[test]
+fn shard_of_is_independent_of_corpus_membership() {
+    // (a) A pure function of the key: same input, same shard, every time, and
+    //     for two independently-constructed equal `&str`s (so the result cannot
+    //     be keyed on a pointer, a length, or interning).
+    let target = "examples/fdm_bracket.ri";
+    let rebuilt: String = ["examples/", "fdm_bracket", ".ri"].concat();
+    assert_eq!(rebuilt, target, "the rebuilt key must be equal by value");
+    assert_eq!(
+        shard_of(target),
+        shard_of(target),
+        "shard_of must be deterministic across repeated calls"
+    );
+    assert_eq!(
+        shard_of(target),
+        shard_of(&rebuilt),
+        "shard_of must depend on the key's VALUE, not on which allocation it came from"
+    );
+
+    // (b) No list, anywhere, at any size, can move the target's shard.
+    let expected = shard_of(target);
+    let mut corpora: Vec<Vec<String>> = Vec::new();
+    for earlier_siblings in [0usize, 1, 40] {
+        // Synthetic siblings under `crates/` all sort BEFORE `examples/...`.
+        let mut corpus: Vec<String> = (0..earlier_siblings)
+            .map(|n| format!("crates/reify-eval/tests/fixtures/synthetic_{n:03}.ri"))
+            .collect();
+        corpus.push(target.to_string());
+        corpus.sort();
+        assert_eq!(
+            shard_of(target),
+            expected,
+            "inserting {earlier_siblings} earlier-sorting sibling(s) must not move \
+             {target}'s shard — the whole point of hash keying"
+        );
+        corpora.push(corpus);
+    }
+
+    // Non-vacuity control for (b): under the OLD `i % CORPUS_SHARD_COUNT` index
+    // keying those same three corpora DO disagree about the target's shard, so
+    // the assertion above is discriminating rather than trivially true.
+    let index_keyed: Vec<usize> = corpora
+        .iter()
+        .map(|c| c.iter().position(|p| p == target).expect("target present") % CORPUS_SHARD_COUNT)
+        .collect();
+    assert!(
+        index_keyed.iter().any(|s| *s != index_keyed[0]),
+        "control failed: the three corpora must disagree under index keying \
+         (got {index_keyed:?}), or (b) proves nothing"
+    );
+
+    // (c) Range property, over the live corpus rather than hand-picked literals.
+    let keys = live_corpus_keys();
+    assert!(
+        keys.len() > 250,
+        "non-vacuity: expected the live corpus to hold hundreds of .ri files, got {}",
+        keys.len()
+    );
+    for key in &keys {
+        let shard = shard_of(key);
+        assert!(
+            shard < CORPUS_SHARD_COUNT,
+            "shard_of({key}) returned {shard}, outside 0..{CORPUS_SHARD_COUNT} — no \
+             corpus_shard_tests! entry would ever run that file"
+        );
+    }
+
+    // A literal from the OTHER corpus root, so (c) is not examples/-only.
+    assert!(shard_of("crates/reify-eval/tests/fixtures/undef_trace.ri") < CORPUS_SHARD_COUNT);
+}
