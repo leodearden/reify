@@ -1375,6 +1375,56 @@ fn selector_consumer_premise_fixture_is_swept_by_exactly_one_shard() {
     );
 }
 
+/// One `#[test]` fn per corpus shard — see [`CORPUS_SHARD_COUNT`] for why the
+/// sweep is sharded at all, and [`run_corpus_shard`] for the per-shard logic.
+/// `$idx` must range exactly over `0..CORPUS_SHARD_COUNT`, which
+/// `corpus_shard_count_matches_generated_tests` checks.
+macro_rules! corpus_shard_tests {
+    ($($name:ident = $idx:literal),+ $(,)?) => {
+        $(
+            #[test]
+            fn $name() {
+                run_corpus_shard($idx);
+            }
+        )+
+
+        /// Every shard index passed to THIS macro invocation, in source order —
+        /// derived from the same repetition that generates the `#[test]` fns
+        /// above, so deleting a `corpus_sweep_shard_NN` line shrinks this array
+        /// too. That is what lets `corpus_shard_count_matches_generated_tests`
+        /// detect a deleted shard line; comparing two independently-hardcoded
+        /// literals cannot, since neither changes when a line is removed.
+        const GENERATED_SHARD_INDICES: &[usize] = &[$($idx),+];
+    };
+}
+
+corpus_shard_tests! {
+    corpus_sweep_shard_00 = 0,
+    corpus_sweep_shard_01 = 1,
+    corpus_sweep_shard_02 = 2,
+    corpus_sweep_shard_03 = 3,
+    corpus_sweep_shard_04 = 4,
+    corpus_sweep_shard_05 = 5,
+    corpus_sweep_shard_06 = 6,
+    corpus_sweep_shard_07 = 7,
+    corpus_sweep_shard_08 = 8,
+    corpus_sweep_shard_09 = 9,
+    corpus_sweep_shard_10 = 10,
+    corpus_sweep_shard_11 = 11,
+    corpus_sweep_shard_12 = 12,
+    corpus_sweep_shard_13 = 13,
+    corpus_sweep_shard_14 = 14,
+    corpus_sweep_shard_15 = 15,
+    corpus_sweep_shard_16 = 16,
+    corpus_sweep_shard_17 = 17,
+    corpus_sweep_shard_18 = 18,
+    corpus_sweep_shard_19 = 19,
+    corpus_sweep_shard_20 = 20,
+    corpus_sweep_shard_21 = 21,
+    corpus_sweep_shard_22 = 22,
+    corpus_sweep_shard_23 = 23,
+}
+
 /// Drift guard: `corpus_shard_tests!` must enumerate EXACTLY
 /// `0..CORPUS_SHARD_COUNT` — one `#[test]` fn per shard index, no gaps,
 /// duplicates or out-of-range entries — or some corpus files would silently
