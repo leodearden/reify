@@ -63,10 +63,24 @@ PMC
 }
 
 # land <repo> [args...] — run land.sh; sets LAND_RC and LAND_OUT.
+#
+# -u DF_VERIFY_ROLE -u REIFY_GATE_EXCLUDE_HEAVY: force-clear both gate-scoping
+# vars before running the script under test, so every value the merge-gate child
+# records in gate-env provably ORIGINATES IN land.sh. The orchestrator injects
+# REIFY_GATE_EXCLUDE_HEAVY=1 into every verify subprocess
+# (dark-factory-orchestrator.yaml) and the merge tier stamps
+# DF_VERIFY_ROLE=merge, so without this scrub the child inherits both no matter
+# what land.sh does, and the propagation assertions below pass on the very
+# failure they exist to catch. Same hazard and same remedy as
+# scripts/test_psi_gate.sh:69-74 (#4943).
+#
+# `env -u` applies BEFORE any explicit NAME=VALUE the caller adds, so the
+# non-vacuity control further down can still force values back in deliberately.
 land() {
     local dir="$1"; shift
     local rc=0 out
-    out="$( ( cd "$dir" && bash scripts/land.sh "$@" ) 2>&1 )" || rc=$?
+    out="$( ( cd "$dir" && env -u DF_VERIFY_ROLE -u REIFY_GATE_EXCLUDE_HEAVY \
+                bash scripts/land.sh "$@" ) 2>&1 )" || rc=$?
     LAND_RC=$rc; LAND_OUT="$out"
 }
 
@@ -187,7 +201,10 @@ grep -v '^export REIFY_GATE_EXCLUDE_HEAVY=1$' "$REPO_ROOT/scripts/land.sh" > "$R
 _STRIPPED_LINES="$(wc -l < "$RC/scripts/land.sh")"
 chmod +x "$RC/scripts/land.sh"
 git -C "$RC" add scripts/land.sh
-git -C "$RC" commit -q -m "control: land.sh without the heavy-exclusion export"
+# --allow-empty so that a DRIFTED anchor (strip removed nothing, leaving the copy
+# identical) is reported by the assertion below instead of aborting this whole
+# file at git commit's exit 1 under set -e, with no summary and no attribution.
+git -C "$RC" commit -q --allow-empty -m "control: land.sh without the heavy-exclusion export"
 assert "control: stripping the export removed exactly one line from scripts/land.sh (the anchor still matches the real script)" \
     test "$(( _LAND_LINES - _STRIPPED_LINES ))" -eq 1
 rm -f "$RC/.git/gate-env"
