@@ -489,17 +489,65 @@ _wallclock_baseline_check() {
     [ "$_brc" -le 1 ] || return "$_brc"
     _rows="$(_emit_record_stream "$_rows" | LC_ALL=C sort)"
 
-    # comm -23: present LIVE, absent from the BASELINE -- i.e. a violation
-    # written today. Multiset semantics come free: comm pairs equal lines one
-    # for one, so a 4th copy of a 3x-baselined record surfaces as exactly one
-    # unmatched line.
-    local _new
+    # TWO DIRECTIONS over the SAME pair of sorted multisets.
+    #   comm -23: present LIVE, absent from the BASELINE -- a violation written
+    #             today.
+    #   comm -13: present in the BASELINE, absent LIVE -- a site that was fixed
+    #             or moved, whose row is now dead weight.
+    # Multiset semantics come free either way: comm pairs equal lines one for
+    # one, so a 4th copy of a 3x-baselined record surfaces as exactly one
+    # unmatched line, and deleting one row of a duplicate pair leaves exactly
+    # one stale row.
+    local _new _stale
     _new="$(LC_ALL=C comm -23 \
         <(_emit_record_stream "$_live") \
         <(_emit_record_stream "$_rows"))"
+    _stale="$(LC_ALL=C comm -13 \
+        <(_emit_record_stream "$_live") \
+        <(_emit_record_stream "$_rows"))"
 
-    [ -n "$_new" ] || return 0
-    printf '%s\n' "$_new" | sed 's/^/  + /' >&2
+    [ -n "$_new" ] || [ -n "$_stale" ] || return 0
+
+    # BOTH directions are reported, always. They never net out against each
+    # other: a run that fixed one site and added another has one of each, and
+    # the reader needs to see both (fixture 4d-5).
+    [ -z "$_new" ] || printf '%s\n' "$_new" | sed 's/^/  + /' >&2
+    [ -z "$_stale" ] || printf '%s\n' "$_stale" | sed 's/^/  - /' >&2
+
+    echo "" >&2
+    echo "The live scan and $_baseline disagree." >&2
+    echo "The two directions mean OPPOSITE things and take opposite fixes:" >&2
+    # The legend deliberately does NOT begin a line with the record prefixes it
+    # describes. A reported record and the prose about it must be tellable
+    # apart, by a reader skimming and by anything counting them -- fixtures
+    # 4d-3/4d-4/4d-5 count `^  + ` and `^  - ` lines, and an earlier draft that
+    # opened these paragraphs with `  + <record>` was scored as three extra
+    # records by its own report.
+    if [ -n "$_new" ]; then
+        echo "" >&2
+        echo "A '+' line is a NEW hand-rolled real-clock deadline, or a NEW upper bound on" >&2
+        echo "elapsed time. An upper bound INVERTS under load: a saturated host that" >&2
+        echo "deschedules the test thread fails code that behaved perfectly." >&2
+        echo "DO NOT simply append a baseline row for it -- a row means 'pre-existing debt" >&2
+        echo "that must not grow', NOT 'blessed'. Apply the three sanctioned fixes in order:" >&2
+        echo "  1. Drive the budget through the WaitClock seam (clock.now(), VirtualClock)" >&2
+        echo "     so the assertion consumes no real time and the claim becomes exact." >&2
+        echo "  2. Delete the upper bound and let nextest's slow-timeout / terminate-after" >&2
+        echo "     catch a genuine hang." >&2
+        echo "  3. Only if the site is genuinely legitimate, take the same-line escape AND" >&2
+        echo "     raise _ESC_ALLOWLIST_SIZE in this file, so the argument lands in review" >&2
+        echo "     rather than in a baseline row." >&2
+    fi
+    if [ -n "$_stale" ]; then
+        echo "" >&2
+        echo "A '-' line is a baselined site that was FIXED, MOVED or DELETED -- good news." >&2
+        echo "Delete that row from $_baseline in this same diff." >&2
+        echo "This direction is what makes the ratchet shrink instead of accreting dead" >&2
+        echo "rows, which is why it is a red rather than a shrug." >&2
+    fi
+    echo "" >&2
+    echo "Regenerate-and-DIFF if you need to; never regenerate-and-replace, which would" >&2
+    echo "launder every + record above into the baseline unread." >&2
     return 1
 }
 
