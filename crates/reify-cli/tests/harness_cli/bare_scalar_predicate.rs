@@ -1,31 +1,18 @@
 //! Bare-`Scalar` detection predicate — SINGLE SOURCE OF TRUTH.
 //!
-//! Declared as a `#[path]` module by exactly two test targets, so there is ONE
-//! copy of the predicate and its two helpers and the drift surface between them
-//! is zero:
-//!
-//!   * `crates/reify-cli/tests/harness_cli/corpus_no_bare_scalar.rs` — the
-//!     corpus-cleanliness guard that owns this predicate and carries its unit
-//!     tests (`predicate_tests`);
-//!   * `crates/reify-spec-conformance/tests/fixture_tree.rs` — the sentinel
-//!     that keeps that guard's registered exclusion arm for the conformance
-//!     fixture tree from going vacuous, and which must still fire under a
-//!     `.ri`-only scope narrowing that never builds `reify-cli`.
-//!
-//! Shared by SOURCE INCLUSION, never by a Cargo dependency edge: a
-//! `reify-spec-conformance` → `reify-cli` dependency would make the former
-//! occt-touching and drag in the hand-synced `scripts/occt-touching-crates.txt`
-//! / `.config/nextest.toml` pair (see `crates/reify-spec-conformance/src/lib.rs`).
-//! `#[path]` adds no edge: `cargo tree -p reify-spec-conformance -e normal,dev`
-//! is unchanged. The cost is that `scripts/affected-crates-lib.sh` maps an edit
-//! here to `reify-cli` alone; the merge gate is `--scope all`, so that is a
-//! staleness in incremental scoping only.
+//! Pulled in with `#[path]` — source inclusion, never a Cargo dependency edge —
+//! by exactly two test targets: `corpus_no_bare_scalar.rs` (the corpus guard
+//! that owns this predicate and carries its unit tests) and
+//! `crates/reify-spec-conformance/tests/fixture_tree.rs`. Why an edge is
+//! forbidden, and why the unit tests live over there rather than here:
+//! `crates/reify-spec-conformance/fixtures/README.md`. The one cost is that
+//! `scripts/affected-crates-lib.sh` maps an edit here to `reify-cli` alone —
+//! a staleness in incremental scoping only, since the merge gate is `--scope all`.
 //!
 //! This file is itself walked by the guard's `crates/**/*.rs` sweep and is
 //! deliberately NOT on its self-exclusion list: it carries no bare annotation
-//! on a non-comment line, and keeping it in the scan is the cheapest way to
-//! keep that true. Write violating examples in `predicate_tests` (whose file
-//! IS self-excluded), never here.
+//! on a non-comment line. Write violating examples in `predicate_tests` (whose
+//! file IS self-excluded), never here.
 //!
 //! Signal: `: *Scalar([^<a-zA-Z]|$)` (annotation) or `-> Scalar([^<a-zA-Z]|$)`
 //! (codomain), with pure-comment lines and `::Scalar` excluded. Rationale for
@@ -53,26 +40,20 @@ fn strip_trailing_line_comment(line: &str) -> &str {
     line
 }
 
-/// Returns `true` when the `Scalar` occurrence at byte offset `abs` in `line`
-/// is the Rust pretty-`Debug` (`{:#?}`) rendering of the `reify_ir::Value::Scalar`
-/// ENUM VARIANT as a struct field — i.e. the whole line is exactly
-/// `<indent><ident>: Scalar {`.
+/// Returns `true` when the `Scalar` at byte offset `abs` in `line` is the Rust
+/// pretty-`Debug` (`{:#?}`) rendering of the `reify_ir::Value::Scalar` ENUM
+/// VARIANT as a struct field — i.e. the whole line is `<indent><ident>: Scalar {`.
 ///
-/// `#[derive(Debug)]` prints a struct-like variant UNQUALIFIED, so the `Value::`
-/// prefix that [`line_has_bare_scalar`]'s `::Scalar` rule keys on is elided:
+/// `#[derive(Debug)]` prints a struct-like variant UNQUALIFIED, eliding the
+/// `Value::` prefix that [`line_has_bare_scalar`]'s `::Scalar` rule keys on, so
 /// a `{:#?}` golden of a LENGTH-dimensioned IR field (task 5743's R7 raw-`Value`
-/// chokepoint) reads as `width: Scalar {`. Those goldens are Rust type names in
-/// a snapshot string, never DSL type annotations, so they are excluded for the
+/// chokepoint) reads as `width: Scalar {`. Those are Rust type names in a
+/// snapshot string, never DSL type annotations, so they are excluded for the
 /// same reason `Value::Scalar` already is.
 ///
-/// The shape is matched WHOLE-LINE and narrowly on purpose:
-///   * everything after `Scalar` must be exactly ` {` — Rust pretty-Debug puts
-///     nothing else on a struct-variant opener line;
-///   * everything before the `: ` must be leading whitespace plus one plain
-///     Rust identifier — so DSL forms never match. `param w: Scalar = 10mm`
-///     fails on both counts, and `structure def X : Scalar {` (the only DSL
-///     shape that *is* `: <Type> {`, a structure supertype) fails because
-///     `structure def X` is not a single identifier.
+/// Matched WHOLE-LINE and narrowly so DSL forms never match; `predicate_tests`
+/// pins both directions, including `structure def X : Scalar {` — the one DSL
+/// shape that is also `: <Type> {`, and which still matches.
 fn is_rust_debug_scalar_field(line: &str, abs: usize) -> bool {
     // Tail must be exactly ` {` (trailing whitespace tolerated).
     if line[abs + 6..].trim_end() != " {" {

@@ -14,17 +14,13 @@
 //!   * `crates/reify-ast/tests/`
 //!
 //! Excluded from scan (conformance corpus, must-reject fixtures are chartered):
-//!   * `crates/reify-spec-conformance/fixtures/` — see the exclusion arm below
-//!     and, for the charter and the sentinel arrangement that keeps that arm
-//!     non-vacuous, `crates/reify-spec-conformance/fixtures/README.md`.
+//!   * `crates/reify-spec-conformance/fixtures/` — see the exclusion arm below.
 //!
-//! The predicate itself and every carve-out's rationale (`::Scalar` enum paths,
-//! `Scalar<…>`, `Scalars`, pure-comment lines, the `{:#?}` Debug struct-field
-//! opener) live on the items in `bare_scalar_predicate.rs`, which this file and
-//! `crates/reify-spec-conformance/tests/fixture_tree.rs` both include so there
-//! is exactly one copy. `predicate_tests` at the bottom of THIS file are that
-//! predicate's unit tests — they live here because this file is self-excluded
-//! from the scan and so may spell violating examples out literally.
+//! The predicate and every carve-out's rationale live on the items in
+//! `bare_scalar_predicate.rs`, single-sourced there and included both here and
+//! by `crates/reify-spec-conformance/tests/fixture_tree.rs`. Its unit tests
+//! (`predicate_tests`) sit at the bottom of THIS file, the one self-excluded
+//! from the scan and so free to spell violating examples out literally.
 //!
 //! This test is GREEN (δ migration complete). It becomes compiler-redundant
 //! once γ adds `E_BARE_SCALAR`, but protects the δ→γ window as a regression
@@ -117,29 +113,22 @@ fn corpus_has_zero_bare_scalar() {
 
     // MARKER: spec-conformance-fixtures-exclusion-arm
     //
-    // That token is a deliberate machine-read contract, not decoration:
+    // That token is a machine-read contract, not decoration:
     // `corpus_guard_still_registers_this_tree` in
     // `crates/reify-spec-conformance/tests/fixture_tree.rs` greps THIS FILE for
-    // it, so the spec-conformance crate can tell "the arm is still here" from
-    // "the guard was retired out from under my sentinel". Keep the token
-    // adjacent to the `retain` below; if the arm is ever retired, delete the
-    // token in the SAME change so that test reds loudly instead of passing over
-    // a tree nobody excludes any more. Pinning a token rather than the local
-    // binding or the predicate's name is what makes both sides rename-proof.
+    // it. Keep it adjacent to the `retain` below; if the arm is ever retired,
+    // delete the token in the SAME change.
     //
-    // The arm itself: the Ring-1 language-spec conformance fixture tree holds
-    // CHARTERED must-reject fixtures (PRD `docs/prds/v0_6/spec-conformance-suite.md`
-    // D2, leaf beta #6759) — bare-`Scalar` rejection is ITSELF a spec clause the
-    // conformance suite must be free to test with a violating fixture. The
-    // charter, and the sentinel arrangement that keeps this arm from going
-    // vacuous, are in `crates/reify-spec-conformance/fixtures/README.md`; the
-    // sentinel's guard-side half is the test below.
-    //
-    // Accepted blind spot: the exclusion is directory-level, not file-level.
-    // Any future fixture added under that tree is also excluded from the scan.
-    // This is intentional and matches the arm above: the invariant the directory
-    // enforces — a conformance fixture may violate any spec clause on purpose —
-    // holds for every future resident, not just today's files.
+    // The arm itself: the Ring-1 conformance fixture tree holds CHARTERED
+    // must-reject fixtures (PRD `docs/prds/v0_6/spec-conformance-suite.md` D2,
+    // leaf beta #6759) — bare-`Scalar` rejection is ITSELF a spec clause the
+    // suite must be free to test with a violating fixture. Same directory-level
+    // blind spot as the arm above, and intentional for the same reason: the
+    // invariant holds for every future resident of the tree, not just today's
+    // files. The charter, the token's rename-proof rationale and the sentinel
+    // arrangement that keeps this arm from going vacuous are all in
+    // `crates/reify-spec-conformance/fixtures/README.md`; the sentinel's
+    // guard-side half is the test below.
     let spec_conformance_fixtures = root
         .join("crates")
         .join("reify-spec-conformance")
@@ -177,15 +166,13 @@ fn corpus_has_zero_bare_scalar() {
 
 // ── Sentinel for the spec-conformance exclusion arm ──────────────────
 
-/// Guard-side half of the placement-probe sentinel: the exclusion arm above is
-/// non-vacuous only while a live violator sits under it, and this makes that a
-/// checked property rather than a comment. Full rationale (and the other half,
-/// in `crates/reify-spec-conformance/tests/fixture_tree.rs`) lives in
-/// `crates/reify-spec-conformance/fixtures/README.md`.
-///
-/// If this guard is ever retired as compiler-redundant (see the header: once
-/// γ adds `E_BARE_SCALAR`), retire the probe and both sentinels in the same
-/// change — do not leave a sentinel standing watch over nothing.
+/// Guard-side half of the placement-probe sentinel: the arm above is non-vacuous
+/// only while a live violator sits under it, and this makes that a checked
+/// property rather than a comment. Full rationale, and the other half in
+/// `crates/reify-spec-conformance/tests/fixture_tree.rs`, live in
+/// `crates/reify-spec-conformance/fixtures/README.md`. If this guard is ever
+/// retired as compiler-redundant (see the header), retire the probe and both
+/// sentinels in the same change.
 #[test]
 fn spec_conformance_placement_probe_is_a_live_violator() {
     let probe = workspace_root()
@@ -215,10 +202,9 @@ fn spec_conformance_placement_probe_is_a_live_violator() {
 
 // ── Unit tests for the detection predicate ─────────────────────────────────
 //
-// These are the ONLY unit tests for `bare_scalar_predicate.rs`; the
-// spec-conformance crate includes the same source and so needs no copy of them.
-// They live in THIS file because it is the one self-excluded from the scan
-// above, so its literals may spell `: Scalar` / `-> Scalar` out in full.
+// The ONLY unit tests for `bare_scalar_predicate.rs` — here because this file
+// is the one self-excluded from the scan above, so its literals may spell
+// `: Scalar` / `-> Scalar` out in full.
 
 #[cfg(test)]
 mod predicate_tests {
