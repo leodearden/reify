@@ -1130,6 +1130,59 @@ mod tests {
     }
 
     #[test]
+    fn goto_def_unit_suffixed_literal_does_not_resolve_to_its_unit_declaration() {
+        // BOUNDARY PIN, sibling to `goto_def_purpose_nested_structure_is_not_top_level`.
+        //
+        // Task 6388's "uniform across declaration kinds" claim holds at
+        // DECLARATION sites for all eleven named kinds, but a `unit` has no
+        // reachable USE site, and that limit is worth pinning rather than
+        // leaving as a silent hole in the use-site table above.
+        //
+        // The cause is the WORD-SCANNING layer, not the declaration scan:
+        // `find_word_at_offset` treats every alphanumeric byte as an identifier
+        // byte, so a unit-suffixed literal fuses with its number and the cursor
+        // anywhere in `5meter` yields the word `"5meter"` — which never equals
+        // the declaration name `meter`. Widening `decl_name_and_span` cannot
+        // reach this; teaching the scanner to split a unit suffix would.
+        let source = "unit meter : Length\nstructure S {\n    param x : Length = 5meter\n}";
+        let parsed = parse_clean(source);
+
+        let suffix = source.rfind("meter").expect("fixture uses a `5meter` literal");
+        // Fixture guard: the scanned word really IS the fused literal, so the
+        // None below pins the documented boundary rather than an unrelated miss.
+        assert_eq!(
+            find_word_at_offset(source, suffix).map(|(_, w)| w),
+            Some("5meter"),
+            "the unit suffix must fuse with the numeric literal, or this pin \
+             no longer describes why the use site is unreachable"
+        );
+        assert!(
+            compute_goto_definition_with_parsed(
+                &parsed,
+                source,
+                &test_uri(),
+                crate::convert::offset_to_position(source, suffix as u32)
+            )
+            .is_none(),
+            "a unit-suffixed literal is not a use site the word scanner can reach"
+        );
+
+        // CONTRAST: the same unit's own DECLARATION name is navigable, so this
+        // is a use-site limit, not a missing kind.
+        let decl = source.find("meter").expect("fixture declares `unit meter`");
+        assert!(
+            compute_goto_definition_with_parsed(
+                &parsed,
+                source,
+                &test_uri(),
+                crate::convert::offset_to_position(source, (decl + "meter".len() / 2) as u32)
+            )
+            .is_some(),
+            "the unit DECLARATION name must still resolve to itself"
+        );
+    }
+
+    #[test]
     fn goto_def_use_site_resolves_to_top_level_declaration_name_token() {
         // Task 6388's headline symptom: goto-def on a USE of a top-level
         // declaration (far from the declaration itself) must jump to that
@@ -1165,6 +1218,18 @@ mod tests {
             (
                 "trait Rigid { param mass : Mass }\nstructure S : Rigid {\n    param mass : Mass\n}",
                 "Rigid",
+                1,
+            ),
+            // occurrence construction — `sub o = Welding()`.
+            (
+                "occurrence def Welding {\n    param method : Length = 1mm\n}\nstructure Asm {\n    sub o = Welding()\n}",
+                "Welding",
+                1,
+            ),
+            // field name referenced from an expression.
+            (
+                "field def temp : Point3 -> Real { source = analytical { |p| p } }\nstructure S {\n    let v = temp\n}",
+                "temp",
                 1,
             ),
         ];
