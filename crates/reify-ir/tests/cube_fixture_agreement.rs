@@ -161,7 +161,11 @@ fn extractor_distinguishes_a_differing_index_block() {
     let a = extract_indices(reference, "f").expect("reference block must parse");
     let b = extract_indices(permuted, "f").expect("permuted block must parse");
 
-    assert_eq!(a, vec![0, 2, 1], "extractor must return the literal it read");
+    assert_eq!(
+        a,
+        vec![0, 2, 1],
+        "extractor must return the literal it read"
+    );
     assert_ne!(
         a, b,
         "extractor returned equal results for two DIFFERENT index blocks, so \
