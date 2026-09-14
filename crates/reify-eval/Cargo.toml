@@ -183,3 +183,13 @@ reify-kernel-gmsh = { workspace = true, features = ["mesh-morph"] }
 # `mesh-morph` feature — the engine seam projects through GeometryKernel trait
 # methods (closest_point_on_shape/vertex_point), not the legacy OcctProjector.
 reify-mesh-morph = { workspace = true, features = ["testing"] }
+# Task 7527: `tests/medial_alignment_invariance_e2e.rs` builds its Z-offset plate
+# sweep from `reify_kernel_openvdb::test_fixtures::axis_aligned_box`, and that
+# module is gated `#[cfg(any(test, feature = "test-fixtures"))]` — a normal dep
+# alone does not reach it. reify-kernel-openvdb is ALREADY a normal dep above, so
+# this line only turns on a pure compile-gate feature for reify-eval's own test
+# builds: no new crate enters the graph, and the openvdb `inventory::submit!`
+# (gated on has_openvdb / `stub_register`, neither touched here) is unaffected.
+# Mirrors the `reify-kernel-manifold = { ..., features = ["test-fixtures"] }`
+# entry above.
+reify-kernel-openvdb = { workspace = true, features = ["test-fixtures"] }
