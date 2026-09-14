@@ -288,6 +288,19 @@ _wallclock_fingerprints() {
         _text="${_text%"${_text##*[![:space:]]}"}"
 
         printf '%s :: %s\n' "$_p" "$_text"
+
+    # PLAIN `sort`, NEVER `sort -u`, HERE OR ANYWHERE DOWNSTREAM -- and this is
+    # a deliberate divergence from the closest precedent, crates/reify-audit's
+    # ptodo.rs::fingerprint, which collapses identical markers by design.
+    # The two baselines are different KINDS of oracle:
+    #   * ptodo's is a SUBSET oracle over deduped fingerprints (the #6859
+    #     ruling), so a second copy of an already-baselined marker is
+    #     intentionally not news.
+    #   * this one is a MULTISET oracle, so a second copy IS news. Erasing line
+    #     numbers makes the 3 copies of `while Instant::now() < deadline {` in
+    #     jcodemunch_session_live.rs byte-equal records; deduping here would let
+    #     a 4th land unseen, which is precisely a new hand-rolled deadline
+    #     arriving under cover of an old one. Section 4b pins all three cases.
     done <<< "$_kept" | LC_ALL=C sort
 }
 
