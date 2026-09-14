@@ -2803,3 +2803,83 @@ structure def S {
         );
     }
 }
+
+/// The Chain arm of `elaborate_forall_connect` duplicates a direction error the
+/// same way the Connect arm did, and gets the same per-declaration collapse
+/// (task 7195).
+///
+/// A chain body desugars to one `Forward` pair per element and every pair's
+/// `compile_connection` call is anchored at `decl.span`, so an N-element
+/// collection produced N byte-identical errors. MEASURED before the fix:
+/// `module.diagnostics.len() == 3`, all three `"incompatible port directions for
+/// connect: In -> In"` labelled at the same forall span. AFTER: exactly 1.
+///
+/// `template.connections.len() == 3` is asserted alongside it: the chain's
+/// per-element lowering is untouched, only the diagnostics vector is filtered.
+#[test]
+fn forall_connect_chain_body_direction_error_reported_once_per_declaration() {
+    let source = r#"
+trait T { param d : Length }
+structure def Vent {
+    port a : in T { param d : Length = 1mm }
+    port b : in T { param d : Length = 1mm }
+}
+structure def S {
+    sub vents : List<Vent>
+    constraint vents.count == 3
+    forall v in vents: chain v.a -> v.b
+}
+"#;
+    let module = compile_source(source);
+
+    let direction_errors: Vec<&reify_core::Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("incompatible port directions"))
+        .collect();
+    assert_eq!(
+        direction_errors.len(),
+        1,
+        "expected the forall chain's direction error exactly once per declaration \
+         (3 byte-identical copies before the fix, one per collection element), \
+         got {}: {:?}",
+        direction_errors.len(),
+        direction_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let forall_span = find_forall_connect_span(source, "S");
+    let surviving = direction_errors[0];
+    assert_eq!(
+        surviving.labels.len(),
+        1,
+        "expected exactly one label on the surviving direction diagnostic, got {:?}",
+        surviving.labels
+    );
+    assert_eq!(
+        surviving.labels[0].span, forall_span,
+        "expected the surviving direction diagnostic to stay anchored at the source \
+         forall span {:?}, got {:?}",
+        forall_span, surviving.labels[0].span
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+    assert_eq!(
+        template.connections.len(),
+        3,
+        "expected 3 CompiledConnections (one desugared chain pair per element) \
+         despite the collapsed diagnostic, got {}: left_ports = {:?}",
+        template.connections.len(),
+        template
+            .connections
+            .iter()
+            .map(|c| c.left_port.as_str())
+            .collect::<Vec<_>>()
+    );
+}
