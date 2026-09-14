@@ -747,6 +747,58 @@ _count_rust_wallclock_escapes() {
     printf '%s\n' "$_hits" | grep -c .
     return 0
 }
+
+# ---------------------------------------------------------------------------
+# _wallclock_uncovered_test_roots <root>...
+#
+# Reads candidate test roots on STDIN, one per line, and prints (stdout) those
+# NOT COVERED by <root>.... Always returns 0.
+#
+# SAME CONTRACT AS _count_rust_wallclock_escapes, and for the same reason: the
+# LIST is the result, and the verdict is the caller's. Section 3 turns an empty
+# list into a green and a non-empty one into a named red; this function has no
+# opinion about either.
+#
+# WHAT IT IS FOR: `_LIVE_ROOTS` is the one input every other assertion in this
+# file trusts. Naming members one at a time can only pin the roots someone
+# thought of, and the root the #6597 review found missing was one nobody had
+# (gui/src-tauri/src/debug_server/tests). Deriving ground truth from the tree
+# and diffing it against the list is what makes the header's "EVERY Rust TEST
+# root" a checked claim rather than a promise.
+#
+# COVERED means EQUAL TO an argument, or a DESCENDANT of one. Prefix coverage
+# rather than equality, because every root is scanned RECURSIVELY: a nested
+# `a/tests/b/tests` is genuinely reached from `a/tests`, and reporting it would
+# be a false red that invites someone to enumerate subdirectories.
+#
+# THE QUOTING IS THE WHOLE IMPLEMENTATION. `"$_arg"` is quoted, so an argument
+# matches LITERALLY -- a root is a path, not a pattern -- and only the trailing
+# `/*` is a wildcard. That is exactly what makes `x/tests2` NOT covered by
+# `x/tests`. An unquoted `$_arg*` would call it covered and silently drop a real
+# test root from the report this function exists to produce; fixture 4f-4 pins
+# the difference, because that failure direction is the dangerous one.
+#
+# NO ROOT VALIDATION HERE, deliberately. The candidates come from `git
+# ls-files` and the question is whether a NAME is covered by the list, which is
+# independent of what exists on disk. Whether the list's OWN entries exist is
+# _wallclock_assert_roots's job (Section 4e), asserted separately in Section 3.
+# ---------------------------------------------------------------------------
+_wallclock_uncovered_test_roots() {
+    local _cand _arg _covered
+    while IFS= read -r _cand; do
+        # A blank line is not a candidate. Skipped rather than reported, so an
+        # empty input cannot manufacture a phantom uncovered root.
+        [ -n "$_cand" ] || continue
+        _covered=0
+        for _arg in "$@"; do
+            case "$_cand" in
+                "$_arg"|"$_arg"/*) _covered=1; break ;;
+            esac
+        done
+        [ "$_covered" -eq 1 ] || printf '%s\n' "$_cand"
+    done
+    return 0
+}
 # ===========================================================================
 # Section 1: Hermetic positive-detection -- the detector must flag a planted
 #             hand-rolled real-clock deadline (Rule A).
@@ -1343,6 +1395,20 @@ echo "--- Section 3: live scan of every Rust test root ---"
 _LIVE_ROOTS=(
     crates/*/tests
     gui/src-tauri/src/tests
+    # A test root under src/, and not reachable from the one above it. Its
+    # CONTENTS are tests -- 31 #[test]/#[tokio::test] fns in write_tools.rs --
+    # split out of debug_server.rs's `mod tests` for SIZE alone, and deliberately
+    # a CHILD of debug_server::tests rather than a sibling under src/tests/, so
+    # `use super::*` still reaches the private production items. That parentage is
+    # why recursing gui/src-tauri/src/tests never reaches it, and why the #6597
+    # review found it unscanned -- in the crate that produced all four flakes.
+    #
+    # ENUMERATED rather than globbed as `gui/src-tauri/src/*/tests`: a glob with
+    # one member today collapses to its literal pattern string the day that member
+    # moves, which _wallclock_assert_roots would then report as a missing root --
+    # a hard error for a tree that is actually fine. The completeness check below
+    # is what keeps the enumeration honest instead of a glob.
+    gui/src-tauri/src/debug_server/tests
     gui/src-tauri/tests
     tree-sitter-reify/tests
 )
