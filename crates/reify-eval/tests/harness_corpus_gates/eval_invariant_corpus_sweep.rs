@@ -1079,3 +1079,69 @@ fn residual_exemptions_and_failure_policy_stay_per_invariant() {
          semantic change, not a restructuring"
     );
 }
+
+/// The #4946 R3f-bridge premise, preserved across the move.
+///
+/// `no_stale_undef_invariant_gate.rs` asserted this inside its own
+/// `run_corpus_shard`: the one explicit `tests/prd-gate/fixtures/` leaf in the
+/// corpus must be PRESENT, actually EVALUATED (not skipped for a compile error,
+/// not residual-exempt), and report zero stale-Undef violations. Under index
+/// keying the owning shard was computable from a sorted position; under hash
+/// keying it is not, so the "exactly one shard owns it" half is asserted over
+/// the whole partition and the owning index is DERIVED from `shard_of` rather
+/// than hardcoded — a future corpus rename then cannot leave the premise
+/// asserted against the wrong shard.
+///
+/// Deliberately does NOT re-run `run_corpus_shard(owning)`: that shard's own
+/// `corpus_sweep_shard_NN` `#[test]` already executes it, premise assertion
+/// included, so re-running it here would double the work for no extra signal.
+/// What this test adds is the partition fact and the per-file outcome.
+#[test]
+fn selector_consumer_premise_fixture_is_swept_by_exactly_one_shard() {
+    let rel = "tests/prd-gate/fixtures/geometry_let_selector_consumer.ri";
+    let corpus = corpus_files();
+    let file = corpus
+        .iter()
+        .find(|f| f.rel == rel)
+        .unwrap_or_else(|| panic!("{rel} must be present in the corpus — the #4946 premise"));
+
+    // (a) EXACTLY one shard owns it, asserted over the whole partition rather
+    //     than against a computed index.
+    let owning: Vec<usize> = (0..CORPUS_SHARD_COUNT)
+        .filter(|i| shard_files(*i).iter().any(|f| f.rel == rel))
+        .collect();
+    assert_eq!(
+        owning,
+        vec![shard_of(rel)],
+        "{rel} must be swept by exactly one shard, and that shard must be the one \
+         shard_of names — otherwise the premise is asserted against the wrong shard, \
+         or against none"
+    );
+
+    // (b) That shard genuinely evaluates it: no compile-error skip, no residual
+    //     exemption, zero stale-Undef findings.
+    let stale = GATES
+        .iter()
+        .find(|g| g.id == InvariantId::StaleUndef)
+        .expect("INV-EVAL-5 gate declared");
+    assert!(
+        stale.scope.covers(rel),
+        "{rel} must be in INV-EVAL-5's scope, or the premise is unasserted"
+    );
+    assert!(
+        stale.residual_reason(rel).is_none(),
+        "{rel} must NOT be residual-exempt — the premise is that it is genuinely clean"
+    );
+
+    let FileSweep::Evaluated(outcome) = sweep_file(file) else {
+        panic!(
+            "{rel} must be EVALUATED, not skipped for a compile error — a skip would \
+             make the #4946 premise silently vacuous"
+        );
+    };
+    assert_eq!(
+        outcome.findings(InvariantId::StaleUndef),
+        Some(&[][..]),
+        "{rel} must report zero stale-Undef violations — the #4946 R3f-bridge premise"
+    );
+}
