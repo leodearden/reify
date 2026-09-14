@@ -2725,10 +2725,10 @@ mod cli {
     /// the file's code-less count is exactly `n`.
     fn pdiag_ratchet_source(n: u32) -> String {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pdiag_ratchet");
-        let header = std::fs::read_to_string(dir.join("header.rs.in"))
-            .expect("read pdiag_ratchet/header.rs.in");
-        let block = std::fs::read_to_string(dir.join("site_block.rs.in"))
-            .expect("read pdiag_ratchet/site_block.rs.in");
+        let header = std::fs::read_to_string(dir.join("header.rs.template"))
+            .expect("read pdiag_ratchet/header.rs.template");
+        let block = std::fs::read_to_string(dir.join("site_block.rs.template"))
+            .expect("read pdiag_ratchet/site_block.rs.template");
         let mut out = header;
         for i in 0..n {
             out.push_str(&block.replace("__N__", &i.to_string()));
