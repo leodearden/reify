@@ -61,6 +61,80 @@ pub use reify_test_support::fixtures::{
     tessellated_cylinder_volume, unit_cube_mesh, unwelded_prismatic_box_mesh,
 };
 
+use reify_ir::Mesh;
+
+// ---------------------------------------------------------------------------
+// subdivided_unit_cube_surface (pure Mesh construction, no gate) — #7224
+// ---------------------------------------------------------------------------
+
+// This IS a fixture in the sense the module doc above says belongs in
+// `reify_test_support`, not here — unlike `entity_census` it has no
+// structural reason to stay local (pure `reify_ir::Mesh` construction, no
+// libgmsh dependency). It stays local anyway because #7224's file set is
+// exactly the two consumers below, both in THIS crate, with no
+// reify_test_support edge locked for this task — the same scope-wall
+// reasoning that kept #6314/#6830 from widening into files outside their
+// lock. A future task may still hoist it into `reify_test_support::fixtures`
+// alongside `prismatic_box_mesh`.
+
+/// Build a 2×2-subdivided unit cube (side 1.0, centred at origin):
+/// 8 corners + 12 edge midpoints + 6 face centres = 26 unique vertices, 48
+/// triangles (6 faces × 8 sub-triangles, outward-facing).
+///
+/// Shared by `tests/node_attachment_producer.rs` and
+/// `tests/gmsh_classify_diagnostics.rs` (#7224) — deliberately NOT
+/// `#[cfg(has_gmsh)]`-gated, since it is pure `reify_ir::Mesh` construction
+/// with no libgmsh dependency. `fill_metrics_tests.rs` includes this module
+/// UNCONDITIONALLY, so an ungated fixture here is correct and matches the
+/// `prismatic_box_mesh` / `tessellated_cylinder_mesh` re-exports above.
+pub fn subdivided_unit_cube_surface() -> Mesh {
+    #[rustfmt::skip]
+    let corners: [[f32; 3]; 8] = [
+        [-0.5, -0.5, -0.5], [ 0.5, -0.5, -0.5],
+        [-0.5,  0.5, -0.5], [ 0.5,  0.5, -0.5],
+        [-0.5, -0.5,  0.5], [ 0.5, -0.5,  0.5],
+        [-0.5,  0.5,  0.5], [ 0.5,  0.5,  0.5],
+    ];
+    #[rustfmt::skip]
+    let edges: [[f32; 3]; 12] = [
+        [ 0.0, -0.5, -0.5], [-0.5,  0.0, -0.5], [ 0.5,  0.0, -0.5], [ 0.0,  0.5, -0.5],
+        [ 0.0, -0.5,  0.5], [-0.5,  0.0,  0.5], [ 0.5,  0.0,  0.5], [ 0.0,  0.5,  0.5],
+        [-0.5, -0.5,  0.0], [ 0.5, -0.5,  0.0], [-0.5,  0.5,  0.0], [ 0.5,  0.5,  0.0],
+    ];
+    #[rustfmt::skip]
+    let face_centers: [[f32; 3]; 6] = [
+        [ 0.0,  0.0, -0.5], [ 0.0,  0.0,  0.5],
+        [ 0.0, -0.5,  0.0], [ 0.0,  0.5,  0.0],
+        [-0.5,  0.0,  0.0], [ 0.5,  0.0,  0.0],
+    ];
+    let mut vertices: Vec<f32> = Vec::with_capacity(26 * 3);
+    for c in &corners { vertices.extend_from_slice(c); }
+    for e in &edges   { vertices.extend_from_slice(e); }
+    for f in &face_centers { vertices.extend_from_slice(f); }
+    #[rustfmt::skip]
+    let indices: Vec<u32> = vec![
+        // Bottom (z=-0.5): vertex indices 8=edge[0], 9=edge[1], 10=edge[2], 11=edge[3], 20=fc[0]
+        0, 9,20,  0,20, 8,  8,20,10,  8,10, 1,
+        9, 2,11,  9,11,20, 20,11, 3, 20, 3,10,
+        // Top (z=0.5)
+        4,12,21,  4,21,13, 12, 5,14, 12,14,21,
+       13,21,15, 13,15, 6, 21,14, 7, 21, 7,15,
+        // Front (y=-0.5)
+        0, 8,22,  0,22,16,  8, 1,17,  8,17,22,
+       16,22,12, 16,12, 4, 22,17, 5, 22, 5,12,
+        // Back (y=0.5)
+        2,18,23,  2,23,11, 11,23,19, 11,19, 3,
+       18, 6,15, 18,15,23, 23,15, 7, 23, 7,19,
+        // Left (x=-0.5)
+        0,16,24,  0,24, 9,  9,24,18,  9,18, 2,
+       16, 4,13, 16,13,24, 24,13, 6, 24, 6,18,
+        // Right (x=0.5)
+        1,10,25,  1,25,17, 10, 3,19, 10,19,25,
+       17,25,14, 17,14, 5, 25,19, 7, 25, 7,14,
+    ];
+    Mesh { vertices, indices, normals: None }
+}
+
 // ---------------------------------------------------------------------------
 // Raw-FFI entity census (has_gmsh only)
 // ---------------------------------------------------------------------------
@@ -72,8 +146,6 @@ pub use reify_test_support::fixtures::{
 // pure reify_ir arithmetic and must stay verified on stub hosts). Un-gating
 // either `use` or the `fn` below compiles fine on a libgmsh host and silently
 // breaks every stub-host build.
-#[cfg(has_gmsh)]
-use reify_ir::Mesh;
 #[cfg(has_gmsh)]
 use reify_kernel_gmsh::{CLASSIFY_CURVE_ANGLE, CLASSIFY_FEATURE_ANGLE, ffi, init};
 

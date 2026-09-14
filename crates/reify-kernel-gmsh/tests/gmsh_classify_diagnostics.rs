@@ -43,63 +43,15 @@
 
 use reify_kernel_gmsh::MeshingOptions;
 use reify_kernel_gmsh::mesh_volume::mesh_surface_to_volume_with_diagnostics;
-use reify_ir::{ElementOrderTag, Mesh};
+use reify_ir::ElementOrderTag;
 
-/// Build a 2×2-subdivided unit cube centred at the origin (side 1.0):
-/// 8 corners + 12 edge midpoints + 6 face centers = 26 unique vertices,
-/// 48 triangles (6 faces × 8 sub-triangles, outward-facing).
-fn subdivided_unit_cube_surface() -> Mesh {
-    #[rustfmt::skip]
-    let corners: [[f32; 3]; 8] = [
-        [-0.5, -0.5, -0.5], [ 0.5, -0.5, -0.5],
-        [-0.5,  0.5, -0.5], [ 0.5,  0.5, -0.5],
-        [-0.5, -0.5,  0.5], [ 0.5, -0.5,  0.5],
-        [-0.5,  0.5,  0.5], [ 0.5,  0.5,  0.5],
-    ];
-    #[rustfmt::skip]
-    let edges: [[f32; 3]; 12] = [
-        [ 0.0, -0.5, -0.5], [-0.5,  0.0, -0.5], [ 0.5,  0.0, -0.5], [ 0.0,  0.5, -0.5],
-        [ 0.0, -0.5,  0.5], [-0.5,  0.0,  0.5], [ 0.5,  0.0,  0.5], [ 0.0,  0.5,  0.5],
-        [-0.5, -0.5,  0.0], [ 0.5, -0.5,  0.0], [-0.5,  0.5,  0.0], [ 0.5,  0.5,  0.0],
-    ];
-    #[rustfmt::skip]
-    let face_centers: [[f32; 3]; 6] = [
-        [ 0.0,  0.0, -0.5], [ 0.0,  0.0,  0.5],
-        [ 0.0, -0.5,  0.0], [ 0.0,  0.5,  0.0],
-        [-0.5,  0.0,  0.0], [ 0.5,  0.0,  0.0],
-    ];
-
-    let mut vertices: Vec<f32> = Vec::with_capacity(26 * 3);
-    for c in &corners { vertices.extend_from_slice(c); }
-    for e in &edges   { vertices.extend_from_slice(e); }
-    for f in &face_centers { vertices.extend_from_slice(f); }
-    assert_eq!(vertices.len(), 78);
-
-    #[rustfmt::skip]
-    let indices: Vec<u32> = vec![
-        // Bottom (z=-0.5)
-        0, 9,20,  0,20, 8,  8,20,10,  8,10, 1,
-        9, 2,11,  9,11,20, 20,11, 3, 20, 3,10,
-        // Top (z=0.5)
-        4,12,21,  4,21,13, 12, 5,14, 12,14,21,
-       13,21,15, 13,15, 6, 21,14, 7, 21, 7,15,
-        // Front (y=-0.5)
-        0, 8,22,  0,22,16,  8, 1,17,  8,17,22,
-       16,22,12, 16,12, 4, 22,17, 5, 22, 5,12,
-        // Back (y=0.5)
-        2,18,23,  2,23,11, 11,23,19, 11,19, 3,
-       18, 6,15, 18,15,23, 23,15, 7, 23, 7,19,
-        // Left (x=-0.5)
-        0,16,24,  0,24, 9,  9,24,18,  9,18, 2,
-       16, 4,13, 16,13,24, 24,13, 6, 24, 6,18,
-        // Right (x=0.5)
-        1,10,25,  1,25,17, 10, 3,19, 10,19,25,
-       17,25,14, 17,14, 5, 25,19, 7, 25, 7,14,
-    ];
-    assert_eq!(indices.len(), 144);
-
-    Mesh { vertices, indices, normals: None }
-}
+// `subdivided_unit_cube_surface` is shared with
+// `tests/node_attachment_producer.rs` through `tests/common/mod.rs` (#7224):
+// it was duplicated here verbatim and had to be updated in lockstep. This
+// file is `#![cfg(has_gmsh)]` as a whole, so a top-level `use` of the
+// (ungated) fixture resolves fine here.
+mod common;
+use common::subdivided_unit_cube_surface;
 
 /// Count how many of the 8 cube-corner positions are present in the output
 /// VolumeMesh's vertex array (within squared tolerance `1e-6`).
