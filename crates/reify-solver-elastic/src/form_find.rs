@@ -762,7 +762,8 @@ fn assemble_d_aniso(
 /// per triangle on the solved geometry by [`recover_principal_stress`].
 ///
 /// # Errors
-/// - [`AnisoFormFindError::DimensionMismatch`] — `members`/`kinds`/`q` disagree.
+/// - [`AnisoFormFindError::DimensionMismatch`] — `members`/`kinds`/`q` disagree,
+///   or a `surfaces` triangle corner indexes past `nodes`.
 /// - [`AnisoFormFindError::SurfaceCountMismatch`] — `surfaces`/`surface_prestress` disagree.
 /// - [`AnisoFormFindError::SignViolation`] — a member violates its `q`-sign contract.
 /// - [`AnisoFormFindError::NonTensionSurfaceStress`] — `σ_w ≤ 0` or `σ_f ≤ 0`.
@@ -800,6 +801,12 @@ pub fn form_find_anchored_surfaces_aniso(
         if spec.sigma_warp <= 0.0 || spec.sigma_weft <= 0.0 {
             return Err(AnisoFormFindError::NonTensionSurfaceStress);
         }
+    }
+    // Surface node-index contract: mirrors form_find_anchored_surfaces — an
+    // out-of-range corner would panic on the `nodes[i]` index in
+    // `assemble_d_aniso`.
+    if !surface_indices_in_range(surfaces, n) {
+        return Err(AnisoFormFindError::DimensionMismatch);
     }
 
     let mut is_anchor = vec![false; n];
