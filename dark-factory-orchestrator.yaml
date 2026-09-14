@@ -29,7 +29,19 @@
 # livelocked the SERIAL merge queue (post-merge verifies timed out exit 124 from
 # 20:06-22:00, main froze 2h at full CPU burn; 24 left the merge verify ~half the
 # box). Re-cut toward 24 if the merge-latency livelock recurs.
-max_concurrent_tasks: 48
+# 2026-09-14: 48->24 AGAIN (Leo, decision docket D14-A; reify task 7532). Measured at 48
+# by the 2026-09-10 verify-speed study: load 71/114/135 on 32 threads, merge-gate p50
+# 45.6 min trending to 54.3, head-of-line queue age 4.4-4.6h, fused-memory wedging
+# under it (284 unaccepted connections after its 09-11 restart). The study's real fix for
+# the contention term is dark_factory 5205 (per-role cgroup CPUWeight on verify scopes:
+# merge 100 / task 33 / background 10), not this knob -- so this is a STOPGAP for gate
+# latency until 5205 lands, chosen because effective merge-verify capacity is ONE host
+# (the laptop runner completed zero verifies in the 7 days to 09-12). reify task 7533
+# (external dep dark_factory:5205) re-measures 10 days after 5205 is live and asks Leo
+# whether to raise this back up. RED-tier: effective at the next orchestrator restart.
+# warm_lane_pool.task_pool_size_source derives the lane pool from this value at startup
+# (N = 24 + spare_warm_lanes 8 = 32 lanes); no second edit is needed there.
+max_concurrent_tasks: 24
 max_per_module: 1
 # lock_depth 4→10 (Leo 2026-06-18): make module locks effectively file-granular. At
 # depth 4 a file path DEEPER than 4 components (e.g. crates/reify-eval/src/compute_targets/
