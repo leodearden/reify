@@ -1255,12 +1255,15 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
             // otherwise unmarked debt → untracked.
             //
             // The malformed-cite branch is deliberate. §8.3 defines that trigger
-            // LANE-INDEPENDENTLY, and three of this lane's live findings are
+            // LANE-INDEPENDENTLY, and three of this lane's live findings WERE
             // `// production wiring deferred to task 4050 (…)`
-            // (crates/reify-eval/src/engine_build.rs:2199/2278/2292) — the legacy
-            // `task NNNN` form. Collapsing them into `untracked` would report an
-            // author who cited imprecisely at High (hard gate) where §8.4 rates a
-            // malformed cite Medium (advisory).
+            // (crates/reify-eval/src/engine_build.rs:2199/2278/2292, as measured
+            // for #6087) — the legacy `task NNNN` form. Task #6934 later deleted
+            // those three attributes outright, the wiring having already landed,
+            // so the shape has no live instance today. The branch stays because
+            // collapsing such a cite into `untracked` would report an author who
+            // cited imprecisely at High (hard gate) where §8.4 rates a malformed
+            // cite Medium (advisory).
             //
             // The γ `#[ignore]` arm (2) above does NOT have this branch. That is
             // a divergence, not a precedent to copy: γ's reason policy is
@@ -2270,22 +2273,42 @@ mod tests {
     // §8.1 deferral-prose matching — has_deferral_prose (lane δ-A)
     // -------------------------------------------------------------------
 
-    /// Verbatim rationale substrings from the real evidence sites the δ-A
-    /// allow-attribute lane exists to surface. Pinning the exact in-tree source
-    /// text (rather than a paraphrase) keeps the user-observable signal covered
-    /// at the unit level: if a refactor stops matching any of these, the lane
-    /// has silently stopped reporting the debt it was built for.
+    /// Verbatim rationale substrings from the δ-A allow-attribute evidence
+    /// sites, pinned rather than paraphrased so a refactor that narrows the
+    /// matcher fails here instead of silently retiring the lane.
+    ///
+    /// The first two are HISTORICAL — #6934 removed both forms from the tree —
+    /// and pin the matcher's GRAMMAR, which is load-bearing precisely when no
+    /// live instance exists. The two after them are the forms live in the tree
+    /// today, so "real evidence site" stays backed by something.
     #[test]
     fn deferral_prose_positives() {
-        // crates/reify-eval/src/engine_build.rs:12891 — the δ-A rationale, and
-        // the one cited-orphaned site this task delivers end-to-end.
+        // WAS the δ-A rationale at crates/reify-eval/src/engine_build.rs:12891,
+        // and the one cited-orphaned site #6087 delivered end-to-end, until
+        // #6934 re-cited that attribute from done-#4744 to live-#4746. Pinned
+        // VERBATIM for the same grammar-not-tree reason.
         assert!(has_deferral_prose(
             "production wiring pending task #4744 (volume-mesh-realization-and-morph-wiring)"
         ));
-        // crates/reify-eval/src/engine_build.rs:2199 — δ-A rationale (legacy
-        // `task 4050` cite form; the cite grammar is not this function's job).
+        // WAS the δ-A rationale at crates/reify-eval/src/engine_build.rs:2199
+        // (legacy `task 4050` cite form; the cite grammar is not this
+        // function's job), as measured for #6087, until #6934 deleted that
+        // attribute, the wiring having already landed. The literal below stays
+        // pinned VERBATIM regardless: it pins the matcher's GRAMMAR, not the
+        // tree.
         assert!(has_deferral_prose(
             "production wiring deferred to task 4050 (in-realization conversion executor)"
+        ));
+        // LIVE δ-A rationale at crates/reify-eval/src/engine_build.rs:13746 —
+        // the successor cite #6934 re-pointed the #4744 attribute above onto.
+        assert!(has_deferral_prose(
+            "production wiring pending #4746 (hex/wedge Phase A activation: emits this diagnostic at the dispatch_volume_mesh production edge)"
+        ));
+        // LIVE δ-A rationale, the lane's most-replicated in-tree form (8 sites
+        // in engine_build.rs). Unlike both literals above it cites canonically:
+        // `pending` runs straight into `#6371` with no intervening `task `.
+        assert!(has_deferral_prose(
+            "T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)"
         ));
         // Guard 2 is scoped to the bytes adjacent to the NEEDLE, not to any
         // backtick on the line: a rationale that code-spans a symbol name next
@@ -3150,9 +3173,14 @@ mod tests {
     /// `malformed-cite`, not `untracked` — the arm mirrors arm (3)'s three-way
     /// split, and §8.3 defines the malformed-cite trigger lane-independently.
     ///
-    /// This is the live shape at `crates/reify-eval/src/engine_build.rs:2199`
+    /// This WAS the live shape at `crates/reify-eval/src/engine_build.rs:2199`
     /// (also `:2278`, `:2292` — 3 of the lane's 14 live findings, 1 of the 5
-    /// seeded baseline fingerprints), pinned VERBATIM. The kind drives severity:
+    /// seeded baseline fingerprints, as measured for #6087) until task #6934
+    /// deleted those three attributes, the wiring having already landed. The
+    /// literal below stays pinned VERBATIM regardless: it pins the GRAMMAR, not
+    /// the tree, and remains load-bearing now that no live instance exists —
+    /// exactly as the (A′) validate_* tests stayed meaningful across an
+    /// empty→non-empty baseline. The kind drives severity:
     /// `malformed-cite` is Medium/advisory per §8.4 whereas `untracked` is High
     /// and hard-fails the merge gate, so a silent flip here would change what a
     /// merge does, not just what it prints.

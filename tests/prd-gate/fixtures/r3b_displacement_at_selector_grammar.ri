@@ -56,8 +56,18 @@ structure CantileverSelectorQuery {
 
     let result = modal_analysis(mi.material, length, width, height, opts)
 
+    // `at` is a topology Selector (task 4577: was String "tip"). The free-tip
+    // (x_max) face is addressed kernel-free via box + faces_by_normal, the same
+    // shape as examples/modal/transient_step_response.ri:101-106 — the selector
+    // is never realized against a mesh, so this stays geometry-free. Let-bound
+    // for the dispatcher arg-shape contract noted below.
+    let part = box(length, width, height)
+    let tip_dir = vec3(1.0, 0.0, 0.0)
+    let tip_tol = 1deg
+    let tip_face = faces_by_normal(part, tip_dir, tip_tol)
+
     let tip_push = StepForce(
-        at: "tip",
+        at: tip_face,
         direction: vec3(0.0, 0.0, 1.0),
         magnitude: 10N,
         start_time: 0s
@@ -69,10 +79,9 @@ structure CantileverSelectorQuery {
     let dt      = 0.0002s
     let response = transient_response(result, forcing, t_start, t_end, dt)
 
-    // Topology selector over a part box. Let-bound `dir`/`tol` mirror the
+    // Topology selector over the same part box. Let-bound `dir`/`tol` mirror the
     // dispatcher arg-shape contract (selector args resolve via values.get;
     // inline vec3()/deg literals fall through to None).
-    let part = box(length, width, height)
     let dir  = vec3(0.0, 0.0, 1.0)
     let tol  = 1deg
     let top  = faces_by_normal(part, dir, tol)

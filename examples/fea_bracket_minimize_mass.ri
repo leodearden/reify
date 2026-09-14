@@ -168,14 +168,26 @@ structure FeaBracketMinimizeMass {
     // silently followed. That is fixed: the wrapper now constructs over a
     // Sampled stress field and `max`/`min`/`argmax`/`argmin` reduce it for real.
     //
-    // What remains is a COMPILE-TIME TYPING GAP only: `analysis_fn_result_type`
-    // derives von_mises's dimension via `tensor_quantity`, which matches
-    // `Type::Tensor`/`Type::Matrix` but has no `Type::Field` arm. A Field-valued
-    // argument therefore falls to the DIMENSIONLESS default,
-    // `von_mises(.stress)` types as `Real`, and `< yield_limit` fails with
-    // "dimension mismatch in comparison: Real vs Scalar[kg·m^-1·s^-2]" — an
-    // Error, so the zero-Error examples gate rejects it. Tracked as #6577; when
-    // that lands, this constraint can move to the explicit form.
+    // The compile-time half is CLOSED as well, by task #6577.
+    // `analysis_fn_result_type` (crates/reify-compiler/src/analysis_signatures.rs)
+    // gained a `Type::Field` arm, so `von_mises(.stress)` types as
+    // `Field<Point3<Length>, Scalar<Pressure>>` and `max(...)` reduces that
+    // codomain to `Scalar<Pressure>`. Before that arm existed, a Field-valued
+    // argument fell to the DIMENSIONLESS default, `von_mises(.stress)` typed as
+    // `Real`, and `< yield_limit` failed with "dimension mismatch in comparison:
+    // Real vs Scalar[kg·m^-1·s^-2]" — an Error, which the zero-Error examples
+    // gate rejected outright. With both halves closed,
+    // `max(von_mises(result.stress)) < yield_limit` now compiles clean and
+    // evaluates for real.
+    //
+    // This example nevertheless KEEPS the `.max_von_mises` spelling, and that is
+    // a deliberate choice, not a surviving workaround. By the `<=` relation
+    // above the two are different numbers, so switching would LOOSEN the yield
+    // predicate: the optimiser would converge on a thinner bracket, changing
+    // this demo's answer and the measured cost of the real Nelder-Mead-over-FEA
+    // run that scripts/heavy-test-filter-lib.sh records for
+    // crates/reify-eval/tests/harness_fea_solver_e2e/fea_bracket_minimize_mass_e2e.rs.
+    // Task #7333 owns that migration decision and the re-measurement it needs.
     //
     // The FEA call is INLINED here rather than bound to a top-level
     // `let fea = solve_elastic_static(...)`. That is not a style choice. A

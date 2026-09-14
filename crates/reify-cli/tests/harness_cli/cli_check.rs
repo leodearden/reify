@@ -1276,3 +1276,130 @@ fn check_geometry_module_upgrades_indeterminate_to_violated_and_exits_failure() 
          (`drop_falsified_indeterminate_diagnostics`).\nstderr: {stderr}"
     );
 }
+
+/// Task 5311 / PRD `docs/prds/v0_6/check-diagnostic-truthfulness.md` leaf α —
+/// the CLI-seam LOCK on this task's headline user-visible change: `reify check`
+/// no longer prints an `error:`-prefixed line while exiting 0.
+///
+/// The engine emits the missing-trampoline fallback diagnostic at the two SOFT
+/// emission sites (`engine_eval.rs::evaluate_params_and_lets_unified` and
+/// `::evaluate_let_bindings`) with `Severity::Warning` when — and only when —
+/// the engine's compute registry is entirely EMPTY, and `Severity::Error`
+/// otherwise. `cmd_check` registers no compute trampolines at all, so its
+/// registry is empty and the diagnostic renders as `warning:`. `reify eval` and
+/// `reify build` both call `register_compute_trampolines`, whose production
+/// bundle registers 19 targets, so their registries are non-empty and the same
+/// diagnostic keeps rendering as `error:` — and keeps gating their exit codes.
+/// That contrast is the whole point of this test, so all three subcommands run
+/// against ONE byte-identical fixture.
+///
+/// The `@optimized` target is deliberately `test::never_registered_probe`: it is
+/// outside `register_production_compute_fns`'s 19-target bundle, and outside
+/// every `test::`-namespaced target registered anywhere else in the workspace,
+/// so `register_compute_fn`'s duplicate-target panic can never collide with it.
+/// An inline temp module rather than a tracked `.ri` fixture, for the same
+/// reason `check_rejects_bare_scalar_mirror_origin_before_reaching_build` above
+/// uses one: nothing else in the corpus needs this source.
+///
+/// CONTROL, measured at task 5311 against a binary built from this branch: the
+/// byte-identical fixture with the `@optimized` fn and its call removed
+/// (`let result = input`) exits 0 with EMPTY stderr on check, eval AND build.
+/// That is what makes the eval/build assertions below attributable to THIS
+/// diagnostic rather than to "the design produced no output files" — without
+/// the control, a non-zero exit here would prove nothing about severity.
+///
+/// FUTURE UPDATE — #6693 (`docs/prds/v0_6/solver-driver-parity.md` leaf δ) wires
+/// `SolverRegistry::production()` and the compute trampolines into `cmd_check`
+/// UNCONDITIONALLY. Post-#6693 `cmd_check`'s registry is non-empty, so the
+/// severity predicate correctly yields `error:` under `check` too and leg (a)
+/// below legitimately inverts. Whoever lands #6693 must update leg (a)
+/// deliberately — exactly as #6693 already plans to invert
+/// `check_fea_violated_constraint_is_not_gated` in `cli_build_fea.rs`.
+#[test]
+fn check_downgrades_unregistered_trampoline_fallback_to_warning_while_eval_and_build_keep_erroring()
+{
+    // Spelled ONCE and reused by every leg, so the test itself cannot drift the
+    // wording between the `check` leg and the `eval`/`build` legs. The engine
+    // single-sources the same stem via `engine_compute.rs`'s
+    // `NO_TRAMPOLINE_STEM`; changing this string means changing that one.
+    const DIAGNOSTIC_BODY: &str = "@optimized target \"test::never_registered_probe\": \
+                                   no registered compute trampoline \
+                                   (falling back to body-inlining)";
+
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    // The stem must match the `module` declaration, or `check` reports
+    // E_MODULE_PATH_MISMATCH and we would be measuring that instead.
+    let path = dir.path().join("trampoline_severity_probe.ri");
+    std::fs::write(
+        &path,
+        r#"module trampoline_severity_probe
+
+@optimized("test::never_registered_probe")
+fn never_registered_probe(x: Int) -> Int { x }
+
+structure def TrampolineSeverityProbe {
+    param input: Int = 42
+    let result = never_registered_probe(input)
+    constraint result > 0
+}
+"#,
+    )
+    .expect("failed to write temp module");
+
+    let path_str = path.to_str().expect("temp path is UTF-8");
+    let warning_line = format!("warning: {DIAGNOSTIC_BODY}");
+    let error_line = format!("error: {DIAGNOSTIC_BODY}");
+
+    // ── (a) `check`: empty compute registry ⇒ Warning, and still exit 0. ──────
+    let (status, stdout, stderr) = common::run_with_args_in(dir.path(), &["check", path_str]);
+    assert!(
+        status.success(),
+        "`reify check` must still exit 0 here — this task changes the SEVERITY \
+         of the fallback diagnostic, not the exit gate (#5403 / leaf γ owns \
+         that).\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains(&warning_line),
+        "`cmd_check` registers no compute trampolines, so its registry is empty \
+         and the SOFT-site diagnostic must render as `{warning_line}`.\n\
+         stderr: {stderr}"
+    );
+    // Asserted explicitly, not merely implied by the `contains` above: a
+    // contains-only assertion would pass if BOTH the warning AND the old error
+    // line were printed, and the loud/silent mismatch this task closes (INV-4)
+    // is precisely the surviving `error:` line beside an exit code of 0.
+    assert!(
+        !stderr.contains("error: @optimized target \"test::never_registered_probe\""),
+        "no `error:`-prefixed form of this diagnostic may survive under \
+         `check` — an `error:` line printed alongside exit 0 is the exact \
+         falsehood this task closes.\nstderr: {stderr}"
+    );
+
+    // ── (b) `eval`: production bundle registered ⇒ Error, and it still gates. ─
+    let (status, stdout, stderr) = common::run_with_args_in(dir.path(), &["eval", path_str]);
+    assert!(
+        !status.success(),
+        "`reify eval` registers the production compute bundle, so its registry \
+         is non-empty, the diagnostic stays `Severity::Error`, and it must keep \
+         gating the exit code.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains(&error_line),
+        "`reify eval` must keep printing `{error_line}` — the downgrade is \
+         conditioned on an EMPTY registry and must not leak into eval.\n\
+         stderr: {stderr}"
+    );
+
+    // ── (c) `build`: same, on the other gating subcommand. ───────────────────
+    let (status, stdout, stderr) = common::run_with_args_in(dir.path(), &["build", path_str]);
+    assert!(
+        !status.success(),
+        "`reify build` registers the production compute bundle too, so the \
+         diagnostic stays `Severity::Error` and keeps gating.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains(&error_line),
+        "`reify build` must keep printing `{error_line}`.\nstderr: {stderr}"
+    );
+}

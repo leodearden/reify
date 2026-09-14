@@ -7,9 +7,16 @@ tasks:
     (parse, analysis)
   capabilities:
   - name: seed-families-registered-today
-    binding: wired — grep:crates/reify-compiler/src/parse_signatures.rs:22 PARSE_FN_NAMES
-      + crates/reify-stdlib/src/parse.rs:17 eval arm + crates/reify-compiler/src/analysis_signatures.rs:38
-      ANALYSIS_FN_NAMES; regression fixture tests/prd-gate/fixtures/parse_length_match_resolves.ri
+    binding: wired — grep:crates/reify-builtins/src/registry.rs:31 registry! seven
+      seed rows (Family::Parse + Family::Analysis) + compiler seam crates/reify-compiler/src/builtin_registry.rs:43
+      registry_result_type + exhaustive eval arms crates/reify-stdlib/src/registry_dispatch.rs:37
+      dispatch (no wildcard arm, I-REG-2). SUPERSEDED 2026-08-30 by this leaf
+      itself; the pre-α evidence was crates/reify-compiler/src/parse_signatures.rs:22
+      PARSE_FN_NAMES + crates/reify-stdlib/src/parse.rs:17 eval arm + crates/reify-compiler/src/analysis_signatures.rs:38
+      ANALYSIS_FN_NAMES, all verified 2026-08-04 against main 5fb3959fbb. α deleted
+      the two *_signatures.rs files outright and removed parse.rs's eval_parse
+      string matcher (parse.rs survives holding kernels only), so those three
+      anchors are historical, not live. Regression fixture tests/prd-gate/fixtures/parse_length_match_resolves.ri
       is NON-probative for registration (D3 adversary vacuity finding 2026-08-04 —
       check exits 0 on unregistered names)
     verdict: PASS
@@ -18,6 +25,52 @@ tasks:
       pattern: enum BuiltinId
       paths:
       - crates/reify-builtins
+      expect: present
+  - name: post-merge-corpus-byte-identity
+    binding: measured 2026-09-10 — `reify check` stdout, stderr AND exit code are
+      byte-identical between main b42c7dd207 and the merged α branch 34165b4be6, for
+      examples/fields_analysis.ri (the analysis corpus named in the 2026-08-17
+      amendment) and tests/prd-gate/fixtures/parse_length_match_resolves.ri (the D3
+      regression fixture). Each binary was built from its own tree and run over the
+      SAME staged inputs, so the comparison isolates the compiler rather than a
+      fixture edit; crates/reify-compiler/stdlib was verified identical between the
+      two trees first. This is PRD §7.3(6) re-baselined against MAIN — post-merge,
+      "today's behaviour" IS main's post-#6577 behaviour, so main's own acceptance
+      tests are part of the bar, and both are GREEN through the registry path —
+      harness_geometry_solver::solver_elastic_static_stdlib_compile (13 passed) and
+      harness_compilation_surface::fea_bracket_minimize_mass_example (1 passed).
+      The parse fixture remains NON-probative for registration (D3 vacuity finding
+      2026-08-04) — it is a regression baseline only, and the registration evidence
+      is the source-level pins in crates/reify-compiler/tests/harness_builtin_registry/registry_seed_result_types.rs.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a cross-tree comparison needs two checkouts built and run over staged
+        inputs; not expressible as a stable grep
+  - name: seed-rows-carry-6577-field-forms
+    binding: >-
+      wired — grep:crates/reify-builtins/src/resolvers.rs:67 field_tensor_arg + :117
+      reduce_tensor_arg, the two-form resolver every analysis row routes through.
+      Main landed task #6577 INSIDE crates/reify-compiler/src/analysis_signatures.rs,
+      the file this leaf deletes, so the merge would have silently regressed it — a
+      Field-valued argument must type as Type::Field, not as a reduced scalar,
+      because eval wraps the field LAZILY and value_type_kind_matches
+      (crates/reify-eval/src/lib.rs:330) maps Value::Field onto Type::Field alone.
+      Ported forward rather than re-derived — the source read is byte-identical to
+      b42c7dd207:crates/reify-compiler/src/analysis_signatures.rs (verified
+      2026-09-10). Row-table consequences — safety_factor moved Const to ArgAware
+      (its Field form is Field<D, Real> while its concrete form stays Real),
+      stress_invariants deliberately stays Const because eval has NO Field arm for
+      that name, and the I-REG-7 Artifact ledger does NOT move: the prelude
+      reproduces legacy behaviour over a wider input shape, it does not supply
+      #2884's constrained-input, Pressure-fixed signature, so nothing is resolved
+      and EXPECTED_ARTIFACT_ROWS stays at three.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: field_tensor_arg
+      paths:
+      - crates/reify-builtins/src/resolvers.rs
       expect: present
   - name: row-without-eval-arm-fails-build
     binding: producer (this leaf) — negative recipe, doc-comment form per registry_drift_tests

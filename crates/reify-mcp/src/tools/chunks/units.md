@@ -203,6 +203,8 @@ bare because it is what you mean, not because you will be told.
 under "Dimensioned arguments". This section states the rule and the idiom; that one enumerates the
 positions — read it before dimensioning an unfamiliar signature.
 
+Worked, compile-gated exemplar: `examples/best_practices/dimensioned_arguments.ri`.
+
 ## Angle as Base Dimension
 
 Angle is the 8th base dimension (not dimensionless). Catches `torque + energy` as a type error. Trig functions are typed: `sin : Angle → Dimensionless`.

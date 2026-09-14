@@ -1,0 +1,1938 @@
+//! The Rust-source SCANNER behind the I-REG-1 seed gate: given a set of
+//! builtin names, it finds every place in `crates/*/src/` where one of them is
+//! used as a dispatch KEY.
+//!
+//! Lexical shape is all this module knows. WHICH names are swept, which sites
+//! are tolerated and what a finding means are the POLICY half, and live with
+//! the ledger in `tests/i_reg_1_seed_string_dispatch_gate.rs` — the one binary
+//! that declares this module (`#[path = "common/seed_name_scan.rs"]`;
+//! `tests/common/` is the C1 harness-layout contract's sanctioned home for a
+//! shared test unit, and declaring it from the gate rather than from
+//! `common/mod.rs` keeps it out of the sibling binaries that do not use it).
+//!
+//! # Interface
+//!
+//! [`scan`] → the `(file, line, name, shape)` [`Site`]s, sorted. That plus
+//! [`Site`] / [`SiteKind`] is the whole surface. The comment-and-literal
+//! stripper, the `#[cfg(test)]` masker, the five shape classifiers and the
+//! one-hop `&str`-forwarder walk are private, and are pinned against synthetic
+//! fixtures by the tests at the foot of this file rather than against whatever
+//! the tree happens to contain.
+
+use crate::common::workspace_root;
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+
+// ── the scan ────────────────────────────────────────────────────────────────
+
+/// Why a site was flagged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum SiteKind {
+    /// `"name" =>` (possibly through `|` alternatives and an `if` guard).
+    MatchArm,
+    /// `eval_builtin("name", …)`.
+    EvalCall,
+    /// A seed name handed to a helper that itself calls
+    /// `eval_builtin(<that parameter>, …)` — the same defect as
+    /// [`SiteKind::EvalCall`], one hop later. See [`Forwarder`].
+    ForwardedEvalCall,
+    /// `name == "von_mises"` / `"von_mises" != name` — a builtin identified by
+    /// comparing a string, which is the `match` arm written as an `if`.
+    EqualityTest,
+    /// A seed name inside an array/slice of string literals — the
+    /// `const ANALYSIS_FN_NAMES: &[&str] = &[…]` + `.contains(&name)` shape.
+    /// This is LITERALLY the legacy form α deleted.
+    NameList,
+    /// The arm-head walk ran off the end of the file without reaching either
+    /// verdict, and no other shape claimed the literal — so the site is
+    /// UNCLASSIFIED.
+    ///
+    /// Reported rather than dropped, deliberately. "Could not decide" and "is
+    /// definitely not dispatch" fail in opposite directions, and only the
+    /// first is safe to make loud: silently reading an undecided site as clean
+    /// is the exact failure mode this file exists to prevent (see
+    /// [`match_arm_head`]).
+    UnresolvedArmHead,
+}
+
+impl SiteKind {
+    pub(crate) fn describe(self) -> &'static str {
+        match self {
+            SiteKind::MatchArm => "match-arm string dispatch",
+            SiteKind::EvalCall => "eval_builtin call keyed by name string",
+            SiteKind::ForwardedEvalCall => {
+                "name string forwarded one hop into an eval_builtin call"
+            }
+            SiteKind::EqualityTest => "builtin identified by a `==`/`!=` string comparison",
+            SiteKind::NameList => "name literal in a string-literal name slice",
+            SiteKind::UnresolvedArmHead => {
+                "arm-head scan reached end of file undecided — site UNCLASSIFIED"
+            }
+        }
+    }
+}
+
+/// One flagged occurrence.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Site {
+    /// Workspace-relative, `/`-separated.
+    pub(crate) file: String,
+    pub(crate) line: usize,
+    pub(crate) name: String,
+    pub(crate) kind: SiteKind,
+}
+
+/// A simple (non-raw) string literal found at code level.
+struct StrLit {
+    /// Byte offset of the opening quote.
+    start: usize,
+    /// Byte offset one past the closing quote.
+    end: usize,
+    content: String,
+}
+
+/// Blank `src[a..b]` to spaces, preserving newlines so byte offsets AND line
+/// numbers both survive.
+fn blank(bytes: &mut [u8], a: usize, b: usize) {
+    let end = b.min(bytes.len());
+    for byte in &mut bytes[a..end] {
+        if *byte != b'\n' {
+            *byte = b' ';
+        }
+    }
+}
+
+/// One past the closing `'` when a char literal starts at `at`, or `None` when
+/// the quote opens a LIFETIME (`'static`, `&'a str`) instead — the two shapes a
+/// `'` can begin, distinguished by whether a closing quote follows one char.
+///
+/// Multi-byte chars (`'é'`) are measured by UTF-8 lead-byte width rather than
+/// assumed one byte wide, so their closing quote is consumed and cannot open a
+/// spurious literal over the code that follows.
+fn char_literal_end(raw: &[u8], at: usize) -> Option<usize> {
+    let n = raw.len();
+    let first = at + 1;
+    if first >= n {
+        return None;
+    }
+    if raw[first] == b'\\' {
+        // An escape's payload can itself be a quote (`'\''`) or run several
+        // bytes (`'\u{7b}'`), so step over the payload byte and then find the
+        // real closing quote.
+        let mut j = first + 2;
+        while j < n && raw[j] != b'\'' {
+            j += 1;
+        }
+        return (j < n).then_some(j + 1);
+    }
+    let width = match raw[first] {
+        b if b < 0x80 => 1,
+        b if b >> 5 == 0b110 => 2,
+        b if b >> 4 == 0b1110 => 3,
+        _ => 4,
+    };
+    let close = first + width;
+    (close < n && raw[close] == b'\'').then_some(close + 1)
+}
+
+/// Blank every comment, and collect every simple string literal at code level.
+///
+/// Raw strings (`r"…"`, `r#"…"#`) are blanked wholesale rather than collected:
+/// in a `src/` file they carry embedded `.ri` fixture text, never Rust pattern
+/// syntax, and leaving them intact would let a fixture that happens to contain
+/// `"von_mises" =>` trip the gate.
+///
+/// Char literals are blanked too (see [`char_literal_end`]), because a brace or
+/// quote inside one is not a brace or quote to any walk over the result.
+///
+/// Not a full Rust lexer — it handles line/block comments (block comments
+/// nest, as in Rust), simple and raw string literals, and char literals /
+/// lifetimes. That is everything the shapes above can hide behind.
+fn strip_comments_and_collect_literals(src: &str) -> (Vec<u8>, Vec<StrLit>) {
+    let mut bytes = src.as_bytes().to_vec();
+    let mut lits = Vec::new();
+    let n = bytes.len();
+    let raw = src.as_bytes();
+    let mut i = 0usize;
+
+    while i < n {
+        match raw[i] {
+            b'/' if i + 1 < n && raw[i + 1] == b'/' => {
+                let start = i;
+                while i < n && raw[i] != b'\n' {
+                    i += 1;
+                }
+                blank(&mut bytes, start, i);
+            }
+            b'/' if i + 1 < n && raw[i + 1] == b'*' => {
+                let start = i;
+                let mut depth = 1usize;
+                i += 2;
+                while i < n && depth > 0 {
+                    if i + 1 < n && raw[i] == b'/' && raw[i + 1] == b'*' {
+                        depth += 1;
+                        i += 2;
+                    } else if i + 1 < n && raw[i] == b'*' && raw[i + 1] == b'/' {
+                        depth -= 1;
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                blank(&mut bytes, start, i);
+            }
+            b'r' if i + 1 < n && (raw[i + 1] == b'"' || raw[i + 1] == b'#') => {
+                // Only a raw-string opener if the `r` starts a token.
+                let prev_is_ident =
+                    i > 0 && (raw[i - 1].is_ascii_alphanumeric() || raw[i - 1] == b'_');
+                let mut j = i + 1;
+                let mut hashes = 0usize;
+                while j < n && raw[j] == b'#' {
+                    hashes += 1;
+                    j += 1;
+                }
+                if prev_is_ident || j >= n || raw[j] != b'"' {
+                    i += 1;
+                    continue;
+                }
+                let start = i;
+                j += 1; // past the opening quote
+                // Scan for `"` followed by `hashes` `#`s.
+                loop {
+                    if j >= n {
+                        break;
+                    }
+                    if raw[j] == b'"' {
+                        let mut k = j + 1;
+                        let mut seen = 0usize;
+                        while k < n && seen < hashes && raw[k] == b'#' {
+                            seen += 1;
+                            k += 1;
+                        }
+                        if seen == hashes {
+                            j = k;
+                            break;
+                        }
+                    }
+                    j += 1;
+                }
+                blank(&mut bytes, start, j);
+                i = j;
+            }
+            b'"' => {
+                let start = i;
+                i += 1;
+                let content_start = i;
+                while i < n {
+                    if raw[i] == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if raw[i] == b'"' {
+                        break;
+                    }
+                    i += 1;
+                }
+                let content_end = i.min(n);
+                i = (i + 1).min(n);
+                lits.push(StrLit {
+                    start,
+                    end: i,
+                    content: String::from_utf8_lossy(&raw[content_start..content_end]).into_owned(),
+                });
+            }
+            b'\'' => {
+                // A char literal (`'a'`, `'\n'`, `'{'`) or a lifetime
+                // (`'static`). A char literal is BLANKED, not merely stepped
+                // past: one char can never hold a seed name, but it can hold a
+                // BRACE, and every brace-balancing walk here reads the stripped
+                // buffer, so an intact `'{'` steers those walks off the real
+                // nesting. A lifetime has no closing quote and stays code —
+                // `is_shared_str_slice` reads `&'static str` from this buffer.
+                match char_literal_end(raw, i) {
+                    Some(end) => {
+                        blank(&mut bytes, i, end);
+                        i = end;
+                    }
+                    None => i += 1,
+                }
+            }
+            _ => i += 1,
+        }
+    }
+
+    (bytes, lits)
+}
+
+/// Does this `#[cfg(…)]` attribute gate **test-only** code — i.e. may the item
+/// it guards be masked out of the scan?
+///
+/// Mirrors the classification `crates/reify-audit/src/p2_consumer_stub.rs`'s
+/// `is_test_cfg_attr` already makes for the same reason, rather than the naive
+/// "does the token `test` appear anywhere" test this gate used to run. That
+/// test was wrong in the SILENT direction — it masked production code:
+///
+/// - `#[cfg(not(test))]` is a **production-only** guard (live in tree, e.g.
+///   `crates/reify-ir/src/sampled.rs`), so blanking it hid real production code
+///   from an I-REG-1 gate whose entire job is to see it. Negated predicates are
+///   therefore never test-gating here, tracked by paren depth so `not(...)`
+///   nested under `any`/`all` is handled too.
+/// - `#[cfg(feature = "test-support")]` / `"test-fixtures"` (live in
+///   `crates/reify-kernel-manifold`) matched only because `test-support` splits
+///   on `-` into `test` + `support`. They ARE test-support code and masking
+///   them is right, but it must be a DECISION, not an accident of tokenising —
+///   so a `feature` whose name starts with `test` is matched deliberately here,
+///   and `#[cfg(feature = "fastest")]` is not.
+///
+/// A predicate under `not(...)` returns `false` (do not mask), which is the
+/// fail-LOUD direction: the item stays in the scan, so a string-dispatch site
+/// hidden there is reported rather than silently certified clean.
+fn attr_gates_test_code(attr: &str) -> bool {
+    let Some(inner) = attr.strip_prefix("#[cfg(") else {
+        return false;
+    };
+    let b = inner.as_bytes();
+    // Paren depths at which a `not(` is still open. Non-empty ⇒ the predicate
+    // being read is negated, so it gates PRODUCTION code, not test code.
+    let mut not_depths: Vec<usize> = Vec::new();
+    let mut depth = 0usize;
+    // The last bare identifier, so a string literal can be attributed to the
+    // `feature` it belongs to (`feature = "test-support"`).
+    let mut last_ident = "";
+    let mut i = 0usize;
+    while i < b.len() {
+        match b[i] {
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                while not_depths.last() == Some(&depth) {
+                    not_depths.pop();
+                }
+                depth = depth.saturating_sub(1);
+                i += 1;
+            }
+            b'"' => {
+                let start = i + 1;
+                let mut k = start;
+                while k < b.len() && b[k] != b'"' {
+                    if b[k] == b'\\' {
+                        k += 1;
+                    }
+                    k += 1;
+                }
+                let content = &inner[start..k.min(inner.len())];
+                if last_ident == "feature" && content.starts_with("test") && not_depths.is_empty() {
+                    return true;
+                }
+                last_ident = "";
+                i = k + 1;
+            }
+            c if c.is_ascii_alphanumeric() || c == b'_' => {
+                let start = i;
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                    i += 1;
+                }
+                let ident = &inner[start..i];
+                if ident == "not" {
+                    // `not` negates everything inside the `(` that follows it.
+                    not_depths.push(depth + 1);
+                } else if ident == "test" && not_depths.is_empty() {
+                    return true;
+                }
+                last_ident = ident;
+            }
+            _ => i += 1,
+        }
+    }
+    false
+}
+
+/// Blank every test-gated item (see [`attr_gates_test_code`]), so the scan sees
+/// production code only. See the module docs for why test code is out of remit.
+///
+/// Handles both shapes an attribute can gate: a braced item (`mod tests { … }`,
+/// `fn … { … }`) is blanked through its matching `}`, and a brace-less item
+/// (`use …;`) through its `;`. Operates on the comment-stripped buffer, so a
+/// brace inside a comment cannot unbalance the count, and a brace inside a CHAR
+/// literal is already blanked there; every byte inside a STRING literal is
+/// skipped using the collected literal spans, so neither a brace nor attribute
+/// TEXT sitting in one of those three places can steer either walk. The claim
+/// is exactly that: a brace the stripped buffer still shows outside a collected
+/// literal span is taken at face value.
+fn mask_cfg_test_blocks(code: &mut [u8], lits: &[StrLit]) {
+    // Byte-level membership mask, built once: the naive
+    // "is `pos` inside any literal?" scan is O(bytes x literals), which on a
+    // 9k-line file like `reify-expr/src/lib.rs` costs tens of seconds.
+    let in_lit = literal_mask(code.len(), lits);
+    let in_literal = |pos: usize| -> bool { in_lit[pos] };
+
+    let mut i = 0usize;
+    while i < code.len() {
+        // Attribute TEXT inside a literal is not an attribute. `StrLit.start`
+        // is the opening quote, so the mask covers the quote and every content
+        // byte. O(1) per byte, like the `!= b'#'` test it precedes, so the
+        // blowup the mask comment above warns about is not reintroduced.
+        if in_literal(i) {
+            i += 1;
+            continue;
+        }
+        if code[i] != b'#' {
+            i += 1;
+            continue;
+        }
+        // Read `#[ … ]`, balanced over the inner parens/brackets.
+        if i + 1 >= code.len() || code[i + 1] != b'[' {
+            i += 1;
+            continue;
+        }
+        let attr_start = i;
+        let mut j = i + 1;
+        let mut depth = 0usize;
+        while j < code.len() {
+            match code[j] {
+                b'[' | b'(' => depth += 1,
+                b']' | b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            j += 1;
+        }
+        if j >= code.len() {
+            break;
+        }
+        let attr = String::from_utf8_lossy(&code[attr_start..=j]).into_owned();
+        if !attr_gates_test_code(&attr) {
+            i = j + 1;
+            continue;
+        }
+
+        // Find the item this attribute gates: to the matching `}` of its first
+        // `{`, or to the `;` of a brace-less item, whichever comes first.
+        let mut k = j + 1;
+        let mut end = None;
+        while k < code.len() {
+            if in_literal(k) {
+                k += 1;
+                continue;
+            }
+            match code[k] {
+                b';' => {
+                    end = Some(k + 1);
+                    break;
+                }
+                b'{' => {
+                    let mut d = 0usize;
+                    let mut m = k;
+                    while m < code.len() {
+                        if !in_literal(m) {
+                            if code[m] == b'{' {
+                                d += 1;
+                            } else if code[m] == b'}' {
+                                d -= 1;
+                                if d == 0 {
+                                    break;
+                                }
+                            }
+                        }
+                        m += 1;
+                    }
+                    end = Some((m + 1).min(code.len()));
+                    break;
+                }
+                _ => k += 1,
+            }
+        }
+        let end = end.unwrap_or(code.len());
+        blank(code, attr_start, end);
+        i = end;
+    }
+}
+
+/// `lit_end_at[i]` is `Some(end)` when a string literal STARTS at byte `i`,
+/// letting a forward walk step over a literal in O(1) instead of rescanning
+/// the literal list at every byte.
+fn literal_start_index(len: usize, lits: &[StrLit]) -> Vec<Option<usize>> {
+    let mut idx = vec![None; len + 1];
+    for l in lits {
+        if l.start < idx.len() {
+            idx[l.start] = Some(l.end);
+        }
+    }
+    idx
+}
+
+/// The reverse of [`literal_start_index`]: `lit_start_at[i]` is `Some(start)`
+/// when a string literal ENDS at byte `i` (one past its closing quote).
+///
+/// Needed by the LEFTWARD walks — [`is_string_array_element`] steps back over
+/// a preceding element in O(1) instead of rescanning the literal list.
+fn literal_end_index(len: usize, lits: &[StrLit]) -> Vec<Option<usize>> {
+    let mut idx = vec![None; len + 1];
+    for l in lits {
+        if l.end < idx.len() {
+            idx[l.end] = Some(l.start);
+        }
+    }
+    idx
+}
+
+/// Byte-level "is this offset inside a string literal?" mask.
+fn literal_mask(len: usize, lits: &[StrLit]) -> Vec<bool> {
+    let mut mask = vec![false; len + 1];
+    for l in lits {
+        for slot in mask.iter_mut().take(l.end.min(len)).skip(l.start) {
+            *slot = true;
+        }
+    }
+    mask
+}
+
+/// The verdict of an arm-head walk. Three-valued on purpose — see
+/// [`ArmHead::Inconclusive`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArmHead {
+    /// The walk reached `=>`: the literal was in match-PATTERN position.
+    Arm,
+    /// The walk hit a token that cannot appear in an arm head. A DECIDED
+    /// negative.
+    NotArm,
+    /// The walk ran off the end of the source before either verdict. NOT the
+    /// same thing as [`ArmHead::NotArm`], and never collapsed into it: an
+    /// undecided site is escalated to [`SiteKind::UnresolvedArmHead`] and
+    /// reported, because a scanner that reads "I ran out of input" as "clean"
+    /// certifies a residue it never looked at.
+    Inconclusive,
+}
+
+/// Is the string literal ending at `idx_end` in match-PATTERN position — i.e.
+/// does the arm it opens reach `=>`?
+///
+/// Two states, because the two halves of an arm head have different grammar:
+///
+/// - **Pattern.** Only whitespace, `|` or-pattern separators and further
+///   string literals may appear. `=>` here means the literal was a pattern;
+///   the `if` keyword hands off to the guard; anything else — `,`, `.`, `)`,
+///   an identifier — means it was an ordinary expression, not a pattern.
+/// - **Guard.** An arbitrary boolean expression, so its own `.`, `,`, parens
+///   and braces are all legal and must NOT abort the walk (the real shape is
+///   `if args.len() == 1 && matches!(&args[0], Value::Field { .. }) =>`). Only
+///   `=>` at depth 0 accepts; `;` at depth 0 or a depth going negative
+///   rejects.
+///
+/// # No lookahead cap
+///
+/// The walk is bounded by the source, not by a fixed byte window. An earlier
+/// revision capped it at 800 bytes, which silently returned "not an arm" for
+/// any guard longer than that — a real shape here, where guards are
+/// `matches!(…)` chains. The cost of an unbounded walk is negligible (it runs
+/// only for a literal that already matched a seed name, and the pattern half
+/// terminates on the first non-pattern token), and the exhaustion case is now
+/// [`ArmHead::Inconclusive`] rather than a false clean.
+fn match_arm_head(code: &[u8], lit_end_at: &[Option<usize>], idx_end: usize) -> ArmHead {
+    let mut i = idx_end;
+    let limit = code.len();
+
+    // ── pattern position ────────────────────────────────────────────────────
+    let mut entered_guard = false;
+    while i < limit {
+        if let Some(end) = lit_end_at[i] {
+            i = end;
+            continue;
+        }
+        let c = code[i];
+        if c.is_ascii_whitespace() || c == b'|' {
+            i += 1;
+            continue;
+        }
+        if c == b'=' && i + 1 < limit && code[i + 1] == b'>' {
+            return ArmHead::Arm;
+        }
+        if c == b'i' && i + 1 < limit && code[i + 1] == b'f' {
+            let after_ok =
+                i + 2 >= limit || !(code[i + 2].is_ascii_alphanumeric() || code[i + 2] == b'_');
+            if after_ok {
+                i += 2;
+                entered_guard = true;
+                break;
+            }
+        }
+        return ArmHead::NotArm;
+    }
+    if !entered_guard {
+        // Whitespace, `|` and literals all the way to EOF: undecided.
+        return ArmHead::Inconclusive;
+    }
+
+    // ── guard position ──────────────────────────────────────────────────────
+    let mut depth = 0i32;
+    while i < limit {
+        if let Some(end) = lit_end_at[i] {
+            i = end;
+            continue;
+        }
+        let c = code[i];
+        if c == b'=' && i + 1 < limit && code[i + 1] == b'>' && depth == 0 {
+            return ArmHead::Arm;
+        }
+        match c {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => {
+                depth -= 1;
+                if depth < 0 {
+                    return ArmHead::NotArm;
+                }
+            }
+            b';' if depth == 0 => return ArmHead::NotArm,
+            _ => {}
+        }
+        i += 1;
+    }
+    ArmHead::Inconclusive
+}
+
+/// Is the string literal at `lit` the first argument of an `eval_builtin(…)`
+/// call?
+fn is_eval_call(code: &[u8], lit_start: usize) -> bool {
+    let mut i = lit_start;
+    while i > 0 && code[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    if i == 0 || code[i - 1] != b'(' {
+        return false;
+    }
+    let paren = i - 1;
+    let mut start = paren;
+    while start > 0 {
+        let c = code[start - 1];
+        if c.is_ascii_alphanumeric() || c == b'_' {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    &code[start..paren] == b"eval_builtin"
+}
+
+/// Is the literal spanning `lit_start..lit_end` an operand of a `==` / `!=`
+/// comparison — `if name == "von_mises"`, or the mirrored
+/// `if "von_mises" != name`?
+///
+/// The `match`-arm shape written as an `if`, and lexically invisible to
+/// [`match_arm_head`]: the walk from the literal's end hits `{` (or the ident)
+/// and DECIDES `NotArm`, so nothing downstream ever looks again.
+///
+/// Both neighbours are checked because either side may hold the literal. The
+/// two-byte test is exact rather than "contains `=`": a bare `=` is
+/// assignment (`let n = "von_mises";`, not dispatch), `=>` is a match arm
+/// (already classified), and `<=` / `>=` are orderings whose second byte is
+/// `=` but whose first is not.
+fn is_equality_operand(code: &[u8], lit_start: usize, lit_end: usize) -> bool {
+    // ── `<expr> == "seed"` ──────────────────────────────────────────────────
+    let mut i = lit_start;
+    while i > 0 && code[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    if i >= 2 && code[i - 1] == b'=' && (code[i - 2] == b'=' || code[i - 2] == b'!') {
+        return true;
+    }
+
+    // ── `"seed" == <expr>` ──────────────────────────────────────────────────
+    let mut j = lit_end;
+    while j < code.len() && code[j].is_ascii_whitespace() {
+        j += 1;
+    }
+    j + 1 < code.len() && (code[j] == b'=' || code[j] == b'!') && code[j + 1] == b'='
+}
+
+/// Is the literal starting at `lit_start` an element of an array/slice literal
+/// whose elements up to that point are all string literals — the
+/// `&["parse_length", "parse_length_r"]` shape?
+///
+/// This is the one that matters most: `const PARSE_FN_NAMES: &[&str] = &[…]`
+/// plus a `.contains(&name)` membership test is EXACTLY the legacy dispatch
+/// form this task deleted, and it is invisible to every other rule here (each
+/// literal is followed by `,` or `]`, so the arm-head walk decides `NotArm`).
+/// The literals live at the DEFINITION, so flagging the array closes the shape
+/// wherever the membership test is later written.
+///
+/// The walk is leftward from the literal over whitespace, `,` separators and
+/// whole preceding string literals; anything else — an ident, `(`, `{` — is a
+/// decided no. That keeps `eval_builtin("von_mises", &[tensor])` and
+/// `[("von_mises", 1), …]` out (both hit `(` or an ident immediately), at the
+/// cost of also flagging a string-keyed index expression `m["von_mises"]`.
+/// That over-report is deliberate and in this file's usual direction: a
+/// string-keyed map lookup on a builtin name IS the dispatch shape the gate
+/// exists to catch.
+fn is_string_array_element(code: &[u8], lit_start_at: &[Option<usize>], lit_start: usize) -> bool {
+    let mut i = lit_start;
+    loop {
+        while i > 0 && code[i - 1].is_ascii_whitespace() {
+            i -= 1;
+        }
+        if i == 0 {
+            return false;
+        }
+        // A preceding element: step over the whole literal in one jump.
+        if let Some(start) = lit_start_at[i] {
+            i = start;
+            continue;
+        }
+        match code[i - 1] {
+            b'[' => return true,
+            b',' => i -= 1,
+            _ => return false,
+        }
+    }
+}
+
+// ── one-hop `&str` forwarding ───────────────────────────────────────────────
+
+/// A production fn that launders a `&str` parameter into `eval_builtin` — the
+/// one hop [`is_eval_call`] is lexically blind to.
+///
+/// Discovered from the source, never declared: a fn qualifies only if its own
+/// body calls `eval_builtin(<that very parameter>, …)`. That is what keeps the
+/// rule from degrading into a hand-maintained allowlist, and what keeps a
+/// `&str` taken purely as a diagnostic label (`wrap_tensor_field(…, op: &str,
+/// …)`) from being mistaken for dispatch.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct Forwarder {
+    /// The fn's name, as written at its definition.
+    name: String,
+    /// Zero-based position of the laundered parameter **as callers write it**
+    /// — a `self` receiver is not an argument, so it is excluded from the
+    /// count.
+    param: usize,
+    /// That parameter's identifier, carried so the rule can be re-verified
+    /// independently of the walk that produced it (see
+    /// `every_discovered_forwarder_really_forwards_to_eval_builtin`).
+    param_name: String,
+}
+
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+fn skip_ws(code: &[u8], mut i: usize) -> usize {
+    while i < code.len() && code[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    i
+}
+
+/// Read the identifier starting at `i`, returning it and the offset one past
+/// its end. `None` when `i` is not on an identifier byte.
+fn read_ident(code: &[u8], i: usize) -> Option<(String, usize)> {
+    let mut j = i;
+    while j < code.len() && is_ident_byte(code[j]) {
+        j += 1;
+    }
+    (j > i).then(|| (String::from_utf8_lossy(&code[i..j]).into_owned(), j))
+}
+
+/// Offset of the delimiter matching the opener at `open`, skipping string
+/// literals so a brace inside one cannot unbalance the count.
+fn match_delim(code: &[u8], lit_end_at: &[Option<usize>], open: usize) -> Option<usize> {
+    let (o, c) = match code.get(open)? {
+        b'(' => (b'(', b')'),
+        b'[' => (b'[', b']'),
+        b'{' => (b'{', b'}'),
+        _ => return None,
+    };
+    let mut depth = 0usize;
+    let mut i = open;
+    while i < code.len() {
+        if let Some(end) = lit_end_at[i] {
+            i = end;
+            continue;
+        }
+        if code[i] == o {
+            depth += 1;
+        } else if code[i] == c {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Split `code[open+1..close]` at depth-0 commas, returning one `(start, end)`
+/// span per parameter/argument. An empty trailing segment (trailing comma) is
+/// dropped.
+///
+/// `generic_types` distinguishes the two callers: a PARAMETER list may contain
+/// `Option<&str>`, so `<` … `>` must nest, while an ARGUMENT list may contain
+/// `a < b`, so it must not — there, only a turbofish `::<` opens a nesting
+/// level. A stray `>` is ignored rather than driving the depth negative.
+fn split_delimited(
+    code: &[u8],
+    lit_end_at: &[Option<usize>],
+    open: usize,
+    close: usize,
+    generic_types: bool,
+) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut angle = 0i32;
+    let mut start = open + 1;
+    let mut i = start;
+    while i < close {
+        if let Some(end) = lit_end_at[i] {
+            i = end.min(close);
+            continue;
+        }
+        match code[i] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b'<' if generic_types || (i > 0 && code[i - 1] == b':') => angle += 1,
+            b'>' if angle > 0 && !(i > 0 && code[i - 1] == b'-') => angle -= 1,
+            b',' if depth == 0 && angle == 0 => {
+                out.push((start, i));
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if code[start.min(close)..close]
+        .iter()
+        .any(|b| !b.is_ascii_whitespace())
+    {
+        out.push((start, close));
+    }
+    out
+}
+
+/// Is `ty` a shared string slice — `&str`, `& str`, `&'a str`, `&'static str`?
+fn is_str_ref(ty: &str) -> bool {
+    let t = ty.trim();
+    let Some(rest) = t.strip_prefix('&') else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    let rest = if let Some(lt) = rest.strip_prefix('\'') {
+        let end = lt
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(lt.len());
+        lt[end..].trim_start()
+    } else {
+        rest
+    };
+    rest == "str"
+}
+
+/// The binding name of a parameter, from the text before its `:` — `mut name`
+/// yields `name`. `None` for a wildcard or anything that is not a plain ident
+/// (a destructuring pattern cannot be forwarded by name).
+fn param_ident(pat: &str) -> Option<String> {
+    let last = pat.split_whitespace().next_back()?;
+    if last == "_" || !last.bytes().all(is_ident_byte) {
+        return None;
+    }
+    Some(last.to_string())
+}
+
+/// Is the first parameter a `self` receiver? Callers do not write it, so it
+/// must not be counted when converting a signature position into an argument
+/// position.
+fn is_self_receiver(seg: &str) -> bool {
+    let t = seg.trim().trim_start_matches('&').trim_start();
+    let t = t
+        .strip_prefix('\'')
+        .map(|lt| {
+            let end = lt
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(lt.len());
+            lt[end..].trim_start()
+        })
+        .unwrap_or(t);
+    let t = t.strip_prefix("mut ").unwrap_or(t).trim_start();
+    t == "self" || t.starts_with("self:")
+}
+
+/// The `(start, end)` span of a fn body, given the offset just past its
+/// parameter list. `None` for a brace-less declaration (a trait method
+/// signature), which has no body to forward from.
+fn fn_body_span(code: &[u8], lit_end_at: &[Option<usize>], from: usize) -> Option<(usize, usize)> {
+    let mut depth = 0i32;
+    let mut i = from;
+    while i < code.len() {
+        if let Some(end) = lit_end_at[i] {
+            i = end;
+            continue;
+        }
+        match code[i] {
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => depth -= 1,
+            b';' if depth <= 0 => return None,
+            b'{' if depth <= 0 => {
+                let close = match_delim(code, lit_end_at, i)?;
+                return Some((i + 1, close));
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Does `code[body]` call `eval_builtin(<param>, …)` — the identifier itself,
+/// not a literal?
+fn body_forwards(
+    code: &[u8],
+    lit_end_at: &[Option<usize>],
+    body: (usize, usize),
+    param: &str,
+) -> bool {
+    const CALLEE: &[u8] = b"eval_builtin";
+    let (start, end) = body;
+    let mut i = start;
+    while i < end {
+        if let Some(lit) = lit_end_at[i] {
+            i = lit;
+            continue;
+        }
+        if code[i] != CALLEE[0] || i + CALLEE.len() > end || &code[i..i + CALLEE.len()] != CALLEE {
+            i += 1;
+            continue;
+        }
+        let is_token = i == 0 || !is_ident_byte(code[i - 1]);
+        let after = skip_ws(code, i + CALLEE.len());
+        if is_token && after < end && code[after] == b'(' {
+            let arg = skip_ws(code, after + 1);
+            if let Some((id, arg_end)) = read_ident(code, arg) {
+                let delim = skip_ws(code, arg_end);
+                if id == param && delim < end && (code[delim] == b',' || code[delim] == b')') {
+                    return true;
+                }
+            }
+        }
+        i += CALLEE.len();
+    }
+    false
+}
+
+/// Every fn in `code` that launders a `&str` parameter into `eval_builtin`.
+fn find_forwarders(code: &[u8], lit_end_at: &[Option<usize>]) -> Vec<Forwarder> {
+    let n = code.len();
+    let mut out: Vec<Forwarder> = Vec::new();
+    let mut i = 0usize;
+    while i + 2 <= n {
+        if code[i] != b'f' || code[i + 1] != b'n' {
+            i += 1;
+            continue;
+        }
+        let prev_ok = i == 0 || !is_ident_byte(code[i - 1]);
+        let next = i + 2;
+        if !prev_ok || (next < n && is_ident_byte(code[next])) {
+            i += 1;
+            continue;
+        }
+        // Past `fn`: every `continue` below has already made progress.
+        i = next;
+        let Some((fname, name_end)) = read_ident(code, skip_ws(code, i)) else {
+            continue;
+        };
+        i = name_end;
+
+        // Optional generics, then the parameter list.
+        let mut k = skip_ws(code, name_end);
+        if k < n && code[k] == b'<' {
+            let mut d = 0i32;
+            while k < n {
+                match code[k] {
+                    b'<' => d += 1,
+                    b'>' if !(k > 0 && code[k - 1] == b'-') => {
+                        d -= 1;
+                        if d == 0 {
+                            k += 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                k += 1;
+            }
+            k = skip_ws(code, k);
+        }
+        if k >= n || code[k] != b'(' {
+            continue;
+        }
+        let Some(close) = match_delim(code, lit_end_at, k) else {
+            continue;
+        };
+        let params = split_delimited(code, lit_end_at, k, close, true);
+        let Some(body) = fn_body_span(code, lit_end_at, close + 1) else {
+            continue;
+        };
+
+        let receiver = params
+            .first()
+            .map(|&(s, e)| is_self_receiver(&String::from_utf8_lossy(&code[s..e])))
+            .unwrap_or(false);
+
+        for (idx, &(ps, pe)) in params.iter().enumerate() {
+            if receiver && idx == 0 {
+                continue;
+            }
+            let seg = String::from_utf8_lossy(&code[ps..pe]).into_owned();
+            let Some((pat, ty)) = seg.split_once(':') else {
+                continue;
+            };
+            if !is_str_ref(ty) {
+                continue;
+            }
+            let Some(pname) = param_ident(pat) else {
+                continue;
+            };
+            if body_forwards(code, lit_end_at, body, &pname) {
+                out.push(Forwarder {
+                    name: fname.clone(),
+                    param: if receiver { idx - 1 } else { idx },
+                    param_name: pname,
+                });
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// [`find_forwarders`] over raw source text, applying the same comment and
+/// `#[cfg(test)]` masking the classification pass uses — which is what keeps
+/// test helpers such as `crates/reify-stdlib/src/complex.rs`'s
+/// `assert_complex_builtin_undef(builtin: &str, …)` out of the forwarder set.
+fn find_forwarders_in(src: &str) -> Vec<Forwarder> {
+    let (mut code, lits) = strip_comments_and_collect_literals(src);
+    mask_cfg_test_blocks(&mut code, &lits);
+    let lit_end_at = literal_start_index(code.len(), &lits);
+    find_forwarders(&code, &lit_end_at)
+}
+
+/// Byte offsets of the string literals sitting at a forwarder's laundered
+/// argument position — i.e. the names that reach `eval_builtin` one hop later.
+fn forwarded_literal_starts(
+    code: &[u8],
+    lit_end_at: &[Option<usize>],
+    forwarders: &[Forwarder],
+) -> BTreeSet<usize> {
+    let mut out = BTreeSet::new();
+    if forwarders.is_empty() {
+        return out;
+    }
+    let mut by_name: BTreeMap<&str, BTreeSet<usize>> = BTreeMap::new();
+    for f in forwarders {
+        by_name.entry(f.name.as_str()).or_default().insert(f.param);
+    }
+
+    let n = code.len();
+    let mut i = 0usize;
+    while i < n {
+        if let Some(end) = lit_end_at[i] {
+            i = end;
+            continue;
+        }
+        if !is_ident_byte(code[i]) || (i > 0 && is_ident_byte(code[i - 1])) {
+            i += 1;
+            continue;
+        }
+        let Some((id, ident_end)) = read_ident(code, i) else {
+            i += 1;
+            continue;
+        };
+        i = ident_end;
+        let Some(params) = by_name.get(id.as_str()) else {
+            continue;
+        };
+        let k = skip_ws(code, ident_end);
+        if k >= n || code[k] != b'(' {
+            continue;
+        }
+        let Some(close) = match_delim(code, lit_end_at, k) else {
+            continue;
+        };
+        let args = split_delimited(code, lit_end_at, k, close, false);
+        for &p in params {
+            let Some(&(s, e)) = args.get(p) else {
+                continue;
+            };
+            let s = skip_ws(code, s);
+            // A literal here, and not one blanked out by the test mask.
+            if s < e && lit_end_at[s].is_some() && code[s] == b'"' {
+                out.insert(s);
+            }
+        }
+    }
+    out
+}
+
+/// Classify ONE source text: the single classification path, shared by the
+/// real sweep in [`scan`] and by the synthetic fixtures, so a fixture cannot
+/// pin a rule the workspace sweep does not actually apply.
+fn classify_text(
+    rel: &str,
+    src: &str,
+    forwarders: &[Forwarder],
+    seed_names: &BTreeSet<String>,
+) -> Vec<Site> {
+    let (mut code, lits) = strip_comments_and_collect_literals(src);
+    mask_cfg_test_blocks(&mut code, &lits);
+    let lit_end_at = literal_start_index(code.len(), &lits);
+    let lit_start_at = literal_end_index(code.len(), &lits);
+    let forwarded = forwarded_literal_starts(&code, &lit_end_at, forwarders);
+
+    let mut sites = Vec::new();
+    for lit in lits.iter() {
+        if !seed_names.contains(&lit.content) {
+            continue;
+        }
+        // A literal inside a masked (test-gated) region is gone from `code`.
+        if code[lit.start] != b'"' {
+            continue;
+        }
+        // Ladder order is deliberate: a DECIDED classification always wins,
+        // and `ArmHead::Inconclusive` only survives to become a site when no
+        // other shape claimed the literal — so "undecided" never masks a
+        // sharper answer, and never silently becomes "clean" either.
+        let arm = match_arm_head(&code, &lit_end_at, lit.end);
+        let kind = if arm == ArmHead::Arm {
+            SiteKind::MatchArm
+        } else if is_eval_call(&code, lit.start) {
+            SiteKind::EvalCall
+        } else if forwarded.contains(&lit.start) {
+            SiteKind::ForwardedEvalCall
+        } else if is_equality_operand(&code, lit.start, lit.end) {
+            SiteKind::EqualityTest
+        } else if is_string_array_element(&code, &lit_start_at, lit.start) {
+            SiteKind::NameList
+        } else if arm == ArmHead::Inconclusive {
+            SiteKind::UnresolvedArmHead
+        } else {
+            continue;
+        };
+        sites.push(Site {
+            file: rel.to_string(),
+            line: line_of(&code, lit.start),
+            name: lit.content.clone(),
+            kind,
+        });
+    }
+    sites
+}
+
+fn line_of(code: &[u8], offset: usize) -> usize {
+    code[..offset].iter().filter(|&&b| b == b'\n').count() + 1
+}
+
+/// Every `crates/*/src/**/*.rs` outside `crates/reify-builtins`.
+fn production_sources(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let crates_dir = root.join("crates");
+    let mut crate_dirs: Vec<PathBuf> = std::fs::read_dir(&crates_dir)
+        .unwrap_or_else(|e| panic!("cannot read {crates_dir:?}: {e}"))
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_dir() && p.file_name() != Some("reify-builtins".as_ref()))
+        .collect();
+    crate_dirs.sort();
+    for dir in crate_dirs {
+        collect_rs(&dir.join("src"), &mut out);
+    }
+    out.sort();
+    out
+}
+
+fn collect_rs(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rs(&path, out);
+        } else if path.extension() == Some("rs".as_ref()) {
+            out.push(path);
+        }
+    }
+}
+
+/// Scan the workspace for seed-name string dispatch.
+///
+/// Two passes over `crates/*/src/`, because a forwarder may be called from
+/// another file in its crate: pass one discovers every fn that launders a
+/// `&str` into `eval_builtin`, pass two classifies with that table in hand.
+pub(crate) fn scan(root: &Path, seed_names: &BTreeSet<String>) -> Vec<Site> {
+    let sources = production_sources(root);
+
+    let mut forwarders: Vec<Forwarder> = Vec::new();
+    for path in &sources {
+        let Ok(src) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        forwarders.extend(find_forwarders_in(&src));
+    }
+    forwarders.sort();
+    forwarders.dedup();
+
+    let mut sites = Vec::new();
+    for path in &sources {
+        let Ok(src) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        sites.extend(classify_text(&rel, &src, &forwarders, seed_names));
+    }
+    sites.sort();
+    sites
+}
+
+// ── the scanner's own fixture-driven pins ─────────────────────────
+
+/// Pins the `#[cfg(test)]` exclusion documented in the module docs, against
+/// synthetic input rather than against whatever the tree happens to contain —
+/// so the exclusion cannot rot when the tree changes.
+#[test]
+fn cfg_test_blocks_and_comments_are_excluded_from_the_scan() {
+    let src = r###"
+fn production(name: &str) -> u8 {
+    match name {
+        "von_mises" => 1,
+        _ => 0,
+    }
+}
+
+// A comment naming "max_shear" => is prose, not dispatch.
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn negative_assertion() {
+        // The units.rs:4010 shape: asserting a name is NOT claimed.
+        assert!(!is_fea_envelope_query("von_mises"));
+        assert_eq!(eval_builtin("safety_factor", &[]), 0);
+        match "principal_stresses" {
+            "principal_stresses" => {}
+            _ => {}
+        }
+    }
+}
+"###;
+    let (mut code, lits) = strip_comments_and_collect_literals(src);
+    mask_cfg_test_blocks(&mut code, &lits);
+
+    let names: BTreeSet<String> = [
+        "von_mises",
+        "max_shear",
+        "safety_factor",
+        "principal_stresses",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+
+    let lit_end_at = literal_start_index(code.len(), &lits);
+    let found: Vec<(String, SiteKind)> = lits
+        .iter()
+        .filter(|l| names.contains(&l.content) && code[l.start] == b'"')
+        .filter_map(|l| {
+            if match_arm_head(&code, &lit_end_at, l.end) == ArmHead::Arm {
+                Some((l.content.clone(), SiteKind::MatchArm))
+            } else if is_eval_call(&code, l.start) {
+                Some((l.content.clone(), SiteKind::EvalCall))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert_eq!(
+        found,
+        vec![("von_mises".to_string(), SiteKind::MatchArm)],
+        "only the production match arm should be flagged — the comment and \
+         everything under #[cfg(test)] must be excluded"
+    );
+}
+
+/// The cfg classification itself, pinned shape by shape — because the two ways
+/// it can be wrong fail in OPPOSITE directions and only one of them is loud.
+///
+/// Masking too little costs a false positive, which a reviewer sees. Masking
+/// too MUCH blanks production code out of the gate, which reports a clean
+/// workspace over a residue it never looked at — the silent failure this whole
+/// file exists to prevent. `#[cfg(not(test))]` is the case that bit: it is a
+/// production-only guard, live in tree (`crates/reify-ir/src/sampled.rs`), and
+/// the previous "does the token `test` appear anywhere" rule blanked it.
+#[test]
+fn cfg_attr_classification_masks_test_code_but_never_production_code() {
+    // Masked: genuinely test-only.
+    for attr in [
+        "#[cfg(test)]",
+        "#[cfg(any(test, feature = \"x\"))]",
+        "#[cfg(all(test, unix))]",
+        // Deliberate, not an accident of splitting "test-support" on `-`:
+        // a `test*` feature gates test-support code. Both are live in tree
+        // (reify-stdlib's `test-support`, reify-kernel-manifold's
+        // `test-fixtures`).
+        "#[cfg(feature = \"test-support\")]",
+        "#[cfg(feature=\"test-fixtures\")]",
+    ] {
+        assert!(
+            attr_gates_test_code(attr),
+            "{attr} gates test-only code and must be masked out of the scan"
+        );
+    }
+
+    // NOT masked: production code, or nothing to do with tests at all.
+    for attr in [
+        // The regression this test exists for — a production-only guard.
+        "#[cfg(not(test))]",
+        "#[cfg(all(not(test), unix))]",
+        "#[cfg(any(not(test), feature = \"y\"))]",
+        // Production when the test-support feature is OFF.
+        "#[cfg(not(feature = \"test-support\"))]",
+        // "test" only as a substring of a feature name.
+        "#[cfg(feature = \"fastest\")]",
+        // Not a `cfg` at all — `cfg_attr` adds attributes, it removes no code.
+        "#[cfg_attr(test, derive(Debug))]",
+        "#[derive(Debug)]",
+        "#[cfg(unix)]",
+    ] {
+        assert!(
+            !attr_gates_test_code(attr),
+            "{attr} does NOT gate test-only code — masking it would blank \
+             production code out of the I-REG-1 scan, which is the silent \
+             failure mode: a clean report over a residue never looked at"
+        );
+    }
+}
+
+/// The `#[cfg(not(test))]` hole, end to end rather than at the predicate:
+/// a dispatch site under a production-only guard must survive masking and be
+/// FOUND, exactly as if the attribute were not there.
+#[test]
+fn production_only_cfg_not_test_items_stay_in_the_scan() {
+    let src = r###"
+#[cfg(not(test))]
+fn production_dispatch(name: &str) -> u8 {
+    match name {
+        "von_mises" => 1,
+        _ => 0,
+    }
+}
+
+#[cfg(test)]
+fn only_for_tests(name: &str) -> u8 {
+    match name {
+        "max_shear" => 1,
+        _ => 0,
+    }
+}
+"###;
+    let (mut code, lits) = strip_comments_and_collect_literals(src);
+    mask_cfg_test_blocks(&mut code, &lits);
+
+    let names: BTreeSet<String> = ["von_mises", "max_shear"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+
+    let lit_end_at = literal_start_index(code.len(), &lits);
+    let found: Vec<(String, SiteKind)> = lits
+        .iter()
+        .filter(|l| names.contains(&l.content) && code[l.start] == b'"')
+        .filter_map(|l| {
+            if match_arm_head(&code, &lit_end_at, l.end) == ArmHead::Arm {
+                Some((l.content.clone(), SiteKind::MatchArm))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert_eq!(
+        found,
+        vec![("von_mises".to_string(), SiteKind::MatchArm)],
+        "the `#[cfg(not(test))]` arm is PRODUCTION code and must be flagged; \
+         only the `#[cfg(test)]` arm may be masked"
+    );
+}
+
+/// Attribute TEXT inside a string literal is not an attribute: the outer walk
+/// of [`mask_cfg_test_blocks`] must skip literals exactly as its own inner
+/// forward walk already does.
+///
+/// [`strip_comments_and_collect_literals`] blanks comments and RAW strings but
+/// only COLLECTS ordinary string literals — their bytes stay in place. So a
+/// production `fn` that tests for the text `"#[cfg(test)]"` reads, to a walk
+/// that never consults the literal mask, as a genuine attribute; the
+/// item-finding walk then blanks forward to the first `;`/`{` outside a
+/// literal, deleting a contiguous span of real production code from the scan.
+/// That is the silent direction the classification test below names: a clean
+/// report over a residue the gate never looked at.
+///
+/// THE FIXTURE SHAPE IS LOAD-BEARING, AND ITS ALTERNATIVE WAS MEASURED, NOT
+/// ASSUMED. The obvious spelling — `let s = "#[cfg(test)]";` followed by the
+/// dispatch arm — is VACUOUS: the `;` closing the `let` is the first terminator
+/// outside a literal, so the blank covers that statement's tail only and never
+/// reaches the arm, which therefore survives on the UNFIXED code and makes the
+/// test pass either way. The literal must instead sit in a TAIL EXPRESSION with
+/// no terminating `;`, so the walk runs past the enclosing `}` and swallows the
+/// NEXT item's braced body. Do not "simplify" this back into a shape that
+/// cannot fail.
+///
+/// This models a live in-tree instance, not a hypothesis:
+/// `crates/reify-audit/src/pdoccover.rs:479` is production code whose
+/// `is_cfg_test_attr` body is exactly this tail-expression shape, so the blank
+/// runs past its closing `}` into the following `blank_literals` fn and
+/// swallows the whole of it. Measured on that real file: masking blanks 27679
+/// bytes without the literal guard and 27089 with it, so the guard hands 590
+/// bytes of production code back to the scan. Inert today only because
+/// reify-audit registers no seed name; a later τ registering a name that
+/// appears inside such a blanked span would get a GREEN gate over a real
+/// violation.
+///
+/// `crates/reify-audit/src/jcodemunch_client.rs:1382,1559` carry the same
+/// literal text but are NOT the same shape and were wrongly cited as such:
+/// both sit inside a genuine `#[cfg(test)] mod tests`, already masked wholesale
+/// by the real attribute above them, so the guard moves that file's blanked
+/// count by zero bytes (19741 either way). Recorded because an uncorrected
+/// cite invites a reader to "verify" it and conclude the guard does nothing.
+#[test]
+fn attribute_text_inside_a_string_literal_is_not_an_attribute() {
+    let src = r###"
+fn is_cfg_test_attr(code: &str) -> bool {
+    code.starts_with("#[cfg(test)]")
+}
+
+fn dispatch(name: &str) -> u8 {
+    match name {
+        "von_mises" => 1,
+        _ => 0,
+    }
+}
+"###;
+    let (mut code, lits) = strip_comments_and_collect_literals(src);
+    mask_cfg_test_blocks(&mut code, &lits);
+
+    let names: BTreeSet<String> = ["von_mises"].into_iter().map(str::to_string).collect();
+
+    let lit_end_at = literal_start_index(code.len(), &lits);
+    let found: Vec<(String, SiteKind)> = lits
+        .iter()
+        .filter(|l| names.contains(&l.content) && code[l.start] == b'"')
+        .filter_map(|l| {
+            if match_arm_head(&code, &lit_end_at, l.end) == ArmHead::Arm {
+                Some((l.content.clone(), SiteKind::MatchArm))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert_eq!(
+        found,
+        vec![("von_mises".to_string(), SiteKind::MatchArm)],
+        "the `#[cfg(test)]` TEXT is a string literal in production code, not an \
+         attribute — masking on it blanks the following item out of the scan"
+    );
+}
+
+/// A brace in a CHAR literal is not a brace — the same defect the test above
+/// closes for string literals, one token different.
+///
+/// `strip_comments_and_collect_literals` used to step PAST a char literal
+/// without blanking it or collecting it, so `'{'` and `'}'` reached every
+/// brace-balancing walk as real braces while `in_literal` (string spans only)
+/// reported them as code. Both directions were measured on the real tree
+/// before the fix:
+///
+/// - SILENT, pinned by the first fixture: a lone `'{'` in a test-gated item
+///   never lets the count return to 0, so `mask_cfg_test_blocks` runs `end` to
+///   `code.len()` and blanks the whole remainder of the file out of the scan.
+///   The gate then reports zero sites and PASSES over code it never read.
+/// - LOUD, pinned by the second: a lone `'}'` closes the count early, leaving
+///   the tail of a `#[cfg(test)]` item in the scan — test code reported as a
+///   production violation.
+///
+/// Inert on today's tree only by luck: the 26 char-literal braces under
+/// `crates/*/src` are all balanced pairs (`strip_prefix('{')` …
+/// `strip_suffix('}')`). A tree-wide differential over the unfixed pass
+/// diverges on 32 of 541 files — `crates/reify-kernel-occt/src/lib.rs` masked
+/// 6,898 bytes where a char-literal-aware pass masks 178,853 (its
+/// `rest.find([',', '}'])` calls) — so the balance is a coincidence, not an
+/// invariant, and one lone `'{'` added above a `#[cfg(test)]` boundary flips
+/// the gate to failing open.
+#[test]
+fn a_brace_in_a_char_literal_is_not_a_brace() {
+    fn seed_match_arms(src: &str) -> Vec<String> {
+        let (mut code, lits) = strip_comments_and_collect_literals(src);
+        mask_cfg_test_blocks(&mut code, &lits);
+        let names: BTreeSet<String> = ["von_mises"].into_iter().map(str::to_string).collect();
+        let lit_end_at = literal_start_index(code.len(), &lits);
+        lits.iter()
+            .filter(|l| names.contains(&l.content) && code[l.start] == b'"')
+            .filter(|l| match_arm_head(&code, &lit_end_at, l.end) == ArmHead::Arm)
+            .map(|l| l.content.clone())
+            .collect()
+    }
+
+    let unbalanced_open = r###"
+#[cfg(test)]
+fn opens(c: char) -> bool {
+    c == '{'
+}
+
+fn dispatch(name: &str) -> u8 {
+    match name {
+        "von_mises" => 1,
+        _ => 0,
+    }
+}
+"###;
+    assert_eq!(
+        seed_match_arms(unbalanced_open),
+        vec!["von_mises".to_string()],
+        "a `'{{'` inside a test-gated item must not unbalance the mask — \
+         letting it run to EOF hides every production site behind it and the \
+         gate passes over an unscanned file"
+    );
+
+    let unbalanced_close = r###"
+#[cfg(test)]
+fn closes(c: char, name: &str) -> u8 {
+    if c == '}' {
+        return 9;
+    }
+    match name {
+        "von_mises" => 1,
+        _ => 0,
+    }
+}
+"###;
+    assert!(
+        seed_match_arms(unbalanced_close).is_empty(),
+        "a `'}}'` inside a test-gated item must not end the mask early — the \
+         arm it exposes is test code, and reporting it is a false violation"
+    );
+}
+
+/// Pins the two violation shapes the module docs name, so a scanner that
+/// silently stopped recognising guarded arms or `eval_builtin` calls fails
+/// loudly instead of reporting a clean workspace.
+#[test]
+fn both_violation_shapes_are_recognised() {
+    let src = r###"
+fn dispatch(name: &str, args: &[Value]) -> Value {
+    match name {
+        "von_mises"
+            if args.len() == 1 && matches!(&args[0], Value::Field { .. }) =>
+        {
+            field_von_mises(&args[0])
+        }
+        "max_shear" | "principal_stresses" => reduce(name, args),
+        _ => reify_stdlib::eval_builtin("safety_factor", args),
+    }
+}
+"###;
+    let (mut code, lits) = strip_comments_and_collect_literals(src);
+    mask_cfg_test_blocks(&mut code, &lits);
+
+    let names: BTreeSet<String> = [
+        "von_mises",
+        "max_shear",
+        "principal_stresses",
+        "safety_factor",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+
+    let lit_end_at = literal_start_index(code.len(), &lits);
+    let mut found: Vec<(String, SiteKind)> = lits
+        .iter()
+        .filter(|l| names.contains(&l.content) && code[l.start] == b'"')
+        .filter_map(|l| {
+            if match_arm_head(&code, &lit_end_at, l.end) == ArmHead::Arm {
+                Some((l.content.clone(), SiteKind::MatchArm))
+            } else if is_eval_call(&code, l.start) {
+                Some((l.content.clone(), SiteKind::EvalCall))
+            } else {
+                None
+            }
+        })
+        .collect();
+    found.sort();
+
+    let mut expected = vec![
+        ("von_mises".to_string(), SiteKind::MatchArm),
+        ("max_shear".to_string(), SiteKind::MatchArm),
+        ("principal_stresses".to_string(), SiteKind::MatchArm),
+        ("safety_factor".to_string(), SiteKind::EvalCall),
+    ];
+    expected.sort();
+
+    assert_eq!(
+        found, expected,
+        "a guarded arm, an or-pattern alternative, and an eval_builtin call \
+         must all be recognised"
+    );
+}
+
+/// The two shapes with no live instance in the tree — an `==` comparison and a
+/// `&[&str]` name slice — are recognised, and the near-miss shapes that sit
+/// next to them are NOT.
+///
+/// Pinned against a fixture precisely because the tree contains neither: run
+/// only over the workspace, these two rules could silently stop matching and
+/// every gate test would still pass. The near-miss half matters just as much —
+/// a rule that flagged `let n = "von_mises";` or `eval_builtin("von_mises",
+/// &[t])`'s argument slice would push noise into the ledger and train readers
+/// to widen it.
+#[test]
+fn equality_and_name_slice_shapes_are_recognised_and_near_misses_are_not() {
+    let src = r###"
+const ANALYSIS_FN_NAMES: &[&str] = &["von_mises", "principal_stresses"];
+
+fn ladder(name: &str, args: &[Value]) -> Value {
+    if name == "max_shear" {
+        return reduce(args);
+    }
+    if "safety_factor" != name && ANALYSIS_FN_NAMES.contains(&name) {
+        return reduce(args);
+    }
+    // Near misses: an assignment, a call argument, and a tuple element.
+    let label = "parse_length";
+    note(label, "parse_length_r", &[args.len()]);
+    let table = [("stress_invariants", 1)];
+    dispatch(table, label)
+}
+"###;
+    let names: BTreeSet<String> = [
+        "von_mises",
+        "principal_stresses",
+        "max_shear",
+        "safety_factor",
+        "parse_length",
+        "parse_length_r",
+        "stress_invariants",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+
+    let mut found: Vec<(String, SiteKind)> = classify_text("fixture.rs", src, &[], &names)
+        .into_iter()
+        .map(|s| (s.name, s.kind))
+        .collect();
+    found.sort();
+
+    let mut expected = vec![
+        // The slice's two elements — the `PARSE_FN_NAMES` shape α deleted.
+        ("von_mises".to_string(), SiteKind::NameList),
+        ("principal_stresses".to_string(), SiteKind::NameList),
+        // `name == "max_shear"`, and the mirrored `"safety_factor" != name`.
+        ("max_shear".to_string(), SiteKind::EqualityTest),
+        ("safety_factor".to_string(), SiteKind::EqualityTest),
+    ];
+    expected.sort();
+
+    assert_eq!(
+        found, expected,
+        "an `==`/`!=` comparison on either side and every element of a \
+         string-literal name slice must be flagged \u{2014} while a plain \
+         assignment (`let label = \"parse_length\"`), an ordinary call \
+         argument (\"parse_length_r\") and a tuple element \
+         (\"stress_invariants\") must not be"
+    );
+}
+
+/// The arm-head walk must have no silent ceiling — the defect that motivated
+/// [`ArmHead`]'s third state.
+///
+/// The walk used to stop after a fixed 800-byte lookahead and return "not an
+/// arm". A guard longer than the window was therefore classified CLEAN, in the
+/// same silent direction the `#[cfg]` masking rule is careful about, and no
+/// fixture exercised it. Both halves are pinned here:
+///
+/// - (a) an over-long `matches!(…)` guard chain is still recognised as an arm;
+/// - (b) a head the walk cannot finish (source ends mid-guard, or mid-pattern)
+///   is reported as [`SiteKind::UnresolvedArmHead`], never dropped.
+#[test]
+fn an_over_long_guard_is_recognised_and_an_unfinished_head_is_reported() {
+    let seed_names: BTreeSet<String> = ["von_mises", "max_shear", "safety_factor"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+
+    // (a) A guard far wider than the retired 800-byte window (~60 clauses,
+    //     ~2.5 kB). Built programmatically so the fixture cannot silently
+    //     shrink back under a cap someone re-adds.
+    let long_guard = (0..60)
+        .map(|n| format!("matches!(&args[{n}], Value::Field {{ .. }})"))
+        .collect::<Vec<_>>()
+        .join("\n            && ");
+    assert!(
+        long_guard.len() > 800,
+        "fixture guard must exceed the retired 800-byte cap to test anything, \
+         got {} bytes",
+        long_guard.len()
+    );
+    let src = format!(
+        "fn dispatch(name: &str, args: &[Value]) -> Value {{\n\
+         \x20   match name {{\n\
+         \x20       \"von_mises\"\n\
+         \x20           if {long_guard} =>\n\
+         \x20       {{\n\
+         \x20           field_von_mises(&args[0])\n\
+         \x20       }}\n\
+         \x20       _ => Value::Undef,\n\
+         \x20   }}\n\
+         }}\n"
+    );
+    let sites = classify_text("fixture/long_guard.rs", &src, &[], &seed_names);
+    assert_eq!(
+        sites
+            .iter()
+            .map(|s| (s.name.as_str(), s.kind))
+            .collect::<Vec<_>>(),
+        vec![("von_mises", SiteKind::MatchArm)],
+        "a guard wider than the retired lookahead window must still be \
+         recognised as a match arm, not silently read as clean: {sites:#?}"
+    );
+
+    // (b) Heads the walk cannot finish. Both end the source mid-arm-head — one
+    //     in guard position, one in pattern position — so neither verdict is
+    //     reachable and the site must be REPORTED, not dropped.
+    // Source ends mid-guard: the walk enters guard position and never reaches
+    // `=>`, a `;` at depth 0, or an unbalanced closer.
+    let unfinished_guard = "match name {\n    \"max_shear\" if args.len() == 1 &&\n";
+    // Source ends mid-pattern: only whitespace follows the literal.
+    let unfinished_pattern = "match name {\n    \"safety_factor\"\n";
+    for (rel, src, name) in [
+        ("fixture/unfinished_guard.rs", unfinished_guard, "max_shear"),
+        (
+            "fixture/unfinished_pattern.rs",
+            unfinished_pattern,
+            "safety_factor",
+        ),
+    ] {
+        let sites = classify_text(rel, src, &[], &seed_names);
+        assert_eq!(
+            sites
+                .iter()
+                .map(|s| (s.name.as_str(), s.kind))
+                .collect::<Vec<_>>(),
+            vec![(name, SiteKind::UnresolvedArmHead)],
+            "{rel}: an arm head the walk cannot finish must surface as \
+             UnresolvedArmHead \u{2014} \"could not decide\" must never be \
+             read as \"clean\": {sites:#?}"
+        );
+    }
+}
+
+// ── the one-hop forwarder rule (step-22/23) ─────────────────────────────────
+
+/// A production source in the shape `crates/reify-expr/src/analysis.rs` has:
+/// one helper that launders a `&str` into `eval_builtin`, and two that take a
+/// seed name purely as a diagnostic label. The gate must tell them apart —
+/// flagging all four would inflate the ledger with entries that name no
+/// dispatch at all, and flagging none certifies a residue it cannot see.
+///
+/// Synthetic, deliberately: like
+/// [`cfg_test_blocks_and_comments_are_excluded_from_the_scan`], this pins the
+/// RULE against hand-written text, so it cannot rot when the tree changes.
+const FORWARDER_FIXTURE: &str = r###"
+fn wrap_tensor_field(field_val: &Value, op: &str, kind: FieldSourceKind) -> Value {
+    eprintln!("[reify-expr] {}: not a tensor field", op);
+    Value::Undef
+}
+
+fn validate_tensor_field(field_val: &Value, op: &str) -> Option<Triple> {
+    eprintln!("[reify-expr] {}: expected a Matrix3x3 field", op);
+    None
+}
+
+fn sample_unary_analysis_at_point(
+    inner_lambda: &Value,
+    point: &Value,
+    ctx: &EvalContext,
+    builtin_name: &str,
+) -> Value {
+    let tensor = apply_lambda_with_point_unpacking(inner_lambda, point, ctx);
+    if tensor.is_undef() {
+        return Value::Undef;
+    }
+    reify_stdlib::eval_builtin(builtin_name, &[tensor])
+}
+
+pub(crate) fn compute_von_mises(field_val: &Value) -> Value {
+    wrap_tensor_field(field_val, "von_mises", FieldSourceKind::VonMises)
+}
+
+pub(crate) fn compute_principal_stresses(field_val: &Value) -> Value {
+    let triple = validate_tensor_field(field_val, "principal_stresses")?;
+    wrap(triple)
+}
+
+pub(crate) fn sample_von_mises_at_point(inner: &Value, point: &Value, ctx: &EvalContext) -> Value {
+    sample_unary_analysis_at_point(inner, point, ctx, "von_mises")
+}
+
+pub(crate) fn sample_max_shear_at_point(inner: &Value, point: &Value, ctx: &EvalContext) -> Value {
+    sample_unary_analysis_at_point(inner, point, ctx, "max_shear")
+}
+"###;
+
+fn fixture_names() -> BTreeSet<String> {
+    [
+        "von_mises",
+        "max_shear",
+        "principal_stresses",
+        "safety_factor",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+/// (a) POSITIVE — a fn with a `&str` parameter whose body calls
+/// `eval_builtin(<that same parameter>, …)` is a FORWARDER, and a seed-name
+/// literal passed at that parameter's position is a violation.
+///
+/// (b) NEGATIVE, load-bearing — `wrap_tensor_field`/`validate_tensor_field`
+/// take a `&str` they never pass to `eval_builtin`, so they are NOT
+/// forwarders and their literal call sites are NOT flagged. A naive "any
+/// `&str` param" rule would flag all four.
+#[test]
+fn only_a_str_param_that_reaches_eval_builtin_makes_a_forwarder() {
+    let found = find_forwarders_in(FORWARDER_FIXTURE);
+    assert_eq!(
+        found,
+        vec![Forwarder {
+            name: "sample_unary_analysis_at_point".to_string(),
+            param: 3,
+            param_name: "builtin_name".to_string(),
+        }],
+        "exactly one fn in the fixture launders a `&str` into eval_builtin; \
+         `wrap_tensor_field`/`validate_tensor_field` take a `&str` label they \
+         never dispatch on and must not be treated as forwarders"
+    );
+}
+
+/// The classification consequence of (a) + (b): the two forwarded call sites
+/// are flagged, the two label call sites are not.
+#[test]
+fn forwarded_seed_names_are_flagged_and_label_arguments_are_not() {
+    let forwarders = find_forwarders_in(FORWARDER_FIXTURE);
+    let sites = classify_text(
+        "fixture.rs",
+        FORWARDER_FIXTURE,
+        &forwarders,
+        &fixture_names(),
+    );
+
+    let got: Vec<(String, SiteKind)> = sites
+        .iter()
+        .map(|s| (s.name.clone(), s.kind))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("max_shear".to_string(), SiteKind::ForwardedEvalCall),
+            ("von_mises".to_string(), SiteKind::ForwardedEvalCall),
+        ],
+        "only the literals at the forwarder's laundered parameter position \
+         are dispatch; `wrap_tensor_field(field_val, \"von_mises\", …)` and \
+         `validate_tensor_field(field_val, \"principal_stresses\")` pass a \
+         diagnostic label and must stay unflagged.\nsites: {sites:#?}"
+    );
+}
+
+/// (c) The forwarder's OWN `eval_builtin(builtin_name, …)` line is not itself
+/// a site: its first argument is an identifier, not a literal. Pinned
+/// explicitly so a future scanner cannot start double-counting the hop it
+/// already counts at the call site.
+#[test]
+fn the_forwarders_own_eval_builtin_line_is_not_a_site() {
+    let forwarders = find_forwarders_in(FORWARDER_FIXTURE);
+    let sites = classify_text(
+        "fixture.rs",
+        FORWARDER_FIXTURE,
+        &forwarders,
+        &fixture_names(),
+    );
+
+    let hop_line = FORWARDER_FIXTURE
+        .lines()
+        .position(|l| l.contains("eval_builtin(builtin_name"))
+        .map(|i| i + 1)
+        .expect("fixture must contain the laundered eval_builtin call");
+
+    assert!(
+        sites.iter().all(|s| s.line != hop_line),
+        "the forwarder's own eval_builtin call takes an identifier, so it \
+         must produce no site; the string is counted once, at the call site \
+         that supplies it.\nsites: {sites:#?}"
+    );
+}
+
+/// (d) The forwarder set must be DERIVED, never a hand-maintained allowlist.
+/// Sweeps the real tree and re-verifies every fn the scan treats as a
+/// forwarder with an INDEPENDENT check — a whitespace-insensitive substring
+/// search for `eval_builtin(<param>` — so a scanner that started inventing
+/// forwarders fails here rather than silently inflating the ledger.
+#[test]
+fn every_discovered_forwarder_really_forwards_to_eval_builtin() {
+    let root = workspace_root();
+    let mut unverified: Vec<String> = Vec::new();
+
+    for path in production_sources(&root) {
+        let Ok(src) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let forwarders = find_forwarders_in(&src);
+        if forwarders.is_empty() {
+            continue;
+        }
+        let squashed: String = src.chars().filter(|c| !c.is_whitespace()).collect();
+        let rel = path
+            .strip_prefix(&root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        for f in forwarders {
+            let comma = format!("eval_builtin({},", f.param_name);
+            let only = format!("eval_builtin({})", f.param_name);
+            if !squashed.contains(&comma) && !squashed.contains(&only) {
+                unverified.push(format!(
+                    "  {}: fn {} (param #{} `{}`) is treated as a forwarder, \
+                     but the file contains no `eval_builtin({}…)` call",
+                    rel, f.name, f.param, f.param_name, f.param_name
+                ));
+            }
+        }
+    }
+
+    assert!(
+        unverified.is_empty(),
+        "the forwarder set must be derived from the source, not declared:\n{}",
+        unverified.join("\n")
+    );
+}

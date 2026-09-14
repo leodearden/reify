@@ -34,7 +34,14 @@
 //     longer a flat param; a geometry-derived positivity will be revived
 //     in Phase 6). RHS is dimensioned (kg/m³) so `eval_cmp` dim-equality
 //     succeeds at runtime after task #3111 tightened Material.density from
-//     Real to Density; a bare `0` yields Indeterminate per esc-3115-112.
+//     Real to Density; `0kg/m^3` is retained by convention, not required — a
+//     bare `0` compiles too, MEMBER-ACCESS operand included.
+//     DIMENSIONED-ZERO CONVENTION — see
+//     docs/notes/dimensioned-zero-coercion.md. The `moi_principal[0]` note
+//     below is not in tension with this: a member access and a subscript
+//     lower to the SAME IndexAccess node, so the coercion reaches both.
+//     What differs is the choice — Rigid declines to lean on it — not the
+//     operand shape.
 //
 // Historical note: prior to task 1876 this refined a trait named `Material`,
 // later renamed to `MaterialSpec`. PRD Phase 1 retires the trait edge
@@ -93,9 +100,10 @@ trait Rigid : Physical {
 trait Flexible {
     param stiffness : Stiffness
     param max_deflection : Length
-    // Bare `0` coerced to Scalar<Stiffness> / Scalar<Length> at compile time
-    // by task-4485/β polymorphic-zero rewrite (esc-3115-112 resolved — the old
-    // multiplication boilerplate `0.0 * 1N/1m` / `0.0 * 1m` is no longer needed).
+    // Bare `0`, not the old `0.0 * 1N/1m` / `0.0 * 1m` boilerplate: it is
+    // coerced to Scalar<Stiffness> / Scalar<Length> at compile time.
+    // DIMENSIONED-ZERO CONVENTION — see
+    // docs/notes/dimensioned-zero-coercion.md.
     constraint stiffness > 0
     constraint max_deflection > 0
 }
@@ -129,7 +137,7 @@ trait ElasticallyDeformable : Flexible {
 // Note: hardening_modulus > 0 is strictly positive — a zero modulus would mean
 // perfectly-plastic behaviour (no strain hardening), which is outside the scope
 // of this trait. Use a separate trait if perfectly-plastic models are required.
-// Bare `0` coerced to Scalar<Pressure> by task-4485/β (esc-3115-112 resolved).
+// DIMENSIONED-ZERO CONVENTION — docs/notes/dimensioned-zero-coercion.md.
 trait Plastic : Flexible {
     param plastic_strain : Real // dimensionless
     param hardening_modulus : Pressure
@@ -143,12 +151,13 @@ trait Plastic : Flexible {
 // physical body, inheriting volume, centroid, and mass.
 // thermal_conductivity (W/(m·K), ThermalConductivity alias — tightened by #3115),
 // max_service_temp (K, Temperature alias — tightened from Real by task α).
-// Bare `0` coerced by task-4485/β (esc-3115-112 resolved for Temperature /
-// ThermalConductivity); thermal_conductivity keeps its 0W/(m*K) quantity form.
+// thermal_conductivity's `> 0W/(m*K)` keeps its dimensioned RHS by choice —
+// the coercion below would accept a bare `0` here too.
 trait ThermallyConductive : Physical {
     param thermal_conductivity : ThermalConductivity
     param max_service_temp : Temperature
     constraint thermal_conductivity > 0W/(m*K)
+    // DIMENSIONED-ZERO CONVENTION — docs/notes/dimensioned-zero-coercion.md.
     constraint max_service_temp > 0
 }
 
@@ -161,8 +170,7 @@ trait ThermallyConductive : Physical {
 trait ElectricallyConductive : Physical {
     param electrical_conductivity : ElectricalConductivity
     param resistivity : ElectricResistivity
-    // Bare `0` coerced to Scalar<ElectricalConductivity> by task-4485/β
-    // (esc-3115-112 resolved).
+    // DIMENSIONED-ZERO CONVENTION — docs/notes/dimensioned-zero-coercion.md.
     constraint electrical_conductivity > 0
 }
 
@@ -170,7 +178,7 @@ trait ElectricallyConductive : Physical {
 
 // A sealed body that prevents fluid/gas passage.
 // seal_pressure_rating (Pa, Pressure alias — tightened from Real by task α).
-// Bare `0` coerced to Scalar<Pressure> by task-4485/β (esc-3115-112 resolved).
+// DIMENSIONED-ZERO CONVENTION — docs/notes/dimensioned-zero-coercion.md.
 trait Sealed {
     param seal_pressure_rating : Pressure
     constraint seal_pressure_rating > 0

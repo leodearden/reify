@@ -33,58 +33,9 @@
 //! `unit_middot_mul.ri` in `_RUST_COUPLED_RI_FIXTURES` — PG-DRIFT derives that set
 //! by grepping tracked `.rs` files, so the two must always move together.
 
-use crate::common::{assert_eq_rel, expect_scalar};
-use reify_core::{DimensionVector, Severity};
+use crate::common::{assert_eq_rel, expect_scalar, stdlib_let_si_value};
+use reify_core::Severity;
 use reify_test_support::compile_source_with_stdlib_allow_parse_errors;
-
-/// Compile `structure def S { let x = <quantity> }` and return the `x` cell's
-/// (si_value, dimension).
-///
-/// A local `let`-flavoured helper rather than `common::stdlib_param_si_value`,
-/// which builds a `param x : <type>` and so demands a named type for every probe.
-/// Two of the three fixture bindings have no obvious one: `N·m/rad` carries a
-/// `rad^-1` component (`rad` is a real dimension — `stdlib/units.ri`
-/// `pub unit rad : Angle`), and `m^2·kg·s^-2` is Energy-shaped but the fixture
-/// binds it untyped.  Guessing a type would either fail to compile or silently
-/// measure a different quantity.  Untyped `let` cells match the fixture's own form.
-///
-/// Uses the same `_allow_parse_errors` helper as [`compile_fixture`], for the same
-/// reason: the `errs.is_empty()` assertion below is meant to be the ONE place a
-/// bad probe is reported, and the plain helper would instead panic inside the
-/// parse step with a message that names no `quantity`.
-fn let_cell_si_value(quantity: &str) -> (f64, DimensionVector) {
-    let source = format!("structure def S {{ let x = {quantity} }}");
-    let module = compile_source_with_stdlib_allow_parse_errors(&source);
-    let errs: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errs.is_empty(),
-        "source `{source}` produced errors: {errs:?}"
-    );
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("S template not found");
-    let cell = template
-        .value_cells
-        .iter()
-        .find(|c| c.id.member == "x")
-        .unwrap_or_else(|| {
-            panic!(
-                "`{quantity}`: no `x` value cell — the binding was DROPPED during \
-                 lowering despite compiling without errors (INV-SF-7)"
-            )
-        });
-    let expr = cell
-        .default_expr
-        .as_ref()
-        .expect("x cell has no default_expr");
-    expect_scalar(expr)
-}
 
 /// The fixture's three bindings: (member name, the `*`-spelled twin of the RHS
 /// committed on that `let` line).
@@ -273,7 +224,7 @@ fn prd_gate_fixture_all_three_bindings_are_present() {
             .as_ref()
             .unwrap_or_else(|| panic!("value cell `{member}` exists but has no default_expr"));
         let (fixture_v, fixture_d) = expect_scalar(expr);
-        let (star_v, star_d) = let_cell_si_value(star_twin);
+        let (star_v, star_d) = stdlib_let_si_value(star_twin);
         assert_eq_rel(
             fixture_v,
             star_v,
@@ -308,7 +259,7 @@ fn prd_gate_fixture_all_three_bindings_are_present() {
 /// motivated κ — and its `rad^-1` factor appears in no lowering test.  Only its
 /// CST is pinned (`unit_middot_mul_grammar_tests::
 /// accept_four_factor_left_associative_chain`), so everything after the parse is
-/// unobserved without this.  `let_cell_si_value` panics on a missing member, so
+/// unobserved without this.  `stdlib_let_si_value` panics on a missing member, so
 /// the anti-silent-drop lock (INV-SF-7) covers this shape too.
 ///
 /// Input whitespace-STRIPPED, and not verbatim eval output: `reify eval` prints
@@ -319,8 +270,8 @@ fn prd_gate_fixture_all_three_bindings_are_present() {
 fn middot_shapes_no_other_layer_covers_match_their_star_twins() {
     // (·-spelled, its `*`-spelled twin)
     let (dot, star) = ("5m^2·kg·s^-2·rad^-1", "5m^2*kg*s^-2*rad^-1");
-    let (dot_v, dot_d) = let_cell_si_value(dot);
-    let (star_v, star_d) = let_cell_si_value(star);
+    let (dot_v, dot_d) = stdlib_let_si_value(dot);
+    let (star_v, star_d) = stdlib_let_si_value(star);
     // Against the twin rather than a hard-coded number, so the assertion stays
     // honest if the stdlib's unit factors move: the two spellings must agree
     // whatever they denote.

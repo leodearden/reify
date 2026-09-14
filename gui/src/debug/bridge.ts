@@ -1522,18 +1522,81 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       return { ok: true, path };
     },
 
-    // Frontend landing point for the Rust `query_frontend("apply_gui_state", ...)` push
-    // from `handle_set_fea_case`.  Applies the re-sourced GuiState (new scalar_channels
-    // from the active FEA case) WITHOUT resetting the view — geometry is shared across
-    // cases so the camera must stay fixed; only the contour colours change per screenshot.
+    // Frontend landing point for the Rust `query_frontend("apply_gui_state", ...)`
+    // push.  TWO classes of caller:
+    //
+    //  1. `handle_set_fea_case` — applies the re-sourced GuiState (new
+    //     scalar_channels from the active FEA case), no `file` member.
+    //  2. the five `reify_*` AI write tools (task 5097 δ, INV-GUI-2 AI path) —
+    //     `reify_set_parameter` and `reify_update_source` push their rebuilt
+    //     GuiState here after a write.
+    //
+    // The OPTIONAL `file` member exists for `reify_update_source` specifically:
+    // PRD §6.3 routes that tool through the IN-MEMORY
+    // `EngineSession::update_source`, which writes no disk, so no FS-watcher
+    // re-fire will reconcile the editor buffer.  Without it the AI's source edit
+    // recompiles and re-renders while the editor still shows the OLD text —
+    // exactly the silent desync INV-GUI-2 exists to prevent.  Reconciliation
+    // rides `editorStore.openFile`'s existing already-open reopen path
+    // (editorStore.ts, task-5359), which owns the dirty/clean split; adding a
+    // second reconciliation here would be a fork of that rule.
+    //
+    // WHAT THAT SPLIT MEANS HERE — deliberate, and pinned by the
+    // `apply_gui_state` cases in debugContract.test.ts (task 5097 δ amendment,
+    // review finding).  `openFile`'s contract is "reopen from DISK", but this
+    // caller's `content` is an IN-MEMORY buffer that no disk write produced, so
+    // the two arms land differently from a watcher re-fire:
+    //
+    //  - CLEAN tab → the buffer is replaced and the tab stays CLEAN, so it now
+    //    differs from disk with no unsaved-changes indicator, and a later clean
+    //    reopen of the same path (an FS-watcher re-fire from
+    //    `reify_set_parameter`, File→Open) overwrites the AI's edit.  Accepted:
+    //    the engine holds the same text, `reify_save_file` is the commit step,
+    //    and forcing the tab dirty from here would fork `openFile`'s rule and
+    //    mean a debug push could block the user's own save behind a conflict
+    //    prompt.  `reify_update_source` is explicitly the volatile,
+    //    try-it-and-read-the-diagnostics tool; `reify_set_parameter` is the
+    //    durable one (it writes disk, so its push carries no `file` member).
+    //  - DIRTY tab → `openFile` does NOT clobber unsaved edits; it raises
+    //    `externallyChanged` when the incoming text diverges.  The engine then
+    //    holds the AI's text while the editor keeps the user's, and that
+    //    divergence is SURFACED as the existing conflict rather than silently
+    //    resolved in either direction.  Resolving it here would be this
+    //    handler picking a winner between the user and the AI.
+    //
+    // A malformed `file` is refused BEFORE either store moves: applying the
+    // GuiState but not the buffer is the very desync this member exists to
+    // close, so a half-applied push is worse than a refused one.
     apply_gui_state: (params) => {
       const rawGuiState = params.guiState as RawGuiState | undefined;
       if (!rawGuiState) return { error: 'guiState is required' };
 
+      const rawFile = params.file as { path?: unknown; content?: unknown } | undefined;
+      let file: { path: string; content: string } | undefined;
+      if (rawFile !== undefined) {
+        if (
+          rawFile === null ||
+          typeof rawFile !== 'object' ||
+          typeof rawFile.path !== 'string' ||
+          typeof rawFile.content !== 'string'
+        ) {
+          return { error: 'file requires path and content' };
+        }
+        file = { path: rawFile.path, content: rawFile.content };
+      }
+
+      // Editor BEFORE engine: the buffer is what the user reads the design
+      // out of, and both stores end up consistent either way, so the ordering
+      // is chosen to keep the visible text and the rendered geometry from
+      // being observably out of step mid-push.
+      if (file) ctx.stores.editor.openFile(file);
+
       const guiState = convertRawGuiState(rawGuiState);
       ctx.stores.engine.initFromState(guiState);
       // Intentionally NO viewState.resetToDefaultView() — preserves camera so the
-      // three per-case visual-regression screenshots differ only in the contour colours.
+      // three per-case visual-regression screenshots differ only in the contour
+      // colours.  The same reasoning covers the AI write path: a parameter tweak
+      // or a source edit must leave the user's camera where they put it.
 
       return { ok: true, case: params.case };
     },

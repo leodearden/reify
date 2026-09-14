@@ -2672,6 +2672,90 @@ pub enum DiagnosticCode {
     /// has no effect.  The solve continues with kernel defaults (this is advisory,
     /// not an error).
     BucklingOptionUnsupported,
+    /// Origin: `crates/reify-eval/src/compute_targets/buckling.rs` and
+    /// `crates/reify-eval/src/modal_ops.rs`, via the shift-honoring solve paths
+    /// (leaves γ #7260 and δ #7261).  Minted here unemitted by leaf α (#7258) so
+    /// the two sibling wiring leaves do not both edit this file (PRD §10 α).
+    ///
+    /// Canonical message form — ONE template with an OPTIONAL count, never two
+    /// drifting messages (PRD §5.4 precision limit):
+    /// `"W_ShiftSkippedModes: the shift sigma = <σ> skipped [<N> ]mode(s) below it; the result is a window around sigma, not the bottom of the spectrum"`.
+    ///
+    /// Emitted as a `Severity::Warning` (PRD-prose mnemonic `W_ShiftSkippedModes`)
+    /// when a shifted solve reports `EigenSolverResult.shift_skipped_modes == true`
+    /// — i.e. some eigenvalue of the pencil lies strictly between zero and σ and is
+    /// absent from the returned set.
+    ///
+    /// Advisory, not an error: inspecting a frequency band around σ is a
+    /// legitimate use, so a user who never asks "what is the first mode?" is
+    /// warned once and otherwise unobstructed.  Refusal lands on the incorrect
+    /// USE instead — see `FirstModeNotInShiftedResult`.
+    ///
+    /// The count is optional because the two implementations differ in precision:
+    /// the dense path computes the whole spectrum via QZ and counts exactly, while
+    /// the Lanczos path's Cholesky/LU discriminator yields only a boolean (an exact
+    /// count would need an inertia-revealing LDL^T that faer's sparse LU does not
+    /// expose).  Omitting the count is always correct; including it is only correct
+    /// on the dense path.
+    ///
+    /// References: PRD `docs/prds/v0_6/shift-invert-eigensolve.md` §5.4, contract
+    /// clause C5, and boundary test BT4.
+    ShiftSkippedModes,
+    /// Origin: `crates/reify-solver-elastic/src/eigensolve.rs`, the shift-invert
+    /// `K − σB` factorization dispatch (leaf β #7259).  Minted here unemitted by
+    /// leaf α (#7258).
+    ///
+    /// Canonical message form:
+    /// `"E_ShiftAtEigenvalue: the shift sigma = <σ> lies on an eigenvalue of the pencil, so K − sigma·B is singular; move sigma off the eigenvalue"`.
+    ///
+    /// Emitted as a `Severity::Error` (PRD-prose mnemonic `E_ShiftAtEigenvalue`)
+    /// when the shifted factorization detects a singular or numerically degenerate
+    /// `K − σB`.  Detection is two-part, because faer's
+    /// `LuError::SymbolicSingular` reports only STRUCTURAL rank deficiency —
+    /// partial-pivot LU on a numerically tiny pivot returns `Ok` and yields
+    /// garbage: (1) the symbolic-singular error directly, and (2) a
+    /// post-factorization guard on the recovered spectrum (non-finite λ, or a
+    /// back-substitution residual above the documented threshold).
+    ///
+    /// NO automatic perturbation is performed.  Nudging σ and continuing is
+    /// exactly the silent-substitution class this PRD exists to close; if
+    /// perturbation is ever wanted it arrives as an explicit opt-in knob, never as
+    /// a default.  The message therefore names the offending σ and tells the author
+    /// to move it.
+    ///
+    /// This code has no counterpart on the DENSE path: `solve_eigen_dense` never
+    /// forms `K − σB` (σ is a sort key there, not a factorization), so contract
+    /// clause C6 is satisfied vacuously and σ on an eigenvalue is a well-posed
+    /// selection rather than a failure.
+    ///
+    /// References: PRD `docs/prds/v0_6/shift-invert-eigensolve.md` §5.3, contract
+    /// clause C6, and boundary test BT5.
+    ShiftAtEigenvalue,
+    /// Origin: the three `modes[0]` helpers — `critical_load`,
+    /// `safety_factor_buckling` (`crates/reify-eval/src/compute_targets/buckling.rs`)
+    /// and `first_frequency` (`crates/reify-eval/src/modal_ops.rs`) — once leaf ε
+    /// (#7262) converts them from pure `.ri` bodies to `@optimized` trampolines.
+    /// Minted here unemitted by leaf α (#7258).
+    ///
+    /// Canonical message form:
+    /// `"E_FirstModeNotInShiftedResult: <helper> cannot answer 'what is the first mode?' — the solve used shift sigma = <σ>, which skipped mode(s) below it, so the first mode is not in the result"`.
+    ///
+    /// Emitted as a `Severity::Error` (PRD-prose mnemonic
+    /// `E_FirstModeNotInShiftedResult`) when one of those helpers is handed a
+    /// result whose C5 provenance says modes were skipped.  Without the refusal the
+    /// helper returns the multiplier of whichever mode was nearest σ, which is
+    /// HIGHER than the true first mode — the unconservative direction: a column
+    /// reported to hold 160 kN that buckles at 41 kN, or a fundamental reported at
+    /// 300 Hz that is really at 30 Hz.
+    ///
+    /// The refusal mechanism is a coded Error, NOT `Value::Undef`: `Undef` is the
+    /// silent-failure sentinel (INV-SF-1), which is the opposite of the loudness
+    /// this PRD is for.  Per INV-SF-2 an `Error` exits `reify eval` non-zero, so the
+    /// wrong number can never reach a report.
+    ///
+    /// References: PRD `docs/prds/v0_6/shift-invert-eigensolve.md` §5.4, contract
+    /// clause C5, and boundary test BT4.
+    FirstModeNotInShiftedResult,
     /// Origin: `crates/reify-compiler/src/diagnostics.rs::dup_member_key_error`,
     /// wired into the keyed-sub pre-pass in
     /// `crates/reify-compiler/src/entity.rs` (`MemberDecl::Sub` arm).
@@ -4126,6 +4210,69 @@ pub enum DiagnosticCode {
     /// non-breaking and round-trips through the feature-gated serde derives
     /// automatically.
     EvalCachedGuardedGroupsFallback,
+    /// Origin: all FOUR `@optimized`-target-not-registered emission sites, and
+    /// only those:
+    ///   - `crates/reify-eval/src/engine_eval.rs::evaluate_params_and_lets_unified` (SOFT)
+    ///   - `crates/reify-eval/src/engine_eval.rs::evaluate_let_bindings` (SOFT)
+    ///   - `crates/reify-eval/src/engine_admin.rs::dispatch_compute_node` (HARD)
+    ///   - `crates/reify-eval/src/engine_compute.rs::run_compute_dispatch` (HARD)
+    ///
+    /// Two canonical message forms, both single-sourced from
+    /// `engine_compute.rs`'s `NO_TRAMPOLINE_STEM` and built by the constructor
+    /// pair beside it (`Engine::soft_no_trampoline_diagnostic`, a method so the
+    /// empty-registry predicate below is spelled exactly once /
+    /// `hard_no_trampoline_diagnostic`):
+    /// - SOFT: `"@optimized target \"<t>\": no registered compute trampoline (falling back to body-inlining)"`
+    /// - HARD: `"@optimized target \"<t>\": no registered compute trampoline"`
+    ///
+    /// The clause is present only at the SOFT sites because body-inlining is
+    /// what those two call sites actually go on to do; the HARD sites return
+    /// `Err` and never inline, so claiming a fallback there would be false.
+    ///
+    /// SEVERITY POLICY (task 5311; RULING in
+    /// `docs/prds/v0_6/check-diagnostic-truthfulness.md` D4). At the two SOFT
+    /// sites the severity is conditioned on the engine's compute registry:
+    /// `Severity::Warning` iff the registry is entirely EMPTY, `Severity::Error`
+    /// otherwise. An empty registry means the *driver* declared a
+    /// trampoline-free posture — `reify check` and `reify-lsp` both construct
+    /// their engine without calling `register_compute_trampolines` — so the
+    /// missing trampoline is expected, not a defect, and reporting it as an
+    /// error while exiting 0 is a loud/silent mismatch. A driver that
+    /// registered SOME trampolines (`reify eval`, `reify build`: 19 production
+    /// targets) and is still missing THIS one is a genuine defect, so the
+    /// severity stays `Severity::Error` there and keeps gating those exit codes.
+    /// At the two HARD sites the severity is UNCONDITIONALLY `Severity::Error`
+    /// — see `hard_no_trampoline_diagnostic`'s rustdoc for why the predicate is
+    /// inapplicable there on the merits.
+    ///
+    /// The CODE is PRESERVED across that severity flip, deliberately: it names
+    /// the CAUSE, while the severity reports how much the caller's posture
+    /// makes that cause matter. Downstream tooling and tests should therefore
+    /// match on this code rather than on the severity or on message substrings
+    /// (the `hex_wedge_mesh_diagnostic` precedent below does the same).
+    ///
+    /// SIDE EFFECT OF CARRYING A CODE AT ALL — worth knowing before editing
+    /// either constructor. `reify-cli`'s `dedup_diagnostics` short-circuits on
+    /// `code.is_some()`, and its `merge_build_diagnostics` keys on the code, so
+    /// a CODED entry is exempt from within-list collapsing while an UNCODED one
+    /// is not. Before this variant existed the diagnostic was uncoded, so two
+    /// byte-identical copies from two `@optimized` call sites collapsed into
+    /// ONE printed line on `cmd_check`'s realization sub-path; they now both
+    /// survive, so the line count under `check` is per CALL SITE rather than
+    /// per distinct message. Measured on `examples/anisotropic_bar.ri`: two
+    /// `solver::elastic_static` lines; on `examples/fdm_bracket.ri`: three
+    /// lines over two distinct targets. That is the behaviour
+    /// `dedup_diagnostics`' own rationale asks for — a coded entry's
+    /// multiplicity is a per-callout fact, not re-run noise — and the
+    /// coded-vs-uncoded split is pinned by `dedup_collapses_only_uncoded_entries`
+    /// and `dedup_exempts_the_coded_missing_trampoline_pair` in
+    /// `crates/reify-cli/src/main.rs`.
+    ///
+    /// Minting rationale: `DiagnosticCode` is `#[non_exhaustive]`, carries no
+    /// `VARIANT_COUNT` backstop, and is never matched exhaustively anywhere in
+    /// the workspace, so adding one variant is purely additive and round-trips
+    /// through the feature-gated serde derives automatically.
+    NoRegisteredComputeTrampoline,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -5996,6 +6143,67 @@ mod tests {
     fn diagnostic_code_buckling_option_unsupported_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::BucklingOptionUnsupported).unwrap();
         assert_eq!(s, "\"BucklingOptionUnsupported\"");
+    }
+
+    // --- §5.3/§5.4 shift-invert DiagnosticCode tests (task α, #7258) ---
+    // Three new shift-contract codes, minted here unemitted: γ (#7260) and δ
+    // (#7261) emit them, β (#7259) raises `ShiftAtEigenvalue`.  Mirrors the
+    // `diagnostic_code_shell_extract_variants_constructible` + `_serde_pascal_case`
+    // pattern: construct via `Diagnostic::error(...).with_code(code)` (the code
+    // round-trips) and assert PascalCase serde wire strings.  Severity is NOT
+    // asserted here — see the first test's doc comment for why it could not be.
+
+    /// A compile-time EXISTENCE fence for the three shift-contract variants,
+    /// plus a `with_code` round-trip.  That is all it is, and all it claims.
+    ///
+    /// It deliberately does NOT assert the PRD §5.3/§5.4 severity split, because
+    /// it cannot: `Diagnostic::warning` hardcodes `Severity::Warning` and
+    /// `Diagnostic::error` hardcodes `Severity::Error`, while `with_code` only
+    /// sets `code` — so any severity asserted here is a property of the
+    /// constructor this test itself chose, entirely independent of which
+    /// `DiagnosticCode` is attached.  Swapping the codes between the two
+    /// constructors would leave such a test green.  The real severity binding
+    /// lives at the emit sites, and is pinned by the tests landed with them:
+    /// γ (#7260), δ (#7261) and ε (#7262).
+    ///
+    /// The `Debug` repr is intentionally not asserted — the neighbouring
+    /// `BucklingOptionUnsupported` block documents that as deliberately unpinned
+    /// cosmetic output with no consumer contract.
+    ///
+    /// RED: the three variants do not exist → compile fail.
+    /// GREEN after step-2 adds them to `DiagnosticCode`.
+    #[test]
+    fn diagnostic_code_shift_variants_constructible() {
+        let codes = [
+            DiagnosticCode::ShiftSkippedModes,
+            DiagnosticCode::ShiftAtEigenvalue,
+            DiagnosticCode::FirstModeNotInShiftedResult,
+        ];
+        for code in codes {
+            let d = Diagnostic::error("x").with_code(code);
+            assert_eq!(d.code, Some(code), "code mismatch for {code:?}");
+        }
+    }
+
+    /// Under `feature = "serde"`, each shift-contract code serializes to its
+    /// PascalCase wire string (from `rename_all = "PascalCase"`).  These are the
+    /// wire identifiers the capability manifest binds, so they are pinned here
+    /// rather than left to follow a future rename of the Rust identifier.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_shift_variants_serde_pascal_case() {
+        let cases = [
+            (DiagnosticCode::ShiftSkippedModes, "\"ShiftSkippedModes\""),
+            (DiagnosticCode::ShiftAtEigenvalue, "\"ShiftAtEigenvalue\""),
+            (
+                DiagnosticCode::FirstModeNotInShiftedResult,
+                "\"FirstModeNotInShiftedResult\"",
+            ),
+        ];
+        for (code, expected) in cases {
+            let s = serde_json::to_string(&code).unwrap();
+            assert_eq!(s, expected, "serde mismatch for {code:?}");
+        }
     }
 
     // --- §7 shell-extract DiagnosticCode tests (task ε, #3837) ---

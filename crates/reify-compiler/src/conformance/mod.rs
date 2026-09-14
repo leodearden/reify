@@ -1305,10 +1305,25 @@ fn arg_type_is_unverifiable(arg_ty: &Type) -> bool {
 /// arms use to accept the expression compiler's numeric-fallback placeholder
 /// (task 5465).
 ///
-/// `point3(…)` and friends are stdlib eval-builtins with no `.ri` return type,
-/// so their calls compile to a `FunctionCall` typed `Scalar[m]` / `Int` rather
-/// than `Type::Point`. `Type::ScalarParam(_)` is the same shape with an
-/// unresolved dimension (see [`arg_type_is_unverifiable`]'s closing note).
+/// Its membership is exactly what the `matches!` below says: `Type::Int`, ANY
+/// `Type::Scalar { .. }` — dimensioned or not, the match is dimension-BLIND —
+/// and `Type::ScalarParam(_)`, a scalar shape whose DIMENSION is unresolved
+/// rather than absent (see [`arg_type_is_unverifiable`]'s closing note). Read
+/// the membership off the predicate, never off an example.
+///
+/// This is a SHARED helper, and each call site states its own reason for wanting
+/// it: the `Point` arm (below), the `Matrix`/`Tensor` arm, and
+/// `list_bottoms_out_numeric`. Notably the `Matrix`/`Tensor` arm wants the
+/// `Type::Scalar { .. }` leg for rank-0 scalar equivalence (Rules 2a/2b), where
+/// the arg is a REAL dimensioned scalar and not a placeholder at all — so
+/// narrowing this predicate to `Int | ScalarParam` to suit the `Point` arm
+/// would break that accept. Any claim about which args "survive" belongs to a
+/// call site's own branch, not here.
+///
+/// `point3(…)` / `point2(…)` are NOT among the `Point` arm's placeholder inputs:
+/// they carry a real `Type::Point` and take that arm's OTHER branch. Ruled once,
+/// in the *Point / Vector quantity-slot convention* section of
+/// `crates/reify-core/src/ty.rs`.
 ///
 /// Deliberately NOT `type_compat.rs::is_scalar_like_leaf`, which also admits
 /// `Bool`, `String`, `Enum`, `StructureRef`, `TraitObject` and `Geometry` — that
@@ -1678,7 +1693,13 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         //     "Point / Vector quantity-slot convention" section of
         //     `crates/reify-core/src/ty.rs`, deliberately not restated here).
         //   • Scalar-like numeric args, as the expression compiler's
-        //     numeric-fallback placeholder for point-producing builtins.
+        //     numeric-fallback placeholder. NOTE this does NOT cover
+        //     `point3(…)` / `point2(…)`, which carry a real `Type::Point` and
+        //     take the branch ABOVE (ruled in the ty.rs section named just
+        //     above). What arrives here is everything [`is_numeric_placeholder_leaf`]
+        //     matches: `Type::Int`, ANY `Type::Scalar { .. }` (dimensioned or
+        //     not — the match is dimension-blind, so a scalar-returning call
+        //     such as `abs(-5kg)` lands here too), and `Type::ScalarParam(_)`.
         //
         // The placeholder predicate is deliberately NARROW — see
         // [`is_numeric_placeholder_leaf`] (`Int | Scalar | ScalarParam`).
@@ -1694,17 +1715,37 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         // `Type::Point`, this arm structurally cannot be reached by a `String` /
         // `Bool` / `Int` / `Real` param, so that hazard is dissolved by
         // construction. It also covers the `let p = point3(…); Anchor(origin: p)`
-        // shape, which an arg-side skip would MISS: the placeholder type
-        // propagates through the value cell and only the type-level walker sees
-        // the resulting `ValueRef`.
+        // shape, which an arg-side skip would MISS: only the type-level walker
+        // sees the resulting `ValueRef`. That shape reaches this SAME arm by a
+        // second route — a persisted `Type::Point` on the value cell rather than
+        // a `FunctionCall`'s inferred `result_type` — and the rule below fires
+        // through it exactly as it does for a direct call. Pinned by
+        // `point3_cross_dimension_via_let_at_dimensioned_point_param_warns_arg_type_mismatch`
+        // (`struct_ctor_field_conformance_tests.rs`); this claim is not carried
+        // by prose alone.
         //
-        // THE BOUNDED, DELIBERATE COST: a bare numeric literal at a Point slot
-        // (`Anchor(origin: 5)`) stays silent. That is identical in kind to the
-        // pre-existing `Type::Geometry` placeholder exclusion (geometry
-        // constructors compile to a dimensionless-scalar placeholder, GHR-γ).
-        // The tolerance can be tightened to a FunctionCall-shaped check once
-        // `point3` carries a real return type — tracked by the family-5 /
-        // placeholder follow-up filed with this task.
+        // THE BOUNDED, DELIBERATE COST, at its true size: ANY scalar-family
+        // arg at a Point slot stays silent. That is a bare numeric literal
+        // (`Anchor(origin: 5)`), but ALSO a scalar carrying the WRONG dimension
+        // (`Anchor(origin: 5kg)` at `Point3<Length>`) and a scalar-returning
+        // call (`Anchor(origin: abs(-5kg))`) — all measured silent, and pinned
+        // respectively by `bare_numeric_literal_at_point_param_stays_clean`,
+        // `dimensioned_scalar_at_point_param_stays_clean` and
+        // `scalar_returning_call_at_point_param_stays_clean`. Note `5kg` at a
+        // `Scalar<Length>` slot IS rejected; the asymmetry is the cost.
+        //
+        // The placeholder EXCLUSION is a standing ruling, identical in kind to
+        // the pre-existing `Type::Geometry` one (geometry constructors compile
+        // to a dimensionless-scalar placeholder, GHR-γ).
+        //
+        // OPEN ITEM, still live: tightening the dimensioned legs — e.g. a
+        // `FunctionCall`-shaped check, or consulting the quantity slot for a
+        // concrete `Type::Scalar { .. }`. Task 5344 removed `point3(…)` from
+        // this branch but did NOT empty it of `FunctionCall`-shaped or
+        // dimensioned inputs, so that narrowing is as available and as
+        // motivated as it was before. It must be argued from the membership set
+        // above, and it cannot be done by narrowing the shared predicate, which
+        // the `Matrix`/`Tensor` rank-0 accept also depends on.
         //
         // That bounded cost is UNCHANGED by task 5766's quantity rule — see the
         // `else` branch below for why.
@@ -1714,17 +1755,29 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
                     Type::Point { n: param_n, .. } => param_n == arg_n,
                     _ => true, // unreachable: outer arm guards param_type as Type::Point
                 },
-                // Numeric-fallback placeholder for point-producing builtins.
+                // Numeric-fallback placeholder: `Int`, ANY `Scalar { .. }`
+                // (dimension-blind) or `ScalarParam(_)`. NOT `point3(…)` /
+                // `point2(…)`, which match the arm above. Pinned by
+                // `bare_numeric_literal_at_point_param_stays_clean` and
+                // `dimensioned_scalar_at_point_param_stays_clean`.
                 other => is_numeric_placeholder_leaf(other),
             };
             if !is_conforming {
                 emit_arg_type_mismatch(param_type, arg_ty, ctx);
             } else {
                 // QUANTITY SLOT (task 5766, param side ruled task 6159) — rule:
-                // `crates/reify-core/src/ty.rs`; applied after the arity check. The
-                // `is_numeric_placeholder_leaf` branch carries no slot and so stays
-                // dimension-blind, which is the branch every real corpus
-                // `point3(…)` arg takes.
+                // `crates/reify-core/src/ty.rs`; applied after the arity check.
+                //
+                // A real corpus `point3(…)` arg reaches this check via the
+                // `Type::Point { .. }` branch above, carrying a genuine quantity
+                // slot, and IS compared here — measured in both directions by
+                // `point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch`
+                // (dimensions disagree ⇒ one `ArgTypeMismatch`) and
+                // `point3_dimensionless_at_dimensioned_point_param_stays_clean`
+                // (arg names no dimension ⇒ silent, the arg-side tolerance), both
+                // in `struct_ctor_field_conformance_tests.rs`. The placeholder
+                // branch above does carry no slot and stay dimension-blind, but
+                // it is not where those args go.
                 emit_if_quantity_conflict(param_type, arg_ty, ctx);
             }
         }
@@ -1988,16 +2041,19 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 /// placeholder/erasure/missing-coercion rationale below is still why those arms
 /// are shape-based rather than `type_compatible`-based:
 ///
-/// * `point3(0m, 0m, 0m)` is a `FunctionCall` whose result_type is the numeric
-///   fallback `Scalar[m]`, never `Type::Point`;
 /// * an analytical `field def` erases both slots to `Field<Real, Real>` whatever
 ///   its declaration says;
 /// * a nested list literal is the idiomatic `Matrix3x3` spelling but compiles to
 ///   `List<List<Real>>`, for which no `List`→`Matrix` coercion arm exists.
 ///
+/// No erasure route runs through `point3(…)` / `point2(…)`; the `Point` arm stays
+/// shape-based for the reasons the arm itself states. What the arg-side tolerance
+/// rests on now is ruled once, in the *Point / Vector quantity-slot convention*
+/// section of `crates/reify-core/src/ty.rs`.
+///
 /// But "unverifiable SLOTS" is not the same as "unverifiable FAMILY", and the
-/// families themselves are now checked. For the two placeholder families this is
-/// the same class the `Type::Geometry` exclusion below and
+/// families themselves are now checked. For the remaining placeholder families
+/// this is the same class the `Type::Geometry` exclusion below and
 /// [`promote_function_call_to_structure_ref`] already exist for.
 ///
 /// # Deliberately excluded, with evidence
@@ -7513,13 +7569,28 @@ mod tests {
     /// arg whose quantity slot names a CONCRETE dimension different from the
     /// param's is exactly one `ArgTypeMismatch`.
     ///
-    /// **Why this is an in-module unit test and not a `.ri` fixture.**
-    /// `resolve_parameterized_builtin_type` recognises `Point3` only, and
-    /// `point3(…)` is an eval-builtin with no `.ri` return type — its calls
-    /// compile to a `Scalar[m]` / `Int` placeholder. No `.ri` source can
-    /// therefore produce a *dimensioned* `Type::Point` arg, so the `Type` is
-    /// constructed directly, exactly as the adjacent arity and dimensionless
-    /// probes do (see `struct_ctor_field_conformance_tests.rs`'s own note on this).
+    /// Constructed as a direct `Type` so the probe reaches the walker without
+    /// depending on `math_fn_result_type`'s first-argument quantity inference
+    /// (task 5889's to change) — NOT because a `.ri` source cannot produce a
+    /// dimensioned `Type::Point` arg. That older premise expired when task 5344
+    /// (`3c4ee5e9ac`) claimed `point3` / `point2` into the math construction
+    /// family; it must not be re-asserted.
+    ///
+    /// The `.ri` twin of this exact cell is
+    /// `point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch`
+    /// (`struct_ctor_field_conformance_tests.rs`, ctor path, `Severity::Warning`).
+    /// Pinning BOTH seams matters because they reach this arm by different
+    /// routes — a hand-built `Type` here, versus a `FunctionCall`'s inferred
+    /// `result_type` there — so this probe holds the walker's rule whatever the
+    /// inference chain does, while only the `.ri` fixture would notice that
+    /// chain ceasing to produce a dimensioned `Type::Point` at all. This is the
+    /// same two-seams shape `vector_param_rejects_cross_dimension_vector_arg`
+    /// states one arm over.
+    ///
+    /// The value-cell route (`let p = point3(…); Anchor(origin: p)`) is a THIRD
+    /// entry point and NOTHING here stands in for it — this probe builds no
+    /// `CompiledExpr` at all. It is pinned by its own fixture,
+    /// `point3_cross_dimension_via_let_at_dimensioned_point_param_warns_arg_type_mismatch`.
     ///
     /// The complement of `point_param_accepts_dimensionless_point_arg` directly
     /// above: that one pins the TOLERANT half (either side declines to name a
@@ -7551,9 +7622,9 @@ mod tests {
     /// The `.ri` seam for the same rule is
     /// `vec3_cross_dimension_at_dimensioned_vector_param_warns_arg_type_mismatch`
     /// in `struct_ctor_field_conformance_tests.rs`. Pinning BOTH seams matters
-    /// because they reach the arm by different routes — a `ValueRef` carrying a
-    /// persisted `Type::Vector` here, versus a `FunctionCall`'s inferred
-    /// `result_type` there — and only the type-level walker sees the former.
+    /// because they reach the arm by different routes — a hand-built `Type`
+    /// here, versus a `FunctionCall`'s inferred `result_type` there — so this
+    /// probe holds the walker's rule whatever the inference chain does.
     ///
     /// The code assertion is the load-bearing half: a quantity conflict must
     /// route to `ArgTypeMismatch`, NOT to this arm's bespoke
@@ -7883,9 +7954,10 @@ mod tests {
     /// NOT because a `.ri` source cannot produce a dimensioned `Type::Point` arg.
     /// That older premise expired when task 5344 (`3c4ee5e9ac`) claimed
     /// `point3` / `point2` into the math construction family; it must not be
-    /// re-asserted. Rule, the measured `.ri`-level cells, and the surviving stale
-    /// sites task 6436 owns: the "Point / Vector quantity-slot convention"
-    /// section of `crates/reify-core/src/ty.rs`.
+    /// re-asserted. Rule and the measured `.ri`-level cells: the "Point / Vector
+    /// quantity-slot convention" section of `crates/reify-core/src/ty.rs`. The
+    /// stale sites that section used to point at were corrected by task 6436;
+    /// there are none outstanding.
     ///
     /// The `.ri` twin of this exact cell is
     /// `point3_dimensioned_at_dimensionless_point_param_warns_arg_type_mismatch`
@@ -8127,15 +8199,36 @@ mod tests {
     /// Arity leg of the `Type::Point` arm (task 5465, family 1): a `Point{n:2}`
     /// arg against a `Point3<Length>` param is exactly one `ArgTypeMismatch`.
     ///
-    /// **Why this is an in-module unit test and not an integration probe in
-    /// `struct_ctor_field_conformance_tests.rs` (where the other four Point
-    /// probes live).** The surface language has no `Point2` spelling —
-    /// `resolve_parameterized_builtin_type` recognises `Point3` only
-    /// (`type_resolution.rs:3192`) — so no `.ri` source can produce a
-    /// `Type::Point { n: 2, .. }` arg and the arity rule is unreachable from
-    /// inline-source fixtures. Constructing the `Type` directly is the only way
-    /// to pin it. Sibling of `vector_param_rejects_wrong_arity_vector_arg`,
-    /// which exists for the same reason.
+    /// **The param-side asymmetry, and what does NOT follow from it.** The
+    /// surface language has no `Point2` PARAM spelling:
+    /// `resolve_parameterized_builtin_type` recognises `Point3` only — its arms
+    /// are `"Point3" if type_args.len() == 1` (`type_resolution.rs`, two sites),
+    /// with no `"Point2"` arm anywhere. That is why this probe's param type is
+    /// `Point3<Length>` and why the `.ri` twin's param must be spelled the same
+    /// way. It does NOT follow that the arity rule is unreachable from
+    /// inline-source fixtures — a param spelling constrains PARAMS, not ARGS,
+    /// and that inference must not be re-asserted over the arg side. The `.ri`
+    /// twin named below carries the detail.
+    ///
+    /// The arity leg IS now pinned from `.ri` source, by
+    /// `point2_arg_at_point3_param_warns_arity_arg_type_mismatch`
+    /// (`struct_ctor_field_conformance_tests.rs`). This probe stays as the
+    /// direct-`Type` seam of the same pair the cross-dimension probe above
+    /// describes: constructed directly so it reaches the walker without
+    /// depending on `math_fn_result_type`'s name-suffix `n` inference (task
+    /// 5889's to change), while the `.ri` fixture is the one that would notice
+    /// that inference ceasing to produce a `Type::Point { n: 2, .. }` at all.
+    ///
+    /// Sibling of `vector_param_rejects_wrong_arity_vector_arg`, which is also a
+    /// direct-`Type` arity probe — note its own doc claims no erasure premise,
+    /// so nothing there needs the correction this block carries. The `Vector`
+    /// arm has the same asymmetry (no `Vector2` param spelling; `vec2` claimed
+    /// into the same collapsed arm by 5344) and now has the matching `.ri` twin,
+    /// `vec2_arg_at_vector3_param_warns_arity_type_not_conforming`. The two
+    /// arms' arity legs differ in EMITTER, not in reachability: `Point` routes
+    /// arity through `emit_arg_type_mismatch`, `Vector` keeps its bespoke
+    /// `TypeNotConformingToVector`, and each `.ri` twin asserts its own code so
+    /// the split cannot drift.
     #[test]
     fn point_param_rejects_wrong_arity_point_arg() {
         let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
