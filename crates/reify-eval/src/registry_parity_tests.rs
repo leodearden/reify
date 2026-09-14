@@ -354,3 +354,77 @@ fn classify_undef_against_error_type_is_vacuous() {
         ParityVerdict::Vacuous
     );
 }
+
+// ── the probe itself must be well-formed before it can blame a row ──────────
+
+/// Every row's representative arguments must be a well-formed probe for THAT
+/// row, checked five ways.
+///
+/// This test exists so that a defective probe fails AT THE PROBE instead of
+/// being misattributed to the row under test. Without it, the most likely
+/// authoring mistake — arguments of the wrong count or wrong shape — reaches
+/// the kernel, the kernel's own guard yields `Value::Undef`, and the sweep
+/// reports the row `Vacuous` for a reason that has nothing to do with the row's
+/// signature. The harness would then be accusing the registry of a fault in
+/// this file.
+#[test]
+fn representative_args_are_well_formed_for_every_row() {
+    for (id, row) in eval_builtin_rows() {
+        let (values, types) = representative_args(id);
+
+        // (a) the two halves are one list of pairs, spelled as two lists.
+        assert_eq!(
+            values.len(),
+            types.len(),
+            "{:?}: representative_args returned {} value(s) but {} type(s)",
+            id,
+            values.len(),
+            types.len()
+        );
+
+        // (b) the kernel must actually run. `helpers::{unary,binary}` return
+        // Value::Undef on the wrong argc (reify-stdlib/src/helpers.rs:7-20),
+        // so a mis-counted probe reads as Vacuous with no bearing on the row.
+        assert!(
+            row.arity.matches(values.len()),
+            "{:?}: {} representative arg(s) do not match the row's declared \
+             arity {:?} — the kernel would short-circuit to Value::Undef and \
+             the sweep would blame the row for this file's mistake",
+            id,
+            values.len(),
+            row.arity
+        );
+
+        // (c) one probe argument per declared slot.
+        assert_eq!(
+            values.len(),
+            row.arg_slots.len(),
+            "{:?}: {} representative arg(s) against {} declared arg_slots",
+            id,
+            values.len(),
+            row.arg_slots.len()
+        );
+
+        // (d) each pair is internally consistent under the SAME oracle the
+        // verdict uses, so a value typed as something it is not cannot make a
+        // row look like it diverges.
+        for (i, (value, ty)) in values.iter().zip(types.iter()).enumerate() {
+            assert!(
+                crate::value_type_kind_matches(value, ty, None),
+                "{id:?}: representative arg {i} is mis-paired — its Value \
+                 does not satisfy the Type this probe claims for it \
+                 ({value:?} vs {ty:?})"
+            );
+        }
+
+        // (e) the row's own resolver must accept the probe's static types. An
+        // ArgAware resolver answering None means the probe is mis-shaped for
+        // the row, which would otherwise surface as an unexplained skip.
+        assert!(
+            row.result.resolve(&types).is_some(),
+            "{id:?}: the row's ResultSpec declined the probe's arg types \
+             {types:?}, so this probe cannot produce a declared type to \
+             compare against"
+        );
+    }
+}
