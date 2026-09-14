@@ -2,7 +2,9 @@ use reify_ast::ImportKind;
 use reify_core::{ModulePath, SourceSpan};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
-use crate::analysis::{enclosing_decl_at, find_named_member_span, module_name_from_uri};
+use crate::analysis::{
+    enclosing_decl_at, find_named_member_span, module_name_from_uri, name_token_span,
+};
 use crate::convert::{find_word_at_offset, position_to_offset, span_to_range};
 
 /// Compute go-to-definition for the symbol at the given position.
@@ -234,7 +236,10 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 
 /// Scan an already-parsed module for the name-token span of the declaration
 /// named `name`, returning the byte [`SourceSpan`] of just the NAME identifier
-/// (located via [`find_name_offset_in_decl`]).
+/// (located via [`crate::analysis::name_token_span`], which matches
+/// whole-word and only within the declaration's own span — a declaration span
+/// starts at its keyword, so an unbounded substring search finds the `s` of
+/// `structure` before the `s` of `structure s`).
 ///
 /// Takes `&ParsedModule` rather than `&str` so a caller that needs more than one
 /// declaration shape pays for exactly one parse; `source` is still required
@@ -271,34 +276,10 @@ fn decl_name_span_in(
         };
         if decl_name == name {
             // Point to the name within the declaration, not the entire span.
-            // Find the name's byte position within the declaration text.
-            let name_offset = find_name_offset_in_decl(source, span.start, name);
-            return Some(SourceSpan::new(name_offset, name_offset + name.len() as u32));
+            return Some(name_token_span(source, span, name));
         }
     }
     None
-}
-
-/// Find the byte offset of a declaration's name within the source.
-///
-/// Searches from `decl_start` forward for the name string, returning its offset.
-/// Falls back to `decl_start` if not found (shouldn't happen for valid declarations).
-fn find_name_offset_in_decl(source: &str, decl_start: u32, name: &str) -> u32 {
-    // Clamp to source length to prevent out-of-bounds panic.
-    let mut start = (decl_start as usize).min(source.len());
-
-    // Snap forward to the next valid UTF-8 character boundary if we
-    // landed mid-character (e.g., on a continuation byte 0x80..0xBF).
-    // This mirrors the pattern in offset_to_position (convert.rs:11-18).
-    while start < source.len() && !source.is_char_boundary(start) {
-        start += 1;
-    }
-
-    if let Some(rel_offset) = source[start..].find(name) {
-        (start + rel_offset) as u32
-    } else {
-        decl_start
-    }
 }
 
 #[cfg(test)]
@@ -1011,44 +992,10 @@ mod tests {
         );
     }
 
-    // --- find_name_offset_in_decl robustness tests (step-16: panic_on_invalid_span) ---
-
-    #[test]
-    fn find_name_offset_decl_start_exceeds_source_len() {
-        // (a) decl_start=100 but source is only 20 bytes — must not panic.
-        let source = "structure Foo { }"; // 17 bytes
-        let result = find_name_offset_in_decl(source, 100, "Foo");
-        // Should fall back to decl_start since the slice is invalid
-        assert_eq!(result, 100);
-    }
-
-    #[test]
-    fn find_name_offset_decl_start_on_continuation_byte() {
-        // (b) decl_start lands on a UTF-8 continuation byte — must not panic.
-        // "aéb" = [0x61, 0xC3, 0xA9, 0x62], byte 2 is continuation byte 0xA9
-        let source = "a\u{00E9}b Foo";
-        // source = [0x61, 0xC3, 0xA9, 0x62, 0x20, 0x46, 0x6F, 0x6F]
-        //           a     é(1)  é(2)  b     ' '   F     o     o
-        // decl_start=2 is the continuation byte
-        let result = find_name_offset_in_decl(source, 2, "Foo");
-        // Should snap forward and find "Foo" at byte 5
-        assert_eq!(result, 5);
-    }
-
-    #[test]
-    fn find_name_offset_decl_start_exactly_source_len() {
-        // (c) decl_start is exactly source.len() (empty trailing slice) — must not panic.
-        let source = "structure Foo { }";
-        let len = source.len() as u32; // 17
-        let result = find_name_offset_in_decl(source, len, "Foo");
-        // Should fall back to decl_start since there's nothing after
-        assert_eq!(result, len);
-    }
-
     #[test]
     fn find_declaration_in_source_with_multibyte_before_decl() {
         // End-to-end: target source has multi-byte chars before a structure declaration.
-        // Parser should still find the declaration, and find_name_offset_in_decl
+        // Parser should still find the declaration, and the name-token locator
         // should handle any tricky offsets gracefully.
         let target_source =
             "// comment with é accent\nstructure Widget {\n    param size: Length = 5mm\n}";
