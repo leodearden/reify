@@ -1290,4 +1290,42 @@ mod tests {
             "the shared helper must not resolve type aliases (rename safety)"
         );
     }
+
+    /// A SHORT declaration name must resolve to the declaration's NAME token,
+    /// never to a character inside the leading keyword.
+    ///
+    /// Every declaration span starts at its keyword (`structure`, `fn`, `enum`,
+    /// `trait`, `occurrence def`), and the grammar admits one-character
+    /// identifiers, so a locator that is not whole-word matches the `s` of
+    /// `structure` before the `s` of `structure s`. The resulting span reaches
+    /// the `references.rs` rename write path, where it rewrites byte 0 of the
+    /// user's file.
+    #[test]
+    fn find_declaration_name_span_short_name_is_name_token_not_keyword_prefix() {
+        // (source, name, byte offset of the NAME token)
+        let rows: &[(&str, &str, u32)] = &[
+            ("structure s {\n}\n", "s", 10),
+            ("fn n() -> Scalar {\n    1\n}\n", "n", 3),
+            ("enum e {\n    A,\n}\n", "e", 5),
+            ("trait t {\n}\n", "t", 6),
+            ("occurrence def o {\n}\n", "o", 15),
+            // Control: a name that cannot occur inside its keyword already works.
+            ("structure Widget {\n}\n", "Widget", 10),
+        ];
+
+        for (source, name, name_offset) in rows {
+            let expected = SourceSpan::new(*name_offset, name_offset + name.len() as u32);
+            assert_eq!(
+                &source[expected.start as usize..expected.end as usize],
+                *name,
+                "fixture is wrong: offset {name_offset} in {source:?} is not {name:?}"
+            );
+            assert_eq!(
+                find_declaration_name_span(source, name),
+                Some(expected),
+                "declaration name {name:?} in {source:?} must resolve to its own \
+                 NAME token, not to a character inside the leading keyword"
+            );
+        }
+    }
 }
