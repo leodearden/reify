@@ -21,10 +21,8 @@ use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
 /// Iterates entity-style top-level declarations (Structure, Occurrence,
 /// Trait, Purpose) and hands every `MemberDecl::Sub` to
 /// [`walk_specialization_scope_members`], which owns the decision of whether
-/// that sub opens a spec §8.7 specialization scope at all — a non-keyed
-/// `body`, or one scope per `keyed_members[]` entry, or (bare instantiation /
-/// collection / bare-colon-no-body) none. It itself recurses into nested
-/// specialization scopes and `where { … } else { … }` branches.
+/// that sub opens a spec §8.7 specialization scope at all. It itself recurses
+/// into nested specialization scopes and `where { … } else { … }` branches.
 ///
 /// For each member visited inside a specialization scope, if
 /// [`forbidden_decl_info`] returns `Some((kind, name, span))`, an
@@ -138,15 +136,13 @@ where
 /// Recursively scan a member list for every `MemberDecl::Sub`, invoking
 /// [`walk_specialization_scope_members`] on each one.
 ///
-/// The scope-root decision is deliberately NOT made here — it is delegated to
-/// the walker, which walks a non-keyed `body`, or every keyed entry's
-/// overrides, or nothing at all for a bare instantiation / collection /
-/// bare-colon-no-body sub. One crate owning that decision is what stopped a
-/// keyed sub from being invisible to this pass: this function used to re-derive
-/// it as `body.is_some()`, which is false by construction for the keyed form
-/// (task 6958). Dropping the guard is observably identical for every non-keyed
-/// shape — a sub with no overrides previously fell through to `_ => {}` and now
-/// reaches a walker that visits nothing.
+/// The scope-root decision is deliberately NOT made here: every
+/// `MemberDecl::Sub` goes to [`walk_specialization_scope_members`], which owns
+/// it. This function used to re-derive it as `body.is_some()` — false by
+/// construction for the keyed form, which is how a keyed sub stayed invisible
+/// to this pass until task 6958. Dropping that guard is observably identical
+/// for every non-keyed shape: a sub with no overrides previously fell through
+/// to `_ => {}` and now reaches a walker that visits nothing.
 ///
 /// We descend into `MemberDecl::GuardedGroup.{members, else_members}` so a
 /// specialization scope that lives inside a top-level
@@ -154,12 +150,11 @@ where
 /// shadow_lint.rs:39-43 — guarded-group branches are siblings in the
 /// enclosing scope).
 ///
-/// We do NOT descend into a sub's overrides here — neither the `body` shape nor
-/// the keyed one — that is the job of [`walk_specialization_scope_members`]
-/// itself (which recurses through nested specialization scopes and inner
-/// guarded groups under the same depth bound). Splitting the responsibility
-/// keeps the outer "find scope roots" pass distinct from the inner "walk a
-/// scope's members" pass.
+/// We do NOT descend into a sub's overrides here — that is the job of
+/// [`walk_specialization_scope_members`] itself (which recurses through nested
+/// specialization scopes and inner guarded groups under the same depth bound).
+/// Splitting the responsibility keeps the outer "find scope roots" pass
+/// distinct from the inner "walk a scope's members" pass.
 fn find_specialization_scopes<F>(members: &[MemberDecl], visitor: &mut F, depth: usize)
 where
     F: FnMut(&MemberDecl),

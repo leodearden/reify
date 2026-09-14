@@ -359,10 +359,16 @@ pub struct KeyedSubMemberEntry {
 
 /// `sub mount_hole = Hole(diameter: 6mm)` or `sub part = Box<Bolt>()`
 ///
-/// Specialization-scope body (`sub motor : T { ... }`) is represented by
-/// `body: Some(...)`; `None` means a bare instantiation or collection form.
-/// The `Some(_)` discriminator IS the spec §8.7 specialization-scope flag —
-/// see `walk_specialization_scope_members` for the traversal contract.
+/// A sub carries its spec §8.7 specialization overrides in one of two mutually
+/// exclusive shapes: `body: Some(members)` (`sub motor : T { … }`), or one
+/// `keyed_members[].overrides` list per key. `body: None` therefore does NOT
+/// mean "no specialization scope" — it is also the keyed form.
+///
+/// [`walk_specialization_scope_members`] is the single discriminator for "does
+/// this sub open a specialization scope?", and the traversal contract for both
+/// shapes. Do not re-derive it from a field test: `body.is_some()` is false by
+/// construction for the keyed form, which is exactly how a keyed sub stayed
+/// invisible to the compiler's §8.7 check until task 6958.
 #[derive(Debug, Clone)]
 pub struct SubDecl {
     pub name: String,
@@ -371,8 +377,10 @@ pub struct SubDecl {
     pub args: Vec<(String, Expr)>,
     pub is_collection: bool,
     pub where_clause: Option<WhereClause>,
-    /// Members of a specialization-scope body, when this `sub` opens one.
-    /// `None` for bare instantiation, collection, or bare-colon-no-body forms.
+    /// Members of the NON-KEYED specialization body, when this `sub` opens
+    /// one. `None` for the keyed form (see `keyed_members`) as well as for the
+    /// bare instantiation, collection, and bare-colon-no-body forms — so
+    /// `is_none()` is not a "opens no specialization scope" test.
     ///
     /// Both the grammar (task 3569) and the CST→AST lowering (task 3571) are
     /// wired. `param_assignment` nodes inside the body are currently dropped
@@ -822,19 +830,11 @@ fn sub_override_bodies(sub: &SubDecl) -> impl Iterator<Item = &[MemberDecl]> {
 
 /// Visit every member of a specialization-scope body (spec §8.7).
 ///
-/// A `SubDecl` opens a specialization scope in either of two shapes, and this
-/// walker iterates the members of each, invoking `visitor` on every one:
-///   * a non-keyed `body` — `sub p : Foo { … }`, one scope; or
-///   * one scope per `keyed_members[]` entry — `sub p : Foo { "a" => { … } }`.
-///
-/// A keyed entry's overrides IS a specialization body, not merely body-like:
-/// the CST node kind of the entry's `overrides` field is literally
-/// `specialization_body`, and `lower_sub` lowers it with the same
-/// `lower_specialization_body_members` it uses for the non-keyed `body`. Per
-/// spec §8.7 a sub-entity instantiated within a parent body has a body that is
-/// a specialization scope, and a keyed entry instantiates one sub-entity per
-/// key. See [`sub_override_bodies`], which owns the two-form union so no caller
-/// re-derives it.
+/// One scope per override list the sub carries — its non-keyed `body`, or each
+/// `keyed_members[]` entry — with `visitor` invoked on every member of each.
+/// Why both shapes are one and the same thing under §8.7 is stated ONCE, on
+/// `sub_override_bodies` (module-private, so not linkable from here), which
+/// owns the union so no caller re-derives it.
 ///
 /// The walker is a no-op only when the sub carries NEITHER shape — a bare
 /// instantiation, a collection, or a bare-colon-no-body sub. Those open no
@@ -956,37 +956,32 @@ struct MemberRecursionSet {
 impl MemberRecursionSet {
     /// Used by [`walk_specialization_scope_members`] (spec §8.7): a sub's
     /// specialization overrides open a scope that is a child of the enclosing
-    /// one — in either shape, since a keyed entry's overrides is a
-    /// `specialization_body` too. A port body, by contrast, is forbidden
-    /// inside a specialization scope (task 2369) and so is never descended
-    /// into here.
+    /// one. A port body, by contrast, is forbidden inside a specialization
+    /// scope (task 2369) and so is never descended into here.
     const SPECIALIZATION_SCOPE: Self = Self {
         sub_overrides: true,
         port_body: false,
     };
     /// Used by `find_named_member_span_depth` (hover/goto-definition): a
     /// port-body param/let IS addressable by its bare name for these
-    /// purposes, but a sub's specialization overrides — `body` or keyed entry
-    /// alike — describe a CHILD instance, not declarations of the entity being
-    /// looked up in.
+    /// purposes, but a sub's specialization overrides describe a CHILD
+    /// instance, not declarations of the entity being looked up in.
     const NAMED_MEMBER_LOOKUP: Self = Self {
         sub_overrides: false,
         port_body: true,
     };
     /// Used by `collect_param_default_candidates` (cell-id resolution):
     /// neither a port-body param (addressed only by the composite
-    /// `<port>.<param>` name) nor a sub's specialization overrides (`body` or
-    /// keyed entry) are editable top-level cells, so neither is descended
-    /// into.
+    /// `<port>.<param>` name) nor a sub's specialization overrides are
+    /// editable top-level cells, so neither is descended into.
     const PARAM_DEFAULT_LOOKUP: Self = Self {
         sub_overrides: false,
         port_body: false,
     };
     /// Used by [`walk_all_member_bodies`] — today, `priv_redundant_lint.rs`'s
     /// E_PRIV_REDUNDANT pass, which asks "does any `let`/`constraint` anywhere
-    /// under this declaration carry `priv`?" and so may skip neither optional
-    /// body, nor either shape a sub's overrides take. Both cells `true`: the
-    /// widest set in the table above.
+    /// under this declaration carry `priv`?" and so may skip no optional body
+    /// at all. Both cells `true`: the widest set in the table above.
     const ALL_MEMBER_BODIES: Self = Self {
         sub_overrides: true,
         port_body: true,
@@ -1024,11 +1019,9 @@ where
         match member {
             // Spec §8.7 nested-sub criterion: a nested SubDecl that carries
             // specialization overrides opens its own specialization scope —
-            // descended into only when `set.sub_overrides`. Both shapes those
-            // overrides take are yielded by `sub_override_bodies`, so a keyed
-            // entry's overrides is walked exactly like a non-keyed body; the
-            // `?` still unwinds a `Break` out of every entry AND every nesting
-            // level.
+            // descended into only when `set.sub_overrides`, over every override
+            // list `sub_override_bodies` yields. The `?` keeps a `Break`
+            // unwinding out of every list AND every nesting level.
             MemberDecl::Sub(s) => {
                 if set.sub_overrides {
                     for overrides in sub_override_bodies(s) {
@@ -1176,15 +1169,12 @@ struct ParamDefaultCandidates<'a> {
 /// a deliberate feature, not a side effect of a shared recursion set.
 ///
 /// **A sub's specialization overrides are deliberately NOT traversed either** —
-/// neither the `body` shape nor the `keyed_members[].overrides` shape, both
-/// yielded by [`sub_override_bodies`]. That omission mirrors
+/// in any shape [`sub_override_bodies`] yields. That omission mirrors
 /// [`find_named_member_span`] and is the asymmetry already documented on
 /// [`walk_specialization_scope_members`]. A sub's overrides SPECIALIZE a child
 /// instance; they are not the child's own param declarations, so a default span
 /// found there would belong to a different entity than the caller's cell_id
-/// names — splicing into it would rewrite the wrong declaration. The keyed shape
-/// makes that starker still: one key's override belongs to ONE element of the
-/// keyed collection, not even to the sub as a whole.
+/// names — splicing into it would rewrite the wrong declaration.
 fn collect_param_default_candidates<'a>(
     members: &'a [MemberDecl],
     name: &str,
