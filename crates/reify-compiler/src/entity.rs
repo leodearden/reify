@@ -4214,8 +4214,9 @@ pub(crate) fn compile_entity(
                     functions,
                     trait_registry,
                 };
-                // Desugar chain into pairwise Forward connections
-                for pair in chain_decl.elements.windows(2) {
+                // Desugar chain into pairwise Forward connections. `chain_hops`
+                // owns the spec §6.2 default-port rule for both desugar sites.
+                for (source, dest) in chain_hops(&ctx, &chain_decl.elements, diagnostics) {
                     let mut acc = ConnectAccumulator {
                         constraints: &mut constraints,
                         constraint_index: &mut constraint_index,
@@ -4228,9 +4229,9 @@ pub(crate) fn compile_entity(
                     compile_connection(
                         &ctx,
                         &ConnectInput {
-                            left_expr: &pair[0],
+                            left_expr: &source,
                             operator: reify_ast::ConnectOp::Forward,
-                            right_expr: &pair[1],
+                            right_expr: &dest,
                             connector_type: None,
                             params: &[],
                             port_mappings: &[],

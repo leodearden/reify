@@ -304,6 +304,96 @@ fn endpoint_direction(ctx: &ConnectContext, port_ref: &str) -> Option<reify_core
     ctx.scope.sub_port_directions.get(sub)?.get(port).copied()
 }
 
+/// Desugar a `chain` statement's elements into one (source, destination)
+/// endpoint pair per hop, applying the spec §6.2 default-port rule.
+///
+/// An element plays two roles in a multi-hop chain: destination of the hop that
+/// arrives at it, and source of the hop that leaves it. Resolving it once per
+/// ROLE — `In` as a destination, `Out` as a source — is what makes a chain
+/// longer than two elements direction-valid: `chain a -> b -> c` becomes
+/// `a.out -> b.in` and `b.out -> c.in`, never `a.out -> b.in` followed by the
+/// `b.in -> c.in` that reading `b` one way in both roles would produce.
+///
+/// A hop is emitted only when BOTH of its endpoints resolved, so a §6.2 failure
+/// yields exactly one precise diagnostic rather than that plus a downstream
+/// "undefined port" from `compile_connection`. Both endpoints are always
+/// attempted, so an unresolvable element is reported in each role it fails in.
+pub(crate) fn chain_hops(
+    ctx: &ConnectContext,
+    elements: &[reify_ast::Expr],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<(reify_ast::Expr, reify_ast::Expr)> {
+    use reify_core::PortDirection::{In, Out};
+    elements
+        .windows(2)
+        .filter_map(|pair| {
+            let source = resolve_chain_endpoint(ctx, &pair[0], Out, diagnostics);
+            let dest = resolve_chain_endpoint(ctx, &pair[1], In, diagnostics);
+            source.zip(dest)
+        })
+        .collect()
+}
+
+/// Resolve one chain element in one role to the endpoint expression the hop
+/// should connect, per spec §6.2.
+///
+/// Four arms, in order, each answering a shape the other three must not claim:
+///
+/// (a) The element is not a port reference at all. Handed back verbatim so
+///     `compile_connection` owns the "invalid port reference" wording — this
+///     function never duplicates a diagnostic that already has a home.
+/// (b) The element names one of the ENCLOSING entity's own ports. That is what
+///     `chain a -> b -> c` over own ports has always meant, so own ports take
+///     precedence over a same-named sub; inference here would silently
+///     repoint an existing chain.
+/// (c) The element is already an explicit dotted port reference (`p1.outlet`).
+///     The designer has named the port, so inference has nothing to add — this
+///     is also the escape hatch for an element with several ports in the
+///     needed direction, which (d) refuses to guess at.
+/// (d) Otherwise the element names a sub, and its unique port in `needed` is
+///     the hop's endpoint. An indexer is stripped at the FIRST `[` because
+///     `sub_port_directions` keys on the SUB name and every element of a
+///     collection shares one child template — the same decomposition
+///     `endpoint_direction` uses.
+///
+/// A `sub_port_directions` MISS is handed back verbatim rather than diagnosed
+/// here: per that map's absence contract a miss means "not resolvable at this
+/// point in the compile", which covers both a typo (`compile_connection`'s
+/// existing undefined-port error is the right one) and a child structure
+/// declared later in the module (#7374), where today's silent pass is
+/// deliberate.
+fn resolve_chain_endpoint(
+    ctx: &ConnectContext,
+    elem: &reify_ast::Expr,
+    needed: reify_core::PortDirection,
+    _diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ast::Expr> {
+    let Some(name) = resolve_port_name(elem) else {
+        return Some(elem.clone());
+    };
+    if own_port_name(&name).is_some_and(|own| ctx.ports.iter().any(|p| p.name == own)) {
+        return Some(elem.clone());
+    }
+    if name.contains('.') {
+        return Some(elem.clone());
+    }
+    let sub = name.split_once('[').map_or(name.as_str(), |(base, _)| base);
+    let Some(child_ports) = ctx.scope.sub_port_directions.get(sub) else {
+        return Some(elem.clone());
+    };
+    let mut in_direction = child_ports.iter().filter(|(_, dir)| **dir == needed);
+    match (in_direction.next(), in_direction.next()) {
+        (Some((port, _)), None) => Some(reify_ast::Expr {
+            kind: reify_ast::ExprKind::MemberAccess {
+                object: Box::new(elem.clone()),
+                member: port.clone(),
+            },
+            span: elem.span,
+        }),
+        _ => Some(elem.clone()),
+    }
+}
+
 /// Compile a single connection (from connect statement or chain desugaring).
 pub(crate) fn compile_connection(
     ctx: &ConnectContext,
