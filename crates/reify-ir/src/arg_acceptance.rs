@@ -71,6 +71,7 @@
 //! | modify    | `fillet` radius, `chamfer` distance, `chamfer_asymmetric` `d1`/`d2`, `shell` thickness, `thicken` offset, `zone_slab` width, `offset_solid`/`offset_curve` distance (9 fields) | 5744 |
 //! | sweep     | `extrude`/`extrude_symmetric` distance, `pipe` radius (3 fields) | 5744 |
 //! | decoded value | `decode_plane` / `decode_axis` ORIGINS `ox`/`oy`/`oz`; the `nurbs_surface` control-point GRID (the SURFACE sibling of the curve poles 5658 gated) — via the decoded-value route | 5745 |
+//! | transform | `apply_transform`'s `transform` TRANSLATION triple, and `arbitrary_pattern`'s LIST-form per-element translation triples (`translation.x`/`translation.y`/`translation.z`) — via the decoded-value route | 5747 |
 //!
 //! The two **5743** rows (`primitive` + `profile`) and the two **5744** rows
 //! (`modify` + `sweep`) are the R7 **raw-`Value`** positions: unlike the
@@ -100,7 +101,59 @@
 //! to every `ArgSpec`-backed rejection emitted in `geometry_ops`, retrofitting
 //! the previously code-less Contract C sites on both of the routes that existed
 //! then. Task 5745's decoded-value route inherits the code for free, by calling
-//! the same shared `accept_length_value`.
+//! the same shared `accept_length_value`. Task 5747 (ζ) added the route's
+//! SECOND consumer, `accept_transform_to_arrays`, which shape-checks a
+//! `Value::Transform` locally and hands its translation WHOLE to
+//! `accept_length_point3` — so the transform row inherits the wording, the
+//! code, D10's `unresolved (Undef)` message and the all-failures-at-once
+//! precedence across the triple without re-deriving any of it.
+//!
+//! Three things task 5747 (ζ) deliberately LEFT STANDING, each with the reason,
+//! so task 5752's closure guard can lift them rather than rediscover them:
+//!
+//! - the two QUIET consumers of `geometry_ops`' `decompose_transform_to_arrays`
+//!   — `interferes`/`min_clearance`'s per-body `world_transform` and
+//!   `walk_templates`' `composed_world` — are GATED (that helper is now a thin
+//!   wrapper over `accept_transform_to_arrays` with a throwaway diagnostic
+//!   sink), but deliberately SILENT. They are NOT un-gated residuals. Both
+//!   already treat `None` as "identity / not decomposable → use the raw handle,
+//!   no kernel op", and both read transforms that are LENGTH BY CONSTRUCTION:
+//!   `identity_pose_transform` and `compose_pose_chain`'s seed mint
+//!   `reify_ir::Value::length(0.0)`, `frame_to_pose_transform` hard-requires
+//!   LENGTH components, and `reify_stdlib::compose_transforms` requires
+//!   `t1_dim == t2_dim` so composition preserves the dimension. A rejection
+//!   there is unreachable in production, and emitting one would DOUBLE-REPORT a
+//!   failure the pose producer has already diagnosed;
+//! - ζ's OTHER half (R12 — `affine_translate`'s `dx`/`dy`/`dz` and
+//!   `affine_map`'s `translation`) is a VALUE-layer gate living in
+//!   **reify-stdlib**. When ζ was written this module was `pub(crate)` to
+//!   reify-eval and the crate edge ran reify-eval → reify-stdlib, so R12 could
+//!   not call it and rendered its wording from a local mirror of
+//!   [`ArgRejection::message`] + [`length_spec`]. That obstacle is GONE: task
+//!   5791 (`docs/prds/v0_6/dimension-checked-readers.md` §3 Leg A) hoisted this
+//!   module into `reify-ir` — which reify-stdlib already depends on — and made
+//!   it `pub`, so reify-stdlib CAN call [`accept_arg`]. The mirror is therefore
+//!   a leftover with no remaining justification, and R12 is folded back onto
+//!   this single owner;
+//! - reify-stdlib's OWN `decompose_transform` (`crates/reify-stdlib/src/geometry.rs`)
+//!   and its consumers. Measured on ζ's final tree, they are NOT uniform, which
+//!   is why ζ did not fold them in wholesale: `affine_from_transform` DISCARDS
+//!   the translation dimension into `_dim` outright, and `transform_inverse`
+//!   propagates whatever dimension arrived through `make_dimensioned_component`.
+//!   Both are one call away from ζ's R12 gate, but neither sits on ANY route in
+//!   the research inventory
+//!   (`docs/notes/units-gating-gap-research-2026-07-28.md`), and folding them in
+//!   would widen a LEAF whose file lock is deliberately serialized against its
+//!   siblings. These two ARE a RESIDUAL — see the owner list below.
+//!
+//!   The THIRD consumer, `transform_log`, was in that list when ζ was written and
+//!   is NOT any more: **RULING #6126** (task 6126, landed 2026-08-28) dropped its
+//!   `LENGTH || DIMENSIONLESS` admission to `t_dim != TWIST_LINEAR_DIM` and gave
+//!   it a `Severity::Error` arm in `geometry::diagnose`, on the same D11 grounds
+//!   ζ argues from. The two rulings AGREE: LENGTH is the one admitted spatial
+//!   dimension on both the log↔exp seam and the affine constructors, so nothing
+//!   here is a competing narrowing. `transform_exp`'s LINEAR half went with it;
+//!   its ANGULAR half is #6080's and is still open.
 //!
 //! Contract C is NOT yet exhaustive, and this note stays open until the closure
 //! guard of task 5752 replaces it with a pointer. What remains un-gated, and
@@ -117,6 +170,15 @@
 //!   `ArgRejection` to hang a dimension-rejection code on; and the inline
 //!   non-`ArgSpec` `ArgRejection` sites (`Int`, `Point<Length>`, `Vec3`,
 //!   `Range`, `String` — including `resolve_int_value_ref`) plus Contract B.
+//!
+//! - The reify-stdlib `decompose_transform` consumers described above
+//!   (`affine_from_transform`, `transform_inverse`; `transform_log` was closed by
+//!   RULING #6126) — owned by task #5752. That task needs to OWN them explicitly
+//!   rather than assume its harness sweeps them up: its probe is
+//!   SOURCE-TEXT-DRIVEN over `reify_compiler::units::GEOMETRY_FUNCTION_NAMES` and
+//!   asserts on the resulting `CompiledGeometryOp`s, so it reaches positions that
+//!   compile down to a geometry op — and these are pure VALUE-layer stdlib
+//!   builtins that mint an `AffineMap`/`Transform` `Value` and never produce one.
 //!
 //! Deliberately NOT gated, and not a residual — the DECODED-VALUE counterparts
 //! of the unit-vector row below, each with the justification task 5752's
