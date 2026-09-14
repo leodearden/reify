@@ -516,6 +516,10 @@ pub mod constitutive;
 pub mod eigensolve;
 pub mod elements;
 pub mod error_estimator;
+// Task 7452/β: goal-oriented (dual-weighted) error estimation — bounded linear
+// functionals of the displacement field and their dual loads. PRD
+// docs/prds/v0_6/goal-oriented-error-estimation.md §5.1/§5.3, §6 C2–C6.
+pub mod qoi;
 // Task 3794: Tensegrity T1a — anchored Force-Density form-finding kernel.
 pub mod form_find;
 // Task 3795: Tensegrity T1b — free-standing Force-Density form-finding kernel.
