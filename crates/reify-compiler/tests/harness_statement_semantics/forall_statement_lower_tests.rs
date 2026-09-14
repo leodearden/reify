@@ -2634,3 +2634,172 @@ structure def S {
         );
     }
 }
+
+/// A direction error raised by a `forall`-generated connect is reported ONCE per
+/// `forall` declaration, not once per collection element (task 7195).
+///
+/// MEASURED before the fix: `module.diagnostics.len() == 3` — three
+/// byte-identical `"incompatible port directions for connect: In -> In"` errors,
+/// all three carrying the same single label `(forall_span, "incompatible
+/// directions")`. `elaborate_forall_connect` calls `compile_connection` once per
+/// element and every call passes `span: decl.span`, and the message interpolates
+/// only the two `PortDirection`s — never the port names — so the three
+/// renderings are indistinguishable. AFTER the fix: exactly 1.
+///
+/// The per-element artifacts are asserted UNCHANGED on purpose: three
+/// `CompiledConnection`s and three DISTINCT
+/// `connect_compat_vents[i].inlet_air_channel` constraints still carry the
+/// per-element identity, so semantic enforcement does not depend on the
+/// diagnostic count — and a "bail out after the first direction error" fix fails
+/// this half.
+///
+/// Fixture is `forall_connect_emits_per_element_connections`'s with
+/// `port inlet : out Air` flipped to `in Air`, which makes `v.inlet ->
+/// air_channel` an `In -> In` connection for every element.
+#[test]
+fn forall_connect_direction_error_reported_once_per_declaration() {
+    let source = r#"
+trait Air { param d : Length }
+structure def Vent {
+    port inlet : in Air { param d : Length = 5mm }
+}
+structure def S {
+    sub vents : List<Vent>
+    constraint vents.count == 3
+    port air_channel : in Air { param d : Length = 5mm }
+    forall v in vents: connect v.inlet -> air_channel
+}
+"#;
+    let module = compile_source(source);
+
+    let direction_errors: Vec<&reify_core::Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("incompatible port directions"))
+        .collect();
+    assert_eq!(
+        direction_errors.len(),
+        1,
+        "expected the forall's direction error exactly once per declaration \
+         (3 byte-identical copies before the fix, one per collection element), \
+         got {}: {:?}",
+        direction_errors.len(),
+        direction_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    // The surviving diagnostic must still be an error anchored at the source
+    // forall declaration — suppression must not re-anchor or drop the label.
+    let forall_span = find_forall_connect_span(source, "S");
+    let surviving = direction_errors[0];
+    assert_eq!(
+        surviving.severity,
+        reify_core::Severity::Error,
+        "expected the surviving direction diagnostic to stay Severity::Error, got {:?}",
+        surviving.severity
+    );
+    assert_eq!(
+        surviving.labels.len(),
+        1,
+        "expected exactly one label on the surviving direction diagnostic, got {:?}",
+        surviving.labels
+    );
+    assert_eq!(
+        surviving.labels[0].span, forall_span,
+        "expected the surviving direction diagnostic to stay anchored at the source \
+         forall span {:?}, got {:?}",
+        forall_span, surviving.labels[0].span
+    );
+
+    // Per-element artifacts are untouched: one connection per element, each with
+    // its own `connect_compat_*` constraint carrying the element index.
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S not found");
+    assert_eq!(
+        template.connections.len(),
+        3,
+        "expected 3 CompiledConnections (one per forall element) despite the \
+         collapsed diagnostic, got {}: left_ports = {:?}",
+        template.connections.len(),
+        template
+            .connections
+            .iter()
+            .map(|c| c.left_port.as_str())
+            .collect::<Vec<_>>()
+    );
+    for (i, conn) in template.connections.iter().enumerate() {
+        let expected_left = format!("vents[{}].inlet", i);
+        assert_eq!(
+            conn.left_port, expected_left,
+            "expected left_port == {:?} for element {}, got {:?}",
+            expected_left, i, conn.left_port
+        );
+        assert_eq!(
+            conn.right_port, "air_channel",
+            "expected right_port == 'air_channel' for element {}, got {:?}",
+            i, conn.right_port
+        );
+    }
+    for i in 0..3 {
+        let expected_label = format!("connect_compat_vents[{}].inlet_air_channel", i);
+        assert!(
+            template
+                .constraints
+                .iter()
+                .any(|c| c.label.as_deref() == Some(expected_label.as_str())),
+            "expected a distinct compatibility constraint labelled {:?}; \
+             the per-element failure set must stay recoverable from the template. \
+             Labels present: {:?}",
+            expected_label,
+            template
+                .constraints
+                .iter()
+                .filter_map(|c| c.label.as_deref())
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+/// Anti-over-suppression half of the task-7195 contract: per-element diagnostics
+/// that DIFFER are all reported, even when they share a label span.
+///
+/// MEASURED (before and after the fix): exactly 2 diagnostics — `"undefined port
+/// 'p' in connect statement"` and `"undefined port 'q' in connect statement"` —
+/// BOTH labelled at the same `forall` span, because `compile_connection` is
+/// anchored at `decl.span` for every element. Same span, different messages, so
+/// this pins that the suppression key is the full rendered identity of a
+/// diagnostic and not its span alone.
+#[test]
+fn forall_connect_distinct_per_element_diagnostics_are_all_reported() {
+    let source = r#"
+trait Air { param d : Length }
+structure def S {
+    port air_channel : in Air { param d : Length = 5mm }
+    forall v in [p, q]: connect v -> air_channel
+}
+"#;
+    let module = compile_source(source);
+
+    let messages: Vec<&str> = module
+        .diagnostics
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    for expected in [
+        "undefined port 'p' in connect statement",
+        "undefined port 'q' in connect statement",
+    ] {
+        assert!(
+            messages.iter().any(|m| *m == expected),
+            "expected {:?} to survive per-declaration duplicate suppression \
+             (it differs from its sibling only in the port name), got: {:?}",
+            expected,
+            messages
+        );
+    }
+}
