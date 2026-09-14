@@ -110,6 +110,8 @@
 use std::collections::HashSet;
 
 use reify_builtins::{BindingKind, BuiltinId, BuiltinRow, EvalBuiltinId, rows};
+use reify_core::Type;
+use reify_ir::Value;
 use strum::{EnumCount, IntoEnumIterator};
 
 // ── membership: derived from the row table, never declared ──────────────────
@@ -200,5 +202,89 @@ fn sweep_covers_every_eval_builtin_row() {
          {} variants in the generated sub-enum",
         swept.len(),
         EvalBuiltinId::COUNT
+    );
+}
+
+// ── the three-way verdict, unit-pinned arm by arm ───────────────────────────
+
+/// A non-`Undef` value whose kind the matcher accepts for its declared type is
+/// the only pass.
+#[test]
+fn classify_matching_kind_is_matches() {
+    assert_eq!(
+        classify(
+            &Value::Option(None),
+            &Type::Option(Box::new(Type::length()))
+        ),
+        ParityVerdict::Matches
+    );
+}
+
+/// A non-`Undef` value whose kind the matcher rejects diverges — the row's
+/// static claim and its runtime answer disagree.
+#[test]
+fn classify_mismatching_kind_is_diverges() {
+    assert_eq!(
+        classify(
+            &Value::String("12mm".to_string()),
+            &Type::Option(Box::new(Type::length()))
+        ),
+        ParityVerdict::Diverges
+    );
+}
+
+/// **The load-bearing arm.** `Value::Undef` must be `Vacuous`, never `Matches`.
+///
+/// `crate::value_type_kind_matches` accepts `Value::Undef` for ANY type
+/// unconditionally (`crates/reify-eval/src/lib.rs:313` — the Auto/no-value
+/// sentinel arm). A two-way `true`/`false` harness would therefore report a
+/// pass for every row whose eval body fell off a match arm, which is exactly
+/// the residue PRD §3 decision 12 says this harness exists to close. Three
+/// in-tree funnels reach `Undef` without any registry involvement at all, so
+/// this is not a hypothetical:
+///
+/// - `reify_stdlib::helpers::{unary, binary}` on the wrong argc
+///   (`crates/reify-stdlib/src/helpers.rs:7-20`);
+/// - `analysis::stress_invariants` on a non-3×3 tensor
+///   (`crates/reify-stdlib/src/analysis.rs:487`);
+/// - `eval_builtin`'s unresolved-name terminus
+///   (`crates/reify-stdlib/src/lib.rs:325`).
+///
+/// The type is swept deliberately rather than probed once: the point is that
+/// `Undef` is `Vacuous` for EVERY declared type, so no row can be certified by
+/// supplying one.
+#[test]
+fn classify_undef_is_vacuous_for_every_declared_type() {
+    for declared in [
+        Type::Option(Box::new(Type::length())),
+        Type::String,
+        Type::Enum("Result".to_string()),
+        Type::dimensionless_scalar(),
+        Type::List(Box::new(Type::dimensionless_scalar())),
+        Type::StructureRef("StressInvariants".to_string()),
+    ] {
+        assert_eq!(
+            classify(&Value::Undef, &declared),
+            ParityVerdict::Vacuous,
+            "Value::Undef must be Vacuous, not a pass, for declared {declared:?}"
+        );
+        assert!(
+            crate::value_type_kind_matches(&Value::Undef, &declared, None),
+            "premise of this test: the matcher itself DOES accept Undef for \
+             {declared:?}, which is why a two-way verdict would be defeated"
+        );
+    }
+}
+
+/// Both trivial-accept paths present at once: `Undef` (the value sentinel) and
+/// `Type::Error` (the type-inference poison sentinel, which
+/// `value_type_kind_matches` short-circuits to `true` before it even inspects
+/// the value). `Vacuous` must win, so the row is not certified by a pair in
+/// which neither side carries information.
+#[test]
+fn classify_undef_against_error_type_is_vacuous() {
+    assert_eq!(
+        classify(&Value::Undef, &Type::Error),
+        ParityVerdict::Vacuous
     );
 }
