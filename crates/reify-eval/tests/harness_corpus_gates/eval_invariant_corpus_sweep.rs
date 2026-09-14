@@ -47,6 +47,58 @@
 
 use crate::eval_gate_support;
 
+// ── The repo-relative shard key ────────────────────────────────────
+
+/// The repo root, resolved from this crate's manifest dir.
+///
+/// Canonicalised, so it is directly comparable with a canonicalised corpus path
+/// no matter how many `..` hops or symlinks either side carries.
+fn workspace_root() -> std::path::PathBuf {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest_dir.join("../..");
+    root.canonicalize().unwrap_or(root)
+}
+
+/// `path`, expressed relative to `root`, as the `/`-separated string used as the
+/// shard key everywhere in this file.
+///
+/// This normalisation is what makes a file's shard stable across this repo's
+/// linked worktrees: the absolute prefix, which differs per checkout, is
+/// stripped, so only the part that is genuinely the same in every checkout is
+/// hashed. Hashing a `Path`/`OsStr` directly would reintroduce that prefix and
+/// silently reassign the whole corpus per lane.
+///
+/// Canonicalising both sides, rather than hand-rolling a `..` collapser, is what
+/// resolves the hops the corpus-root joins introduce
+/// (`crates/reify-eval/../../examples/x.ri` → `examples/x.ri`) and any symlink on
+/// either side. A side that does not exist on this filesystem — a synthetic path
+/// in a test — falls back to itself, which is lexically correct for a path that
+/// carries no `..` to begin with.
+///
+/// Returns an owned `String`: the shard key is a VALUE, not a borrow into a path
+/// buffer whose lifetime a caller would then have to manage.
+fn repo_relative(path: &std::path::Path, root: &std::path::Path) -> String {
+    fn resolved(p: &std::path::Path) -> std::path::PathBuf {
+        p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
+    }
+
+    let path = resolved(path);
+    let root = resolved(root);
+    let rel = path.strip_prefix(&root).unwrap_or_else(|_| {
+        panic!(
+            "corpus path {} does not sit under the repo root {} — the shard key \
+             would carry a per-checkout prefix",
+            path.display(),
+            root.display()
+        )
+    });
+
+    rel.components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 // ── Shard keying ──────────────────────────────────────────────────
 
 /// Number of shards the corpus sweep is split across — one shard per
@@ -99,27 +151,18 @@ fn shard_of(rel_path: &str) -> usize {
 /// S1-local scaffolding: the real `corpus_files()` lands later in this file and
 /// carries its key alongside the absolute path. Until then this walk is what
 /// gives the range property below real data (299 paths today) instead of three
-/// hand-picked literals.
+/// hand-picked literals. It routes through [`repo_relative`], so there is still
+/// exactly ONE relativizer in this file.
 fn live_corpus_keys() -> Vec<String> {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let root = manifest_dir.join("../..").canonicalize().expect("workspace root");
+    let root = workspace_root();
 
     let mut files = Vec::new();
     eval_gate_support::collect_ri_files(&manifest_dir.join("tests/fixtures"), &mut files);
     eval_gate_support::collect_ri_files(&root.join("examples"), &mut files);
     files.push(root.join("tests/prd-gate/fixtures/geometry_let_selector_consumer.ri"));
 
-    files
-        .iter()
-        .map(|p| {
-            let canonical = p.canonicalize().unwrap_or_else(|e| panic!("{}: {e}", p.display()));
-            canonical
-                .strip_prefix(&root)
-                .unwrap_or(&canonical)
-                .to_string_lossy()
-                .into_owned()
-        })
-        .collect()
+    files.iter().map(|p| repo_relative(p, &root)).collect()
 }
 
 /// The headline behaviour change task #7431 makes: a corpus file's shard is a
