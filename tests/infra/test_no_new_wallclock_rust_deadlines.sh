@@ -227,89 +227,9 @@ _fixture() {
 # EXIT CODES, following grep's: 0 with records, 0 with none (grep's rc 1 means
 # "clean", not "broken"), and grep's rc >= 2 PROPAGATED, because an unreadable
 # or non-existent root must never reach the comparison looking clean.
-# ---------------------------------------------------------------------------
-_wallclock_fingerprints() {
-    # The escape token is split across two adjacent single-quoted strings so
-    # this source file holds no contiguous copy of it (see SELF-MATCH SAFETY
-    # in the header).
-    local _esc_re; _esc_re='wallcl''ock:allow'
-    local _rule_a
-    _rule_a='(Instant::now\(\)[[:space:]]*(\+|\.checked_add|[<>]=?))'
-    _rule_a="${_rule_a}"'|([<>]=?[[:space:]]*Instant::now\(\))'
-    local _rule_b
-    _rule_b='(<=?[[:space:]]*Duration::)|(Duration::[a-z_]*\([^)]*\)[[:space:]]*>)'
-    # Scalar-accessor family, composed in rather than spelled inline so the
-    # accessor list appears once instead of twice (the same composition idiom
-    # the sibling guard uses for its `_wc_var_sfx`). The `<expr>` before the
-    # accessor in the reversed alternative is deliberately narrow -- an
-    # identifier with dots -- because a blanket `.*` there would let any `>`
-    # earlier on the line (a `->` return arrow, a generic close) drag an
-    # innocent line in.
-    local _scal; _scal='(millis|micros|nanos|secs_f32|secs_f64|secs)'
-    _rule_b="${_rule_b}"'|(\.as_'"${_scal}"'\(\)[[:space:]]*<=?)'
-    _rule_b="${_rule_b}"'|(>=?[[:space:]]*[A-Za-z_][A-Za-z0-9_.]*\.as_'"${_scal}"'\(\))'
-
-    # ONE grep for the whole scan, not one [[ =~ ]] per line. The detector
-    # this replaced justified its per-line bash loop against `echo | grep` per
-    # line -- true, but it never weighed one grep for the ENTIRE scan.
-    # Measured on this tree: the bash loop over ONE ~30-file directory takes
-    # 0.518s, while this whole function over all 35 roots (1330 files, 677k
-    # lines) takes 0.108s end to end -- 0.070s of it the grep itself. The loop
-    # at that scale would cost ~30s in a gate that is supposed to be instant.
-    local _hits _rc=0
-    _hits="$(grep -rnE --include='*.rs' -e "$_rule_a" -e "$_rule_b" -- "$@")" || _rc=$?
-    [ "$_rc" -le 1 ] || return "$_rc"
-
-    # Escape filtering is its own pass for the same reason: it is one fork,
-    # not one per line. rc 1 here means "every hit was escaped", which is a
-    # clean result, so only rc >= 2 propagates.
-    local _kept _krc=0
-    _kept="$(printf '%s' "$_hits" | grep -vE "$_esc_re")" || _krc=$?
-    [ "$_krc" -le 1 ] || return "$_krc"
-    [ -n "$_kept" ] || return 0
-
-    local _m _p _rest _text
-    while IFS= read -r _m; do
-        # NEVER a colon field-split. `awk -F:`/`cut -d: -f3` would cut inside
-        # Rust's `::` and emit `Instant  now()` for a line containing
-        # `Instant::now()` -- a fingerprint that can never match its own
-        # source line again (fixture 4a-1; found by dry-running the generator).
-        # Two anchored prefix strips take exactly the path and the line
-        # number, leaving every later colon untouched by construction.
-        _p="${_m%%:*}"       # path: up to the FIRST colon
-        _rest="${_m#*:}"     # drop the path
-        _text="${_rest#*:}"  # drop the line number; all later colons survive
-
-        # Trim in bash rather than forking sed per line. A single stream `sed`
-        # is not an option: it would have to tell the ` :: ` separator apart
-        # from a `::` in the source text, and the separator does not exist yet
-        # at that point.
-        _text="${_text#"${_text%%[![:space:]]*}"}"
-        _text="${_text%"${_text##*[![:space:]]}"}"
-
-        printf '%s :: %s\n' "$_p" "$_text"
-
-    # PLAIN `sort`, NEVER `sort -u`, HERE OR ANYWHERE DOWNSTREAM -- and this is
-    # a deliberate divergence from the closest precedent, crates/reify-audit's
-    # ptodo.rs::fingerprint, which collapses identical markers by design.
-    # The two baselines are different KINDS of oracle:
-    #   * ptodo's is a SUBSET oracle over deduped fingerprints (the #6859
-    #     ruling), so a second copy of an already-baselined marker is
-    #     intentionally not news.
-    #   * this one is a MULTISET oracle, so a second copy IS news. Erasing line
-    #     numbers makes the 3 copies of `while Instant::now() < deadline {` in
-    #     jcodemunch_session_live.rs byte-equal records; deduping here would let
-    #     a 4th land unseen, which is precisely a new hand-rolled deadline
-    #     arriving under cover of an old one. Section 4b pins all three cases.
-    done <<< "$_kept" | LC_ALL=C sort
-}
-
-# ---------------------------------------------------------------------------
-# _detect_rust_wallclock_deadline <dir>
 #
-# Scans all *.rs files in <dir> for hand-rolled real-clock deadlines and
-# elapsed-time upper bounds. A PHYSICAL line is a violation iff it matches
-# Rule A or Rule B and does NOT carry the escape comment.
+# THE TWO RULES, canonically -- this is the ONE copy. Both are single-physical-line
+# by construction, and both scan every line including comments.
 #
 #   Rule A  (Instant::now\(\)[[:space:]]*(\+|\.checked_add|[<>]=?))
 #           |([<>]=?[[:space:]]*Instant::now\(\))
@@ -390,16 +310,8 @@ _wallclock_fingerprints() {
 # paren-balanced macros) would be substantial complexity for zero detection
 # gain -- and would be a fresh source of bugs in a guard whose whole value is
 # being trivially auditable.
-#
-# Prints each violation as "file:lineno: <content>" to stderr.
-# Returns 1 if any violations found, 0 if none.
-#
-# Uses [[ =~ ]] per line rather than `echo | grep`, avoiding two subprocess
-# spawns per line -- the same performance rationale the sibling guard records.
 # ---------------------------------------------------------------------------
-_detect_rust_wallclock_deadline() {
-    local dir="$1"
-
+_wallclock_fingerprints() {
     # The escape token is split across two adjacent single-quoted strings so
     # this source file holds no contiguous copy of it (see SELF-MATCH SAFETY
     # in the header).
@@ -420,48 +332,107 @@ _detect_rust_wallclock_deadline() {
     _rule_b="${_rule_b}"'|(\.as_'"${_scal}"'\(\)[[:space:]]*<=?)'
     _rule_b="${_rule_b}"'|(>=?[[:space:]]*[A-Za-z_][A-Za-z0-9_.]*\.as_'"${_scal}"'\(\))'
 
-    local _found=0
-    local f
-    for f in "$dir"/*.rs; do
-        # An unmatched glob expands to the literal pattern under default
-        # shell options, so a directory with no .rs files lands here with
-        # `f` set to `<dir>/*.rs`, which is not a file. Skipping keeps an
-        # empty directory CLEAN rather than aborting under `set -euo
-        # pipefail` (fixture 2m).
-        [ -f "$f" ] || continue
+    # ONE grep for the whole scan, not one [[ =~ ]] per line. The detector
+    # this replaced justified its per-line bash loop against `echo | grep` per
+    # line -- true, but it never weighed one grep for the ENTIRE scan.
+    # Measured on this tree: the bash loop over ONE ~30-file directory takes
+    # 0.518s, while this whole function over all 35 roots (1330 files, 677k
+    # lines) takes 0.108s end to end -- 0.070s of it the grep itself. The loop
+    # at that scale would cost ~30s in a gate that is supposed to be instant.
+    local _hits _rc=0
+    _hits="$(grep -rnE --include='*.rs' -e "$_rule_a" -e "$_rule_b" -- "$@")" || _rc=$?
+    [ "$_rc" -le 1 ] || return "$_rc"
 
-        local _lineno=0
-        local _line
-        # `IFS=` and `-r` keep each line byte-exact (leading whitespace,
-        # backslashes). The `|| [ -n "$_line" ]` guard processes a final
-        # line lacking a trailing newline instead of silently dropping it.
-        while IFS= read -r _line || [ -n "$_line" ]; do
-            _lineno=$((_lineno + 1))
-            [[ "$_line" =~ $_esc_re ]] && continue
-            if [[ "$_line" =~ $_rule_a ]] || [[ "$_line" =~ $_rule_b ]]; then
-                echo "$f:$_lineno: $_line" >&2
-                _found=1
-            fi
-        done < "$f"
-    done
+    # Escape filtering is its own pass for the same reason: it is one fork,
+    # not one per line. rc 1 here means "every hit was escaped", which is a
+    # clean result, so only rc >= 2 propagates.
+    local _kept _krc=0
+    _kept="$(printf '%s' "$_hits" | grep -vE "$_esc_re")" || _krc=$?
+    [ "$_krc" -le 1 ] || return "$_krc"
+    [ -n "$_kept" ] || return 0
 
-    if [ "$_found" = "1" ]; then
-        echo "" >&2
-        echo "Each line above builds a real-clock deadline by hand, or bounds elapsed time from ABOVE." >&2
-        echo "An upper bound on elapsed time INVERTS under load: a saturated host that deschedules the" >&2
-        echo "test thread fails code that behaved perfectly. That is the flake class tasks #5143, #5422," >&2
-        echo "#5709 and #6438 each had to clean up. Try these three fixes, in this order:" >&2
-        echo "  1. Drive the budget through the WaitClock seam in watcher_tests.rs (clock.now(), " >&2
-        echo "     VirtualClock) so the assertion consumes no real time and the claim becomes exact." >&2
-        echo "  2. Delete the upper bound outright and let nextest's slow-timeout / terminate-after" >&2
-        echo "     catch a genuine hang -- that is what the two tombstones in watcher_tests.rs do." >&2
-        echo "  3. Only if the site is genuinely legitimate, annotate it on the same line with" >&2
-        echo "     '// ${_esc_re} -- <reason>'. Exactly ONE escape exists in tree today" >&2
-        echo "     (far_future_stamp in watcher_tests.rs, argued at the site); yours would be" >&2
-        echo "     the second, so state the argument where the next reader will find it." >&2
-        return 1
-    fi
-    return 0
+    local _m _p _rest _text
+    while IFS= read -r _m; do
+        # NEVER a colon field-split. `awk -F:`/`cut -d: -f3` would cut inside
+        # Rust's `::` and emit `Instant  now()` for a line containing
+        # `Instant::now()` -- a fingerprint that can never match its own
+        # source line again (fixture 4a-1; found by dry-running the generator).
+        # Two anchored prefix strips take exactly the path and the line
+        # number, leaving every later colon untouched by construction.
+        _p="${_m%%:*}"       # path: up to the FIRST colon
+        _rest="${_m#*:}"     # drop the path
+        _text="${_rest#*:}"  # drop the line number; all later colons survive
+
+        # Trim in bash rather than forking sed per line. A single stream `sed`
+        # is not an option: it would have to tell the ` :: ` separator apart
+        # from a `::` in the source text, and the separator does not exist yet
+        # at that point.
+        _text="${_text#"${_text%%[![:space:]]*}"}"
+        _text="${_text%"${_text##*[![:space:]]}"}"
+
+        printf '%s :: %s\n' "$_p" "$_text"
+
+    # PLAIN `sort`, NEVER `sort -u`, HERE OR ANYWHERE DOWNSTREAM -- and this is
+    # a deliberate divergence from the closest precedent, crates/reify-audit's
+    # ptodo.rs::fingerprint, which collapses identical markers by design.
+    # The two baselines are different KINDS of oracle:
+    #   * ptodo's is a SUBSET oracle over deduped fingerprints (the #6859
+    #     ruling), so a second copy of an already-baselined marker is
+    #     intentionally not news.
+    #   * this one is a MULTISET oracle, so a second copy IS news. Erasing line
+    #     numbers makes the 3 copies of `while Instant::now() < deadline {` in
+    #     jcodemunch_session_live.rs byte-equal records; deduping here would let
+    #     a 4th land unseen, which is precisely a new hand-rolled deadline
+    #     arriving under cover of an old one. Section 4b pins all three cases.
+    done <<< "$_kept" | LC_ALL=C sort
+}
+
+# ---------------------------------------------------------------------------
+# _detect_rust_wallclock_deadline <root>...
+#
+# REPORTING WRAPPER over _wallclock_fingerprints. It adds the human half --
+# what to DO about a violation -- and nothing else. Rule A and Rule B are
+# deliberately NOT restated here; they live with the engine above, in one copy.
+#
+# Prints each violating record to stderr, then the three sanctioned fixes in
+# the order they should be tried. Returns 1 if any violation was found, 0 if
+# none. An engine error (a missing or unreadable root) propagates as its own
+# rc >= 2 rather than being flattened into "clean".
+#
+# This function USED to be the whole guard, carrying its own copy of both
+# regexes and a per-line bash read loop over `"$dir"/*.rs`. Both are gone. The
+# regex copy went because two statements of the only thing this file knows is
+# exactly how the ratchet and the detector drift apart without either looking
+# wrong; the loop went because it was NON-RECURSIVE -- which silently misses
+# the 5 baselined sites that live in a subdirectory -- and ~400x slower than
+# one grep at the widened scope.
+# ---------------------------------------------------------------------------
+_detect_rust_wallclock_deadline() {
+    # Split across two adjacent single-quoted strings, as everywhere else in
+    # this file: a contiguous copy would annotate this very line for the
+    # sibling guard. Used only to SPELL the escape in the hint below.
+    local _esc_re; _esc_re='wallcl''ock:allow'
+
+    local _records _rc=0
+    _records="$(_wallclock_fingerprints "$@")" || _rc=$?
+    [ "$_rc" -eq 0 ] || return "$_rc"
+    [ -n "$_records" ] || return 0
+
+    printf '%s\n' "$_records" >&2
+    echo "" >&2
+    echo "Each line above builds a real-clock deadline by hand, or bounds elapsed time from ABOVE." >&2
+    echo "An upper bound on elapsed time INVERTS under load: a saturated host that deschedules the" >&2
+    echo "test thread fails code that behaved perfectly. That is the flake class tasks #5143, #5422," >&2
+    echo "#5709 and #6438 each had to clean up. Try these three fixes, in this order:" >&2
+    echo "  1. Drive the budget through the WaitClock seam in watcher_tests.rs (clock.now(), " >&2
+    echo "     VirtualClock) so the assertion consumes no real time and the claim becomes exact." >&2
+    echo "  2. Delete the upper bound outright and let nextest's slow-timeout / terminate-after" >&2
+    echo "     catch a genuine hang -- that is what the two tombstones in watcher_tests.rs do." >&2
+    echo "  3. Only if the site is genuinely legitimate, annotate it on the same line with" >&2
+    echo "     '// ${_esc_re} -- <reason>'. Exactly ONE escape exists in tree today" >&2
+    echo "     (far_future_stamp in watcher_tests.rs, argued at the site); yours would be" >&2
+    echo "     the second, so state the argument where the next reader will find it." >&2
+    return 1
 }
 
 # ---------------------------------------------------------------------------
