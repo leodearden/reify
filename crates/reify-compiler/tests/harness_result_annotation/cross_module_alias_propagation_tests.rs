@@ -1330,3 +1330,216 @@ fn seeded_unresolved_non_parametric_alias_retains_its_body() {
         "the seeded `Gq` alias must lower exactly as the direct `Zq` does"
     );
 }
+
+// ── task 6477: PARAMETRIC entity-bodied aliases across the prelude boundary ──
+//
+// The parametric register of `pub_prelude_alias_to_prelude_enum_resolves_in_
+// user_module` above. #6259 fixed the NON-parametric spelling; the parametric
+// one kept reporting `unresolved type: Gq<Real>` because
+// `resolve_type_alias_expr_with_subst`'s terminal `Named` arm resolved the body
+// against hard-coded EMPTY entity namespaces.
+//
+// This is the literal reproducer from task 6477's description, and it needs
+// BOTH halves of the fix to pass: the alias must be `pub` to cross the module
+// boundary at all, which means the def-site guard (enum-blind before #6477)
+// rejected it in the PRELUDE module before any consumer ran.
+
+/// Compile `src` as a standalone prelude module, asserting it is clean.
+fn compile_prelude(src: &str, name: &str) -> reify_compiler::CompiledModule {
+    let parsed = reify_syntax::parse(src, ModulePath::single(name));
+    assert!(
+        parsed.errors.is_empty(),
+        "[{name}] prelude parse errors: {:?}",
+        parsed.errors
+    );
+    let module = reify_compiler::compile(&parsed);
+    assert_eq!(
+        error_count(&module),
+        0,
+        "[{name}] the prelude module itself must compile cleanly — a `pub`
+         parametric alias is validated at its OWN definition site, so this is
+         where an enum-blind def-site guard fires first; got: {:?}",
+        error_messages(&module)
+    );
+    module
+}
+
+/// Compile `src` against `prelude`, asserting it is clean, and return the
+/// declared type of `D.p`.
+fn param_type_against_prelude(
+    src: &str,
+    name: &str,
+    prelude: &reify_compiler::CompiledModule,
+    context: &str,
+) -> Type {
+    let parsed = reify_syntax::parse(src, ModulePath::single(name));
+    assert!(parsed.errors.is_empty(), "[{name}] parse errors: {:?}", parsed.errors);
+    let compiled = compile_with_prelude(&parsed, std::slice::from_ref(prelude));
+    assert_eq!(
+        error_count(&compiled),
+        0,
+        "{context}; got: {:?}",
+        error_messages(&compiled)
+    );
+    entity_param_type(&compiled, "D", "p")
+}
+
+/// End-to-end headline case: a prelude declaring `enum Zq` plus
+/// `pub type Gq<T> = Option<Zq>` must make `param p : Gq<Real>` resolve in a
+/// downstream user module, identically to spelling `Option<Zq>` directly.
+///
+/// MEASURED on `main` (823502024d): `["unresolved type: Gq<Real>"]`.
+#[test]
+fn pub_prelude_parametric_alias_to_prelude_enum_resolves_in_user_module() {
+    let prelude_m = compile_prelude(
+        "enum Zq { Close, Medium }\npub type Gq<T> = Option<Zq>\n",
+        "parametric_entity_alias_prelude",
+    );
+
+    // Oracle: the same body spelled DIRECTLY, against the same prelude. This
+    // also pins that prelude ENUM names propagate at all — without it the
+    // parity assertion could pass vacuously with both sides `Type::Error`.
+    let direct_ty = param_type_against_prelude(
+        "structure def D { param p : Option<Zq> }",
+        "parametric_entity_alias_user_direct",
+        &prelude_m,
+        "DIRECT baseline must compile cleanly for the parity oracle to mean anything",
+    );
+    assert!(
+        !direct_ty.is_error(),
+        "DIRECT baseline must lower to a real type, not the `Type::Error` poison; \
+         got: {direct_ty:?}"
+    );
+
+    let alias_ty = param_type_against_prelude(
+        "structure def D { param p : Gq<Real> }",
+        "parametric_entity_alias_user_alias",
+        &prelude_m,
+        "a prelude `pub type Gq<T> = Option<Zq>` must resolve at a cross-module use site",
+    );
+    assert_eq!(
+        alias_ty, direct_ty,
+        "`param p : Gq<Real>` must lower exactly as the direct `param p : Option<Zq>` does"
+    );
+}
+
+/// The param-USING cross-module variant: `pub type Iq<T> = Map<T, Zq>` used as
+/// `Iq<Real>`. Proves the substitution and the prelude entity lookup compose
+/// across the module boundary, not just one or the other.
+///
+/// MEASURED on `main`: `["unresolved type: Iq<Real>"]`.
+#[test]
+fn pub_prelude_parametric_alias_using_its_param_and_a_prelude_enum_resolves() {
+    let prelude_m = compile_prelude(
+        "enum Zq { Close, Medium }\npub type Iq<T> = Map<T, Zq>\n",
+        "param_using_entity_alias_prelude",
+    );
+
+    let direct_ty = param_type_against_prelude(
+        "structure def D { param p : Map<Real, Zq> }",
+        "param_using_entity_alias_user_direct",
+        &prelude_m,
+        "DIRECT baseline must compile cleanly for the parity oracle to mean anything",
+    );
+    assert!(
+        !direct_ty.is_error(),
+        "DIRECT baseline must lower to a real type; got: {direct_ty:?}"
+    );
+
+    let alias_ty = param_type_against_prelude(
+        "structure def D { param p : Iq<Real> }",
+        "param_using_entity_alias_user_alias",
+        &prelude_m,
+        "a prelude `pub type Iq<T> = Map<T, Zq>` must resolve at a cross-module use site",
+    );
+    assert_eq!(
+        alias_ty, direct_ty,
+        "`param p : Iq<Real>` must lower exactly as the direct `param p : Map<Real, Zq>` does"
+    );
+}
+
+/// Unit-level pin on the seeding precondition the two tests above depend on —
+/// the parametric analogue of `seeded_unresolved_non_parametric_alias_retains_
+/// its_body`.
+///
+/// `from_compiled_for_prelude` drops an alias body only when
+/// `type_params.is_empty() && resolved_type.is_some()`. A parametric
+/// entity-bodied alias fails BOTH conjuncts, so its `type_expr` crosses the
+/// module boundary and `resolve_parameterized_alias` has something to
+/// substitute into. If the body were dropped, that function reports
+/// `internal error: parametric alias 'Gq' has no body` — so this test asserts
+/// the absence of that message specifically, not just overall cleanliness.
+///
+/// The enum lives in the USER module here, so this observes ONLY the body
+/// carry-over; prelude enum-name propagation is the end-to-end tests' job.
+#[test]
+fn seeded_parametric_entity_bodied_alias_retains_its_body() {
+    let option_of_zq = reify_ast::TypeExpr {
+        kind: reify_ast::TypeExprKind::Named {
+            name: "Option".to_string(),
+            type_args: vec![reify_ast::TypeExpr {
+                kind: reify_ast::TypeExprKind::Named {
+                    name: "Zq".to_string(),
+                    type_args: vec![],
+                },
+                span: SourceSpan::new(0, 0),
+            }],
+        },
+        span: SourceSpan::new(0, 0),
+    };
+    let alias = CompiledTypeAlias {
+        name: "Gq".to_string(),
+        // The realistic shape: the alias DFS cannot resolve a parametric
+        // entity-bodied alias, so it leaves `resolved_type: None`.
+        resolved_type: None,
+        type_params: vec![TypeParam {
+            name: "T".to_string(),
+            bounds: vec![],
+            default: None,
+        }],
+        type_expr: Some(option_of_zq),
+        is_pub: true,
+        span: SourceSpan::new(0, 0),
+        content_hash: ContentHash::of_str("Gq"),
+    };
+    let prelude_m = CompiledModuleBuilder::new(ModulePath::single("parametric_body_carry_prelude"))
+        .type_alias(alias)
+        .build();
+
+    let direct_ty = param_type_against_prelude(
+        "enum Zq { Close, Medium }\nstructure def D { param p : Option<Zq> }",
+        "parametric_body_carry_user_direct",
+        &prelude_m,
+        "DIRECT baseline must compile cleanly",
+    );
+
+    let alias_parsed = reify_syntax::parse(
+        "enum Zq { Close, Medium }\nstructure def D { param p : Gq<Real> }",
+        ModulePath::single("parametric_body_carry_user_alias"),
+    );
+    assert!(
+        alias_parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        alias_parsed.errors
+    );
+    let compiled = compile_with_prelude(&alias_parsed, std::slice::from_ref(&prelude_m));
+    let errs = error_messages(&compiled);
+    assert!(
+        !errs.iter().any(|m| m.contains("has no body")),
+        "the seeded PARAMETRIC alias must carry its `type_expr` across the module \
+         boundary — an `internal error: … has no body` here means \
+         `from_compiled_for_prelude` dropped it; got: {errs:?}"
+    );
+    assert_eq!(
+        error_count(&compiled),
+        0,
+        "seeding a parametric alias with `resolved_type: None` and \
+         `type_expr: Some(..)` must keep the body so `resolve_parameterized_alias` \
+         can substitute into it; got: {errs:?}"
+    );
+    assert_eq!(
+        entity_param_type(&compiled, "D", "p"),
+        direct_ty,
+        "the seeded `Gq<Real>` alias must lower exactly as the direct `Option<Zq>` does"
+    );
+}
