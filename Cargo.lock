@@ -4426,6 +4426,7 @@ dependencies = [
  "inventory",
  "reify-ast",
  "reify-build-utils",
+ "reify-builtins",
  "reify-compiler",
  "reify-compute-contract",
  "reify-config",
