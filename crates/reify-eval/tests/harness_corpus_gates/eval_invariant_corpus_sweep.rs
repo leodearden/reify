@@ -203,3 +203,95 @@ fn shard_of_is_independent_of_corpus_membership() {
     // A literal from the OTHER corpus root, so (c) is not examples/-only.
     assert!(shard_of("crates/reify-eval/tests/fixtures/undef_trace.ri") < CORPUS_SHARD_COUNT);
 }
+
+/// The trap that makes hash keying CORRECT in this repo: the shard key must be
+/// a REPO-RELATIVE path, never the absolute one.
+///
+/// Every corpus root here is derived from `env!("CARGO_MANIFEST_DIR")`, whose
+/// prefix differs per checkout — `/home/leo/src/reify` in the main checkout
+/// versus `/home/leo/src/warm-lanes/worktrees/_lane-N` in each of the 235 linked
+/// worktrees. Hashing the absolute path would therefore give the SAME `.ri` file
+/// a DIFFERENT shard in every lane, destroying exactly the reproducibility
+/// `shard_of` exists to buy: "shard 7 reds" would not transfer from the lane
+/// that found it to the checkout someone reproduces it in.
+#[test]
+fn shard_key_is_worktree_independent() {
+    // (a) Two checkouts of the same repo, same file. Deliberately synthetic and
+    //     non-existent on this filesystem, which is what makes the assertion
+    //     deterministic everywhere: neither side canonicalizes, so this pins the
+    //     prefix-stripping alone. Part (b) below covers the canonicalizing path.
+    let main_root = std::path::Path::new("/nonexistent-checkout/reify");
+    let lane_root = std::path::Path::new("/nonexistent-checkout/warm-lanes/worktrees/_lane-7");
+    let main_path = main_root.join("examples/fdm_bracket.ri");
+    let lane_path = lane_root.join("examples/fdm_bracket.ri");
+
+    assert_ne!(
+        main_path, lane_path,
+        "control: the two absolute paths must genuinely differ, or (a) proves nothing"
+    );
+
+    let from_main = repo_relative(&main_path, main_root);
+    let from_lane = repo_relative(&lane_path, lane_root);
+    assert_eq!(
+        from_main, from_lane,
+        "the same corpus file must key identically from any checkout"
+    );
+    assert_eq!(from_main, "examples/fdm_bracket.ri");
+    assert_eq!(
+        shard_of(&from_main),
+        shard_of(&from_lane),
+        "...and therefore land in the same shard in every worktree"
+    );
+
+    // Non-vacuity control: hashing the ABSOLUTE paths would have disagreed.
+    assert_ne!(
+        shard_of(&main_path.to_string_lossy()),
+        shard_of(&lane_path.to_string_lossy()),
+        "control: absolute-path keying must disagree across checkouts, or (a) is \
+         not pinning anything"
+    );
+
+    // (b) Real live corpus paths — these carry the `../..` hops the corpus-root
+    //     joins introduce, so this is the canonicalizing half.
+    let root = workspace_root();
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let live: Vec<std::path::PathBuf> = vec![
+        manifest_dir.join("tests/fixtures/undef_trace.ri"),
+        manifest_dir.join("../../examples/fdm_bracket.ri"),
+        manifest_dir.join("../../tests/prd-gate/fixtures/geometry_let_selector_consumer.ri"),
+    ];
+    let expected_roots = [
+        "examples/",
+        "crates/reify-eval/tests/fixtures/",
+        "tests/prd-gate/fixtures/",
+    ];
+    for path in &live {
+        assert!(path.exists(), "premise: {} must exist", path.display());
+        let rel = repo_relative(path, &root);
+        assert!(
+            !rel.starts_with('/'),
+            "{rel} must be relative — a leading / means the prefix was not stripped"
+        );
+        assert!(
+            !rel.split('/').any(|c| c == ".."),
+            "{rel} must carry no `..` component — the corpus-root joins introduce \
+             `crates/reify-eval/../../examples/x.ri`, which must normalise to \
+             `examples/x.ri` or two spellings of one file would key to two shards"
+        );
+        assert!(
+            expected_roots.iter().any(|p| rel.starts_with(p)),
+            "{rel} must sit under one of the three corpus roots {expected_roots:?}"
+        );
+    }
+
+    // (c) `/` separators verbatim, so the key is exactly what a reader would
+    //     type and what `KNOWN_RESIDUAL_*` suffixes are written against.
+    assert_eq!(
+        repo_relative(&manifest_dir.join("../../examples/fdm_bracket.ri"), &root),
+        "examples/fdm_bracket.ri"
+    );
+    assert_eq!(
+        repo_relative(&manifest_dir.join("tests/fixtures/undef_trace.ri"), &root),
+        "crates/reify-eval/tests/fixtures/undef_trace.ri"
+    );
+}
