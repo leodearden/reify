@@ -596,6 +596,88 @@ fn representative_args_are_well_formed_for_every_row() {
     }
 }
 
+// ── the exemption ledger ────────────────────────────────────────────────────
+
+/// One accepted non-[`ParityVerdict::Matches`] row.
+///
+/// Keyed on `EvalBuiltinId`, **not** on a name string (house heuristic 12 —
+/// structured data, never meaningful strings): a row deleted by a later τ turns
+/// its entry into a compile error rather than a dead line nobody notices, and
+/// there is no string to typo.
+///
+/// `expected` carries the verdict the row is exempted AT, not merely the fact of
+/// an exemption. A row ledgered as `Vacuous` that begins genuinely diverging is
+/// then reported rather than silently absorbed — the exemption covers one known
+/// disposition, not the row forever.
+struct ExemptionEntry {
+    /// The row this entry exempts.
+    id: EvalBuiltinId,
+    /// The verdict this row is known to produce, and is exempted at.
+    expected: ParityVerdict,
+    /// Which leaf retires this entry, and why ψ cannot.
+    why: &'static str,
+}
+
+/// Every row whose parity assertion cannot be made non-vacuously today, one
+/// entry each. **Empty at α**, and that is the measured state, not a stub.
+///
+/// # Measured at α: all seven seed rows classify `Matches`
+///
+/// Observed by running the sweep, not derived by reading the table:
+///
+/// | row | observed `Value` | declared `Type` |
+/// |---|---|---|
+/// | `parse_length` | `Option(Some(Scalar{LENGTH}))` | `Option(Scalar{LENGTH})` |
+/// | `parse_length_r` | `Enum{type_name:"Result"}` | `Enum("Result")` |
+/// | `von_mises` | `Scalar{PRESSURE}` | `Scalar{PRESSURE}` |
+/// | `max_shear` | `Scalar{PRESSURE}` | `Scalar{PRESSURE}` |
+/// | `principal_stresses` | `List([Scalar{PRESSURE}; 3])` | `List(Scalar{PRESSURE})` |
+/// | `safety_factor` | `Real(2.5)` | `Scalar{DIMENSIONLESS}` |
+/// | `stress_invariants` | `StructureInstance{type_name:"StressInvariants"}` | `StructureRef("StressInvariants")` |
+///
+/// Two of those pairings are worth naming because they look like mismatches and
+/// are not. `safety_factor` returns a bare `Value::Real` while its resolver
+/// answers `Type::dimensionless_scalar()`, which IS
+/// `Type::Scalar{DIMENSIONLESS}` (`crates/reify-core/src/ty.rs:631`) — there is
+/// no `Type::Real` variant, and the matcher's `Value::Real` arm accepts
+/// `Type::Scalar{..}`. `stress_invariants` returns a registry-free
+/// `StructureInstance` whose `type_id` is a sentinel, and the matcher's
+/// `Type::StructureRef` arm compares `type_name` only, which is why
+/// `registry: None` suffices (see [`classify`]).
+///
+/// # Why the PRD's named seed entry cannot be here yet
+///
+/// PRD §4 / §9 name the `piecewise_polynomial` stub as the ledger's first
+/// entry. It CANNOT be present: that name has no registry row, so it is not in
+/// `eval_builtin_rows()` at all and the sweep never reaches it. It is still
+/// answered by the surviving legacy string arm at
+/// `crates/reify-stdlib/src/trajectory/mod.rs:107`
+/// (`"piecewise_polynomial" => Some(Value::Undef)`), and it joins this ledger —
+/// as a `Vacuous` entry, which is why that verdict class must exist — when
+/// τ-mechanism/trajectory migrates the family.
+///
+/// # The dialect
+///
+/// One WHY sentence per entry naming the leaf that retires it, exactly as
+/// `SEED_STRING_DISPATCH_LEDGER`
+/// (`crates/reify-builtins/tests/i_reg_1_seed_string_dispatch_gate.rs:145-156`)
+/// and `registry_drift_tests`' `QUERY_CALL_LEDGER` do. The point is that the
+/// residue is COUNTED, not that it is acceptable. An empty ledger is only
+/// meaningful because it is enforced in BOTH directions — an unledgered
+/// non-`Matches` row fails, and so does a stale entry — so it cannot be padded
+/// with entries that assert nothing.
+const PARITY_EXEMPTION_LEDGER: &[ExemptionEntry] = &[];
+
+/// Is this (row, verdict) pair accepted by the ledger?
+///
+/// Both halves must match. An entry for the right row at the WRONG verdict does
+/// not exempt it — see [`ExemptionEntry::expected`].
+fn is_ledgered(id: EvalBuiltinId, verdict: ParityVerdict) -> bool {
+    PARITY_EXEMPTION_LEDGER
+        .iter()
+        .any(|entry| entry.id == id && entry.expected == verdict)
+}
+
 // ── the executed sweep: the harness's headline assertion ────────────────────
 
 /// **The headline assertion** (PRD §3 decision 12 / §7.2 I-REG-4 / §8 row 9).
@@ -677,3 +759,4 @@ fn every_eval_builtin_row_agrees_with_its_executed_kind() {
         offenders.join("\n")
     );
 }
+
