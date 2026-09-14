@@ -948,14 +948,22 @@ fn fea_pressure_smoke_example_has_no_ctor_conformance_diagnostics() {
 //       revert.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ── (b) excluded family: Point ← numeric-fallback placeholder ────────────────
+// ── (b) Point ← a MATCHING dimensioned `point3(…)` call ────────────────────
 //
-// `point3(0m, 0m, 0m)` is a `CompiledExprKind::FunctionCall` whose result_type
-// is the expression compiler's numeric fallback `Scalar[m]`, NOT `Type::Point`.
-// `type_compatible` has a Point-vs-Point arm but no Point-vs-Scalar arm, so the
-// general leaf arm false-rejects. This is the same placeholder class the
-// pre-existing `Type::Geometry` carve-out and `promote_function_call_to_structure_ref`
-// exist for. Shape taken from examples/anisotropic_bar.ri and the five
+// `point3(0m, 0m, 0m)` types as a real `Type::Point { n: 3, quantity: Scalar[m] }`
+// whose quantity slot MATCHES the param's `Length`, so the quantity rule is
+// consulted here and agrees. The two fixtures below are the CLEAN LEG of that
+// rule at the ctor seam, not a carve-out from it.
+//
+// This is NOT the placeholder tolerance. That still exists
+// (`is_numeric_placeholder_leaf`, in `conformance/mod.rs`) and covers `Int`, ANY
+// `Type::Scalar { .. }` (dimension-blind) and `Type::ScalarParam(_)` — see
+// `bare_numeric_literal_at_point_param_stays_clean` and
+// `dimensioned_scalar_at_point_param_stays_clean` further down this file.
+// (Premise changed at task 5344 `3c4ee5e9ac`; narrative in the *Point / Vector
+// quantity-slot convention* section of `crates/reify-core/src/ty.rs`.)
+//
+// Shape taken from examples/anisotropic_bar.ri and the five
 // examples/tensegrity_*.ri files.
 const SRC_FAMILY_POINT: &str = r#"module test.family_point
 structure def Anchor { param origin : Point3<Length> }
@@ -964,50 +972,248 @@ structure def Root {
 }
 "#;
 
-/// Clean fixture for the promoted `Point` family.
+/// Clean fixture for the `Point` family: the arg's dimension AGREES with the
+/// param's, so the quantity rule is consulted and is silent.
 ///
-/// `point3` is a stdlib EVAL-BUILTIN (`crates/reify-stdlib/src/geometry.rs:942`)
-/// with no `.ri` signature, so it carries no declared return type at compile
-/// time and the call compiles to a `CompiledExprKind::FunctionCall` typed
-/// `Scalar[m]` — the expression compiler's numeric fallback — never
-/// `Type::Point`. The dedicated `Point` arm tolerates scalar-like args as
-/// exactly that placeholder.
+/// **What it holds.** `point3(0m, 0m, 0m)` types as a real `Point3<Scalar[m]>`,
+/// which MATCHES the `Point3<Length>` param exactly, so the rule is consulted
+/// and is silent because it AGREES — not because the arg is exempt from it.
+/// This is therefore the fixture that would notice the rule starting to reject
+/// args whose dimensions agree.
+///
+/// Its counterparts at the same arm are
+/// [`point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch`]
+/// (dimensions disagree ⇒ reject) and
+/// [`point3_dimensionless_at_dimensioned_point_param_stays_clean`] (arg names no
+/// dimension at all ⇒ the surviving tolerance).
 ///
 /// Shape from `examples/anisotropic_bar.ri:82` (`origin: point3(0m, 0m, 0m)`)
 /// and `examples/dynamics/pendulum_idyn.ri:29` (`com:`).
 #[test]
-fn point_param_given_placeholder_function_call_stays_clean() {
+fn point_param_given_matching_dimensioned_point3_call_stays_clean() {
     let module = compile_source_with_stdlib(SRC_FAMILY_POINT);
+    // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
+    // LOAD-BEARING under the new premise, in a way it was not under the old one:
+    // this fixture no longer claims "nothing is compared", it claims "the
+    // quantity rule IS consulted and agrees". Were `point3` or `Point3<Length>`
+    // to stop resolving, the arg would degrade to `Type::Error` / no quantity
+    // slot, `emit_if_quantity_conflict` would return silently, and the fixture
+    // would stay GREEN while the rule it now holds had ceased to fire. The
+    // cross-dimension fixture over this same `Anchor` declaration
+    // (`point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch`)
+    // supplies the structural half of the argument; this guard supplies the rest.
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
     let diags = ctor_conformance_diags(&module);
     assert!(
         diags.is_empty(),
         "a Point3<Length> param given `point3(0m, 0m, 0m)` must emit ZERO ctor-conformance \
-         diagnostics — the arg's result_type is the numeric-fallback placeholder Scalar[m], \
-         not Type::Point, so `type_compatible` cannot judge it. Got: {diags:#?}"
+         diagnostics — since task 5344 the arg types as a real Point3<Scalar[m]>, whose \
+         quantity slot names the SAME dimension as the param's Length, so the quantity rule \
+         is consulted and agrees. It is NOT silent because the arg is an unjudgeable \
+         placeholder — that premise expired. Got: {diags:#?}"
     );
 }
 
-const SRC_LIST_OF_POINT_PLACEHOLDERS: &str = r#"module test.list_point
+const SRC_LIST_OF_MATCHING_POINT3_CALLS: &str = r#"module test.list_point
 structure def Truss { param nodes : List<Point3<Length>> }
 structure def Root {
     let t = Truss(nodes: [point3(0m, 0m, 0m), point3(1m, 0m, 0m), point3(0m, 1m, 0m)])
 }
 "#;
 
-/// Wrapper composition on the clean side: the placeholder tolerance must be
-/// reached PER ELEMENT through the walker's `ListLiteral` recursion.
+/// Wrapper composition on the clean side: the quantity rule must be reached PER
+/// ELEMENT through the walker's `ListLiteral` recursion.
+///
+/// The per-element claim is what this fixture uniquely holds: each element types
+/// as a real `Point3<Scalar[m]>` and the quantity rule genuinely fires at every
+/// one of them, agreeing three times over — rather than the walker merely
+/// recursing without emitting a wrapper-shape diagnostic on top.
+///
+/// Its REJECT-side composition twin is
+/// [`list_of_point3_dimensioned_at_real_point_param_warns_arg_type_mismatch`],
+/// which drives the same `List`/`List` recursion into a DISAGREEING element.
+/// Holding both directions is what stops the recursion from silently stopping at
+/// the wrapper; the `Vector` arm's equivalent pair sits one arm over.
 ///
 /// Shape from `examples/tensegrity_pavilion.ri:53-58`, where the `point3(…)`
 /// calls sit inside a list literal.
 #[test]
-fn list_of_point_param_given_placeholder_calls_stays_clean() {
-    let module = compile_source_with_stdlib(SRC_LIST_OF_POINT_PLACEHOLDERS);
+fn list_of_point_param_given_matching_dimensioned_point3_calls_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_LIST_OF_MATCHING_POINT3_CALLS);
+    // Non-vacuity guard — see the sibling above for why it is load-bearing here
+    // specifically. Its REJECT-side twin
+    // (`list_of_point3_dimensioned_at_real_point_param_warns_arg_type_mismatch`)
+    // shows the same `List`/`List` recursion reaching a DISAGREEING element, so
+    // together they separate "silent because it agrees" from "silent because
+    // nothing compiled".
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
     let diags = ctor_conformance_diags(&module);
     assert!(
         diags.is_empty(),
         "a List<Point3<Length>> param given a list literal of `point3(…)` calls must emit ZERO \
-         ctor-conformance diagnostics — each element is the same numeric-fallback placeholder. \
+         ctor-conformance diagnostics — the List/List wrapper arm recurses into EACH element, \
+         and since task 5344 each one types as a real Point3<Scalar[m]> whose dimension agrees \
+         with the param's Length. Got: {diags:#?}"
+    );
+}
+
+const SRC_BARE_NUMERIC_AT_POINT_PARAM: &str = r#"module test.bare_numeric_at_point
+structure def Anchor { param origin : Point3<Length> }
+structure def Root {
+    let a = Anchor(origin: 5)
+}
+"#;
+
+/// THE RESIDUAL that survived task 5344 — the only remaining justification for
+/// `is_numeric_placeholder_leaf`'s `Point` branch, and until now pinned by
+/// nothing at all.
+///
+/// `conformance/mod.rs` calls this cell "THE BOUNDED, DELIBERATE COST", and
+/// `crates/reify-core/src/ty.rs` files it under the same bounded-cost class as
+/// the `Vector` arm's dimensionless-direction tolerance — but both said it in
+/// prose only. This fixture makes it a measured, held fact.
+///
+/// **Why it is needed.** The branch's most VISIBLE input — every corpus
+/// `point3(…)` arg — went away at 5344, leaving the `Point` case looking dead.
+/// Without THIS fixture a reader could reasonably conclude 5344 killed it
+/// entirely, delete it, and watch every other test in both files stay green
+/// while `Anchor(origin: 5)` silently became a warning against the whole corpus.
+/// This is the regression fence that makes that deletion visible.
+///
+/// It pins the `Int` leg ALONE. The branch's membership is wider — any
+/// `Type::Scalar { .. }`, dimensioned or not, plus `Type::ScalarParam(_)` — so
+/// do not read this fixture as the branch's whole surviving input set;
+/// `dimensioned_scalar_at_point_param_stays_clean` and
+/// `scalar_returning_call_at_point_param_stays_clean` pin the rest.
+///
+/// That "every other test stays green" is MEASURED, not assumed. Killing the
+/// `other => is_numeric_placeholder_leaf(other)` branch of the `Type::Point` arm
+/// in `conformance/mod.rs` (replacing it with `false`) fails exactly this
+/// fixture and the two siblings named above —
+/// `dimensioned_scalar_at_point_param_stays_clean` and
+/// `scalar_returning_call_at_point_param_stays_clean`, one per surviving leg —
+/// while every other test in this file, every in-module `conformance` probe, and
+/// the `no_example_emits_ctor_field_conformance_diagnostics` corpus gate all
+/// stay green, because no `.ri` example passes a scalar to a `Point` param
+/// today. That is precisely why the branch needs these fixtures rather than a
+/// comment.
+///
+/// **It is a RULING, not an oversight.** The tolerance is the deliberate
+/// `Type::Geometry`-class placeholder exclusion (GHR-γ): geometry constructors
+/// compile to a dimensionless-scalar placeholder and are excluded in the same
+/// way. Anyone tightening this arm must therefore treat this cell as a decision
+/// to be re-opened rather than a bug to be fixed — and must also account for
+/// the branch's other legs: any `Type::Scalar { .. }`, and `Type::ScalarParam(_)`,
+/// which stands for a dimension that is not yet resolved rather than one that is
+/// absent.
+///
+/// MEASURED at HEAD `2c449f5d6e`: CLEAN, zero compile errors.
+#[test]
+fn bare_numeric_literal_at_point_param_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_BARE_NUMERIC_AT_POINT_PARAM);
+    // Non-vacuity guard — ESSENTIAL for a CLEAN fixture, which is otherwise
+    // indistinguishable from one that never compiled. The `Point3<Length>` param
+    // spelling is shown to resolve-and-reject by the cross-dimension fixture
+    // further down this file, which uses the identical `Anchor` declaration.
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a bare numeric literal at a Point3<Length> param must stay SILENT — this is the \
+         `is_numeric_placeholder_leaf` Point branch's `Int` leg, and it is a deliberate \
+         GHR-γ placeholder exclusion, not an oversight. If this now fires, that branch has \
+         been narrowed or deleted: re-read the ruling in crates/reify-core/src/ty.rs and the \
+         arm's own comment in conformance/mod.rs before retargeting, and check the branch's \
+         other legs (any Type::Scalar {{ .. }}, Type::ScalarParam(_)) at the same time. \
          Got: {diags:#?}"
+    );
+}
+
+const SRC_DIMENSIONED_SCALAR_AT_POINT_PARAM: &str = r#"module test.dim_scalar_at_point
+structure def Anchor { param origin : Point3<Length> }
+structure def Root {
+    let a = Anchor(origin: 5kg)
+}
+"#;
+
+const SRC_SCALAR_CALL_AT_POINT_PARAM: &str = r#"module test.scalar_call_at_point
+structure def Anchor { param origin : Point3<Length> }
+structure def Root {
+    let a = Anchor(origin: abs(-5kg))
+}
+"#;
+
+/// THE FULL SIZE of the `Point` arm's placeholder tolerance — the sibling of
+/// `bare_numeric_literal_at_point_param_stays_clean`, and the reason that test's
+/// cell must not be read as the branch's whole membership.
+///
+/// [`is_numeric_placeholder_leaf`] matches `Int | Scalar { .. } | ScalarParam(_)`,
+/// and `Type::Scalar { .. }` is dimension-BLIND. So a scalar of the WRONG
+/// dimension at a `Point` slot — `Anchor(origin: 5kg)` against
+/// `Point3<Length>` — is silent too, even though the very same `5kg` at a
+/// `Scalar<Length>` slot is rejected (`g_i2_cross_dimension_arg_at_dimensioned_slot_warns`).
+/// That asymmetry is the actual bounded cost, and it is strictly larger than a
+/// bare literal.
+///
+/// Pinned so the membership claim in `conformance/mod.rs`'s arm comment cannot
+/// drift back to "a bare numeric literal and `ScalarParam` only": narrowing the
+/// shared predicate to `Int | ScalarParam` to make that claim true would fail
+/// THIS test — and would also break the `Matrix`/`Tensor` arm's rank-0 scalar
+/// accept, which wants a real dimensioned `Scalar` (Rules 2a/2b).
+#[test]
+fn dimensioned_scalar_at_point_param_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_DIMENSIONED_SCALAR_AT_POINT_PARAM);
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a DIMENSIONED scalar at a Point3<Length> param is silent today — \
+         `is_numeric_placeholder_leaf` matches any `Type::Scalar {{ .. }}` regardless of \
+         dimension. If this now fires, the Point arm's tolerance has been narrowed: that is a \
+         legitimate tightening, but re-read the ruling in crates/reify-core/src/ty.rs and \
+         check the Matrix/Tensor rank-0 accept, which shares the predicate. Got: {diags:#?}"
+    );
+}
+
+/// A scalar-returning FUNCTION CALL reaches the same branch and is likewise
+/// silent — the measurement that keeps the `FunctionCall`-shaped narrowing an
+/// OPEN option rather than a closed one.
+///
+/// `abs(-5kg)` types as `Scalar[kg]`, so it lands on the placeholder leg exactly
+/// as the bare literal does, with a dimension that disagrees with the param's
+/// `Length`. Task 5344 moved `point3(…)` off this branch, but it did NOT empty
+/// the branch of `FunctionCall`-shaped inputs, so the standing follow-up
+/// ("tighten to a `FunctionCall`-shaped check") remains available and motivated.
+#[test]
+fn scalar_returning_call_at_point_param_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_SCALAR_CALL_AT_POINT_PARAM);
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a scalar-returning FunctionCall at a Point3<Length> param is silent today. If this \
+         now fires, the FunctionCall-shaped narrowing has been taken — update the residual \
+         note on the Point arm in conformance/mod.rs. Got: {diags:#?}"
     );
 }
 
@@ -1034,15 +1240,24 @@ fn point_param_given_string_warns_arg_type_mismatch() {
 }
 
 // The `Point` arm's ARITY rule ("a `Point2` value is not a valid substitute for
-// a `Point3` param", mirroring the `Type::Vector` arm) is NOT pinned here.
-// `resolve_parameterized_builtin_type` recognises `Point3` only
-// (crates/reify-compiler/src/type_resolution.rs:3192) — there is no `Point2`
-// surface spelling — so no inline `.ri` fixture can produce a
-// `Type::Point { n: 2, .. }` arg. It is pinned instead by
+// a `Point3` param", mirroring the `Type::Vector` arm) IS pinned here as well,
+// by `point2_arg_at_point3_param_warns_arity_arg_type_mismatch` further down
+// this file.
+//
+// There is no `Point2` PARAM spelling — `resolve_parameterized_builtin_type`
+// recognises `Point3` only, its arms being `"Point3" if type_args.len() == 1`
+// (`crates/reify-compiler/src/type_resolution.rs`, two sites) — which is why that
+// fixture's param is `Point3<Length>`. That constrains PARAMS, not ARGS; the
+// fixture's own doc carries why the arg side is reachable.
+//
+// The rule is ALSO pinned at the direct-`Type` seam by
 // `point_param_rejects_wrong_arity_point_arg` in `conformance/mod.rs`'s own
-// `mod tests`, which constructs the `Type` directly, alongside
-// `point_param_accepts_dimensionless_point_arg` for the loose-quantity leg.
-// `vector_param_rejects_wrong_arity_vector_arg` sits there for the same reason.
+// `mod tests`, alongside `point_param_accepts_dimensionless_point_arg` for the
+// loose-quantity leg. Both seams are kept: that probe constructs the `Type`
+// directly and so does not depend on the name-suffix `n` inference, while the
+// `.ri` fixture is the only one that would notice the inference breaking.
+// `vector_param_rejects_wrong_arity_vector_arg` sits there as the `Vector` arm's
+// direct-`Type` equivalent.
 
 const SRC_OPTION_POINT_GIVEN_STRING: &str = r#"module test.option_point_string
 structure def Anchor { param origin : Option<Point3<Length>> }
@@ -2505,6 +2720,69 @@ fn vec3_dimensioned_off_first_component_at_dimensionless_vector_param_stays_clea
     );
 }
 
+const SRC_VEC2_AT_VECTOR3_PARAM: &str = r#"module test.vec2_at_vector3_param
+structure def Joint { param axis : Vector3<Length> }
+structure def Root {
+    let j = Joint(axis: vec2(1m, 2m))
+}
+"#;
+
+/// THE ARITY LEG of the `Vector` arm reached from `.ri` source — the `Vector`
+/// arm's twin of [`point2_arg_at_point3_param_warns_arity_arg_type_mismatch`],
+/// and of `conformance/mod.rs`'s direct-`Type` probe
+/// `vector_param_rejects_wrong_arity_vector_arg`.
+///
+/// The same param-side asymmetry holds here as at the `Point` arm: there is no
+/// `Vector2` PARAM spelling, which is why this fixture's param is
+/// `Vector3<Length>` and cannot be spelled otherwise. The ARG side is reachable
+/// because task 5344 (`3c4ee5e9ac`) claimed `vec2` into the very same collapsed
+/// `"vec3" | "vec2" | "point3" | "point2"` arm of `math_fn_result_type` that it
+/// claimed `point2` into — `n` comes from the name suffix — so the two arms
+/// gained an `.ri` arity twin at the same moment and for the same reason.
+///
+/// **What this holds that the direct-`Type` probe cannot.** That probe builds
+/// its `Type::Vector { n: 2, .. }` by hand, so it would stay green if the
+/// name-suffix `n` inference stopped producing one from source (task 5889 owns
+/// that inference). This fixture is the only thing that would notice.
+///
+/// The code is `TypeNotConformingToVector`, not `ArgTypeMismatch`: at this arm
+/// FAMILY and ARITY keep the bespoke code and only a QUANTITY conflict routes to
+/// `ArgTypeMismatch` (task 5766). That differs from the `Point` arm, whose arity
+/// leg emits `ArgTypeMismatch` — the asserted code below is what pins the two
+/// arms' emitters apart. Both components are `m` here, so the quantity slots
+/// AGREE and this cell cannot be reached through the quantity rule.
+#[test]
+fn vec2_arg_at_vector3_param_warns_arity_type_not_conforming() {
+    // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
+    let module = compile_source_with_stdlib(SRC_VEC2_AT_VECTOR3_PARAM);
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "a vec2(…) arg at a Vector3<Length> param must be REJECTED with exactly one \
+         diagnostic — since task 5344 the call types as a real Vector2<Scalar[m]> and the \
+         Vector arm's arity check separates it from the param's n=3. Got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::TypeNotConformingToVector),
+        "the Vector arm's FAMILY/ARITY rejection keeps its bespoke code; only a QUANTITY \
+         conflict routes to ArgTypeMismatch (task 5766). Got: {:?}",
+        diags[0].code
+    );
+    assert!(
+        !diags[0].message.contains("has quantity"),
+        "this cell must route through the ARITY leg, NOT the quantity-slot rule — both \
+         components are `m`, so the quantity slots AGREE. Got: {:?}",
+        diags[0].message
+    );
+}
+
 const SRC_POINT3_DIMENSIONED_AT_DIMENSIONLESS: &str = r#"module test.point3_dimensioned_at_dimensionless
 structure def Origin { param origin : Point3<Dimensionless> }
 structure def Root {
@@ -2533,21 +2811,14 @@ structure def Root {
 /// `dimensionless_quantity_point_param_rejects_dimensioned_point_arg`
 /// (`conformance/mod.rs`), which constructs the `Type::Point` itself and so
 /// BYPASSES the whole inference chain. That chain is what makes the claim true:
-/// task 5344 (`3c4ee5e9ac`) claimed `point3` / `point2` into the math
-/// construction family, so `math_fn_result_type`'s collapsed
-/// `"vec3" | "vec2" | "point3" | "point2"` arm now returns a real
-/// `Type::Point { n, quantity }` with the quantity taken from the FIRST argument.
-/// The same reasoning the `Matrix` fixture states about `matrix_shape` applies
-/// here, one arm over.
+/// `math_fn_result_type`'s collapsed `"vec3" | "vec2" | "point3" | "point2"` arm
+/// returns a real `Type::Point { n, quantity }`, the quantity taken from the
+/// FIRST argument. The same reasoning the `Matrix` fixture states about
+/// `matrix_shape` applies here, one arm over.
 ///
-/// It also retires, by demonstration, the premise that "no `.ri` source can
-/// produce a dimensioned `Type::Point` arg" — expired since 5344 landed, still
-/// written at the sites task 6436 owns.
-///
-/// **Scope fence.** This pins the cell task 6159 itself ruled and measured.
-/// Converting the pre-existing `Point`-arm probes (task 5465's) to `.ri`
-/// fixtures, and reconciling the stale erasure rationales around them, stays
-/// task 6436's.
+/// It also demonstrates that a dimensioned `Type::Point` arg IS reachable from
+/// `.ri` source — see the *Point / Vector quantity-slot convention* section of
+/// `crates/reify-core/src/ty.rs` for why, ruled there and not restated here.
 #[test]
 fn point3_dimensioned_at_dimensionless_point_param_warns_arg_type_mismatch() {
     // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
@@ -2596,6 +2867,307 @@ fn point3_dimensioned_at_real_point_param_warns_arg_type_mismatch() {
         "Real",
         "Scalar[m]",
         "Point3<Real> ← Point3<Length> — Real and Dimensionless are the same cell",
+    );
+}
+
+const SRC_LIST_OF_POINT3_DIMENSIONED_AT_REAL: &str = r#"module test.list_point3_dimensioned_at_real
+structure def Bead { param centerline : List<Point3<Real>> = [] }
+structure def Root {
+    let b = Bead(centerline: [point3(1mm, 0mm, 0mm)])
+}
+"#;
+
+/// THE `fdm_slice.ri` COUNTERFACTUAL, made measurable — and the REJECT leg of
+/// the `List`/`List` wrapper arm recursing into the `Point` arm.
+///
+/// `crates/reify-core/src/ty.rs` makes a counterfactual claim it could not
+/// otherwise hold: `Bead.centerline` is absent from the tightening's
+/// zero-new-diagnostics measurement "only because the measurement is over
+/// constructor-ARG sites and no `.ri` file constructs a `Bead` today", and "if
+/// one ever did it would NOT stay silent, including from a literal `point3(…)`
+/// arg rather than merely a `List<Point3<Length>>`-typed REF". A claim about a
+/// construction site that does not exist cannot be pinned by the corpus gate, by
+/// definition — so this fixture builds the counterfactual construction site
+/// directly, mirroring `stdlib/fdm_slice.ri:43`'s param verbatim
+/// (`param centerline : List<Point3<Real>> = []`).
+///
+/// MEASURED at HEAD `2c449f5d6e`: exactly one `ArgTypeMismatch` [Warning] —
+/// "argument 'centerline' has quantity 'Scalar[m]' but param 'centerline'
+/// requires quantity 'Real'". Zero compile errors. The `mm` literal is what
+/// makes this bite: `fdm_slice.ri`'s marshalling contract says centerline
+/// coordinates are RAW G-CODE MILLIMETRES — bare numbers — so `Real` is
+/// deliberate there and a `Length`-dimensioned arg is a real breach of it, not a
+/// mis-typed param. Anyone tempted to retype that param must weigh the
+/// marshalling contract, as ty.rs says.
+///
+/// **The corpus stays unaffected, and that is checked, not assumed.** There is
+/// still no `.ri` construction site for `Bead` anywhere in the tree
+/// (`grep -rn 'Bead(' --include=*.ri .` returns nothing at this HEAD), so
+/// `no_example_emits_ctor_field_conformance_diagnostics` is untouched by this
+/// fixture. If a real `Bead` construction site ever appears, this test is the
+/// one that predicts what it will emit.
+///
+/// **Composition.** This drives the `List`/`List` wrapper arm's per-element
+/// recursion into the `Point` arm on the REJECT side; its CLEAN twin is
+/// [`list_of_point_param_given_matching_dimensioned_point3_calls_stays_clean`].
+/// The `Vector`-arm equivalent of the same composition is
+/// `list_wrapped_vector_param_rejects_cross_dimension_element` in
+/// `conformance/mod.rs` — the direct-`Type` seam of this cell, which enters the
+/// wrapper arm without going through `math_fn_result_type`. Exactly one
+/// diagnostic is required either way: the wrapper walk must not emit a shape
+/// diagnostic on top of the element's quantity conflict.
+#[test]
+fn list_of_point3_dimensioned_at_real_point_param_warns_arg_type_mismatch() {
+    // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
+    let module = compile_source_with_stdlib(SRC_LIST_OF_POINT3_DIMENSIONED_AT_REAL);
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    assert_single_quantity_conflict_warning_in(
+        &module,
+        "centerline",
+        "Real",
+        "Scalar[m]",
+        "List<Point3<Real>> ← List<Point3<Length>> (the fdm_slice.ri Bead.centerline shape)",
+    );
+}
+
+const SRC_POINT3_CROSS_DIMENSION_AT_DIMENSIONED: &str = r#"module test.point3_cross_dimension_at_dimensioned
+structure def Anchor { param origin : Point3<Length> }
+structure def Root {
+    let a = Anchor(origin: point3(1kg, 0kg, 0kg))
+}
+"#;
+
+/// THE CROSS-DIMENSION LEG of the quantity rule at the `Point` arm, `.ri`/ctor
+/// seam: a `point3` whose components carry a dimension that DISAGREES with the
+/// param's quantity slot is rejected — reached from real source, not from a
+/// hand-built `Type`.
+///
+/// The `.ri` twin of `conformance/mod.rs`'s
+/// `point_param_rejects_cross_dimension_point_arg`, exactly as
+/// [`vec3_cross_dimension_at_dimensioned_vector_param_warns_arg_type_mismatch`]
+/// twins the `Vector` arm's probe one arm over. The two seams reach the same
+/// arm by DIFFERENT routes and both are worth holding: the in-module probe
+/// constructs the `Type::Point` directly, so it pins the walker's rule without
+/// depending on `math_fn_result_type`'s first-argument quantity inference (task
+/// 5889's to change); this fixture drives that whole inference chain from `.ri`
+/// source, so it is the one that would notice if the chain stopped producing a
+/// dimensioned `Type::Point` at all.
+///
+/// MEASURED at HEAD `2c449f5d6e`: exactly one `ArgTypeMismatch` [Warning] —
+/// "argument 'origin' has quantity 'Scalar[kg]' but param 'origin' requires
+/// quantity 'Scalar[m]'". Zero compile errors, so `Point3<Length>` resolves as a
+/// param spelling and `point3(1kg, 0kg, 0kg)` genuinely compiles and types as
+/// `Type::Point { n: 3, quantity: Scalar[kg] }`.
+///
+/// **This fixture passes on arrival, and that is its point.** It exists so that
+/// "a dimensioned `Type::Point` arg is unreachable from `.ri` source" — an
+/// erasure premise the rationale blocks around the `Point` probes once rested on
+/// — is held dead by a test rather than by prose, and so cannot be re-asserted
+/// from prose alone.
+#[test]
+fn point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch() {
+    // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
+    // LOAD-BEARING twice over here: a `Point3<Length>` param that failed to
+    // resolve, or a `point3(…)` call that failed to compile, would emit zero
+    // ctor-conformance diagnostics and read as a RULE failure rather than a
+    // broken fixture.
+    let module = compile_source_with_stdlib(SRC_POINT3_CROSS_DIMENSION_AT_DIMENSIONED);
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    // The `_in` variant so the guard above and the assertion share that one
+    // compile of the source plus the whole stdlib.
+    assert_single_quantity_conflict_warning_in(
+        &module,
+        "origin",
+        "Scalar[m]",
+        "Scalar[kg]",
+        "Point3<Length> ← Point3<Mass>",
+    );
+}
+
+const SRC_POINT3_CROSS_DIMENSION_VIA_LET: &str = r#"module test.point3_cross_dimension_via_let
+structure def Anchor { param origin : Point3<Length> }
+structure def Root {
+    let p = point3(1kg, 0kg, 0kg)
+    let a = Anchor(origin: p)
+}
+"#;
+
+/// THE VALUE-CELL ROUTE into the `Point` arm: the same cross-dimension cell as
+/// the fixture directly above, but reached through a `let` binding rather than a
+/// direct call at the arg position.
+///
+/// This is the route the `Type::Point` arm's comment in `conformance/mod.rs`
+/// names as the reason its tolerance lives INSIDE the arm rather than as an
+/// arg-side `CompiledExpr` skip: an arg-side skip sees a `FunctionCall`, so it
+/// would MISS the resulting `ValueRef`, and only the type-level walker reaches
+/// it. That is a behavioural claim about a second entry point, and this fixture
+/// is what holds it — neither the direct-call fixture above nor the hand-built
+/// `Type` probe in `conformance/mod.rs` exercises it, so without this one the
+/// value-cell route could go silent with the whole suite green.
+///
+/// MEASURED at HEAD `2c449f5d6e`: exactly one `ArgTypeMismatch` [Warning] —
+/// "argument 'origin' has quantity 'Scalar[kg]' but param 'origin' requires
+/// quantity 'Scalar[m]'", identical to the direct-call twin. Zero compile
+/// errors, so the `let` cell genuinely persists a `Type::Point { n: 3, quantity:
+/// Scalar[kg] }` rather than degrading to a placeholder.
+///
+/// **Not a duplicate of the twin above — measured.** An instrumented run of the
+/// walker's non-literal fallback shows the two fixtures arrive with DIFFERENT
+/// `CompiledExprKind`s at the same `Point3<Length>` param: `FunctionCall`
+/// (`std::point3`) for the twin, `ValueRef(Root.p)` here. Both carry
+/// `Point { n: 3, quantity: Scalar[kg] }`, so the `let` does not inline and the
+/// value cell does not erase.
+#[test]
+fn point3_cross_dimension_via_let_at_dimensioned_point_param_warns_arg_type_mismatch() {
+    // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
+    // Load-bearing as on the direct-call twin, and once more here: a `let` whose
+    // initialiser failed to compile emits zero ctor-conformance diagnostics.
+    let module = compile_source_with_stdlib(SRC_POINT3_CROSS_DIMENSION_VIA_LET);
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    assert_single_quantity_conflict_warning_in(
+        &module,
+        "origin",
+        "Scalar[m]",
+        "Scalar[kg]",
+        "Point3<Length> ← Point3<Mass> reached through a `let` value cell",
+    );
+}
+
+const SRC_POINT3_DIMENSIONLESS_AT_DIMENSIONED: &str = r#"module test.point3_dimensionless_at_dimensioned
+structure def Anchor { param origin : Point3<Length> }
+structure def Root {
+    let a = Anchor(origin: point3(0, 0, 1))
+}
+"#;
+
+/// THE TOLERANT LEG of the quantity rule at the `Point` arm, `.ri`/ctor seam —
+/// the third cell of this arm's `.ri` seam, completing the set the `Vector` arm
+/// has had since task 5766.
+///
+/// The `.ri` twin of `conformance/mod.rs`'s
+/// `point_param_accepts_dimensionless_point_arg`, exactly as
+/// [`vec3_dimensionless_at_dimensioned_vector_param_stays_clean`] twins the
+/// `Vector` arm's equivalent. (That probe's doc carries no erasure premise and
+/// is therefore NOT rewritten by task 6436 — only cross-referenced from here.)
+///
+/// `point3(0, 0, 1)` types with a quantity slot that names no dimension, so the
+/// dimensionless-tolerant half of the rule applies and the cell is silent even
+/// though the param declares `Length`. This is the ARG-side tolerance
+/// `crates/reify-core/src/ty.rs` rules on, and it is what a future tightening at
+/// this arm would break first.
+///
+/// MEASURED at HEAD `2c449f5d6e`: CLEAN, zero compile errors.
+///
+/// **Non-vacuity, structurally.** A CLEAN fixture is otherwise indistinguishable
+/// from one that never compiled, so beyond the `errors_only` guard below this
+/// cell has a stronger proof available and uses it:
+/// [`point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch`]
+/// above is the same `Anchor`, the same `Point3<Length>` param and the same
+/// `point3(…)` call shape, differing ONLY in whether the components carry a
+/// dimension — and it demonstrably RESOLVES and REJECTS. Silence here can
+/// therefore come only from the arg-side tolerance rule, never from a param
+/// spelling that failed to resolve or a call that failed to compile. This is the
+/// same argument
+/// [`vec3_dimensioned_off_first_component_at_dimensionless_vector_param_stays_clean`]
+/// makes from its own one-token-different twin.
+#[test]
+fn point3_dimensionless_at_dimensioned_point_param_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_POINT3_DIMENSIONLESS_AT_DIMENSIONED);
+    // Non-vacuity guard — ESSENTIAL for a CLEAN fixture; see the doc above for
+    // the stronger structural proof the cross-dimension twin supplies.
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a dimensionless point3(0, 0, 1) at a Point3<Length> param must stay SILENT — the \
+         quantity rule is dimensionless-tolerant on the ARG side by decision, and the \
+         cross-dimension twin directly above proves the param resolves and rejects. If this \
+         now fires, the arg-side tolerance at the Point arm has been tightened; re-read the \
+         ruling in crates/reify-core/src/ty.rs before retargeting. Got: {diags:#?}"
+    );
+}
+
+const SRC_POINT2_AT_POINT3_PARAM: &str = r#"module test.point2_at_point3_param
+structure def Anchor { param origin : Point3<Length> }
+structure def Root {
+    let a = Anchor(origin: point2(1m, 2m))
+}
+"#;
+
+/// THE ARITY LEG of the `Point` arm reached from `.ri` source — the fixture the
+/// surrounding rationale blocks long asserted could not exist.
+///
+/// The `.ri` twin of `conformance/mod.rs`'s
+/// `point_param_rejects_wrong_arity_point_arg`, which constructs its
+/// `Type::Point { n: 2, .. }` directly.
+///
+/// **The asymmetry that makes this possible.** `resolve_parameterized_builtin_type`
+/// recognises `Point3` only — its arms are `"Point3" if type_args.len() == 1`
+/// (`type_resolution.rs`, two sites), with no `"Point2"` arm anywhere — so this
+/// fixture's param is spelled `Point3<Length>` and cannot be spelled otherwise.
+/// A param spelling constrains PARAMS, not ARGS, and nothing about arg
+/// reachability follows from it: task 5344 (`3c4ee5e9ac`) claimed `point2` into
+/// `math_fn_result_type`'s collapsed `"vec3" | "vec2" | "point3" | "point2"`
+/// arm, which fixes `n` from the name suffix, so `point2(1m, 2m)` compiles and
+/// types as `Type::Point { n: 2, quantity: Scalar[m] }`. This fixture is what
+/// stops the param-side premise being re-extended over the arg side.
+///
+/// MEASURED at HEAD `2c449f5d6e`: exactly one `ArgTypeMismatch` [Warning] —
+/// "argument 'origin' has type 'Point2<Scalar[m]>' but param 'origin' requires
+/// type 'Point3<Scalar[m]>'". Zero compile errors, so `point2(…)` genuinely
+/// compiles from `.ri`.
+///
+/// The negative assertion below is load-bearing: it pins that this cell routes
+/// through the ARITY leg (`emit_arg_type_mismatch`, whole types) and NOT the
+/// quantity-slot rule, which is exactly the distinction the in-module probe
+/// exists to hold. Both components are `m` here, so the quantity slots AGREE —
+/// were the arity check ever to fall through to the quantity rule, this fixture
+/// would go silent rather than change its message.
+#[test]
+fn point2_arg_at_point3_param_warns_arity_arg_type_mismatch() {
+    // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
+    let module = compile_source_with_stdlib(SRC_POINT2_AT_POINT3_PARAM);
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    // The WHOLE-TYPE helper, deliberately NOT the quantity sibling: this cell's
+    // quantity slots agree and only the arity differs.
+    let diags = assert_single_arg_type_mismatch_warning_in(
+        &module,
+        "origin",
+        "Point3<Length> ← Point2<Length> (arity)",
+    );
+    assert!(
+        diags[0].message.contains("Point2<Scalar[m]>")
+            && diags[0].message.contains("Point3<Scalar[m]>"),
+        "the diagnostic must name BOTH whole types, which is what distinguishes the ARITY \
+         leg's `emit_arg_type_mismatch` from the quantity-slot emitter. Got: {:?}",
+        diags[0].message
+    );
+    assert!(
+        !diags[0].message.contains("has quantity"),
+        "this cell must route through the ARITY leg, NOT the quantity-slot rule — both \
+         components are `m`, so the quantity slots AGREE and a quantity-shaped message \
+         would mean the arity check stopped separating these two types. Got: {:?}",
+        diags[0].message
     );
 }
 
