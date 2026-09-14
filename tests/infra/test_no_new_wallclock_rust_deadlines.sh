@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
 # tests/infra/test_no_new_wallclock_rust_deadlines.sh
 #
-# Regression guard (task #6438):
+# Regression guard (tasks #6438, #6597):
 #   Flags NEW hand-rolled real-clock deadlines and elapsed-time UPPER bounds
-#   in gui/src-tauri/src/tests/*.rs, so the flake class de-flaked by tasks
-#   #5143, #5422, #5709 and #6438 cannot silently return a FIFTH time THERE.
-#   Read that as scoped to that one directory: it is where all four instances
-#   happened, and it is all this guard scans. See SCOPE under KNOWN LIMITS.
+#   across EVERY Rust TEST root, so the flake class de-flaked by tasks #5143,
+#   #5422, #5709 and #6438 cannot silently return a FIFTH time -- anywhere in
+#   the Rust tests, not merely where the first four happened.
+#   #6438 shipped this scoped to the one directory gui/src-tauri/src/tests.
+#   #6597 widened it to every crates/*/tests, both gui/src-tauri test roots and
+#   tree-sitter-reify/tests, scanned recursively, with the sites that already
+#   existed held in a two-directional baseline ratchet rather than blessed.
+#   See SCOPE under KNOWN LIMITS for what that does and does not cover.
 #
 # The guard itself is a LOAD-INDEPENDENT static grep -- it is NOT a wall-clock
-# test, and it runs no cargo, no npm and no watcher.
+# test, and it runs no cargo, no npm and no watcher. It stays instant at the
+# widened scope: 0.108s over 1330 files.
 #
 # ---------------------------------------------------------------------------
 # WHY THIS IS A SIBLING OF test_no_new_wallclock_upper_bounds.sh AND NOT AN
@@ -41,10 +46,13 @@
 # ---------------------------------------------------------------------------
 #
 # THE TWO RULES, one line each. The canonical statement is the comment block
-# on `_detect_rust_wallclock_deadline` below: it carries the regexes, every
-# spelling matched and every spelling deliberately not matched, and the reason
-# for each. It sits with the code it describes, so it is the copy to read and
-# the copy to keep true -- this summary is deliberately not a second one.
+# on `_wallclock_fingerprints` below -- the ENGINE, which is where the regexes
+# actually live and the only place they appear: it carries every spelling
+# matched and every spelling deliberately not matched, and the reason for each.
+# It sits with the code it describes, so it is the copy to read and the copy to
+# keep true -- this summary is deliberately not a second one. (#6597 moved it
+# there from `_detect_rust_wallclock_deadline`, which is now a reporting
+# wrapper and states no rules of its own.)
 #   Rule A -- the raw clock used as a deadline: `Instant::now()` offset by hand
 #             (`+` or `.checked_add`) rather than taken through the WaitClock
 #             seam watcher_tests.rs provides, or compared against a deadline,
@@ -66,12 +74,15 @@
 # `// ptodo:allow`.
 #
 # ALLOWLIST: exactly ONE escape exists in tree -- `far_future_stamp()` in
-# watcher_tests.rs, the single legitimate real-`Instant` offset in the
-# directory, argued at the site in its own doc comment. That count is CHECKED,
-# not merely asserted here: Section 3 counts escape-annotated lines under the
-# live directory and compares them against `_ESC_ALLOWLIST_SIZE`, because the
-# detector skips an escaped line without counting it and so returns 0 for one
-# escape and for twenty alike. (An earlier draft of
+# watcher_tests.rs, argued at the site in its own doc comment. That count is
+# CHECKED, not merely asserted here: Section 3 counts escape-annotated lines
+# across ALL of `_LIVE_ROOTS`, recursively, and compares them against
+# `_ESC_ALLOWLIST_SIZE`, because the detector skips an escaped line without
+# counting it and so returns 0 for one escape and for twenty alike. Since #6597
+# that claim covers the whole Rust test tree rather than one directory, and it
+# survived the widening unchanged: scanning ~44x more files admitted no second
+# escape, and the 19 pre-existing sites went to the baseline, NOT to escapes.
+# (An earlier draft of
 # this guard spelled that site with `checked_add` specifically BECAUSE Rule A
 # did not match it. That was a documented bypass masquerading as house style:
 # it made the one site invisible AND blessed an undetectable spelling for
@@ -80,24 +91,64 @@
 # a review, not added quietly.
 #
 # KNOWN LIMITS, stated rather than hidden -- this is a lexical guard, not a
-# type-aware one, and it covers ONE directory.
+# type-aware one, and it covers every Rust TEST root but no production code.
 #
-# SCOPE, stated first because it bounds every other claim here. `_LIVE_DIR` is
-# gui/src-tauri/src/tests and its glob is non-recursive, so what this guard
-# ratchets is the file that produced all four flakes -- not the Rust half of
-# the tree. The identical Rule A shape exists elsewhere today, unguarded:
-#   * crates/reify-audit/tests/jcodemunch_session_live.rs -- 8 matching lines
-#   * crates/reify-cli/tests/harness_cli/cli_lsp_protocol.rs -- 4
-#   * crates/reify-fdm/src/slice.rs -- 2, and outside tests at that
-# i.e. 14 lines across 3 files, measured 2026-08-25 by running this guard's
-# own two regexes over crates/ and gui/. They hand-roll a deadline off the raw
-# clock and poll against it, which is exactly what Rule A exists to catch.
-# Pointing `_LIVE_DIR` at those roots is therefore NOT a one-line change: they
-# would fail the gate on day one, so extending the ratchet needs a per-file
-# baseline (or an escape argued at each site), and those files sit outside
-# task #6438's scope. Filed as follow-up work rather than done here or left
-# implied -- until it lands, a reader should assume the Rust half of the tree
-# is unguarded except for this one directory.
+# SCOPE, stated first because it bounds every other claim here. `_LIVE_ROOTS`
+# is the glob expansion of crates/*/tests (32 directories today) plus
+# gui/src-tauri/src/tests, gui/src-tauri/tests and tree-sitter-reify/tests --
+# 35 roots, 1330 .rs files, scanned RECURSIVELY. #6438 shipped this guard
+# scoped to the single non-recursive directory gui/src-tauri/src/tests, where
+# all four flakes happened, and said plainly that the rest of the Rust tree was
+# unguarded; #6597 closed that. The glob is deliberate: a new crate's tests are
+# ratcheted the day they land, so the guard does not need editing to stay
+# honest, and an unmatched glob is rejected loudly rather than skipped.
+#
+# THE BASELINE, AND THE DISTINCTION A READER MUST NOT BLUR. Widening the scan
+# could not be a one-line change: 19 violating lines across 6 files already
+# existed and would have redded the gate on day one. They are listed in
+# tests/infra/wallclock-rust-deadline-baseline.txt. A baseline row and an
+# escape comment are DIFFERENT CLAIMS, and conflating them is the one way this
+# design fails quietly:
+#   * an ESCAPE says "this site is LEGITIMATE, and here is the argument, at the
+#     site". There is exactly one, far_future_stamp() in watcher_tests.rs, and
+#     adding a second also takes a diff to _ESC_ALLOWLIST_SIZE.
+#   * a ROW says "PRE-EXISTING DEBT that MUST NOT GROW". Nothing in that file is
+#     blessed. Annotating those 19 sites with escapes instead was considered and
+#     rejected: it would have edited 6 files across 5 crates plus
+#     tree-sitter-reify, and it would have blessed 19 flakes-in-waiting.
+# The ratchet runs in TWO DIRECTIONS, which is what makes it shrink-only. A live
+# record absent from the baseline is `+` and reds; a baseline row matching
+# nothing live is `-` and ALSO reds, so a fixed site must be drained in the same
+# diff. That follows tests/infra/harness-layout-baseline.manifest, which reds on
+# orphan rows -- deliberately not ptodo-baseline.txt's subset-only rule, which
+# has no forcing function to drain it (a limitation #6859 accepts openly, and
+# one this guard need not inherit at 19 hand-auditable rows).
+#
+# PRODUCTION CODE IS EXCLUDED, and this is an argument rather than an
+# oversight. A "root" here is a directory whose CONTENTS are tests -- which is
+# why gui/src-tauri/src/tests is IN (a test root that happens to live under
+# src/) while crates/*/src is OUT. Re-running the two rules over the whole tree
+# finds 5 more matching lines that this guard deliberately drops:
+#   * crates/reify-fdm/src/slice.rs:333,340 -- `fn wait_within` polls a real
+#     child process for exit within a grace window, then escalates to SIGKILL.
+#     (Verified: that file contains no #[cfg(test)] module at all.)
+#   * tree-sitter-reify/build.rs:43,58 -- the identical shape in a build script.
+# Both rules exist for TEST flake: an upper bound on elapsed time INVERTS under
+# load. A subprocess grace period asserts nothing, cannot invert into a failure,
+# and has no WaitClock seam to be routed through -- it IS a real-time wait, by
+# definition. Scanning it would force escape comments onto correctness code and
+# would blur what Rule A means.
+#
+# THE REMAINING BLIND SPOT, named exactly as #6438 named its own. An inline
+# `#[cfg(test)]` module inside a production src/ file is NOT scanned, even
+# though its contents genuinely are tests. Finding one lexically needs brace
+# nesting -- i.e. the Rust grammar this guard deliberately refuses to grow (see
+# NO LINE JOINER at the engine). ONE instance is known and measured:
+# crates/reify-eval/src/compute_targets/fdm_slice.rs:821
+# (`elapsed < Duration::from_secs(10)`), inside the #[cfg(test)] mod that starts
+# at line 480. It is uncovered. A reader should not assume otherwise, and the
+# honest fix is to move such tests to a tests/ root rather than to teach this
+# grep to parse Rust.
 #
 # FALSE NEGATIVES, i.e. shapes that get past it by construction:
 #   * A named constant: `assert!(elapsed < TIMEOUT_BUDGET)` carries neither a
@@ -139,9 +190,18 @@
 #     own directory, and this one does not.
 #   * The SIBLING guard DOES scan this file (its live scan covers all of
 #     tests/infra except its own basename). So no line here may carry
-#     `assert` + a `-le`/`-lt <int>` upper bound + a time lexeme. Every rc
-#     assertion below uses `-eq`, which fails that guard's operator condition
-#     outright and keeps this file un-flaggable by construction.
+#     `assert` + a `-le`/`-lt <int>` upper bound + a time lexeme. No assertion
+#     below uses either operator: rc checks use `-eq`, and the few that are not
+#     equalities use `-ne` (a root list is non-empty, a bad root is non-zero) or
+#     `-ge` (the file-count floor). `-ge` in particular is not a slip -- a floor
+#     is a LOWER bound, and a lower bound is both the only direction that means
+#     anything there and the direction that guard is deliberately blind to.
+#     Verified: the sibling guard is green on this file.
+#   * THE BASELINE FILE, tests/infra/wallclock-rust-deadline-baseline.txt, holds
+#     19 verbatim copies of forbidden shapes -- and is invisible to BOTH guards
+#     by file type: this one scans *.rs (fixture 4a-4 pins that), the sibling
+#     scans *.sh. So it needs no escapes, no assembly convention, and it cannot
+#     fingerprint itself into permanent self-reference. Keep it a .txt.
 #
 # The escape token itself IS assembled from two adjacent single-quoted parts,
 # so this file contains no contiguous copy of it -- writing one would silently
