@@ -170,7 +170,7 @@ fn main() -> ExitCode {
     }
 }
 
-/// Print already-rendered parse errors to stderr and yield the exit code a parse failure
+/// Write already-rendered parse errors to `out` and yield the exit code a parse failure
 /// gets, so both entry points cannot drift apart on the prefix or the code.
 ///
 /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
@@ -180,9 +180,14 @@ fn main() -> ExitCode {
 /// and slated for removal by the PRD task η follow-up. Callers reach the renderer by method
 /// resolution instead, which needs no crate path — and `ParsedModule::render_errors` is where
 /// the reason for rendering the whole list at once is documented.
-fn report_parse_errors(rendered: Vec<String>) -> ExitCode {
+///
+/// `out` is injected rather than written as `eprintln!`, matching
+/// [`report_constraint_results`] in this file: the position prefix is the whole point of the
+/// rendering step, and a test that cannot read what was written can only assert that SOMETHING
+/// mentioning "Parse error" reached stderr — which passes just as well with the position gone.
+fn report_parse_errors(rendered: Vec<String>, out: &mut impl std::io::Write) -> ExitCode {
     for error in rendered {
-        eprintln!("Parse error: {error}");
+        let _ = writeln!(out, "Parse error: {error}");
     }
     ExitCode::FAILURE
 }
@@ -208,7 +213,10 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
     let parsed = reify_compiler::parse_with_stdlib(&source, ModulePath::single(module_name));
 
     if !parsed.errors.is_empty() {
-        return Err(report_parse_errors(parsed.render_errors(&source)));
+        return Err(report_parse_errors(
+            parsed.render_errors(&source),
+            &mut std::io::stderr(),
+        ));
     }
 
     let mut compiled = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
@@ -264,7 +272,10 @@ fn parse_and_compile_with_cfg(
     let parsed = reify_compiler::parse_with_stdlib(&source, ModulePath::single(module_name));
 
     if !parsed.errors.is_empty() {
-        return Err(report_parse_errors(parsed.render_errors(&source)));
+        return Err(report_parse_errors(
+            parsed.render_errors(&source),
+            &mut std::io::stderr(),
+        ));
     }
 
     // Resolve sibling user imports relative to the entry file's parent dir.
@@ -3624,6 +3635,83 @@ mod tests {
     use reify_core::ConstraintNodeId;
     use reify_eval::ConstraintCheckEntry;
     use reify_ir::Satisfaction;
+
+    /// A parse error the CLI prints must be one a user can JUMP TO.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+    /// Both entry points used to print `err.message` alone — no file, no line, no column — so
+    /// a parse error in a long file named no place to look. The pre-existing CLI harness
+    /// asserts only `stderr.contains("Parse error")`, which passes identically whether the
+    /// position is there or not; this asserts the position itself.
+    ///
+    /// Runs the same two-step composition the entry points run (`parse_with_stdlib` then
+    /// `render_errors`) against the real in-tree fixture, and derives the expected line from
+    /// that fixture with `str::find` rather than hard-coding it, so the test tracks the
+    /// fixture if its layout changes.
+    #[test]
+    fn report_parse_errors_writes_a_line_and_column_for_every_error() {
+        const FIXTURE: &str = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/bracket_parse_error.ri"
+        );
+        let source = std::fs::read_to_string(FIXTURE).expect("fixture must be readable");
+        let fault_offset = source
+            .find("@@@")
+            .expect("fixture precondition: bracket_parse_error.ri must contain the `@@@` fault");
+        let fault_line = source[..fault_offset].matches('\n').count() + 1;
+
+        let parsed =
+            reify_compiler::parse_with_stdlib(&source, ModulePath::single("bracket_parse_error"));
+        assert!(
+            !parsed.errors.is_empty(),
+            "fixture precondition: bracket_parse_error.ri must fail to parse"
+        );
+
+        let mut out = Vec::new();
+        report_parse_errors(parsed.render_errors(&source), &mut out);
+        let printed = String::from_utf8(out).expect("CLI output must be UTF-8");
+
+        assert!(
+            !printed.is_empty(),
+            "a failing parse must report something to the user"
+        );
+        for reported in printed.lines() {
+            let located = reported.strip_prefix("Parse error: ").unwrap_or_else(|| {
+                panic!("every reported line keeps the `Parse error: ` prefix; got {reported:?}")
+            });
+            let (line_str, rest) = located.split_once(':').unwrap_or_else(|| {
+                panic!(
+                    "expected a `line:column: message` prefix so the user can jump straight to \
+                     the fault; got {reported:?}"
+                )
+            });
+            let (col_str, message) = rest.split_once(':').unwrap_or_else(|| {
+                panic!("expected a `line:column:` prefix — found a line but no column; got {reported:?}")
+            });
+            let line: usize = line_str.parse().unwrap_or_else(|_| {
+                panic!("the leading field must be a 1-based line number; got {reported:?}")
+            });
+            let col: usize = col_str.parse().unwrap_or_else(|_| {
+                panic!("the second field must be a 1-based column number; got {reported:?}")
+            });
+            assert!(
+                line >= 1 && col >= 1,
+                "line and column are 1-based; got {reported:?}"
+            );
+            assert!(
+                !message.trim().is_empty(),
+                "the position must be ADDED to the parser's message, not substituted for it; \
+                 got {reported:?}"
+            );
+        }
+
+        let expected_prefix = format!("Parse error: {fault_line}:");
+        assert!(
+            printed.lines().any(|l| l.starts_with(&expected_prefix)),
+            "at least one report must land on line {fault_line}, where the fixture's `@@@` \
+             fault sits; got {printed:?}"
+        );
+    }
 
     /// Helper: capture `report_constraint_results` output into an in-memory
     /// buffer and return the outcome plus the formatted output as a `String`.
