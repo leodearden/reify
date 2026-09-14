@@ -603,6 +603,65 @@ fn assert_probe_saw_kernel_backed_body(case: &str, records: &[ProbeRecord]) {
     );
 }
 
+/// Shared assertion for #5951's content guard, on every surface that can reach
+/// it: no `@optimized` invocation may be handed non-empty `realization_inputs`
+/// in which every `RealizationReadHandle::content()` is `None`.
+///
+/// One predicate, one failure message, one place a future change to #5951's
+/// contract has to land. Asserted from the cold `build()` case and — since
+/// #7332 made the warm `build_snapshot` surface reachable — from its warm twin
+/// too.
+fn assert_no_contentless_latch(case: &str, records: &[ProbeRecord]) {
+    let contentless: Vec<_> = records
+        .iter()
+        .filter(|r| r.realization_inputs_len > 0 && !r.any_realized_content)
+        .collect();
+    assert!(
+        contentless.is_empty(),
+        "{case}: no probe invocation may be handed non-empty \
+         `realization_inputs` in which every `RealizationReadHandle::content()` \
+         is None. Such a write delivers nothing to the trampoline yet still ends \
+         the node's redispatch for the rest of that build, stranding it on its \
+         degraded first-dispatch result — SILENTLY, because the `ReprKind::BRep` \
+         arm of `project_realization_read_handle` is identity-only by design \
+         (PRD §4 D1) and `degrade_projection`'s Warning is never reached (task \
+         #5951 fix (B)). Since #7332 that strand lasts one build instead of \
+         forever, which narrows the door but does not close it. Offending \
+         invocations: {contentless:?} of all records: {records:?}"
+    );
+}
+
+/// Shared assertion for #5951's end-of-build report: a node the content guard
+/// can never rescue must be named exactly ONCE per build — per NODE, not per
+/// per-template redispatch call, and never zero times.
+///
+/// Asserted from the cold `build()` case and the warm `build_snapshot` one.
+/// Both fixtures carry trailing templates, so "once" is a real claim rather
+/// than an artefact of there being only one call.
+fn assert_one_strand_warning(case: &str, diagnostics: &[reify_core::Diagnostic]) {
+    let strand_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == reify_core::Severity::Warning
+                && d.message.contains("projected no content")
+        })
+        .collect();
+    assert_eq!(
+        strand_warnings.len(),
+        1,
+        "{case}: exactly ONE Warning must report the stranded node — the \
+         degradation must be visible, and it must be reported per node. Zero \
+         means it is as silent as the pre-#5951 defect was; more than one means \
+         it is reported per per-template redispatch call. Got: {strand_warnings:?}"
+    );
+    assert!(
+        strand_warnings[0].message.contains(ORDER_PROBE_TARGET),
+        "{case}: the Warning must name the @optimized target so the user can \
+         find the degraded node: {:?}",
+        strand_warnings[0]
+    );
+}
+
 // ── tests ──────────────────────────────────────────────────────────────────
 
 /// Task #5951 (RED before the fix): a single no-op structure declared ahead of
@@ -705,20 +764,7 @@ fn latch_is_not_tripped_when_the_rebuilt_inputs_carry_no_realized_content() {
     // (a) Observable at the trampoline: the same `realization_inputs` that get
     //     written onto the node are the ones handed to `run_compute_dispatch`,
     //     so a content-free write is visible here.
-    let contentless: Vec<_> = records
-        .iter()
-        .filter(|r| r.realization_inputs_len > 0 && !r.any_realized_content)
-        .collect();
-    assert!(
-        contentless.is_empty(),
-        "no probe invocation may be handed non-empty `realization_inputs` in \
-         which every `RealizationReadHandle::content()` is None. Such a write \
-         delivers nothing to the trampoline yet still trips the Phase-1 \
-         `realization_inputs.is_empty()` one-shot latch, permanently and \
-         SILENTLY stranding the node on its degraded first-dispatch result \
-         (task #5951 fix (B)). Offending invocations: {contentless:?} of all \
-         records: {records:?}"
-    );
+    assert_no_contentless_latch("cold build, non-tessellating kernel", &records);
 
     // (b) Observable in the post-build graph: the candidate gate is untripped,
     //     so a later pass — a later template's iteration, a later build tick —
@@ -954,26 +1000,9 @@ fn a_permanently_stranded_node_is_reported_once_at_end_of_build() {
             "precondition: the content guard must have left the node a candidate"
         );
 
-        let strand_warnings: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| {
-                d.severity == reify_core::Severity::Warning
-                    && d.message.contains("projected no content")
-            })
-            .collect();
-        assert_eq!(
-            strand_warnings.len(),
-            1,
-            "exactly ONE Warning must report the stranded node with {trailing} \
-             trailing template(s) — the degradation must be visible, and it must \
-             be reported per node, not per per-template redispatch call. \
-             Got: {strand_warnings:?}"
-        );
-        assert!(
-            strand_warnings[0].message.contains(ORDER_PROBE_TARGET),
-            "the Warning must name the @optimized target so the user can find \
-             the degraded node: {:?}",
-            strand_warnings[0]
+        assert_one_strand_warning(
+            &format!("cold build, {trailing} trailing template(s)"),
+            &diagnostics,
         );
     }
 }
@@ -1147,19 +1176,9 @@ fn a_warm_rebuild_still_refuses_to_latch_on_contentless_inputs() {
 
     // (a) #5951's door, over records from BOTH builds. Same predicate as the
     //     cold twin; step-4 hoists the two copies into one helper.
-    let records = recorded();
-    let contentless: Vec<_> = records
-        .iter()
-        .filter(|r| r.realization_inputs_len > 0 && !r.any_realized_content)
-        .collect();
-    assert!(
-        contentless.is_empty(),
-        "no probe invocation may be handed non-empty `realization_inputs` in \
-         which every `RealizationReadHandle::content()` is None — on the WARM \
-         `build_snapshot` surface (#7332) exactly as on the cold `build()` one \
-         (#5951 fix (B)). Such a write delivers nothing to the trampoline yet \
-         still ends the node's redispatch for the rest of that build. Offending \
-         invocations: {contentless:?} of all records: {records:?}"
+    assert_no_contentless_latch(
+        "cold build + warm build_snapshot, non-tessellating kernel",
+        &recorded(),
     );
 
     // (b) Still a candidate after the warm build, so a later tick — a repaired
@@ -1176,27 +1195,8 @@ fn a_warm_rebuild_still_refuses_to_latch_on_contentless_inputs() {
     // (c) The degradation must not be silent on the warm surface either — and
     //     must be reported once per NODE, not once per trailing template. The
     //     fixture carries three, so a per-template report would read 4.
-    let strand_warnings: Vec<_> = warm
-        .diagnostics
-        .iter()
-        .filter(|d| {
-            d.severity == reify_core::Severity::Warning
-                && d.message.contains("projected no content")
-        })
-        .collect();
-    assert_eq!(
-        strand_warnings.len(),
-        1,
-        "the warm `build_snapshot` must emit exactly ONE Warning reporting the \
-         stranded node. Zero means `emit_contentless_redispatch_warnings` never \
-         reports on this surface, so a warm-path strand is as silent as the \
-         pre-#5951 defect was; more than one means it reports per per-template \
-         redispatch call rather than per node. Got: {strand_warnings:?}"
-    );
-    assert!(
-        strand_warnings[0].message.contains(ORDER_PROBE_TARGET),
-        "the Warning must name the @optimized target so the user can find the \
-         degraded node: {:?}",
-        strand_warnings[0]
+    assert_one_strand_warning(
+        "warm build_snapshot, 3 trailing template(s)",
+        &warm.diagnostics,
     );
 }
