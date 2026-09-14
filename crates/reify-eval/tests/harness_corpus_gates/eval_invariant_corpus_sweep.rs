@@ -1374,3 +1374,47 @@ fn selector_consumer_premise_fixture_is_swept_by_exactly_one_shard() {
         "{rel} must report zero stale-Undef violations — the #4946 R3f-bridge premise"
     );
 }
+
+/// Drift guard: `corpus_shard_tests!` must enumerate EXACTLY
+/// `0..CORPUS_SHARD_COUNT` — one `#[test]` fn per shard index, no gaps,
+/// duplicates or out-of-range entries — or some corpus files would silently
+/// never be swept, and `run_corpus_shard` could be invoked with an index that
+/// can never match any file.
+///
+/// Asserted against `GENERATED_SHARD_INDICES`, the array the macro emits FROM
+/// THE SAME repetition that generates the shard `#[test]` fns, rather than a
+/// separately hand-maintained literal: deleting a `corpus_sweep_shard_NN` line
+/// shrinks that array too, so this guard actually fires on that drift. Comparing
+/// two independently-hardcoded literals could not — neither changes when a line
+/// is removed.
+///
+/// This matters MORE under hash keying than it did under index keying. With
+/// `i % N` a missing shard left an obvious arithmetic hole in a sorted walk;
+/// with `hash % N` the files a deleted shard owned are scattered across the
+/// corpus, so their disappearance is invisible without this guard plus
+/// `hash_sharding_partitions_the_corpus_within_measured_bounds`'s exhaustive
+/// partition assertion.
+#[test]
+fn corpus_shard_count_matches_generated_tests() {
+    assert_eq!(
+        GENERATED_SHARD_INDICES.len(),
+        CORPUS_SHARD_COUNT,
+        "corpus_shard_tests! generated {} shard test(s) but CORPUS_SHARD_COUNT is \
+         {CORPUS_SHARD_COUNT} — every index in 0..CORPUS_SHARD_COUNT must have \
+         exactly one corpus_sweep_shard_NN test, or some corpus files silently \
+         never get swept",
+        GENERATED_SHARD_INDICES.len()
+    );
+
+    // Stronger than a count match: pin the exact index SET too, so a
+    // duplicate/out-of-range index masking a missing one (same count, wrong
+    // coverage) cannot slip through.
+    let mut sorted_indices = GENERATED_SHARD_INDICES.to_vec();
+    sorted_indices.sort_unstable();
+    let expected: Vec<usize> = (0..CORPUS_SHARD_COUNT).collect();
+    assert_eq!(
+        sorted_indices, expected,
+        "corpus_shard_tests! must enumerate EXACTLY 0..CORPUS_SHARD_COUNT — no gaps, \
+         duplicates, or out-of-range indices — got {GENERATED_SHARD_INDICES:?}"
+    );
+}
