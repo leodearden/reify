@@ -7,14 +7,15 @@
 #   #5422, #5709 and #6438 cannot silently return a FIFTH time -- anywhere in
 #   the Rust tests, not merely where the first four happened.
 #   #6438 shipped this scoped to the one directory gui/src-tauri/src/tests.
-#   #6597 widened it to every crates/*/tests, both gui/src-tauri test roots and
-#   tree-sitter-reify/tests, scanned recursively, with the sites that already
-#   existed held in a two-directional baseline ratchet rather than blessed.
+#   #6597 widened it to every crates/*/tests, all three gui/src-tauri test
+#   roots and tree-sitter-reify/tests, scanned recursively, with the sites
+#   that already existed held in a two-directional baseline ratchet rather
+#   than blessed.
 #   See SCOPE under KNOWN LIMITS for what that does and does not cover.
 #
 # The guard itself is a LOAD-INDEPENDENT static grep -- it is NOT a wall-clock
 # test, and it runs no cargo, no npm and no watcher. It stays instant at the
-# widened scope: 0.108s over 1330 files.
+# widened scope: ~0.13s over 1331 files, re-measured on the 36-root set.
 #
 # ---------------------------------------------------------------------------
 # WHY THIS IS A SIBLING OF test_no_new_wallclock_upper_bounds.sh AND NOT AN
@@ -95,13 +96,25 @@
 #
 # SCOPE, stated first because it bounds every other claim here. `_LIVE_ROOTS`
 # is the glob expansion of crates/*/tests (32 directories today) plus
-# gui/src-tauri/src/tests, gui/src-tauri/tests and tree-sitter-reify/tests --
-# 35 roots, 1330 .rs files, scanned RECURSIVELY. #6438 shipped this guard
-# scoped to the single non-recursive directory gui/src-tauri/src/tests, where
-# all four flakes happened, and said plainly that the rest of the Rust tree was
-# unguarded; #6597 closed that. The glob is deliberate: a new crate's tests are
-# ratcheted the day they land, so the guard does not need editing to stay
-# honest, and an unmatched glob is rejected loudly rather than skipped.
+# gui/src-tauri/src/tests, gui/src-tauri/src/debug_server/tests,
+# gui/src-tauri/tests and tree-sitter-reify/tests -- 36 roots, 1331 .rs files,
+# scanned RECURSIVELY. #6438 shipped this guard scoped to the single
+# non-recursive directory gui/src-tauri/src/tests, where all four flakes
+# happened, and said plainly that the rest of the Rust tree was unguarded;
+# #6597 closed that. The glob is deliberate: a new crate's tests are ratcheted
+# the day they land, so the guard does not need editing to stay honest, and an
+# unmatched glob is rejected loudly rather than skipped.
+#
+# "EVERY TEST ROOT" IS CHECKED, NOT PROMISED. The four enumerated roots are the
+# part no glob covers, and an enumeration is exactly where a root goes missing:
+# the #6597 review found gui/src-tauri/src/debug_server/tests unscanned -- 31
+# test fns, a CHILD of debug_server::tests, so recursing gui/src-tauri/src/tests
+# never reaches it -- in the very crate that produced all four flakes. So the
+# claim is derived rather than trusted. Section 3 builds ground truth from the
+# tree (every directory named `tests` that holds a tracked .rs file) and reds on
+# any of them this list does not cover, naming it. A test directory split out
+# tomorrow therefore reds the gate instead of quietly becoming a second blind
+# spot.
 #
 # THE BASELINE, AND THE DISTINCTION A READER MUST NOT BLUR. Widening the scan
 # could not be a one-line change: 19 violating lines across 6 files already
@@ -139,16 +152,27 @@
 # definition. Scanning it would force escape comments onto correctness code and
 # would blur what Rule A means.
 #
-# THE REMAINING BLIND SPOT, named exactly as #6438 named its own. An inline
-# `#[cfg(test)]` module inside a production src/ file is NOT scanned, even
-# though its contents genuinely are tests. Finding one lexically needs brace
-# nesting -- i.e. the Rust grammar this guard deliberately refuses to grow (see
-# NO LINE JOINER at the engine). ONE instance is known and measured:
+# THE REMAINING BLIND SPOT, named exactly as #6438 named its own -- and there
+# is exactly ONE, which is now a checked claim rather than a hopeful one. An
+# inline `#[cfg(test)]` module inside a production src/ file is NOT scanned,
+# even though its contents genuinely are tests. Finding one lexically needs
+# brace nesting -- i.e. the Rust grammar this guard deliberately refuses to grow
+# (see NO LINE JOINER at the engine). ONE instance is known and measured:
 # crates/reify-eval/src/compute_targets/fdm_slice.rs:821
 # (`elapsed < Duration::from_secs(10)`), inside the #[cfg(test)] mod that starts
 # at line 480. It is uncovered. A reader should not assume otherwise, and the
 # honest fix is to move such tests to a tests/ root rather than to teach this
 # grep to parse Rust.
+#
+# WHAT MAKES "ONE" TRUE is the other half of the sentence -- that every tests/
+# root IS scanned -- and that half is ENFORCED, not asserted: the completeness
+# check in Section 3 diffs the root list against the tree. It has to be. An
+# earlier draft of this widening left gui/src-tauri/src/debug_server/tests out
+# of the list, which made this paragraph false as written: there were TWO
+# uncovered locations, not one, and nothing here could see the second. With that
+# root added the tree's 36-root ground truth is covered exactly, re-measured,
+# and the inline #[cfg(test)] mod above is once again the sole uncovered
+# category -- and a future omission reds rather than joining it.
 #
 # FALSE NEGATIVES, i.e. shapes that get past it by construction:
 #   * A named constant: `assert!(elapsed < TIMEOUT_BUDGET)` carries neither a
@@ -479,9 +503,10 @@ _wallclock_fingerprints() {
     # this replaced justified its per-line bash loop against `echo | grep` per
     # line -- true, but it never weighed one grep for the ENTIRE scan.
     # Measured on this tree: the bash loop over ONE ~30-file directory takes
-    # 0.518s, while this whole function over all 35 roots (1330 files, 677k
-    # lines) takes 0.108s end to end -- 0.070s of it the grep itself. The loop
-    # at that scale would cost ~30s in a gate that is supposed to be instant.
+    # 0.518s, while this whole function over all 36 roots (1331 files, 679k
+    # lines) takes ~0.13s end to end -- about 0.10s of it the grep itself, over
+    # a 0.10-0.44s spread across eight runs on a busy host. The loop at that
+    # scale would cost ~30s in a gate that is supposed to be instant.
     local _hits _rc=0
     _hits="$(grep -rnE --include='*.rs' -e "$_rule_a" -e "$_rule_b" -- "$@")" || _rc=$?
     [ "$_rc" -le 1 ] || return "$_rc"
@@ -1289,7 +1314,7 @@ assert "2ac: three escapes across two files count 3, not 1 and not 2" \
 # 2ad: escape COUNTER, RECURSION. An escape buried in a subdirectory must be
 #      counted. The counter globbed `"$dir"/*.rs`, which is non-recursive --
 #      harmless while it only ever saw one flat directory, and a silent hole
-#      the moment Section 3 points it at 35 roots full of subdirectories. An
+#      the moment Section 3 points it at 36 roots full of subdirectories. An
 #      uncounted escape is strictly worse than an uncounted violation: the
 #      detector cannot see an escaped line AT ALL, so the escape count is the
 #      only thing that knows the line exists.
@@ -1356,8 +1381,8 @@ assert "2af: a root that does not exist is a hard error, not a zero count" \
 # scoped to the single non-recursive directory gui/src-tauri/src/tests -- the
 # file where all four flakes happened, and, as its header said plainly, all it
 # scanned. It now covers every crates/*/tests (32 today, glob-expanded so a new
-# crate is covered the day it lands), both gui/src-tauri test roots, and
-# tree-sitter-reify/tests, recursively.
+# crate is covered the day it lands), all three gui/src-tauri test roots, and
+# tree-sitter-reify/tests, recursively -- 36 roots, 1331 .rs files today.
 #
 # That widening cannot be a one-line change, because 19 violating lines across
 # 6 files already exist and would red the gate on day one. They are BASELINED
@@ -1367,9 +1392,12 @@ assert "2af: a root that does not exist is a hard error, not a zero count" \
 # touching a row.
 #
 # FOUR ASSERTIONS, and each one covers a way the other three can lie:
-#   (1) THE ROOT LIST IS REAL. Every entry exists, and the list contains the
-#       roots we know hold baselined sites. A glob that expanded to nothing
-#       would otherwise leave a shorter list that still passes everything else.
+#   (1) THE ROOT LIST IS REAL, AND COMPLETE. Every entry exists; the list names
+#       the roots known to hold baselined sites; and it is diffed against ground
+#       truth derived from the tree, so a test root NOBODY thought of cannot sit
+#       unscanned -- the failure the #6597 review found. A glob that expanded to
+#       nothing would otherwise leave a shorter list that still passes
+#       everything else.
 #   (2) THE RATCHET HOLDS, in both directions -- no new violation, and no
 #       stale row.
 #   (3) THE FLOOR. Files were actually scanned. A subset oracle is trivially
@@ -1506,7 +1534,7 @@ assert "live scan: no NEW hand-rolled deadlines or elapsed upper bounds, and no 
     test "$_s3_rc" -eq 0
 
 # --- (3) the non-vacuity floor ---------------------------------------------
-# 1330 .rs files today. The floor is deliberately loose: it must catch a root
+# 1331 .rs files today. The floor is deliberately loose: it must catch a root
 # list that collapsed, without churning every time a test file is added or
 # deleted. It is a LOWER bound, which is the only direction that means
 # anything here -- an upper bound would red on a growing tree.
@@ -2085,7 +2113,7 @@ assert "4e-2: an empty root is not an error (returns 0)" \
 
 # ---------------------------------------------------------------------------
 # 4e-3: counts RECURSIVELY and ACROSS ROOTS, and counts only .rs. The live
-#       floor is asserted over 35 roots full of subdirectories, so a
+#       floor is asserted over 36 roots full of subdirectories, so a
 #       non-recursive or first-root-only count would report a number far
 #       below the real one and could satisfy a floor it should not.
 # ---------------------------------------------------------------------------
