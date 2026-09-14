@@ -43,30 +43,10 @@ pub fn compute_goto_definition_with_parsed(
     // a reference to a member, so answering it here removes any chance that a
     // pathologically same-named member shadows the definition — and returning
     // the definition when the cursor is already on it is standard LSP
-    // behaviour.
-    for decl in &parsed.declarations {
-        // CHEAP DISCRIMINATORS FIRST: name equality, then cursor containment in
-        // the declaration's statement span — both O(1)-ish — before paying for
-        // `decl_name_token`, which is a bounded scan over the declaration's
-        // text. Pre-filtering on the statement span cannot change which
-        // declaration matches: `name_token_span` returns a sub-span of the span
-        // it is given, so `offset` inside the name token always implies
-        // `offset` inside the statement span.
-        let Some((name, span)) = crate::analysis::decl_name_and_span(decl) else {
-            continue;
-        };
-        if name != word || offset < span.start as usize || offset >= span.end as usize {
-            continue;
-        }
-        if let Some(tok) = decl_name_token(source, name, span)
-            && offset >= tok.start as usize
-            && offset < tok.end as usize
-        {
-            return Some(Location {
-                uri: uri.clone(),
-                range: span_to_range(source, tok),
-            });
-        }
+    // behaviour. Pinned by
+    // `goto_def_cursor_on_declaration_name_beats_same_named_member`.
+    if let Some(loc) = resolve_decl_name(parsed, source, uri, word, Some(offset)) {
+        return Some(loc);
     }
 
     // Try to find the enclosing declaration by checking if the cursor offset
@@ -114,38 +94,75 @@ pub fn compute_goto_definition_with_parsed(
     // Ordering is load-bearing:
     // - AFTER both member phases, so every pre-existing member resolution keeps
     //   byte-identical behaviour and a member never loses to a same-named
-    //   declaration.
+    //   declaration. Pinned by
+    //   `goto_def_member_use_wins_over_same_named_top_level_declaration`.
     // - BEFORE cross-file Phase 2. `compute_goto_definition_cross_file_with_parsed`
     //   delegates to this core at its Phase 1 slot, so placing Phase C here
-    //   makes a LOCAL declaration win over an IMPORT of the same name — the
-    //   correct conflict resolution, pinned by
-    //   `goto_def_local_declaration_wins_over_same_named_import`.
+    //   makes a LOCAL declaration win over an IMPORT of the same name — pinned
+    //   by `goto_def_local_declaration_wins_over_same_named_import`.
     // - Cross-file Phase 0 (cursor inside an `import` span) still runs first, so
     //   the cursor-on-import contract is untouched.
     //
-    // When two top-level declarations share a name (already a semantic error)
-    // the FIRST in source order wins. The returned range is the NAME TOKEN —
-    // deliberately the same shape the cross-file path returns via
-    // `find_declaration_name_span`; closing that asymmetry is why task 6388
-    // exists. Member resolution above keeps returning the full member statement
-    // span, unchanged.
+    // The returned range is the NAME TOKEN — deliberately the same shape the
+    // cross-file path returns via `find_declaration_name_span`; closing that
+    // asymmetry is why task 6388 exists. Member resolution above keeps returning
+    // the full member statement span, unchanged.
+    resolve_decl_name(parsed, source, uri, word, None)
+}
+
+/// Resolve `word` to the NAME TOKEN of the top-level declaration it names.
+///
+/// The single body behind task 6388's two same-file phases; `cursor` is what
+/// distinguishes them:
+/// - `Some(offset)` — Phase A, the cursor sits ON a declaration's own name
+///   token: the match must additionally CONTAIN `offset`.
+/// - `None` — Phase C, `word` merely NAMES a declaration from a use site
+///   anywhere in the file: no containment filter.
+///
+/// Where the two calls sit relative to the member phases is the load-bearing
+/// decision, and it lives at the call sites rather than here.
+///
+/// CHEAP DISCRIMINATORS FIRST: name equality, then (Phase A only) cursor
+/// containment in the declaration's statement span — both O(1)-ish — before
+/// paying for [`decl_name_token`], a bounded scan over the declaration's text.
+/// Pre-filtering on the statement span cannot change which declaration matches:
+/// `name_token_span` returns a sub-span of the span it is given, so `offset`
+/// inside the name token always implies `offset` inside the statement span.
+///
+/// When two declarations share a name (already a semantic error) the FIRST in
+/// source order wins.
+fn resolve_decl_name(
+    parsed: &reify_ast::ParsedModule,
+    source: &str,
+    uri: &Url,
+    word: &str,
+    cursor: Option<usize>,
+) -> Option<Location> {
     for decl in &parsed.declarations {
-        // Cheap discriminator first (see Phase A): only a declaration whose name
-        // IS the word under the cursor is worth narrowing to its name token.
         let Some((name, span)) = crate::analysis::decl_name_and_span(decl) else {
             continue;
         };
         if name != word {
             continue;
         }
-        if let Some(tok) = decl_name_token(source, name, span) {
-            return Some(Location {
-                uri: uri.clone(),
-                range: span_to_range(source, tok),
-            });
+        if let Some(offset) = cursor
+            && (offset < span.start as usize || offset >= span.end as usize)
+        {
+            continue;
         }
+        let Some(tok) = decl_name_token(source, name, span) else {
+            continue;
+        };
+        if let Some(offset) = cursor
+            && (offset < tok.start as usize || offset >= tok.end as usize)
+        {
+            continue;
+        }
+        return Some(Location {
+            uri: uri.clone(),
+            range: span_to_range(source, tok),
+        });
     }
-
     None
 }
 
