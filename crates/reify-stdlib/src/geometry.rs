@@ -5806,8 +5806,15 @@ mod tests {
             eval_builtin("affine_translate", &bad).is_undef(),
             "non-numeric component must be Undef"
         );
-        // Non-finite component.
-        let nan = [Value::Real(f64::NAN), Value::Real(0.0), Value::Real(0.0)];
+        // Non-finite component. All three are LENGTH so that non-finiteness is
+        // the ONLY reason this is Undef: a bare `Real` triple would also be
+        // rejected by the R12 dimension gate, and the row would stop witnessing
+        // the `is_finite()` check it is named for.
+        let nan = [
+            Value::length(f64::NAN),
+            Value::length(0.0),
+            Value::length(0.0),
+        ];
         assert!(
             eval_builtin("affine_translate", &nan).is_undef(),
             "non-finite component must be Undef"
