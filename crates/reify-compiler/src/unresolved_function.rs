@@ -12,8 +12,10 @@
 //!
 //! This module supplies the missing complement: a single predicate,
 //! [`is_known_builtin`], that answers "is this name known to the compiler at
-//! all?" by unioning **every** classification family the ladder consults, plus
-//! two explicit manifests declared here:
+//! all?" by unioning **every** classification family the ladder consults —
+//! the name slices, the builtin-signature registry, and the two vocabularies
+//! that live in no list at all (the arity-gated relation verbs, the
+//! determinacy predicates) — plus two explicit manifests declared here:
 //!
 //! * `FIRST_ARG_TYPED_NAMES` — names for which the terminal fallback's
 //!   first-arg typing is *verified correct*, so they are named rather than
@@ -55,7 +57,26 @@
 //!   registry row, the allowlist has no remaining job. Its family-by-family
 //!   migration is seeded by this task's warn-sweep violation list
 //!   (`docs/notes/unresolved-function-warn-sweep-2026-08-29.md`).
+//!
+//! # The registry arm is where the rest of this union is going
+//!
+//! Every name slice below is a *pre-registry* way of spelling "the compiler
+//! knows this name". #6001 α already retired two of them —
+//! `PARSE_FN_NAMES` and `ANALYSIS_FN_NAMES` left with their modules, and the
+//! seven names they held are now reached through the single
+//! [`crate::builtin_registry::registry_knows_name`] arm. Each τ task retires
+//! more the same way, and #6014 finishes the job.
+//!
+//! So the maintenance contract on a slice (`FIELD_OP_NAMES` and the four
+//! resolver-only slices in [`crate::units`] carry the canonical shape: keep
+//! the slice and its resolver in lockstep, pinned by a test) is a contract
+//! with an expiry. The migration that discharges it is a DELETION here —
+//! drop the slice's arm, and the registry arm already covers its names. No
+//! name should ever be added to both: [`EVAL_DEFERRED_BUILTIN_NAMES`]'s
+//! disjointness test treats the registry as a family precisely so a
+//! half-finished migration fails loudly instead of leaving two owners.
 
+use crate::builtin_registry::registry_knows_name;
 use crate::expr::DETERMINACY_PREDICATE_NAMES;
 use crate::joint_signatures::JOINT_TYPED_FN_NAMES;
 use crate::list_helpers::LIST_HELPER_NAMES;
@@ -383,8 +404,9 @@ pub const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[
 /// Is `name` a builtin function name the compiler knows about *at all*?
 ///
 /// Closed-world union over every classification family the `expr.rs`
-/// `NoUserFunctions` ladder consults, plus the two manifests declared in this
-/// module. A pure predicate: no allocation, no diagnostics.
+/// `NoUserFunctions` ladder consults — name slices, the builtin-signature
+/// registry, and the two slice-less vocabularies — plus the two manifests
+/// declared in this module. A pure predicate: no allocation, no diagnostics.
 ///
 /// # What this does NOT answer
 ///
@@ -431,6 +453,18 @@ pub fn is_known_builtin(name: &str) -> bool {
         || SELECTOR_COMPOSITION_NAMES.contains(&name)
         || LIST_HELPER_NAMES.contains(&name)
         || AFFINE_ALGEBRA_NAMES.contains(&name)
+        // --- The builtin-signature registry (#6001 α). ---
+        //
+        // Not a slice but a row table, and the successor to the
+        // `PARSE_FN_NAMES` / `ANALYSIS_FN_NAMES` slices this union used to
+        // carry — #6001 α deleted both modules. Asked through
+        // `builtin_registry`, the compiler's one seam onto `reify-builtins`,
+        // so this module does not open a second one.
+        //
+        // `registry_knows_name`, not `registry_owns`: the question here is
+        // membership, and an arity-overloaded name is a member even though no
+        // single row can type it.
+        || registry_knows_name(name)
         // --- Vocabularies that live outside any slice. ---
         //
         // The arity-gated shared verbs `angle`/`distance` are deliberately
