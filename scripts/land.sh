@@ -92,31 +92,27 @@ main_gate_mark
 # (merge-starvation / livelock; PRD §5 D5). Exporting propagates the role to the
 # pre-merge-commit child spawned by git merge.
 #
-# That same child inherits REIFY_GATE_EXCLUDE_HEAVY=1, excluding the 8 heavy-filter
-# members (scripts/heavy-test-filter-lib.sh) from this local gate — exactly as
+# That same child inherits REIFY_GATE_EXCLUDE_HEAVY, which scopes the 8 heavy-filter
+# members (scripts/heavy-test-filter-lib.sh) out of this local gate exactly as
 # dark-factory-orchestrator.yaml:230 already does for every orchestrator-spawned
-# role, task and merge alike. esc-6485-3 option B (Leo, 2026-08-31).
+# role. Defaulting it to 1 is load-bearing, not tidiness: this path runs
+# --profile both --scope all, so the debug --workspace pass runs the heavy members
+# under a binding 3600s wall where their 12h per-test ceiling is unreachable and a
+# hang degrades to a bare `timeout` exit 124 naming nothing. Do not remove this
+# without also removing that ceiling.
 #
-# REQUIRED, not tidy. This path runs --profile both --scope all, so NARROW_ACTIVE=0
-# and the debug --workspace pass runs the heavy members too, under a BINDING 3600s
-# wall. The 12h per-test ceiling .config/nextest.toml gives them is unreachable
-# there, so a heavy hang would surface as a bare `timeout` exit 124 naming nothing
-# — the task-4877/4878 zero-attribution shape. This export is the load-bearing
-# precondition for that ceiling: do not remove one without the other.
+# The decision, the coverage-vs-diagnosability trade behind it, why the hook is
+# deliberately left alone, and the accepted residual are recorded ONCE in
+# docs/prds/offline-deep-test-lane.md DA5 (esc-6485-3 option B, Leo 2026-08-31).
+# Propagation into the gate child is pinned behaviourally, not by grep, in
+# tests/infra/test_land_script.sh.
 #
-# Coverage is DEFERRED, not deleted. The offline deep lane re-runs the heavy set
-# from main's head under the 12h by-name ceiling. A local land bypasses the
-# orchestrator's on_post_merge trigger, so it is the lane's SHA poll backstop that
-# picks the commit up — git.offline_lane_poll_interval_secs (120s) compares main's
-# tip against the head of the last completed run, so within ~2 minutes. Accepted
-# residual: a heavy failure on a locally-landed commit yields a fix task rather
-# than blocking the land.
-#
-# Scoped here and not in hooks/pre-merge-commit: the hook is the shared gate entry
-# point, and a bare local `git merge --no-ff` on main is already unsanctioned
-# (CLAUDE.md), so the hook keeps the wider coverage.
+# `:-` rather than a bare 1, deliberately: DA5 settles the DEFAULT, not whether an
+# operator may override it. `REIFY_GATE_EXCLUDE_HEAVY=0 scripts/land.sh <branch>`
+# still buys full local heavy coverage, at the cost of the attribution above — the
+# behaviour every local land had before task 6485.
 export DF_VERIFY_ROLE=merge
-export REIFY_GATE_EXCLUDE_HEAVY=1
+export REIFY_GATE_EXCLUDE_HEAVY="${REIFY_GATE_EXCLUDE_HEAVY:-1}"
 echo "land.sh: merging '$BRANCH' into main (--no-ff; pre-merge-commit runs the full gate)..." >&2
 if git merge --no-ff "$BRANCH"; then
     landed="$(git rev-parse HEAD)"

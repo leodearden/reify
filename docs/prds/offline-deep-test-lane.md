@@ -176,6 +176,76 @@ and **auditable** — the drift-guard lists exactly what is deferred.
   — and runs the heavy set there under the 12h by-name ceiling.
   **Accepted residual:** a heavy failure on a locally-landed commit yields a fix task rather than
   blocking the land.
+  The default is expressed as `${REIFY_GATE_EXCLUDE_HEAVY:-1}`, not a bare `1`: DA5 settles what
+  happens when nobody says otherwise, not whether an operator may say otherwise. `REIFY_GATE_EXCLUDE_HEAVY=0
+  scripts/land.sh <branch>` still buys full local heavy coverage at the cost of the attribution above.
+  Adjacent `DF_VERIFY_ROLE=merge` is genuinely non-negotiable on this path and stays unconditional.
+- **DA6 — Three ceiling tiers, and what makes each one safe.** THIS IS THE NORMATIVE COPY of the
+  argument; `.config/nextest.toml`, `scripts/verify.sh`, `scripts/land.sh` and the guard tests carry a
+  rule and a pointer here, not a restatement. Six copies of one argument is how the claim "no gate path
+  runs heavy members" came to be carried, in this file's own words, after it had become false.
+
+  `.config/nextest.toml` sets a per-test `slow-timeout`/`terminate-after` ceiling in three tiers:
+
+  | tier | ceiling | members |
+  |---|---|---|
+  | default | 1200s | everything with no more specific override |
+  | gate-resident | 1800s | `representation_within_assertion` (LPT tier 50), `solve_elastic_static_body_e2e` (task 7339 contention headroom) |
+  | heavy | 43200s (12h) | all 8 members of `REIFY_HEAVY_NEXTEST_FILTER` |
+
+  **What the ceiling buys.** On expiry nextest SIGTERMs the offending test BY NAME. The pass-level
+  `timeout` wall in `scripts/verify.sh` does not: it kills the whole nextest process tree as exit 124
+  attributing nothing — the task 4877/4878 shape. So a ceiling is only worth having where it is
+  REACHABLE, i.e. strictly under the wall that binds the run.
+
+  **Which wall binds is a per-role fact**, and it is the joint everything else turns on. A role's
+  binding wall is the tighter of the walls for the profiles it forces: `offline` forces `release` and
+  gets a role-scoped 13h wall (46800s, ~3600s of headroom over the 12h ceiling — it exists only to make
+  the ceiling the binding bound, never to bind itself; observed offline sub-runs are ~560–2625s).
+  `background` forces `both`, so its binding wall is the 60m debug one.
+
+  **Why a 12h ceiling is safe on the BLOCKING gate.** Not because "no gate path runs heavy members" —
+  that is false as stated. `REIFY_GATE_EXCLUDE_HEAVY=1` is set for every orchestrator-spawned role
+  (`dark-factory-orchestrator.yaml`) and by `scripts/land.sh`, but setting the env var decides nothing:
+  `scripts/verify.sh` scopes its EFFECT to the `task` and `merge` roles alone (`_GATE_HEAVY_EXCLUDE`).
+  Those two, plus the sanctioned manual-land path, genuinely do not run heavy members — and that, not
+  the env var, is what makes the tier safe where a red blocks a merge.
+
+  **Accepted residual: `background`.** The main-tip cadence sweep runs `--profile both --scope all` and
+  is outside that exclusion, so it runs all 8 heavy members under the 60m debug wall where 43200s is out
+  of reach. This is a REGRESSION in hang-diagnosability on that path against the 1200s/1800s ceilings
+  those members carried before task 6485. Bounded honestly, not explained away: background is a
+  non-blocking sweep whose failures produce fix tasks rather than gating a merge, and the same heavy set
+  also runs on the offline lane where the ceiling IS reachable — so attribution is recoverable one lane
+  later rather than lost outright. Two further paths share the gap without being orchestrator-spawned: a
+  bare `cargo nextest run`, and a `scripts/verify.sh` run with `REIFY_GATE_EXCLUDE_HEAVY` unset.
+
+  **Why task 6485 documented the background gap rather than closing it.** Both remedies are
+  coverage/budget decisions needing the same kind of explicit human ruling DA5 got. (a) Extending the
+  exclusion to `task|merge|background` reduces main-tip heavy coverage and contradicts the stated
+  "Role=background NEVER skips" backstop contract. (b) Role-scoping background's walls to 13h+ would let
+  one hung heavy test stall the cadence sweep for 13 hours, and since background runs `--profile both`
+  it needs BOTH walls scoped. Filed as follow-up ticket `tkt_0RTN0PQ35EZGXGQ7WF2HXZE2N9`.
+
+  **Open, and the honest weakness of this decision:** 12h is not a measured figure. The quoted durations
+  are whole-run offline sub-runs (~560–2625s) and a worst heavy test of ~490s; the `#[ignore]`d
+  convergence studies (§10) have never run first-class, so their cost is genuinely unknown. A ceiling
+  sized under the TIGHTEST heavy-running wall instead would be reachable on background too and would
+  delete the residual and its guard machinery outright. That is an argument for MEASURING the studies,
+  not for picking a smaller number blind — tracked as its own follow-up.
+
+  **Mechanised, not asserted.** `tests/infra/test_nextest_slow_priority.sh` derives the heavy set from
+  `scripts/heavy-test-filter-lib.sh` and the role sets, walls and per-role profiles from
+  `scripts/verify.sh`: Assertion J requires a 43200s block per heavy atom, K requires every
+  slow-timeout override to classify as heavy or gate-resident, L requires every heavy-RUNNING role to
+  either reach the ceiling or be an enumerated residual. L reds again, deliberately, once remedy (a)
+  lands and the `background` entry goes stale, retiring note and allowlist together.
+  `tests/infra/test_occt_flock_gate.sh` T14–T17 pin the role-scoped wall itself.
+
+  **Rejected: role-scoping the ceiling in the DERIVED config (option D, esc-6485-3).** It would dissolve
+  the verify.sh-mediated paths but not a bare `cargo nextest run`, and `gen-nextest-config.sh` is a
+  line-anchored sed rewriter whose ceiling literal is not unique across blocks — doing it correctly needs
+  a section-aware pass keyed on each block's `filter =` line plus new test pins. A task of its own.
 
 ## 5. Pre-conditions / substrate (G3 — all verified present this session)
 

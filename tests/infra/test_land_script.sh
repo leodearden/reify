@@ -197,7 +197,8 @@ RC=""; make_repo RC
 # would otherwise match nothing and silently turn this control into a no-op that
 # passes for the wrong reason.
 _LAND_LINES="$(wc -l < "$REPO_ROOT/scripts/land.sh")"
-grep -v '^export REIFY_GATE_EXCLUDE_HEAVY=1$' "$REPO_ROOT/scripts/land.sh" > "$RC/scripts/land.sh"
+grep -vFx 'export REIFY_GATE_EXCLUDE_HEAVY="${REIFY_GATE_EXCLUDE_HEAVY:-1}"' \
+    "$REPO_ROOT/scripts/land.sh" > "$RC/scripts/land.sh"
 _STRIPPED_LINES="$(wc -l < "$RC/scripts/land.sh")"
 chmod +x "$RC/scripts/land.sh"
 git -C "$RC" add scripts/land.sh
@@ -221,6 +222,31 @@ assert "control: the stripped variant still reached the merge gate (gate-env rec
     bash -c "test -f '$RC/.git/gate-env'"
 assert "control: with the export stripped, the gate child records REIFY_GATE_EXCLUDE_HEAVY=<unset> even under an ambient =1 — which is what makes the happy-path propagation assertion load-bearing rather than inherited" \
     bash -c "grep -qx 'REIFY_GATE_EXCLUDE_HEAVY=<unset>' '$RC/.git/gate-env'"
+
+# -- operator override: an EXPLICIT value must survive land.sh's default --------
+# land.sh sets the knob with `:-`, not a bare 1. The happy-path assertion above
+# pins the DEFAULT (nothing set => heavy members excluded); this pins that the
+# default is a default. An operator who deliberately wants full local heavy
+# coverage — the behaviour every local land had before task 6485 — asks for it
+# with REIFY_GATE_EXCLUDE_HEAVY=0 and gets it, accepting that a hang on that path
+# then attributes nothing (docs/prds/offline-deep-test-lane.md DA5).
+#
+# Invoked directly rather than through land(), because land()'s whole job is to
+# CLEAR this variable. The `env -u NAME … NAME=VALUE` form is the same one land()
+# documents: the unset applies first, so the value the child sees is this
+# explicit 0 and provably not an ambient one.
+echo ""
+echo "--- operator override: an explicit REIFY_GATE_EXCLUDE_HEAVY=0 is honoured ---"
+RO=""; make_repo RO
+rm -f "$RO/.git/gate-env"
+( cd "$RO" && env -u DF_VERIFY_ROLE -u REIFY_GATE_EXCLUDE_HEAVY \
+        REIFY_GATE_EXCLUDE_HEAVY=0 bash scripts/land.sh task/foo ) >/dev/null 2>&1
+assert "override: the run reached the merge gate (gate-env recorded)" \
+    bash -c "test -f '$RO/.git/gate-env'"
+assert "override: an explicit REIFY_GATE_EXCLUDE_HEAVY=0 reaches the gate child unclobbered — land.sh's 1 is a default, not an override, so full local heavy coverage stays expressible" \
+    bash -c "grep -qx 'REIFY_GATE_EXCLUDE_HEAVY=0' '$RO/.git/gate-env'"
+assert "override: DF_VERIFY_ROLE=merge is still forced — unlike the heavy knob it is NOT negotiable on this path (held test-run slot / PSI exemption, PRD §5 D5)" \
+    bash -c "grep -qx 'DF_VERIFY_ROLE=merge' '$RO/.git/gate-env'"
 
 # -- darkened core.hooksPath -> re-assert (task 4380) --------------------------
 # Scenario: before the merge, core.hooksPath has been overwritten to the inert

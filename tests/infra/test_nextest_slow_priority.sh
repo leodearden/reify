@@ -12,11 +12,11 @@
 # temp config consumed by nextest. Task 6485 added the tiering guards J/K/L.
 #
 # THREE TIERS of ceiling now live in that file: default 1200s, gate-resident
-# 1800s (blocks that still run on the merge gate, bounded by its 3600s wall), and
-# heavy 43200s/12h (the 8 members of REIFY_HEAVY_NEXTEST_FILTER, which the merge
-# gate never runs; they run on the offline deep lane under its 13h release wall,
-# where the ceiling is reachable, and on the background main-tip sweep, where it
-# is not — an accepted residual Assertion L enumerates).
+# 1800s, heavy 43200s/12h. What each tier is for, which wall binds which role,
+# and why the background residual is accepted: docs/prds/offline-deep-test-lane.md
+# DA6 — the normative copy. This file MECHANISES that decision; it does not
+# restate it, and a claim about the tiers that is only written down here is
+# either a duplicate or a drift.
 #
 # Assertions:
 # STRUCTURE / PRESERVATION (step-1):
@@ -1048,19 +1048,17 @@ assert "K: the two classes PARTITION the file — every enumerated slow-timeout 
 # decision rather than an accident.
 #
 # WHY THE ROLE SET IS DERIVED, NOT ASSUMED. The first form of this assertion
-# covered the offline role alone, which was a coverage regression: `background`
-# is a live orchestrator-spawned role (main-tip cadence sweep) that forces
-# --profile both and --scope all, while verify.sh's _GATE_HEAVY_EXCLUDE guard is
-# scoped to task|merge — so background runs all 8 heavy members under the 60m
-# debug wall, 12x under the 43200s ceiling. The heavy-running ROLE SET is
-# therefore computed from scripts/verify.sh (accepted roles MINUS heavy-excluded
-# roles); a role added to either list lands in this classification with no edit
-# here.
+# covered the offline role alone and missed `background` entirely — a live
+# orchestrator-spawned role that runs all 8 heavy members 12x under the ceiling.
+# The heavy-running set is therefore computed from scripts/verify.sh (accepted
+# roles MINUS heavy-excluded roles), so a role added to either list lands in this
+# classification with no edit here.
 #
 # WHAT THIS COMMENT MUST NOT SAY: "no gate path runs heavy members". That claim
-# was false as written — REIFY_GATE_EXCLUDE_HEAVY=1 really is set for every
-# orchestrator-spawned role and by scripts/land.sh, but verify.sh scopes its
-# EFFECT to task|merge, so setting it says nothing about background or offline.
+# was false as written — the env var is set for every orchestrator-spawned role,
+# but verify.sh scopes its EFFECT to task|merge, so setting it says nothing about
+# background or offline. (Mechanism and the accepted residual:
+# docs/prds/offline-deep-test-lane.md DA6.)
 #
 # EVERY OPERAND IS DERIVED FROM A FILE — including, since the amendment pass,
 # the role => binding-wall mapping itself. The ceiling comes from
@@ -1259,17 +1257,25 @@ _max_heavy_ceiling_for_file() {
 # ---------------------------------------------------------------------------
 # _residual_role_documented <nextest.toml> <role> — true iff <role> is named
 # inside the ACCEPTED RESIDUAL paragraph of the [profile.default] header comment.
-# The paragraph runs from its `# ACCEPTED RESIDUAL:` opener to the end of that
-# contiguous comment block, so a `#`-separated continuation still counts.
+# The paragraph runs from its opener to the end of that contiguous comment block,
+# so a `#`-separated continuation still counts.
 #
 # Requiring the prose AND the allowlist to agree is what stops a residual from
 # being allowlisted silently in this test file alone: the gap has to be readable
 # by someone opening the config with no knowledge that this guard exists.
+#
+# The opener anchor is a SHARED constant, not a literal repeated in the seeding
+# fixture below. Reworded punctuation after `ACCEPTED RESIDUAL` once broke this
+# match; had the fixture carried its own copy of the anchor it would have stopped
+# seeding at the same moment the checker stopped checking, and the pair would
+# have gone quietly vacuous together instead of going red.
 # ---------------------------------------------------------------------------
+RESIDUAL_PAR_ANCHOR='^#[[:space:]]*ACCEPTED RESIDUAL'
+
 _residual_role_documented() {
     local file="$1" role="$2"
-    awk -v role="$role" '
-        /^# ACCEPTED RESIDUAL:/ { par = 1 }
+    awk -v role="$role" -v anchor="$RESIDUAL_PAR_ANCHOR" '
+        $0 ~ anchor { par = 1 }
         par && !/^#/ { par = 0 }
         par && $0 ~ ("(^|[^a-z])" role "([^a-z]|$)") { found = 1 }
         END { exit(found ? 0 : 1) }
@@ -1473,8 +1479,8 @@ sed 's/\[ "\$DF_VERIFY_ROLE" = "merge" \]; }/[ "$DF_VERIFY_ROLE" = "merge" ] || 
 # (v) a nextest.toml with `background` struck from the ACCEPTED RESIDUAL
 #     paragraph: the allowlist here and the prose there must agree, so a residual
 #     cannot be carried in the test alone.
-awk '
-    /^# ACCEPTED RESIDUAL:/ { par = 1 }
+awk -v anchor="$RESIDUAL_PAR_ANCHOR" '
+    $0 ~ anchor { par = 1 }
     par && !/^#/ { par = 0 }
     par { gsub(/background/, "REDACTED") }
     { print }

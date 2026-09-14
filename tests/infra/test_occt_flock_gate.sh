@@ -701,14 +701,13 @@ rm -f "$_T13_ERR"
 # -- Tests T14–T17 (task 6485): role-scoped OFFLINE release wall ------------------
 # INVARIANT: the offline release wall must strictly EXCEED the heavy per-test
 # ceiling in .config/nextest.toml, so nextest SIGTERMs the offending test BY NAME
-# before the outer `timeout` can fire exit 124 with zero attribution.
+# before the outer `timeout` can fire exit 124 with zero attribution. Tiers and
+# rationale: docs/prds/offline-deep-test-lane.md DA6.
 #
-# The heavy ceiling is 12h (43200s); the offline release wall is 13h (46800s),
-# leaving ~3600s of headroom. Without the role scoping the offline lane would run
-# that 12h ceiling under the 90m release default, where it is unreachable by
-# construction — the task 4877/4878 zero-attribution shape this task exists to
-# remove. tests/infra/test_nextest_slow_priority.sh Assertion L guards the
-# numeric relationship itself; these four tests guard the RENDERING.
+# SCOPE SPLIT, so neither guard grows the other's job:
+# test_nextest_slow_priority.sh Assertion L guards the numeric RELATIONSHIP
+# (wall > ceiling, every operand derived from a file); these four guard the
+# RENDERING — that the role default reaches the command line at all.
 #
 # Each case invokes verify.sh with NO --profile flag on purpose: the offline role
 # forces PROFILE=release itself (verify.sh ~:702), and that is part of what is
