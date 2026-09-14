@@ -12,6 +12,13 @@
 //! would otherwise make every downstream corpus test in this suite
 //! vacuously green.
 
+/// The corpus walker and the ONE engine constructor this file's sweeps share
+/// with `harness_corpus_gates`'s unified corpus sweep. `#[path]` (not `mod
+/// common;`) follows the `common/differential.rs` precedent — see that file's
+/// header for why the 312-line `common/mod.rs` is deliberately not pulled in.
+#[path = "common/eval_gate_support.rs"]
+mod eval_gate_support;
+
 use std::collections::HashMap;
 
 use reify_core::{ContentHash, Type, ValueCellId};
@@ -610,47 +617,6 @@ fn seeded_kind_mismatch_composition_undef_is_unexempted_without_caller_disciplin
     );
 }
 
-// ── The shared engine constructor every sweep in this file uses ─────────────
-
-/// The ONE engine-construction site every sweep in this file routes through —
-/// the deliberately-undef fixture test, `run_corpus_shard`'s eval sweep,
-/// `build_surface_violations`'s build sweep and `diag_per_file_timing`.
-///
-/// It existed as three hand-copied blocks until the copies drifted (task 5578):
-/// the build sweep registered the shell-extract trampolines and the eval sweep
-/// did not, so the eval sweep was still sweeping
-/// `examples/fea_shell_too_thick_annotated.ri` on a DEGRADED dispatch —
-/// `@optimized target "shell-extract::extract": no registered compute trampoline`
-/// — which is the very defect class this file gates against. One constructor is
-/// what keeps them from drifting again.
-///
-/// The registered arm calls [`Engine::register_production_compute_fns`], the
-/// canonical bundler production uses (`reify-cli`'s `configured_eval_engine`
-/// routes through it), rather than hand-listing individual registrars: a NEW
-/// production trampoline set then reaches these sweeps automatically. The
-/// mesh-morph producer is `Unavailable` because `reify-eval`'s own tests do not
-/// depend on `reify-mesh-morph`; it is a producer-side optimization, not a
-/// dispatch target, so no `@optimized` target goes unregistered because of it.
-///
-/// `register_compute` is an explicit switch, not a convenience knob: `false` is
-/// what lets `seeded_build_surface_sweep_reports_a_planted_violation` reproduce
-/// the task-5578 defect in miniature. Only that self-test may pass `false`.
-///
-/// A fresh [`Engine`] per call, so `register_production_compute_fns`'s
-/// panic-on-double-registration contract is never at risk.
-fn gate_engine(register_compute: bool) -> reify_eval::Engine {
-    let mut engine = reify_eval::Engine::new(
-        Box::new(reify_constraints::SimpleConstraintChecker),
-        Some(Box::new(reify_test_support::MockGeometryKernel::new())),
-    );
-    if register_compute {
-        engine.register_production_compute_fns(reify_eval::MorphRegistration::Unavailable {
-            reason: "reify-eval's own test harness does not depend on reify-mesh-morph",
-        });
-    }
-    engine
-}
-
 // ── Step-7: Engine-path corpus test over the deliberately-undef fixtures ────
 
 /// The four fixtures purpose-built for the undef-self-describing PRD family
@@ -690,7 +656,7 @@ fn deliberately_undef_fixtures_report_zero_violations() {
             "{name}.ri should compile without errors: {errors:#?}"
         );
 
-        let mut engine = gate_engine(true);
+        let mut engine = eval_gate_support::gate_engine(true);
         engine.eval(&compiled);
 
         let violations = engine.check_no_stale_undef();
@@ -703,23 +669,6 @@ fn deliberately_undef_fixtures_report_zero_violations() {
 }
 
 // ── Step-9/10: broad debug-gate corpus sweep ─────────────────────────────────
-
-/// Recursively collect every `.ri` file under `dir` (including subdirectories).
-/// Unreadable entries/directories are silently skipped — this only ever walks
-/// our own repo directories, which are expected to be readable.
-fn collect_ri_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_ri_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("ri") {
-            out.push(path);
-        }
-    }
-}
 
 /// Files with a residual stale-Undef violation that is NOT a checker gap
 /// fixable within `invariants.rs`'s `(graph, values, trace_map, functions)`
@@ -809,8 +758,8 @@ fn corpus_files() -> (Vec<std::path::PathBuf>, std::path::PathBuf) {
         .join("../../tests/prd-gate/fixtures/geometry_let_selector_consumer.ri");
 
     let mut files = Vec::new();
-    collect_ri_files(&fixtures_dir, &mut files);
-    collect_ri_files(&examples_dir, &mut files);
+    eval_gate_support::collect_ri_files(&fixtures_dir, &mut files);
+    eval_gate_support::collect_ri_files(&examples_dir, &mut files);
     files.push(selector_consumer_path.clone());
     files.sort();
     (files, selector_consumer_path)
@@ -854,7 +803,7 @@ fn run_corpus_shard(shard_index: usize) {
             continue;
         }
 
-        let mut engine = gate_engine(true);
+        let mut engine = eval_gate_support::gate_engine(true);
         engine.eval(&compiled);
         let violations = engine.check_no_stale_undef();
 
@@ -1018,7 +967,7 @@ fn diag_per_file_timing() {
         if !errors.is_empty() {
             continue;
         }
-        let mut engine = gate_engine(true);
+        let mut engine = eval_gate_support::gate_engine(true);
         engine.eval(&compiled);
         let _ = engine.check_no_stale_undef();
         timings.push((t0.elapsed(), display));
@@ -1148,13 +1097,13 @@ struct BuildSurfaceOutcome {
 /// Compile `source` through the stdlib prelude, run it through a real
 /// `Engine::build(.., ExportFormat::Step)`, and report what that build did.
 ///
-/// Engine wiring is [`gate_engine`]'s — the same constructor the eval sweep
+/// Engine wiring is [`eval_gate_support::gate_engine`]'s — the same constructor the eval sweep
 /// above uses — with the terminal `engine.eval(&compiled)` swapped for
 /// `engine.build(..)`. That swap is the whole point: it is precisely the surface
 /// half of the coverage gap task 5578 names, since every sweep above this line
 /// only ever drives `eval()`.
 ///
-/// `register_compute` is forwarded to [`gate_engine`] verbatim; see its doc for
+/// `register_compute` is forwarded to [`eval_gate_support::gate_engine`] verbatim; see its doc for
 /// why `false` exists and who may pass it.
 ///
 /// A source that fails to COMPILE panics rather than being skipped. That is
@@ -1171,7 +1120,7 @@ fn build_surface_violations(source: &str, register_compute: bool) -> BuildSurfac
          compile error here means the caller's curated file list is stale: {errors:#?}"
     );
 
-    let mut engine = gate_engine(register_compute);
+    let mut engine = eval_gate_support::gate_engine(register_compute);
     let result = engine.build(&compiled, reify_ir::ExportFormat::Step);
     let diagnostics: Vec<String> = result
         .diagnostics
@@ -1577,7 +1526,7 @@ const BUILD_SURFACE_DROPPED_DUPLICATES: &[(&str, &str)] = &[
          defers to, and it is cheap for exactly the reason that disqualifies it. \
          Its `solve_elastic_static` call is INLINED in a `constraint` expression \
          rather than bound to a `let` (see the example's own comment for why that \
-         is forced), and `gate_engine` wires NO constraint solver — so the cost \
+         is forced), and `eval_gate_support::gate_engine` wires NO constraint solver — so the cost \
          loop that would evaluate that expression never runs on this surface. \
          MEASURED by building it through `build_surface_violations`: \
          `dispatched_targets` comes back EMPTY, against \
@@ -1825,7 +1774,7 @@ fn source_calls_fn(source: &str, fn_name: &str) -> bool {
 /// prose the way "that yields 18 candidate files" did.
 struct OptimizedCallerSurvey {
     /// How many `.ri` files were walked under `examples/` — recursively, via the
-    /// same `collect_ri_files` the eval sweep uses, so the two surfaces cannot
+    /// same `eval_gate_support::collect_ri_files` the eval sweep uses, so the two surfaces cannot
     /// disagree about which files exist.
     files_scanned: usize,
     /// `(examples/-relative extension-stripped name, targets it calls)` for every
@@ -1854,7 +1803,7 @@ fn survey_optimized_callers() -> OptimizedCallerSurvey {
     stdlib_targets.dedup();
 
     let mut files: Vec<std::path::PathBuf> = Vec::new();
-    collect_ri_files(&examples_dir, &mut files);
+    eval_gate_support::collect_ri_files(&examples_dir, &mut files);
     files.sort();
 
     let mut callers: Vec<(String, Vec<String>)> = Vec::new();
@@ -2430,7 +2379,7 @@ fn instance_scope_optimized_cells_report_no_stale_undef_in_either_arm() {
         "the #6662 two-arm fixture should compile without errors: {errors:#?}"
     );
 
-    let mut engine = gate_engine(false);
+    let mut engine = eval_gate_support::gate_engine(false);
     engine.register_compute_fn("test::s8_const777", s8_const777_fn as reify_eval::ComputeFn);
     engine.register_compute_fn("test::s8_double", s8_double_fn as reify_eval::ComputeFn);
 
