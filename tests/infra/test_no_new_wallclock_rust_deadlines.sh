@@ -190,6 +190,72 @@ _fixture() {
 }
 
 # ---------------------------------------------------------------------------
+# _wallclock_assert_roots <root>...
+#
+# THE ROOT VALIDATOR, shared by every scanning function below so a bad root
+# cannot enter through one door after being refused at another. Returns 0 if
+# every <root> is an existing directory; otherwise names the offender on
+# stderr and returns 2.
+#
+# 2 SPECIFICALLY, because that is grep's "an input was unusable" code, and
+# every caller here already distinguishes rc 0 (clean) / rc 1 (a real finding)
+# / rc >= 2 (the scan itself is broken). Collapsing a bad root into rc 0 is the
+# vacuity hole Section 4e exists to close; collapsing it into rc 1 would be
+# only marginally better, since it would be read as "there are violations".
+#
+# THE FAILURE THIS IS REALLY FOR is an UNMATCHED GLOB. `$REPO_ROOT/crates/*/tests`
+# expanding to nothing leaves bash's default behaviour: the LITERAL pattern
+# string, `.../crates/*/tests`, as a single array element. grep would report
+# that as one missing path and, with the baseline drained to zero, everything
+# downstream would be consistent and empty. So the check is on the root list,
+# before any scanning, and it is loud.
+# ---------------------------------------------------------------------------
+_wallclock_assert_roots() {
+    local _r
+    for _r in "$@"; do
+        [ -d "$_r" ] && continue
+        echo "ERROR: wallclock scan root is not a directory: $_r" >&2
+        if [ -e "$_r" ]; then
+            echo "  It exists but is not a directory. A root names a TREE to scan; scanning" >&2
+            echo "  a single file where a tree was intended is the same vacuity hole." >&2
+        else
+            echo "  It does not exist. If it looks like a glob pattern rather than a path," >&2
+            echo "  that glob matched nothing and bash left the pattern string behind." >&2
+        fi
+        return 2
+    done
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# _wallclock_files_scanned <root>...
+#
+# THE NON-VACUITY FLOOR. Prints (stdout) the number of *.rs files under
+# <root>..., recursively. Returns 0, or the validator's 2 for a bad root.
+#
+# WHAT IT IS FOR: the ratchet is a subset oracle, and a subset oracle is
+# trivially satisfied by the empty set. Asserting the count is what makes
+# "no new violations" mean "we looked, and there were none" rather than
+# "we looked at nothing". The stale direction covers this only while the
+# baseline is non-empty -- i.e. only until this ratchet succeeds.
+#
+# `find` rather than `grep -rl -e ''`: an EMPTY .rs file matches no line, so
+# grep would not list it, and the count would silently disagree with the
+# number of files a reader would count by hand. The floor's whole job is to be
+# a number you can trust without re-deriving it.
+# ---------------------------------------------------------------------------
+_wallclock_files_scanned() {
+    _wallclock_assert_roots "$@" || return $?
+
+    local _n _rc=0
+    _n="$(find "$@" -type f -name '*.rs' -print | wc -l)" || _rc=$?
+    [ "$_rc" -eq 0 ] || return "$_rc"
+
+    echo "$_n"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # _wallclock_fingerprints <root>...
 #
 # THE ENGINE. Every rule-matching path in this file goes through here: the
@@ -312,6 +378,11 @@ _fixture() {
 # being trivially auditable.
 # ---------------------------------------------------------------------------
 _wallclock_fingerprints() {
+    # SAME validation as the floor, so a bad root cannot slip in through the
+    # engine and contribute zero records to a comparison that then reports
+    # "clean" for it (fixture 4e-5).
+    _wallclock_assert_roots "$@" || return $?
+
     # The escape token is split across two adjacent single-quoted strings so
     # this source file holds no contiguous copy of it (see SELF-MATCH SAFETY
     # in the header).
