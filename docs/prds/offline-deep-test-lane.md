@@ -232,7 +232,9 @@ and **auditable** — the drift-guard lists exactly what is deferred.
   convergence studies (§10) have never run first-class, so their cost is genuinely unknown. A ceiling
   sized under the TIGHTEST heavy-running wall instead would be reachable on background too and would
   delete the residual and its guard machinery outright. That is an argument for MEASURING the studies,
-  not for picking a smaller number blind — tracked as its own follow-up.
+  not for picking a smaller number blind — tracked as ticket `tkt_0RTN426YPJ2JWVP3YGQQZ8KH7C`, which
+  should be settled BEFORE `tkt_0RTN0PQ35EZGXGQ7WF2HXZE2N9`: a small enough measured ceiling dissolves
+  the background gap rather than answering it.
 
   **Mechanised, not asserted.** `tests/infra/test_nextest_slow_priority.sh` derives the heavy set from
   `scripts/heavy-test-filter-lib.sh` and the role sets, walls and per-role profiles from
