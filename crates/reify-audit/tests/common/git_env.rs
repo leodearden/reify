@@ -13,9 +13,9 @@
 //!   [`assert_not_in_replay_child`] / [`announce_replay_mark`] — what a replay
 //!   child may conclude about the parent that spawned it, and what it reports
 //!   back about the mark it carries.
-//! - [`libtest_summary_count`] — the one parser every replay child's libtest
-//!   summary is read through, here because the replay's own non-vacuity checks
-//!   are its first reader.
+//! - [`libtest_summary_count`] / [`SummaryField`] — the one parser every replay
+//!   child's libtest summary is read through, and the named counts it reads,
+//!   here because the replay's own non-vacuity checks are its first reader.
 //!
 //! Generic only: this module is compiled into every `tests/*.rs` in this crate,
 //! so a helper hard-coding one script's path, argv or skip protocol belongs in
@@ -440,12 +440,13 @@ fn replay_with_mark(filters: &[&str], expected_min: usize, mark: ReplayMark) -> 
 /// libtest summary and its stderr notes both reach the parent intact, and
 /// `mark` stamped into [`REPLAY_GUARD`].
 ///
-/// Public so a binary needing the same child in a DIFFERENT environment (see
-/// `g_allow.rs`'s deprived-`PATH` fixture) builds it from this one body, and so
-/// cannot drift from the real replay whose behaviour it claims to pin. An
-/// argument or a second guard variable added here reaches both; added at one
-/// call site it would silently make the two children different processes while
-/// the test that compares them kept passing.
+/// Public so a binary that needs this same child on its own terms builds it
+/// from this one body, and so cannot drift from the real replay whose behaviour
+/// it claims to pin: `g_allow.rs`'s deprived-`PATH` fixture wants it in a
+/// DIFFERENT environment, and its refusal fixture wants it with nothing but the
+/// guard variable set. An argument or a second guard variable added here
+/// reaches all of them; added at one call site it would silently make the
+/// children different processes while the tests comparing them kept passing.
 #[allow(dead_code)]
 pub fn replay_child_command(filters: &[&str], mark: ReplayMark) -> Command {
     let mut cmd = Command::new(std::env::current_exe().expect("current_exe"));
@@ -481,27 +482,64 @@ fn list_matching_tests(exe: &Path, filters: &[&str]) -> Vec<String> {
         .collect()
 }
 
-/// Extract one count from libtest's summary line — e.g. `5` for `"passed"`
-/// given `test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured;
-/// 30 filtered out; finished in 0.92s`.
+/// Which count [`libtest_summary_count`] reads out of libtest's summary line.
+///
+/// Same bargain as [`ReplayMark`], for the same reason: callers name the count
+/// and this enum resolves it to libtest's spelling, so the word appears exactly
+/// once and a misspelling is a compile error. A free-form `&str` field would
+/// make one a runtime `None` instead — and `None` is the same answer this
+/// parser gives for a child that printed no summary at all, so the caller's
+/// typo would be reported as the CHILD's output being malformed.
+///
+/// Carries only the counts something reads: `measured` and `filtered out` are
+/// absent because nothing here has ever needed them, and a variant no caller
+/// constructs is a claim of coverage this module does not have.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SummaryField {
+    /// Tests that ran and passed.
+    Passed,
+    /// Tests that ran and failed.
+    Failed,
+    /// Tests libtest skipped as `#[ignore]`d.
+    Ignored,
+}
+
+impl SummaryField {
+    /// The word libtest prints immediately after this field's count.
+    fn word(self) -> &'static str {
+        match self {
+            SummaryField::Passed => "passed",
+            SummaryField::Failed => "failed",
+            SummaryField::Ignored => "ignored",
+        }
+    }
+}
+
+/// Extract one count from libtest's summary line — e.g. `5` for
+/// [`SummaryField::Passed`] given `test result: ok. 5 passed; 0 failed;
+/// 0 ignored; 0 measured; 30 filtered out; finished in 0.92s`.
 ///
 /// Takes the LAST such line, since `--nocapture` interleaves test output that
 /// could in principle contain the same prefix. Parses the count as a NUMBER
 /// rather than substring-matching `"1 passed"`, which would also match
 /// `"21 passed"`.
 ///
+/// A `None` therefore has exactly one cause left — no `test result:` line in
+/// `stdout` — which is what lets every caller attribute it to the child.
+///
 /// Public because a caller that spawns its own child must read the same summary
 /// this module reads, and one parser with two readers cannot drift the way two
 /// parsers would. Pinned in `tests/replay_harness.rs` rather than beside either
 /// reader, so retiring one reader cannot take its only coverage with it.
 #[allow(dead_code)]
-pub fn libtest_summary_count(stdout: &str, field: &str) -> Option<usize> {
+pub fn libtest_summary_count(stdout: &str, field: SummaryField) -> Option<usize> {
     let line = stdout
         .lines()
         .rev()
         .find(|l| l.trim_start().starts_with("test result:"))?;
 
-    let suffix = format!(" {field}");
+    let suffix = format!(" {}", field.word());
     line.split(';')
         .map(str::trim)
         .find_map(|seg| seg.strip_suffix(suffix.as_str()))
@@ -513,7 +551,7 @@ pub fn libtest_summary_count(stdout: &str, field: &str) -> Option<usize> {
 /// [`replay_with_mark`]'s two non-vacuity checks need.
 fn parse_passed_and_ignored(stdout: &str) -> Option<(usize, usize)> {
     Some((
-        libtest_summary_count(stdout, "passed")?,
-        libtest_summary_count(stdout, "ignored")?,
+        libtest_summary_count(stdout, SummaryField::Passed)?,
+        libtest_summary_count(stdout, SummaryField::Ignored)?,
     ))
 }
