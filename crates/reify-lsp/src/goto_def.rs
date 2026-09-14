@@ -1303,7 +1303,7 @@ mod tests {
         // (source, name, byte offset of the NAME token)
         let rows: &[(&str, &str, u32)] = &[
             ("structure s {\n}\n", "s", 10),
-            ("fn n() -> Scalar {\n    1\n}\n", "n", 3),
+            ("fn n() -> Length {\n    1mm\n}\n", "n", 3),
             ("enum e {\n    A,\n}\n", "e", 5),
             ("trait t {\n}\n", "t", 6),
             ("occurrence def o {\n}\n", "o", 15),
