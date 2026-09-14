@@ -1712,7 +1712,12 @@ Having `rotation` carry a real ANGLE unlocks three things that
 - `rotational_stiffness * rotation` reduces to a **torque** — N·m/rad² × rad
   = N·m/rad — instead of collapsing to a dimensionless product;
 - `deg` / `rad` literals become usable in assertions and constraints against
-  the channel;
+  the channel — worked example: `examples/differential_field_ops.ri` carries
+  `constraint rot_probe > 0.001deg` / `constraint rot_probe < 0.5deg`, gated
+  in CI by `differential_field_ops_e2e`. One limitation: the comparison is
+  against an ANGLE **scalar** (there, `magnitude` of a sampled
+  `Vector3<Angle>`), because no in-language Vector3 component access exists
+  yet — a per-component `deg` comparison is still out of reach;
 - a future `d/dt` of `rotation` yields **angular velocity** (rad/s) rather
   than a bare frequency (1/s).
 
