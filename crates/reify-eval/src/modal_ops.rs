@@ -29,6 +29,9 @@ use reify_solver_elastic::{
     assemble_global_stiffness, consistent_element_mass_tet_p1, consistent_element_mass_tet_p2,
     element_stiffness, solve_eigen_dense, try_solve_eigen_shift_invert,
 };
+// Not re-exported from the crate root: the shift-contract C5 rule belongs beside
+// the other shift helpers, and this is the module path to it.
+use reify_solver_elastic::eigensolve::conservative_shift_provenance;
 use reify_stdlib::dynamics::mass_props::resolve_density_strict;
 use reify_stdlib::{mass_properties_from_value, resolve_body_mass};
 use reify_stdlib::modal::free_vibration::{
@@ -891,6 +894,13 @@ fn solve_generalized_eigen(
                 eigenvectors: faer::Mat::<f64>::zeros(n, 0),
                 n_converged: 0,
                 converged: false,
+                shift: opts.sigma,
+                // No spectrum was computed at all here, so `false` cannot be
+                // ESTABLISHED and C5 forbids assuming it.  The rule itself lives
+                // in the solver crate (SPOT) — writing it out here too is how
+                // this copy and the Lanczos one drift apart when #7259 refines
+                // the discriminator.
+                shift_skipped_modes: conservative_shift_provenance(opts.sigma),
             },
             singular_k_over_ceiling: true,
         }
