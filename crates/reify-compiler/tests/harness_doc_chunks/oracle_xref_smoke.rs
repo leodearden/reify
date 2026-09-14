@@ -76,6 +76,7 @@
 
 use crate::geometry_chunk_smoke::{
     call_sites, called_names, phantom_name_panic, registry_family, section_body,
+    ORACLE_SECTION_MARKER, ORACLE_SECTION_TITLE, CHUNK_PATH as GEOMETRY_CHUNK_PATH,
 };
 
 /// Marker that OPENS the cross-reference region in each REFERRING chunk.
@@ -340,6 +341,54 @@ fn the_stdlib_chunk_points_at_the_oracle() {
 
     let violations = xref_region_violations(&region, STDLIB_CHUNK_PATH);
     assert!(violations.is_empty(), "{}", violations.join("\n\n"));
+}
+
+/// The DANGLING-POINTER direction: the section both pointers promise must still
+/// exist, and must still document what they promise.
+///
+/// WHY THIS BELONGS TO THE REFERRER rather than to `geometry_chunk_smoke.rs`.
+/// That module's guard deliberately leaves the HEADING free to retitle — that
+/// is the entire reason it scopes by an inert marker — so a pointer written
+/// against the heading wording could go stale with nothing RED anywhere. The two
+/// pointers are therefore written against the retrieval TOPIC, and this is what
+/// ties that topic to a section that still answers the question.
+///
+/// TWO failures, distinguishable, and RED HERE rather than only in the
+/// destination's own suite: the section was deleted (`section_body`'s
+/// marker panic fires), or it survived a rewrite that dropped a form the
+/// pointers send readers to find.
+///
+/// MUTATION-VERIFIED — this test is green on arrival, so it was checked in both
+/// directions before it counted. See the commit that added it.
+#[test]
+fn the_xref_destination_still_answers_the_question() {
+    let markdown = std::fs::read_to_string(GEOMETRY_CHUNK_PATH).unwrap_or_else(|e| {
+        panic!(
+            "{GEOMETRY_CHUNK_PATH} must be readable ({e}) — the two cross-references \
+             guarded by this module route readers to it"
+        )
+    });
+
+    let section = section_body(
+        &markdown,
+        ORACLE_SECTION_MARKER,
+        GEOMETRY_CHUNK_PATH,
+        ORACLE_SECTION_TITLE,
+    );
+
+    for name in REQUIRED_ORACLE_CALL_FORMS.iter().copied() {
+        assert!(
+            !call_sites(&section, name).is_empty(),
+            "{GEOMETRY_CHUNK_PATH}'s `{ORACLE_SECTION_MARKER}` section still exists but no \
+             longer documents `{name}(` as a call form. constraints.md and stdlib.md both \
+             send readers here for exactly that name (see REQUIRED_ORACLE_CALL_FORMS), so \
+             those pointers now route to a section that does not answer the question — a \
+             dangling pointer that no amount of checking the REFERRING chunks would catch. \
+             FIX: restore the form in the destination section. If the oracle genuinely lost \
+             it, retire it from REQUIRED_ORACLE_CALL_FORMS and rewrite BOTH pointers in the \
+             same commit."
+        );
+    }
 }
 
 // ── Synthetic controls ───────────────────────────────────────────────────────
