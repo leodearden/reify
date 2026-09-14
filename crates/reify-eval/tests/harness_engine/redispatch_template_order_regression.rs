@@ -187,6 +187,43 @@ structure Leading {
 }
 "#;
 
+/// The WARM twin of [`CONSUMER_STRUCTURE`]: the same single-geometry-arg
+/// `@optimized` consumer, but with an editable numeric LEAF in the body.
+///
+/// `CONSUMER_STRUCTURE` drives all three box extents from `width`. That is fine
+/// for a single cold `build()`, but the warm tests re-drive `width` through
+/// `edit_param` and want the smallest unambiguous change to the body's
+/// realization, so only the X extent is parameterised here.
+///
+/// `order_probe` returns a NON-geometry type (`Int`) for the same reason
+/// [`CONSUMER_STRUCTURE`] does: the consuming `let` must compile to a
+/// `CompiledExprKind::UserFunctionCall` default-expr, which is the shape
+/// `redispatch_geometry_consuming_compute_nodes`' Phase-1 scan matches.
+///
+/// Reuses [`ORDER_PROBE_TARGET`] rather than inventing a third target —
+/// `Engine::register_compute_fn` panics on duplicate registration, and every
+/// test here builds a fresh `Engine`, so sharing the target costs nothing.
+///
+/// Tests using this fixture append [`trailing_structures`]`(3)`: three no-op
+/// structures declared AFTER `WarmConsumer`. That is what keeps the
+/// "at most once per build" half of the warm pin non-vacuous — an
+/// implementation that simply DELETED the Phase-1 candidate gate instead of
+/// build-scoping it would re-dispatch once per trailing template, so the
+/// recorded count would scale with the trailing count instead of staying at 1.
+const WARM_CONSUMER_STRUCTURE: &str = r#"
+@optimized("test::redispatch-order-probe")
+fn order_probe(g: Geometry) -> Int {
+    0
+}
+
+structure WarmConsumer {
+    param width : Length = 10mm
+
+    let body = box(width, 10mm, 10mm)
+    let probe = order_probe(body)
+}
+"#;
+
 /// A MIXED-arg `@optimized` probe: two `Geometry` params, one of which never
 /// gets a kernel-backed handle.
 ///
@@ -418,6 +455,24 @@ fn build_with_probe_using(
     source: &str,
     kernel: Box<dyn reify_ir::GeometryKernel>,
 ) -> (reify_eval::Engine, Vec<reify_core::Diagnostic>) {
+    let (engine, _compiled, diagnostics) = build_with_probe_capturing_module(source, kernel);
+    (engine, diagnostics)
+}
+
+/// [`build_with_probe_using`], additionally handing back the `CompiledModule`.
+///
+/// `build()` does not stash the module, but `build_snapshot(&module, ..)` needs
+/// it a second time, so the WARM tests cannot use the two-value form. Both
+/// helpers share this one body: there is a single place the probe targets get
+/// registered and a single place the cold build runs.
+fn build_with_probe_capturing_module(
+    source: &str,
+    kernel: Box<dyn reify_ir::GeometryKernel>,
+) -> (
+    reify_eval::Engine,
+    reify_compiler::CompiledModule,
+    Vec<reify_core::Diagnostic>,
+) {
     let compiled = reify_test_support::parse_and_compile(source);
     let mut engine = reify_eval::Engine::new(
         reify_eval::SolverPosture::SolverFree,
@@ -430,7 +485,7 @@ fn build_with_probe_using(
     // unambiguous.
     engine.register_compute_fn(MIXED_PROBE_TARGET, order_probe_fn as reify_eval::ComputeFn);
     let diagnostics = engine.build(&compiled, ExportFormat::Step).diagnostics;
-    (engine, diagnostics)
+    (engine, compiled, diagnostics)
 }
 
 /// [`build_with_probe_using`] against the default tessellating mock kernel,
