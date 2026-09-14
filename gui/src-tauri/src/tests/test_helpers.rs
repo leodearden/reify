@@ -228,7 +228,7 @@ pub(crate) fn assert_rigid_mass_props_determined(state: &crate::types::GuiState,
 
     let pd = find_moi_principal_constraint(state);
     assert_eq!(
-        pd.status, "Satisfied",
+        pd.status, "satisfied",
         "[{ctx}] the `moi_principal[0] > 0` PD constraint must be Satisfied once \
          moi_principal resolves; got status={:?}",
         pd.status

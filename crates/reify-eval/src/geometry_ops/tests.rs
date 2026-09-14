@@ -1596,6 +1596,17 @@
     /// Warning path — mirroring the `edges`/`faces`/`third` optional-arg
     /// convention (fillet/chamfer/draft/offset_curve) rather than a required-arg helper.
     ///
+    /// ALSO THE ANTI-REGRESSION LOCK FOR DECISION D12 (units-length λ, task
+    /// 5755): for `isosurface`, ABSENCE of `iso` is the NORMAL, EXPECTED shape
+    /// (`isosurface(solid)` is the common form, shipped in
+    /// `examples/multi_kernel/voxel_to_mesh.ri`), so the un-gated
+    /// `iso_level = 0.0` default STAYS and an absent `iso` MUST NOT emit a
+    /// missing-arg Warning — only a PRESENT `iso` is LENGTH-gated. Routing the
+    /// absent case through `required_length_arg` too would push
+    /// `eval_named_arg`'s "missing required geometry argument" Warning at every
+    /// bare call site; the `diagnostics.is_empty()` assertion below is what
+    /// fails if the gate is ever "tidied" into covering both halves.
+    ///
     /// RED: `CompiledGeometryOp::Isosurface` does not exist yet.
     #[test]
     fn compile_geometry_op_isosurface_bare_defaults_iso_zero_adaptive_false() {
@@ -1633,7 +1644,8 @@
         }
         assert!(
             diagnostics.is_empty(),
-            "bare isosurface(g) must emit no diagnostics, got: {:?}",
+            "bare isosurface(g) must emit no diagnostics — absence is the normal \
+             expected shape, in particular no missing-arg Warning (D12); got: {:?}",
             diagnostics
         );
     }
@@ -1688,6 +1700,365 @@
             "named isosurface(g, iso, adaptive) must emit no diagnostics, got: {:?}",
             diagnostics
         );
+    }
+
+    // ---- units-length λ (task 5755 step-3): Contract C at `isosurface`'s `iso` ----
+
+    /// REJECTION arm of Contract C at `isosurface`'s `iso`. A PRESENT but
+    /// non-LENGTH isovalue must DROP the op with exactly one `Severity::Error`
+    /// carrying `DiagnosticCode::DimensionedArgRejected` — never be read as a
+    /// bare SI-metre count.
+    ///
+    /// THE DEFECT THIS PINS, measured on the pre-change tree (task 5755 pre-1):
+    /// `iso` = `literal_f64(5.0)` returned
+    /// `Ok(Surface { iso_level: 5.0, .. })` with ZERO diagnostics — a bare `5`
+    /// silently read as 5 SI **metres**, 1000x a plausible 5 mm isovalue. That
+    /// is the same class of silent-1000x defect task 5214 fixed at the pattern
+    /// spacings; `isosurface` has no compile-layer slot in `builtin_arg_slots`,
+    /// so the eval-layer gate is the ONLY one and this path was wide open.
+    ///
+    /// Rows mirror the β sibling
+    /// `eval_named_arg_length_rejection_is_error_with_dimensioned_arg_rejected_code`
+    /// so the two read as one table, PLUS a `Bool` row that pins the
+    /// replacement for the old bespoke "non-numeric — defaulting to 0.0"
+    /// Warning (measured pre-change: Bool gave `Ok(iso_level: 0.0)` + one
+    /// non-Error Warning; it must now be a typed Error naming the actual type).
+    /// The real source shape that reaches that `Bool` row is
+    /// `isosurface(g, adaptive: true)` — a positional-lowering quirk (owner:
+    /// live task #6313) pinned end-to-end by `pattern_spacing_units_e2e.rs`'s
+    /// `skipped_optional_iso_slot_binds_adaptive_positionally`. Because that
+    /// spelling is real, the `Bool` row alone also carries a supplementary
+    /// `Severity::Info` hint naming it; see the per-row count below.
+    ///
+    /// The positive control that keeps this from passing vacuously is the
+    /// already-shipped
+    /// `compile_geometry_op_isosurface_named_args_decode_iso_metres_and_adaptive_true`
+    /// (`literal_length(0.005)` -> 0.005, zero diagnostics), which passes both
+    /// before and after and is deliberately NOT duplicated here.
+    ///
+    /// RED until step-4 routes a PRESENT `iso` through `optional_length_value`.
+    #[test]
+    fn compile_geometry_op_isosurface_non_length_iso_is_rejected_not_read_as_metres() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // Third column: how many diagnostics this row must produce IN TOTAL.
+        // It is 1 everywhere except `Bool`, where the typed rejection is joined
+        // by the supplementary `Severity::Info` #6313 positional-binding hint —
+        // pinned as an exact count, per row, so a hint that started firing on
+        // the OTHER rows (where the author really did type a bare number and the
+        // hint would be noise) fails here.
+        //
+        // Fourth column: the `got` token the rejection must NAME for this row.
+        // Without it the four rows would assert one identical message and the
+        // "names the actual type" claim above would be untested — every row
+        // still passes if `ArgRejection::message` renders the same `got` for
+        // all four.
+        for (label, iso_expr, expected_diagnostics, expected_got) in [
+            (
+                "bare Int",
+                reify_ir::CompiledExpr::literal(
+                    reify_ir::Value::Int(5),
+                    reify_core::Type::dimensionless_scalar(),
+                ),
+                1,
+                "Int",
+            ),
+            ("bare Real", literal_f64(5.0), 1, "Real"),
+            (
+                "wrong-dimension Scalar (MASS)",
+                literal_scalar(5.0, reify_core::DimensionVector::MASS),
+                1,
+                "Mass Scalar",
+            ),
+            ("Bool", literal_bool(true), 2, "Bool"),
+        ] {
+            let op = CompiledGeometryOp::Isosurface {
+                grid: GeomRef::Step(0),
+                args: vec![("iso".to_string(), iso_expr)],
+            };
+
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &step_handles,
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            // Exact equality, not a bare `is_err()`: the INVALID arm's
+            // caller-facing wording is owned solely by `length_arg_to_result`
+            // (D9), shared by both arities of the named-arg route, so pinning
+            // the string is what proves this position DELEGATES rather than
+            // forking a local message — a fork would
+            // still drop the op and still satisfy `is_err()`. Mirrors the
+            // `expect_err` style of the Undef sibling below, closing the arm
+            // that was previously asymmetric. (Asserted on the `Err` string
+            // because `reify_ir::GeometryOp` is not `PartialEq`; the `Ok` arm
+            // panics with the op so a regression names what leaked through.)
+            let err = match result {
+                Err(e) => e,
+                Ok(op) => panic!(
+                    "{label}: a non-Length `iso` must DROP the op so a bare 5 can \
+                     never reach the kernel as 5 SI metres; got: Ok({op:?})"
+                ),
+            };
+            assert_eq!(
+                err, "missing or non-Length argument 'iso' for isosurface",
+                "{label}: the rejected-value wording is inherited from \
+                 `length_arg_to_result`, not forked locally"
+            );
+
+            // TOTAL count first, then the filtered one. The filter alone is the
+            // weaker half: an ADDITIONAL non-matching diagnostic on this path —
+            // e.g. a re-introduced "'iso' argument evaluated to a non-numeric
+            // value — defaulting to 0.0" Warning, precisely what λ removed here
+            // — would slip past a filtered-only assertion. The Undef sibling
+            // asserts `diagnostics.is_empty()`, so this arm gets the matching
+            // exact-count lock rather than staying asymmetric.
+            assert_eq!(
+                diagnostics.len(),
+                expected_diagnostics,
+                "{label}: the typed rejection (plus, for Bool alone, the #6313 \
+                 hint) must be the ONLY diagnostics on this path — no surviving \
+                 warn-and-default Warning alongside them; got: {diagnostics:?}"
+            );
+            // Severity, not just count: the supplementary hint must never be an
+            // Error, or `reify eval` would report two failures for one bad input.
+            assert_eq!(
+                diagnostics
+                    .iter()
+                    .filter(|d| d.severity == reify_core::Severity::Error)
+                    .count(),
+                1,
+                "{label}: exactly ONE Error-severity diagnostic; any supplementary \
+                 hint is advisory; got: {diagnostics:?}"
+            );
+            let rejections: Vec<&Diagnostic> = diagnostics
+                .iter()
+                .filter(|d| d.message.contains("argument expects Length"))
+                .collect();
+            assert_eq!(
+                rejections.len(),
+                1,
+                "{label}: exactly ONE rejection diagnostic (no cascade); got: {diagnostics:?}"
+            );
+            let rej = rejections[0];
+
+            assert_eq!(
+                rej.severity,
+                reify_core::Severity::Error,
+                "{label}: the rejection must be Error severity so `reify eval` exits \
+                 nonzero through the pure severity gate; got: {rej:?}"
+            );
+            assert_eq!(
+                rej.code,
+                Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                "{label}: the rejection must carry the shared runtime code; got: {rej:?}"
+            );
+
+            // Wording is inherited from `ArgRejection::message` via
+            // `optional_length_value` — the SINGLE owner (D9). No forked text.
+            //
+            // EXACT equality, restated through the same `format!` the owner uses
+            // (`expected_length_rejection`), rather than a needle list: a
+            // substring check for "iso" is satisfied by the builtin name
+            // `isosurface` alone, so renaming the SLOT would not have failed it,
+            // and the per-row `got` claim only becomes real once the whole
+            // string is pinned.
+            assert_eq!(
+                rej.message,
+                expected_length_rejection("isosurface", "iso", expected_got),
+                "{label}: the rejection must name the builtin, the SLOT, and the \
+                 actual type it received"
+            );
+        }
+    }
+
+    /// UNRESOLVED arm of Contract C at `isosurface`'s `iso`: an `Undef` isovalue
+    /// drops the op with the DISTINCT unresolved wording and leaves the value
+    /// layer QUIET (decision D10 / INV-SF-1). During solver iteration an Undef
+    /// cell is expected transient state — asserting "non-Length" for it would be
+    /// actively wrong, and emitting a diagnostic would spam every iteration.
+    ///
+    /// Exact equality on the message, same shape as
+    /// `pattern_kind_label_in_diagnostics_is_the_dsl_builtin_name`: this wording
+    /// is owned solely by `length_arg_to_result`, so pinning it here proves the
+    /// delegation rather than a forked local message. (Asserted on the `Err`
+    /// string via `expect_err` because `reify_ir::GeometryOp` is not `PartialEq`.)
+    ///
+    /// RED until step-4. Measured pre-change (task 5755 pre-1): an Undef `iso`
+    /// returned `Ok(Surface { iso_level: 0.0, .. })` plus one non-Error
+    /// "non-numeric value — defaulting to 0.0" Warning — i.e. the op was BUILT
+    /// with a wrong isovalue AND the value layer was loud.
+    #[test]
+    fn compile_geometry_op_isosurface_undef_iso_is_quiet_and_unresolved() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Isosurface {
+            grid: GeomRef::Step(0),
+            args: vec![("iso".to_string(), literal_undef())],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        let err = result.expect_err("an Undef `iso` must drop the op");
+        assert_eq!(
+            err, "argument 'iso' for isosurface is unresolved (Undef)",
+            "an Undef `iso` gets the DISTINCT unresolved wording owned by \
+             `length_arg_to_result`, not \"missing or non-Length\""
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "the value layer stays QUIET for an unresolved cell (D10 / INV-SF-1); \
+             got: {diagnostics:?}"
+        );
+    }
+
+    /// BOUNDARY row the shipped positive control does not cover: an explicitly
+    /// dimensioned ZERO isovalue (`iso: 0mm`) must be ACCEPTED, with
+    /// `iso_level == 0.0` and zero diagnostics.
+    ///
+    /// This is the one input where an over-strict gate would regress a SHIPPED
+    /// e2e — `crates/reify-eval/tests/isosurface_iso_option_e2e.rs` builds with
+    /// `iso: 0mm`. `0mm` retains its LENGTH dimension
+    /// (`reify-compiler`'s expr lowering builds `Value::Scalar { si_value: 0.0,
+    /// dimension }`), so it is a finite LENGTH `Scalar` and Accepted — it is NOT
+    /// the same thing as an ABSENT `iso`, whose 0.0 comes from the un-gated D12
+    /// default. This test is what separates those two paths; without it, a gate
+    /// that rejected zero (or one that silently treated `0mm` as "absent") would
+    /// look correct at the unit layer.
+    #[test]
+    fn compile_geometry_op_isosurface_explicit_zero_length_iso_is_accepted() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Isosurface {
+            grid: GeomRef::Step(0),
+            args: vec![("iso".to_string(), literal_length(0.0))],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        )
+        .expect("an explicit `iso: 0mm` is a finite LENGTH Scalar and must be Accepted");
+
+        match result {
+            reify_ir::GeometryOp::Surface { iso_level, .. } => assert_eq!(
+                iso_level, 0.0,
+                "`iso: 0mm` decodes to exactly 0.0 SI metres"
+            ),
+            other => panic!("expected GeometryOp::Surface, got {other:?}"),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "an Accepted LENGTH Scalar pushes ZERO diagnostics; got: {diagnostics:?}"
+        );
+    }
+
+    /// The FOURTH and last reachable `LengthArg` outcome at this position: an
+    /// ACCEPTED but NON-FINITE Length. With this test the `iso` slot pins all
+    /// four — `Length` (the `0mm` / `5mm` positive controls), `Unresolved` (the
+    /// Undef sibling), `Invalid` via `Rejected` (the four-row rejection table),
+    /// and `Invalid` via the non-finite arm here.
+    ///
+    /// It is a DIFFERENT diagnostic shape from the rejection table's, which is
+    /// why the table cannot simply grow a row: `f64::INFINITY` with a LENGTH
+    /// dimension is `Accepted` by `accept_arg` — it IS a Length, merely ±inf —
+    /// so `accept_length_value` takes its own `Severity::Warning` branch,
+    /// carries NO `DimensionedArgRejected` code, and never mints the "expects
+    /// Length, got …" text. Only the `Err` (and hence the DROP) is shared. That
+    /// un-promoted severity is a deliberate, tracked residual, not a defect
+    /// here: task 6157 owns it workspace-wide, and this test pins today's shape
+    /// so the promotion shows up as an expected diff rather than a surprise.
+    ///
+    /// Reachable from real source as `iso: 1mm / 0`. What it guards is the
+    /// obvious wrong fix: an isovalue of ±inf must DROP the op, not be handed to
+    /// marching cubes.
+    #[test]
+    fn compile_geometry_op_isosurface_non_finite_length_iso_drops_op_with_warning() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        for (label, si) in [
+            ("+inf", f64::INFINITY),
+            ("-inf", f64::NEG_INFINITY),
+            ("NaN", f64::NAN),
+        ] {
+            let op = CompiledGeometryOp::Isosurface {
+                grid: GeomRef::Step(0),
+                args: vec![("iso".to_string(), literal_length(si))],
+            };
+
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &step_handles,
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+
+            let err = match result {
+                Err(e) => e,
+                Ok(op) => panic!(
+                    "{label}: a non-finite `iso` must DROP the op rather than reach \
+                     marching cubes; got: Ok({op:?})"
+                ),
+            };
+            assert_eq!(
+                err, "missing or non-Length argument 'iso' for isosurface",
+                "{label}: the non-finite arm returns `Invalid`, so it inherits the \
+                 same `Err` wording from `length_arg_to_result`"
+            );
+
+            assert_eq!(
+                diagnostics.len(),
+                1,
+                "{label}: exactly one diagnostic — the non-finite Warning, with no \
+                 rejection alongside it; got: {diagnostics:?}"
+            );
+            assert_eq!(
+                diagnostics[0].message,
+                "argument 'iso' for isosurface evaluated to a non-finite Length",
+                "{label}: wording is owned by `accept_length_value`'s non-finite arm"
+            );
+            assert_eq!(
+                diagnostics[0].severity,
+                reify_core::Severity::Warning,
+                "{label}: today's severity — Warning, NOT the Error the Rejected \
+                 arm carries (task 6157 owns promoting it); got: {:?}",
+                diagnostics[0]
+            );
+            assert_eq!(
+                diagnostics[0].code, None,
+                "{label}: an Accepted-but-non-finite value produces no \
+                 `ArgRejection`, so there is no `DimensionedArgRejected` code to \
+                 carry; got: {:?}",
+                diagnostics[0]
+            );
+        }
     }
 
     /// Helper: build a CompiledExpr literal from a Value::Transform
@@ -3131,10 +3502,14 @@
 
             // Wording is byte-unchanged and still owned solely by
             // `ArgRejection::message` — the retrofit moves severity + code, never text.
-            // NB: the kind_label a `PatternKind::Linear` op carries is `"linear"`,
-            // not `"linear_pattern"` — measured from the live diagnostic, not assumed.
+            // NB: since task 5755 the kind_label a `PatternKind::Linear` op
+            // carries is `"linear_pattern"` — the DSL builtin the author typed,
+            // not the `PatternKind::Linear` variant nickname `"linear"` this
+            // previously recorded. Measured from the live diagnostic, not
+            // assumed. The needle is the FULL label so a partial revert of the
+            // λ rename cannot pass this test on the `linear` substring.
             for needle in [
-                "linear",
+                "linear_pattern",
                 "spacing",
                 "Length",
                 "pass a dimensioned length such as `5mm`",
@@ -3259,6 +3634,106 @@
                 .iter()
                 .any(|d| d.message.contains("argument expects Length")),
             "Undef must push NO rejection diagnostic (D10 quiet value layer); got: {diagnostics:?}"
+        );
+    }
+
+    // ---- units-length λ (task 5755 step-1): the user-visible PatternKind labels ----
+
+    /// The `kind_label` interpolated into a pattern's eval-layer diagnostics
+    /// must be the builtin name the `.ri` author actually TYPED
+    /// (`linear_pattern` / `linear_pattern_2d`), not `PatternKind`'s internal
+    /// variant nickname (`linear` / `linear_2d`). A diagnostic naming a symbol
+    /// that appears nowhere in the source is unactionable: the reader cannot
+    /// grep for it (PRD decision D7).
+    ///
+    /// WHY THE UNDEF ROUTE, not a bare `spacing`: the bare-spacing route is
+    /// SHADOWED. `linear_pattern` has a compile-layer LENGTH slot
+    /// (`reify-compiler`'s `builtin_signatures.rs`), so
+    /// `linear_pattern(b, 1, 0, 0, 3, 20)` is rejected at COMPILE with a
+    /// message minted by `ArgRejection::message` from the DSL builtin name —
+    /// already correct, and never routed through `PatternKind::Display`. The
+    /// UNRESOLVED (`Undef`) arm of `required_length_arg` is the reachable route
+    /// where `Display` is the ONLY producer of the label token. Do not
+    /// "simplify" this back to a bare literal: that fixture cannot fail.
+    ///
+    /// Precedent for EXACT-equality on this wording: the `accept_length_point3`
+    /// test below pins `"argument 'oy' for mirror is unresolved (Undef)"` the
+    /// same way. Here the equality is asserted on the `Err` STRING via
+    /// `expect_err` rather than on the whole `Result`, because
+    /// `reify_ir::GeometryOp` does not implement `PartialEq` — the wording is
+    /// still pinned byte-for-byte, which is the point.
+    ///
+    /// RED until step-2 flips the two `Display` arms. Measured on the
+    /// pre-change tree (task 5755 pre-1): `Err("argument 'spacing' for linear
+    /// is unresolved (Undef)")` and `Err("argument 'spacing1' for linear_2d is
+    /// unresolved (Undef)")`, both with EMPTY diagnostics.
+    #[test]
+    fn pattern_kind_label_in_diagnostics_is_the_dsl_builtin_name() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // (a) 1D `linear_pattern`.
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &linear_pattern_with_spacing(literal_undef()),
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        let err = result.expect_err("an Undef spacing must drop the op");
+        assert_eq!(
+            err, "argument 'spacing' for linear_pattern is unresolved (Undef)",
+            "the label must be the DSL builtin name `linear_pattern`, not the \
+             `PatternKind::Linear` variant nickname `linear`"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "an Undef spacing stays QUIET at the value layer (D10 / INV-SF-1); \
+             got: {diagnostics:?}"
+        );
+
+        // (b) The 2D twin. This is the SAME defect as (a), reached through the
+        // same `required_length_arg` Unresolved arm — found by the adversary
+        // probe on the live tree, not a speculative extra.
+        let op_2d = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Linear2D,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx1".into(), literal_f64(1.0)),
+                ("dy1".into(), literal_f64(0.0)),
+                ("dz1".into(), literal_f64(0.0)),
+                ("count1".into(), literal_f64(3.0)),
+                ("spacing1".into(), literal_undef()),
+                ("dx2".into(), literal_f64(0.0)),
+                ("dy2".into(), literal_f64(1.0)),
+                ("dz2".into(), literal_f64(0.0)),
+                ("count2".into(), literal_f64(4.0)),
+                ("spacing2".into(), literal_length(0.03)),
+            ],
+        };
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op_2d,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        let err = result.expect_err("an Undef spacing1 must drop the op");
+        assert_eq!(
+            err, "argument 'spacing1' for linear_pattern_2d is unresolved (Undef)",
+            "the label must be the DSL builtin name `linear_pattern_2d`, not the \
+             `PatternKind::Linear2D` variant nickname `linear_2d`"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "an Undef spacing1 stays QUIET at the value layer (D10 / INV-SF-1); \
+             got: {diagnostics:?}"
         );
     }
 
@@ -7725,10 +8200,18 @@
             "diagnostic message should mention 'spacing', got: {}",
             diagnostics[0].message
         );
+        // C6 MIGRATION (task 5755): this used to read
+        // `contains("linear") && !contains("linear_")`. Task 5755 renamed the
+        // `PatternKind::Linear` label from `linear` to `linear_pattern` (the
+        // DSL builtin the author typed), which makes the negated clause FALSE
+        // by construction. The ORIGINAL INTENT — the diagnostic names THIS
+        // builtin and not its 2D sibling — is preserved verbatim below; only
+        // the needles move with the rename.
         assert!(
-            diagnostics[0].message.contains("linear")
-                && !diagnostics[0].message.contains("linear_"),
-            "diagnostic message should mention 'linear' but not any underscore-suffixed sibling (linear_*), got: {}",
+            diagnostics[0].message.contains("linear_pattern")
+                && !diagnostics[0].message.contains("linear_pattern_2d"),
+            "diagnostic message should name the builtin the author typed \
+             ('linear_pattern') and not its 2D sibling ('linear_pattern_2d'), got: {}",
             diagnostics[0].message
         );
     }
@@ -23340,6 +23823,431 @@
         assert_eq!(
             got, expected,
             "single-element chain == transform_compose(identity, t)"
+        );
+    }
+
+    // ── task 6099: pose-composition failure classifier ───────────────────────
+    //
+    // `transform_compose` returns a bare `Value::Undef` whenever its two
+    // operands' translation dimensions disagree (`compose_transforms`' dimension
+    // gate in reify-stdlib), and `eval_builtin` has no diagnostic channel — so a
+    // dimensionless `at` pose silently poisoned the composed world transform and
+    // the sub built at the origin. `diagnose_pose_composition_failure` is the
+    // pure classifier that turns that silent `Undef` into a build-failing
+    // `Severity::Error` naming the sub and both dimensions.
+
+    /// A `Value::Transform` whose translation is a bare DIMENSIONLESS
+    /// `Vector[Real, Real, Real]` — exactly what `transform3(orient_identity(),
+    /// vec3(5.0, 0.0, 0.0))` evaluates to (`transform3` performs no dimension
+    /// validation, so this is a legal value, not a malformed one).
+    fn dimensionless_transform_of(q: [f64; 4], t: [f64; 3]) -> reify_ir::Value {
+        reify_ir::Value::Transform {
+            rotation: Box::new(reify_ir::Value::Orientation {
+                w: q[0],
+                x: q[1],
+                y: q[2],
+                z: q[3],
+            }),
+            translation: Box::new(reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(t[0]),
+                reify_ir::Value::Real(t[1]),
+                reify_ir::Value::Real(t[2]),
+            ])),
+        }
+    }
+
+    #[test]
+    fn pose_composition_dimensionless_translation_is_diagnosed() {
+        let parent = identity_transform();
+        let pose = dimensionless_transform_of([1.0, 0.0, 0.0, 0.0], [5.0, 0.0, 0.0]);
+
+        // Keep the fixture honest: assert the composition really does collapse to
+        // `Undef` today rather than hardcoding the expected failure.
+        let child = compose_pose_chain(&[parent.clone(), pose.clone()]);
+        assert_eq!(
+            child,
+            reify_ir::Value::Undef,
+            "LENGTH identity composed with a dimensionless pose must yield Undef"
+        );
+
+        let d = diagnose_pose_composition_failure(&parent, &pose, &child, "Asm", "widget")
+            .expect("a dimensionless sub-pose must be diagnosed, never silently dropped");
+        assert_eq!(
+            d.severity,
+            reify_core::Severity::Error,
+            "the diagnostic must fail the build (reify-cli's build_is_success gates on Error)"
+        );
+        let msg = d.message.to_lowercase();
+        assert!(
+            msg.contains("widget"),
+            "message must name the offending sub: {}",
+            d.message
+        );
+        assert!(
+            msg.contains("asm"),
+            "message must name the enclosing structure: {}",
+            d.message
+        );
+        assert!(
+            msg.contains("dimensionless"),
+            "message must name the offending dimension: {}",
+            d.message
+        );
+        assert!(
+            msg.contains("length"),
+            "message must name the expected (parent) dimension: {}",
+            d.message
+        );
+    }
+
+    #[test]
+    fn pose_composition_matching_length_dimensions_is_not_diagnosed() {
+        let parent = identity_transform();
+        let pose = transform_of([1.0, 0.0, 0.0, 0.0], [0.005, 0.0, 0.0]);
+        let child = compose_pose_chain(&[parent.clone(), pose.clone()]);
+        assert_ne!(
+            child,
+            reify_ir::Value::Undef,
+            "an all-LENGTH chain must compose successfully"
+        );
+        assert!(
+            diagnose_pose_composition_failure(&parent, &pose, &child, "Asm", "widget").is_none(),
+            "the happy path must stay silent"
+        );
+    }
+
+    // ── task 6099: origination guards (fire exactly once per authoring mistake) ─
+    //
+    // An `Undef` `child_world` is written back as the NEXT level's
+    // `composed_world`, and `transform_compose` returns `Undef` whenever EITHER
+    // operand is not a well-formed Transform — so a single bad pose at depth 1
+    // poisons every deeper composition. Without these guards a depth-N subtree
+    // would emit N copies of the same error for one authoring mistake, and the
+    // diagnostic's "name the sub the author must edit" promise would be false.
+
+    #[test]
+    fn pose_composition_silent_when_parent_world_already_undef() {
+        // An `Undef` parent means the failure was already reported at a
+        // shallower level of the walk and has poisoned this composition too;
+        // re-firing here would duplicate that error once per descendant level.
+        let parent = reify_ir::Value::Undef;
+        let pose = transform_of([1.0, 0.0, 0.0, 0.0], [0.005, 0.0, 0.0]);
+        assert!(
+            diagnose_pose_composition_failure(
+                &parent,
+                &pose,
+                &reify_ir::Value::Undef,
+                "Asm",
+                "widget",
+            )
+            .is_none(),
+            "a poisoned parent must not re-report the ancestor's failure"
+        );
+    }
+
+    #[test]
+    fn pose_composition_silent_when_sub_pose_already_undef() {
+        // `eval_sub_pose` already pushed its own `Diagnostic::error`
+        // ("`at` pose expression must evaluate to a Transform or Frame") for
+        // this exact sub, and that `Undef` then composes to an `Undef` child.
+        // Firing again here would double-report one mistake.
+        let parent = identity_transform();
+        assert!(
+            diagnose_pose_composition_failure(
+                &parent,
+                &reify_ir::Value::Undef,
+                &reify_ir::Value::Undef,
+                "Asm",
+                "widget",
+            )
+            .is_none(),
+            "eval_sub_pose already reported this sub's failed pose"
+        );
+    }
+
+    #[test]
+    fn pose_composition_silent_when_both_undef() {
+        assert!(
+            diagnose_pose_composition_failure(
+                &reify_ir::Value::Undef,
+                &reify_ir::Value::Undef,
+                &reify_ir::Value::Undef,
+                "Asm",
+                "widget",
+            )
+            .is_none(),
+            "both origination guards apply; still exactly zero new diagnostics"
+        );
+    }
+
+    // ── task 6099: malformed poses (not a clean two-dimension mismatch) ──────
+    //
+    // `compose_transforms` rejects these WITHOUT its `t1_dim != t2_dim` gate
+    // ever firing — `decompose_xyz3` refuses a translation whose three
+    // components disagree or are non-finite before that gate is reached, and
+    // `normalize_quat_input`'s 1e-24 squared-norm gate refuses a degenerate
+    // quaternion after it has already passed. The composition still collapses
+    // to `Undef` and the sub still lands at the origin, so the diagnostic must
+    // still fire; it just must not fabricate a two-dimension mismatch that did
+    // not happen.
+
+    #[test]
+    fn pose_composition_non_uniform_translation_dimensions_is_diagnosed() {
+        let parent = identity_transform();
+        // Components disagree: element 0 is LENGTH, elements 1-2 are bare Reals.
+        let pose = reify_ir::Value::Transform {
+            rotation: Box::new(reify_ir::Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(reify_ir::Value::Vector(vec![
+                reify_ir::Value::length(0.005),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+            ])),
+        };
+        let child = compose_pose_chain(&[parent.clone(), pose.clone()]);
+        assert_eq!(
+            child,
+            reify_ir::Value::Undef,
+            "a mixed-dimension translation must be rejected by decompose_xyz3"
+        );
+
+        let d = diagnose_pose_composition_failure(&parent, &pose, &child, "Asm", "widget")
+            .expect("a malformed pose must still be diagnosed, never silently dropped");
+        assert_eq!(d.severity, reify_core::Severity::Error);
+        let msg = d.message.to_lowercase();
+        assert!(
+            msg.contains("widget"),
+            "message must name the offending sub: {}",
+            d.message
+        );
+        assert!(
+            msg.contains("asm"),
+            "message must name the enclosing structure: {}",
+            d.message
+        );
+        assert!(
+            !msg.contains("dimensionless"),
+            "element 0 is LENGTH, so reporting a length-vs-dimensionless \
+             mismatch would be a fabricated diagnosis: {}",
+            d.message
+        );
+    }
+
+    #[test]
+    fn pose_composition_degenerate_rotation_is_diagnosed() {
+        let parent = identity_transform();
+        // Zero quaternion: rejected by `normalize_quat_input`'s 1e-24
+        // squared-norm gate, AFTER the dimension gate has already passed.
+        let pose = transform_of([0.0, 0.0, 0.0, 0.0], [0.005, 0.0, 0.0]);
+        let child = compose_pose_chain(&[parent.clone(), pose.clone()]);
+        assert_eq!(
+            child,
+            reify_ir::Value::Undef,
+            "a degenerate rotation quaternion must be rejected"
+        );
+
+        let d = diagnose_pose_composition_failure(&parent, &pose, &child, "Asm", "widget")
+            .expect("a degenerate rotation must still be diagnosed, never silently dropped");
+        assert_eq!(d.severity, reify_core::Severity::Error);
+        assert!(
+            d.message.to_lowercase().contains("widget"),
+            "message must name the offending sub: {}",
+            d.message
+        );
+    }
+
+    // ── task 6099 amendment: coupling guards for the classifier's inputs ─────
+
+    #[test]
+    fn compose_pose_pair_equals_two_element_chain() {
+        // The walk composes through `compose_pose_pair` (borrowing) rather than
+        // `compose_pose_chain` (cloning both operands into an array literal).
+        // The two MUST agree, or the classifier would be reasoning about a
+        // different composition than the one the placement decomposition sees.
+        // Covers both the success and the `Undef` arm.
+        let parent = transform_of([1.0, 0.0, 0.0, 0.0], [0.01, 0.0, 0.0]);
+        let ok = transform_of([0.5, 0.5, 0.5, 0.5], [0.0, 0.02, 0.0]);
+        let bad = dimensionless_transform_of([1.0, 0.0, 0.0, 0.0], [5.0, 0.0, 0.0]);
+
+        for (label, child) in [("length pose", &ok), ("dimensionless pose", &bad)] {
+            assert_eq!(
+                compose_pose_pair(&parent, child),
+                compose_pose_chain(&[parent.clone(), child.clone()]),
+                "{label}: compose_pose_pair must equal the two-element chain"
+            );
+        }
+        // And the second row really is the failure arm, so the equality above is
+        // not vacuously comparing two successes.
+        assert_eq!(
+            compose_pose_pair(&parent, &bad),
+            reify_ir::Value::Undef,
+            "the dimensionless row must be the Undef arm"
+        );
+    }
+
+    #[test]
+    fn pose_diagnostic_push_is_deduplicated() {
+        // BREADTH-wise dedup: one shared template reached through N containment
+        // paths is walked N times, so the same `(scope, sub_name)` message would
+        // otherwise be pushed N times for ONE authoring mistake. Nothing
+        // downstream can collapse them (`Diagnostic::error` leaves `code: None`,
+        // which is what reify-cli's dedup helpers key on).
+        let mut diagnostics = vec![Diagnostic::error("an unrelated pre-existing error")];
+
+        let one = || Diagnostic::error("sub `bad` in structure `Asm`: its `at` pose ...");
+        push_pose_diagnostic_deduped(&mut diagnostics, one());
+        push_pose_diagnostic_deduped(&mut diagnostics, one());
+        push_pose_diagnostic_deduped(&mut diagnostics, one());
+        assert_eq!(
+            diagnostics.len(),
+            2,
+            "three identical pushes must collapse to one, leaving the unrelated \
+             diagnostic untouched: {diagnostics:?}"
+        );
+
+        // A DIFFERENT sub is a different authoring mistake and must still report.
+        push_pose_diagnostic_deduped(
+            &mut diagnostics,
+            Diagnostic::error("sub `other` in structure `Asm`: its `at` pose ..."),
+        );
+        assert_eq!(
+            diagnostics.len(),
+            3,
+            "a distinct message must not be swallowed by the dedup: {diagnostics:?}"
+        );
+
+        // Same text at a different severity is a different diagnostic.
+        let mut warn = Diagnostic::error("same text");
+        warn.severity = reify_core::Severity::Warning;
+        push_pose_diagnostic_deduped(&mut diagnostics, warn);
+        push_pose_diagnostic_deduped(&mut diagnostics, Diagnostic::error("same text"));
+        assert_eq!(
+            diagnostics.len(),
+            5,
+            "dedup keys on (severity, message), not message alone: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn pose_translation_dimension_agrees_with_stdlib_composition_gate() {
+        // CROSS-CRATE DRIFT GUARD.
+        //
+        // `pose_translation_dimension` re-states, in reify-eval, the
+        // dimension-agreement rule that `reify_stdlib`'s `decompose_xyz3` +
+        // `compose_transforms` dimension gate actually apply. The classifier's
+        // "clean two-dimension mismatch" arm is only correct while the two
+        // notions coincide: if stdlib later accepts a `Point` translation, or
+        // coerces per-component dimensions, this helper starts returning `None`
+        // (or a stale dimension) for poses that DID hit the gate, and every real
+        // mismatch silently degrades to the generic message.
+        //
+        // Every row asserts BOTH sides — what the helper says, and what the real
+        // composition does — so a change on either side of the crate boundary
+        // reds here instead of quietly downgrading a diagnostic. It is the
+        // in-crate stand-in for the narrow stdlib accessor this helper should
+        // eventually call (reify-stdlib is outside this task's scope).
+        let mixed = reify_ir::Value::Transform {
+            rotation: Box::new(reify_ir::Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(reify_ir::Value::Vector(vec![
+                reify_ir::Value::length(0.005),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+            ])),
+        };
+        let length = transform_of([1.0, 0.0, 0.0, 0.0], [0.005, 0.0, 0.0]);
+        let dimensionless = dimensionless_transform_of([1.0, 0.0, 0.0, 0.0], [5.0, 0.0, 0.0]);
+
+        // Probes the RAW pairwise builtin, not `compose_pose_pair`: the latter
+        // folds from a LENGTH identity seed, which would mask the gate's actual
+        // rule on any row whose first operand is not LENGTH (see the seed
+        // assertions below).
+        //
+        // (label, a, b, both sides yield a dimension?, composition succeeds?)
+        let rows: [(&str, &reify_ir::Value, &reify_ir::Value, bool, bool); 5] = [
+            ("length ∘ length", &length, &length, true, true),
+            // Load-bearing: the stdlib gate compares the two translations'
+            // dimensions for AGREEMENT (`t1_dim != t2_dim`) — it does not
+            // require LENGTH — which is exactly the assumption
+            // `pose_translation_dimension` encodes. If stdlib ever hard-codes
+            // LENGTH here, this row flips and the drift is caught.
+            (
+                "dimensionless ∘ dimensionless",
+                &dimensionless,
+                &dimensionless,
+                true,
+                true,
+            ),
+            (
+                "length ∘ dimensionless",
+                &length,
+                &dimensionless,
+                true,
+                false,
+            ),
+            (
+                "dimensionless ∘ length",
+                &dimensionless,
+                &length,
+                true,
+                false,
+            ),
+            // Helper returns `None` here, and the composition is rejected by
+            // `decompose_xyz3` BEFORE the dimension gate is ever reached — so
+            // "no single dimension" must never be read as "gate accepted it".
+            ("mixed ∘ length", &mixed, &length, false, false),
+        ];
+
+        for (label, a, b, both_dimensioned, composes) in rows {
+            let da = pose_translation_dimension(a);
+            let db = pose_translation_dimension(b);
+            assert_eq!(
+                da.is_some() && db.is_some(),
+                both_dimensioned,
+                "{label}: pose_translation_dimension agreement on both operands"
+            );
+            let composed = reify_stdlib::eval_builtin("transform_compose", &[a.clone(), b.clone()]);
+            assert_eq!(
+                composed != reify_ir::Value::Undef,
+                composes,
+                "{label}: stdlib composition outcome changed"
+            );
+            if let (Some(da), Some(db)) = (da, db) {
+                assert_eq!(
+                    da == db,
+                    composes,
+                    "{label}: the helper's dimensions-agree verdict must match \
+                     whether the stdlib gate actually accepted the pair — if it \
+                     stops matching, the classifier's clean-mismatch arm is \
+                     diagnosing a gate that no longer works that way"
+                );
+            }
+        }
+
+        // The LENGTH identity seed is itself load-bearing, and is why the
+        // headline bug is catchable AT ALL at the top of the walk: a root's
+        // `composed_world` is the seed, so a dimensionless sub-pose composed
+        // against it mismatches immediately. Measured here rather than assumed —
+        // the raw pairwise row above shows the same pair composing FINE when the
+        // seed is not in play.
+        assert_eq!(
+            compose_pose_pair(&dimensionless, &dimensionless),
+            reify_ir::Value::Undef,
+            "the LENGTH identity seed must reject a dimensionless chain even \
+             though the pair agrees with itself"
+        );
+        assert_ne!(
+            compose_pose_pair(&length, &length),
+            reify_ir::Value::Undef,
+            "an all-LENGTH chain must still compose through the seed"
         );
     }
 

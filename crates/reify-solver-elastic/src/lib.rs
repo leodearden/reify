@@ -737,6 +737,33 @@ pub use sweep::{
 // is enforced by the orchestrator, not by the projector itself. External
 // callers cannot misuse it with a short slice.
 pub use volume_refine::{RefineError, refine_with_size_field};
+// Task 4909: the two gmsh symbols this crate's own PUBLIC refine signatures
+// require. `refine_with_size_field` and `adaptive::refine_marked_elements`
+// both take `&MeshingOptions`, and the Gmsh-only local-refine path has to be
+// runtime-gated on availability — yet neither symbol was re-exported, so no
+// downstream crate could construct the argument or gate on presence without
+// naming `reify_kernel_gmsh` itself. This closes that pre-existing API gap.
+//
+// It is also the seam by which `reify-eval` reaches gmsh availability WITHOUT
+// naming `reify_kernel_gmsh::*`, honouring the task-4743 gmsh-build-free
+// posture recorded in `reify-eval/Cargo.toml` (gmsh is a DEV-dep there, and
+// referencing one of its symbols from a non-gmsh test binary pulls in its
+// `inventory::submit!` and breaks OCCT-only registry-size assertions).
+// `reify-solver-elastic` is a NORMAL dep of reify-eval and already normal-deps
+// `reify-kernel-gmsh`, so routing through here changes no linkage.
+//
+// Deliberately exactly two symbols: the surface must stay what the public
+// signatures and the runtime gate require, not a general re-export of the
+// gmsh crate.
+pub use reify_kernel_gmsh::{GMSH_AVAILABLE, MeshingOptions};
+// Task 4909: the free-face boundary extractor. `refine_with_size_field` and
+// `adaptive::refine_marked_elements` both require the closed surface their
+// volume mesh was meshed from; on the realized (`body : Solid`) path that
+// surface is not carried by the realization handle, so it is reconstructed
+// from the tet mesh itself. See `volume_refine::boundary_surface_mesh` for
+// why the volume mesh is the *right* source and not merely the available one
+// (it makes the nearest-vertex size transfer a distance-0 identity).
+pub use volume_refine::boundary_surface_mesh;
 // Task 3868: κ — additive joint-stiffness kernel.
 // PRD compliant-joints-flexures.md §7.2: each spring-loaded joint contributes
 // K[dof,dof] += k to the global stiffness matrix; empty contributions → rigid

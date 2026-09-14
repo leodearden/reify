@@ -76,7 +76,7 @@ pub use geometry::{
     KernelAttributeOutcome, KernelHandle, KernelId, KernelRegistration, LocalFeatureOpHistoryRecords,
     LoftOpHistoryRecords, Mesh, ModEntry, Operation, ThreeMfOptions, ThreeMfWarning, write_3mf, write_stl_ascii, write_stl_binary,
     QueryCapability, QueryError, ReprKind, ResultFaceDescriptor, Role, StepSchema, SweepOpHistoryRecords, TessError,
-    TopologyAttribute, TopologyAttributeTable, VolumeConnectivity, VolumeMesh, debug_assert_query_many_invariant,
+    TopologyAttribute, TopologyAttributeTable, VolumeConnectivity, VolumeMesh, VoxelResolution, debug_assert_query_many_invariant,
 };
 pub use kernel_validation::{
     BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE,

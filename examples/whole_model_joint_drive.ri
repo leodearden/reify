@@ -45,32 +45,62 @@ module whole_model_joint_drive
 //     centrality objective is NOT synthesised (the solver only synthesises one
 //     when the problem carries no user objective), so the freeze-at-the-centre
 //     outcome is gone and cost-minimisation governs instead:
-//       quantity_produced → 0.01
-//       line_cost         → 0.005 USD   (0.50 × 0.01)
+//       quantity_produced → 1e-9
+//       line_cost         → 5e-10 USD   (0.50 × 1e-9)
 //
-// ## Why the merged figure is the SEED, not the exact argmin
+// ## Why the merged figure is the ROBUSTNESS FLOOR, not zero
 //
-// A linear Money objective's argmin sits exactly ON a constraint boundary, and
-// the solver's penalty method has a stationary point offset INSIDE the penalty
-// by `objective_gradient / (2 × PENALTY_WEIGHT)` ≈ 2.5e-7 — far above
-// `FEASIBILITY_THRESHOLD` (1e-12).  The converged point therefore reads as
-// infeasible and `solve_core` returns its `initially_feasible` fallback: the
-// seed `extract_initial_point` supplies (0.01 for an unbounded dimensionless
-// auto).  That is the SAME documented eval-layer behaviour recorded in
-// `examples/continuous_cost_min.ri`'s header ("returns the initially-feasible
-// SEED … rather than a unique convergent point"), not something this seam
-// introduces — and it is why the box's LOWER bracket must contain that seed:
-// with `quantity_produced >= 1.0` the seed is outside the floored window and the
-// solve reports `RobustnessFloorInfeasible` instead.
+// With a Money objective and at least one live inequality, the solver
+// synthesises a per-constraint margin floor before it ever solves — see the
+// "Robustness floor (task #4789 α)" comment block and the
+// `synthesise_floor_constraints` / `robustness_margin_for` functions in
+// `crates/reify-constraints/src/solver.rs`:
 //
-// The user-observable signal is therefore the GOVERNANCE change — 50.0 → 0.01,
-// 25.00 USD → 0.005 USD — not the precise converged number.  Without the joint
+//     m_i = max(REL_MARGIN × |bound_i|, ABS_FLOOR_SI)
+//     REL_MARGIN   = 0.02   (`const REL_MARGIN`, solver.rs)
+//     ABS_FLOOR_SI = 1e-9   (`const ABS_FLOOR_SI`, solver.rs)
+//
+// so the effective lower bound becomes `bracket + max(REL_MARGIN × |bracket|,
+// ABS_FLOOR_SI)` — a RULE a reader can re-derive for any bracket, not a magic
+// number.  For this model's `quantity_produced >= 0.0` the bound magnitude is
+// 0, so `m = max(0.02 × 0.0, 1e-9) = 1e-9`: the RELATIVE margin degenerates to
+// the ABSOLUTE floor, which is the genuinely interesting reason the merged
+// answer collapses to ~0 rather than to some 2%-of-bracket value.  The
+// floored lower bound is therefore `1e-9`, and since `line_cost = 0.50USD ×
+// quantity_produced` is strictly increasing, the argmin sits exactly there.
+// (The upper bracket floors to `q <= 98.0` — `m = max(0.02 × 100, 1e-9) =
+// 2.0` — and never binds for a minimisation.)
+//
+// The solver's penalty method has a stationary point offset slightly INSIDE
+// that floor, which therefore reads as infeasible; the CLAMP derived from
+// `effective_constraints` (`derive_param_intervals` / `resolve_bounds` with
+// `include_strict = false`, solver.rs) is what snaps the
+// converged point back onto the floored bound.  That clamp — not a seed
+// fallback — is what produces the published figure: `solve_core` is NOT
+// returning its `initially_feasible` seed here.  The fixed `0.01` seed
+// `extract_initial_point` falls back to is now only its LAST-RESORT arm,
+// reached when neither explicit bounds nor a constraint-derived box exist
+// (task #5618 added the constraint-derived-box arm ahead of it; see
+// `extract_initial_point`'s four-arm docblock, solver.rs).  For this model
+// both sides of the box are derived, so today's seed is the midpoint
+// `(0.0+100.0)/2 = 50.0` — and it is NOT the returned value, since the solve
+// reaches the floored argmin instead.  A shifted bracket is the worked second
+// instance of the same rule: `quantity_produced >= 1.0` →
+// `m = max(0.02 × 1.0, 1e-9) = 0.02` → floored bound `1.02` →
+// `quantity_produced = 1.02`, `line_cost = 0.51 USD`, solving cleanly with
+// zero errors — NOT `RobustnessFloorInfeasible`.
+//
+// The user-observable signal is therefore the GOVERNANCE change — 50.0 → 1e-9,
+// 25.00 USD → 5e-10 USD — not the precise converged number.  Without the joint
 // drive, the parent's cost objective cannot reach the child's auto at all and
 // the design is pinned at the arbitrary centre of its feasible box.
 //
-// Both published assertions are COMPARATIVE (strict inequality + strict
-// difference), never an absolute converged value — the numbers above are the
-// derivation, not the pins.
+// BT-5's two assertions on the figures above are COMPARATIVE (strict
+// inequality + strict difference), never an absolute converged value.
+// BT-5b pins BOTH figures against the closed form `bracket +
+// max(REL_MARGIN×|bracket|, ABS_FLOOR_SI)` evaluated at each bracket —
+// DERIVED from the `REL_MARGIN` / `ABS_FLOOR_SI` rule above, not tuned to an
+// observed output.
 //
 // # Reading the result
 //
@@ -89,7 +119,15 @@ module whole_model_joint_drive
 //   this same model minus the `minimize`, not from a recorded constant — and
 //   (iii) the instance-path cell the expanded objective actually reads
 //   (`RivetedPanel.rivets.line_cost`) holds the same freshly-folded value as its
-//   structure-keyed source.
+//   structure-keyed source.  Its companion pin
+//   `parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves`
+//   (same file) holds the `total_cost` claim above executable.
+//
+//   The same test file's BT-5b pins the ROBUSTNESS-FLOOR relationship above
+//   — `floored_lo = bracket + max(REL_MARGIN×|bracket|, ABS_FLOOR_SI)` —
+//   across two brackets, so this header's arithmetic now has a named
+//   executable counterpart that fails the moment the merged figure drifts
+//   again.
 //
 // # TRAP — the aggregate MUST stay inlined in the `minimize`
 //
@@ -122,9 +160,11 @@ structure def Rivet : Costed {
 
     // The joint-drive target.  Bracketed by a NON-DEGENERATE box so the
     // cost-minimising direction and the frozen Chebyshev centre (50.0) are far
-    // apart — that separation is what makes the coupling observable.  The lower
-    // bracket must contain the solver's fixed 0.01 seed for a dimensionless
-    // auto; see the header's "Why the merged figure is the SEED" note.
+    // apart — that separation is what makes the coupling observable.  The 0.0
+    // lower bracket also selects the ABSOLUTE-floor regime (the robustness
+    // margin degenerates to `ABS_FLOOR_SI` at a zero bracket), landing the
+    // merged figure at 1e-9; see the header's "Why the merged figure is the
+    // ROBUSTNESS FLOOR, not zero" note.
     param quantity_produced : Real   = auto(free)
     constraint quantity_produced >= 0.0
     constraint quantity_produced <= 100.0
@@ -136,8 +176,17 @@ structure RivetedPanel {
     // INLINED — never behind a `let`.  This is the whole point of the fixture.
     minimize cost(self.descendants)
 
-    // Observational only, for `reify eval` legibility.  Reading the aggregate
+    // This `let` reads the SAME aggregate as the `minimize` above,
+    // deliberately: it is an executable NEGATIVE CONTROL for the header's
+    // TRAP section — pairing a `let` ALONGSIDE the inlined `minimize` must
+    // NOT dissolve the δ cluster BT-5 depends on.  Reading the aggregate
     // through a `let` is fine ALONGSIDE the inlined `minimize`; it is only
-    // fatal as a REPLACEMENT for it.
+    // fatal as a REPLACEMENT for it, pinned for the replacement case by
+    // `objective_must_inline_the_aggregate_to_couple`
+    // (crates/reify-eval/src/resolve_order.rs).
+    //
+    // The cell itself never resolves post-solve — see
+    // `parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves`
+    // (crates/reify-eval/tests/joint_drive_expansion_boundary.rs) / #5835.
     let total_cost : Money = cost(self.descendants)
 }

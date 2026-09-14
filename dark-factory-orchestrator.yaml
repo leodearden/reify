@@ -813,6 +813,23 @@ verify_runners:
     ssh_host: leo-laptop
     git_remote: leo-laptop
     config_path: /home/leo/.config/orchestrator/reify-laptop.yaml
+    # INV-2 contract-currency auto-sync (dark_factory task 2884; reify #7470).
+    # Path to the remote's DARK-FACTORY CODE checkout -- the tree whose
+    # 'orchestrator verify-merge' gate this runner executes over ssh. Distinct
+    # from git_remote, which is the PROJECT checkout the merge sha is pushed to.
+    # OPT-IN PER RUNNER: merge_queue.py passes df_remote_checkout=r.df_checkout_path,
+    # and while this was UNSET (until 2026-09-12) sync_if_stale returned
+    # configured=False/ok=True and made ZERO ssh/git calls -- so the laptop could
+    # run merge verifies from an arbitrarily stale DF checkout and nothing benched
+    # it. Measured 2026-09-12 at 752 commits behind the dispatcher (laptop
+    # 39676b3c00, last fetch 09-07, vs workstation 99ca5323be), with no second net
+    # because verify_cross_check_remote_green:false (2026-08-21) adopts a remote
+    # green without a local cross-check. That is not theoretical: task 6934's
+    # head-of-line verify died on the laptop ~10 min in without returning a
+    # verdict and left the merge queue on a dead lease for 66+ min.
+    # Set so a stale checkout is pulled --ff-only + uv sync'd before dispatch, and
+    # a FAILED sync BENCHES the runner instead of silently trusting its verdict.
+    df_checkout_path: /home/leo/src/dark-factory
     enabled: true
 verify_drift_check_every_n_lands: 20
 #
@@ -838,6 +855,22 @@ verify_drift_check_every_n_lands: 20
 # remote green are real.
 # REVERT THIS (back to true) once dark_factory:4579 lands and reify redeploys.
 verify_cross_check_remote_green: false
+
+# Pre-merge rebase-and-reverify: run it ONCE and never repeat it (Leo, 2026-09-06,
+# applied to reify after the same ruling on dark-factory). workflow.py's merge
+# phase rebases the task branch onto main and runs a full task-role scoped
+# verify (admission-gated) BEFORE submitting to the merge queue; the stock loop
+# repeats that whole cycle up to max_pre_merge_retries times whenever main moved
+# during the verify. MEASURED on the shared workstation 2026-09-06: the
+# "main moved during pre-merge rebase, retrying" line fired 29 times in one day
+# for dark-factory alone, each retry a 40-90 min verify under load. With 1 the
+# loop runs one rebase+verify; if main moved meanwhile the task submits anyway
+# with pre_rebased=False and the merge queue's own rebase + post-merge verify
+# (which happens regardless) is the one that lands it. NOT in RELOADABLE_FIELDS
+# -- takes effect at the next orchestrator restart. Follow-up lever (dark_factory
+# task 5098, the dispatch/speculation policy PRD): whether the pre-merge verify
+# should run at all when the queue re-verifies on landing.
+max_pre_merge_retries: 1
 #
 # sccache shared backend (κ): both hosts share a redis cache so the laptop free-rides
 # the workstation's warm compilation artifacts. ENABLED 2026-06-10 alongside the C enable.

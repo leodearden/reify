@@ -35,6 +35,10 @@
 //!   slot. It hosts here only because the mechanism is generic (name-keyed),
 //!   which avoids standing up a parallel checker for one slot.
 //! - Pattern SPACING (task 5652) — `linear_pattern` / `linear_pattern_2d`.
+//! - Pattern ORIGIN triples (task 5662) — `mirror`'s 7-arg and
+//!   `circular_pattern`'s 9-arg scalar forms, `ox`/`oy`/`oz`. The row task 5652
+//!   deferred; it mirrors the `pattern` rows of `arg_acceptance.rs`' family
+//!   table (mirror plane, task 5214; circular axis, task 5350).
 //! - The Contract C LENGTH families of PRD
 //!   `docs/prds/v0_6/units-length-gate-completion.md` leaf η (task 5750):
 //!   PRIMITIVE and PROFILE producers, MODIFY, SWEEP, and the TRANSFORM row
@@ -56,8 +60,11 @@
 //!   `extrude_infinite`'s `dx`/`dy`/`dz`) is dimensionless and legitimately
 //!   bare in correct `.ri`, so a slot there would reject valid code. Stated
 //!   binding at `crates/reify-eval/src/arg_acceptance.rs`'s "unit-vector
-//!   DIRECTIONS" paragraph. The three builtins whose arguments STRADDLE this
-//!   line carry the split on their own arm.
+//!   DIRECTIONS" paragraph. The builtins whose arguments STRADDLE this line
+//!   carry the split on their own arm — deliberately UNCOUNTED here, because a
+//!   tally stated away from the arms is exactly the second copy nothing
+//!   machine-checks that this section opens by warning against. It read
+//!   "three" until task 5662 added the fourth and fifth.
 //! - **COUNTS, face INDICES and dimensionless RATIOS are never slots.** A
 //!   wrong `count`, `face_{i}` or `scale` factor is an arity or semantic
 //!   error, not a dimension one, and a LENGTH slot on a ratio would reject
@@ -83,17 +90,6 @@
 //! - **Names with no dimensioned-scalar argument have no arm at all**
 //!   (`split`, `face`, `edge`, `solid_body`, `volume`, `edges`, `faces`, …).
 //!
-//! One position is eligible under every rule above and still absent, on a
-//! recorded decision rather than by omission:
-//!
-//! - `mirror` (arity 7) / `circular_pattern` (arity 9) origin triples
-//!   `ox`/`oy`/`oz` — length-semantic and eligible, but deliberately DEFERRED
-//!   by task 5652: LENGTH slots there turn at least six existing valid-today
-//!   call sites into hard compile errors, spanning `reify-eval` tests and
-//!   `examples/` — a separable breaking-surface migration outside 5652's
-//!   scope. TODO(#5662): add the ox/oy/oz LENGTH slots and migrate those call
-//!   sites.
-//!
 //! # Contract C positions this table deliberately does NOT cover (task 5750)
 //!
 //! Task 5750 (units-length η) closed the four families its PRD leaf names —
@@ -102,9 +98,11 @@
 //! left to be rediscovered, and each entry states WHY, so a reader can tell a
 //! decision from an oversight. These are PROSE, not `TODO`s, on purpose: under
 //! the repo's PTODO grammar a `TODO` must cite a live non-terminal task, and
-//! only the `mirror`/`circular_pattern` row above has one (`#5662`). Task 5752
-//! (leaf ι, the Contract C closure guard) is the backstop that will surface any
-//! of these if they are ever forgotten.
+//! NONE of these has one. (The `mirror`/`circular_pattern` row was the last
+//! that did; task 5662 landed those slots, so that row moved UP into the
+//! COVERED list above and its `TODO` retired with it — this table now carries
+//! no live `TODO` at all.) Task 5752 (leaf ι, the Contract C closure guard) is the
+//! backstop that will surface any of these if they are ever forgotten.
 //!
 //! - The task-5623 CURVE row — `line_segment`'s endpoints `x1`…`z2`, `arc`'s
 //!   centre `cx`/`cy`/`cz` plus its `radius`, and `helix`'s
@@ -198,6 +196,30 @@
 //! under `#[cfg(test)]` because the match arms are the source of truth for the
 //! table's domain; it is the reviewed statement of which of them are
 //! non-selectors, consumed only by the invariant that enforces it.
+//!
+//! # Two RULES task 6862 added
+//!
+//! Both are stated here as rules only; the arms and the tests that enforce them
+//! are the source of truth, so there is no second copy to drift.
+//!
+//! 1. **`Type::ScalarParam` DEFERS at a dimension slot and REJECTS at an `Int`
+//!    slot.** `Scalar<Q>` — what a dim-kinded generic PARAMETER
+//!    (`fn beam<Q: Dimension>(l: Scalar<Q>)`) resolves to — has a KNOWN family
+//!    and an OPEN dimension, and the asymmetry falls out of that. Why each half
+//!    is right, what the defer COSTS, the cases bounding that cost and the two
+//!    compiler precedents it follows are stated ONCE, on the two arms that make
+//!    the decision — [`ExpectedArg::Scalar`] and [`ExpectedArg::Int`] in
+//!    [`check_builtin_arg_types`]; the enforcement is
+//!    `tests::scalar_param_defers_at_length_slot` and
+//!    `tests::scalar_param_still_rejected_at_int_slot`.
+//!
+//! 2. **A slotted name that accepts more than one arity needs a guard or an
+//!    argued exemption.** An arity-agnostic arm serving an overloaded name is
+//!    how a slot index comes to fire on the wrong argument. The mechanism, the
+//!    worked example, what the guard buys and its MEASURED blind spot are
+//!    stated ONCE, on the HAZARD block above the primitive arms; the
+//!    enforcement is
+//!    `tests::lowering_arity_ledger_is_pinned_and_coupled_to_the_slot_table`.
 //!
 //! # Relationship to the eval-layer units gate (task 5214)
 //!
@@ -354,6 +376,15 @@ const fn length_arg(index: usize, name: &'static str) -> CheckableArg {
 /// `h` that IS present.  Short-arg calls are already handled downstream by
 /// `check_builtin_arg_types`'s `compiled_args.get(index)` bounds check; arity
 /// errors are a separate diagnostic family.
+///
+/// **The standing obligation that rule creates** (task 6862 FINDING 2): a name
+/// is only safely unguarded while it stays single-form.  When a lowering gains
+/// a VALUE-FORM overload, the matching guard must land here in the same change,
+/// or the existing indices start firing on the wrong arguments.  The hazard, why
+/// the `compiled_args.get(index)` bounds check does not shield it, and the guard
+/// that now enforces the coupling
+/// ([`tests::lowering_arity_ledger_is_pinned_and_coupled_to_the_slot_table`])
+/// are all stated in the HAZARD block immediately above the primitive arms.
 pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [CheckableArg] {
     match name {
         // ── Mass-properties topology selectors ───────────────────────────────
@@ -520,6 +551,155 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
             },
         ],
 
+        // ── Pattern CSG producers: the ORIGIN triple is a Length (task 5662) ──
+        //
+        // The pattern-origin row task 5652 deferred (it turned six then-valid
+        // call sites into hard compile errors, a separable breaking-surface
+        // migration) and this task closes. These mirror, at the compile layer,
+        // the `pattern` rows of `crates/reify-eval/src/arg_acceptance.rs`'s
+        // family table: the mirror-plane origin (task 5214) and the
+        // circular-pattern axis origin (task 5350). Arg names are COPIED from
+        // `geometry.rs`'s lowering sites — the `("ox".to_string(), …)` triples
+        // in its n==7 and n==9 arms — never invented, so the two layers word one
+        // authoring mistake identically (PRD decision D9).
+        //
+        // mirror(target, ox, oy, oz, nx, ny, nz)          — 7-arg scalar form
+        // mirror(target, plane)                           — 2-arg value form
+        //   args1-3: the mirror-plane ORIGIN → LENGTH ("Length"). A point in
+        //            space, so a bare `10` is silently read as 10 SI METRES —
+        //            1000× a plausible 10 mm offset.
+        //   args4-6: the plane NORMAL `nx`/`ny`/`nz` — a DIMENSIONLESS unit
+        //            vector, deliberately UNSLOTTED. Legitimately bare in
+        //            correct `.ri` (a normal's scale is irrelevant to the plane
+        //            it defines), so a LENGTH slot would reject valid code.
+        //            This is the FOURTH builtin whose args STRADDLE the
+        //            ORIGIN-vs-DIRECTION boundary, after `half_space`,
+        //            `revolve` and `rotate_around` — the split is stated binding
+        //            at `arg_acceptance.rs`' "unit-vector DIRECTIONS" paragraph.
+        //            Pinned by `mirror_slots_the_origin_but_never_the_normal`.
+        //
+        // The `arg_count == 7` guard is SEMANTICALLY LOAD-BEARING, not
+        // forward-compat: index 1 is `ox` at arity 7 but `plane` at arity 2, so
+        // an arity-agnostic slot would demand a Length of a Plane on correct
+        // code — the same class of false positive the `linear_pattern_2d` and
+        // `fillet` guards exist to prevent. Note this is NOT justified by "the
+        // eval layer covers the value form": that hole was task 5745's and is
+        // separately closed. The justification is that index 1 denotes a
+        // DIFFERENT PARAMETER in each overload.
+        "mirror" if arg_count == 7 => const { &[
+            length_arg(1, "ox"),
+            length_arg(2, "oy"),
+            length_arg(3, "oz"),
+        ] },
+
+        // circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle)  — 9-arg
+        // circular_pattern(target, axis, count, angle)                    — 4-arg
+        //   args1-3: the rotation-axis ORIGIN → LENGTH ("Length").
+        //   args4-6: the axis DIRECTION `ax`/`ay`/`az` — a dimensionless unit
+        //            vector, UNSLOTTED for the same reason as `mirror`'s normal.
+        //            The FIFTH and widest straddle case.
+        //   arg7:    `count` — an Int. A wrong count is an arity/semantic error,
+        //            not a dimension error.
+        //   arg8:    `angle` — owned by
+        //            `docs/prds/v0_6/angle-units-surface-convergence.md` by
+        //            binding seam decree; gating it here would be a scope
+        //            violation.
+        //   Pinned by
+        //   `circular_pattern_slots_the_origin_but_never_the_axis_count_or_angle`.
+        //
+        // Same load-bearing guard: index 1 is `ox` at arity 9 but `axis` at
+        // arity 4.
+        //
+        // MEASURED PREFIX DIVERGENCE. This layer is keyed on the CALL, so it
+        // reports the SURFACE name `circular_pattern:`, while the eval layer
+        // renders its `{builtin}` from `PatternKind::Circular`'s `Display` — its
+        // `kind_label` — which is `"circular"` (`types.rs:1748`). That is the
+        // same class as the `box_centered`-vs-`box` divergence already recorded
+        // under `check_builtin_arg_types`' "# Message format", and it holds this
+        // way deliberately: reporting the name the author actually typed beats
+        // reporting a lowering detail they never wrote. `mirror` does NOT
+        // diverge — `PatternKind::Mirror` displays as `"mirror"`
+        // (`types.rs:1749`) — so the two layers agree byte-for-byte there. Both
+        // halves are pinned by
+        // `circular_pattern_slot_names_the_surface_builtin_not_the_lowered_kind`
+        // in `tests/builtin_arg_signature_tests.rs`.
+        //
+        // These two arms make `reify check` a REAL gate for these positions, not
+        // merely `reify eval`: `cmd_check` returns `ExitCode::FAILURE` on any
+        // compile `Severity::Error` and short-circuits BEFORE constraint checking
+        // and before `build()`. Pinned at the CLI seam by
+        // `check_rejects_bare_scalar_mirror_origin_before_reaching_build`.
+        //
+        // STRUCTURAL EXCLUSION OF THE DECODED-VALUE ROUTE — the AUTHORITATIVE
+        // statement, kept here beside the code it describes per this module's
+        // own header rule. Four other sites need it and POINT here rather than
+        // restate it: `reify-cli/tests/fixtures/mirror_bare_origin{,_purpose}.ri`,
+        // `cli_check.rs`' two build-diagnostic tests, and
+        // `reify-eval/tests/mirror_circular_value_forms_e2e.rs`.
+        //
+        // A bare origin reaching `mirror` / `circular_pattern` through the value
+        // form — `mirror(g, plane_yz(0))`, `circular_pattern(g, axis_z(…), n, a)`
+        // — arrives already assembled into a composite `Value` by a stdlib
+        // producer, so it never passes through a positional argument index for
+        // this name-and-arity-keyed table to key on. NO arm can gate it: the
+        // exclusion is structural, not a gap someone forgot to fill, so it stays
+        // a BUILD-only diagnostic for as long as the table stays index-keyed.
+        // That is why task 5748's two CLI fixtures had to move onto that route
+        // when these arms landed — the short-circuit above would otherwise have
+        // destroyed every assertion they carry.
+        "circular_pattern" if arg_count == 9 => const { &[
+            length_arg(1, "ox"),
+            length_arg(2, "oy"),
+            length_arg(3, "oz"),
+        ] },
+
+        // ── HAZARD: an arity-agnostic arm meets a future value-form overload ─
+        //
+        // Everything from here down (the task-5750 primitive / profile / modify
+        // / sweep / transform blocks) is arity-AGNOSTIC except where an arm
+        // spells an explicit `if arg_count ==` guard. That is correct while each
+        // name has ONE form, and it is what the "guard only genuinely overloaded
+        // names" rule above requires. The hazard is what happens when that stops
+        // being true.
+        //
+        // If a slotted name later gains a VALUE-FORM overload in the lowering
+        // WITHOUT a matching edit here, the slot INDICES below start denoting
+        // different parameters — and fire on the wrong ones. Worked example
+        // (task 6862 FINDING 2): adding `revolve(profile, axis_value, angle)`
+        // alongside today's 8-arg form would leave the `ox`@1 / `oy`@2 origin
+        // slots pointing at the `Axis` and at a `Scalar{ANGLE}`, i.e. TWO false
+        // `ArgTypeMismatch` errors on correct code.
+        //
+        // `check_builtin_arg_types`' `compiled_args.get(index)` bounds check does
+        // NOT shield that case. It shields `linear_pattern`'s 4-arg form only
+        // because the slot indices there are ABSENT at the short arity; in the
+        // `revolve` sketch indices 1-2 ARE populated, just by different
+        // parameters. A bounds check cannot tell those two situations apart.
+        //
+        // Coupling: task 5351 owns the value forms, and `linear_pattern` /
+        // `linear_pattern_2d` are already forward-compat-guarded for it.
+        //
+        // # What now enforces this
+        //
+        // `tests::lowering_arity_ledger_is_pinned_and_coupled_to_the_slot_table`.
+        // It compiles real calls at every arity, derives each lowering's ACCEPTED
+        // arity set from the arg-count diagnostics, pins it, and requires that any
+        // name accepting MORE THAN ONE arity either carry an `if arg_count ==`
+        // guard or appear in `tests::MULTI_ARITY_AGNOSTIC_SAFE` with the layout
+        // that proves its indices denote the same parameters at every form.
+        //
+        // Task 6862 chose that ENFORCEABLE-TEST route over the comment-only
+        // route its brief also allowed, because the ledger is derived
+        // BEHAVIOURALLY (from diagnostics, not from reading these arms) and so
+        // cannot drift out of step with the lowering the way a comment can.
+        //
+        // Honest limit, MEASURED rather than assumed: the guard is blind to the
+        // nine geometry TOPOLOGY SELECTORS and to `generate`, which emit no
+        // arg-count diagnostic at all at any probed arity (see
+        // `tests::ARITY_UNOBSERVABLE_SLOT_KEYS`). It therefore covers exactly
+        // FINDING 2's subject — the geometry-lowering families task 5750 added —
+        // and not task 4493/3994's selector family.
+
         // ── Primitive CSG producers: every dimension is a Length (task 5750) ──
         //
         // PRD `docs/prds/v0_6/units-length-gate-completion.md` leaf η, work
@@ -643,7 +823,8 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // from `geometry_transform.rs`'s `compile_transform_op`.
         //
         // Both names are single-form (`check_arg_count_exact`), so both arms
-        // stay arity-agnostic per the rule stated on this function.
+        // stay arity-agnostic per the rule stated on this function — and are
+        // therefore subject to the HAZARD block above the primitives.
         //
         // translate(target, dx, dy, dz)
         //   arg0:    the geometry handle — permanently unchecked (ε=4358's
@@ -683,6 +864,12 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // `crates/reify-eval/src/arg_acceptance.rs`'s family table. Arg names
         // are copied from `geometry_modify.rs`'s `compile_modify_op` arms and
         // its shared `compile_modify_2arg` helper.
+        //
+        // The arity-agnostic arms here are subject to the HAZARD block above the
+        // primitives. Two names in this block ALREADY accept more than one arity
+        // while staying agnostic — `offset_curve` and `shell` — and both are
+        // recorded, with the layout that makes them safe, in
+        // `tests::MULTI_ARITY_AGNOSTIC_SAFE`.
         //
         // This is where the table's first genuinely OVERLOADED names appear.
         // `fillet` and `chamfer` each accept a 2-arg all-edges form and a 3-arg
@@ -749,6 +936,9 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // this leaf through its named fixtures. Arg names from `geometry.rs`'s
         // Sweep arms.
         //
+        // Arity-agnostic, so subject to the HAZARD block above the primitives,
+        // whose worked example is `revolve`'s own origin slots.
+        //
         // extrude(profile, distance) / extrude_symmetric(profile, distance)
         // pipe(path, radius)
         //   All exact-2 single-form. Index 0 is the profile / path — a geometry
@@ -782,8 +972,8 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // ── 2-D profile producers (task 5750) ────────────────────────────────
         //
         // The task-5743 `profile` row of the same family table. Same rules as
-        // the primitives above; `polygon`'s variadic vertex stream is excluded
-        // for the reason recorded there.
+        // the primitives above — including the HAZARD block; `polygon`'s
+        // variadic vertex stream is excluded for the reason recorded there.
         //
         // rectangle(width, height)
         "rectangle" => const { &[length_arg(0, "width"), length_arg(1, "height")] },
@@ -809,10 +999,16 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
 /// # Gradualism (PRD decision 6)
 ///
 /// The check fires only when a definite concrete type is available:
-/// - `Type::Error` — poison sentinel; silently skipped (avoids cascading
-///   diagnostics off an unrelated root-cause error).
-/// - `Type::TypeParam(_)` — unresolved type variable; silently skipped
-///   (constraint-aware / auto-type-param resolution is out of scope for ζ).
+/// - `Type::Error` — poison sentinel; silently skipped at BOTH arms (avoids
+///   cascading diagnostics off an unrelated root-cause error).
+/// - `Type::TypeParam(_)` — unresolved type variable; silently skipped at BOTH
+///   arms (constraint-aware / auto-type-param resolution is out of scope for ζ).
+/// - `Type::ScalarParam(_)` — unresolved DIMENSION placeholder (`Scalar<Q>`);
+///   silently skipped at the [`ExpectedArg::Scalar`] arm ONLY, and still
+///   REJECTED at the [`ExpectedArg::Int`] arm (task 6862). The scope is
+///   per-arm, not global, because the defer is a DIMENSION-comparison argument
+///   and an `Int` count slot is not a dimension slot; each arm states its own
+///   half of the reasoning below.
 /// - Any other variant — a concrete known type; compared against the slot's
 ///   expected dimension.
 ///
@@ -875,7 +1071,72 @@ pub(crate) fn check_builtin_arg_types(
                 migration_hint,
             } => match &arg.result_type {
                 // Gradualism: poison + unresolved pass silently.
-                Type::Error | Type::TypeParam(_) => continue,
+                //
+                // `Type::ScalarParam(Q)` (task 6862) is the third member, and
+                // the only one whose membership is arm-SPECIFIC. It is the
+                // unresolved-DIMENSION placeholder a dim-kinded generic
+                // produces: `fn beam<Q: Dimension>(l: Scalar<Q>)` resolves `l`
+                // to `ScalarParam("Q")` (`type_resolution.rs`'s
+                // `classify_dim_slot`), which displays as `Scalar<Q>`. Its
+                // FAMILY is known — it IS a scalar, so it belongs at a
+                // dimension slot — and only its DIMENSION is open. There is
+                // therefore nothing here to compare: judging the UNINSTANTIATED
+                // body under the strict `DimensionVector` equality the next arm
+                // applies can only ever REJECT, so every such site is a false
+                // positive.
+                //
+                // WHAT THE DEFER COSTS — MEASURED, not assumed (reviewer
+                // amendment). It does NOT hand the wrong-dimension case on to a
+                // per-instantiation recheck: no such recheck exists. A generic
+                // fn body is compiled ONCE, generically — which is precisely why
+                // the false positive existed — and the call-site unify arm
+                // accepts `ScalarParam(Q)` against any `Scalar { .. }`. So
+                // `beam(10kg)` emits NO compile Error at all. That silence is
+                // the gradualism trade this arm makes, and it is pinned as such
+                // by `wrong_dimension_through_a_dim_kinded_generic_is_undiagnosed_at_compile`
+                // in `tests/builtin_arg_signature_tests.rs`.
+                //
+                // What the cost does NOT extend to, each MEASURED and pinned in
+                // the same file:
+                //   - the same wrong dimension written INLINE
+                //     (`extrude(circle(10kg), 10kg)`) is rejected HERE at
+                //     compile (`ArgTypeMismatch`) and again at build by the
+                //     eval-layer LENGTH gate (`DimensionedArgRejected`) —
+                //     `wrong_dimension_written_inline_is_rejected_at_both_layers`;
+                //   - through a NON-generic fn (`fn beam(l: Length)`) it is
+                //     rejected by overload resolution at the call site —
+                //     `wrong_dimension_through_a_non_generic_fn_is_rejected_at_the_call_site`.
+                // Only the dim-kinded GENERIC form is undiagnosed, which is the
+                // narrowest shape this defer could have.
+                //
+                // Two precedents make the same call elsewhere in the compiler,
+                // and this arm aligns with both rather than inventing a rule:
+                // `type_compat::is_mul_div_gradualism_skip` (type_compat.rs,
+                // cited from expr.rs:2037) already lists `ScalarParam`
+                // alongside `TypeParam` as a DEFER kind; and
+                // `conformance::scalar_param_arg_defers_at_scalar_slot`
+                // (conformance/mod.rs, task 5627 γ D4-5 / PRD invariant I5)
+                // makes the identical call at the struct-ctor layer.
+                //
+                // MEASURED symptom this closes: before task 6862,
+                // `fn beam<Q: Dimension>(l: Scalar<Q>) -> Solid { extrude(circle(l), l) }`
+                // instantiated at `beam(10mm)` hard-errored at `reify check`
+                // (exit 1) with two `ArgTypeMismatch`es — `circle: radius
+                // argument expects Length, got Scalar<Q>; …` and `extrude:
+                // distance argument expects Length, got Scalar<Q>; …` — on code
+                // that is correct at Q = LENGTH. Fixture:
+                // `tests/fixtures/dim_kinded_length_slot.ri`; pinned by
+                // `scalar_param_defers_at_length_slot` below and by
+                // `dim_kinded_generic_param_at_length_slot_compiles_clean` in
+                // `tests/builtin_arg_signature_tests.rs`. The defer is fenced
+                // on the other side by `bare_int_at_length_slot_still_rejected`
+                // and `wrong_dimension_scalar_at_length_slot_still_rejected`,
+                // so it cannot widen into a blanket disable of the slot.
+                //
+                // Reach: this table was introduced by task 4493 over 7 LENGTH
+                // slots and widened to 33 slotted names by task 5750, so the
+                // gap was pre-existing but its exposed surface is now large.
+                Type::Error | Type::TypeParam(_) | Type::ScalarParam(_) => continue,
 
                 // Dimensioned scalar: mismatch only when the dimension differs.
                 Type::Scalar { dimension } => {
@@ -911,6 +1172,26 @@ pub(crate) fn check_builtin_arg_types(
 
             ExpectedArg::Int { type_name } => match &arg.result_type {
                 // Gradualism: poison + unresolved pass silently.
+                //
+                // `Type::ScalarParam(_)` is DELIBERATELY absent here, and the
+                // asymmetry with the `Scalar` arm above is the point (task
+                // 6862). That defer is a DIMENSION-comparison argument — it
+                // holds because at a dimension slot there is nothing to compare
+                // until `Q` binds. An `Int` count slot is not a dimension slot:
+                // `Scalar<Q>` is a dimensioned scalar for EVERY binding of `Q`,
+                // and at Q = DIMENSIONLESS it is precisely the `Real` this
+                // arm's own comment below already names as a definite mismatch.
+                // The FAMILY mismatch is therefore decidable without
+                // instantiating, so rejecting is correct and loses nothing.
+                //
+                // The precedent is narrow in exactly the same way:
+                // `conformance::scalar_param_arg_defers_at_scalar_slot` gates
+                // on `matches!(param_type, Type::Scalar { .. })`, so it too
+                // defers only at a scalar slot and nowhere else.
+                //
+                // Pinned by `scalar_param_still_rejected_at_int_slot` below,
+                // which is what makes this asymmetry ENFORCEABLE rather than
+                // merely conventional.
                 Type::Error | Type::TypeParam(_) => continue,
 
                 // Correct — a true `Int` count.
@@ -1014,6 +1295,8 @@ mod tests {
     };
     use reify_core::{DimensionVector, Severity, SourceSpan, Type, identity::ValueCellId};
     use reify_ir::CompiledExpr;
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::OnceLock;
 
     /// Inclusive upper bound for every arity sweep in this module.
     ///
@@ -1039,6 +1322,23 @@ mod tests {
         FEA_ENVELOPE_NAMES,
         FIELD_OP_NAMES,
     ];
+
+    /// [`builtin_arg_slots`] keys that belong to NO [`BUILTIN_NAME_FAMILIES`]
+    /// slice, and so cannot be reached by any slice-derived sweep — they must be
+    /// probed BY NAME or every sweep stays vacuous for them.
+    ///
+    /// `generate` (task 3994's list combinator, the table's lone `Int` count
+    /// slot) is exactly the name the predecessor invariant
+    /// `arg_slot_keys_are_subset_of_topology_selector_names` structurally could
+    /// not reach.
+    ///
+    /// ONE list, two consumers — [`arg_slot_keys_are_registered_builtin_names`]
+    /// and [`slotted_builtin_names`] — because a comment-enforced "kept in
+    /// lockstep" pair is exactly the drift the FINDING-2 completeness arm exists
+    /// to close: a key added to one copy and not the other would make
+    /// [`every_slotted_name_is_ledgered_or_recorded_unobservable`] vacuous for
+    /// precisely that key, a silent false GREEN.
+    const NON_FAMILY_SLOT_KEYS: &[&str] = &["generate"];
 
     /// The curated exemption list for [`builtin_arg_slots`] keys that are NOT
     /// members of `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` (task 5652).
@@ -1103,6 +1403,16 @@ mod tests {
     ///   Same story again: both are registered in `GEOMETRY_FUNCTION_NAMES`,
     ///   neither is a topology selector, and neither may be moved into the
     ///   selector slice.
+    ///
+    /// - The task-5662 PATTERN ORIGIN producers — `mirror` and
+    ///   `circular_pattern`. Same story a third time: both are CSG producers
+    ///   registered in `GEOMETRY_FUNCTION_NAMES`, neither is a topology
+    ///   selector, and neither may be moved into
+    ///   `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` to satisfy the subset assertion —
+    ///   doing so would route every `mirror(...)` call through the selector arm
+    ///   at `expr.rs:3243`, whose
+    ///   `topology_selector_result_type(name).expect(...)` has no entry for
+    ///   them and would panic.
     pub(crate) const NON_SELECTOR_ARG_SLOT_KEYS: &[&str] = &[
         "generate",
         "linear_pattern",
@@ -1142,6 +1452,9 @@ mod tests {
         // Task 5750 — transforms.
         "translate",
         "rotate_around",
+        // Task 5662 — pattern origin triples.
+        "mirror",
+        "circular_pattern",
     ];
 
     // ── builtin_arg_slots table contract (step-1) ────────────────────────────
@@ -1892,13 +2205,12 @@ mod tests {
     #[test]
     fn arg_slot_keys_are_registered_builtin_names() {
         // Keys that belong to NO units.rs family slice and so cannot be reached
-        // by any slice-derived sweep — they must be probed by name or the
-        // subset assertion stays vacuous for them. `generate` is exactly the
-        // name the predecessor test structurally could not reach; listing it
-        // here is what actually closes that hole (removing it from
-        // NON_SELECTOR_ARG_SLOT_KEYS now fails the assertion below, whereas
-        // before it would have gone unnoticed).
-        let non_family_keys: &[&str] = &["generate"];
+        // by any slice-derived sweep — see `NON_FAMILY_SLOT_KEYS`, which is
+        // shared with `slotted_builtin_names` so the two sweeps cannot drift.
+        // Listing `generate` there is what actually closes the predecessor
+        // test's hole (removing it from NON_SELECTOR_ARG_SLOT_KEYS now fails
+        // the assertion below, whereas before it would have gone unnoticed).
+        let non_family_keys: &[&str] = NON_FAMILY_SLOT_KEYS;
 
         // Extra non-selector names that must never map to non-empty slots.
         // `"box"` and `"cylinder"` used to head this list. Task 5750
@@ -1995,7 +2307,15 @@ mod tests {
         // list: adding them to GEOMETRY_TOPOLOGY_SELECTOR_NAMES would satisfy the
         // subset assertion above while actively breaking dispatch — see
         // NON_SELECTOR_ARG_SLOT_KEYS for the mechanism.
-        for &name in &["linear_pattern", "linear_pattern_2d"] {
+        for &name in &[
+            "linear_pattern",
+            "linear_pattern_2d",
+            // Task 5662 — same mechanism, and the one where a mis-move would
+            // panic rather than merely misreport: `expr.rs`' selector arm calls
+            // `topology_selector_result_type(name).expect(...)`.
+            "mirror",
+            "circular_pattern",
+        ] {
             assert!(
                 !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(&name),
                 "{:?} must NOT be in GEOMETRY_TOPOLOGY_SELECTOR_NAMES — it is a CSG \
@@ -2731,5 +3051,1171 @@ mod tests {
             "both spacings bare → one diagnostic each, got: {:?}",
             diags
         );
+    }
+
+    // ── mirror / circular_pattern ORIGIN LENGTH slots (task 5662) ────────────
+
+    /// Build a 7-arg `mirror(target, ox, oy, oz, nx, ny, nz)` arg list with the
+    /// given origin-component type. The normal components 4-6 are deliberately
+    /// unslotted — see the `mirror` arm of [`builtin_arg_slots`].
+    fn mirror_args(origin: Type) -> Vec<CompiledExpr> {
+        vec![
+            arg_expr(Type::Geometry),               // 0 target
+            arg_expr(origin.clone()),               // 1 ox
+            arg_expr(origin.clone()),               // 2 oy
+            arg_expr(origin),                       // 3 oz
+            arg_expr(Type::dimensionless_scalar()), // 4 nx
+            arg_expr(Type::dimensionless_scalar()), // 5 ny
+            arg_expr(Type::dimensionless_scalar()), // 6 nz
+        ]
+    }
+
+    /// Build a 9-arg
+    /// `circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle)` arg list
+    /// with the given origin-component type.
+    fn circular_pattern_args(origin: Type) -> Vec<CompiledExpr> {
+        vec![
+            arg_expr(Type::Geometry),               // 0 target
+            arg_expr(origin.clone()),               // 1 ox
+            arg_expr(origin.clone()),               // 2 oy
+            arg_expr(origin),                       // 3 oz
+            arg_expr(Type::dimensionless_scalar()), // 4 ax
+            arg_expr(Type::dimensionless_scalar()), // 5 ay
+            arg_expr(Type::dimensionless_scalar()), // 6 az
+            arg_expr(Type::Int),                    // 7 count
+            arg_expr(Type::Scalar {
+                dimension: DimensionVector::ANGLE,
+            }), // 8 angle
+        ]
+    }
+
+    /// mirror @ arity 7 → ox@1 / oy@2 / oz@3 (LENGTH); every other arity → empty.
+    ///
+    /// Arity 2 gets its own assertion because it is the CONCRETE false positive
+    /// the guard prevents, not a hypothetical: `mirror(target, plane)` holds a
+    /// `Plane` at index 1, so an arity-agnostic `ox@1 LENGTH` slot would demand
+    /// a Length of a Plane on correct code.
+    #[test]
+    fn mirror_origin_slots_are_arity_7_only() {
+        assert_eq!(
+            builtin_arg_slots("mirror", 7),
+            vec![
+                length_slot(1, "ox"),
+                length_slot(2, "oy"),
+                length_slot(3, "oz"),
+            ],
+            "mirror(target, ox, oy, oz, nx, ny, nz) — args 1-3 are the mirror-plane \
+             ORIGIN and must be LENGTH"
+        );
+        assert!(
+            builtin_arg_slots("mirror", 2).is_empty(),
+            "at arity 2 (`mirror(target, plane)`, the task-5745 decoded-value form) \
+             index 1 is `plane`, a Plane — an ox@1 LENGTH slot would emit a FALSE \
+             ArgTypeMismatch on valid code, so arity 2 must expose NO slots"
+        );
+        for arity in (0usize..=MAX_PROBED_ARITY).filter(|n| *n != 7) {
+            assert!(
+                builtin_arg_slots("mirror", arity).is_empty(),
+                "mirror at arity {arity} is not the 7-arg scalar form, so it must \
+                 expose NO slots — index 1 does not denote `ox` there"
+            );
+        }
+    }
+
+    /// circular_pattern @ arity 9 → ox@1 / oy@2 / oz@3 (LENGTH); every other
+    /// arity → empty.
+    ///
+    /// Arity 4 gets its own assertion for the same reason arity 2 does on
+    /// `mirror`: `circular_pattern(target, axis, count, angle)` holds an `Axis`
+    /// at index 1.
+    #[test]
+    fn circular_pattern_origin_slots_are_arity_9_only() {
+        assert_eq!(
+            builtin_arg_slots("circular_pattern", 9),
+            vec![
+                length_slot(1, "ox"),
+                length_slot(2, "oy"),
+                length_slot(3, "oz"),
+            ],
+            "circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle) — \
+             args 1-3 are the rotation-axis ORIGIN and must be LENGTH"
+        );
+        assert!(
+            builtin_arg_slots("circular_pattern", 4).is_empty(),
+            "at arity 4 (`circular_pattern(target, axis, count, angle)`, the \
+             task-5745 decoded-value form) index 1 is `axis`, an Axis — an ox@1 \
+             LENGTH slot would emit a FALSE ArgTypeMismatch on valid code, so \
+             arity 4 must expose NO slots"
+        );
+        for arity in (0usize..=MAX_PROBED_ARITY).filter(|n| *n != 9) {
+            assert!(
+                builtin_arg_slots("circular_pattern", arity).is_empty(),
+                "circular_pattern at arity {arity} is not the 9-arg scalar form, so \
+                 it must expose NO slots — index 1 does not denote `ox` there"
+            );
+        }
+    }
+
+    /// The STRADDLE case, fourth of five: `mirror`'s 7-arg form mixes a gated
+    /// plane ORIGIN with an un-gated plane NORMAL in one argument list.
+    ///
+    /// Stated POSITIVELY as a decision rather than left to be inferred from an
+    /// absence, exactly as `half_space_slots_the_point_but_never_the_normal`
+    /// does: `nx`/`ny`/`nz` are a dimensionless unit vector whose components are
+    /// legitimately bare in correct `.ri` (a normal's scale is irrelevant to the
+    /// plane it defines), so slotting 4-6 would reject valid code.
+    #[test]
+    fn mirror_slots_the_origin_but_never_the_normal() {
+        let slotted: Vec<usize> = builtin_arg_slots("mirror", 7)
+            .iter()
+            .map(|slot| slot.index)
+            .collect();
+        assert_eq!(
+            slotted,
+            vec![1, 2, 3],
+            "mirror's slotted index set at arity 7 must be exactly the ORIGIN \
+             triple {{1,2,3}}; got {slotted:?}"
+        );
+        for normal_index in [4usize, 5, 6] {
+            assert!(
+                !slotted.contains(&normal_index),
+                "mirror arg{normal_index} is a plane-NORMAL component — a \
+                 dimensionless unit vector — and must stay slot-free; got slots at \
+                 {slotted:?}"
+            );
+        }
+    }
+
+    /// The STRADDLE case, fifth of five, and the widest: `circular_pattern`'s
+    /// 9-arg form carries a gated ORIGIN, an un-gated axis DIRECTION, an Int
+    /// `count` and an `angle` this leaf may not touch.
+    ///
+    /// Modelled on `revolve_slots_the_origin_but_never_the_axis_or_the_angle`:
+    ///
+    /// * `ox`/`oy`/`oz` are a point in space — bare components silently read as
+    ///   SI metres, so they are slotted;
+    /// * `ax`/`ay`/`az` are a unit vector, legitimately bare;
+    /// * `count` is an Int — a wrong count is an arity/semantic error, not a
+    ///   dimension error;
+    /// * `angle` belongs to `docs/prds/v0_6/angle-units-surface-convergence.md`
+    ///   by binding seam decree. Gating it HERE would be a scope violation.
+    #[test]
+    fn circular_pattern_slots_the_origin_but_never_the_axis_count_or_angle() {
+        let slotted: Vec<usize> = builtin_arg_slots("circular_pattern", 9)
+            .iter()
+            .map(|slot| slot.index)
+            .collect();
+        assert_eq!(
+            slotted,
+            vec![1, 2, 3],
+            "circular_pattern's slotted index set at arity 9 must be exactly the \
+             ORIGIN triple {{1,2,3}}; got {slotted:?}"
+        );
+        for excluded in [4usize, 5, 6, 7, 8] {
+            assert!(
+                !slotted.contains(&excluded),
+                "circular_pattern arg{excluded} is an axis DIRECTION component, the \
+                 Int `count`, or the ANGLE — none of which this leaf may gate; got \
+                 slots at {slotted:?}"
+            );
+        }
+    }
+
+    /// CORRECT: a dimensioned `Length` origin → 0 diagnostics, both builtins.
+    #[test]
+    fn pattern_origin_length_components_give_no_error() {
+        for (name, args) in [
+            ("mirror", mirror_args(Type::length())),
+            ("circular_pattern", circular_pattern_args(Type::length())),
+        ] {
+            let mut diags = Vec::new();
+            check_builtin_arg_types(name, &args, dummy_span(), &mut diags);
+            assert!(
+                diags.is_empty(),
+                "{name}: a dimensioned Length origin must pass, got: {:?}",
+                diags
+            );
+        }
+    }
+
+    /// MISMATCH: a bare `Int` origin (`0`) → exactly 3 ArgTypeMismatch Errors,
+    /// ONE PER COMPONENT, each naming the builtin, its own component, the
+    /// expected `Length` and the migration hint.
+    ///
+    /// Three, not one: each component is an independent slot, so a copy-paste
+    /// slip that duplicated a single name across all three would still yield
+    /// three diagnostics — hence the per-component name assertion below.
+    #[test]
+    fn pattern_bare_int_origin_gives_three_errors_naming_each_component() {
+        for (name, args) in [
+            ("mirror", mirror_args(Type::Int)),
+            ("circular_pattern", circular_pattern_args(Type::Int)),
+        ] {
+            let mut diags = Vec::new();
+            check_builtin_arg_types(name, &args, dummy_span(), &mut diags);
+            assert_eq!(
+                diags.len(),
+                3,
+                "{name}: a bare origin triple must produce one diagnostic per \
+                 component, got: {:?}",
+                diags
+            );
+            for (diag, component) in diags.iter().zip(["ox", "oy", "oz"]) {
+                assert_eq!(diag.severity, Severity::Error, "{name}/{component}");
+                assert_eq!(
+                    diag.code,
+                    Some(DiagnosticCode::ArgTypeMismatch),
+                    "{name}/{component}"
+                );
+                for needle in [
+                    name,
+                    component,
+                    "expects Length",
+                    "pass a dimensioned length such as `5mm`",
+                ] {
+                    assert!(
+                        diag.message.contains(needle),
+                        "{name}/{component}: message must contain {needle:?}: {}",
+                        diag.message
+                    );
+                }
+            }
+        }
+    }
+
+    /// MISMATCH: a DIMENSIONED but WRONG-dimension origin (`0deg`) names the
+    /// expected `Length` AND the offending unit.
+    ///
+    /// Distinct from the bare-`Int` case at the CODE level, not just the source
+    /// level: a bare Int lands in `check_builtin_arg_types`' catch-all `other =>`
+    /// arm, whereas a wrong-dimension scalar goes through the
+    /// `Type::Scalar { dimension } != expected_dim` arm. Without this case that
+    /// arm is unexercised for both new slots.
+    #[test]
+    fn pattern_wrong_dimension_origin_names_length_and_actual_unit() {
+        let angle = Type::Scalar {
+            dimension: DimensionVector::ANGLE,
+        };
+        for (name, args) in [
+            ("mirror", mirror_args(angle.clone())),
+            ("circular_pattern", circular_pattern_args(angle.clone())),
+        ] {
+            let mut diags = Vec::new();
+            check_builtin_arg_types(name, &args, dummy_span(), &mut diags);
+            assert_eq!(
+                diags.len(),
+                3,
+                "{name}: expected 3 diagnostics, got: {:?}",
+                diags
+            );
+            for diag in &diags {
+                assert_eq!(diag.severity, Severity::Error);
+                assert_eq!(diag.code, Some(DiagnosticCode::ArgTypeMismatch));
+                for needle in ["expects Length", "got Scalar[rad]"] {
+                    assert!(
+                        diag.message.contains(needle),
+                        "{name}: message must contain {needle:?} so the user can see \
+                         WHICH unit was wrong, not merely that one was: {}",
+                        diag.message
+                    );
+                }
+            }
+        }
+    }
+
+    /// GRADUALISM: an unresolved `TypeParam` / poison `Error` origin → 0
+    /// diagnostics, both builtins. The executable proof of the two-layer
+    /// relationship stated in this module's "Relationship to the eval-layer
+    /// units gate" section.
+    #[test]
+    fn pattern_unresolved_origin_passes_silently() {
+        for ty in [Type::TypeParam("T".to_string()), Type::Error] {
+            for (name, args) in [
+                ("mirror", mirror_args(ty.clone())),
+                ("circular_pattern", circular_pattern_args(ty.clone())),
+            ] {
+                let mut diags = Vec::new();
+                check_builtin_arg_types(name, &args, dummy_span(), &mut diags);
+                assert!(
+                    diags.is_empty(),
+                    "{name}: a {ty} origin must pass silently (gradualism) — the \
+                     eval-layer gate stays the backstop; got: {:?}",
+                    diags
+                );
+            }
+        }
+    }
+
+    /// The ARITY GUARD, not the `compiled_args.get(index)` bounds check, is what
+    /// keeps the two decoded-VALUE forms quiet.
+    ///
+    /// This is the distinction that matters, and it is why the guard is
+    /// semantically load-bearing rather than mere forward-compat: both value
+    /// forms DO have an index 1, holding a `Plane` / an `Axis`. A definitely-
+    /// wrong type there produces nothing only because the arm never matches.
+    #[test]
+    fn pattern_value_form_arities_give_no_diagnostics() {
+        // mirror(target, plane) — the task-5745 decoded-value form.
+        let mirror_value_form = vec![
+            arg_expr(Type::Geometry), // 0 target
+            arg_expr(Type::Int),      // 1 plane — definitely wrong, NOT checked here
+        ];
+        let mut diags = Vec::new();
+        check_builtin_arg_types("mirror", &mirror_value_form, dummy_span(), &mut diags);
+        assert!(
+            diags.is_empty(),
+            "a 2-arg mirror exposes no slots even though index 1 EXISTS, got: {:?}",
+            diags
+        );
+
+        // circular_pattern(target, axis, count, angle).
+        let circular_value_form = vec![
+            arg_expr(Type::Geometry), // 0 target
+            arg_expr(Type::Int),      // 1 axis — definitely wrong, NOT checked here
+            arg_expr(Type::Int),      // 2 count
+            arg_expr(Type::Scalar {
+                dimension: DimensionVector::ANGLE,
+            }), // 3 angle
+        ];
+        let mut diags = Vec::new();
+        check_builtin_arg_types(
+            "circular_pattern",
+            &circular_value_form,
+            dummy_span(),
+            &mut diags,
+        );
+        assert!(
+            diags.is_empty(),
+            "a 4-arg circular_pattern exposes no slots even though index 1 EXISTS, \
+             got: {:?}",
+            diags
+        );
+    }
+
+    // ── Task 6862: `Type::ScalarParam` at a dimension slot ────────────────────
+
+    /// A dimension-kinded generic fn PARAMETER must DEFER at a LENGTH slot,
+    /// never reject.
+    ///
+    /// `fn beam<Q: Dimension>(l: Scalar<Q>) -> Solid { extrude(circle(l), l) }`
+    /// resolves `l` to `Type::ScalarParam("Q")` (`type_resolution.rs`'s
+    /// `classify_dim_slot`), which displays as `Scalar<Q>`. Its FAMILY is known —
+    /// it is a scalar — and only its DIMENSION is open, so at a dimension slot
+    /// there is nothing to compare: judging the UNINSTANTIATED body under strict
+    /// `DimensionVector` equality can only ever REJECT, so every such site is a
+    /// false positive.
+    ///
+    /// The defer's COST — that `beam(10kg)` is then undiagnosed, because nothing
+    /// rechecks a generic body per instantiation — is stated on the
+    /// `ExpectedArg::Scalar` arm and pinned by the three MEASUREMENT tests named
+    /// there.
+    ///
+    /// Three names, so the fix cannot be accidentally index-specific: `circle`
+    /// (slot 0), `extrude` (slot 1) and `box` (slots 0/1/2).
+    ///
+    /// End-to-end sibling: `dim_kinded_generic_param_at_length_slot_compiles_clean`
+    /// in `tests/builtin_arg_signature_tests.rs`, over the fixture
+    /// `tests/fixtures/dim_kinded_length_slot.ri`.
+    #[test]
+    fn scalar_param_defers_at_length_slot() {
+        let q = || arg_expr(Type::ScalarParam("Q".to_string()));
+
+        // circle(radius) — the slot is index 0.
+        let mut diags = Vec::new();
+        check_builtin_arg_types("circle", &[q()], dummy_span(), &mut diags);
+        assert!(
+            diags.is_empty(),
+            "ScalarParam at circle's LENGTH radius slot must defer, got: {:?}",
+            diags
+        );
+
+        // extrude(profile, distance) — the slot is index 1, so a defer that only
+        // covered index 0 would survive the `circle` case and die here.
+        let mut diags = Vec::new();
+        check_builtin_arg_types(
+            "extrude",
+            &[arg_expr(Type::Geometry), q()],
+            dummy_span(),
+            &mut diags,
+        );
+        assert!(
+            diags.is_empty(),
+            "ScalarParam at extrude's LENGTH distance slot must defer, got: {:?}",
+            diags
+        );
+
+        // box(w, d, h) — slots 0, 1 AND 2 at once.
+        let mut diags = Vec::new();
+        check_builtin_arg_types("box", &[q(), q(), q()], dummy_span(), &mut diags);
+        assert!(
+            diags.is_empty(),
+            "ScalarParam at box's three LENGTH slots must defer, got: {:?}",
+            diags
+        );
+    }
+
+    /// NEGATIVE CONTROL (green before AND after task 6862) — a bare `Int` at a
+    /// LENGTH slot is still a definite mismatch.
+    ///
+    /// The defer added for `ScalarParam` is a DIMENSION argument; it must not
+    /// leak into the family check that catches `circle(5)`.
+    #[test]
+    fn bare_int_at_length_slot_still_rejected() {
+        let mut diags = Vec::new();
+        check_builtin_arg_types("circle", &[arg_expr(Type::Int)], dummy_span(), &mut diags);
+        assert_eq!(
+            diags.len(),
+            1,
+            "a bare Int radius must still be rejected exactly once, got: {:?}",
+            diags
+        );
+        let d = &diags[0];
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::ArgTypeMismatch));
+        for needle in ["circle", "radius", "Length", "got Int"] {
+            assert!(
+                d.message.contains(needle),
+                "message missing {:?}: {}",
+                needle,
+                d.message
+            );
+        }
+    }
+
+    /// NEGATIVE CONTROL (green before AND after task 6862) — a CONCRETE
+    /// wrong-dimension scalar at a LENGTH slot is still rejected.
+    ///
+    /// This is the assertion that proves the `ScalarParam` defer does not blanket
+    /// -disable the slot: a `Scalar{MASS}` has a known dimension, so the
+    /// comparison is decidable and rejecting is correct.
+    #[test]
+    fn wrong_dimension_scalar_at_length_slot_still_rejected() {
+        let mut diags = Vec::new();
+        check_builtin_arg_types(
+            "circle",
+            &[arg_expr(Type::Scalar {
+                dimension: DimensionVector::MASS,
+            })],
+            dummy_span(),
+            &mut diags,
+        );
+        assert_eq!(
+            diags.len(),
+            1,
+            "a concrete MASS radius must still be rejected exactly once, got: {:?}",
+            diags
+        );
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert_eq!(diags[0].code, Some(DiagnosticCode::ArgTypeMismatch));
+        assert!(
+            diags[0].message.contains("Length"),
+            "message must still name the expected Length: {}",
+            diags[0].message
+        );
+    }
+
+    /// NARROWNESS PIN (green before AND after task 6862) — `ScalarParam` must
+    /// STILL be rejected at an `ExpectedArg::Int` slot.
+    ///
+    /// This is what makes the asymmetry in `check_builtin_arg_types` ENFORCEABLE
+    /// rather than merely conventional. The defer is a DIMENSION-comparison
+    /// argument and an `Int` count slot is not a dimension slot: `Scalar<Q>` is a
+    /// dimensioned scalar for EVERY binding of `Q` (at Q = DIMENSIONLESS it is
+    /// `Real`, which the `Int` arm's own comment already names as a definite
+    /// mismatch), so the family mismatch is decidable without instantiating.
+    #[test]
+    fn scalar_param_still_rejected_at_int_slot() {
+        let mut diags = Vec::new();
+        check_builtin_arg_types(
+            "generate",
+            &[arg_expr(Type::ScalarParam("Q".to_string()))],
+            dummy_span(),
+            &mut diags,
+        );
+        assert_eq!(
+            diags.len(),
+            1,
+            "ScalarParam at generate's Int count slot must still be rejected, got: {:?}",
+            diags
+        );
+        assert_eq!(diags[0].code, Some(DiagnosticCode::ArgTypeMismatch));
+        assert!(
+            diags[0].message.contains("expects Int"),
+            "message should pin the expected Int type: {}",
+            diags[0].message
+        );
+    }
+
+    // ── Task 6862 FINDING 2: the lowering-arity ledger ───────────────────────
+    //
+    // FINDING 2's hazard — an arity-agnostic arm meeting a future value-form
+    // overload — is stated once, with its worked example, on the HAZARD block
+    // above the primitive arms in this file. What follows is its enforcement.
+    //
+    // The existing `assert_slots_at_every_arity` sweeps catch a stray GUARD
+    // being ADDED here; they cannot catch a new OVERLOAD being added over in
+    // the lowering. This ledger closes that direction: it derives each
+    // lowering's ACCEPTED ARITY SET behaviourally (by compiling real calls and
+    // reading back the arg-count diagnostics), pins it, and couples it to the
+    // slot table.
+
+    /// Compile `source` through the crate's OWN stdlib entry points.
+    ///
+    /// This must NOT go through `reify_test_support::compile_source_with_stdlib`:
+    /// the crate's `[dev-dependencies]` self-pull (`reify-compiler { features =
+    /// ["test-support"] }`) puts two `reify_compiler` instances in the unit-test
+    /// graph, and that helper returns the *external* instance's `CompiledModule`,
+    /// which would not unify with `crate::CompiledModule` here (E0308).
+    ///
+    /// `relation_signatures.rs`'s `compile_module` is the same three lines for
+    /// the same reason — see its doc comment rather than a third telling of the
+    /// argument here. `guards.rs`'s `guarded_param_default_tests::compile`
+    /// shares only the RATIONALE, not the shape (MEASURED: it parses through
+    /// `reify_syntax::parse` with NO stdlib prelude, asserts the parse is clean,
+    /// and calls the module-local `compile`), so it is not a third copy of this
+    /// helper. Hoisting the two that ARE identical into one crate-internal
+    /// `#[cfg(test)]` module is the right move and is filed as follow-up work:
+    /// it needs edits in `relation_signatures.rs` and a `mod` line in `lib.rs`,
+    /// both outside task 6862's scope.
+    fn compile_module(source: &str) -> crate::CompiledModule {
+        let parsed = crate::parse_with_stdlib(source, reify_core::ModulePath::single("test"));
+        crate::compile_with_stdlib(&parsed)
+    }
+
+    /// Every name [`builtin_arg_slots`] actually serves, derived MECHANICALLY
+    /// rather than listed by hand.
+    ///
+    /// Sweeps EVERY curated registry that can name a slot key — [`BUILTIN_NAME_FAMILIES`]
+    /// (flattened), [`NON_FAMILY_SLOT_KEYS`] and [`NON_SELECTOR_ARG_SLOT_KEYS`] —
+    /// across `0..=MAX_PROBED_ARITY`, and keeps every name yielding a non-empty
+    /// slot list at some arity. Same technique
+    /// [`arg_slot_keys_are_registered_builtin_names`] uses, and what makes the
+    /// ledger guard self-maintaining: a name added to the table in a future leaf
+    /// is picked up here automatically instead of quietly escaping the guard.
+    ///
+    /// # Why THREE registries and not one (reviewer amendment)
+    ///
+    /// This function is the sole input to
+    /// [`every_slotted_name_is_ledgered_or_recorded_unobservable`], so a slot key
+    /// it cannot NAME is a key that escapes the ledger, escapes the coupling rule,
+    /// and leaves that guard GREEN — the silent false GREEN
+    /// [`NON_FAMILY_SLOT_KEYS`] exists to close. Reaching the key through any ONE
+    /// of the three curated lists is enough, so the hand-maintained
+    /// [`NON_FAMILY_SLOT_KEYS`] is no longer the single point of failure it was:
+    /// the 5662 `mirror` / `circular_pattern` catch worked only because those two
+    /// names happen to sit in a family slice.
+    ///
+    /// MEASURED, so the widening is not mistaken for a fix to a live hole: it
+    /// admits NO name today. Of the 35 [`NON_SELECTOR_ARG_SLOT_KEYS`] entries,
+    /// `generate` is the only one unreachable from the family slices, and it is
+    /// already a [`NON_FAMILY_SLOT_KEYS`] entry. The chain is future-proofing —
+    /// a NEW non-selector key added to that curated list is now swept even if
+    /// whoever adds it never touches [`NON_FAMILY_SLOT_KEYS`].
+    ///
+    /// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` — the third list the slot table draws
+    /// on — needs no chain of its own: it IS a [`BUILTIN_NAME_FAMILIES`] member,
+    /// asserted rather than asserted-in-prose by
+    /// [`slotted_name_sweep_reaches_every_curated_slot_registry`].
+    ///
+    /// Nothing spurious is admitted by widening: every candidate passes the
+    /// `!builtin_arg_slots(..).is_empty()` filter below, and both extra lists
+    /// carry their own no-dead-entry assertions.
+    fn slotted_builtin_names() -> BTreeSet<&'static str> {
+        BUILTIN_NAME_FAMILIES
+            .iter()
+            .flat_map(|family| family.iter())
+            .chain(NON_FAMILY_SLOT_KEYS.iter())
+            .chain(NON_SELECTOR_ARG_SLOT_KEYS.iter())
+            .copied()
+            .filter(|name| {
+                (0usize..=MAX_PROBED_ARITY).any(|k| !builtin_arg_slots(name, k).is_empty())
+            })
+            .collect()
+    }
+
+    /// The completeness sweep reaches a slot key through ANY curated registry,
+    /// not just through the one hand-maintained list.
+    ///
+    /// Pins the two claims [`slotted_builtin_names`]'s doc makes, so neither can
+    /// rot into a comment that is merely believed:
+    ///
+    /// 1. Every [`NON_FAMILY_SLOT_KEYS`] and every [`NON_SELECTOR_ARG_SLOT_KEYS`]
+    ///    entry comes back from the sweep. (Both lists already reject dead
+    ///    entries elsewhere, so each name here does yield slots.) This pins the
+    ///    OUTCOME — "every curated key is swept" — not any one chain: MEASURED
+    ///    today, the two explicit chains are mutually redundant, since `generate`
+    ///    is the only family-unreachable key and it sits in BOTH lists, so
+    ///    dropping either `.chain(..)` alone leaves this green and dropping both
+    ///    turns it RED. The redundancy is the point of the widening; the
+    ///    assertion becomes chain-specific the moment a curated key is added to
+    ///    only one list.
+    ///
+    /// 2. `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` is a [`BUILTIN_NAME_FAMILIES`]
+    ///    member, which is WHY it needs no chain of its own. If a future edit
+    ///    drops it from that array, this fails loudly instead of silently
+    ///    shrinking the sweep — the selectors are 9 of the ledger's
+    ///    [`ARITY_UNOBSERVABLE_SLOT_KEYS`] entries, so losing them would hollow
+    ///    out that arm rather than break it.
+    #[test]
+    fn slotted_name_sweep_reaches_every_curated_slot_registry() {
+        let swept = slotted_builtin_names();
+
+        for &name in NON_FAMILY_SLOT_KEYS
+            .iter()
+            .chain(NON_SELECTOR_ARG_SLOT_KEYS)
+        {
+            assert!(
+                swept.contains(name),
+                "{name:?} is a curated slot-table key but the slotted-name sweep does \
+                 not reach it, so it would escape \
+                 every_slotted_name_is_ledgered_or_recorded_unobservable entirely. \
+                 Restore the .chain(..) that names its registry in slotted_builtin_names()."
+            );
+        }
+
+        assert!(
+            BUILTIN_NAME_FAMILIES.contains(&GEOMETRY_TOPOLOGY_SELECTOR_NAMES),
+            "GEOMETRY_TOPOLOGY_SELECTOR_NAMES is swept only because it is a \
+             BUILTIN_NAME_FAMILIES member; it is no longer, so slotted_builtin_names() \
+             must chain it explicitly."
+        );
+    }
+
+    /// Probe each slotted name's lowering for the arities it ACCEPTS, by
+    /// compiling one synthetic module holding every (name, arity) call and
+    /// reading back the arg-count diagnostics.
+    ///
+    /// # Anchored on the MESSAGE, not on the label
+    ///
+    /// Three different emit sites produce arg-count errors —
+    /// [`crate::arg_check::check_arg_count_exact`],
+    /// [`crate::arg_check::check_arg_count_at_least`], and bare custom pushes
+    /// such as `geometry.rs`'s `extrude` arm, which carries NO `"wrong number of
+    /// arguments"` label at all. The label is therefore NOT universal. The
+    /// message shape `"{name}() expects … got {N}"` IS: it held for all 34
+    /// observable names across all three emit sites when this ledger was
+    /// measured. The trailing `", got {N}"` is matched with `ends_with` and not
+    /// `contains`, because `", got 1"` is a prefix of `", got 12"`.
+    ///
+    /// # Failure polarity is deliberately safe
+    ///
+    /// An arity message this matcher does NOT recognise makes the probe read
+    /// that arity as ACCEPTED, which BREAKS the pin below — a false RED that
+    /// forces a human look. It can never produce a false GREEN.
+    ///
+    /// # Headroom
+    ///
+    /// Measured: a 660-call probe module (44 slotted names × 15 arities)
+    /// produced 459 arity diagnostics with no truncation and no diagnostic cap,
+    /// so ONE compile suffices for the whole sweep.
+    ///
+    /// # Memoised
+    ///
+    /// Both consumers — the pin/coupling guard and the completeness arm — need
+    /// the identical probe, and the probe is a full `parse_with_stdlib` +
+    /// `compile_with_stdlib` over a module whose size grows with both the slot
+    /// table and [`MAX_PROBED_ARITY`]. It is pure and deterministic, so it runs
+    /// ONCE per test binary behind a `OnceLock` and both callers share the
+    /// result.
+    fn lowering_accepted_arities() -> &'static BTreeMap<String, BTreeSet<usize>> {
+        static PROBE: OnceLock<BTreeMap<String, BTreeSet<usize>>> = OnceLock::new();
+        PROBE.get_or_init(probe_lowering_accepted_arities)
+    }
+
+    /// The uncached probe body behind [`lowering_accepted_arities`]. Pure and
+    /// deterministic — it depends only on the slot table and the lowering, both
+    /// compile-time constants of the test binary — which is what makes sharing
+    /// one result across both consumers safe.
+    fn probe_lowering_accepted_arities() -> BTreeMap<String, BTreeSet<usize>> {
+        let names: Vec<&str> = slotted_builtin_names().into_iter().collect();
+
+        let mut src = String::from("module test\n\nstructure def ArityProbe {\n");
+        for (i, name) in names.iter().enumerate() {
+            for k in 0usize..=MAX_PROBED_ARITY {
+                let args = vec!["1mm"; k].join(", ");
+                src.push_str(&format!("    let v{i}_{k} = {name}({args})\n"));
+            }
+        }
+        src.push_str("}\n");
+
+        let module = compile_module(&src);
+
+        names
+            .iter()
+            .map(|name| {
+                let prefix = format!("{name}() expects");
+                let rejected: BTreeSet<usize> = (0usize..=MAX_PROBED_ARITY)
+                    .filter(|k| {
+                        let suffix = format!(", got {k}");
+                        module.diagnostics.iter().any(|d| {
+                            d.message.starts_with(&prefix) && d.message.ends_with(&suffix)
+                        })
+                    })
+                    .collect();
+                let accepted = (0usize..=MAX_PROBED_ARITY)
+                    .filter(|k| !rejected.contains(k))
+                    .collect();
+                ((*name).to_string(), accepted)
+            })
+            .collect()
+    }
+
+    /// A ledger row's pinned accepted-arity set, held STRUCTURALLY so that a row
+    /// backed by an OPEN lowering tail stays correct when [`MAX_PROBED_ARITY`]
+    /// moves.
+    ///
+    /// [`MAX_PROBED_ARITY`] is shared by ~10 sweeps in this module, so raising it
+    /// for an unrelated reason is a plausible future edit. Written as the
+    /// enumerated window `[2, 3, …, 14]`, `shell`'s
+    /// `check_arg_count_at_least(2)` tail would break the pin on that edit and
+    /// report it as "accepted-arity set moved … value-form overload arriving" —
+    /// pointing the reader at entirely the wrong cause. [`AtLeast`] expands
+    /// against the CURRENT bound instead, so the row means what the lowering
+    /// means.
+    ///
+    /// [`AtLeast`]: AcceptedArities::AtLeast
+    #[derive(Debug, Clone, Copy)]
+    enum AcceptedArities {
+        /// A CLOSED set — one `check_arg_count_exact` form per member.
+        Exactly(&'static [usize]),
+        /// An OPEN tail — a `check_arg_count_at_least(n)` lowering, expanding to
+        /// `n..=MAX_PROBED_ARITY`.
+        AtLeast(usize),
+    }
+
+    impl AcceptedArities {
+        /// The set to compare the probe against, resolved against the CURRENT
+        /// [`MAX_PROBED_ARITY`].
+        fn expand(self) -> BTreeSet<usize> {
+            match self {
+                AcceptedArities::Exactly(arities) => arities.iter().copied().collect(),
+                AcceptedArities::AtLeast(min) => (min..=MAX_PROBED_ARITY).collect(),
+            }
+        }
+    }
+
+    /// The PINNED accepted-arity ledger: the 34 slotted names whose lowering
+    /// emits an observable arg-count diagnostic, and the arities each accepts.
+    ///
+    /// Derived by MEASUREMENT (see [`lowering_accepted_arities`]), not by
+    /// reading the lowering arms, and held as an [`AcceptedArities`] so a row
+    /// backed by an OPEN lowering tail does not silently become wrong when
+    /// [`MAX_PROBED_ARITY`] moves. If an entry disagrees with the probe,
+    /// INVESTIGATE — a name that GAINED an accepted arity is exactly FINDING 2's
+    /// hazard arriving (task 5351's value forms are the named motivating case) —
+    /// rather than blindly re-pinning the new value.
+    ///
+    /// The 10 slotted names deliberately absent from this list are recorded, with
+    /// the measurement that justifies their absence, in
+    /// [`ARITY_UNOBSERVABLE_SLOT_KEYS`]; the completeness arm of
+    /// [`lowering_arity_ledger_is_pinned_and_coupled_to_the_slot_table`] asserts
+    /// every slotted name sits in exactly one of the two lists.
+    const LOWERING_ACCEPTED_ARITIES: &[(&str, AcceptedArities)] = &[
+        // Primitive CSG producers.
+        ("box", AcceptedArities::Exactly(&[3])),
+        ("box_centered", AcceptedArities::Exactly(&[3])),
+        ("cone", AcceptedArities::Exactly(&[3])),
+        ("cylinder", AcceptedArities::Exactly(&[2])),
+        ("cylinder_centered", AcceptedArities::Exactly(&[2])),
+        ("half_space", AcceptedArities::Exactly(&[6])),
+        ("sphere", AcceptedArities::Exactly(&[1])),
+        ("torus", AcceptedArities::Exactly(&[2])),
+        ("tube", AcceptedArities::Exactly(&[3])),
+        ("wedge", AcceptedArities::Exactly(&[4])),
+        // 2-D profile producers.
+        ("circle", AcceptedArities::Exactly(&[1])),
+        ("ellipse", AcceptedArities::Exactly(&[2])),
+        ("rectangle", AcceptedArities::Exactly(&[2])),
+        // Modify producers.
+        ("chamfer", AcceptedArities::Exactly(&[2, 3])),
+        ("chamfer_asymmetric", AcceptedArities::Exactly(&[4])),
+        ("fillet", AcceptedArities::Exactly(&[2, 3])),
+        ("fillet_all", AcceptedArities::Exactly(&[2])),
+        ("offset_curve", AcceptedArities::Exactly(&[2, 3])),
+        ("offset_solid", AcceptedArities::Exactly(&[2])),
+        // `shell` is `check_arg_count_at_least(2)` — args 2.. are face indices,
+        // so the accepted tail is OPEN. `AtLeast` says exactly that, and
+        // expands against the CURRENT MAX_PROBED_ARITY, so raising that bound
+        // no longer breaks this pin with a misattributed message.
+        ("shell", AcceptedArities::AtLeast(2)),
+        ("shell_open", AcceptedArities::Exactly(&[3])),
+        ("thicken", AcceptedArities::Exactly(&[2])),
+        ("zone_slab", AcceptedArities::Exactly(&[2])),
+        // Sweep producers.
+        ("extrude", AcceptedArities::Exactly(&[2])),
+        ("extrude_symmetric", AcceptedArities::Exactly(&[2])),
+        ("pipe", AcceptedArities::Exactly(&[2])),
+        ("revolve", AcceptedArities::Exactly(&[8])),
+        ("revolve_full", AcceptedArities::Exactly(&[7])),
+        // Transform producers and patterns.
+        ("linear_pattern", AcceptedArities::Exactly(&[6])),
+        ("linear_pattern_2d", AcceptedArities::Exactly(&[11])),
+        ("rotate_around", AcceptedArities::Exactly(&[8])),
+        ("translate", AcceptedArities::Exactly(&[4])),
+        // Pattern ORIGIN triples (task 5662) — the only rows here that are
+        // multi-arity because the name is genuinely OVERLOADED: the scalar form
+        // and the value form. Both are safe under the coupling rule because
+        // their arms carry a load-bearing `if arg_count ==` guard, so no
+        // MULTI_ARITY_AGNOSTIC_SAFE exemption is needed; pinned by
+        // `pattern_origin_family_is_ledgered_and_guarded_not_exempted`.
+        //
+        // PROVENANCE, worth one line: these two rows exist because task 5662
+        // landed two new slotted names on `main` while task 6862 was on a
+        // branch, and `every_slotted_name_is_ledgered_or_recorded_unobservable`
+        // FIRED on them unprompted at the merge. The completeness arm caught an
+        // unrelated task's change — which is the evidence that this guard is
+        // enforceable rather than decorative.
+        ("circular_pattern", AcceptedArities::Exactly(&[4, 9])),
+        ("mirror", AcceptedArities::Exactly(&[2, 7])),
+    ];
+
+    /// Slotted names whose lowering emits NO observable arg-count diagnostic, so
+    /// [`lowering_accepted_arities`] cannot derive an accepted-arity set for them
+    /// and a [`LOWERING_ACCEPTED_ARITIES`] row would be VACUOUS rather than
+    /// merely absent.
+    ///
+    /// # The measurement, not an assumption
+    ///
+    /// Compiling every one of these names at every arity in `0..=MAX_PROBED_ARITY`
+    /// produced NO arg-count diagnostic AT ALL — the probe therefore reads every
+    /// arity as "accepted" for them, which is not a fact about the lowering but
+    /// the absence of one. The geometry TOPOLOGY SELECTOR family is simply not
+    /// routed through a lowering arity check the way the geometry PRODUCERS are.
+    /// That measurement is re-run on every test run, not trusted: the
+    /// no-dead-entries arm of
+    /// [`every_slotted_name_is_ledgered_or_recorded_unobservable`] asserts each
+    /// name here still yields a FULL accepted set, so if a selector ever gains an
+    /// arity check this list turns RED and forces the name into the ledger, where
+    /// the pin and the coupling rule can see it.
+    ///
+    /// # The consequence, stated honestly
+    ///
+    /// The FINDING-2 guard therefore covers the geometry-LOWERING families —
+    /// task 5750's subject, and the 26 arity-agnostic arms that motivated the
+    /// finding — and NOT task 4493/3994's selector family. Nobody should read the
+    /// guard as broader than that. The nine selectors plus `generate` are also
+    /// the names least exposed to the hazard: none is overloaded today, and a
+    /// value-form overload is a producer-side notion (task 5351).
+    const ARITY_UNOBSERVABLE_SLOT_KEYS: &[&str] = &[
+        // The nine geometry topology selectors (task 4493).
+        "center_of_mass",
+        "moment_of_inertia",
+        "faces_by_normal",
+        "edges_parallel_to",
+        "faces_perpendicular_to",
+        "edges_perpendicular_to",
+        "edges_at_height",
+        "extremal_by_bbox",
+        "extremal_by_centroid",
+        // The task-3994 list combinator, the table's lone `Int` count slot.
+        "generate",
+    ];
+
+    /// Names that legitimately accept MORE THAN ONE arity while being served by
+    /// an arity-AGNOSTIC arm in [`builtin_arg_slots`].
+    ///
+    /// Adding a name here is a DELIBERATE CLAIM, not a way to quiet the guard:
+    /// that the slot indices denote THE SAME PARAMETERS at every accepted arity,
+    /// verified against the lowering. When they do NOT — the usual case — the
+    /// correct fix is an `if arg_count ==` guard on the arm, as `fillet`,
+    /// `chamfer`, `linear_pattern` and `linear_pattern_2d` already carry.
+    ///
+    /// The companion no-dead-entries assertion in
+    /// [`lowering_arity_ledger_is_pinned_and_coupled_to_the_slot_table`] requires
+    /// every name here to still be multi-arity AND still be agnostic, so a stale
+    /// entry cannot silently hollow out the rule.
+    ///
+    /// Per entry, why it is safe — each VERIFIED against the lowering, not
+    /// assumed:
+    ///
+    /// - `offset_curve` — accepts 2 and 3. The 2-arg form goes through
+    ///   `geometry_modify.rs`'s `compile_modify_2arg(…, "distance", …)`, which
+    ///   builds `[("target", …), ("distance", …)]`; the 3-arg form builds
+    ///   `[("target", …), ("distance", …), ("third", …)]` explicitly. Index 1 is
+    ///   `distance` in BOTH, so the arm's `length_arg(1, "distance")` denotes the
+    ///   same parameter either way. Note plainly what this is: FINDING 2's exact
+    ///   hazard shape, ALREADY PRESENT in the table and benign only by
+    ///   coincidence of the lowering's layout. It is listed rather than silently
+    ///   tolerated precisely so that a future third case has to be argued.
+    ///
+    /// - `shell` — `check_arg_count_at_least("shell", …, 2, …)`, so it accepts an
+    ///   OPEN tail. The lowering builds `[("target", …), ("thickness", …)]` and
+    ///   then appends the remaining args as `face_{i}` indices, so index 1 is
+    ///   `thickness` at every arity and the agnostic arm denotes the same
+    ///   parameter throughout.
+    const MULTI_ARITY_AGNOSTIC_SAFE: &[&str] = &["offset_curve", "shell"];
+
+    /// FINDING 2's guard: the lowering-arity ledger is pinned, and a name that
+    /// accepts MORE THAN ONE arity may not be served by an arity-AGNOSTIC arm
+    /// unless it is an explicitly-argued [`MULTI_ARITY_AGNOSTIC_SAFE`] entry.
+    ///
+    /// Four assertions, and the second is the one that makes FINDING 2
+    /// enforceable rather than conventional:
+    ///
+    /// 0. MATCHER SANITY — every name pinned to a BOUNDED set must have had at
+    ///    least one rejection RECOGNISED by the probe. Asserted first, and with
+    ///    its own wording, so that a reworded arity diagnostic is reported as a
+    ///    probe failure rather than as every ledger row simultaneously
+    ///    "gaining an overload" — two very different causes that the pin's
+    ///    message alone cannot tell apart.
+    ///
+    /// 1. PIN — each ledger entry's measured accepted-arity set still equals the
+    ///    pinned set. A slotted name that gains an accepted arity (i.e. gains a
+    ///    value-form overload) breaks here, in this file, next to the slot table
+    ///    that must be updated with it.
+    ///
+    /// 2. COUPLING — for every multi-arity name, `builtin_arg_slots(name, k)`
+    ///    must NOT be identical across its accepted arities, i.e. the arm must
+    ///    carry an `if arg_count ==` guard (as `fillet` / `chamfer` /
+    ///    `linear_pattern` / `linear_pattern_2d` already do), UNLESS the name is
+    ///    an argued [`MULTI_ARITY_AGNOSTIC_SAFE`] entry. An arity-agnostic arm
+    ///    serving an overloaded name is EXACTLY how a slot comes to fire on the
+    ///    wrong argument.
+    ///
+    /// 3. NO DEAD EXEMPTIONS — every [`MULTI_ARITY_AGNOSTIC_SAFE`] entry must
+    ///    still be multi-arity AND still be agnostic. Without this, a name that
+    ///    later gained a guard (or lost an overload) would sit in the exemption
+    ///    list forever, hollowing rule 2 out for it. Mirrors assertion (a) of
+    ///    [`arg_slot_keys_are_registered_builtin_names`].
+    #[test]
+    fn lowering_arity_ledger_is_pinned_and_coupled_to_the_slot_table() {
+        let probed = lowering_accepted_arities();
+        let mut agnostic_multi_arity: Vec<(&str, Vec<usize>)> = Vec::new();
+
+        // (0) MATCHER SANITY, asserted BEFORE the pin so a reworded diagnostic
+        // is reported as ITSELF instead of as 30-odd simultaneous "accepted-arity
+        // set moved" failures, which name the wrong cause.
+        //
+        // Every name below is pinned to a BOUNDED set, so the probe must have
+        // recognised at least one REJECTION for it. A name whose measured set is
+        // the FULL probe window means the probe saw no rejection at all — which
+        // is a fact about the MATCHER, not about the lowering gaining arities.
+        let full_window: BTreeSet<usize> = (0usize..=MAX_PROBED_ARITY).collect();
+        let matcher_blind: Vec<&str> = LOWERING_ACCEPTED_ARITIES
+            .iter()
+            .filter(|(name, pinned)| {
+                pinned.expand() != full_window && probed.get(*name) == Some(&full_window)
+            })
+            .map(|(name, _)| *name)
+            .collect();
+        assert!(
+            matcher_blind.is_empty(),
+            "the probe saw NO recognised arg-count rejection for these ledgered \
+             names, though each is pinned to a BOUNDED arity set: \
+             {matcher_blind:?}.\n\
+             Read this as a PROBE failure, NOT as task 6862 FINDING 2. Either \
+             the arity diagnostic MESSAGE SHAPE changed out from under \
+             `lowering_accepted_arities`'s matcher (`\"{{name}}() expects …, \
+             got {{N}}\"` — there are THREE emit sites, so a reword at one of \
+             them blinds only part of this list), or those lowerings dropped \
+             their arity check entirely. Fix that first; the pin failures below \
+             would otherwise all report the same thing under the wrong name."
+        );
+
+        for (name, pinned_arities) in LOWERING_ACCEPTED_ARITIES {
+            let pinned: BTreeSet<usize> = pinned_arities.expand();
+            let measured = probed.get(*name).unwrap_or_else(|| {
+                panic!(
+                    "ledger names {name:?}, but it is not a slotted builtin — the probe never \
+                     saw it. Remove the stale row, or fix the name."
+                )
+            });
+
+            // (1) PIN.
+            assert_eq!(
+                measured, &pinned,
+                "{name}'s lowering accepted-arity set moved: pinned {pinned:?}, measured \
+                 {measured:?}. If the lowering gained a VALUE-FORM overload, that is task \
+                 6862 FINDING 2 arriving — check `builtin_arg_slots({name:?}, …)` denotes \
+                 the same parameters at the NEW arity before re-pinning."
+            );
+
+            // (2) COUPLING. Collected rather than asserted in-loop, so ONE run
+            // names every offender instead of only the alphabetically-first.
+            if pinned.len() > 1 && !MULTI_ARITY_AGNOSTIC_SAFE.contains(name) {
+                let arities: Vec<usize> = pinned.iter().copied().collect();
+                let first = builtin_arg_slots(name, arities[0]);
+                let arity_agnostic = arities.iter().all(|&k| builtin_arg_slots(name, k) == first);
+                if arity_agnostic {
+                    agnostic_multi_arity.push((*name, arities));
+                }
+            }
+        }
+
+        assert!(
+            agnostic_multi_arity.is_empty(),
+            "these names accept more than one arity, but `builtin_arg_slots` returns the \
+             SAME slots at every one of them: {agnostic_multi_arity:?}. An arity-agnostic \
+             arm serving an overloaded name makes the slot indices fire on the wrong \
+             arguments (task 6862 FINDING 2). Add an `if arg_count ==` guard — or, if the \
+             indices genuinely denote the same parameters at every accepted arity, record \
+             the name in MULTI_ARITY_AGNOSTIC_SAFE with the layout that proves it."
+        );
+
+        // (3) NO DEAD EXEMPTIONS.
+        for &name in MULTI_ARITY_AGNOSTIC_SAFE {
+            let measured = probed.get(name).unwrap_or_else(|| {
+                panic!(
+                    "MULTI_ARITY_AGNOSTIC_SAFE names {name:?}, but it is not a slotted \
+                     builtin — the probe never saw it. Remove the stale entry."
+                )
+            });
+            assert!(
+                measured.len() > 1,
+                "MULTI_ARITY_AGNOSTIC_SAFE names {name:?}, but its lowering now accepts \
+                 only {measured:?}. The exemption no longer applies — delete the entry so \
+                 the coupling rule covers this name again."
+            );
+            let arities: Vec<usize> = measured.iter().copied().collect();
+            let first = builtin_arg_slots(name, arities[0]);
+            assert!(
+                arities.iter().all(|&k| builtin_arg_slots(name, k) == first),
+                "MULTI_ARITY_AGNOSTIC_SAFE names {name:?}, but its arm is no longer \
+                 arity-agnostic — it now carries an `if arg_count ==` guard, which is the \
+                 stronger fix. Delete the entry; the guard already satisfies the rule."
+            );
+        }
+    }
+
+    /// COMPLETENESS: every name the slot table serves is accounted for by the
+    /// FINDING-2 guard — either it carries a measured [`LOWERING_ACCEPTED_ARITIES`]
+    /// row, or it is a recorded [`ARITY_UNOBSERVABLE_SLOT_KEYS`] entry.
+    ///
+    /// Without this arm the ledger has a silent hole: a name newly added to
+    /// [`builtin_arg_slots`] in a future leaf would simply not appear in the
+    /// ledger, and
+    /// [`lowering_arity_ledger_is_pinned_and_coupled_to_the_slot_table`] — which
+    /// iterates the LEDGER, not the table — would never look at it. The new name
+    /// would escape the coupling rule entirely, which is exactly the class of
+    /// silent escape task 6862 FINDING 2 exists to close.
+    ///
+    /// The served-name set is derived MECHANICALLY by [`slotted_builtin_names`],
+    /// so this is self-maintaining: nobody has to remember to update a list.
+    ///
+    /// The no-dead-entries companion holds the other direction — an
+    /// [`ARITY_UNOBSERVABLE_SLOT_KEYS`] entry must still yield slots AND still be
+    /// genuinely unobservable, so a name that later gains an arity check cannot
+    /// sit in the wrong list forever.
+    #[test]
+    fn every_slotted_name_is_ledgered_or_recorded_unobservable() {
+        let probed = lowering_accepted_arities();
+
+        let unaccounted: Vec<&str> = slotted_builtin_names()
+            .into_iter()
+            .filter(|name| {
+                !LOWERING_ACCEPTED_ARITIES.iter().any(|(n, _)| n == name)
+                    && !ARITY_UNOBSERVABLE_SLOT_KEYS.contains(name)
+            })
+            .collect();
+        assert!(
+            unaccounted.is_empty(),
+            "these names yield arg slots but are accounted for by neither list: \
+             {unaccounted:?}. A new slotted name must be added to \
+             LOWERING_ACCEPTED_ARITIES with its measured accepted arities — or, if its \
+             lowering emits no arity diagnostic at all, recorded in \
+             ARITY_UNOBSERVABLE_SLOT_KEYS with the measurement that shows it."
+        );
+
+        // No dead entries, direction 1: still in the table.
+        for &name in ARITY_UNOBSERVABLE_SLOT_KEYS {
+            assert!(
+                (0usize..=MAX_PROBED_ARITY).any(|k| !builtin_arg_slots(name, k).is_empty()),
+                "ARITY_UNOBSERVABLE_SLOT_KEYS names {name:?}, but it yields no slots at any \
+                 arity — the key left the table. Remove the stale entry."
+            );
+        }
+
+        // No dead entries, direction 2: still genuinely UNOBSERVABLE. A name
+        // whose lowering has gained an arity check now has a real accepted-arity
+        // set, so it belongs in the ledger where the pin and the coupling rule
+        // can see it — not in the exemption list.
+        for &name in ARITY_UNOBSERVABLE_SLOT_KEYS {
+            let measured = probed.get(name).expect("slotted name must have been probed");
+            let fully_accepted: BTreeSet<usize> = (0usize..=MAX_PROBED_ARITY).collect();
+            assert_eq!(
+                measured, &fully_accepted,
+                "ARITY_UNOBSERVABLE_SLOT_KEYS names {name:?}, but the probe now sees it \
+                 REJECT some arities ({measured:?} accepted of {fully_accepted:?}) — its \
+                 lowering has gained an observable arity check. Move it to \
+                 LOWERING_ACCEPTED_ARITIES with the measured set."
+            );
+        }
+    }
+
+    /// The task-5662 pattern-origin pair is LEDGERED, and its multi-arity row is
+    /// discharged by a real `if arg_count ==` guard rather than by an exemption.
+    ///
+    /// # Provenance
+    ///
+    /// `mirror` and `circular_pattern` are not names task 6862 went looking for.
+    /// They landed on `main` in task 5662 while this branch was away, and
+    /// [`every_slotted_name_is_ledgered_or_recorded_unobservable`] FIRED on them
+    /// unprompted the moment the two were merged, naming exactly
+    /// `["circular_pattern", "mirror"]`. That is the completeness arm doing the
+    /// one job it exists for, on an UNRELATED task's change — the strongest
+    /// available evidence the FINDING-2 guard is enforceable rather than
+    /// decorative.
+    ///
+    /// # What this pins that main's arity tests do not
+    ///
+    /// [`mirror_origin_slots_are_arity_7_only`] and
+    /// [`circular_pattern_origin_slots_are_arity_9_only`] already pin the slot
+    /// SHAPE against a hard-coded arity, and this test deliberately does not
+    /// restate them. It pins the LEDGER-side fact they cannot see: each name
+    /// carries a MEASURED [`LOWERING_ACCEPTED_ARITIES`] row, that row is
+    /// MULTI-ARITY, and the coupling rule is therefore discharged the STRONG way
+    /// — by a guard that discriminates the accepted arities — and not by a
+    /// [`MULTI_ARITY_AGNOSTIC_SAFE`] exemption. Every arity it reasons about is
+    /// read back from the probe; none is written by hand.
+    #[test]
+    fn pattern_origin_family_is_ledgered_and_guarded_not_exempted() {
+        let probed = lowering_accepted_arities();
+
+        for name in ["mirror", "circular_pattern"] {
+            assert!(
+                LOWERING_ACCEPTED_ARITIES.iter().any(|(n, _)| *n == name),
+                "{name:?} yields origin slots (task 5662) but carries no \
+                 LOWERING_ACCEPTED_ARITIES row, so nothing pins its accepted \
+                 arities and the coupling rule never reaches it. Measure the set \
+                 with `lowering_accepted_arities()` and land the row."
+            );
+
+            let measured = probed
+                .get(name)
+                .unwrap_or_else(|| panic!("{name:?} must be a slotted builtin"));
+
+            // MULTI-ARITY is what puts these two under the coupling rule at all:
+            // the lowering accepts BOTH the scalar form and the value form.
+            assert!(
+                measured.len() > 1,
+                "{name} is expected to accept both a scalar and a value form, but \
+                 the probe measured only {measured:?}. If the value form went \
+                 away the coupling rule no longer bites here and this test should \
+                 go with it."
+            );
+
+            // Discharged by a GUARD, never by an exemption.
+            assert!(
+                !MULTI_ARITY_AGNOSTIC_SAFE.contains(&name),
+                "{name} must satisfy the coupling rule with its `if arg_count ==` \
+                 guard, never with a MULTI_ARITY_AGNOSTIC_SAFE exemption: index 1 \
+                 is `ox` at the scalar form but the composite plane/axis at the \
+                 value form, so an arity-agnostic arm would demand a Length OF A \
+                 PLANE on correct code."
+            );
+            let slotted: Vec<usize> = measured
+                .iter()
+                .copied()
+                .filter(|&k| !builtin_arg_slots(name, k).is_empty())
+                .collect();
+            assert_eq!(
+                slotted.len(),
+                1,
+                "exactly ONE of {name}'s accepted arities {measured:?} may carry \
+                 origin slots — the scalar form. The value form hands index 1 a \
+                 composite built by a stdlib producer, so slotting it would fire \
+                 on correct code. Slots found at: {slotted:?}"
+            );
+        }
     }
 }

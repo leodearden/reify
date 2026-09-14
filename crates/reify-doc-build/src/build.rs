@@ -671,6 +671,16 @@ fn type_to_string(ty: &Type) -> String {
 /// production construction site, `convert_type_params`
 /// (`crates/reify-compiler/src/type_resolution.rs:3839-3852`), always builds
 /// it as `vec![]`, so a `<…>` arm here would be dead code.
+///
+/// **MIRRORED GRAMMAR — keep in sync.** The per-param skeleton described
+/// above is also rendered by `format_type_params` in
+/// `crates/reify-lsp/src/hover.rs` (task #6341) for LSP hover and, via
+/// `format_type_alias_signature`, for completion `detail`. The default's
+/// own rendering is deliberately NOT part of that obligation (semantic
+/// `reify_core::Type` Display here vs. syntactic `TypeExpr` Display there —
+/// see `format_type_alias_signature`'s doc comment). See
+/// `format_type_params`'s doc comment for the rest of the shared-grammar
+/// rationale.
 fn render_type_params(params: &[reify_ir::TypeParam]) -> Vec<String> {
     params
         .iter()

@@ -141,23 +141,26 @@
 //! produce a dimensioned `Type::Point` arg, because `point3(…)` carries no
 //! quantity slot" — does NOT, and must not be re-asserted: task 5344 claimed
 //! `point3` / `point2` into the math construction family, so those calls now
-//! return a real `Type::Point { n, quantity }`.  That claim is still written,
+//! return a real `Type::Point { n, quantity }`.  That claim was still written,
 //! and still false, at further sites in `conformance/mod.rs` and
-//! `struct_ctor_field_conformance_tests.rs` — ALL OWNED BY TASK 6436, filed
-//! from esc-6159-3 for exactly this purpose, which enumerates them in its own
-//! description so the site list has ONE home and is not maintained here in
-//! lockstep.  Converting the pre-existing `Point`-arm probes to `.ri` fixtures,
-//! which the ctor-path fixtures above show is now possible for the first time,
-//! is 6436's as well.  Task 6159 corrected only what task 6159 itself authored.
+//! `struct_ctor_field_conformance_tests.rs`; task 6436 (filed from esc-6159-3
+//! for exactly this purpose) corrected all of them, and converted the
+//! pre-existing `Point`-arm probes to `.ri` fixtures — which the ctor-path
+//! fixtures above had shown was possible for the first time.  Task 6159 had
+//! corrected only what task 6159 itself authored.
 //!
-//! 6436's list also includes one site in THIS file, and that one IS flagged in
-//! place, because a reader of this section reaches it a few paragraphs down:
-//! "Why the ARG side is tolerant rather than strict" still leads with
-//! `point3(…)` as one of three erasure routes.  Only that ONE route is retired;
-//! the other two — a `Matrix<3,3,MomentOfInertia>` spelled `List<List<Real>>` at
-//! every corpus site, and a `Field`'s slots erasing to `Field<Real, Real>` — are
-//! untouched, so the arg-side tolerance RULING stands and only its stated basis
-//! needs re-arguing.
+//! The site list is deliberately NOT enumerated here, and was not while it was
+//! outstanding either: each arm's own doc carries the detail, so the two never
+//! have to be maintained in lockstep.  The reconciliation is done; what remains
+//! normative here is the premise itself — a `point3(…)` / `point2(…)` call
+//! carries a real quantity slot, and no site may re-derive an erasure claim from
+//! it.
+//!
+//! One site in THIS file rested on the same premise and HAS BEEN re-argued: "Why
+//! the ARG side is tolerant rather than strict", a few paragraphs down, which
+//! now carries the whole account of what the retired route cost that ruling and
+//! why it survives on the two that remain.  That paragraph is this file's single
+//! home for it.
 //!
 //! The `Real` quantity slots on `stdlib/solver_elastic.ri`'s `ElasticResult`
 //! `gradient` / `frame` params are out of the measurement's reach for a
@@ -203,19 +206,38 @@
 //! **Why the ARG side is tolerant rather than strict.**  This rationale is
 //! ARG-SIDE ONLY — it is what the param-side ruling above does *not* inherit.
 //! The arg side of these arms is systematically erased, so strict equality would
-//! compare a declaration against a hole: `point3(…)` is an eval-builtin with no
-//! `.ri` return type, so its calls arrive as `Scalar[m]` / `Int` placeholders;
+//! compare a declaration against a hole.  TWO erasure routes carry this:
 //! `Matrix<3,3,MomentOfInertia>` is spelled `List<List<Real>>` at every corpus
-//! site; a `Field`'s slots always erase to `Field<Real, Real>`, which is what
-//! produced the false warnings that arm's comment records.  None of those three
-//! erasure routes exists on the param side, where the slot is always written out.
+//! site; and a `Field`'s slots always erase to `Field<Real, Real>`, which is what
+//! produced the false warnings that arm's comment records.  Neither route exists
+//! on the param side, where the slot is always written out.
+//!
+//! There used to be a THIRD, listed first: `point3(…)` is an eval-builtin with no
+//! `.ri` return type, so its calls arrive as `Scalar[m]` / `Int` placeholders.
+//! Task 5344 retired it.  **The ruling survives the loss because that route did
+//! not become STRICT — it became CORRECT.**  A `point3(…)` arg now carries a real
+//! quantity slot, so at the `Point` arm the tolerance is no longer NEEDED rather
+//! than no longer JUSTIFIED, and nothing that was silent for a good reason has
+//! started comparing a declaration against a hole.
+//!
+//! What the remaining tolerance still buys at that arm is measured, in both
+//! directions, by an accept/reject pair of `.ri` fixtures in
+//! `struct_ctor_field_conformance_tests.rs`:
+//! `point3_dimensionless_at_dimensioned_point_param_stays_clean` — `point3(0, 0,
+//! 1)` at a `Point3<Length>` param, SILENT, which is what the tolerance is for —
+//! and `point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch`
+//! — `point3(1kg, 0kg, 0kg)` at the same param, REJECTED.  Those two are where
+//! the arm's line now sits, and they are the fixtures a future tightening has to
+//! move deliberately rather than by accident.
 //!
 //! **The residual this knowingly leaves — an ARG-side one, deliberately kept.**
 //! A `Vector3<Length>` param fed a *dimensionless* vector stays silent: the
 //! corpus's idiomatic spelling for a *direction* is dimensionless even where a
 //! declaration says `Length`, so rejecting it would false-reject `vec3(0, 1, 0)`.
-//! That is the same bounded-cost class as the `Point` arm's tolerance of a bare
-//! numeric literal, and it is accepted for the same reason.  Task 5848 has since
+//! That is the same bounded-cost class as the `Point` arm's tolerance of a
+//! scalar-family arg (any `Type::Scalar { .. }`, dimensioned or not, plus `Int`
+//! and `ScalarParam` — not a bare literal alone), and it is accepted for the
+//! same reason.  Task 5848 has since
 //! LANDED and retyped the direction fields this paragraph used to name —
 //! `kinematic.ri`'s `axis` and `ports.ri`'s `Frame3.x_axis/y_axis/z_axis` are
 //! `Vec3<Dimensionless>` today — but the residual is structural, not a property

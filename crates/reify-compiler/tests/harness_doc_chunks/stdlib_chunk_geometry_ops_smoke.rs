@@ -751,13 +751,14 @@ fn every_documented_geometry_op_name_is_exercised_by_the_fixture() {
 // later. Like its siblings this is a NAME-EXISTENCE check against code
 // registries, deliberately NOT a wording/content pin on either chunk's prose.
 
-/// Registry entries that are primitive/profile CONSTRUCTORS, documented in
-/// `chunks/geometry.md` rather than in stdlib.md's "Key Geometry Operations"
-/// table.
+/// Registry entries documented in `chunks/geometry.md` rather than in
+/// stdlib.md's "Key Geometry Operations" table.
 ///
-/// These build the geometry that the operations table transforms, and
-/// geometry.md is where a designer looks for them — so their absence from
-/// stdlib.md is a placement decision, not a coverage gap.
+/// Most are the primitive/profile CONSTRUCTORS that build the geometry the
+/// operations table transforms; the GD&T tolerance zones below are not
+/// primitives at all, but are documented in the same chunk for the same
+/// reason — geometry.md is where a designer looks for a shape-producing call.
+/// Their absence from stdlib.md is a placement decision, not a coverage gap.
 ///
 /// This is a claim about where the docs live, and the guard checks it: an entry
 /// listed here that is NOT actually mentioned in geometry.md is itself
@@ -778,33 +779,44 @@ const CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK: &[&str] = &[
     "ellipse",
     "rounded_box",
     "rounded_rect",
-];
-
-/// Registry entries that are implemented but documented in NO chunk at all.
-///
-/// None of these seven is mentioned in any file under [`CHUNKS_DIR`] — a claim
-/// the guard enforces against the WHOLE corpus (via [`read_all_chunks`]), not
-/// just stdlib.md and geometry.md, so documenting one in any chunk reports it.
-/// This is a REAL residual documentation gap, carried here explicitly rather
-/// than folded into [`CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK`] — filing them
-/// as "documented elsewhere" would launder a gap into a false coverage claim,
-/// which is exactly the failure mode this guard exists to catch, one level down.
-/// They are out of scope here (they are constructors, not operations) and are
-/// covered by a separate follow-up, task #5700.
-///
-/// This list is expected to SHRINK and must never grow. Documenting one of
-/// these means deleting its entry; the guard reports any entry that has in fact
-/// been documented, so a closed gap cannot linger here and mask a later
-/// regression.
-const CONSTRUCTORS_DOCUMENTED_NOWHERE: &[&str] = &[
+    "half_space",
+    // GD&T tolerance zones — geometry.md's "GD&T Tolerance Zones" section.
     "zone_slab",
     "zone_cylinder",
     "zone_annulus",
     "zone_profile",
-    "half_space",
+    // Free-form & implicit surfaces — geometry.md's section of that name.
     "nurbs_surface",
     "isosurface",
 ];
+
+/// Registry entries that are implemented but documented in NO chunk at all.
+///
+/// **Currently EMPTY, and that is the success state.** This list was born
+/// carrying seven real documentation gaps; task #5700 documented all seven in
+/// `chunks/geometry.md`, and each one left here as its prose landed. Empty
+/// means every registry entry is now either in stdlib.md's operations table or
+/// in [`CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK`] — no name is exempt from
+/// the guard by fiat.
+///
+/// The const and its class-3 check are deliberately KEPT rather than deleted,
+/// because the mechanism outlives the gap it was created for. It is the
+/// standing ratchet for any FUTURE registry entry that lands documented in no
+/// chunk: park it here explicitly rather than folding it into
+/// [`CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK`], because filing a gap as
+/// "documented elsewhere" would launder it into a false coverage claim — the
+/// exact failure mode this guard exists to catch, one level down.
+///
+/// Membership here is a claim the guard enforces against the WHOLE corpus (via
+/// [`read_all_chunks`]), not just stdlib.md and geometry.md, so documenting a
+/// parked name in ANY chunk reports it. The list is expected to SHRINK and must
+/// never grow: documenting an entry means deleting it, and class 3 still
+/// reports any entry that has in fact been documented, so a closed gap cannot
+/// linger here and mask a later regression. With the list empty, class 3's
+/// discriminating power is proven by
+/// [`a_known_gap_entry_that_has_since_been_documented_is_reported`], which
+/// drives the check with synthetic data rather than these consts.
+const CONSTRUCTORS_DOCUMENTED_NOWHERE: &[&str] = &[];
 
 /// Is `name` MENTIONED in this markdown — the identifier followed by `(`?
 ///
@@ -1136,6 +1148,225 @@ fn a_name_that_is_only_a_suffix_of_a_documented_one_is_not_counted_as_mentioned(
         reported.iter().any(|v| v.contains("box")),
         "`box` is excluded as documented in geometry.md, but geometry.md only documents \
          `rounded_box(` — the exclusion must not ride on a suffix match. Got: {reported:?}"
+    );
+}
+
+// ── geometry.md → examples/ referential integrity ────────────────────────────
+//
+// Everything above checks what geometry.md says about the COMPILER. This checks
+// what it says about the REPOSITORY: the chunk points designers at runnable
+// `.ri` files, and a pointer that does not resolve — or that resolves to a file
+// not containing what the prose promises — sends a designer looking for a
+// constructor they will never find. Same authoritative-doc-is-wrong failure
+// class as the guards above, one artifact over, and NOTHING else checks it: the
+// chunk is inert prose to `cargo test`, and the examples never mention the
+// chunk, so the two drift apart silently.
+//
+// Deliberately NOT a wording pin (house rule: no doc-content meta-tests). Both
+// assertions read a CLAIM out of the chunk and check it against real files on
+// disk; either side may be reworded freely so long as the claim stays true.
+
+/// Repository root, reached from this test crate's manifest dir. Same
+/// `concat!(env!("CARGO_MANIFEST_DIR"), "/../…")` idiom the chunk-path consts
+/// use to reach a sibling crate, one level further out — not a second
+/// path-discovery mechanism.
+const REPO_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+
+/// The example geometry.md cites as the worked example of ALL FOUR GD&T zone
+/// constructors, and the four names that claim has to cover.
+const GDT_ZONES_EXAMPLE: &str = "examples/tolerancing/gdt_zones.ri";
+const GDT_ZONE_CONSTRUCTORS: &[&str] =
+    &["zone_slab", "zone_cylinder", "zone_annulus", "zone_profile"];
+
+/// Every repo-root-relative `examples/….ri` path cited in `markdown`, deduped,
+/// in source order.
+///
+/// Scans for the `examples/` prefix and consumes the longest following run of
+/// path characters, so a citation ends at the surrounding backtick, quote, comma
+/// or space rather than running on into the prose. A trailing sentence period is
+/// trimmed, and a span that does not end in `.ri` is not a file citation at all
+/// (bare `examples/` used as a directory word contributes nothing).
+///
+/// Anchored on a non-path boundary to the LEFT, for the mirror-image reason
+/// [`chunk_mentions`] is anchored: an `examples/` segment NESTED in a longer path
+/// (`docs/examples/foo.ri`, `crates/reify-eval/tests/examples/bar.ri`) would
+/// otherwise be truncated to `examples/foo.ri` and then reported by the caller as
+/// a file that does not exist — a spurious hard failure, with a misleading fix
+/// instruction, against a chunk edit that was entirely correct. Such a path is
+/// not a repo-root citation, so it contributes nothing.
+///
+/// Loose by design, like [`chunk_mentions`]: it exists only to FIND the pointers
+/// worth checking — the check itself is whether the file is there.
+fn cited_example_paths(markdown: &str) -> Vec<String> {
+    let is_path_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/');
+    let mut out: Vec<String> = Vec::new();
+    for (at, _) in markdown.match_indices("examples/") {
+        if markdown[..at].chars().next_back().is_some_and(is_path_char) {
+            continue;
+        }
+        let span: String = markdown[at..]
+            .chars()
+            .take_while(|c| is_path_char(*c))
+            .collect();
+        let path = span.trim_end_matches('.');
+        if path.ends_with(".ri") && !out.iter().any(|p| p == path) {
+            out.push(path.to_string());
+        }
+    }
+    out
+}
+
+/// `source` with every `//`-to-end-of-line comment removed.
+///
+/// Applied before [`chunk_mentions`] so "this example EXERCISES the constructor"
+/// is checked against the example's CODE, not against a header comment that
+/// merely names it — otherwise the claim could be satisfied by describing a call
+/// instead of making one, which is the laundering-a-gap-into-a-coverage-claim
+/// failure this guard family exists to catch.
+///
+/// Deliberately naive: a `//` inside a string literal is stripped too, and block
+/// comment syntax is not handled. Both errors only REMOVE text, so they can make
+/// this stricter, never laxer — the safe direction for a guard.
+fn strip_line_comments(source: &str) -> String {
+    source
+        .lines()
+        .map(|line| line.split("//").next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// geometry.md's pointers into `examples/` must hold against the real files.
+///
+/// TWO claims, both read out of the chunk rather than pinned as wording:
+///
+/// (a) **Every cited `examples/….ri` path resolves on disk.** A standing ratchet
+///     against path rot — an example renamed or moved leaves the chunk citing a
+///     404, and the chunk is served verbatim to the in-GUI assistant.
+/// (b) **The GD&T section's "worked example of all four" claim is true**: the
+///     cited example really does call each of the four zone constructors. This
+///     is the half that motivated the guard — `zone_slab` had no worked example
+///     anywhere under `examples/` until task #5700 added a cell for it to the
+///     cited file, so the one constructor the prose promised an example for was
+///     the one that had none. This assertion is what keeps it that way.
+#[test]
+fn geometry_chunk_example_citations_hold_against_the_real_examples() {
+    let geometry_md = read_chunk(GEOMETRY_CHUNK_PATH);
+    let cited = cited_example_paths(&geometry_md);
+
+    // Anti-vacuity: a scan finding nothing (citations reworded out of
+    // `examples/…` shape) would make (a) pass without checking anything.
+    assert!(
+        cited.len() >= 3,
+        "anti-vacuity: only {} `examples/….ri` citation(s) found in {GEOMETRY_CHUNK_PATH} — \
+         the citation scan is vacuous and gives NO protection. Got: {cited:?}",
+        cited.len()
+    );
+
+    // (a) — every pointer resolves.
+    let missing: Vec<&String> = cited
+        .iter()
+        .filter(|path| !std::path::Path::new(REPO_ROOT).join(path).is_file())
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "{GEOMETRY_CHUNK_PATH} cites example file(s) that do not exist — FIX: repoint the \
+         citation at the file's new path, or restore the example. Missing: {missing:?}"
+    );
+
+    // (b) — the "worked example of all four" claim, checked against the example.
+    assert!(
+        cited.iter().any(|path| path == GDT_ZONES_EXAMPLE),
+        "{GEOMETRY_CHUNK_PATH} no longer cites {GDT_ZONES_EXAMPLE} — FIX: repoint this guard \
+         at whatever example the GD&T section now cites, so the all-four claim stays checked \
+         against the file it is actually made about. Cited: {cited:?}"
+    );
+
+    let example_path = std::path::Path::new(REPO_ROOT).join(GDT_ZONES_EXAMPLE);
+    let example_src = std::fs::read_to_string(&example_path).unwrap_or_else(|e| {
+        panic!("{GDT_ZONES_EXAMPLE} must be readable ({e}) — it is cited by {GEOMETRY_CHUNK_PATH}")
+    });
+    let code = strip_line_comments(&example_src);
+    let absent: Vec<&str> = GDT_ZONE_CONSTRUCTORS
+        .iter()
+        .copied()
+        .filter(|name| !chunk_mentions(&code, name))
+        .collect();
+    assert!(
+        absent.is_empty(),
+        "{GEOMETRY_CHUNK_PATH} cites {GDT_ZONES_EXAMPLE} as the worked example of all four GD&T \
+         zone constructors, but the example never calls: {}. A designer following that pointer \
+         to learn one of them finds nothing — FIX: add a cell calling the missing constructor(s) \
+         to {GDT_ZONES_EXAMPLE} (preferred: the example is the artifact designers actually run), \
+         or narrow the chunk's claim to the constructors the example does exercise.",
+        absent.join(", ")
+    );
+}
+
+// Discriminating-power controls for the two pure helpers above, in the same
+// synthetic-data posture as the coverage-guard controls earlier in this file:
+// both helpers are the load-bearing part of the guard, and neither is exercised
+// by the real chunk in a way that would notice it going inert.
+
+#[test]
+fn cited_example_paths_trims_a_trailing_sentence_period_and_dedupes() {
+    let markdown = "Worked example: `examples/tolerancing/gdt_zones.ri`.\n\
+                    See also examples/tolerancing/gdt_zones.ri and examples/half_space.ri.\n";
+    assert_eq!(
+        cited_example_paths(markdown),
+        vec![
+            "examples/tolerancing/gdt_zones.ri".to_string(),
+            "examples/half_space.ri".to_string(),
+        ],
+        "citations are deduped, kept in source order, and stripped of the sentence period \
+         that ends the citing sentence"
+    );
+}
+
+#[test]
+fn cited_example_paths_ignores_a_bare_examples_directory_word() {
+    let markdown = "Runnable designs live under examples/, e.g. the tolerancing/ subdir.";
+    assert!(
+        cited_example_paths(markdown).is_empty(),
+        "`examples/` used as a directory word cites no file, so there is nothing to resolve"
+    );
+}
+
+#[test]
+fn cited_example_paths_ignores_an_examples_segment_nested_in_a_longer_path() {
+    let markdown = "See `crates/reify-eval/tests/examples/bar.ri` and `docs/examples/foo.ri`.";
+    assert!(
+        cited_example_paths(markdown).is_empty(),
+        "an `examples/` segment inside a longer path is not a repo-root citation — truncating \
+         it to `examples/bar.ri` would report a file nobody cited as missing. Got: {:?}",
+        cited_example_paths(markdown)
+    );
+}
+
+#[test]
+fn a_constructor_named_only_in_a_comment_does_not_count_as_exercised() {
+    let described = "// zone_slab(face, width) — face offset ±width/2, capped into a slab\n\
+                     let body = box(10mm, 10mm, 10mm)\n";
+    assert!(
+        chunk_mentions(described, "zone_slab"),
+        "control: the RAW source does mention zone_slab, so the assertion below is about \
+         strip_line_comments and not about chunk_mentions"
+    );
+    assert!(
+        !chunk_mentions(&strip_line_comments(described), "zone_slab"),
+        "a header comment DESCRIBING the call must not satisfy the \"this example exercises \
+         the constructor\" claim — describing a call instead of making one is exactly the \
+         laundering this guard family exists to catch"
+    );
+}
+
+#[test]
+fn a_constructor_actually_called_in_code_survives_comment_stripping() {
+    let called = "// this header names no constructor at all\n\
+                  let slab = zone_slab(rectangle(width: 40mm, height: 20mm), 2mm) // ±1mm\n";
+    assert!(
+        chunk_mentions(&strip_line_comments(called), "zone_slab"),
+        "a real call is CODE: stripping comments must leave it standing, including when a \
+         trailing comment follows it on the same line"
     );
 }
 

@@ -7,7 +7,7 @@
 //!   step-7/8: unregistered target fallback diagnostic
 //!   step-9/10: public seam API-surface pin
 
-use reify_core::{Severity, ValueCellId};
+use reify_core::{DiagnosticCode, Severity, ValueCellId};
 use reify_eval::{
     CancellationHandle, ComputeDispatchRegistry, ComputeFn, ComputeOutcome, RealizationReadHandle,
     RealizedContent,
@@ -212,6 +212,73 @@ fn dispatch_compute_node_unregistered_target_returns_error_diagnostic() {
     );
 }
 
+/// Task 5311 — the two assertions the HARD-site contract ADDS, kept as a
+/// separate sibling of
+/// `dispatch_compute_node_unregistered_target_returns_error_diagnostic` above,
+/// which the RULING in `docs/prds/v0_6/check-diagnostic-truthfulness.md` D4
+/// marks UNCHANGED and which is therefore not touched.
+///
+/// HONEST SCOPE — the INPUT is not what is new here. `make_simple_engine()`'s
+/// compute registry is empty in the older test too, so "still `Severity::Error`
+/// on an entirely empty registry" — the input that DOWNGRADES the two SOFT
+/// sites in `engine_eval.rs` — is already pinned there, and stays pinned there.
+/// What this test adds is only what that lock cannot absorb without being
+/// edited: the [`DiagnosticCode`], and the deliberate ABSENCE of the
+/// `(falling back to body-inlining)` clause. The severity is re-asserted on the
+/// code-selected entry, in one line, so "coded AND still Error" is stated
+/// somewhere as a single fact.
+///
+/// If a later sweep ever "tidies up" by applying the empty-registry predicate
+/// uniformly across all four sites, BOTH tests turn red — which is the point of
+/// keeping them adjacent.
+///
+/// Why the predicate is deliberately not applied at the HARD sites, argued on
+/// the merits: `hard_no_trampoline_diagnostic`'s rustdoc in
+/// `crates/reify-eval/src/engine_compute.rs`. Not restated here — it was
+/// previously triplicated across that constructor, this docblock and an
+/// assertion message.
+#[test]
+fn dispatch_compute_node_unregistered_target_is_error_and_coded_even_on_an_empty_registry() {
+    let engine = make_simple_engine();
+    assert!(
+        engine.compute_dispatch("nonexistent::target").is_none(),
+        "precondition: the target must be unregistered",
+    );
+
+    let diags = engine
+        .dispatch_compute_node(
+            "nonexistent::target",
+            &[Value::Int(1)],
+            &[],
+            &Value::Undef,
+            None,
+        )
+        .expect_err("expected Err for unregistered target");
+
+    let diag = diags
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::NoRegisteredComputeTrampoline))
+        .unwrap_or_else(|| {
+            panic!(
+                "the HARD form carries the SAME code as the SOFT form — the code \
+                 names the cause, independently of severity, and downstream \
+                 tooling matches on it rather than on the prose; got: {diags:?}"
+            )
+        });
+    assert_eq!(
+        diag.severity,
+        Severity::Error,
+        "the HARD sites do NOT apply the empty-registry downgrade — see \
+         hard_no_trampoline_diagnostic's rustdoc; got: {diag:?}"
+    );
+    assert!(
+        !diag.message.contains("falling back to body-inlining"),
+        "the fallback clause is deliberately omitted at the HARD sites: \
+         body-inlining is the eval-loop caller's behaviour, not this helper's, \
+         and direct callers do not inline; got: {diag:?}"
+    );
+}
+
 /// Test: dispatch helper propagates Error diagnostics from a Failed trampoline.
 #[test]
 fn dispatch_compute_node_failed_outcome_surfaces_diagnostics() {
@@ -298,11 +365,37 @@ fn e2e_optimized_fn_lowers_to_compute_node_and_evaluates() {
 
 // ── step-7: RED — unregistered @optimized target fallback diagnostic ──────────
 // PRD §7.2: when the engine encounters an @optimized fn call whose target is not
-// registered, it must emit an Error diagnostic naming the target, then fall back
-// to body-inlining so the cell still evaluates correctly (no ComputeNode inserted).
+// registered, it must emit a diagnostic naming the target, then fall back to
+// body-inlining so the cell still evaluates correctly (no ComputeNode inserted).
+// Task 5311 conditioned that diagnostic's SEVERITY at this SOFT site on whether
+// the engine's compute registry is entirely empty (Warning) or not (Error); the
+// pair of tests below covers both arms. The diagnostic's identity is carried by
+// `DiagnosticCode::NoRegisteredComputeTrampoline`, which is the same in both.
 
-/// Test: @optimized fn with unregistered target emits an Error diagnostic naming
-/// the target, body-inlines (cell value == input), and inserts no ComputeNode.
+/// Test: @optimized fn with unregistered target emits a diagnostic naming the
+/// target, body-inlines (cell value == input), and inserts no ComputeNode.
+///
+/// SUPERSEDED at task 5311 on the SEVERITY assertion only — the four
+/// behavioural assertions below are unchanged. This test builds
+/// `make_simple_engine()`, whose compute registry is entirely EMPTY, and evals
+/// through the SOFT emission site
+/// (`engine_eval.rs::evaluate_params_and_lets_unified`). Per the 2026-09-01
+/// RULING in `docs/prds/v0_6/check-diagnostic-truthfulness.md` D4, that site
+/// now conditions severity on `compute_registry.fns.is_empty()`: an empty
+/// registry means "this driver registered no trampolines at all", which is a
+/// posture, not a defect, so the diagnostic is a `Severity::Warning`.
+///
+/// The old `Severity::Error` assertion pinned CURRENT BEHAVIOUR, not a
+/// contract: the row it cited — `docs/prds/v0_3/compute-node-contract.md`:189 —
+/// asks for a NAMED diagnostic and `Freshness::Failed`, and says NOTHING about
+/// severity. What IS contractual is the CAUSE, so this test now also asserts
+/// `DiagnosticCode::NoRegisteredComputeTrampoline`, which is PRESERVED across
+/// the severity flip precisely so downstream tooling can match the cause
+/// independently of severity.
+///
+/// `e2e_unregistered_optimized_target_on_a_nonempty_registry_stays_an_error`
+/// below is this test's mandatory twin: without it, relaxing the severity here
+/// would be a silent weakening rather than a supersession.
 #[test]
 fn e2e_unregistered_optimized_target_emits_diagnostic_and_inlines() {
     // Use compute_identity.ri but register NO trampoline for "test::identity".
@@ -310,29 +403,56 @@ fn e2e_unregistered_optimized_target_emits_diagnostic_and_inlines() {
     let compiled = parse_and_compile_with_stdlib(source);
 
     let mut engine = make_simple_engine();
-    // Deliberately no register_compute_fn — "test::identity" is unregistered.
+    // Deliberately no register_compute_fn — "test::identity" is unregistered,
+    // AND the registry is entirely empty, which is what selects Warning.
     let eval_result = engine.eval(&compiled);
 
-    // (a) Must emit at least one Error diagnostic naming the unknown target.
-    let error_diags: Vec<_> = eval_result
+    // (a) Must emit at least one Warning diagnostic naming the unknown target.
+    let warning_diags: Vec<_> = eval_result
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.severity == Severity::Warning)
         .collect();
     assert!(
-        !error_diags.is_empty(),
-        "expected Error diagnostic for unregistered @optimized target, \
-         got diagnostics: {:?}",
+        !warning_diags.is_empty(),
+        "expected Warning diagnostic for unregistered @optimized target on an \
+         empty compute registry, got diagnostics: {:?}",
         eval_result.diagnostics
     );
-    let target_named = error_diags
+    let target_named = warning_diags
         .iter()
         .any(|d| d.message.contains("test::identity"));
     assert!(
         target_named,
-        "expected at least one Error diagnostic to name \"test::identity\", \
+        "expected at least one Warning diagnostic to name \"test::identity\", \
          got: {:?}",
-        error_diags
+        warning_diags
+    );
+
+    // (a2) The CAUSE is carried by the code, which survives the severity flip.
+    let coded = warning_diags
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::NoRegisteredComputeTrampoline));
+    assert!(
+        coded,
+        "expected the fallback diagnostic to carry \
+         DiagnosticCode::NoRegisteredComputeTrampoline — downstream tooling \
+         matches the code, not the severity or the prose, got: {:?}",
+        warning_diags
+    );
+
+    // (a3) NEGATIVE: no Error-severity diagnostic naming the target may remain.
+    // A `contains`-style assertion alone would pass if BOTH were emitted.
+    let stray_error = eval_result
+        .diagnostics
+        .iter()
+        .find(|d| d.severity == Severity::Error && d.message.contains("test::identity"));
+    assert!(
+        stray_error.is_none(),
+        "an empty compute registry must produce ONLY the Warning form; a \
+         surviving Error naming \"test::identity\" is the loud/silent mismatch \
+         task 5311 closes, got: {:?}",
+        stray_error
     );
 
     // (b) Body inlines: cell value still equals the input (42).
@@ -349,6 +469,99 @@ fn e2e_unregistered_optimized_target_emits_diagnostic_and_inlines() {
     );
 
     // (c) No ComputeNode inserted for the unregistered target.
+    let snapshot = engine
+        .eval_state()
+        .expect("eval_state must be Some after eval()")
+        .snapshot
+        .clone();
+    let rogue_node = snapshot
+        .graph
+        .compute_nodes
+        .iter()
+        .find(|(_, data)| data.target == "test::identity");
+    assert!(
+        rogue_node.is_none(),
+        "expected no ComputeNode for unregistered target, found: {:?}",
+        rogue_node.map(|(id, _)| id)
+    );
+}
+
+/// Task 5311 — the MANDATORY TWIN of
+/// `e2e_unregistered_optimized_target_emits_diagnostic_and_inlines` above.
+///
+/// Same fixture, same four behavioural assertions, one difference: an unrelated
+/// trampoline is registered FIRST, so `compute_registry.fns.is_empty()` is
+/// false while `"test::identity"` itself stays unregistered. That is exactly
+/// the `reify eval` / `reify build` posture — both call
+/// `register_compute_trampolines`, whose production bundle registers 19
+/// targets — and it must keep producing `Severity::Error`, because a driver
+/// that registered SOME trampolines and is still missing THIS one is a genuine
+/// defect rather than a declared posture.
+///
+/// Without this test, the severity relaxation in the sibling above would be
+/// indistinguishable from an unconditional downgrade, and review must reject it
+/// as a silent weakening. The `DiagnosticCode` assertion is identical in both,
+/// which is the point: the code identifies the cause; the severity reports how
+/// much the caller's posture makes it matter.
+#[test]
+fn e2e_unregistered_optimized_target_on_a_nonempty_registry_stays_an_error() {
+    let source = compute_identity_source();
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    // A target that exists nowhere else in the workspace: `register_compute_fn`
+    // panics on a duplicate target, so a fresh name is required here.
+    engine.register_compute_fn("test::registry_nonempty_probe", identity_fn as ComputeFn);
+    // "test::identity" remains UNregistered — only the registry's emptiness changed.
+    let eval_result = engine.eval(&compiled);
+
+    // (a) Error, not Warning, because the registry is non-empty.
+    let error_diags: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !error_diags.is_empty(),
+        "a non-empty compute registry missing THIS target is a defect, not a \
+         posture, so the diagnostic must stay Severity::Error, got: {:?}",
+        eval_result.diagnostics
+    );
+    let target_named = error_diags
+        .iter()
+        .any(|d| d.message.contains("test::identity"));
+    assert!(
+        target_named,
+        "expected at least one Error diagnostic to name \"test::identity\", \
+         got: {:?}",
+        error_diags
+    );
+
+    // (a2) Same code as the Warning form — the cause is severity-independent.
+    let coded = error_diags
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::NoRegisteredComputeTrampoline));
+    assert!(
+        coded,
+        "expected DiagnosticCode::NoRegisteredComputeTrampoline on the Error \
+         form too, got: {:?}",
+        error_diags
+    );
+
+    // (b) Body still inlines — severity does not change the fallback behaviour.
+    let result_cell = ValueCellId::new("IdentityFixture", "result");
+    let result_val = eval_result
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| panic!("cell IdentityFixture.result not found in eval result"));
+    assert_eq!(
+        *result_val,
+        Value::Int(42),
+        "expected IdentityFixture.result == Int(42) (inline fallback), got {:?}",
+        result_val
+    );
+
+    // (c) Still no ComputeNode inserted for the unregistered target.
     let snapshot = engine
         .eval_state()
         .expect("eval_state must be Some after eval()")
@@ -665,4 +878,1376 @@ fn e2e_optimized_non_valueref_arg_yields_empty_value_inputs() {
          got: {:?}",
         data.value_inputs
     );
+}
+
+// ── task #6662: @optimized dispatch at sub-INSTANCE scope ────────────────────
+//
+// Defect: `@optimized` → ComputeNode lowering happens ONLY at template scope
+// (`engine_eval.rs::evaluate_params_and_lets_unified` /
+// `evaluate_let_bindings`, both keyed on `for template in &module.templates`).
+// Instance-scope cells — the ones a `sub` produces, keyed
+// `ValueCellId::new("Parent.sub", member)` — are elaborated in
+// `unfold.rs` through `cell_eval_ctx`, which carries no compute dispatch, so
+// `reify_expr::try_compute_dispatch` returns None and the `.ri` function BODY
+// runs instead. For every solver stdlib target the body is a bare sentinel
+// constructor, so an instantiated sub silently gets an empty shell where the
+// template got the real solved value.
+//
+// The trampoline/body discriminator below is the same trick the zero-arg test
+// above uses: the trampoline returns 777, the `.ri` body returns 42, so the
+// observed value names which path ran.
+
+/// Trampoline returning a fixed sentinel (777) that can never be confused with
+/// the `.ri` body literal (42) — the instance-vs-template discriminator.
+fn const777_fn(
+    _value_inputs: &[Value],
+    _realization_inputs: &[RealizationReadHandle],
+    _options: &Value,
+    _prior_warm_state: Option<&OpaqueState>,
+    _cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    ComputeOutcome::Completed {
+        result: Value::Int(777),
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: vec![],
+        structured_detail: vec![],
+    }
+}
+
+/// RED (#6662 S1): an `@optimized` cell reached through a `sub` instantiation
+/// must carry the template's DISPATCHED value, not the body-inlined fallback.
+///
+/// `Outer` instantiates `Inner` with no constructor overrides, so the instance
+/// cell's inputs are value-identical to the template's and the two scopes must
+/// agree. The template-scope assertion is kept deliberately: it is already
+/// green today, and pinning it keeps the test honest about which scope changed.
+#[test]
+fn instance_scope_optimized_cell_equals_template_dispatched_value() {
+    let source = r#"
+        @optimized("test::const777")
+        fn zero_arg_777() -> Int {
+            42
+        }
+
+        structure Inner {
+            let result = zero_arg_777()
+        }
+
+        structure Outer {
+            sub inner = Inner()
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::const777", const777_fn as ComputeFn);
+
+    let eval_result = engine.eval(&compiled);
+
+    // (a) Template scope — already green; dispatch fires in `module.templates`.
+    let template_cell = ValueCellId::new("Inner", "result");
+    assert_eq!(
+        eval_result.values.get(&template_cell),
+        Some(&Value::Int(777)),
+        "template-scope Inner.result must be the dispatched 777, got {:?}",
+        eval_result.values.get(&template_cell)
+    );
+
+    // (b) Instance scope — the defect. Int(42) here means the `.ri` function
+    //     BODY was inlined instead of the registered trampoline's result.
+    let instance_cell = ValueCellId::new("Outer.inner", "result");
+    let instance_val = eval_result.values.get(&instance_cell);
+    assert_ne!(
+        instance_val,
+        Some(&Value::Int(42)),
+        "Outer.inner.result is the body-inline sentinel Int(42): @optimized \
+         dispatch did not reach instance scope (unfold.rs elaborates instance \
+         cells without compute dispatch, so try_compute_dispatch returned None \
+         and the .ri body ran)"
+    );
+    assert_eq!(
+        instance_val,
+        Some(&Value::Int(777)),
+        "instance-scope Outer.inner.result must equal the template's dispatched \
+         value Int(777) (no ctor overrides ⇒ inputs are value-identical), got {:?}",
+        instance_val
+    );
+}
+
+/// RED (#6662 S3): the fix must reach NESTED instance scope, and phase 1.5's
+/// scratch overlay must agree with what phase 2 commits.
+///
+/// `elaborate_child_instance_nested`'s `Phase15Node::Let` arm computes a
+/// SCRATCH let value into the running `overlay` that nested subs' constructor
+/// args are pre-evaluated against, and its comment pins the invariant "the
+/// scratch value equals the value phase 2 will commit". Fixing only phase 2
+/// BREAKS that invariant for `@optimized` cells: phase 2 would commit 777 while
+/// the overlay still held the body-inline 42 — a new, quieter instance of the
+/// very defect being fixed. `Top.mid.sink.seed` is where a stale scratch value
+/// surfaces and nowhere else.
+#[test]
+fn nested_sub_instance_optimized_cell_and_phase15_scratch_agree() {
+    let source = r#"
+        @optimized("test::const777")
+        fn zero_arg_777() -> Int {
+            42
+        }
+
+        structure Leaf {
+            param seed : Int = 0
+            let result = zero_arg_777()
+        }
+
+        structure Mid {
+            sub leaf = Leaf()
+            let echoed = self.leaf.result
+            sub sink = Leaf(seed: self.leaf.result)
+        }
+
+        structure Top {
+            sub mid = Mid()
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::const777", const777_fn as ComputeFn);
+
+    let eval_result = engine.eval(&compiled);
+
+    // (a) Two-level nesting: reaches phase 1.5's recursion, not just the
+    //     top-level plain-sub loop.
+    let leaf_cell = ValueCellId::new("Top.mid.leaf", "result");
+    assert_eq!(
+        eval_result.values.get(&leaf_cell),
+        Some(&Value::Int(777)),
+        "nested instance Top.mid.leaf.result must be the dispatched 777 \
+         (Int(42) = body-inlined), got {:?}",
+        eval_result.values.get(&leaf_cell)
+    );
+
+    // (b) The middle template's own let reads the nested sub's member through
+    //     the projection BFS.
+    let echoed_cell = ValueCellId::new("Top.mid", "echoed");
+    assert_eq!(
+        eval_result.values.get(&echoed_cell),
+        Some(&Value::Int(777)),
+        "Top.mid.echoed must read the nested sub's dispatched value, got {:?}",
+        eval_result.values.get(&echoed_cell)
+    );
+
+    // (c) PHASE-1.5 PARITY: `sink`'s ctor arg is pre-evaluated against the
+    //     phase-1.5 overlay, so a stale scratch 42 surfaces HERE.
+    let sink_seed_cell = ValueCellId::new("Top.mid.sink", "seed");
+    assert_eq!(
+        eval_result.values.get(&sink_seed_cell),
+        Some(&Value::Int(777)),
+        "Top.mid.sink.seed must be 777: the nested sub's ctor arg is evaluated \
+         against phase 1.5's scratch overlay, so Int(42) here means the overlay \
+         still holds the body-inlined value while phase 2 commits the dispatched \
+         one — the \"scratch value equals the value phase 2 will commit\" \
+         invariant is broken. Got {:?}",
+        eval_result.values.get(&sink_seed_cell)
+    );
+}
+
+/// RED (#6662 S3): phase 1.5's SCRATCH let arm must resolve `@optimized` the
+/// same way phase 2 does.
+///
+/// Discriminating shape: the phase-1.5 `Phase15Node::Let` node must ITSELF be
+/// the `@optimized` call. (In the nested test above the phase-1.5 let is
+/// `self.leaf.result`, a member projection over already-collapsed nested-sub
+/// values — it never reaches the `@optimized` arm, which is why that test went
+/// green on the phase-2 fix alone.)
+///
+/// Here `Mid.computed` IS the call, and `sub sink`'s ctor arg reads it. Phase
+/// 1.5 evaluates the scratch value into the overlay that ctor args are
+/// pre-evaluated against, while phase 2 separately commits the authoritative
+/// cell — so a phase-2-only fix makes the two disagree: `Top.mid.computed` is
+/// 777 but `Top.mid.sink.seed` is the stale body-inlined 42.
+#[test]
+fn phase15_scratch_let_optimized_value_matches_phase2_commit() {
+    let source = r#"
+        @optimized("test::const777")
+        fn zero_arg_777() -> Int {
+            42
+        }
+
+        structure Leaf2 {
+            param seed : Int = 0
+        }
+
+        structure Mid2 {
+            let computed = zero_arg_777()
+            sub sink = Leaf2(seed: computed)
+        }
+
+        structure Top2 {
+            sub mid = Mid2()
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::const777", const777_fn as ComputeFn);
+
+    let eval_result = engine.eval(&compiled);
+
+    // (a) Phase 2's authoritative commit — green since the phase-2 wiring.
+    let computed_cell = ValueCellId::new("Top2.mid", "computed");
+    assert_eq!(
+        eval_result.values.get(&computed_cell),
+        Some(&Value::Int(777)),
+        "Top2.mid.computed must be the dispatched 777, got {:?}",
+        eval_result.values.get(&computed_cell)
+    );
+
+    // (b) PHASE-1.5 PARITY — the genuine RED. `sink`'s ctor arg is
+    //     pre-evaluated against the phase-1.5 overlay, so Int(42) here means
+    //     the overlay holds the body-inlined value while phase 2 commits the
+    //     dispatched one, breaking the arm's own documented invariant that
+    //     "the scratch value equals the value phase 2 will commit".
+    let sink_seed_cell = ValueCellId::new("Top2.mid.sink", "seed");
+    assert_eq!(
+        eval_result.values.get(&sink_seed_cell),
+        Some(&Value::Int(777)),
+        "Top2.mid.sink.seed must equal the phase-2 commit of Top2.mid.computed \
+         (777); Int(42) is phase 1.5's stale body-inlined scratch value. Got {:?}",
+        eval_result.values.get(&sink_seed_cell)
+    );
+}
+
+/// RED (#6662 S3): a param whose DEFAULT is an `@optimized` call must carry the
+/// dispatched value at instance scope too.
+///
+/// `elaborate_child_params_only`'s `default_expr` branch is the third
+/// instance-scope eval site. Only the default arm is in scope: an EXPLICIT ctor
+/// arg is by construction an instance-specific input, and it is evaluated in
+/// the PARENT's scope, so the helper's read comparison would be against the
+/// wrong map there.
+#[test]
+fn instance_scope_optimized_param_default_equals_template_dispatched_value() {
+    let source = r#"
+        @optimized("test::const777")
+        fn zero_arg_777() -> Int {
+            42
+        }
+
+        structure DefaultedParam {
+            param p : Int = zero_arg_777()
+        }
+
+        structure OuterDp {
+            sub dp = DefaultedParam()
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::const777", const777_fn as ComputeFn);
+
+    let eval_result = engine.eval(&compiled);
+
+    // CHARACTERIZATION, measured on this branch: template scope does NOT lower
+    // an `@optimized` call in a PARAM DEFAULT — only let-cells reach the
+    // ComputeNode lowering — so `DefaultedParam.p` is the body-inlined 42, not
+    // 777. That template-scope gap is a separate defect, filed as a follow-up;
+    // closing it here would be a template-scope change, which this task's scope
+    // (instance cells inheriting the template's dispatched value) excludes.
+    //
+    // Pinning the template value explicitly is what keeps the cross-scope
+    // assertion below honest: without it, `instance == template` would pass
+    // trivially in the world where BOTH scopes body-inline. When the
+    // template-scope param gap is closed, THIS assertion turns RED first and
+    // names exactly what changed — and the instance-scope assertion below
+    // should then follow it to 777 in lockstep, with no production change
+    // needed here, because the reuse helper copies whatever the template holds.
+    let template_cell = ValueCellId::new("DefaultedParam", "p");
+    assert_eq!(
+        eval_result.values.get(&template_cell),
+        Some(&Value::Int(42)),
+        "characterization: template-scope DefaultedParam.p is the body-inlined \
+         42 today (param defaults are not lowered to ComputeNodes). If this is \
+         now 777, the template-scope param-default gap has been closed — update \
+         the instance assertion below to match. Got {:?}",
+        eval_result.values.get(&template_cell)
+    );
+
+    // The contract this task owns: whatever the template resolved to, the
+    // uninstantiated-arg instance cell must AGREE with it. Agreement holds in
+    // both worlds — it is the reuse helper's invariant, not a value pin.
+    let instance_cell = ValueCellId::new("OuterDp.dp", "p");
+    assert_eq!(
+        eval_result.values.get(&instance_cell),
+        eval_result.values.get(&template_cell),
+        "instance-scope OuterDp.dp.p must equal template-scope DefaultedParam.p \
+         (no ctor override ⇒ inputs are value-identical); got instance {:?} vs \
+         template {:?}",
+        eval_result.values.get(&instance_cell),
+        eval_result.values.get(&template_cell)
+    );
+}
+
+/// Doubling trampoline — makes the reuse gate's INPUT sensitivity observable:
+/// the dispatched result depends on the argument, so a blanket copy of the
+/// template's value is distinguishable from a correct per-instance answer.
+fn double_fn(
+    value_inputs: &[Value],
+    _realization_inputs: &[RealizationReadHandle],
+    _options: &Value,
+    _prior_warm_state: Option<&OpaqueState>,
+    _cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    let out = match value_inputs.first() {
+        Some(Value::Int(n)) => Value::Int(n * 2),
+        _ => Value::Undef,
+    };
+    ComputeOutcome::Completed {
+        result: out,
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: vec![],
+        structured_detail: vec![],
+    }
+}
+
+/// RED (#6662 S5): the reuse gate must DECLINE when the instance's inputs
+/// differ from the template's, and must say so out loud.
+///
+/// This locks the two ways the reuse helper could be wrong:
+///   - copying the template value even when the instance's inputs differ
+///     (silently WRONG — strictly worse than the bug being fixed);
+///   - declining SILENTLY (today's bug, merely relocated).
+///
+/// `Outer3.a` takes the default (inputs equal ⇒ reuse fires); `Outer3.b`
+/// overrides `x` (inputs differ ⇒ the helper must not copy).
+#[test]
+fn instance_scope_optimized_cell_declines_reuse_when_ctor_args_differ() {
+    let source = r#"
+        @optimized("test::double")
+        fn dbl(x : Int) -> Int {
+            0
+        }
+
+        structure Inner2 {
+            param x : Int = 3
+            let r = dbl(x)
+        }
+
+        structure Outer3 {
+            sub a = Inner2()
+            sub b = Inner2(x: 10)
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::double", double_fn as ComputeFn);
+
+    let eval_result = engine.eval(&compiled);
+
+    // (a) Template scope dispatched: 2 * 3 == 6.
+    let template_cell = ValueCellId::new("Inner2", "r");
+    assert_eq!(
+        eval_result.values.get(&template_cell),
+        Some(&Value::Int(6)),
+        "template-scope Inner2.r must be the dispatched 2*3 == 6, got {:?}",
+        eval_result.values.get(&template_cell)
+    );
+
+    // (b) No ctor override ⇒ inputs equal ⇒ reuse fires.
+    let a_cell = ValueCellId::new("Outer3.a", "r");
+    assert_eq!(
+        eval_result.values.get(&a_cell),
+        Some(&Value::Int(6)),
+        "Outer3.a.r must reuse the template's dispatched 6 (x defaults to 3, so \
+         the instance's inputs are value-identical), got {:?}",
+        eval_result.values.get(&a_cell)
+    );
+
+    // (c) Ctor override ⇒ inputs DIFFER (x = 10 vs 3) ⇒ the helper must NOT
+    //     copy 6. Pin the exact body-inline sentinel (`dbl`'s body is `0`), not
+    //     merely `!= Int(6)`: a weaker assertion would let a future blanket-copy
+    //     regression through as long as it produced something else.
+    let b_cell = ValueCellId::new("Outer3.b", "r");
+    assert_eq!(
+        eval_result.values.get(&b_cell),
+        Some(&Value::Int(0)),
+        "Outer3.b.r must be the body-inline sentinel Int(0): x is overridden to \
+         10, so the template's 6 is NOT this instance's answer and must not be \
+         copied. (The correct per-instance answer, 20, needs genuine \
+         per-instance dispatch — #6592.) Got {:?}",
+        eval_result.values.get(&b_cell)
+    );
+
+    // (d) The decline must be LOUD — exactly one Warning, naming both the
+    //     @optimized target and the scoped cell that declined, and none for the
+    //     instance that reused successfully.
+    let warnings: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .filter(|d| d.message.contains("test::double"))
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected exactly ONE Warning naming \"test::double\" (the declining \
+         cell Outer3.b.r). Phase 1.5's scratch arm and phase 2's committing arm \
+         both see the same cell, so more than one means the diagnostic is \
+         emitted from a non-authoritative site too. Got: {:?}",
+        eval_result.diagnostics
+    );
+    assert!(
+        warnings[0].message.contains("Outer3.b"),
+        "the Warning must name the scoped cell that declined (Outer3.b), got: {:?}",
+        warnings[0]
+    );
+    assert!(
+        !warnings[0].message.contains("Outer3.a"),
+        "Outer3.a reused successfully and must NOT be named in a decline \
+         warning, got: {:?}",
+        warnings[0]
+    );
+}
+
+/// Guard for the `reify check` path (#6662 S5/S6): when NO trampoline is
+/// registered, template scope body-inlines too, so instance and template agree
+/// and the reuse gate fires SILENTLY. `reify check` deliberately registers no
+/// trampolines, so a diagnostic here would fire on every `check` of every
+/// fixture with an `@optimized` call in an instantiated structure.
+///
+/// amend (#6662 reviewer_comprehensive, suggestion #1). The original fixture
+/// pinned only the no-override quadrant, where the gate returns `Reuse` and no
+/// decline is even considered — so it could not see the case that actually
+/// misfired. `InnerV`/`OuterV` below add the missing quadrant: an unregistered
+/// target AND a constructor override, which makes the inputs compare UNEQUAL
+/// and drives the helper to `Unreusable`. MEASURED before the fix, that shape
+/// produced the correct per-instance body-inlined answer `Int(11)` alongside a
+/// warning claiming it was "falling back to body-inlining" — a second,
+/// wrong-in-substance report of a condition template scope had already
+/// diagnosed as `no registered compute trampoline`, on the DEFAULT CLI path.
+#[test]
+fn instance_scope_optimized_unregistered_target_reuses_silently() {
+    let source = r#"
+        @optimized("test::never_registered")
+        fn unregistered_call() -> Int {
+            42
+        }
+
+        structure InnerU {
+            let result = unregistered_call()
+        }
+
+        structure OuterU {
+            sub inner = InnerU()
+        }
+
+        @optimized("test::never_registered_2")
+        fn unregistered_call_arg(x : Int) -> Int {
+            x + 1
+        }
+
+        structure InnerV {
+            param x : Int = 3
+            let result = unregistered_call_arg(x)
+        }
+
+        structure OuterV {
+            sub plain = InnerV()
+            sub overridden = InnerV(x: 10)
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    // NO register_compute_fn — this is the `reify check` shape.
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+
+    // Both scopes body-inline, and they AGREE — which is correct.
+    let template_cell = ValueCellId::new("InnerU", "result");
+    let instance_cell = ValueCellId::new("OuterU.inner", "result");
+    assert_eq!(
+        eval_result.values.get(&template_cell),
+        Some(&Value::Int(42)),
+        "template-scope InnerU.result body-inlines to 42 with no trampoline registered"
+    );
+    assert_eq!(
+        eval_result.values.get(&instance_cell),
+        Some(&Value::Int(42)),
+        "instance-scope OuterU.inner.result must agree with the template's 42"
+    );
+
+    // The reuse gate must NOT add a decline warning here: inputs compare equal
+    // and the template cell exists, so this is `Reuse`, not `Unreusable`. The
+    // unregistered-target diagnostic that template scope already emits is the
+    // one and only report of this condition.
+    let decline_warnings: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .filter(|d| d.message.contains("OuterU.inner"))
+        .collect();
+    assert!(
+        decline_warnings.is_empty(),
+        "an unregistered @optimized target must not produce an instance-scope \
+         decline warning (template and instance agree; `reify check` registers \
+         no trampolines and would otherwise warn on every fixture). Got: {:?}",
+        decline_warnings
+    );
+
+    // ── the missing quadrant: unregistered target AND a ctor override ────────
+    // Values first, so the assertion below is about NOISE and not about a
+    // behaviour change: each instance still body-inlines its own inputs.
+    assert_eq!(
+        eval_result.values.get(&ValueCellId::new("InnerV", "result")),
+        Some(&Value::Int(4)),
+        "template-scope InnerV.result body-inlines to x + 1 == 4 with no trampoline"
+    );
+    assert_eq!(
+        eval_result
+            .values
+            .get(&ValueCellId::new("OuterV.plain", "result")),
+        Some(&Value::Int(4)),
+        "no override ⇒ inputs equal ⇒ OuterV.plain.result reuses the template's 4"
+    );
+    assert_eq!(
+        eval_result
+            .values
+            .get(&ValueCellId::new("OuterV.overridden", "result")),
+        Some(&Value::Int(11)),
+        "override x = 10 ⇒ inputs differ ⇒ OuterV.overridden.result body-inlines \
+         its OWN inputs to 11 — the correct per-instance answer, with nothing \
+         degraded and so nothing to warn about"
+    );
+
+    // The point of the quadrant: ZERO INSTANCE-SCOPE decline warnings anywhere
+    // in this eval. There is no dispatch to fall back FROM, and template scope
+    // owns the unregistered-target report — which on an empty registry is
+    // itself a `Severity::Warning` (the `reify check` posture ruled in
+    // check-diagnostic-truthfulness.md D4) opening with the same
+    // `@optimized target` stem, so severity + prose alone cannot tell the two
+    // apart. `DiagnosticCode` can: template scope's report is coded
+    // `NoRegisteredComputeTrampoline`, an instance-scope decline is a bare
+    // `Diagnostic::warning` and carries no code. Excluding the code keeps this
+    // assertion about instance-scope noise, which is what it is named for.
+    let all_declines: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .filter(|d| d.message.contains("@optimized target"))
+        .filter(|d| d.code != Some(DiagnosticCode::NoRegisteredComputeTrampoline))
+        .collect();
+    assert!(
+        all_declines.is_empty(),
+        "a constructor override on an UNREGISTERED @optimized target must stay \
+         silent: `reify check` registers no trampolines, so this would warn on \
+         every model that instantiates an @optimized-bearing structure with an \
+         override, while claiming a fallback that never happened. Got: {:?}",
+        all_declines
+    );
+}
+
+/// amend (#6662 reviewer_comprehensive, suggestion #2 — diagnostic-noise).
+///
+/// The decline is a fact about `(target, template, member)` — ONE authoring
+/// fact — but the site that reports it runs once per INSTANCE. MEASURED before
+/// the fix: three subs of `InnerM` with three distinct overrides produced three
+/// near-identical warnings, and a collection sub routes every element through
+/// the same `elaborate_child_lets_only`, so the count scales with element
+/// count. The pre-existing decline test pins `warnings.len() == 1` on a fixture
+/// with exactly ONE declining instance, so it could not see the multiplicity.
+///
+/// This fixture carries three declining sibling instances AND a four-element
+/// collection of the same template, and asserts the warning count stays at one.
+#[test]
+fn instance_scope_optimized_decline_warning_does_not_scale_with_instance_count() {
+    let source = r#"
+        @optimized("test::double_multi")
+        fn dbl_multi(x : Int) -> Int {
+            0
+        }
+
+        structure InnerM {
+            param x : Int = 3
+            let r = dbl_multi(x)
+        }
+
+        structure OuterM {
+            sub a = InnerM(x: 10)
+            sub b = InnerM(x: 11)
+            sub c = InnerM(x: 12)
+            sub bolts : List<InnerM>
+            constraint bolts.count == 4
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::double_multi", double_fn as ComputeFn);
+
+    let eval_result = engine.eval(&compiled);
+
+    // Values are unchanged by the dedupe: each overriding instance still
+    // body-inlines its own sentinel, and each collection element (no ctor args,
+    // so inputs equal) still reuses the template's dispatched 2*3 == 6.
+    assert_eq!(
+        eval_result.values.get(&ValueCellId::new("InnerM", "r")),
+        Some(&Value::Int(6)),
+        "template-scope InnerM.r must be the dispatched 2*3 == 6"
+    );
+    for sub in ["a", "b", "c"] {
+        assert_eq!(
+            eval_result
+                .values
+                .get(&ValueCellId::new(format!("OuterM.{sub}"), "r")),
+            Some(&Value::Int(0)),
+            "OuterM.{sub}.r overrides x, so it must body-inline to the sentinel 0"
+        );
+    }
+    for i in 0..4 {
+        assert_eq!(
+            eval_result
+                .values
+                .get(&ValueCellId::new(format!("OuterM.bolts[{i}]"), "r")),
+            Some(&Value::Int(6)),
+            "collection element OuterM.bolts[{i}].r takes the default x, so its \
+             inputs are value-identical to the template's and it must reuse 6"
+        );
+    }
+
+    // The dedupe itself: three declining siblings, one warning.
+    let warnings: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .filter(|d| d.message.contains("test::double_multi"))
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "the decline names one authoring fact (InnerM.r under \
+         \"test::double_multi\"), so it must be reported ONCE however many \
+         instances hit it — three overriding siblings plus a four-element \
+         collection here. Got {} warnings: {:?}",
+        warnings.len(),
+        warnings
+    );
+    // The surviving warning must still be actionable: it names the template
+    // cell that is the fact, and one concrete instance as the witness.
+    assert!(
+        warnings[0].message.contains("InnerM.r"),
+        "the deduped warning must name the template cell the fact belongs to \
+         (InnerM.r), got: {:?}",
+        warnings[0]
+    );
+    assert!(
+        ["OuterM.a", "OuterM.b", "OuterM.c"]
+            .iter()
+            .any(|e| warnings[0].message.contains(e)),
+        "the deduped warning must still name one concrete declining instance as \
+         a witness, got: {:?}",
+        warnings[0]
+    );
+}
+
+/// amend (#6662 review round 3): the per-template-cell dedupe must not swallow
+/// a SIBLING cell's decline through a prefix collision.
+///
+/// `report_optimized_instance_decline`'s dedupe key is an UNDELIMITED prefix of
+/// the emitted message — `format!("@optimized target {:?} on {}.{}", target,
+/// template, member)` — scanned with `starts_with`. The target is delimited by
+/// `{:?}`'s closing quote and the template name by the following `.`, so only
+/// the trailing `{member}` is open-ended: when two members of ONE child
+/// template share ONE `@optimized` target and the shorter member name is a
+/// proper prefix of the longer (`r`/`r2`, `k`/`k2`, `defl`/`deflection`), the
+/// longer member's already-emitted warning matches the shorter member's key and
+/// the shorter cell's decline is SILENTLY DROPPED — defeating the LOUD contract
+/// for exactly the cells the report exists to surface.
+///
+/// No existing test can see this: every decline fixture in the corpus uses a
+/// single member name (`r`, `result`, `p`, `computed`), including the
+/// instance-count dedupe test above, which pins only the intended per-instance
+/// dedupe.
+///
+/// ORDER IS LOAD-BEARING. `starts_with` is asymmetric, so `r2`'s key does NOT
+/// match `r`'s message; a fixture emitting `r` first would report both and go
+/// green against the live bug. The cells are chained (`r = dblpc(r2)`) so
+/// topological order forces the LONGER member `r2` to be emitted FIRST.
+///
+/// MEASURED before the fix: `TPL r2=Some(Int(6)) r=Some(Int(12))`,
+/// `INST r2=Some(Int(0)) r=Some(Int(0))` — two genuinely degraded instance
+/// cells — but only ONE warning, naming `InnerPC.r2`.
+#[test]
+fn instance_scope_optimized_decline_dedupe_is_per_cell_not_per_prefix() {
+    let source = r#"
+        @optimized("test::dblpc")
+        fn dblpc(x : Int) -> Int {
+            0
+        }
+
+        structure InnerPC {
+            param x : Int = 3
+            let r2 = dblpc(x)
+            let r = dblpc(r2)
+        }
+
+        structure OuterPC {
+            sub a = InnerPC(x: 10)
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    // Reuse `double_fn` under a fixture-private target name: its
+    // input-sensitivity is exactly the discriminator needed here, and the
+    // distinct target keeps this fixture's warning count independent of every
+    // other test's.
+    engine.register_compute_fn("test::dblpc", double_fn as ComputeFn);
+
+    let eval_result = engine.eval(&compiled);
+
+    // (1) Value pins — BOTH instance cells genuinely declined and genuinely
+    //     degraded, so the test cannot go green by the declines never
+    //     happening.
+    assert_eq!(
+        eval_result.values.get(&ValueCellId::new("InnerPC", "r2")),
+        Some(&Value::Int(6)),
+        "template-scope InnerPC.r2 must be the dispatched 2*3 == 6"
+    );
+    assert_eq!(
+        eval_result.values.get(&ValueCellId::new("InnerPC", "r")),
+        Some(&Value::Int(12)),
+        "template-scope InnerPC.r must be the dispatched 2*6 == 12"
+    );
+    assert_eq!(
+        eval_result.values.get(&ValueCellId::new("OuterPC.a", "r2")),
+        Some(&Value::Int(0)),
+        "OuterPC.a.r2 overrides x (10 vs 3), so it declines and body-inlines \
+         dblpc's sentinel 0"
+    );
+    assert_eq!(
+        eval_result.values.get(&ValueCellId::new("OuterPC.a", "r")),
+        Some(&Value::Int(0)),
+        "OuterPC.a.r reads the degraded r2 (0 vs the template's 6), so it is a \
+         SECOND, independently declining cell — not a knock-on of the first"
+    );
+
+    // (2) THE RED: two distinct template cells declined, so two warnings.
+    let warnings: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .filter(|d| d.message.contains("test::dblpc"))
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        2,
+        "InnerPC.r2 and InnerPC.r are two distinct authoring facts and must each \
+         be reported. An undelimited dedupe key makes InnerPC.r's key a proper \
+         prefix of InnerPC.r2's already-emitted message, silently dropping the \
+         InnerPC.r decline. Got {} warning(s): {:?}",
+        warnings.len(),
+        warnings
+    );
+
+    // (3) The two warnings name DIFFERENT cells. Assert on the delimited forms:
+    //     a bare `contains("InnerPC.r")` is also satisfied by InnerPC.r2's
+    //     message, which would let a one-warning result pass this assertion.
+    assert_eq!(
+        warnings
+            .iter()
+            .filter(|d| d.message.contains("InnerPC.r2:"))
+            .count(),
+        1,
+        "exactly one warning must name the template cell InnerPC.r2, got: {:?}",
+        warnings
+    );
+    assert_eq!(
+        warnings
+            .iter()
+            .filter(|d| d.message.contains("InnerPC.r:"))
+            .count(),
+        1,
+        "exactly one warning must name the template cell InnerPC.r — this is \
+         the decline the undelimited prefix key swallows, got: {:?}",
+        warnings
+    );
+}
+
+/// amend (#6662 reviewer_comprehensive, suggestion #5 — design-coherence).
+///
+/// `elaborate_child_params_only`'s `default_expr` arm consumed `Unreusable`
+/// without emitting anything, and the lets site's justification for silence
+/// ("phase 2 is authoritative and sees the same cell") does NOT cover a param:
+/// `elaborate_child_lets_only` filters on `ValueCellKind::Let`, so a Param cell
+/// is never seen there. The site now reports its own declines through the same
+/// helper — and this test pins that today's observable behaviour is still
+/// SILENT, for a reason that is structural rather than an omission: template
+/// scope lowers only LET cells to ComputeNodes, so the registered-target gate is
+/// false for every param default and both scopes body-inline in agreement.
+///
+/// When the template-scope param-default gap (#6750) closes, the gate flips and
+/// this test turns RED at the warning assertion — which is the intended signal,
+/// not a regression: update it to assert the decline IS reported.
+#[test]
+fn instance_scope_optimized_param_default_decline_is_silent_while_template_scope_body_inlines() {
+    let source = r#"
+        @optimized("test::double_pd")
+        fn dbl_pd(x : Int) -> Int {
+            0
+        }
+
+        structure InnerPD {
+            param seed : Int = 3
+            param p : Int = dbl_pd(seed)
+        }
+
+        structure OuterPD {
+            sub a = InnerPD()
+            sub b = InnerPD(seed: 10)
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::double_pd", double_fn as ComputeFn);
+
+    let eval_result = engine.eval(&compiled);
+
+    // CHARACTERIZATION (the #6750 premise): template scope body-inlines a param
+    // default even with a registered trampoline, so `InnerPD.p` is the sentinel
+    // 0 rather than the dispatched 2*3 == 6.
+    assert_eq!(
+        eval_result.values.get(&ValueCellId::new("InnerPD", "p")),
+        Some(&Value::Int(0)),
+        "characterization: template scope does not lower an @optimized PARAM \
+         DEFAULT to a ComputeNode (#6750), so InnerPD.p is the body-inline \
+         sentinel 0. If this is now 6 that gap has closed — see this test's doc."
+    );
+
+    // Both instances agree with whatever the template holds: `a` by reuse
+    // (inputs equal), `b` by body-inlining its own inputs to the same sentinel.
+    for sub in ["a", "b"] {
+        assert_eq!(
+            eval_result
+                .values
+                .get(&ValueCellId::new(format!("OuterPD.{sub}"), "p")),
+            Some(&Value::Int(0)),
+            "OuterPD.{sub}.p must agree with the template's body-inlined 0"
+        );
+    }
+
+    // The behaviour this test owns: nothing is reported, because nothing is
+    // degraded — there is no dispatched template value for the instance to be
+    // missing out on.
+    let declines: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .filter(|d| d.message.contains("test::double_pd"))
+        .collect();
+    assert!(
+        declines.is_empty(),
+        "an @optimized param default whose template-scope cell was itself \
+         body-inlined must not report a decline: both scopes agree and no \
+         dispatched value was lost. Got: {:?}",
+        declines
+    );
+}
+
+/// The #6750 contingency, made executable — and a MEASURED correction to what
+/// it was contingent on (amend round 5, suggestion #5).
+///
+/// `elaborate_child_params_only` walks `child_template.value_cells` in
+/// DECLARATION order, and the reuse gate compares `child_values.get(read)`
+/// against the global map — so an `@optimized` param default reading a SIBLING
+/// param declared AFTER it compares `None` against `Some(v)` and declines for a
+/// purely positional reason, not because anything is instance-specific.
+///
+/// The decline itself is still free: the registered-target gate is
+/// unconditionally false for param defaults (template scope lowers only LET
+/// cells to ComputeNodes), so nothing is reported. That is the contingency this
+/// test pins — when #6750 closes the template-scope gap the gate flips to true
+/// and the warning assertion below REDS, which is when the param loop must be
+/// ordered by dependency (reusing `phase15_node_traces` + `topological_sort`,
+/// as phase 2 already does) rather than when a user first sees a warning about
+/// a cell nothing is wrong with.
+///
+/// The OTHER half of what the code claimed is false, and this test is what
+/// measured it. `unfold.rs` asserted the value was unaffected because "the
+/// fallback `eval_child_expr` resolves the missing read from `snapshot.values`
+/// anyway". It does not: the instance cell comes out `Undef` while the template
+/// cell holds `Int(0)`. The `q` control below — a PLAIN, non-`@optimized`
+/// forward-referencing default, which never touches the reuse gate — degrades
+/// identically, so this is a pre-existing declaration-order gap in
+/// `elaborate_child_params_only`, not something #6662 introduced or can reach.
+/// Filed as ticket `tkt_0RTGVFCMK9K695TCM0WK00FCP9`; characterized here so the
+/// follow-up's premise is pinned and the wrong claim cannot be restated.
+#[test]
+fn instance_scope_optimized_param_default_reading_a_later_sibling_is_silent() {
+    // `p` and `q` both read `seed`, which is declared AFTER them — the ordering
+    // the decline is contingent on. `parse_and_compile_with_stdlib` asserts a
+    // clean compile, so this also pins that the shape is expressible at all.
+    let source = r#"
+        @optimized("test::double_fwd")
+        fn dbl_fwd(x : Int) -> Int {
+            0
+        }
+
+        fn plain_fwd(x : Int) -> Int {
+            0
+        }
+
+        structure InnerFwd {
+            param p : Int = dbl_fwd(seed)
+            param q : Int = plain_fwd(seed)
+            param seed : Int = 3
+        }
+
+        structure OuterFwd {
+            sub a = InnerFwd()
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    // A REGISTERED trampoline, so the registered-target gate is the only thing
+    // keeping this quiet — an unregistered target would make the test vacuous.
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::double_fwd", double_fn as ComputeFn);
+
+    let eval_result = engine.eval(&compiled);
+
+    // TEMPLATE scope resolves the forward read: both defaults evaluate their
+    // body to the sentinel 0 rather than degrading.
+    for member in ["p", "q"] {
+        assert_eq!(
+            eval_result.values.get(&ValueCellId::new("InnerFwd", member)),
+            Some(&Value::Int(0)),
+            "template scope evaluates a forward-referencing param default \
+             (InnerFwd.{member}); if this is 777 the @optimized param-default \
+             gap #6750 has closed — see this test's doc"
+        );
+    }
+
+    // INSTANCE scope does not — and the plain `q` control is what makes this a
+    // characterization of declaration order rather than of the reuse gate. `q`
+    // is a call to a non-`@optimized` fn, so `resolve_optimized_instance_cell`
+    // returns `NotOptimized` for it and never runs the read comparison; it
+    // degrades anyway. Whatever fixes one fixes both.
+    for member in ["p", "q"] {
+        assert_eq!(
+            eval_result.values.get(&ValueCellId::new("OuterFwd.a", member)),
+            Some(&Value::Undef),
+            "CHARACTERIZATION, measured by this test: `elaborate_child_params_only` \
+             visits params in DECLARATION order, so OuterFwd.a.{member}'s default \
+             evaluates against a `seed` that is not in `child_values` yet and \
+             degrades to Undef — the fallback does NOT recover it from the \
+             snapshot. If this now equals the template's Int(0), the \
+             declaration-order gap has been closed and this arm should become an \
+             equality against the template cell"
+        );
+    }
+
+    // THE TRIPWIRE. `OuterFwd.a` carries no ctor override at all, so a decline
+    // warning here would name declaration order, not an instance-specific
+    // input — spurious by construction. It stays absent only while the
+    // registered-target gate is false for param defaults.
+    let declines: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .filter(|d| d.message.contains("test::double_fwd"))
+        .filter(|d| d.code != Some(DiagnosticCode::NoRegisteredComputeTrampoline))
+        .collect();
+    assert!(
+        declines.is_empty(),
+        "a forward-referencing @optimized param default must not report a \
+         decline: the instance has no ctor override, so the only thing that \
+         differs is the order this loop happens to visit sibling params in. If \
+         this is now non-empty, #6750 has closed the template-scope gap and \
+         `elaborate_child_params_only` must be reordered by dependency. Got: {:?}",
+        declines
+    );
+}
+
+/// amend (#6662 reviewer_comprehensive, suggestion #7 — the two instance maps).
+///
+/// The reuse gate runs against phase 1.5's `overlay` and phase 2's
+/// `child_values`, and those maps are built differently: the overlay projects
+/// ONE level of nested-sub members, phase 2's BFS projects the whole subtree. A
+/// read key one map carries and the other does not would compare `Some(v)` vs
+/// `None` and flip the gate, letting the two sites reach OPPOSITE decisions for
+/// one cell — phase 1.5 body-inlining a sentinel into the overlay that a nested
+/// sub's ctor arg then consumes, while phase 2 commits the reused value.
+///
+/// This pins the deepest read that can actually reach the gate: ONE hop across
+/// a sub (`self.leaf.ix`), relayed by a let in the nested template. Its sibling
+/// `two_level_cross_sub_read_is_rejected_by_the_compiler` pins why there is no
+/// deeper case to test.
+#[test]
+fn phase15_phase2_parity_deepest_expressible_cross_sub_read() {
+    let source = r#"
+        @optimized("test::double_deep")
+        fn dbl_deep(x : Int) -> Int {
+            0
+        }
+
+        structure Inner3 {
+            param x : Int = 5
+        }
+
+        structure Leaf3 {
+            sub inner = Inner3()
+            let ix = self.inner.x
+        }
+
+        structure Sink3 {
+            param seed : Int = 0
+        }
+
+        structure Mid3 {
+            sub leaf = Leaf3()
+            let computed = dbl_deep(self.leaf.ix)
+            sub sink = Sink3(seed: computed)
+        }
+
+        structure Top3 {
+            sub mid = Mid3()
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::double_deep", double_fn as ComputeFn);
+
+    let eval_result = engine.eval(&compiled);
+
+    // Phase 2's committed value at nested instance scope.
+    let computed = eval_result
+        .values
+        .get(&ValueCellId::new("Top3.mid", "computed"))
+        .cloned();
+    assert_eq!(
+        computed,
+        Some(Value::Int(10)),
+        "Top3.mid.computed must be the template's dispatched 2*5 == 10 (no ctor \
+         overrides ⇒ inputs value-identical), got {computed:?}"
+    );
+
+    // Phase 1.5's SCRATCH value for the same cell, observed where it is the only
+    // thing observable: `sub sink = Sink3(seed: computed)` pre-evaluates its
+    // ctor arg against the overlay. A divergent scratch value shows up here as
+    // the body-inline sentinel 0 while `computed` above reads 10.
+    let seed = eval_result
+        .values
+        .get(&ValueCellId::new("Top3.mid.sink", "seed"))
+        .cloned();
+    assert_eq!(
+        seed, computed,
+        "phase 1.5's scratch value for Mid3.computed must equal what phase 2 \
+         commits: `sub sink` pre-evaluates `seed: computed` against the overlay, \
+         so a divergent gate decision surfaces as Top3.mid.sink.seed = {seed:?} \
+         against Top3.mid.computed = {computed:?}"
+    );
+
+    // No decline anywhere: the one-hop read resolves in BOTH maps.
+    let declines: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .filter(|d| d.message.contains("test::double_deep"))
+        .collect();
+    assert!(
+        declines.is_empty(),
+        "a one-hop cross-sub read is carried by both the phase-1.5 overlay and \
+         phase 2's BFS map, so neither site may decline. Got: {:?}",
+        declines
+    );
+}
+
+/// amend (#6662 reviewer_comprehensive round 2, suggestion #1 — robustness).
+///
+/// The `Unreusable`/no-template-value branch used to hard-code ONE explanation:
+/// "structure not in module.templates — e.g. a prelude/stdlib structure". That
+/// branch is ALSO reached when template-scope dispatch RAN and FAILED —
+/// `e2e_registered_failed_trampoline_does_not_silently_body_inline` pins that
+/// the Failed handler does not write to `values`, so the template cell is
+/// ABSENT — and in that case `template_cell_was_dispatched` is TRUE (the
+/// `ComputeNode` exists, because lowering only inserts one inside the registered
+/// arm), so the decline reporter's registered-target gate PASSES and the
+/// misattributing text gets printed, on top of the trampoline's own Error for
+/// the same cell.
+///
+/// Sharpened while fixing it: the prelude reading is not merely one of two
+/// possible causes here, it is the one cause that can NEVER be the explanation
+/// for a message that actually reaches the user. A structure with no
+/// template-scope pass gets no `ComputeNode` either, so the registered-target
+/// gate suppresses it first. Hence the fix is structural — `DeclineCause`
+/// carries which condition fired, and the reporter emits only `InputsDiffer`.
+///
+/// This fixture is the registered-but-Failed shape INSIDE an instantiated
+/// `sub`, i.e. the exact quadrant that misfired.
+#[test]
+fn instance_scope_failed_trampoline_declines_without_the_prelude_wording() {
+    let source = r#"
+        @optimized("test::failing_in_sub")
+        fn failing_in_sub(x : Int) -> Int {
+            x
+        }
+
+        structure FailingInner {
+            param input : Int = 42
+            let result = failing_in_sub(input)
+        }
+
+        structure FailingOuter {
+            sub inner = FailingInner()
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::failing_in_sub", failing_fn as ComputeFn);
+
+    let eval_result = engine.eval(&compiled);
+
+    // ── premises: this fixture really is in the branch under test ───────────
+    // (p1) Template scope DISPATCHED and the dispatch FAILED, so the template
+    //      output cell holds no value — the `NoTemplateValue` condition.
+    let template_cell = ValueCellId::new("FailingInner", "result");
+    assert_eq!(
+        eval_result.values.get(&template_cell),
+        None,
+        "premise: the Failed handler does not write to `values`, so the \
+         template-scope cell must be ABSENT (that absence is what drives the \
+         instance-scope gate into the no-template-value branch). Got {:?}",
+        eval_result.values.get(&template_cell)
+    );
+
+    // (p2) A ComputeNode NAMES that cell — so `template_cell_was_dispatched` is
+    //      TRUE and the registered-target gate does NOT suppress. Without this,
+    //      the test would pass vacuously.
+    let snapshot = engine
+        .eval_state()
+        .expect("eval_state must be Some after eval()")
+        .snapshot
+        .clone();
+    let dispatched = snapshot
+        .graph
+        .compute_nodes
+        .values()
+        .any(|n| n.output_value_cells.contains(&template_cell));
+    assert!(
+        dispatched,
+        "premise: lowering inserts a ComputeNode only inside the registered arm, \
+         so a registered-but-Failed target must still leave one naming \
+         FailingInner.result — that is what makes the registered-target gate \
+         PASS and the decline text reachable. compute_nodes: {:?}",
+        snapshot.graph.compute_nodes
+    );
+
+    // (p3) The trampoline's own Error is present: template scope already owns
+    //      the report of this condition.
+    assert!(
+        eval_result
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error && d.message.contains("test trampoline failed")),
+        "premise: the failing trampoline's Error must be surfaced. Got: {:?}",
+        eval_result.diagnostics
+    );
+
+    // ── the regression guard ────────────────────────────────────────────────
+    // (a) NOTHING anywhere may attribute this failed solve to a prelude/stdlib
+    //     structure. This is the assertion the reviewer asked for, and it reds
+    //     on the pre-fix code.
+    let misattributed: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.message.contains("prelude/stdlib structure")
+                || d.message.contains("was never evaluated")
+        })
+        .collect();
+    assert!(
+        misattributed.is_empty(),
+        "a registered-but-FAILED template-scope dispatch must never be reported \
+         at instance scope as a structure that got no template-scope pass — the \
+         prelude/stdlib wording is the one explanation that is provably not the \
+         cause whenever the registered-target gate lets a message through. Got: \
+         {misattributed:?}"
+    );
+
+    // (b) And in fact no instance-scope decline at all: template scope already
+    //     emitted the authoritative Error for this cell, so a second report
+    //     would be the same class of misleading duplicate the registered-target
+    //     gate was added to eliminate.
+    let declines: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .filter(|d| d.message.contains("test::failing_in_sub"))
+        .collect();
+    assert!(
+        declines.is_empty(),
+        "a failed template-scope dispatch must not also produce an \
+         instance-scope decline warning: the value is body-inlined either way \
+         and the trampoline's Error is the one true report. Got: {declines:?}"
+    );
+
+    // (c) Values are untouched by this amendment: the instance still
+    //     body-inlines (`failing_in_sub`'s body is `x`), exactly as before.
+    assert_eq!(
+        eval_result
+            .values
+            .get(&ValueCellId::new("FailingOuter.inner", "result")),
+        Some(&Value::Int(42)),
+        "the amendment removes a misleading DIAGNOSTIC, never a value: the \
+         instance cell must still body-inline to its own input, 42. Got {:?}",
+        eval_result
+            .values
+            .get(&ValueCellId::new("FailingOuter.inner", "result"))
+    );
+}
+
+/// amend (#6662 reviewer_comprehensive, suggestion #7 — the bound on the above).
+///
+/// The divergence the parity test is defending against would need a read whose
+/// key reaches TWO levels down (`Mid3.leaf.inner.x`) — projected by phase 2's
+/// BFS, not by phase 1.5's single-level loop. MEASURED: that read is not
+/// expressible. The compiler rejects `self.leaf.inner.x` outright, so no
+/// compiled `CompiledExpr` can carry such a key into the gate's read set, and
+/// the two maps agree on every key the gate can actually query.
+///
+/// This is the load-bearing half of `resolve_optimized_instance_cell`'s "Why the
+/// two instance maps reach the SAME decision" note. If the language ever gains
+/// the flat two-level form, THIS test reds first and that note must be revisited
+/// — the parity test above would still pass while silently losing its bound.
+#[test]
+fn two_level_cross_sub_read_is_rejected_by_the_compiler() {
+    let source = r#"
+        @optimized("test::double_deep")
+        fn dbl_deep2(x : Int) -> Int {
+            0
+        }
+
+        structure Inner4 {
+            param x : Int = 5
+        }
+
+        structure Leaf4 {
+            sub inner = Inner4()
+        }
+
+        structure Mid4 {
+            sub leaf = Leaf4()
+            let computed = dbl_deep2(self.leaf.inner.x)
+        }
+
+        structure Leaf4Ok {
+            param ix : Int = 5
+        }
+
+        structure Mid4Ok {
+            sub leaf = Leaf4Ok()
+            let computed = dbl_deep2(self.leaf.ix)
+        }
+    "#;
+    let compiled = reify_test_support::compile_source_with_stdlib(source);
+    let errors = reify_test_support::collect_errors(&compiled.diagnostics);
+
+    // (a) THE LOAD-BEARING ASSERTION — structural, not prose. What the parity
+    //     argument actually needs is that no compiled expression in `Mid4` can
+    //     carry a read whose KEY reaches two levels down (`Mid4.leaf.inner` +
+    //     member `x`); such a key is projected by phase 2's BFS and not by
+    //     phase 1.5's single-level loop, which is the only way the two instance
+    //     maps could disagree on a key the reuse gate queries.
+    //
+    //     amend (#6662 reviewer_comprehensive round 2, suggestion #6). This used
+    //     to assert on the exact diagnostic prose `unknown member 'inner' on sub
+    //     'leaf'`, so a purely cosmetic rewording of that message redded a
+    //     load-bearing test, while a change that kept the wording but started
+    //     ACCEPTING the two-level form elsewhere would have slipped past.
+    //     Asserting on the compiled read set inverts both failure modes. (A
+    //     `DiagnosticCode` would be the other structured option, but that
+    //     emission site in `reify-compiler/src/expr.rs` is still a legacy
+    //     `code: None` producer and is outside this task's lock set.)
+    let mid4 = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Mid4")
+        .expect("Mid4 template must exist even when its let poisons");
+    let deep_reads: Vec<reify_core::ValueCellId> = mid4
+        .value_cells
+        .iter()
+        .filter_map(|c| c.default_expr.as_ref())
+        .chain(
+            mid4.sub_components
+                .iter()
+                .flat_map(|sc| sc.args.iter().map(|(_, e)| e)),
+        )
+        .flat_map(|e| reify_eval::deps::extract_dependency_trace(e).reads)
+        // `Mid4.leaf` is ONE hop (one dot) and is carried by BOTH maps; the
+        // shape under test is `Mid4.leaf.inner` — two hops, two dots.
+        .filter(|r| r.entity.matches('.').count() >= 2)
+        .collect();
+    assert!(
+        deep_reads.is_empty(),
+        "a TWO-level cross-sub read must not survive compilation into any \
+         Mid4 expression: `resolve_optimized_instance_cell`'s phase-1.5 / \
+         phase-2 map-parity argument holds only because the deepest expressible \
+         cross-sub read is ONE hop, which both instance maps carry. Got deep \
+         reads: {deep_reads:?}. (Informationally, today the compiler rejects the \
+         form outright: {errors:?})"
+    );
+
+    // (b) NON-VACUITY. The compiler poisons the rejected read to a literal, so
+    //     `Mid4` legitimately carries ZERO reads — meaning (a) alone could pass
+    //     for the wrong reason if the scan were walking nothing. `Mid4Ok` is the
+    //     same shape one hop shallower (`self.leaf.ix`, the DEEPEST expressible
+    //     cross-sub read), compiled in the same module: the identical scan must
+    //     find it, keyed at exactly ONE dot. That is both the proof the scan
+    //     sees reads at all and the positive statement of the parity bound.
+    let ok_reads: Vec<reify_core::ValueCellId> = mid4_ok_reads(&compiled);
+    assert!(
+        ok_reads
+            .iter()
+            .any(|r| r.entity == "Mid4Ok.leaf" && r.member == "ix"),
+        "non-vacuity: the same scan must FIND the one-hop cross-sub read \
+         `Mid4Ok.leaf.ix` — otherwise (a)'s emptiness proves nothing about the \
+         two-level shape. Got: {ok_reads:?}"
+    );
+    assert!(
+        ok_reads.iter().all(|r| r.entity.matches('.').count() <= 1),
+        "the deepest expressible cross-sub read is ONE hop; a deeper key here \
+         would break the same parity bound (a) defends. Got: {ok_reads:?}"
+    );
+
+    // (c) Corroborating, and deliberately prose-free: the module does NOT
+    //     compile clean. If a future compiler starts accepting `self.leaf.inner.x`
+    //     this reds alongside (a); if it merely rewords its rejection, neither
+    //     assertion moves.
+    assert!(
+        !errors.is_empty(),
+        "the two-level cross-sub read must remain a COMPILE error; a silent \
+         acceptance would put a two-level key in reach of the reuse gate"
+    );
+}
+
+/// Every value-cell read compiled into `Mid4Ok` — the control arm of
+/// `two_level_cross_sub_read_is_rejected_by_the_compiler`'s structural
+/// assertion (amend #6662 round 2, suggestion #6).
+fn mid4_ok_reads(compiled: &reify_compiler::CompiledModule) -> Vec<reify_core::ValueCellId> {
+    compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Mid4Ok")
+        .expect("Mid4Ok template must compile: it is the legal one-hop control")
+        .value_cells
+        .iter()
+        .filter_map(|c| c.default_expr.as_ref())
+        .flat_map(|e| reify_eval::deps::extract_dependency_trace(e).reads)
+        .collect()
 }

@@ -126,6 +126,7 @@ regex-automata
 regex-syntax
 reify-ast
 reify-build-utils
+reify-builtins
 reify-compiler
 reify-compute-contract
 reify-config

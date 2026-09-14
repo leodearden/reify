@@ -199,6 +199,313 @@ assert "wrapper script references reify-audit-snapshot-filter.jq" \
     bash -c 'grep -qF "reify-audit-snapshot-filter.jq" "$1"' \
     -- "$REPO_ROOT/scripts/reify-audit-predone-wrapper.sh"
 
+# ------------------------------------------------------------------------------
+# Check 5f: a malformed updatedAt degrades PER-ROW, it never aborts the snapshot
+# ------------------------------------------------------------------------------
+# Defect (task 7236): the sidecar's updatedAt -> done_at fallback guarded only
+# the EMPTY-string case, so any non-empty unparseable value raised inside
+# fromdateiso8601 and jq exited 5 with ZERO output. The wrapper runs that
+# curl|jq pipeline under `set -euo pipefail` and so took its `exit 125`
+# ("Infrastructure error") arm: ONE malformed row blocked the done-flip
+# project-wide, losing EVERY task's metadata, not just the offending row's.
+#
+# The contract pinned here mirrors the crate's live loader
+# (crates/reify-audit/src/fused_memory_client.rs parse_iso8601_to_epoch, a
+# `?`-chained Option<i64>): an unparseable timestamp yields done_at=null FOR
+# THAT ROW ONLY, and the row STAYS in the snapshot so the wrapper's
+# missing_done_at warning (and P1/P5) can still see it.
+#
+# Deliberately a SECOND fixture rather than an extension of the a/b/c one
+# above: 5c asserts `length == 3` and must keep its meaning. But good and
+# malformed rows are mixed inside this ONE payload, because per-row
+# degradation -- a bad row not taking down its good neighbour -- is precisely
+# the invariant under test.
+cat > "$FILTER_TMPDIR/tasks-malformed.json" <<'MALFORMED_EOF'
+{
+  "tasks": [
+    {
+      "id": "d1",
+      "status": "done",
+      "title": "Task D1 (garbage updatedAt)",
+      "updatedAt": "garbage",
+      "metadata": {
+        "files": [], "done_provenance": null, "prd": null,
+        "consumer_ref": null, "audit_foundation": null
+      }
+    },
+    {
+      "id": "d2",
+      "status": "done",
+      "title": "Task D2 (good neighbour)",
+      "updatedAt": "2026-05-01T12:00:00.000Z",
+      "metadata": {
+        "files": [], "done_provenance": null, "prd": null,
+        "consumer_ref": null, "audit_foundation": null
+      }
+    },
+    {
+      "id": "d3",
+      "status": "done",
+      "title": "Task D3 (non-string updatedAt)",
+      "updatedAt": 12345,
+      "metadata": {
+        "files": [], "done_provenance": null, "prd": null,
+        "consumer_ref": null, "audit_foundation": null
+      }
+    },
+    {
+      "id": "d4",
+      "status": "done",
+      "title": "Task D4 (valid ISO-8601, numeric TZ offset)",
+      "updatedAt": "2026-05-01T12:00:00+00:00",
+      "metadata": {
+        "files": [], "done_provenance": null, "prd": null,
+        "consumer_ref": null, "audit_foundation": null
+      }
+    },
+    {
+      "id": "d5",
+      "status": "done",
+      "title": "Task D5 (metadata.done_at beats a garbage updatedAt)",
+      "updatedAt": "garbage",
+      "metadata": {
+        "done_at": 1700000000,
+        "files": [], "done_provenance": null, "prd": null,
+        "consumer_ref": null, "audit_foundation": null
+      }
+    }
+  ]
+}
+MALFORMED_EOF
+
+jq -n --rawfile text "$FILTER_TMPDIR/tasks-malformed.json" \
+    '{result:{content:[{type:"text",text:$text}]}}' \
+    > "$FILTER_TMPDIR/fixture-malformed.json"
+
+# Capture the filter's EXIT CODE explicitly (Check 9's `set +e` / rc=$? / `set -e`
+# idiom). Check 5's pre-run above discards it via `|| echo '[]'`, but "the filter
+# exits 0 rather than 5" is the headline claim of the defect report, so 5f-a
+# asserts on the code itself. Keep the same `[]` fallback so the per-row
+# assertions FAIL deterministically rather than aborting the suite under set -e.
+set +e
+jq -r -f "$REPO_ROOT/scripts/reify-audit-snapshot-filter.jq" \
+    "$FILTER_TMPDIR/fixture-malformed.json" \
+    > "$FILTER_TMPDIR/snapshot-malformed.json" 2>/dev/null
+malformed_rc=$?
+set -e
+[ "$malformed_rc" -eq 0 ] || echo '[]' > "$FILTER_TMPDIR/snapshot-malformed.json"
+
+assert "5f-a: filter exits 0 on a payload containing a malformed updatedAt" \
+    bash -c 'test "$1" -eq 0' -- "$malformed_rc"
+
+# 5f-b: the row-count assertion. This is what discriminates the CORRECT
+# `try (...) catch null` fix from the `fromdateiso8601?` form: jq's `?` is
+# `try ... catch EMPTY`, and an empty result inside `map({...})` object
+# construction makes the WHOLE OBJECT VANISH -- silently dropping the malformed
+# row from the snapshot. A dropped row is invisible to the wrapper's warning
+# and to P1/P5 alike, which is data loss, not degradation.
+assert "5f-b: output keeps all 5 rows (a malformed row is degraded, never dropped)" \
+    bash -c 'jq -e '"'"'type == "array" and length == 5'"'"' "$1"' \
+    -- "$FILTER_TMPDIR/snapshot-malformed.json"
+
+# Per-row assertions reuse 5b's `length == 1 and (...)` guard verbatim, so a
+# DROPPED row FAILS (length 0) instead of passing vacuously.
+assert "5f-c: done task with a garbage updatedAt string gets done_at null" \
+    bash -c 'jq -e '"'"'[.[] | select(.task_id=="d1")] | length == 1 and (.[0].done_at == null)'"'"' "$1"' \
+    -- "$FILTER_TMPDIR/snapshot-malformed.json"
+
+assert "5f-d: the good neighbour row is unaffected (done_at a positive integer)" \
+    bash -c 'jq -e '"'"'[.[] | select(.task_id=="d2")] | length == 1 and (.[0].done_at | (type == "number") and (. > 0))'"'"' "$1"' \
+    -- "$FILTER_TMPDIR/snapshot-malformed.json"
+
+# 5f-e: a NON-STRING updatedAt raises inside sub(), which `fromdateiso8601?`
+# does NOT catch (`?` binds only to fromdateiso8601) -- so this row is the
+# second discriminator against that form.
+assert "5f-e: done task with a non-string updatedAt gets done_at null" \
+    bash -c 'jq -e '"'"'[.[] | select(.task_id=="d3")] | length == 1 and (.[0].done_at == null)'"'"' "$1"' \
+    -- "$FILTER_TMPDIR/snapshot-malformed.json"
+
+# 5f-f: pins a KNOWN, ACCEPTED divergence rather than leaving it to be
+# rediscovered as a fresh bug: jq's fromdateiso8601 accepts only
+# "%Y-%m-%dT%H:%M:%SZ", while the Rust parse_iso8601_to_epoch has a split_tz
+# arm that handles "+HH:MM". The two loaders still disagree on offset-form
+# timestamps -- but under this fix the jq side degrades that ONE row instead of
+# aborting the whole snapshot, which is the property this guard exists for.
+#
+# ACCEPTED, BUT TRACKED -- not merely narrated. `catch null` makes this
+# particular failure permanently QUIET: done_at=null reproduces the ORIGINAL
+# task-3731 silent-skip (P1's 14-day grace comparison skips the row entirely)
+# and the only signal is the wrapper's stderr WARNING, on a systemd hook path
+# nobody is likely reading. It is unreachable today -- fused-memory's
+# sqlite_task_backend.py updatedAt writer only emits ...Z -- so 7236 pinned it
+# rather than widening the sidecar's parser. Closing it (matching split_tz's
+# "+HH:MM" and no-TZ arms) is filed as fused-memory follow-up ticket
+# tkt_0RT8TN837CA7QP5T4GFH8Q5VYZ. When that lands, THIS assertion and its
+# comment flip in the same diff, and any widened parser must stay TOTAL: jq's
+# capture/match produce EMPTY on no-match, which inside `map({...})` DROPS the
+# whole row -- the same data-loss trap that made `fromdateiso8601?` wrong.
+assert "5f-f: valid ISO-8601 with a numeric TZ offset degrades to null, not an abort" \
+    bash -c 'jq -e '"'"'[.[] | select(.task_id=="d4")] | length == 1 and (.[0].done_at == null)'"'"' "$1"' \
+    -- "$FILTER_TMPDIR/snapshot-malformed.json"
+
+assert "5f-g: metadata.done_at precedence still wins over a garbage updatedAt" \
+    bash -c 'jq -e '"'"'[.[] | select(.task_id=="d5")] | length == 1 and (.[0].done_at == 1700000000)'"'"' "$1"' \
+    -- "$FILTER_TMPDIR/snapshot-malformed.json"
+
+# 5f-h: the degraded rows must be OBSERVABLE. This is the wrapper's own
+# post-snapshot sanity-check expression (the same one 5d pins), run against the
+# degraded snapshot: it must name exactly d1, d3 and d4. Unreachable if the
+# rows were dropped -- which is the whole point of degrading rather than
+# vanishing.
+assert "5f-h: the wrapper's missing_done_at snippet reports exactly d1,d3,d4" \
+    bash -c 'missing=$(jq -r '"'"'[ .[] | select(.status == "done" and .done_at == null) | .task_id ] | sort | join(",")'"'"' "$1"); [ "$missing" = "d1,d3,d4" ]' \
+    -- "$FILTER_TMPDIR/snapshot-malformed.json"
+
+# ------------------------------------------------------------------------------
+# Check 5f-i..k: the SAME malformed payload, driven END-TO-END through the wrapper
+# ------------------------------------------------------------------------------
+# 5f-a..h above exercise the sidecar in ISOLATION, but the headline defect is
+# stated at the WRAPPER level: the curl|jq pipeline runs under
+# `set -euo pipefail`, so a jq abort takes the wrapper's `exit 125`
+# ("Infrastructure error") arm, and dark-factory's pre_done_hook.py blocks the
+# status flip on ANY non-zero rc -- i.e. ONE malformed row wedges every
+# done-flip in the project. Nothing above pins that claim end-to-end: 5e only
+# greps the wrapper for the sidecar's FILENAME, so a regression that
+# reintroduced the abort at the WRAPPER layer (a post-snapshot
+# `jq -e 'all(.[]; .done_at != null)'` gate, say, or the wrapper inlining its
+# own filter again) would leave every one of 5f-a..h green.
+#
+# The stub is Check 6's fake-curl-on-PATH shim rather than a real socket
+# listener on FUSED_MEMORY_MCP_URL: the seam under test is everything
+# DOWNSTREAM of the transport (sidecar -> `type == "array"` gate ->
+# missing_done_at warning -> child rc), and a shim keeps this check hermetic
+# and pool-classified (run-all-classification.manifest:160) with no port to
+# allocate and no listener to leak into a concurrently-running lane. Defined
+# here rather than reused from Check 6 because that harness is created ~70
+# lines below and its fake curl serves a DIFFERENT (empty-tasks) envelope.
+mkdir -p "$FILTER_TMPDIR/e2e-bin"
+
+# Fake curl: ignores every argument and emits the envelope named by
+# $FAKE_CURL_BODY, which is set on the wrapper invocation below and reaches
+# this shim through the wrapper's environment -- exactly how Check 6's shim
+# reads $FAKE_RC.
+cat > "$FILTER_TMPDIR/e2e-bin/curl" <<'E2E_CURL_EOF'
+#!/usr/bin/env bash
+cat "$FAKE_CURL_BODY"
+E2E_CURL_EOF
+chmod +x "$FILTER_TMPDIR/e2e-bin/curl"
+
+# Fake reify-audit: ignores every argument and exits 0, so the wrapper's rc is
+# the child's and 125 can only come from the snapshot path. Freshly created, so
+# its mtime is NOW and the freshness guard passes silently (that is Check 7/9's
+# territory, not this one's). REIFY_AUDIT_ADVISORY_SENTINEL is redirected into
+# the tmpdir regardless, so this check can never stamp the host-wide default
+# path and make an operator sweep report a stale fleet -- Check 6 exports that
+# same redirect, but only ~70 lines below here.
+cat > "$FILTER_TMPDIR/e2e-bin/reify-audit" <<'E2E_AUDIT_EOF'
+#!/usr/bin/env bash
+exit 0
+E2E_AUDIT_EOF
+chmod +x "$FILTER_TMPDIR/e2e-bin/reify-audit"
+
+# `2>&1 >/dev/null` keeps STDERR only (7b-ii's idiom); the rc is captured with
+# the same `set +e` / rc=$? / `set -e` form 5f-a uses.
+set +e
+E2E_STDERR=$(PATH="$FILTER_TMPDIR/e2e-bin:$PATH" \
+    FAKE_CURL_BODY="$FILTER_TMPDIR/fixture-malformed.json" \
+    REIFY_AUDIT_BIN="$FILTER_TMPDIR/e2e-bin/reify-audit" \
+    REIFY_AUDIT_ADVISORY_SENTINEL="$FILTER_TMPDIR/advisory-sentinel" \
+    bash "$WRAPPER" --task d2 --pre-done 2>&1 >/dev/null)
+e2e_rc=$?
+set -e
+
+# 5f-i: THE headline claim, at the layer it is claimed. 125 is the
+# "Infrastructure error" arm; 0 is the stub child's own rc, so a pass here says
+# the malformed row cost the run nothing.
+assert "5f-i: wrapper exits 0 (NOT the 125 Infrastructure arm) on a payload with a malformed updatedAt" \
+    bash -c 'test "$1" -eq 0' -- "$e2e_rc"
+
+# 5f-j: and it reached 0 by SUCCEEDING rather than by some other path that
+# happens to return 0 -- the 125 arm's own diagnostic must be absent.
+assert "5f-j: wrapper stderr carries no 'failed to fetch tasks' diagnostic" \
+    bash -c '! printf "%s" "$1" | grep -qF "failed to fetch tasks from fused-memory MCP"' \
+    -- "$E2E_STDERR"
+
+# 5f-k: the degradation is REPORTED, not swallowed. This is the wrapper's LIVE
+# warning (5f-h pins only the jq expression it is built from), naming exactly
+# the three degraded ids -- which also proves d2 (good neighbour) and d5
+# (metadata.done_at precedence) survived the round trip, since they are absent
+# from the list.
+assert "5f-k: wrapper stderr warns 'done tasks with no done_at' naming exactly d1,d3,d4" \
+    bash -c 'printf "%s" "$1" | grep -qF "WARNING: done tasks with no done_at (P1 will skip them): d1,d3,d4"' \
+    -- "$E2E_STDERR"
+
+# ------------------------------------------------------------------------------
+# Check 5g: the sidecar is wired to select THIS suite
+# ------------------------------------------------------------------------------
+# Measured at task 7236, and it contradicts the intuition that a script under
+# scripts/ is automatically covered:
+#   verify-pipeline-guard.sh requires-full-gate scripts/reify-audit-snapshot-filter.jq -> 1
+#   verify-pipeline-guard.sh is-registered      scripts/reify-audit-snapshot-filter.jq -> 1
+# i.e. the sidecar is fast-path eligible AND registered by NO route, while
+# scripts/verify-pipeline-infra-tests.txt maps the wrapper and the freshness
+# lib but had no row for the .jq. So a future .jq-only diff neither routes to
+# the full gate nor selects this suite: Check 5f above would never run on the
+# very file it guards. This check pins the wiring that closes that hole.
+#
+# Deliberately NOT asserted: that requires-full-gate exits 0. Surgical
+# registration keeps the sidecar OFF the full-gate route on purpose -- the map
+# file's own header says such a row must not also be added to
+# scripts/verify-pipeline-paths.txt, which would force `--scope all` on every
+# future edit to a one-line jq filter.
+echo ""
+echo "--- Check 5g: sidecar is wired into the verify-pipeline artifact map ---"
+
+VP_INFRA_MAP="$REPO_ROOT/scripts/verify-pipeline-infra-tests.txt"
+SIDECAR_REL="scripts/reify-audit-snapshot-filter.jq"
+_SELF_TEST_PATH="$SCRIPT_DIR/test_reify_audit_predone_wrapper.sh"
+
+# _map_selects_self <artifact-path> — mirror select_infra_tests()'s parse
+# exactly (same comment/blank filter, same two-field `read`, same ACTIVE-ROW
+# RULE that BOTH fields must be non-empty per the map header :38-39), then
+# expand each matching row's glob under $REPO_ROOT and succeed if it resolves
+# to THIS test file. `-f` (not `-e`) mirrors verify.sh's own selective-infra
+# emitter loop, so a glob that resolves to a non-regular path is excluded here
+# exactly as it would be at runtime. Same idiom as
+# tests/infra/test_govtest_slice_reaper.sh Block K.
+#
+# KNOWN MIRROR, tracked. This is the FOURTH hand-rolled copy of that parse:
+# scripts/verify.sh:1355 (select_infra_tests(), the production original),
+# scripts/verify-pipeline-guard.sh:626 (which carries its own MUST-NOT-DRIFT
+# warning about being a copy), test_govtest_slice_reaper.sh's _map_targets_for,
+# and this one. Converging the two TEST-side copies onto one helper is filed as
+# fused-memory follow-up ticket tkt_0RT8TP6EJR02PMGD2DF0BJ77XK; it was out of
+# reach for task 7236, whose module locks covered neither the reaper suite nor
+# test_helpers.sh. The two PRODUCTION copies stay independent on purpose -- a
+# test that sourced the implementation it asserts against would be vacuous.
+_map_selects_self() {
+    local _want="$1" _artifact _glob _line _expanded
+    [ -f "$VP_INFRA_MAP" ] || return 1
+    while IFS= read -r _line; do
+        read -r _artifact _glob <<< "$_line"
+        [ -n "$_artifact" ] || continue
+        [ -n "$_glob" ]     || continue
+        [ "$_artifact" = "$_want" ] || continue
+        for _expanded in "$REPO_ROOT"/$_glob; do
+            [ -f "$_expanded" ] || continue
+            [ "$_expanded" = "$_SELF_TEST_PATH" ] && return 0
+        done
+    done < <(grep -v '^[[:space:]]*#' "$VP_INFRA_MAP" | grep -v '^[[:space:]]*$')
+    return 1
+}
+
+assert "5g-a: verify-pipeline-infra-tests.txt maps the snapshot filter sidecar -> this test" \
+    _map_selects_self "$SIDECAR_REL"
+
+assert "5g-b: verify-pipeline-guard.sh reports the snapshot filter sidecar as registered" \
+    bash -c 'bash "$1/scripts/verify-pipeline-guard.sh" is-registered "$2" >/dev/null 2>&1' \
+    -- "$REPO_ROOT" "$SIDECAR_REL"
+
 # ==============================================================================
 # Check 6: exit-code propagation under `set -e`
 # ==============================================================================

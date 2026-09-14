@@ -3,12 +3,23 @@
 //! Task #5281 (PRD docs/prds/merge-gate-compile-cost.md §3 W1 / §5 C1, leaf EVAL-2):
 //! folds the former standalone `tests/<file>.rs` binaries for the fea_/tensegrity_/
 //! stress_/objective_/multi_/process_/as_printed_/kinematic_ subsystems into this single
-//! compile unit to cut the merge-gate link count. Layout-only — no `#[test]` fn is added
-//! or removed. Each former file is included as a stem-named module so its
-//! `<file>::<test>` module path (and thus every `test(/^<file>::/)` filterset) resolves
-//! unchanged. Explicit `#[path]` is required: this harness root is an integration-test
-//! crate root, where a bare `mod <file>;` would resolve to the sibling `tests/<file>.rs`,
-//! not the `harness_fea_solver_e2e/` subdir.
+//! compile unit to cut the merge-gate link count. That stem list is HISTORICAL — it names
+//! the #5281 fold set as it stood then, NOT today's contents: two of those groups have
+//! since LEFT (next paragraph) and a `jacobian_` stem has since ARRIVED (task #6102), so
+//! the `mod` declarations below are the authoritative inventory of what lives here now.
+//! Layout-only — no `#[test]` fn is added or removed. Each former file is included as a
+//! stem-named module so its `<file>::<test>` module path (and thus every
+//! `test(/^<file>::/)` filterset) resolves unchanged. Explicit `#[path]` is required:
+//! this harness root is an integration-test crate root, where a bare `mod <file>;` would
+//! resolve to the sibling `tests/<file>.rs`, not the `harness_fea_solver_e2e/` subdir.
+//!
+//! TWO groups have since LEFT this harness under rule (a)'s split remedy, each recorded
+//! in the root it moved to: `process_dfm_*` -> `harness_process_dfm.rs` (task #4880, at
+//! 20034 > 20000), and `stress_*` -> `harness_stress_scenarios.rs` (task #6121, at
+//! 19429/20000 = 97.1% — split while there was still headroom, prompted by the advisory
+//! WARN tier the same task added to `tests/infra/test_harness_kloc_cap.sh`). Neither was
+//! a behaviour change: both were layout-only moves that preserved every `<file>::<test>`
+//! module path.
 //!
 //! `common` (tests/common/mod.rs) is declared ONCE here rather than once per includer: 5
 //! of the submodules below reference it, and each carrying its own file-backed copy would
@@ -24,6 +35,12 @@ mod as_printed_material_e2e;
 mod as_printed_r0_trampoline;
 #[path = "harness_fea_solver_e2e/as_printed_trampoline.rs"]
 mod as_printed_trampoline;
+// Task #5025's edit-path dispatch guards. A DELIBERATELY separate stem from
+// `fea_in_the_loop_producer`, whose test-scoped heavy atom would otherwise sweep
+// these two cheap guards off the task/merge gate along with the ~490s producer
+// (task #6630; pinned by tests/infra/test_heavy_filter_atoms.sh Assertion G).
+#[path = "harness_fea_solver_e2e/edit_path_optimized_dispatch.rs"]
+mod edit_path_optimized_dispatch;
 #[path = "harness_fea_solver_e2e/fea_bracket_minimize_mass_e2e.rs"]
 mod fea_bracket_minimize_mass_e2e;
 #[path = "harness_fea_solver_e2e/fea_cold_start_heuristic_e2e.rs"]
@@ -77,20 +94,6 @@ mod objective_inheritance;
 mod objective_provenance;
 #[path = "harness_fea_solver_e2e/objective_set_signal.rs"]
 mod objective_set_signal;
-#[path = "harness_fea_solver_e2e/stress_dimensional_chains.rs"]
-mod stress_dimensional_chains;
-#[path = "harness_fea_solver_e2e/stress_error_messages.rs"]
-mod stress_error_messages;
-#[path = "harness_fea_solver_e2e/stress_large_assembly.rs"]
-mod stress_large_assembly;
-#[path = "harness_fea_solver_e2e/stress_pattern_composition.rs"]
-mod stress_pattern_composition;
-#[path = "harness_fea_solver_e2e/stress_query_consistency.rs"]
-mod stress_query_consistency;
-#[path = "harness_fea_solver_e2e/stress_sweep_degenerate.rs"]
-mod stress_sweep_degenerate;
-#[path = "harness_fea_solver_e2e/stress_trait_hierarchy.rs"]
-mod stress_trait_hierarchy;
 #[path = "harness_fea_solver_e2e/tensegrity_delta_combined_form_find_e2e.rs"]
 mod tensegrity_delta_combined_form_find_e2e;
 #[path = "harness_fea_solver_e2e/tensegrity_force_density_gauge.rs"]
