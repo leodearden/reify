@@ -479,7 +479,7 @@ fn isosurface_with_named_options_compiles() {
 /// const must move with it — the failure mode is a loud `expect` on the read,
 /// not a silent skip. Mirrors the `CHUNK_PATH` const in
 /// `stdlib_chunk_geometry_ops_smoke.rs`.
-const CHUNK_PATH: &str = concat!(
+pub(crate) const CHUNK_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../reify-mcp/src/tools/chunks/geometry.md"
 );
@@ -501,12 +501,12 @@ const CHUNK_PATH: &str = concat!(
 /// when it plainly is. That is the one thing the house rule in this file's
 /// preamble forbids. An inert HTML comment costs the chunk one line, is invisible
 /// in rendered markdown, and leaves the title free to change.
-const ORACLE_SECTION_MARKER: &str = "<!-- ORACLE-SECTION -->";
+pub(crate) const ORACLE_SECTION_MARKER: &str = "<!-- ORACLE-SECTION -->";
 
 /// Human-readable name of the marked section. Used ONLY in panic text, so a
 /// reader is told which part of the chunk to look at; nothing matches on it.
 /// A retitle may update this for legibility but need not — no test reads it.
-const ORACLE_SECTION_TITLE: &str = "## Interference & Clearance Queries";
+pub(crate) const ORACLE_SECTION_TITLE: &str = "## Interference & Clearance Queries";
 
 /// Marker that OPENS the section cataloguing WHICH ARGUMENT of which geometry
 /// constructor is length-semantic. Matched BYTE-EXACTLY on the trimmed line,
