@@ -2576,3 +2576,163 @@ mod parametric_alias_body_param_hygiene {
         );
     }
 }
+
+/// Decision lock: alias/direct parity under SHADOWING, extended to the
+/// PARAMETRIC path (task #6477, step-7).
+///
+/// #6259 commit a98a356da9 recorded the governing decision: "alias bodies get
+/// NO separate name-resolution rule. `type AL = <Body>` resolves its body
+/// through the IDENTICAL `resolve_type_expr_with_aliases_kinded` path the
+/// direct spelling takes, at the same use site, including under shadowing."
+/// Step-4 made the parametric path obey that decision for the first time. This
+/// module pins it, so a future change cannot quietly introduce the second rule
+/// — a defining-module snapshot, or an `is_seeded` gate — that task 6477's own
+/// description proposed and that decision forbids.
+///
+/// # The late-binding worry in 6477's description is ANSWERED, not open
+///
+/// Task 6477 describes it as a hazard that a prelude alias body might bind to a
+/// consumer-local declaration of the same name, and asks for a defining-module
+/// snapshot to prevent it. Under the recorded decision that binding is the
+/// INTENDED semantics, not a silent-capture bug: the alias spelling and the
+/// direct spelling must denote the same type at the same use site, and a
+/// snapshot is exactly what would break that. Do not "fix" this.
+///
+/// # Why parity, and not a literal `Type` variant
+///
+/// Today's precedence is measured below, but `enum-shadow-coherence` leaf α is
+/// chartered to revisit it. Freezing the variant would hand α a test to fight;
+/// asserting parity lets α move the precedence with these locks still holding.
+///
+/// # Dated non-vacuity measurement — 2026-09-14
+///
+/// So a future reader can tell "parity holds because both sides are right" from
+/// "both sides are equally broken", and so α landing surfaces as a prompt to
+/// re-read the decision rather than as a silent flip:
+///
+///   * prelude-vs-local (`enum Fit` local vs stdlib `structure def Fit`):
+///     BOTH spellings → `Type::Enum("Fit")`. The module-local enum wins.
+///   * local-vs-local (`enum Zq` + `structure def Zq` in one module):
+///     BOTH spellings → `Type::StructureRef("Zq")`. The structure wins.
+///
+/// The two configurations disagree with each other, and that is #5429's
+/// shadowing rule working as designed — it overrides a PRELUDE structure only.
+/// What this module asserts is that the alias spelling tracks the direct one in
+/// each, whatever each one is.
+mod parametric_alias_body_shadow_parity {
+    use super::alias_to_entity_type_parity::param_type_and_errors;
+    use super::*;
+
+    /// One shadowed configuration: a name bound BOTH as an enum and as a
+    /// structure def, either across the prelude boundary or inside one module.
+    /// Mirrors `alias_body_shadow_semantics::SHADOW_CASES` in the parametric
+    /// register.
+    struct ShadowCase {
+        label: &'static str,
+        decls: &'static str,
+        body: &'static str,
+        /// Which binding won on 2026-09-14, for BOTH spellings.
+        measured_winner: &'static str,
+    }
+
+    const SHADOW_CASES: &[ShadowCase] = &[
+        ShadowCase {
+            label: "prelude-vs-local (local `enum Fit` vs stdlib `structure def Fit`)",
+            decls: "enum Fit { Close, Medium }",
+            body: "Fit",
+            measured_winner: "Type::Enum(\"Fit\") — the module-local enum",
+        },
+        ShadowCase {
+            label: "local-vs-local (`enum Zq` + `structure def Zq`)",
+            decls: "enum Zq { Close, Medium }\n\
+                    structure def Zq {\n    param w : Length = 1.0mm\n}",
+            body: "Zq",
+            measured_winner: "Type::StructureRef(\"Zq\") — the structure def",
+        },
+    ];
+
+    #[test]
+    fn shadowed_parametric_alias_body_resolves_identically_to_the_direct_spelling() {
+        let mut failures: Vec<String> = Vec::new();
+
+        for case in SHADOW_CASES {
+            let direct_src = format!(
+                "{decls}\nstructure def D {{\n    param p : {body}\n}}\n",
+                decls = case.decls,
+                body = case.body
+            );
+            let alias_src = format!(
+                "{decls}\ntype F<T> = {body}\nstructure def D {{\n    param p : F<Real>\n}}\n",
+                decls = case.decls,
+                body = case.body
+            );
+
+            let (direct_ty, direct_errs) = param_type_and_errors(&direct_src, "D", "p");
+            assert!(
+                direct_errs.is_empty(),
+                "[{}] DIRECT baseline must compile cleanly for the parity oracle to \
+                 mean anything; got: {:?}\n--- source ---\n{}",
+                case.label,
+                direct_errs,
+                direct_src
+            );
+
+            let (alias_ty, alias_errs) = param_type_and_errors(&alias_src, "D", "p");
+            if !alias_errs.is_empty() {
+                failures.push(format!(
+                    "[{}] parametric alias spelling produced Error diagnostics: {:?}",
+                    case.label, alias_errs
+                ));
+            }
+            if alias_ty != direct_ty {
+                failures.push(format!(
+                    "[{}] `type F<T> = {}` at `F<Real>` lowered `D.p` to {:?}, but the \
+                     direct spelling lowers it to {:?} — a parametric alias body must \
+                     not get its own shadowing rule (on 2026-09-14 both were {})",
+                    case.label, case.body, alias_ty, direct_ty, case.measured_winner
+                ));
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "parametric alias/direct parity violated under shadowing:\n  {}",
+            failures.join("\n  ")
+        );
+    }
+
+    /// Non-vacuity for the parity test above: a shadowed name must resolve to
+    /// SOMETHING concrete and unpoisoned, otherwise parity could hold with both
+    /// spellings equally broken.
+    ///
+    /// Asserts only what non-vacuity needs — that the name lands on one of the
+    /// two competing bindings. WHICH one is `enum-shadow-coherence` leaf α's
+    /// call, not this task's; the dated measurement in the module doc records
+    /// today's answer without freezing it.
+    #[test]
+    fn shadowed_name_resolves_to_a_real_type_so_the_parity_test_is_not_vacuous() {
+        for case in SHADOW_CASES {
+            let alias_src = format!(
+                "{decls}\ntype F<T> = {body}\nstructure def D {{\n    param p : F<Real>\n}}\n",
+                decls = case.decls,
+                body = case.body
+            );
+            let (ty, errs) = param_type_and_errors(&alias_src, "D", "p");
+            assert!(
+                errs.is_empty(),
+                "[{}] the parametric alias spelling must be clean; got: {:?}",
+                case.label,
+                errs
+            );
+            assert!(
+                matches!(ty, Type::Enum(_) | Type::StructureRef(_)),
+                "[{}] expected the shadowed name to land on one of the two competing \
+                 bindings, not the `Type::Error` poison (measured 2026-09-14: {}). \
+                 Got: {:?}",
+                case.label,
+                case.measured_winner,
+                ty
+            );
+        }
+    }
+}

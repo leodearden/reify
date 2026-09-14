@@ -1804,6 +1804,95 @@ pub(crate) fn resolve_type_expr_with_aliases(
 /// build the dim-param set from `fn_def.type_params`).  All other callers go
 /// through the 6-arg wrapper with an empty dim set.
 #[allow(clippy::too_many_arguments)]
+/// Resolve a type NAME against all four entity namespaces, applying the
+/// local-enum shadowing precedence.
+///
+/// The single definition of "what does this name denote here?", shared by the
+/// direct spelling (`resolve_type_expr_with_aliases_kinded`) and by a
+/// parametric alias BODY (`resolve_type_alias_expr_with_subst`). That sharing
+/// is the point, not an incidental refactor: #6259 recorded the decision that
+/// alias bodies get NO separate name-resolution rule — a body resolves through
+/// the identical path the direct spelling takes, at the same use site,
+/// including under shadowing. One function is how that decision stops being a
+/// convention two call sites have to keep in sync. Pinned by
+/// `parametric_alias_body_shadow_parity`.
+///
+/// Order, and why each step is where it is:
+///
+/// 1. `resolve_type_with_aliases` — builtins, type params, resolved aliases,
+///    structures, traits.
+///
+/// 2. Shadowing-enum override (task #5429; PRD
+///    docs/prds/v0_6/uniform-member-access.md §4 M5 / D8): a MODULE-LOCAL
+///    `enum N` outranks a same-named PRELUDE `structure def N`, so `enum Fit` +
+///    `param fit : Fit` lowers to `Type::Enum("Fit")` rather than being
+///    conflated with std.tolerancing's `structure def Fit`.
+///
+///    Each conjunct earns its place:
+///
+///    - `type_args.is_empty()` — bare names only, the same gate step 3 uses.
+///      An applied `N<Args>` must keep flowing past, so the generic-enum
+///      Applied path (`entity.rs::resolve_enum_type_with_args`, which only
+///      runs when this resolution yields None) still sees it. Regression
+///      oracle: `tests::applied_form_is_not_shadowed` — without this
+///      conjunct, `Result<Length, String>` collapses to `Enum("Result")` and
+///      four tests in generic_enum_pattern_binder_tests.rs fail.
+///    - `matches!(ty, Type::StructureRef(_))` — only the structure arm is
+///      overridable. Builtins, type params and aliases return EARLIER inside
+///      `resolve_type_with_aliases`, so their precedence is preserved for
+///      free (a local `enum Length` cannot shadow the builtin LENGTH
+///      dimension); trait objects are deliberately left alone
+///      (local-enum-vs-prelude-TRAIT collisions are out of #5429's scope).
+///    - set membership — the set is empty outside a `LocalEnumShadowScope`,
+///      so every caller that installs no scope is unaffected.
+///
+/// 3. Enum-name fallback (task 2998): an enum used as an inner type arg of a
+///    parameterized builtin (e.g. the `QoIDescriptor` in
+///    `Option<QoIDescriptor>`) reaches here because step 1 resolves builtins /
+///    aliases / structures / traits but NOT enums. Consult the ambient enum set
+///    installed by `EnumNameScope` (non-empty ONLY around struct-param
+///    resolution; empty otherwise — see `RESOLUTION_ENUM_NAMES`). Bare names
+///    only, for the same reason as step 2: an `Enum<Args>` form keeps
+///    `type_args` non-empty and falls through, and entity.rs then emits "enum
+///    does not accept type arguments". This is the same enum fallback the
+///    struct-param (entity.rs) and enum-variant-payload (enums_phase.rs) paths
+///    use via `resolve_enum_type`, lifted to cover the nested-in-builtin
+///    position that explicit `structure_names` / `trait_names` threading does
+///    not reach.
+///
+/// `None` means the name is unknown in every namespace; each caller has its own
+/// further arms to try and its own diagnostic to emit.
+fn resolve_entity_name_with_shadowing(
+    name: &str,
+    type_args: &[reify_ast::TypeExpr],
+    type_param_names: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
+) -> Option<Type> {
+    if let Some(ty) = resolve_type_with_aliases(
+        name,
+        type_param_names,
+        alias_registry,
+        structure_names,
+        trait_names,
+    ) {
+        if type_args.is_empty()
+            && matches!(ty, Type::StructureRef(_))
+            && RESOLUTION_SHADOWING_ENUM_NAMES.with(|s| s.borrow().contains(name))
+        {
+            return Some(Type::Enum(name.to_string()));
+        }
+        return Some(ty);
+    }
+
+    if type_args.is_empty() && RESOLUTION_ENUM_NAMES.with(|s| s.borrow().contains(name)) {
+        return Some(Type::Enum(name.to_string()));
+    }
+
+    None
+}
+
 pub(crate) fn resolve_type_expr_with_aliases_kinded(
     type_expr: &reify_ast::TypeExpr,
     type_param_names: &HashSet<String>,
@@ -2018,61 +2107,18 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
         return Some(Type::Error);
     }
 
-    // Simple name resolution (builtins, type params, non-parameterized aliases,
-    // structure names, trait names).
-    if let Some(ty) = resolve_type_with_aliases(
+    // Simple name resolution across all four namespaces, with the local-enum
+    // shadowing precedence. Shared with the parametric alias-body path so an
+    // alias body and the direct spelling cannot drift (see the helper's doc).
+    if let Some(ty) = resolve_entity_name_with_shadowing(
         name,
+        type_args,
         type_param_names,
         alias_registry,
         structure_names,
         trait_names,
     ) {
-        // Shadowing-enum override (task #5429; PRD
-        // docs/prds/v0_6/uniform-member-access.md §4 M5 / D8): a MODULE-LOCAL
-        // `enum N` outranks a same-named PRELUDE `structure def N`, so
-        // `enum Fit` + `param fit : Fit` lowers to Type::Enum("Fit") rather than
-        // being conflated with std.tolerancing's `structure def Fit`.
-        //
-        // Each conjunct earns its place:
-        // • `type_args.is_empty()` — bare names only, the same gate the sibling
-        //   enum fallback below uses. An applied `N<Args>` must keep flowing down
-        //   so the generic-enum Applied path (`entity.rs::resolve_enum_type_with_args`,
-        //   which only runs when this simple-name resolution yields None) still
-        //   sees it. Regression oracle: `tests::applied_form_is_not_shadowed` —
-        //   without this conjunct, `Result<Length, String>` collapses to
-        //   Enum("Result") and four tests in generic_enum_pattern_binder_tests.rs
-        //   fail.
-        // • `matches!(ty, Type::StructureRef(_))` — only the structure arm is
-        //   overridable. Builtins, type params and aliases return EARLIER inside
-        //   `resolve_type_with_aliases`, so their precedence is preserved for free
-        //   (a local `enum Length` cannot shadow the builtin LENGTH dimension);
-        //   trait objects are deliberately left alone (local-enum-vs-prelude-TRAIT
-        //   collisions are out of #5429's scope).
-        // • set membership — the set is empty outside a `LocalEnumShadowScope`,
-        //   so every caller that installs no scope is unaffected.
-        if type_args.is_empty()
-            && matches!(ty, Type::StructureRef(_))
-            && RESOLUTION_SHADOWING_ENUM_NAMES.with(|s| s.borrow().contains(name))
-        {
-            return Some(Type::Enum(name.to_string()));
-        }
         return Some(ty);
-    }
-
-    // Enum-name fallback (task 2998): an enum used as an inner type arg of a
-    // parameterized builtin (e.g. the `QoIDescriptor` in `Option<QoIDescriptor>`)
-    // reaches this bare-`Named` tail because `resolve_type_with_aliases` above
-    // resolves builtins / aliases / structures / traits but NOT enums. Consult the
-    // ambient enum set installed by `EnumNameScope` (non-empty ONLY around
-    // struct-param resolution; empty otherwise — see `RESOLUTION_ENUM_NAMES`).
-    // Bare names only: enums are non-parametric in v0.4, so an `Enum<Args>` form
-    // keeps `type_args` non-empty and falls through (entity.rs then emits "enum
-    // does not accept type arguments"). This is the same enum fallback that the
-    // struct-param (entity.rs) and enum-variant-payload (enums_phase.rs) paths
-    // already use via `resolve_enum_type`, lifted to cover the nested-in-builtin
-    // position the explicit structure_names/trait_names threading does not reach.
-    if type_args.is_empty() && RESOLUTION_ENUM_NAMES.with(|s| s.borrow().contains(name)) {
-        return Some(Type::Enum(name.to_string()));
     }
 
     // Deferred non-parametric alias body (task 6259): `type AL = <Body>` whose
@@ -3376,23 +3422,20 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
             // Enum names are not in `namespaces` — they come from the ambient
             // `RESOLUTION_ENUM_NAMES` fallback below, the same channel the
             // non-parametric `_kinded` tail uses.
-            let empty = HashSet::new();
-            if let Some(ty) = resolve_type_with_aliases(
+            //
+            // The alias's own params arrive through `subst`, checked at the top
+            // of this arm, so the type-param set passed here is EMPTY: a body
+            // must never see the use site's parameter scope (pinned by
+            // `parametric_alias_body_param_hygiene`).
+            let no_type_params = HashSet::new();
+            resolve_entity_name_with_shadowing(
                 name,
-                &empty,
+                type_args,
+                &no_type_params,
                 alias_registry,
                 namespaces.structures,
                 namespaces.traits,
-            ) {
-                return Some(ty);
-            }
-            // Bare names only: enums are non-parametric in v0.4, so an
-            // `Enum<Args>` form keeps `type_args` non-empty and falls through
-            // (mirrors the bare-name guard on the `_kinded` enum fallback).
-            if type_args.is_empty() && RESOLUTION_ENUM_NAMES.with(|s| s.borrow().contains(name)) {
-                return Some(Type::Enum(name.to_string()));
-            }
-            None
+            )
         }
         reify_ast::TypeExprKind::IntegerLiteral(n) => {
             diagnostics.push(

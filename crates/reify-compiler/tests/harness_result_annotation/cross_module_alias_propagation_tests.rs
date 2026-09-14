@@ -1543,3 +1543,56 @@ fn seeded_parametric_entity_bodied_alias_retains_its_body() {
         "the seeded `Gq<Real>` alias must lower exactly as the direct `Option<Zq>` does"
     );
 }
+
+/// The late-binding case task 6477's description worries about, spelled
+/// literally: a PRELUDE `pub type Gq<T> = Option<Zq>` whose body names the
+/// prelude's own `Zq`, consumed by a module that declares its OWN `Zq`.
+///
+/// The task proposes preventing this by snapshotting the body's resolution in
+/// the defining module. #6259 commit a98a356da9 recorded the opposite decision
+/// — alias bodies get NO separate name-resolution rule; the body resolves
+/// through the identical path the direct spelling takes, at the same use site,
+/// including under shadowing — so binding to the consumer's declaration is the
+/// INTENDED semantics here, and a snapshot is exactly what would break it.
+///
+/// Asserts PARITY rather than a literal `Type` variant, for the reason #6259
+/// gave: `enum-shadow-coherence` leaf α is chartered to revisit the precedence,
+/// and a frozen variant would hand α a test to fight. The module-local
+/// companion is `type_alias_compile_tests::parametric_alias_body_shadow_parity`,
+/// which carries the dated measurement of which binding wins today.
+#[test]
+fn shadowed_prelude_parametric_alias_body_binds_as_the_direct_spelling_does() {
+    let prelude_m = compile_prelude(
+        "enum Zq { Close, Medium }\npub type Gq<T> = Option<Zq>\n",
+        "shadowed_parametric_alias_prelude",
+    );
+
+    // The consumer declares its OWN `Zq`, shadowing the prelude's.
+    let shadowing_decl = "structure def Zq { param w : Length = 1.0mm }";
+
+    let direct_ty = param_type_against_prelude(
+        &format!("{shadowing_decl}\nstructure def D {{ param p : Option<Zq> }}"),
+        "shadowed_parametric_alias_user_direct",
+        &prelude_m,
+        "DIRECT baseline must compile cleanly for the parity oracle to mean anything",
+    );
+    assert!(
+        !direct_ty.is_error(),
+        "DIRECT baseline must lower to a real type, not the `Type::Error` poison; \
+         got: {direct_ty:?}"
+    );
+
+    let alias_ty = param_type_against_prelude(
+        &format!("{shadowing_decl}\nstructure def D {{ param p : Gq<Real> }}"),
+        "shadowed_parametric_alias_user_alias",
+        &prelude_m,
+        "a prelude parametric alias whose body names a SHADOWED entity must still \
+         resolve at the consumer's use site",
+    );
+    assert_eq!(
+        alias_ty, direct_ty,
+        "the prelude alias body `Option<Zq>` must bind `Zq` exactly as the consumer's \
+         own direct `Option<Zq>` spelling does — that is the recorded decision, not a \
+         late-binding bug to be fixed with a defining-module snapshot"
+    );
+}
