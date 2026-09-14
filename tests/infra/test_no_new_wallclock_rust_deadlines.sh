@@ -1169,6 +1169,70 @@ _s2ac_count="$(_count_rust_wallclock_escapes "$_s2ac_tmpdir" 2>/dev/null)"
 assert "2ac: three escapes across two files count 3, not 1 and not 2" \
     test "$_s2ac_count" -eq 3
 
+# ---------------------------------------------------------------------------
+# 2ad: escape COUNTER, RECURSION. An escape buried in a subdirectory must be
+#      counted. The counter globbed `"$dir"/*.rs`, which is non-recursive --
+#      harmless while it only ever saw one flat directory, and a silent hole
+#      the moment Section 3 points it at 35 roots full of subdirectories. An
+#      uncounted escape is strictly worse than an uncounted violation: the
+#      detector cannot see an escaped line AT ALL, so the escape count is the
+#      only thing that knows the line exists.
+# ---------------------------------------------------------------------------
+_s2ad_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2ad_tmpdir")
+mkdir -p "$_s2ad_tmpdir/nested/deeper"
+_fixture "$_s2ad_tmpdir" "top.rs" \
+    "    let a = Instant::now() + Duration::from_secs(1); // $_ESC_TOKEN -- reason"
+_fixture "$_s2ad_tmpdir/nested" "mid.rs" \
+    "    let b = Instant::now() + Duration::from_secs(2); // $_ESC_TOKEN -- reason"
+_fixture "$_s2ad_tmpdir/nested/deeper" "low.rs" \
+    "    let c = Instant::now() + Duration::from_secs(3); // $_ESC_TOKEN -- reason"
+
+_s2ad_count="$(_count_rust_wallclock_escapes "$_s2ad_tmpdir" 2>/dev/null)"
+assert "2ad: escapes nested two levels deep are counted (3, not 1)" \
+    test "$_s2ad_count" -eq 3
+
+# ---------------------------------------------------------------------------
+# 2ae: escape COUNTER, MULTIPLE ROOTS in one call -- the shape Section 3 now
+#      uses. A single-root implementation would silently count only `$1`,
+#      which for the live list is crates/reify-ast/tests: zero escapes, and a
+#      guard that reports "0" while the tree holds one.
+# ---------------------------------------------------------------------------
+_s2ae_r1="$(mktemp -d)"; _TMPDIRS+=("$_s2ae_r1")
+_s2ae_r2="$(mktemp -d)"; _TMPDIRS+=("$_s2ae_r2")
+_s2ae_r3="$(mktemp -d)"; _TMPDIRS+=("$_s2ae_r3")
+_fixture "$_s2ae_r1" "clean.rs" \
+    '    let t0 = Instant::now();'
+_fixture "$_s2ae_r2" "one.rs" \
+    "    let a = Instant::now() + Duration::from_secs(1); // $_ESC_TOKEN -- reason"
+mkdir -p "$_s2ae_r3/sub"
+_fixture "$_s2ae_r3/sub" "two.rs" \
+    "    let b = Instant::now() + Duration::from_secs(2); // $_ESC_TOKEN -- reason"
+
+_s2ae_count="$(_count_rust_wallclock_escapes "$_s2ae_r1" "$_s2ae_r2" "$_s2ae_r3" 2>/dev/null)"
+assert "2ae: escapes across three roots, one of them nested, count 2" \
+    test "$_s2ae_count" -eq 2
+
+# ---------------------------------------------------------------------------
+# 2af: escape COUNTER, NON-.rs and BAD ROOT. The count feeds an equality
+#      assertion, so both of its failure directions matter: an escape in a
+#      .txt must not inflate it, and a root that does not exist must be a hard
+#      error rather than a zero contribution that could make the total match
+#      the allowlist by luck.
+# ---------------------------------------------------------------------------
+_s2af_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2af_tmpdir")
+_fixture "$_s2af_tmpdir" "notrust.txt" \
+    "    let a = Instant::now() + Duration::from_secs(1); // $_ESC_TOKEN -- reason"
+
+_s2af_count="$(_count_rust_wallclock_escapes "$_s2af_tmpdir" 2>/dev/null)"
+assert "2af: an escape in a non-.rs file is not counted" \
+    test "$_s2af_count" -eq 0
+
+_s2af_rc=0
+_count_rust_wallclock_escapes "$_s2af_tmpdir/no-such-root" >/dev/null 2>&1 || _s2af_rc=$?
+assert "2af: a root that does not exist is a hard error, not a zero count" \
+    test "$_s2af_rc" -ne 0
+
+
 # ===========================================================================
 # Section 3: LIVE GUARD -- the ratchet, over EVERY Rust test root.
 #
