@@ -816,6 +816,101 @@ pub fn run_modify_pipeline(
     (result, ops)
 }
 
+/// Compile `source` — whose length-semantic argument(s) are deliberately
+/// BARE — via the LENIENT [`compile_source`] (not [`parse_and_compile`],
+/// which hard-asserts zero Error diagnostics and would panic before eval ever
+/// ran), then assert that the resulting compile-layer diagnostics are exactly
+/// what a bare length-semantic argument must produce: at least one Error, and
+/// every Error carrying `DiagnosticCode::ArgTypeMismatch`.
+///
+/// `what` names the family under test for the first assertion's panic
+/// message — e.g. `"primitive/profile dimension"`, `"modify/sweep
+/// magnitude"`, `"pattern spacing"`.
+///
+/// # Why both halves matter
+///
+/// 1. At least one compile-layer Error must be present, so a caller cannot
+///    silently stop noticing if the compile-layer length slot regresses.
+/// 2. `DiagnosticCode::ArgTypeMismatch` must be the ONLY Error-severity
+///    compile diagnostic, so an unrelated compile Error cannot make a
+///    caller's downstream "no op reached the kernel" assertion pass for the
+///    wrong reason — compilation having broken, rather than a later eval gate
+///    having dropped the op.
+///
+/// Canonical home for the idiom that used to be duplicated (byte-for-byte,
+/// modulo this `what` wording) as `compile_bare_length` in
+/// `crates/reify-eval/tests/harness_geometry/primitive_profile_length_units_e2e.rs`
+/// and `modify_sweep_length_units_e2e.rs`, and as `compile_bare_spacing` in
+/// `crates/reify-eval/tests/pattern_spacing_units_e2e.rs` (task #6636).
+///
+/// # Panics
+/// Panics if no compile-layer Error diagnostic is produced, or if any
+/// compile-layer Error diagnostic carries a code other than
+/// `DiagnosticCode::ArgTypeMismatch`.
+#[track_caller]
+pub fn compile_expecting_only_arg_type_mismatch(
+    source: &str,
+    what: &str,
+) -> reify_compiler::CompiledModule {
+    let compiled = compile_source(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "a bare {what} must ALSO be rejected at compile time (ArgTypeMismatch), \
+         not only at eval; got no Error diagnostics in: {:?}",
+        compiled.diagnostics
+    );
+    assert!(
+        errors
+            .iter()
+            .all(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch)),
+        "ArgTypeMismatch must be the ONLY compile Error in this fixture, else a \
+         caller's \"no op reached the kernel\" assertion could pass because \
+         compilation broke rather than because the eval gate dropped the op; \
+         unexpected errors: {:?}",
+        errors
+            .iter()
+            .filter(|d| d.code != Some(DiagnosticCode::ArgTypeMismatch))
+            .collect::<Vec<_>>()
+    );
+    compiled
+}
+
+/// Build `compiled` against a fresh [`MockGeometryKernel`], returning the
+/// build diagnostics and every [`reify_ir::GeometryOp`] that reached the
+/// kernel.
+///
+/// `operations_ref()` is captured BEFORE the kernel moves into the `Engine`
+/// — the only ordering that lets the emitted ops be inspected afterwards.
+///
+/// Canonical home for the idiom that used to be duplicated byte-for-byte as a
+/// private `build_compiled` in both
+/// `crates/reify-eval/tests/harness_geometry/primitive_profile_length_units_e2e.rs`
+/// and `modify_sweep_length_units_e2e.rs` (task #6636).
+#[cfg(feature = "eval-helpers")]
+pub fn build_compiled(
+    compiled: reify_compiler::CompiledModule,
+) -> (Vec<Diagnostic>, Vec<reify_ir::GeometryOp>) {
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(
+        Box::new(MockConstraintChecker::new()),
+        Some(Box::new(kernel)),
+    );
+    let result: reify_eval::BuildResult = engine.build(&compiled, reify_ir::ExportFormat::Step);
+    let ops = ops_ref
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| r.op.clone())
+        .collect();
+    (result.diagnostics, ops)
+}
+
 /// Retrieve the `ValueCellDecl` of a value cell by name from a named template.
 ///
 /// Resolves any value cell — `let` bindings and `param`s (defaulted or `auto`) alike —

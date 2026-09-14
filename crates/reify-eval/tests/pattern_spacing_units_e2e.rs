@@ -25,11 +25,12 @@
 //! because `scripts/check-harness-baseline-registration.sh` refuses a
 //! newly-added one.
 
-use reify_core::{DiagnosticCode, Severity};
+use reify_core::Severity;
 use reify_eval::{BuildResult, Engine};
 use reify_ir::{ExportFormat, GeometryOp};
 use reify_test_support::{
-    MockConstraintChecker, MockGeometryKernel, compile_source, parse_and_compile,
+    MockConstraintChecker, MockGeometryKernel, compile_expecting_only_arg_type_mismatch,
+    parse_and_compile,
 };
 
 /// Compile a source whose pattern spacing is deliberately BARE.
@@ -37,11 +38,14 @@ use reify_test_support::{
 /// Task 5652 added a compile-LAYER `ArgTypeMismatch` Error for bare pattern
 /// spacing, so these sources no longer compile clean and `parse_and_compile`
 /// (which hard-asserts zero Error diagnostics) would panic before eval ever
-/// runs. The non-asserting `compile_source` keeps this file testing what it
+/// runs. Delegates to the shared
+/// `reify_test_support::compile_expecting_only_arg_type_mismatch` (task
+/// #6636), whose lenient `compile_source` keeps this file testing what it
 /// exists to test: task 5214's EVAL-layer gate.
 ///
-/// The assertions below are what make that switch a TIGHTENING rather than a
-/// loosening. They keep BOTH halves of what `parse_and_compile` used to give:
+/// That shared helper's two assertions are what make the switch a TIGHTENING
+/// rather than a loosening — they keep BOTH halves of what `parse_and_compile`
+/// used to give for free:
 ///
 /// 1. The expected compile-layer `ArgTypeMismatch` really is emitted, so this
 ///    file cannot silently stop noticing if task 5652's gate regresses.
@@ -56,32 +60,7 @@ use reify_test_support::{
 /// `check_builtin_arg_types` is anti-cascade: lowering is untouched, so the op
 /// is still emitted and must still be DROPPED at eval.
 fn compile_bare_spacing(source: &str) -> reify_compiler::CompiledModule {
-    let compiled = compile_source(source);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        !errors.is_empty(),
-        "a bare pattern spacing must ALSO be rejected at compile time (task 5652 \
-         ArgTypeMismatch), not only at eval; got no Error diagnostics in: {:?}",
-        compiled.diagnostics
-    );
-    assert!(
-        errors
-            .iter()
-            .all(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch)),
-        "ArgTypeMismatch must be the ONLY compile Error in this fixture, else the \
-         callers' \"no pattern op reached the kernel\" assertions could pass \
-         because compilation broke rather than because the eval gate dropped the \
-         op; unexpected errors: {:?}",
-        errors
-            .iter()
-            .filter(|d| d.code != Some(DiagnosticCode::ArgTypeMismatch))
-            .collect::<Vec<_>>()
-    );
-    compiled
+    compile_expecting_only_arg_type_mismatch(source, "pattern spacing")
 }
 
 /// BARE `20` spacings on `linear_pattern_2d` → the op is dropped: at least one
