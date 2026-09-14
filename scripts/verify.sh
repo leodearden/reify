@@ -165,6 +165,13 @@
 #                                  merge_verify_cold_command_timeout_secs (task 5383) in
 #                                  dark-factory-orchestrator.yaml — that key's comment
 #                                  block is the single source for the relationship.
+#                                  ROLE-SCOPED (task 6485): under DF_VERIFY_ROLE=offline
+#                                  the default is 13h (46800s), not 90m, so that
+#                                  .config/nextest.toml's 12h heavy per-test ceiling is
+#                                  REACHABLE — ~3600s of headroom lets nextest attribute
+#                                  and kill a hung heavy test BY NAME before this wall
+#                                  fires exit 124 naming nothing. An explicit valid value
+#                                  still wins verbatim under either role.
 #   REIFY_VERIFY_PREBUILD_TIMEOUT — outer timeout for the merge-path RELEASE
 #                                  pre-builds (`cargo build --release -p reify-audit`
 #                                  and `-p reify-cli`). Default 45m. These run ONLY on
@@ -446,6 +453,38 @@ _resolve_timeout_knob() {
 # REIFY_VERIFY_TEST_TIMEOUT_RELEASE (90m) — see add_test_passes for the derivation.
 _VERIFY_TEST_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT 60m)"
 _VERIFY_TEST_TIMEOUT_RELEASE="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE 90m)"
+# OFFLINE role: re-resolve the RELEASE budget with a 13h default (task 6485), so
+# .config/nextest.toml's 12h (43200s) heavy per-test ceiling is REACHABLE. ~3600s
+# of headroom means nextest SIGTERMs a hung heavy test BY NAME before this outer
+# wall could fire exit 124 attributing nothing. The offline lane's observed
+# sub-run durations are ~560-2625s, so 13h never binds in practice — it exists
+# only to make the per-test ceiling the binding, ATTRIBUTING bound.
+#
+# WHY THE 90m LINE ABOVE IS PRESERVED VERBATIM rather than folded into one
+# role-derived default: tests/infra/test_occt_flock_gate.sh T10 extracts it with
+# `grep -oE '_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE [0-9]+m'`,
+# and T10's >= relationship models the MERGE path against
+# merge_verify_cold_command_timeout_secs. 90m is and must remain the release
+# inner budget THERE; the offline default must never enter that sum, because the
+# offline lane is not bounded by that outer wall.
+#
+# WHY THIS IS UNCONDITIONAL under offline rather than skipped when the knob is
+# already set: routing through the same validator twice keeps an explicit VALID
+# value winning verbatim, while making a MALFORMED one fall back to 13h instead
+# of to the 90m the first call just produced. The cheaper-looking "only when
+# unset" form would leave offline silently at 90m under a 12h ceiling — the exact
+# unreachable-ceiling shape this exists to remove. The only cost is a duplicated
+# WARNING line on malformed input under offline; a loud duplicate beats a silent
+# wrong budget. T16 pins this case.
+#
+# Only the RELEASE wall is role-scoped. The debug wall stays 60m because the
+# offline role forces PROFILE=release, so a debug pass happens only under an
+# explicit --profile debug|both — a manual invocation, on which the 12h ceiling
+# is unreachable (see .config/nextest.toml's ACCEPTED RESIDUAL note).
+# DF_VERIFY_ROLE is env-only (no CLI flag), so it is readable this early.
+if [ "${DF_VERIFY_ROLE:-task}" = "offline" ]; then
+    _VERIFY_TEST_TIMEOUT_RELEASE="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE 13h)"
+fi
 _VERIFY_PREBUILD_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_PREBUILD_TIMEOUT 45m)"
 _VERIFY_CLIPPY_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_CLIPPY_TIMEOUT 45m)"
 _VERIFY_GUI_FEATURE_TEST_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_GUI_FEATURE_TEST_TIMEOUT 45m)"
@@ -2634,6 +2673,15 @@ add_test_passes() {
     #    model, and why the inner ceilings are not summed against it. Do not restate
     #    its arithmetic here; it drifted once already (esc-5382-1 amendment review).
     #    tests/infra/test_occt_flock_gate.sh T10 mechanises that relationship.
+    #    OFFLINE TIER (task 6485): under DF_VERIFY_ROLE=offline this budget is 13h
+    #    (46800s) instead, because the offline lane is the ONLY path that runs the
+    #    heavy filterset, and .config/nextest.toml gives those 8 members a 12h
+    #    (43200s) per-test ceiling. The wall must strictly exceed the ceiling or the
+    #    ceiling is unreachable and a hang degrades to a bare exit 124 with zero
+    #    per-test attribution (the task 4877/4878 shape). ~3600s of headroom; the
+    #    lane's observed sub-runs are ~560-2625s, so 13h never binds in practice.
+    #    T14-T17 mechanise the rendering; test_nextest_slow_priority.sh Assertion L
+    #    mechanises wall > ceiling with both operands derived from files.
     # NOTE: outer timeouts asserted in tests/infra/test_occt_flock_gate.sh
     # (Test 17 — debug pass, Test 17b — release pass; T1/T2/T8/T9 knob behavior) — keep in sync.
     local _profile _rel
