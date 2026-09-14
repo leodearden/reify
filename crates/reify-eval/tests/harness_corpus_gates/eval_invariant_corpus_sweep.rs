@@ -482,6 +482,102 @@ fn hash_sharding_partitions_the_corpus_within_measured_bounds() {
     );
 }
 
+// ── The shared evaluation core ────────────────────────────────────
+
+/// The invariants this sweep asserts. A CLOSED enum, not a string tag: a typo
+/// in a meaningful string would silently create a third, never-checked
+/// "invariant", which is precisely the ad-hoc-string failure this codebase
+/// gates against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InvariantId {
+    /// INV-EVAL-5, the no-stale-Undef invariant (task α, PRD
+    /// `docs/prds/v0_6/eval-uniform-dependency-handling.md` §6.1).
+    StaleUndef,
+    /// INV-EVAL-4, the snapshot↔cache content-hash divergence audit (task ι, PRD
+    /// `docs/prds/v0_6/eval-cell-commit-substrate.md` §2.6 / §3 P3 / §7 B4).
+    SnapshotCacheDivergence,
+}
+
+/// One invariant finding, in the shape BOTH checkers already report.
+///
+/// `reify_eval::StaleUndefViolation` and `reify_eval::SnapshotCacheDivergence`
+/// each expose exactly `{ cell, detail }`, so this is a faithful common shape and
+/// NOT a merge of the two checkers — it is the report type, not the logic.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Finding {
+    cell: reify_core::ValueCellId,
+    detail: String,
+}
+
+/// What one corpus file's single evaluation produced, per invariant.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FileOutcome {
+    rel: String,
+    per_invariant: Vec<(InvariantId, Vec<Finding>)>,
+}
+
+impl FileOutcome {
+    /// This file's findings for `id`, or `None` if the sweep did not carry that
+    /// invariant at all — which
+    /// `one_corpus_evaluation_feeds_both_invariant_checkers` asserts never happens.
+    fn findings(&self, id: InvariantId) -> Option<&[Finding]> {
+        self.per_invariant
+            .iter()
+            .find(|(i, _)| *i == id)
+            .map(|(_, f)| f.as_slice())
+    }
+}
+
+/// INV-EVAL-5's adapter: ONE `Engine` wrapper call, mapped to [`Finding`].
+///
+/// Deliberately a separate named function from its sibling below. Task 5060 is
+/// explicit that the snapshot↔cache audit is a DISTINCT invariant and the two
+/// checkers must NOT be merged; keeping one adapter per invariant holds that at
+/// the code level, not just in `reify-eval`'s `src/`. What this file shares is
+/// the expensive corpus EVALUATION — never the checking.
+fn stale_undef_findings(engine: &reify_eval::Engine) -> Vec<Finding> {
+    engine
+        .check_no_stale_undef()
+        .into_iter()
+        .map(|v| Finding { cell: v.cell, detail: v.detail })
+        .collect()
+}
+
+/// INV-EVAL-4's adapter — see [`stale_undef_findings`] for why these are two
+/// functions and not one parameterised over a checker.
+fn snapshot_cache_divergence_findings(engine: &reify_eval::Engine) -> Vec<Finding> {
+    engine
+        .check_snapshot_cache_divergence()
+        .into_iter()
+        .map(|d| Finding { cell: d.cell, detail: d.detail })
+        .collect()
+}
+
+/// Run every invariant against ONE already-evaluated engine.
+///
+/// The engine arrives ALREADY eval'd and by shared reference, which is what
+/// makes "exactly one eval per corpus file" structural rather than a convention
+/// a future edit could quietly break: this function cannot evaluate anything,
+/// so a second eval would have to be written somewhere a reader can see it.
+///
+/// Sound because `Engine::check_no_stale_undef` (`invariants.rs`) and
+/// `Engine::check_snapshot_cache_divergence` (`cache_divergence.rs`) are both
+/// `&self` reads of the same retained `eval_state()` snapshot the preceding
+/// `eval()` installed, and neither mutates the engine — so one evaluation feeds
+/// both, in either order, with no order-dependent result.
+fn check_file(engine: &reify_eval::Engine, rel: &str) -> FileOutcome {
+    FileOutcome {
+        rel: rel.to_string(),
+        per_invariant: vec![
+            (InvariantId::StaleUndef, stale_undef_findings(engine)),
+            (
+                InvariantId::SnapshotCacheDivergence,
+                snapshot_cache_divergence_findings(engine),
+            ),
+        ],
+    }
+}
+
 /// The whole CPU saving in one assertion: BOTH invariants are asserted per file
 /// off a SINGLE compile+eval.
 ///
