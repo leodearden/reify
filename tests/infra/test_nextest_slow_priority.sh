@@ -529,4 +529,209 @@ assert "gen-nextest-config.sh (both caps rewritten): determinism priority overri
 
 rm -f "$_CO_CFG"
 
+# ===========================================================================
+# Assertion J (task 6485): every heavy-filter member carries its own
+# slow-timeout override at the 12h offline ceiling.
+#
+# Heavy membership is DERIVED from scripts/heavy-test-filter-lib.sh rather than
+# restated here. That is the point of the guard: heavy membership already has
+# exactly one definition, and a list repeated here would become a second one
+# that drifts. A 9th atom added to the lib fails Assertion J immediately, with
+# no edit to this file.
+#
+# The correspondence checked is exact string equality between an atom (outer
+# parentheses stripped) and an override block's `filter =` VALUE. That is why
+# the two test-scoped atoms must be authored in .config/nextest.toml
+# byte-identically to their lib form.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Helper (task 6485): ceiling (period-seconds * terminate-after) for the
+# [[profile.default.overrides]] block whose `filter` VALUE equals <filter>
+# exactly (whitespace-normalized). Mirrors the _slow_period_for_file /
+# _slow_terminate_for_file block-walk above, but keys on the whole filter
+# value instead of package+binary.
+#
+# REQUIRED, not stylistic: the two test-scoped heavy atoms share BOTH package
+# (reify-eval) AND binary (harness_fea_solver_e2e), so the package+binary
+# helpers above cannot tell them apart -- they would match whichever block
+# came first and silently report one ceiling for both.
+# Usage: _slow_ceiling_for_filter <file> <filter-value>
+# ---------------------------------------------------------------------------
+_slow_ceiling_for_filter() {
+    local file="$1" want="$2"
+    awk -v want="$want" -v q="'" '
+        /^\[\[/ { in_block = 0 }
+        $0 ~ "^[[:space:]]*filter[[:space:]]*=" {
+            in_block = 0
+            if (match($0, q "[^" q "]*" q)) {
+                val = substr($0, RSTART + 1, RLENGTH - 2)
+                gsub(/[[:space:]]+/, " ", val)
+                sub(/^ /, "", val)
+                sub(/ $/, "", val)
+                if (val == want) in_block = 1
+            }
+        }
+        in_block && /^[[:space:]]*slow-timeout[[:space:]]*=/ {
+            match($0, /period[[:space:]]*=[[:space:]]*"[0-9]+s"/)
+            pseg = substr($0, RSTART, RLENGTH)
+            match(pseg, /[0-9]+/)
+            period = substr(pseg, RSTART, RLENGTH) + 0
+            match($0, /terminate-after[[:space:]]*=[[:space:]]*[0-9]+/)
+            tseg = substr($0, RSTART, RLENGTH)
+            match(tseg, /[0-9]+$/)
+            term = substr(tseg, RSTART, RLENGTH) + 0
+            print period * term
+            in_block = 0
+        }
+    ' "$file"
+}
+
+# The 12h (43200s = 120s x 360) offline per-test ceiling.
+HEAVY_CEILING_SECONDS=43200
+
+# ---------------------------------------------------------------------------
+# Parse the heavy atoms out of the single source of truth. Split the
+# or-joined expression on its top-level ' | ' joiner and strip each atom's
+# outer parentheses, yielding exactly the filter strings the override blocks
+# must carry. (test_heavy_filter_atoms.sh's parser deliberately stops at the
+# `package(X) & binary(Y)` PREFIX; here the WHOLE atom text is needed,
+# including a trailing `& test(...)` clause, because that whole text is what
+# an override block's filter value has to equal.)
+# ---------------------------------------------------------------------------
+# shellcheck source=scripts/heavy-test-filter-lib.sh
+source "$REPO_ROOT/scripts/heavy-test-filter-lib.sh"
+
+HEAVY_ATOMS=()
+while IFS= read -r _atom; do
+    [ -n "$_atom" ] && HEAVY_ATOMS+=("$_atom")
+done < <(printf '%s\n' "${REIFY_HEAVY_NEXTEST_FILTER:-}" \
+            | sed 's/ | /\n/g' \
+            | sed -e 's/^(//' -e 's/)$//')
+
+# ---------------------------------------------------------------------------
+# _heavy_ceilings_ok <file> — returns 0 iff EVERY heavy atom resolves to a
+# block at HEAVY_CEILING_SECONDS in <file>. Pointed at the canonical config by
+# Assertion J, at a generated config by J-gen, and at deliberately-broken
+# fixture copies by the non-vacuity self-check below.
+# ---------------------------------------------------------------------------
+_heavy_ceilings_ok() {
+    local file="$1" atom got
+    for atom in ${HEAVY_ATOMS+"${HEAVY_ATOMS[@]}"}; do
+        got="$(_slow_ceiling_for_filter "$file" "$atom")"
+        [ "${got:-}" = "$HEAVY_CEILING_SECONDS" ] || return 1
+    done
+    return 0
+}
+
+# Negation wrapper. assert runs "$@" directly in THIS shell (test_helpers.sh's
+# no-subshell idiom), so the rejection cases must be a shell function too --
+# a `bash -c '! ...'` child would not inherit _heavy_ceilings_ok or HEAVY_ATOMS
+# and would fail for the wrong reason, making the self-check meaningless.
+_heavy_ceilings_reject() { ! _heavy_ceilings_ok "$1"; }
+
+echo ""
+echo "--- Assertion J (task 6485): every heavy-filter atom has a 12h (${HEAVY_CEILING_SECONDS}s) override block ---"
+
+# Non-vacuity floor for the PARSE itself. Deliberately '>= 1', not '== 8': a
+# 9th atom added to the lib must fail in the per-atom checks below (naming the
+# offender), never here with an unhelpful count mismatch.
+echo "    (parsed ${#HEAVY_ATOMS[@]} heavy atoms from scripts/heavy-test-filter-lib.sh)"
+assert "heavy-filter lib parsed into at least one atom (guard is non-vacuous)" \
+    test "${#HEAVY_ATOMS[@]}" -ge 1
+
+for _atom in ${HEAVY_ATOMS+"${HEAVY_ATOMS[@]}"}; do
+    _got="$(_slow_ceiling_for_filter "$NEXTEST_TOML" "$_atom")"
+    assert "nextest.toml: heavy atom [${_atom}] has an override block at the ${HEAVY_CEILING_SECONDS}s (12h) ceiling (got '${_got:-<no block>}')" \
+        test "${_got:-}" = "$HEAVY_CEILING_SECONDS"
+done
+
+# ---------------------------------------------------------------------------
+# Assertion J-gen (task 6485): the same ceilings survive gen-nextest-config.sh
+# verbatim, asserted from ONE generate (mirrors Assertion G's
+# one-generate-many-assertions pattern). The generator's two sed anchors
+# (`^occt = { max-threads = N }$`, `^test-threads = ...$`) do not touch
+# slow-timeout lines today; this pins that they never start to.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Assertion J-gen (task 6485): gen-nextest-config.sh preserves every heavy 12h ceiling ---"
+
+_TMP_CFG_J="$(REIFY_OCCT_NEXTEST_MAX_THREADS=24 bash "$GEN_CFG")"
+
+for _atom in ${HEAVY_ATOMS+"${HEAVY_ATOMS[@]}"}; do
+    _gotj="$(_slow_ceiling_for_filter "$_TMP_CFG_J" "$_atom")"
+    assert "gen-nextest-config.sh: heavy atom [${_atom}] still at the ${HEAVY_CEILING_SECONDS}s ceiling in the generated config (got '${_gotj:-<no block>}')" \
+        test "${_gotj:-}" = "$HEAVY_CEILING_SECONDS"
+done
+
+rm -f "$_TMP_CFG_J"
+
+# ---------------------------------------------------------------------------
+# Assertion J-neg (task 6485): NON-VACUITY SELF-CHECK. A completeness guard
+# that is green on arrival proves nothing unless it is also shown to go RED on
+# the drift it exists to catch. Each fixture below is a copy of the real
+# nextest.toml broken in one specific way; _heavy_ceilings_ok must reject all
+# three. Follows assert_guard_rejects in tests/infra/test_verify_offline_partition.sh.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Assertion J-neg (task 6485): the heavy-ceiling checker REJECTS each seeded drift ---"
+
+_J_FIX="$(mktemp -d)"
+_FIRST_ATOM="${HEAVY_ATOMS[0]}"
+
+# (i) the first heavy atom's whole override block deleted.
+awk -v want="$_FIRST_ATOM" -v q="'" '
+    function flush(   i) {
+        if (!drop) { for (i = 1; i <= n; i++) print b[i] }
+        n = 0; drop = 0
+    }
+    /^\[\[/ { flush() }
+    { b[++n] = $0 }
+    $0 ~ "^[[:space:]]*filter[[:space:]]*=" {
+        if (match($0, q "[^" q "]*" q)) {
+            val = substr($0, RSTART + 1, RLENGTH - 2)
+            if (val == want) drop = 1
+        }
+    }
+    END { flush() }
+' "$NEXTEST_TOML" > "$_J_FIX/deleted.toml"
+
+# (ii) the first heavy atom's block left at the old terminate-after = 15.
+awk -v want="$_FIRST_ATOM" -v q="'" '
+    /^\[\[/ { hit = 0 }
+    $0 ~ "^[[:space:]]*filter[[:space:]]*=" {
+        hit = 0
+        if (match($0, q "[^" q "]*" q)) {
+            val = substr($0, RSTART + 1, RLENGTH - 2)
+            if (val == want) hit = 1
+        }
+    }
+    hit && /^[[:space:]]*slow-timeout[[:space:]]*=/ {
+        sub(/terminate-after[[:space:]]*=[[:space:]]*[0-9]+/, "terminate-after = 15")
+        hit = 0
+    }
+    { print }
+' "$NEXTEST_TOML" > "$_J_FIX/stale.toml"
+
+# (iii) the first heavy atom's filter VALUE typo'd so it no longer equals the
+# lib atom (the silent-drift shape: nextest still parses the file happily).
+sed "s|${_FIRST_ATOM}|&_typo|" "$NEXTEST_TOML" > "$_J_FIX/typo.toml"
+
+assert "J-neg (i): checker REJECTS a nextest.toml with a heavy atom's override block deleted" \
+    _heavy_ceilings_reject "$_J_FIX/deleted.toml"
+
+assert "J-neg (ii): checker REJECTS a nextest.toml with a heavy block left at the old terminate-after = 15" \
+    _heavy_ceilings_reject "$_J_FIX/stale.toml"
+
+assert "J-neg (iii): checker REJECTS a nextest.toml with a heavy block's filter value typo'd out of correspondence" \
+    _heavy_ceilings_reject "$_J_FIX/typo.toml"
+
+# Positive control: the SAME checker accepts the real file, so the three
+# rejections above are attributable to the seeded drift and not to a checker
+# that rejects everything.
+assert "J-neg control: the same checker ACCEPTS the real .config/nextest.toml" \
+    _heavy_ceilings_ok "$NEXTEST_TOML"
+
+rm -rf "$_J_FIX"
+
 test_summary
