@@ -4013,16 +4013,19 @@ impl std::fmt::Display for Value {
                 si_value,
                 dimension,
             } => {
-                // Label only: si_value stays the raw SI magnitude. The
-                // dimensionless guard is required because
-                // `dimension_unit_label` returns "" there, which would emit a
-                // trailing space where the composed form writes the word
-                // "dimensionless" — the sibling Complex arm below branches on
-                // the same predicate for the same reason.
-                if dimension.is_dimensionless() {
+                // Label only: si_value stays the raw SI magnitude. The empty
+                // label is `dimension_unit_label`'s own way of reporting "this
+                // dimension has no unit", so branch on what it RETURNED rather
+                // than re-derive that condition from the dimension — one
+                // encoding of the contract, shared with `format_hover`, which
+                // binds and tests the label the same way. Without the branch a
+                // dimensionless scalar would render "1.02 " with a trailing
+                // space instead of the composed "1.02 dimensionless".
+                let unit = dimension_unit_label(dimension);
+                if unit.is_empty() {
                     write!(f, "{} {}", si_value, dimension)
                 } else {
-                    write!(f, "{} {}", si_value, dimension_unit_label(dimension))
+                    write!(f, "{} {}", si_value, unit)
                 }
             }
             Value::Enum { type_name, variant, .. } => write!(f, "{}::{}", type_name, variant),
@@ -4118,11 +4121,17 @@ impl std::fmt::Display for Value {
                 let re_str = fmt_f64(*re);
                 let im_abs_str = fmt_f64(im.abs());
                 let sign = if im.is_sign_negative() { "-" } else { "+" };
-                if dimension.is_dimensionless() {
+                // Same label source as the Scalar arm above and
+                // `format_hover`, so one dimension renders one way wherever it
+                // surfaces: both arms are reachable from a single `reify eval`
+                // cell dump, and curating only the Scalar one would print
+                // "101325 Pa" beside "(3+4i) kg·m^-1·s^-2".
+                let unit = dimension_unit_label(dimension);
+                if unit.is_empty() {
                     write!(f, "{}{}{}", re_str, sign, im_abs_str)?;
                     write!(f, "i")
                 } else {
-                    write!(f, "({}{}{}i) {}", re_str, sign, im_abs_str, dimension)
+                    write!(f, "({}{}{}i) {}", re_str, sign, im_abs_str, unit)
                 }
             }
             Value::Orientation { w, x, y, z } => {
@@ -7627,6 +7636,41 @@ mod tests {
             dimension: DimensionVector::LENGTH,
         };
         assert_eq!(format!("{}", v), "(3+4i) m");
+    }
+
+    /// The Complex arm sources its unit from `dimension_unit_label`, the same
+    /// resolver the Scalar arm and `format_hover` use, so one dimension renders
+    /// one way across a whole `reify eval` cell dump (task #6674 amendment).
+    ///
+    /// `value_complex_display_dimensioned` above cannot witness that: LENGTH's
+    /// curated and composed spellings are both "m", so it passes either way.
+    /// These rows use dimensions whose two spellings DIFFER.
+    #[test]
+    fn value_complex_display_uses_the_curated_unit_label() {
+        let curated = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::PRESSURE,
+        };
+        assert_eq!(
+            format!("{}", curated),
+            "(3+4i) Pa",
+            "a curated dimension must render its registry label, not the composed base-SI form"
+        );
+
+        // The fallback arm, mirroring the Scalar arm's Torque row in
+        // `display_scalar_fallback_and_composite_arms`: an uncurated dimension
+        // keeps the composed base-SI label.
+        let uncurated = Value::Complex {
+            re: 1.0,
+            im: -2.0,
+            dimension: DimensionVector::TORQUE,
+        };
+        assert_eq!(
+            format!("{}", uncurated),
+            "(1-2i) m^2\u{00b7}kg\u{00b7}s^-2\u{00b7}rad^-1",
+            "an uncurated dimension must keep its composed base-SI label"
+        );
     }
 
     #[test]
