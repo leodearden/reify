@@ -159,6 +159,52 @@ assert "main-gate log records the sanctioned move" \
 assert "happy path prints the landed SHA on stdout" \
     bash -c "printf '%s\n' \"\$1\" | grep -qE '[0-9a-f]{40}'" _ "$LAND_OUT"
 
+# -- non-vacuity control: the recorded gate-env can only come from land.sh -----
+# WHY THIS EXISTS. The two propagation assertions above were MEASURED vacuous:
+# land() runs the script under test with the ambient environment un-scrubbed, and
+# the orchestrator injects REIFY_GATE_EXCLUDE_HEAVY=1 into every verify
+# subprocess while the merge tier stamps DF_VERIFY_ROLE=merge — precisely the two
+# values they look for. Deleting `export REIFY_GATE_EXCLUDE_HEAVY=1` from
+# scripts/land.sh outright and running this file under
+# `DF_VERIFY_ROLE=merge REIFY_GATE_EXCLUDE_HEAVY=1` left both of them PASSING.
+# The repo's established answer to that hazard is the `env -u` scrub at the
+# invocation site (scripts/test_psi_gate.sh:69-74 clears DF_VERIFY_ROLE for the
+# same reason, #4943), and land() now carries one.
+#
+# This control is what pins that scrub: it lands a copy of land.sh with the
+# export STRIPPED and asserts the gate child records <unset> anyway. Without it a
+# later edit could drop the scrub and return both assertions above to vacuity
+# with nothing going red.
+echo ""
+echo "--- non-vacuity control: a land.sh with the export stripped must record <unset> ---"
+RC=""; make_repo RC
+# Derive the stripped variant from the real script rather than writing one out,
+# and assert the strip removed EXACTLY ONE line — a future rename of the variable
+# would otherwise match nothing and silently turn this control into a no-op that
+# passes for the wrong reason.
+_LAND_LINES="$(wc -l < "$REPO_ROOT/scripts/land.sh")"
+grep -v '^export REIFY_GATE_EXCLUDE_HEAVY=1$' "$REPO_ROOT/scripts/land.sh" > "$RC/scripts/land.sh"
+_STRIPPED_LINES="$(wc -l < "$RC/scripts/land.sh")"
+chmod +x "$RC/scripts/land.sh"
+git -C "$RC" add scripts/land.sh
+git -C "$RC" commit -q -m "control: land.sh without the heavy-exclusion export"
+assert "control: stripping the export removed exactly one line from scripts/land.sh (the anchor still matches the real script)" \
+    test "$(( _LAND_LINES - _STRIPPED_LINES ))" -eq 1
+rm -f "$RC/.git/gate-env"
+# Force BOTH guard vars into the ambient environment, so this control is
+# deterministically red without the scrub regardless of what the host env happens
+# to hold. Set by an explicit `export` inside a SUBSHELL, never as a
+# `VAR=val land ...` prefix: bash prefix assignments on a FUNCTION call can
+# persist in the calling shell after the function returns (they are reliably
+# transient only under `set -o posix`), which would silently contaminate every
+# later assertion in this file. LAND_RC/LAND_OUT are lost to the subshell, which
+# costs nothing here — the control reads its verdict from the recorded gate-env.
+( export DF_VERIFY_ROLE=merge REIFY_GATE_EXCLUDE_HEAVY=1; land "$RC" task/foo )
+assert "control: the stripped variant still reached the merge gate (gate-env recorded)" \
+    bash -c "test -f '$RC/.git/gate-env'"
+assert "control: with the export stripped, the gate child records REIFY_GATE_EXCLUDE_HEAVY=<unset> even under an ambient =1 — which is what makes the happy-path propagation assertion load-bearing rather than inherited" \
+    bash -c "grep -qx 'REIFY_GATE_EXCLUDE_HEAVY=<unset>' '$RC/.git/gate-env'"
+
 # -- darkened core.hooksPath -> re-assert (task 4380) --------------------------
 # Scenario: before the merge, core.hooksPath has been overwritten to the inert
 # .git/hooks samples dir (no reference-transaction hook) — mirroring the Claude
