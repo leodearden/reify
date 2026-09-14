@@ -55,6 +55,12 @@
 //! is supported there. `Connect` (tracked by task 2690), `Instantiation`,
 //! and `Chain` body shapes retain compile-time silent-skip semantics and
 //! emit an info diagnostic noting the follow-up task.
+//!
+//! **Duplicate diagnostics:** every diagnostic raised inside
+//! `elaborate_forall_connect`'s per-element loop goes through
+//! `ForallDiagnosticSink`, which reports each distinct diagnostic once per
+//! declaration and only ever filters — so the zero-diagnostic guarantees above
+//! are unaffected.
 
 use super::*;
 use std::collections::HashMap;
@@ -939,31 +945,31 @@ pub(crate) fn elaborate_forall_connect(
             // anchor every emitted connection's span at `decl.span` so
             // per-element diagnostics cite the forall site.
             ForallConnectBody::Chain(cd) => {
-                // Edge case: fewer than two elements is a malformed chain.
-                // Emit the standard chain diagnostic once per element-iteration
-                // (matching the plain-Chain arm's behaviour) anchored at the
-                // forall span. The plain arm uses `chain_decl.span`; here the
-                // forall span subsumes the chain body's span and is the
-                // user-visible site.
+                // Edge case: fewer than two elements is a malformed chain. The
+                // guard is CHECKED per element; the diagnostic it raises is
+                // element-independent, so the sink reports it once per
+                // declaration. Anchored at the forall span — the plain-Chain arm
+                // uses `chain_decl.span`, but here the forall span subsumes the
+                // chain body's span and is the user-visible site. Unreachable
+                // from `.ri` source today: `ts_parser.rs::lower_chain` rejects a
+                // `<2`-element chain with a parse error and is the only
+                // constructor of `ForallConnectBody::Chain`.
                 //
                 // INTENTIONAL PLACEMENT — this guard is INSIDE the outer
                 // per-element loop. For `forall v in []: chain ...` (PRD
                 // criterion 6), the outer loop iterates zero times so this
-                // guard is never reached and no diagnostic is emitted. For a
-                // non-empty forall with a malformed chain body (e.g. only one
-                // chain element), the guard fires once per outer-loop element.
-                // Do NOT hoist this guard outside the loop for "efficiency" —
-                // doing so would fire the diagnostic for the empty-list case
-                // (breaking criterion 6) and for the undef-count deferred case.
+                // guard is never reached and no diagnostic is emitted; the sink
+                // only ever filters, never adds, so that stays true. Do NOT
+                // hoist this guard outside the loop for "efficiency" — doing so
+                // would fire the diagnostic for the empty-list case (breaking
+                // criterion 6) and for the undef-count deferred case.
                 if cd.elements.len() < 2 {
-                    // TRANSIENT (task 7195 step-2): the Chain arm still writes
-                    // straight through to the sink's output, so it keeps today's
-                    // per-element duplication. Step-4 routes both Chain-arm
-                    // emissions through `sink.collecting`.
-                    sink.out.push(
-                        Diagnostic::error("chain statement requires at least two elements")
-                            .with_label(DiagnosticLabel::new(decl.span, "too few elements")),
-                    );
+                    sink.collecting(|element_diagnostics| {
+                        element_diagnostics.push(
+                            Diagnostic::error("chain statement requires at least two elements")
+                                .with_label(DiagnosticLabel::new(decl.span, "too few elements")),
+                        );
+                    });
                     // Skip emission for this element; without at least two
                     // elements there is no pairwise window to desugar.
                     let _ = i;
@@ -986,20 +992,22 @@ pub(crate) fn elaborate_forall_connect(
                         value_cells,
                         pending_connect_auto_params,
                     };
-                    compile_connection(
-                        &ctx,
-                        &ConnectInput {
-                            left_expr: &pair[0],
-                            operator: reify_ast::ConnectOp::Forward,
-                            right_expr: &pair[1],
-                            connector_type: None,
-                            params: &[],
-                            port_mappings: &[],
-                            span: decl.span,
-                        },
-                        sink.out,
-                        &mut acc,
-                    );
+                    sink.collecting(|element_diagnostics| {
+                        compile_connection(
+                            &ctx,
+                            &ConnectInput {
+                                left_expr: &pair[0],
+                                operator: reify_ast::ConnectOp::Forward,
+                                right_expr: &pair[1],
+                                connector_type: None,
+                                params: &[],
+                                port_mappings: &[],
+                                span: decl.span,
+                            },
+                            element_diagnostics,
+                            &mut acc,
+                        );
+                    });
                 }
             }
         }
