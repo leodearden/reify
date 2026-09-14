@@ -4411,7 +4411,14 @@ pub(crate) fn check_applied_type_arg_bounds(
 /// - `alias_registry.lookup(name).is_some()` → known alias → OK
 /// - `structure_names.contains(name)` → known structure/occurrence → OK
 /// - `trait_names.contains(name)` → known trait → OK
+/// - `enum_names.contains(name)` → known enum → OK
 /// - Otherwise → push a def-site `UnresolvedType` Error at `entry.span`.
+///
+/// All four entity kinds an alias body may legally name — structure def,
+/// occurrence def, trait, enum — are therefore covered.  The enum arm was
+/// missing until #6477, which made `pub type G<T> = Option<SomeEnum>` fail
+/// its own definition site with "references unknown name" for a plainly
+/// declared name.
 ///
 /// Resolving names in isolation (rather than re-resolving the whole body)
 /// avoids false-positives on valid `Rate<Q>=Q/Time` (Q is a free param; the
@@ -4437,6 +4444,7 @@ pub(crate) fn validate_pub_parametric_alias_def_site(
     alias_registry: &TypeAliasRegistry,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
+    enum_names: &HashSet<String>,
     template_registry: &HashMap<String, &TopologyTemplate>,
     trait_registry: &HashMap<String, &CompiledTrait>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -4455,9 +4463,9 @@ pub(crate) fn validate_pub_parametric_alias_def_site(
 
     // ── Case (a): name-existence check ────────────────────────────────────────
     // Emit an error for each name referenced in the body that is not the alias's
-    // own type param and cannot be resolved as a builtin, alias, structure, or
-    // trait.  Track seen names (as owned Strings) to suppress duplicate errors
-    // for the same name across the body.
+    // own type param and cannot be resolved as a builtin, alias, structure,
+    // trait, or enum.  Track seen names (as owned Strings) to suppress duplicate
+    // errors for the same name across the body.
     let mut seen: HashSet<String> = HashSet::new();
     for name in collect_type_expr_names(body) {
         if !seen.insert(name.clone()) {
@@ -4478,7 +4486,8 @@ pub(crate) fn validate_pub_parametric_alias_def_site(
             || is_parameterized_builtin_name(name.as_str())
             || alias_registry.lookup(&name).is_some()
             || structure_names.contains(&name)
-            || trait_names.contains(&name);
+            || trait_names.contains(&name)
+            || enum_names.contains(&name);
         if !is_known {
             diagnostics.push(
                 Diagnostic::error(format!(
