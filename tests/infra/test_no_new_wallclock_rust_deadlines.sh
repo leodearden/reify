@@ -1635,4 +1635,147 @@ _s4d5_nm="$(grep -c '^  - ' "$_s4d5_tmpdir/out.txt" || true)"
 assert "4d-5: both directions are reported -- one + record and one - row" \
     test "$_s4d5_both" -eq 1
 
+# ===========================================================================
+# Section 4e: THE VACUITY FLOOR, and roots that do not exist.
+#
+# WHY THIS SECTION IS MANDATORY, not defensive padding. A subset oracle is
+# TRIVIALLY SATISFIED BY THE EMPTY SET: a scan that silently visited no files
+# at all reports "no new violations" and passes. Today the stale direction
+# covers that by accident -- scanning nothing turns all 19 baseline rows stale
+# and reds -- but that cover EVAPORATES the moment the baseline is drained to
+# zero, which is precisely the state this ratchet exists to reach. At that
+# point a typo in the root list would leave the guard permanently, silently
+# green while guarding nothing.
+#
+# So the floor is explicit and independent of the baseline: COUNT the .rs
+# files actually visited, and treat a root that does not exist as a HARD
+# ERROR rather than as an empty contribution. grep's own exit codes already
+# draw that line -- an empty directory is rc 1 (clean) and a missing one is
+# rc 2 (error) -- and this section pins that the distinction survives all the
+# way out to the caller.
+# ===========================================================================
+echo ""
+echo "--- Section 4e: vacuity floor and root validation ---"
+
+# ---------------------------------------------------------------------------
+# 4e-1: a populated root counts the .rs files it holds.
+# ---------------------------------------------------------------------------
+_s4e1_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4e1_tmpdir")
+_fixture "$_s4e1_tmpdir" "a.rs" '    let t0 = Instant::now();'
+_fixture "$_s4e1_tmpdir" "b.rs" '    fn main() {}'
+
+_s4e1_n="$(_wallclock_files_scanned "$_s4e1_tmpdir" 2>/dev/null || echo "ERR")"
+assert "4e-1: a root holding two .rs files counts 2" \
+    test "$_s4e1_n" -eq 2
+
+# ---------------------------------------------------------------------------
+# 4e-2: an EMPTY root counts 0 and is NOT an error. An existing-but-empty
+#       directory is a real state (a crate whose tests were all consolidated
+#       away), and conflating it with a missing one would make the guard red
+#       on a legitimate tree.
+# ---------------------------------------------------------------------------
+_s4e2_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4e2_tmpdir")
+
+_s4e2_rc=0
+_s4e2_n="$(_wallclock_files_scanned "$_s4e2_tmpdir" 2>/dev/null)" || _s4e2_rc=$?
+assert "4e-2: an empty root counts 0" \
+    test "$_s4e2_n" -eq 0
+assert "4e-2: an empty root is not an error (returns 0)" \
+    test "$_s4e2_rc" -eq 0
+
+# ---------------------------------------------------------------------------
+# 4e-3: counts RECURSIVELY and ACROSS ROOTS, and counts only .rs. The live
+#       floor is asserted over 35 roots full of subdirectories, so a
+#       non-recursive or first-root-only count would report a number far
+#       below the real one and could satisfy a floor it should not.
+# ---------------------------------------------------------------------------
+_s4e3_r1="$(mktemp -d)"; _TMPDIRS+=("$_s4e3_r1")
+_s4e3_r2="$(mktemp -d)"; _TMPDIRS+=("$_s4e3_r2")
+mkdir -p "$_s4e3_r1/nested/deeper"
+_fixture "$_s4e3_r1" "top.rs" '    fn main() {}'
+_fixture "$_s4e3_r1/nested" "mid.rs" '    fn main() {}'
+_fixture "$_s4e3_r1/nested/deeper" "low.rs" '    fn main() {}'
+_fixture "$_s4e3_r1" "notrust.txt" '    fn main() {}'
+_fixture "$_s4e3_r2" "other.rs" '    fn main() {}'
+
+_s4e3_n="$(_wallclock_files_scanned "$_s4e3_r1" "$_s4e3_r2" 2>/dev/null || echo "ERR")"
+assert "4e-3: three nested .rs plus one in a second root count 4, ignoring the .txt" \
+    test "$_s4e3_n" -eq 4
+
+# ---------------------------------------------------------------------------
+# 4e-4: A ROOT THAT DOES NOT EXIST IS A HARD ERROR. This is the assertion the
+#       whole section is for. It must never be a silent zero contribution --
+#       that is exactly how a typo'd root list plus a drained baseline goes
+#       green while scanning nothing.
+# ---------------------------------------------------------------------------
+_s4e4_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4e4_tmpdir")
+
+_s4e4_rc=0
+_wallclock_files_scanned "$_s4e4_tmpdir/no-such-root" \
+    > "$_s4e4_tmpdir/out.txt" 2>&1 || _s4e4_rc=$?
+assert "4e-4: a root that does not exist is a hard error (returns non-zero)" \
+    test "$_s4e4_rc" -ne 0
+
+_s4e4_named=0
+case "$(cat "$_s4e4_tmpdir/out.txt")" in
+    *"$_s4e4_tmpdir/no-such-root"*) _s4e4_named=1 ;;
+esac
+assert "4e-4: the error names the missing root" \
+    test "$_s4e4_named" -eq 1
+
+# ---------------------------------------------------------------------------
+# 4e-5: THE SAME VALIDATION IN THE FINGERPRINT ENGINE. The floor is only half
+#       the protection: if a bad root reached the comparison it would
+#       contribute no records, and the NEW direction would report "clean" for
+#       it. Asserted on the engine directly so the guarantee cannot be lost by
+#       someone calling it without the counter.
+# ---------------------------------------------------------------------------
+_s4e5_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4e5_tmpdir")
+
+_s4e5_rc=0
+_wallclock_fingerprints "$_s4e5_tmpdir/no-such-root" \
+    > "$_s4e5_tmpdir/out.txt" 2>&1 || _s4e5_rc=$?
+assert "4e-5: the fingerprint engine rejects a root that does not exist (non-zero)" \
+    test "$_s4e5_rc" -ne 0
+
+_s4e5_named=0
+case "$(cat "$_s4e5_tmpdir/out.txt")" in
+    *"$_s4e5_tmpdir/no-such-root"*) _s4e5_named=1 ;;
+esac
+assert "4e-5: the engine's error names the missing root" \
+    test "$_s4e5_named" -eq 1
+
+# ---------------------------------------------------------------------------
+# 4e-6: AND OUT THROUGH THE RATCHET. The end-to-end statement: a bad root can
+#       never reach `_wallclock_baseline_check`'s caller looking like "no new
+#       violations". rc must be neither 0 (clean) nor 1 (a real difference),
+#       so a caller can tell a broken scan from a failing one.
+# ---------------------------------------------------------------------------
+_s4e6_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4e6_tmpdir")
+_fixture "$_s4e6_tmpdir" "baseline.txt" '# empty'
+
+_s4e6_rc=0
+_wallclock_baseline_check "$_s4e6_tmpdir/baseline.txt" "$_s4e6_tmpdir/no-such-root" \
+    > "$_s4e6_tmpdir/out.txt" 2>&1 || _s4e6_rc=$?
+assert "4e-6: a bad root propagates out of the ratchet as rc 2, not 0 and not 1" \
+    test "$_s4e6_rc" -eq 2
+
+# ---------------------------------------------------------------------------
+# 4e-7: A ROOT THAT IS A FILE, not a directory. The realistic way the glob in
+#       Section 3 goes wrong is an UNMATCHED glob, which bash leaves as the
+#       literal pattern string -- a path that does not exist, covered by 4e-4.
+#       A plain file is the other near-miss (a root list that lost its `/tests`
+#       suffix), and it must be rejected rather than quietly scanned as one
+#       file, because scanning one file where a whole tree was intended is the
+#       same vacuity hole wearing a different hat.
+# ---------------------------------------------------------------------------
+_s4e7_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4e7_tmpdir")
+_fixture "$_s4e7_tmpdir" "notadir.rs" '    let t0 = Instant::now();'
+
+_s4e7_rc=0
+_wallclock_files_scanned "$_s4e7_tmpdir/notadir.rs" \
+    > "$_s4e7_tmpdir/out.txt" 2>&1 || _s4e7_rc=$?
+assert "4e-7: a root that is a file, not a directory, is a hard error (non-zero)" \
+    test "$_s4e7_rc" -ne 0
+
 test_summary
