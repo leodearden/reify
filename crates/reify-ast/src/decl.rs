@@ -2835,33 +2835,18 @@ mod member_recursion_set_tests {
     }
 
     /// A KEYED sub handed to `walk_specialization_scope_members` as the scope
-    /// ROOT has its entries' overrides walked.
+    /// ROOT has EVERY entry's overrides walked, in declaration order.
     ///
-    /// A code path distinct from the table above: that fixture reaches its keyed
-    /// sub through `walk_members`' recursive `Sub` arm, whereas this one hands a
-    /// keyed sub straight to the root entry point, which reads the sub's
-    /// override lists itself. A keyed ROOT was a silent no-op until both paths
-    /// shared `sub_override_bodies`. As with the body form, the root sub itself
-    /// is not visited — the walk is over its scope's members.
-    #[test]
-    fn walk_specialization_scope_members_visits_keyed_entry_overrides() {
-        let sub = sub_with_keyed_members(
-            "scope",
-            vec![("a", vec![param("marker_keyed_root", (0, 40), None)])],
-        );
-        let mut tags = Vec::new();
-        walk_specialization_scope_members(&sub, &mut |m| tags.push(tag(m)));
-        assert_eq!(
-            tags,
-            vec!["param:marker_keyed_root".to_string()],
-            "a keyed sub IS a specialization-scope root — one scope per entry (spec §8.7)"
-        );
-    }
-
-    /// Every keyed entry is its own scope root, in declaration order.
+    /// A code path distinct from the reachability table above: that fixture
+    /// reaches its keyed sub through `walk_members`' recursive `Sub` arm,
+    /// whereas this one hands a keyed sub straight to the root entry point,
+    /// which reads the sub's override lists itself. A keyed ROOT was a silent
+    /// no-op until both paths shared `sub_override_bodies`. As with the body
+    /// form, the root sub itself is not visited — the walk is over its scope's
+    /// members.
     ///
-    /// Guards against a `.first()`-shaped partial fix at the root entry point;
-    /// the single-entry test above cannot tell the two apart.
+    /// Two entries rather than one, so a `.first()`-shaped partial fix at the
+    /// root entry point fails here.
     #[test]
     fn walk_specialization_scope_members_visits_every_keyed_entry_in_source_order() {
         let sub = sub_with_keyed_members(
