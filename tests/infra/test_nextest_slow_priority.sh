@@ -588,11 +588,75 @@ rm -f "$_CO_CFG"
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
+# _slow_timeout_blocks_for_file <file> — ONE parse, two views (see the two
+# wrappers below). Emits one `<ceiling-seconds><TAB><filter-value>` line per
+# TOML table that carries BOTH a `filter` and a `slow-timeout` key. Ceiling is
+# period-seconds * terminate-after. Tables with a filter but no slow-timeout
+# (the occt test-group routing block) are correctly omitted: they set a
+# different SETTING and this guard is about ceilings.
+#
+# BLOCK-BUFFERED AND QUOTE-AGNOSTIC, deliberately. The first form of this parse
+# walked line-by-line and only saw a block whose `slow-timeout` line came AFTER
+# its `filter` line, with the value single-quoted. TOML imposes no key order and
+# permits either quote character, so an override authored the other way round —
+# or with "double quotes" — was INVISIBLE here. That mattered asymmetrically:
+# Assertion J failed CLOSED on it (no block found => `<no block>` => red), but
+# Assertion K's total classification failed OPEN, silently absorbing exactly the
+# unclassified newcomer it exists to catch. Buffering the whole table and reading
+# both keys out of it regardless of order closes that.
+#
+# `/^\[/` (any table header, not just `^\[\[`) terminates a block: a following
+# `[profile.X]` must not let one table's filter pair with a later table's
+# slow-timeout.
+# ---------------------------------------------------------------------------
+_slow_timeout_blocks_for_file() {
+    local file="$1"
+    awk '
+        function emit(   pseg, tseg, period, term) {
+            if (fil != "" && sto != "") {
+                period = 0; term = 0
+                if (match(sto, /period[[:space:]]*=[[:space:]]*"[0-9]+s"/)) {
+                    pseg = substr(sto, RSTART, RLENGTH)
+                    match(pseg, /[0-9]+/)
+                    period = substr(pseg, RSTART, RLENGTH) + 0
+                }
+                if (match(sto, /terminate-after[[:space:]]*=[[:space:]]*[0-9]+/)) {
+                    tseg = substr(sto, RSTART, RLENGTH)
+                    match(tseg, /[0-9]+$/)
+                    term = substr(tseg, RSTART, RLENGTH) + 0
+                }
+                printf "%d\t%s\n", period * term, fil
+            }
+            fil = ""; sto = ""
+        }
+        /^\[/ { emit() }
+        $0 ~ "^[[:space:]]*filter[[:space:]]*=" {
+            s = $0
+            sub(/^[[:space:]]*filter[[:space:]]*=[[:space:]]*/, "", s)
+            qc = substr(s, 1, 1)
+            if (qc == "\047" || qc == "\"") {
+                rest = substr(s, 2)
+                i = index(rest, qc)
+                if (i > 0) {
+                    val = substr(rest, 1, i - 1)
+                    gsub(/[[:space:]]+/, " ", val)
+                    sub(/^ /, "", val)
+                    sub(/ $/, "", val)
+                    fil = val
+                }
+            }
+        }
+        $0 ~ "^[[:space:]]*slow-timeout[[:space:]]*=" { sto = $0 }
+        END { emit() }
+    ' "$file"
+}
+
+# ---------------------------------------------------------------------------
 # Helper (task 6485): ceiling (period-seconds * terminate-after) for the
 # [[profile.default.overrides]] block whose `filter` VALUE equals <filter>
-# exactly (whitespace-normalized). Mirrors the _slow_period_for_file /
-# _slow_terminate_for_file block-walk above, but keys on the whole filter
-# value instead of package+binary.
+# exactly (whitespace-normalized). Keys on the whole filter value instead of
+# the package+binary pair the _slow_period_for_file / _slow_terminate_for_file
+# helpers above use.
 #
 # REQUIRED, not stylistic: the two test-scoped heavy atoms share BOTH package
 # (reify-eval) AND binary (harness_fea_solver_e2e), so the package+binary
@@ -601,32 +665,11 @@ rm -f "$_CO_CFG"
 # Usage: _slow_ceiling_for_filter <file> <filter-value>
 # ---------------------------------------------------------------------------
 _slow_ceiling_for_filter() {
-    local file="$1" want="$2"
-    awk -v want="$want" -v q="'" '
-        /^\[\[/ { in_block = 0 }
-        $0 ~ "^[[:space:]]*filter[[:space:]]*=" {
-            in_block = 0
-            if (match($0, q "[^" q "]*" q)) {
-                val = substr($0, RSTART + 1, RLENGTH - 2)
-                gsub(/[[:space:]]+/, " ", val)
-                sub(/^ /, "", val)
-                sub(/ $/, "", val)
-                if (val == want) in_block = 1
-            }
-        }
-        in_block && /^[[:space:]]*slow-timeout[[:space:]]*=/ {
-            match($0, /period[[:space:]]*=[[:space:]]*"[0-9]+s"/)
-            pseg = substr($0, RSTART, RLENGTH)
-            match(pseg, /[0-9]+/)
-            period = substr(pseg, RSTART, RLENGTH) + 0
-            match($0, /terminate-after[[:space:]]*=[[:space:]]*[0-9]+/)
-            tseg = substr($0, RSTART, RLENGTH)
-            match(tseg, /[0-9]+$/)
-            term = substr(tseg, RSTART, RLENGTH) + 0
-            print period * term
-            in_block = 0
-        }
-    ' "$file"
+    local file="$1" want="$2" ceil fil
+    while IFS="$(printf '\t')" read -r ceil fil; do
+        [ "$fil" = "$want" ] && { printf '%s' "$ceil"; return 0; }
+    done < <(_slow_timeout_blocks_for_file "$file")
+    return 0
 }
 
 # The 12h (43200s = 120s x 360) offline per-test ceiling.
@@ -801,37 +844,107 @@ rm -rf "$_J_FIX"
 
 VERIFY_SH="$REPO_ROOT/scripts/verify.sh"
 
+# ---------------------------------------------------------------------------
+# WALL EXTRACTORS (task 6485). Each reads ONE specific `_resolve_timeout_knob`
+# default out of scripts/verify.sh and converts it to seconds; each prints empty
+# when its anchor stops matching, which the non-emptiness assertions turn into a
+# loud failure rather than a silent comparison against zero.
+#
+# EVERY ONE IS WINDOWED to the construct it claims to read, never `head -n1` over
+# a file-wide grep. verify.sh mentions these knob names in prose comments as well
+# as in code, and the release knob now has TWO defaults (the base one and the
+# offline re-resolution). A first-match-anywhere grep would work today purely by
+# accident of ordering, and would silently substitute one role's wall for
+# another's the moment a second role gained its own default — reporting a role
+# REACHABLE against a wall it does not run under. Windowing is the same technique
+# _heavy_excluded_roles_for_file uses, for the same reason.
+# ---------------------------------------------------------------------------
+
+# _debug_wall_secs_for_file <verify.sh> — the DEBUG (--workspace) pass wall.
+# Anchored on the unconditional assignment at column 0, so neither the comment
+# quoting this grep nor the `_RELEASE` knob's own line can match.
+_debug_wall_secs_for_file() {
+    local file="$1" m
+    m="$(grep -oE '^_VERIFY_TEST_TIMEOUT="\$\(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT [0-9]+m' "$file" \
+            | grep -oE '[0-9]+m$' | tr -d 'm')" || m=""
+    [ -n "$m" ] || return 0
+    printf '%s' $(( m * 60 ))
+}
+
+# _base_release_wall_secs_for_file <verify.sh> — the RELEASE pass wall that
+# applies to every role the offline re-resolution below does NOT cover.
+# Anchored on its own unconditional assignment at column 0.
+_base_release_wall_secs_for_file() {
+    local file="$1" m
+    m="$(grep -oE '^_VERIFY_TEST_TIMEOUT_RELEASE="\$\(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE [0-9]+m' "$file" \
+            | grep -oE '[0-9]+m$' | tr -d 'm')" || m=""
+    [ -n "$m" ] || return 0
+    printf '%s' $(( m * 60 ))
+}
+
+# _offline_wall_secs_for_file <verify.sh> — the role-scoped RELEASE wall, read
+# from INSIDE the `if [ "${DF_VERIFY_ROLE:-task}" = "<role>" ]` … `fi` block that
+# re-resolves it, not from the first `Nh` anywhere in the file.
+_offline_wall_secs_for_file() {
+    local file="$1" h
+    h="$(_release_scope_block_for_file "$file" \
+            | grep -oE '_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE [0-9]+h' \
+            | grep -oE '[0-9]+h$' | tr -d 'h')" || h=""
+    [ -n "$h" ] || return 0
+    printf '%s' $(( h * 3600 ))
+}
+
+# _release_scope_block_for_file <verify.sh> — the body of the role-scoped
+# release re-resolution: the `if` line that tests DF_VERIFY_ROLE and immediately
+# assigns _VERIFY_TEST_TIMEOUT_RELEASE, through its closing `fi`. Both the wall
+# value and the role it is scoped to are read out of this one window, so the two
+# can never be taken from different constructs.
+_release_scope_block_for_file() {
+    awk '
+        /^if \[ "\$\{DF_VERIFY_ROLE:-[a-z]+\}" = "[a-z]+" \]; then$/ { buf = $0; n = 1; win = 1; next }
+        win && /^fi$/ { if (hit) print buf ORS $0; win = 0; hit = 0; buf = ""; next }
+        win {
+            buf = buf ORS $0
+            if ($0 ~ /_VERIFY_TEST_TIMEOUT_RELEASE=/) hit = 1
+        }
+    ' "$1"
+}
+
+# _release_scoped_roles_for_file <verify.sh> — the role(s) whose RELEASE wall the
+# block above re-scopes. Today: offline. Derived rather than named so that
+# re-pointing the scope at a different role moves the wall with it here too.
+_release_scoped_roles_for_file() {
+    _release_scope_block_for_file "$1" \
+        | grep -oE 'DF_VERIFY_ROLE:-[a-z]+\}" = "[a-z]+"' \
+        | grep -oE '= "[a-z]+"$' | tr -d '= "'
+}
+
 # The gate-resident tier: overrides that DO still run on the merge gate, so the
-# 3600s pass-level wall really binds them and their ceiling must stay under it.
+# pass-level wall really binds them and their ceiling must stay under it.
 GATE_RESIDENT_FILTERS=(
     'package(reify-eval) & binary(representation_within_assertion)'
     'package(reify-eval) & binary(solve_elastic_static_body_e2e)'
 )
 GATE_RESIDENT_CEILING_SECONDS=1800
-GATE_WALL_SECONDS=3600
+
+# DERIVED, not a literal. This is the merge role's binding DEBUG wall — the same
+# number Assertion L reads for the background role — and the gate-resident tier
+# exists precisely to stay under it. Hardcoding 3600 here would mean lowering
+# verify.sh's debug default (to 20m, say) silently left the two gate-resident
+# 1800s ceilings unreachable on the BLOCKING gate with nothing going red: the
+# zero-attribution shape, reintroduced where it matters most. Assertion H's own
+# comment records this same defect being fixed once already.
+GATE_WALL_SECONDS="$(_debug_wall_secs_for_file "$VERIFY_SH")"
 
 # ---------------------------------------------------------------------------
-# _slow_timeout_filters_for_file <file> — one line per [[profile.default.overrides]]
-# block that carries a slow-timeout key, printing that block's filter VALUE.
-# Blocks with no slow-timeout (the occt test-group block) are correctly omitted:
-# they set a different SETTING and this guard is about ceilings.
+# _slow_timeout_filters_for_file <file> — the filter-value view of
+# _slow_timeout_blocks_for_file: one line per override block that carries a
+# slow-timeout key. Sharing that one parse is what keeps K's enumeration and
+# J's lookup agreeing about which blocks exist; two parsers would let a block
+# be visible to one and not the other, which is how K came to fail OPEN.
 # ---------------------------------------------------------------------------
 _slow_timeout_filters_for_file() {
-    local file="$1"
-    awk -v q="'" '
-        /^\[\[/ { cur = "" }
-        $0 ~ "^[[:space:]]*filter[[:space:]]*=" {
-            cur = ""
-            if (match($0, q "[^" q "]*" q)) {
-                val = substr($0, RSTART + 1, RLENGTH - 2)
-                gsub(/[[:space:]]+/, " ", val)
-                sub(/^ /, "", val)
-                sub(/ $/, "", val)
-                cur = val
-            }
-        }
-        cur != "" && /^[[:space:]]*slow-timeout[[:space:]]*=/ { print cur; cur = "" }
-    ' "$file"
+    _slow_timeout_blocks_for_file "$1" | cut -f2-
 }
 
 # _in_list <needle> [item...] — exact string membership.
@@ -878,6 +991,12 @@ _classify_overrides_reject() { ! _classify_overrides_ok "$1"; }
 
 echo ""
 echo "--- Assertion K (task 6485): every slow-timeout override classifies as heavy or gate-resident ---"
+
+# The gate-resident bound has two operands and BOTH must come from a file. This
+# is the one for the wall; the ceiling operand is read from .config/nextest.toml
+# per block below.
+assert "K: gate wall extracted from scripts/verify.sh (non-empty seconds, got '${GATE_WALL_SECONDS:-<none>}') — the gate-resident bound compares two file-derived numbers, not one number against a literal" \
+    test -n "${GATE_WALL_SECONDS:-}"
 
 _K_SEEN=()
 while IFS= read -r _f; do
@@ -943,9 +1062,14 @@ assert "K: the two classes PARTITION the file — every enumerated slow-timeout 
 # orchestrator-spawned role and by scripts/land.sh, but verify.sh scopes its
 # EFFECT to task|merge, so setting it says nothing about background or offline.
 #
-# Every operand is derived from a file: the ceiling from .config/nextest.toml,
-# the walls and both role sets from scripts/verify.sh. An assertion over two
-# hardcoded numbers can never fail regardless of what the files contain.
+# EVERY OPERAND IS DERIVED FROM A FILE — including, since the amendment pass,
+# the role => binding-wall mapping itself. The ceiling comes from
+# .config/nextest.toml; from scripts/verify.sh come both role sets, the two wall
+# defaults, which role the release wall is re-scoped for, AND which profile each
+# role forces (so a role running `both` is judged against the TIGHTER of its two
+# walls). Naming any of those instead of reading them re-opens the same hole: an
+# assertion whose operands are literals cannot fail whatever the files say, and
+# a mapping that is a CONSEQUENCE of verify.sh is a literal in disguise.
 #
 # WALLCLOCK-GUARD SAFETY: every comparison here is a lower bound (-gt, never
 # -le/-lt), the operand vars carry no ELAPSED/_S/_MS/_NS/SECONDS suffix, and no
@@ -966,33 +1090,10 @@ L_RESIDUAL_ROLES=(
     background
 )
 
-# ---------------------------------------------------------------------------
-# _offline_wall_secs_for_file <verify.sh> — the offline role's RELEASE wall
-# default in seconds, from the `[0-9]+h` default on the offline re-resolution
-# line. Prints empty if absent (caught by the non-emptiness assertions below,
-# so a broken extractor fails loudly instead of silently comparing zeros).
-# ---------------------------------------------------------------------------
-_offline_wall_secs_for_file() {
-    local file="$1" h
-    h="$(grep -oE '_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE [0-9]+h' "$file" \
-            | grep -oE '[0-9]+' | head -n1)" || h=""
-    [ -n "$h" ] || return 0
-    printf '%s' $(( h * 3600 ))
-}
-
-# ---------------------------------------------------------------------------
-# _debug_wall_secs_for_file <verify.sh> — the DEBUG (--workspace) pass wall
-# default in seconds. The trailing space in the grep is load-bearing: it is what
-# stops this matching the REIFY_VERIFY_TEST_TIMEOUT_RELEASE line (and the
-# comment quoting it), whose knob name continues with `_RELEASE`.
-# ---------------------------------------------------------------------------
-_debug_wall_secs_for_file() {
-    local file="$1" m
-    m="$(grep -oE '_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT [0-9]+m' "$file" \
-            | grep -oE '[0-9]+' | head -n1)" || m=""
-    [ -n "$m" ] || return 0
-    printf '%s' $(( m * 60 ))
-}
+# (The wall extractors — _debug_wall_secs_for_file, _base_release_wall_secs_for_file,
+# _offline_wall_secs_for_file and the release-scope window they share — are
+# defined above Assertion K, which needs the debug wall for its gate-resident
+# bound.)
 
 # ---------------------------------------------------------------------------
 # _heavy_excluded_roles_for_file <verify.sh> — the roles the `-E "not (<heavy>)"`
@@ -1054,26 +1155,89 @@ _heavy_running_roles_for_file() {
 }
 
 # ---------------------------------------------------------------------------
-# _role_wall_secs <verify.sh> <role> — the wall that BINDS heavy members on
-# <role>, in seconds; empty for a role whose profile forcing is not modelled
-# here (which makes it unclassifiable below, i.e. RED, which is the point).
+# _role_profile_for_file <verify.sh> <role> — the profile <role> runs when no
+# explicit --profile is given: the value its branch of the role-based PROFILE
+# default assigns, or the script's base `PROFILE="..."` initializer for a role
+# no branch names.
 #
-# The profile each role forces is genuine role-specific logic in verify.sh, so
-# it is named here rather than re-derived:
-#   offline    — forces PROFILE=release (verify.sh, DF_VERIFY_ROLE=offline
-#                branch of the profile default), so the RELEASE wall binds.
-#   background — forces PROFILE=both plus --scope all, so BOTH passes run the
-#                heavy members and the tighter DEBUG wall is the binding one.
-# task and merge never reach here: the exclusion fragment removes heavy members
-# from their run entirely.
+# The parse is windowed to that `if [ "$PROFILE_EXPLICIT" -eq 0 ]` … `fi` block.
+# Within it, each if/elif condition names one or more roles and the assignment
+# that follows is theirs.
+# ---------------------------------------------------------------------------
+_role_profile_for_file() {
+    local file="$1" role="$2" got
+    got="$(awk -v want="$role" '
+        /^if \[ "\$PROFILE_EXPLICIT" -eq 0 \]/ { win = 1 }
+        win && /^fi$/ { win = 0 }
+        win && /^(if|elif) / {
+            hit = 0
+            s = $0
+            while (match(s, /DF_VERIFY_ROLE"[[:space:]]*=[[:space:]]*"[a-z_]+"/)) {
+                seg = substr(s, RSTART, RLENGTH)
+                if (match(seg, /"[a-z_]+"$/) && substr(seg, RSTART + 1, RLENGTH - 2) == want) hit = 1
+                s = substr(s, RSTART + RLENGTH)
+            }
+        }
+        win && hit && match($0, /^[[:space:]]*PROFILE="[a-z]+"$/) {
+            match($0, /"[a-z]+"$/)
+            print substr($0, RSTART + 1, RLENGTH - 2)
+            exit
+        }
+    ' "$file")"
+    if [ -n "$got" ]; then
+        printf '%s' "$got"
+        return 0
+    fi
+    grep -oE '^PROFILE="[a-z]+"$' "$file" | head -n1 | grep -oE '"[a-z]+"' | tr -d '"'
+}
+
+# ---------------------------------------------------------------------------
+# _role_wall_secs <verify.sh> <role> — the wall that BINDS heavy members on
+# <role>, in seconds; empty if any wall the role needs could not be extracted
+# (which makes the role unclassifiable below, i.e. RED, which is the point).
+#
+# DERIVED END TO END, deliberately. The first form of this helper named each
+# role's profile in a literal case statement — offline=>release, background=>debug
+# — which made L's "every operand comes from a file" claim false at its most
+# load-bearing joint. That mapping is a CONSEQUENCE of verify.sh's role-based
+# PROFILE defaults, one `||` away from changing: had offline's branch flipped to
+# PROFILE="both" (the same one-line shape merge and background already have), it
+# would run a debug pass under the 60m wall with a 12h ceiling — the exact
+# unreachable-ceiling shape L exists to prevent — while a hardcoded map went on
+# comparing against the 13h release wall and reported REACHABLE. A false green on
+# L's core invariant, covered by nothing else. Fixture (viii) pins it.
+#
+# A role running BOTH profiles is bound by the TIGHTER of the two walls, since
+# the heavy members run in each pass and the first wall to fire ends the run.
+# Conservative in the safe direction: a `both` role whose debug pass happened to
+# be narrow (no heavy members) would be judged against a wall stricter than the
+# one that really binds it, which can only over-report a gap, never hide one.
 # ---------------------------------------------------------------------------
 _role_wall_secs() {
-    local file="$1" role="$2"
-    case "$role" in
-        offline)    _offline_wall_secs_for_file "$file" ;;
-        background) _debug_wall_secs_for_file "$file" ;;
-        *)          : ;;
+    local file="$1" role="$2" profile wall min=""
+    profile="$(_role_profile_for_file "$file" "$role")"
+    [ -n "$profile" ] || return 0
+    case "$profile" in
+        debug)   set -- debug ;;
+        release) set -- release ;;
+        both)    set -- debug release ;;
+        *)       return 0 ;;
     esac
+    for wall in "$@"; do
+        case "$wall" in
+            debug) wall="$(_debug_wall_secs_for_file "$file")" ;;
+            release)
+                if _in_list "$role" $(_release_scoped_roles_for_file "$file"); then
+                    wall="$(_offline_wall_secs_for_file "$file")"
+                else
+                    wall="$(_base_release_wall_secs_for_file "$file")"
+                fi
+                ;;
+        esac
+        [ -n "$wall" ] || return 0
+        if [ -z "$min" ] || [ "$min" -gt "$wall" ]; then min="$wall"; fi
+    done
+    printf '%s' "$min"
 }
 
 # ---------------------------------------------------------------------------
@@ -1200,6 +1364,10 @@ done < <(_heavy_running_roles_for_file "$VERIFY_SH")
 
 echo "    (heavy-excluded roles from verify.sh: $(_heavy_excluded_roles_for_file "$VERIFY_SH" | tr '\n' ' '))"
 echo "    (heavy-RUNNING roles from verify.sh: ${_HEAVY_ROLES[*]:-<none>})"
+echo "    (walls from verify.sh: debug=${_DEBUG_WALL:-?}s release=$(_base_release_wall_secs_for_file "$VERIFY_SH")s; release re-scoped for: $(_release_scoped_roles_for_file "$VERIFY_SH" | tr '\n' ' ')=> ${_OFFLINE_WALL:-?}s)"
+for _r in ${_HEAVY_ROLES+"${_HEAVY_ROLES[@]}"}; do
+    echo "    (role '${_r}': forces profile '$(_role_profile_for_file "$VERIFY_SH" "$_r")' => binding wall $(_role_wall_secs "$VERIFY_SH" "$_r")s)"
+done
 
 # Non-vacuity floor for the role derivation itself: an edit that excluded every
 # role would empty the set and make the whole classification loop below a no-op.
@@ -1322,6 +1490,40 @@ sed 's/_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE [0-9]\+h/_resolve
 sed '/unknown DF_VERIFY_ROLE/ s/(want \([a-z|]*\))/(want \1|experimental)/' \
     "$VERIFY_SH" > "$_KL_FIX/verify-extra-role.sh"
 
+# (viii) a verify.sh whose OFFLINE branch of the role-based PROFILE default
+#        forces `both` instead of `release` — one `||` away from the shape merge
+#        and background already have. Offline then also runs a DEBUG pass, so the
+#        60m debug wall becomes its binding one and the 12h ceiling is out of
+#        reach, with the 13h release wall left intact to look reassuring. This is
+#        the fixture that makes _role_wall_secs' profile DERIVATION load-bearing:
+#        against the literal role=>wall map it replaced, this file classified
+#        offline REACHABLE and nothing went red.
+sed 's/^\([[:space:]]*\)PROFILE="release"$/\1PROFILE="both"/' \
+    "$VERIFY_SH" > "$_KL_FIX/verify-offline-both.sh"
+
+# (ix) an unclassified override authored slow-timeout BEFORE filter. TOML imposes
+#      no key order, so this is a legal way to write the (i) fixture — and the
+#      line-ordered parse this file used to carry could not see it at all,
+#      absorbing the newcomer silently (K failing OPEN, the one direction a
+#      total-classification guard must never fail).
+cp "$NEXTEST_TOML" "$_KL_FIX/reordered.toml"
+cat >> "$_KL_FIX/reordered.toml" <<'REORDERED'
+
+[[profile.default.overrides]]
+slow-timeout = { period = "120s", terminate-after = 99 }
+filter = 'package(reify-eval) & binary(reordered_newcomer)'
+REORDERED
+
+# (x) an unclassified override whose filter is DOUBLE-quoted. Equally legal TOML,
+#     equally invisible to a parse that keys on the single-quote character.
+cp "$NEXTEST_TOML" "$_KL_FIX/dquoted.toml"
+cat >> "$_KL_FIX/dquoted.toml" <<'DQUOTED'
+
+[[profile.default.overrides]]
+filter = "package(reify-eval) & binary(dquoted_newcomer)"
+slow-timeout = { period = "120s", terminate-after = 99 }
+DQUOTED
+
 assert "K-neg (i): classifier REJECTS an EXTRA override belonging to neither class (a new override must be classified, not absorbed)" \
     _classify_overrides_reject "$_KL_FIX/extra.toml"
 
@@ -1354,6 +1556,24 @@ assert "L-neg (vii) fixture is non-vacuous — the extra-role seed really change
 
 assert "L-neg (vii): classifier REJECTS a verify.sh that accepts a new unexcluded role, so a newcomer cannot inherit the residual by silence" \
     _role_classification_reject "$NEXTEST_TOML" "$_KL_FIX/verify-extra-role.sh"
+
+assert "L-neg (viii) fixture is non-vacuous — the offline-forces-both seed really changed scripts/verify.sh" \
+    _files_differ "$VERIFY_SH" "$_KL_FIX/verify-offline-both.sh"
+
+assert "L-neg (viii): classifier REJECTS a verify.sh whose offline branch forces PROFILE=both — offline then runs a debug pass under the tighter wall, so its binding wall is DERIVED as that wall and the ceiling is unreachable, however long the release wall stays" \
+    _role_classification_reject "$NEXTEST_TOML" "$_KL_FIX/verify-offline-both.sh"
+
+assert "K-neg (ix) fixture is non-vacuous — the reordered-keys seed really changed .config/nextest.toml" \
+    _files_differ "$NEXTEST_TOML" "$_KL_FIX/reordered.toml"
+
+assert "K-neg (ix): classifier REJECTS an unclassified override authored slow-timeout BEFORE filter (TOML fixes no key order, so the parse must not either)" \
+    _classify_overrides_reject "$_KL_FIX/reordered.toml"
+
+assert "K-neg (x) fixture is non-vacuous — the double-quoted-filter seed really changed .config/nextest.toml" \
+    _files_differ "$NEXTEST_TOML" "$_KL_FIX/dquoted.toml"
+
+assert "K-neg (x): classifier REJECTS an unclassified override whose filter is double-quoted (both TOML quote characters must be seen)" \
+    _classify_overrides_reject "$_KL_FIX/dquoted.toml"
 
 # Positive controls: the SAME checkers accept the real files, so the rejections
 # above are attributable to the seeded drift and not to checkers that reject
