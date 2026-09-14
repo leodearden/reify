@@ -1,6 +1,8 @@
 # `UnresolvedFunction` warn-sweep — enumerated violation list (task #5371)
 
-**Measured** 2026-08-29 on branch `task/5371`, base `1d4417977673`.
+**Measured** 2026-08-29 on branch `task/5371`, base `1d4417977673`;
+**re-measured** 2026-09-14 against base `ed7f60c635` — same two dispositions,
+no new violations, see "Re-measurement" below.
 **Gate:** `crates/reify-compiler/tests/unresolved_function_corpus_sweep.rs`.
 **Consumers:** #5997 (flips the Warning to an Error; names this sweep as a
 precondition) and #6014 (registry ω; deletes the terminal first-arg fallback,
@@ -258,9 +260,50 @@ designed. The sweep widened the enumeration by exactly the two names in
 
 ---
 
+## Re-measurement, 2026-09-14 (base `ed7f60c635`)
+
+Main moved two weeks and ~1.5k lines of `reify-stdlib/src` between the two
+bases, so the sweep was re-run to ask whether the closed world had reopened.
+It had not: **both dispositions stand unchanged, and no third appeared.**
+
+The substantive change was **#6001 α**, the builtin-signature registry. It
+DELETED `analysis_signatures.rs` and `parse_signatures.rs`, whose
+`ANALYSIS_FN_NAMES` / `PARSE_FN_NAMES` slices this sweep's oracle unioned over,
+and hoisted `registry_dispatch::try_dispatch` to the front of
+`reify_stdlib::eval_builtin`'s chain in place of the `eval_analysis` /
+`eval_parse` arms. Both sides of the sweep's question therefore moved at once.
+The union of the two departed slices was exactly the seven names α seeded as
+rows, so nothing was stranded, and `is_known_builtin` now reaches them through
+a single `builtin_registry::registry_knows_name` arm.
+
+That arm is also why the oracle is asked of the registry rather than of a copy
+of those seven names: a copy would stop covering the first τ task that
+registers a row, and every τ task exists to register rows.
+
+Two further drift questions, both asked of a test rather than of judgement:
+
+| question | test | answer |
+|---|---|---|
+| has any manifest entry acquired a registry row? | `eval_deferred_names_are_disjoint_from_every_registered_family` | no — α seeded none of the manifest's names |
+| did a family's resolver grow an arm its slice does not list? | `resolver_only_family_slices_match_their_resolvers` | one, `bbox` (with `bbox_size` / `bbox_center`), from #6081 — a real resolver arm, so it joined `DATUM_CONSTRUCTOR_NAMES`, not the manifest |
+| does any corpus call site now name something outside the union? | `corpus_has_no_unresolved_function_calls` | no |
+
+`EVAL_DEFERRED_BUILTIN_NAMES` is therefore unchanged by the integration. That
+is the manifest working as designed in the quiet direction: it holds names
+*awaiting* a row, and the first tranche of rows landed for names it never held.
+
+---
+
 ## What did NOT change
 
 Typing. Every call above still infers exactly the type it inferred before
 #5371 — the fallback still adopts arg0. The only new observable in this task is
 a diagnostic, which is what makes it corpus-safe and what lets #5997 do the
 severity flip against a green baseline rather than against a moving one.
+
+The claim survives the re-measurement, and is worth stating precisely because
+#6001 α also touched the ladder. α moved where seven names' types come FROM
+without changing WHAT they are (its PRD §7.3(6): zero corrections), and #5371
+adds no typing of its own on top — `is_known_builtin` is consulted only to
+decide whether to emit a warning. So the baseline #5997 flips against is still
+type-identical to the pre-task one at every call site.
