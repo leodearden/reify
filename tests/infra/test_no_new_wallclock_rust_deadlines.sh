@@ -436,6 +436,74 @@ _detect_rust_wallclock_deadline() {
 }
 
 # ---------------------------------------------------------------------------
+# _emit_record_stream <blob>
+#
+# Print <blob> as newline-terminated lines, or NOTHING AT ALL when it is empty.
+# `printf '%s\n' ""` would emit a single blank line, which `comm` would then
+# treat as a record that is present on one side and absent on the other -- a
+# phantom +/- on every drained-baseline or clean-tree comparison. Small, but it
+# is the difference between the empty case working and the empty case lying.
+# ---------------------------------------------------------------------------
+_emit_record_stream() {
+    [ -n "$1" ] || return 0
+    printf '%s\n' "$1"
+}
+
+# ---------------------------------------------------------------------------
+# _wallclock_baseline_check <baseline-file> <root>...
+#
+# THE RATCHET. Compares the live fingerprint multiset under <root>... against
+# the multiset committed in <baseline-file>, and reds on any difference.
+#
+# Returns 0 and prints NOTHING when the two are equal -- silence on success is
+# load-bearing (see Section 4c). Returns 1 on any difference, naming every
+# offending record on stderr. Propagates the engine's rc >= 2 unchanged: a
+# missing or unreadable root must never be reported as "no new violations".
+#
+# BASELINE ROWS are every line that is neither blank nor a `#` comment
+# (indented or not), so the committed file can carry the header that explains
+# what a row MEANS. That follows tests/infra/harness-layout-baseline.manifest,
+# not ptodo-baseline.txt, which forbids comments. The stripping is ONE `grep -v`
+# with two anchored alternatives, borrowed verbatim from
+# harness-layout-lib.sh's _harness_layout_baseline_load, for its exit-status
+# property: a single rc, so grep's error rc 2 ("cannot read the baseline")
+# stays distinguishable from its rc 1 ("the baseline has no rows"). Two piped
+# `grep -v`s would hide that behind PIPESTATUS, and a blanket `|| true` would
+# collapse an unreadable baseline into a clean pass -- which is the vacuous
+# green that file's own comment records as a real bug.
+#
+# COLLATION IS PINNED ON BOTH SIDES AND ON `comm` ITSELF. comm is only correct
+# when its two inputs are sorted the way comm compares them; the engine sorts
+# under LC_ALL=C, so this must too, rather than inheriting whatever locale the
+# runner happens to have.
+# ---------------------------------------------------------------------------
+_wallclock_baseline_check() {
+    local _baseline="$1"; shift
+
+    local _live _lrc=0
+    _live="$(_wallclock_fingerprints "$@")" || _lrc=$?
+    [ "$_lrc" -eq 0 ] || return "$_lrc"
+
+    local _rows _brc=0
+    _rows="$(grep -vE '^[[:space:]]*#|^[[:space:]]*$' -- "$_baseline")" || _brc=$?
+    [ "$_brc" -le 1 ] || return "$_brc"
+    _rows="$(_emit_record_stream "$_rows" | LC_ALL=C sort)"
+
+    # comm -23: present LIVE, absent from the BASELINE -- i.e. a violation
+    # written today. Multiset semantics come free: comm pairs equal lines one
+    # for one, so a 4th copy of a 3x-baselined record surfaces as exactly one
+    # unmatched line.
+    local _new
+    _new="$(LC_ALL=C comm -23 \
+        <(_emit_record_stream "$_live") \
+        <(_emit_record_stream "$_rows"))"
+
+    [ -n "$_new" ] || return 0
+    printf '%s\n' "$_new" | sed 's/^/  + /' >&2
+    return 1
+}
+
+# ---------------------------------------------------------------------------
 # _count_rust_wallclock_escapes <dir>
 #
 # Prints (stdout) the number of PHYSICAL lines carrying the escape token
