@@ -211,43 +211,44 @@
 - **Note:** This is the PRD's hard precondition. It's not part of the shells task list (it's in the v0.2 multi-kernel PRD's territory) but the shells PRD assumes it ships.
 
 > **CORRECTION 2026-09-14 (task 6560, landed in merge `fe7e200c93` / commits `eee72dc436` +
-> `bf7cfa9a5a`) — M-025's State and Evidence above are SUPERSEDED.** This is a dated audit snapshot
-> (**Date:** 2026-05-12), so the bullets above are preserved as the record of what was measured then.
-> What task 6560 changed:
+> `bf7cfa9a5a`) — M-025's Evidence and the *rationale* for its State are SUPERSEDED; the State
+> *value* (PARTIAL) is unchanged.** This is a dated audit snapshot (**Date:** 2026-05-12), so the
+> bullets above are preserved as the record of what was measured then. What task 6560 changed:
 >
 > - The quoted register.rs bullet **"BRep→Voxel sampling: deferred to a separate follow-up" no longer
 >   exists.** `register.rs` now carries a "# BRep→Voxel (task 6560)" module-doc section recording the
 >   landed disposition.
+> - **Failure mode F4's second clause is retired too** — "B-rep→Voxel sampling deferred" quoted the
+>   same retired bullet and no longer holds. F4's first clause (FFI gated on `cfg(has_openvdb)`) is
+>   untouched by task 6560 and still holds.
 > - **Anchor drift:** `register.rs:30-33` no longer contains either quoted string. The BRep→Voxel one
 >   is superseded by the "# BRep→Voxel (task 6560)" module-doc section (below). The Voxel→Mesh
 >   "deferred as a follow-up task" quote no longer appears anywhere in `register.rs` either — that
->   mechanism belongs to a different PRD (`voxel-to-mesh-surfacing.md`, task 5033) and is not otherwise
->   re-verified by this overlay. Grep the named section rather than trusting these line numbers.
+>   mechanism belongs to a different PRD (`docs/prds/v0_3/voxel-to-mesh-surfacing.md`, task 5033) and
+>   is not otherwise re-verified by this overlay. Grep the named section rather than trusting these
+>   line numbers.
 > - **The Evidence claim "Capability descriptor declares only `(BooleanUnion|Difference|Intersection,
 >   Voxel)`" is FALSE**, and has been since commit `0bd745c20a` (task 3438), landed 2026-05-27 — two
 >   weeks after this audit's own 2026-05-12 date stamp. The descriptor declares **six** entries;
->   `0bd745c20a` added `(Convert { from: ReprKind::Mesh }, ReprKind::Voxel)`, now `register.rs:169`.
->   The Top-concerns claim that "`(Convert, Voxel)` is excluded from the capability descriptor" is
->   the same claim and is equally false as of that commit.
+>   `0bd745c20a` added `(Convert { from: ReprKind::Mesh }, ReprKind::Voxel)`, now
+>   `openvdb_capability_descriptor` (`register.rs:169`). The Top-concerns claim that "`(Convert,
+>   Voxel)` is excluded from the capability descriptor" is the same claim and is equally false as of
+>   that commit.
 > - **BRep→Voxel is served** by the two-stage `BRep --occt--> Mesh --openvdb--> Voxel` chain over that
->   Mesh-sourced entry, at a resolution the caller chooses via `reify_ir::VoxelResolution` /
->   `GeometryKernel::ingest_mesh_at_resolution` / `MeshToVoxelOptions::for_resolution`.
-> - Three caveats carry forward, each already filed: **(a)** the resolution is honoured only by the
->   post-build DIRECT recipe `Engine::realize_solid_sdf_at`, NOT by the dispatcher's conversion
->   executor, which still voxelizes at the honest floor because its intermediate realization-cache
->   entry is `NO_OPTIONS`-keyed (**#6989**); **(b)** the `SampledField` lowering remains DENSE under a
->   256Mi-voxel budget (**#6988**, near-duplicate **#6565**); **(c)** no `(Convert { from: BRep },
->   Voxel)` descriptor entry was added, deliberately — OpenVDB cannot read a B-rep handle and the
->   descriptor is a feasibility table.
+>   Mesh-sourced entry. The full mechanism, resolution API, and all three carried caveats (cache-key
+>   aliasing, **#6989**; DENSE-lowering budget, **#6988**; deliberate absence of a BRep-sourced
+>   descriptor entry) are recorded in the parent shells PRD's 2026-09-01 Updates bullet
+>   (`docs/prds/v0_4/structural-analysis-shells.md`) and register.rs's module-doc section (cited
+>   above) — cited here rather than restated (SPOT). Note the split: the Updates bullet carries only
+>   the first two caveats; the third (deliberate non-entry) is register.rs's alone.
 >
-> **What still holds:** `Engine::realize_solid_sdf_at` is `pub(crate)`
-> (`crates/reify-eval/src/realize_solid_sdf.rs:121`) with no non-test caller requesting a
-> thickness-scale resolution — its only non-test caller delegates the fixed `VoxelResolution::HonestFloor`
-> (`:50`), and every `MinFeature` / `TargetVoxelSize` call site in that file is a unit test. M-025's
-> **Blocks** line (real end-to-end shell extraction from user geometry) and the Evidence's observation
-> that `reify-shell-extract` still runs on synthetic `SampledField` therefore remain accurate, but for a
-> different reason than stated above: the producer seam now exists but has no wired consumer, rather
-> than not existing at all. **State: PARTIAL still holds** — not WIRED — but for that different reason.
+> **What still holds:** the producer seam has no wired consumer. See
+> `docs/prds/v0_4/shell-extract-engine-bridge.md` §11 open question 2 for the residual-gap analysis
+> and its owning task (**#6989**, pending). M-025's **Blocks** line (real end-to-end shell extraction
+> from user geometry) and the Evidence's observation that `reify-shell-extract` still runs on synthetic
+> `SampledField` therefore remain accurate, but for a different reason than stated above: the producer
+> seam now exists but has no wired consumer, rather than not existing at all. **State: PARTIAL still
+> holds** — not WIRED — but for that different reason.
 
 > **NON-EXHAUSTIVE — this overlay re-verified M-025 and the third Top-concerns bullet ONLY.**
 > M-001…M-024 and M-026 were *not* re-checked against the landed task-6560 work and must be
