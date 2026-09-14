@@ -567,35 +567,22 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
         // (task 5747, units-length ζ / R12); otherwise `Value::Undef`.
         //
         // The two halves are independent and stay that way: D11 keeps the LINEAR
-        // part dimensionless-required, so its check below is untouched by ζ, and
-        // `diagnose` bails on it FIRST so a dimensioned-linear call is never
+        // part dimensionless-required, so ζ leaves it alone, and the shared
+        // classifier checks it FIRST so a dimensioned-linear call is never
         // mislabelled as a translation rejection.
-        "affine_map" => {
-            if args.len() != 2 {
-                return Some(Value::Undef);
-            }
-            let (nrows, ncols, data, dim) = match matrix_components_f64(&args[0]) {
-                Some(v) => v,
-                None => return Some(Value::Undef),
-            };
-            if nrows != 3 || ncols != 3 || !dim.is_dimensionless() {
-                return Some(Value::Undef);
-            }
-            // data is row-major with exactly 9 entries (3×3).
-            let linear = [
-                [data[0], data[1], data[2]],
-                [data[3], data[4], data[5]],
-                [data[6], data[7], data[8]],
-            ];
-            let translation = match decompose_vec3(&args[1]) {
-                Some((t, t_dim)) if t_dim == DimensionVector::LENGTH => t,
-                _ => return Some(Value::Undef),
-            };
-            Value::AffineMap {
+        //
+        // The acceptance predicate itself lives in `classify_affine_map_args`,
+        // which `diagnose` also consults — the two cannot drift apart, so a
+        // rejection here is always paired with the message that explains it.
+        // EVERY fault is `Undef` at this layer; only `diagnose` distinguishes
+        // them, and only the units one becomes a user-facing rejection.
+        "affine_map" => match classify_affine_map_args(args) {
+            Ok((linear, translation)) => Value::AffineMap {
                 linear,
                 translation,
-            }
-        }
+            },
+            Err(_) => Value::Undef,
+        },
         // `affine_from_transform(t)`: widen a rigid Transform to a general affine
         // map. The rotation quaternion becomes an orthogonal 3×3 (det=+1) whose
         // columns are R·x̂, R·ŷ, R·ẑ (built via quat_rotate on the basis vectors),
@@ -1659,6 +1646,83 @@ fn length_group_rejection(items: &[Value]) -> Option<ArgRejection> {
     }
 }
 
+/// Why an `affine_map(linear, translation)` call cannot be built — the fault
+/// vocabulary of [`classify_affine_map_args`], which is the ONE acceptance
+/// predicate both `eval_geometry`'s arm and [`diagnose`]'s arm consult.
+///
+/// This is the `TWIST_LINEAR_DIM` / `decompose_twist_component` discipline
+/// applied to `affine_map`. Before it, eval spelled the predicate as
+/// `matrix_components_f64` + an `nrows`/`ncols`/`dim` check + `decompose_vec3` +
+/// a LENGTH comparison, while `diagnose` spelled the same predicate as a
+/// `matches!` pattern + a `Value::Vector` destructure + `length_group_rejection`.
+/// The two agreed, but only by convention — and a drift is not symmetric: it
+/// makes `diagnose` return `None` where eval returns `Undef`, which degrades
+/// R12's rejection back to the SILENT `undef` at exit 0 that task 5747 exists to
+/// close, with no test failing because every case exercises a value both
+/// spellings agree on.
+///
+/// GUARD ORDER is now a property of one function rather than a convention
+/// restated in two places: the LINEAR part is classified FIRST, so a
+/// dimensioned-linear call can never be mislabelled as a translation rejection.
+enum AffineMapFault {
+    /// Wrong arity, a non-matrix or non-3×3 linear part, or a translation that
+    /// is not a `Vector` of exactly three numeric, finite components sharing ONE
+    /// dimension. A SHAPE/CONSISTENCY failure, never a units one — [`diagnose`]
+    /// stays silent for all of it, matching the `transform3` convention.
+    Shape,
+    /// The 3×3 linear part carries a dimension: D11's pre-existing
+    /// dimensionless-linear-part contract, which ζ neither loosened nor
+    /// tightened. Silent for a sharper reason than `Shape` — naming
+    /// `translation` here would misattribute the fault to the other argument.
+    LinearNotDimensionless,
+    /// The translation is a well-formed 3-group whose shared dimension is not
+    /// LENGTH. The ONE fault R12 diagnoses (task 5747, units-length ζ), carrying
+    /// the shared owner's rejection so the wording is never re-rendered here.
+    TranslationNotLength(ArgRejection),
+}
+
+/// Decode `affine_map`'s two arguments into its linear and translation parts,
+/// or say why they cannot be decoded. See [`AffineMapFault`] for the
+/// shared-classifier rationale and the guard order it fixes.
+fn classify_affine_map_args(args: &[Value]) -> Result<([[f64; 3]; 3], [f64; 3]), AffineMapFault> {
+    if args.len() != 2 {
+        return Err(AffineMapFault::Shape);
+    }
+    let Some((nrows, ncols, data, dim)) = matrix_components_f64(&args[0]) else {
+        return Err(AffineMapFault::Shape);
+    };
+    if nrows != 3 || ncols != 3 {
+        return Err(AffineMapFault::Shape);
+    }
+    // FIRST, and before the translation is even looked at: the D11 check.
+    if !dim.is_dimensionless() {
+        return Err(AffineMapFault::LinearNotDimensionless);
+    }
+    // `data` is row-major with exactly 9 entries (3×3), guaranteed above.
+    let linear = [
+        [data[0], data[1], data[2]],
+        [data[3], data[4], data[5]],
+        [data[6], data[7], data[8]],
+    ];
+    let Value::Vector(items) = &args[1] else {
+        return Err(AffineMapFault::Shape);
+    };
+    match length_group_rejection(items) {
+        Some(rejection) => Err(AffineMapFault::TranslationNotLength(rejection)),
+        None => match decompose_xyz3(items) {
+            Some((translation, t_dim)) if t_dim == DimensionVector::LENGTH => {
+                Ok((linear, translation))
+            }
+            // `length_group_rejection` said nothing, so this is its OTHER silent
+            // cause: a `decompose_xyz3` shape/consistency failure. The non-LENGTH
+            // arm is unreachable (the rejection branch above owns it) and falls
+            // here deliberately — fail CLOSED, so an unclassifiable translation is
+            // still `Undef` rather than silently built into a map.
+            _ => Err(AffineMapFault::Shape),
+        },
+    }
+}
+
 /// Pure classifier (post-`Value::Undef` hook) for geometry builtin calls,
 /// mirroring `stackup::diagnose` / `fea::diagnose`. `reify-expr`'s `FunctionCall`
 /// arm calls this (re-exported as `geometry_diagnose`) when a stdlib builtin
@@ -1682,7 +1746,9 @@ fn length_group_rejection(items: &[Value]) -> Option<ArgRejection> {
 ///   a TRANSLATION that is not `Vector3<Length>` (task 5747, units-length ζ / R12).
 ///   `affine_map`'s LINEAR half is checked FIRST and bails, so a dimensioned-linear
 ///   call — which fails the pre-existing D11 dimensionless check, not ζ's — is never
-///   mislabelled as a translation rejection.
+///   mislabelled as a translation rejection. That order is fixed in
+///   [`classify_affine_map_args`], the one acceptance predicate this arm and the
+///   eval arm share, rather than restated in each.
 /// - **`bbox`** (exactly 2 args) — a corner that is not `Point3<Length>`
 ///   (task 6081: a BoundingBox is spatial by construction), including one whose
 ///   components carry MIXED dimensions. Every SHAPE failure stays silent — a
@@ -1805,28 +1871,18 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
         // `affine_map` needs no such join: `translation` is literally the
         // builtin's own parameter name for the whole `Vector3`.
         //
-        // GUARD ORDER MATTERS. The LINEAR part is checked FIRST and bails, so a
-        // dimensioned-linear call — which fails the pre-existing D11
-        // dimensionless check, not ζ's — is never mislabelled as a translation
-        // rejection.
-        "affine_map" => {
-            if args.len() != 2 {
-                return None;
-            }
-            match matrix_components_f64(&args[0]) {
-                Some((3, 3, _, dim)) if dim.is_dimensionless() => {}
-                // Wrong shape or a dimensioned linear part: not ζ's to diagnose.
-                _ => return None,
-            }
-            let Value::Vector(items) = &args[1] else {
-                return None;
-            };
-            let rejection = length_group_rejection(items)?;
-            Some(
+        // GUARD ORDER MATTERS, and it is not restated here: this arm reads the
+        // SAME `classify_affine_map_args` the eval arm builds from, so the order
+        // — linear part first, translation second — is a property of that one
+        // function. Everything except the units fault stays silent, which is this
+        // arm's no-mis-attribution guard.
+        "affine_map" => match classify_affine_map_args(args) {
+            Err(AffineMapFault::TranslationNotLength(rejection)) => Some(
                 reify_core::Diagnostic::error(rejection.message("affine_map", "translation"))
                     .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
-            )
-        }
+            ),
+            Ok(_) | Err(AffineMapFault::Shape | AffineMapFault::LinearNotDimensionless) => None,
+        },
         "transform_log" => {
             if args.len() != 1 {
                 return None;
@@ -6068,8 +6124,90 @@ mod tests {
             "1 arg must stay silent"
         );
         assert!(
-            super::diagnose("affine_map", &[m, length_t, Value::Real(0.0)]).is_none(),
+            super::diagnose("affine_map", &[m.clone(), length_t, Value::Real(0.0)]).is_none(),
             "3 args must stay silent"
+        );
+
+        // NO-MIS-ATTRIBUTION GUARD, mirroring `affine_translate`'s
+        // `diagnose_affine_translate_mixed_dimensions_stays_silent` and its
+        // non-finite row. Both causes below reach the identical silent path —
+        // `classify_affine_map_args` reading `AffineMapFault::Shape` out of
+        // `decompose_xyz3` — and both are deliberate NON-rejections. Without
+        // these rows a later change that "completes" the arm (say, falling back
+        // to `accept_arg(&items[0], ..)` when `decompose_xyz3` returns `None`)
+        // would start reporting `affine_map: translation argument expects Length,
+        // got ...` for a MIXED-dimension triple, misnaming a consistency fault as
+        // a units fault, with the suite staying green. Each row pins the eval and
+        // diagnose halves TOGETHER, so the pair cannot drift.
+        for (label, translation) in [
+            (
+                "mixed dimensions",
+                Value::Vector(vec![
+                    Value::length(0.005),
+                    Value::Scalar {
+                        si_value: 0.0,
+                        dimension: DimensionVector::MASS,
+                    },
+                    Value::length(0.0),
+                ]),
+            ),
+            (
+                "non-finite LENGTH",
+                Value::Vector(vec![
+                    Value::length(f64::NAN),
+                    Value::length(0.0),
+                    Value::length(0.0),
+                ]),
+            ),
+            (
+                "non-numeric",
+                Value::Vector(vec![
+                    Value::String("x".to_string()),
+                    Value::length(0.0),
+                    Value::length(0.0),
+                ]),
+            ),
+        ] {
+            let args = [m.clone(), translation];
+            assert!(
+                eval_builtin("affine_map", &args).is_undef(),
+                "{label}: was Undef before ζ and stays Undef"
+            );
+            assert!(
+                super::diagnose("affine_map", &args).is_none(),
+                "{label}: a consistency/shape failure is NOT a ζ units rejection and must \
+                 stay silent; got: {:?}",
+                super::diagnose("affine_map", &args)
+            );
+        }
+    }
+
+    /// ANGLE is a third non-admitted dimension alongside MASS and dimensionless,
+    /// and it must be NAMED rather than hardcoded — the sibling coverage
+    /// `affine_translate_shared_angle_returns_undef` /
+    /// `diagnose_transform_log_angle_translation_names_angle` already carries for
+    /// their arms. Pins the eval and diagnose halves together.
+    #[test]
+    fn affine_map_shared_angle_translation_is_undef_and_names_angle() {
+        let m = matrix3x3(IDENTITY_3X3);
+        let t = Value::Vector(vec![Value::angle(1.0), Value::angle(0.0), Value::angle(0.0)]);
+        assert!(
+            eval_builtin("affine_map", &[m.clone(), t.clone()]).is_undef(),
+            "a shared-ANGLE translation Vector must be Undef (ζ/R12)"
+        );
+        let diag = super::diagnose("affine_map", &[m, t])
+            .expect("an ANGLE translation must be diagnosed");
+        assert_eq!(diag.severity, reify_core::Severity::Error, "{diag:?}");
+        assert_eq!(
+            diag.code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+            "{diag:?}"
+        );
+        assert!(
+            diag.message.contains("Angle"),
+            "the message must NAME the offending dimension rather than hardcode one \
+             string, got: {}",
+            diag.message
         );
     }
 
@@ -6102,6 +6240,87 @@ mod tests {
             "the linear part's rejection must NOT acquire a ζ units diagnostic — it \
              would misname the offending argument"
         );
+    }
+
+    /// GUARD ORDER, proven rather than argued in a comment.
+    ///
+    /// `classify_affine_map_args` classifies the LINEAR part FIRST, so every
+    /// linear-part failure must stay silent EVEN WHEN the translation is ALSO
+    /// bad. Without the second column below, `affine_map(<2x2>, <MASS triple>)`
+    /// could start reporting "translation argument expects Length" for a call
+    /// whose real fault is the matrix — sending the author to the wrong argument
+    /// — and nothing would fail.
+    ///
+    /// The sibling `diagnose_affine_map_dimensioned_linear_stays_silent` is the
+    /// scope lock on the dimensioned-3×3 arm; this covers all three arms the
+    /// classifier can reject a linear part through, which were otherwise proven
+    /// for only one of the three.
+    #[test]
+    fn diagnose_affine_map_linear_failures_stay_silent_even_with_a_bad_translation() {
+        let mass = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::MASS,
+        };
+        let length_t = Value::Vector(vec![
+            Value::length(0.005),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let mass_t = Value::Vector(vec![mass(5.0), mass(0.0), mass(0.0)]);
+
+        let two_by_two = Value::Matrix(vec![
+            vec![Value::Real(1.0), Value::Real(0.0)],
+            vec![Value::Real(0.0), Value::Real(1.0)],
+        ]);
+        let three_by_four = Value::Matrix(vec![
+            vec![
+                Value::Real(1.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+            ],
+            vec![
+                Value::Real(0.0),
+                Value::Real(1.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+            ],
+            vec![
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(1.0),
+                Value::Real(0.0),
+            ],
+        ]);
+        let dimensioned_3x3 = Value::Matrix(vec![
+            vec![Value::length(1.0), Value::length(0.0), Value::length(0.0)],
+            vec![Value::length(0.0), Value::length(1.0), Value::length(0.0)],
+            vec![Value::length(0.0), Value::length(0.0), Value::length(1.0)],
+        ]);
+
+        for (label, linear) in [
+            ("2x2 matrix", two_by_two),
+            ("3x4 matrix", three_by_four),
+            ("non-matrix args[0]", Value::Real(1.0)),
+            ("dimensioned 3x3", dimensioned_3x3),
+        ] {
+            for (t_label, translation) in [
+                ("good LENGTH translation", &length_t),
+                ("bad MASS translation", &mass_t),
+            ] {
+                let args = [linear.clone(), translation.clone()];
+                assert!(
+                    eval_builtin("affine_map", &args).is_undef(),
+                    "{label} / {t_label}: a linear-part failure must still be Undef"
+                );
+                assert!(
+                    super::diagnose("affine_map", &args).is_none(),
+                    "{label} / {t_label}: the LINEAR part is classified FIRST, so this must \
+                     stay silent rather than misname `translation`; got: {:?}",
+                    super::diagnose("affine_map", &args)
+                );
+            }
+        }
     }
 
     // ── affine_from_transform tests (step-9) ──────────────────────────────────
@@ -6429,10 +6648,11 @@ mod tests {
     /// records that it adds no new crate edge; this is the same path, used for the
     /// wording rather than for the verdict.
     ///
-    /// The three `got` shapes are exactly the ones that can reach an R12 rejection:
-    /// `decompose_xyz3` requires `Value::as_f64` to succeed, so only `Real`, `Int`
-    /// and `Scalar` ever arrive, and a LENGTH `Scalar` is accepted rather than
-    /// rejected.
+    /// The rows below are EXHAUSTIVE over the `got` shapes that can reach an R12
+    /// rejection, which is what makes the enumeration executable rather than
+    /// aspirational: `decompose_xyz3` requires `Value::as_f64` to succeed, so only
+    /// `Real`, `Int` and `Scalar` ever arrive; a LENGTH `Scalar` is accepted rather
+    /// than rejected, leaving the dimensionless and dimensioned `Scalar` forms.
     #[test]
     fn r12_rejection_wording_is_the_shared_arg_rejection_template() {
         use reify_ir::arg_acceptance::{Acceptance, accept_arg, length_spec};
@@ -6446,6 +6666,12 @@ mod tests {
         // before this gate can fire, so each row carries its own matching zero.
         for (shape, offender, zero) in [
             ("bare Real", Value::Real(5.0), Value::Real(0.0)),
+            // `Int` is a DISTINCT rendering, not a spelling of `Real`:
+            // `value_short_label` prints "Int", so `affine_translate(5, 0, 0)`
+            // written with integer literals produces a materially different
+            // sentence — and an integer triple is at least as likely an authoring
+            // mistake as a float one.
+            ("bare Int", Value::Int(5), Value::Int(0)),
             (
                 "dimensionless Scalar",
                 scalar(5.0, DimensionVector::DIMENSIONLESS),
