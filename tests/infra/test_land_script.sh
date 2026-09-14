@@ -42,6 +42,11 @@ make_repo() {
 ROOT="$(git rev-parse --show-toplevel)"
 . "$ROOT/hooks/main-gate-lib.sh"
 [ -e "$(main_gate_sentinel)" ] && echo yes > "$(git rev-parse --git-common-dir)/gate-saw-sentinel"
+# Record the gate-scoping env this child actually INHERITED from land.sh, so the
+# test can assert propagation through `git merge` rather than grepping land.sh.
+printf 'DF_VERIFY_ROLE=%s\nREIFY_GATE_EXCLUDE_HEAVY=%s\n' \
+    "${DF_VERIFY_ROLE:-<unset>}" "${REIFY_GATE_EXCLUDE_HEAVY:-<unset>}" \
+    > "$(git rev-parse --git-common-dir)/gate-env"
 main_gate_mark   # stand in for "verify passed"
 exit 0
 PMC
@@ -124,7 +129,7 @@ rm -f "$R/untracked.txt"
 # -- happy path: clean main, real --no-ff merge, sentinel marked BEFORE gate --
 echo ""
 echo "--- happy path: verified --no-ff merge marks the sentinel before the gate ---"
-rm -f "$R/.git/gate-saw-sentinel" "$R/.git/reify-main-gate-ok" "$R/.git/reify-main-gate.log"
+rm -f "$R/.git/gate-saw-sentinel" "$R/.git/gate-env" "$R/.git/reify-main-gate-ok" "$R/.git/reify-main-gate.log"
 before="$(git -C "$R" rev-parse main)"
 land "$R" task/foo
 after="$(git -C "$R" rev-parse main)"
@@ -134,6 +139,19 @@ assert "happy path creates a merge commit (2 parents)" \
     bash -c "[ \"\$(git -C '$R' rev-list --parents -n1 HEAD | wc -w)\" -eq 3 ]"
 assert "land.sh marked the sentinel BEFORE the merge gate ran (gate observed it)" \
     bash -c "test -f '$R/.git/gate-saw-sentinel'"
+# Item 4 (esc-6485-3 option B, Leo 2026-08-31): the sanctioned manual-land path
+# excludes the heavy-filter members from its merge gate, exactly as
+# dark-factory-orchestrator.yaml already does for every orchestrator-spawned role.
+# Asserted BEHAVIOURALLY, not by grepping land.sh's text: the property that matters
+# is that the `export` actually reaches the pre-merge-commit child spawned by
+# `git merge`. A static grep cannot observe that, and would still pass if the
+# export were later moved below the merge or shadowed.
+assert "happy path: merge gate child inherited REIFY_GATE_EXCLUDE_HEAVY=1 (heavy members excluded on the sanctioned manual-land path — esc-6485-3 option B, Leo 2026-08-31)" \
+    bash -c "grep -qx 'REIFY_GATE_EXCLUDE_HEAVY=1' '$R/.git/gate-env'"
+# Green-on-arrival companion: pins the pre-existing role export so a later edit
+# cannot drop it while adding the new one.
+assert "happy path: merge gate child still inherited DF_VERIFY_ROLE=merge (existing carve-out unchanged)" \
+    bash -c "grep -qx 'DF_VERIFY_ROLE=merge' '$R/.git/gate-env'"
 assert "reference-transaction consumed the sentinel (sanctioned, not lingering)" \
     bash -c "! test -e '$R/.git/reify-main-gate-ok'"
 assert "main-gate log records the sanctioned move" \
