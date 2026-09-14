@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! Regression tests for task #5951 — a premature per-template
-//! `Engine::redispatch_geometry_consuming_compute_nodes` pass permanently
-//! strands a geometry-consuming `@optimized` compute node.
+//! `Engine::redispatch_geometry_consuming_compute_nodes` pass strands a
+//! geometry-consuming `@optimized` compute node.
 //!
 //! ## The defect these tests pin
 //!
@@ -20,9 +20,9 @@
 //! them — the same remedy that commit applied to the Phase-1 scan anchor
 //! cited below.)
 //!
-//! Its Phase-1 candidate gate is `realization_inputs.is_empty()`: a node whose
-//! `realization_inputs` are already non-empty is skipped. That gate is a
-//! **one-shot latch**.
+//! Its Phase-1 candidate gate skips a node the pass has already redispatched.
+//! The pass's sole write is what trips it, so one bad write ends the node's
+//! redispatch — the defect below.
 //!
 //! When a template precedes the geometry-consuming one, the redispatch fires
 //! during the *preceding* template's iteration, before the consumer's body has
@@ -30,12 +30,21 @@
 //! `Value::GeometryHandle { kernel_handle: None, .. }` (minted by
 //! `mint_symbolic_geometry_handles_into_values`), the Phase-2 gate matched
 //! `Value::GeometryHandle { .. }` regardless of `kernel_handle`, and
-//! `build_compute_realization_inputs` recorded a content-free handle. The latch
+//! `build_compute_realization_inputs` recorded a content-free handle. The gate
 //! tripped, and the LATER — correct, post-hydration — pass for the consumer's
-//! own template was skipped forever. The node kept the degraded first-dispatch
+//! own template was skipped. The node kept the degraded first-dispatch
 //! result, with **no diagnostic**: the `ReprKind::BRep` arm of
 //! `project_realization_read_handle` is identity-only by design (PRD §4 D1) and
 //! emits nothing.
+//!
+//! HOW LONG "skipped" LASTS changed under #7332, and nothing else here did.
+//! When #5951 measured this the gate read the node's own
+//! `realization_inputs`, a field the graph carries across edits, so a tripped
+//! gate stranded the node for the ENGINE's lifetime. The signal now lives in
+//! `RedispatchPassState::redispatched`, which cannot outlive one build, so the
+//! next build re-admits the node whatever this one wrote. That narrows the
+//! blast radius; it does not make a content-free write acceptable, which is
+//! what the content pair below pins.
 //!
 //! ## Why this file is mock-kernel, not OCCT/gmsh
 //!
@@ -57,7 +66,7 @@
 //!    carrying a KERNEL-BACKED (`kernel_handle: Some(_)`) geometry arg, i.e.
 //!    the post-hydration redispatch actually ran.
 //! 2. **Content pair** — varies whether the kernel can tessellate. The write
-//!    that trips the Phase-1 latch must only ever happen when the rebuilt
+//!    that trips the Phase-1 gate must only ever happen when the rebuilt
 //!    `RealizationReadHandle`s carry real content: with a non-tessellating
 //!    kernel the node's `realization_inputs` must stay EMPTY (still a
 //!    candidate); with a tessellating one they must be recorded as before
@@ -501,10 +510,12 @@ fn build_with_probe(source: &str) -> Vec<reify_core::Diagnostic> {
 /// The `realization_inputs` recorded on the probe's compute node in the
 /// post-build snapshot graph.
 ///
-/// This is the state the Phase-1 candidate gate reads
-/// (`realization_inputs.is_empty()`): EMPTY means the node is still a
-/// redispatch candidate, non-empty means the one-shot latch has been tripped
-/// and no later pass will ever revisit it.
+/// This is the DEPENDENCY RECORD the redispatch pass writes, not the gate it
+/// reads — since #7332 the gate keys on the build-scoped
+/// `RedispatchPassState::redispatched`. So EMPTY means the pass has never
+/// written this node (within this build: still a candidate; across builds:
+/// still nothing recorded), and non-empty means some build's pass did write
+/// it — which stops nothing in a LATER build.
 fn probe_node_realization_inputs(engine: &reify_eval::Engine) -> Vec<usize> {
     probe_node_realization_input_refs(engine, ORDER_PROBE_TARGET)
         .iter()
@@ -515,9 +526,9 @@ fn probe_node_realization_inputs(engine: &reify_eval::Engine) -> Vec<usize> {
 /// The `realization_inputs` REFS recorded on every compute node dispatching to
 /// `target`, one inner `Vec` per node.
 ///
-/// [`probe_node_realization_inputs`] answers "was the latch tripped?"; this
-/// answers "by WHICH realizations?", which is what the mixed-arg case needs —
-/// there the latch is legitimately tripped and the contract is about the
+/// [`probe_node_realization_inputs`] answers "did the pass write this node?";
+/// this answers "with WHICH realizations?", which is what the mixed-arg case
+/// needs — there the write legitimately happens and the contract is about the
 /// membership of the recorded list.
 fn probe_node_realization_input_refs(
     engine: &reify_eval::Engine,
@@ -578,10 +589,10 @@ fn assert_probe_saw_kernel_backed_body(case: &str, records: &[ProbeRecord]) {
     );
     // Diagnostic aid only (NOT the assertion): count invocations that were
     // handed non-empty `realization_inputs` carrying nothing real. Each such
-    // invocation corresponds to a write that tripped the Phase-1
-    // `realization_inputs.is_empty()` latch while delivering no content —
-    // the signature of the #5951 strand. Step-3/step-4 turn this into a
-    // first-class assertion; here it just makes the failure legible.
+    // invocation corresponds to a write that tripped the Phase-1 gate while
+    // delivering no content — the signature of the #5951 strand.
+    // `assert_no_contentless_latch` turns this into a first-class assertion;
+    // here it just makes the failure legible.
     let empty_content_latches = records
         .iter()
         .filter(|r| r.realization_inputs_len > 0 && !r.any_realized_content)
@@ -594,9 +605,9 @@ fn assert_probe_saw_kernel_backed_body(case: &str, records: &[ProbeRecord]) {
          actually run for this node. Every recorded invocation carried an \
          unhydrated arg instead, which is the task #5951 strand: a premature \
          per-template redispatch consumed the SYMBOLIC \
-         (`kernel_handle: None`) handle and latched the Phase-1 \
-         `realization_inputs.is_empty()` candidate gate, so the correct later \
-         pass was skipped forever. {empty_content_latches} of \
+         (`kernel_handle: None`) handle and tripped the Phase-1 candidate \
+         gate, so the correct later pass in this build was skipped. \
+         {empty_content_latches} of \
          {} invocation(s) were handed non-empty realization_inputs carrying no \
          realized content. Records: {records:?}",
         records.len(),

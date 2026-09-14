@@ -191,32 +191,35 @@ fn captured_max_vertex_x(stage: &str) -> f32 {
 ///    producer morphs the prior mesh IN PLACE (Laplacian quick-pass for the tiny
 ///    displacement).
 ///
-/// # What this test asserts, and what it deliberately does NOT (#7332)
+/// # What this test asserts (#7332)
 ///
-/// It asserts `reify_mesh_morph::diagnostics::snapshot().morphed == 1` — the
-/// morph_stats RPC data source, and the arm's actual end-to-end signal.
+/// That the warm `build_snapshot()` re-dispatches the geometry-consuming
+/// `@optimized` consumer exactly once, and that the mesh it then hands over is
+/// the POST-tick one: connectivity preserved, x-extent grown onto the new box
+/// face, `morphed == 1`. Each assertion carries its own rationale at its site;
+/// what is not local is the ORDER — the invocation-count pin is what makes the
+/// other three non-vacuous, since `MORPH_PROBE_CAPTURED` is written with `=`
+/// and a capture taken after a tick that re-dispatched zero times is the COLD
+/// capture read a second time.
 ///
-/// It does NOT compare the pre-tick and post-tick `tet_indices`, because on the
-/// `build_snapshot()` path THE CONSUMER IS NEVER RE-DISPATCHED, so there is no
-/// post-tick capture to compare against. `redispatch_geometry_consuming_compute_nodes`'
-/// Phase-1 candidate filter (`engine_build.rs:10022`) admits only compute nodes
-/// whose `realization_inputs` is still empty, and its own doc calls that "a
-/// ONE-SHOT LATCH" (`engine_build.rs:10234`). `build_snapshot()` reuses
-/// `eval_state.snapshot.graph` verbatim (`engine_build.rs:3443`) and never calls
-/// `eval()`, so the latch — set during the cold build's redispatch — closes the
-/// only dispatch surface this path has. That is task **#7332**.
+/// MEASURED post-#7332 (release, real OCCT + gmsh, confirmed not to take the
+/// `OCCT_AVAILABLE` soft-skip): two probe fires inside the cold `build()` (the
+/// original `Undef`-bodied dispatch plus its redispatch), ONE during the warm
+/// `build_snapshot()`, `morphed == 1`, identical `tet_indices` either side of
+/// the tick, and max vertex x moving 0.005 m → 0.00525 m. The pre-fix
+/// measurement was ZERO warm fires and a byte-identical, still-10mm capture.
 ///
-/// MEASURED 2026-09-08 (release, real OCCT + gmsh): the probe fires exactly
-/// twice, BOTH inside the cold `build()` (the original `Undef`-bodied dispatch
-/// plus its redispatch), and ZERO times during the warm `build_snapshot()`,
-/// while `morphed` reaches 1. A `tet_indices` comparison across the tick would
-/// therefore read the SAME thread-local slot twice and compare the cold capture
-/// against itself — true exactly when the cold capture succeeded, and blind to
-/// every property it names. That assertion was deleted rather than kept green.
-///
-/// The invocation-count pin below records the latch as MEASURED STATE. When
-/// #7332 lands it goes RED, and the correct response is to TIGHTEN it back into
-/// a real pre-morph-vs-post-morph connectivity comparison — not to widen it.
+/// #7332 has two halves and this test needs both.
+/// `redispatch_geometry_consuming_compute_nodes`' Phase-1 candidate filter used
+/// to read the node's `realization_inputs` — a graph-lifetime DEPENDENCY
+/// record, not a lifecycle flag — so the cold build's write latched the node
+/// out of every later build; the redispatch-once signal now lives in the
+/// build-scoped `RedispatchPassState::redispatched`. That alone still delivered
+/// the PRE-tick mesh, because `RealizationProjectionStore` is keyed on the
+/// static `content_hash`, which cannot see a value-driven change;
+/// `engine_edit::invalidate_realization_dirty_cone` now evicts that memo over
+/// the edit's dirty cone. Reverting the first half reddens the count pin;
+/// reverting the second reddens the x-extent assertion.
 #[cfg(has_gmsh)]
 #[test]
 fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {

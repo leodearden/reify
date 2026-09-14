@@ -341,8 +341,12 @@ pub(crate) fn build_compute_value_inputs(
 /// `Value::GeometryHandle{..}` regardless of `kernel_handle`) records a
 /// NON-EMPTY `realization_inputs` from a placeholder with no real content —
 /// which then defeats `Engine::redispatch_geometry_consuming_compute_nodes`'s
-/// (task #4726) candidate gate (`realization_inputs.is_empty()`), permanently
-/// stranding the node's degraded (`lambda=Undef`) first-dispatch result.
+/// (task #4726) candidate gate, stranding the node on its degraded
+/// (`lambda=Undef`) first-dispatch result. Since #7332 that gate reads the
+/// build-scoped `RedispatchPassState::redispatched` rather than the node's
+/// `realization_inputs`, so the strand is bounded by the build rather than by
+/// the engine's lifetime — shorter, but still the whole build, and still
+/// silent. This downgrade is what stops it arising at all.
 ///
 /// Call site 3 is pinned by
 /// `a_symbolic_sibling_arg_is_kept_out_of_realization_inputs` in
@@ -357,9 +361,12 @@ pub(crate) fn build_compute_value_inputs(
 /// `for (t_idx, template)` loop) and scans ALL compute nodes on every call, so
 /// any template declared AHEAD of a geometry-consuming one triggers a pass
 /// while that consumer's body is still symbolic. Passing raw `arg_values` there
-/// wrote a content-free `realization_inputs`, tripped the one-shot
-/// `is_empty()` latch, and the later — correct, post-hydration — pass for the
-/// consumer's own template was skipped forever. Silently: the `ReprKind::BRep`
+/// wrote a content-free `realization_inputs`, tripped the candidate gate, and
+/// the later — correct, post-hydration — pass for the consumer's own template
+/// was skipped. That gate was `realization_inputs.is_empty()` when #5951
+/// measured it, over a field the graph carries across edits, so "skipped" meant
+/// forever; #7332 build-scoped the signal, so it now means "for the rest of
+/// this build". The silence is unchanged: the `ReprKind::BRep`
 /// arm of `project_realization_read_handle` is identity-only by design (PRD
 /// §4 D1) and emits no diagnostic.
 ///
