@@ -338,3 +338,106 @@ fn shard_key_is_worktree_independent() {
         "crates/reify-eval/tests/fixtures/undef_trace.ri"
     );
 }
+
+/// Hash keying is a sound REPLACEMENT for index keying, not merely a different
+/// one: it must still partition the corpus exhaustively, leave no shard idle,
+/// and stay balanced enough that no shard becomes the binary's straggler.
+///
+/// # Why these bounds, and not a guess
+///
+/// (a) is the deterministic core and can never flake: it is what proves no file
+/// silently stops being swept — the failure both old
+/// `corpus_shard_count_matches_generated_tests` guards existed to prevent.
+///
+/// (b) and (c) are statistical, so their thresholds are MEASURED rather than
+/// picked. Over the real 299 relative corpus paths, three independent
+/// well-distributed 128-bit hashes (blake2b-128, sha256[:16], md5) gave a max
+/// shard of 19 / 21 / 20 and a min of 7 / 6 / 8 against a mean of 12.46. A
+/// 20 000-trial Monte-Carlo of multinomial(299, 24) gave max-bucket p50 20,
+/// p90 22, p99 25, p99.9 28, absolute max 32; and P(some shard empty) is
+/// 24·(23/24)^299 ≈ 9.3e-5. xxh3-128 is a well-distributed hash, so its residues
+/// mod 24 are statistically indistinguishable from those samples.
+///
+/// The bound in (c) — 3× the ceiling mean, = 39 at 299 files — therefore clears
+/// every measured point sample by ≥1.85× and the simulated absolute max by
+/// 1.22×, while still reddening on the pathologies that actually matter: a
+/// constant-keyed hash (all 299 in one shard) or a truncated modulus (shards
+/// left empty). It is stated as a FORMULA over the live corpus, so growing the
+/// corpus cannot make it fragile.
+#[test]
+fn hash_sharding_partitions_the_corpus_within_measured_bounds() {
+    let corpus = corpus_files();
+    let total = corpus.len();
+    assert!(
+        total > 250,
+        "non-vacuity: expected hundreds of corpus files, got {total}"
+    );
+
+    let shards: Vec<Vec<CorpusFile>> = (0..CORPUS_SHARD_COUNT).map(shard_files).collect();
+    let sizes: Vec<usize> = shards.iter().map(Vec::len).collect();
+    let histogram = || {
+        sizes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| format!("  shard {i:02}: {n}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    // (a) EXHAUSTIVE and DISJOINT: the shards are a partition of the corpus.
+    let mut swept: Vec<String> = shards
+        .iter()
+        .flat_map(|s| s.iter().map(|f| f.rel.clone()))
+        .collect();
+    let mut expected: Vec<String> = corpus.iter().map(|f| f.rel.clone()).collect();
+    swept.sort();
+    expected.sort();
+    assert_eq!(
+        swept.len(),
+        total,
+        "the shards must hold each corpus file EXACTLY once — {} slot(s) across \
+         {CORPUS_SHARD_COUNT} shards for {total} file(s) means a file is swept \
+         twice or not at all:\n{}",
+        swept.len(),
+        histogram()
+    );
+    assert_eq!(
+        swept,
+        expected,
+        "the union of every shard must be exactly corpus_files() — a file missing \
+         here is a file that is never swept by any invariant:\n{}",
+        histogram()
+    );
+
+    // (b) NO DEAD SHARD: an empty shard means a `#[test]` fn that can never
+    //     observe anything, and (under hash keying) files scattered invisibly
+    //     rather than an obvious arithmetic hole.
+    let min = *sizes.iter().min().expect("CORPUS_SHARD_COUNT > 0");
+    assert!(
+        min >= 1,
+        "every shard must own at least one file; shard sizes:\n{}\n\
+         (P(some shard empty) at {total} files over {CORPUS_SHARD_COUNT} shards is \
+         ~9.3e-5, so this is a truncated modulus or a degenerate key, not bad luck)",
+        histogram()
+    );
+
+    // (c) BALANCE: bounded at 3x the ceiling mean over the LIVE corpus.
+    let ceiling_mean = total.div_ceil(CORPUS_SHARD_COUNT);
+    let bound = 3 * ceiling_mean;
+    let max = *sizes.iter().max().expect("CORPUS_SHARD_COUNT > 0");
+    assert!(
+        max <= bound,
+        "the largest shard holds {max} file(s), over the bound of {bound} \
+         (3 x ceil({total}/{CORPUS_SHARD_COUNT})). Measured point samples over this \
+         corpus with three independent 128-bit hashes were 19/21/20, so a breach \
+         here is a degenerate key (a constant hash puts every file in one shard), \
+         not ordinary variance; shard sizes:\n{}",
+        histogram()
+    );
+
+    eprintln!(
+        "corpus partition: {total} file(s) over {CORPUS_SHARD_COUNT} shards \
+         (min {min}, max {max}, bound {bound})\n{}",
+        histogram()
+    );
+}
