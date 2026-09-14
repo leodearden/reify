@@ -1363,10 +1363,15 @@ assert "live scan: every _LIVE_ROOTS entry exists on disk" \
     test "$_s3_missing" -eq 0
 
 # The named members are the ones that would make a collapsed glob obvious: a
-# `crates/*/tests` that matched nothing still leaves the three enumerated roots
+# `crates/*/tests` that matched nothing still leaves the enumerated roots
 # behind, and the list would look plausible. Naming two crates known to hold
 # baselined sites means the list cannot shrink silently.
-for _s3_want in gui/src-tauri/src/tests gui/src-tauri/tests \
+# gui/src-tauri/src/debug_server/tests is named for a different reason: it is
+# the root the #6597 review found MISSING, so it is pinned by name as well as
+# by the general completeness check below -- a specific regression and a
+# general property, which are not the same assertion.
+for _s3_want in gui/src-tauri/src/tests gui/src-tauri/src/debug_server/tests \
+                gui/src-tauri/tests \
                 crates/reify-audit/tests crates/reify-fdm/tests \
                 tree-sitter-reify/tests; do
     _s3_found=0
@@ -1376,6 +1381,55 @@ for _s3_want in gui/src-tauri/src/tests gui/src-tauri/tests \
     assert "live scan: _LIVE_ROOTS contains $_s3_want" \
         test "$_s3_found" -eq 1
 done
+
+# THE LIST IS COMPLETE -- checked against the tree, not asserted in the header.
+# Naming members one at a time can only pin the roots someone thought of; the
+# failure the #6597 review actually found was a root NOBODY thought of
+# (gui/src-tauri/src/debug_server/tests). So ground truth is DERIVED: every
+# directory that holds a tracked .rs file and is named `tests`. `git ls-files`
+# is the right source precisely because it is TRACKED-only -- an untracked
+# scratch directory must not red the gate.
+#
+# Coverage is by PREFIX, not equality: the roots scan recursively, so a nested
+# `a/tests/b/tests` is genuinely reached from `a/tests`. See Section 4f.
+_s3_gt_rc=0
+_s3_gt="$(git ls-files '*.rs' \
+    | sed -E 's#(.*/tests)/.*#\1#' \
+    | LC_ALL=C sort -u \
+    | grep '/tests$')" || _s3_gt_rc=$?
+assert "live scan: the ground-truth test-root derivation succeeds" \
+    test "$_s3_gt_rc" -eq 0
+
+# The derivation itself must not be vacuous: a `sed` or `git` that silently
+# stopped producing roots would make the completeness check below trivially
+# true, which is the same empty-set hole Section 4e exists to close one layer
+# down. 36 roots today; the floor is deliberately loose, and it is a LOWER
+# bound because that is the only direction that means anything for a tree that
+# grows.
+_s3_gt_n="$(_emit_record_stream "$_s3_gt" | grep -c . || true)"
+assert "live scan: the ground-truth derivation found a plausible number of test roots" \
+    test "$_s3_gt_n" -ge 20
+
+_s3_unc_rc=0
+_s3_uncovered="$(_emit_record_stream "$_s3_gt" \
+    | _wallclock_uncovered_test_roots "${_LIVE_ROOTS[@]}")" || _s3_unc_rc=$?
+assert "live scan: the completeness check runs (returns 0 -- the LIST is the result)" \
+    test "$_s3_unc_rc" -eq 0
+
+if [ -n "$_s3_uncovered" ]; then
+    echo "" >&2
+    echo "Tracked Rust TEST ROOTS that _LIVE_ROOTS does not cover:" >&2
+    printf '%s\n' "$_s3_uncovered" | sed 's/^/  /' >&2
+    echo "" >&2
+    echo "Each directory above holds tracked Rust tests that this guard is NOT scanning," >&2
+    echo "so a hand-rolled deadline or an elapsed upper bound can land there unseen." >&2
+    echo "Add it to _LIVE_ROOTS above. If it is genuinely not a test root, say why in the" >&2
+    echo "header's SCOPE paragraph rather than quietly narrowing the derivation -- an" >&2
+    echo "unexplained exclusion is how the gap this check exists to catch got here." >&2
+fi
+
+assert "live scan: _LIVE_ROOTS covers EVERY tracked Rust test root" \
+    test -z "$_s3_uncovered"
 
 # --- (2) the ratchet holds, in both directions -----------------------------
 assert "live scan: the baseline file exists" test -f "$_BASELINE_FILE"
@@ -2057,5 +2111,110 @@ _wallclock_files_scanned "$_s4e7_tmpdir/notadir.rs" \
     > "$_s4e7_tmpdir/out.txt" 2>&1 || _s4e7_rc=$?
 assert "4e-7: a root that is a file, not a directory, is a hard error (non-zero)" \
     test "$_s4e7_rc" -ne 0
+
+# ===========================================================================
+# Section 4f: ROOT-SET COMPLETENESS -- is the root LIST itself right?
+#
+# WHY THIS SECTION EXISTS (#6597 review). Every other assertion in this file
+# takes `_LIVE_ROOTS` as given and checks what happens INSIDE it. That left one
+# failure nothing here could see: a genuine Rust test root simply MISSING from
+# the list. The review found exactly that -- gui/src-tauri/src/debug_server/tests,
+# 31 #[test]/#[tokio::test] fns split out of debug_server.rs's `mod tests` for
+# size alone, and a CHILD of debug_server::tests, so recursing
+# gui/src-tauri/src/tests never reaches it -- in the very crate that produced
+# all four historical flakes. Adding one path by hand is how that gap got here,
+# so the fix is the move this guard already made for _ESC_ALLOWLIST_SIZE: the
+# header's "EVERY Rust TEST root" claim becomes CHECKED against the tree
+# (Section 3), and this section pins the primitive that checks it.
+#
+# `_wallclock_uncovered_test_roots <root>...` reads candidate roots on stdin and
+# prints the UNCOVERED ones on stdout. COVERAGE IS BY PREFIX, not string
+# equality, because the roots scan recursively: a nested `a/tests/b/tests` is
+# genuinely reached from `a/tests` and reporting it would be a false red. The
+# trap in prefix matching is `x/tests2`, which a naive `case $_cand in $_arg*)`
+# swallows -- 4f-4 pins it, because that failure direction is the dangerous one
+# (a root wrongly called covered is a root nobody scans).
+#
+# House contract, same as _count_rust_wallclock_escapes: the LIST is the result
+# and the function always returns 0. The verdict belongs to the caller, which
+# is why every fixture below asserts rc 0 alongside the output.
+#
+# PURE STRING LOGIC -- synthetic stdin against synthetic args, no filesystem,
+# no mktemp. These roots need not exist, and deliberately do not: the question
+# is whether the LIST covers a name, which is independent of what is on disk
+# (that is _wallclock_assert_roots's job, Section 4e).
+# ===========================================================================
+echo ""
+echo "--- Section 4f: root-set completeness ---"
+
+# ---------------------------------------------------------------------------
+# 4f-1: an EXACTLY EQUAL root is covered.
+# ---------------------------------------------------------------------------
+_s4f1_rc=0
+_s4f1_out="$(printf '%s\n' 'x/tests' \
+    | _wallclock_uncovered_test_roots 'x/tests' 2>/dev/null)" || _s4f1_rc=$?
+assert "4f-1: the primitive returns 0 -- the list is the result, not a verdict" \
+    test "$_s4f1_rc" -eq 0
+assert "4f-1: a root equal to an argument is covered (nothing printed)" \
+    test -z "$_s4f1_out"
+
+# ---------------------------------------------------------------------------
+# 4f-2: a DESCENDANT is covered. The roots scan recursively, so `x/tests/sub`
+#       is genuinely reached from `x/tests`; reporting it would be a false red
+#       that invites someone to "fix" it by enumerating subdirectories.
+# ---------------------------------------------------------------------------
+_s4f2_rc=0
+_s4f2_out="$(printf '%s\n' 'x/tests/sub' 'x/tests/sub/deeper/tests' \
+    | _wallclock_uncovered_test_roots 'x/tests' 2>/dev/null)" || _s4f2_rc=$?
+assert "4f-2: the primitive returns 0 for descendants" \
+    test "$_s4f2_rc" -eq 0
+assert "4f-2: a descendant of an argument is covered, at any depth (nothing printed)" \
+    test -z "$_s4f2_out"
+
+# ---------------------------------------------------------------------------
+# 4f-3: a SIBLING is NOT covered, and is printed. This is the review's actual
+#       failure shape: a real test root beside the ones in the list.
+# ---------------------------------------------------------------------------
+_s4f3_rc=0
+_s4f3_out="$(printf '%s\n' 'y/tests' \
+    | _wallclock_uncovered_test_roots 'x/tests' 2>/dev/null)" || _s4f3_rc=$?
+assert "4f-3: an uncovered root still returns 0 -- it is a finding, not an error" \
+    test "$_s4f3_rc" -eq 0
+assert "4f-3: a sibling root is NOT covered and is printed by name" \
+    test "$_s4f3_out" = "y/tests"
+
+# ---------------------------------------------------------------------------
+# 4f-4: THE PREFIX TRAP. `x/tests2` shares a string prefix with `x/tests` but
+#       is a different directory, and `x/tests` does not scan it. A naive
+#       `case $_cand in $_arg*)` calls it covered -- silently dropping a real
+#       test root from the completeness report, which is precisely the failure
+#       this whole section exists to catch. The quoted `"$_arg"/*` form is what
+#       makes the difference, so it is pinned rather than trusted.
+# ---------------------------------------------------------------------------
+_s4f4_rc=0
+_s4f4_out="$(printf '%s\n' 'x/tests2' \
+    | _wallclock_uncovered_test_roots 'x/tests' 2>/dev/null)" || _s4f4_rc=$?
+assert "4f-4: the prefix trap returns 0" \
+    test "$_s4f4_rc" -eq 0
+assert "4f-4: x/tests2 is NOT covered by x/tests (a string prefix is not a parent)" \
+    test "$_s4f4_out" = "x/tests2"
+
+# ---------------------------------------------------------------------------
+# 4f-5: EVERY uncovered root is printed, not just the first, and coverage is
+#       tested against ALL the arguments rather than only `$1`. Section 3
+#       reports the list to a human who then edits _LIVE_ROOTS; stopping at
+#       the first would turn one edit into as many red runs as there are gaps.
+# ---------------------------------------------------------------------------
+_s4f5_rc=0
+_s4f5_out="$(printf '%s\n' 'a/tests' 'b/tests' 'c/tests' \
+    | _wallclock_uncovered_test_roots 'b/tests' 'd/tests' 2>/dev/null)" || _s4f5_rc=$?
+_s4f5_n="$(_emit_record_stream "$_s4f5_out" | grep -c . || true)"
+assert "4f-5: multiple uncovered roots return 0" \
+    test "$_s4f5_rc" -eq 0
+assert "4f-5: BOTH uncovered roots are printed, not just the first" \
+    test "$_s4f5_n" -eq 2
+assert "4f-5: coverage is tested against every argument, not only the first" \
+    test "$_s4f5_out" = "a/tests
+c/tests"
 
 test_summary
