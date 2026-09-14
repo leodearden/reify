@@ -55,12 +55,19 @@ fn eval_curated_unit_labels_renders_registry_units_without_rescaling() {
     }
 
     // Standing fence: this path must never acquire resolve_display's
-    // rescaling — no scaled rung, and no engineering notation.
-    for gone in ["3 mm", "28.6478897565 deg", "\u{00d7}"] {
+    // rescaling — no scaled rung, and no engineering notation. Asserted on the
+    // UNIT token, never on a particular digit spelling: "no rescaled rung ever
+    // reaches this path" is a claim about the unit, and a fence that named a
+    // magnitude ("3 mm", "28.6478897565 deg") would pass vacuously the moment a
+    // reroute rendered the same rescaled value with a different digit count.
+    // Length is the fixture's only mm-scale cell and Angle its only degree-scale
+    // one, so no cell here can legitimately emit either token.
+    for gone in [" mm", " deg", "\u{00d7}"] {
         assert!(
             !stdout.contains(gone),
             "stdout must NOT contain {gone:?} — the eval cell renders the raw SI \
-             magnitude, never a rescaled one;\nstdout:\n{stdout}\nstderr:\n{stderr}"
+             magnitude under its raw-SI unit, never a rescaled rung;\n\
+             stdout:\n{stdout}\nstderr:\n{stderr}"
         );
     }
 }

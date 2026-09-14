@@ -59,10 +59,13 @@ fn eval_thin_walled_bracket_exits_zero_with_in_band_max_von_mises() {
 
     // The RHS must carry the curated pressure unit (task #6674 replaced the
     // composed SI-base label "kg·m^-1·s^-2" with "Pa"; the magnitude above is
-    // unchanged).
-    assert!(
-        rhs.contains("Pa"),
-        "expected the curated pressure unit 'Pa' in the RHS of the \
+    // unchanged). Pinned as the whole unit TOKEN, not a substring: `contains`
+    // would also be satisfied by "kPa"/"MPa"/"GPa", i.e. by exactly the rescaled
+    // rung this assertion exists to exclude.
+    assert_eq!(
+        rhs.split_whitespace().nth(1),
+        Some("Pa"),
+        "expected the curated pressure unit token 'Pa' in the RHS of the \
          max_von_mises line.\nRHS: {rhs:?}"
     );
 
