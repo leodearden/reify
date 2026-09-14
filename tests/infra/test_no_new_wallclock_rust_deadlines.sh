@@ -635,12 +635,14 @@ _wallclock_baseline_check() {
 }
 
 # ---------------------------------------------------------------------------
-# _count_rust_wallclock_escapes <dir>
+# _count_rust_wallclock_escapes <root>...
 #
 # Prints (stdout) the number of PHYSICAL lines carrying the escape token
-# across all *.rs files in <dir>, and lists each one (stderr) as
-# "file:lineno: <content>". Always returns 0 -- the COUNT is the result, and
-# what to do with it is the caller's assertion, not this function's.
+# across all *.rs files under <root>..., RECURSIVELY, and lists each one
+# (stderr) as "file:lineno: <content>". Returns 0 -- the COUNT is the result,
+# and what to do with it is the caller's assertion, not this function's. The
+# one exception is a bad root, which returns the validator's 2: it is not an
+# answer of any kind, and a zero there could match the allowlist by luck.
 #
 # WHY THIS EXISTS AT ALL (#6438 review). The detector above `continue`s on an
 # escaped line without counting it, so its rc is 0 whether the tree holds one
@@ -656,7 +658,10 @@ _wallclock_baseline_check() {
 # so the two can never disagree about what an escape is.
 # ---------------------------------------------------------------------------
 _count_rust_wallclock_escapes() {
-    local dir="$1"
+    # SAME validator as the engine and the floor: a root that does not exist
+    # must be a hard error, never a zero contribution that could make the
+    # total match the allowlist by luck (fixture 2af).
+    _wallclock_assert_roots "$@" || return $?
 
     # Split across two adjacent single-quoted strings, as everywhere else in
     # this file: a contiguous copy here would annotate this very line and
@@ -664,23 +669,22 @@ _count_rust_wallclock_escapes() {
     # copy of its own logic.
     local _esc_re; _esc_re='wallcl''ock:allow'
 
-    local _n=0
-    local f
-    for f in "$dir"/*.rs; do
-        [ -f "$f" ] || continue
+    # Same single-grep-over-all-roots shape as _wallclock_fingerprints, for
+    # the same two reasons: it recurses, and it is one fork rather than one
+    # per line. `-n` keeps the "file:lineno: <content>" listing the contract
+    # below promises. rc 1 means zero escapes -- a legitimate answer, not a
+    # failure -- so only rc >= 2 propagates.
+    local _hits _rc=0
+    _hits="$(grep -rnE --include='*.rs' -e "$_esc_re" -- "$@")" || _rc=$?
+    [ "$_rc" -le 1 ] || return "$_rc"
 
-        local _lineno=0
-        local _line
-        while IFS= read -r _line || [ -n "$_line" ]; do
-            _lineno=$((_lineno + 1))
-            if [[ "$_line" =~ $_esc_re ]]; then
-                echo "$f:$_lineno: $_line" >&2
-                _n=$((_n + 1))
-            fi
-        done < "$f"
-    done
+    if [ -z "$_hits" ]; then
+        echo "0"
+        return 0
+    fi
 
-    echo "$_n"
+    printf '%s\n' "$_hits" >&2
+    printf '%s\n' "$_hits" | grep -c .
     return 0
 }
 # ===========================================================================
