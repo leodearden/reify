@@ -872,8 +872,13 @@ pub fn build_against_mock_kernel(
 /// e.g. `sub v : Vent { area = auto }` next to a parent `let area = ...`.
 /// If a specific entity's cell matters, disambiguate before calling, e.g.
 /// by searching `template.value_cells` directly for the desired
-/// `id.entity`. [`get_let_expr_in_template`] shares this same resolution
-/// walk and is subject to the identical ambiguity contract.
+/// `id.entity`. [`get_value_cell_of`], [`try_get_value_cell_of`],
+/// [`get_let_expr_in_template`], [`get_let_expr_in`] and [`get_let_expr`]
+/// share this same resolution walk and are subject to the identical
+/// ambiguity contract.
+///
+/// Takes a `&CompiledModule` plus a template name; [`get_value_cell_of`] is
+/// the sibling for a `&TopologyTemplate` the caller already holds.
 ///
 /// # Panics
 /// - `"no template named '{template_name}'"` if no template with that name exists.
@@ -890,44 +895,83 @@ pub fn get_value_cell_in<'a>(
     let Some(template) = module.templates.iter().find(|t| t.name == template_name) else {
         panic!("no template named '{template_name}'")
     };
-    lookup_value_cell(template, cell_name)
+    get_value_cell_of(template, cell_name)
 }
 
-/// THE single ambiguity-guarded cell walk, shared by [`get_value_cell_in`] and
-/// [`get_let_expr_in_template`]: resolves `cell_name` against
-/// `template.value_cells` by `id.member` alone; `id.entity` is not considered.
+/// Retrieve a value cell declaration by name from a template you already hold.
 ///
-/// See `get_value_cell_in`'s rustdoc for the full ambiguity contract —
-/// the realistic producer of a collision and the disambiguation route.
+/// Reach for this when you hold a `&TopologyTemplate` directly — e.g. from
+/// [`compile_first_template`] or [`compile_template`], both of which return an *owned*
+/// `TopologyTemplate` and consume the compiled module in the process, so they cannot feed
+/// [`get_value_cell_in`] (which takes a `&CompiledModule` plus a template name).
+/// [`get_let_expr_in_template`] is the expr-only sibling: it yields the cell's
+/// `default_expr` rather than the declaration, so it panics on a defaultless cell
+/// where this function returns that cell as-is. [`try_get_value_cell_of`] is the
+/// tolerant variant, for callers to which absence is an expected outcome.
+///
+/// Resolves through [`try_get_value_cell_of`]; see its rustdoc for the shared
+/// ambiguity contract.
 ///
 /// # Panics
-/// - `"no value cell named '{cell_name}' in template '{template.name}'; has: [...]"` if no
-///   cell matches — the panic lists the `entity.member` of every cell the template does carry.
+/// - `"no value cell named '{cell_name}' in template '{template.name}'; has: [...]"` if the
+///   cell is absent — the panic lists the `entity.member` of every cell the template does carry.
 /// - `"ambiguous cell name '{cell_name}' in template '{template.name}'"` if more than one
-///   value cell shares that member name, naming the colliding `id.entity` values.
+///   value cell shares that member name (raised by [`try_get_value_cell_of`]).
 #[track_caller]
-fn lookup_value_cell<'a>(
+pub fn get_value_cell_of<'a>(
     template: &'a TopologyTemplate,
     cell_name: &str,
 ) -> &'a reify_compiler::ValueCellDecl {
+    // The not-found `panic!` stays in this `#[track_caller]` body rather than moving
+    // into an `unwrap_or_else` closure: `#[track_caller]` does not propagate into a
+    // closure, so the closure form would report this file's line instead of the
+    // caller's.
+    let Some(cell) = try_get_value_cell_of(template, cell_name) else {
+        let available: Vec<String> = template
+            .value_cells
+            .iter()
+            .map(|vc| vc.id.to_string())
+            .collect();
+        panic!(
+            "no value cell named '{cell_name}' in template '{}'; has: {available:?}",
+            template.name
+        )
+    };
+    cell
+}
+
+/// Resolve a value cell by name from a template you already hold, tolerating absence.
+///
+/// THE single ambiguity-guarded cell walk. Every value-cell entry point in this module
+/// resolves through it: [`get_value_cell_of`], [`get_value_cell_in`],
+/// [`get_let_expr_in_template`], [`get_let_expr_in`] and [`get_let_expr`]. Resolution
+/// keys on `id.member` alone; `id.entity` is not considered.
+///
+/// `None` means the member is ABSENT, and only that — an ambiguous member still panics
+/// rather than collapsing into `None`, so a caller checking absence can never read "no
+/// such cell" when the truth is "two cells matched". Reach for this variant when absence
+/// is an expected outcome (asserting a cell is *not* declared); use [`get_value_cell_of`]
+/// when absence is a test failure.
+///
+/// See [`get_value_cell_in`]'s rustdoc for the full ambiguity contract — the realistic
+/// producer of a collision and the disambiguation route.
+///
+/// # Panics
+/// - `"ambiguous cell name '{cell_name}' in template '{template.name}'"` if more than one
+///   value cell shares that member name, naming the colliding `id.entity` values.
+#[track_caller]
+pub fn try_get_value_cell_of<'a>(
+    template: &'a TopologyTemplate,
+    cell_name: &str,
+) -> Option<&'a reify_compiler::ValueCellDecl> {
     let matching: Vec<_> = template
         .value_cells
         .iter()
         .filter(|vc| vc.id.member == cell_name)
         .collect();
     match matching.as_slice() {
-        [] => {
-            let available: Vec<String> = template
-                .value_cells
-                .iter()
-                .map(|vc| vc.id.to_string())
-                .collect();
-            panic!(
-                "no value cell named '{cell_name}' in template '{}'; has: {available:?}",
-                template.name
-            )
-        }
-        [only] => only,
+        [] => None,
+        [only] => Some(only),
         many => {
             let entities: Vec<&str> = many.iter().map(|vc| vc.id.entity.as_str()).collect();
             panic!(
@@ -983,7 +1027,7 @@ pub fn get_let_expr_in_template<'a>(
     template: &'a TopologyTemplate,
     cell_name: &str,
 ) -> &'a CompiledExpr {
-    require_default_expr(lookup_value_cell(template, cell_name), &template.name)
+    require_default_expr(get_value_cell_of(template, cell_name), &template.name)
 }
 
 /// Retrieve the compiled `default_expr` of any value cell by name from a named template.
@@ -2408,11 +2452,14 @@ mod tests {
     }
 
     // ── get_value_cell_in ─────────────────────────────────────────────────
-    // get_value_cell_in, get_let_expr_in_template, get_let_expr_in, and
-    // get_let_expr all resolve through the shared lookup_value_cell walk, so
-    // the not-found and ambiguity panics pinned once below (on
-    // get_value_cell_in) apply identically at all four entry points — no
-    // per-entry-point duplicate is added for either panic.
+    // All six value-cell entry points — get_value_cell_of,
+    // try_get_value_cell_of, get_value_cell_in, get_let_expr_in_template,
+    // get_let_expr_in and get_let_expr — resolve through the shared
+    // try_get_value_cell_of walk, so the ambiguity panic pinned once below (on
+    // get_value_cell_in) applies identically at all six, and the not-found
+    // panic at the five that raise it (try_get_value_cell_of returns None
+    // instead, pinned in its own section). No per-entry-point duplicate is
+    // added for either panic.
 
     /// Shared fixture: two templates both declare `w` with different values, so a
     /// wrong-template resolution is observable in the assertion.
@@ -2696,7 +2743,7 @@ mod tests {
     /// The two panic branches of `get_let_expr_in_template` ("no value cell
     /// named" / "has no default expr") are intentionally NOT re-tested here.
     /// `get_let_expr_in_template` and `get_let_expr_in` both resolve through
-    /// the shared `lookup_value_cell` / `require_default_expr` primitives, and
+    /// the shared `try_get_value_cell_of` / `require_default_expr` primitives, and
     /// `test_get_let_expr_in_panics_on_missing_cell` /
     /// `test_get_let_expr_in_panics_on_missing_default_expr` below already
     /// exercise both branches through those primitives — duplicating them at
