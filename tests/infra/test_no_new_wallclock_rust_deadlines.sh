@@ -164,8 +164,20 @@ source "$SCRIPT_DIR/test_helpers.sh"
 
 echo "=== Rust real-clock deadline / upper-bound regression guard ==="
 
-# The directory the live scan in Section 3 guards.
-_LIVE_DIR="$REPO_ROOT/gui/src-tauri/src/tests"
+# EVERY PATH BELOW IS RESOLVED FROM THE REPO ROOT, pinned once here.
+#
+# The scan roots in Section 3 are written repo-relative, and that is not
+# cosmetic: grep echoes each match's path under the root exactly as it was
+# named, so a repo-relative root is what makes a fingerprint repo-relative --
+# which is what the committed baseline holds, and what keeps it portable
+# across machines and worktrees. Absolute roots would bake this checkout's
+# path into every row.
+#
+# Sections 1, 2 and 4 are unaffected: their roots are absolute mktemp dirs.
+cd "$REPO_ROOT" || {
+    echo "ERROR: cannot cd to REPO_ROOT ($REPO_ROOT)" >&2
+    exit 1
+}
 
 # Escape token, assembled from parts (see SELF-MATCH SAFETY above).
 _ESC_TOKEN='wallcl''ock:allow'
@@ -1189,6 +1201,23 @@ assert "2ac: three escapes across two files count 3, not 1 and not 2" \
 # ===========================================================================
 echo ""
 echo "--- Section 3: live scan of every Rust test root ---"
+
+# Every Rust TEST ROOT, repo-relative (see the cd at the top of this file).
+# `crates/*/tests` rather than an enumerated list so a new crate's tests are
+# ratcheted the day they land -- the guard must not need editing to stay
+# honest. An unmatched glob leaves the literal pattern string as an array
+# element, which _wallclock_assert_roots rejects loudly rather than skipping.
+#
+# PRODUCTION CODE IS DELIBERATELY EXCLUDED, and roots are directories whose
+# CONTENTS are tests -- which is why gui/src-tauri/src/tests is in (a test root
+# that happens to live under src/) while crates/*/src is out. See KNOWN LIMITS
+# in the header for the argument and the sites it drops.
+_LIVE_ROOTS=(
+    crates/*/tests
+    gui/src-tauri/src/tests
+    gui/src-tauri/tests
+    tree-sitter-reify/tests
+)
 
 _BASELINE_FILE="$SCRIPT_DIR/wallclock-rust-deadline-baseline.txt"
 
