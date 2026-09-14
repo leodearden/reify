@@ -1,4 +1,4 @@
-use reify_ir::{AttributeHistory, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, Mesh, QueryError, SampledField, TessError, Value};
+use reify_ir::{AttributeHistory, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, Mesh, QueryError, SampledField, TessError, Value, VoxelResolution};
 
 /// A single-kernel holder that wraps an optional geometry kernel.
 ///
@@ -40,6 +40,21 @@ impl SingleKernelHolder {
     /// Returns `true` if a kernel has been registered.
     pub fn has_kernel(&self) -> bool {
         self.kernel.is_some()
+    }
+
+    /// The no-kernel outcome shared by every Mesh-ingest entry point.
+    ///
+    /// `GeometryKernel::ingest_mesh` and
+    /// `GeometryKernel::ingest_mesh_at_resolution` must both reproduce the
+    /// trait default's no-kernel message, which is one string; producing it
+    /// once means the two arms cannot drift, so no test is needed to check
+    /// that they agree. `type_name::<Self>()` resolves to `SingleKernelHolder`
+    /// here exactly as it does in the trait default.
+    fn no_mesh_kernel_error() -> GeometryError {
+        GeometryError::OperationFailed(format!(
+            "{} does not accept Mesh inputs",
+            std::any::type_name::<Self>()
+        ))
     }
 }
 
@@ -232,12 +247,33 @@ impl GeometryKernel for SingleKernelHolder {
     fn ingest_mesh(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
         match self.kernel.as_mut() {
             Some(k) => k.ingest_mesh(mesh),
-            // Mirror the trait default's no-kernel message; type_name::<Self>()
-            // resolves to SingleKernelHolder here, exactly as the default would.
-            None => Err(GeometryError::OperationFailed(format!(
-                "{} does not accept Mesh inputs",
-                std::any::type_name::<Self>()
-            ))),
+            None => Err(Self::no_mesh_kernel_error()),
+        }
+    }
+
+    /// Delegating override for the resolution-carrying mesh ingest (task 6560).
+    ///
+    /// Required by this impl's delegate-EVERY-method invariant, and uniquely
+    /// harmful to omit: the trait default drops `resolution` and routes
+    /// through `self.ingest_mesh`, which this holder also overrides, so the
+    /// call still reaches the inner kernel — just via its `ingest_mesh` arm,
+    /// at `VoxelResolution::HonestFloor`. The caller's request is therefore
+    /// discarded SILENTLY, surfacing as a quietly coarser grid rather than an
+    /// error: precisely the sub-voxel-feature failure `VoxelResolution` was
+    /// introduced to prevent. Delegating verbatim is the whole point of the
+    /// seam.
+    ///
+    /// The `None` arm reproduces the trait default's no-kernel output via the
+    /// shared `SingleKernelHolder::no_mesh_kernel_error`, which `ingest_mesh`
+    /// above also calls — so the two arms cannot drift.
+    fn ingest_mesh_at_resolution(
+        &mut self,
+        mesh: &Mesh,
+        resolution: VoxelResolution,
+    ) -> Result<GeometryHandle, GeometryError> {
+        match self.kernel.as_mut() {
+            Some(k) => k.ingest_mesh_at_resolution(mesh, resolution),
+            None => Err(Self::no_mesh_kernel_error()),
         }
     }
 
@@ -253,7 +289,7 @@ impl GeometryKernel for SingleKernelHolder {
 mod tests {
     use reify_test_support::MockGeometryKernel;
     use reify_test_support::mm3;
-    use reify_ir::{AttributeHistory, BRepKind, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, Mesh, QueryError, SampledField, TessError, Value};
+    use reify_ir::{AttributeHistory, BRepKind, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, Mesh, QueryError, SampledField, TessError, Value, VoxelResolution};
     use std::sync::{Arc, Mutex};
 
     use super::*;
@@ -568,12 +604,31 @@ mod tests {
     /// returns `Err` rather than constructing a heavyweight `SampledField`).
     struct RecordingKernel {
         log: Arc<Mutex<Vec<&'static str>>>,
+        /// Every `VoxelResolution` the inner kernel was actually handed, in
+        /// call order. Separate from `log` because the method NAME alone
+        /// cannot distinguish a real delegating override from the trait
+        /// default — only the request VALUE can.
+        resolutions: Arc<Mutex<Vec<VoxelResolution>>>,
     }
 
+    /// A fresh `RecordingKernel` together with shared handles to the two logs
+    /// it writes: the method-name call log and the `VoxelResolution` request
+    /// log.
+    type RecordingKernelWithLogs = (
+        RecordingKernel,
+        Arc<Mutex<Vec<&'static str>>>,
+        Arc<Mutex<Vec<VoxelResolution>>>,
+    );
+
     impl RecordingKernel {
-        fn new() -> (Self, Arc<Mutex<Vec<&'static str>>>) {
+        fn new() -> RecordingKernelWithLogs {
             let log = Arc::new(Mutex::new(Vec::new()));
-            (Self { log: log.clone() }, log)
+            let resolutions = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self { log: log.clone(), resolutions: resolutions.clone() },
+                log,
+                resolutions,
+            )
         }
 
         fn record(&self, name: &'static str) {
@@ -694,6 +749,21 @@ mod tests {
             Ok(Self::handle())
         }
 
+        fn ingest_mesh_at_resolution(
+            &mut self,
+            _mesh: &Mesh,
+            resolution: VoxelResolution,
+        ) -> Result<GeometryHandle, GeometryError> {
+            // Record BOTH the method name and the requested resolution. The
+            // name proves the holder delegated at all; the value proves it
+            // delegated the caller's request VERBATIM rather than falling
+            // through the trait default, which drops `resolution` and calls
+            // `ingest_mesh` instead.
+            self.record("ingest_mesh_at_resolution");
+            self.resolutions.lock().unwrap().push(resolution);
+            Ok(Self::handle())
+        }
+
         fn attribute_hook(&self) -> Option<&dyn KernelAttributeHook> {
             self.record("attribute_hook");
             None
@@ -718,7 +788,7 @@ mod tests {
     /// RED until step-4 adds the 10 delegating overrides.
     #[test]
     fn delegates_all_capability_methods_to_inner_kernel() {
-        let (kernel, log) = RecordingKernel::new();
+        let (kernel, log, _resolutions) = RecordingKernel::new();
         let mut holder = SingleKernelHolder::new();
         holder.register_kernel(Box::new(kernel));
 
@@ -751,6 +821,7 @@ mod tests {
         let _ = holder.execute_split(&op);
         let _ = holder.make_compound(&[GeometryHandleId(1)]);
         let ingest = holder.ingest_mesh(&mesh);
+        let _ = holder.ingest_mesh_at_resolution(&mesh, VoxelResolution::HonestFloor);
         let _ = holder.attribute_hook();
         let deviation = holder.measure_mesh_deviation(GeometryHandleId(1), &mesh);
 
@@ -800,6 +871,7 @@ mod tests {
             "execute_split",
             "make_compound",
             "ingest_mesh",
+            "ingest_mesh_at_resolution",
             "attribute_hook",
             "measure_mesh_deviation",
         ] {
@@ -808,6 +880,76 @@ mod tests {
                 "SingleKernelHolder did not delegate `{method}` to the inner kernel; \
                  recorded calls: {recorded:?}"
             );
+        }
+    }
+
+    /// The resolution request itself must reach the inner kernel VERBATIM.
+    ///
+    /// `delegates_all_capability_methods_to_inner_kernel` proves only that
+    /// *some* call reached the inner kernel — it cannot on its own separate a
+    /// real delegating override from the trait default, because that default
+    /// routes through `self.ingest_mesh` → the holder's own `ingest_mesh`
+    /// override → the inner kernel's `ingest_mesh`, which logs too. This test
+    /// makes the difference observable. With a real override the inner kernel
+    /// sees `ingest_mesh_at_resolution` carrying the exact `VoxelResolution`
+    /// the caller passed; with the trait default it sees `ingest_mesh` and the
+    /// request is silently downgraded to `VoxelResolution::HonestFloor` — the
+    /// sub-voxel-feature failure task 6560 exists to close, arriving as a
+    /// quietly coarser grid rather than as an error.
+    #[test]
+    fn ingest_mesh_at_resolution_delegates_the_request_verbatim() {
+        let (kernel, log, resolutions) = RecordingKernel::new();
+        let mut holder = SingleKernelHolder::new();
+        holder.register_kernel(Box::new(kernel));
+
+        let mesh = Mesh { vertices: vec![], indices: vec![], normals: None };
+        let handle = holder
+            .ingest_mesh_at_resolution(&mesh, VoxelResolution::MinFeature(1.0))
+            .expect("holder must propagate the inner kernel's Ok(handle)");
+        assert_eq!(handle.id, GeometryHandleId(1));
+
+        assert_eq!(
+            *resolutions.lock().unwrap(),
+            vec![VoxelResolution::MinFeature(1.0)],
+            "the inner kernel must receive the caller's VoxelResolution verbatim"
+        );
+
+        let recorded = log.lock().unwrap();
+        assert_eq!(
+            *recorded,
+            vec!["ingest_mesh_at_resolution"],
+            "the holder must delegate ingest_mesh_at_resolution directly; a \
+             recorded `ingest_mesh` means it fell through the trait default and \
+             silently downgraded the request to VoxelResolution::HonestFloor"
+        );
+    }
+
+    /// The `None` arm must reproduce the trait default's no-kernel output.
+    ///
+    /// Per this impl's delegate-EVERY-method INVARIANT, adding a delegating
+    /// override must not change what an empty holder returns. Agreement with
+    /// `ingest_mesh` is now structural — both arms call
+    /// `SingleKernelHolder::no_mesh_kernel_error` — so what is left to check is
+    /// that the shared message is the right one, in particular that it carries
+    /// the `type_name::<Self>()`-derived `SingleKernelHolder` prefix rather
+    /// than a hard-coded name.
+    #[test]
+    fn ingest_mesh_at_resolution_no_kernel_names_the_holder() {
+        let mut holder = SingleKernelHolder::new();
+        let mesh = Mesh { vertices: vec![], indices: vec![], normals: None };
+
+        let err = holder
+            .ingest_mesh_at_resolution(&mesh, VoxelResolution::MinFeature(1.0))
+            .expect_err("an empty holder must reject mesh ingest");
+
+        match &err {
+            GeometryError::OperationFailed(msg) => {
+                assert!(
+                    msg.contains("SingleKernelHolder does not accept Mesh inputs"),
+                    "the message must name the holder via type_name::<Self>(): {msg}"
+                );
+            }
+            other => panic!("expected OperationFailed, got {other:?}"),
         }
     }
 }
