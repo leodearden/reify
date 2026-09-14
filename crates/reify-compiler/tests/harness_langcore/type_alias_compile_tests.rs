@@ -2457,3 +2457,122 @@ mod parametric_alias_entity_body_use_site {
         );
     }
 }
+
+/// Hygiene locks for the PARAMETRIC alias path: a parametric body must bind
+/// exactly its OWN type params and nothing ambient (task #6477, step-6).
+///
+/// The parametric register of `alias_to_entity_type_parity`'s two
+/// `deferred_alias_body_does_not_capture_a_use_site_*_param` locks, and the
+/// rule DIFFERS in a way that matters. #6259's non-parametric rule is "the body
+/// resolves in an EMPTY type/dim parameter scope" — correct there, because a
+/// non-parametric alias is always a top-level declaration and so can never
+/// legitimately name any parameter. A PARAMETRIC alias body legitimately can
+/// name its own declared params, so "empty" is the wrong rule here. The right
+/// one is:
+///
+///   exactly the alias's OWN type params, arriving bound through `subst`,
+///   and nothing ambient.
+///
+/// MEASURED: the parametric path was already hygienic on this axis before
+/// step-4, by construction — `resolve_type_alias_expr_with_subst` accepts no
+/// type/dim parameter scope at all, and `resolve_parameterized_alias`'s
+/// `type_param_names` is consumed ONLY to resolve the use-site-written type
+/// ARGS, which is correct. So every test here is a LOCK, GREEN on arrival.
+/// Its job is to fail loudly if step-4's namespace threading — or any later
+/// change to it — widens the body's scope to the caller's parameters.
+///
+/// The positive control is not optional: without it, a resolver that saw NO
+/// type params at all would satisfy the two capture locks while being broken.
+mod parametric_alias_body_param_hygiene {
+    use super::alias_to_entity_type_parity::param_type_and_errors;
+    use super::*;
+    use reify_test_support::compile_source_with_stdlib;
+
+    /// Positive control — the "exactly its own params" half of the rule.
+    ///
+    /// `T` here IS the alias's own declared param, so the body must bind it,
+    /// through `subst`, to the use-site argument.
+    #[test]
+    fn parametric_alias_body_does_bind_its_own_type_param() {
+        let direct_src = "structure def D {\n    param p : Option<Real>\n}\n";
+        let alias_src = "type AL<T> = Option<T>\n\
+                         structure def D {\n    param p : AL<Real>\n}\n";
+
+        let (direct_ty, direct_errs) = param_type_and_errors(direct_src, "D", "p");
+        assert!(
+            direct_errs.is_empty(),
+            "DIRECT baseline must compile cleanly; got: {direct_errs:?}"
+        );
+
+        let (alias_ty, alias_errs) = param_type_and_errors(alias_src, "D", "p");
+        assert!(
+            alias_errs.is_empty(),
+            "an alias body naming its OWN type param must resolve — `subst` is \
+             exactly the channel that binds it; got: {alias_errs:?}"
+        );
+        assert_eq!(
+            alias_ty, direct_ty,
+            "`type AL<T> = Option<T>` at `AL<Real>` must lower as `Option<Real>` does"
+        );
+    }
+
+    /// `T` is `D`'s type parameter, NOT anything the module-scope alias `AL`
+    /// can see — `AL` declares `U`, and `U` alone is what its body may name.
+    ///
+    /// Assert BOTH halves. Capture turns a hard error into a SILENTLY WRONG
+    /// type, so a diagnostic-only assertion would miss the silent form
+    /// entirely, exactly as #6259's non-parametric row documents.
+    #[test]
+    fn parametric_alias_body_does_not_capture_a_use_site_type_param() {
+        let source = "type AL<U> = T\n\
+                      structure def D<T> {\n    param p : AL<Real> = 1.0\n}\n";
+        let (ty, errs) = param_type_and_errors(source, "D", "p");
+
+        assert!(
+            errs.iter().any(|m| m.contains("AL")),
+            "the unresolvable alias `AL` must still be reported at its use site; \
+             got: {errs:?}"
+        );
+        assert_ne!(
+            ty,
+            Type::TypeParam("T".to_string()),
+            "`type AL<U> = T` must NOT capture the use site's type parameter `T` — \
+             the alias's own `U` is the only param its body may name"
+        );
+        assert_eq!(
+            ty,
+            Type::Error,
+            "an unresolvable alias body must leave the poison sentinel; got {ty:?} \
+             with errors {errs:?}"
+        );
+    }
+
+    /// The DIMENSION-param analogue. Spelled as a `fn` deliberately:
+    /// `dim_param_names` is non-empty only at fn-signature callers, so a struct
+    /// param cannot reproduce this row.
+    ///
+    /// Asserts on the error SET only (this site surfaces no `value_cell`), and
+    /// on the PROPERTY rather than the wording: WHICH name the diagnostic
+    /// mentions is the discriminator between a capture and an honest failure.
+    #[test]
+    fn parametric_alias_body_does_not_capture_a_use_site_dim_param() {
+        let source = "type AD<U> = Q\n\
+                      fn k<Q: Dimension>(x: Scalar<Q>, y: AD<Real>) -> Real { 1.0 }\n";
+        let module = compile_source_with_stdlib(source);
+        let errs: Vec<String> = errors_only(&module)
+            .iter()
+            .map(|d| d.message.clone())
+            .collect();
+
+        assert!(
+            !errs.iter().any(|m| m.contains("'Q'")),
+            "no diagnostic may name `Q` — it is `k`'s dimension parameter, invisible \
+             to the module-scope alias `AD`, whose own param is `U`; got: {errs:?}"
+        );
+        assert!(
+            errs.iter().any(|m| m.contains("AD")),
+            "the unresolvable alias `AD` must still be reported at its use site; \
+             got: {errs:?}"
+        );
+    }
+}
