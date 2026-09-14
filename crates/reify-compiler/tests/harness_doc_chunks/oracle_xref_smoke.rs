@@ -1,11 +1,273 @@
-//! Guard for the CROSS-REFERENCES that send a constraint author from the chunk
-//! they retrieved to the interference/clearance oracle in `geometry.md`.
+//! Guard for the CROSS-REFERENCES that send an author from the chunk they
+//! actually retrieved to the interference/clearance oracle in `geometry.md`.
 //!
-//! Module doc is completed in the next step; this file currently carries only
-//! the synthetic controls that pin `xref_region_violations`' discriminating
-//! power, written BEFORE the predicate exists.
+//! # Why this file exists
+//!
+//! Task 5389 closed the hole in `geometry.md` itself: the oracle now has a
+//! section there, with worked fences and a trap catalogue, guarded by
+//! `geometry_chunk_smoke.rs`. That fixed the destination and not the route.
+//!
+//! The printer_v01 dogfood session's entry point was writing a CONSTRAINT, and
+//! chunks are retrieved PER TOPIC — so an assistant pulling `constraints` to
+//! answer "how do I gate on parts not fouling?" never saw `geometry.md` at all,
+//! read the oracle as a missing capability, and hand-rolled a bounding-box
+//! overlap test. A correct destination nobody is routed to is still a hole; the
+//! two chunks a clearance question is actually asked from are `constraints` and
+//! `stdlib`, so those two carry a pointer and this file is what keeps the
+//! pointers true.
+//!
+//! # What this file guards
+//!
+//! Per referring chunk (`constraints.md`, `stdlib.md`), five properties —
+//! the first inherited, the next four decided by [`xref_region_violations`]:
+//!
+//! 1. **Region presence.** The `<!-- ORACLE-XREF -->` region EXISTS.
+//!    [`section_body`](crate::geometry_chunk_smoke::section_body) PANICS on an
+//!    absent marker, so deleting the pointer is RED rather than vacuously
+//!    green. No anti-vacuity code is written here.
+//! 2. **Call-form coverage.** The region names `intersects(` and `distance(` as
+//!    CALL FORMS — an open paren, never a bare word.
+//! 3. **Destination naming.** The region names the backticked retrieval topic
+//!    it routes to.
+//! 4. **Registry truth.** Every call-shaped name in the region is a live member
+//!    of a compiler name registry, so a rename goes RED at the REFERRER and not
+//!    only at the destination.
+//! 5. **Pointer size.** The region stays under a content-line ceiling. This is
+//!    the executable form of "a pointer, not a copy" — see
+//!    [`MAXIMUM_XREF_CONTENT_LINES`].
+//!
+//! And in the other direction, once, from the referrer side:
+//! [`the_xref_destination_still_answers_the_question`] pins that the section
+//! both pointers promise still exists and still documents what they promise.
+//!
+//! # What is NOT established
+//!
+//! THE CANONICAL SCOPE STATEMENT FOR THIS FILE — test docstrings point back here.
+//!
+//! - **No prose is pinned. Nowhere.** Nothing here matches a sentence, a
+//!   heading, an ordering or a typography choice in any of the three chunks.
+//!   The only structural pins are the two byte-exact inert HTML-comment
+//!   markers, which are house convention precisely so the shipped wording stays
+//!   free to change — and that freedom is now load-bearing in a second way: the
+//!   pointers name the retrieval TOPIC rather than `geometry.md`'s heading
+//!   wording, exactly because that heading may be retitled at will.
+//! - **Nothing here says the pointer is CORRECT, only that it is true and
+//!   whole.** That the traps it defers to are accurate, that the destination
+//!   section teaches what it should — those are `geometry.md`'s own guard's,
+//!   and the eval/CLI tests its SYNC blocks map.
+//! - **No ARITY, dimension or type claim is checked.** The pointers deliberately
+//!   carry no ```` ```reify ```` fence: duplicating `geometry.md`'s worked
+//!   `ClearanceGate` example is the SPOT/G7 lockstep duplication this file
+//!   exists to prevent, so there is nothing here for a fence gate to compile.
+//!
+//! # No new scanner
+//!
+//! This module adds NONE. `section_body`, `called_names`, `registry_family` and
+//! `phantom_name_panic` are all `geometry_chunk_smoke.rs`'s, already
+//! `pub(crate)` and already parameterised by `chunk_path` so a `constraints.md`
+//! failure names `constraints.md`. That follows task 5759's precedent
+//! (`units_chunk_smoke.rs`) exactly: the harness binary now holds FIVE chunk
+//! modules and STILL THREE scrapers.
+//!
+//! The shared `chunk_io` extraction those three still owe is task **#5924**
+//! (ticket `tkt_0RS9A7843SBQ4BZX1A2ACY5TC1`), which is `deferred` — reuse
+//! inside the existing binary is what is available today, not a substitute for
+//! it.
 
-use crate::geometry_chunk_smoke::phantom_name_panic;
+use crate::geometry_chunk_smoke::{
+    call_sites, called_names, phantom_name_panic, registry_family,
+};
+
+/// Marker that OPENS the cross-reference region in each REFERRING chunk.
+/// Matched BYTE-EXACTLY on the trimmed line.
+///
+/// Minted in the same shape as `geometry_chunk_smoke.rs`'s
+/// [`ORACLE_SECTION_MARKER`](crate::geometry_chunk_smoke::ORACLE_SECTION_MARKER)
+/// and for the identical reason: an inert HTML comment costs the chunk one
+/// line, is invisible in rendered markdown, and leaves the heading above it free
+/// to be retitled. Scoping by the heading instead would make every check below a
+/// wording pin on shipped prose.
+const ORACLE_XREF_MARKER: &str = "<!-- ORACLE-XREF -->";
+
+/// First referring chunk: where a designer writes the GATE.
+///
+/// Read (never written) at RUNTIME rather than `include_str!`d, mirroring
+/// `geometry_chunk_smoke.rs`'s `CHUNK_PATH`, so an edit to the markdown is seen
+/// by `cargo test` without a rebuild of this crate. If the chunk moves, this
+/// const must move with it — the failure mode is a loud `expect` on the read,
+/// not a silent skip.
+const CONSTRAINTS_CHUNK_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../reify-mcp/src/tools/chunks/constraints.md"
+);
+
+/// Second referring chunk: where a designer looks up WHAT THE CALL IS CALLED.
+/// Same runtime-read contract as [`CONSTRAINTS_CHUNK_PATH`].
+const STDLIB_CHUNK_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../reify-mcp/src/tools/chunks/stdlib.md"
+);
+
+/// The oracle call forms every pointer must name.
+///
+/// FORM B ONLY — the two-argument, let-bound-geometry pair a constraint author
+/// reaches for. The FORM A snapshot trio (`min_clearance` / `interferes_with` /
+/// `interferes`) is deliberately absent: it needs a mechanism, a body table and
+/// a snapshot before it answers anything, so enumerating it in a POINTER would
+/// be teaching rather than routing. Documenting it stays `geometry.md`'s job,
+/// and [`the_xref_destination_still_answers_the_question`] is what checks the
+/// pointer's destination still does that job.
+const REQUIRED_ORACLE_CALL_FORMS: &[&str] = &["intersects", "distance"];
+
+/// The retrieval TOPIC each pointer must route to.
+///
+/// A topic name, not a heading and not a file path: it is a live key in
+/// `reify-mcp`'s topic list and the destination chunk's filename stem —
+/// structured data rather than meaningful prose — and it is what the reader
+/// actually types. Matched BACKTICKED (see [`xref_region_violations`]), because
+/// "geometry" unadorned is an ordinary noun these pointers use in prose.
+const DESTINATION_TOPIC: &str = "geometry";
+
+/// How many CONTENT lines a cross-reference region may carry before it has
+/// stopped being a pointer and started being a copy.
+///
+/// Non-blank lines of the region, after HTML comments are removed; the marker
+/// line is already excluded by `section_body`, which never emits it.
+///
+/// WHY A SIZE CEILING AND NOT A WORD BLOCKLIST. The constraint being encoded is
+/// G7, no lockstep duplication: `geometry.md` owns the trap catalogue, and a
+/// second copy of it in a referring chunk is a second thing to keep in step with
+/// the compiler — which is the rot this whole task exists to prevent. Forbidding
+/// the trap list's WORDS would be a prose pin, the one thing the house rule in
+/// these files forbids: it would go RED against a correct rewording and green
+/// against a reworded copy. A size ceiling is wording-blind and discriminates
+/// for the right reason — that catalogue is 44 content lines in the live chunk
+/// (measured 2026-09-14) and cannot fit under this by construction.
+///
+/// RE-MEASUREMENT PROTOCOL — the INVERSE of the one stated once on
+/// `geometry_chunk_smoke.rs`'s `MINIMUM_FN_CITES` for every `MINIMUM_*` floor.
+/// This is a CEILING: it is raised only after re-reading WHY the pointer must
+/// not become a copy, and NEVER to go green. Going RED here means an editor
+/// started answering the question in the referring chunk instead of routing to
+/// where it is already answered — the fix is almost always to cut, not to raise.
+/// Set against the live pointers (both ~9 content lines when written), with room
+/// for one clarifying sentence each and no more.
+const MAXIMUM_XREF_CONTENT_LINES: usize = 12;
+
+/// Everything wrong with a cross-reference region, as human-actionable
+/// violation lines — each naming its own corrective action, so a failure tells
+/// a maintainer what to DO rather than only what is wrong.
+///
+/// FOUR classes, emitted in the order a fixer should work them (a region that
+/// names no call form cannot also be judged on size usefully):
+///
+/// 1. **Call-form coverage.** Every [`REQUIRED_ORACLE_CALL_FORMS`] entry must
+///    appear as a CALL, via
+///    [`call_sites`](crate::geometry_chunk_smoke::call_sites) — the same
+///    open-paren-and-balanced-parens rule `geometry.md`'s own coverage scan
+///    uses. The paren is the whole discriminator: `distance` is an ordinary
+///    English noun AND the argument name in `extrude(profile, distance)`, so a
+///    region containing those eight letters has told a constraint author
+///    nothing about the query.
+/// 2. **Destination naming.** The region must carry [`DESTINATION_TOPIC`]
+///    BACKTICKED. A pointer that names no destination points nowhere.
+/// 3. **Registry truth.** Every call-shaped name must resolve through
+///    [`registry_family`](crate::geometry_chunk_smoke::registry_family), and a
+///    failure is reported in
+///    [`phantom_name_panic`](crate::geometry_chunk_smoke::phantom_name_panic)'s
+///    shared wording so the three chunk modules cannot drift on what a reader is
+///    told about a phantom name.
+/// 4. **Pointer size.** See [`MAXIMUM_XREF_CONTENT_LINES`].
+///
+/// HTML COMMENTS ARE STRIPPED FIRST, by [`strip_html_comments`]. They are
+/// editor-facing notes the assistant never renders — house convention puts SYNC
+/// blocks inside exactly these marked regions — so counting them against the
+/// pointer ceiling would penalise the note that keeps a placement constraint
+/// legible, and scanning them for call names would hold an editor note to a
+/// registry it makes no claim against.
+///
+/// PURE and fully parameterized over its input text — it does not read the
+/// chunks — exactly as
+/// `stdlib_chunk_geometry_ops_smoke.rs::geometry_op_doc_coverage_violations` is,
+/// so the controls below pin every class with synthetic data.
+fn xref_region_violations(region: &str, chunk_path: &str) -> Vec<String> {
+    let prose = strip_html_comments(region);
+    let mut out = Vec::new();
+
+    for name in REQUIRED_ORACLE_CALL_FORMS.iter().copied() {
+        if call_sites(&prose, name).is_empty() {
+            out.push(format!(
+                "{chunk_path}'s `{ORACLE_XREF_MARKER}` region never names `{name}(` as a CALL \
+                 FORM. The open paren is the point: a reader who has only seen the bare word \
+                 cannot write the call. FIX: name it as a call with its return type, e.g. \
+                 `{name}(a, b) -> …`, over let-bound geometry — or, if the oracle really did \
+                 lose this form, fix the destination section first and change \
+                 REQUIRED_ORACLE_CALL_FORMS with it."
+            ));
+        }
+    }
+
+    let topic_key = format!("`{DESTINATION_TOPIC}`");
+    if !prose.contains(&topic_key) {
+        out.push(format!(
+            "{chunk_path}'s `{ORACLE_XREF_MARKER}` region never names the destination topic \
+             {topic_key} — a pointer that names no destination points nowhere, which is the \
+             very regression this region exists to close. FIX: route the reader in the house \
+             idiom the other chunks use — the {topic_key} chunk, topic {topic_key} of \
+             `reify_language_reference` — and write that tool name WITHOUT parentheses (a \
+             call-shaped spelling is reported as a phantom builtin by reify-audit's PDOCCOVER \
+             fabrication lane)."
+        ));
+    }
+
+    for name in called_names(&prose) {
+        if registry_family(&name).is_none() {
+            out.push(phantom_name_panic(
+                chunk_path,
+                &format!("its `{ORACLE_XREF_MARKER}` region"),
+                &name,
+            ));
+        }
+    }
+
+    let content_lines = prose.lines().filter(|line| !line.trim().is_empty()).count();
+    if content_lines > MAXIMUM_XREF_CONTENT_LINES {
+        out.push(format!(
+            "{chunk_path}'s `{ORACLE_XREF_MARKER}` region is {content_lines} content lines, over \
+             the {MAXIMUM_XREF_CONTENT_LINES}-line pointer ceiling — it has stopped routing the \
+             reader and started answering the question a second time, which is the lockstep \
+             duplication this cross-reference exists to avoid. FIX: cut it back to a route. Read \
+             MAXIMUM_XREF_CONTENT_LINES' re-measurement protocol before raising the ceiling, and \
+             never raise it merely to go green."
+        ));
+    }
+
+    out
+}
+
+/// `markdown` with every `<!-- … -->` comment removed.
+///
+/// An UNTERMINATED comment consumes the remainder, which is exactly what a
+/// markdown renderer does with it — so a region whose pointer has been swallowed
+/// by a stray `<!--` reports as missing its call forms, which is the true
+/// description of what the reader can now see.
+fn strip_html_comments(markdown: &str) -> String {
+    const OPEN: &str = "<!--";
+    const CLOSE: &str = "-->";
+
+    let mut out = String::with_capacity(markdown.len());
+    let mut rest = markdown;
+
+    while let Some(open) = rest.find(OPEN) {
+        out.push_str(&rest[..open]);
+        let Some(close) = rest[open..].find(CLOSE) else {
+            return out;
+        };
+        rest = &rest[open + close + CLOSE.len()..];
+    }
+    out.push_str(rest);
+    out
+}
 
 // ── Synthetic controls ───────────────────────────────────────────────────────
 //
@@ -177,5 +439,34 @@ See the `geometry` chunk — topic `geometry` of `reify_language_reference`.
             "bogus_query"
         )),
         "expected the SHARED phantom-name wording verbatim, got: {violations:#?}"
+    );
+}
+
+// ── Scanner unit tests ───────────────────────────────────────────────────────
+//
+// `strip_html_comments` is this module's ONLY hand-rolled text helper, and every
+// class of `xref_region_violations` runs downstream of it. It is pinned DIRECTLY
+// here rather than only through the controls above, following the posture
+// `geometry_chunk_smoke.rs`'s own "Scanner unit tests" block establishes: the
+// failure it guards against is self-concealing. A stripper that quietly returned
+// nothing would empty every scan, and the call-form class would then blame the
+// chunk for a defect in this function.
+
+#[test]
+fn html_comments_are_removed_and_the_prose_around_them_is_kept() {
+    assert_eq!(
+        strip_html_comments("before\n<!-- an editor note\n   spanning lines -->\nafter\n"),
+        "before\n\nafter\n"
+    );
+}
+
+#[test]
+fn an_unterminated_html_comment_consumes_the_remainder() {
+    // What a markdown renderer does with it, so what the reader sees. The
+    // region then reports as missing its call forms, which is TRUE of the
+    // rendered chunk — not a scanner defect to be worked around.
+    assert_eq!(
+        strip_html_comments("visible\n<!-- swallowed\n`intersects(a, b)`\n"),
+        "visible\n"
     );
 }
