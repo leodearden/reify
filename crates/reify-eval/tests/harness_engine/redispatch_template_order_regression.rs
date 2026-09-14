@@ -977,3 +977,134 @@ fn a_permanently_stranded_node_is_reported_once_at_end_of_build() {
         );
     }
 }
+
+// ── task #7332: the WARM (`build_snapshot`) surface ────────────────────────
+
+/// Task #7332 (RED before the fix): a warm `build_snapshot` following an
+/// `edit_param` must re-dispatch the geometry-consuming `@optimized` node.
+///
+/// The mock-kernel, always-runs twin of `morph_arm_e2e.rs`'s gmsh-gated
+/// `e2e_non_structural_tick_morphs_and_preserves_connectivity`, which pins the
+/// same contract on the real OCCT+gmsh VolumeMesh path.
+///
+/// `redispatch_geometry_consuming_compute_nodes`' Phase-1 candidate gate reads
+/// `realization_inputs.is_empty()`. But `realization_inputs` is a DEPENDENCY
+/// RECORD with GRAPH lifetime — `deps.rs` builds the Realization→Compute
+/// reverse edge from it and `compute_cache_key` folds it into the key — so
+/// reading its emptiness as the BUILD-lifetime question "has this build
+/// hydrated me yet?" conflates two unrelated facts and makes the gate a
+/// CROSS-BUILD latch.
+///
+/// `build()` is accidentally immune: `eval()` installs a fresh snapshot and
+/// `EvaluationGraph::from_templates` creates no compute nodes, so its
+/// `compute_nodes` map starts empty on every call. `build_snapshot` never calls
+/// `eval()` and reuses `eval_state.snapshot.graph` verbatim, so the COLD
+/// build's write closes the only dispatch surface the warm path has.
+///
+/// That the warm surface really re-executes realizations against the edited
+/// param is pinned independently by
+/// `interactive_edit_loop.rs::edit_param_then_build_snapshot_updates_geometry`
+/// on this same `MockGeometryKernel`; premise (b) below re-asserts it locally
+/// so a failure of the pin cannot be blamed on a dead geometry path.
+#[test]
+fn a_warm_build_snapshot_after_edit_param_re_dispatches_the_geometry_consuming_node() {
+    reset_records();
+    let source = format!("{WARM_CONSUMER_STRUCTURE}{}", trailing_structures(3));
+    let (mut engine, compiled, diagnostics) = build_with_probe_capturing_module(
+        &source,
+        Box::new(reify_test_support::MockGeometryKernel::new()),
+    );
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "premise: the cold build must succeed, or nothing below is about the \
+         warm surface: {errors:?}"
+    );
+
+    // ── Premise (a): the node really IS a geometry-consuming redispatch
+    //    candidate, AND the cold build dispatched it at most once.
+    //
+    // This doubles as the counterfactual guard on the FIX's shape. The fixture
+    // carries three trailing templates, and the pass is re-entered once per
+    // template scanning ALL compute nodes. An implementation that made the warm
+    // pin below pass by simply DELETING the Phase-1 gate — rather than
+    // build-scoping it — would re-dispatch on every trailing template too, and
+    // this count would read 5 (1 original + 4 per-template calls), not 2.
+    let cold = recorded();
+    assert_eq!(
+        cold.len(),
+        2,
+        "premise: the cold build() must dispatch the probe EXACTLY twice — the \
+         original `Value::Undef`-bodied dispatch, then ONE post-hydration \
+         redispatch that the candidate gate then stops repeating for the three \
+         trailing templates. A count of 5 means the gate was removed rather \
+         than build-scoped. Records: {cold:?}"
+    );
+    let last = cold.last().expect("cold.len() == 2 was just asserted");
+    assert!(
+        last.kernel_backed_arg && last.any_realized_content && last.realization_inputs_len == 1,
+        "premise: the cold build's LAST probe invocation must be the \
+         post-hydration redispatch — a KERNEL-BACKED geometry arg, exactly one \
+         `realization_inputs` entry, and real projected content. Without that \
+         this node is not a geometry-consuming redispatch candidate at all and \
+         the warm pin below would hold vacuously. Last record: {last:?}, all: \
+         {cold:?}"
+    );
+
+    // Non-structural tick: 10mm → 12mm on the body's one parameterised extent.
+    engine
+        .edit_param(
+            reify_core::ValueCellId::new("WarmConsumer", "width"),
+            Value::length(0.012),
+        )
+        .expect("edit_param must succeed against the WarmConsumer.width Length param");
+
+    // Drop the cold records: everything below is attributable to
+    // `build_snapshot` alone, not to `edit_param`'s own incremental re-eval.
+    reset_records();
+    let build = engine
+        .build_snapshot(&compiled, ExportFormat::Step)
+        .expect("build_snapshot must return a BuildResult after edit_param");
+
+    // ── Premise (b): the warm surface really re-executed the realization and
+    //    re-stamped a kernel-backed handle. Without this, a zero warm dispatch
+    //    count below could mean "geometry path is dead", not "gate is latched".
+    assert!(
+        build.geometry_output.is_some(),
+        "premise: the warm build_snapshot must produce geometry output — it is \
+         what proves the body was re-realized and re-exported against the edited \
+         param, so the pin below is about the CANDIDATE GATE and not about a \
+         dead geometry path"
+    );
+
+    // ── THE PIN (#7332) ────────────────────────────────────────────────────
+    let warm = recorded();
+    assert!(
+        !warm.is_empty(),
+        "#7332: the warm `build_snapshot` must dispatch the geometry-consuming \
+         `@optimized` node at least once, and dispatched it ZERO times. That is \
+         the defect: `redispatch_geometry_consuming_compute_nodes`' Phase-1 \
+         candidate gate is still reading `realization_inputs.is_empty()`, which \
+         is a GRAPH-lifetime dependency record, as if it were a BUILD-lifetime \
+         \"already hydrated\" flag — so the write the COLD build made latches \
+         the node out of every LATER build. `build_snapshot` reuses \
+         `eval_state.snapshot.graph` verbatim and never calls `eval()`, so that \
+         is the only dispatch surface it has. The redispatch-once signal belongs \
+         in the build-scoped `RedispatchPassState`, not in `realization_inputs`."
+    );
+    assert!(
+        warm.iter().any(|r| r.kernel_backed_arg
+            && r.any_realized_content
+            && r.realization_inputs_len == 1),
+        "#7332: the warm `build_snapshot`'s redispatch must deliver the SAME \
+         shape the cold one did — a KERNEL-BACKED `Value::GeometryHandle`, \
+         exactly one `realization_inputs` entry, and real projected content — \
+         otherwise the node was re-admitted as a candidate but handed nothing \
+         the `@optimized` fn can use, which is a re-dispatch in name only. \
+         Warm records: {warm:?}"
+    );
+}
