@@ -13,8 +13,10 @@
 #
 # THREE TIERS of ceiling now live in that file: default 1200s, gate-resident
 # 1800s (blocks that still run on the merge gate, bounded by its 3600s wall), and
-# heavy 43200s/12h (the 8 members of REIFY_HEAVY_NEXTEST_FILTER, which run only on
-# the offline deep lane under its 13h release wall).
+# heavy 43200s/12h (the 8 members of REIFY_HEAVY_NEXTEST_FILTER, which the merge
+# gate never runs; they run on the offline deep lane under its 13h release wall,
+# where the ceiling is reachable, and on the background main-tip sweep, where it
+# is not — an accepted residual Assertion L enumerates).
 #
 # Assertions:
 # STRUCTURE / PRESERVATION (step-1):
@@ -49,11 +51,15 @@
 #      fails too. The gate-resident allowlist lives in THIS FILE, deliberately not
 #      in the config, so an override cannot be self-classified in the same edit
 #      that adds it.
-#   L. REACHABILITY — the offline release wall (grepped from scripts/verify.sh)
-#      strictly exceeds the heavy ceiling (parsed from .config/nextest.toml), so
-#      nextest attributes-and-kills a hung heavy test BY NAME before the outer
-#      wall fires exit 124 naming nothing. Both operands are derived from files,
-#      never restated as literals.
+#   L. REACHABILITY — every role that actually runs heavy members either REACHES
+#      the ceiling (its binding wall strictly exceeds it, so nextest
+#      attributes-and-kills BY NAME before the outer wall fires exit 124 naming
+#      nothing) or is an explicitly enumerated residual, allowlisted here AND
+#      named in the config's ACCEPTED RESIDUAL paragraph. The heavy-running role
+#      set is DERIVED from scripts/verify.sh — accepted roles minus the roles the
+#      _GATE_HEAVY_EXCLUDE guard covers — so `background`, which runs the heavy
+#      set under the 60m debug wall, is classified rather than overlooked. Every
+#      operand comes from a file; none is restated as a literal.
 
 set -euo pipefail
 
@@ -911,25 +917,54 @@ assert "K: the two classes PARTITION the file — every enumerated slow-timeout 
     _classify_overrides_ok "$NEXTEST_TOML"
 
 # ===========================================================================
-# Assertion L (task 6485): REACHABILITY — the offline release wall strictly
-# exceeds the heavy per-test ceiling.
+# Assertion L (task 6485): REACHABILITY — every role that actually runs heavy
+# members either REACHES the heavy per-test ceiling or is an explicitly
+# enumerated, doc-agreed residual.
 #
-# GREEN relationship guard (following T10's and Test 16d's precedent): it holds
-# on arrival and exists to fail if either side drifts. BOTH operands are derived
-# from files — the ceiling parsed out of .config/nextest.toml, the wall grepped
-# out of scripts/verify.sh — never restated as literals here. That is the
-# standard Assertion H was amended to meet: an assertion over two hardcoded
-# numbers can never fail regardless of what the files contain.
+# THE INVARIANT, in one line: a hung heavy test must be SIGTERM'd BY NAME by
+# nextest's per-test ceiling before the pass-level `timeout` wall fires exit 124
+# attributing nothing (the task 4877/4878 shape) — and on any role where that is
+# NOT true, the role must be named both in L_RESIDUAL_ROLES below and in
+# .config/nextest.toml's ACCEPTED RESIDUAL paragraph, so the gap is a recorded
+# decision rather than an accident.
 #
-# If the wall does not exceed the ceiling, the ceiling is unreachable and a hung
-# heavy test degrades to a bare `timeout` exit 124 naming nothing — the task
-# 4877/4878 zero-attribution shape this task exists to remove.
+# WHY THE ROLE SET IS DERIVED, NOT ASSUMED. The first form of this assertion
+# covered the offline role alone, which was a coverage regression: `background`
+# is a live orchestrator-spawned role (main-tip cadence sweep) that forces
+# --profile both and --scope all, while verify.sh's _GATE_HEAVY_EXCLUDE guard is
+# scoped to task|merge — so background runs all 8 heavy members under the 60m
+# debug wall, 12x under the 43200s ceiling. The heavy-running ROLE SET is
+# therefore computed from scripts/verify.sh (accepted roles MINUS heavy-excluded
+# roles); a role added to either list lands in this classification with no edit
+# here.
 #
-# WALLCLOCK-GUARD SAFETY: the comparison is the lower-bound `-gt` (never -le/-lt),
-# and the operand vars carry no ELAPSED/_S/_MS/_NS/SECONDS suffix, so
-# tests/infra/test_no_new_wallclock_upper_bounds.sh does not fire. These are
-# CONFIG CONSTANTS, not measured durations.
+# WHAT THIS COMMENT MUST NOT SAY: "no gate path runs heavy members". That claim
+# was false as written — REIFY_GATE_EXCLUDE_HEAVY=1 really is set for every
+# orchestrator-spawned role and by scripts/land.sh, but verify.sh scopes its
+# EFFECT to task|merge, so setting it says nothing about background or offline.
+#
+# Every operand is derived from a file: the ceiling from .config/nextest.toml,
+# the walls and both role sets from scripts/verify.sh. An assertion over two
+# hardcoded numbers can never fail regardless of what the files contain.
+#
+# WALLCLOCK-GUARD SAFETY: every comparison here is a lower bound (-gt, never
+# -le/-lt), the operand vars carry no ELAPSED/_S/_MS/_NS/SECONDS suffix, and no
+# description uses an elapsed/duration/within-Ns lexeme. These are CONFIG
+# CONSTANTS, not measured durations, so
+# tests/infra/test_no_new_wallclock_upper_bounds.sh does not fire.
 # ===========================================================================
+
+# Roles whose binding wall does NOT reach the heavy ceiling and which are
+# accepted as such — deliberately, with the gap recorded in .config/nextest.toml.
+#
+# SELF-CLEANING BY CONSTRUCTION: every entry must STILL be a heavy-running role
+# (asserted below). When verify.sh's exclusion is extended to cover one, that
+# role leaves the heavy-running set, this entry goes stale and RED-lights —
+# forcing the allowlist entry and the config's residual note to be retired
+# together instead of one outliving the other.
+L_RESIDUAL_ROLES=(
+    background
+)
 
 # ---------------------------------------------------------------------------
 # _offline_wall_secs_for_file <verify.sh> — the offline role's RELEASE wall
@@ -945,28 +980,211 @@ _offline_wall_secs_for_file() {
     printf '%s' $(( h * 3600 ))
 }
 
-_reachability_ok() {
-    local toml="$1" vsh="$2" wall atom got
-    wall="$(_offline_wall_secs_for_file "$vsh")"
-    [ -n "$wall" ] || return 1
+# ---------------------------------------------------------------------------
+# _debug_wall_secs_for_file <verify.sh> — the DEBUG (--workspace) pass wall
+# default in seconds. The trailing space in the grep is load-bearing: it is what
+# stops this matching the REIFY_VERIFY_TEST_TIMEOUT_RELEASE line (and the
+# comment quoting it), whose knob name continues with `_RELEASE`.
+# ---------------------------------------------------------------------------
+_debug_wall_secs_for_file() {
+    local file="$1" m
+    m="$(grep -oE '_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT [0-9]+m' "$file" \
+            | grep -oE '[0-9]+' | head -n1)" || m=""
+    [ -n "$m" ] || return 0
+    printf '%s' $(( m * 60 ))
+}
+
+# ---------------------------------------------------------------------------
+# _heavy_excluded_roles_for_file <verify.sh> — the roles the `-E "not (<heavy>)"`
+# fragment is scoped to, one per line, parsed from the _GATE_HEAVY_EXCLUDE
+# guard's `[ "$DF_VERIFY_ROLE" = "<role>" ]` operands. Today: task, merge.
+#
+# The parse is windowed to that guard (its `_GATE_HEAVY_EXCLUDE=""` initializer
+# through the closing `fi`) because the same role-equality idiom appears dozens
+# of times elsewhere in verify.sh — an unwindowed grep would report every role
+# the script mentions.
+# ---------------------------------------------------------------------------
+_heavy_excluded_roles_for_file() {
+    local file="$1"
+    awk '
+        /^_GATE_HEAVY_EXCLUDE=""$/ { win = 1; next }
+        win && /^fi$/ { win = 0 }
+        win {
+            s = $0
+            while (match(s, /DF_VERIFY_ROLE"[[:space:]]*=[[:space:]]*"[a-z_]+"/)) {
+                st = RSTART; ln = RLENGTH
+                seg = substr(s, st, ln)
+                if (match(seg, /"[a-z_]+"$/)) print substr(seg, RSTART + 1, RLENGTH - 2)
+                s = substr(s, st + ln)
+            }
+        }
+    ' "$file"
+}
+
+# ---------------------------------------------------------------------------
+# _all_roles_for_file <verify.sh> — the full accepted role set, one per line,
+# split out of the unknown-role error's `want a|b|c` spec. That message is the
+# single place verify.sh enumerates its roles, so a new role cannot be added
+# without passing through it. Anchored on the error text so a `want ...` phrase
+# in unrelated prose cannot be mistaken for the role list.
+# ---------------------------------------------------------------------------
+_all_roles_for_file() {
+    local file="$1" spec
+    spec="$(grep -F 'unknown DF_VERIFY_ROLE' "$file" \
+            | grep -oE 'want [a-z]+(\|[a-z]+)+' | head -n1)" || spec=""
+    [ -n "$spec" ] || return 0
+    printf '%s\n' "${spec#want }" | tr '|' '\n'
+}
+
+# ---------------------------------------------------------------------------
+# _heavy_running_roles_for_file <verify.sh> — accepted roles MINUS heavy-excluded
+# roles: exactly the roles on which a heavy test can actually run. Today:
+# offline, background.
+# ---------------------------------------------------------------------------
+_heavy_running_roles_for_file() {
+    local file="$1" role
+    local -a excluded=()
+    while IFS= read -r role; do
+        [ -n "$role" ] && excluded+=("$role")
+    done < <(_heavy_excluded_roles_for_file "$file")
+    while IFS= read -r role; do
+        [ -n "$role" ] || continue
+        _in_list "$role" ${excluded+"${excluded[@]}"} || printf '%s\n' "$role"
+    done < <(_all_roles_for_file "$file")
+}
+
+# ---------------------------------------------------------------------------
+# _role_wall_secs <verify.sh> <role> — the wall that BINDS heavy members on
+# <role>, in seconds; empty for a role whose profile forcing is not modelled
+# here (which makes it unclassifiable below, i.e. RED, which is the point).
+#
+# The profile each role forces is genuine role-specific logic in verify.sh, so
+# it is named here rather than re-derived:
+#   offline    — forces PROFILE=release (verify.sh, DF_VERIFY_ROLE=offline
+#                branch of the profile default), so the RELEASE wall binds.
+#   background — forces PROFILE=both plus --scope all, so BOTH passes run the
+#                heavy members and the tighter DEBUG wall is the binding one.
+# task and merge never reach here: the exclusion fragment removes heavy members
+# from their run entirely.
+# ---------------------------------------------------------------------------
+_role_wall_secs() {
+    local file="$1" role="$2"
+    case "$role" in
+        offline)    _offline_wall_secs_for_file "$file" ;;
+        background) _debug_wall_secs_for_file "$file" ;;
+        *)          : ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# _max_heavy_ceiling_for_file <file> — the largest per-test ceiling across the
+# heavy atoms, or empty if any atom has no block at all. Comparing a wall
+# against this maximum is equivalent to comparing it against every atom's
+# ceiling, and keeps the failure message to one number.
+# ---------------------------------------------------------------------------
+_max_heavy_ceiling_for_file() {
+    local file="$1" atom got max=""
     for atom in ${HEAVY_ATOMS+"${HEAVY_ATOMS[@]}"}; do
-        got="$(_slow_ceiling_for_filter "$toml" "$atom")"
-        [ -n "$got" ] || return 1
-        [ "$wall" -gt "$got" ] || return 1
+        got="$(_slow_ceiling_for_filter "$file" "$atom")"
+        [ -n "$got" ] || return 0
+        if [ -z "$max" ] || [ "$got" -gt "$max" ]; then max="$got"; fi
+    done
+    printf '%s' "$max"
+}
+
+# ---------------------------------------------------------------------------
+# _residual_role_documented <nextest.toml> <role> — true iff <role> is named
+# inside the ACCEPTED RESIDUAL paragraph of the [profile.default] header comment.
+# The paragraph runs from its `# ACCEPTED RESIDUAL:` opener to the end of that
+# contiguous comment block, so a `#`-separated continuation still counts.
+#
+# Requiring the prose AND the allowlist to agree is what stops a residual from
+# being allowlisted silently in this test file alone: the gap has to be readable
+# by someone opening the config with no knowledge that this guard exists.
+# ---------------------------------------------------------------------------
+_residual_role_documented() {
+    local file="$1" role="$2"
+    awk -v role="$role" '
+        /^# ACCEPTED RESIDUAL:/ { par = 1 }
+        par && !/^#/ { par = 0 }
+        par && $0 ~ ("(^|[^a-z])" role "([^a-z]|$)") { found = 1 }
+        END { exit(found ? 0 : 1) }
+    ' "$file"
+}
+
+# ---------------------------------------------------------------------------
+# _role_class <nextest.toml> <verify.sh> <role> — prints REACHABLE or RESIDUAL,
+# or returns 1 for a role belonging to neither class. Written once and used by
+# both the per-role assertions and the boolean whole-file checker below, so the
+# fixtures exercise the very logic the assertions report.
+# ---------------------------------------------------------------------------
+_role_class() {
+    local toml="$1" vsh="$2" role="$3" wall ceiling
+    ceiling="$(_max_heavy_ceiling_for_file "$toml")"
+    [ -n "$ceiling" ] || return 1
+    wall="$(_role_wall_secs "$vsh" "$role")"
+    [ -n "$wall" ] || return 1
+    if [ "$wall" -gt "$ceiling" ]; then
+        printf 'REACHABLE'
+        return 0
+    fi
+    if _in_list "$role" ${L_RESIDUAL_ROLES+"${L_RESIDUAL_ROLES[@]}"} \
+        && _residual_role_documented "$toml" "$role" \
+        && [ "$ceiling" -gt "$wall" ]; then
+        printf 'RESIDUAL'
+        return 0
+    fi
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# _role_classification_ok <nextest.toml> <verify.sh> — returns 0 iff EVERY
+# heavy-running role classifies, AND every L_RESIDUAL_ROLES entry is still a
+# heavy-running role (the self-cleaning direction). The boolean form exists so
+# the non-vacuity self-check can point the same logic at broken fixture copies.
+# ---------------------------------------------------------------------------
+_role_classification_ok() {
+    local toml="$1" vsh="$2" role
+    local -a running=()
+    while IFS= read -r role; do
+        [ -n "$role" ] && running+=("$role")
+    done < <(_heavy_running_roles_for_file "$vsh")
+    [ "${#running[@]}" -ge 1 ] || return 1
+    for role in "${running[@]}"; do
+        _role_class "$toml" "$vsh" "$role" >/dev/null || return 1
+    done
+    for role in ${L_RESIDUAL_ROLES+"${L_RESIDUAL_ROLES[@]}"}; do
+        _in_list "$role" ${running+"${running[@]}"} || return 1
     done
     return 0
 }
 
-_reachability_reject() { ! _reachability_ok "$1" "$2"; }
+_role_classification_reject() { ! _role_classification_ok "$1" "$2"; }
+
+# _files_differ <a> <b> — non-vacuity of a seeded fixture: a sed/awk anchor that
+# stopped matching would otherwise produce a copy identical to the original and
+# a rejection test that silently tests nothing.
+_files_differ() { ! cmp -s "$1" "$2"; }
 
 echo ""
-echo "--- Assertion L (task 6485): offline release wall > heavy per-test ceiling (both operands derived from files) ---"
+echo "--- Assertion L (task 6485): every heavy-running role reaches the ceiling or is an enumerated residual ---"
 
 _OFFLINE_WALL="$(_offline_wall_secs_for_file "$VERIFY_SH")"
+_DEBUG_WALL="$(_debug_wall_secs_for_file "$VERIFY_SH")"
+_CEILING="$(_max_heavy_ceiling_for_file "$NEXTEST_TOML")"
 
 assert "L: offline release wall extracted from scripts/verify.sh (non-empty seconds, got '${_OFFLINE_WALL:-<none>}')" \
     test -n "${_OFFLINE_WALL:-}"
 
+assert "L: debug pass wall extracted from scripts/verify.sh (non-empty seconds, got '${_DEBUG_WALL:-<none>}')" \
+    test -n "${_DEBUG_WALL:-}"
+
+assert "L: heavy per-test ceiling extracted from .config/nextest.toml (non-empty seconds, got '${_CEILING:-<none>}')" \
+    test -n "${_CEILING:-}"
+
+# The offline per-atom reachability checks, retained: the whole-role
+# classification below compares against the largest heavy ceiling, so these keep
+# naming the individual atom whose block drifted.
 for _atom in ${HEAVY_ATOMS+"${HEAVY_ATOMS[@]}"}; do
     _lgot="$(_slow_ceiling_for_filter "$NEXTEST_TOML" "$_atom")"
     assert "L: heavy ceiling for [${_atom}] extracted from nextest.toml (non-empty seconds, got '${_lgot:-<none>}')" \
@@ -975,11 +1193,57 @@ for _atom in ${HEAVY_ATOMS+"${HEAVY_ATOMS[@]}"}; do
         test "${_OFFLINE_WALL:-0}" -gt "${_lgot:-0}"
 done
 
+_HEAVY_ROLES=()
+while IFS= read -r _r; do
+    [ -n "$_r" ] && _HEAVY_ROLES+=("$_r")
+done < <(_heavy_running_roles_for_file "$VERIFY_SH")
+
+echo "    (heavy-excluded roles from verify.sh: $(_heavy_excluded_roles_for_file "$VERIFY_SH" | tr '\n' ' '))"
+echo "    (heavy-RUNNING roles from verify.sh: ${_HEAVY_ROLES[*]:-<none>})"
+
+# Non-vacuity floor for the role derivation itself: an edit that excluded every
+# role would empty the set and make the whole classification loop below a no-op.
+assert "L: at least one role still runs heavy members (role derivation is non-vacuous)" \
+    test "${#_HEAVY_ROLES[@]}" -ge 1
+
+for _role in ${_HEAVY_ROLES+"${_HEAVY_ROLES[@]}"}; do
+    _rwall="$(_role_wall_secs "$VERIFY_SH" "$_role")"
+    _rclass="$(_role_class "$NEXTEST_TOML" "$VERIFY_SH" "$_role" || true)"
+    case "$_rclass" in
+        REACHABLE)
+            assert "L: role '${_role}' is REACHABLE — its binding wall (${_rwall:-?}s, from verify.sh) strictly exceeds the heavy ceiling (${_CEILING:-?}s, from nextest.toml), so a hung heavy test is killed BY NAME" \
+                test "${_rwall:-0}" -gt "${_CEILING:-0}"
+            ;;
+        RESIDUAL)
+            assert "L: role '${_role}' is an ACCEPTED RESIDUAL — allowlisted in L_RESIDUAL_ROLES here AND named in .config/nextest.toml's ACCEPTED RESIDUAL paragraph, so the gap is recorded where a config reader will find it" \
+                _residual_role_documented "$NEXTEST_TOML" "$_role"
+            assert "L: role '${_role}' really is a residual and not a mislabel — the heavy ceiling (${_CEILING:-?}s) exceeds its binding wall (${_rwall:-?}s), so raising that wall past the ceiling must move it to REACHABLE" \
+                test "${_CEILING:-0}" -gt "${_rwall:-0}"
+            ;;
+        *)
+            assert "L: role '${_role}' runs heavy members (verify.sh accepts it and the _GATE_HEAVY_EXCLUDE guard does not cover it) but is NEITHER reachable (its binding wall '${_rwall:-<unmodelled>}' does not exceed the ${_CEILING:-?}s ceiling) NOR an enumerated residual. Classify it: raise its wall past the ceiling, add it to the exclusion guard, or add it to L_RESIDUAL_ROLES here AND to .config/nextest.toml's ACCEPTED RESIDUAL paragraph. Do not widen the guard." \
+                false
+            ;;
+    esac
+done
+
+# Self-cleaning direction: a stale allowlist entry is as much a defect as a
+# missing one, because it documents a gap that no longer exists.
+for _r in ${L_RESIDUAL_ROLES+"${L_RESIDUAL_ROLES[@]}"}; do
+    assert "L: residual allowlist entry '${_r}' is still a heavy-running role — once verify.sh's exclusion covers it, remove this entry and the config's residual note together" \
+        _in_list "$_r" ${_HEAVY_ROLES+"${_HEAVY_ROLES[@]}"}
+done
+
+assert "L: every heavy-running role classifies, and every allowlisted residual is still heavy-running" \
+    _role_classification_ok "$NEXTEST_TOML" "$VERIFY_SH"
+
 # ---------------------------------------------------------------------------
 # Assertion K/L NON-VACUITY SELF-CHECK. Both K and L are green on arrival, which
 # proves nothing on its own: a checker that accepts everything would look
 # identical. Each fixture below breaks exactly one thing and the corresponding
-# checker must REJECT it.
+# checker must REJECT it. Each fixture is also asserted to DIFFER from its
+# source, so a seed whose anchor stopped matching fails loudly instead of
+# quietly testing the unmodified file.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Assertion K/L non-vacuity: both checkers REJECT each seeded drift ---"
@@ -1031,10 +1295,32 @@ awk -v want="$_GR_FIRST" -v q="'" '
     END { flush() }
 ' "$NEXTEST_TOML" > "$_KL_FIX/gr-deleted.toml"
 
-# (iv) a verify.sh whose offline default is dropped BELOW the heavy ceiling,
-#      making the 12h ceiling unreachable again.
+# (iv) a verify.sh whose heavy-exclusion guard ALSO names `background`: the role
+#      stops running heavy members, so its L_RESIDUAL_ROLES entry is stale and
+#      the allowlist must be retired with the config's residual note. This is the
+#      fixture that makes the guard self-cleaning rather than merely tolerant.
+sed 's/\[ "\$DF_VERIFY_ROLE" = "merge" \]; }/[ "$DF_VERIFY_ROLE" = "merge" ] || [ "$DF_VERIFY_ROLE" = "background" ]; }/' \
+    "$VERIFY_SH" > "$_KL_FIX/verify-bg-excluded.sh"
+
+# (v) a nextest.toml with `background` struck from the ACCEPTED RESIDUAL
+#     paragraph: the allowlist here and the prose there must agree, so a residual
+#     cannot be carried in the test alone.
+awk '
+    /^# ACCEPTED RESIDUAL:/ { par = 1 }
+    par && !/^#/ { par = 0 }
+    par { gsub(/background/, "REDACTED") }
+    { print }
+' "$NEXTEST_TOML" > "$_KL_FIX/no-residual-note.toml"
+
+# (vi) a verify.sh whose offline release default drops BELOW the heavy ceiling:
+#      offline is then neither reachable nor allowlisted, i.e. an unrecorded gap.
 sed 's/_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE [0-9]\+h/_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE 6h/' \
     "$VERIFY_SH" > "$_KL_FIX/verify-6h.sh"
+
+# (vii) a verify.sh that accepts a new `experimental` role with no exclusion and
+#       no wall model: the newcomer shape, which must not be absorbed silently.
+sed '/unknown DF_VERIFY_ROLE/ s/(want \([a-z|]*\))/(want \1|experimental)/' \
+    "$VERIFY_SH" > "$_KL_FIX/verify-extra-role.sh"
 
 assert "K-neg (i): classifier REJECTS an EXTRA override belonging to neither class (a new override must be classified, not absorbed)" \
     _classify_overrides_reject "$_KL_FIX/extra.toml"
@@ -1045,17 +1331,38 @@ assert "K-neg (ii): classifier REJECTS a gate-resident block silently promoted t
 assert "K-neg (iii): classifier REJECTS a nextest.toml with an allowlisted gate-resident block deleted" \
     _classify_overrides_reject "$_KL_FIX/gr-deleted.toml"
 
-assert "L-neg (iv): reachability guard REJECTS a verify.sh whose offline wall (6h) no longer exceeds the ${HEAVY_CEILING_SECONDS}s heavy ceiling" \
-    _reachability_reject "$NEXTEST_TOML" "$_KL_FIX/verify-6h.sh"
+assert "L-neg (iv) fixture is non-vacuous — the background-exclusion seed really changed scripts/verify.sh" \
+    _files_differ "$VERIFY_SH" "$_KL_FIX/verify-bg-excluded.sh"
 
-# Positive controls: the SAME checkers accept the real files, so the four
-# rejections above are attributable to the seeded drift and not to checkers that
-# reject everything.
+assert "L-neg (iv): classifier REJECTS a verify.sh whose exclusion guard covers 'background' while the residual allowlist still claims it runs heavy members" \
+    _role_classification_reject "$NEXTEST_TOML" "$_KL_FIX/verify-bg-excluded.sh"
+
+assert "L-neg (v) fixture is non-vacuous — the residual-note seed really changed .config/nextest.toml" \
+    _files_differ "$NEXTEST_TOML" "$_KL_FIX/no-residual-note.toml"
+
+assert "L-neg (v): classifier REJECTS a nextest.toml with 'background' struck from the ACCEPTED RESIDUAL paragraph (allowlist and prose must agree)" \
+    _role_classification_reject "$_KL_FIX/no-residual-note.toml" "$VERIFY_SH"
+
+assert "L-neg (vi) fixture is non-vacuous — the 6h seed really changed scripts/verify.sh" \
+    _files_differ "$VERIFY_SH" "$_KL_FIX/verify-6h.sh"
+
+assert "L-neg (vi): classifier REJECTS a verify.sh whose offline wall (6h) no longer exceeds the ${HEAVY_CEILING_SECONDS}s heavy ceiling, leaving offline an unrecorded gap" \
+    _role_classification_reject "$NEXTEST_TOML" "$_KL_FIX/verify-6h.sh"
+
+assert "L-neg (vii) fixture is non-vacuous — the extra-role seed really changed scripts/verify.sh" \
+    _files_differ "$VERIFY_SH" "$_KL_FIX/verify-extra-role.sh"
+
+assert "L-neg (vii): classifier REJECTS a verify.sh that accepts a new unexcluded role, so a newcomer cannot inherit the residual by silence" \
+    _role_classification_reject "$NEXTEST_TOML" "$_KL_FIX/verify-extra-role.sh"
+
+# Positive controls: the SAME checkers accept the real files, so the rejections
+# above are attributable to the seeded drift and not to checkers that reject
+# everything.
 assert "K-neg control: the same classifier ACCEPTS the real .config/nextest.toml" \
     _classify_overrides_ok "$NEXTEST_TOML"
 
-assert "L-neg control: the same reachability guard ACCEPTS the real nextest.toml + verify.sh pair" \
-    _reachability_ok "$NEXTEST_TOML" "$VERIFY_SH"
+assert "L-neg control: the same role classifier ACCEPTS the real nextest.toml + verify.sh pair" \
+    _role_classification_ok "$NEXTEST_TOML" "$VERIFY_SH"
 
 rm -rf "$_KL_FIX"
 
