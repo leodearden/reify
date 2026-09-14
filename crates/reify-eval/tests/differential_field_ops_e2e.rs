@@ -470,9 +470,14 @@ fn differential_field_ops_integration_gate() {
         );
     }
 
-    // Harness-side degree comparison (WORK 3: no in-language Vector3 component
-    // access exists — `.x`, `v[0]` and `norm(v) < 5deg` were all probed dead —
-    // so the numeric comparison lives here rather than as a .ri constraint).
+    // Whole-FIELD degree comparison.  It lives here because it reduces over the
+    // raw SampledField buffer, which .ri cannot reach — NOT for want of a
+    // degree comparison in-language.  The example now also carries
+    // `constraint rot_probe > 0.001deg` / `< 0.5deg` at its single probe point:
+    // `magnitude` of a sampled Vector3<Angle> is an Angle SCALAR, and a
+    // scalar/`deg`-literal comparison type-checks and evaluates.  What remains
+    // dead is Vector3 COMPONENT access (`.x`, `v[0]` and `norm(v) < 5deg` were
+    // all probed dead), which a per-component in-language assertion would need.
     //
     // The bound is NOT invented.  It is RIGOROUSLY IMPLIED by the example's
     // already-validated `constraint g_mag < 1.0`, asserted directly above:

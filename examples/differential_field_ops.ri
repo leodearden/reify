@@ -71,13 +71,20 @@ field def linear : Length -> Real {
 // parameter type — the one position in the capability chain that no existing
 // stdlib or example code exercises (structure params already carry
 // `Vector3<Force>`, e.g. tensegrity.ri:468, but no `fn` anywhere takes a
-// `Vector3<Q>`).  It is deliberately trivial and computes nothing interesting:
-// the numeric rotation↔curl comparison lives harness-side in
-// differential_field_ops_e2e.rs, because no in-language Vector3 component
-// access exists (`.x`, `v[0]` and `norm(v) < 5deg` were all probed dead).
+// `Vector3<Q>`).  It is deliberately trivial: it reduces the vector to a
+// scalar and lets the constraints below do the comparing.
 //
 // `magnitude` of a Vector3<Angle> is an Angle, so the crossing's radian tag
-// survives the round trip through the call boundary and back out.
+// survives the round trip through the call boundary and back out.  That
+// Angle SCALAR compares against `deg` literals in-language, which is what
+// `constraint rot_probe > 0.001deg` / `< 0.5deg` below exercise.
+//
+// What is still missing is Vector3 COMPONENT access: `.x`, `v[0]` and
+// `norm(v) < 5deg` were all probed dead and stay dead.  So the whole-FIELD
+// rotation↔curl comparison remains harness-side in
+// differential_field_ops_e2e.rs — it reduces over the raw SampledField
+// buffer, which .ri cannot reach.  Only this single-point probe is asserted
+// here.
 
 fn rotation_probe(v: Vector3<Angle>) -> Angle { magnitude(v) }
 
@@ -149,6 +156,21 @@ structure DifferentialFieldOps {
     // limit (|strain tensor components| << 1 for a steel beam at these loads).
     constraint g_mag > 0.0
     constraint g_mag < 1.0
+
+    // Phase 1: the ruling-#6164 rotation crossing, compared against `deg`
+    // literals IN-LANGUAGE — the user-observable signal the ruling names.
+    // `rot_probe` is an Angle SCALAR (magnitude of the sampled Vector3<Angle>),
+    // and a scalar/`deg`-literal comparison type-checks and evaluates; it is
+    // only Vector3 COMPONENT access that is still missing (see the
+    // rotation_probe preamble above).  The whole-field bound stays in the Rust
+    // gate, which needs the raw buffer.
+    // BOUND BASIS (G6 — measured on this example, not guessed): rot_probe at
+    // point3(500mm, 50mm, 50mm) = 1.9283303415907750e-4 rad
+    //                           = 0.011048519008017177°.
+    // The bracket clears that measurement by ~11x below and ~45x above, and
+    // 0.5deg is the literal ruling #6164 itself names.
+    constraint rot_probe > 0.001deg
+    constraint rot_probe < 0.5deg
 
     // Phase 2: exact polynomial values (G6 numeric-premise discipline).
     // Central AND one-sided 3-pt 2nd-difference are EXACT on quadratics on any
