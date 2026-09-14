@@ -261,8 +261,8 @@ pub struct EigenSolverResult {
     /// "some eigenvalue with `|λ|` strictly less than `min |λ|` over the
     /// selected set is absent from it", which subsumes the interval rule for
     /// both signs of σ and is still exact on the dense path — rather than
-    /// diverging from the PRD here.  Tracked as a follow-up; it must be settled
-    /// before ε (#7262) ships a refusal keyed on this field.
+    /// diverging from the PRD here.  That amendment must be settled before ε
+    /// (#7262) ships a refusal keyed on this field.
     pub shift_skipped_modes: bool,
     /// The shift σ actually used for this solve (contract clause C5).
     ///
