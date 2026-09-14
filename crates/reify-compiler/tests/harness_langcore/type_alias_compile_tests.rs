@@ -2736,3 +2736,177 @@ mod parametric_alias_body_shadow_parity {
         }
     }
 }
+
+/// Regression lock: the pre-existing parametric-alias population must be
+/// unperturbed by task #6477 (step-8).
+///
+/// Step-4 widens the namespaces consulted by EVERY parametric alias body, not
+/// only entity-bodied ones, so a name that previously fell through to `None`
+/// can now bind to a structure, trait or enum. That is the intended fix, but it
+/// is also the risk: a widening that resolves MORE than it should shows up as
+/// a previously-rejected program quietly starting to compile.
+///
+/// The three rows below are the ones that could move, chosen because each fails
+/// differently: the stdlib population (must keep the same types), the committed
+/// def-site fixtures (must keep the same VERDICTS, for the same REASONS), and a
+/// name in no namespace at all (must still fail).
+mod parametric_alias_population_regression {
+    use super::alias_to_entity_type_parity::param_type_and_errors;
+    use super::*;
+    use reify_compiler::{compile_with_stdlib, parse_with_stdlib};
+    use reify_core::{ModulePath, Severity};
+
+    const REJECT_FIXTURE: &str = include_str!("../fixtures/parametric_alias_def_site_reject.ri");
+    const OK_FIXTURE: &str = include_str!("../fixtures/parametric_alias_def_site_ok.ri");
+
+    /// The only two production parametric aliases in the repo — a 700-file `.ri`
+    /// survey found no others. Both are dimensional/builtin-bodied, so neither
+    /// exercises the entity namespaces step-4 added; that is exactly why they
+    /// are the right regression subjects.
+    ///
+    /// Each is asserted against a direct-spelling ORACLE that stdlib already
+    /// provides, not a frozen `Type` literal:
+    ///   * `Rate<Length>` (stdlib/units.ri:132)      vs `Velocity`
+    ///   * `Vec3<Length>` (stdlib/trajectory.ri:118) vs `Vector3<Length>`
+    ///
+    /// This uses the REAL stdlib across the real prelude boundary. The
+    /// synthetic `parametric_prelude_dimensional_alias_resolves_cross_module`
+    /// in `cross_module_alias_propagation_tests.rs` hand-builds a `Rate`
+    /// `CompiledTypeAlias` to pin the SEEDING mechanism and covers only `Rate`;
+    /// this covers the shipped definitions and both aliases, so the two are
+    /// complementary rather than duplicates.
+    #[test]
+    fn the_two_stdlib_parametric_aliases_still_resolve_to_the_same_types() {
+        for (label, alias_body, oracle_body) in [
+            ("Rate<Length> (stdlib/units.ri:132)", "Rate<Length>", "Velocity"),
+            (
+                "Vec3<Length> (stdlib/trajectory.ri:118)",
+                "Vec3<Length>",
+                "Vector3<Length>",
+            ),
+        ] {
+            let oracle_src = format!("structure def D {{\n    param p : {oracle_body}\n}}\n");
+            let alias_src = format!("structure def D {{\n    param p : {alias_body}\n}}\n");
+
+            let (oracle_ty, oracle_errs) = param_type_and_errors(&oracle_src, "D", "p");
+            assert!(
+                oracle_errs.is_empty(),
+                "[{label}] the `{oracle_body}` oracle must compile cleanly; got: \
+                 {oracle_errs:?}"
+            );
+
+            let (alias_ty, alias_errs) = param_type_and_errors(&alias_src, "D", "p");
+            assert!(
+                alias_errs.is_empty(),
+                "[{label}] the stdlib parametric alias must still resolve \
+                 cross-module; got: {alias_errs:?}"
+            );
+            assert_eq!(
+                alias_ty, oracle_ty,
+                "[{label}] `{alias_body}` must still lower exactly as `{oracle_body}` does"
+            );
+        }
+    }
+
+    /// Error-severity `(code, message)` pairs from compiling a fixture.
+    fn fixture_errors(src: &str, name: &str) -> Vec<(Option<String>, String)> {
+        let parsed = parse_with_stdlib(src, ModulePath::single(name));
+        assert!(
+            parsed.errors.is_empty(),
+            "[{name}] fixture must parse cleanly: {:?}",
+            parsed.errors
+        );
+        compile_with_stdlib(&parsed)
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .map(|d| (d.code.map(|c| format!("{c:?}")), d.message.clone()))
+            .collect()
+    }
+
+    /// The committed def-site fixtures must keep their verdicts — and
+    /// `reject.ri`'s two flaws must keep their REASONS, which is the sharper
+    /// assertion and the one nothing else makes.
+    ///
+    /// `BadBound<P> = Holder<P>` is the row that matters: `Holder` IS a declared
+    /// `structure def`, so before step-4 the subst-aware resolver could not see
+    /// it. The alias must still be rejected for its BOUND violation — and must
+    /// NOT start passing merely because the resolver learned to see structures,
+    /// nor flip to an "unknown name" rejection for a name that is declared.
+    ///
+    /// Span-level pinning that each error lands AT its alias def site is already
+    /// covered by `parametric_alias_def_site_validation_tests`; this asserts the
+    /// orthogonal thing (which flaw, reported as what) and the fixtures are read
+    /// as they stand, never edited.
+    #[test]
+    fn the_def_site_fixtures_keep_their_verdicts_for_the_same_reasons() {
+        assert!(
+            fixture_errors(OK_FIXTURE, "regression_ok").is_empty(),
+            "the OK fixture must stay clean — step-4's widening must not have \
+             introduced a rejection; got: {:?}",
+            fixture_errors(OK_FIXTURE, "regression_ok")
+        );
+
+        let reject_errs = fixture_errors(REJECT_FIXTURE, "regression_reject");
+
+        let bad_bound = reject_errs
+            .iter()
+            .find(|(_, m)| m.contains("BadBound"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "`BadBound<P> = Holder<P>` must still be rejected — step-4 taught \
+                     the resolver to see structure names, and `Holder` is one, so a \
+                     silently-passing BadBound is the precise over-widening this lock \
+                     exists to catch. Errors: {reject_errs:?}"
+                )
+            });
+        assert_eq!(
+            bad_bound.0.as_deref(),
+            Some("TypeArgBound"),
+            "BadBound must still be rejected for its BOUND violation, not reclassified \
+             — `Holder` is a declared structure def, so an `UnresolvedType` here would \
+             mean the name check regressed. Got: {bad_bound:?}"
+        );
+
+        let leak = reject_errs
+            .iter()
+            .find(|(_, m)| m.contains("LeakName"))
+            .unwrap_or_else(|| {
+                panic!("`LeakName<Q> = Q / NotExportedThing` must still be rejected; \
+                        errors: {reject_errs:?}")
+            });
+        assert_eq!(
+            leak.0.as_deref(),
+            Some("UnresolvedType"),
+            "LeakName must still be rejected for naming something declared nowhere. \
+             Got: {leak:?}"
+        );
+    }
+
+    /// Step-4 must not be a blanket "resolve anything" widening: a name declared
+    /// in NO namespace — not a builtin, alias, structure, occurrence, trait or
+    /// enum — must still fail at the use site, and leave the poison sentinel.
+    #[test]
+    fn a_name_declared_in_no_namespace_still_fails_to_resolve() {
+        for (label, body) in [
+            ("bare", "NotDeclaredAnywhere"),
+            ("nested", "Option<NotDeclaredAnywhere>"),
+        ] {
+            let source = format!(
+                "type AL<T> = {body}\nstructure def D {{\n    param p : AL<Real>\n}}\n"
+            );
+            let (ty, errs) = param_type_and_errors(&source, "D", "p");
+            assert!(
+                errs.iter().any(|m| m.contains("unresolved type")),
+                "[{label}] a body naming something declared nowhere must still report \
+                 `unresolved type`; got: {errs:?}"
+            );
+            assert_eq!(
+                ty,
+                Type::Error,
+                "[{label}] an unresolvable parametric alias body must leave the poison \
+                 sentinel; got {ty:?} with errors {errs:?}"
+            );
+        }
+    }
+}
