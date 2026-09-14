@@ -313,6 +313,34 @@ fn the_constraints_chunk_points_at_the_oracle() {
     );
 }
 
+/// The chunk a designer is in when they look up WHAT THE CALL IS CALLED must
+/// route to the oracle too, and the route must be whole.
+///
+/// The second half of the printer_v01 entry point, and the one with a live
+/// near-miss in it: this chunk already lists `intersection(a, b)`, the CSG
+/// boolean that BUILDS a solid. An author scanning for a fouling check finds a
+/// plausible-looking name, and nothing here would tell them it answers a
+/// different question. Scope: this module's doc.
+#[test]
+fn the_stdlib_chunk_points_at_the_oracle() {
+    let markdown = std::fs::read_to_string(STDLIB_CHUNK_PATH).unwrap_or_else(|e| {
+        panic!(
+            "{STDLIB_CHUNK_PATH} must be readable ({e}) — update STDLIB_CHUNK_PATH \
+             if the chunk moved"
+        )
+    });
+
+    let region = section_body(
+        &markdown,
+        ORACLE_XREF_MARKER,
+        STDLIB_CHUNK_PATH,
+        XREF_REGION_TITLE,
+    );
+
+    let violations = xref_region_violations(&region, STDLIB_CHUNK_PATH);
+    assert!(violations.is_empty(), "{}", violations.join("\n\n"));
+}
+
 // ── Synthetic controls ───────────────────────────────────────────────────────
 //
 // `xref_region_violations` is PURE and fully parameterized over its input text
