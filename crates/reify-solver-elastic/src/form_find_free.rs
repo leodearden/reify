@@ -230,6 +230,13 @@ pub fn form_find_free_surfaces(
             return Err(FreeFormError::NonTensionSurfaceStress);
         }
     }
+    // Surface node-index contract: a triangle corner past the node array would
+    // panic on the `nodes[gi]` index in `assemble_surface_matrix`. The module
+    // contract promises infeasible input becomes a clean typed error, never a
+    // panic — so reject it here.
+    if !crate::form_find::surface_indices_in_range(surfaces, nodes_guess.len()) {
+        return Err(FreeFormError::DimensionMismatch);
+    }
 
     // Empty surfaces delegate to the line-only path with an empty echo.
     if surfaces.is_empty() {

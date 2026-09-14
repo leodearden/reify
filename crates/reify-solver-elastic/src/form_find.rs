@@ -398,6 +398,17 @@ pub fn form_find_anchored_surfaces(
     })
 }
 
+/// True when every surface triangle corner indexes a real node (`< n`).
+///
+/// [`assemble_d`], [`assemble_d_aniso`] and `form_find_free`'s
+/// `assemble_surface_matrix` all index `nodes[i]` directly, so an out-of-range
+/// corner would panic. The three surface-aware entries call this up front and
+/// map `false` to their own `DimensionMismatch`, mirroring the member-index
+/// guard in `form_find_free::validate_explicit`.
+pub(crate) fn surface_indices_in_range(surfaces: &[(usize, usize, usize)], n: usize) -> bool {
+    surfaces.iter().all(|&(i, j, k)| i < n && j < n && k < n)
+}
+
 /// Scatter the line-member rank-1 FDM updates into `d`: for each member `(j, k)`
 /// with force density `qᵢ`, adds `+qᵢ` to the diagonal entries `D[j,j]`,
 /// `D[k,k]` and `−qᵢ` to the off-diagonal pairs `D[j,k]`, `D[k,j]`.
