@@ -583,15 +583,150 @@ impl CorpusScope {
     }
 }
 
-/// One invariant's declaration: what it is, what it is called in a report, and
-/// which corpus files it covers.
+/// One invariant's declaration: what it is, what it is called in a report, which
+/// corpus files it covers, which of those are exempt, and what happens when it
+/// finds something.
+///
+/// The two invariants' residual lists and failure policies differ, and those
+/// differences are DATA here rather than two hand-copied code branches: one
+/// implementation reads these fields, so the policies cannot drift apart the way
+/// the two sweeps' engine constructors did (task 5578).
 struct InvariantGate {
     id: InvariantId,
     /// How this invariant names itself in sweep output, so a red says which
     /// invariant broke without the reader decoding an enum variant.
     label: &'static str,
     scope: CorpusScope,
+    /// `(repo-relative path SUFFIX, root-cause reason)` for files with a
+    /// residual finding that is NOT a checker gap. Every entry is PRINTED with
+    /// its reason and finding count when it is exempted — never silent — so
+    /// bounded coverage can never read as full coverage.
+    residuals: &'static [(&'static str, &'static str)],
+    /// Whether a declared residual that produces ZERO findings fails the sweep.
+    ///
+    /// INV-EVAL-4 shipped with this ON: a resolved residual is reported loud so
+    /// the dead exemption gets deleted rather than lingering as weight that
+    /// masks the now-recovered coverage. INV-EVAL-5 shipped with it OFF. That
+    /// asymmetry is PRESERVED, not harmonised — turning it on for INV-EVAL-5
+    /// would be a semantic change outside a zero-loss restructuring, and is
+    /// named as a follow-up.
+    stale_residual_is_fatal: bool,
+    /// Break-glass env var that DOWNGRADES this invariant's failure to a warn.
+    ///
+    /// INV-EVAL-4 shipped with `REIFY_SNAPSHOT_CACHE_AUDIT_BYPASS`, mirroring
+    /// `REIFY_MAIN_GATE_BYPASS`, so a future change that introduces a divergence
+    /// can never wedge the merge queue. INV-EVAL-5 shipped with none, and is not
+    /// granted one here — same preservation argument as above.
+    bypass_env: Option<&'static str>,
 }
+
+impl InvariantGate {
+    /// The declared root-cause reason exempting `rel` from this invariant, if
+    /// any. Matched by path SUFFIX against the repo-relative key, as both old
+    /// sweeps matched against their display path.
+    fn residual_reason(&self, rel: &str) -> Option<&'static str> {
+        self.residuals
+            .iter()
+            .find(|(suffix, _)| rel.ends_with(suffix))
+            .map(|(_, reason)| *reason)
+    }
+
+    /// Whether this invariant's failure is downgraded to a warn right now.
+    ///
+    /// Read at report time, not at declaration time, because the process
+    /// environment is not knowable at `const` construction.
+    fn bypassed(&self) -> bool {
+        self.bypass_env
+            .is_some_and(|key| std::env::var(key).is_ok_and(|v| v == "1"))
+    }
+}
+
+/// Files with a residual stale-Undef violation that is NOT a checker gap fixable
+/// within `invariants.rs`'s `(graph, values, trace_map, functions)` signature —
+/// each traced to its root cause during the α broad-sweep investigation (task
+/// 4952 step-10). Carried here VERBATIM from
+/// `no_stale_undef_invariant_gate.rs`'s `KNOWN_RESIDUAL_SKIPS` by task #7431:
+/// the reasons are root-cause RECORDS, not prose, and are neither paraphrased
+/// nor merged with INV-EVAL-4's list. If a future engine change resolves one of
+/// these, its entry should be deleted rather than left as dead weight.
+const STALE_UNDEF_RESIDUALS: &[(&str, &str)] = &[
+    (
+        "examples/integration_corner_cases.ri",
+        "RecTree.child.{span,depth}: a `sub child = RecTree(...) where depth > 0` \
+         self-recursive sub. The compiler statically emits one placeholder level of \
+         child value cells regardless of the runtime `where` guard's truth value, but \
+         that guard's active/inactive state is a compiler-side concept never threaded \
+         into the runtime EvaluationGraph (unlike value-cell-level `guard()` branches, \
+         which DO get a GuardedGroupInfo entry). Fixing this needs a new \
+         EvaluationGraph field populated from the compiler's sub-instantiation guard \
+         info — a change to shared graph-construction code, out of this task's scope.",
+    ),
+    (
+        "crates/reify-eval/tests/fixtures/match_block_decls_bolt.ri",
+        "Bolt.head.across_flats: a decl-level `match head_type { ... => sub head: ... }` \
+         block. The compiler tracks per-arm active/inactive state in \
+         `TopologyTemplate::match_arm_groups` (`GuardedDeclGroup`), but \
+         `EvaluationGraph::from_templates` does not carry that field into the runtime \
+         graph at all (confirmed: no analogous field exists on EvaluationGraph). Same \
+         class of gap as the RecTree entry above, for match blocks instead of `where` \
+         guards — needs shared graph-construction plumbing, out of this task's scope.",
+    ),
+    (
+        "examples/multi_load_bracket.ri",
+        "MultiLoadBracket.critical_case: `worst_case(results, |r| r)` — a lambda-over-Map \
+         combinator. Reproducibly hits a pre-existing reify-expr dispatch gap \
+         (\"[reify-expr] sample: Field lambda is not a Lambda: Undef\", printed 3x during \
+         this sweep — once per load case) unrelated to geometry, kinematics, or \
+         dynamics. A worst_case/lambda-dispatch product limitation, not a staleness \
+         false-positive this checker should paper over.",
+    ),
+    (
+        "examples/surface_finish_functional.ri",
+        "Demo.total: reads through `let bom = AssemblyBOM()` — a whole-structure VALUE \
+         constructor call (not a `sub` declaration) for a structure that itself declares \
+         nested subs (`sub p1 = Plate()`, `sub p2 = Bracket()`). Their finishing_cost \
+         fields do not resolve when the parent is constructed as an inline value \
+         expression rather than a `sub`. A pre-existing struct-constructor-with-nested- \
+         subs eval limitation, independent of geometry/staleness.",
+    ),
+];
+
+/// Files with a residual snapshot↔cache divergence that is a documented
+/// eval-surface limitation, NOT a checker gap fixable within
+/// `cache_divergence.rs`'s `(snapshot_values, cache, journal)` signature — each
+/// root-caused during the ι broad-sweep investigation (step-8). Carried here
+/// VERBATIM from `snapshot_cache_divergence_gate.rs`'s
+/// `KNOWN_RESIDUAL_DIVERGENCE_SKIPS` by task #7431.
+///
+/// A residual that traces to a genuine post-γ snapshot↔cache write bug (not a
+/// documented eval-surface limitation) is a design_concern to escalate, NOT a
+/// residual entry to paper over.
+const SNAPSHOT_CACHE_DIVERGENCE_RESIDUALS: &[(&str, &str)] = &[
+    (
+        "examples/fdm_bracket.ri",
+        "FdmBracket.r_print: an `@optimized` `solve_elastic_static(...)` FEA \
+         compute-dispatch result cell (task #4726). Compute dispatch runs OUTSIDE \
+         the plain expr-eval commit path — it is NOT one of the three post-passes \
+         (self-datum / structural-query / annotation-args) task γ routed through \
+         `commit_cell_result` — so the ComputeNode writes its result into the cache \
+         while the retained `eval_state()` snapshot value for the cell diverges. This \
+         is the compute-dispatch analog of the geometry-handle standing surface gap: \
+         `invariants.rs` clause 5a already EXEMPTS exactly this `@optimized` cell \
+         class from the sibling stale-Undef invariant for the same 'evaluated outside \
+         the plain expr-eval path' reason. A documented eval-surface limitation, not a \
+         post-γ snapshot↔cache write bug.",
+    ),
+    (
+        "examples/fea_shell_too_thick_annotated.ri",
+        "FeaShellTooThickAnnotated.result: same class as fdm_bracket.ri above — an \
+         `@optimized` `solve_elastic_static(...)` FEA compute-dispatch result cell \
+         whose ComputeNode-written cache entry diverges from the retained snapshot \
+         value because compute dispatch runs outside the `commit_cell_result` \
+         post-pass path task γ migrated (invariants.rs clause 5a exempts the same \
+         cell class from the sibling invariant). A documented eval-surface \
+         limitation, not a post-γ snapshot↔cache write bug.",
+    ),
+];
 
 /// Every invariant this sweep asserts, with its per-invariant scope.
 ///
@@ -603,11 +738,17 @@ const GATES: &[InvariantGate] = &[
         id: InvariantId::StaleUndef,
         label: "INV-EVAL-5 (no stale Undef)",
         scope: CorpusScope::Union,
+        residuals: STALE_UNDEF_RESIDUALS,
+        stale_residual_is_fatal: false,
+        bypass_env: None,
     },
     InvariantGate {
         id: InvariantId::SnapshotCacheDivergence,
         label: "INV-EVAL-4 (snapshot↔cache divergence)",
         scope: CorpusScope::ExamplesOnly,
+        residuals: SNAPSHOT_CACHE_DIVERGENCE_RESIDUALS,
+        stale_residual_is_fatal: true,
+        bypass_env: Some("REIFY_SNAPSHOT_CACHE_AUDIT_BYPASS"),
     },
 ];
 
