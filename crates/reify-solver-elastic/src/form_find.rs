@@ -1675,6 +1675,27 @@ mod tests {
         );
     }
 
+    // (c2) A surface triangle corner that indexes past `nodes` is infeasible
+    // input — `assemble_d` would panic on its `nodes[i]` index. PRD 8.1
+    // promises a clean diagnostic, never a panic.
+    #[test]
+    fn surfaces_out_of_range_index_is_dimension_mismatch() {
+        let (nodes, _surfaces, anchors) = tent_membrane();
+        // Boundary index: 5 is the FIRST invalid index for the 5-node tent, so
+        // this pins the `≥ n` comparison that a `> n` typo would let pass.
+        let surfaces = vec![(0usize, 1usize, 5usize)];
+        let sigmas = vec![1.0];
+        let members: Vec<(usize, usize)> = vec![];
+        let kinds: Vec<MemberKind> = vec![];
+        let q: Vec<f64> = vec![];
+
+        assert_eq!(
+            form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
+                .unwrap_err(),
+            FormFindError::DimensionMismatch,
+        );
+    }
+
     // (d) The pure-line path (empty surfaces) through the surface-aware entry
     // must return exactly the landed form_find_anchored result, with an empty
     // surface_stresses echo — the additive-extension invariant.
