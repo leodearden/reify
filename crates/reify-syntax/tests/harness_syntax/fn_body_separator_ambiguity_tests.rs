@@ -550,8 +550,11 @@ fn well_formed_fn_bodies_produce_no_diagnostics() {
 #[test]
 fn a_file_of_broken_functions_is_bounded_and_says_so() {
     const FNS: usize = 24;
-    /// Mirrors `diagnose_error_node`'s private `MAX_DIAGNOSTICS`. Kept as a named constant so
-    /// the assertions below read as the per-node cap they are, not as bare magic numbers.
+    /// Mirrors `ts_parser::fault_diagnosis::MAX_DIAGNOSTICS`, which an integration test cannot
+    /// name: `ts_parser` is a private module of `reify-syntax`, so nothing inside it is
+    /// reachable from here at any visibility short of re-exporting it from the crate root.
+    /// Kept as a named constant so the assertions below read as the per-node cap they are,
+    /// not as bare magic numbers.
     const MAX_DIAGNOSTICS: usize = 8;
 
     let mut source = String::new();
