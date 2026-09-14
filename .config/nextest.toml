@@ -56,14 +56,23 @@ occt = { max-threads = 24 }
 # nextest resolves each override SETTING by first-match independently, so none
 # of these falls through to this default.
 #
-# The heavy tier is 12x the 3600s wall, which is SAFE only because no gate path
-# runs heavy members: every orchestrator-spawned role gets
-# REIFY_GATE_EXCLUDE_HEAVY=1 (dark-factory-orchestrator.yaml:230), and
-# scripts/land.sh exports it for the sanctioned manual-land path. They run on
-# the offline deep lane instead, where verify.sh's release wall is 13h — so the
-# ceiling is REACHABLE there and kills BY NAME. That exclusion is a load-bearing
-# precondition, not tidiness: without it a heavy hang on the gate degrades to a
-# bare `timeout` exit 124 attributing nothing (the task 4877/4878 shape).
+# WHY A CEILING 12x THE 3600s WALL IS SAFE ON THE GATE. Stated as the measured
+# mechanism, because the shorter claim this paragraph used to make — that no gate
+# path runs heavy members — is FALSE, and reads as broader cover than it is.
+# REIFY_GATE_EXCLUDE_HEAVY=1 is indeed set for every orchestrator-spawned role
+# (dark-factory-orchestrator.yaml:230) and by scripts/land.sh, but setting the
+# env var is not what decides anything: scripts/verify.sh scopes its EFFECT to
+# the task and merge roles alone (the _GATE_HEAVY_EXCLUDE guard). So:
+#   - task, merge and the sanctioned manual-land path genuinely do not run heavy
+#     members. That is what makes this tier safe on the BLOCKING gate, and it is
+#     a load-bearing precondition rather than tidiness: without it a heavy hang
+#     on the gate degrades to a bare `timeout` exit 124 attributing nothing (the
+#     task 4877/4878 shape).
+#   - the offline deep lane runs them under a 13h release wall, so the ceiling is
+#     REACHABLE there and a hang is SIGTERM'd BY NAME.
+#   - the background role (main-tip cadence sweep) is covered by neither: it runs
+#     all 8 heavy members under the 3600s debug wall, where 43200s is out of
+#     reach. That gap is enumerated in the ACCEPTED RESIDUAL note below.
 # DELIBERATE: no `retries` key here or anywhere in this file. A retry would
 # re-run and mask the very hangs/flakes this ceiling exists to attribute and
 # kill (task invariant — regression-guarded by test_occt_gated_scope.sh).
@@ -80,16 +89,53 @@ occt = { max-threads = 24 }
 # longer has to be.
 #
 # ACCEPTED RESIDUAL: the ceiling is STATIC config, so it applies on every path,
-# including ones where it cannot be reached. A bare `cargo nextest run`, or a
-# scripts/verify.sh run with REIFY_GATE_EXCLUDE_HEAVY unset — a developer's
-# manual path, reached by neither the orchestrator verify_env nor land.sh —
-# still runs heavy members under a 60m/90m outer wall, where 43200s is
-# unreachable and a hang degrades to exit 124 with no per-test attribution.
-# Role-scoping the ceiling in the DERIVED config (option D) would dissolve this
-# and was priced and REJECTED in esc-6485-3: gen-nextest-config.sh is a
-# line-anchored sed rewriter and the ceiling literal is not unique across
-# blocks, so doing it correctly needs a section-aware pass keyed on each block's
-# `filter =` line, plus new test pins — a task of its own, not a rider here.
+# including the ones where it cannot be reached. Three such paths, the third
+# being the only orchestrator-spawned one:
+#   1. a bare `cargo nextest run`;
+#   2. a scripts/verify.sh run with REIFY_GATE_EXCLUDE_HEAVY unset — a
+#      developer's manual path, reached by neither the orchestrator verify_env
+#      nor land.sh;
+#   3. DF_VERIFY_ROLE=background, the main-tip cadence sweep. It runs
+#      --profile both --scope all and is outside verify.sh's task|merge
+#      exclusion, so it runs all 8 heavy members under the 60m debug wall.
+# On all three, a heavy hang degrades to `timeout` exit 124 with no per-test
+# attribution. On path 3 that is a REGRESSION in hang-diagnosability against the
+# 1200s/1800s ceilings those members carried before task 6485: under those, the
+# per-test kill was reachable inside the wall and named the offending test.
+# Blast radius, bounded honestly and not offered as a reason the gap is harmless:
+# background is a non-blocking cadence sweep whose failures produce fix tasks
+# rather than gating a merge, and the same heavy set also runs on the offline
+# deep lane (dark-factory-orchestrator.yaml:1199 offline_lane_enabled: true),
+# where the ceiling IS reachable — so by-name attribution is recoverable there,
+# one lane later, rather than lost outright.
+#
+# WHY THIS TASK DOCUMENTS PATH 3 RATHER THAN CLOSING IT: both remedies are
+# coverage/budget decisions that need the same kind of explicit human ruling the
+# land.sh carve-out got (esc-6485-3, Leo, 2026-08-31), not an implementer's
+# judgement call.
+#   (a) Extending verify.sh's exclusion to task|merge|background REDUCES main-tip
+#       heavy coverage, and contradicts the stated "Role=background NEVER skips"
+#       backstop contract (dark-factory-orchestrator.yaml:253-254).
+#   (b) Role-scoping background's walls to 13h+ would let one hung heavy test
+#       stall the cadence sweep for 13 hours, and because background runs
+#       --profile both it needs BOTH walls scoped, not only the release one.
+# Filed as follow-up ticket tkt_0RTN0PQ35EZGXGQ7WF2HXZE2N9.
+#
+# The classification above is MECHANISED, not merely asserted in this comment:
+# Assertion L in tests/infra/test_nextest_slow_priority.sh derives the
+# heavy-running role set from scripts/verify.sh and fails if any such role is
+# neither reachable nor an enumerated residual — and fails again, deliberately,
+# once remedy (a) lands and this paragraph's background entry goes stale, so the
+# note and the test's allowlist are retired together instead of one outliving
+# the other.
+#
+# Role-scoping the ceiling in the DERIVED config (option D) would dissolve paths
+# 2 and 3, which both run through verify.sh's generated config, though not path 1
+# which reads this static file directly. It was priced and REJECTED in
+# esc-6485-3: gen-nextest-config.sh is a line-anchored sed rewriter and the
+# ceiling literal is not unique across blocks, so doing it correctly needs a
+# section-aware pass keyed on each block's `filter =` line, plus new test pins —
+# a task of its own, not a rider here.
 [profile.default]
 slow-timeout = { period = "120s", terminate-after = 10 }
 
