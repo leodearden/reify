@@ -2107,6 +2107,77 @@ mod tests {
         );
     }
 
+    // ── build_compiled ────────────────────────────────────────────────────
+
+    /// build_compiled: a clean single-op source yields NO Error diagnostics in
+    /// slot 1 and the emitted `Box` op in slot 2.
+    ///
+    /// Non-empty ops PAIRED with empty errors is what discriminates here: two
+    /// slots sourced from the same place, or returned the wrong way round,
+    /// cannot satisfy both halves at once. The ops half also pins the one
+    /// non-obvious line in the helper — `operations_ref()` captured BEFORE the
+    /// kernel moves into the `Engine`; capture it after and slot 2 is empty.
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_build_compiled_returns_build_diagnostics_and_the_ops_that_reached_the_kernel() {
+        let (diagnostics, ops) = super::build_compiled(super::parse_and_compile(
+            r#"structure def OneBox { let body = box(10mm, 10mm, 10mm) }"#,
+        ));
+
+        let errors = super::collect_errors(&diagnostics);
+        assert!(
+            errors.is_empty(),
+            "a dimensioned box must build with zero Error diagnostics; got: {errors:?}"
+        );
+        let boxes: Vec<_> = ops
+            .iter()
+            .filter(|op| matches!(op, reify_ir::GeometryOp::Box { .. }))
+            .collect();
+        assert_eq!(
+            boxes.len(),
+            1,
+            "slot 2 must carry the ops that actually reached the kernel; got: {ops:?}"
+        );
+    }
+
+    /// build_compiled: composed with
+    /// [`super::compile_expecting_only_arg_type_mismatch`] — the way all call
+    /// sites use it — slot 1 carries the EVAL layer's `DimensionedArgRejected`
+    /// and NOT the COMPILE layer's `ArgTypeMismatch`.
+    ///
+    /// This is what proves slot 1 is `BuildResult.diagnostics` rather than the
+    /// incoming `compiled.diagnostics` forwarded through. The test above passes
+    /// either way, since a clean source has nothing at either layer; only a
+    /// fixture that is rejected at BOTH layers separates them. Every call site
+    /// filters on `DimensionedArgRejected` alone, so a helper that returned the
+    /// compile diagnostics would leave each of them unable to find its needle —
+    /// and PRD decision D2's two-layer observability unobservable from here.
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_build_compiled_returns_the_eval_layer_diagnostics_not_the_compile_layer_ones() {
+        let (diagnostics, _ops) =
+            super::build_compiled(super::compile_expecting_only_arg_type_mismatch(
+                BARE_FILLET_SRC,
+                "modify/sweep magnitude",
+            ));
+
+        assert!(
+            diagnostics.iter().any(|d| d.severity == Severity::Error
+                && d.code == Some(DiagnosticCode::DimensionedArgRejected)),
+            "slot 1 must be BuildResult.diagnostics — the EVAL-layer gate every call site \
+             filters on; got: {diagnostics:?}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch)),
+            "slot 1 must NOT be the incoming compile diagnostics forwarded through: the \
+             COMPILE-layer ArgTypeMismatch belongs to the returned module's own \
+             `diagnostics`, and merging the layers makes \"which layer rejected this?\" \
+             unanswerable from the code alone (PRD D2); got: {diagnostics:?}"
+        );
+    }
+
     // ── assert_has_diagnostic ──────────────────────────────────────────────
 
     /// assert_has_diagnostic should not panic when the diagnostics slice contains
