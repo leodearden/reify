@@ -3079,9 +3079,11 @@ fn area(w: Length) -> Length { w }"#;
         assert!(span.is_empty(), "fallback span must be empty");
     }
 
-    // --- name_token_span robustness (relocated from the retired
-    // `goto_def::find_name_offset_in_decl`, whose clamp / UTF-8-snap /
-    // start==len hardening now lives with the primitive that performs it) ---
+    // --- name_token_span robustness: clamp / UTF-8-snap / start==len ---
+    //
+    // goto_def had its own name-token locator with a parallel set of these
+    // tests; task 7529 collapsed the two locators into this one, so the
+    // hardening is pinned here, at the primitive that performs it.
 
     #[test]
     fn name_token_span_start_beyond_source_len_falls_back_without_panic() {
