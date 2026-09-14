@@ -158,6 +158,24 @@ and **auditable** — the drift-guard lists exactly what is deferred.
   `heavy` set is a binary-level expression (robust vs test-name-regex; each atom must resolve to a
   file on disk). The thin smoke lives in a **new** binary (`crates/reify-solver-elastic/tests/solver_gate_smoke.rs`)
   outside the `heavy` pattern, so no `heavy`-binary membership can accidentally capture it.
+- **DA5 — `scripts/land.sh` sets `REIFY_GATE_EXCLUDE_HEAVY=1`; `hooks/pre-merge-commit` does NOT.**
+  Resolved by Leo, 2026-08-31 (esc-6485-3, option B), settling what §10 previously carried as an open
+  tactical question. `scripts/land.sh` exports the knob alongside its existing `DF_VERIFY_ROLE=merge`,
+  so the sanctioned manual-land path scopes its gate exactly as `dark-factory-orchestrator.yaml` already
+  does for every orchestrator-spawned role. The hook is deliberately left alone: it is the shared gate
+  entry point, and a bare local `git merge --no-ff` on `main` is already unsanctioned by CLAUDE.md, so
+  the hook keeps the wider coverage.
+  **The trade that decided it** was local-land DIAGNOSABILITY over pre-merge-blocking local-land
+  COVERAGE. Without the carve-out this path runs `--profile both --scope all` (so `NARROW_ACTIVE=0` and
+  the debug `--workspace` pass runs heavy members) under a binding 3600s wall, where the 12h per-test
+  ceiling in `.config/nextest.toml` is unreachable and a heavy hang degrades to a bare `timeout` exit
+  124 naming nothing — the task 4877/4878 zero-attribution shape. Coverage is DEFERRED, not deleted:
+  the offline lane's trigger is SHA-based, and a local land bypasses the orchestrator's `on_post_merge`
+  notifiee, so it is the lane's poll backstop (`git.offline_lane_poll_interval_secs`, 120s, comparing
+  `main`'s tip against the head of the last completed run) that picks the commit up — within ~2 minutes
+  — and runs the heavy set there under the 12h by-name ceiling.
+  **Accepted residual:** a heavy failure on a locally-landed commit yields a fix task rather than
+  blocking the land.
 
 ## 5. Pre-conditions / substrate (G3 — all verified present this session)
 
@@ -287,5 +305,3 @@ leaf), per the user directive to "make the flip immediate."
 - **Precise warm-gate seconds saved post-LPT.** A Phase-0-style warm `DF_VERIFY_ROLE=merge` timing
   once the partition exists quantifies the win; not required to ship Part A (premise confirmed
   structurally in §1).
-- **Whether the local `hooks/pre-merge-commit` (land.sh) path should also honor `REIFY_GATE_EXCLUDE_HEAVY`.**
-  Default `0` keeps local landings running the full set until an operator opts in; revisit with Part B.
