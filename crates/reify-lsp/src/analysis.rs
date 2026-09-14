@@ -965,9 +965,16 @@ fn name_selection_range(source: &str, span: SourceSpan, name: &str) -> Range {
 /// The crate's single name-token locator — no second implementation of this
 /// search exists: `references.rs` uses it for the declaration name-token span,
 /// the `include_declaration` token and the prepare/compute-rename declaration
-/// path; `goto_def::decl_name_span_in` uses it for top-level declarations; and
-/// `name_selection_range` uses it for the LSP `selection_range`, degrading the
-/// empty-span fallback to the declaration start.
+/// path; `goto_def::decl_name_span_in` uses it for the top-level declarations
+/// the cross-file path resolves; `goto_def::decl_name_token` uses it for the
+/// top-level declarations SAME-FILE goto-def resolves (task 6388), mapping the
+/// empty-span fallback below to `None` because a zero-width jump target is
+/// useless; and `name_selection_range` uses it for the LSP `selection_range`,
+/// degrading that same fallback to the declaration start.
+///
+/// That enumeration is maintained as EXHAUSTIVE on purpose — a new consumer
+/// that quietly omits itself here is how the list stops being usable as a
+/// blast-radius answer for changing this function's fallback.
 pub fn name_token_span(source: &str, member_span: SourceSpan, name: &str) -> SourceSpan {
     let mut start = (member_span.start as usize).min(source.len());
     // Snap forward to a valid UTF-8 boundary if we landed mid-character.

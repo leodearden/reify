@@ -176,13 +176,7 @@ fn resolve_decl_name(
 /// instead of a per-kind allowlist.
 ///
 /// Narrowing uses [`crate::analysis::name_token_span`] — whole-word, bounded to
-/// the declaration's own span, UTF-8-boundary-snapping. Deliberately NOT
-/// [`find_name_offset_in_decl`], a bare substring search that matches the `n` of
-/// `fn` for a declaration named `n`. That sibling is on the RENAME write path,
-/// where the same bug rewrites a keyword byte (`structure s` renames to
-/// `Xtructure s`); migrating it onto `name_token_span` changes rename output, so
-/// it is filed as a follow-up rather than fixed under task 6388's
-/// no-rename-change constraint.
+/// the declaration's own span, UTF-8-boundary-snapping.
 ///
 /// `name_token_span` falls back to a ZERO-WIDTH span at `span.start` when the
 /// name is absent within the declaration span (e.g. a recovered AST node). A
@@ -194,9 +188,13 @@ fn resolve_decl_name(
 /// - a `structure def` nested inside a `purpose` body lives in
 ///   `PurposeDef.structures`, is not a top-level declaration, and is not
 ///   resolved (see `goto_def_purpose_nested_structure_is_not_top_level`);
-/// - CROSS-file goto-def still covers only the narrower
-///   [`find_declaration_name_span`] kind list, so Purpose/Constraint/Unit/
-///   TypeAlias/Joint remain same-file only.
+/// - CROSS-file goto-def does NOT route through here at all: it resolves via
+///   [`find_declaration_in_source`], whose scan is the narrower
+///   [`decl_name_span_in`] one. That scan admits TypeAlias — #6341 gave the
+///   cross-file path `include_aliases = true` — so an alias IS cross-file
+///   navigable; it is Purpose/Constraint/Unit/Joint that this task leaves
+///   SAME-FILE-only. Widening the cross-file side means covering their
+///   type-position use sites first, which is #6972's remit.
 fn decl_name_token(source: &str, name: &str, decl_span: SourceSpan) -> Option<SourceSpan> {
     let tok = crate::analysis::name_token_span(source, decl_span, name);
     (tok.start != tok.end).then_some(tok)
