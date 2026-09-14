@@ -370,24 +370,21 @@ WARN_PCT=90
 # above was rejected — a cite that resolves to a live task is the fix for that,
 # not an omission.
 #
-# harness_cli.rs is the second arrival, added by task #6162 and cited to #7365
-# on the same terms. Its remedy is likewise rule (a)'s split, not a cap bump.
-# The arrival is NOT #6162's doing on its own: bare main measured 17908 for
-# this unit (root 188 + module 17399 across 82 files + external 321), only 92
-# lines under the 18000 warn line, so reify-cli crossed on the next
-# test-bearing commit whichever one it turned out to be. #6162 contributed 434
-# of those lines (harness_cli/cli_lsp_protocol.rs) and so is the diff that
-# acknowledges the row, per the ARRIVING rule above.
-#
 # Kept in-script rather than in a new manifest file because this guard already
 # carries its comparable constant sets in-script (_HL_OVERRIDE_STEMS via the
 # shared lib, CAP_LINES, WARN_PCT), so no new file, loader or drift-gate is
 # needed. Enforced as a SUBSET in Section 5d, which also reports the prune
 # direction the subset check is blind to: an advisory `PRUNE:` note for a row
 # that stopped WARNing, and a RED for a row whose file is no longer on disk.
+# harness_occt.rs measured 19020/20000 = 95% at task #6619 (root 154 + 17707
+# across 55 module files + 1159 external via the bare `mod common;`). Listed
+# for the same reason as harness_syntax above and NOT because it is acceptable:
+# the remedy is still rule (a)'s split, and that split is #7466. On bare
+# main the unit already measured 17737, 263 lines under the warn line, so the
+# crate was crossing on its next test-bearing commit regardless of #6619.
 _KLOC_WARN_KNOWN=(
     "crates/reify-syntax/tests/harness_syntax.rs"
-    "crates/reify-cli/tests/harness_cli.rs"
+    "crates/reify-kernel-occt/tests/harness_occt.rs"
 )
 
 # The checked-in grandfather-baseline ratchet (resolved via the shared lib so
@@ -3144,10 +3141,12 @@ assert "10: normalization scan emits NO FAIL line at all" \
     bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s10_norm_out"
 
 # --- must-not-fire: MODDIR BOUNDARY + the live #[cfg] shape. A #[cfg]-gated
-# member (crates/reify-cli/tests/harness_cli.rs:184-186's #[cfg] -> #[path]
-# -> mod ordering) is DECLARED regardless of cfg state, and a bare `mod
-# common;` resolving to a retained tests/ sibling is not a member at all — it
-# resolves OUTSIDE the module dir. ---
+# member (the `rpath_smoke` declaration in
+# crates/reify-cli/tests/harness_cli_surface.rs — its #[cfg] -> #[path] -> mod
+# ordering; cited by NAME, never by line span, which drifts on every edit to
+# that root) is DECLARED regardless of cfg state, and a bare `mod common;`
+# resolving to a retained tests/ sibling is not a member at all — it resolves
+# OUTSIDE the module dir. ---
 _s10_bound_dir="$(mktemp -d)"; _TMPDIRS+=("$_s10_bound_dir")
 mkdir -p "$_s10_bound_dir/harness_synth" "$_s10_bound_dir/common"
 {

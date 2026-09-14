@@ -222,24 +222,47 @@ pub(crate) fn validate_selector_target(v: &Value) -> Option<()> {
     }
 }
 
-/// Validate that `v` is a `Value::Scalar` with dimension matching `expected_dim`
-/// and a finite SI value.
+/// Validate that `v` carries `expected_dim` and a finite SI value.
 ///
 /// Returns `Some(si_value)` on success, `None` on any failure.
+///
+/// # An adapter, not a rival
+///
+/// Since task 5791 (PRD `docs/prds/v0_6/dimension-checked-readers.md` §6
+/// decision 8) this is a THIN ADAPTER over
+/// [`reify_ir::arg_acceptance::accept_arg`], so the dimension predicate — and
+/// the rejection wording that goes with it — has exactly ONE implementation in
+/// the repo instead of an eval-layer one and a stdlib-layer one drifting apart.
+/// Adding a dimension rule here rather than there is how the two would fork
+/// again; don't.
+///
+/// The signature deliberately keeps taking a bare `DimensionVector` rather than
+/// an `&ArgSpec`: this helper returns `Option<f64>` and never formats a
+/// message, so it has no use for `type_name`/`migration_hint`, and changing the
+/// signature would churn its 8 production call sites and 12 tests for no
+/// contract gain. Per-position `ArgSpec` adoption (§7 I1) is the consuming
+/// leaves' work.
+///
+/// # The finiteness filter is a DELIBERATE narrowing
+///
+/// `accept_arg` ACCEPTS a non-finite Scalar — it IS the expected dimension,
+/// merely NaN/±inf — and `crates/reify-ir/src/arg_acceptance.rs`'s module doc
+/// assigns promoting non-finite handling into the shared family to **task
+/// 6157**. Until then this adapter keeps its own finiteness post-filter, and
+/// that divergence is intentional rather than an oversight: it is pinned
+/// two-sidedly by
+/// `validate_dimensioned_scalar_keeps_its_finiteness_filter_over_accept_arg`,
+/// so a later "simplification" that drops it turns red.
 pub(crate) fn validate_dimensioned_scalar(v: &Value, expected_dim: DimensionVector) -> Option<f64> {
-    match v {
-        Value::Scalar {
-            si_value,
-            dimension,
-        } => {
-            if *dimension != expected_dim {
-                return None;
-            }
-            if !si_value.is_finite() {
-                return None;
-            }
-            Some(*si_value)
-        }
+    // `type_name` and `migration_hint` are unused: this helper returns
+    // `Option<f64>` and never formats an `ArgRejection` message.
+    let spec = reify_ir::arg_acceptance::ArgSpec {
+        type_name: "",
+        dimension: expected_dim,
+        migration_hint: None,
+    };
+    match reify_ir::arg_acceptance::accept_arg(v, &spec) {
+        reify_ir::arg_acceptance::Acceptance::Accepted(si) if si.is_finite() => Some(si),
         _ => None,
     }
 }
@@ -2034,4 +2057,154 @@ mod tests {
             "Tensor input should return None (only List accepted)"
         );
     }
+
+    // ── PRD 5 §3 Leg A: cross-crate reachability of the shared acceptance family ──
+
+    /// Structural guard for PRD 5 §3 Leg A
+    /// (`docs/prds/v0_6/dimension-checked-readers.md`, task 5791): the
+    /// dimension-acceptance family (`ArgSpec`/`Acceptance`/`accept_arg`) lives in
+    /// **reify-ir**, the one crate BOTH `reify-eval` and `reify-stdlib` already
+    /// depend on, so the two layers share ONE dimension-acceptance rule instead of
+    /// forking it.
+    ///
+    /// reify-stdlib CANNOT reach the family at its former home in `reify-eval` —
+    /// the crate edge runs the other way (`reify-eval` deps `reify-stdlib`, never
+    /// the reverse) — so re-privatising `reify_ir::arg_acceptance`, or moving it
+    /// back into `reify-eval`, must turn this test red as a COMPILE failure, not
+    /// as a silent behavioural drift.
+    ///
+    /// `crates/reify-stdlib/Cargo.toml` already deps `reify-ir` in both
+    /// `[dependencies]` and `[dev-dependencies]`; this test adds no new edge.
+    #[test]
+    fn arg_acceptance_is_reachable_from_reify_stdlib() {
+        use reify_ir::arg_acceptance::{Acceptance, accept_arg, length_spec};
+
+        let ten_mm = Value::Scalar {
+            si_value: 0.01,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_eq!(
+            accept_arg(&ten_mm, &length_spec()),
+            Acceptance::Accepted(0.01),
+            "a LENGTH Scalar must be Accepted with its SI value through the \
+             shared reify-ir family"
+        );
+        assert!(
+            matches!(
+                accept_arg(&Value::Real(10.0), &length_spec()),
+                Acceptance::Rejected(_)
+            ),
+            "a bare Real must still be Rejected at a length_spec position (the \
+             10-vs-10mm 1000x hazard)"
+        );
+    }
+
+
+    // ── PRD 5 §6 decision 8: validate_dimensioned_scalar as an accept_arg ─────
+    // ── adapter — what that must and must NOT change ─────────────────────────
+
+    /// (a) The ONE observable behaviour change the adapter makes, and exactly
+    /// PRD §7 I3: at a DIMENSIONLESS expectation, a bare `Real`/`Int` is now
+    /// accepted, inheriting `accept_arg`'s guarded bare arm.
+    ///
+    /// MEASURED SAFE: none of the 8 production call sites passes DIMENSIONLESS.
+    /// `fea/loads.rs:161` passes `accel_dim` (ACCELERATION); `stackup.rs:32`
+    /// and `tolerancing.rs:86`/`:87`/`:116`/`:117`/`:178`/`:190` all pass
+    /// LENGTH. So this widening is unreachable from every shipped caller and is
+    /// here for the readers PRD §3 Leg B's "deliberately bare" list will route
+    /// through it.
+    #[test]
+    fn validate_dimensioned_scalar_accepts_bare_numbers_at_a_dimensionless_expectation() {
+        assert_eq!(
+            validate_dimensioned_scalar(&Value::Real(0.3), DimensionVector::DIMENSIONLESS),
+            Some(0.3),
+            "a bare Real at a DIMENSIONLESS expectation must now be accepted \
+             (PRD §7 I3, inherited from accept_arg's guarded bare arm)"
+        );
+        assert_eq!(
+            validate_dimensioned_scalar(&Value::Int(7), DimensionVector::DIMENSIONLESS),
+            Some(7.0),
+            "a bare Int at a DIMENSIONLESS expectation must now be accepted, \
+             widened to f64"
+        );
+    }
+
+    /// (b) The load-bearing floor that must NOT move: the 1000x bare-metres
+    /// hazard stays closed at every real call site.
+    #[test]
+    fn validate_dimensioned_scalar_still_rejects_bare_numbers_at_a_length_expectation() {
+        assert_eq!(
+            validate_dimensioned_scalar(&Value::Real(10.0), DimensionVector::LENGTH),
+            None,
+            "a bare Real at a LENGTH expectation must stay None — `10` is not \
+             `10mm`, and reading it as 10 SI metres is the 1000x hazard"
+        );
+        assert_eq!(
+            validate_dimensioned_scalar(&Value::Int(10), DimensionVector::LENGTH),
+            None,
+            "a bare Int at a LENGTH expectation must stay None"
+        );
+    }
+
+    /// (c) The DELIBERATE DIVERGENCE from `accept_arg`, written as an explicit
+    /// TWO-SIDED comparison so a later "simplification" that drops the filter
+    /// turns this red rather than silently letting NaN through.
+    ///
+    /// `accept_arg` ACCEPTS a non-finite Scalar — it IS the right dimension,
+    /// merely NaN/±inf — and `crates/reify-ir/src/arg_acceptance.rs`'s module
+    /// doc assigns promoting non-finite handling into the shared family to
+    /// **task 6157**, not to this adapter. This helper's finiteness post-filter
+    /// is therefore its own INTENTIONAL narrowing of the shared predicate, and
+    /// is NOT PRD §7 I4's non-finite work.
+    #[test]
+    fn validate_dimensioned_scalar_keeps_its_finiteness_filter_over_accept_arg() {
+        use reify_ir::arg_acceptance::{Acceptance, accept_arg, force_spec};
+
+        for (label, si) in [("NaN", f64::NAN), ("+inf", f64::INFINITY)] {
+            let v = Value::Scalar {
+                si_value: si,
+                dimension: DimensionVector::FORCE,
+            };
+
+            match accept_arg(&v, &force_spec()) {
+                Acceptance::Accepted(got) => assert!(
+                    !got.is_finite(),
+                    "{label}: accept_arg must ACCEPT a non-finite FORCE Scalar \
+                     and carry the non-finite SI through (task 6157 owns \
+                     changing that, not this adapter)"
+                ),
+                other => panic!(
+                    "{label}: accept_arg must Accept a non-finite FORCE Scalar, got {other:?}"
+                ),
+            }
+
+            assert_eq!(
+                validate_dimensioned_scalar(&v, DimensionVector::FORCE),
+                None,
+                "{label}: the adapter's finiteness post-filter must still turn \
+                 that Accepted into None — this divergence is deliberate"
+            );
+        }
+    }
+
+    /// (d) Parity for `Value::Undef`: `accept_arg` classifies it as
+    /// `Undefined`, and the adapter — which has only `Option<f64>` to say it
+    /// with — collapses that to `None`, exactly as it does today.
+    #[test]
+    fn validate_dimensioned_scalar_maps_accept_arg_undefined_to_none() {
+        use reify_ir::arg_acceptance::{Acceptance, accept_arg, force_spec};
+
+        assert_eq!(
+            accept_arg(&Value::Undef, &force_spec()),
+            Acceptance::Undefined,
+            "accept_arg must classify Undef as Undefined"
+        );
+        assert_eq!(
+            validate_dimensioned_scalar(&Value::Undef, DimensionVector::FORCE),
+            None,
+            "the adapter collapses Undefined to None (its return type cannot \
+             carry the distinction)"
+        );
+    }
+
 }

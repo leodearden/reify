@@ -100,7 +100,7 @@ fn get_constraints_returns_satisfied() {
     // All bracket constraints should be satisfied at default values
     for c in &constraints {
         assert_eq!(
-            c.status, "Satisfied",
+            c.status, "satisfied",
             "constraint {} should be satisfied",
             c.node_id
         );

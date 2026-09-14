@@ -4276,6 +4276,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "reify-builtins"
+version = "0.1.0"
+dependencies = [
+ "reify-core",
+ "strum 0.26.3",
+]
+
+[[package]]
 name = "reify-cli"
 version = "0.1.0"
 dependencies = [
@@ -4312,6 +4320,7 @@ version = "0.1.0"
 dependencies = [
  "indexmap 2.14.0",
  "reify-ast",
+ "reify-builtins",
  "reify-compiler",
  "reify-config",
  "reify-core",
@@ -4736,9 +4745,11 @@ version = "0.1.0"
 dependencies = [
  "faer",
  "nalgebra",
+ "reify-builtins",
  "reify-core",
  "reify-gcode",
  "reify-ir",
+ "reify-stdlib",
  "reify-test-support",
  "tracing",
 ]

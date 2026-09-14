@@ -212,6 +212,7 @@ mod orientation;
 mod parse;
 mod snapshot;
 mod stackup;
+mod registry_dispatch;
 mod supports;
 mod sweep;
 mod tensegrity;
@@ -223,6 +224,35 @@ mod trig;
 ///
 /// Returns `Value::Undef` for unknown functions or wrong argument types/counts.
 pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
+    // Registry FIRST (PRD §7.3(3)): a name registered as a
+    // `BindingKind::EvalBuiltin` row resolves here, ahead of the surviving
+    // family dispatchers. `None` falls through exactly as any other family's
+    // decline does — the same registry-first coexistence shape the compiler
+    // ladder already uses.
+    //
+    // What the hoist is actually pinned to do, row-derived in
+    // `tests/registry_dispatch_seed_parity.rs`:
+    //
+    // - It CLAIMS exactly its rows' declared arities and nothing else —
+    //   `try_dispatch_answers_for_exactly_the_eval_rows_at_their_declared_arities`.
+    // - It DECLINES every name the registry does not own, so a dispatcher
+    //   later in this chain keeps its own — `abs` and `single` are still
+    //   answered downstream:
+    //   `try_dispatch_declines_every_name_the_registry_does_not_own`.
+    // - At a NON-declared arity a seed name still reaches this fn's terminal
+    //   `Value::Undef` — `eval_builtin_yields_undef_at_a_non_declared_arity`.
+    //
+    // That third one is the only evidence bearing on shadowing, and it is
+    // PARTIAL: a later arm that claimed a seed name at a non-declared arity
+    // would answer with something other than `Undef` and fail there. The
+    // declared-arity direction is NOT observable from a test — once the
+    // registry answers first, no layer can distinguish "the registry answered"
+    // from "a later arm would have answered too". So this comment claims no
+    // no-shadowing property; see the parity test's module doc for the same
+    // ceiling stated at length.
+    if let Some(v) = registry_dispatch::try_dispatch(name, args) {
+        return v;
+    }
     if let Some(v) = numeric::eval_numeric(name, args) {
         return v;
     }
@@ -248,9 +278,6 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         return v;
     }
     if let Some(v) = construct::eval_construct(name, args) {
-        return v;
-    }
-    if let Some(v) = analysis::eval_analysis(name, args) {
         return v;
     }
     if let Some(v) = joints::eval_joints(name, args) {
@@ -295,10 +322,61 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
     if let Some(v) = tensegrity::eval_tensegrity(name, args) {
         return v;
     }
-    if let Some(v) = parse::eval_parse(name, args) {
-        return v;
-    }
     Value::Undef
+}
+
+/// Expose the registry-keyed eval dispatcher to the registry seam test without
+/// widening reify-stdlib's public API.
+///
+/// Taking an `EvalBuiltinId` — not a `&str` — is the point: it lets
+/// `tests/registry_dispatch_seed_parity.rs` observe that eval dispatch is
+/// genuinely keyed on the registry, which a test routed through the public
+/// `eval_builtin(name, args)` alone could not distinguish from the old string
+/// matchers.
+///
+/// # Stability
+///
+/// This function is intentionally named with `__` prefix to signal that it is
+/// an internal test shim and **not part of the public API**. It may be removed
+/// or changed at any time. Gated behind `feature = "test-support"` (or
+/// `cfg(test)` for in-crate tests); not part of the released public API.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+// G-allow: task #6001 (registry α) — test-support-gated eval-seam shim,
+// consumed by tests/registry_dispatch_seed_parity.rs (the §7.3(3) I-REG-2
+// dispatch-parity pin).
+pub fn __registry_dispatch_for_test(id: reify_builtins::EvalBuiltinId, args: &[Value]) -> Value {
+    registry_dispatch::dispatch(id, args)
+}
+
+/// Expose the registry's NAME resolution to the registry seam test without
+/// widening reify-stdlib's public API.
+///
+/// Why this exists next to [`__registry_dispatch_for_test`]: that shim takes
+/// an `EvalBuiltinId`, so it structurally cannot observe how a `&str` becomes
+/// one — it bypasses both `try_dispatch` and `reify_builtins::lookup`. This
+/// one takes the name, so it is the only way a test can pin the `lookup`-keyed
+/// resolution the public `eval_builtin` actually performs: that the registry
+/// is consulted, is authoritative for exactly the `BindingKind::EvalBuiltin`
+/// rows at their declared arities, and DECLINES every other name so a later
+/// member of the dispatch chain keeps its own.
+///
+/// `registry_dispatch::try_dispatch` itself stays `pub(crate)`; this shim is
+/// what keeps the crate's real surface unchanged.
+///
+/// # Stability
+///
+/// Same contract as [`__registry_dispatch_for_test`]: `__`-prefixed internal
+/// test shim, **not part of the public API**, may be removed or changed at any
+/// time. Gated behind `feature = "test-support"` (or `cfg(test)` for in-crate
+/// tests).
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+// G-allow: task #6001 (registry α) — test-support-gated eval-seam shim,
+// consumed by tests/registry_dispatch_seed_parity.rs (the §7.3(3) no-shadowing
+// sweep over the name path).
+pub fn __try_dispatch_for_test(name: &str, args: &[Value]) -> Option<Value> {
+    registry_dispatch::try_dispatch(name, args)
 }
 
 #[cfg(test)]

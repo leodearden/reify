@@ -130,3 +130,8 @@ mod redispatch_template_order_regression;
 // outside the C1 consolidatable set.
 #[path = "harness_engine/objective_seed_parking_e2e.rs"]
 mod objective_seed_parking_e2e;
+// Task #6038's trait-body eval pins for the polymorphic-zero coercion land here
+// for the same anti-re-accretion reason as #5196's, #5045's, #5360's and
+// #5758's above.
+#[path = "harness_engine/polymorphic_zero_trait_eval.rs"]
+mod polymorphic_zero_trait_eval;

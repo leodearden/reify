@@ -13,6 +13,9 @@ use reify_test_support::{MockGeometryKernel, bracket_source};
 
 use crate::commands::AppState;
 use crate::engine::EngineSession;
+// The ONE η bounded fixture, shared with the engine-level tests rather than twinned
+// here — see its doc comment for why a second copy is a hazard.
+use crate::tests::engine_tests::bounded_bracket_source;
 
 fn make_session() -> EngineSession {
     let checker = SimpleConstraintChecker;
@@ -20,12 +23,20 @@ fn make_session() -> EngineSession {
     EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
 }
 
-fn make_loaded_session() -> EngineSession {
+/// [`make_session`] with `source` loaded under the module name `bracket`.
+///
+/// The `&str`-parameterized form of [`make_loaded_session`], which is what the ~20
+/// neighbouring tests call; both bodies are this one.
+fn make_loaded_session_from(source: &str) -> EngineSession {
     let mut session = make_session();
     session
-        .load_from_source(bracket_source(), "bracket")
+        .load_from_source(source, "bracket")
         .expect("initial load");
     session
+}
+
+fn make_loaded_session() -> EngineSession {
+    make_loaded_session_from(bracket_source())
 }
 
 /// Shared 3-level nested-composed fixture (task 5348). `Top` composes two `Mid`
@@ -147,7 +158,7 @@ fn constraint_violation_set_thickness_1mm() {
     };
 
     // thickness=1mm violates "thickness > 2mm"
-    let thickness_gt_constraint = state.constraints.iter().find(|c| c.status == "Violated");
+    let thickness_gt_constraint = state.constraints.iter().find(|c| c.status == "violated");
 
     assert!(
         thickness_gt_constraint.is_some(),
@@ -422,7 +433,7 @@ fn constraint_violation_and_recovery() {
     let violated_count = state
         .constraints
         .iter()
-        .filter(|c| c.status == "Violated")
+        .filter(|c| c.status == "violated")
         .count();
     assert!(
         violated_count >= 1,
@@ -433,7 +444,7 @@ fn constraint_violation_and_recovery() {
     let satisfied_count = state
         .constraints
         .iter()
-        .filter(|c| c.status == "Satisfied")
+        .filter(|c| c.status == "satisfied")
         .count();
     assert!(
         satisfied_count >= 1,
@@ -447,7 +458,7 @@ fn constraint_violation_and_recovery() {
 
     for c in &state.constraints {
         assert_eq!(
-            c.status, "Satisfied",
+            c.status, "satisfied",
             "all constraints should be satisfied after restoring thickness=5mm, but {} is {}",
             c.node_id, c.status
         );
@@ -486,6 +497,125 @@ fn end_to_end_export_via_impl() {
 
     export_impl(&engine, "step", path.to_str().unwrap()).expect("export should succeed");
     assert!(path.exists(), "exported file should exist");
+}
+
+// --- η export refusal: the three callers of the `EngineSession::export` chokepoint
+// (task 6190) ---
+//
+// The gate lives in `EngineSession::export`; these tests PROVE — rather than assert —
+// that every GUI export caller reaches it, so a refactor giving one its own build path
+// goes red instead of silently reopening the bypass. The shared rationale for the
+// `starts_with` assertions, and the enumeration of the three callers, is argued once in
+// the η cluster header in `engine_tests.rs`.
+
+/// Caller 1 of 3 — `commands::export_impl`, the Tauri command the frontend calls.
+#[test]
+fn export_impl_refuses_a_module_declaring_an_unenforced_representation_bound() {
+    use crate::commands::export_impl;
+
+    let engine = Mutex::new(make_loaded_session_from(&bounded_bracket_source()));
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("e2e_bounded.step");
+
+    let err = export_impl(&engine, "step", path.to_str().unwrap()).expect_err(
+        "export_impl must surface the η refusal for a design declaring a \
+         RepresentationWithin bound",
+    );
+    assert!(
+        err.starts_with(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+        "the message reaching the frontend must LEAD with the stable E_* token; got: {err}"
+    );
+    assert!(
+        !path.exists(),
+        "NO file may be created at the export target for a refused export (PRD §1.1)"
+    );
+}
+
+/// Caller 2 of 3 — `mcp_context::TauriToolContext::export`, the MCP tool context.
+///
+/// Load-bearing for a reason caller 1 cannot cover: this one returns
+/// `Result<bool, ToolError>`, so folding the refusal into `Ok(false)` would report a
+/// REFUSED export to the MCP client as a completed one with the diagnostic dropped.
+/// The `match` pins that mapping, not just the message text.
+///
+/// Sited here rather than in its topical home `mcp_context_tests.rs`, which is outside
+/// task 6190's lock footprint; co-locating all three proofs also lets a reader diff the
+/// surfaces' contracts side by side.
+#[test]
+fn export_via_mcp_context_refuses_a_module_declaring_an_unenforced_representation_bound() {
+    use crate::mcp_context::TauriToolContext;
+    use reify_mcp::{ReifyToolContext, ToolError};
+
+    let session = make_loaded_session_from(&bounded_bracket_source());
+    let ctx = TauriToolContext::builder(Arc::new(Mutex::new(session))).build();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mcp_bounded.step");
+
+    let err = ctx
+        .export("step", path.to_str().unwrap())
+        .expect_err("the MCP export tool must surface the η refusal, not report success");
+    match err {
+        ToolError::EngineError(msg) => assert!(
+            msg.starts_with(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+            "the refusal must reach the MCP client as an EngineError LEADING with the \
+             stable E_* token; got: {msg}"
+        ),
+        other => panic!(
+            "a refused export must map to ToolError::EngineError (the engine's own \
+             refusal), not {other:?}"
+        ),
+    }
+    assert!(
+        !path.exists(),
+        "NO file may be created at the export target for a refused export (PRD §1.1)"
+    );
+}
+
+/// Caller 3 of 3 — `debug_server::reify_export_on_engine_and_refresh_baseline`, the
+/// engine-routing core of the `reify_export` AI write tool.
+///
+/// Its own test (`debug_server::tests::write_tools::reify_export_writes_a_non_empty_file`)
+/// covers success only, so without this the third caller's delegation would be the one
+/// unpinned leg of the chokepoint claim. `#[cfg(feature = "gui")]` because
+/// `crate::debug_server` is gated on that feature.
+///
+/// The refusal must also leave the delta baseline untouched: the seam's
+/// `compute_delta` sits after the `?`, so a refused write commits no new state.
+#[cfg(feature = "gui")]
+#[tokio::test]
+async fn reify_export_tool_refuses_a_module_declaring_an_unenforced_representation_bound() {
+    use crate::debug_server::reify_export_on_engine_and_refresh_baseline;
+
+    let engine = Arc::new(Mutex::new(make_loaded_session_from(&bounded_bracket_source())));
+    let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+        std::sync::Mutex::new(None);
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ai_bounded.step");
+
+    let err = reify_export_on_engine_and_refresh_baseline(
+        &engine,
+        &last_state,
+        "step",
+        path.to_str().unwrap(),
+    )
+    .await
+    .expect_err("the reify_export write tool must surface the η refusal, not report success");
+    assert!(
+        err.starts_with(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+        "the refusal must reach the AI client LEADING with the stable E_* token; got: {err}"
+    );
+    assert!(
+        !path.exists(),
+        "NO file may be created at the export target for a refused export (PRD §1.1)"
+    );
+    assert!(
+        last_state.lock().unwrap().is_none(),
+        "a refused export must not refresh the delta baseline — the seam's compute_delta \
+         runs only after a successful write"
+    );
 }
 
 #[test]
@@ -3452,7 +3582,7 @@ fn warm_edit_of_a_non_op_arg_mass_input_does_not_replay_a_stale_mass() {
     );
     assert_ne!(
         find_moi_principal_constraint(&state).status,
-        "Satisfied",
+        "satisfied",
         "the `moi_principal[0] > 0` PD constraint must not be re-checked to \
          Satisfied off a RETAINED pre-edit `moi_principal` — that is the same stale \
          value wearing a constraint badge"

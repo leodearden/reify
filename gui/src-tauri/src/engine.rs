@@ -10,6 +10,7 @@ use reify_compiler::{CompiledModule, EntityKind, ValueCellKind, find_template};
 use reify_eval::cache::NodeId;
 use reify_eval::tolerance_combine::{
     OutputTarget, conforms_to_output, extract_output_export_spec,
+    unenforced_representation_bound_diagnostic,
 };
 use reify_eval::{CancellationHandle, CheckResult, Engine};
 use reify_core::{
@@ -3315,11 +3316,28 @@ impl EngineSession {
     }
 
     /// Export geometry to a file.
+    ///
+    /// Refuses outright — writing nothing — when the module declares a
+    /// `RepresentationWithin` bound this path cannot demonstrate it honours; see the
+    /// η gate below and PRD
+    /// `docs/prds/v0_6/precision-nominal-representation-guarantee.md`, C-SURFACE (2).
     pub fn export(&mut self, format: ExportFormat, path: &Path) -> Result<(), String> {
         // split_compiled_and_engine_mut surfaces the compiled-immutable /
         // engine-mutable disjoint-field borrow through the encapsulation boundary.
         let (compiled_opt, engine) = self.core.split_compiled_and_engine_mut();
         let compiled = compiled_opt.ok_or_else(|| "No module loaded".to_string())?;
+
+        // η export refusal — PRD docs/prds/v0_6/precision-nominal-representation-guarantee.md,
+        // C-SURFACE (2). Must precede `engine.build`: that path never emits this
+        // diagnostic, so the `diag.severity == Severity::Error` loop below would catch
+        // NOTHING, and `std::fs::write` runs inside the `Some(data)` arm — only a gate
+        // sited here gates the write at all. Gating on `Some(_)` rather than
+        // `diag.severity` is deliberate: returning `Err` IS the refusal on this surface.
+        // The message is the shared helper's, returned verbatim; the η tests in
+        // `tests/{engine,commands}_tests.rs` pin that and the no-write contract.
+        if let Some(diag) = unenforced_representation_bound_diagnostic(compiled) {
+            return Err(diag.message);
+        }
 
         let result = engine.build(compiled, format);
 
@@ -4978,6 +4996,17 @@ fn build_values(
     values
 }
 
+/// The single producer of `ConstraintData.status`; every comparison against a
+/// verdict token routes through here rather than a hand-written literal. The
+/// wire contract is documented on that field in `types.rs`.
+pub(crate) fn satisfaction_token(s: Satisfaction) -> &'static str {
+    match s {
+        Satisfaction::Satisfied => "satisfied",
+        Satisfaction::Violated => "violated",
+        Satisfaction::Indeterminate => "indeterminate",
+    }
+}
+
 /// Build the `Vec<ConstraintData>` shared between `build_gui_state` and
 /// `build_preview_gui_state`.
 ///
@@ -5000,11 +5029,7 @@ pub(crate) fn build_constraints(
 ) -> Vec<ConstraintData> {
     let mut constraints = Vec::new();
     for entry in &check.constraint_results {
-        let status = match entry.satisfaction {
-            Satisfaction::Satisfied => "Satisfied",
-            Satisfaction::Violated => "Violated",
-            Satisfaction::Indeterminate => "Indeterminate",
-        };
+        let status = satisfaction_token(entry.satisfaction);
         let (expression, parameter_ids) = compiled
             .templates
             .iter()
@@ -5310,7 +5335,15 @@ fn surface_geometry_derived_cells(
     // The overlay is built INSIDE the guard so a pass that surfaces cells but has
     // no Indeterminate constraint left — the non-`Rigid` majority — pays neither
     // the clone nor the dispatch.
-    if surfaced_any && constraints.iter().any(|c| c.status == "Indeterminate") {
+    //
+    // Both Indeterminate comparisons below compare through `satisfaction_token`:
+    // a bare literal out of step with it would disable this entire re-check with
+    // no compile error, surfacing only as a PD constraint stuck Indeterminate.
+    if surfaced_any
+        && constraints
+            .iter()
+            .any(|c| c.status == satisfaction_token(Satisfaction::Indeterminate))
+    {
         let merged: Option<ValueMap> = if cache_sourced.is_empty() {
             None
         } else {
@@ -5324,7 +5357,7 @@ fn surface_geometry_derived_cells(
 
         if let Ok((recheck, _diags)) = engine.check_constraints_with_values(recheck_values) {
             for c in constraints.iter_mut() {
-                if c.status != "Indeterminate" {
+                if c.status != satisfaction_token(Satisfaction::Indeterminate) {
                     continue;
                 }
                 let Some(new_sat) = recheck
@@ -5337,12 +5370,7 @@ fn surface_geometry_derived_cells(
                 if new_sat == Satisfaction::Indeterminate {
                     continue;
                 }
-                c.status = match new_sat {
-                    Satisfaction::Satisfied => "Satisfied",
-                    Satisfaction::Violated => "Violated",
-                    Satisfaction::Indeterminate => "Indeterminate",
-                }
-                .to_string();
+                c.status = satisfaction_token(new_sat).to_string();
             }
         }
     }

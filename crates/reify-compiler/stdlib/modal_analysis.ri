@@ -642,9 +642,16 @@ structure def StepForce : ForcingFunction {
     // rather than relying solely on test coverage (task-2544 convention,
     // mirroring `ModalOptions.n_modes > 0` above and
     // `PiecewisePolynomialProfile.waypoints.count > 0` in trajectory.ri).
-    // Dimensioned literal `0N` (= 0 newtons in SI) is required to keep
-    // eval_cmp dim-equality matching at runtime; a bare `0` would yield
-    // `Indeterminate` per task #3115 esc-3115-112.
+    //
+    // DIMENSIONED-ZERO CONVENTION — canonical statement in
+    // docs/notes/dimensioned-zero-coercion.md (mechanism:
+    // `coerce_zero_operand` in reify-compiler/src/expr.rs; task #3115
+    // esc-3115-112, resolved by task-4485/β). In short: in comparison /
+    // additive operand position a syntactic zero adopts the sibling's
+    // dimension at compile time, so `0N` here is a READABILITY convention —
+    // a bare `0` compiles to the same thing. In PARAM-DEFAULT position the
+    // rewrite does NOT apply; see the `phase : Angle = 0deg` note further
+    // down this file.
     constraint magnitude > 0N
 
     // NOTE — explicitly NOT constrained:
@@ -694,12 +701,13 @@ structure def ImpulseForce : ForcingFunction {
     param impulse : Impulse
     param time : Time
 
-    // `impulse : Impulse` uses the dimensioned-zero form `0 * 1N * 1s`
-    // (N·s = kg·m·s⁻¹ = Impulse) because polymorphic-zero has not landed —
-    // same convention as `frequency > 0Hz` on the Frequency-typed
-    // HarmonicForce.frequency and `StepForce.magnitude > 0N` above. By
-    // convention, `direction` carries the sign (unit vector); `impulse` carries
-    // the positive scalar magnitude. Declaring the lower bound at the
+    // `impulse : Impulse` keeps the explicit dimensioned-zero form
+    // `0 * 1N * 1s` because it spells out N·s = kg·m·s⁻¹ = Impulse right
+    // at the constraint site; a bare `0` would compile too.
+    // DIMENSIONED-ZERO CONVENTION — docs/notes/dimensioned-zero-coercion.md.
+    //
+    // By convention, `direction` carries the sign (unit vector); `impulse`
+    // carries the positive scalar magnitude. Declaring the lower bound at the
     // structure-def level follows the task-2544 explicit-contract convention.
     constraint impulse > 0 * 1N * 1s
 
@@ -740,10 +748,15 @@ structure def ImpulseForce : ForcingFunction {
 //               negative frequency is degenerate (symmetric to positive under the
 //               sine function). Encoded as `Frequency` (bare dimension name).
 //   phase     — initial phase offset in angle units. Default `0deg` (zero Angle
-//               literal) per PRD §5.1 "default: 0". The canonical zero-Angle
-//               default `= 0deg` (not bare `= 0`) is required because a bare `0`
-//               yields `Type::Real` which is dim-incompatible with `Type::Scalar
-//               { ANGLE }` per task #3115 esc-3115-112. Choice of `deg` over `rad`
+//               literal) per PRD §5.1 "default: 0". `= 0deg` is a CONVENTION,
+//               not a requirement — a bare `= 0` compiles, accepted by the
+//               param-default literal guard (esc-3115-112). But the
+//               DIMENSIONED-ZERO CONVENTION above does NOT reach a param
+//               default: that guard only SUPPRESSES the
+//               `ParamDefaultTypeMismatch` diagnostic, it performs no rewrite,
+//               so `= 0` leaves the stored default DIMENSIONLESS while `= 0deg`
+//               stores `Scalar<Angle>(0.0)`. `0deg` is preferred for that
+//               reason, not merely for readability. Choice of `deg` over `rad`
 //               follows the `Angularity.nominal_angle : Angle = 0deg`
 //               precedent in `tolerancing.ri` and is more user-intuitive
 //               for the typical 0/90/180 phase-offset workflow. Any real phase
@@ -763,14 +776,14 @@ structure def HarmonicForce : ForcingFunction {
     // sign (unit vector); amplitude carries the positive peak size. Declaring
     // the lower bound at the structure-def level follows the task-2544
     // explicit-contract convention (same rationale as `StepForce.magnitude
-    // > 0N` and `ModalOptions.n_modes > 0`). Dimensioned literal `0N`
-    // required per task #3115 esc-3115-112.
+    // > 0N` and `ModalOptions.n_modes > 0`). `0N` retained per the
+    // DIMENSIONED-ZERO CONVENTION — docs/notes/dimensioned-zero-coercion.md.
     constraint amplitude > 0N
 
     // A zero-frequency "harmonic" is a DC offset (degenerate as a sinusoid);
     // negative frequency is symmetric to positive under sin() and physically
-    // degenerate for a "harmonic" excitation. Dimensioned literal `0Hz`
-    // required per the same dim-equality rationale as `amplitude > 0N`.
+    // degenerate for a "harmonic" excitation. `0Hz` retained per the
+    // DIMENSIONED-ZERO CONVENTION — docs/notes/dimensioned-zero-coercion.md.
     constraint frequency > 0Hz
 
     // NOTE — explicitly NOT constrained:

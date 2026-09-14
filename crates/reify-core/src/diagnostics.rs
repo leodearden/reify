@@ -2672,6 +2672,90 @@ pub enum DiagnosticCode {
     /// has no effect.  The solve continues with kernel defaults (this is advisory,
     /// not an error).
     BucklingOptionUnsupported,
+    /// Origin: `crates/reify-eval/src/compute_targets/buckling.rs` and
+    /// `crates/reify-eval/src/modal_ops.rs`, via the shift-honoring solve paths
+    /// (leaves γ #7260 and δ #7261).  Minted here unemitted by leaf α (#7258) so
+    /// the two sibling wiring leaves do not both edit this file (PRD §10 α).
+    ///
+    /// Canonical message form — ONE template with an OPTIONAL count, never two
+    /// drifting messages (PRD §5.4 precision limit):
+    /// `"W_ShiftSkippedModes: the shift sigma = <σ> skipped [<N> ]mode(s) below it; the result is a window around sigma, not the bottom of the spectrum"`.
+    ///
+    /// Emitted as a `Severity::Warning` (PRD-prose mnemonic `W_ShiftSkippedModes`)
+    /// when a shifted solve reports `EigenSolverResult.shift_skipped_modes == true`
+    /// — i.e. some eigenvalue of the pencil lies strictly between zero and σ and is
+    /// absent from the returned set.
+    ///
+    /// Advisory, not an error: inspecting a frequency band around σ is a
+    /// legitimate use, so a user who never asks "what is the first mode?" is
+    /// warned once and otherwise unobstructed.  Refusal lands on the incorrect
+    /// USE instead — see `FirstModeNotInShiftedResult`.
+    ///
+    /// The count is optional because the two implementations differ in precision:
+    /// the dense path computes the whole spectrum via QZ and counts exactly, while
+    /// the Lanczos path's Cholesky/LU discriminator yields only a boolean (an exact
+    /// count would need an inertia-revealing LDL^T that faer's sparse LU does not
+    /// expose).  Omitting the count is always correct; including it is only correct
+    /// on the dense path.
+    ///
+    /// References: PRD `docs/prds/v0_6/shift-invert-eigensolve.md` §5.4, contract
+    /// clause C5, and boundary test BT4.
+    ShiftSkippedModes,
+    /// Origin: `crates/reify-solver-elastic/src/eigensolve.rs`, the shift-invert
+    /// `K − σB` factorization dispatch (leaf β #7259).  Minted here unemitted by
+    /// leaf α (#7258).
+    ///
+    /// Canonical message form:
+    /// `"E_ShiftAtEigenvalue: the shift sigma = <σ> lies on an eigenvalue of the pencil, so K − sigma·B is singular; move sigma off the eigenvalue"`.
+    ///
+    /// Emitted as a `Severity::Error` (PRD-prose mnemonic `E_ShiftAtEigenvalue`)
+    /// when the shifted factorization detects a singular or numerically degenerate
+    /// `K − σB`.  Detection is two-part, because faer's
+    /// `LuError::SymbolicSingular` reports only STRUCTURAL rank deficiency —
+    /// partial-pivot LU on a numerically tiny pivot returns `Ok` and yields
+    /// garbage: (1) the symbolic-singular error directly, and (2) a
+    /// post-factorization guard on the recovered spectrum (non-finite λ, or a
+    /// back-substitution residual above the documented threshold).
+    ///
+    /// NO automatic perturbation is performed.  Nudging σ and continuing is
+    /// exactly the silent-substitution class this PRD exists to close; if
+    /// perturbation is ever wanted it arrives as an explicit opt-in knob, never as
+    /// a default.  The message therefore names the offending σ and tells the author
+    /// to move it.
+    ///
+    /// This code has no counterpart on the DENSE path: `solve_eigen_dense` never
+    /// forms `K − σB` (σ is a sort key there, not a factorization), so contract
+    /// clause C6 is satisfied vacuously and σ on an eigenvalue is a well-posed
+    /// selection rather than a failure.
+    ///
+    /// References: PRD `docs/prds/v0_6/shift-invert-eigensolve.md` §5.3, contract
+    /// clause C6, and boundary test BT5.
+    ShiftAtEigenvalue,
+    /// Origin: the three `modes[0]` helpers — `critical_load`,
+    /// `safety_factor_buckling` (`crates/reify-eval/src/compute_targets/buckling.rs`)
+    /// and `first_frequency` (`crates/reify-eval/src/modal_ops.rs`) — once leaf ε
+    /// (#7262) converts them from pure `.ri` bodies to `@optimized` trampolines.
+    /// Minted here unemitted by leaf α (#7258).
+    ///
+    /// Canonical message form:
+    /// `"E_FirstModeNotInShiftedResult: <helper> cannot answer 'what is the first mode?' — the solve used shift sigma = <σ>, which skipped mode(s) below it, so the first mode is not in the result"`.
+    ///
+    /// Emitted as a `Severity::Error` (PRD-prose mnemonic
+    /// `E_FirstModeNotInShiftedResult`) when one of those helpers is handed a
+    /// result whose C5 provenance says modes were skipped.  Without the refusal the
+    /// helper returns the multiplier of whichever mode was nearest σ, which is
+    /// HIGHER than the true first mode — the unconservative direction: a column
+    /// reported to hold 160 kN that buckles at 41 kN, or a fundamental reported at
+    /// 300 Hz that is really at 30 Hz.
+    ///
+    /// The refusal mechanism is a coded Error, NOT `Value::Undef`: `Undef` is the
+    /// silent-failure sentinel (INV-SF-1), which is the opposite of the loudness
+    /// this PRD is for.  Per INV-SF-2 an `Error` exits `reify eval` non-zero, so the
+    /// wrong number can never reach a report.
+    ///
+    /// References: PRD `docs/prds/v0_6/shift-invert-eigensolve.md` §5.4, contract
+    /// clause C5, and boundary test BT4.
+    FirstModeNotInShiftedResult,
     /// Origin: `crates/reify-compiler/src/diagnostics.rs::dup_member_key_error`,
     /// wired into the keyed-sub pre-pass in
     /// `crates/reify-compiler/src/entity.rs` (`MemberDecl::Sub` arm).
@@ -3981,18 +4065,34 @@ pub enum DiagnosticCode {
     /// round-trips automatically (follows the `TraitRefinementChainTooDeep`
     /// too-deep precedent).
     ExpressionNestingTooDeep,
-    /// Origin: `crates/reify-eval/src/geometry_ops.rs` — the eval-layer
-    /// `arg_acceptance`-backed chokepoints, i.e. `eval_named_arg_length`
-    /// (every LENGTH-semantic geometry arg: primitive/profile dimensions,
-    /// pattern spacing, mirror-plane and circular-pattern axis origins), plus
-    /// the two quiet-degrade readers `resolve_spec_arg` and
-    /// `resolve_density_arg`.
+    /// Origin: every `arg_acceptance`-backed chokepoint, on BOTH sides of the
+    /// eval/stdlib split. The original (task 5743) is
+    /// `crates/reify-eval/src/geometry_ops.rs` — `eval_named_arg_length` (every
+    /// LENGTH-semantic geometry arg: primitive/profile dimensions, pattern
+    /// spacing, mirror-plane and circular-pattern axis origins), plus the two
+    /// quiet-degrade readers `resolve_spec_arg` and `resolve_density_arg`.
+    ///
+    /// Since task 5791 the origin ALSO covers the reify-stdlib READER and FIELD
+    /// surface: `reify_ir::arg_acceptance::accept_field` (the struct-field
+    /// sibling of `accept_arg`), the reify-stdlib `diagnose` classifiers (the 8
+    /// `*_diagnose` re-exports in `crates/reify-stdlib/src/lib.rs`), and the
+    /// `ComputeOutcome::Failed { diagnostics, .. }` transport that carries them
+    /// out. That widening is not speculative: the `bbox` arm at
+    /// `crates/reify-stdlib/src/geometry.rs:1670-1681` (task 6081) has carried
+    /// this code since 2026-08-27, which is the already-shipped counter-example
+    /// proving the old eval-only line was too narrow.
+    ///
+    /// One code for one rejection REASON, across both surfaces — BINDING ruling
+    /// A7 (Leo, 2026-08-30, esc-5791-3) and PRD
+    /// `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 1's
+    /// RECONCILIATION block (landed b3ba3228f5). `ArgDimensionMismatch` is
+    /// deliberately NOT minted.
     ///
     /// Canonical message form:
     /// `"{builtin}: {arg_name} argument expects {expected}, got {got}; {hint}"`
     ///
     /// The wording is owned SOLELY by
-    /// `crates/reify-eval/src/arg_acceptance::ArgRejection::message` — producers
+    /// `crates/reify-ir/src/arg_acceptance.rs`'s `ArgRejection::message` — producers
     /// attach this code, they never re-phrase the text. That single-owner rule is
     /// what lets the ANGLE (PRD 3) and reader (PRD 5) follow-ups inherit
     /// byte-identical diagnostics, and it is why the migration hint (e.g.
@@ -4189,6 +4289,47 @@ pub enum DiagnosticCode {
     /// the workspace, so adding one variant is purely additive and round-trips
     /// through the feature-gated serde derives automatically.
     NoRegisteredComputeTrampoline,
+    /// Origin: the FEA load-kind read surface,
+    /// `crates/reify-eval/src/compute_targets/elastic_static.rs::extract_loads`
+    /// (:4111-4152), whose `PointLoad` / `PressureLoad` / `Gravity`
+    /// if/else-if chain has NO `else` arm and therefore silently DISCARDS every
+    /// other `type_name`. The two kinds this code exists for are stdlib-declared
+    /// but solver-unreachable: `TractionLoad`
+    /// (`crates/reify-compiler/stdlib/fea_multi_case.ri:447`) and `BodyForce`
+    /// (:477). An author who writes either one today gets a silently
+    /// zero-contribution solve rather than a fault.
+    ///
+    /// Emitted at `Severity::Error`. Per PRD
+    /// `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 6, BOTH kinds
+    /// self-identify in their own `.ri` comments as PLACEHOLDERS needing a
+    /// type-surface extension this PRD does not own, so INV-SF-3 forbids the
+    /// silent no-op and they get an explicit NAMED REJECTION rather than a
+    /// wire-up. CONSTRUCTING a `TractionLoad`/`BodyForce` value stays legal —
+    /// only passing one to a solver errors.
+    ///
+    /// Canonical message form:
+    /// `"{solver}: unsupported FEA load kind '{type_name}'"`
+    ///
+    /// PRD-prose mnemonic: `E_FeaLoadKindUnsupported` (severity convention:
+    /// `E_*` → Error).
+    ///
+    /// The EMITTING call site is leaf γ3's, NOT task 5791's — α mints the
+    /// vocabulary only. Note that the existing guard
+    /// `extract_loads_unknown_type_name_is_silently_skipped`
+    /// (`elastic_static.rs:8493-8524`) asserts ZERO NUMERIC CONTRIBUTION and
+    /// NOT the absence of a diagnostic, so γ3 can start emitting without
+    /// retargeting it.
+    ///
+    /// Minting rationale: `DiagnosticCode` is `#[non_exhaustive]` with no
+    /// `impl` block anywhere in the workspace (no `as_str`/`Display`/`FromStr`/
+    /// exhaustive match-on-self), no exhaustiveness test, no docs registry, no
+    /// `reify-audit` check and no mirrored GUI enum
+    /// (`crates/reify-lsp/src/convert.rs:435-459` is a deliberate 4-variant
+    /// representative spread, not a census) — so this is a one-variant addition
+    /// that is non-breaking for downstream consumers and round-trips through
+    /// the feature-gated serde derives automatically (same measured argument as
+    /// `DimensionedArgRejected` and `EvalCachedGuardedGroupsFallback` above).
+    FeaLoadKindUnsupported,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -4685,8 +4826,9 @@ mod tests {
     //
     // This is the shared RUNTIME code for "a builtin argument that must carry a
     // physical dimension was given a bare / wrongly-dimensioned value", emitted
-    // from `crates/reify-eval/src/geometry_ops.rs`'s `arg_acceptance`-backed
-    // chokepoints.
+    // from the `crates/reify-ir/src/arg_acceptance.rs`-backed chokepoints in
+    // `crates/reify-eval/src/geometry_ops.rs` and in reify-stdlib's `diagnose`
+    // classifiers.
     //
     // As with `DimensionMismatch` above, Copy/Clone/PartialEq/Eq/Hash/Debug are
     // already covered by the variant-agnostic `diagnostic_code_derives` test, so
@@ -4708,6 +4850,54 @@ mod tests {
     // That ruling lives in the variant's own doc comment and in
     // `docs/prds/v0_6/units-length-gate-completion.md`; it is a naming decision,
     // not a runtime behaviour a test can pin.
+
+    // --- FeaLoadKindUnsupported tests (dimension-checked-readers α, task 5791) ---
+    //
+    // The ONE variant this task mints. Per BINDING ruling A7 (Leo, 2026-08-30,
+    // esc-5791-3) `ArgDimensionMismatch` is NOT minted — the dimension
+    // rejection reason reuses the shipped `DimensionedArgRejected` — so there
+    // is deliberately no test for it here.
+    //
+    // No exhaustiveness test is written over `DiagnosticCode`. MEASURED: the
+    // enum is `#[non_exhaustive]`, there is no `impl DiagnosticCode` anywhere
+    // in the workspace, no `as_str`/`Display`/`FromStr`, no exhaustiveness
+    // test, no docs registry and no mirrored GUI enum
+    // (`crates/reify-lsp/src/convert.rs:435-459` is a deliberate 4-variant
+    // representative spread, not a census). A variant addition therefore has
+    // exactly zero other update obligations.
+
+    /// Under `feature = "serde"`, `DiagnosticCode::FeaLoadKindUnsupported`
+    /// serializes as `"FeaLoadKindUnsupported"` (PascalCase, from
+    /// `rename_all = "PascalCase"`), and deserializes back to the same variant.
+    /// This is the wire form downstream tooling reads as an opaque string, so
+    /// it is a compatibility surface.
+    ///
+    /// RED until step-12 adds the variant.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn fea_load_kind_unsupported_serializes_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::FeaLoadKindUnsupported).unwrap();
+        assert_eq!(s, "\"FeaLoadKindUnsupported\"");
+
+        let back: DiagnosticCode = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, DiagnosticCode::FeaLoadKindUnsupported);
+    }
+
+    /// The variant attaches through the ordinary builder and reads back, at
+    /// `Severity::Error` — PRD §6 decision 6: the stdlib-declared but
+    /// solver-unreachable FEA load kinds get an explicit named REJECTION rather
+    /// than the silent no-op INV-SF-3 forbids.
+    ///
+    /// RED until step-12 adds the variant.
+    #[test]
+    fn fea_load_kind_unsupported_attaches_to_a_diagnostic() {
+        use super::Severity;
+
+        let d = Diagnostic::error("unsupported FEA load kind 'TractionLoad'")
+            .with_code(DiagnosticCode::FeaLoadKindUnsupported);
+        assert_eq!(d.code, Some(DiagnosticCode::FeaLoadKindUnsupported));
+        assert_eq!(d.severity, Severity::Error);
+    }
 
     /// Under `feature = "serde"`, `DiagnosticCode::DimensionedArgRejected`
     /// serializes as `"DimensionedArgRejected"` (PascalCase, from
@@ -6059,6 +6249,67 @@ mod tests {
     fn diagnostic_code_buckling_option_unsupported_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::BucklingOptionUnsupported).unwrap();
         assert_eq!(s, "\"BucklingOptionUnsupported\"");
+    }
+
+    // --- §5.3/§5.4 shift-invert DiagnosticCode tests (task α, #7258) ---
+    // Three new shift-contract codes, minted here unemitted: γ (#7260) and δ
+    // (#7261) emit them, β (#7259) raises `ShiftAtEigenvalue`.  Mirrors the
+    // `diagnostic_code_shell_extract_variants_constructible` + `_serde_pascal_case`
+    // pattern: construct via `Diagnostic::error(...).with_code(code)` (the code
+    // round-trips) and assert PascalCase serde wire strings.  Severity is NOT
+    // asserted here — see the first test's doc comment for why it could not be.
+
+    /// A compile-time EXISTENCE fence for the three shift-contract variants,
+    /// plus a `with_code` round-trip.  That is all it is, and all it claims.
+    ///
+    /// It deliberately does NOT assert the PRD §5.3/§5.4 severity split, because
+    /// it cannot: `Diagnostic::warning` hardcodes `Severity::Warning` and
+    /// `Diagnostic::error` hardcodes `Severity::Error`, while `with_code` only
+    /// sets `code` — so any severity asserted here is a property of the
+    /// constructor this test itself chose, entirely independent of which
+    /// `DiagnosticCode` is attached.  Swapping the codes between the two
+    /// constructors would leave such a test green.  The real severity binding
+    /// lives at the emit sites, and is pinned by the tests landed with them:
+    /// γ (#7260), δ (#7261) and ε (#7262).
+    ///
+    /// The `Debug` repr is intentionally not asserted — the neighbouring
+    /// `BucklingOptionUnsupported` block documents that as deliberately unpinned
+    /// cosmetic output with no consumer contract.
+    ///
+    /// RED: the three variants do not exist → compile fail.
+    /// GREEN after step-2 adds them to `DiagnosticCode`.
+    #[test]
+    fn diagnostic_code_shift_variants_constructible() {
+        let codes = [
+            DiagnosticCode::ShiftSkippedModes,
+            DiagnosticCode::ShiftAtEigenvalue,
+            DiagnosticCode::FirstModeNotInShiftedResult,
+        ];
+        for code in codes {
+            let d = Diagnostic::error("x").with_code(code);
+            assert_eq!(d.code, Some(code), "code mismatch for {code:?}");
+        }
+    }
+
+    /// Under `feature = "serde"`, each shift-contract code serializes to its
+    /// PascalCase wire string (from `rename_all = "PascalCase"`).  These are the
+    /// wire identifiers the capability manifest binds, so they are pinned here
+    /// rather than left to follow a future rename of the Rust identifier.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_shift_variants_serde_pascal_case() {
+        let cases = [
+            (DiagnosticCode::ShiftSkippedModes, "\"ShiftSkippedModes\""),
+            (DiagnosticCode::ShiftAtEigenvalue, "\"ShiftAtEigenvalue\""),
+            (
+                DiagnosticCode::FirstModeNotInShiftedResult,
+                "\"FirstModeNotInShiftedResult\"",
+            ),
+        ];
+        for (code, expected) in cases {
+            let s = serde_json::to_string(&code).unwrap();
+            assert_eq!(s, expected, "serde mismatch for {code:?}");
+        }
     }
 
     // --- §7 shell-extract DiagnosticCode tests (task ε, #3837) ---

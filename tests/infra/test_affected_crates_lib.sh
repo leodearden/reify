@@ -38,6 +38,17 @@
 #      "WHAT PROVES WHAT" note on that block)
 #  16. (task 6292) argv coverage: _reverse_closure invokes cargo metadata
 #      with --offline alongside task 6277's --locked
+#  17. (task 7427) INERT-SPOT: the inert class (docs/**, *.md, *.yaml, *.yml)
+#      is ONE list shared with verify.sh's decide_scope, so a mixed
+#      crate + top-level *.md diff narrows to the crate-alone closure
+#      instead of C5-widening to ALL — while an unmappable NON-inert path
+#      still widens, and a crate-OWNED *.md/*.yaml still maps to its owning
+#      crate, because attribution outranks the inert class on both sides
+#  18. (task 7427) EXAMPLES-CORPUS: examples/**/*.ri (flat and nested) maps
+#      to the declared reader crates instead of C5-widening to ALL, while
+#      non-.ri, non-inert content under examples/ still widens; plus
+#      RI-CORPUS-DRIFT, a derived-⊆-declared guard that keeps the declared
+#      reader list honest against the repo's real Rust sources
 
 set -euo pipefail
 
@@ -116,6 +127,81 @@ echo "--- C5: unmappable path forces ALL ---"
 
 assert "unmappable path -> ALL" \
     test "$(affected_crates some/unknown/place.zzz)" = "ALL"
+
+# ---------------------------------------------------------------------------
+# INERT-SPOT (task 7427): the inert class is ONE list, shared with decide_scope.
+# These assertions pin the two classifications together — the mixed
+# crate + top-level *.md diff is the shape the old two-copy version widened to
+# ALL. Contract and cost: §3 of docs/prds/verify-scope-contract.md.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- INERT-SPOT: the inert class matches decide_scope's (docs/**, *.md, *.yaml, *.yml) ---"
+
+_check_mixed_md_not_ALL() {
+    local out
+    out="$(affected_crates crates/reify-doc/src/lib.rs README.md)"
+    [ "$out" != "ALL" ]
+}
+assert "crate + top-level README.md is NOT the ALL sentinel" _check_mixed_md_not_ALL
+
+_check_mixed_md_equals_crate_alone() {
+    local with_md without_md
+    with_md="$(affected_crates crates/reify-doc/src/lib.rs README.md)"
+    without_md="$(affected_crates crates/reify-doc/src/lib.rs)"
+    echo "with README.md: [$with_md]"
+    echo "crate alone:    [$without_md]"
+    [ "$with_md" = "$without_md" ]
+}
+assert "an inert *.md contributes nothing: closure equals the crate-alone closure" \
+    _check_mixed_md_equals_crate_alone
+
+assert "top-level *.yaml -> empty (not ALL)" \
+    test -z "$(affected_crates dark-factory-orchestrator.yaml)"
+
+assert "top-level *.md -> empty (not ALL)" \
+    test -z "$(affected_crates CLAUDE.md)"
+
+# Fail-wide is narrowed, not weakened: an unmappable NON-inert path still
+# C5-widens. scripts/verify.sh is the sharpest case — a verify-pipeline
+# artifact whose blast radius is the whole workspace.
+assert "unmappable non-inert path still forces ALL (C5 preserved)" \
+    test "$(affected_crates scripts/verify.sh)" = "ALL"
+
+# Crate ATTRIBUTION outranks the inert class (contract §5). The two fixtures
+# below are chosen because they are real compile/test inputs rather than
+# incidental docs — crates/reify-mcp/src/tools/chunks/*.md are `include_str!`-ed
+# by crates/reify-mcp/src/tools/language_chunks.rs, and
+# crates/reify-doc/tests/snapshots/*.md are compared by
+# crates/reify-doc/tests/fmt_markdown_tests.rs; 32 of the 33 tracked
+# crates/**/*.{md,yaml,yml} are of that kind. Classifying one as "no crate"
+# drops the very crate whose tests read the edited bytes.
+_check_crate_owned_doc_maps_to_owner() {
+    # Usage: <expected-crate> <crate-owned path>
+    local expected="$1" path="$2" out
+    out="$(affected_crates "$path")"
+    echo "$path -> [$(printf '%s' "$out" | tr '\n' ' ')]"
+    printf '%s\n' "$out" | grep -qx "$expected"
+}
+assert "an include_str!-ed crate-owned *.md maps to its owning crate" \
+    _check_crate_owned_doc_maps_to_owner reify-mcp crates/reify-mcp/src/tools/chunks/syntax.md
+assert "a crate-owned snapshot *.md maps to its owning crate" \
+    _check_crate_owned_doc_maps_to_owner reify-doc crates/reify-doc/tests/snapshots/integration_full_v01.single.md
+
+# A crate-owned doc narrows like its crate — it neither vanishes nor widens
+# to ALL. Compared against the UNION of the two crates' own closures rather
+# than a hand-written crate list, so the assertion cannot rot as the
+# dependency graph moves.
+_check_crate_owned_doc_unions() {
+    local mixed expected
+    mixed="$(affected_crates crates/reify-doc/src/lib.rs crates/reify-mcp/src/tools/chunks/syntax.md | sort -u)"
+    expected="$( { affected_crates crates/reify-doc/src/lib.rs
+                   affected_crates crates/reify-mcp/src/lib.rs; } | sort -u)"
+    echo "lib + crate-owned .md: [$(printf '%s' "$mixed"    | tr '\n' ' ')]"
+    echo "union of both crates:  [$(printf '%s' "$expected" | tr '\n' ' ')]"
+    [ "$mixed" != "ALL" ] && [ "$mixed" = "$expected" ]
+}
+assert "crate + another crate's owned *.md equals the union of the two closures" \
+    _check_crate_owned_doc_unions
 
 # ---------------------------------------------------------------------------
 # Step 7: direct-set printing — crate-mapped paths emit the crate name
@@ -287,6 +373,197 @@ _check_mixed_contains_reify_doc() {
     affected_crates tests/infra/test_cpu_load_governance.sh crates/reify-doc/src/lib.rs | grep -qx reify-doc
 }
 assert "mixed tests/infra + crate diff contains reify-doc" _check_mixed_contains_reify_doc
+
+# ---------------------------------------------------------------------------
+# EXAMPLES-CORPUS (task 7427): examples/**/*.ri maps to its reader crates.
+#
+# The examples/ tree is a test CORPUS: compiled Rust test targets walk it and
+# open .ri leaves by path. With no _file_to_crate rule for it, every one of the
+# 264 tracked .ri files was an unmappable path — so the C5 arm fired and an
+# .ri-only edit became the most expensive diff shape in the repo (a full
+# workspace verify for a corpus edit). Mapping it to the declared reader set
+# feeds those seeds through the normal reverse closure instead.
+#
+# Non-.ri, non-inert content under examples/ still takes C5: the mapping is a
+# claim about .ri corpus leaves specifically, not about the directory.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- EXAMPLES-CORPUS: examples/**/*.ri maps to the declared reader crates ---"
+
+_check_examples_ri_not_ALL() {
+    local out
+    out="$(affected_crates examples/foo.ri)"
+    echo "closure: [$out]"
+    [ "$out" != "ALL" ] && [ -n "$out" ]
+}
+assert "examples/*.ri is NOT the ALL sentinel" _check_examples_ri_not_ALL
+
+_check_examples_ri_contains() {
+    # Usage: _check_examples_ri_contains <expected-crate>
+    affected_crates examples/foo.ri | grep -qx "$1"
+}
+assert "examples/*.ri closure contains reify-eval"           _check_examples_ri_contains reify-eval
+assert "examples/*.ri closure contains reify-compiler"       _check_examples_ri_contains reify-compiler
+assert "examples/*.ri closure contains reify-cli"            _check_examples_ri_contains reify-cli
+assert "examples/*.ri closure contains reify-eval-fea-tests" _check_examples_ri_contains reify-eval-fea-tests
+
+# NESTED is the common real shape (examples/auto/, examples/ambient_default_
+# material/, …), and a bash `case` glob's `*` matches `/`, so one arm covers
+# both depths. Asserted as EQUALITY with the flat case so a future rule that
+# accidentally keys on depth cannot pass.
+_check_examples_nested_same_as_flat() {
+    local nested flat
+    nested="$(affected_crates examples/auto/bearing_unsat.ri)"
+    flat="$(affected_crates examples/foo.ri)"
+    echo "nested: [$nested]"
+    echo "flat:   [$flat]"
+    [ "$nested" = "$flat" ]
+}
+assert "nested examples/<dir>/*.ri closure equals the flat one" _check_examples_nested_same_as_flat
+
+assert "examples/README.md -> empty (inert, not ALL)" \
+    test -z "$(affected_crates examples/README.md)"
+
+# Fail-wide PRESERVED for the two real non-.ri, non-inert tracked shapes.
+assert "examples/**/*.gcode still forces ALL (C5 preserved)" \
+    test "$(affected_crates examples/trajectory/test_data/printer_print_envelope.gcode)" = "ALL"
+
+assert "examples/**/.gitkeep still forces ALL (C5 preserved)" \
+    test "$(affected_crates examples/generics/.gitkeep)" = "ALL"
+
+# ---------------------------------------------------------------------------
+# RI-CORPUS-DRIFT: the declared reader set is derived from the repo, not
+# hand-maintained (house pattern; mirrors PG-DRIFT and
+# test_release_scoped_scope.sh).
+#
+# DERIVED ⊆ DECLARED, deliberately a subset and not an equality: an extra
+# DECLARED crate only ever WIDENS the closure, which is the direction of error
+# C5 already blesses. A new corpus reader that nobody declared is the real
+# regression — that crate's tests would be narrowed AWAY by an edit to the
+# very fixture they read.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- RI-CORPUS-DRIFT: every workspace member whose Rust sources read the examples/ corpus is declared ---"
+
+# _workspace_member_dirs — every workspace member's repo-relative directory and
+# package name, TAB-separated, longest directory first so the prefix match below
+# resolves a nested member to the nearest one.
+#
+# Read from `cargo metadata`, never hand-listed: a hand-kept pathspec stops
+# meaning "every member" the moment one is added outside `crates/`, which is how
+# this derivation first missed gui/src-tauri (reify-gui `include_str!`s a corpus
+# leaf at compile time) and then tree-sitter-reify. Empty output means
+# `cargo metadata` failed — see the cold-registry preflight above.
+_workspace_member_dirs() {
+    local meta
+    meta="$( cd "$REPO_ROOT" && cargo metadata --format-version 1 --locked --offline 2>/dev/null )" || return 0
+    printf '%s\n' "$meta" | python3 -c '
+import json, os, sys
+meta = json.load(sys.stdin)
+root = os.path.realpath(sys.argv[1])
+members = set(meta["workspace_members"])
+rows = [
+    (os.path.relpath(os.path.dirname(os.path.realpath(p["manifest_path"])), root), p["name"])
+    for p in meta["packages"] if p["id"] in members
+]
+for d, name in sorted(rows, key=lambda r: (-len(r[0]), r[0])):
+    print(f"{d}\t{name}")
+' "$REPO_ROOT"
+}
+
+# _derived_ri_corpus_crates — every workspace member with a non-comment Rust
+# source line naming the examples/ corpus, one package name per line.
+#
+# TWO reader shapes are matched, because the literal one alone left this guard
+# green by coincidence rather than by construction: a named leaf
+# (`include_str!(".../examples/foo.ri")`) AND a directory walk
+# (`collect_files(&root.join("examples"), "ri", …)`, or a path assembled with
+# `format!("examples/{}.ri", …)`, which no `\.ri` pattern can see). A crate that
+# only walked the directory would otherwise be an undeclared reader.
+# OVER-derivation is the safe direction: it can only force a DECLARATION, and an
+# extra declared crate merely widens — the direction of error C5 already blesses.
+#
+# A member with no §5 mapping rule of its own (tree-sitter-reify, which
+# _is_global widens to ALL on its own edits) is still swept and still has to be
+# declared if it ever reads the corpus: an examples/*.ri edit must reach the
+# tests of every crate that opens those bytes, whatever that crate's own edits do.
+_RI_CORPUS_READ_RE='examples/|"examples"'
+
+_derived_ri_corpus_crates() {
+    local members
+    members="$(_workspace_member_dirs)"
+    [ -n "$members" ] || return 0
+
+    local -a pathspecs=()
+    local -A member_pkg=()
+    local dir pkg
+    while IFS=$'\t' read -r dir pkg; do
+        [ -n "$dir" ] || continue
+        pathspecs+=("$dir/**.rs")
+        member_pkg["$dir"]="$pkg"
+    done <<< "$members"
+
+    git -C "$REPO_ROOT" grep -nE "$_RI_CORPUS_READ_RE" -- "${pathspecs[@]}" \
+        | while IFS= read -r line; do
+            # `path:lineno:code` — split off the prefix to inspect the CODE.
+            local path="${line%%:*}"
+            local code="${line#*:}"; code="${code#*:}"
+            # A pure-comment mention is not a corpus read: skip lines whose
+            # first non-space characters are `//`.
+            local trimmed="${code#"${code%%[![:space:]]*}"}"
+            case "$trimmed" in //*) continue ;; esac
+            # Project the source path onto its owning member: walk up parents
+            # until one is a member directory (longest match wins).
+            local owner="$path"
+            while [ -n "$owner" ] && [ -z "${member_pkg[$owner]:-}" ]; do
+                case "$owner" in */*) owner="${owner%/*}" ;; *) owner="" ;; esac
+            done
+            [ -n "$owner" ] && printf '%s\n' "${member_pkg[$owner]}"
+        done | sort -u
+}
+
+_check_derived_subset_of_declared() {
+    local derived missing=""
+    derived="$(_derived_ri_corpus_crates)"
+    echo "derived:  [$(printf '%s' "$derived" | tr '\n' ' ')]"
+    echo "declared: [${_RI_CORPUS_CRATES:-<unset>}]"
+    [ -n "$derived" ] || { echo "derivation produced NOTHING — cargo metadata, the grep or the projection broke"; return 1; }
+    local c
+    while IFS= read -r c; do
+        [ -n "$c" ] || continue
+        case " ${_RI_CORPUS_CRATES:-} " in
+            *" $c "*) ;;
+            *) missing+=" $c" ;;
+        esac
+    done <<< "$derived"
+    [ -z "$missing" ] || { echo "UNDECLARED corpus readers:$missing"; return 1; }
+    return 0
+}
+assert "derived examples/*.ri reader crates ⊆ declared _RI_CORPUS_CRATES" \
+    _check_derived_subset_of_declared
+
+# ---------------------------------------------------------------------------
+# GV-PREMISE (task 7427): the two crates the vitest-gate fixtures are built on.
+#
+# tests/infra/test_verify_scope.sh's GV-1/GV-2 drive AFFECTED_CLOSURE through
+# REIFY_AFFECTED_CRATES_OVERRIDE, because their throwaway fixture repo has no
+# cargo workspace. Those hand-written override values are only meaningful while
+# they describe reality — so pin the two facts they encode against the REAL
+# repo here, where a real `cargo metadata` runs.
+#
+# The negative holds because the reify-doc -> reify-eval edge is a DEV-dep and
+# the compile-closure model is dev-dep non-transitive — the property the task
+# 4938 section above already covers. If that model ever changes, GV-1 becomes
+# fiction silently; this assertion is what makes it fail loudly instead.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- GV-PREMISE: the reify-doc / reify-eval closures the vitest-gate fixtures assume ---"
+
+assert "reify-doc closure EXCLUDES reify-gui (GV-1's skip premise)" \
+    _check_not_contains reify-gui crates/reify-doc/src/lib.rs
+
+assert "reify-eval closure INCLUDES reify-gui (GV-2's run premise)" \
+    _check_contains reify-gui crates/reify-eval/src/lib.rs
 
 # ---------------------------------------------------------------------------
 # Amendment (code-review follow-up, task 6277): --locked non-mutation check.

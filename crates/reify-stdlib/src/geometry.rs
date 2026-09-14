@@ -1667,18 +1667,26 @@ fn dimension_label(dim: DimensionVector) -> String {
 ///   produced at all — rather than a drop-and-continue like `affine_scale`,
 ///   where the offending factor is discarded and evaluation proceeds.
 ///
-/// `DiagnosticCode` is deliberately NOT uniform across the arms. The two RULING
-/// #6126 arms stay code-less because MINTING
-/// `DiagnosticCode::ArgDimensionMismatch` is owned by
-/// `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 1 (whose own direction is
-/// Error, not Warning), and `tolerancing.rs`'s code-less `Diagnostic::error` through
-/// this same hook is the standing in-crate precedent. The `bbox` arm mints nothing
-/// either — it carries the PRE-EXISTING
-/// [`reify_core::DiagnosticCode::DimensionedArgRejected`], which
-/// `reify_eval::geometry_ops` already attaches to exactly this fault class (an
+/// `DiagnosticCode` is NOT uniform across the arms, but the three DIMENSION arms
+/// now agree. All THREE — `transform_log`, `transform_exp` and `bbox` — carry the
+/// PRE-EXISTING [`reify_core::DiagnosticCode::DimensionedArgRejected`], which
+/// `reify_eval::geometry_ops` already attaches to exactly this fault class (a
 /// `Severity::Error` runtime dimension rejection of a positional argument).
-/// Converging the two — once the PRD's code exists — is worth doing and is
-/// deliberately NOT done here.
+///
+/// The convergence an earlier revision of this comment DEFERRED — waiting on a
+/// `DiagnosticCode::ArgDimensionMismatch` that
+/// `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 1 was expected to
+/// mint — is DONE here, by task 5791. Under BINDING ruling A7 (Leo,
+/// 2026-08-30, esc-5791-3) there was nothing to wait for: that variant is
+/// deliberately NOT minted, because one rejection REASON gets one code, and
+/// `DimensionedArgRejected` already IS that code. See §6 decision 1's
+/// RECONCILIATION block (landed b3ba3228f5). The `bbox` arm, which has carried
+/// the code since task 6081 (2026-08-27), was the shipped counter-example that
+/// made the point.
+///
+/// The `affine_scale` arms deliberately stay `Severity::Warning` and CODE-LESS.
+/// They are a different fault class — a dropped factor, drop-and-continue — and
+/// ruling A7 converges the DIMENSION reason, not every arm in this function.
 /// Returns `None` for any other name, wrong arity, or valid input.
 pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
     match name {
@@ -1715,11 +1723,14 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
             if t_dim == TWIST_LINEAR_DIM {
                 return None;
             }
-            Some(reify_core::Diagnostic::error(format!(
-                "transform_log: a Transform's translation must be Vector3<Length>; got {} \
-                 (a twist's `linear` half carries Length — RULING #6126)",
-                dimension_label(t_dim)
-            )))
+            Some(
+                reify_core::Diagnostic::error(format!(
+                    "transform_log: a Transform's translation must be Vector3<Length>; got {} \
+                     (a twist's `linear` half carries Length — RULING #6126)",
+                    dimension_label(t_dim)
+                ))
+                .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
+            )
         }
         "transform_exp" => {
             if args.len() != 1 {
@@ -1758,11 +1769,14 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
             if lin_dim == TWIST_LINEAR_DIM {
                 return None;
             }
-            Some(reify_core::Diagnostic::error(format!(
-                "transform_exp: a twist's `linear` must be Vector3<Length>; got {} \
-                 (RULING #6126)",
-                dimension_label(lin_dim)
-            )))
+            Some(
+                reify_core::Diagnostic::error(format!(
+                    "transform_exp: a twist's `linear` must be Vector3<Length>; got {} \
+                     (RULING #6126)",
+                    dimension_label(lin_dim)
+                ))
+                .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
+            )
         }
         "bbox" => {
             if args.len() != 2 {
@@ -1847,11 +1861,21 @@ fn classify_bbox_corner(v: &Value) -> BboxCorner {
 ///
 /// The message mirrors `ArgRejection::message`'s
 /// `"{builtin}: {arg_name} argument expects {expected}, got {got}"` shape
-/// (`crates/reify-eval/src/arg_acceptance.rs`). It is hand-mirrored rather than
-/// shared: reify-stdlib cannot depend on reify-eval (reify-eval → reify-expr →
-/// reify-stdlib would be a cycle), and copying the wording across that boundary
-/// is established practice (see `reify-compiler/src/conformance/mod.rs`,
-/// annotated "COPIED from ArgRejection::message").
+/// (`crates/reify-ir/src/arg_acceptance.rs` — relocated there from reify-eval by
+/// task 5791, PRD `docs/prds/v0_6/dimension-checked-readers.md` §3 Leg A).
+///
+/// It stays hand-mirrored, but the REASON changed with that relocation. The old
+/// reason — "reify-stdlib cannot depend on reify-eval (reify-eval → reify-expr →
+/// reify-stdlib would be a cycle)" — no longer applies: reify-stdlib already
+/// deps reify-ir, and `arg_acceptance_is_reachable_from_reify_stdlib`
+/// (helpers.rs's test module) pins that `reify_ir::arg_acceptance` IS importable
+/// from here. What keeps this rendering separate is the divergence documented
+/// directly above: the label lands in a TYPE-ARGUMENT slot (`Point3<…>`), where
+/// DIMENSIONLESS spells `Real` rather than `dimension_label`'s prose
+/// "dimensionless". Copying the wording across a boundary remains established
+/// practice for the genuinely-unreachable case (see
+/// `reify-compiler/src/conformance/mod.rs`, annotated "COPIED from
+/// ArgRejection::message").
 fn diagnose_bbox_corners(min: &Value, max: &Value) -> Option<reify_core::Diagnostic> {
     for (arg_name, corner) in [("min", min), ("max", max)] {
         let got = match classify_bbox_corner(corner) {
@@ -6946,4 +6970,115 @@ mod tests {
             result[0]
         );
     }
+
+    // ── BINDING ruling A7: the three DIMENSION arms converge on ──────────────
+    // ── DiagnosticCode::DimensionedArgRejected (task 5791) ───────────────────
+
+    /// The two RULING #6126 arms (`transform_log`, `transform_exp`) carry the
+    /// canonical runtime dimension-rejection code.
+    ///
+    /// Under BINDING ruling A7 (Leo, 2026-08-30, esc-5791-3) there is nothing
+    /// to mint: `DiagnosticCode::ArgDimensionMismatch` — which the deferral
+    /// comment on `diagnose` used to promise — is deliberately NOT created, and
+    /// the shipped `DimensionedArgRejected` is reused instead, one code per
+    /// rejection REASON. See PRD
+    /// `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 1's
+    /// RECONCILIATION block (landed b3ba3228f5).
+    ///
+    /// Input shapes are reused verbatim from the neighbouring shipped tests
+    /// (`diagnose_transform_log_dimensionless_translation_names_dimension` and
+    /// `diagnose_transform_exp_dimensionless_linear_names_dimension`) so this
+    /// test adds a code assertion and nothing else.
+    #[test]
+    fn ruling_6126_dimension_arms_carry_dimensioned_arg_rejected() {
+        let t = make_transform_with_translation([
+            Value::Real(1.0),
+            Value::Real(2.0),
+            Value::Real(3.0),
+        ]);
+        let log_diag = super::diagnose("transform_log", &[t])
+            .expect("a dimensionless translation must produce a diagnostic");
+        assert_eq!(
+            log_diag.severity,
+            reify_core::Severity::Error,
+            "the transform_log dimension arm stays Error (RULING #6126, Leo's \
+             severity amendment 2026-08-19 via esc-6080-6)"
+        );
+        assert_eq!(
+            log_diag.code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+            "the transform_log dimension arm must carry the canonical runtime \
+             dimension-rejection code (ruling A7)"
+        );
+
+        let twist = make_twist(
+            [0.0, 0.0, 0.0],
+            [1.0, 2.0, 3.0],
+            DimensionVector::DIMENSIONLESS,
+        );
+        let exp_diag = super::diagnose("transform_exp", &[twist])
+            .expect("a dimensionless linear must produce a diagnostic");
+        assert_eq!(
+            exp_diag.severity,
+            reify_core::Severity::Error,
+            "the transform_exp dimension arm stays Error"
+        );
+        assert_eq!(
+            exp_diag.code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+            "the transform_exp dimension arm must carry the same code as its \
+             transform_log mirror"
+        );
+    }
+
+    /// Re-pins the already-correct THIRD arm so the convergence is asserted as
+    /// a SET of three arms sharing one code, not as two independent edits.
+    /// `bbox` has carried `DimensionedArgRejected` since task 6081
+    /// (2026-08-27); it is the shipped counter-example proving the reuse was
+    /// always the right shape.
+    #[test]
+    fn bbox_arm_still_carries_dimensioned_arg_rejected() {
+        let min = make_point3_angle(0.0, 0.0, 0.0);
+        let max = make_point3_angle(1.0, 2.0, 3.0);
+        let diag = super::diagnose("bbox", &[min, max])
+            .expect("Angle-cornered bbox must produce a diagnostic");
+        assert_eq!(diag.severity, reify_core::Severity::Error);
+        assert_eq!(
+            diag.code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+            "the bbox arm is the third member of the converged set"
+        );
+    }
+
+    /// The `affine_scale` arms are a DIFFERENT FAULT CLASS — a dropped factor,
+    /// drop-and-continue — and ruling A7 converges the DIMENSION reason, not
+    /// every arm in `diagnose`. They must stay `Severity::Warning` and stay
+    /// CODE-LESS.
+    #[test]
+    fn affine_scale_arms_stay_warning_and_code_less() {
+        let dimensioned = super::diagnose(
+            "affine_scale",
+            &[Value::length(2.0), Value::Real(1.0), Value::Real(1.0)],
+        )
+        .expect("a dimensioned scale factor must still produce a diagnostic");
+        assert_eq!(
+            dimensioned.severity,
+            reify_core::Severity::Warning,
+            "affine_scale is drop-and-continue, not a construction failure"
+        );
+        assert_eq!(
+            dimensioned.code, None,
+            "affine_scale must stay code-less — it is not the dimension \
+             rejection reason ruling A7 converges"
+        );
+
+        let zero = super::diagnose(
+            "affine_scale",
+            &[Value::Real(0.0), Value::Real(1.0), Value::Real(1.0)],
+        )
+        .expect("a zero scale factor must still produce a diagnostic");
+        assert_eq!(zero.severity, reify_core::Severity::Warning);
+        assert_eq!(zero.code, None);
+    }
+
 }

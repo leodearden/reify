@@ -64,7 +64,7 @@ Notation: `d` = requested `#precision`, `a` = achieved sampled facet deviation,
 | torus | `minor/major`, `d/minor` | 0.978 | 0.02, 0.015 | supremum |
 | cone | `top_r/bottom_r` | 0.970 | 0.8, `d/R` = 6e-4 | supremum |
 | fillet blend | `fillet_r/feature` | 0.925 | 0.49, `d/R` = 6e-4 | supremum |
-| nurbs surface | `d/span` † | 0.9975 | `d/span` = 1.2e-4 | **lower bound** |
+| nurbs surface | `d/span` † | **1.0010** | `d/span` = 1.4386e-4 | **lower bound**, `K` > 1 |
 | pipe | pipe_r / path curvature | 0.598 | `d/R` = 5e-2 | **lower bound** |
 | sweep | profile / path curvature | 0.534 | `d/R` = 1e-2 | **lower bound** |
 | spline | profile / path curvature | 0.013 | `d/R` = 2e-2 | **lower bound** |
@@ -74,11 +74,19 @@ Notation: `d` = requested `#precision`, `a` = achieved sampled facet deviation,
 committed **1000 mm × 1000 mm control net** only (§1.5) — unlike cone/torus/fillet, whose
 shape regime (`top/bottom`, `minor/major`, `r/feature`) was independently walked, this
 task scoped a d-ladder only, and the net shape itself was not walked. Second, unlike
-pipe/sweep/spline, this class is not budget-limited: an initial ladder read a fall from
-0.996 at 0.5 mm as a turnover and entered it here as a supremum, but a deeper walk
-following review found a **higher** value, 0.9975 at 0.12 mm, inside a dense, unresolved
-oscillation — so `lower bound` here means the oscillation's period was not resolved
-within this task, not that a wall was hit.
+pipe/sweep/spline, this class is not budget-limited, and `lower bound` here carries a
+weaker meaning than on any other row. The oscillation that made an earlier ladder's
+`sup K = 0.996` wrong **has since been resolved** (§1.5, task #7128): it has no period —
+local maxima recur at irregular spacing — and `a` is piecewise-constant on plateaus
+~1e-4 mm wide, with the ratio peaking at each plateau's **lower edge**. Bisecting those
+edges to 1e-5 mm pins **1.0010 at `d` = 0.14386 mm**, the one measurement in this note
+where achieved *exceeds* requested; the true ratio there lies in [1.000626, 1.001321),
+entirely above 1, so **`K` > 1 is established** for this class. What is still not proven
+is the *value*: a dense search raises a lower bound and cannot prove a supremum over a
+continuum, and only three plateau edges of the very many in [0.12, 0.18] mm were pinned
+(P1–P3; a fourth plateau was walked as a control, with its lower edge left unbracketed).
+So `lower bound` no longer means the structure is un-understood, and never meant a wall
+was hit — it means 1.0010 is a floor that further walking can only raise.
 
 The deviation is **deterministic**: `torus(1000mm,100mm)` at `d`=10 mm returned
 `5.665e-3` on three consecutive runs. The ratios carry no run-to-run error.
@@ -172,12 +180,14 @@ comfortable envelope. This is the trap the non-analytic classes could not escape
 | sweep | `sweep(circle(100mm), interp(…))` | 10 mm | 0.534 |
 | pipe | `pipe(helix(100mm,80mm,300mm), 20mm)` | 5 mm | 0.598 |
 | spline | `sweep(circle(100mm), bezier(…))` | 20 mm | 0.013 |
-| nurbs surface | `nurbs_surface(3x3 point3 net, …)` | 0.1 mm ‡ | 0.9975 @ 0.12 mm ‡ |
+| nurbs surface | `nurbs_surface(3x3 point3 net, …)` | 0.1 mm ‡ | 1.0010 @ 0.14386 mm ‡ |
 
 ‡ Unlike the other three rows, 0.1 mm is not where the 90 s budget stopped this class —
 it is merely where this task stopped walking it (see Not-budget-limited below). And the
 a/d quoted is not the value at that finest rung (0.1 mm itself reads 0.934): it is the
-highest value found anywhere on the full ladder, at 0.12 mm. See the full ladder below.
+highest value found anywhere on the ladder *or* on the dense sub-0.01 mm walk that
+followed it — **1.0010 at 0.14386 mm** (task #7128). 0.12 mm's 0.9975 was 6545's best and
+is superseded. See the full ladder and the dense walk below.
 
 sweep: 100 mm 0.148 (floor) · 50 mm 0.296 (floor) · 20 mm 0.379 · **10 mm 0.534**.
 pipe (shape-shrunk): 20 mm 0.135 · 10 mm 0.258 · **5 mm 0.598**; 2 mm timed out.
@@ -195,8 +205,9 @@ property of the budget — it is affordable far past the mandated 100/50/20/10 m
 which the extended ladder below demonstrates. Its §1.1 entry is nonetheless a **lower
 bound, not a supremum**, for the opposite reason: an initial pass read a two-rung fall as
 a turnover and entered `sup K = 0.996` as confirmed, but review correctly challenged that
-call, and a deeper walk (below) found a **higher** value, 0.9975 at 0.12 mm, in a dense,
-unresolved oscillation this task did not fully resolve. Full account — the original
+call, and a deeper walk (below) found a **higher** value, 0.9975 at 0.12 mm, in a dense
+oscillation task 6545 did not fully resolve (task #7128 later did, and found higher still
+— see the dense walk below). Full account — the original
 reading, why review challenged it, and the amended ladder — is under "Amendment" below.
 
 Not measurable, recorded honestly:
@@ -280,7 +291,7 @@ re-running `reify check`; the committed file itself stays pinned at 20 mm:
 | 0.15 mm | 1.495e-4 | 0.9967 | |
 | 0.14 mm | 1.376e-4 | 0.9829 | |
 | 0.13 mm | 1.287e-4 | 0.9900 | |
-| **0.12 mm** | 1.197e-4 | **0.9975** | ← highest measured |
+| **0.12 mm** | 1.197e-4 | **0.9975** | ← highest on this ladder — superseded by the #7128 dense walk below (1.0010 at 0.14386 mm) |
 | 0.1 mm | 9.342e-5 | 0.9342 | |
 
 The 20 mm row reproduces the `1.713e-2` excerpted above exactly, confirming this ladder
@@ -347,6 +358,361 @@ the inference that the absence prevents realization: it resolves instead via the
 `DEFAULT_KERNEL_NAME` fallback, which is exactly how the corrected call above realizes.
 The full d-ladder for this class is recorded above and summarized in §1.1 and §3.1,
 closing out follow-up task #6545 (ticket `tkt_0RSV7JNW3WXWDSFJGRDMHDT63T`).
+
+
+**Dense sub-0.01 mm walk, measured 2026-09-12** (task #7128), resolving the oscillation
+the 6545 amendment above left open. Same committed fixture, same method — edit
+`#precision(...)` in a scratch copy, re-run `reify check` — on a different binary, HEAD,
+kernel and session than either block above.
+
+**Provenance for this block** — own stamp; deliberately *not* §0's identity table, and
+not the 6545 block's:
+
+| | |
+|---|---|
+| binary | `target/release/reify`, built 2026-09-11 23:14 (newer than every `crates/` commit reachable from HEAD; no rebuild needed) |
+| HEAD | `ebecf20df5` (branch `task/7128`) |
+| kernel | OCCT 7.8 (26 `libTK*.so.7.8` ldd lines, 23 distinct sonames; `has_occt` live, confirmed functionally — every probe below realized and passed the §0 Caveat-2 datum gate). 27 `libTK*.so.7.9` lines are also linked, via gmsh; reify's own calls bind 7.8, which is why the counts here differ from §0's 56 and the 6545 block's 53 without the measurement differing |
+| machine | AMD Ryzen 9 3950X, 16C/32T (same box as §0), Linux 7.0.0-28 — a **different kernel** than §0's 6.14.0-37 |
+| load | 368.83 – 424.17 1-min loadavg across this session — 3–5× the load of either block above, and per §0 Caveat 1 this moves wall clocks only |
+
+**Reproduction gate — cross-session, cross-binary, cross-HEAD, cross-kernel.** Before any
+new datum was trusted, three rungs already published in the 6545 ladder above were
+re-measured on this session's apparatus:
+
+| d | a (m) | a/d | published above |
+|---|---|---|---|
+| 20 mm | 1.713e-2 | 0.8565 | 1.713e-2 / 0.8565 |
+| 0.18 mm | 1.795e-4 | 0.9972 | 1.795e-4 / 0.9972 |
+| 0.12 mm | 1.197e-4 | 0.9975 | 1.197e-4 / 0.9975 |
+
+All three match the published strings exactly, and all three emitted the §0 Caveat-2
+datum line. This is a **stronger determinism datum than the same-session repetitions the
+6545 block records**: those establish that a fixed binary repeats itself, whereas these
+show the achieved value survives a rebuilt binary, a different HEAD, a different kernel
+and a 3–5× load change. It also validates the apparatus used below — a mismatched value
+here would have indicted the harness rather than the geometry, and the gate is
+genuinely falsifiable: a wrong binary, a stale fixture, the `E_MODULE_PATH_MISMATCH`
+scratch-file trap (§4) or a silent non-realization each fail it loudly.
+
+**Stage A — the 0.005 mm bracket walk over [0.12, 0.18] mm.** The six new midpoints,
+plus a re-probe of all seven published 0.01 mm rungs in the same bracket so the whole
+sweep is one internally consistent session. Ratios by `decimal.Decimal` /
+`ROUND_HALF_UP` at 4 dp throughout (§4):
+
+| d | a (m) | a/d | note |
+|---|---|---|---|
+| 0.12 mm | 1.197e-4 | 0.9975 | reproduces 6545 |
+| 0.125 mm | 1.245e-4 | 0.9960 | new |
+| 0.13 mm | 1.287e-4 | 0.9900 | reproduces 6545 |
+| 0.135 mm | 1.305e-4 | 0.9667 | new — local trough |
+| 0.14 mm | 1.376e-4 | 0.9829 | reproduces 6545 |
+| **0.145 mm** | 1.450e-4 | **1.0000** | new ← highest in Stage A |
+| 0.15 mm | 1.495e-4 | 0.9967 | reproduces 6545 |
+| 0.155 mm | 1.539e-4 | 0.9929 | new |
+| 0.16 mm | 1.595e-4 | 0.9969 | reproduces 6545 |
+| 0.165 mm | 1.638e-4 | 0.9927 | new |
+| 0.17 mm | 1.686e-4 | 0.9918 | reproduces 6545 |
+| 0.175 mm | 1.729e-4 | 0.9880 | new |
+| 0.18 mm | 1.795e-4 | 0.9972 | reproduces 6545 |
+
+All seven re-probed rungs reproduce the 6545 ladder's achieved strings exactly, so the
+six new midpoints interleave a verified ladder rather than a drifting one.
+
+**A midpoint beats the published peak.** 0.145 mm reads `a` = 1.450e-4 against `d` =
+1.45e-4 — a ratio of **1.0000**, above the 0.9975 at 0.12 mm that 6545 recorded as this
+class's best lower bound. That rung lies exactly halfway between two published rungs
+(0.14 mm, 0.9829 and 0.15 mm, 0.9967), neither of which hints at it. The published
+ladder did not merely fail to resolve the oscillation's period; it stepped over the
+highest value in its own bracket.
+
+**0.005 mm does not resolve the structure either.** It is a necessary refinement of the
+6545 ladder's 0.01 mm spine, but not a sufficient one, and this table shows why on its own
+terms. The ratio is non-monotone between every pair of adjacent rungs, and the swing
+between adjacent 0.005 mm rungs reaches 0.0233 (0.9900 at 0.130 mm to 0.9667 at 0.135 mm),
+and across two rungs — 0.010 mm, the 6545 ladder's own step — 0.0333 (0.9667 at 0.135 mm
+to 1.0000 at 0.145 mm). Meanwhile the five leading values — 0.9967, 0.9969, 0.9972, 0.9975
+and 1.0000 — are separated from one another by as little as 0.0002. **The between-rung
+swing is two orders of magnitude larger than the gaps between the candidates the sweep is
+trying to rank**, so a 0.005 mm grid cannot establish which of them is the true local
+maximum, nor that any of them is a local maximum at all: each is simply the largest value
+on whichever grid happened to be sampled. This is the §1.2 aliasing trap in its exact
+form — the sphere's branches alternate over ~0.006 mm, and a grid at that same order lands
+on one branch and misses the other.
+
+**Sub-brackets carrying the leaders**, to be walked at 0.001 mm in Stage B: **[0.143,
+0.147] mm** around the new 1.0000; **[0.118, 0.122] mm** around the published 0.9975; and
+**[0.148, 0.152]**, **[0.158, 0.162]** and **[0.178, 0.182] mm** around the three
+near-ties at 0.15, 0.16 and 0.18 mm. The trough at 0.135 mm is not walked — it is the one
+rung in this bracket that is unambiguously far from the leaders.
+
+
+**Stage B — the 0.001 mm fine walk**, across the five sub-brackets Stage A flagged. A
+fourth column is added here: the **deficit** `δ = d − a`. At these magnitudes `a` prints
+as `X.XXXe-4`, so the display quantum is exactly 1e-7 m and δ is an integer count of
+quanta — a sharper lens than the ratio, because `a/d` compresses the whole interesting
+range into its last two digits while δ reads it directly.
+
+| d | a (e-4 m) | δ (quanta) | a/d | note |
+|---|---|---|---|---|
+| 0.118 mm | 1.175 | 5 | 0.9958 | |
+| 0.119 mm | 1.183 | 7 | 0.9941 | |
+| 0.120 mm | 1.197 | 3 | 0.9975 | 6545's peak |
+| 0.121 mm | 1.183 | 27 | 0.9777 | |
+| 0.122 mm | 1.174 | 46 | 0.9623 | |
+| 0.143 mm | 1.429 | 1 | 0.9993 | |
+| **0.144 mm** | 1.440 | **0** | **1.0000** | `a` = `d` to 4 s.f. |
+| **0.145 mm** | 1.450 | **0** | **1.0000** | `a` = `d` to 4 s.f. |
+| 0.146 mm | 1.451 | 9 | 0.9938 | |
+| 0.147 mm | 1.468 | 2 | 0.9986 | |
+| 0.148 mm | 1.476 | 4 | 0.9973 | |
+| 0.149 mm | 1.479 | 11 | 0.9926 | |
+| 0.150 mm | 1.495 | 5 | 0.9967 | |
+| 0.151 mm | 1.507 | 3 | 0.9980 | |
+| 0.152 mm | 1.512 | 8 | 0.9947 | |
+| 0.158 mm | 1.567 | 13 | 0.9918 | |
+| 0.159 mm | 1.585 | 5 | 0.9969 | |
+| 0.160 mm | 1.595 | 5 | 0.9969 | |
+| 0.161 mm | 1.605 | 5 | 0.9969 | |
+| 0.162 mm | 1.617 | 3 | 0.9981 | |
+| 0.178 mm | 1.771 | 9 | 0.9949 | |
+| 0.179 mm | 1.775 | 15 | 0.9916 | |
+| 0.180 mm | 1.795 | 5 | 0.9972 | plateau with 0.181 |
+| 0.181 mm | 1.795 | 15 | 0.9917 | identical `a` |
+| 0.182 mm | 1.789 | 31 | 0.9830 | |
+
+**Cross-check.** The five rungs in [0.118, 0.122] mm were measured in a separate earlier
+session, on the same binary but before any commit in this block, and returned 0.9958 /
+0.9941 / 0.9975 / 0.9777 / 0.9623. This stage reproduces all five exactly. They are
+re-measured here, not copied.
+
+**`a` is not monotone in `d`.** Requesting a *coarser* precision can yield a *smaller*
+deviation: 0.120 mm → 1.197e-4 but 0.121 mm → 1.183e-4, and 0.181 mm → 1.795e-4 but
+0.182 mm → 1.789e-4. Two different `d` can also return identical `a` (0.119 mm and
+0.121 mm both read 1.183e-4). Any reasoning that assumes `a` rises with `d` — including
+any bisection that assumes it — is unsound on this class.
+
+**Shape: no single period, and at least three distinct local behaviours.** Within
+[0.143, 0.152] mm — the one bracket walked contiguously across 0.010 mm — the ratio has
+local maxima at 0.144–0.145 mm, 0.147 mm and 0.151 mm, i.e. spacings of **0.002 and
+0.004 mm**. They do not recur on a regular interval, so these samples do **not** exhibit a
+period, and none is asserted. That is a real difference from the sphere (§1.2), whose two
+branches alternate on a clean ~0.006 mm period; this class is not a two-branch staircase,
+and the sphere's "period" has no direct analogue here. The three behaviours visible:
+
+* **Exact plateau** — 0.180 and 0.181 mm return byte-identical `a` = 1.795e-4, so `a` is
+  locally constant while `d` varies. Inside a plateau the ratio *falls* as `d` rises, so
+  its maximum sits at the plateau's **lower** edge.
+* **Unit-slope tracking** — 0.159, 0.160 and 0.161 mm hold δ constant at 5 quanta while
+  `a` rises in exact 1e-7 m steps with `d`. Here `a = d − c` for fixed `c`, so the ratio
+  `1 − c/d` *rises* as `d` rises and its maximum sits at the segment's **upper** edge.
+* **Sharp sawtooth** — δ runs 3 → 27 → 46 quanta across 0.120 → 0.122 mm, an order of
+  magnitude of change in two steps.
+
+Because the ratio's maximum sits at a *lower* edge in the first regime and an *upper* edge
+in the second, there is no single direction to search, and this is why Stage C bisects
+each candidate individually rather than applying one rule to all of them.
+
+*Hypothesis (not established by these samples):* an interleaved u/v subdivision, in which
+two independent facet-count staircases beat against each other, would produce exactly this
+— irregular maxima spacing and locally varying behaviour, rather than the single period a
+one-dimensional staircase gives. Distinguishing it would require walking the control net's
+u and v spans independently, which this task does not do.
+
+**The δ = 0 rungs, and what Stage C must ask of them.** At 0.144 mm and 0.145 mm the
+deficit reaches the display floor: `a` equals `d` to all four significant figures printed.
+0.143 mm returns a different `a` (1.429e-4), so if 0.144 mm sits on a plateau, that
+plateau's lower edge lies in (0.143, 0.144] mm — and **any `d` below 0.144 mm that still
+returns 1.440e-4 yields a ratio strictly above 1**. That is the one measurement in reach
+that could settle the K = 1 question above the display floor, and it is Stage C's target.
+
+**Stage C — sub-0.001 mm plateau-edge bisection**, 31 probes. This is the stage that
+pins the answer, and it exploits the structure rather than gridding it. Where `a` is
+locally constant on a plateau, `d` falling inside that plateau leaves `a` fixed, so `a/d`
+rises to a local maximum at the plateau's **lower edge**. The supremum is therefore an
+edge property, findable by bisection — about ten probes per edge, against the ~600 a
+1e-4 mm grid over [0.12, 0.18] mm would need. Because Stage B showed `a` is not monotone
+in `d`, each bracket was scanned rather than blind-bisected, and each pinned edge is
+bracketed by a probe on both sides that returns a *different* `a`.
+
+**P1 — `a` = 1.440e-4, the leader.** Lower edge pinned to 1e-5 mm:
+
+| d | a (m) | a/d | |
+|---|---|---|---|
+| 0.14385 mm | 1.439e-4 | 1.0003 | below the edge — different `a` |
+| **0.14386 mm** | 1.440e-4 | **1.0010** | ← `d_lo`, pinned lower edge |
+| 0.14387 mm | 1.440e-4 | 1.0009 | |
+| 0.14388 mm | 1.440e-4 | 1.0008 | |
+| 0.14389 mm | 1.440e-4 | 1.0008 | |
+| 0.1439 mm | 1.440e-4 | 1.0007 | |
+| 0.14395 mm | 1.440e-4 | 1.0003 | |
+| 0.144 mm | 1.440e-4 | 1.0000 | Stage B's δ = 0 rung |
+| 0.1442 mm | 1.441e-4 | 0.9993 | above the plateau — different `a` |
+
+The ratio falls monotonically across the plateau exactly as the model predicts, and
+Stage B's 1.0000 at 0.144 mm is revealed as the plateau's *upper* end, not its peak.
+`d_lo` ∈ (0.14385, 0.14386] mm — edge resolution **1e-5 mm**. Measured plateau width
+≥ 0.00014 mm, upper edge bracketed in [0.144, 0.1442) mm, so width ∈ [0.00014, 0.00035) mm.
+The supremum over P1 is `1.440e-4 / d_lo` = **1.0010**, and that value is stable across
+the whole pinned edge bracket (1.0010 at both `d_lo` = 0.14386 and `d_lo` → 0.14385⁺), so
+pinning the edge finer would not change it at 4 dp.
+
+**P2 — `a` = 1.433e-4.** A narrow plateau confined to (0.14319, 0.14325) mm:
+
+| d | a (m) | a/d | |
+|---|---|---|---|
+| 0.14319 mm | 1.428e-4 | 0.9973 | below — different `a` |
+| 0.1432 mm | 1.433e-4 | 1.0007 | `d_lo` ∈ (0.14319, 0.1432] |
+| 0.14325 mm | 1.432e-4 | 0.9997 | above — different `a` |
+
+**P3 — `a` = 1.450e-4.** Stage B's other δ = 0 rung, likewise not its own plateau's peak:
+
+| d | a (m) | a/d | |
+|---|---|---|---|
+| 0.1449 mm | 1.449e-4 | 1.0000 | below — different `a` |
+| 0.14495 mm | 1.450e-4 | 1.0003 | `d_lo` ∈ (0.1449, 0.14495] |
+| 0.145 mm | 1.450e-4 | 1.0000 | Stage B's δ = 0 rung |
+
+**P4 — `a` = 1.428e-4**, walked as a control, and deliberately **not** counted as a
+pinned edge: no probe below 0.14305 mm returns a different `a`, so its lower edge is
+unbracketed and it fails this section's own test. It is a *low* plateau, and it shows the
+mechanism cleanly in the direction that does not flatter the result — `a` byte-identical
+across seven probes spanning 0.00014 mm while the ratio falls monotonically with rising
+`d`:
+
+| d | 0.14305 | 0.1431 | 0.14315 | 0.14316 | 0.14317 | 0.14318 | 0.14319 |
+|---|---|---|---|---|---|---|---|
+| a (m) | 1.428e-4 | 1.428e-4 | 1.428e-4 | 1.428e-4 | 1.428e-4 | 1.428e-4 | 1.428e-4 |
+| a/d | 0.9983 | 0.9979 | 0.9976 | 0.9975 | 0.9974 | 0.9973 | 0.9973 |
+
+The 0.0002 mm scan of [0.179, 0.180] mm also corrected a Stage B reading: 0.1798 mm
+returns 1.796e-4 (0.9989), *above* the 1.795e-4 that 0.180 and 0.181 mm share, so the
+plateau Stage B saw there is not that bracket's local maximum either. The same scan over
+[0.1442, 0.1448] mm found 0.9993 / 0.9979 / 0.9972 / 0.9965 — falling away, confirming P1
+is left behind above 0.1442 mm.
+
+**Result: the achieved deviation exceeds the requested precision.** The best value found
+is **1.0010 at `d` = 0.14386 mm**, and it clears the display floor by a margin that makes
+it unambiguous rather than marginal. `a` prints as 1.440e-4, so the true achieved value
+lies in [1.4395e-4, 1.4405e-4); `d` is exact at 1.4386e-4 m because it is the *request*,
+not a measurement. The true ratio therefore lies in **[1.000626, 1.001321)** — an interval
+lying *entirely* above 1. Two further plateau edges (P2 at 1.0007, P3 at 1.0003) exceed 1
+independently, as do 0.1439, 0.14395 and 0.14385 mm, so the finding does not rest on a
+single probe.
+
+**What this is, and is not.** 1.0010 is a supremum **over the plateaus walked** — P1 to P4
+plus the brackets scanned around them. A dense search raises a lower bound; it can never
+prove a supremum over a continuum, and no claim of exhaustiveness is made here. Two
+distinct statements follow, and they should not be conflated: that **`K` > 1 for this
+class is established** — that is a lower-bound claim, and a lower bound above 1 settles
+it — while **the numeric value 1.0010 remains a lower bound** on the true supremum. All 69
+probes of the dense walk itself (92 runs) — Stage A onward, `d` ∈ [0.118, 0.182] mm — lie
+within [0.9623, 1.0010], with no sign of a second branch like the sphere's ~2.07 tread,
+but that is an observation about where these samples fell, not a bound on where others
+might. (The block's three reproduction-gate runs sit outside that window by construction:
+the 20 mm rung reads 0.8565, deep in the coarse regime.)
+
+**The display-precision wall — and why this result clears it.** The achieved deviation is
+formatted `{achieved:.3e}` at `crates/reify-eval/src/tolerance_combine.rs:460`, which is
+the **only** site under `crates/` that emits the sampled facet deviation —
+`grep -rn 'sampled facet deviation' crates/*/src/` returns exactly that line plus two
+comments in the same file (:401, :444). (`.3e` itself is common under `crates/` and proves
+nothing — `crates/reify-constraints/src/solver.rs:2531` even binds its own `achieved`; the
+discriminator is the message, not the format spec. And `reify check`'s usage line offers no
+`--json` or `--verbose` alternative: `reify check [--strict] [--purpose
+<name>=<binding>]... [--cfg <key=value|flag>]... <file>`.) Four significant figures is
+therefore the whole apparatus, and it is a hard floor, not a convention this task could
+dial up.
+
+*Derived.* A reported `a` of `X.XXXe-4` bounds the true value to ± 0.5e-7 m, so a ratio
+carries ± 0.5e-7/`d` — about ± 4.2e-4 at `d` = 0.12 mm, ± 2.8e-4 at 0.18 mm. **Every ratio
+in §1 of this note inherits that bound.** Its sharpest consequence is that a ratio *read
+as 1.0000 cannot by itself settle anything*: Stage B's 0.144 mm and 0.145 mm rungs are
+each consistent with a true ratio anywhere in [0.99965, 1.00035), spanning 1. Had the walk
+stopped at Stage B, its two 1.0000 readings would have been exactly the ambiguous
+non-result this wall predicts, and reporting them as `K = 1` would have been an artifact
+of the formatter.
+
+*What breaks the tie is an asymmetry.* `d` carries **no** uncertainty — it is the
+*request*, an exact input, not a measurement — so only one side of the ratio is fuzzy. On
+a plateau `a` is fixed while `d` moves freely, so driving `d` down inside a plateau raises
+the ratio by an amount set by the **plateau's width**, which is exact, rather than by the
+display precision, which is not. That is why Stage C's bisection could reach a verdict
+where Stage B's grid could not: it converts a display-precision problem into a
+`d`-resolution problem, and `d` resolves arbitrarily.
+
+**Verdict: outcome (b) — the class's true `K` exceeds 1.** At `d` = 0.14386 mm the printed
+ratio is **1.0010**, and the display bound puts the true ratio in [1.000626, 1.001321), an
+interval lying entirely above 1 with its lower end 6 quanta clear of the boundary. This is
+not a marginal reading at the precision floor; it is above the ~1.0005 threshold at which
+the wall stops mattering, and it is corroborated by five further probes above 1 at two
+independent plateau edges (§ Stage C). *Measured*, and reproduced byte-identically on a
+second repetition.
+
+*Derived consequence.* `n` = ⌈log₂ `K`⌉ = **1** for this class, where §3.1 previously
+recorded 0 — the first class in this note for which the achieved deviation is shown to
+exceed the request at all. §1.1 and §3.1 are corrected accordingly.
+
+*And what remains open.* Outcome (b) settles the **direction** — `K` > 1 — because a lower
+bound above 1 settles it. It does not make 1.0010 a proven supremum: that number is still
+the best value found over the plateaus walked, and the true supremum can only be higher.
+The distinction matters downstream and is carried into §3.1 rather than rounded away.
+**Determinism and datum gates.** Every probe in this block passed the §0 Caveat-2 datum
+gate: the harness extracts `a` only from the `deviation <X> m` capture and emits a literal
+`NO-DATUM` token when that capture is empty, so a non-realization cannot enter a table as a
+number. That token did not separate a non-realization from a `timeout` kill — both leave
+the capture empty — which is immaterial here because **no** `NO-DATUM` occurred at all, and
+that excludes both causes at once; §4's published recipe splits them anyway, so a walk that
+does hit one can tell which. The sentinel was checked against two live failures before use
+and reported `NO-DATUM` for both rather than an empty field. One is §0 Caveat 2's shape
+exactly — this fixture with its `RepresentationWithin` bound loosened to 50 mm prints
+`OK PnrgNurbsSurfaceCheck#constraint[0]` / `All constraints satisfied.` and **exits 0**,
+with no deviation line anywhere. The other is loud: a scratch file whose basename does not
+match its `module` declaration fails with `E_MODULE_PATH_MISMATCH` on **exit 1**. Both
+leave the capture empty, which is the point — the gate keys on the deviation line being
+present, not on the exit code, so a quiet failure and a loud one are caught alike. (An
+earlier draft of this paragraph credited the module-path mismatch with exiting 0; it was
+re-measured on this lane's binary and exits 1.)
+
+*Stage A:* all six new rungs were re-run for a second repetition — matching the rep count
+§1.5 records for 6545's own sub-0.3 mm rungs — and returned **byte-identical achieved
+strings**, including the new 1.0000 leader at 0.145 mm. Zero divergence. Each repetition
+regenerates its scratch `.ri` from the committed fixture rather than re-running a cached
+file, so the rep exercises the whole path, not just the kernel. Wall clocks varied
+substantially with load (the sweeps below ran between 122 and 424 1-min loadavg); no
+achieved value did, which is §0 Caveat 1's standing distinction holding at this
+resolution too.
+
+*Stage B:* the eight leading rungs were re-run for a second repetition — the top five by
+ratio (0.144, 0.145, 0.143, 0.162, 0.147 mm), unconditionally every rung whose ratio
+rounds to ≥ 0.999, and 0.151, 0.120 and 0.180 mm besides — and all eight returned
+**byte-identical achieved strings**. Zero divergence. This gate carries more weight than
+Stage A's: these are the rungs the block's conclusions rest on, and the two at δ = 0 sit
+exactly on the K = 1 boundary, where a single unreproducible digit in the last printed
+place would flip the verdict rather than perturb it. Both returned 1.440e-4 and 1.450e-4
+again.
+
+*Stage C:* every probe defining a pinned edge was re-run for a second repetition — **both
+sides** of all three brackets (0.14385/0.14386, 0.14319/0.1432, 0.1449/0.14495 mm), P1's
+upper bracket (0.144/0.1442 mm), and the highest-ratio probe overall — and all nine
+returned **byte-identical achieved strings**. Zero divergence. A plateau edge is precisely
+where the tessellator's facet count changes, so it is the one place a non-deterministic
+tie-break would surface if one existed; pinning an edge without re-running both of its
+sides would have been the weakest link in the chain, and `d_lo` = 0.14386 mm returned
+1.440e-4 both times.
+
+*Totals across the block:* **95 runs over 72 probes** — 3 reproduction-gate runs, 19 in
+Stage A (13 rungs, 6 re-run), 33 in Stage B (25 rungs, 8 leaders re-run) and 40 in Stage C
+(31 probes, 9 edge probes re-run); the dense walk alone is 69 probes over 92 runs. Probes
+are not distinct `d` either: several recur across stages — 0.12, 0.145, 0.15, 0.16 and
+0.18 mm between the gate, Stage A and Stage B, and 0.144, 0.145, 0.179 and 0.180 mm between
+Stage B and Stage C — so the distinct-`d` count is smaller again, and neither tally above
+should be read as one. Every run emitted the datum line; not a single `OK`,
+`INDETERMINATE` or `NO-DATUM` occurred. No achieved value differed between repetitions
+anywhere in the block, at any stage or resolution. Nothing timed out, so this class remains
+**not budget-limited** at these `d` — the finest probe in the block, and so by §2.1's
+1/deflection scaling its most expensive, is Stage B's 0.118 mm, well inside the regime 6545
+already showed to be affordable.
 
 ### 1.6 Loft is unreachable from the source language
 
@@ -511,16 +877,19 @@ the natural authoring case `B ≈ d0`, `n ≥ log2(K)`. **Derived** from the §1
 | torus | 0.978 | 0 |
 | cone | 0.970 | 0 |
 | fillet blend | 0.925 | 0 |
-| nurbs surface | ≥ 0.9975 † | 0 † |
+| nurbs surface | ≥ 1.0010 † | 1 † |
 | sweep / pipe / spline | ≤ 0.598 * | 0 * |
 | loft | no datum | — |
 
 **No measured class exceeds K ≈ 16.** The worst is the sphere at 2.079, needing `n = 2`.
-nurbs_surface's highest measured value, 0.9975 (§1.1, §1.5), is the closest any class
-comes to the K = 1 boundary that would flip `required n` from 0 to 1 — and per the † note
-below it is a lower bound, not a confirmed value, so a true supremum fractionally above 1
-is not excluded. Even so this changes nothing at the cap level: `n = 1` is nowhere near
-the cap-4 budget, and no plausible reading of this class's data approaches K ≈ 16. Cap 4
+nurbs_surface is the one class measured **above** the K = 1 boundary, and so the one whose
+`required n` is not 0: its best pinned value is 1.0010 (§1.1, §1.5), and the true ratio at
+that `d` is bounded in [1.000626, 1.001321) — an interval lying entirely above 1, so the
+crossing is established rather than merely not excluded. Per the † note below that value is
+still a lower bound, so the true supremum can only be higher. Even so this changes nothing
+at the cap level: `n = 1` is nowhere near the cap-4 budget, and no plausible reading of this
+class's data approaches K ≈ 16 — all 69 probes of its dense walk lie within [0.9623, 1.0010],
+with no second branch like the sphere's ~2.07 tread. Cap 4
 covers K up to 16 at `B = d0` — **7.7× headroom** over the worst thing measured.
 
 \* Lower bounds only. The fine-`d` regime where the sphere reached its supremum was
@@ -528,11 +897,16 @@ unaffordable for these three classes (§1.5, §2.1 caveat 1). The cap is justifi
 **headroom**, not by a claim of exhaustive coverage.
 
 † Lower bound for a different reason than the row above: nurbs_surface is not
-budget-limited (§1.5) — every rung tried, down to 0.1 mm, completed well under the 90 s
-wall. An amendment to this task's own ladder found a higher value than an earlier apparent
-peak and left the oscillation's period unresolved, so `required n = 0` holds only while
-the true K ≤ 1; a true K fractionally above 1 would make it 1, which — as above — does not
-change §3.3's decision either way.
+budget-limited (§1.5) — every rung tried completed well under the 90 s wall: down to
+0.1 mm on 6545's ladder, and across all 95 runs of #7128's block. Task #7128
+resolved the oscillation an earlier amendment left open (no period; `a` piecewise-constant
+on plateaus ~1e-4 mm wide; the ratio peaking at each plateau's lower edge) and pinned
+**1.0010 at `d` = 0.14386 mm**, which crosses the K = 1 boundary and is what moves
+`required n` from 0 to 1. The value stays a lower bound — three plateau edges of very many
+were pinned (a fourth plateau was walked only as a control), and a dense search cannot
+prove a supremum over a continuum — so the true K can only be *higher* than 1.0010. That
+does not disturb the cap: `n = 1` is nowhere near the cap-4 budget, and no plausible
+reading of this class's data approaches K ≈ 16.
 
 ### 3.2 Cost
 
@@ -554,11 +928,22 @@ counting the initial pass so they are comparable:
 
 ### 3.3 Decision — keep the cap at 4
 
-*Buys over 3*: K headroom 16 vs 8, i.e. 7.7× vs 3.8× over the worst measured class. With
-four classes known only as lower bounds (sweep, pipe, spline and nurbs_surface) and one
-(loft) with no datum at all, the extra doubling is cheap insurance against classes this
-session could not fully pin down — three by the 90 s budget wall, one (nurbs_surface) by
-an unresolved oscillation.
+*Buys over 3*: K headroom 16 vs 8, i.e. 7.7× vs 3.8× over the worst measured class. That
+ratio is unchanged by task #7128: nurbs_surface rose from 0.9975 to 1.0010, but the worst
+measured class is still the sphere at 2.079, so 16/2.079 = 7.7× stands as derived.
+
+The *argument* around it does move, and is re-derived rather than left standing. Four
+classes are still known only as lower bounds (sweep, pipe, spline and nurbs_surface) and
+one (loft) still has no datum at all, so the extra doubling is still cheap insurance
+against classes this session could not fully pin down — but the reasons now differ: three
+by the 90 s budget wall, and nurbs_surface because a dense search cannot prove a supremum
+over a continuum. Its oscillation is no longer unresolved (§1.5, task #7128); three pinned
+plateau edges simply are not exhaustiveness. That class has also become the **worked
+example** for the insurance rather than merely a claimant on it: believed to peak at
+0.9975, it was found on denser walking to exceed 1 (1.0010, `n` = 1). A lower-bound row
+moving upward once walked properly is precisely the risk the extra doubling covers, and it
+has now happened once, measured — which strengthens the case for 4 rather than weakening
+it.
 
 *Costs*: worst-case ~6.0 min instead of ~2.9 min on the re-baselined sphere — a worst
 case reached only when **every** attempt fails. The measured classes converge at
@@ -623,6 +1008,70 @@ done
 
 **A regime walk** — same loop, with a second `sed` expression rewriting the constructor,
 e.g. `s/torus\(1000mm, 100mm\)/torus(1000mm, 20mm)/`.
+
+**A dense parallel walk** (task #7128) — what the plain ladder above does not cover. Three
+things differ once probes run concurrently and the ratios are read to 4 dp:
+
+```bash
+F=tests/prd-gate/fixtures/pnrg_envelope_nurbs_surface.ri
+# (1) Each d needs its own PARENT dir.  The basename must stay pnrg_envelope_<class>.ri
+#     for the module-path rule above, so concurrent probes sharing one path clobber each
+#     other.  Per §0 Caveat 1 ratios are load-invariant and exact — only wall clocks are
+#     contended — so parallelism cannot corrupt the data, only its timings.  P=4; do not
+#     raise it on a box already oversubscribed.
+probe() {                            # probe <d>  ->  "<d> <a|NO-DATUM|TIMEOUT>"
+  local d=$1 dir=/tmp/pnrg7128/$1 b; b=$(basename "$F")
+  mkdir -p "$dir"
+  sed -E "s/#precision\([^)]*\)/#precision($d)/" "$F" > "$dir/$b"
+  grep -q "^#precision($d)\$" "$dir/$b" || { echo "$d SED-FAILED"; return 1; }
+  local out rc a
+  out=$(timeout 240 ./target/release/reify check "$dir/$b" 2>&1); rc=$?
+  # (2) The failure tokens are FATAL for the row — never a number, never 0 — and they
+  #     must not be merged, because a kill and a non-realization both leave the grep
+  #     empty.  A §0 Caveat-2 non-realization exits 0 and prints no deviation line, so a
+  #     harness that records the empty grep builds a table of confident false near-zero
+  #     ratios.  A `timeout` kill (rc 124) is instead a COST result, and this class's
+  #     "not budget-limited" claim (§1.5) is exactly what a merged token would hide.
+  #     Capturing `out` first is what makes rc readable: inside a pipeline $? is the
+  #     grep's, not reify's.
+  [ "$rc" -eq 124 ] && { echo "$d TIMEOUT"; return 0; }
+  a=$(printf '%s\n' "$out" | grep -oE 'deviation [0-9.e+-]+ m' | head -1 | awk '{print $2}')
+  echo "$d ${a:-NO-DATUM}"
+}
+export -f probe; export F
+printf '%s\n' 0.143mm 0.14386mm 0.144mm 0.145mm | xargs -P4 -I{} bash -c 'probe {}' \
+  | sort -g | python3 ratio.py
+```
+
+```python
+# ratio.py — (3) ratios via decimal.Decimal with ROUND_HALF_UP at 4 dp.
+# awk '%.4f' is WRONG here: it rounds exact ties DOWN.  The 0.8 mm rung is a live
+# example — 7.658e-4 / 8e-4 = 0.95725 exactly, which awk prints 0.9572 and this
+# prints 0.9573.  One such cell needed its own fix commit in task 6545.
+import sys
+from decimal import Decimal, ROUND_HALF_UP
+for line in sys.stdin:
+    d, a = line.split()
+    if a in ("NO-DATUM", "TIMEOUT", "SED-FAILED"):
+        print(f"{d}\t{a}")
+        continue
+    ratio = Decimal(a) / (Decimal(d.rstrip("m")) / 1000)
+    print(f"{d}\t{a}\t{ratio.quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)}")
+```
+
+To pin a plateau edge rather than grid the interval, bisect `d` downward from a candidate
+to the largest `d` still returning the plateau's `a`, bracketing each edge with a probe on
+*both* sides that returns a different `a` — `a` is not monotone in `d` (§1.5), so an
+unbracketed bisection is unsound. ~10 probes pin one edge; a 1e-4 mm grid over
+[0.12, 0.18] mm would need ~600.
+
+*Checked.* The `probe()` block above was extracted from this file and run verbatim after
+the fact — same lane, same binary, loadavg 149 — and printed `0.143mm 1.429e-4 0.9993`,
+`0.14386mm 1.440e-4 1.0010`, `0.144mm 1.440e-4 1.0000`, `0.145mm 1.450e-4 1.0000` in 26.6 s
+wall at P=4. §1.5's Stage C values therefore reproduce from the *published* recipe in a
+later session, not merely from whatever was typed at the time. The `TIMEOUT` arm was
+exercised by lowering `timeout 240` to `timeout 1` (prints `0.12mm TIMEOUT`, returns 0 so
+`xargs` does not abort) and the `NO-DATUM` arm by the two failures §1.5 records.
 
 **The cost split** (three vectors; the STL path must go to tmpfs to keep the write term
 bounded):

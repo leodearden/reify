@@ -45,7 +45,8 @@
 //!
 //! `RayleighDamping` is only their vehicle — they landed here because task
 //! 6093 held this file's lock and not the binder's. Their contract home is
-//! `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`; the
+//! `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs`;
+//! the
 //! relocation is filed as follow-up (escalation id
 //! `agent-followup-6093-mishomed-tests`). Until it happens, a binder change
 //! must run THIS binary too.

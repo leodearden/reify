@@ -660,6 +660,35 @@ if [ "$TEST_THREADS_SET" -eq 1 ]; then
         echo "verify.sh: ERROR — invalid --test-threads '$TEST_THREADS' (want positive integer)" >&2; exit 64 ;;
     esac
 fi
+
+# THE CLI --test-threads SEAM (task 6375).  gen-nextest-config.sh is the ONE
+# place the derived global pool exists, so it is the one place that can refuse a
+# CLI value which would silently RAISE that pool (nextest's CLI --test-threads
+# outranks --config-file); its header carries the three-way contract.
+#
+# REIFY_NEXTEST_CLI_TEST_THREADS reaches it as a PER-INVOCATION env prefix at
+# each of the two generation sites below, and is deliberately NOT exported.  An
+# export would be process-global for the whole run and inherited by every child
+# — including the infra suites verify.sh itself executes, several of which drive
+# this very generator and pin a pool of their own, and which an inherited value
+# reds (measured: `REIFY_NEXTEST_CLI_TEST_THREADS=2 bash
+# tests/infra/test_occt_gated_scope.sh` goes from 61/0 to 59 passed / 2 FAILED).
+# The prefix reaches the one consumer and nothing else.
+#
+# No TEST_THREADS_SET guard is needed at those sites: an empty value is the
+# unset-flag default and falls through the generator's '' case arm as a no-op,
+# while a set one carries the ^[1-9][0-9]*$ guarantee the validation block above
+# just established, so neither needs re-validating.  Passing it at the
+# invocation rather than here also keeps --print-plan free of any new subprocess,
+# leaving the plan the pure, hermetic oracle the infra suites drive.
+#
+# Because the generator can now legitimately REFUSE (exit 64) and verify.sh runs
+# under `set -euo pipefail`, without a message of its own the run would abort
+# with nothing but the generator's stderr line and no indication of who died.
+_die_nextest_config() {
+    echo "verify.sh: ERROR — gen-nextest-config.sh refused to generate the nextest config (exit $1); its diagnostic is immediately above" >&2
+    exit "$1"
+}
 DF_VERIFY_ROLE="${DF_VERIFY_ROLE:-task}"
 # Role-based PROFILE default: when no explicit --profile was given and the
 # orchestrator merge path stamps DF_VERIFY_ROLE=merge, default to 'both' so
@@ -943,6 +972,10 @@ _jobserver_owner_live() {
     return 0  # LIVE
 }
 
+# The loader path the PLAN-EXECUTION phase runs under: computed by apply_env(),
+# exported once at the phase boundary below (see the SCOPE CONTRACT there).
+_PLAN_LD_LIBRARY_PATH=""
+
 apply_env() {
     if [ -f "$HOME/.cargo/env" ]; then
         # shellcheck disable=SC1091
@@ -1008,24 +1041,29 @@ apply_env() {
 
     # OCCT shared-library search path (mirrors .cargo/run-with-occt.sh).
     #
-    # SCOPE CONTRACT (task 5730, esc-4581-87 / task 5321) — read before touching:
-    # /opt/reify-deps/lib is NOT an OCCT lib dir, it is a whole conda prefix.
-    # Alongside the ~153 libTK* it carries libcrypto.so.3, libcurl.so.4,
+    # SCOPE CONTRACT (tasks 5730/6392, esc-4581-87 / task 5321) — read before
+    # touching: /opt/reify-deps/lib is NOT an OCCT lib dir, it is a whole conda
+    # prefix. Alongside the ~153 libTK* it carries libcrypto.so.3, libcurl.so.4,
     # libexpat.so.1, libz.so.1, libcairo.so.2, libEGL.so.1, libsqlite3.so.0 and
     # hundreds of other system sonames (477 measured 2026-07-28 by intersecting
     # its .so-bearing filenames with /usr/lib/x86_64-linux-gnu — a DATED
     # measurement of unversioned host state that drifts on every environment
     # refresh, not an invariant count). LD_LIBRARY_PATH outranks DT_RUNPATH and
-    # ld.so.cache in the loader search order, so exporting it process-wide is
-    # HOSTILE to every non-Rust subprocess of the gate: it silently substitutes
-    # conda libraries under bare CLI tools. sqlite3 is merely the one that
-    # self-checks its header/source hash and aborts loudly.
+    # ld.so.cache in the loader search order, so it is HOSTILE to every non-Rust
+    # subprocess that inherits it: conda libraries silently substitute under
+    # bare CLI tools. sqlite3 is merely the one that self-checks its
+    # header/source hash and aborts loudly.
     #
-    # The export stays because it is belt-and-braces for the Rust/cargo path
-    # (see the header note above: .cargo/config.toml's `runner` and the
-    # DT_RUNPATH baked into every bin/test binary are the primary mechanisms).
-    # Non-cargo "tool" plan lines are instead emitted via add_tool(), which
-    # prefixes them with a scrub restoring the value captured here.
+    # Hence the value is COMPUTED here and exported only at the PHASE BOUNDARY
+    # (between build_plan and the plan-execution loop). Scope decision and plan
+    # construction — every `git diff`, gen-nextest-config.sh, the run_all.sh
+    # subset probe, and the grep/sed/cut tail — therefore fork on the clean
+    # ambient. The export itself is unchanged in reach: it is belt-and-braces
+    # for the Rust/cargo path (see the header note above: .cargo/config.toml's
+    # `runner` and the DT_RUNPATH baked into every bin/test binary are the
+    # primary mechanisms), and every plan line, cargo or tool, still runs under
+    # it. Non-cargo "tool" plan lines are additionally emitted via add_tool(),
+    # which prefixes them with a scrub restoring the value captured here.
     # REIFY_AMBIENT_LD_LIBRARY_PATH is the SINGLE SOURCE OF TRUTH for that
     # restore, so it must be captured HERE — before either prepend below —
     # or every scrub built from it degrades to a no-op. Restoring the captured
@@ -1035,20 +1073,21 @@ apply_env() {
     export REIFY_AMBIENT_LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
     ENV_LINES+=("export REIFY_AMBIENT_LD_LIBRARY_PATH=${REIFY_AMBIENT_LD_LIBRARY_PATH}")
 
+    _PLAN_LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
     local snap_lib="/snap/freecad/current/usr/lib"
     if [ -d "$snap_lib" ]; then
-        export LD_LIBRARY_PATH="$snap_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        _PLAN_LD_LIBRARY_PATH="$snap_lib${_PLAN_LD_LIBRARY_PATH:+:$_PLAN_LD_LIBRARY_PATH}"
     fi
     local deps_lib="/opt/reify-deps/lib"
     if [ -d "$deps_lib" ] && ls "$deps_lib"/libTKernel.so* >/dev/null 2>&1; then
-        export LD_LIBRARY_PATH="$deps_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        _PLAN_LD_LIBRARY_PATH="$deps_lib${_PLAN_LD_LIBRARY_PATH:+:$_PLAN_LD_LIBRARY_PATH}"
     fi
-    ENV_LINES+=("export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}")
+    ENV_LINES+=("export LD_LIBRARY_PATH=${_PLAN_LD_LIBRARY_PATH:-}")
 }
 apply_env
 
 # ---------------------------------------------------------------------------
-# Scope decision: RUN_RUST / RUN_GUI / RUN_OCCT_GATE
+# Scope decision: RUN_RUST / RUN_GUI / RUN_OCCT_GATE / GUI_PATH_SIGNAL
 # ---------------------------------------------------------------------------
 RUN_RUST=0
 RUN_GUI=0
@@ -1056,6 +1095,10 @@ RUN_GUI=0
 # Still computed (gate=1 when OCCT-touching files change) and printed in the
 # --print-plan header for observability; it no longer gates any test emission.
 RUN_OCCT_GATE=0
+# GUI_PATH_SIGNAL: decide_scope's path-signal half, exported for the vitest gate.
+# Initialized here so no decide_scope exit — present or future — can leave it
+# unbound under `set -u`; every exit that widens sets it to 1 explicitly.
+GUI_PATH_SIGNAL=0
 CHANGED_FILES_RAW=""   # post-.task/ filtered file list; set by decide_scope for branch/staged
 
 # is_occt_crate <crate-name> — true iff the crate is in the declared OCCT set.
@@ -1090,6 +1133,20 @@ is_occt_crate() {
 #     stdlib_ns_qualified_expr.ri, stdlib_ns_qualified_type.ri (the two
 #     qualified-reference probes held as qualified_ref_grammar_tests.rs's
 #     prd_gate_qualified_{expr,type}_fixture_parses_with_zero_errors, task 5495)
+#   named by a WAIVER TABLE in a compiled test (task 5305): the seven fixtures
+#     keyed by (file, param) in ctor_conformance_corpus_survey.rs's
+#     CTOR_CONFORMANCE_CORPUS_RESIDUAL —
+#     curvature_rad_literal.ri,
+#     dcr_load_ctor_dimension_silent.ri,
+#     dcr_material_dimension_silent.ri,
+#     dcr_reader_ctor_dimension_silent.ri,
+#     dcr_shaper_frequency_dimension_silent.ri,
+#     dcr_solver_load_dropped_dimensioned.ri,
+#     dcr_yield_stress_dimension_silent.ri.
+#     That target compiles the whole tracked corpus and cross-checks each entry
+#     against the warning it excuses, so an edit to one of these files makes its
+#     entry stale or its warning unexplained — two RED outcomes a docs-only
+#     commit would otherwise carry to main ungated.
 #   conservative, doc-comment mentions only today (listing a name is cheap, and
 #   a doc mention is usually the first trace of a read about to exist):
 #     compiler_type_hygiene_trait_args_silent_accept.ri, stdlib_ns_mode_member.ri,
@@ -1119,7 +1176,7 @@ is_occt_crate() {
 # (mirrors select_infra_tests/select_harness_kloc_guard) — required here
 # because one name is a strict prefix of another
 # (geometry_let_selector_consumer.ri vs …_consumer_edit.ri).
-_RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri cost_robustness_tradeoff_form.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri jacobian_column_members.ri r3b_displacement_at_selector_grammar.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
+_RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri cost_robustness_tradeoff_form.ri curvature_rad_literal.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri dcr_load_ctor_dimension_silent.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri jacobian_column_members.ri r3b_displacement_at_selector_grammar.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
 
 # GUI-COUPLED prd-gate fixtures (task 6435). Basenames PINNED in EXPECTED_CLEAN
 # in gui/src/__tests__/reifyGrammarCorpus.test.ts — the grammar drift ledger,
@@ -1161,7 +1218,7 @@ _GUI_COUPLED_RI_FIXTURES=" bare_angle_silently_accepted.ri collection_expr_index
 
 decide_scope() {
     if [ "$SCOPE" = "all" ]; then
-        RUN_RUST=1; RUN_GUI=1; RUN_OCCT_GATE=1
+        RUN_RUST=1; RUN_GUI=1; RUN_OCCT_GATE=1; GUI_PATH_SIGNAL=1
         return
     fi
 
@@ -1171,9 +1228,20 @@ decide_scope() {
     #   branch: git diff "$_MERGE_BASE" (working tree vs merge-base(main,HEAD);
     #           tracked changes only — committed, staged, unstaged tracked
     #           modifications; untracked new files are not included)
-    # Map each path to its impact:
-    #   rust+gui+gate   workspace-global or OCCT-touching crate change
-    #   rust+gui        a non-OCCT Rust crate / Tauri crate change (Rust ⊇ GUI)
+    # Two INDEPENDENT accumulators plus the OCCT gate:
+    #   rust  a changed path can affect Rust compilation or test outcomes.
+    #   gui   a FRONTEND consumer READS this changed path — or we are failing
+    #         wide. Task 7427 narrowed this from "GUI checks are implied": it
+    #         no longer fires for `crates/**`, because whether a crate change
+    #         needs the frontend SUITE is a closure question, not a path one.
+    #         RUN_GUI is still rust|gui, so the cheap GUI checks (npm ci, tsc)
+    #         are unmoved on every path; `gui` alone is exported as
+    #         GUI_PATH_SIGNAL and gates only vitest.
+    #   gate  the OCCT serialization gate is required.
+    # Shapes:
+    #   rust+gate       an OCCT-touching crate change
+    #   rust            a non-OCCT Rust crate change
+    #   rust+gui        a Tauri-crate / grammar / workspace-global change
     #   gui             frontend-only TS change (Rust ⊥ GUI)
     #   ignore          docs / markdown / yaml config
     #   conservative    anything unrecognised -> treat as rust+gui+gate
@@ -1186,7 +1254,7 @@ decide_scope() {
     if [ "$SCOPE" = "branch" ]; then
         if ! _diff_out="$(git -C "$REPO_ROOT" diff --name-only --diff-filter=ACMRD "$_MERGE_BASE")"; then
             echo "verify.sh: WARNING — --scope branch git diff failed — failing WIDE to --scope all (contract C5)" >&2
-            RUN_RUST=1; RUN_GUI=1; RUN_OCCT_GATE=1
+            RUN_RUST=1; RUN_GUI=1; RUN_OCCT_GATE=1; GUI_PATH_SIGNAL=1
             return
         fi
         _files="$(grep -v '^\.task/' <<< "$_diff_out" || true)"
@@ -1211,13 +1279,13 @@ decide_scope() {
     if [ "$SCOPE" = "branch" ]; then
         if ! _rsrc="$(git -C "$REPO_ROOT" diff --name-status --diff-filter=R -M "$_MERGE_BASE" | cut -f2)"; then
             echo "verify.sh: WARNING — --scope branch rename-source diff failed — failing WIDE to --scope all (contract C5)" >&2
-            RUN_RUST=1; RUN_GUI=1; RUN_OCCT_GATE=1
+            RUN_RUST=1; RUN_GUI=1; RUN_OCCT_GATE=1; GUI_PATH_SIGNAL=1
             return
         fi
     else
         if ! _rsrc="$(git -C "$REPO_ROOT" diff --cached --name-status --diff-filter=R -M | cut -f2)"; then
             echo "verify.sh: WARNING — --scope staged rename-source diff failed — failing WIDE to --scope all (contract C5)" >&2
-            RUN_RUST=1; RUN_GUI=1; RUN_OCCT_GATE=1
+            RUN_RUST=1; RUN_GUI=1; RUN_OCCT_GATE=1; GUI_PATH_SIGNAL=1
             return
         fi
     fi
@@ -1252,7 +1320,13 @@ decide_scope() {
         [ -z "$f" ] && continue
         case "$f" in
             crates/*)
-                rust=1; gui=1
+                # NO gui=1 (task 7427): a workspace crate is not a path the
+                # frontend reads. RUN_GUI is unchanged — it is rust|gui, and
+                # rust=1 here already — so npm ci + tsc still run. What this
+                # buys is the vitest gate: whether a crate change needs the
+                # frontend SUITE is answered by the reverse-dependency closure
+                # (closure_reaches_reify_gui), not by the path.
+                rust=1
                 crate="${f#crates/}"; crate="${crate%%/*}"
                 if is_occt_crate "$crate"; then gate=1; fi
                 ;;
@@ -1373,12 +1447,38 @@ decide_scope() {
                 # widen the heavy-check surface with no matching benefit.
                 gui=1
                 ;;
-            docs/*|*.md|*.yaml|*.yml)
-                : # no heavy checks
+            examples/*.ri)
+                # A corpus leaf (task 7427). Same answer as the `*)` catch-all
+                # it used to reach, but each flag is now EARNED:
+                #   rust — the corpus gates are compiled Rust test targets
+                #          that open these leaves by path.
+                #   gui  — gui/src/__tests__/reifyGrammarCorpus.test.ts sets
+                #          CORPUS_ROOTS = ['examples', …] and walks the tree
+                #          recursively, so this is a genuine frontend read.
+                #   gate — reify-eval and reify-cli are both declared in
+                #          scripts/occt-touching-crates.txt.
+                # A bash `case` glob's `*` spans `/`, so nested corpus dirs
+                # (examples/auto/, …) land here too.
+                rust=1; gui=1; gate=1
                 ;;
             *)
-                # Unrecognised path: be conservative.
-                rust=1; gui=1; gate=1
+                # Inert (documentation / configuration-only) -> no heavy
+                # checks; anything else unrecognised -> be conservative.
+                # The class is defined once, by reify_is_inert_path
+                # (scripts/affected-crates-lib.sh, sourced above — see its
+                # header).
+                #
+                # Consulted HERE, inside the catch-all, and deliberately NOT
+                # hoisted ahead of the case: every arm above must keep winning
+                # over the inert rule — `gui/*` (a gui/*.md or gui/*.yaml is GUI
+                # work), `tests/prd-gate/fixtures/*.ri` (tasks 5536/6435) and
+                # the docs/gui-event-channels.md carve-out (task 6281), which
+                # sits ahead of this arm for exactly that reason.
+                if reify_is_inert_path "$f"; then
+                    : # no heavy checks
+                else
+                    rust=1; gui=1; gate=1
+                fi
                 ;;
         esac
     done <<< "$_classify"
@@ -1391,6 +1491,9 @@ decide_scope() {
     # Any Rust change implies the (fast) GUI checks too.
     RUN_GUI=$(( rust | gui ))
     RUN_OCCT_GATE=$gate
+    # The frontend-read signal on its own, WITHOUT the rust implication —
+    # the vitest half of the node lane is gated on it (task 7427).
+    GUI_PATH_SIGNAL=$gui
 }
 decide_scope
 
@@ -1421,6 +1524,47 @@ add_selected_infra_glob() {
     case " $SELECTED_INFRA_GLOBS " in
         *" $1 "*) : ;;
         *) SELECTED_INFRA_GLOBS="${SELECTED_INFRA_GLOBS:+$SELECTED_INFRA_GLOBS }$1" ;;
+    esac
+}
+
+# selected_infra_leaf_env <glob-or-path> — print the command prefix a single
+# selective-infra leaf runs under, or nothing. Sits beside
+# add_selected_infra_glob for the same reason that helper gives: per-selector
+# knowledge is written once in a named place rather than inlined into the
+# generic emission loop.
+#
+# The output carries its OWN trailing space and is EMPTY for every glob but
+# one, so every other selective leaf stays byte-identical — that is what keeps
+# the --print-plan byte-identity oracles (test_occt_flock_gate.sh Tests 17/17b,
+# test_occt_gated_scope.sh) untouched by this helper's existence.
+#
+# The SCOPE re-check is not redundant with select_cheap_ptodo_gate's own.
+# That selector is the sole producer of this glob token today and is already
+# staged-only, but a future verify-pipeline-infra-tests.txt row mapping some
+# artifact to this same path would reach the arm under --scope branch, where a
+# warm-lane stamped target/ makes a rc-125-with-present-binary freshness
+# result the COMMON case and a hard refusal would red every task lane. What
+# the arm produces there is an EMPTY prefix — the same un-armed, byte-identical
+# leaf every other glob gets — and that un-armed branch leaf is what
+# test_verify_scope.sh's PT-RATCHET-BRANCH pins.
+#
+# `if`, not `[ "$SCOPE" = staged ] && printf`: the sole caller assigns this
+# helper's output under `set -euo pipefail`, where a plain assignment's status
+# IS the command substitution's status. A trailing false `&&` test would make
+# the function return 1, abort the enclosing function and the whole script, and
+# emit NO plan at all — a silent rc-1 exit rather than the graceful un-armed
+# leaf this arm is written to produce. An `if` whose condition is false is 0.
+selected_infra_leaf_env() {
+    case "$1" in
+        tests/infra/test_reify_audit_ptodo.sh)
+            # The ratchet is mandatory on the hook-gated main-landing gate: a
+            # skipped ratchet there is a refusal, not a budget-safe degrade.
+            # Read by tests/infra/test_reify_audit_ptodo.sh; the name agreement
+            # between the two files is pinned by PT-RATCHET-DRIFT.
+            if [ "$SCOPE" = "staged" ]; then
+                printf 'REIFY_PTODO_RATCHET_REQUIRED=1 '
+            fi
+            ;;
     esac
 }
 
@@ -1612,22 +1756,47 @@ select_harness_kloc_guard
 # the wall fails the commit loudly, which is the correct direction of error
 # for a gate protecting a main landing.
 #
-# A THIRD outcome is accepted too, not just the two above: if
+# A THIRD outcome of that rebuild is NOT accepted, and is closed here. If
 # reify_audit_guard's rebuild attempt still leaves the binary judged stale
 # (rc=125 — e.g. a cargo no-op fingerprint match against an on-disk mtime
 # older than the last crates/reify-audit commit, such as a warm-lane target/
 # with stamped mtimes) while REIFY_AUDIT_BIN stays executable,
-# tests/infra/test_reify_audit_ptodo.sh sets RATCHET_SKIP=1 and skips exactly
-# scenario (a)+(b) — the gen-driven fingerprint ratchet this selector exists
-# to run — while still executing its (c)-(f) exit-code hard gate, which is
+# tests/infra/test_reify_audit_ptodo.sh still sets RATCHET_SKIP=1 and skips
+# exactly scenario (a)+(b) — the gen-driven fingerprint ratchet this selector
+# exists to run — while executing its (c)-(g) exit-code hard gate, which is
 # High-severity-only. phantom-tracking is MEDIUM, so that hard gate does not
-# catch it: this path can exit GREEN on a main landing without the ratchet
-# having run at all. Left accepted rather than closed here because closing it
-# needs a change to test_reify_audit_ptodo.sh, outside this task's scope
-# (scripts/verify.sh + tests/infra/test_verify_scope.sh) — e.g. an opt-in
-# REIFY_PTODO_RATCHET_REQUIRED that turns the rc=125-with-present-binary case
-# into a hard failure instead of RATCHET_SKIP=1. Filed as follow-up work
-# rather than done inline (task 6817 amendment pass).
+# catch it, and on its own that leaves this path able to exit GREEN on a main
+# landing with the ratchet never having run. The leaf this selector emits
+# therefore carries REIFY_PTODO_RATCHET_REQUIRED=1 (selected_infra_leaf_env,
+# beside add_selected_infra_glob above), under which that file refuses rather
+# than skipping — for ANY skip cause, not just this rc. The degrade itself is
+# left intact, because it is the right behaviour everywhere the knob is not
+# set; only this gate declares the ratchet mandatory.
+#
+# WHAT THAT ARMS, AND WHAT IT DOES NOT. The claim is narrower than "the
+# ratchet can no longer be skipped before a main landing", and the gap is
+# named here rather than left to be rediscovered from the plan. --scope
+# staged has exactly ONE production caller — hooks/project-checks, reached
+# from hooks/pre-commit, which returns early for every branch but `main`. The
+# armed path is therefore a hook-gated `git commit` on main whose staged set
+# includes a swept extension: precisely the 108d1d9226 shape (a docs landing
+# carrying a tests/prd-gate/fixtures/*.ri), which is the incident this
+# selector was written for.
+#
+# The merge tier is NOT armed, and it is the route by which most source
+# reaches main. hooks/pre-merge-commit and scripts/land.sh both run
+# DF_VERIFY_ROLE=merge ... --scope all, where the selective-infra emission
+# block (add_tool site below) is suppressed outright and this file instead
+# runs inside the run_all.sh pool leaf, under REIFY_AUDIT_NO_COLD_BUILD=1.
+# A stale binary there returns guard rc 75 rather than 125 — a different rc
+# reaching the same RATCHET_SKIP=1 and the same green-with-the-ratchet-unrun
+# outcome. The pre-build that feeds that tier asserts the binary EXISTS, not
+# that it is FRESH (see the ERROR(#4624) existence check below), so a cargo
+# no-op against a stamped target/ keeps that state reachable there. Whether
+# the merge tier should also require the ratchet is a decision about
+# REIFY_AUDIT_NO_COLD_BUILD=1 on that pool leaf — a budget question about its
+# 30m wall — which this selector cannot answer and does not claim to; it is
+# filed separately.
 # ---------------------------------------------------------------------------
 select_cheap_ptodo_gate() {
     [ "$SCOPE" = "staged" ] || return 0
@@ -1770,6 +1939,137 @@ if [ "$NARROW_ACTIVE" -eq 1 ]; then
     if [ -z "$AFFECTED_ALL_FLAGS" ]; then
         NARROW_ACTIVE=0
     fi
+fi
+
+# ---------------------------------------------------------------------------
+# closure_reaches_reify_gui — returns 0 (true) iff this run must treat
+# reify-gui as affected.  The ONE implementation of that question (task 6268,
+# extracted by task 7427); two consumers read it — the gui-feature nextest
+# pass and the vitest lane gate just below.
+#
+# THREE EXPLICIT ARMS, read off SCOPE and AFFECTED_CLOSURE directly:
+#   1. SCOPE=all            -> true.  The merge gate never narrows; that is a
+#                              CONTRACT, not a side effect.
+#   2. closure unavailable  -> true.  FAIL WIDE.  "Unavailable" covers the ALL
+#                              sentinel (a C4 workspace-global file, a C5
+#                              cargo-metadata failure, an unmappable path), an
+#                              empty CHANGED_FILES_RAW, and a malformed
+#                              REIFY_AFFECTED_CRATES_OVERRIDE.  The empty case
+#                              is genuinely OVERLOADED — decide_scope's
+#                              git-failure fail-wide paths also return
+#                              RUN_RUST=1 with CHANGED_FILES_RAW="" — so
+#                              conflating it with "provably no crates" is
+#                              CORRECT here and cannot be tightened without a
+#                              separate closure-available sentinel.
+#   3. otherwise            -> true iff reify-gui ∈ AFFECTED_CLOSURE.
+#
+# NOT keyed on NARROW_ACTIVE.  NARROW_ACTIVE is a narrowing-ACTIVATION flag,
+# not a scope oracle: it is also 0 for `--scope staged` without `--narrow` and
+# for the two fail-wide resets, so reading it as "scope=all, i.e. the merge
+# gate" was a false equivalence.
+#
+# WHAT ACTUALLY NARROWS is smaller than "every hook run", and the difference is
+# measured, not assumed: only a diff whose paths ALL map to crates AND whose
+# reverse closure excludes reify-gui takes arm 3.  A scripts-only diff yields
+# the ALL sentinel (C5/unmappable) and a tests/infra-only one yields an EMPTY
+# closure (affected-crates-lib treats tests/infra/* as non-crate, while
+# decide_scope's conservative arm still sets RUN_RUST=1) — both take arm 2.
+# Arm 1 keeps the merge gate unconditional, so a hook-tier miss can only ever
+# be LATENCY, never a coverage hole.
+#
+# Membership is the REVERSE-dependency closure, not a hand-listed trigger set
+# (reify-gui/reify-eval/reify-mesh-morph), so a change to an indirect
+# dependency (reify-syntax, reify-ir, …) cannot silently fall out of it.
+# Measured on this tree: crates/reify-eval/src/lib.rs and
+# crates/reify-mesh-morph/src/lib.rs yield sets containing reify-gui;
+# crates/reify-doc/src/lib.rs does not.
+#
+# The closure is normalized ONCE into a word ARRAY so arm 2 sees every
+# malformed-knob shape as "unavailable" rather than as a crate list — a
+# malformed REIFY_AFFECTED_CRATES_OVERRIDE must fail WIDE, never narrow, the
+# same invariant as the AFFECTED_ALL_FLAGS-empty reset above.  Three shapes,
+# each measured to narrow the answer AWAY before this normalization existed:
+#   * whitespace-only ("   ") — non-empty and not the ALL sentinel, so it
+#     reached the membership loop, split to NOTHING, and never ran the loop
+#     body.  Closed by the EMPTY-array test.
+#   * glob-bearing ("*") — the split is an UNQUOTED expansion, so with pathname
+#     expansion live it expanded against the CWD into directory entries
+#     ("crates scripts") instead of collapsing; measured on a hermetic fixture,
+#     `*` on --scope staged printed `closure=*` and emitted ZERO gui-feature
+#     passes.  Closed by `set -f` ACROSS the split (the caller's -f state is
+#     saved and restored — verify.sh does not otherwise run with noglob).
+#   * any token outside cargo's package-name grammar — a surviving glob
+#     metacharacter, a path fragment, a stray flag.  A real affected_crates()
+#     closure only ever holds crate names, so a token that cannot BE one means
+#     the knob is malformed, not that the closure excludes reify-gui.  Closed
+#     by the grammar check, which routes to arm 2 rather than arm 3.
+#
+# Role-specific skips belong at the CALL SITE, not here: the gui-feature pass's
+# `DF_VERIFY_ROLE != offline` guard is a property of that pass, not of the
+# closure.
+# ---------------------------------------------------------------------------
+closure_reaches_reify_gui() {
+    [ "$SCOPE" = "all" ] && return 0
+
+    local -a _words=()
+    local _w _malformed=0 _noglob_was=1
+    case "$-" in *f*) ;; *) _noglob_was=0 ;; esac
+    set -f
+    # shellcheck disable=SC2086
+    for _w in $AFFECTED_CLOSURE; do
+        _words+=("$_w")
+        case "$_w" in
+            *[!A-Za-z0-9_.-]*) _malformed=1 ;;
+        esac
+    done
+    if [ "$_noglob_was" -eq 0 ]; then set +f; fi
+
+    # Arm 2 — closure unavailable: fail wide.
+    [ "${#_words[@]}" -eq 0 ] && return 0
+    [ "$_malformed" -eq 1 ] && return 0
+    { [ "${#_words[@]}" -eq 1 ] && [ "${_words[0]}" = "ALL" ]; } && return 0
+
+    # Arm 3 — a real crate list: membership decides.
+    for _w in "${_words[@]}"; do
+        [ "$_w" = "reify-gui" ] && return 0
+    done
+    return 1
+}
+
+# RUN_GUI_VITEST — does the node lane run `npm test` (vitest), or only
+# npm ci + tsc?  Task 7427.
+#
+# tsc is UNCONDITIONAL whenever the node lane runs: the frontend consumes
+# generated Rust->TS bindings, so any Rust change can break typechecking.
+# vitest is not — it exercises frontend behaviour, so it earns its ~100-120s
+# only when the frontend could actually have changed.  THREE routes, any one
+# sufficient:
+#   GUI_PATH_SIGNAL            decide_scope classified a changed path as one a
+#                              frontend consumer READS (see its accumulators).
+#   closure_reaches_reify_gui  the affected-crate closure reaches reify-gui —
+#                              see that predicate for SCOPE=all and its
+#                              fail-wide arms.
+#   REIFY_GUI_RETRY_SPECS      a caller ASKED for named vitest specs to be
+#                              re-run (dark-factory's narrowed retry).
+#                              Non-empty is the whole test: a malformed value
+#                              still runs the full suite via the loud §4.3
+#                              fallback at the forwarding site.  Why a request
+#                              counts as evidence: contract C7.
+#
+# So the ONLY shape that skips vitest is a RUN_RUST=1 branch/staged diff with a
+# real crate closure that excludes reify-gui and no spec request.  A Rust-only
+# change outside that cone which nonetheless breaks the frontend is caught at
+# the merge gate — delay ≤ 1 gate, never a coverage hole.
+RUN_GUI_VITEST=0
+if [ "$RUN_GUI" -eq 1 ] && { [ "$GUI_PATH_SIGNAL" -eq 1 ] || [ -n "${REIFY_GUI_RETRY_SPECS:-}" ] || closure_reaches_reify_gui; }; then
+    RUN_GUI_VITEST=1
+fi
+# A scope with no node lane at all (RUN_GUI=0) can still swallow a retry
+# request, since the route above is conjoined with RUN_GUI.  Warn rather than
+# pass in silence, and print the observed flags rather than narrating them, so
+# the line cannot outlive the gate that produced it.
+if [ -n "${REIFY_GUI_RETRY_SPECS:-}" ] && [ "$RUN_GUI_VITEST" -eq 0 ]; then
+    echo "verify.sh: WARNING — REIFY_GUI_RETRY_SPECS is set but this run emits no vitest lane (RUN_GUI=$RUN_GUI RUN_GUI_VITEST=0); the requested specs will NOT run" >&2
 fi
 
 # ---------------------------------------------------------------------------
@@ -2068,7 +2368,10 @@ emit_nextest_pass() {
             # Produces a full copy of .config/nextest.toml with the occt cap rewritten
             # to the resolved env value; removed by _verify_cleanup on EXIT.
             if [ -z "$_NEXTEST_CONFIG_FILE" ]; then
-                _NEXTEST_CONFIG_FILE="$("$SCRIPT_DIR/gen-nextest-config.sh")"
+                # Per-invocation prefix, never an export — see "THE CLI
+                # --test-threads SEAM" beside _die_nextest_config.
+                _NEXTEST_CONFIG_FILE="$(REIFY_NEXTEST_CLI_TEST_THREADS="$TEST_THREADS" "$SCRIPT_DIR/gen-nextest-config.sh")" \
+                    || _die_nextest_config "$?"
             fi
             _cfg_path="$_NEXTEST_CONFIG_FILE"
         fi
@@ -2447,55 +2750,19 @@ add_test_passes() {
     #     copy would cost another cold link for zero added coverage.
     #   * Skipped for DF_VERIFY_ROLE=offline, whose plan runs the heavy #[ignore]
     #     partition only.
-    #   * NARROWED on the same affected-crate axis every other narrowed pass uses.
-    #     THREE EXPLICIT ARMS, read off SCOPE and AFFECTED_CLOSURE directly:
-    #       1. SCOPE=all            -> emit.  The merge gate never narrows; that is
-    #                                  a CONTRACT, not a side effect.
-    #       2. closure unavailable  -> emit.  FAIL WIDE.  "Unavailable" covers the
-    #                                  ALL sentinel (a C4 workspace-global file, a
-    #                                  C5 cargo-metadata failure, an unmappable
-    #                                  path), an empty CHANGED_FILES_RAW, and a
-    #                                  malformed REIFY_AFFECTED_CRATES_OVERRIDE.
-    #                                  The empty case is genuinely OVERLOADED —
-    #                                  decide_scope's git-failure fail-wide paths
-    #                                  also return RUN_RUST=1 with
-    #                                  CHANGED_FILES_RAW="" — so conflating it
-    #                                  with "provably no crates" is CORRECT here
-    #                                  and cannot be tightened without a separate
-    #                                  closure-available sentinel.
-    #       3. otherwise            -> emit iff reify-gui ∈ AFFECTED_CLOSURE.
-    #     This is NOT keyed on NARROW_ACTIVE.  NARROW_ACTIVE is a narrowing-
-    #     ACTIVATION flag, not a scope oracle: NARROW_ACTIVE=0 ALSO holds for
-    #     `--scope staged` without `--narrow` and for the two fail-wide resets, so
-    #     the old "emitted whenever NARROW_ACTIVE=0 (scope=all, i.e. the merge
-    #     gate)" reading was a false equivalence.  Its cost was concrete and
-    #     measured: `hooks/project-checks` execs
+    #   * NARROWED on the same affected-crate axis every other narrowed pass uses,
+    #     by closure_reaches_reify_gui (defined above — task 6268's three arms and
+    #     their fail-wide ladder; task 7427 extracted them so the vitest lane reads
+    #     the same answer instead of a second copy).
+    #     WHAT THAT BUYS *THIS* PASS is a full tauri + webkit2gtk + OCCT
+    #     feature-unification link (20m42s cold / ~137s warm, and NOT shareable
+    #     with any other pass's artifacts).  Emitting it unconditionally made a
+    #     `-p reify-doc` branch plan pay that link for a change no reify-doc edit
+    #     can regress — while that same plan had already narrowed reify-gui's
+    #     UNGATED tests away, so running its gui-GATED ones was incoherent.  The
+    #     per-commit hook paid it too: `hooks/project-checks` execs
     #     `verify.sh all --profile debug --scope staged --include-infra`, and a
-    #     staged crates/reify-doc/src/lib.rs emitted 1 gui-feature pass — the
-    #     per-commit hook paying the full `--features gui` link for a closure that
-    #     cannot reach reify-gui.  Arm 3 now covers that shape too.
-    #     WHAT ACTUALLY BENEFITS is narrower than "every hook run", and the
-    #     difference is measured, not assumed: only a staged diff whose paths ALL
-    #     map to crates AND whose reverse closure excludes reify-gui takes arm 3.
-    #     A scripts-only staged diff yields the ALL sentinel (C5/unmappable) and a
-    #     tests/infra-only one yields an EMPTY closure (affected-crates-lib treats
-    #     tests/infra/* as non-crate, while decide_scope's conservative arm still
-    #     sets RUN_RUST=1) — both take arm 2 and keep paying the link.
-    #     Arm 1 keeps the merge gate unconditional, so a hook-tier miss can only
-    #     ever be LATENCY, never a coverage hole.
-    #     affected_crates() is a REVERSE-dependency closure, so a change anywhere in
-    #     reify-gui's dependency graph puts reify-gui in the set — measured on this
-    #     tree: crates/reify-eval/src/lib.rs and crates/reify-mesh-morph/src/lib.rs
-    #     both yield sets containing reify-gui; crates/reify-doc/src/lib.rs does not.
-    #     Emitting unconditionally made a `-p reify-doc` branch plan pay a full
-    #     tauri + webkit2gtk + OCCT feature-unification build (20m42s cold / ~137s
-    #     warm, and NOT shareable with any other pass's artifacts) that no reify-doc
-    #     change can regress — while that same plan already narrowed reify-gui's
-    #     UNGATED tests away, so running its gui-GATED ones would have been
-    #     incoherent.  Membership is the reverse closure rather than a hand-listed
-    #     trigger set (reify-gui/reify-eval/reify-mesh-morph) so a change to an
-    #     indirect dependency (reify-syntax, reify-ir, …) cannot silently fall out
-    #     of the trigger.
+    #     staged crates/reify-doc/src/lib.rs emitted one such pass.
     #
     # NOT reusing emit_nextest_pass — nor extending it with an optional extra-flags
     # parameter, which was considered and rejected.  Three structural mismatches, not
@@ -2538,60 +2805,12 @@ add_test_passes() {
     # ensure-gui-sidecar-placeholder.sh runs first for the same reason it does at the
     # build_plan compile-check: tauri_build::build() validates bundle.externalBin and
     # panics when gui/src-tauri/sidecar/reify-sidecar-<triple> is absent from disk.
-    local _emit_gui_feature_pass=0 _gui_ac
-    # Normalize the closure ONCE, into a word ARRAY, so that arm 2 below sees
-    # every malformed-knob shape as "unavailable" rather than as a crate list.
-    # A malformed REIFY_AFFECTED_CRATES_OVERRIDE must fail WIDE, never narrow —
-    # the same invariant, for the same reason, as the AFFECTED_ALL_FLAGS-empty
-    # reset in the Phase-2 narrowing block.  Three shapes, each measured to
-    # narrow the pass AWAY before this normalization existed:
-    #   * whitespace-only ("   ") — non-empty and not the ALL sentinel, so it
-    #     reached the membership loop, split to NOTHING, and never ran the loop
-    #     body.  Closed by the EMPTY-array test.
-    #   * glob-bearing ("*") — the split is an UNQUOTED expansion, so with
-    #     pathname expansion live it expanded against the CWD into directory
-    #     entries ("crates scripts") instead of collapsing; measured on a
-    #     hermetic fixture, `*` on --scope staged printed `closure=*` and
-    #     emitted ZERO gui-feature passes.  Closed by `set -f` ACROSS the split
-    #     (the caller's -f state is saved and restored — verify.sh does not
-    #     otherwise run with noglob).
-    #   * any token outside cargo's package-name grammar — a surviving glob
-    #     metacharacter, a path fragment, a stray flag.  A real affected_crates()
-    #     closure only ever holds crate names, so a token that cannot BE one
-    #     means the knob is malformed, not that the closure excludes reify-gui.
-    #     Closed by the grammar check, which routes to arm 2 rather than arm 3.
-    local -a _gui_closure_words=()
-    local _gui_closure_malformed=0 _gui_noglob_was=1
-    case "$-" in *f*) ;; *) _gui_noglob_was=0 ;; esac
-    set -f
-    # shellcheck disable=SC2086
-    for _gui_ac in $AFFECTED_CLOSURE; do
-        _gui_closure_words+=("$_gui_ac")
-        case "$_gui_ac" in
-            *[!A-Za-z0-9_.-]*) _gui_closure_malformed=1 ;;
-        esac
-    done
-    if [ "$_gui_noglob_was" -eq 0 ]; then set +f; fi
-    if [ "$DF_VERIFY_ROLE" != "offline" ]; then
-        if [ "$SCOPE" = "all" ]; then
-            # Merge gate: unconditional BY CONTRACT, not as a side effect of
-            # narrowing happening to be inactive.
-            _emit_gui_feature_pass=1
-        elif [ "${#_gui_closure_words[@]}" -eq 0 ] \
-            || [ "$_gui_closure_malformed" -eq 1 ] \
-            || { [ "${#_gui_closure_words[@]}" -eq 1 ] && [ "${_gui_closure_words[0]}" = "ALL" ]; }; then
-            # Closure unavailable — the ALL sentinel from a C4 global file / C5
-            # metadata failure / unmappable path, an empty CHANGED_FILES_RAW, or
-            # a malformed knob (see the normalization above).  Fail WIDE.
-            _emit_gui_feature_pass=1
-        else
-            for _gui_ac in "${_gui_closure_words[@]}"; do
-                if [ "$_gui_ac" = "reify-gui" ]; then
-                    _emit_gui_feature_pass=1
-                    break
-                fi
-            done
-        fi
+    # The `!= offline` guard stays HERE, at the call site: skipping this pass
+    # for the offline role is a property of THIS pass (its plan runs the heavy
+    # #[ignore] partition only), not of the closure.
+    local _emit_gui_feature_pass=0
+    if [ "$DF_VERIFY_ROLE" != "offline" ] && closure_reaches_reify_gui; then
+        _emit_gui_feature_pass=1
     fi
     if [ "$_emit_gui_feature_pass" -eq 1 ]; then
         local _gui_feat_cmd
@@ -2611,7 +2830,10 @@ add_test_passes() {
                 _gui_cfg_path="${TMPDIR:-/tmp}/reify-nextest-occt.<print-plan-placeholder>"
             else
                 if [ -z "$_NEXTEST_CONFIG_FILE" ]; then
-                    _NEXTEST_CONFIG_FILE="$("$SCRIPT_DIR/gen-nextest-config.sh")"
+                    # Per-invocation prefix, never an export — see "THE CLI
+                    # --test-threads SEAM" beside _die_nextest_config.
+                    _NEXTEST_CONFIG_FILE="$(REIFY_NEXTEST_CLI_TEST_THREADS="$TEST_THREADS" "$SCRIPT_DIR/gen-nextest-config.sh")" \
+                        || _die_nextest_config "$?"
                 fi
                 _gui_cfg_path="$_NEXTEST_CONFIG_FILE"
             fi
@@ -2763,7 +2985,9 @@ build_plan() {
     local _gui_cmd="" _sidecar_cmd="" _ts_cmd="" _node_lane=""
     if [ "$RUN_GUI" -eq 1 ] && { [ "$DO_TEST" -eq 1 ] || [ "$DO_LINT" -eq 1 ]; }; then
         # typecheck always (whenever the block runs, test OR lint); npm test only
-        # on the test side. On a merge-gate narrowed retry, dark-factory sets
+        # on the test side AND only when RUN_GUI_VITEST=1 (task 7427 — see that
+        # variable's definition for the gate; tsc is deliberately NOT gated,
+        # because the frontend consumes generated Rust->TS bindings). On a merge-gate narrowed retry, dark-factory sets
         # REIFY_GUI_RETRY_SPECS to the space-separated, gui-root-relative vitest
         # spec paths that failed (e.g. `src/__tests__/foo.test.ts`); forward them
         # so the block runs ONLY those specs via `npm test -- <specs>` (== `vitest
@@ -2789,7 +3013,7 @@ build_plan() {
         # would still pass an option-like token (e.g. `--run`) straight through
         # to vitest's argument parser.
         local gui_inner="npm ci && npm run typecheck"
-        if [ "$DO_TEST" -eq 1 ]; then
+        if [ "$DO_TEST" -eq 1 ] && [ "$RUN_GUI_VITEST" -eq 1 ]; then
             local _gui_retry_specs="${REIFY_GUI_RETRY_SPECS:-}"
             local _gui_retry_ok=0
             # -z on the allowlist-stripped residue => every char is allowed.
@@ -2945,20 +3169,32 @@ build_plan() {
     # full pool runs exactly once, at merge; per-task lanes get the cheap selective
     # subset below instead (exactly-one invariant, INV-5).
     #
-    # TRADE-OFF, accepted deliberately (task 5125 review): this also moves the
-    # reify-audit PTODO hard gate (CLAUDE.md's untracked/orphaned/bare-ignore
-    # gate) from per-task feedback to merge-time-only feedback, since that gate
-    # lives inside the run_all.sh pool (tests/infra/test_reify_audit_ptodo*.sh).
-    # A change that touches only product source (no verify-pipeline artifact
-    # from scripts/verify-pipeline-infra-tests.txt) and introduces an orphaned
-    # TODO now passes its per-task verify and is only caught at the merge gate —
-    # later feedback than before, but merge still blocks landing on main, so
-    # this is a latency trade-off, not a coverage gap. It is the direct fix for
-    # the M-way run_all pool contention above (INV-5); see this task's plan
-    # design_decisions for the full rationale. A cheap per-task-only PTODO
-    # precheck (skipping the other ~102 run_all tests) is a possible follow-up
-    # if per-task PTODO latency proves costly in practice — not implemented
-    # here to keep this task's fix scoped to the tiering mechanism itself.
+    # TRADE-OFF, accepted deliberately (task 5125 review): this also
+    # moves the PTODO fingerprint ratchet from per-task feedback to
+    # merge-time-only feedback, since it lives inside the run_all.sh pool
+    # (tests/infra/test_reify_audit_ptodo.sh scenario (a): ptodo-baseline-gen's
+    # live fingerprints vs. crates/reify-audit/ptodo-baseline.txt via
+    # comm -23). The ratchet is severity-blind — fingerprint = {path}
+    # :: {kind} :: {text} — so it reds on a new fingerprint at any
+    # severity, broader than a severity-scoped check on that axis. It
+    # is narrower in reach on another axis, though: ptodo-baseline-gen
+    # fingerprints only path-keyed source-marker findings, so the
+    # task-id-keyed inverse lane never enters the ratchet at all (§8.4).
+    # A change touching only product source (no verify-pipeline artifact
+    # from scripts/verify-pipeline-infra-tests.txt) that introduces
+    # a new PTODO fingerprint now passes per-task verify and is only
+    # caught at the merge gate — later feedback than before, but merge
+    # still blocks landing on main, so this is a latency trade-off, not
+    # a coverage gap. It is the direct fix for the M-way run_all pool
+    # contention above (INV-5); see this task's plan design_decisions for
+    # the full rationale. docs/prds/reify-audit-ptodo-detector.md §8.4
+    # (commit e5b9341413) is the canonical source for this framing;
+    # CLAUDE.md's "TODO citation convention" section holds the current
+    # summary. select_cheap_ptodo_gate (above) selects this same ratchet
+    # on the --scope staged hook path whenever a swept-extension file is
+    # staged (task 6817; see that block for the RATCHET_SKIP residual);
+    # the --scope branch per-task lanes here stay uncovered, a possible
+    # follow-up if per-task PTODO latency proves costly in practice.
     #
     # FAIL-FAST: emitted BEFORE add_test_passes (task #4448).
     #
@@ -3178,9 +3414,18 @@ build_plan() {
         # 17/17b, test_verify_scope.sh, test_occt_gated_scope.sh).
         local _git_scrub
         _git_scrub="$(reify_git_env_scrub_prefix)"
+        # Per-leaf env prefix (task 7006), empty for all but one glob. Placed
+        # BEFORE `timeout`, as a plain shell assignment prefix in the emitted
+        # for-body: that is valid bash whatever $_git_scrub expands to, whereas
+        # placing it after $_git_scrub would silently depend on that prefix
+        # always being an `env ...` invocation. ONE add_tool call is kept —
+        # test_verify_ld_library_path_scope.sh asserts this file has exactly one
+        # `for _vt in` emission site calling add_tool, so a second arm reds.
+        local _leaf_env
         set -f  # disable pathname expansion: keep glob tokens as literals
         for _glob in $SELECTED_INFRA_GLOBS; do
-            add_tool "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; timeout --kill-after=60 10m $_git_scrub bash \"\$_vt\" || exit \$?; done )"
+            _leaf_env="$(selected_infra_leaf_env "$_glob")"
+            add_tool "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; ${_leaf_env}timeout --kill-after=60 10m $_git_scrub bash \"\$_vt\" || exit \$?; done )"
         done
         set +f
     fi
@@ -3354,7 +3599,12 @@ if [ "$PRINT_PLAN" -eq 1 ]; then
     if [ "$INCLUDE_INFRA" -eq 1 ] && [ "$DF_VERIFY_ROLE" != "merge" ] && [ "$DF_VERIFY_ROLE" != "background" ]; then
         echo "# NOTE: include_infra=1 under role=$DF_VERIFY_ROLE gets the selective per-artifact infra subset only (scripts/verify-pipeline-infra-tests.txt) — the wholesale infra pool suite now runs at the merge tier exclusively, not here"
     fi
-    echo "# scope decision — RUN_RUST=$RUN_RUST RUN_GUI=$RUN_GUI RUN_OCCT_GATE=$RUN_OCCT_GATE"
+    # `RUN_GUI_VITEST=` is APPENDED, never inserted — the same convention, for
+    # the same reason, as the `closure=` field on the next line: every existing
+    # assertion greps this as the unanchored substring
+    # "RUN_RUST=… RUN_GUI=… RUN_OCCT_GATE=…", which survives a trailing append
+    # and does not survive a reordering.
+    echo "# scope decision — RUN_RUST=$RUN_RUST RUN_GUI=$RUN_GUI RUN_OCCT_GATE=$RUN_OCCT_GATE RUN_GUI_VITEST=$RUN_GUI_VITEST"
     # `closure=` is APPENDED, never inserted: tests/infra/test_verify_scope.sh
     # greps this line as the unanchored substrings "NARROW_ACTIVE=1 affected=…" /
     # "NARROW_ACTIVE=0 affected=ALL", and plan_capture_lib.sh's plan_narrow_active
@@ -3402,6 +3652,17 @@ if [ "${#PLAN[@]}" -eq 0 ]; then
     echo "verify.sh: nothing to verify (action=$ACTION scope=$SCOPE) — no commands in plan." >&2
     exit 0
 fi
+
+# The phase boundary the SCOPE CONTRACT in apply_env() names. ONE export for
+# the whole loop is a deliberate choice, not a forced one: a per-line prefix
+# (LD_LIBRARY_PATH=… eval "$_cmd") does work in bash's default mode — the eval
+# arm still sets _VERIFY_NODE_BG_PID in this shell — but `eval` is a POSIX
+# SPECIAL BUILTIN, so under `set -o posix` the prefix PERSISTS after the
+# command (measured, bash 5.2.21) and would leak the OCCT path into every later
+# line. One export keeps both dispatch arms uniform; its cost is that
+# test_semaphore_acquire/release and reaper_teardown, which interleave with the
+# loop, also run on the OCCT path.
+export LD_LIBRARY_PATH="$_PLAN_LD_LIBRARY_PATH"
 
 for _cmd in "${PLAN[@]}"; do
     case "$_cmd" in
