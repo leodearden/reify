@@ -1578,6 +1578,13 @@ pub(crate) fn resolve_type_alias_expr(
             // registry, which happens after alias resolution. Pass an empty
             // trait-name set so alias bodies resolve only against builtins
             // and the alias registry here.
+            //
+            // These empty sets reach the alias body as an empty
+            // `EntityNamespaces` (task 6477). That is the SAME deferral the
+            // sets below document, not an oversight left behind when the use
+            // site started forwarding its real namespaces — the names do not
+            // exist yet at this point in the phase order, so there is nothing
+            // to forward. Do not "fix" this to pass real sets.
             if !type_args.is_empty()
                 && let Some(alias_entry) = alias_registry.lookup(name)
                 && !alias_entry.type_params.is_empty()
@@ -2413,7 +2420,21 @@ pub(crate) fn resolve_parameterized_alias(
         );
         return None;
     };
-    resolve_type_alias_expr_with_subst(body, alias_registry, &subst, diagnostics, depth + 1)
+    // The body sees the caller's entity namespaces — which at a use site are
+    // the real ones, and during the alias-DFS pre-pass are deliberately empty
+    // (task 6477; see `EntityNamespaces`).
+    let namespaces = EntityNamespaces {
+        structures: structure_names,
+        traits: trait_names,
+    };
+    resolve_type_alias_expr_with_subst(
+        body,
+        alias_registry,
+        &subst,
+        diagnostics,
+        depth + 1,
+        namespaces,
+    )
 }
 
 /// Substitute resolved type parameters in a `Type` from a name→`Type` map.
@@ -3156,6 +3177,30 @@ pub(crate) fn substitute_expr_result_types(expr: &mut CompiledExpr, subst: &Hash
     }
 }
 
+/// The entity name sets an alias body is resolved against (task 6477).
+///
+/// Threaded as one borrowed bundle through the `*_with_subst` family rather
+/// than as two positional parameters, so "which namespaces does this body
+/// see?" stays a single named concept across ~17 recursion sites instead of a
+/// widening argument list.
+///
+/// Enum names are deliberately NOT a field: they travel on the ambient
+/// `RESOLUTION_ENUM_NAMES` thread-local, which the non-parametric `_kinded`
+/// tail already reads for exactly this purpose. Adding a third set here would
+/// be a second plumbing axis for the same question.
+///
+/// Both sets are EMPTY on the alias-DFS pre-pass path, and that emptiness is a
+/// load-bearing DEFERRAL rather than a limitation: structures, traits and enums
+/// are not compiled when `phase_aliases` runs, so a body naming one legitimately
+/// leaves that phase `resolved_type: None` and is resolved at each use site
+/// instead. See `aliases_phase.rs`'s module header — that path "must not be
+/// 'fixed' to take the name sets".
+#[derive(Clone, Copy)]
+pub(crate) struct EntityNamespaces<'a> {
+    pub(crate) structures: &'a HashSet<String>,
+    pub(crate) traits: &'a HashSet<String>,
+}
+
 /// Resolve a type alias body TypeExpr with parameter substitutions applied.
 ///
 /// Like `resolve_type_alias_expr`, but checks the substitution map first so
@@ -3163,12 +3208,16 @@ pub(crate) fn substitute_expr_result_types(expr: &mut CompiledExpr, subst: &Hash
 ///
 /// The `depth` parameter tracks alias expansion depth to prevent stack overflow
 /// from recursive parameterized type aliases.
+///
+/// `namespaces` carries the entity names the body may reference; see
+/// [`EntityNamespaces`] and the terminal `Named` arm below.
 pub(crate) fn resolve_type_alias_expr_with_subst(
     type_expr: &reify_ast::TypeExpr,
     alias_registry: &TypeAliasRegistry,
     subst: &HashMap<String, Type>,
     diagnostics: &mut Vec<Diagnostic>,
     depth: usize,
+    namespaces: EntityNamespaces<'_>,
 ) -> Option<Type> {
     if depth > MAX_ALIAS_INSTANTIATION_DEPTH {
         diagnostics.push(
@@ -3198,6 +3247,7 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                     subst,
                     diagnostics,
                     depth,
+                    namespaces,
                 )?);
             }
             let resolved_return = resolve_type_alias_expr_with_subst(
@@ -3206,6 +3256,7 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                 subst,
                 diagnostics,
                 depth,
+                namespaces,
             )?;
             Some(Type::Function {
                 params: resolved_params,
@@ -3250,6 +3301,7 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                     subst,
                     diagnostics,
                     depth,
+                    namespaces,
                 )
             {
                 return Some(ty);
@@ -3279,6 +3331,7 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                         subst,
                         diagnostics,
                         depth,
+                        namespaces,
                     )?;
                     inner_subst.insert(param.name.clone(), resolved);
                 }
@@ -3294,18 +3347,52 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                     &inner_subst,
                     diagnostics,
                     depth + 1,
+                    namespaces,
                 );
             }
-            // Then builtins + alias registry.
-            // Trait and structure name resolution is not applied during
-            // alias-body resolution under substitution: alias bodies are resolved
-            // either during DFS (before traits/structures exist) or during alias
-            // instantiation at a use site where the alias body itself should
-            // only refer to builtins/aliases.
+            // Builtins, the alias registry, and the USE SITE's entity
+            // namespaces (task 6477).
+            //
+            // These sets used to be hard-coded EMPTY here, under a comment
+            // asserting an alias body "should only refer to builtins/aliases".
+            // That premise was never true — `type AL<T> = Option<SomeEnum>` is
+            // legal — and #6259 already invalidated it for the NON-parametric
+            // path. Until it was corrected here, every parametric alias whose
+            // body named any of the four entity kinds failed at every use site
+            // with `unresolved type: AL<Args>`, module-locally as well as
+            // across the prelude boundary.
+            //
+            // Resolving against the USE SITE's namespaces (rather than a
+            // snapshot taken where the alias was declared) is the correct rule,
+            // not capture: #6259 recorded the governing decision that alias
+            // bodies get NO separate name-resolution rule — the body resolves
+            // through the same path the direct spelling takes, at the same use
+            // site, including under shadowing. `parametric_alias_entity_body_\
+            // use_site` and `parametric_alias_body_shadow_parity` pin it.
+            //
+            // The alias-DFS pre-pass passes empty sets and so is unaffected;
+            // the emptiness there is a deferral, not a gap.
+            //
+            // Enum names are not in `namespaces` — they come from the ambient
+            // `RESOLUTION_ENUM_NAMES` fallback below, the same channel the
+            // non-parametric `_kinded` tail uses.
             let empty = HashSet::new();
-            let empty_structs = HashSet::new();
-            let empty_traits = HashSet::new();
-            resolve_type_with_aliases(name, &empty, alias_registry, &empty_structs, &empty_traits)
+            if let Some(ty) = resolve_type_with_aliases(
+                name,
+                &empty,
+                alias_registry,
+                namespaces.structures,
+                namespaces.traits,
+            ) {
+                return Some(ty);
+            }
+            // Bare names only: enums are non-parametric in v0.4, so an
+            // `Enum<Args>` form keeps `type_args` non-empty and falls through
+            // (mirrors the bare-name guard on the `_kinded` enum fallback).
+            if type_args.is_empty() && RESOLUTION_ENUM_NAMES.with(|s| s.borrow().contains(name)) {
+                return Some(Type::Enum(name.to_string()));
+            }
+            None
         }
         reify_ast::TypeExprKind::IntegerLiteral(n) => {
             diagnostics.push(
@@ -3763,6 +3850,7 @@ fn expect_integer_literal_type_arg(
 /// `Field<D, C>` resolves both `D` (domain) and `C` (codomain) via
 /// `resolve_type_alias_expr_with_subst` — the full-type resolver with substitutions,
 /// **not** the dimension-only resolver — because Field's args are full Types.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_parameterized_builtin_type_with_subst(
     name: &str,
     type_args: &[reify_ast::TypeExpr],
@@ -3770,6 +3858,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
     subst: &HashMap<String, Type>,
     diagnostics: &mut Vec<Diagnostic>,
     depth: usize,
+    namespaces: EntityNamespaces<'_>,
 ) -> Option<Type> {
     // Gate: fast-path None for any name not in the canonical builtin set.
     // Mirrors the gate in resolve_parameterized_builtin_type so both are
@@ -3785,6 +3874,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
+                namespaces,
             )?;
             Some(Type::List(Box::new(inner)))
         }
@@ -3795,6 +3885,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
+                namespaces,
             )?;
             Some(Type::Set(Box::new(inner)))
         }
@@ -3805,6 +3896,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
+                namespaces,
             )?;
             let val = resolve_type_alias_expr_with_subst(
                 &type_args[1],
@@ -3812,6 +3904,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
+                namespaces,
             )?;
             Some(Type::Map(Box::new(key), Box::new(val)))
         }
@@ -3822,6 +3915,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
+                namespaces,
             )?;
             Some(Type::Keyed(Box::new(inner)))
         }
@@ -3832,6 +3926,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
+                namespaces,
             )?;
             Some(Type::Option(Box::new(inner)))
         }
@@ -3842,6 +3937,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
+                namespaces,
             )?;
             Some(Type::Range(Box::new(inner)))
         }
@@ -3884,6 +3980,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
+                namespaces,
             )?;
             Some(Type::tensor(rank, n, quantity))
         }
@@ -3896,6 +3993,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
+                namespaces,
             )?;
             Some(Type::matrix(m, n, quantity))
         }
@@ -3908,6 +4006,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
+                namespaces,
             )?;
             let codomain = resolve_type_alias_expr_with_subst(
                 &type_args[1],
@@ -3915,6 +4014,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
+                namespaces,
             )?;
             Some(Type::Field {
                 domain: Box::new(domain),
@@ -4439,6 +4539,11 @@ pub(crate) fn check_applied_type_arg_bounds(
 /// the concrete use-site — entity.rs comment "bounds enforced at the
 /// concrete instantiation site").  At the definition site the param IS the
 /// subject of the check.
+// Eight distinct inputs, none derivable from another: the entry under test,
+// the four namespaces its body may name, and the two registries case (b) needs
+// for required-bound metadata.  Same disposition as `resolve_parameterized_alias`
+// and `resolve_parameterized_builtin_type_with_subst` in this file.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn validate_pub_parametric_alias_def_site(
     entry: &TypeAliasEntry,
     alias_registry: &TypeAliasRegistry,
@@ -5793,18 +5898,28 @@ mod tests {
     #[test]
     fn resolve_parameterized_builtin_type_with_subst_resolves_keyed_distinct_from_list() {
         let reg = TypeAliasRegistry::new();
-        // The subst path is structure-name-blind by design (alias DFS runs before
-        // structures are compiled — see the hardcoded empty `structure_names` in
-        // `resolve_type_alias_expr_with_subst`). The inner type arg is therefore
-        // supplied through the substitution map, which is exactly what this
+        // No use site here, so no entity names are in scope — the same empty
+        // bundle the alias-DFS pre-pass passes. The inner type arg is supplied
+        // through the substitution map instead, which is exactly what this
         // resolver variant exists to exercise: `Keyed<T>` with `T := Vent`.
+        let no_entities = HashSet::new();
+        let namespaces = EntityNamespaces {
+            structures: &no_entities,
+            traits: &no_entities,
+        };
         let mut subst = HashMap::new();
         subst.insert("T".to_string(), Type::StructureRef("Vent".into()));
         let args = [named_type_expr("T")];
 
         let mut diags = Vec::new();
         let keyed = resolve_parameterized_builtin_type_with_subst(
-            "Keyed", &args, &reg, &subst, &mut diags, 0,
+            "Keyed",
+            &args,
+            &reg,
+            &subst,
+            &mut diags,
+            0,
+            namespaces,
         );
         assert_eq!(
             keyed,
@@ -5821,6 +5936,7 @@ mod tests {
             &subst,
             &mut list_diags,
             0,
+            namespaces,
         );
         assert_eq!(
             list,

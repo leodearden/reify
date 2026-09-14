@@ -2299,7 +2299,6 @@ mod parametric_alias_def_site_enum_body {
 /// vacuously with both sides `Type::Error`.
 mod parametric_alias_entity_body_use_site {
     use super::alias_to_entity_type_parity::param_type_and_errors;
-    use super::*;
 
     /// One use-site row. The alias is always declared as `type AL<T> = {body}`
     /// and used as `param p : AL<Real>`; `direct` is that same body with the
