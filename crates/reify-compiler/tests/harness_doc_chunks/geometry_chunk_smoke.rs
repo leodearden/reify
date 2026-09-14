@@ -79,15 +79,18 @@
 //! `chunk_io` needs edits to `tests/harness_doc_chunks.rs` and to both siblings,
 //! none of which is in task 5389's locked file set.
 //!
-//! STILL THREE, not four: task 5759 added `units_chunk_smoke.rs` and pointed it
-//! at THIS module's scanners (`reify_tagged_fences`, `assert_module_compiles`,
-//! `strip_reify_comments`, `call_sites`, `section_body`, `cited_source_paths`,
-//! `resolve_cited_path`, `source_files_by_basename`, all raised to
-//! `pub(crate)`) rather than copying them. That is why those helpers now take
-//! `chunk_path` / `tag` / `section_title` parameters instead of reading this
-//! module's consts — a sibling's failure must name the sibling's chunk. The
-//! extraction below is still owed; this is reuse inside the existing binary, not
-//! the shared module.
+//! STILL THREE, though the binary now holds FIVE chunk modules: task 5759 added
+//! `units_chunk_smoke.rs` and task 6258 added `oracle_xref_smoke.rs`, and both
+//! point at THIS module's scanners (`reify_tagged_fences`,
+//! `assert_module_compiles`, `strip_reify_comments`, `call_sites`,
+//! `called_names`, `registry_family`, `phantom_name_panic`, `section_body`,
+//! `cited_source_paths`, `resolve_cited_path`, `source_files_by_basename`, all
+//! raised to `pub(crate)`) rather than copying them. That is why those helpers
+//! take `chunk_path` / `tag` / `section_title` parameters instead of reading
+//! this module's consts — a sibling's failure must name the sibling's chunk, and
+//! 6258's are two chunks this module does not own at all. The extraction below
+//! is still owed; this is reuse inside the existing binary, not the shared
+//! module.
 //!
 //! Task **#5924** (filed as ticket `tkt_0RS9A7843SBQ4BZX1A2ACY5TC1`) owns the
 //! extraction AND the axis-by-axis reconciliation contract — which heading /
@@ -501,6 +504,14 @@ pub(crate) const CHUNK_PATH: &str = concat!(
 /// when it plainly is. That is the one thing the house rule in this file's
 /// preamble forbids. An inert HTML comment costs the chunk one line, is invisible
 /// in rendered markdown, and leaves the title free to change.
+///
+/// THIS MARKER IS NO LONGER SCOPED TO THIS MODULE. Since task 6258
+/// `oracle_xref_smoke.rs` resolves constraints.md's and stdlib.md's pointers at
+/// the oracle through it, so DELETING OR MOVING IT BREAKS A GUARD IN ANOTHER
+/// FILE as well as the scans below. Retitling the heading stays free — and that
+/// freedom is now load-bearing rather than merely convenient: those two pointers
+/// name the retrieval TOPIC precisely because this heading may change, which is
+/// only safe while the marker does not.
 pub(crate) const ORACLE_SECTION_MARKER: &str = "<!-- ORACLE-SECTION -->";
 
 /// Human-readable name of the marked section. Used ONLY in panic text, so a

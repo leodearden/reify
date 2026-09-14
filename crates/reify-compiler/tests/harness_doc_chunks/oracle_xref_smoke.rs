@@ -75,8 +75,8 @@
 //! it.
 
 use crate::geometry_chunk_smoke::{
-    call_sites, called_names, phantom_name_panic, registry_family, section_body,
-    ORACLE_SECTION_MARKER, ORACLE_SECTION_TITLE, CHUNK_PATH as GEOMETRY_CHUNK_PATH,
+    CHUNK_PATH as GEOMETRY_CHUNK_PATH, ORACLE_SECTION_MARKER, ORACLE_SECTION_TITLE, call_sites,
+    called_names, phantom_name_panic, registry_family, section_body,
 };
 
 /// Marker that OPENS the cross-reference region in each REFERRING chunk.
@@ -308,11 +308,7 @@ fn the_constraints_chunk_points_at_the_oracle() {
     );
 
     let violations = xref_region_violations(&region, CONSTRAINTS_CHUNK_PATH);
-    assert!(
-        violations.is_empty(),
-        "{}",
-        violations.join("\n\n")
-    );
+    assert!(violations.is_empty(), "{}", violations.join("\n\n"));
 }
 
 /// The chunk a designer is in when they look up WHAT THE CALL IS CALLED must
