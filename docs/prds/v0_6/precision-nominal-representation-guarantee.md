@@ -482,15 +482,19 @@ the user — `report_eval_output` (`main.rs:3508`) prints every diagnostic to st
    The non-assertion hot path must keep its zero-allocation shape (tactical: a precomputed
    per-check boolean).
 2. Three production call sites share one helper,
-   `unenforced_representation_bound_diagnostic` (`tolerance_combine.rs`), and emit an
+   `unenforced_representation_bound_diagnostic` (`tolerance_combine.rs`), and refuse on its
    **Error**-severity coded diagnostic when the module declares a bound the export path cannot
-   demonstrate it honours: `engine_build.rs`'s `build_outputs` / `build_outputs_with_result`
-   (the occurrence-driven Mode-B export path); `cmd_build`'s Mode-A `-o` path
-   (`crates/reify-cli/src/main.rs`), which calls the helper directly ahead of the write rather
-   than relying only on the pre-existing `Severity::Error` gate for its exit code; and the GUI's
-   `EngineSession::export` (`gui/src-tauri/src/engine.rs`), which calls the helper directly ahead
-   of `engine.build`, mirroring the CLI Mode-A siting term for term (task **6190**, landed on
-   `main`). All three surfaces are enforcing sites.
+   demonstrate it honours — the two CLI/eval sites by propagating the typed `Diagnostic` itself,
+   the GUI by returning its message verbatim as `Err(String)` (leading `E_*` token preserved,
+   pinned by `starts_with` in `gui/src-tauri/src/tests/{engine,commands}_tests.rs`):
+   `engine_build.rs`'s `build_outputs` / `build_outputs_with_result` (the occurrence-driven
+   Mode-B export path); `cmd_build`'s Mode-A `-o` path (`crates/reify-cli/src/main.rs`), which
+   calls the helper directly ahead of the write rather than relying only on the pre-existing
+   `Severity::Error` gate for its exit code; and the GUI's `EngineSession::export`
+   (`gui/src-tauri/src/engine.rs`), which calls the helper directly ahead of `engine.build`,
+   mirroring the CLI Mode-A *siting* — helper ahead of the build, so the write is never reached —
+   though the refusal is delivered as an `Err` return rather than through `report_eval_output`
+   plus an exit code (task **6190**, landed on `main`). All three surfaces are enforcing sites.
 
    Mode A and Mode B are also empirically asymmetric in what they report **on success**, independent
    of the refusal wiring above: Mode A (`reify build -o <path>`) prints a `Triangles: N` line that
