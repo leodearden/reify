@@ -106,3 +106,54 @@
 //! Strings appear only inside assertion messages, which are FORMATTED from
 //! those types at the point of failure — never parsed, compared, or used as a
 //! key.
+
+use std::collections::HashSet;
+
+use reify_builtins::EvalBuiltinId;
+use strum::{EnumCount, IntoEnumIterator};
+
+// ── coverage: the sweep sees every EvalBuiltin row ───────────────────────────
+
+/// The sweep's membership must be the WHOLE `EvalBuiltin` group, and must be
+/// derived rather than declared.
+///
+/// The cardinality pin is the point of this test, not decoration. A filter or
+/// mapping bug in [`eval_builtin_rows`] that silently SHRINKS coverage — drops
+/// a row whose `binding` it fails to match, or loses one whose `id` declines to
+/// narrow — would otherwise leave the harness reporting green over fewer rows
+/// than exist. That is the failure mode which would quietly hollow this module
+/// out as each τ migration adds rows, and it is indistinguishable from success
+/// without an independent count. `EvalBuiltinId::COUNT` is that independent
+/// count: strum derives it from the generated sub-enum, which the `registry!`
+/// macro mints from the same row declarations, so the two can only agree when
+/// the derivation is total.
+///
+/// No seed name, id, or count is restated here — the whole assertion is
+/// derived from `reify_builtins`.
+#[test]
+fn sweep_covers_every_eval_builtin_row() {
+    let swept = eval_builtin_rows();
+
+    assert!(
+        !swept.is_empty(),
+        "the parity sweep is empty — no BindingKind::EvalBuiltin row was \
+         derived from reify_builtins::rows(), so every assertion in this \
+         module would pass vacuously"
+    );
+
+    let swept_ids: HashSet<EvalBuiltinId> = swept.iter().map(|(id, _)| *id).collect();
+    let declared_ids: HashSet<EvalBuiltinId> = EvalBuiltinId::iter().collect();
+    assert_eq!(
+        swept_ids, declared_ids,
+        "the swept id set must be exactly the EvalBuiltinId group"
+    );
+
+    assert_eq!(
+        swept.len(),
+        EvalBuiltinId::COUNT,
+        "the sweep must visit each EvalBuiltin row exactly once: {} swept vs \
+         {} variants in the generated sub-enum",
+        swept.len(),
+        EvalBuiltinId::COUNT
+    );
+}
