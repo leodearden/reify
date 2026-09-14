@@ -1,9 +1,20 @@
 #!/usr/bin/env bash
-# Infrastructure test for task 4627.
-# Validates that .config/nextest.toml declares priority overrides for the 5
-# heavy-compute test binaries (LPT scheduling to compress the slow tail), that
-# the existing occt test-group block coexists, and that scripts/gen-nextest-config.sh
-# preserves all overrides verbatim in the generated temp config consumed by nextest.
+# Infrastructure test for task 4627, broadened by task 6485.
+#
+# PURPOSE: this is the completeness-and-safety guard over EVERY slow-timeout
+# override in .config/nextest.toml — not only the five LPT priority blocks it
+# originally covered.
+#
+# Originally (4627/5141) it validated that .config/nextest.toml declares priority
+# overrides for the heavy-compute test binaries (LPT scheduling to compress the
+# slow tail), that the occt test-group block coexists, and that
+# scripts/gen-nextest-config.sh preserves all overrides verbatim in the generated
+# temp config consumed by nextest. Task 6485 added the tiering guards J/K/L.
+#
+# THREE TIERS of ceiling now live in that file: default 1200s, gate-resident
+# 1800s (blocks that still run on the merge gate, bounded by its 3600s wall), and
+# heavy 43200s/12h (the 8 members of REIFY_HEAVY_NEXTEST_FILTER, which run only on
+# the offline deep lane under its 13h release wall).
 #
 # Assertions:
 # STRUCTURE / PRESERVATION (step-1):
@@ -24,6 +35,25 @@
 #      exists on disk (rejects typo'd / dangling filters silently ignored by nextest).
 #   E. The straggler binary tensegrity_t0a carries a priority STRICTLY GREATER than
 #      each of the other four (enforces longest-first LPT scheduling tier).
+#
+# TIERING / COMPLETENESS (task 6485):
+#   J. Every atom of REIFY_HEAVY_NEXTEST_FILTER has its own override block at the
+#      43200s (12h) heavy ceiling. Heavy membership is DERIVED from
+#      scripts/heavy-test-filter-lib.sh, never restated here, so a 9th atom added
+#      to the lib fails immediately with no edit to this file. J-gen pins the same
+#      ceilings through gen-nextest-config.sh; J-neg is its non-vacuity self-check.
+#   K. TOTAL CLASSIFICATION — every slow-timeout override in the file classifies
+#      as exactly one of heavy (=> 43200s) or gate-resident (=> 1800s, under the
+#      3600s gate wall), and the two classes PARTITION the file. A block matching
+#      neither RED-lights until a human classifies it; a deleted allowlisted block
+#      fails too. The gate-resident allowlist lives in THIS FILE, deliberately not
+#      in the config, so an override cannot be self-classified in the same edit
+#      that adds it.
+#   L. REACHABILITY — the offline release wall (grepped from scripts/verify.sh)
+#      strictly exceeds the heavy ceiling (parsed from .config/nextest.toml), so
+#      nextest attributes-and-kills a hung heavy test BY NAME before the outer
+#      wall fires exit 124 naming nothing. Both operands are derived from files,
+#      never restated as literals.
 
 set -euo pipefail
 
@@ -739,5 +769,294 @@ assert "J-neg control: the same checker ACCEPTS the real .config/nextest.toml" \
     _heavy_ceilings_ok "$NEXTEST_TOML"
 
 rm -rf "$_J_FIX"
+
+# ===========================================================================
+# Assertion K (task 6485): TOTAL CLASSIFICATION — no override can silently
+# drift out of coverage.
+#
+# Assertion J above proves every HEAVY atom has a block. K proves the converse:
+# every slow-timeout override block in .config/nextest.toml is accounted for by
+# exactly one of two classes, so a block can neither appear nor vanish unnoticed.
+#
+#   heavy          — its filter is one of the atoms parsed from
+#                    REIFY_HEAVY_NEXTEST_FILTER => ceiling must be 43200s (12h).
+#   gate-resident  — its filter is in GATE_RESIDENT_FILTERS below => ceiling must
+#                    be 1800s, and strictly under the 3600s gate wall.
+#
+# A block matching NEITHER fails, telling the author to classify it.
+#
+# The allowlist lives HERE, in the test, and deliberately NOT as a marker in
+# .config/nextest.toml. A marker in the config would let whoever adds an override
+# self-classify it in the same edit — the guard would then be satisfied by
+# construction and would stop guarding, which is the exact failure mode this task
+# was filed against. Keeping it here means a newly added override matches neither
+# class and RED-lights until a human deliberately classifies it.
+# ===========================================================================
+
+VERIFY_SH="$REPO_ROOT/scripts/verify.sh"
+
+# The gate-resident tier: overrides that DO still run on the merge gate, so the
+# 3600s pass-level wall really binds them and their ceiling must stay under it.
+GATE_RESIDENT_FILTERS=(
+    'package(reify-eval) & binary(representation_within_assertion)'
+    'package(reify-eval) & binary(solve_elastic_static_body_e2e)'
+)
+GATE_RESIDENT_CEILING_SECONDS=1800
+GATE_WALL_SECONDS=3600
+
+# ---------------------------------------------------------------------------
+# _slow_timeout_filters_for_file <file> — one line per [[profile.default.overrides]]
+# block that carries a slow-timeout key, printing that block's filter VALUE.
+# Blocks with no slow-timeout (the occt test-group block) are correctly omitted:
+# they set a different SETTING and this guard is about ceilings.
+# ---------------------------------------------------------------------------
+_slow_timeout_filters_for_file() {
+    local file="$1"
+    awk -v q="'" '
+        /^\[\[/ { cur = "" }
+        $0 ~ "^[[:space:]]*filter[[:space:]]*=" {
+            cur = ""
+            if (match($0, q "[^" q "]*" q)) {
+                val = substr($0, RSTART + 1, RLENGTH - 2)
+                gsub(/[[:space:]]+/, " ", val)
+                sub(/^ /, "", val)
+                sub(/ $/, "", val)
+                cur = val
+            }
+        }
+        cur != "" && /^[[:space:]]*slow-timeout[[:space:]]*=/ { print cur; cur = "" }
+    ' "$file"
+}
+
+# _in_list <needle> [item...] — exact string membership.
+_in_list() {
+    local needle="$1"; shift
+    local x
+    for x in "$@"; do
+        [ "$x" = "$needle" ] && return 0
+    done
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# _classify_overrides_ok <file> — returns 0 iff EVERY slow-timeout override in
+# <file> classifies as heavy or gate-resident at its class's required ceiling,
+# AND every GATE_RESIDENT_FILTERS entry is actually present (so deleting an
+# allowlisted block fails too, not just adding an unclassified one).
+# The boolean form exists so the non-vacuity self-check below can point the very
+# same checker at deliberately-broken fixtures.
+# ---------------------------------------------------------------------------
+_classify_overrides_ok() {
+    local file="$1" f got
+    local -a seen=()
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        got="$(_slow_ceiling_for_filter "$file" "$f")"
+        if _in_list "$f" ${HEAVY_ATOMS+"${HEAVY_ATOMS[@]}"}; then
+            [ "${got:-}" = "$HEAVY_CEILING_SECONDS" ] || return 1
+        elif _in_list "$f" ${GATE_RESIDENT_FILTERS+"${GATE_RESIDENT_FILTERS[@]}"}; then
+            [ "${got:-}" = "$GATE_RESIDENT_CEILING_SECONDS" ] || return 1
+            [ "$GATE_WALL_SECONDS" -gt "${got:-0}" ] || return 1
+        else
+            return 1
+        fi
+        seen+=("$f")
+    done < <(_slow_timeout_filters_for_file "$file")
+    for f in ${GATE_RESIDENT_FILTERS+"${GATE_RESIDENT_FILTERS[@]}"}; do
+        _in_list "$f" ${seen+"${seen[@]}"} || return 1
+    done
+    return 0
+}
+
+_classify_overrides_reject() { ! _classify_overrides_ok "$1"; }
+
+echo ""
+echo "--- Assertion K (task 6485): every slow-timeout override classifies as heavy or gate-resident ---"
+
+_K_SEEN=()
+while IFS= read -r _f; do
+    [ -n "$_f" ] || continue
+    _kgot="$(_slow_ceiling_for_filter "$NEXTEST_TOML" "$_f")"
+    if _in_list "$_f" ${HEAVY_ATOMS+"${HEAVY_ATOMS[@]}"}; then
+        assert "K: [${_f}] classified HEAVY — ceiling is ${HEAVY_CEILING_SECONDS}s (got '${_kgot:-<none>}')" \
+            test "${_kgot:-}" = "$HEAVY_CEILING_SECONDS"
+    elif _in_list "$_f" ${GATE_RESIDENT_FILTERS+"${GATE_RESIDENT_FILTERS[@]}"}; then
+        assert "K: [${_f}] classified GATE-RESIDENT — ceiling is ${GATE_RESIDENT_CEILING_SECONDS}s (got '${_kgot:-<none>}')" \
+            test "${_kgot:-}" = "$GATE_RESIDENT_CEILING_SECONDS"
+        assert "K: [${_f}] gate-resident ceiling stays under the ${GATE_WALL_SECONDS}s gate wall that binds it" \
+            test "$GATE_WALL_SECONDS" -gt "${_kgot:-0}"
+    else
+        assert "K: [${_f}] is UNCLASSIFIED — add it to the heavy filterset (scripts/heavy-test-filter-lib.sh) or, if it really does still run on the merge gate, to GATE_RESIDENT_FILTERS in this test. Classify it deliberately; do not widen the guard." \
+            false
+    fi
+    _K_SEEN+=("$_f")
+done < <(_slow_timeout_filters_for_file "$NEXTEST_TOML")
+
+# PARTITION, reverse direction: every allowlist entry must actually be in the
+# file, so DELETING a gate-resident block fails here too.
+for _g in ${GATE_RESIDENT_FILTERS+"${GATE_RESIDENT_FILTERS[@]}"}; do
+    assert "K: gate-resident allowlist entry [${_g}] is present in .config/nextest.toml (a deleted block fails here)" \
+        _in_list "$_g" ${_K_SEEN+"${_K_SEEN[@]}"}
+done
+
+# solve_elastic_static_body_e2e is named explicitly: it is the override this task
+# was combined to cover (it had no drift-guard at all before task 6485), so it
+# must be VISIBLY covered rather than only incidentally covered by the loop above.
+assert "K: solve_elastic_static_body_e2e (task 7339's contention-headroom override) is enumerated and gate-resident at ${GATE_RESIDENT_CEILING_SECONDS}s — the previously unguarded block this task closes" \
+    bash -c '[ "$1" = "$2" ]' _ \
+        "$(_slow_ceiling_for_filter "$NEXTEST_TOML" 'package(reify-eval) & binary(solve_elastic_static_body_e2e)')" \
+        "$GATE_RESIDENT_CEILING_SECONDS"
+
+assert "K: the two classes PARTITION the file — every enumerated slow-timeout override is consumed by exactly one class" \
+    _classify_overrides_ok "$NEXTEST_TOML"
+
+# ===========================================================================
+# Assertion L (task 6485): REACHABILITY — the offline release wall strictly
+# exceeds the heavy per-test ceiling.
+#
+# GREEN relationship guard (following T10's and Test 16d's precedent): it holds
+# on arrival and exists to fail if either side drifts. BOTH operands are derived
+# from files — the ceiling parsed out of .config/nextest.toml, the wall grepped
+# out of scripts/verify.sh — never restated as literals here. That is the
+# standard Assertion H was amended to meet: an assertion over two hardcoded
+# numbers can never fail regardless of what the files contain.
+#
+# If the wall does not exceed the ceiling, the ceiling is unreachable and a hung
+# heavy test degrades to a bare `timeout` exit 124 naming nothing — the task
+# 4877/4878 zero-attribution shape this task exists to remove.
+#
+# WALLCLOCK-GUARD SAFETY: the comparison is the lower-bound `-gt` (never -le/-lt),
+# and the operand vars carry no ELAPSED/_S/_MS/_NS/SECONDS suffix, so
+# tests/infra/test_no_new_wallclock_upper_bounds.sh does not fire. These are
+# CONFIG CONSTANTS, not measured durations.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# _offline_wall_secs_for_file <verify.sh> — the offline role's RELEASE wall
+# default in seconds, from the `[0-9]+h` default on the offline re-resolution
+# line. Prints empty if absent (caught by the non-emptiness assertions below,
+# so a broken extractor fails loudly instead of silently comparing zeros).
+# ---------------------------------------------------------------------------
+_offline_wall_secs_for_file() {
+    local file="$1" h
+    h="$(grep -oE '_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE [0-9]+h' "$file" \
+            | grep -oE '[0-9]+' | head -n1)" || h=""
+    [ -n "$h" ] || return 0
+    printf '%s' $(( h * 3600 ))
+}
+
+_reachability_ok() {
+    local toml="$1" vsh="$2" wall atom got
+    wall="$(_offline_wall_secs_for_file "$vsh")"
+    [ -n "$wall" ] || return 1
+    for atom in ${HEAVY_ATOMS+"${HEAVY_ATOMS[@]}"}; do
+        got="$(_slow_ceiling_for_filter "$toml" "$atom")"
+        [ -n "$got" ] || return 1
+        [ "$wall" -gt "$got" ] || return 1
+    done
+    return 0
+}
+
+_reachability_reject() { ! _reachability_ok "$1" "$2"; }
+
+echo ""
+echo "--- Assertion L (task 6485): offline release wall > heavy per-test ceiling (both operands derived from files) ---"
+
+_OFFLINE_WALL="$(_offline_wall_secs_for_file "$VERIFY_SH")"
+
+assert "L: offline release wall extracted from scripts/verify.sh (non-empty seconds, got '${_OFFLINE_WALL:-<none>}')" \
+    test -n "${_OFFLINE_WALL:-}"
+
+for _atom in ${HEAVY_ATOMS+"${HEAVY_ATOMS[@]}"}; do
+    _lgot="$(_slow_ceiling_for_filter "$NEXTEST_TOML" "$_atom")"
+    assert "L: heavy ceiling for [${_atom}] extracted from nextest.toml (non-empty seconds, got '${_lgot:-<none>}')" \
+        test -n "${_lgot:-}"
+    assert "L: offline release wall (${_OFFLINE_WALL:-?}s, from verify.sh) strictly exceeds the heavy ceiling for [${_atom}] (${_lgot:-?}s, from nextest.toml) so nextest kills BY NAME before the wall fires" \
+        test "${_OFFLINE_WALL:-0}" -gt "${_lgot:-0}"
+done
+
+# ---------------------------------------------------------------------------
+# Assertion K/L NON-VACUITY SELF-CHECK. Both K and L are green on arrival, which
+# proves nothing on its own: a checker that accepts everything would look
+# identical. Each fixture below breaks exactly one thing and the corresponding
+# checker must REJECT it.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Assertion K/L non-vacuity: both checkers REJECT each seeded drift ---"
+
+_KL_FIX="$(mktemp -d)"
+_GR_FIRST="${GATE_RESIDENT_FILTERS[0]}"
+
+# (i) an EXTRA override block, belonging to neither class.
+cp "$NEXTEST_TOML" "$_KL_FIX/extra.toml"
+cat >> "$_KL_FIX/extra.toml" <<'EXTRA'
+
+[[profile.default.overrides]]
+filter = 'package(reify-eval) & binary(some_unclassified_newcomer)'
+slow-timeout = { period = "120s", terminate-after = 99 }
+EXTRA
+
+# (ii) a gate-resident block bumped to the heavy ceiling (the silent-promotion
+#      shape: it would then run on the gate with an unreachable 12h ceiling).
+awk -v want="$_GR_FIRST" -v q="'" '
+    /^\[\[/ { hit = 0 }
+    $0 ~ "^[[:space:]]*filter[[:space:]]*=" {
+        hit = 0
+        if (match($0, q "[^" q "]*" q)) {
+            val = substr($0, RSTART + 1, RLENGTH - 2)
+            if (val == want) hit = 1
+        }
+    }
+    hit && /^[[:space:]]*slow-timeout[[:space:]]*=/ {
+        sub(/terminate-after[[:space:]]*=[[:space:]]*[0-9]+/, "terminate-after = 360")
+        hit = 0
+    }
+    { print }
+' "$NEXTEST_TOML" > "$_KL_FIX/promoted.toml"
+
+# (iii) a gate-resident block deleted entirely (the reverse-drift shape).
+awk -v want="$_GR_FIRST" -v q="'" '
+    function flush(   i) {
+        if (!drop) { for (i = 1; i <= n; i++) print b[i] }
+        n = 0; drop = 0
+    }
+    /^\[\[/ { flush() }
+    { b[++n] = $0 }
+    $0 ~ "^[[:space:]]*filter[[:space:]]*=" {
+        if (match($0, q "[^" q "]*" q)) {
+            val = substr($0, RSTART + 1, RLENGTH - 2)
+            if (val == want) drop = 1
+        }
+    }
+    END { flush() }
+' "$NEXTEST_TOML" > "$_KL_FIX/gr-deleted.toml"
+
+# (iv) a verify.sh whose offline default is dropped BELOW the heavy ceiling,
+#      making the 12h ceiling unreachable again.
+sed 's/_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE [0-9]\+h/_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE 6h/' \
+    "$VERIFY_SH" > "$_KL_FIX/verify-6h.sh"
+
+assert "K-neg (i): classifier REJECTS an EXTRA override belonging to neither class (a new override must be classified, not absorbed)" \
+    _classify_overrides_reject "$_KL_FIX/extra.toml"
+
+assert "K-neg (ii): classifier REJECTS a gate-resident block silently promoted to the ${HEAVY_CEILING_SECONDS}s heavy ceiling" \
+    _classify_overrides_reject "$_KL_FIX/promoted.toml"
+
+assert "K-neg (iii): classifier REJECTS a nextest.toml with an allowlisted gate-resident block deleted" \
+    _classify_overrides_reject "$_KL_FIX/gr-deleted.toml"
+
+assert "L-neg (iv): reachability guard REJECTS a verify.sh whose offline wall (6h) no longer exceeds the ${HEAVY_CEILING_SECONDS}s heavy ceiling" \
+    _reachability_reject "$NEXTEST_TOML" "$_KL_FIX/verify-6h.sh"
+
+# Positive controls: the SAME checkers accept the real files, so the four
+# rejections above are attributable to the seeded drift and not to checkers that
+# reject everything.
+assert "K-neg control: the same classifier ACCEPTS the real .config/nextest.toml" \
+    _classify_overrides_ok "$NEXTEST_TOML"
+
+assert "L-neg control: the same reachability guard ACCEPTS the real nextest.toml + verify.sh pair" \
+    _reachability_ok "$NEXTEST_TOML" "$VERIFY_SH"
+
+rm -rf "$_KL_FIX"
 
 test_summary
