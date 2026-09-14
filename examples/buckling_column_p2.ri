@@ -25,16 +25,13 @@
 //     LoadCase fields + solve_buckling params both tightened by ζ/4444 — distinct
 //     from task 4093, which tightened solve_elastic_static in the FEA examples)
 //
-// Ctor args bind BY NAME (task 4522), so these labels are load-bearing and
-// position-independent. The trap is a MISSPELLED label: it is diagnosed
-// (`E_CTOR_UNKNOWN_FIELD`) yet STILL bound leniently as `__arg{i}` and never
-// claims a param slot, so `element_order` falls back to its `ElementOrder.P1`
-// default and quietly reinstates the bending lock this fixture exists to
-// avoid. Spelling the other params out does not prevent that — the mis-bind
-// is independent of them. They are written at their BucklingOptions defaults
-// for one reason: an exhaustive, in-order call keeps a typo'd label visible
-// under review whatever the diagnostic's current severity. The binder rule,
-// the lenient fallback and the CURRENT severity are stated once, in
+// Ctor args bind BY NAME (task 4522), so a MISSPELLED label is the hazard
+// here: the typo'd arg never claims `element_order`, which then falls back to
+// its `ElementOrder.P1` default and quietly reinstates the bending lock this
+// fixture exists to avoid. The 6 preceding params are written at their
+// BucklingOptions defaults purely so a typo stays visible under review. What
+// the compiler does with the typo'd arg, and how loudly it says so, are
+// deliberately NOT restated here; both are pinned in
 // `crates/reify-compiler/tests/harness_mechanics/modal_options_validation_tests.rs::misspelled_ctor_label_is_diagnosed_but_still_leniently_appended`.
 // Mirrors the `let opts = ModalOptions(...)` pattern in
 // examples/modal/cantilever_beam_modes.ri.
@@ -65,10 +62,8 @@ structure BucklingColumnP2 {
     let mi = FEAMaterialInput(material: material)
 
     // Buckling solve: @optimized dispatcher routes to solver::buckling trampoline.
-    // The 6 preceding BucklingOptions params are spelled out at their defaults
-    // for review visibility (binding is by name — see header comment), so
-    // `element_order: ElementOrder.P2` is unambiguous even though it is the
-    // 7th param.
+    // The 6 preceding params are spelled out at their defaults for review
+    // visibility — see the header note on ctor-label typos.
     let result = solve_buckling(
         mi.material, length, width, height, lc.loads, lc.supports,
         BucklingOptions(
