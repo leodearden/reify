@@ -2290,6 +2290,28 @@ mod tests {
         );
     }
 
+    // (a2) A surface triangle corner that indexes past `nodes` is infeasible
+    // input — `assemble_d_aniso` would panic on its `nodes[i]` index. Mirrors
+    // the isotropic entry's guard.
+    #[test]
+    fn aniso_solve_out_of_range_surface_index_is_dimension_mismatch() {
+        let (nodes, _surfaces, prestress, anchors) = tent_aniso_fixture();
+        // Boundary index: 5 is the FIRST invalid index for the 5-node tent, so
+        // this pins the `≥ n` comparison that a `> n` typo would let pass.
+        let surfaces = vec![(0usize, 1usize, 5usize)];
+        let pres = vec![prestress[0].clone()];
+        let members: Vec<(usize, usize)> = vec![];
+        let kinds: Vec<MemberKind> = vec![];
+        let q: Vec<f64> = vec![];
+        assert_eq!(
+            form_find_anchored_surfaces_aniso(
+                &nodes, &members, &kinds, &q, &surfaces, &pres, &anchors
+            )
+            .unwrap_err(),
+            AnisoFormFindError::DimensionMismatch,
+        );
+    }
+
     // (b) members/kinds/q length mismatch → DimensionMismatch.
     #[test]
     fn aniso_solve_dimension_mismatch() {
