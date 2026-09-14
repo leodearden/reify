@@ -227,7 +227,10 @@ declared `diffed keyed(key=node_id, item="constraint", update="constraint-update
 changed=changed_constraints)` (`types.rs`), so it rides the same delta
 choke-point as `values` and `meshes`, and each `ConstraintData` carries
 `{node_id, expression, status, label, parameter_ids}` with `status` drawn from
-exactly `Satisfied` / `Violated` / `Indeterminate` (`engine.rs`). Prefer
+exactly `satisfied` / `violated` / `indeterminate` — LOWER-CASE; the PascalCase
+spelling names the `Satisfaction` enum variants, not the wire tokens, and
+`engine::satisfaction_token` is the sole producer (contract canonical on
+`ConstraintData.status` in `types.rs`). Prefer
 `parameter_ids` — `collect_value_refs(expr)` — over the positional `node_id`
 when naming a constraint you care about: `Printer#constraint[45]` renumbers when
 a constraint is added anywhere above it. Pinned end to end

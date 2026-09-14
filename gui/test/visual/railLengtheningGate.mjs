@@ -161,6 +161,30 @@ export const RAIL_GATE_MIN_DISPATCHES = 1;
  */
 export const RAIL_GATE_LENGTH_TOLERANCE_MM = 1e-6;
 
+// ─── The constraint-verdict wire vocabulary ──────────────────────────────────
+
+/**
+ * The three tokens `ConstraintData.status` actually crosses the wire as.
+ *
+ * THEY ARE LOWER-CASE, and the PascalCase spelling is a trap this gate fell into
+ * once already. `Satisfaction::Satisfied` / `Violated` / `Indeterminate` are the
+ * RUST ENUM VARIANTS — the left-hand side of `engine.rs`'s `satisfaction_token`
+ * match. What reaches a debug-MCP payload is the right-hand side: `"satisfied"`,
+ * `"violated"`, `"indeterminate"`. Reading the variant names off that match and
+ * comparing a live payload against them makes every status fall through
+ * {@link foldPinStatus}'s vocabulary check to {@link PIN_ABSENT}, so the live
+ * gate reds at every phase while its own unit fixtures — hand-written in the
+ * same wrong casing — stay green agreeing with themselves.
+ *
+ * The contract is canonical on `ConstraintData.status` in
+ * gui/src-tauri/src/types.rs; `engine::satisfaction_token` is its only producer.
+ * `./railLengtheningGate.test.ts` pins these three against that producer's real
+ * bytes, so a drift is a red test rather than a silently-absent pin.
+ */
+export const STATUS_SATISFIED = "satisfied";
+export const STATUS_VIOLATED = "violated";
+export const STATUS_INDETERMINATE = "indeterminate";
+
 // ─── The measured truth table ────────────────────────────────────────────────
 
 /**
@@ -190,8 +214,8 @@ export const RAIL_GATE_PHASES = Object.freeze({
       [RAIL_SPAN_CELL]: 800,
       [TRAVEL_AVAIL_CELL]: 510,
     }),
-    railSpanPinStatus: "Satisfied",
-    toolDockPinStatus: "Satisfied",
+    railSpanPinStatus: STATUS_SATISFIED,
+    toolDockPinStatus: STATUS_SATISFIED,
   }),
   "after-y-rail": Object.freeze({
     cells: Object.freeze({
@@ -199,8 +223,8 @@ export const RAIL_GATE_PHASES = Object.freeze({
       [RAIL_SPAN_CELL]: 800,
       [TRAVEL_AVAIL_CELL]: 510,
     }),
-    railSpanPinStatus: "Violated",
-    toolDockPinStatus: "Satisfied",
+    railSpanPinStatus: STATUS_VIOLATED,
+    toolDockPinStatus: STATUS_SATISFIED,
   }),
   "after-rail-span": Object.freeze({
     cells: Object.freeze({
@@ -208,8 +232,8 @@ export const RAIL_GATE_PHASES = Object.freeze({
       [RAIL_SPAN_CELL]: 1100,
       [TRAVEL_AVAIL_CELL]: 810,
     }),
-    railSpanPinStatus: "Satisfied",
-    toolDockPinStatus: "Violated",
+    railSpanPinStatus: STATUS_SATISFIED,
+    toolDockPinStatus: STATUS_VIOLATED,
   }),
 });
 
@@ -431,8 +455,8 @@ export function selectPinConstraints(constraints, cells) {
 /**
  * Reduce the halves of one pin to a single status.
  *
- * A two-sided pin holds only when BOTH halves hold, so any `Violated` half makes
- * the pin violated; failing that, any `Indeterminate` half makes it
+ * A two-sided pin holds only when BOTH halves hold, so any `violated` half makes
+ * the pin violated; failing that, any `indeterminate` half makes it
  * indeterminate. No match at all is {@link PIN_ABSENT} rather than a silent
  * pass — a pin that vanished from printer.ri must fail the gate loudly, which is
  * exactly what an index-keyed selector would have hidden.
@@ -445,11 +469,12 @@ export function foldPinStatus(matched) {
   const statuses = matched.map((c) =>
     c !== null && typeof c === "object" ? /** @type {any} */ (c).status : undefined,
   );
-  if (statuses.some((s) => s === "Violated")) return "Violated";
-  if (statuses.some((s) => s === "Indeterminate")) return "Indeterminate";
-  if (statuses.every((s) => s === "Satisfied")) return "Satisfied";
-  // A status outside the {Satisfied, Violated, Indeterminate} vocabulary
-  // (engine.rs build_constraints) is not a pin reading at all.
+  if (statuses.some((s) => s === STATUS_VIOLATED)) return STATUS_VIOLATED;
+  if (statuses.some((s) => s === STATUS_INDETERMINATE)) return STATUS_INDETERMINATE;
+  if (statuses.every((s) => s === STATUS_SATISFIED)) return STATUS_SATISFIED;
+  // A status outside the wire vocabulary (engine.rs satisfaction_token) is not
+  // a pin reading at all — including the PascalCase variant names, which is the
+  // miss this arm caught. See the STATUS_* docblock.
   return PIN_ABSENT;
 }
 

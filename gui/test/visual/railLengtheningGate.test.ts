@@ -60,6 +60,9 @@ import {
   RAIL_GATE_LENGTH_TOLERANCE_MM,
   RAIL_SPAN_CELL,
   RAIL_SPAN_PIN,
+  STATUS_INDETERMINATE,
+  STATUS_SATISFIED,
+  STATUS_VIOLATED,
   SUBJECT_BASENAME,
   TOOL_DOCK_PIN,
   TRAVEL_AVAIL_CELL,
@@ -78,6 +81,10 @@ import {
   observeThenExtras,
   selectPinConstraints,
 } from "./railLengtheningGate.mjs";
+import {
+  extractVerdictTokens,
+  readEngineSource,
+} from "../../src/__tests__/constraintVerdictTokens.js";
 
 type Failure = {
   gate: string;
@@ -137,13 +144,13 @@ function constraintsFor(railSpanStatus: string, toolDockStatus: string) {
     PIN_YH_MIN_TODAY_CELL,
   ];
   return [
-    constraint("Printer#constraint[44]", "Satisfied", railCells),
+    constraint("Printer#constraint[44]", STATUS_SATISFIED, railCells),
     constraint("Printer#constraint[45]", railSpanStatus, railCells),
     constraint("Printer#constraint[88]", toolDockStatus, dockCells),
-    constraint("Printer#constraint[89]", "Satisfied", dockCells),
+    constraint("Printer#constraint[89]", STATUS_SATISFIED, dockCells),
     // An unrelated pin that must never be selected: it names ONE of the two
     // rail cells, so a match-any selector would pick it up.
-    constraint("Printer#constraint[7]", "Satisfied", [
+    constraint("Printer#constraint[7]", STATUS_SATISFIED, [
       PIN_RAIL_SPAN_CELL,
       "Printer.a_frame.brg_len_m",
     ]),
@@ -177,9 +184,9 @@ function inputsFor(
   };
 }
 
-const BASELINE = inputsFor("baseline", 800, 800, 510, "Satisfied", "Satisfied");
-const AFTER_Y_RAIL = inputsFor("after-y-rail", 1100, 800, 510, "Violated", "Satisfied");
-const AFTER_RAIL_SPAN = inputsFor("after-rail-span", 1100, 1100, 810, "Satisfied", "Violated");
+const BASELINE = inputsFor("baseline", 800, 800, 510, STATUS_SATISFIED, STATUS_SATISFIED);
+const AFTER_Y_RAIL = inputsFor("after-y-rail", 1100, 800, 510, STATUS_VIOLATED, STATUS_SATISFIED);
+const AFTER_RAIL_SPAN = inputsFor("after-rail-span", 1100, 1100, 810, STATUS_SATISFIED, STATUS_VIOLATED);
 
 /** Every failure record naming one field. */
 const forField = (failures: Failure[], field: string) => failures.filter((f) => f.field === field);
@@ -187,6 +194,29 @@ const forField = (failures: Failure[], field: string) => failures.filter((f) => 
 const forGate = (failures: Failure[], gate: string) => failures.filter((f) => f.gate === gate);
 
 // ─────────────────────────────────────────────────────────────────────────────
+
+describe("STATUS_* — the wire vocabulary, against the producer's real bytes", () => {
+  // WHY THIS IS NOT THREE LOWER-CASE LITERALS. The gate originally hard-coded
+  // "Satisfied"/"Violated"/"Indeterminate" — the RUST ENUM VARIANT names, read
+  // off the left-hand side of engine.rs's `satisfaction_token` match instead of
+  // the tokens on the right. Every fixture in this file was hand-written in the
+  // same casing, so the suite stayed green while the live gate could never have
+  // matched a single real payload. Driving the assertion from the producer's own
+  // source is the established cure (../../src/__tests__/constraintVerdictParity
+  // .test.ts, task 6723) and the only form that makes this pin two-way.
+  it("matches what engine.rs actually serialises each Satisfaction variant as", () => {
+    const tokens = extractVerdictTokens(readEngineSource());
+    expect({
+      Satisfied: tokens.get("Satisfied"),
+      Violated: tokens.get("Violated"),
+      Indeterminate: tokens.get("Indeterminate"),
+    }).toEqual({
+      Satisfied: STATUS_SATISFIED,
+      Violated: STATUS_VIOLATED,
+      Indeterminate: STATUS_INDETERMINATE,
+    });
+  });
+});
 
 describe("RAIL_GATE_PHASES — the measured truth table", () => {
   it("names exactly the three states the scenario passes through", () => {
@@ -214,7 +244,7 @@ describe("RAIL_GATE_PHASES — the measured truth table", () => {
       RAIL_GATE_PHASES["baseline"]!.railSpanPinStatus,
       RAIL_GATE_PHASES["after-y-rail"]!.railSpanPinStatus,
       RAIL_GATE_PHASES["after-rail-span"]!.railSpanPinStatus,
-    ]).toEqual(["Satisfied", "Violated", "Satisfied"]);
+    ]).toEqual([STATUS_SATISFIED, STATUS_VIOLATED, STATUS_SATISFIED]);
   });
 
   it("encodes the ToolDock cascade as EXPECTED, not as a failure to be tolerated", () => {
@@ -225,7 +255,7 @@ describe("RAIL_GATE_PHASES — the measured truth table", () => {
       RAIL_GATE_PHASES["baseline"]!.toolDockPinStatus,
       RAIL_GATE_PHASES["after-y-rail"]!.toolDockPinStatus,
       RAIL_GATE_PHASES["after-rail-span"]!.toolDockPinStatus,
-    ]).toEqual(["Satisfied", "Satisfied", "Violated"]);
+    ]).toEqual([STATUS_SATISFIED, STATUS_SATISFIED, STATUS_VIOLATED]);
   });
 });
 
@@ -354,7 +384,7 @@ describe("checkRailLengtheningGate — (d) the constraint gate", () => {
   it("demands the rail-span pin flip to Violated after the y_rail_len edit", () => {
     const { ok, failures } = checkRailLengtheningGate({
       ...AFTER_Y_RAIL,
-      railSpanPinStatus: "Satisfied",
+      railSpanPinStatus: STATUS_SATISFIED,
     }) as Verdict;
     expect(ok).toBe(false);
     expect(failures).toEqual([
@@ -362,8 +392,8 @@ describe("checkRailLengtheningGate — (d) the constraint gate", () => {
         gate: "constraint",
         tool: "engine_state",
         field: `constraints[${RAIL_SPAN_PIN}].status`,
-        observed: "Satisfied",
-        expected: "Violated",
+        observed: STATUS_SATISFIED,
+        expected: STATUS_VIOLATED,
       },
     ]);
   });
@@ -371,15 +401,15 @@ describe("checkRailLengtheningGate — (d) the constraint gate", () => {
   it("demands the rail-span pin return to Satisfied after the rail_span_m edit", () => {
     const { failures } = checkRailLengtheningGate({
       ...AFTER_RAIL_SPAN,
-      railSpanPinStatus: "Violated",
+      railSpanPinStatus: STATUS_VIOLATED,
     }) as Verdict;
     expect(forField(failures, `constraints[${RAIL_SPAN_PIN}].status`)).toEqual([
       {
         gate: "constraint",
         tool: "engine_state",
         field: `constraints[${RAIL_SPAN_PIN}].status`,
-        observed: "Violated",
-        expected: "Satisfied",
+        observed: STATUS_VIOLATED,
+        expected: STATUS_SATISFIED,
       },
     ]);
   });
@@ -387,7 +417,7 @@ describe("checkRailLengtheningGate — (d) the constraint gate", () => {
   it("demands the ToolDock cascade, so a pin that stays green is a FAILURE", () => {
     const { ok, failures } = checkRailLengtheningGate({
       ...AFTER_RAIL_SPAN,
-      toolDockPinStatus: "Satisfied",
+      toolDockPinStatus: STATUS_SATISFIED,
     }) as Verdict;
     expect(ok).toBe(false);
     expect(failures).toEqual([
@@ -395,8 +425,8 @@ describe("checkRailLengtheningGate — (d) the constraint gate", () => {
         gate: "constraint",
         tool: "engine_state",
         field: `constraints[${TOOL_DOCK_PIN}].status`,
-        observed: "Satisfied",
-        expected: "Violated",
+        observed: STATUS_SATISFIED,
+        expected: STATUS_VIOLATED,
       },
     ]);
   });
@@ -417,13 +447,13 @@ describe("checkRailLengtheningGate — (d) the constraint gate", () => {
     // gate keyed on a global count would red on correct behaviour — so this
     // drives the whole extract-then-check path over a constraints list that is
     // genuinely full of red, none of it on either named pin.
-    const payloads = payloadsFor("after-rail-span", 1100, 1100, 810, "Satisfied", "Violated");
+    const payloads = payloadsFor("after-rail-span", 1100, 1100, 810, STATUS_SATISFIED, STATUS_VIOLATED);
     payloads.engineState.constraints = [
       ...payloads.engineState.constraints,
       ...new Array(11)
         .fill(0)
-        .map((_, i) => constraint(`Printer#constraint[${200 + i}]`, "Indeterminate", ["Printer.env.build_z"])),
-      constraint("Printer#constraint[300]", "Violated", ["Printer.d_toolhead.peak_accel"]),
+        .map((_, i) => constraint(`Printer#constraint[${200 + i}]`, STATUS_INDETERMINATE, ["Printer.env.build_z"])),
+      constraint("Printer#constraint[300]", STATUS_VIOLATED, ["Printer.d_toolhead.peak_accel"]),
     ];
     const { inputs, failures } = extractGateInputs(payloads) as Extraction;
     expect(failures).toEqual([]);
@@ -573,7 +603,7 @@ function payloadsFor(
 describe("extractGateInputs — (h) folding live payloads into flat scalars", () => {
   it("extracts a complete, gradeable baseline with no failures", () => {
     const { inputs, failures } = extractGateInputs(
-      payloadsFor("baseline", 800, 800, 510, "Satisfied", "Satisfied"),
+      payloadsFor("baseline", 800, 800, 510, STATUS_SATISFIED, STATUS_SATISFIED),
     ) as Extraction;
     expect(failures).toEqual([]);
     expect(checkRailLengtheningGate(inputs)).toEqual({ ok: true, failures: [] });
@@ -581,7 +611,7 @@ describe("extractGateInputs — (h) folding live payloads into flat scalars", ()
 
   it("scales si_value from metres to millimetres", () => {
     const { inputs } = extractGateInputs(
-      payloadsFor("after-rail-span", 1100, 1100, 810, "Satisfied", "Violated"),
+      payloadsFor("after-rail-span", 1100, 1100, 810, STATUS_SATISFIED, STATUS_VIOLATED),
     ) as Extraction;
     expect((inputs["cells"] as Record<string, { mm: number }>)[TRAVEL_AVAIL_CELL]!.mm).toBeCloseTo(
       810,
@@ -590,7 +620,7 @@ describe("extractGateInputs — (h) folding live payloads into flat scalars", ()
   });
 
   it("selects the pin by parameter_ids superset, never by node_id index", () => {
-    const payloads = payloadsFor("after-y-rail", 1100, 800, 510, "Violated", "Satisfied");
+    const payloads = payloadsFor("after-y-rail", 1100, 800, 510, STATUS_VIOLATED, STATUS_SATISFIED);
     // Renumber every constraint. An index-keyed selector would now miss.
     payloads.engineState.constraints = payloads.engineState.constraints.map((c, i) => ({
       ...c,
@@ -598,27 +628,27 @@ describe("extractGateInputs — (h) folding live payloads into flat scalars", ()
     }));
     const { inputs, failures } = extractGateInputs(payloads) as Extraction;
     expect(failures).toEqual([]);
-    expect(inputs["railSpanPinStatus"]).toBe("Violated");
+    expect(inputs["railSpanPinStatus"]).toBe(STATUS_VIOLATED);
   });
 
   it("folds the two halves of a pin pair: Violated on either half is Violated", () => {
     const { inputs } = extractGateInputs(
-      payloadsFor("after-y-rail", 1100, 800, 510, "Violated", "Satisfied"),
+      payloadsFor("after-y-rail", 1100, 800, 510, STATUS_VIOLATED, STATUS_SATISFIED),
     ) as Extraction;
     // Only `Printer#constraint[45]` is Violated; `[44]` shares the same
     // parameter_ids and is Satisfied.
-    expect(inputs["railSpanPinStatus"]).toBe("Violated");
-    expect(inputs["toolDockPinStatus"]).toBe("Satisfied");
+    expect(inputs["railSpanPinStatus"]).toBe(STATUS_VIOLATED);
+    expect(inputs["toolDockPinStatus"]).toBe(STATUS_SATISFIED);
   });
 
   it("folds an Indeterminate half as Indeterminate when no half is Violated", () => {
-    const payloads = payloadsFor("baseline", 800, 800, 510, "Indeterminate", "Satisfied");
+    const payloads = payloadsFor("baseline", 800, 800, 510, STATUS_INDETERMINATE, STATUS_SATISFIED);
     const { inputs } = extractGateInputs(payloads) as Extraction;
-    expect(inputs["railSpanPinStatus"]).toBe("Indeterminate");
+    expect(inputs["railSpanPinStatus"]).toBe(STATUS_INDETERMINATE);
   });
 
   it("reports an unmatched pin as 'absent' rather than silently passing", () => {
-    const payloads = payloadsFor("baseline", 800, 800, 510, "Satisfied", "Satisfied");
+    const payloads = payloadsFor("baseline", 800, 800, 510, STATUS_SATISFIED, STATUS_SATISFIED);
     payloads.engineState.constraints = payloads.engineState.constraints.filter(
       (c) => !c.parameter_ids.includes(PIN_Y_RAIL_LEN_CELL),
     );
@@ -629,7 +659,7 @@ describe("extractGateInputs — (h) folding live payloads into flat scalars", ()
   it("classifies an in-band tool error as an OUTAGE, not a shape problem", () => {
     // An outage means the invariant was never tested; a caller must be able to
     // tell that apart from a gate that was tested and violated.
-    const payloads = payloadsFor("baseline", 800, 800, 510, "Satisfied", "Satisfied");
+    const payloads = payloadsFor("baseline", 800, 800, 510, STATUS_SATISFIED, STATUS_SATISFIED);
     const { failures } = extractGateInputs({
       ...payloads,
       engineState: { error: "engine session poisoned" },
@@ -656,7 +686,7 @@ describe("extractGateInputs — (h) folding live payloads into flat scalars", ()
   });
 
   it("flags a non-array meshes/values/constraints field by name", () => {
-    const payloads = payloadsFor("baseline", 800, 800, 510, "Satisfied", "Satisfied");
+    const payloads = payloadsFor("baseline", 800, 800, 510, STATUS_SATISFIED, STATUS_SATISFIED);
     const { failures } = extractGateInputs({
       ...payloads,
       engineState: { meshes: 240, values: null, constraints: "many" },
@@ -669,7 +699,7 @@ describe("extractGateInputs — (h) folding live payloads into flat scalars", ()
   });
 
   it("flags a missing reify_open_file source", () => {
-    const payloads = payloadsFor("baseline", 800, 800, 510, "Satisfied", "Satisfied");
+    const payloads = payloadsFor("baseline", 800, 800, 510, STATUS_SATISFIED, STATUS_SATISFIED);
     const { failures } = extractGateInputs({
       ...payloads,
       openFile: { success: true },
@@ -686,7 +716,7 @@ describe("extractGateInputs — (h) folding live payloads into flat scalars", ()
   });
 
   it("an extraction failure means the invariant was NEVER TESTED, so the verdict is not ok", () => {
-    const payloads = payloadsFor("baseline", 800, 800, 510, "Satisfied", "Satisfied");
+    const payloads = payloadsFor("baseline", 800, 800, 510, STATUS_SATISFIED, STATUS_SATISFIED);
     const { inputs, failures } = extractGateInputs({
       ...payloads,
       engineState: { error: "boom" },
@@ -704,9 +734,9 @@ describe("selectPinConstraints / foldPinStatus — (h2) the selector's own halve
   it("matches on a SUPERSET of the named cells, never on one of them", () => {
     const matched = selectPinConstraints(
       [
-        half("Satisfied"),
-        constraint("Printer#constraint[7]", "Violated", [PIN_RAIL_SPAN_CELL]),
-        constraint("Printer#constraint[8]", "Violated", [PIN_Y_RAIL_LEN_CELL]),
+        half(STATUS_SATISFIED),
+        constraint("Printer#constraint[7]", STATUS_VIOLATED, [PIN_RAIL_SPAN_CELL]),
+        constraint("Printer#constraint[8]", STATUS_VIOLATED, [PIN_Y_RAIL_LEN_CELL]),
       ],
       pinCells,
     );
@@ -716,7 +746,7 @@ describe("selectPinConstraints / foldPinStatus — (h2) the selector's own halve
   it.each([
     ["a non-array constraints list", "many", pinCells],
     ["a null constraints list", null, pinCells],
-    ["a non-array cells list", [half("Satisfied")], "Printer.a_frame.rail_span_m"],
+    ["a non-array cells list", [half(STATUS_SATISFIED)], "Printer.a_frame.rail_span_m"],
     ["an entry that is not an object", [null, 7, "x"], pinCells],
     ["an entry whose parameter_ids is not an array", [{ node_id: "a", parameter_ids: "x" }], pinCells],
   ])("yields no matches for %s rather than throwing", (_name, constraints, cells) => {
@@ -724,22 +754,22 @@ describe("selectPinConstraints / foldPinStatus — (h2) the selector's own halve
   });
 
   it.each([
-    ["Violated wins over every other half", ["Satisfied", "Indeterminate", "Violated"], "Violated"],
-    ["Indeterminate wins when no half is Violated", ["Satisfied", "Indeterminate"], "Indeterminate"],
-    ["Satisfied only when EVERY half is", ["Satisfied", "Satisfied"], "Satisfied"],
+    ["Violated wins over every other half", [STATUS_SATISFIED, STATUS_INDETERMINATE, STATUS_VIOLATED], STATUS_VIOLATED],
+    ["Indeterminate wins when no half is Violated", [STATUS_SATISFIED, STATUS_INDETERMINATE], STATUS_INDETERMINATE],
+    ["Satisfied only when EVERY half is", [STATUS_SATISFIED, STATUS_SATISFIED], STATUS_SATISFIED],
   ])("folds a pin pair: %s", (_name, statuses, want) => {
     expect(foldPinStatus((statuses as string[]).map(half))).toBe(want);
   });
 
   it.each([
-    ["a status outside the engine's vocabulary", [half("Unknown"), half("Satisfied")]],
-    ["a status that is not a string at all", [{ ...half("Satisfied"), status: 7 }]],
+    ["a status outside the engine's vocabulary", [half("Unknown"), half(STATUS_SATISFIED)]],
+    ["a status that is not a string at all", [{ ...half(STATUS_SATISFIED), status: 7 }]],
     ["an entry that is not an object", [null]],
     ["no match at all", []],
-    ["a non-array argument", "Satisfied"],
+    ["a non-array argument", STATUS_SATISFIED],
   ])("reports %s as PIN_ABSENT, never as a silent pass", (_name, matched) => {
     // `build_constraints` emits exactly Satisfied / Violated / Indeterminate, so
-    // anything else is not a pin reading. Folding it to "Satisfied" by omission
+    // anything else is not a pin reading. Folding it to "satisfied" by omission
     // would be the disarmed-assertion failure the whole selector exists to
     // avoid: the gate would go green on a payload it did not understand.
     expect(foldPinStatus(matched as never)).toBe(PIN_ABSENT);
@@ -753,7 +783,7 @@ describe("formatFailures — the single site where a record becomes English", ()
     const { failures } = checkRailLengtheningGate({
       ...AFTER_RAIL_SPAN,
       meshCount: 0,
-      railSpanPinStatus: "Violated",
+      railSpanPinStatus: STATUS_VIOLATED,
     }) as Verdict;
     // ORDER, not length: `formatFailures` is an `Array.map`, so a length check
     // holds for any implementation at all. Each line must be the rendering of
@@ -768,12 +798,12 @@ describe("formatFailures — the single site where a record becomes English", ()
   it("explains a constraint failure in terms of the pin, the phase and both statuses", () => {
     const { failures } = checkRailLengtheningGate({
       ...AFTER_Y_RAIL,
-      railSpanPinStatus: "Satisfied",
+      railSpanPinStatus: STATUS_SATISFIED,
     }) as Verdict;
     const line = formatFailures(failures)[0]!;
     expect(line).toContain(RAIL_SPAN_PIN);
-    expect(line).toContain("Satisfied");
-    expect(line).toContain("Violated");
+    expect(line).toContain(STATUS_SATISFIED);
+    expect(line).toContain(STATUS_VIOLATED);
   });
 
   it("explains a stale reading in terms of the cell and the freshness actually read", () => {
@@ -1069,8 +1099,8 @@ const SETTLED_READING = {
     [RAIL_SPAN_CELL]: { mm: 1100, freshness: "final" },
     [TRAVEL_AVAIL_CELL]: { mm: 810, freshness: "final" },
   },
-  railSpanPinStatus: "Satisfied",
-  toolDockPinStatus: "Violated",
+  railSpanPinStatus: STATUS_SATISFIED,
+  toolDockPinStatus: STATUS_VIOLATED,
 };
 
 /** The post-edit source the B2 cases read, with both params already rewritten. */
@@ -1309,13 +1339,13 @@ describe("checkIdempotentReload — (m) B5, the watcher re-read adds no churn", 
   });
 
   it("faults a pin that flipped across the debounce", () => {
-    const flipped = { ...settled, railSpanPinStatus: "Violated" };
+    const flipped = { ...settled, railSpanPinStatus: STATUS_VIOLATED };
     const failures = checkIdempotentReload({ before: settled, after: flipped }) as Failure[];
     expect(failures[0]).toMatchObject({
       gate: "reload",
       field: `constraints[${RAIL_SPAN_PIN}].status`,
-      observed: "Violated",
-      expected: "Satisfied",
+      observed: STATUS_VIOLATED,
+      expected: STATUS_SATISFIED,
     });
   });
 

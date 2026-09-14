@@ -316,6 +316,7 @@ async fn frontend_error_envelope_is_refused_after_the_transport() {
 #[cfg(feature = "gui")]
 #[tokio::test]
 async fn write_tool_payload_carries_a_flipped_constraint_status() {
+    use reify_ir::Satisfaction;
     use reify_test_support::{bracket_source, bracket_source_with_width};
 
     let narrowed_source = bracket_source_with_width("20mm");
@@ -351,12 +352,19 @@ async fn write_tool_payload_carries_a_flipped_constraint_status() {
             .collect::<Vec<_>>()
     );
     let flipped = flipped[0];
+    // Never a hand-written `"satisfied"`: `types.rs` makes
+    // `engine::satisfaction_token` the sole permitted producer of this token,
+    // and a literal here is what let this gate ship asserting the PascalCase
+    // ENUM VARIANT names instead of the lower-case wire tokens.
     assert_eq!(
         prior.get(flipped.node_id.as_str()).copied(),
-        Some("Satisfied"),
-        "the flipped constraint must have been Satisfied before the edit"
+        Some(crate::engine::satisfaction_token(Satisfaction::Satisfied)),
+        "the flipped constraint must have been satisfied before the edit"
     );
-    assert_eq!(flipped.status, "Violated");
+    assert_eq!(
+        flipped.status,
+        crate::engine::satisfaction_token(Satisfaction::Violated)
+    );
 
     // The selector the live gate uses: a pin named by the cells it is about
     // instead of by its positional `node_id`. `parameter_ids` is

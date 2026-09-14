@@ -78,7 +78,7 @@ PRD `ai-native-editing.md` §7 rows B1–B3, B5 and B7 end to end: two
 `reify_set_parameter` edits (`CoreXY.y_rail_len`, then `AFrame.rail_span_m`,
 both 800mm → 1100mm), asserting the viewport and property panel follow WITHOUT
 a file reload, the `.ri` on disk carries the new default literal
-unit-preservingly, the rail-span pin flips `Violated` and back to `Satisfied`,
+unit-preservingly, the rail-span pin flips `violated` and back to `satisfied`,
 the post-debounce watcher re-read adds no churn, and two refused writes leave
 disk byte-identical. **Not CI-gated** — needs a live GUI, same as §2.
 
@@ -97,7 +97,7 @@ hand-kept equal to `BearingRod.length / 2` (`printer.ri`), the rear-web spans ar
 `#6592`-inert (per-instance sizing does not thread to the sub-bearing level), and
 the interim socket bridges INVERT at 1100mm rails — `brf_y1` is independent of
 `rail_span_m`, so the box depth goes negative rather than merely to zero, which
-takes `AFrame.vol_vs_analytic` `Indeterminate`. A green run means the value-flow
+takes `AFrame.vol_vs_analytic` `indeterminate`. A green run means the value-flow
 chain carried the edit, not that the design is consistent at the new length.
 
 **B1 is an ORDERING property, not a payload property.** "Without a file reload"
