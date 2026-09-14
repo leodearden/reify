@@ -2,8 +2,28 @@
 //! (task α, PRD docs/prds/v0_6/eval-uniform-dependency-handling.md §6.1).
 //!
 //! Runs `reify_eval::invariants::check_no_stale_undef` — and the
-//! `Engine::check_no_stale_undef` convenience wrapper — over the eval
-//! fixture corpus + examples/, proving the invariant holds post-eval.
+//! `Engine::check_no_stale_undef` convenience wrapper — proving the invariant
+//! holds post-eval.
+//!
+//! # What this file is, since task #7431
+//!
+//! The broad corpus SWEEP no longer lives here. It was unified with the
+//! INV-EVAL-4 snapshot↔cache divergence sweep into one hash-keyed sweep that
+//! does ONE compile+eval per corpus file and asserts both invariants off it:
+//! `harness_corpus_gates::eval_invariant_corpus_sweep::corpus_sweep_shard_NN`
+//! (with `corpus_files`, the residual list as `STALE_UNDEF_RESIDUALS`, and the
+//! `diag_per_file_timing` diagnostic harness). This file keeps the parts that
+//! are about the CHECKER rather than about the corpus:
+//!
+//! - the five mandatory anti-silent-accept seeded-violation self-tests below —
+//!   they are the unified sweep's vacuity guard too, and run in the same nextest
+//!   pass, so a checker that always returned `vec![]` still cannot make a corpus
+//!   sweep silently green;
+//! - `deliberately_undef_fixtures_report_zero_violations`, the Engine-path
+//!   corpus test over the four purpose-built undef fixtures;
+//! - the whole task-5578/6662 `build()`-SURFACE suite, which drives
+//!   `engine.build(..)` rather than `engine.eval(..)` and is therefore a
+//!   different surface entirely, not a second copy of the eval sweep.
 //!
 //! Step-1 (RED): the mandatory anti-silent-accept seeded-violation
 //! self-test. Fabricates a minimal post-eval state (NOT a real
@@ -668,317 +688,6 @@ fn deliberately_undef_fixtures_report_zero_violations() {
     }
 }
 
-// ── Step-9/10: broad debug-gate corpus sweep ─────────────────────────────────
-
-/// Files with a residual stale-Undef violation that is NOT a checker gap
-/// fixable within `invariants.rs`'s `(graph, values, trace_map, functions)`
-/// signature — each traced to its root cause during the α broad-sweep
-/// investigation (task 4952 step-10). Matched by path SUFFIX against each
-/// corpus file's display path. Every skip is PRINTED (never silent) so
-/// bounded coverage never reads as full coverage; if a future engine change
-/// resolves one of these, its entry should be deleted (not left as dead
-/// weight) — the corpus sweep will still pass either way.
-const KNOWN_RESIDUAL_SKIPS: &[(&str, &str)] = &[
-    (
-        "examples/integration_corner_cases.ri",
-        "RecTree.child.{span,depth}: a `sub child = RecTree(...) where depth > 0` \
-         self-recursive sub. The compiler statically emits one placeholder level of \
-         child value cells regardless of the runtime `where` guard's truth value, but \
-         that guard's active/inactive state is a compiler-side concept never threaded \
-         into the runtime EvaluationGraph (unlike value-cell-level `guard()` branches, \
-         which DO get a GuardedGroupInfo entry). Fixing this needs a new \
-         EvaluationGraph field populated from the compiler's sub-instantiation guard \
-         info — a change to shared graph-construction code, out of this task's scope.",
-    ),
-    (
-        "crates/reify-eval/tests/fixtures/match_block_decls_bolt.ri",
-        "Bolt.head.across_flats: a decl-level `match head_type { ... => sub head: ... }` \
-         block. The compiler tracks per-arm active/inactive state in \
-         `TopologyTemplate::match_arm_groups` (`GuardedDeclGroup`), but \
-         `EvaluationGraph::from_templates` does not carry that field into the runtime \
-         graph at all (confirmed: no analogous field exists on EvaluationGraph). Same \
-         class of gap as the RecTree entry above, for match blocks instead of `where` \
-         guards — needs shared graph-construction plumbing, out of this task's scope.",
-    ),
-    (
-        "examples/multi_load_bracket.ri",
-        "MultiLoadBracket.critical_case: `worst_case(results, |r| r)` — a lambda-over-Map \
-         combinator. Reproducibly hits a pre-existing reify-expr dispatch gap \
-         (\"[reify-expr] sample: Field lambda is not a Lambda: Undef\", printed 3x during \
-         this sweep — once per load case) unrelated to geometry, kinematics, or \
-         dynamics. A worst_case/lambda-dispatch product limitation, not a staleness \
-         false-positive this checker should paper over.",
-    ),
-    (
-        "examples/surface_finish_functional.ri",
-        "Demo.total: reads through `let bom = AssemblyBOM()` — a whole-structure VALUE \
-         constructor call (not a `sub` declaration) for a structure that itself declares \
-         nested subs (`sub p1 = Plate()`, `sub p2 = Bracket()`). Their finishing_cost \
-         fields do not resolve when the parent is constructed as an inline value \
-         expression rather than a `sub`. A pre-existing struct-constructor-with-nested- \
-         subs eval limitation, independent of geometry/staleness.",
-    ),
-];
-
-/// Number of shards the broad corpus sweep is split across — one shard per
-/// `broad_corpus_sweep_shard_NN` `#[test]` fn (below).
-///
-/// The user-observable debug-gate signal (task α, PRD §6.1 row 6 + §9) is
-/// that every `.ri` fixture under `crates/reify-eval/tests/fixtures/` and
-/// `examples/`, plus the explicit #4946 R3f-bridge premise fixture
-/// `tests/prd-gate/fixtures/geometry_let_selector_consumer.ri`, produces
-/// ZERO stale-Undef violations — modulo the explicit, printed
-/// `KNOWN_RESIDUAL_SKIPS` above. That was originally ONE test compiling +
-/// evaluating all ~270 corpus files sequentially, which passed but took
-/// ~270s wall-clock (each file costs a fraction of a second, same as any
-/// other single compile+eval test in this suite, just summed 270x) — long
-/// enough, as the last test left running with nothing to interleave its
-/// output with, to trip the verify pipeline's heartbeat-idle backstop
-/// despite every file passing (task 4952 debug fix). Sharding into
-/// `CORPUS_SHARD_COUNT` independent `#[test]` fns lets cargo-nextest run
-/// them as separate, concurrently-scheduled processes — each reporting its
-/// own PASS/SLOW line — so the worst-case silent gap is bounded by roughly
-/// one shard's share of the corpus (~11 files) instead of the whole corpus,
-/// regardless of host CPU contention.
-const CORPUS_SHARD_COUNT: usize = 24;
-
-/// Collects the full, deterministically-sorted corpus file list (fixtures +
-/// examples + the explicit #4946 selector-consumer premise fixture) and the
-/// selector-consumer path itself. Every shard calls this and keeps only the
-/// files whose index (in this SAME sorted order) is `≡ shard_index (mod
-/// CORPUS_SHARD_COUNT)`, so the partition is stable across shards/runs
-/// without needing to share state between the independent shard processes.
-/// Cheap (a directory walk, no compilation) — recomputing it once per shard
-/// isn't worth caching.
-fn corpus_files() -> (Vec<std::path::PathBuf>, std::path::PathBuf) {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let fixtures_dir = std::path::Path::new(manifest_dir).join("tests/fixtures");
-    let examples_dir = std::path::Path::new(manifest_dir).join("../../examples");
-    let selector_consumer_path = std::path::Path::new(manifest_dir)
-        .join("../../tests/prd-gate/fixtures/geometry_let_selector_consumer.ri");
-
-    let mut files = Vec::new();
-    eval_gate_support::collect_ri_files(&fixtures_dir, &mut files);
-    eval_gate_support::collect_ri_files(&examples_dir, &mut files);
-    files.push(selector_consumer_path.clone());
-    files.sort();
-    (files, selector_consumer_path)
-}
-
-/// Runs the broad corpus sweep over the slice of the corpus assigned to
-/// `shard_index` (of `CORPUS_SHARD_COUNT` total — see its doc comment for
-/// why the sweep is sharded at all). Semantics per file are identical to the
-/// pre-sharding single-test sweep: SKIP any file whose compile emits an
-/// Error-severity diagnostic (printed), exempt `KNOWN_RESIDUAL_SKIPS`
-/// entries (printed), and require zero violations everywhere else. If the
-/// #4946 selector-consumer premise fixture falls in this shard, also
-/// require it was evaluated (not skipped) with zero violations — mirroring
-/// the original single-test assertion exactly, just scoped to whichever one
-/// shard deterministically contains that path.
-fn run_corpus_shard(shard_index: usize) {
-    let (files, selector_consumer_path) = corpus_files();
-    let shard_files: Vec<&std::path::PathBuf> = files
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| i % CORPUS_SHARD_COUNT == shard_index)
-        .map(|(_, f)| f)
-        .collect();
-    let selector_consumer_in_shard = shard_files.iter().any(|p| **p == selector_consumer_path);
-    let shard_file_count = shard_files.len();
-
-    let mut skipped: Vec<String> = Vec::new();
-    let mut known_residual_skips: Vec<(String, &'static str, usize)> = Vec::new();
-    let mut offenders: Vec<(String, Vec<reify_eval::StaleUndefViolation>)> = Vec::new();
-    let mut selector_consumer_result: Option<usize> = None;
-
-    for path in shard_files {
-        let display = path.display().to_string();
-        let source =
-            std::fs::read_to_string(path).unwrap_or_else(|e| panic!("reading {display}: {e}"));
-
-        let compiled = reify_test_support::compile_source_with_stdlib(&source);
-        let errors = reify_test_support::collect_errors(&compiled.diagnostics);
-        if !errors.is_empty() {
-            skipped.push(display);
-            continue;
-        }
-
-        let mut engine = eval_gate_support::gate_engine(true);
-        engine.eval(&compiled);
-        let violations = engine.check_no_stale_undef();
-
-        if *path == selector_consumer_path {
-            selector_consumer_result = Some(violations.len());
-        }
-
-        if let Some((_, reason)) = KNOWN_RESIDUAL_SKIPS
-            .iter()
-            .find(|(suffix, _)| display.ends_with(suffix))
-        {
-            known_residual_skips.push((display, reason, violations.len()));
-            continue;
-        }
-
-        if !violations.is_empty() {
-            offenders.push((display, violations));
-        }
-    }
-
-    eprintln!(
-        "broad_corpus_sweep shard {shard_index}/{CORPUS_SHARD_COUNT}: {} files evaluated, {} skipped (compile errors), {} skipped (known residual)",
-        shard_file_count - skipped.len() - known_residual_skips.len(),
-        skipped.len(),
-        known_residual_skips.len(),
-    );
-    for s in &skipped {
-        eprintln!("  SKIP (compile error): {s}");
-    }
-    for (f, reason, violation_count) in &known_residual_skips {
-        eprintln!("  SKIP (known residual, {violation_count} violation(s)): {f}\n    reason: {reason}");
-    }
-
-    assert!(
-        offenders.is_empty(),
-        "expected zero stale-Undef violations across the corpus; offending file(s):\n{}",
-        offenders
-            .iter()
-            .map(|(f, vs)| {
-                let detail = vs
-                    .iter()
-                    .map(|v| format!("    {:?}: {}", v.cell, v.detail))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                format!("  {f}:\n{detail}")
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
-
-    if selector_consumer_in_shard {
-        assert_eq!(
-            selector_consumer_result,
-            Some(0),
-            "geometry_let_selector_consumer.ri must be present, evaluated (not skipped due \
-             to a compile error), and produce zero violations — the #4946 R3f-bridge premise"
-        );
-    }
-}
-
-/// One `#[test]` fn per corpus shard — see `CORPUS_SHARD_COUNT`'s doc
-/// comment for why the broad sweep is sharded, and `run_corpus_shard` for
-/// the per-shard logic. `$idx` must range exactly over `0..CORPUS_SHARD_COUNT`
-/// (checked by `corpus_shard_count_matches_generated_tests` below).
-macro_rules! corpus_shard_tests {
-    ($($name:ident = $idx:literal),+ $(,)?) => {
-        $(
-            #[test]
-            fn $name() {
-                run_corpus_shard($idx);
-            }
-        )+
-
-        /// Every shard index passed to THIS macro invocation, in source
-        /// order — derived from the same repetition that generates the
-        /// `#[test]` fns above, so deleting a `broad_corpus_sweep_shard_NN`
-        /// line here shrinks this array too. This is what lets
-        /// `corpus_shard_count_matches_generated_tests` detect a deleted
-        /// shard line: comparing two independently-hardcoded literals
-        /// cannot (both stay unchanged when a line is removed).
-        const GENERATED_SHARD_INDICES: &[usize] = &[$($idx),+];
-    };
-}
-
-corpus_shard_tests! {
-    broad_corpus_sweep_shard_00 = 0,
-    broad_corpus_sweep_shard_01 = 1,
-    broad_corpus_sweep_shard_02 = 2,
-    broad_corpus_sweep_shard_03 = 3,
-    broad_corpus_sweep_shard_04 = 4,
-    broad_corpus_sweep_shard_05 = 5,
-    broad_corpus_sweep_shard_06 = 6,
-    broad_corpus_sweep_shard_07 = 7,
-    broad_corpus_sweep_shard_08 = 8,
-    broad_corpus_sweep_shard_09 = 9,
-    broad_corpus_sweep_shard_10 = 10,
-    broad_corpus_sweep_shard_11 = 11,
-    broad_corpus_sweep_shard_12 = 12,
-    broad_corpus_sweep_shard_13 = 13,
-    broad_corpus_sweep_shard_14 = 14,
-    broad_corpus_sweep_shard_15 = 15,
-    broad_corpus_sweep_shard_16 = 16,
-    broad_corpus_sweep_shard_17 = 17,
-    broad_corpus_sweep_shard_18 = 18,
-    broad_corpus_sweep_shard_19 = 19,
-    broad_corpus_sweep_shard_20 = 20,
-    broad_corpus_sweep_shard_21 = 21,
-    broad_corpus_sweep_shard_22 = 22,
-    broad_corpus_sweep_shard_23 = 23,
-}
-
-/// Drift guard: `corpus_shard_tests!` above must enumerate EXACTLY
-/// `0..CORPUS_SHARD_COUNT` — one `#[test]` fn per shard index, no gaps and
-/// no out-of-range entries — or some corpus files would silently never be
-/// swept (a gap) or `run_corpus_shard` would be invoked with an index that
-/// can never match any file (dead weight). Asserted against
-/// `GENERATED_SHARD_INDICES` — the array the macro emits FROM THE SAME
-/// repetition that generates the shard `#[test]` fns — rather than a
-/// separately hand-maintained literal count: deleting a
-/// `broad_corpus_sweep_shard_NN` line shrinks `GENERATED_SHARD_INDICES` too,
-/// so this guard actually fails when that drift occurs (a literal-vs-literal
-/// comparison would not: neither literal changes when a line is deleted).
-#[test]
-fn corpus_shard_count_matches_generated_tests() {
-    assert_eq!(
-        GENERATED_SHARD_INDICES.len(), CORPUS_SHARD_COUNT,
-        "corpus_shard_tests! generated {} shard test(s) but CORPUS_SHARD_COUNT \
-         is {CORPUS_SHARD_COUNT} — every index in 0..CORPUS_SHARD_COUNT must \
-         have exactly one broad_corpus_sweep_shard_NN test, or some corpus \
-         files silently never get swept",
-        GENERATED_SHARD_INDICES.len()
-    );
-
-    // Stronger than a count match: pin the exact index SET too, so a
-    // duplicate/out-of-range index masking a missing one (same count, wrong
-    // coverage) can't slip through.
-    let mut sorted_indices = GENERATED_SHARD_INDICES.to_vec();
-    sorted_indices.sort_unstable();
-    let expected: Vec<usize> = (0..CORPUS_SHARD_COUNT).collect();
-    assert_eq!(
-        sorted_indices, expected,
-        "corpus_shard_tests! must enumerate EXACTLY 0..CORPUS_SHARD_COUNT — no \
-         gaps, duplicates, or out-of-range indices — got {:?}",
-        GENERATED_SHARD_INDICES
-    );
-}
-
-#[test]
-#[ignore = "diagnostic timing harness; run explicitly with --ignored"]
-fn diag_per_file_timing() {
-    let (files, _selector_consumer_path) = corpus_files();
-    let mut timings: Vec<(std::time::Duration, String)> = Vec::new();
-    for path in &files {
-        let display = path.display().to_string();
-        let t0 = std::time::Instant::now();
-        let Ok(source) = std::fs::read_to_string(path) else {
-            continue;
-        };
-        let compiled = reify_test_support::compile_source_with_stdlib(&source);
-        let errors = reify_test_support::collect_errors(&compiled.diagnostics);
-        if !errors.is_empty() {
-            continue;
-        }
-        let mut engine = eval_gate_support::gate_engine(true);
-        engine.eval(&compiled);
-        let _ = engine.check_no_stale_undef();
-        timings.push((t0.elapsed(), display));
-    }
-    timings.sort();
-    timings.reverse();
-    for (d, f) in timings.iter().take(40) {
-        eprintln!("DIAG {d:?} {f}");
-    }
-}
-
 // ── Task 5578: the build() SURFACE ───────────────────────────────────────────
 //
 // Everything above drives `engine.eval()`. That leaves half the coverage gap
@@ -1242,8 +951,9 @@ fn build_surface_probe_is_clean_when_registered() {
 // 10.08s for the buckling-multi-case probe (standing in for a 78.35s example) and
 // 4.73s for the trajectory-simulate probe (standing in for a 303.26s example).
 // Each probe keeps its own `#[test]` so it schedules as an independent process
-// with its own PASS/SLOW line — the same reasoning that sharded the eval sweep
-// into `CORPUS_SHARD_COUNT`. Per-case costs below are single-build measurements
+// with its own PASS/SLOW line — the same reasoning that shards the eval sweep in
+// `harness_corpus_gates::eval_invariant_corpus_sweep`. Per-case costs below are
+// single-build measurements
 // and drift with host contention (the trajectory probe measured 4.7-6.2s across
 // runs); they are recorded to justify a RANKING — cheapest caller per target —
 // not as a budget anything asserts against.
@@ -1563,7 +1273,7 @@ const BUILD_SURFACE_DROPPED_DUPLICATES: &[(&str, &str)] = &[
     (
         "multi_load_bracket",
         "2.06s — solver::multi_case, covered by fea_multi_case_bracket (1.10s). \
-         Also carries a KNOWN_RESIDUAL_SKIPS entry on the eval surface \
+         Also carries a STALE_UNDEF_RESIDUALS entry on the eval surface \
          (MultiLoadBracket.critical_case, a worst_case/lambda-dispatch product \
          limitation), so importing it here would add a known-broken case for zero \
          added target coverage.",
@@ -1610,7 +1320,8 @@ const BUILD_SURFACE_DROPPED_DUPLICATES: &[(&str, &str)] = &[
     ),
 ];
 
-/// Build-surface counterpart of `KNOWN_RESIDUAL_SKIPS` — same convention
+/// Build-surface counterpart of the eval sweep's `STALE_UNDEF_RESIDUALS`
+/// (`harness_corpus_gates::eval_invariant_corpus_sweep`) — same convention
 /// (reasoned per entry, matched exactly, PRINTED never silent), but keyed
 /// `(example base name, EXACT cell rendered as "Entity.member", reason)` rather
 /// than by file. Cell-level rather than file-level is a deliberate tightening:
@@ -1773,9 +1484,14 @@ fn source_calls_fn(source: &str, fn_name: &str) -> bool {
 /// banner quote comes from here, so no number in this file can rot into false
 /// prose the way "that yields 18 candidate files" did.
 struct OptimizedCallerSurvey {
-    /// How many `.ri` files were walked under `examples/` — recursively, via the
-    /// same `eval_gate_support::collect_ri_files` the eval sweep uses, so the two surfaces cannot
-    /// disagree about which files exist.
+    /// How many `.ri` files were walked under `examples/` — recursively, via
+    /// `eval_gate_support::collect_ri_files`. That is the SAME walker the unified
+    /// eval sweep uses, so this surface and that one cannot disagree about which
+    /// files exist. Task #7431 changed what enforces that and not whether it
+    /// holds: the walker used to be a private fn the two sweeps shared by living
+    /// in one file, and is now a single `pub fn` in `tests/common/eval_gate_support.rs`
+    /// that both compile units declare by `#[path]` — shared deliberately rather
+    /// than by co-residence, which is the stronger guarantee.
     files_scanned: usize,
     /// `(examples/-relative extension-stripped name, targets it calls)` for every
     /// caller file, sorted by name. The name shape matches `BuildSurfaceCase::name`
@@ -2267,8 +1983,9 @@ fn build_surface_optimized_examples_have_no_stale_undef() {
 /// why a hand-written probe (6.98s) stands in for the 78.35s example that is its
 /// only other dispatcher. Identical assertions; separate `#[test]` so
 /// cargo/nextest schedules it as its own process with its own PASS/SLOW line
-/// instead of adding ~7s to the sweep above (the same reasoning that sharded the
-/// eval sweep into `CORPUS_SHARD_COUNT` independent tests).
+/// instead of adding ~7s to the sweep above (the same reasoning that shards the
+/// eval sweep in `harness_corpus_gates::eval_invariant_corpus_sweep` into
+/// independent tests).
 #[test]
 fn build_surface_buckling_multi_case_has_no_stale_undef() {
     run_build_surface_sweep(
