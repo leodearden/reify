@@ -34,37 +34,21 @@ use reify_core::{
     BASE_UNIT_SYMBOLS, Diagnostic, DimensionVector, NAMED_DIMENSIONS, Severity, SourceSpan,
 };
 use reify_ir::{CompiledExprKind, Value};
-use reify_test_support::{compile_source_with_stdlib, errors_only, warnings_only};
-
-/// True when `code` is one of the diagnostic codes emitted by the struct-ctor
-/// field-conformance surface (task 5302 / 5303 / 4584 / 4598 / 4622 / 4444).
-///
-/// Filtering to this set keeps the per-fixture "exactly one diagnostic" counts
-/// from being polluted by unrelated diagnostics (an incidental `W_*` warning, a
-/// downstream note, etc.). The first five codes already existed in
-/// `diagnostics.rs`; α minted none. ε (task 5303) adds the two structural codes
-/// `CtorUnknownField` / `CtorArity` — they belong here because they are emitted
-/// at the same `CTOR_FIELD_CONFORMANCE_SEVERITY` knob and δ flips them together
-/// with the α type codes, so the ε probes' "exactly N" counts must see them.
-fn is_ctor_conformance_code(code: Option<DiagnosticCode>) -> bool {
-    matches!(
-        code,
-        Some(
-            DiagnosticCode::ArgTypeMismatch
-                | DiagnosticCode::SelectorKindMismatch
-                | DiagnosticCode::TypeNotConformingToTrait
-                | DiagnosticCode::TypeNotConformingToStructureRef
-                | DiagnosticCode::TypeNotConformingToVector
-                | DiagnosticCode::CtorUnknownField
-                | DiagnosticCode::CtorArity
-        )
-    )
-}
+use reify_test_support::{
+    compile_source_with_stdlib, errors_only, is_ctor_conformance_code, warnings_only,
+};
 
 /// All ctor-conformance diagnostics in `module`, of any severity.
 ///
 /// Used by "exactly N diagnostics" / "zero diagnostics" assertions so an
-/// incidental unrelated diagnostic does not throw off the count.
+/// incidental unrelated diagnostic does not throw off the count: a probe
+/// compiled through `compile_source_with_stdlib` carries the whole stdlib
+/// prelude's diagnostics too, so without this narrowing an unrelated `W_*`
+/// warning or downstream note would pollute every per-fixture count.
+///
+/// The admission set is `reify_test_support::ctor_conformance`'s
+/// [`is_ctor_conformance_code`] — severity-agnostic, so δ's Warning→Error flip
+/// moves no pin that filters here.
 fn ctor_conformance_diags(module: &CompiledModule) -> Vec<&Diagnostic> {
     module
         .diagnostics
@@ -5208,10 +5192,10 @@ structure CtorMisspelledLabelProbe {
     );
     assert!(
         is_ctor_conformance_code(judging[0].code),
-        "…and the LOCAL copy of the ctor-conformance code set must recognise \
-         it. A stale copy stops matching rather than failing to build, which \
-         is exactly the SILENT miss that copy's docstring warns about. Got: \
-         {:?}",
+        "…and the SHARED `reify_test_support::ctor_conformance` admission set \
+         must recognise it. This arm is the behavioural proof, at a real \
+         former call site, that the hoisted predicate admits the code the \
+         assertions above independently established. Got: {:?}",
         judging[0].code
     );
     assert_eq!(

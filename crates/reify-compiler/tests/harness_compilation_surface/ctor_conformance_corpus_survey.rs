@@ -55,10 +55,9 @@
 //!    `crates/reify-compiler/tests/harness_compilation_surface.rs`;
 //! 3. the artifact `docs/prds/struct-ctor-field-type-conformance.survey.md`.
 //!
-//! The ONE thing that must survive is [`CTOR_CONFORMANCE_CODES`], which the
-//! sibling `examples_smoke.rs` α corpus gate reads and which outlives this
-//! survey — move it (see its own doc comment, which records where it wants to
-//! land) rather than deleting it with the rest.
+//! The ctor-conformance admission set this survey filters through no longer
+//! lives here: it is `reify_test_support::ctor_conformance`, read by every
+//! consumer, so deleting this survey costs nothing that outlives it.
 //!
 //! Nothing here fails when the artifact is deleted on its own:
 //! [`committed_survey_stamps_a_commit_that_is_an_ancestor_of_head`] SKIPS on an
@@ -74,6 +73,7 @@ use std::process::Command;
 // module cannot drift from the set it is supposed to remove.
 // (`crates/reify-test-support/src/git_env.rs`.)
 use reify_test_support::git_env::{REPO_REDIRECT_VARS, removed_vars, sanitize};
+use reify_test_support::is_ctor_conformance_code;
 
 /// Absolute path to the workspace root, resolved at compile time from this
 /// crate's manifest directory (two levels up).
@@ -663,62 +663,6 @@ fn ctor_type_name_at_returns_none_rather_than_guessing() {
 }
 
 // ─── step 5/6: diagnostic field extraction ───────────────────────────────────
-
-/// The diagnostic codes emitted by the struct-ctor field-conformance surface
-/// (tasks 5302 / 5303 / 4584 / 4598 / 4622 / 4444) — the admission set shared by
-/// this survey and the α corpus gate in the sibling `examples_smoke.rs`.
-///
-/// This is the SINGLE definition for the whole `harness_compilation_surface`
-/// compile unit. `examples_smoke.rs` used to carry its own hand-written copy of
-/// the same seven variants; the two were lock-step by convention only, so adding
-/// an eighth code to one and not the other would have silently under-counted
-/// this survey (or under-gated the α corpus walk). Both now read this slice, so
-/// that drift is impossible by construction rather than guarded after the fact.
-///
-/// # Two copies is NOT the floor — it is where this task's lock set stopped
-///
-/// A *third* copy lives in
-/// `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs`
-/// (its local `is_ctor_conformance_code`), which is a separate test binary and
-/// so cannot reach this `#[path]` module. That copy is still lock-step by
-/// convention, with no drift guard — the exact failure mode collapsing the
-/// first two removed.
-///
-/// The support-crate hop that would close it ALREADY EXISTS and costs nothing
-/// new: `struct_ctor_field_conformance_tests.rs` already does
-/// `use reify_test_support::{…}`, this module already does
-/// `use reify_test_support::git_env::{…}`, and `reify-test-support` already
-/// carries `reify-core.workspace = true`, so `DiagnosticCode` is in scope
-/// there. The right home is a `ctor_conformance` module in
-/// `reify-test-support` alongside `git_env`, read by all three consumers.
-///
-/// It is not done here because landing it means editing
-/// `crates/reify-test-support/src/lib.rs` and
-/// `struct_ctor_field_conformance_tests.rs`, neither of which is in task
-/// #5304's lock set — a concurrency-footprint expansion, not a technical
-/// obstacle. Filed as follow-up rather than asserted away: do NOT read the
-/// paragraph above as a rationale for why two copies are acceptable.
-pub(super) const CTOR_CONFORMANCE_CODES: &[reify_core::diagnostics::DiagnosticCode] = {
-    use reify_core::diagnostics::DiagnosticCode;
-    &[
-        DiagnosticCode::ArgTypeMismatch,
-        DiagnosticCode::SelectorKindMismatch,
-        DiagnosticCode::TypeNotConformingToTrait,
-        DiagnosticCode::TypeNotConformingToStructureRef,
-        DiagnosticCode::TypeNotConformingToVector,
-        DiagnosticCode::CtorUnknownField,
-        DiagnosticCode::CtorArity,
-    ]
-};
-
-/// True when `code` is one of [`CTOR_CONFORMANCE_CODES`].
-///
-/// Shared with the α corpus gate in `examples_smoke.rs`, which calls straight
-/// through to it — see [`CTOR_CONFORMANCE_CODES`] for why there is exactly one
-/// definition in this compile unit.
-pub(super) fn is_ctor_conformance_code(code: Option<reify_core::diagnostics::DiagnosticCode>) -> bool {
-    code.is_some_and(|c| CTOR_CONFORMANCE_CODES.contains(&c))
-}
 
 /// Which D9 fix-forward rule governs a site — the load-bearing, mechanizable
 /// half of D9 and the artifact's primary grouping key.
@@ -2101,8 +2045,10 @@ struct SurveyRun {
 /// Mirrors `examples_smoke.rs`'s `ctor_conformance_one` — read →
 /// `parse_with_stdlib(&source, ModulePath::single(stem))` →
 /// `compile_with_stdlib` → filter `compiled.diagnostics` by
-/// `is_ctor_conformance_code` — so the survey and the landed α corpus gate
-/// cannot disagree about what a ctor-conformance site IS.
+/// `is_ctor_conformance_code`, the shared
+/// `reify_test_support::ctor_conformance` predicate both read — so the survey
+/// and the landed α corpus gate cannot disagree about what a ctor-conformance
+/// site IS.
 ///
 /// Two deliberate differences from that gate:
 /// 1. The root widens from `examples/` to whatever corpus is handed in.
@@ -2596,7 +2542,7 @@ fn survey_corpus_orders_sites_deterministically() {
 /// prelude compile plus these files, so the sites γ actually changed become
 /// gate-resident without reversing that landed cost decision.
 ///
-/// Matching is on `DiagnosticCode` IDENTITY via [`is_ctor_conformance_code`],
+/// Matching is on `DiagnosticCode` IDENTITY via `is_ctor_conformance_code`,
 /// never on message prose. The prose-keyed guard covering the same r3b fixture
 /// in `crates/reify-eval-fea-tests/tests/r3b_modal_selector_displacement.rs` is
 /// deliberately left alone — it is documented code-AGNOSTIC on purpose and keys

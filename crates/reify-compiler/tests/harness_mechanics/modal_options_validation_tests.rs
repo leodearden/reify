@@ -35,7 +35,8 @@ use reify_compiler::*;
 use reify_core::*;
 use reify_ir::*;
 use reify_test_support::{
-    collect_value_ref_members, compile_source_with_stdlib, errors_only, warnings_only,
+    collect_value_ref_members, compile_source_with_stdlib, ctor_diagnostic_names_arg, errors_only,
+    is_ctor_conformance_code, warnings_only,
 };
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -117,56 +118,8 @@ fn require_default<'a>(template: &'a TopologyTemplate, member: &str) -> &'a Comp
         .unwrap_or_else(|| panic!("{}.{} missing default_expr", template.name, member))
 }
 
-/// True when `code` is one of the diagnostic codes emitted by the struct-ctor
-/// field-conformance pass (tasks 5302 / 5303 / 4584 / 4598 / 4622 / 4444).
-///
-/// Severity-agnostic ON PURPOSE: `CTOR_FIELD_CONFORMANCE_SEVERITY`
-/// (the const of that name in `reify-compiler/src/conformance/mod.rs` — cited
-/// by SYMBOL, never by line, so the cite cannot rot) is `Warning` pre-δ, and
-/// the planned Warning→Error flip must not move any pin that filters here.
-///
-/// One of several copies of this set across the ctor-conformance test
-/// binaries, kept in step by hand because integration tests are separate
-/// binaries and cannot share a private helper without a support-crate hop.
-fn is_ctor_conformance_code(code: Option<DiagnosticCode>) -> bool {
-    matches!(
-        code,
-        Some(
-            DiagnosticCode::ArgTypeMismatch
-                | DiagnosticCode::SelectorKindMismatch
-                | DiagnosticCode::TypeNotConformingToTrait
-                | DiagnosticCode::TypeNotConformingToStructureRef
-                | DiagnosticCode::TypeNotConformingToVector
-                | DiagnosticCode::CtorUnknownField
-                | DiagnosticCode::CtorArity
-        )
-    )
-}
-
-/// The prefix `emit_arg_type_mismatch` puts before the offending param label in
-/// every ctor-conformance message it words
-/// (`reify-compiler/src/conformance/mod.rs`; full shape `argument 'X' has type
-/// 'A' but param 'X' requires type 'B'`).
-///
-/// Mirrors `CTOR_DIAGNOSTIC_ARG_PREFIX` in
-/// `harness_compilation_surface/examples_smoke.rs`.
-const CTOR_DIAGNOSTIC_ARG_PREFIX: &str = "argument '";
-
 /// The two `RayleighDamping` params task #6093 retyped, in declaration order.
 const RAYLEIGH_PARAMS: [&str; 2] = ["alpha", "beta"];
-
-/// True when `message` is a ctor-conformance diagnostic naming exactly `param`.
-///
-/// Matched on the QUOTED label (`argument 'beta'`), never a bare
-/// `contains(param)`: a module compiled through `compile_source_with_stdlib`
-/// carries the diagnostics of the probe source AND of the whole stdlib prelude,
-/// so an unquoted match would also catch any prelude message that merely
-/// contains the word. Same reasoning as the `names_typo` closure in
-/// `misspelled_ctor_label_is_diagnosed_but_still_leniently_appended`, in
-/// `harness_structure_declarations/struct_ctor_field_conformance_tests.rs`.
-fn names_ctor_arg(message: &str, param: &str) -> bool {
-    message.contains(&format!("{CTOR_DIAGNOSTIC_ARG_PREFIX}{param}'"))
-}
 
 /// True when `d` is a ctor-conformance diagnostic naming one of
 /// [`RAYLEIGH_PARAMS`] — i.e. one attributable to a `RayleighDamping` ctor
@@ -181,7 +134,7 @@ fn judges_rayleigh_ctor_arg(d: &Diagnostic) -> bool {
     is_ctor_conformance_code(d.code)
         && RAYLEIGH_PARAMS
             .iter()
-            .any(|p| names_ctor_arg(&d.message, p))
+            .any(|p| ctor_diagnostic_names_arg(&d.message, p))
 }
 
 // ─── step-1: module loads with zero error diagnostics ────────────────────────
@@ -621,7 +574,9 @@ structure BareCtorArgProbe {
     );
     for param in RAYLEIGH_PARAMS {
         assert!(
-            mismatches.iter().any(|m| names_ctor_arg(m, param)),
+            mismatches
+                .iter()
+                .any(|m| ctor_diagnostic_names_arg(m, param)),
             "one ArgTypeMismatch must name `{param}`; got: {:?}",
             mismatches
         );
@@ -696,7 +651,9 @@ structure SwappedCtorArgProbe {
     );
     for param in RAYLEIGH_PARAMS {
         assert!(
-            mismatches.iter().any(|m| names_ctor_arg(m, param)),
+            mismatches
+                .iter()
+                .any(|m| ctor_diagnostic_names_arg(m, param)),
             "one ArgTypeMismatch must name `{param}` — a gate that fired only \
              once would leave half the transposition unreported; got: {:?}",
             mismatches

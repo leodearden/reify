@@ -5,6 +5,7 @@
 #![allow(clippy::mutable_key_type)]
 
 pub mod builders;
+pub mod ctor_conformance;
 pub mod fixtures;
 pub mod git_env;
 pub mod helpers;
@@ -21,6 +22,7 @@ pub mod value_decompose;
 pub mod values;
 
 pub use builders::*;
+pub use ctor_conformance::*;
 pub use fixtures::*;
 // Deliberately NOT `pub use git_env::*;`. `sanitize` and `REPO_REDIRECT_VARS`
 // are generic enough names that hoisting them into a crate root which many
