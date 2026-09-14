@@ -1998,6 +1998,115 @@ mod tests {
         );
     }
 
+    // ── compile_expecting_only_arg_type_mismatch ──────────────────────────
+
+    /// A source whose ONLY compile-layer Error is the bare-length
+    /// `ArgTypeMismatch` — the shape every call site of
+    /// [`super::compile_expecting_only_arg_type_mismatch`] feeds it. Measured:
+    /// exactly one Error diagnostic, code `Some(DiagnosticCode::ArgTypeMismatch)`.
+    const BARE_FILLET_SRC: &str = r#"
+        structure def BareFillet {
+            let body = fillet(box(10mm, 10mm, 10mm), 1)
+        }
+        "#;
+
+    /// [`BARE_FILLET_SRC`] with a SECOND, unrelated compile Error added inside
+    /// the SAME structure. Measured: TWO Error diagnostics — `ArgTypeMismatch`
+    /// AND `UnresolvedName` — because compilation does not abort on the first
+    /// error. The MIX is what discriminates the helper's `all` from an `any`;
+    /// an unrelated-error-ONLY source panics under both and would prove nothing.
+    const BARE_FILLET_PLUS_UNRELATED_ERROR_SRC: &str = r#"
+        structure def BareFilletAndStray {
+            let body = fillet(box(10mm, 10mm, 10mm), 1)
+            let stray = totally_undefined_name
+        }
+        "#;
+
+    /// compile_expecting_only_arg_type_mismatch: a source whose sole compile
+    /// Error is the `ArgTypeMismatch` does not panic, AND the module comes back
+    /// with its diagnostics INTACT.
+    ///
+    /// The returned-unchanged half is the property every call site depends on:
+    /// each goes on to inspect the module it got back rather than recompiling,
+    /// so a helper that swallowed the diagnostics it had just asserted on — or
+    /// re-ran the STRICT path — would break them all while still passing the
+    /// assertions above it.
+    #[test]
+    fn test_compile_expecting_only_arg_type_mismatch_returns_the_lenient_module() {
+        let compiled = super::compile_expecting_only_arg_type_mismatch(
+            BARE_FILLET_SRC,
+            "modify/sweep magnitude",
+        );
+
+        let errors = super::collect_errors(&compiled.diagnostics);
+        assert_eq!(
+            errors.len(),
+            1,
+            "the helper must hand back compile_source's output unchanged, diagnostics \
+             and all; got: {errors:?}"
+        );
+        assert_eq!(
+            errors[0].code,
+            Some(DiagnosticCode::ArgTypeMismatch),
+            "the surviving Error must be the COMPILE-layer ArgTypeMismatch; got: {:?}",
+            errors[0]
+        );
+    }
+
+    /// compile_expecting_only_arg_type_mismatch: PANIC ARM 1 — a source with no
+    /// Error diagnostic at all (what a regressed compile-layer length slot would
+    /// look like) panics, and the panic interpolates the caller's `what` noun
+    /// verbatim. That interpolation is the only behavioural claim `what` makes,
+    /// and it is what lets a failure name the family under test rather than a
+    /// shared helper six call sites deep.
+    #[test]
+    fn test_compile_expecting_only_arg_type_mismatch_panics_when_no_compile_error() {
+        let message = panic_message(|| {
+            super::compile_expecting_only_arg_type_mismatch(bracket_source(), "pattern spacing");
+        });
+
+        assert!(
+            message.contains("a bare pattern spacing"),
+            "the panic must interpolate the caller's `what` noun verbatim; got: {message}"
+        );
+        assert!(
+            message.contains("got no Error diagnostics"),
+            "the panic must say WHICH arm fired — no compile Error at all, as distinct \
+             from the wrong one; got: {message}"
+        );
+    }
+
+    /// compile_expecting_only_arg_type_mismatch: PANIC ARM 2 — an
+    /// `ArgTypeMismatch` accompanied by a SECOND, unrelated compile Error
+    /// panics, and the panic names the intruder.
+    ///
+    /// Driven by the MIXED source deliberately. Weaken the helper's second
+    /// assertion from `all` to `any` and it would ACCEPT this module, at which
+    /// point every call site's "no op reached the kernel" assertion starts
+    /// passing VACUOUSLY — the op absent because compilation broke, not because
+    /// the eval gate dropped it. That silent-vacuity failure is the whole
+    /// reason the assertion exists, and only a mixed fixture can see it.
+    #[test]
+    fn test_compile_expecting_only_arg_type_mismatch_panics_on_a_second_unrelated_error() {
+        let message = panic_message(|| {
+            super::compile_expecting_only_arg_type_mismatch(
+                BARE_FILLET_PLUS_UNRELATED_ERROR_SRC,
+                "pattern spacing",
+            );
+        });
+
+        assert!(
+            message.contains("ONLY compile Error"),
+            "the panic must say WHICH arm fired — a second Error alongside the expected \
+             ArgTypeMismatch; got: {message}"
+        );
+        assert!(
+            message.contains("UnresolvedName"),
+            "the panic must NAME the unexpected error rather than merely report that one \
+             exists, or the reader cannot tell what broke compilation; got: {message}"
+        );
+    }
+
     // ── assert_has_diagnostic ──────────────────────────────────────────────
 
     /// assert_has_diagnostic should not panic when the diagnostics slice contains
