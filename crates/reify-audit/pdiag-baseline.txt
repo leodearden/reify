@@ -78,7 +78,7 @@ crates/reify-eval/src/engine_compute.rs 1
 crates/reify-eval/src/engine_constraints.rs 1
 crates/reify-eval/src/engine_edit.rs 6
 crates/reify-eval/src/engine_eval.rs 21
-crates/reify-eval/src/geometry_ops.rs 138
+crates/reify-eval/src/geometry_ops.rs 137
 crates/reify-eval/src/modal_ops.rs 25
 crates/reify-eval/src/morph_producer.rs 1
 crates/reify-eval/src/realization_content.rs 4
@@ -87,8 +87,9 @@ crates/reify-eval/src/shell_extract_compute.rs 6
 crates/reify-eval/src/structural_query.rs 3
 crates/reify-eval/src/tolerance_combine.rs 1
 crates/reify-eval/src/unfold.rs 10
+crates/reify-eval/src/unfold/optimized_instance_reuse.rs 1
 crates/reify-shell-extract/src/result.rs 2
 crates/reify-stdlib/src/dfm.rs 12
-crates/reify-stdlib/src/geometry.rs 4
+crates/reify-stdlib/src/geometry.rs 2
 crates/reify-stdlib/src/tolerancing.rs 2
 gui/src-tauri/src/engine.rs 1
