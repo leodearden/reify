@@ -1647,6 +1647,18 @@ impl ParseError {
     /// line start — always a character boundary, since `'\n'` is one byte — and stops at
     /// `offset` without ever slicing there, so an offset that is not a character boundary
     /// degrades to a position rather than panicking, exactly as the scanning version does.
+    ///
+    /// "Reproduces exactly" is a DUPLICATION, not a settled placement, and
+    /// `render_with_offsets_agrees_with_the_scanning_render` — an exhaustive `0..=source.len()`
+    /// equivalence test — exists only to hold the two in lockstep. The conversion belongs in
+    /// `reify_core` beside [`reify_core::build_line_offsets`] and its table-based INVERSE
+    /// `line_col_to_byte_offset_with_offsets`, as the missing forward sibling of that pair,
+    /// with [`reify_core::byte_offset_to_line_col`] delegating to it; this method would then be
+    /// a formatting wrapper and that test would collapse to a couple of unit cases. Only the
+    /// PARSE-ERROR formatting has a reason to live here — `reify-cli` cannot name
+    /// `reify_ast::ParseError` — and that reason does not extend to the line/col algorithm,
+    /// since `reify-cli` depends on `reify-core` directly. Not done here: `reify-core` is
+    /// outside task #5392's lock set.
     pub fn render_with_offsets(&self, source: &str, line_offsets: &[usize]) -> String {
         let offset = self.span.start as usize;
         if offset == SourceSpan::PRELUDE_SENTINEL_OFFSET {

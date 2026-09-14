@@ -272,6 +272,14 @@ impl ReifyToolContext for CliToolContext {
             })?;
 
         let mut result = Vec::new();
+        // Two O(len(source)) scans from byte 0 per diagnostic — the O(diagnostics × len(source))
+        // shape `ParsedModule::render_all` batches away for parse errors, still un-batched here.
+        // The pressure grew with task #5392: `diagnose_error_node` emits up to 8 diagnostics per
+        // `ERROR` node and `forward_parse_errors` promotes each to `Severity::Error`, so this
+        // list grows with the same inputs that motivated the batching. Hoisting one
+        // `reify_core::build_line_offsets(source)` above this loop fixes it at identical output,
+        // but needs the table-based forward converter that does not exist yet — see
+        // `ParseError::render_with_offsets`, which reproduces it and says where it belongs.
         for diag in &compiled.diagnostics {
             // Use the first label's span if available, otherwise default to (1,1)
             let (line, column, end_line, end_column) = if let Some(label) = diag.labels.first() {
