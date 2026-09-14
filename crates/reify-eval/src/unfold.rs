@@ -1338,8 +1338,8 @@ fn eval_child_expr(
 /// site stays silent rather than double-reporting, the mistake
 /// [`phase15_cycle_members`]' doc comment was written to prevent. Both halves
 /// are pinned by `cyclic_param_defaults_are_still_committed_at_instance_scope`
-/// (tests/instance_scope_param_default_order.rs), whose message says what a
-/// missing cell would mean.
+/// (tests/harness_engine/instance_scope_param_default_order.rs), whose message
+/// says what a missing cell would mean.
 fn params_in_dependency_order<'t>(
     child_template: &'t TopologyTemplate,
     args: &[(String, reify_ir::CompiledExpr)],
@@ -1525,7 +1525,7 @@ fn elaborate_child_params_only<'f>(
             // wrongly asserted was already true. Both halves are pinned by
             // `instance_scope_optimized_param_default_reading_a_later_sibling_is_silent`
             // (tests/compute_dispatch_registry.rs) and by
-            // tests/instance_scope_param_default_order.rs.
+            // tests/harness_engine/instance_scope_param_default_order.rs.
             //
             // The Auto-precedence branch above still `continue`s without
             // inserting, so an Auto-overridden sibling read still sees `None` —
@@ -1536,9 +1536,9 @@ fn elaborate_child_params_only<'f>(
             // before `elaborate_child_lets_only`; closing it is the instance-scope
             // analogue of task #4317's template-scope phase unification. Measured
             // and pinned by `param_default_reading_a_sibling_let_still_degrades_at_instance_scope`
-            // (tests/instance_scope_param_default_order.rs), filed as ticket
-            // `tkt_0RTKT9B322NQ9VTT2SY6DK5AYN` (not cited as `#NNNN` because the
-            // curator assigns the task id asynchronously).
+            // (tests/harness_engine/instance_scope_param_default_order.rs), filed
+            // as ticket `tkt_0RTKT9B322NQ9VTT2SY6DK5AYN` (not cited as `#NNNN`
+            // because the curator assigns the task id asynchronously).
             //
             // The DECLINE remains free: the registered-target gate is
             // unconditionally false here, so nothing is reported. #6750 flips
