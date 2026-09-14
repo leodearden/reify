@@ -6472,6 +6472,79 @@ mod tests {
         }
     }
 
+    /// R12's rejection wording must be the SHARED
+    /// `reify_ir::arg_acceptance::ArgRejection::message` template, not a fork of it
+    /// — PRD C1 invariant (i): "wording is produced only by `ArgRejection::message`
+    /// — no hand-rolled rejection strings".
+    ///
+    /// The reference string is built from the OWNER on every row: `accept_arg` is
+    /// asked for the rejection that the SAME component value produces at a
+    /// `length_spec()` position, and `ArgRejection::message` renders it. Nothing
+    /// here restates the sentence shape, the type name or the migration hint, so a
+    /// reword on the owner's side fails this test rather than silently forking the
+    /// two crates.
+    ///
+    /// This test is reachable at all only because task 5791 relocated
+    /// `arg_acceptance` from `reify-eval` (where it was `pub(crate)`, and
+    /// unreachable from this crate — the edge runs reify-eval → reify-stdlib) into
+    /// `reify-ir`, which this crate already depends on. `helpers.rs`'s
+    /// `arg_acceptance_is_reachable_from_reify_stdlib` pins that import path and
+    /// records that it adds no new crate edge; this is the same path, used for the
+    /// wording rather than for the verdict.
+    ///
+    /// The three `got` shapes are exactly the ones that can reach an R12 rejection:
+    /// `decompose_xyz3` requires `Value::as_f64` to succeed, so only `Real`, `Int`
+    /// and `Scalar` ever arrive, and a LENGTH `Scalar` is accepted rather than
+    /// rejected.
+    #[test]
+    fn r12_rejection_wording_is_the_shared_arg_rejection_template() {
+        use reify_ir::arg_acceptance::{Acceptance, accept_arg, length_spec};
+
+        let scalar = |v: f64, dimension| Value::Scalar {
+            si_value: v,
+            dimension,
+        };
+
+        // `decompose_xyz3` requires all three components to share ONE dimension
+        // before this gate can fire, so each row carries its own matching zero.
+        for (shape, offender, zero) in [
+            ("bare Real", Value::Real(5.0), Value::Real(0.0)),
+            (
+                "dimensionless Scalar",
+                scalar(5.0, DimensionVector::DIMENSIONLESS),
+                scalar(0.0, DimensionVector::DIMENSIONLESS),
+            ),
+            (
+                "MASS Scalar",
+                scalar(5.0, DimensionVector::MASS),
+                scalar(0.0, DimensionVector::MASS),
+            ),
+        ] {
+            let Acceptance::Rejected(rejection) = accept_arg(&offender, &length_spec()) else {
+                panic!("{shape}: the owner must REJECT this component at a length_spec position");
+            };
+
+            let triple = vec![offender, zero.clone(), zero];
+            for (builtin, arg_name, args) in [
+                ("affine_translate", "dx/dy/dz", triple.clone()),
+                (
+                    "affine_map",
+                    "translation",
+                    vec![matrix3x3(IDENTITY_3X3), Value::Vector(triple.clone())],
+                ),
+            ] {
+                let diag = super::diagnose(builtin, &args)
+                    .unwrap_or_else(|| panic!("{builtin} / {shape}: must be diagnosed"));
+                assert_eq!(
+                    diag.message,
+                    rejection.message(builtin, arg_name),
+                    "{builtin} / {shape}: R12's wording has forked from the shared \
+                     ArgRejection template"
+                );
+            }
+        }
+    }
+
     #[test]
     fn diagnose_non_affine_name_returns_none() {
         assert!(
