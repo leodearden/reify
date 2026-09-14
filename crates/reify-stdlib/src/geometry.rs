@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use reify_core::DimensionVector;
+use reify_ir::arg_acceptance::{Acceptance, ArgRejection, accept_arg, length_spec};
 use reify_ir::{Value, quaternion_is_finite};
 
 use crate::helpers::tensor_components_f64;
@@ -1627,88 +1628,35 @@ fn dimension_label(dim: DimensionVector) -> String {
         .unwrap_or_else(|| dim.to_string())
 }
 
-/// The Contract C1 LENGTH-rejection template, MIRRORED from
-/// `reify_eval::arg_acceptance::ArgRejection::message` + `length_spec()`.
-///
-/// WHY A LOCAL COPY, and not a shared source of truth: C1(i) makes
-/// `ArgRejection::message` the sole owner of this wording, but the workspace
-/// dependency arrow runs reify-eval → reify-stdlib and `arg_acceptance` is
-/// `pub(crate)` to reify-eval, so this crate physically cannot call it.
-/// Relocating that module down into reify-ir was considered and rejected: it
-/// would unfreeze a file the PRD marks FROZEN, widen a deliberately crate-private
-/// API to the whole workspace, and collide with task 5752's chartered shrink of
-/// that very module doc.
-///
-/// This is the established in-repo answer to exactly this constraint, across
-/// exactly this boundary: `reify_eval::geometry_ops::affine_apply_linear_det`
-/// already mirrors `crate::matrix::mat3_det` with the recorded rationale "since
-/// they cannot share a single source of truth across the crate boundary",
-/// guarded by an equality test rather than by shared code.
-///
-/// The guard here is
-/// `affine_translate_and_affine_map_rejection_wording_matches_the_shared_arg_rejection_template`
-/// in `crates/reify-eval/src/geometry_ops/tests.rs` — the only place that can see
-/// BOTH sides. It builds its reference string from the OWNER and `assert_eq!`s it
-/// against what this function renders, so a reword of `length_spec` fails there
-/// instead of silently forking the two crates.
-///
-/// HALF of the mirror is no longer hand-copied. Task 5750 (leaf η, landed after ζ was
-/// written) hoisted the migration hint to [`reify_core::units::LENGTH_MIGRATION_HINT`]
-/// — reify-core sits BELOW both crates, so this file can and does read it directly,
-/// and the hint cannot drift at all. What still has to be mirrored is the SENTENCE
-/// SHAPE (`{builtin}: {arg_name} argument expects {expected}, got {got}; {hint}`) plus
-/// `length_spec().type_name`, both of which live behind `pub(crate)` in reify-eval.
-/// That residue is what the guard test above still covers.
-fn length_rejection_message(builtin: &str, arg_name: &str, got: &str) -> String {
-    let base = format!("{builtin}: {arg_name} argument expects Length, got {got}");
-    format!("{base}; {}", reify_core::units::LENGTH_MIGRATION_HINT)
-}
-
-/// Mirror of `reify_eval::arg_acceptance::value_short_label`, narrowed to exactly
-/// the shapes `decompose_xyz3` admits (it requires `Value::as_f64` to succeed, so
-/// only `Real`, `Int` and `Scalar` can ever reach a rejection here).
-///
-/// Same crate-boundary rationale as [`length_rejection_message`]; same guard.
-///
-/// NOT interchangeable with this file's [`dimension_label`], and the two must not be
-/// unified locally: that one labels a DIMENSION for the RULING #6126 arms, in a
-/// sentence that has already named the value, so it drops the `" Scalar"` suffix and
-/// falls back through `Display`. This one labels a VALUE and must render `Real` /
-/// `Int` — shapes a `DimensionVector` cannot express at all — because it is pinned
-/// byte-for-byte to `arg_acceptance::value_short_label` by the cross-crate guard
-/// named above. `dimension_label`'s own doc already files the shared
-/// `DimensionVector::diagnostic_label()` carrying BOTH renderings as the follow-up
-/// that would retire both copies.
-fn length_rejection_got_label(value: &Value) -> String {
-    match value {
-        Value::Real(_) => "Real".to_string(),
-        Value::Int(_) => "Int".to_string(),
-        Value::Scalar { dimension, .. } => {
-            if dimension.is_dimensionless() {
-                "dimensionless Scalar".to_string()
-            } else if let Some(name) = dimension.canonical_name() {
-                format!("{name} Scalar")
-            } else {
-                "dimensioned Scalar".to_string()
-            }
-        }
-        _ => "unknown".to_string(),
-    }
-}
-
 /// Classify a 3-component group that must share ONE LENGTH dimension.
 ///
-/// Returns `Some(got_label)` when the group is well-formed enough to be a UNITS
+/// Returns `Some(rejection)` when the group is well-formed enough to be a UNITS
 /// rejection (three numeric, finite components sharing one non-LENGTH dimension),
-/// and `None` when there is nothing for ζ to say — wrong arity, a non-numeric or
+/// and `None` when there is nothing to say — wrong arity, a non-numeric or
 /// non-finite component, MIXED dimensions (a `decompose_xyz3` CONSISTENCY
 /// failure, not a LENGTH one), or an accepted LENGTH group.
-fn length_group_rejection(items: &[Value]) -> Option<String> {
+///
+/// The rejection is obtained from [`accept_arg`] rather than rendered here, so
+/// Contract C1 invariant (i) holds literally: the wording is produced only by
+/// `ArgRejection::message`, and there is no hand-rolled rejection string in this
+/// crate to drift. `r12_rejection_wording_is_the_shared_arg_rejection_template`
+/// is the standing guard.
+///
+/// Only the first component is offered to `accept_arg` because `decompose_xyz3`
+/// has ALREADY required all three to share one dimension, so they reject
+/// identically — which is also why the one message names the whole triple.
+fn length_group_rejection(items: &[Value]) -> Option<ArgRejection> {
     let ([_, _, _], dim) = decompose_xyz3(items)?;
     if dim == DimensionVector::LENGTH {
         return None;
     }
-    Some(length_rejection_got_label(&items[0]))
+    match accept_arg(&items[0], &length_spec()) {
+        Acceptance::Rejected(rejection) => Some(rejection),
+        // Unreachable by construction: `decompose_xyz3` has already accepted the
+        // component as numeric and finite (so not `Undefined`) and the guard above
+        // has already excluded LENGTH (so not `Accepted`).
+        Acceptance::Accepted(_) | Acceptance::Undefined => None,
+    }
 }
 
 /// Pure classifier (post-`Value::Undef` hook) for geometry builtin calls,
@@ -1858,14 +1806,10 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
         // triple are all `decompose_xyz3` failures, not LENGTH ones, and stay
         // silent.
         "affine_translate" => {
-            let got = length_group_rejection(args)?;
+            let rejection = length_group_rejection(args)?;
             Some(
-                reify_core::Diagnostic::error(length_rejection_message(
-                    "affine_translate",
-                    "dx/dy/dz",
-                    &got,
-                ))
-                .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
+                reify_core::Diagnostic::error(rejection.message("affine_translate", "dx/dy/dz"))
+                    .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
             )
         }
         // `affine_map` needs no such join: `translation` is literally the
@@ -1887,14 +1831,10 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
             let Value::Vector(items) = &args[1] else {
                 return None;
             };
-            let got = length_group_rejection(items)?;
+            let rejection = length_group_rejection(items)?;
             Some(
-                reify_core::Diagnostic::error(length_rejection_message(
-                    "affine_map",
-                    "translation",
-                    &got,
-                ))
-                .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
+                reify_core::Diagnostic::error(rejection.message("affine_map", "translation"))
+                    .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
             )
         }
         "transform_log" => {

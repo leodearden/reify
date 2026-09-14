@@ -132,9 +132,10 @@
 //!   [`ArgRejection::message`] + [`length_spec`]. That obstacle is GONE: task
 //!   5791 (`docs/prds/v0_6/dimension-checked-readers.md` §3 Leg A) hoisted this
 //!   module into `reify-ir` — which reify-stdlib already depends on — and made
-//!   it `pub`, so reify-stdlib CAN call [`accept_arg`]. The mirror is therefore
-//!   a leftover with no remaining justification, and R12 is folded back onto
-//!   this single owner;
+//!   it `pub`, so reify-stdlib CAN call [`accept_arg`] — and does. The mirror is
+//!   DELETED and R12 reads its rejection straight from this module, pinned by
+//!   `r12_rejection_wording_is_the_shared_arg_rejection_template` in
+//!   reify-stdlib's own test module. One owner, nothing left to drift;
 //! - reify-stdlib's OWN `decompose_transform` (`crates/reify-stdlib/src/geometry.rs`)
 //!   and its consumers. Measured on ζ's final tree, they are NOT uniform, which
 //!   is why ζ did not fold them in wholesale: `affine_from_transform` DISCARDS
