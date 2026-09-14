@@ -151,7 +151,8 @@ const DESTINATION_TOPIC: &str = "geometry";
 /// started answering the question in the referring chunk instead of routing to
 /// where it is already answered — the fix is almost always to cut, not to raise.
 /// Set against the live pointers, with room for one clarifying sentence each and
-/// no more: constraints.md's region measures 10 content lines.
+/// no more: the two regions measure 10 (constraints.md) and 9 (stdlib.md)
+/// content lines.
 const MAXIMUM_XREF_CONTENT_LINES: usize = 12;
 
 /// Everything wrong with a cross-reference region, as human-actionable

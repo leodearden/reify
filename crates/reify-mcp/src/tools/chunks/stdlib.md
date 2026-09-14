@@ -39,6 +39,33 @@ Positions/lengths take a `Length` (e.g. `5mm`); angles take an `Angle` (e.g. `90
 **Curves:** `line_segment(x1, y1, z1, x2, y2, z2)`, `arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az)`, `helix(radius, pitch, height)`, `interp(x1, y1, z1, …)` (coordinate triples), `bezier(x1, y1, z1, …)` (coordinate triples), `nurbs(degree, n_points, coords…, weights…)`
 Curve coordinates are length-semantic and must be dimensioned — `0mm`, not `0`; a bare number is rejected rather than read as SI metres. That covers every `interp` and `bezier` argument and `nurbs`' `coords…`. What stays dimensionless: `arc`'s angles and `ax`/`ay`/`az`, and `nurbs`' `degree` and `n_points` (counts), its `weights…` (rational blending factors) and its trailing knots (parameter-space values).
 
+## Interference & Clearance Queries
+<!-- ORACLE-XREF -->
+
+<!--
+PLACEMENT IS LOAD-BEARING — do NOT tidy this pointer back into "Key Geometry Operations"
+as a `**Queries:**` row. stdlib_chunk_geometry_ops_smoke.rs::documented_geometry_op_forms
+scans ONLY that section's `**`-prefixed lines, and two live tests then hold every name it
+finds to GEOMETRY_FUNCTION_NAMES + GEOMETRY_TOPOLOGY_SELECTOR_NAMES — which EXCLUDE the
+query family — and to having a call in tests/fixtures/stdlib_geometry_ops_smoke.ri. So
+`intersects` and `distance` on such a row are RED as phantom names. Its own `##` heading
+resets that scanner, leaving the scanned line set above byte-identical.
+
+The region below is guarded by
+crates/reify-compiler/tests/harness_doc_chunks/oracle_xref_smoke.rs, matched on the
+`<!-- ORACLE-XREF -->` marker line, never on this heading — retitling is free.
+-->
+
+`intersection(a, b)` above is the CSG boolean: it BUILDS the solid two bodies have in common. To
+ASK whether two bodies foul, or how far apart they are, reach for the query pair instead —
+`intersects(a, b) -> Bool` (do they overlap?) and `distance(a, b) -> Length` (the true minimum
+surface gap) — both over let-bound geometry.
+
+Both need a realized geometry kernel, and there are traps that make a wrong answer read as a PASS
+rather than an error. Those, the posed and multi-body form, and a worked example are in the
+`geometry` chunk — topic `geometry` of `reify_language_reference` — under "Interference &
+Clearance Queries".
+
 ## Constants
 
 `pi`, `e`, `g` (gravity), `c` (light speed), `boltzmann`, `avogadro`, `planck`
