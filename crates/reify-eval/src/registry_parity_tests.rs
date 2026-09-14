@@ -595,3 +595,85 @@ fn representative_args_are_well_formed_for_every_row() {
         );
     }
 }
+
+// ── the executed sweep: the harness's headline assertion ────────────────────
+
+/// **The headline assertion** (PRD §3 decision 12 / §7.2 I-REG-4 / §8 row 9).
+///
+/// For every `BindingKind::EvalBuiltin` row: synthesize representative args,
+/// evaluate them through the PUBLIC `reify_stdlib::eval_builtin`, resolve the
+/// row's declared result type from the same args' static types, and classify
+/// the pair. Only [`ParityVerdict::Matches`] is a pass; anything else must be
+/// named in [`PARITY_EXEMPTION_LEDGER`].
+///
+/// # Why the public path, not α's id-keyed shim
+///
+/// `reify_stdlib::eval_builtin` runs the full 26-arm dispatch chain with the
+/// registry hoisted to its front (`crates/reify-stdlib/src/lib.rs:253`), so it
+/// asserts strictly more than `__registry_dispatch_for_test` would: a later
+/// family arm that shadowed a registered name — a live migration hazard while
+/// the great majority of builtin names are still string-matched — surfaces here
+/// as a kind mismatch. The shim takes an `EvalBuiltinId` and therefore bypasses
+/// name resolution by construction, as its own doc-comment says.
+///
+/// # I-REG-1 is satisfied twice over
+///
+/// `row.name` is passed as a **variable**, derived from `reify_builtins::rows()`
+/// — no builtin-name literal appears anywhere in this file, so the seed
+/// string-dispatch gate
+/// (`crates/reify-builtins/tests/i_reg_1_seed_string_dispatch_gate.rs`) has
+/// nothing to find even before its `#[cfg(test)]`-block masking applies. No
+/// ledger entry there is needed or wanted.
+///
+/// # Every row is reported, not just the first
+///
+/// Verdicts are accumulated across the whole table before asserting. A τ
+/// migration lands several rows at once, and a first-failure abort would make
+/// the reader re-run the harness once per broken row.
+#[test]
+fn every_eval_builtin_row_agrees_with_its_executed_kind() {
+    let mut offenders: Vec<String> = Vec::new();
+
+    for (id, row) in eval_builtin_rows() {
+        let (values, types) = representative_args(id);
+
+        let declared = row
+            .result
+            .resolve(&types)
+            .expect("probe well-formedness (e) guarantees the resolver answers");
+
+        // The public path. `row.name` is a VARIABLE — see the doc above.
+        let observed = reify_stdlib::eval_builtin(row.name, &values);
+        let verdict = classify(&observed, &declared);
+
+        if verdict != ParityVerdict::Matches && !is_ledgered(id, verdict) {
+            // The observed value is reported in full rather than through a
+            // local variant-name table: the leading token of a Rust enum's
+            // Debug output IS its discriminant, and reify_ir owns the variant
+            // list (SPOT — a 30-arm name table here would be a second copy of
+            // it, drifting silently). For a `Vacuous` verdict this prints the
+            // bare `Undef`; for `Diverges` it prints the payload, which is
+            // exactly what the reader needs.
+            offenders.push(format!(
+                "  {:?} ({:?}): observed {:?}, declared {:?} — verdict {:?}",
+                id, row.name, observed, declared, verdict
+            ));
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "static-vs-runtime parity: {} EvalBuiltin row(s) did not classify \
+         Matches and are not in PARITY_EXEMPTION_LEDGER.\n\n{}\n\n\
+         A `Diverges` verdict means the row's declared `result` and its eval \
+         body disagree about the KIND of the returned value — fix whichever is \
+         wrong. A `Vacuous` verdict means the row evaluated to `Value::Undef`, \
+         which `value_type_kind_matches` accepts for any type, so the parity \
+         assertion certifies NOTHING about the row; check the representative \
+         args first, since a mis-shaped probe produces exactly this. If the \
+         divergence genuinely belongs to a later leaf, add an entry to \
+         PARITY_EXEMPTION_LEDGER naming that leaf.",
+        offenders.len(),
+        offenders.join("\n")
+    );
+}
