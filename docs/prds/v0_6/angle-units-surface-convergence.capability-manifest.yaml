@@ -305,7 +305,9 @@ tasks:
       `int32_t lookahead;`, i.e. decoded codepoints. Controlled experiment: patching
       scanner.c:250 to (c==''*''||c==0xB7) makes the fixture exit 0; patching it to
       the PRD''s 0xC2/0xB7 byte pair leaves it exit 1 (dead branch). PRD §5 C2''s
-      "UTF-8 0xC2 0xB7" and §3.8''s "UTF-8-aware read" are VOID'
+      "UTF-8 0xC2 0xB7" and §3.8''s "UTF-8-aware read" are VOID; both were corrected
+      in the PRD text itself by task 5949 (2026-08-29), so the quoted strings are the
+      pre-correction wording'
     verdict: PASS
     delivered_check:
       kind: grep

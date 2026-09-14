@@ -22,6 +22,7 @@
 #![allow(clippy::mutable_key_type)]
 
 pub mod annotation;
+pub mod arg_acceptance;
 pub mod boundary_attachment;
 pub mod color;
 pub mod constraint;
@@ -75,7 +76,7 @@ pub use geometry::{
     KernelAttributeOutcome, KernelHandle, KernelId, KernelRegistration, LocalFeatureOpHistoryRecords,
     LoftOpHistoryRecords, Mesh, ModEntry, Operation, ThreeMfOptions, ThreeMfWarning, write_3mf, write_stl_ascii, write_stl_binary,
     QueryCapability, QueryError, ReprKind, ResultFaceDescriptor, Role, StepSchema, SweepOpHistoryRecords, TessError,
-    TopologyAttribute, TopologyAttributeTable, VolumeConnectivity, VolumeMesh, debug_assert_query_many_invariant,
+    TopologyAttribute, TopologyAttributeTable, VolumeConnectivity, VolumeMesh, VoxelResolution, debug_assert_query_many_invariant,
 };
 pub use kernel_validation::{
     BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE,
@@ -97,12 +98,16 @@ pub use provenance::{FieldImportProvenance, SnapshotProvenance};
 pub use ranked::{BestFoundReason, OptimalityStatus, RankedCandidate, RankedSolveResult};
 pub use structure_registry::{StructureMeta, StructureRegistry, StructureTypeId};
 pub use traits::{EnumDef, EnumVariantDef, VariantPayload, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
-pub use ri_literal::{RiLiteralError, value_to_ri_literal, value_to_ri_literal_with_unit};
+pub use ri_literal::{
+    RiLiteralError, UnitScope, value_to_ri_literal, value_to_ri_literal_in_scope,
+    value_to_ri_literal_with_unit,
+};
 pub use value::{
     DeterminacyState, ErrorRef, EvalError, FieldSourceKind, Freshness, InterpolationKind,
     KeyedMember, MATERIALIZED_ANNOTATIONS_KEY, MaterializedAnnotation, MemberKey, RegionRef,
     ResultRef, SOURCE_SPAN_KEY, SampledField, SampledGridKind, Satisfaction,
-    StructureInstanceData, UndefCause, Value, ValueMap, keyed_member_cell, quaternion_is_finite,
+    StructureInstanceData, UndefCause, Value, ValueMap, dimension_unit_label, keyed_member_cell,
+    quaternion_is_finite,
 };
 pub use warm::{OpaqueState, WarmStartable};
 pub use warm_registry::{WarmStartableRegistration, WarmStartableRegistry};

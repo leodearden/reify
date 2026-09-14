@@ -15,6 +15,14 @@ source "$SCRIPT_DIR/test_helpers.sh"
 [ -f "$SCRIPT_DIR/occt_flock_gate_lib.sh" ] || { echo "ERROR: occt_flock_gate_lib.sh not found at $SCRIPT_DIR/occt_flock_gate_lib.sh"; exit 1; }
 source "$SCRIPT_DIR/occt_flock_gate_lib.sh"
 
+# plan_capture_lib.sh (task 6426) — `plan_capture_complete` certifies a
+# --print-plan capture is not truncated, and `capture_print_plan` retries until
+# it is.  Every plan-string assertion in this file depends on both: without the
+# completeness certification a capture truncated under load reads as "pattern
+# absent" and fires a misleading failure instead of a retry (task 6247).
+[ -f "$SCRIPT_DIR/plan_capture_lib.sh" ] || { echo "ERROR: plan_capture_lib.sh not found at $SCRIPT_DIR/plan_capture_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/plan_capture_lib.sh"
+
 WRAPPER="$REPO_ROOT/scripts/cargo-test-occt-gated.sh"
 
 echo "=== OCCT flock gate tests ==="
@@ -113,11 +121,28 @@ assert "wrapper exit code is 42 (got $_EC)" \
 # -- verify.sh plan integration tests ------------------------------------------
 # These formerly grepped dark-factory-orchestrator.yaml's test_command. Since task 3766 the
 # orchestrator calls scripts/verify.sh, so the canonical command list is taken
-# from verify.sh --print-plan (--scope all → full plan, index-independent; env
-# lines stripped via `grep -v '^#'`). The gated passes are plain `cargo test`
-# under the flock wrapper regardless of the nextest/cargo-test choice for the
-# ungated tail, so the gated assertions below stay exact-match.
-TEST_PLAN_SEGS="$(bash "$REPO_ROOT/scripts/verify.sh" test --profile both --scope all --print-plan | grep -v '^#')"
+# from verify.sh --print-plan (--scope all → full plan, index-independent). The
+# gated passes are plain `cargo test` under the flock wrapper regardless of the
+# nextest/cargo-test choice for the ungated tail, so the gated assertions below
+# stay exact-match.
+#
+# CAPTURE SHAPE (task 6247), used identically at every --print-plan site below:
+# capture into a _RAW variable via capture_print_plan (which retries until the
+# dump is complete), assert plan_capture_complete on that RAW dump, and only
+# THEN reduce it to command lines with plan_strip_comments. The order is forced:
+# the completeness markers verify.sh emits are themselves comment lines, so the
+# former single-shot `... --print-plan | grep -v '^#'` destroyed the evidence of
+# truncation and a short capture read as "pattern absent" — a misleading
+# contract failure instead of a retry.
+TEST_PLAN_SEGS_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan TEST_PLAN_SEGS_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env bash "$REPO_ROOT/scripts/verify.sh" test --profile both --scope all --print-plan || true
+assert "TEST_PLAN_SEGS: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$TEST_PLAN_SEGS_RAW"
+TEST_PLAN_SEGS="$(plan_strip_comments "$TEST_PLAN_SEGS_RAW")"
 export TEST_PLAN_SEGS
 
 echo ""
@@ -160,11 +185,17 @@ echo "--- Test 14: REIFY_OCCT_LOCK_WAIT=1 fires within budget, exits non-zero wi
 _LOCK14="$(mktemp)"
 _ERR14="$(mktemp)"
 
-# Spawn a background holder that acquires slot-1 and holds it for 10s.
-# The wrapper uses ${LOCK}.slot-1 (not $LOCK directly), so the holder must
-# target the slot file to actually block the wrapper.
-( flock -x 9; sleep 10 ) 9>>"${_LOCK14}.slot-1" &
-_HOLDER14=$!
+# Spawn a background holder that acquires slot-1 and holds it until THIS TEST
+# releases it (task 6247).  The wrapper uses ${LOCK}.slot-1 (not $LOCK
+# directly), so the holder must target the slot file to actually block it.
+#
+# The hold used to be a fixed `sleep 10`, which is a race in the OVERRUN
+# direction: on a saturated host the wrapper's preamble plus retry cycle can
+# outlast the hold, so the wrapper acquires the slot it was supposed to be
+# blocked on and the test's premise silently disappears.  A test-released hold
+# strictly CONTAINS the wrapper invocation however long it takes.
+_HOLD14="$(mktemp -d)"
+_HOLDER14="$(holder_spawn_gated "${_LOCK14}.slot-1" "$_HOLD14/ready" "$_HOLD14/release")"
 # Causal flock-probe barrier (task 5258, PRD merge-gate-health W4b): block until
 # the holder actually holds slot-1, instead of a fixed `sleep 0.2` grace that a
 # saturated host can outrun (holder unscheduled ⇒ wrapper finds slot FREE ⇒
@@ -172,7 +203,7 @@ _HOLDER14=$!
 # `assert` so a transient confirm-failure yields a clear FAIL naming the root
 # cause instead of tripping `set -e` and aborting the whole suite.
 assert "Test 14: background holder confirmed holding slot-1 (causal flock-probe barrier)" \
-    occt_wait_until_slot_held "${_LOCK14}.slot-1"
+    holder_wait_until_held "${_LOCK14}.slot-1"
 
 _START14="$(date +%s)"
 _EXIT14=0
@@ -186,8 +217,8 @@ REIFY_OCCT_LOCK="$_LOCK14" REIFY_OCCT_CONCURRENCY=1 REIFY_OCCT_LOCK_WAIT=1 timeo
 _END14="$(date +%s)"
 _ELAPSED14=$(( _END14 - _START14 ))
 
-kill "$_HOLDER14" 2>/dev/null || true
-wait "$_HOLDER14" 2>/dev/null || true
+holder_release "$_HOLD14/release" "$_HOLDER14" || true
+rm -rf "$_HOLD14"
 
 # Discriminators: exit==75 (EX_TEMPFAIL) and stderr pattern are the NON-VACUOUS
 # proof that the deadline logic fired correctly.  The elapsed guard is a generous
@@ -218,12 +249,19 @@ _LOCK15="$(mktemp)"
 # + 1s command).  Hold bumped 4s→6s for margin: with a bounded confirm latency
 # (≤~2s under load) remaining_hold is ≥4s ⇒ elapsed ≥5s ⇒ truncates to ≥4 with
 # ≥1s margin; 6s < LOCK_WAIT(10s) leaves headroom so no spurious exit-75.
+# NOT migrated to holder_spawn_gated (task 6247), unlike the Test 14 and Test 22
+# holders: those must OUTLIVE the wrapper, whereas here the wrapper must outlive
+# the HOLDER.  This test proves the internal timer starts after the lock is
+# acquired, so the holder has to release itself mid-wait while the wrapper is
+# still blocked.  The 6s is a test INPUT, not a synchronization grace, and a
+# test-released hold cannot express it: the wrapper would block until LOCK_WAIT
+# expired and exit 75 instead of 124.
 ( flock -x 9; sleep 6 ) 9>>"${_LOCK15}.slot-1" &
 _HOLDER15=$!
 # Causal flock-probe barrier (task 5258): block until the holder holds slot-1.
 # Wrapped in `assert` so a transient confirm-failure cannot trip `set -e`.
 assert "Test 15: background holder confirmed holding slot-1 (causal flock-probe barrier)" \
-    occt_wait_until_slot_held "${_LOCK15}.slot-1"
+    holder_wait_until_held "${_LOCK15}.slot-1"
 
 _START15="$(date +%s)"
 _EXIT15=0
@@ -350,9 +388,17 @@ echo "--- Tests T1–T7 (task 4621): host-relative compile timeout knobs ---"
 #     distinguishable. RED against current code: the release pass currently follows the unified
 #     base knob → would render 95m.
 _T1_ERR="$(mktemp)"
-_T1_PLAN="$(env -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE REIFY_VERIFY_TEST_TIMEOUT=95m \
-    bash "$REPO_ROOT/scripts/verify.sh" test \
-    --profile both --scope all --print-plan 2>"$_T1_ERR" | grep -v '^#')"
+_T1_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T1_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE REIFY_VERIFY_TEST_TIMEOUT=95m \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T1_ERR" || true
+assert "T1: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T1_RAW"
+_T1_PLAN="$(plan_strip_comments "$_T1_RAW")"
 export _T1_PLAN
 assert "T1: REIFY_VERIFY_TEST_TIMEOUT=95m: debug nextest pass uses 95m outer timeout" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 95m .*cargo nextest run --workspace' "$_T1_PLAN" "$_T1_ERR"
@@ -370,8 +416,16 @@ assert "T2: REIFY_VERIFY_TEST_TIMEOUT unset: release nextest pass uses its own d
 
 # T3: Malformed REIFY_VERIFY_TEST_TIMEOUT=banana → falls back to 60m (validation guard).
 _T3_ERR="$(mktemp)"
-_T3_PLAN="$(REIFY_VERIFY_TEST_TIMEOUT=banana bash "$REPO_ROOT/scripts/verify.sh" test \
-    --profile both --scope all --print-plan 2>"$_T3_ERR" | grep -v '^#')"
+_T3_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T3_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env REIFY_VERIFY_TEST_TIMEOUT=banana bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T3_ERR" || true
+assert "T3: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T3_RAW"
+_T3_PLAN="$(plan_strip_comments "$_T3_RAW")"
 export _T3_PLAN
 assert "T3: REIFY_VERIFY_TEST_TIMEOUT=banana (malformed): falls back to 60m default" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 60m .*cargo nextest run --workspace' "$_T3_PLAN" "$_T3_ERR"
@@ -381,8 +435,16 @@ rm -f "$_T3_ERR"
 #     both render `timeout --kill-after=60 70m` in verify.sh lint --print-plan.
 #     RED: current code always emits 45m.
 _T4_ERR="$(mktemp)"
-_T4_PLAN="$(REIFY_VERIFY_CLIPPY_TIMEOUT=70m bash "$REPO_ROOT/scripts/verify.sh" lint \
-    --print-plan 2>"$_T4_ERR" | grep -v '^#')"
+_T4_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T4_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env REIFY_VERIFY_CLIPPY_TIMEOUT=70m bash "$REPO_ROOT/scripts/verify.sh" lint \
+        --print-plan 2>"$_T4_ERR" || true
+assert "T4: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T4_RAW"
+_T4_PLAN="$(plan_strip_comments "$_T4_RAW")"
 export _T4_PLAN
 assert "T4: REIFY_VERIFY_CLIPPY_TIMEOUT=70m: clippy pass uses 70m outer timeout" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 70m .*cargo clippy' "$_T4_PLAN" "$_T4_ERR"
@@ -392,8 +454,16 @@ rm -f "$_T4_ERR"
 
 # T5: REIFY_VERIFY_CLIPPY_TIMEOUT unset → clippy uses 45m (workstation default preserved).
 _T5_ERR="$(mktemp)"
-_T5_PLAN="$(env -u REIFY_VERIFY_CLIPPY_TIMEOUT bash "$REPO_ROOT/scripts/verify.sh" lint \
-    --print-plan 2>"$_T5_ERR" | grep -v '^#')"
+_T5_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T5_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_VERIFY_CLIPPY_TIMEOUT bash "$REPO_ROOT/scripts/verify.sh" lint \
+        --print-plan 2>"$_T5_ERR" || true
+assert "T5: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T5_RAW"
+_T5_PLAN="$(plan_strip_comments "$_T5_RAW")"
 export _T5_PLAN
 assert "T5: REIFY_VERIFY_CLIPPY_TIMEOUT unset: clippy pass uses default 45m" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 45m .*cargo clippy' "$_T5_PLAN" "$_T5_ERR"
@@ -403,8 +473,16 @@ rm -f "$_T5_ERR"
 #     `timeout --kill-after=60 50m` in verify.sh typecheck --print-plan.
 #     RED: current code always emits 30m.
 _T6_ERR="$(mktemp)"
-_T6_PLAN="$(REIFY_VERIFY_CHECK_TIMEOUT=50m bash "$REPO_ROOT/scripts/verify.sh" typecheck \
-    --print-plan 2>"$_T6_ERR" | grep -v '^#')"
+_T6_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T6_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env REIFY_VERIFY_CHECK_TIMEOUT=50m bash "$REPO_ROOT/scripts/verify.sh" typecheck \
+        --print-plan 2>"$_T6_ERR" || true
+assert "T6: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T6_RAW"
+_T6_PLAN="$(plan_strip_comments "$_T6_RAW")"
 export _T6_PLAN
 assert "T6: REIFY_VERIFY_CHECK_TIMEOUT=50m: cargo check --workspace --tests uses 50m outer timeout" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 50m .*cargo check --workspace' "$_T6_PLAN" "$_T6_ERR"
@@ -412,8 +490,16 @@ rm -f "$_T6_ERR"
 
 # T7: REIFY_VERIFY_CHECK_TIMEOUT unset → check uses 30m (workstation default preserved).
 _T7_ERR="$(mktemp)"
-_T7_PLAN="$(env -u REIFY_VERIFY_CHECK_TIMEOUT bash "$REPO_ROOT/scripts/verify.sh" typecheck \
-    --print-plan 2>"$_T7_ERR" | grep -v '^#')"
+_T7_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T7_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_VERIFY_CHECK_TIMEOUT bash "$REPO_ROOT/scripts/verify.sh" typecheck \
+        --print-plan 2>"$_T7_ERR" || true
+assert "T7: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T7_RAW"
+_T7_PLAN="$(plan_strip_comments "$_T7_RAW")"
 export _T7_PLAN
 assert "T7: REIFY_VERIFY_CHECK_TIMEOUT unset: cargo check --workspace --tests uses default 30m" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 30m .*cargo check --workspace' "$_T7_PLAN" "$_T7_ERR"
@@ -434,9 +520,17 @@ echo "--- Tests T8–T10 (task 5382): release-pass cold-aware inner timeout knob
 #     default 60m (REIFY_VERIFY_TEST_TIMEOUT explicitly unset). Proves the release knob is
 #     release-only. RED against current code: no release knob exists, so release renders 60m.
 _T8_ERR="$(mktemp)"
-_T8_PLAN="$(env -u REIFY_VERIFY_TEST_TIMEOUT REIFY_VERIFY_TEST_TIMEOUT_RELEASE=100m \
-    bash "$REPO_ROOT/scripts/verify.sh" test \
-    --profile both --scope all --print-plan 2>"$_T8_ERR" | grep -v '^#')"
+_T8_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T8_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_VERIFY_TEST_TIMEOUT REIFY_VERIFY_TEST_TIMEOUT_RELEASE=100m \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T8_ERR" || true
+assert "T8: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T8_RAW"
+_T8_PLAN="$(plan_strip_comments "$_T8_RAW")"
 export _T8_PLAN
 assert "T8: REIFY_VERIFY_TEST_TIMEOUT_RELEASE=100m: release nextest pass uses 100m outer timeout" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 100m .*cargo nextest run .*--release' "$_T8_PLAN" "$_T8_ERR"
@@ -448,9 +542,17 @@ rm -f "$_T8_ERR"
 #     90m default (mirrors T3's malformed-fallback guard through the shared
 #     _resolve_timeout_knob validator). RED against current code: release renders 60m.
 _T9_ERR="$(mktemp)"
-_T9_PLAN="$(env -u REIFY_VERIFY_TEST_TIMEOUT REIFY_VERIFY_TEST_TIMEOUT_RELEASE=banana \
-    bash "$REPO_ROOT/scripts/verify.sh" test \
-    --profile both --scope all --print-plan 2>"$_T9_ERR" | grep -v '^#')"
+_T9_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T9_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_VERIFY_TEST_TIMEOUT REIFY_VERIFY_TEST_TIMEOUT_RELEASE=banana \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T9_ERR" || true
+assert "T9: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T9_RAW"
+_T9_PLAN="$(plan_strip_comments "$_T9_RAW")"
 export _T9_PLAN
 assert "T9: REIFY_VERIFY_TEST_TIMEOUT_RELEASE=banana (malformed): release pass falls back to 90m default" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 90m .*cargo nextest run .*--release' "$_T9_PLAN" "$_T9_ERR"
@@ -532,10 +634,18 @@ echo "--- Tests T11–T13 (task 5382): merge-path release pre-build cold-aware t
 
 # T11: default → both release pre-builds render the 45m pre-build budget (was a fixed 10m).
 _T11_ERR="$(mktemp)"
-_T11_PLAN="$(env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_RELEASE_DELTA_SKIP -u REIFY_VERIFY_PREBUILD_TIMEOUT \
-    DF_VERIFY_ROLE=merge \
-    bash "$REPO_ROOT/scripts/verify.sh" test \
-    --profile both --scope all --print-plan 2>"$_T11_ERR" | grep -v '^#')"
+_T11_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T11_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_RELEASE_DELTA_SKIP -u REIFY_VERIFY_PREBUILD_TIMEOUT \
+        DF_VERIFY_ROLE=merge \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T11_ERR" || true
+assert "T11: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T11_RAW"
+_T11_PLAN="$(plan_strip_comments "$_T11_RAW")"
 export _T11_PLAN
 assert "T11: default: reify-cli release pre-build uses the 45m pre-build budget (not the former fixed 10m)" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 45m .*cargo build --release -p reify-cli' "$_T11_PLAN" "$_T11_ERR"
@@ -546,11 +656,19 @@ rm -f "$_T11_ERR"
 # T12: REIFY_VERIFY_PREBUILD_TIMEOUT=40m drives the pre-builds ONLY — the two nextest passes
 #      keep their own 60m/90m defaults. Proves the pre-build knob is pre-build-scoped.
 _T12_ERR="$(mktemp)"
-_T12_PLAN="$(env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_RELEASE_DELTA_SKIP \
-    -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE \
-    DF_VERIFY_ROLE=merge REIFY_VERIFY_PREBUILD_TIMEOUT=40m \
-    bash "$REPO_ROOT/scripts/verify.sh" test \
-    --profile both --scope all --print-plan 2>"$_T12_ERR" | grep -v '^#')"
+_T12_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T12_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_RELEASE_DELTA_SKIP \
+        -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE \
+        DF_VERIFY_ROLE=merge REIFY_VERIFY_PREBUILD_TIMEOUT=40m \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T12_ERR" || true
+assert "T12: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T12_RAW"
+_T12_PLAN="$(plan_strip_comments "$_T12_RAW")"
 export _T12_PLAN
 assert "T12: REIFY_VERIFY_PREBUILD_TIMEOUT=40m: reify-cli pre-build uses 40m" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 40m .*cargo build --release -p reify-cli' "$_T12_PLAN" "$_T12_ERR"
@@ -563,10 +681,18 @@ rm -f "$_T12_ERR"
 # T13: malformed REIFY_VERIFY_PREBUILD_TIMEOUT=banana → falls back to the 45m default via the
 #      shared _resolve_timeout_knob validator (mirrors T3/T9's malformed-fallback guard).
 _T13_ERR="$(mktemp)"
-_T13_PLAN="$(env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_RELEASE_DELTA_SKIP \
-    DF_VERIFY_ROLE=merge REIFY_VERIFY_PREBUILD_TIMEOUT=banana \
-    bash "$REPO_ROOT/scripts/verify.sh" test \
-    --profile both --scope all --print-plan 2>"$_T13_ERR" | grep -v '^#')"
+_T13_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+capture_print_plan _T13_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_RELEASE_DELTA_SKIP \
+        DF_VERIFY_ROLE=merge REIFY_VERIFY_PREBUILD_TIMEOUT=banana \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T13_ERR" || true
+assert "T13: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T13_RAW"
+_T13_PLAN="$(plan_strip_comments "$_T13_RAW")"
 export _T13_PLAN
 assert "T13: REIFY_VERIFY_PREBUILD_TIMEOUT=banana (malformed): pre-builds fall back to the 45m default" \
     occt_plan_grep_or_dump 'timeout --kill-after=60 45m .*cargo build --release -p reify-cli' "$_T13_PLAN" "$_T13_ERR"
@@ -641,35 +767,29 @@ _LOCK19="$(mktemp)"
 _LOG19="$(mktemp)"
 _BARRIER19="$(mktemp -d)"
 
-# Each wrapper: acquire slot → emit ACQUIRE to log → touch ready-$$ → wait
-# (bounded ~20s) for go signal → exit → emit RELEASE to log.
+# Each wrapper: acquire slot → emit ACQUIRE to log → run occt_hold_until_go
+# (touch ready-$$, hold until the test touches `go`) → exit → emit RELEASE to
+# log.  The payload is THE shared one in occt_flock_gate_lib.sh, reached through
+# OCCT_BARRIER_DIR, so its budget and this test's barrier budget scale together.
 REIFY_OCCT_LOCK="$_LOCK19" REIFY_OCCT_CONCURRENCY=2 \
     REIFY_SLOT_EVENT_LOG="$_LOG19" \
-    "$WRAPPER" bash -c '
-        touch "'"$_BARRIER19"'/ready-$$"
-        _w=0; while [ ! -f "'"$_BARRIER19"'/go" ] && [ "$_w" -lt 100 ]; do
-            sleep 0.2; _w=$(( _w + 1 )); done
-    ' &
+    OCCT_BARRIER_DIR="$_BARRIER19" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID19A=$!
 REIFY_OCCT_LOCK="$_LOCK19" REIFY_OCCT_CONCURRENCY=2 \
     REIFY_SLOT_EVENT_LOG="$_LOG19" \
-    "$WRAPPER" bash -c '
-        touch "'"$_BARRIER19"'/ready-$$"
-        _w=0; while [ ! -f "'"$_BARRIER19"'/go" ] && [ "$_w" -lt 100 ]; do
-            sleep 0.2; _w=$(( _w + 1 )); done
-    ' &
+    OCCT_BARRIER_DIR="$_BARRIER19" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID19B=$!
 
-# Wait (bounded ~20s) for BOTH ready files — proves both ACQUIREd concurrently.
-# Under N→1 regression only 1 ready file appears; wait elapses → go → serial.
-_w19=0
-while [ "$(ls "$_BARRIER19"/ready-* 2>/dev/null | wc -l)" -lt 2 ] && [ "$_w19" -lt 100 ]; do
-    sleep 0.2; _w19=$(( _w19 + 1 ))
-done
+# Wait for BOTH ready files — proves both ACQUIREd concurrently.  Under an N→1
+# regression only 1 ready file appears; the bounded wait elapses, `go` is
+# touched, and the two run serially → max=1 → clean RED, never a hang.
+# This was a fourth hand-rolled copy of occt_wait_for_ready_count, and the only
+# one whose budget was NOT load-scaled.
+occt_wait_for_ready_count "$_BARRIER19" 2 || true
 touch "$_BARRIER19/go"
 wait "$_PID19A" "$_PID19B"
 
-_MAX19="$(occt_max_concurrent_holders "$_LOG19")"
+_MAX19="$(holder_max_concurrent "$_LOG19")"
 rm -rf "$_BARRIER19"
 rm -f "$_LOCK19" "${_LOCK19}.slot-1" "${_LOCK19}.slot-2" "$_LOG19"
 
@@ -678,50 +798,76 @@ assert "Test 19: ≥2 slots held simultaneously with N=2 (causal R-proof; max_co
 
 # -- Test 20: N=2, three concurrent invocations serializes the third ----------
 # With only 2 slots, a third concurrent wrapper invocation must wait until one
-# slot is released. Measured elapsed must be >= 700ms (two parallel rounds of
-# ~400ms — proves serialization) and <= 2000ms (load-tolerant sanity ceiling,
-# raised 1200->2000 per esc-3939-94: verify-pipeline load inflated the
-# serialized 3rd invocation to 1473ms in one run with no logic defect).
-# At 2000ms the upper bound no longer discriminates N=2 (~800ms) from fully-serial
-# N=1 (~1200ms); the >=700ms lower bound guards against under-serialization only.
-# COVERAGE GAP (accepted tradeoff per esc-3939-94): a fully-serial regression
-# (N->1) produces ~1200ms for three invocations — inside [700,2000], undetected.
-# Test 19 does NOT guard this: two fully-serial invocations complete in ~800ms,
-# below Test 19's <900ms threshold (both pass under a fully-serial regression).
-# This validates that the acquire-loop bounds N strictly (not ">=N" slots).
+# slot is released.  This validates that the acquire-loop bounds N strictly
+# (not ">=N" slots).
+#
+# HOW IT IS PROVED (task 6247, PRD infra-test-wallclock-deflake.md D1): by
+# reading the slot event log, not the clock.  The retired form asserted total
+# wall-clock inside [700,5000]ms, a ceiling ratcheted 1200->2000->5000 and still
+# observed at 5791ms, which also could not see the very regression it was aimed
+# at — three FULLY SERIAL invocations land ~1200ms, inside the band.
+#
+# BARRIER SHAPE — deliberately TWO ready files, not three.  Each payload touches
+# ready-$$ once it holds a slot, then waits for `go`.  With 2 slots the third
+# invocation cannot enter its critical section until one of the first two exits,
+# so waiting for all three would deadlock.  Waiting for exactly two, then
+# touching `go`, MAKES the two-way contention happen rather than hoping for it:
+# the first two are pinned holding until the test says otherwise, the third then
+# acquires, finds `go` already present and exits.  Max concurrency is therefore
+# exactly 2, with 3 ACQUIRE and 3 RELEASE events.
+#
+# Under an N->1 regression only one ready file ever appears; the bounded wait
+# elapses, `go` is touched, all three run serially, max concurrency is 1 and the
+# assertion goes cleanly RED — a clean RED, never a hang.
 echo ""
 echo "--- Test 20: REIFY_OCCT_CONCURRENCY=2 serializes the 3rd invocation when both slots are busy ---"
 
 _LOCK20="$(mktemp)"
-_START20_NS="$(date +%s%N)"
+_LOG20="$(mktemp)"
+_BARRIER20="$(mktemp -d)"
 
-# Spawn three concurrent invocations each sleeping 0.4s with N=2 slots.
-REIFY_OCCT_LOCK="$_LOCK20" REIFY_OCCT_CONCURRENCY=2 "$WRAPPER" bash -c 'sleep 0.4' &
+# Three concurrent invocations, each pinned holding its slot until `go` appears.
+REIFY_OCCT_LOCK="$_LOCK20" REIFY_OCCT_CONCURRENCY=2 REIFY_SLOT_EVENT_LOG="$_LOG20" \
+    OCCT_BARRIER_DIR="$_BARRIER20" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID20A=$!
-REIFY_OCCT_LOCK="$_LOCK20" REIFY_OCCT_CONCURRENCY=2 "$WRAPPER" bash -c 'sleep 0.4' &
+REIFY_OCCT_LOCK="$_LOCK20" REIFY_OCCT_CONCURRENCY=2 REIFY_SLOT_EVENT_LOG="$_LOG20" \
+    OCCT_BARRIER_DIR="$_BARRIER20" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID20B=$!
-REIFY_OCCT_LOCK="$_LOCK20" REIFY_OCCT_CONCURRENCY=2 "$WRAPPER" bash -c 'sleep 0.4' &
+REIFY_OCCT_LOCK="$_LOCK20" REIFY_OCCT_CONCURRENCY=2 REIFY_SLOT_EVENT_LOG="$_LOG20" \
+    OCCT_BARRIER_DIR="$_BARRIER20" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID20C=$!
+
+occt_wait_for_ready_count "$_BARRIER20" 2 || true
+touch "$_BARRIER20/go"
 wait "$_PID20A" "$_PID20B" "$_PID20C"
 
-_END20_NS="$(date +%s%N)"
-_ELAPSED20_MS=$(( (_END20_NS - _START20_NS) / 1000000 ))
-
+rm -rf "$_BARRIER20"
 rm -f "$_LOCK20" "${_LOCK20}.slot-1" "${_LOCK20}.slot-2"
 
-# Two slots: two run in parallel (~400ms), third waits and runs (~800ms total).
-# Lower bound >= 700ms proves the third was serialized (all-parallel ~400ms).
-# Upper bound <= 2000ms is a load-tolerant sanity ceiling (esc-3939-94).
-assert "Test 20: 3 invocations with N=2 complete in [${OCCT_SERIAL3_N2_LOW_MS},${OCCT_SERIAL3_N2_HIGH_MS}]ms — 3rd is serialized (got ${_ELAPSED20_MS}ms)" \
-    occt_serial3_n2_within_bounds "$_ELAPSED20_MS"
+# CAUSAL serialization proof (task 6247, PRD infra-test-wallclock-deflake.md
+# D1/T3), read off the slot event log instead of the clock: exactly 2 of the
+# three invocations may hold a slot at any instant. An N->1 over-serialization
+# regression gives 1 and a lost cap gives 3, both of which the retired
+# millisecond band accepted.
+_ACQ20="$(grep -c ' ACQUIRE ' "$_LOG20" 2>/dev/null || true)"
+_REL20="$(grep -c ' RELEASE' "$_LOG20" 2>/dev/null || true)"
+assert "Test 20: exactly 2 slots held at once across the three N=2 invocations (causal proof)" \
+    occt_serial3_n2_serialized "$_LOG20"
+# NON-VACUITY CONTROL: a bypassed or DISABLEd wrapper records no events at all,
+# and an empty log must not read as success. Counted facts, not magnitudes.
+assert "Test 20: the event log records 3 ACQUIRE events (got ${_ACQ20}) — no invocation was bypassed" \
+    test "$_ACQ20" -eq 3
+assert "Test 20: the event log records 3 RELEASE events (got ${_REL20}) — every slot was given back" \
+    test "$_REL20" -eq 3
+rm -f "$_LOG20"
 
 # -- Test 21: REIFY_OCCT_MAX_CONCURRENCY sets N when CONCURRENCY is unset ------
 # With REIFY_OCCT_CONCURRENCY unset, N falls back to REIFY_OCCT_MAX_CONCURRENCY.
 # Sub-test A: two concurrent wrappers → R-proof ≥2 slots simultaneously held
 #   (causal event-log, same technique as Test 19; replaces vacuous <2000ms ceiling).
-# Sub-test B: three concurrent wrappers → third serialized ([700,5000]ms,
-#   load-tolerant ceiling per esc-3939-94; raised 2000→5000 after 3317ms observed
-#   under task/3443 load; shared with Test 20 via occt_flock_gate_lib.sh).
+# Sub-test B: three concurrent wrappers → third serialized (causal event-log
+#   proof, max concurrency exactly 2; shared with Test 20 via
+#   occt_flock_gate_lib.sh, task 6247).
 #
 # Historical note: a prior implementation auto-detected N as
 # clamp(nproc - load_1m_int, 1, MAX_CAP) and was retired (esc-4000-39, 2026-05-28)
@@ -735,57 +881,63 @@ _LOCK21A="$(mktemp)"
 _LOG21A="$(mktemp)"
 _BARRIER21A="$(mktemp -d)"
 _LOCK21B="$(mktemp)"
+_LOG21B="$(mktemp)"
 
 # Sub-test A: 2 invocations with MAX_CONCURRENCY=2 → R-proof ≥2 slots simultaneously.
 # Barrier: each wrapper touches ready-$$ after ACQUIRE, waits bounded for go signal.
 # Test waits for both ready files (proves concurrent holding) then touches go.
 REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21A" \
     REIFY_SLOT_EVENT_LOG="$_LOG21A" \
-    "$WRAPPER" bash -c '
-        touch "'"$_BARRIER21A"'/ready-$$"
-        _w=0; while [ ! -f "'"$_BARRIER21A"'/go" ] && [ "$_w" -lt 100 ]; do
-            sleep 0.2; _w=$(( _w + 1 )); done
-    ' &
+    OCCT_BARRIER_DIR="$_BARRIER21A" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID21A1=$!
 REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21A" \
     REIFY_SLOT_EVENT_LOG="$_LOG21A" \
-    "$WRAPPER" bash -c '
-        touch "'"$_BARRIER21A"'/ready-$$"
-        _w=0; while [ ! -f "'"$_BARRIER21A"'/go" ] && [ "$_w" -lt 100 ]; do
-            sleep 0.2; _w=$(( _w + 1 )); done
-    ' &
+    OCCT_BARRIER_DIR="$_BARRIER21A" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID21A2=$!
-_w21a=0
-while [ "$(ls "$_BARRIER21A"/ready-* 2>/dev/null | wc -l)" -lt 2 ] && [ "$_w21a" -lt 100 ]; do
-    sleep 0.2; _w21a=$(( _w21a + 1 ))
-done
+occt_wait_for_ready_count "$_BARRIER21A" 2 || true
 touch "$_BARRIER21A/go"
 wait "$_PID21A1" "$_PID21A2"
-_MAX21A="$(occt_max_concurrent_holders "$_LOG21A")"
+_MAX21A="$(holder_max_concurrent "$_LOG21A")"
 rm -rf "$_BARRIER21A"
 rm -f "$_LOCK21A" "${_LOCK21A}.slot-1" "${_LOCK21A}.slot-2" "$_LOG21A"
 
-# Sub-test B: 3 invocations with MAX_CONCURRENCY=2 → third must wait.
-_START21B_NS="$(date +%s%N)"
+# Sub-test B: 3 invocations with MAX_CONCURRENCY=2 → the third must wait.
+# Same causal proof and same two-ready-file barrier as Test 20 (see the note
+# there for why exactly two, and why the millisecond band was retired).
+_BARRIER21B="$(mktemp -d)"
 REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21B" \
-    "$WRAPPER" bash -c 'sleep 0.4' &
+    REIFY_SLOT_EVENT_LOG="$_LOG21B" \
+    OCCT_BARRIER_DIR="$_BARRIER21B" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID21B1=$!
 REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21B" \
-    "$WRAPPER" bash -c 'sleep 0.4' &
+    REIFY_SLOT_EVENT_LOG="$_LOG21B" \
+    OCCT_BARRIER_DIR="$_BARRIER21B" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID21B2=$!
 REIFY_OCCT_MAX_CONCURRENCY=2 REIFY_OCCT_LOCK="$_LOCK21B" \
-    "$WRAPPER" bash -c 'sleep 0.4' &
+    REIFY_SLOT_EVENT_LOG="$_LOG21B" \
+    OCCT_BARRIER_DIR="$_BARRIER21B" "$WRAPPER" bash -c 'occt_hold_until_go' &
 _PID21B3=$!
+
+occt_wait_for_ready_count "$_BARRIER21B" 2 || true
+touch "$_BARRIER21B/go"
 wait "$_PID21B1" "$_PID21B2" "$_PID21B3"
-_END21B_NS="$(date +%s%N)"
-_ELAPSED21B_MS=$(( (_END21B_NS - _START21B_NS) / 1000000 ))
+rm -rf "$_BARRIER21B"
 rm -f "$_LOCK21B" "${_LOCK21B}.slot-1" "${_LOCK21B}.slot-2"
 
 assert "Test 21A: ≥2 slots held simultaneously with MAX_CONCURRENCY=2 (causal R-proof; max_concurrent=${_MAX21A})" \
     test "$_MAX21A" -ge 2
 
-assert "Test 21B: 3 invocations with MAX_CONCURRENCY=2 have 3rd serialized ([${OCCT_SERIAL3_N2_LOW_MS},${OCCT_SERIAL3_N2_HIGH_MS}]ms, got ${_ELAPSED21B_MS}ms)" \
-    occt_serial3_n2_within_bounds "$_ELAPSED21B_MS"
+# CAUSAL serialization proof — the exact twin of Test 20's, on the
+# MAX_CONCURRENCY path.
+_ACQ21B="$(grep -c ' ACQUIRE ' "$_LOG21B" 2>/dev/null || true)"
+_REL21B="$(grep -c ' RELEASE' "$_LOG21B" 2>/dev/null || true)"
+assert "Test 21B: exactly 2 slots held at once across the three MAX_CONCURRENCY=2 invocations (causal proof)" \
+    occt_serial3_n2_serialized "$_LOG21B"
+assert "Test 21B: the event log records 3 ACQUIRE events (got ${_ACQ21B}) — no invocation was bypassed" \
+    test "$_ACQ21B" -eq 3
+assert "Test 21B: the event log records 3 RELEASE events (got ${_REL21B}) — every slot was given back" \
+    test "$_REL21B" -eq 3
+rm -f "$_LOG21B"
 
 # -- Test 22: LOCK_WAIT bound fires when ALL N slots are externally held ------
 # Mirrors Test 14's pattern but with N=2 (full contention across all slots).
@@ -801,19 +953,20 @@ echo "--- Test 22: LOCK_WAIT fires within budget when ALL N=2 slots are external
 _LOCK22="$(mktemp)"
 _ERR22="$(mktemp)"
 
-# Spawn two background holders: one pins slot-1, one pins slot-2.
-( flock -x 9; sleep 10 ) 9>>"${_LOCK22}.slot-1" &
-_HOLDER22A=$!
-( flock -x 9; sleep 10 ) 9>>"${_LOCK22}.slot-2" &
-_HOLDER22B=$!
+# Spawn two background holders, one per slot, each holding until THIS TEST
+# releases it (task 6247 — see the Test 14 note for why a fixed hold is a race
+# the wrapper can win on a saturated host).
+_HOLD22="$(mktemp -d)"
+_HOLDER22A="$(holder_spawn_gated "${_LOCK22}.slot-1" "$_HOLD22/ready-a" "$_HOLD22/release")"
+_HOLDER22B="$(holder_spawn_gated "${_LOCK22}.slot-2" "$_HOLD22/ready-b" "$_HOLD22/release")"
 # Causal flock-probe barrier (task 5258, PRD merge-gate-health W4b): block until
 # BOTH holders hold their slots, instead of a fixed `sleep 0.2` grace a saturated
 # host can outrun.  Two calls reuse the single-slot helper (one per slot); each
 # is wrapped in `assert` so a transient confirm-failure cannot trip `set -e`.
 assert "Test 22: background holder confirmed holding slot-1 (causal flock-probe barrier)" \
-    occt_wait_until_slot_held "${_LOCK22}.slot-1"
+    holder_wait_until_held "${_LOCK22}.slot-1"
 assert "Test 22: background holder confirmed holding slot-2 (causal flock-probe barrier)" \
-    occt_wait_until_slot_held "${_LOCK22}.slot-2"
+    holder_wait_until_held "${_LOCK22}.slot-2"
 
 _START22="$(date +%s)"
 _EXIT22=0
@@ -827,8 +980,9 @@ REIFY_OCCT_LOCK="$_LOCK22" REIFY_OCCT_CONCURRENCY=2 REIFY_OCCT_LOCK_WAIT=1 \
 _END22="$(date +%s)"
 _ELAPSED22=$(( _END22 - _START22 ))
 
-kill "$_HOLDER22A" "$_HOLDER22B" 2>/dev/null || true
-wait "$_HOLDER22A" "$_HOLDER22B" 2>/dev/null || true
+holder_release "$_HOLD22/release" "$_HOLDER22A" || true
+holder_release "$_HOLD22/release" "$_HOLDER22B" || true
+rm -rf "$_HOLD22"
 
 assert "Test 22: wrapper exits 75 when all N=2 slots held and LOCK_WAIT=1 (got $_EXIT22)" \
     test "$_EXIT22" -eq 75

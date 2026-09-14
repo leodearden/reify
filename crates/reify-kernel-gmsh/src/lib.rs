@@ -60,6 +60,14 @@ pub mod ffi;
 #[cfg(has_gmsh)]
 pub mod init;
 
+// The shared `Mesh.MeshSizeMin`/`MeshSizeMax` restore discipline — only
+// compiled when has_gmsh is set (it writes through `crate::ffi`, itself
+// has_gmsh-gated). Deliberately NOT re-exported at the crate root: each
+// constant keeps exactly one public path, so a citation cannot drift between
+// two spellings of the same value.
+#[cfg(has_gmsh)]
+pub mod mesh_size_clamp;
+
 // Real kernel (FFI-backed) — only compiled when has_gmsh is set.
 #[cfg(has_gmsh)]
 pub mod kernel_real;

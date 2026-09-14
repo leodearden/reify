@@ -77,8 +77,8 @@ impl AnalysisContext {
     pub fn new(source: &str, uri: &Url) -> Self {
         let module_name = module_name_from_uri(uri);
         // Prelude-aware parse so stdlib enum references like `CorrosionClass.C5`
-        // disambiguate to `EnumAccess`; pairs with `compile_with_stdlib` in
-        // `from_parsed`. See task 2525.
+        // disambiguate to `EnumAccess`; pairs with `compile_with_stdlib_checked`
+        // in `from_parsed`. See task 2525.
         let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
         Self::from_parsed(Arc::new(parsed))
     }
@@ -91,10 +91,20 @@ impl AnalysisContext {
     /// the same `Arc<ParsedModule>` to every request for a given document
     /// version, so hover and completion compile + check the cached parse instead
     /// of re-parsing. [`AnalysisContext::new`] delegates here after parsing.
+    ///
+    /// **Real constraint checker (task #6798, PRD `driver-contract-implementation.md`
+    /// leaf pi).** The compile stage below uses the real `SimpleConstraintChecker`
+    /// — matching `reify check`'s `parse_and_compile` and the GUI's
+    /// `compile_single_file_with_stdlib` instead of the compile-time
+    /// `CompileTimeIndeterminateChecker` stub — so hover/completion/goto-def/symbols
+    /// see the same `auto:` candidate-feasibility verdicts the CLI does. Full
+    /// rationale: `crate::diagnostics::compute_diagnostics_with_state`'s "##
+    /// Compile-time checker" doc section.
     pub fn from_parsed(parsed: Arc<ParsedModule>) -> Self {
         // `&parsed` (`&Arc<ParsedModule>`) deref-coerces to the `&ParsedModule`
         // the compiler expects.
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled =
+            reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
         let checker = SimpleConstraintChecker;
         let mut engine = reify_eval::Engine::new(Box::new(checker), None);
         // Enable undef-cause capture BEFORE `check` so the post-eval snapshot
@@ -104,6 +114,65 @@ impl AnalysisContext {
         // byte-identical whether or not capture is on — all existing tests
         // continue to pass.
         engine.set_capture_undef_causes(true);
+
+        // Containment (root cause owned by task **#6851**): a FAILED `auto:`
+        // type-parameter resolution — and, per that predicate's
+        // "## Blast radius", two shapes with no `auto:` clause at all — leave
+        // an unsubstituted `Type::TypeParam` value cell that panics
+        // `engine.check` in debug builds. See
+        // `crate::diagnostics::eval_guard::first_unrepresentable_cell`'s doc
+        // comment for the mechanism. Skip the eval/check pass and hand back an
+        // empty `CheckResult`. On the `auto:` shapes `compiled.diagnostics`
+        // already carries the user-visible `E_AUTO_TYPE_PARAM_*` error, so
+        // hover / completion / goto-def / symbols still surface the real
+        // problem; on the compile-clean ones it carries nothing, which is what
+        // the editor-visible report below is for. Path-qualified deliberately,
+        // so the cross-module borrow of the guard is visible at the call
+        // site.
+        //
+        // BEHAVIOUR: hover and completion over such a file show no computed
+        // values, because `check_result.values` is empty. That is the correct
+        // degradation — today's alternative is a debug-build crash of the whole
+        // LSP process, and in release builds (where
+        // `assert_value_cell_types_representable` is elided) a silently wrong
+        // `TypeKindMismatch`/`Undef`.
+        //
+        // `skip_reason` names the offending cell in the server log (throttled
+        // — this constructor runs per hover / completion / goto-def / symbols
+        // request). The EDITOR-visible half of the report is not pushed here:
+        // this site owns no diagnostics list, and `check_result.diagnostics`
+        // must stay empty so
+        // `tests::auto_resolution_failure_does_not_panic_analysis_context` can
+        // still tell a SKIPPED eval pass from a run-and-recovered one. It is
+        // delivered instead by `compute_diagnostics_with_state`, which the
+        // server runs over the same document on open and on every change, so
+        // any file whose AnalysisContext degrades here also carries the
+        // file-level Warning from `SkippedEval::diagnostic`. Rendering the
+        // offender in the hover panel itself would mean editing `hover.rs`,
+        // outside this task's file scope.
+        //
+        // The five-field literal is spelled out rather than reaching for a
+        // `Default` derive on `reify_eval::CheckResult` (which it does not
+        // have): adding one would widen this leaf's file set beyond the PRD's
+        // "Modules: `reify-lsp`" scope into a hot shared crate, whereas the
+        // explicit literal turns any future `CheckResult` field addition into a
+        // loud compile error in exactly the place that must then decide what
+        // the skipped-eval value should be.
+        if crate::diagnostics::eval_guard::skip_reason(&compiled).is_some() {
+            return Self {
+                parsed,
+                compiled,
+                check_result: CheckResult {
+                    values: Default::default(),
+                    constraint_results: Vec::new(),
+                    diagnostics: Vec::new(),
+                    resolved_params: Default::default(),
+                    structured_detail: Vec::new(),
+                },
+                engine,
+            };
+        }
+
         let check_result = engine.check(&compiled);
 
         Self {
@@ -865,11 +934,296 @@ pub fn name_token_span(source: &str, member_span: SourceSpan, name: &str) -> Sou
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_core::DimensionVector;
+    use reify_core::{DiagnosticCode, DimensionVector, Severity};
     use tower_lsp::lsp_types::Url;
 
     fn test_uri() -> Url {
         Url::parse("file:///test.ri").unwrap()
+    }
+
+    /// BT8 forward (task #6798, PRD `driver-contract-implementation.md`
+    /// leaf pi): `AnalysisContext::from_parsed` — the third and last LSP
+    /// production compile site — must agree with `reify check`'s
+    /// real-checker verdict on a CONSTANT `auto:` constraint, not the
+    /// compile-time stub's. Reuses
+    /// [`crate::diagnostics::auto_type_param_fixtures::BT8_CONSTANT_CONSTRAINT_SRC`] rather than
+    /// duplicating the fixture, so the two forward tests cannot drift
+    /// apart.
+    ///
+    /// Anti-vacuity guard first, via the shared
+    /// [`crate::diagnostics::auto_type_param_fixtures::assert_bt8_fixture_still_diverges`] helper:
+    /// assert the stub and the real checker still genuinely diverge on the
+    /// fixture before asserting `AnalysisContext` matches the real one. The
+    /// guard is extracted into that one shared function rather than
+    /// duplicated here and in
+    /// `diagnostics::tests::lsp_constant_constraint_agrees_with_reify_check_real_checker`,
+    /// so the two call sites cannot drift apart. If a future compiler
+    /// change collapses AMBIGUOUS/NO_CANDIDATE into the same verdict, the
+    /// guard fails loudly instead of the `AnalysisContext` assertion below
+    /// passing vacuously.
+    ///
+    /// Asserts against the typed `reify_core::DiagnosticCode` (not the LSP
+    /// wire string) because `AnalysisContext` holds the raw
+    /// `CompiledModule`, one layer below `convert::convert_diagnostic`.
+    #[test]
+    fn analysis_context_uses_real_constraint_checker() {
+        let src = crate::diagnostics::auto_type_param_fixtures::BT8_CONSTANT_CONSTRAINT_SRC;
+
+        // --- Anti-vacuity guard: the fixture must still genuinely diverge ---
+        crate::diagnostics::auto_type_param_fixtures::assert_bt8_fixture_still_diverges();
+
+        // --- AnalysisContext (the site under test) ---
+        let ctx = AnalysisContext::new(src, &test_uri());
+        let observed: Vec<(Severity, Option<DiagnosticCode>, &str)> = ctx
+            .compiled
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, d.code, d.message.as_str()))
+            .collect();
+        let has_no_candidate = ctx.compiled.diagnostics.iter().any(|d| {
+            d.severity == Severity::Error
+                && d.code == Some(DiagnosticCode::AutoTypeParamNoCandidate)
+        });
+        let has_ambiguous = ctx
+            .compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::AutoTypeParamAmbiguous));
+        assert!(
+            has_no_candidate && !has_ambiguous,
+            "BT8 forward (AnalysisContext::from_parsed): must agree with \
+             `reify check`'s real-checker AutoTypeParamNoCandidate verdict \
+             on a constant constraint, not the compile-time stub's \
+             AutoTypeParamAmbiguous; got (severity, code, message) \
+             triples: {:#?}",
+            observed
+        );
+    }
+
+    /// Containment regression lock for the THIRD LSP production entry point,
+    /// `AnalysisContext::from_parsed`, which backs hover, completion,
+    /// goto-definition and document-symbols.
+    ///
+    /// A failed `auto:` type-parameter resolution leaves the `param seal : T`
+    /// member carrying `cell_type = Type::TypeParam("T")` into the evaluation
+    /// graph, where `reify-eval`'s `#[cfg(debug_assertions)]`
+    /// `assert_value_cell_types_representable` PANICS. Measured at HEAD before
+    /// the guard: `AnalysisContext::new` panicked at
+    /// `crates/reify-eval/src/engine_eval.rs:210` with "unrepresentable
+    /// cell_type: value cell `Assembly.b.seal` has cell_type TypeParam(\"T\")".
+    /// Which cell the assertion names first is not load-bearing. Root cause is
+    /// owned by task **#6851**; this is the LSP-side containment.
+    ///
+    /// Reuses [`crate::diagnostics::auto_type_param_fixtures::AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC`]
+    /// rather than duplicating the source string, for the same anti-drift
+    /// reason `BT8_CONSTANT_CONSTRAINT_SRC` is shared across its two forward
+    /// tests.
+    ///
+    /// **Reaching the assertions AT ALL is half the contract** — without the
+    /// guard the constructor panics before it can return, so "the test ran to
+    /// completion" IS the no-panic assertion. Do not add `#[should_panic]` or
+    /// a `catch_unwind` wrapper; that would invert the contract.
+    ///
+    /// **Two fixtures, one body.** The `param seal : T` member is exercised
+    /// both plain and inside a GUARDED group, mirroring
+    /// `diagnostics::tests::auto_resolution_failure_does_not_panic_diagnostics_entry_points`
+    /// — this entry point is affected identically, because all three share the
+    /// one containment predicate. A guarded member lives in
+    /// `CompiledGuardedGroup::members`, never in
+    /// `TopologyTemplate::value_cells`, and was measured to slip past that
+    /// predicate's stage-1 absence proof and panic. Parameterised over a table
+    /// rather than copied, so the two shapes' contracts cannot drift apart;
+    /// every assertion below is load-bearing for both.
+    #[test]
+    fn auto_resolution_failure_does_not_panic_analysis_context() {
+        use crate::diagnostics::auto_type_param_fixtures as fixtures;
+
+        // Each fixture carries its OWN anti-vacuity guard: both claim "stub
+        // clean, real checker fails resolution", but each names its own
+        // fixture when that stops being true.
+        let cases: [(&str, &str, fn()); 2] = [
+            (
+                "plain member",
+                fixtures::AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC,
+                fixtures::assert_auto_fail_fixture_is_newly_reachable,
+            ),
+            (
+                "guarded-group member",
+                fixtures::GUARDED_GROUP_AUTO_FAIL_TYPEPARAM_SRC,
+                fixtures::assert_guarded_group_fixture_is_newly_reachable,
+            ),
+        ];
+
+        for (shape, src, assert_fixture_is_newly_reachable) in cases {
+            // --- Anti-vacuity guard: stub clean, real checker fails resolution ---
+            assert_fixture_is_newly_reachable();
+
+            // --- AnalysisContext (the site under test) ---
+            let ctx = AnalysisContext::new(src, &test_uri());
+            let observed: Vec<(Severity, Option<DiagnosticCode>, &str)> = ctx
+                .compiled
+                .diagnostics
+                .iter()
+                .map(|d| (d.severity, d.code, d.message.as_str()))
+                .collect();
+            assert!(
+                ctx.compiled
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.severity == Severity::Error
+                        && d.code == Some(DiagnosticCode::AutoTypeParamNoCandidate)),
+                "containment (AnalysisContext::from_parsed, {shape}): a failed \
+                 `auto:` resolution must still surface the compile-stage \
+                 AutoTypeParamNoCandidate error, so hover/completion/goto-def \
+                 report the real problem. Reaching this assertion at all means \
+                 the eval/check pass was correctly skipped rather than panicking \
+                 on the unsubstituted TypeParam cell (task #6851). Observed \
+                 (severity, code, message) triples: {:#?}",
+                observed
+            );
+
+            // Pin that the eval/check pass was SKIPPED, not run-and-recovered.
+            // Without this, a future change that "fixes" the panic by making eval
+            // tolerant of unrepresentable cells would silently satisfy the
+            // assertion above while re-introducing exactly the cell #6851 is about
+            // into the engine. This assertion is what keeps the test about
+            // CONTAINMENT rather than about absence-of-crash.
+            assert!(
+                ctx.check_result.constraint_results.is_empty()
+                    && ctx.check_result.diagnostics.is_empty(),
+                "containment (AnalysisContext::from_parsed, {shape}): the \
+                 eval/check pass must be SKIPPED on a failed `auto:` resolution, \
+                 leaving an empty CheckResult — a populated one means the \
+                 unsubstituted TypeParam graph reached the engine after all (task \
+                 #6851). Got constraint_results: {:#?}, diagnostics: {:#?}",
+                ctx.check_result.constraint_results,
+                ctx.check_result.diagnostics
+            );
+        }
+    }
+
+    /// Containment at this entry point on the two COMPILE-CLEAN shapes, the
+    /// mirror of
+    /// `crate::diagnostics::tests::compile_clean_unrepresentable_graph_is_contained_and_reported`.
+    ///
+    /// `auto_resolution_failure_does_not_panic_analysis_context` above pins
+    /// containment on fixtures that also carry an `AutoTypeParamNoCandidate`
+    /// Error. These two carry no compile diagnostic at all — a generic
+    /// structure merely DECLARED, and an explicit `Bearing<GasketSeal>()`
+    /// instantiation — yet their graphs carry a `TypeParam` cell all the same,
+    /// so `engine.check` would panic here on valid `.ri` the compiler
+    /// accepted. Reaching the assertions AT ALL is that half of the contract.
+    ///
+    /// Also pins the eval pass as SKIPPED rather than run-and-recovered, for
+    /// the same reason the sibling test does: a future change making eval
+    /// tolerant of unrepresentable cells would otherwise satisfy "it did not
+    /// panic" while feeding the engine exactly the cell task #6851 is about.
+    #[test]
+    fn compile_clean_unrepresentable_graph_yields_empty_check_result() {
+        use crate::diagnostics::auto_type_param_fixtures as fixtures;
+
+        fixtures::assert_compile_clean_typeparam_fixtures_carry_no_error();
+
+        for (shape, src) in [
+            (
+                "declared-only generic",
+                fixtures::DECLARED_ONLY_GENERIC_TYPEPARAM_SRC,
+            ),
+            (
+                "explicit generic instantiation",
+                fixtures::EXPLICIT_GENERIC_INSTANTIATION_TYPEPARAM_SRC,
+            ),
+        ] {
+            let ctx = AnalysisContext::new(src, &test_uri());
+
+            assert!(
+                ctx.check_result.constraint_results.is_empty()
+                    && ctx.check_result.diagnostics.is_empty()
+                    && ctx.check_result.values.is_empty(),
+                "containment (AnalysisContext::from_parsed, {shape}): the \
+                 eval/check pass must be SKIPPED on a graph carrying an \
+                 unrepresentable cell, even though this document compiles \
+                 CLEAN — a populated CheckResult means that graph reached the \
+                 engine after all, which panics in debug builds and yields a \
+                 wrong TypeKindMismatch/Undef in release (task #6851). Got \
+                 constraint_results: {:#?}, diagnostics: {:#?}",
+                ctx.check_result.constraint_results,
+                ctx.check_result.diagnostics
+            );
+
+            // The user-facing consequence is not silent: `compute_diagnostics`
+            // over the SAME document — which the server runs on open and on
+            // every change — carries the file-level Warning naming the
+            // offending cell. Asserted in full by the sibling test named
+            // above; probed here so the two halves of the degradation stay
+            // wired together at this entry point too.
+            assert!(
+                crate::diagnostics::compute_diagnostics(src, &test_uri())
+                    .iter()
+                    .any(|d| d.code
+                        == Some(tower_lsp::lsp_types::NumberOrString::String(
+                            "EvalSkippedUnrepresentableCell".to_string()
+                        ))),
+                "containment (AnalysisContext::from_parsed, {shape}): hover and \
+                 completion show no computed values for this document, so the \
+                 diagnostics path over the same document must tell the user \
+                 why. Without it this entry point degrades mutely on a file \
+                 that compiles clean."
+            );
+        }
+    }
+
+    /// The containment guard's NARROWNESS at the THIRD production entry
+    /// point, `AnalysisContext::from_parsed` — which backs hover, completion,
+    /// goto-definition and document-symbols.
+    ///
+    /// This site's degradation is quieter than `diagnostics.rs`'s and so needs
+    /// its own lock: skipping the eval/check pass here empties
+    /// `check_result.values`, and hover/completion then show NO computed values
+    /// for the whole document, with no EDITOR-visible error to explain why
+    /// (only a server-log line naming the offending cell). Under the
+    /// `AutoTypeParam*` diagnostic-code proxy this guard replaced, a single
+    /// failing `auto:` clause did exactly that even when the failure was
+    /// provably safe to evaluate.
+    ///
+    /// `UNUSED_TYPEPARAM_AUTO_FAIL_WITH_EVAL_DIAGS_SRC` leaves `T` UNUSED in
+    /// `Bearing`'s body, so the failed resolution creates no `TypeParam`-typed
+    /// cell and there is nothing for `assert_value_cell_types_representable`
+    /// to panic on. Anti-vacuity: assert the fixture still genuinely FAILS
+    /// `auto:` resolution, or "the values survived" is trivially true.
+    ///
+    /// Deliberately the mirror of, not a duplicate of,
+    /// `auto_resolution_failure_does_not_panic_analysis_context`: that one
+    /// pins the guard FIRING (empty `CheckResult`) on the shape that needs
+    /// containment, this one pins it NOT firing on the shape that does not.
+    #[test]
+    fn failed_auto_resolution_with_unused_type_param_still_populates_check_values() {
+        use crate::diagnostics::auto_type_param_fixtures::UNUSED_TYPEPARAM_AUTO_FAIL_WITH_EVAL_DIAGS_SRC;
+
+        let ctx = AnalysisContext::new(UNUSED_TYPEPARAM_AUTO_FAIL_WITH_EVAL_DIAGS_SRC, &test_uri());
+
+        assert!(
+            ctx.compiled
+                .diagnostics
+                .iter()
+                .any(|d| d.severity == Severity::Error
+                    && d.code == Some(DiagnosticCode::AutoTypeParamNoCandidate)),
+            "anti-vacuity: the fixture must still FAIL `auto:` resolution, or \
+             this test no longer exercises the containment guard at all. \
+             compiled diagnostics: {:#?}",
+            ctx.compiled.diagnostics
+        );
+
+        assert!(
+            !ctx.check_result.values.is_empty(),
+            "over-fire (AnalysisContext::from_parsed): a failed `auto:` \
+             resolution whose type parameter is UNUSED leaves no \
+             unrepresentable cell, so the eval/check pass is safe and MUST \
+             run — an empty `check_result.values` means hover and completion \
+             silently show no computed values for the whole document. \
+             constraint_results: {:#?}",
+            ctx.check_result.constraint_results
+        );
     }
 
     /// Minimal source that references two stdlib symbols (Rigid trait, Material struct).

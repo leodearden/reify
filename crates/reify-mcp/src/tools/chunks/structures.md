@@ -17,6 +17,9 @@ structure def Bracket<M: Material> : Rigid {
 
     sub rib : Rib { height = thickness * 0.8 }
 
+    // Illustrative PARAMETER arithmetic, showing what a `let` member and a
+    // field access on a type param look like. It is NOT a measurement of the
+    // realized part — see the note under this example.
     let volume = thickness * width * width
     let mass = volume * material.density
 
@@ -24,6 +27,14 @@ structure def Bracket<M: Material> : Rigid {
     constraint thickness < width / 2
 }
 ```
+
+> **The `volume` above is arithmetic, not a measurement.** `thickness * width * width` derives a
+> number from the parameters and never sees the realized solid, so it silently stops describing the
+> part the moment a fillet, a shell, a boolean or a pattern changes it — and nothing flags the
+> divergence. To measure realized geometry, ask the kernel: `volume(solid)` and `centroid(solid)`
+> for the geometric quantities, `center_of_mass(solid, density)` for the density-weighted one. The
+> `geometry` chunk's "Measurement & Mass-Property Queries" section documents the whole family,
+> including the let-bind-the-operand rule those calls require.
 
 > **Note:** `def` is optional. Bare `structure Bracket { ... }` (omitting `def`) is a silently-accepted, equal-status alias — the grammar parses both forms identically. This document uses the canonical `def` spelling, but existing code may use either form.
 

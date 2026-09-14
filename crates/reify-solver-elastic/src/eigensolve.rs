@@ -10,10 +10,15 @@
 //! This module provides kernel primitives for the generalized symmetric
 //! eigenproblem `K φ = λ M φ`:
 //!
-//! - [`solve_eigen_dense`] — dense QZ path via `faer::linalg::gevd::gevd_real`
+//! - [`solve_eigen_dense`] — dense QZ path via `faer::linalg::gevd::gevd_real`;
+//!   honors `opts.sigma` as a selection key over the full computed spectrum
 //! - [`solve_eigen_shift_invert`] — shift-invert Lanczos via sparse Cholesky +
 //!   `faer::matrix_free::eigen::partial_self_adjoint_eigen`; falls back to
 //!   dense when the Krylov window would exceed the problem dimension.
+//! - [`try_solve_eigen_shift_invert`] — the same solve, returning `None`
+//!   instead of panicking when `K` is not SPD, and ONLY then: a non-numeric
+//!   Cholesky failure (out of memory / index overflow) still panics (task 6663;
+//!   for callers that can legitimately be handed an under-constrained system).
 //! - [`lanczos_shift_invert`] — generic Lanczos core operating over arbitrary
 //!   [`StiffnessOp`] / [`MetricOp`] operator pairs; no dense fallback (caller
 //!   is responsible for small-problem dispatch).
@@ -30,6 +35,78 @@
 //! The modal-analysis pipeline (task 3819) may call `lanczos_shift_invert`
 //! directly with custom `StiffnessOp`/`MetricOp` implementations (e.g.
 //! matrix-free K, lumped diagonal M) without going through the sparse wrapper.
+//!
+//! # Shift contract (C1–C6)
+//!
+//! Normative source: `docs/prds/v0_6/shift-invert-eigensolve.md` §6. This
+//! section is the written spec both implementations are built against; the
+//! executable form is `tests/eigensolve_shift_contract.rs`.
+//!
+//! [`EigenSolverOptions::sigma`] is the shift **in eigenvalue (λ) space** for
+//! both callers. Unit conversion — a modal caller's frequency, say — is the
+//! CALLER's job, not the eigensolver's (PRD §7 seam table). Handing this
+//! function a shift in any other space is a caller bug it cannot detect.
+//!
+//! - **C1 — σ=0 is the identity.** `sigma == 0.0` produces the same
+//!   eigenvalues, the same order and the same code path as before this PRD.
+//!   STRUCTURAL, not a tolerance: `λ − 0.0 == λ` bit-exactly in IEEE-754 for
+//!   every finite λ (and `|−0.0 − 0.0| == 0.0`), so the selection sort at σ=0
+//!   IS the pre-PRD `|λ|` sort, the selected prefix is the same slice, and a
+//!   STABLE re-sort of an already-`|λ|`-ascending prefix is a no-op. No
+//!   `if sigma == 0.0` branch exists or is needed on the dense path.
+//! - **C2 — Selection.** The returned set is the `n_modes` converged
+//!   eigenvalues with the smallest `|λ − σ|`.
+//! - **C3 — Order.** `eigenvalues` is ascending by `|λ|` — absolute, not
+//!   signed, exactly as before this PRD: λ=−2 still sorts before λ=+3. The
+//!   `eigenvectors` columns are permuted to match.
+//! - **C4 — Back-shift.** Eigenvalues are returned in the original λ space
+//!   (`λ = σ + 1/μ` on the Lanczos path), never in shifted or μ space.
+//! - **C5 — Provenance.** [`EigenSolverResult::shift_skipped_modes`] reports
+//!   whether any eigenvalue of the pencil lies between zero and σ and is absent
+//!   from the returned set; [`EigenSolverResult::shift`] carries the σ used.
+//!   `false` is reported only when ESTABLISHED (a full-spectrum count, or a
+//!   Cholesky success), never assumed. Exact on the dense path, a conservative
+//!   boolean on Lanczos. The PRD's "between zero and σ" wording is implemented
+//!   verbatim and has a known gap on indefinite pencils — see the known-gap
+//!   section on [`EigenSolverResult::shift_skipped_modes`], which must be
+//!   settled before ε (#7262) ships a refusal keyed on the flag.
+//! - **C6 — Singularity.** A singular or numerically-degenerate `K − σB` is a
+//!   typed failure carrying σ — never a panic, never a silently perturbed
+//!   solve, never a garbage spectrum.
+//!
+//! **C2 and C3 are two different rules and no implementation may conflate
+//! them.** Selection decides WHICH eigenvalues come back; order decides in WHAT
+//! ORDER they are presented. A comparator that fuses them returns the right set
+//! in proximity order, so a 300 Hz band inspection reads as 301, 298, 310, 295
+//! instead of 295, 298, 301, 310 — the right answer in a form an engineer
+//! cannot read (PRD §5.2). They are separate functions here for that reason.
+//!
+//! ## Per-clause implementation status
+//!
+//! | Clause | Dense path ([`solve_eigen_dense`]) | Lanczos path |
+//! |---|---|---|
+//! | C1 | implemented | implemented |
+//! | C2 | implemented | #7259 — solves at σ=0 until then, and reports `shift: 0.0` |
+//! | C3 | implemented (shared helper) | implemented (same helper) |
+//! | C4 | n/a — no shift is ever applied to invert | #7259 |
+//! | C5 | implemented, EXACT | established `false` at its own σ=0; #7259 |
+//! | C6 | vacuous — no `K − σB` is ever formed | #7259 |
+//!
+//! Staging α before β means [`solve_eigen_shift_invert`] honors σ for n ≤ 64
+//! (dense fallback) and not for larger problems (Lanczos). That divergence is
+//! deliberate but it is **not silent**: [`EigenSolverResult::shift`] reports the
+//! σ a solve actually used, never the σ it was asked for, so
+//! `result.shift == opts.sigma` is a definite caller-side test for whether the
+//! shift was honored. Echoing the request over an unshifted answer would be
+//! correct-looking provenance describing a solve that never happened — the
+//! silent-substitution class this contract exists to close.
+//!
+//! The dense path honors σ as a SORT-KEY CHANGE AND NOTHING ELSE: `gevd_real`
+//! computes the entire spectrum, so no factorization is formed, `K − σB` never
+//! exists, and no new failure mode is introduced. That is why it lands first
+//! and the Lanczos implementation is held to it. The acceptance criterion for
+//! #7259 is `tests/eigensolve_shift_contract.rs` — its σ≠0 arms instantiate the
+//! harness functions already there, rather than inventing their own.
 //!
 //! # Design decisions
 //!
@@ -84,6 +161,7 @@ use faer::matrix_free::LinOp;
 use faer::matrix_free::eigen::{
     PartialEigenParams, partial_self_adjoint_eigen, partial_self_adjoint_eigen_scratch,
 };
+use faer::sparse::linalg::LltError as SparseLltError;
 use faer::sparse::{SparseRowMat, SparseRowMatRef};
 use faer::sparse::linalg::solvers::Llt;
 use faer::reborrow::ReborrowMut;
@@ -109,7 +187,12 @@ pub struct EigenSolverOptions {
     /// `PartialEigenParams.max_restarts`; do not extrapolate the value from
     /// `CgResult::iterations` (which counts inner iterations).
     pub max_iters: usize,
-    /// Shift σ (reserved for shifted-inverse formulation; currently 0.0).
+    /// Spectral shift σ, in eigenvalue (λ) space.
+    ///
+    /// Selects the `n_modes` eigenvalues nearest σ rather than nearest zero.
+    /// Unit conversion is the caller's job — see the module-level
+    /// "Shift contract (C1–C6)" section, which is the normative spec for how
+    /// every path must treat this value.
     pub sigma: f64,
 }
 
@@ -143,6 +226,58 @@ pub struct EigenSolverResult {
     /// `true` iff all requested `n_modes` eigenvalues were returned
     /// (`eigenvalues.len() == n_modes`).
     pub converged: bool,
+    /// Whether any eigenvalue of the pencil lies STRICTLY between zero and
+    /// [`shift`](Self::shift) AND is absent from the returned set — i.e.
+    /// whether this result is a *window* around σ rather than the bottom of the
+    /// spectrum (contract clause C5).
+    ///
+    /// Per C5, `false` is only ever reported when it has been ESTABLISHED,
+    /// never assumed.  Like [`n_converged`](Self::n_converged) the basis differs
+    /// per path: [`solve_eigen_dense`] computes the whole spectrum via QZ and so
+    /// answers EXACTLY — it compares source indices between the full spectrum
+    /// and the selected set — while the **shift-invert path** has only the
+    /// Cholesky/LU discriminator, which is a conservative boolean (an exact
+    /// count would need an inertia-revealing LDL^T that faer's sparse LU does
+    /// not expose).  At σ=0 every path reports `false`, and that `false` is
+    /// established rather than assumed: the open interval strictly between 0
+    /// and 0 is empty, so no eigenvalue can lie in it.
+    ///
+    /// # Known gap: an interval rule under an absolute-value order
+    ///
+    /// The predicate is the PRD §6 wording *verbatim* — "between zero and σ" —
+    /// but C3 orders by `|λ|`, so "the first mode" means smallest `|λ|`, and the
+    /// two do not coincide when the pencil is indefinite.  With spectrum
+    /// {−0.1, 0.5, 1.0}, σ=0.6 and `n_modes=1`, C2 selects {0.5}; nothing lies
+    /// in the open interval (0, 0.6) that is absent, so this field is `false` —
+    /// yet the true first mode by `|λ|` is −0.1 and it did NOT come back.
+    /// Consumers that key a refusal on this flag (ε #7262's `critical_load` /
+    /// `safety_factor_buckling` / `first_frequency`) therefore inherit the
+    /// precondition that the pencil has no eigenvalue on the far side of zero
+    /// from σ.  Indefinite pencils are not hypothetical here: `buckling_kernel`
+    /// assembles a `neg_sigma` geometric stiffness for the reversed-load case.
+    ///
+    /// No caller passes σ≠0 today, so the gap is unreachable.  Closing it means
+    /// amending PRD §6 C5 to the predicate that serves the stated purpose —
+    /// "some eigenvalue with `|λ|` strictly less than `min |λ|` over the
+    /// selected set is absent from it", which subsumes the interval rule for
+    /// both signs of σ and is still exact on the dense path — rather than
+    /// diverging from the PRD here.  That amendment must be settled before ε
+    /// (#7262) ships a refusal keyed on this field.
+    pub shift_skipped_modes: bool,
+    /// The shift σ actually used for this solve (contract clause C5).
+    ///
+    /// Carried on the result so a diagnostic can name the offending σ without
+    /// the caller re-deriving it from its own options.  In eigenvalue (λ) space,
+    /// like [`EigenSolverOptions::sigma`] — unit conversion is the caller's job.
+    ///
+    /// "Actually used" is load-bearing: this is NOT an echo of
+    /// [`EigenSolverOptions::sigma`], and a path that did not honor the
+    /// requested σ reports the one it did solve at.  The Lanczos path reports
+    /// `0.0` for any request until #7259 makes it honor σ, so
+    /// `result.shift == opts.sigma` is a definite caller-side test for whether
+    /// the shift was applied — and the reason a caller never has to infer it
+    /// from the problem dimension.
+    pub shift: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +302,18 @@ fn check_eigen_options_and_shapes(
         opts.tol.is_finite() && opts.tol > 0.0,
         "EigenSolverOptions.tol = {} must be a finite positive value",
         opts.tol,
+    );
+    // σ is a live selection key (C2), so a non-finite one is a caller bug that
+    // must be loud.  Left unguarded it degrades silently instead: every
+    // `(λ − σ).abs()` is NaN, `total_cmp` orders all NaNs equal so the stable
+    // sort is a no-op, and the caller receives gevd's arbitrary internal order
+    // as if it were the nearest-σ set — well-formed and wrong, which is the
+    // silent-substitution class this contract exists to close.  ±∞ collapses
+    // the same way (every distance is ∞).
+    assert!(
+        opts.sigma.is_finite(),
+        "EigenSolverOptions.sigma = {} must be finite",
+        opts.sigma,
     );
     assert!(
         opts.max_iters >= 1,
@@ -297,14 +444,105 @@ impl MetricOp for SparseMetricOp<'_> {
 }
 
 // ---------------------------------------------------------------------------
+// Shift-contract rules: SELECTION (C2) and ORDER (C3)
+//
+// These are two different rules and no implementation may conflate them
+// (PRD §5.2).  They are separate, separately named functions precisely so the
+// two are not expressible as one tangled comparator: `select_nearest_to_shift`
+// decides WHICH eigenvalues come back, `order_by_abs_lambda` decides in WHAT
+// ORDER they are presented.  Conflating them turns a 300 Hz band inspection
+// into the mode table 301, 298, 310, 295 instead of 295, 298, 301, 310.
+//
+// Both sorts are STABLE and keyed via `total_cmp`, so equidistant eigenvalues
+// resolve deterministically from gevd's own index order — the crate's
+// determinism suite depends on it.
+// ---------------------------------------------------------------------------
+
+/// **C2 — Selection.** Reorder `pairs` so its first `n_take` entries are the
+/// eigenvalues nearest σ, and return that `n_take`.
+///
+/// The tail beyond `n_take` is left in place (still sorted by |λ − σ|) rather
+/// than dropped: it is the *unselected* set, which the C5 provenance
+/// computation needs.
+fn select_nearest_to_shift(pairs: &mut [(f64, usize)], sigma: f64, n_modes: usize) -> usize {
+    pairs.sort_by(|a, b| (a.0 - sigma).abs().total_cmp(&(b.0 - sigma).abs()));
+    pairs.len().min(n_modes)
+}
+
+/// **C3 — Order.** Sort a selected set ascending by |λ|.
+///
+/// Absolute, not signed, which is the pre-PRD convention preserved unchanged:
+/// with negative eigenvalues present λ=−2 still sorts before λ=+3.  Shared by
+/// both implementations (SPOT) so the Lanczos path's presentation order cannot
+/// drift from the dense path's.
+fn order_by_abs_lambda(pairs: &mut [(f64, usize)]) {
+    pairs.sort_by(|a, b| a.0.abs().total_cmp(&b.0.abs()));
+}
+
+/// **C5 — Provenance.** Whether some eigenvalue of the pencil lies STRICTLY
+/// between zero and σ and is absent from the selected set.
+///
+/// Discrimination is on the `usize` source index, never on float equality of λ:
+/// a pencil with a repeated eigenvalue would otherwise report one of the two
+/// copies as "skipped" while its twin was returned.
+///
+/// Both signs of σ are covered, so a negative shift on the reversed-load
+/// buckling side is handled by the same rule rather than a second one.  That is
+/// a statement about the sign of **σ**, not about the sign of λ: an eigenvalue
+/// on the far side of zero from σ is outside the interval by construction and
+/// is never reported here, even when it is the smallest by `|λ|` and absent from
+/// the selected set.  See the known-gap section on
+/// [`EigenSolverResult::shift_skipped_modes`] — this function implements the PRD
+/// §6 wording verbatim, and closing the gap is a PRD amendment, not a local fix.
+///
+/// At σ=0 the open interval is empty, so this is unconditionally `false` with no
+/// branch — C1 preserved, and that `false` is ESTABLISHED rather than assumed.
+fn any_eigenvalue_skipped_between_zero_and_shift(
+    all_pairs: &[(f64, usize)],
+    selected: &[(f64, usize)],
+    sigma: f64,
+) -> bool {
+    all_pairs.iter().any(|&(lam, src_col)| {
+        let between = (0.0 < lam && lam < sigma) || (sigma < lam && lam < 0.0);
+        between && !selected.iter().any(|&(_, sel_col)| sel_col == src_col)
+    })
+}
+
+/// **C5 — Provenance, conservative form.** The answer a path that did not
+/// compute a spectrum it can count must give.
+///
+/// C5 permits `false` only when ESTABLISHED, never assumed, so any path without
+/// the evidence to establish it reports `true` at σ≠0.  At σ=0 `false` IS
+/// established with no evidence needed: the open interval strictly between 0 and
+/// 0 is empty, so no eigenvalue can lie in it.
+///
+/// Exposed (and `pub`) rather than inlined because two crates need the identical
+/// rule — the Lanczos path here and `reify-eval`'s degenerate
+/// `singular_k_over_ceiling` early return, which returns no spectrum at all.
+/// Writing it twice across a crate boundary is how the two drift when #7259
+/// refines the Lanczos discriminator to a real one; this is the single place
+/// that changes.
+#[inline]
+pub fn conservative_shift_provenance(sigma: f64) -> bool {
+    sigma != 0.0
+}
+
+// ---------------------------------------------------------------------------
 // Dense path
 // ---------------------------------------------------------------------------
 
 /// Solve the generalized symmetric eigenproblem `K φ = λ B φ` via dense QZ.
 ///
 /// Densifies K and B, calls `faer::linalg::gevd::gevd_real`, recovers
-/// `λ_i = S_re[i] / beta[i]` (skipping near-zero or infinite beta), sorts
-/// ascending by `|λ|`, and returns the smallest `n_modes`.
+/// `λ_i = S_re[i] / beta[i]` (skipping near-zero or infinite beta), then applies
+/// the shift contract's two rules in order: selects the `n_modes` eigenvalues
+/// nearest `opts.sigma` (C2) and presents them ascending by `|λ|` (C3).
+///
+/// Because `gevd_real` yields the ENTIRE spectrum, this path's
+/// `shift_skipped_modes` answer is EXACT — it compares source indices between
+/// the full spectrum and the selected set — whereas the shift-invert path can
+/// only report a conservative boolean from its Cholesky/LU discriminator
+/// (PRD §5.4 precision limit).
 ///
 /// Sets `n_converged = 0` (direct path; no iterative budget consumed).
 /// Sets `converged = (n_take == opts.n_modes)` — `false` only when B is
@@ -396,10 +634,19 @@ pub fn solve_eigen_dense(
         })
         .collect();
 
-    // Sort ascending by |λ|; stable sort preserves relative order of equal |λ|.
-    pairs.sort_by(|a, b| a.0.abs().total_cmp(&b.0.abs()));
-
-    let n_take = pairs.len().min(opts.n_modes);
+    // C2 then C3, in that order and never fused (see the helper block above).
+    //
+    // C1 (σ=0 is the identity) needs NO `if sigma == 0.0` branch: `λ − 0.0 == λ`
+    // bit-exactly in IEEE-754 for every finite λ, so at σ=0 the selection sort
+    // IS the pre-PRD `|λ|` sort, the prefix is the same slice, and a STABLE
+    // re-sort of an already-|λ|-ascending prefix is a no-op.  Same faer calls in
+    // the same order, so the buckling and modal goldens pass bit-for-bit.
+    let n_take = select_nearest_to_shift(&mut pairs, opts.sigma, opts.n_modes);
+    // C5 is EXACT here, so compute it from the whole vector and its selected
+    // prefix while both are still in hand — nothing is re-derived later.
+    let shift_skipped_modes =
+        any_eigenvalue_skipped_between_zero_and_shift(&pairs, &pairs[..n_take], opts.sigma);
+    order_by_abs_lambda(&mut pairs[..n_take]);
     let eigenvalues: Vec<f64> = pairs[..n_take].iter().map(|&(lam, _)| lam).collect();
 
     let mut eigenvectors = Mat::<f64>::zeros(n, n_take);
@@ -415,6 +662,8 @@ pub fn solve_eigen_dense(
         eigenvectors,
         n_converged: 0,
         converged: n_take == opts.n_modes,
+        shift: opts.sigma,
+        shift_skipped_modes,
     }
 }
 
@@ -484,9 +733,18 @@ impl<K: StiffnessOp, M: MetricOp> LinOp<f64> for CompositeShiftInvertOp<'_, K, M
 
 /// Shift-invert Lanczos eigensolver over arbitrary SPD operator pairs.
 ///
-/// Solves `K φ = λ M φ` using shift-invert Lanczos (σ = 0).  Finds the
-/// smallest |λ| by maximizing |μ| = 1/|λ| in the Krylov subspace of
-/// `K⁻¹ · M`.
+/// Solves `K φ = λ M φ` using shift-invert Lanczos.  Finds the smallest |λ| by
+/// maximizing |μ| = 1/|λ| in the Krylov subspace of `K⁻¹ · M`.
+///
+/// **Shift contract status:** this path does not yet honor `opts.sigma` — the
+/// `K − σB` assembly, the Cholesky-then-LU dispatch and the C4 back-shift are
+/// task #7259.  It satisfies C1 and C3 today, and reports C5 conservatively (it
+/// cannot ESTABLISH that nothing was skipped, and C5 forbids assuming it).
+/// Until then it solves the UNSHIFTED pencil whatever `opts.sigma` says, and
+/// **says so**: it reports `shift: 0.0` — the σ it actually used — rather than
+/// echoing the request, so `result.shift == opts.sigma` is the caller's test for
+/// whether the shift was honored.  See the module-level "Shift contract (C1–C6)"
+/// section.
 ///
 /// This is the generic core — it operates over any [`StiffnessOp`] /
 /// [`MetricOp`] pair without knowledge of the underlying representation
@@ -539,6 +797,21 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
     );
 
     let n = k_op.n();
+
+    // The σ this solve ACTUALLY uses, which is what `EigenSolverResult::shift`
+    // is documented to report.  #7259 lands the `K − σB` assembly and the
+    // Cholesky-then-LU dispatch; until then this path solves the UNSHIFTED
+    // pencil whatever `opts.sigma` says, so it reports 0.0 rather than echoing
+    // the request.  Echoing σ=0.6 over a bottom-of-the-spectrum answer would be
+    // a correct-looking provenance field describing a solve that never happened
+    // — the silent-substitution class this contract exists to close — and would
+    // also make ε (#7262) refuse a result whose first mode is in fact present.
+    // A caller that needs σ honored detects the gap with
+    // `result.shift == opts.sigma`; #7259 replaces this with `opts.sigma`, and
+    // when it does it must also add the `opts.sigma.is_finite()` guard this
+    // function's option-contract asserts above deliberately omit — σ is inert
+    // here precisely because it is never read.
+    let shift_used = 0.0_f64;
 
     let op = CompositeShiftInvertOp { k_op, m_op, n };
 
@@ -598,8 +871,11 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
         })
         .collect();
 
-    // Sort ascending by |λ| (stable).
-    pairs.sort_by(|a, b| a.0.abs().total_cmp(&b.0.abs()));
+    // C3 via the shared helper (SPOT).  SELECTION is deliberately NOT re-run
+    // here: this path's converged set is the output of the UNSHIFTED operator,
+    // so re-selecting it by |λ − σ| would be wrong until #7259 makes the
+    // operator itself honor σ.
+    order_by_abs_lambda(&mut pairs);
 
     let n_take = pairs.len().min(opts.n_modes);
     // Track what the caller actually receives: converged iff we hand back
@@ -620,6 +896,15 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
         eigenvectors,
         n_converged: n_conv,
         converged,
+        shift: shift_used,
+        // Shared with `reify-eval`'s degenerate early return (SPOT): a path that
+        // cannot count what it skipped may not assume `false`.  Here `false` IS
+        // established — the solve ran at σ=0 and the open interval strictly
+        // between 0 and 0 is empty — and it stays correct for the ε (#7262)
+        // consumer, which keys a refusal on this flag: the bottom of the
+        // spectrum genuinely does contain the first mode.  #7259 passes
+        // `opts.sigma` here once the operator honors it.
+        shift_skipped_modes: conservative_shift_provenance(shift_used),
     }
 }
 
@@ -627,7 +912,16 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
 // Sparse shift-invert wrapper (with dense fallback)
 // ---------------------------------------------------------------------------
 
-/// Solve `K φ = λ B φ` via shift-invert Lanczos (σ = 0).
+/// Solve `K φ = λ B φ` via shift-invert Lanczos.
+///
+/// **Shift contract status:** inherits [`lanczos_shift_invert`]'s — `opts.sigma`
+/// is not yet honored on the Lanczos branch (#7259).  The dense fallback below
+/// DOES honor it, so **which σ this entry point actually applies depends on the
+/// problem dimension** until #7259 lands: n ≤ 64 routes dense and honors σ, a
+/// larger problem routes Lanczos and solves at σ=0.  That divergence is not
+/// silent — the returned [`EigenSolverResult::shift`] reports the σ actually
+/// used, so a caller that needs the shift honored tests
+/// `result.shift == opts.sigma` and gets a definite answer either way.
 ///
 /// Factors K via sparse Cholesky, builds [`SparseStiffnessOp`] +
 /// [`SparseMetricOp`] adapters, and delegates to [`lanczos_shift_invert`] for
@@ -643,21 +937,87 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
 ///
 /// # Panics
 ///
-/// - K is not SPD (Cholesky failure → panic with descriptive message, matching
-///   Task-2544 panic-on-contract convention)
+/// - K is not SPD (numeric Cholesky failure → panic with descriptive message,
+///   matching Task-2544 panic-on-contract convention)
+/// - The sparse Cholesky fails for a NON-numeric reason (`LltError::Generic`:
+///   `OutOfMemory` / `IndexOverflow`). That panic is raised inside
+///   [`try_solve_eigen_shift_invert`] and names the resource failure, so it is
+///   never mistaken for the "K must be SPD" message below.
 /// - See also [`check_eigen_options_and_shapes`]
+///
+/// A caller that can legitimately be handed a singular `K` — an
+/// under-constrained modal model, say — should use
+/// [`try_solve_eigen_shift_invert`] instead of catching this panic.
 pub fn solve_eigen_shift_invert(
     k: &SparseRowMat<usize, f64>,
     b: &SparseRowMat<usize, f64>,
     opts: EigenSolverOptions,
 ) -> EigenSolverResult {
+    try_solve_eigen_shift_invert(k, b, opts)
+        .expect("eigensolve: K must be SPD; sp_cholesky failed — check that BCs have been applied")
+}
+
+/// Non-panicking sibling of [`solve_eigen_shift_invert`]: returns `None` when
+/// the up-front sparse Cholesky of `K` fails.
+///
+/// `None` means EXACTLY ONE thing — `K` is not SPD (`sp_cholesky` returned
+/// `LltError::Numeric`, i.e. a non-positive pivot). Every other precondition is
+/// still a hard contract and still panics: the option/shape preconditions via
+/// [`check_eigen_options_and_shapes`] (bad `n_modes`, shape mismatch, …), and a
+/// `LltError::Generic` factorization failure (`FaerError::OutOfMemory` /
+/// `IndexOverflow`) via an explicit panic at the match. `None` is therefore never
+/// ambiguous between "singular K", "caller bug" and "out of memory", which is
+/// what makes it safe for a caller to treat `None` as the domain fact "this
+/// model is under-constrained" rather than as a generic failure. That
+/// enforcement matters most on the large-mesh path: mapping an allocation
+/// failure to `None` would surface it as
+/// `W_ModalRigidBodyMode: K_free is singular (the model is under-constrained)`.
+///
+/// The factorization is performed exactly ONCE: on `Some` the very same `llt`
+/// feeds [`SparseStiffnessOp`], so the healthy path pays no extra cost relative
+/// to calling [`solve_eigen_shift_invert`] directly. (This is why the shape
+/// here is `try_` + delegate rather than "probe with a throwaway `sp_cholesky`,
+/// then call the panicking entry point", which would factor K twice on every
+/// well-posed solve.)
+///
+/// # Panics
+///
+/// - See [`check_eigen_options_and_shapes`].
+/// - The sparse Cholesky fails with `LltError::Generic` (`OutOfMemory` /
+///   `IndexOverflow`) — a resource/index failure, not a property of the model.
+///
+/// A non-SPD `K` does NOT panic here; it is the `None` return.
+pub fn try_solve_eigen_shift_invert(
+    k: &SparseRowMat<usize, f64>,
+    b: &SparseRowMat<usize, f64>,
+    opts: EigenSolverOptions,
+) -> Option<EigenSolverResult> {
     check_eigen_options_and_shapes(k, b, &opts);
     let n = k.nrows();
 
-    // Factor K via sparse Cholesky (panics if not SPD per Task-2544 convention).
-    let llt = k
-        .sp_cholesky(Side::Lower)
-        .expect("eigensolve: K must be SPD; sp_cholesky failed — check that BCs have been applied");
+    // Factor K via sparse Cholesky. A NUMERIC failure here means K is not SPD —
+    // the one condition this entry point reports rather than panics on.
+    //
+    // The error is MATCHED rather than `.ok()?`'d so that `None` really does
+    // mean only that. faer's sparse `LltError` also carries a `Generic` arm
+    // (`FaerError::OutOfMemory` / `IndexOverflow`), and mapping those to `None`
+    // would let a resource failure factorizing a large `K_free` surface to the
+    // user as `W_ModalRigidBodyMode: K_free is singular (the model is
+    // under-constrained)` — a confidently wrong diagnosis of an allocation
+    // problem, on the exact large-mesh path `DENSE_FALLBACK_MAX_DIM` exists to
+    // serve. A `Generic` failure is not a domain fact about the model, so it
+    // keeps the panicking contract.
+    let llt = match k.sp_cholesky(Side::Lower) {
+        Ok(llt) => llt,
+        // K is not SPD (a non-positive pivot) — the documented `None`.
+        Err(SparseLltError::Numeric(_)) => return None,
+        Err(e @ SparseLltError::Generic(_)) => panic!(
+            "eigensolve: sparse Cholesky of K failed for a non-numeric reason \
+             ({e:?}) — this is a resource/index failure (allocation or index \
+             overflow), NOT an under-constrained model; do not report it as a \
+             rigid-body mode"
+        ),
+    };
 
     // Dense-fallback dispatch (sparse-matrix-specific; not in the generic).
     // faer's partial_self_adjoint_eigen_imp requires max_dim < n strictly.
@@ -682,7 +1042,7 @@ pub fn solve_eigen_shift_invert(
         // Problem too small for Lanczos; delegate to the direct dense solver.
         // The dense result already satisfies the EigenSolverResult contract
         // (converged=true, iterations=0, eigenvalues sorted ascending |λ|).
-        return solve_eigen_dense(k, b, opts);
+        return Some(solve_eigen_dense(k, b, opts));
     }
 
     // Delegate to the generic Lanczos core via zero-cost adapter pair.
@@ -691,5 +1051,5 @@ pub fn solve_eigen_shift_invert(
     // so buckling goldens pass bit-for-bit.
     let k_op = SparseStiffnessOp { llt: &llt, n };
     let m_op = SparseMetricOp { m: b.as_ref() };
-    lanczos_shift_invert(&k_op, &m_op, opts)
+    Some(lanczos_shift_invert(&k_op, &m_op, opts))
 }

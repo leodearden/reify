@@ -341,6 +341,37 @@ info "Seeding per-worktree core.hooksPath via extensions.worktreeConfig..."
 "$(dirname "${BASH_SOURCE[0]}")/setup-main-gate-worktree-config.sh"
 ok "main-gate worktree config seeded (config.worktree core.hooksPath=hooks)"
 
+# ---------- git rerere disarm ----------
+#
+# Every warm lane shares ONE unlocked rr-cache, so a resolution recorded by one
+# task can be auto-staged into an unrelated task's merge.  Re-run every setup:
+# git's rerere.enabled default is -1 ("enabled iff rr-cache/ exists"), so LOSING
+# the explicit false silently re-arms the fleet.  Idempotent; never prunes
+# rr-cache.  Mechanism and recovery:
+# docs/notes/git-rerere-shared-worktree-hazard.md.
+#
+# EXIT-CODE CONTRACT — normative in the header of scripts/git-rerere-guard.sh;
+# read it there before touching the branch below.  In short: the shared-config
+# write is the success criterion here, not a globally clean verdict, so 2 is
+# advisory (something out of `arm`'s --local reach) and must not abort the rest
+# of setup — and the branch is `0 | 2 | *`, never a closed set {0,1,2}.
+
+info "Disabling git rerere repo-wide (shared rr-cache hazard)..."
+_rerere_arm_rc=0
+"$(dirname "${BASH_SOURCE[0]}")/git-rerere-guard.sh" arm || _rerere_arm_rc=$?
+if [ "$_rerere_arm_rc" -eq 0 ]; then
+    ok "git rerere disarmed (rerere.enabled=false, rerere.autoupdate=false)"
+elif [ "$_rerere_arm_rc" -eq 2 ]; then
+    warn "shared config pinned, but rerere is still armed — or unverifiable — in a scope"
+    warn "  'arm' cannot reach (another lane's config.worktree, or one it cannot read)"
+    warn "  run 'scripts/git-rerere-guard.sh check' — it names the worktree either way"
+    warn "  see docs/notes/git-rerere-shared-worktree-hazard.md"
+else
+    err "git-rerere-guard.sh arm failed (exit $_rerere_arm_rc)"
+    exit 1
+fi
+unset _rerere_arm_rc
+
 # ---------- build-accelerator systemd --user services ----------
 #
 # Build infra installed as systemd --user units so it survives reboots and
@@ -365,7 +396,9 @@ ok "main-gate worktree config seeded (config.worktree core.hooksPath=hooks)"
 #                                    for the dual-FIFO (/tmp/reify-jobserver-merge
 #                                    + /tmp/reify-jobserver-task) pools.
 #
-# Cache size overridable via REIFY_SCCACHE_SIZE (default 100G). Skipped when no
+# Cache size overridable via REIFY_SCCACHE_SIZE (default 500G; raised from 100G
+# per task 7425 — the workstation's 100G cap was continuously LRU-evicting
+# across ~240 worktrees with 1.8 TB free on the volume). Skipped when no
 # systemd --user bus is available (e.g. CI).
 
 install_build_services() {
@@ -373,7 +406,7 @@ install_build_services() {
     local sccache_bin="$HOME/.cargo/bin/sccache"
     local repo_dir size jobserver_dir main_checkout
     repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-    size="${REIFY_SCCACHE_SIZE:-100G}"
+    size="${REIFY_SCCACHE_SIZE:-500G}"
     mkdir -p "$unit_dir"
 
     # ---- HOST-GLOBAL ExecStart pinning (task 5888) --------------------------
@@ -533,7 +566,7 @@ EOF
 }
 
 if systemctl --user show-environment &>/dev/null; then
-    info "Installing build-accelerator services (sccache ${REIFY_SCCACHE_SIZE:-100G} + cargo jobserver + leak canary)..."
+    info "Installing build-accelerator services (sccache ${REIFY_SCCACHE_SIZE:-500G} + cargo jobserver + leak canary)..."
     if install_build_services; then
         ok "build-accelerator services installed, enabled & started"
     else
@@ -541,6 +574,24 @@ if systemctl --user show-environment &>/dev/null; then
     fi
 else
     warn "no systemd --user bus — skipping build-accelerator service install"
+fi
+
+# ---------- jcodemunch index-warming units ----------
+#
+# A daily oneshot + timer that keeps the reify code index current with the
+# canonical checkout, so jcodemunch queries never answer from a stale tree.
+#
+# Deliberately OUTSIDE the REIFY_PROVISION_WARM_LANES block above, and installed
+# by its own script rather than by install-warm-lane-units.sh: index freshness is
+# wanted on every dev host, not only on hosts that provision warm lanes, and
+# gating it behind that flag would leave a developer who never sets it querying a
+# silently stale index.
+#
+# No bus guard needed here — the installer fail-opens on a bus-less host itself.
+if "$(dirname "${BASH_SOURCE[0]}")/install-jcodemunch-index-units.sh"; then
+    ok "jcodemunch index-warming units installed"
+else
+    warn "jcodemunch index-unit install failed (see above) — non-fatal, continuing setup"
 fi
 
 # ---------- cargo-nextest ----------

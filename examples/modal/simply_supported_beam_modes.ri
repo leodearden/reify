@@ -32,17 +32,25 @@
 //
 // Type-coercion notes — identical to cantilever_beam_modes.ri:
 //   - FEAMaterialInput(material: mat) → mi.material (ElasticMaterial coercion).
-//   - boundary_conditions accepts the List<FixedSupport> value for its
+//   - boundary_conditions accepts the List<PinnedSupport> value for its
 //     List<Support> param (structure ctors do not type-check args).
 //
 // Boundary conditions:
 //   A simply-supported beam is PINNED at BOTH end faces (x_min and x_max) in the
-//   bending direction — encoded as TWO `FixedSupport`s. The trampoline (step-18)
-//   interprets the two-support `boundary_conditions` list as the pin-pin
-//   configuration: pin both end faces in z plus minimal axial/lateral anchors to
-//   remove rigid-body translation without over-constraining rotation (so the
-//   modes match the (nπ)² simply-supported family, NOT fixed-fixed). This is the
-//   discriminator from the cantilever fixture's single-support clamp.
+//   bending direction — encoded as TWO `PinnedSupport`s, because the structure
+//   is pinned. The trampoline realizes a pinned end face as the transverse (z)
+//   DOF only, and — with BOTH end faces pinned — adds the minimal axial/lateral
+//   anchors that remove rigid-body translation without over-constraining
+//   rotation, so the modes match the (nπ)² simply-supported family, NOT
+//   fixed-fixed.
+//
+//   HISTORY (task 6663): these were `FixedSupport`s, and the trampoline used to
+//   discriminate on the target face NAMES alone — two supports naming both end
+//   faces meant pin-pin regardless of kind. That threw the support KIND away, so
+//   a genuinely clamped-clamped beam silently got the pinned-pinned answer. The
+//   realization is now per-face and kind-aware, and this fixture spells the kind
+//   it actually means. The e2e's 2% analytic bands are unchanged and are the
+//   guard that the pin-pin numbers are bit-preserved across that change.
 
 structure SimplySupportedBeamModes {
     // Geometry: 200 mm slender beam, 10 mm × 2 mm rectangular cross-section.
@@ -58,10 +66,12 @@ structure SimplySupportedBeamModes {
     // compile-time type ElasticMaterial (matching the fn param type).
     let mi = FEAMaterialInput(material: material)
 
-    // Simply-supported: pin BOTH end faces (x_min and x_max). Two FixedSupports
-    // signal the pin-pin configuration to the trampoline (step-18).
-    let pin_min = FixedSupport(target: "x_min")
-    let pin_max = FixedSupport(target: "x_max")
+    // Simply-supported: pin BOTH end faces (x_min and x_max). These are
+    // PinnedSupports because the structure is pinned — the trampoline reads the
+    // support KIND per face (task 6663), so a FixedSupport here would mean a
+    // genuinely clamped end and a ~2.27x higher fundamental.
+    let pin_min = PinnedSupport(target: "x_min")
+    let pin_max = PinnedSupport(target: "x_max")
 
     // Modal options: extract the first 3 modes, undamped, bending in z, at
     // element_order = ElementOrder.P2 — the P2-tet path that resolves bending

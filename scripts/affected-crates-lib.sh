@@ -17,6 +17,14 @@
 #   affected_crates <file>...  prints the affected workspace crate names
 #                              (sorted, one per line), or the literal ALL.
 #                              Always returns 0.
+#   reify_is_inert_path <path> true iff the path is documentation or
+#                              configuration (docs/**, *.md, *.yaml, *.yml).
+#                              The shared definition of that class; verify.sh's
+#                              decide_scope is its second consumer.
+#
+# Unprefixed names are the declared interface. A leading underscore means
+# private to affected_crates — do not add a consumer outside this file without
+# promoting the helper here first.
 #
 # Sourced by:
 #   scripts/verify.sh           (Phase 2 narrowing)
@@ -53,28 +61,69 @@ _is_global() {
     return 1
 }
 
-# _is_noncrate <path> — returns 0 (true) if the path is a non-crate file that
-# contributes no crates and must NOT force ALL.
-# Matches: docs/** (documentation), gui/src/** (frontend-only), and
-# tests/infra/** (shell/python infra test scripts — these run as their own
-# verify step and never affect Rust crate compilation or test outcomes, so a
-# tests/infra-only diff must narrow to no crates rather than hitting the C5
-# fail-wide-to-ALL path via an unmappable path).
-_is_noncrate() {
+# reify_is_inert_path <path> — returns 0 (true) if the path is documentation or
+# configuration: it needs no heavy checks and belongs to no crate of its own.
+# Matches: docs/**, *.md, *.yaml, *.yml. Contract: §3 "Inert paths are ONE
+# list" in docs/prds/verify-scope-contract.md.
+#
+# SPOT (task 7427): the single definition of that class, for the two consumers
+# that used to carry their own drifting copies — _is_noncrate below (crate
+# attribution) and scripts/verify.sh's decide_scope (heavy-check selection).
+# tests/infra/test_affected_crates_lib.sh's INERT-SPOT battery pins them
+# together.
+#
+# The suffix patterns are DELIBERATELY NOT ANCHORED, which is safe only because
+# both consumers place crate ATTRIBUTION ahead of this predicate — decide_scope
+# through its `crates/*)` arm, affected_crates through _file_to_crate in its
+# accumulation loop — so a crate-OWNED *.md never reaches here and keeps mapping
+# to its owning crate. That shared attribute-first precedence is the load-bearing
+# half of the SPOT, and is recorded here rather than at each call site; §5 of the
+# contract records what it protects.
+reify_is_inert_path() {
     local path="$1"
     case "$path" in
-        docs/*)        return 0 ;;
+        docs/*)                 return 0 ;;
+        *.md|*.yaml|*.yml)      return 0 ;;
+    esac
+    return 1
+}
+
+# _is_noncrate <path> — returns 0 (true) if the path is a non-crate file that
+# contributes no crates and must NOT force ALL.
+# Matches: everything reify_is_inert_path covers (documentation/configuration),
+# plus gui/src/** (frontend-only) and tests/infra/** (shell/python infra test
+# scripts — these run as their own verify step and never affect Rust crate
+# compilation or test outcomes, so a tests/infra-only diff must narrow to no
+# crates rather than hitting the C5 fail-wide-to-ALL path via an unmappable
+# path).
+_is_noncrate() {
+    local path="$1"
+    reify_is_inert_path "$path" && return 0
+    case "$path" in
         gui/src/*)     return 0 ;;
         tests/infra/*) return 0 ;;
     esac
     return 1
 }
 
+# _RI_CORPUS_CRATES — the crates whose COMPILED tests read the examples/ .ri
+# corpus, as SEED crates for the reverse closure (task 7427). Contract: §3
+# "Corpus mapping" in docs/prds/verify-scope-contract.md.
+#
+# HOW MEMBERSHIP IS KEPT HONEST: not by hand. RI-CORPUS-DRIFT in
+# tests/infra/test_affected_crates_lib.sh sweeps every workspace member's Rust
+# sources and asserts DERIVED ⊆ DECLARED; that block owns the reader shapes it
+# recognises and why the subset direction is the safe one. Re-run it rather than
+# editing this line from memory. Each crate is declared in its own right, never
+# left to arrive transitively through another seed's dep edge.
+_RI_CORPUS_CRATES="reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui"
+
 # _file_to_crate <path> — map a crate-owned path to its crate name, or print
 # nothing if the path is not under a known crate location.
 # Mapping rules (§5):
 #   crates/<name>/**  -> <name>
 #   gui/src-tauri/**  -> reify-gui
+#   examples/**/*.ri  -> _RI_CORPUS_CRATES (corpus seeds)
 _file_to_crate() {
     local path="$1"
     case "$path" in
@@ -85,6 +134,17 @@ _file_to_crate() {
             ;;
         gui/src-tauri/*)
             echo "reify-gui"
+            ;;
+        examples/*.ri)
+            # A corpus leaf: emit the declared reader crates as ordinary seeds,
+            # fed through _reverse_closure like any other direct crate. A bash
+            # `case` glob's `*` spans `/`, so nested corpus dirs land here too;
+            # scoped to .ri LEAVES, so non-.ri content under examples/ (a
+            # .gcode datum, a .gitkeep) keeps falling to the C5 fail-wide arm.
+            # Word-split is the point (one seed per line) and is safe: the
+            # declared value is a literal here with no glob metacharacter.
+            # shellcheck disable=SC2086
+            printf '%s\n' $_RI_CORPUS_CRATES
             ;;
         *)
             # No mapping found.
@@ -118,18 +178,37 @@ _reverse_closure() {
     # Collect metadata once; guard failure -> ALL.
     #
     # --locked stops cargo from REWRITING Cargo.lock: it refuses to resolve a
-    # stale/missing lock instead of silently updating it (the tracked-file
-    # mid-commit-mutation risk this task closes). It does NOT imply
-    # --offline: on a cold registry/index cache, cargo can still perform
-    # network I/O to read dependency manifests even against a valid,
-    # unchanged lock. Fully closing that (--frozen/--offline) is deliberately
-    # out of scope for this change — it trades a cold-cache network hit for
-    # cold-cache closures unconditionally widening to ALL, a separate
-    # tradeoff left to a follow-up rather than folded into this single-flag
-    # change.
+    # stale/missing lock instead of silently updating it, closing the
+    # tracked-file mid-commit-mutation risk. --offline adds the guarantee
+    # --locked does NOT imply — no network I/O at all: even against a valid,
+    # unchanged lock, a cold registry/index cache would otherwise let cargo
+    # fetch dependency manifests. Together they make this call hermetic,
+    # which matters because it now runs on the pre-commit-hook tier and under
+    # verify.sh --print-plan, where an unbounded index fetch is a hook-stall
+    # hazard. (--frozen is exactly this pair spelled as one flag; the two-flag
+    # form is kept so each guarantee stays legible at the call site.)
+    #
+    # Accepted tradeoff: a genuinely cold registry cache no longer stalls, it
+    # fails fast (measured 0.15-0.35s) into the C5 fail-wide ALL path just
+    # below. docs/prds/verify-scope-contract.md §3 C5 already specifies ALL as
+    # the answer to "cannot compute the affected set", so the failure only
+    # ever WIDENS the verify scope and can never produce a false PASS. That is
+    # the whole containment argument, and it holds unconditionally.
+    #
+    # Two weaker claims are deliberately NOT made (both were asserted here and
+    # corrected in review). C4 does NOT make the cold case unreachable: it
+    # returns ALL only when Cargo.lock is in THIS run's changed-file set, so a
+    # dev who pulls a Cargo.lock bump and then commits only a source file
+    # reaches here with a cache that is cold relative to the lock, C4 never
+    # having fired. And the widening does not self-heal by elapsed time: what
+    # repopulates the registry is the `cargo check` / `cargo clippy` passes a
+    # RUN_RUST=1 verify goes on to run, neither of which passes --offline. A
+    # --print-plan probe or a RUN_RUST=0 docs-tier commit never shells out to
+    # a networked cargo, so it keeps reporting ALL — harmlessly, per C5 —
+    # until a real build runs.
     local meta
-    meta="$(cargo metadata --format-version 1 --locked 2>/dev/null)" || {
-        echo "affected-crates-lib.sh: cargo metadata --locked failed (stale/missing Cargo.lock?) — falling back to ALL" >&2
+    meta="$(cargo metadata --format-version 1 --locked --offline 2>/dev/null)" || {
+        echo "affected-crates-lib.sh: cargo metadata --locked --offline failed (stale/missing Cargo.lock, or a cold registry cache) — falling back to ALL" >&2
         echo ALL
         return 0
     }
@@ -160,16 +239,17 @@ affected_crates() {
     done
 
     # Accumulate the direct crate set from crate-mappable paths.
+    # ATTRIBUTION FIRST, then the non-crate classes (see reify_is_inert_path's
+    # header for why that order is the contract on both sides of the SPOT).
     local direct=()
     local crate
     for arg in "$@"; do
-        if _is_noncrate "$arg"; then
-            # Non-crate path: skip, contributes nothing.
-            continue
-        fi
         crate="$(_file_to_crate "$arg")"
         if [ -n "$crate" ]; then
             direct+=("$crate")
+        elif _is_noncrate "$arg"; then
+            # Non-crate path: skip, contributes nothing.
+            continue
         else
             # C5: unmappable path — fail wide.
             echo ALL

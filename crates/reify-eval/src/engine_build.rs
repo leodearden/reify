@@ -1950,6 +1950,7 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
             | GeometryOp::Thicken { target, .. }
             | GeometryOp::OffsetCurve { target, .. }
             | GeometryOp::OffsetSolid { target, .. }
+            | GeometryOp::OffsetSurface { target, .. }
             | GeometryOp::Shell { target, .. }
             | GeometryOp::ZoneSlab { target, .. } => ParentHandles::Inline([*target, z], 1),
             // Surface (isosurface, task 4999): the sole parent is `grid`, not
@@ -2062,6 +2063,7 @@ fn substitute_op_parents(
             | GeometryOp::Thicken { target, .. }
             | GeometryOp::OffsetCurve { target, .. }
             | GeometryOp::OffsetSolid { target, .. }
+            | GeometryOp::OffsetSurface { target, .. }
             | GeometryOp::Shell { target, .. }
             | GeometryOp::ZoneSlab { target, .. } => {
                 sub(target);
@@ -2185,7 +2187,7 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
     // `operation`. Split's row has `operation: None`, which reproduces the
     // prior unreachable!() exactly — Split is a topology selector and must
     // never reach this function (it is never inserted into the realization
-    // graph). All other 47 variants have `operation: Some(_)`.
+    // graph). All other 48 variants have `operation: Some(_)`.
     descriptor_for(op.into())
         .and_then(|d| d.operation)
         .unwrap_or_else(|| {
@@ -2220,7 +2222,6 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
 /// - Convert { from }                 → `[BRep, Mesh]`
 /// - Primitive* / Curve*              → `[BRep]` (sources; classified to
 ///   document the 'not a Mesh-accepting consumer' decision; step-4 adds arms)
-#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
 fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
     use Operation::*;
     use ReprKind::{BRep, Mesh, Voxel};
@@ -2233,7 +2234,9 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
 
         // Modify — BRep-only consumers
         ModifyFillet | ModifyChamfer | ModifyShell | ModifyDraft | ModifyThicken
-        | ModifyOffsetCurve | ModifyZoneSlab | ModifyOffsetSolid => Some(BREP_ONLY),
+        | ModifyOffsetCurve | ModifyZoneSlab | ModifyOffsetSolid | ModifyOffsetSurface => {
+            Some(BREP_ONLY)
+        }
 
         // Transform — accept both reprs. `TransformApplyTransform` is the
         // post-realization rigid-isometry application (task 3901); like the
@@ -2299,7 +2302,6 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
 /// Unclassified ops (`classify_op_input_reprs` returns `None`) return `false`,
 /// making them conservative: they do not accept Mesh, which forces their
 /// producers to demand BRep.
-#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
 fn op_accepts_repr(op: &Operation, repr: ReprKind) -> bool {
     classify_op_input_reprs(op).is_some_and(|s| s.contains(&repr))
 }
@@ -2313,7 +2315,6 @@ fn op_accepts_repr(op: &Operation, repr: ReprKind) -> bool {
 /// classified with multiple reprs that happen to include Voxel alongside
 /// Mesh/BRep — such an op would NOT be Voxel-only-input and must not force
 /// its producer to Voxel demand.
-#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
 fn op_is_voxel_only_input(op: &Operation) -> bool {
     op_accepts_repr(op, ReprKind::Voxel)
         && !op_accepts_repr(op, ReprKind::Mesh)
@@ -2353,6 +2354,7 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
             ModifyKind::Thicken => Operation::ModifyThicken,
             ModifyKind::ZoneSlab => Operation::ModifyZoneSlab,
             ModifyKind::OffsetSolid => Operation::ModifyOffsetSolid,
+            ModifyKind::OffsetSurface => Operation::ModifyOffsetSurface,
             ModifyKind::OffsetCurve => Operation::ModifyOffsetCurve,
         },
         CompiledGeometryOp::Transform { kind, .. } => match kind {
@@ -3297,6 +3299,7 @@ impl Engine {
             last_guard_phase_group_evals: _, // edit instrumentation
             last_role_flip_probes: _,        // edit instrumentation
             last_diff_value_cells: _,        // edit_source diff snapshot
+            last_changed_realizations: _, // edit-produced changed-realization set, read by the following build (task β/γ)
             last_param_override_type_kind_rejections: _, // eval instrumentation
             last_param_override_dimension_rejections: _, // eval instrumentation
             last_sub_component_unknown_structure_errors: _, // eval instrumentation
@@ -3509,11 +3512,19 @@ impl Engine {
             && self.geometry_kernels.contains_key(name)
         {
             let mut step_handles: Vec<KernelHandle> = Vec::new();
+            // task 5345: query-only realizations (hoisted `__geoq_<N>` inline
+            // geometry-query arguments) are measurement scaffolding, not
+            // bodies, and are excluded from the export walk. Counting them here
+            // would turn a structure whose ONLY geometry lives inside a query
+            // arg — `structure def S { let v = volume(torus(..)) }` — into a
+            // spurious "all realized bodies are aux; no product geometry to
+            // export" error. Pre-hoist such a structure produced no realization
+            // at all and exported nothing silently; that stays true.
             let had_realization_ops = module
                 .templates
                 .iter()
                 .flat_map(|t| &t.realizations)
-                .any(|r| !r.operations.is_empty());
+                .any(|r| !r.is_query_only && !r.operations.is_empty());
 
             // θ (task 4361): record each realization's terminal handle positionally
             // by (t_idx, r_idx) for the Phase-B export walk — mirrors build()'s
@@ -4318,11 +4329,19 @@ impl Engine {
         {
             // Execute geometry operations from realizations
             let mut step_handles: Vec<KernelHandle> = Vec::new();
+            // task 5345: query-only realizations (hoisted `__geoq_<N>` inline
+            // geometry-query arguments) are measurement scaffolding, not
+            // bodies, and are excluded from the export walk. Counting them here
+            // would turn a structure whose ONLY geometry lives inside a query
+            // arg — `structure def S { let v = volume(torus(..)) }` — into a
+            // spurious "all realized bodies are aux; no product geometry to
+            // export" error. Pre-hoist such a structure produced no realization
+            // at all and exported nothing silently; that stays true.
             let had_realization_ops = module
                 .templates
                 .iter()
                 .flat_map(|t| &t.realizations)
-                .any(|r| !r.operations.is_empty());
+                .any(|r| !r.is_query_only && !r.operations.is_empty());
 
             // T7 (task 3905): record each realization's terminal handle
             // positionally by (t_idx, r_idx) — mirrors the tessellate_from_values
@@ -12992,11 +13011,12 @@ where
 // tet seam, T6, and the engine-bridge PRD (δ/ε) respectively.
 //
 // The whole seam is `#[allow(dead_code)]` because its consumer — the
-// engine-bridge mixed solve wiring — is a future task; this mirrors the
-// `dispatch_volume_mesh` G-allow pattern above.
+// engine-bridge mixed solve wiring — is a future task: #6371, "Wire
+// build_mixed_region_mesh (T12 layer-B seam) into a production consumer".
+// This mirrors the `dispatch_volume_mesh` G-allow pattern above.
 
 /// Per-element kind tag in a [`MixedRegionMesh`].
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UnifiedElementKind {
     /// A mid-surface shell element (one per shell triangle, 6 DOF/node).
@@ -13006,7 +13026,7 @@ pub(crate) enum UnifiedElementKind {
 }
 
 /// One element of the unified mixed mesh, referencing unified node ids.
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct UnifiedElement {
     /// Whether this element is meshed as a shell or a tet.
@@ -13018,7 +13038,7 @@ pub(crate) struct UnifiedElement {
 
 /// Unified mixed shell/tet mesh: a single node list, per-element kind tags, and
 /// the shell↔tet interface MPC constraint rows.
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 #[derive(Debug, Clone)]
 pub(crate) struct MixedRegionMesh {
     /// Unified node positions (world, f64). Shell vertices first, then tet
@@ -13044,12 +13064,74 @@ pub(crate) enum MixedRegionError {
     },
     /// An interface's tie geometry violates `MpcRow::shell_tet_tying`'s
     /// preconditions — a non-unit `normal` or a non-positive `thickness`, both
-    /// of which that builder asserts on (and would panic). `partition_body`
-    /// guarantees these invariants, so this only arises for an interface
-    /// constructed directly by a caller that bypasses the partition layer.
+    /// of which that builder asserts on (and would panic) — or has a
+    /// non-finite `location`, which `shell_tet_tying` never sees (only the
+    /// resolved DOF indices are passed downstream) but which would instead
+    /// poison this function's own nearest-node tie resolution.
+    /// `partition_body` guarantees the `normal`/`thickness` invariants, so
+    /// this only arises for an interface constructed directly by a caller
+    /// that bypasses the partition layer; [`ShellTetInterface`] documents no
+    /// invariant for `location` at all, so its finiteness is checked here
+    /// rather than assumed.
     InvalidInterfaceGeometry {
         /// Index of the offending interface in the input `interfaces` slice.
         interface_index: usize,
+    },
+    /// A unified node coordinate (shell vertex, or tet vertex offset by
+    /// `n_shell`) is NaN or ±infinite. Left unchecked, it would poison the
+    /// interface-tying comparisons — the `dot3` projection sort that assigns
+    /// the tet top/mid/bot triple, and the `dist3_sq` nearest-node picks —
+    /// silently rather than loudly. Only checked when at least one interface
+    /// is present; the pure shell/tet merge has no comparison anywhere, so a
+    /// non-finite vertex cannot scramble it.
+    NonFiniteNodeCoordinate {
+        /// Unified index (into the merged node list) of the offending node.
+        node_index: usize,
+    },
+    /// `tet`'s connectivity is `Hex` or `Wedge` — `build_mixed_region_mesh` is
+    /// tet-only (task 4996 hardening; the tet-side `VolumeMesh` must carry
+    /// `VolumeConnectivity::Tet`).
+    UnsupportedConnectivity,
+    /// `tet`'s tet index buffer length is not a whole multiple of the
+    /// per-element node count, so it describes no whole number of elements.
+    ///
+    /// Sibling of [`MixedRegionError::UnsupportedConnectivity`]: both reject a
+    /// mis-shaped `VolumeMesh` at the same up-front gate. Without this check
+    /// the `chunks_exact(nodes_per_tet)` walk below would SILENTLY DROP the
+    /// trailing partial chunk and return `Ok` with one fewer tet element than
+    /// the caller supplied — the truncating `tet_indices.len() / nodes_per_tet`
+    /// capacity expression matching the loss, so nothing surfaces it. Mirrors
+    /// `reify_solver_elastic::volume_refine::RefineError::MalformedTetIndices`
+    /// and `reify_mesh_morph::elasticity::ElasticityFailure::MalformedTetIndices`.
+    MalformedTetIndices {
+        /// `tet_indices.len()`.
+        len: usize,
+        /// Per-element node count (4 for P1, 10 for P2).
+        stride: usize,
+    },
+    /// A tet index addresses a vertex that does not exist
+    /// (`>= tet.vertices.len() / 3`).
+    ///
+    /// The SEMANTIC sibling of the two STRUCTURAL checks above, completing the
+    /// structural-then-semantic pair that
+    /// `reify_solver_elastic::volume_refine::tet_shape` and
+    /// `reify_mesh_morph::elasticity::ElasticityFailure` both draw — without it
+    /// this gate would claim a parity it did not have.
+    ///
+    /// Unlike its siblings, this one guards a DEFERRED failure rather than an
+    /// immediate one: nothing in `build_mixed_region_mesh` dereferences the
+    /// connectivity it builds, so an out-of-range index is not a panic here —
+    /// it is copied verbatim into `UnifiedElement::connectivity` as
+    /// `n_shell + i`, yielding an apparently-valid `MixedRegionMesh` whose
+    /// element connectivity dangles past `nodes.len()`. The abort would then
+    /// land in whichever assembly path first indexes `nodes[conn[a]]`, far from
+    /// the malformed input that caused it.
+    InvalidTetIndex {
+        /// The offending index value, as found in `tet.tet_indices()`.
+        vertex_index: u32,
+        /// Number of tet vertices (`tet.vertices.len() / 3`) — the exclusive
+        /// upper bound every tet index must respect.
+        vertex_count: usize,
     },
 }
 
@@ -13064,8 +13146,31 @@ impl std::fmt::Display for MixedRegionError {
             MixedRegionError::InvalidInterfaceGeometry { interface_index } => write!(
                 f,
                 "interface {interface_index} has invalid tie geometry: `normal` must be \
-                 a unit vector and `thickness` must be positive \
-                 (MpcRow::shell_tet_tying preconditions)"
+                 a unit vector, `thickness` must be positive \
+                 (MpcRow::shell_tet_tying preconditions), and `location` must be finite"
+            ),
+            MixedRegionError::NonFiniteNodeCoordinate { node_index } => write!(
+                f,
+                "unified node {node_index} has a non-finite coordinate (NaN or ±infinity); \
+                 it would poison the interface-tying comparisons"
+            ),
+            MixedRegionError::UnsupportedConnectivity => write!(
+                f,
+                "mixed-region assembly is tet-only: a Hex/Wedge VolumeMesh has no \
+                 mixed-region path"
+            ),
+            MixedRegionError::MalformedTetIndices { len, stride } => write!(
+                f,
+                "malformed tet connectivity: {len} indices is not a whole multiple \
+                 of the {stride}-node per-element stride"
+            ),
+            MixedRegionError::InvalidTetIndex {
+                vertex_index,
+                vertex_count,
+            } => write!(
+                f,
+                "tet index {vertex_index} is out of range (the tet mesh has \
+                 {vertex_count} vertices)"
             ),
         }
     }
@@ -13094,12 +13199,80 @@ impl std::error::Error for MixedRegionError {}
 ///
 /// Returns [`MixedRegionError::InterfaceResolutionFailed`] if an interface
 /// cannot be resolved to tie nodes (empty shell or tet mesh on one side).
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+/// Returns [`MixedRegionError::InvalidInterfaceGeometry`] if an interface's
+/// `normal`/`thickness`/`location` violate `MpcRow::shell_tet_tying`'s
+/// preconditions. Returns [`MixedRegionError::NonFiniteNodeCoordinate`] if
+/// any unified node coordinate is non-finite and at least one interface is
+/// present (the pure merge with no interfaces tolerates non-finite nodes,
+/// since it performs no comparison on them). Returns
+/// [`MixedRegionError::UnsupportedConnectivity`] if `tet`'s connectivity is
+/// `Hex` or `Wedge` (this function is tet-only),
+/// [`MixedRegionError::MalformedTetIndices`] if its tet index buffer length is
+/// not a whole multiple of the per-element node count, or
+/// [`MixedRegionError::InvalidTetIndex`] if an index addresses a vertex that
+/// does not exist. Those last three form the up-front mesh-shape gate and run
+/// **first**, before any allocation; the two structural checks run before the
+/// semantic one, so a buffer that is both mis-sized and out-of-range reports
+/// `MalformedTetIndices`.
+///
+/// # Scope of the guarantee
+///
+/// The gate establishes that the emitted [`MixedRegionMesh`] is *structurally*
+/// addressable: every `UnifiedElement::connectivity` entry it produces on the
+/// tet side indexes a node that exists. It does NOT check vertex ORDERING,
+/// element quality, or degeneracy — a gated mesh is well-formed enough for a
+/// downstream consumer to index safely, not necessarily solvable.
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 pub(crate) fn build_mixed_region_mesh(
     shell: &MidSurfaceMesh,
     tet: &VolumeMesh,
     interfaces: &[ShellTetInterface],
 ) -> Result<MixedRegionMesh, MixedRegionError> {
+    // ── Connectivity gate: reject Hex/Wedge before ANY allocation ────────────
+    //
+    // Hoisted above the node merge so a mis-routed hex/wedge mesh costs no
+    // O(n_vertices) allocate-and-copy before it is rejected — matching the
+    // fail-fast ordering `refine_with_size_field` establishes on the
+    // reify-solver-elastic side.
+    let tet_indices = tet
+        .tet_indices()
+        .ok_or(MixedRegionError::UnsupportedConnectivity)?;
+    // Per-tet node count (P1 = 4, P2 = 10); tet local node `m` → unified node
+    // `n_shell + m`. The `tet_indices()?` guard above already established
+    // `tet.connectivity` is `Tet`, so `nodes_per_element()` returns 4/10 here —
+    // never 0, making the `%`/`/` below safe.
+    let nodes_per_tet = tet.nodes_per_element();
+    // Shape gate, sibling of the connectivity gate above: a buffer that is not
+    // a whole multiple of the stride describes no whole number of elements.
+    // Without this the `chunks_exact(nodes_per_tet)` element walk below would
+    // silently drop the trailing partial chunk (and the truncating capacity
+    // division would match the loss), so the function would return `Ok` with
+    // one fewer tet than the caller supplied. Mirrors
+    // `reify_solver_elastic::volume_refine::tet_shape`.
+    if !tet_indices.len().is_multiple_of(nodes_per_tet) {
+        return Err(MixedRegionError::MalformedTetIndices {
+            len: tet_indices.len(),
+            stride: nodes_per_tet,
+        });
+    }
+    // Semantic check, after the two structural ones: every index must address
+    // a tet vertex that exists. Unlike its siblings this guards a DEFERRED
+    // failure — nothing below dereferences the connectivity, so a dangling
+    // index is copied verbatim into `UnifiedElement::connectivity` as
+    // `n_shell + i` and the abort lands in whichever assembly path first
+    // indexes `nodes[conn[a]]`. Structural-before-semantic ordering mirrors
+    // `reify_solver_elastic::volume_refine::tet_shape` and
+    // `reify_mesh_morph::elasticity`.
+    let vertex_count = tet.vertices.len() / 3;
+    if let Some(&vertex_index) = tet_indices.iter().find(|&&i| i as usize >= vertex_count) {
+        return Err(MixedRegionError::InvalidTetIndex {
+            vertex_index,
+            vertex_count,
+        });
+    }
+    // Exact (not truncating) now that divisibility is proven.
+    let n_tet_elements = tet_indices.len() / nodes_per_tet;
+
     // ── Merge nodes: shell vertices first, then tet vertices (f32 → f64) ──────
     let n_shell = shell.vertices.len();
     let mut nodes: Vec<[f64; 3]> = Vec::with_capacity(n_shell + tet.vertices.len() / 3);
@@ -13109,31 +13282,47 @@ pub(crate) fn build_mixed_region_mesh(
     }
 
     // ── Elements: one shell element per triangle, one tet element per tet ─────
-    let tet_indices = tet
-        .tet_indices()
-        .expect("build_mixed_region_mesh: tet-only (hex/wedge VolumeMesh not supported)");
+    //
+    // Size by ELEMENT count, not index count: `tet_indices.len()` is 4× (P1) or
+    // 10× (P2) the number of tet elements actually pushed.
     let mut elements: Vec<UnifiedElement> =
-        Vec::with_capacity(shell.triangles.len() + tet_indices.len());
+        Vec::with_capacity(shell.triangles.len() + n_tet_elements);
     for tri in &shell.triangles {
         elements.push(UnifiedElement {
             kind: UnifiedElementKind::Shell,
             connectivity: vec![tri[0] as usize, tri[1] as usize, tri[2] as usize],
         });
     }
-    // Per-tet node count from the element order (P1 = 4, P2 = 10); tet local
-    // node `m` → unified node `n_shell + m`.
-    let nodes_per_tet = match tet
-        .element_order()
-        .expect("build_mixed_region_mesh: tet-only (hex/wedge VolumeMesh not supported)")
-    {
-        ElementOrderTag::P1 => 4,
-        ElementOrderTag::P2 => 10,
-    };
     for tet_conn in tet_indices.chunks_exact(nodes_per_tet) {
         elements.push(UnifiedElement {
             kind: UnifiedElementKind::Tet,
             connectivity: tet_conn.iter().map(|&i| n_shell + i as usize).collect(),
         });
+    }
+
+    // ── Node-coordinate finiteness guard (task 6378) ──────────────────────────
+    //
+    // A NaN/±Inf unified node coordinate would poison the interface-tying
+    // comparisons below (the `dot3` projection sort assigning the tet
+    // top/mid/bot triple, and the `dist3_sq` nearest-node picks) silently
+    // rather than loudly. Scoped to the ordering path via `!interfaces.is_
+    // empty()`: the merge above performs no comparison on `nodes`, so it
+    // tolerates non-finite coordinates when there is nothing to tie. Hoisted
+    // out of the interface loop below (checked once, O(n)) rather than
+    // re-scanned per interface.
+    if !interfaces.is_empty()
+        && let Some(node_index) = nodes.iter().position(|p| p.iter().any(|c| !c.is_finite()))
+    {
+        tracing::warn!(
+            target: "reify_eval::engine_build",
+            reason = "non_finite_node_coordinate",
+            node_index,
+            n_nodes = nodes.len(),
+            "build_mixed_region_mesh: non-finite unified node coordinate; \
+             abandoning the mixed-region build rather than emitting MPC rows \
+             from a scrambled top/mid/bot tie triple"
+        );
+        return Err(MixedRegionError::NonFiniteNodeCoordinate { node_index });
     }
 
     // ── Interface → MPC wiring (D=6 unified DOF layout) ───────────────────────
@@ -13156,13 +13345,39 @@ pub(crate) fn build_mixed_region_mesh(
         // exactly, so any interface passing here also passes `shell_tet_tying`;
         // binding to booleans first keeps a NaN normal/thickness rejected (NaN
         // comparisons are false) without tripping clippy::neg_cmp_op_on_partial_ord.
+        // `location` gets the same treatment even though `shell_tet_tying` never
+        // sees it (only the resolved DOF indices are passed downstream) — it
+        // feeds this function's own `nearest_node_index` / `three_nearest_node_
+        // indices` tie resolution below, and `ShellTetInterface`
+        // (reify-shell-extract/src/partition.rs:57-71) documents invariants for
+        // `normal` and `thickness` only, so `location`'s finiteness is checked
+        // here rather than assumed.
         let normal_mag = (iface.normal[0] * iface.normal[0]
             + iface.normal[1] * iface.normal[1]
             + iface.normal[2] * iface.normal[2])
             .sqrt();
         let thickness_ok = iface.thickness > 0.0;
         let normal_is_unit = (normal_mag - 1.0).abs() < 1e-9;
-        if !thickness_ok || !normal_is_unit {
+        let location_is_finite = iface.location.iter().all(|c| c.is_finite());
+        if !thickness_ok || !normal_is_unit || !location_is_finite {
+            let reason_detail = if !location_is_finite {
+                "non-finite `location`"
+            } else if !thickness_ok {
+                "non-positive `thickness`"
+            } else {
+                "non-unit `normal`"
+            };
+            tracing::warn!(
+                target: "reify_eval::engine_build",
+                reason = "invalid_interface_geometry",
+                interface_index,
+                thickness_ok,
+                normal_is_unit,
+                location_is_finite,
+                "build_mixed_region_mesh: interface {interface_index} has invalid tie \
+                 geometry ({reason_detail}); rejecting rather than emitting an MPC row \
+                 from invalid geometry"
+            );
             return Err(MixedRegionError::InvalidInterfaceGeometry { interface_index });
         }
 
@@ -13191,7 +13406,7 @@ pub(crate) fn build_mixed_region_mesh(
         nearest3.sort_by(|&m1, &m2| {
             let p1 = dot3(nodes[n_shell + m1], iface.normal);
             let p2 = dot3(nodes[n_shell + m2], iface.normal);
-            p2.partial_cmp(&p1).unwrap_or(std::cmp::Ordering::Equal)
+            p2.partial_cmp(&p1).unwrap_or(std::cmp::Ordering::Equal) // nan-safe:allow — all node coords finite here (non-finite → early `Err(NonFiniteNodeCoordinate)` from the node-coordinate finiteness guard above) and `iface.normal` unit-checked by the `normal_is_unit` binding above, so `dot3` is finite at any physically-realizable coordinate magnitude and `partial_cmp` never returns None
         });
         let tet_top = n_shell + nearest3[0];
         let tet_mid = n_shell + nearest3[1];
@@ -13219,13 +13434,13 @@ pub(crate) fn build_mixed_region_mesh(
 }
 
 /// Dot product of two 3-vectors.
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 /// Squared Euclidean distance between two 3-vectors.
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 fn dist3_sq(a: [f64; 3], b: [f64; 3]) -> f64 {
     let dx = a[0] - b[0];
     let dy = a[1] - b[1];
@@ -13235,7 +13450,7 @@ fn dist3_sq(a: [f64; 3], b: [f64; 3]) -> f64 {
 
 /// Index of the node in `nodes` nearest (Euclidean) to `target`; `None` if
 /// `nodes` is empty. Ties resolve to the lowest index (deterministic).
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 fn nearest_node_index(nodes: &[[f64; 3]], target: [f64; 3]) -> Option<usize> {
     let mut best: Option<(usize, f64)> = None;
     for (i, &p) in nodes.iter().enumerate() {
@@ -13249,16 +13464,55 @@ fn nearest_node_index(nodes: &[[f64; 3]], target: [f64; 3]) -> Option<usize> {
 
 /// The 3 indices of `nodes` nearest `target`, nearest first. The caller
 /// guarantees `nodes.len() >= 3`.
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+///
+/// Fail-closed, never panics (PRD `compute-fea-hardening.md` Resolved design
+/// decision 4): normalizes a non-finite squared distance (NaN, or an
+/// overflow-to-`+INFINITY` from a non-finite or overflowing node/target
+/// coordinate) to `+INFINITY` before comparing, so a non-finite candidate can
+/// never win the pick. The normalization must run BEFORE [`f64::total_cmp`],
+/// not be replaced by it: `total_cmp` alone is a total order, but it ranks a
+/// negative-signed NaN BELOW every finite value (and below `-infinity`) — in
+/// a nearest-node pick that would let the poisoned node win, i.e. fail OPEN
+/// in exactly the direction this guard exists to prevent. Emits one WARN
+/// (not one per non-finite node) when any candidate's squared distance was
+/// non-finite, as telemetry for the mis-selection this fallback can still
+/// cause.
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 fn three_nearest_node_indices(nodes: &[[f64; 3]], target: [f64; 3]) -> Vec<usize> {
-    let mut idx: Vec<usize> = (0..nodes.len()).collect();
-    idx.sort_by(|&a, &b| {
-        dist3_sq(nodes[a], target)
-            .partial_cmp(&dist3_sq(nodes[b], target))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    idx.truncate(3);
-    idx
+    // Latches on any non-finite dist3_sq (NaN, or +INFINITY from a non-finite
+    // or overflowing coordinate) for the WARN below, and normalizes NaN to
+    // +INFINITY so it can never win the total_cmp pick (see doc comment).
+    let saw_non_finite = std::cell::Cell::new(false);
+    let key = |i: usize| -> f64 {
+        let d = dist3_sq(nodes[i], target);
+        if !d.is_finite() {
+            saw_non_finite.set(true);
+        }
+        if d.is_nan() { f64::INFINITY } else { d }
+    };
+
+    // Precompute each node's key once, rather than inside the `sort_by`
+    // comparator (which would otherwise re-run `dist3_sq` ~O(n log n) times
+    // for a 3-element result).
+    let mut keyed: Vec<(usize, f64)> = (0..nodes.len()).map(|i| (i, key(i))).collect();
+    // `sort_by` (stable), not `sort_unstable_by`: preserves the lowest-index
+    // tie-break on equal keys that callers rely on.
+    keyed.sort_by(|(_, a), (_, b)| a.total_cmp(b));
+    keyed.truncate(3);
+
+    if saw_non_finite.get() {
+        tracing::warn!(
+            target: "reify_eval::engine_build",
+            reason = "non_finite_squared_distance",
+            n_nodes = nodes.len(),
+            "three_nearest_node_indices: non-finite squared distance \
+             (non-finite or overflowing node/target coordinate); falling \
+             back to total_cmp for a deterministic 3-nearest pick (a \
+             shell↔tet tie node may consequently be mis-selected)"
+        );
+    }
+
+    keyed.into_iter().map(|(i, _)| i).collect()
 }
 
 /// Returns `true` if `expr`'s compiled tree contains a `CrossSubGeometryRef`
@@ -13351,7 +13605,15 @@ fn compute_realization_upstream_values_hash(
 /// Split out so the R3d (`#4900`) in-walk mint for the `edit_param` reeval
 /// walk can call it using graph-resident `RealizationNodeData.operations`
 /// (which is the same type but is not wrapped in a `RealizationDecl`).
-fn compute_realization_upstream_values_hash_from_ops(
+///
+/// `pub(crate)` for the same reason: `engine_edit.rs`'s
+/// `compute_changed_realizations` (selective-realization-eviction task β)
+/// recomputes the input-cone hash over graph-resident ops and compares it
+/// against α's stored `RealizationNodeData.input_cone_hash`. PRD D1 forbids a
+/// second fold — a divergent one would silently mis-classify against the very
+/// hash that GHR-β identity, the value-cell early cutoff, and the tag-28
+/// in-memory geometry cache key all agree on.
+pub(crate) fn compute_realization_upstream_values_hash_from_ops(
     operations: &[reify_compiler::CompiledGeometryOp],
     ctx: &reify_expr::EvalContext<'_>,
 ) -> [u8; 32] {
@@ -13475,11 +13737,15 @@ mod dispatch_volume_mesh_tests;
 // below exercise the helper's contract but cannot verify the one-shot guarantee
 // at the call-site level.
 //
-// Not yet wired into the engine's realization pipeline; blocked on task
-// #4744 (volume-mesh-realization-and-morph-wiring §8 task β — morph arm in
-// dispatch_volume_mesh). See compute-node-contract.md §6 for the full task
-// history and rejected-alternative rationale.
-#[allow(dead_code)] // production wiring pending task #4744 (volume-mesh-realization-and-morph-wiring §8 task β)
+// Not yet wired into the engine's realization pipeline; blocked on #4746
+// (hex/wedge Phase A activation), whose WHAT-TO-DO names this helper
+// explicitly — it emits this diagnostic at the `dispatch_volume_mesh`
+// production edge. The cite here was previously task 4744, which is now done
+// and landed WITHOUT wiring this helper. See compute-node-contract.md §6 for
+// the rejected-alternative rationale (why morph is a §3.2 dispatch producer,
+// not a §3.4 ComputeNode) — not for wiring ownership, which that doc still
+// records under the superseded cite and which this comment states instead.
+#[allow(dead_code)] // production wiring pending #4746 (hex/wedge Phase A activation: emits this diagnostic at the dispatch_volume_mesh production edge)
 pub(crate) fn p2_substitution_diagnostic(
     swept_kind: Option<&SweptKind>,
     force_tet: bool,

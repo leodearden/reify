@@ -32,7 +32,7 @@
 use reify_ir::{Mesh, VolumeMesh};
 use reify_kernel_gmsh::MeshingOptions;
 
-use crate::volume_refine::{RefineError, element_count, refine_with_size_field};
+use crate::volume_refine::{RefineError, refine_with_size_field_validated, tet_shape};
 
 // ---------------------------------------------------------------------------
 // Termination-reason data model (mirrors solver_elastic.ri exactly).
@@ -506,17 +506,32 @@ pub fn run_adaptive_refinement<P: AdaptiveProblem>(
 ///
 /// # Errors
 ///
-/// Two malformed-input guards run **before** any gmsh work (and before
+/// Five malformed-input guards run **before** any gmsh work (and before
 /// [`dorfler_size_hints`] indexes the sizes), so a bad call fails fast and
 /// build-agnostically:
 ///
+/// * [`RefineError::UnsupportedConnectivity`] when `volume_mesh`'s
+///   connectivity is `Hex` or `Wedge` — this refinement pipeline is tet-only.
+/// * [`RefineError::MalformedTetIndices`] when the tet index buffer length is
+///   not a whole multiple of the per-element node count, so it describes no
+///   whole number of elements.
+/// * [`RefineError::InvalidTetIndex`] when an index addresses a vertex that
+///   does not exist (`>= volume_mesh.vertices.len() / 3`).
+///
+///   Those three are the shared `tet_shape` chokepoint and run **first**,
+///   ahead of both checks below: it is called before either the length or the
+///   marked-index validation.
 /// * [`RefineError::SizeHintsLengthMismatch`] when
 ///   `current_sizes.len() != element_count`.
 /// * [`RefineError::MarkedIndexOutOfRange`] when any `marked` index is
 ///   `>= element_count`.
 ///
 /// Otherwise propagates whatever [`refine_with_size_field`] returns
-/// (non-positive/non-finite hint validation and Gmsh errors).
+/// (non-positive/non-finite hint validation and Gmsh errors) — this function
+/// reaches that body through the shared `refine_with_size_field_validated`
+/// core, passing on the `TetShape` it gated above so the gate is not re-run.
+///
+/// [`refine_with_size_field`]: crate::volume_refine::refine_with_size_field
 pub fn refine_marked_elements(
     surface: &Mesh,
     volume_mesh: &VolumeMesh,
@@ -524,8 +539,19 @@ pub fn refine_marked_elements(
     current_sizes: &[f64],
     options: &MeshingOptions,
 ) -> Result<VolumeMesh, RefineError> {
-    // Element count from the mesh topology (shared with refine_with_size_field).
-    let n_elements = element_count(volume_mesh);
+    // The mesh-shape gate: rejects a Hex/Wedge, non-multiple-of-stride or
+    // out-of-range `volume_mesh` here, before any size-hint/marked-index
+    // validation or gmsh call runs.
+    //
+    // This seam reads only `n_elements`; the `shape` as a whole is forwarded
+    // to `refine_with_size_field_validated` below, whose stride and order it
+    // carries. Forwarding it — rather than tail-calling the public
+    // `refine_with_size_field`, which would re-run this gate — is what keeps
+    // `tet_shape` to ONE O(n_indices) validation scan per refine, instead of
+    // walking the whole tet index buffer twice for an identical result on
+    // every adaptive iteration.
+    let shape = tet_shape(volume_mesh)?;
+    let n_elements = shape.n_elements;
 
     // Length guard BEFORE any gmsh work: one current size per element.
     if current_sizes.len() != n_elements {
@@ -550,7 +576,7 @@ pub fn refine_marked_elements(
 
     // Canonical h/2 for marked elements; unmarked keep their current size.
     let size_hints = dorfler_size_hints(marked, current_sizes);
-    refine_with_size_field(surface, volume_mesh, &size_hints, options)
+    refine_with_size_field_validated(surface, volume_mesh, shape, &size_hints, options)
 }
 
 #[cfg(test)]

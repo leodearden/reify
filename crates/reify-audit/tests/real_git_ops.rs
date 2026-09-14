@@ -39,13 +39,13 @@ mod common;
 /// helper's assertion message says so — always diagnose against the clean
 /// parent run first.
 ///
-/// The floor of 10 is today's selection (9 real tests + this one). It exists
+/// The floor of 11 is today's selection (10 real tests + this one). It exists
 /// because libtest exits 0 on a zero-match filter; with an empty filter that
 /// cannot happen today, but the floor also catches a test being deleted or
 /// moved out of this binary, which would silently shrink the proof.
 #[test]
 fn real_git_ops_helpers_survive_ambient_hook_git_env() {
-    common::git_env::replay_self_under_hook_git_env(&[""], 10);
+    common::git_env::replay_self_under_hook_git_env(&[""], 11);
 }
 
 /// Run `git <args…>` against the repository at `dir` and assert it succeeded.
@@ -316,6 +316,114 @@ fn last_commit_for_path_real_repo() {
         none.is_none(),
         "last_commit_for_path(\"never.rs\") must return None; got {:?}",
         none,
+    );
+}
+
+/// Pin that `RealGitOps::rename_target_for_path` resolves a real rename — and
+/// that it composes with `last_commit_for_path`, which is how the ζ inverse
+/// lane reaches it (the lane already holds the commit that last touched the
+/// cited path, and asks "did THAT commit rename it?").
+///
+/// This must be a real-git-repo test: a wrong argument form — omitting `-M`
+/// (so git reports the rename as an unrelated `D`/`A` pair), omitting
+/// `--format=` (so the commit header lines pollute the parse), or reading the
+/// wrong TAB field — would shell out perfectly happily, and `MockGitOps`,
+/// which returns whatever the test puts in, could never catch it.
+///
+/// Setup:
+///   - commit 1: add `old.rs` and `doomed.rs`
+///   - commit 2: `git mv old.rs sub/new.rs` (the rename commit)
+///   - commit 3: `git rm doomed.rs` (a genuine delete, for the fail-safe pin)
+///
+/// Assertions:
+///   - `last_commit_for_path("old.rs")` → `Some(c)` with `c.sha == rename sha`
+///     (the two seam calls compose: the lane's existing call hands this one its
+///     sha)
+///   - `rename_target_for_path("old.rs", rename_sha)` → `Some("sub/new.rs")`
+///   - fail-safe, all `None`:
+///     (a) a genuine delete commit queried for its deleted path
+///     (b) a bogus sha (`git show` exits non-zero with `fatal: bad object`)
+///     (c) a path present in the rename commit that is not its rename SOURCE
+///     (querying the rename TARGET must not match)
+#[test]
+fn rename_target_for_path_real_repo() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    git_init(root);
+
+    // Commit 1: add old.rs (to be renamed) and doomed.rs (to be deleted).
+    write_file(root, "old.rs", "fn old() {}\n");
+    write_file(root, "doomed.rs", "fn doomed() {}\n");
+    git_commit(root, "add old.rs and doomed.rs");
+
+    // Commit 2: rename old.rs → sub/new.rs. `git mv` requires the destination
+    // directory to exist.
+    std::fs::create_dir_all(root.join("sub")).expect("create sub/");
+    git_run(root, &["mv", "old.rs", "sub/new.rs"]);
+    git_commit(root, "rename old.rs to sub/new.rs");
+    let rename_sha = rev_parse_head(root);
+
+    // Commit 3: genuine delete of an unrelated file.
+    git_run(root, &["rm", "doomed.rs"]);
+    git_commit(root, "delete doomed.rs");
+    let delete_sha = rev_parse_head(root);
+
+    let git = RealGitOps::new(root);
+
+    // The two seam calls compose: the commit the inverse lane already resolved
+    // for the cited path IS the rename commit.
+    let last = git.last_commit_for_path("old.rs");
+    assert!(
+        last.is_some(),
+        "last_commit_for_path(\"old.rs\") must return Some after the rename; got None"
+    );
+    assert_eq!(
+        last.as_ref().unwrap().sha,
+        rename_sha,
+        "last_commit_for_path(\"old.rs\") must resolve to the rename commit; got {:?} expected {}",
+        last,
+        rename_sha,
+    );
+
+    // Core assertion: the rename target is recovered from that commit.
+    let target = git.rename_target_for_path("old.rs", &rename_sha);
+    assert_eq!(
+        target,
+        Some("sub/new.rs".to_string()),
+        "rename_target_for_path(\"old.rs\", <rename sha>) must return the new path; got {:?}",
+        target,
+    );
+
+    // Fail-safe (a): a genuine delete commit has no `R` line → None, so the
+    // inverse lane keeps emitting task-cites-deleted-path.
+    let deleted = git.rename_target_for_path("doomed.rs", &delete_sha);
+    assert!(
+        deleted.is_none(),
+        "a genuine delete must not resolve a rename target; got {:?}",
+        deleted,
+    );
+
+    // Fail-safe (b): a bogus sha makes git exit non-zero (`fatal: bad object`),
+    // which run_or_warn turns into None — a git failure can never manufacture a
+    // renamed classification.
+    let bogus = git.rename_target_for_path(
+        "old.rs",
+        "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+    );
+    assert!(
+        bogus.is_none(),
+        "a bogus sha must return None; got {:?}",
+        bogus,
+    );
+
+    // Fail-safe (c): the rename TARGET appears in the rename commit's diff, but
+    // it is not the rename SOURCE — matching on it would invert the relation.
+    let target_as_source = git.rename_target_for_path("sub/new.rs", &rename_sha);
+    assert!(
+        target_as_source.is_none(),
+        "querying the rename TARGET as if it were the source must return None; got {:?}",
+        target_as_source,
     );
 }
 

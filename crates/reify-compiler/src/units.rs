@@ -36,6 +36,7 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "shell_open",
     "thicken",
     "offset_solid",
+    "offset_surface",
     "offset_curve",
     "draft",
     "chamfer",
@@ -606,6 +607,9 @@ pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_cor
 /// fn frame_at(o: Point, x: Direction, z: Direction)-> Frame(3)
 /// fn plane_xy(δ: Length)                           -> Plane   (also plane_xz/plane_yz)
 /// fn axis_x(o: Point3)                             -> Axis    (also axis_y/axis_z)
+/// fn bbox(min: Point3<Length>, max: Point3<Length>)-> BoundingBox
+/// fn bbox_size(bb: BoundingBox)                    -> Vector3<Length>
+/// fn bbox_center(bb: BoundingBox)                  -> Point3<Length>
 /// ```
 ///
 /// Each name resolves to its datum codomain:
@@ -615,6 +619,22 @@ pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_cor
 /// - `axis_x` / `axis_y` / `axis_z`        → `Type::Axis`
 /// - `frame_at`                            → `Type::Frame(3)`
 /// - `offset`                              → `Type::Plane` ONLY at arity 2 (see below)
+/// - `bbox`                                → `Type::BoundingBox`
+/// - `bbox_size`                           → `Vector3<Length>`
+/// - `bbox_center`                         → `Point3<Length>`
+///
+/// **BoundingBox is Length-valued (task 6081).** The three `bbox*` names are
+/// the BoundingBox constructor and its two accessors. Their quantity slot is
+/// fixed at LENGTH by the task-6081 ruling — a bounding box is spatial by
+/// construction — so unlike `point3`/`vec3` (whose quantity is
+/// argument-DEPENDENT and therefore lives in `math_signatures`) they fit this
+/// arity-blind table. The monomorphism is load-bearing in both directions:
+/// `reify_stdlib::geometry` rejects non-`Length` corners at `bbox` and emits
+/// `Length` components unconditionally from both accessors, so these rows
+/// agree with the runtime rather than over-claiming a quantity-polymorphic
+/// value. Before this task all three fell through to `expr.rs`'s SILENT
+/// first-arg fallback, which typed `bbox(p, p)` as its argument's
+/// `Point3<Length>` and both accessors as their `BoundingBox` argument.
 ///
 /// **Neighbour audit (task 5344).** The six axis-aligned constructors
 /// `plane_xy`/`plane_xz`/`plane_yz` and `axis_x`/`axis_y`/`axis_z` — which this
@@ -689,6 +709,15 @@ pub(crate) fn datum_constructor_result_type(
         // only; arity-3 `offset(Plane, Plane, Length)` is γ's relation, claimed
         // by the earlier relation arm.
         "offset" if args.len() == 2 => Some(reify_core::Type::Plane),
+        // BoundingBox constructor + accessors (task 6081). Same vocabulary,
+        // same eval home (`reify_stdlib::geometry::eval_geometry`); arity-blind
+        // like every sibling except `offset`. The quantity slot is fixed at
+        // LENGTH by the task-6081 ruling — a bounding box is spatial by
+        // construction, and the eval side emits Length components
+        // unconditionally, so these monomorphic rows agree with the runtime.
+        "bbox" => Some(reify_core::Type::bounding_box()),
+        "bbox_size" => Some(reify_core::Type::vec3(reify_core::Type::length())),
+        "bbox_center" => Some(reify_core::Type::point3(reify_core::Type::length())),
         _ => None,
     }
 }
@@ -882,6 +911,36 @@ pub(crate) fn is_geometry_query(name: &str) -> bool {
     GEOMETRY_QUERY_NAMES.contains(&name)
 }
 
+/// The **whole-handle** geometry-query names: the subset of
+/// [`GEOMETRY_QUERY_NAMES`] whose eval-time dispatch resolves arg[0] against a
+/// realized kernel handle in `named_steps`
+/// (`reify_eval::geometry_ops::resolve_geometry_handle_arg` +
+/// `dispatch_geometry_query_call`, gated by the eval `is_geometry_query_call`
+/// family — `volume`/`area`/`centroid`/`bounding_box` with exactly one arg).
+///
+/// This is the exact name-set targeted by the compile-time inline-arg hoist
+/// (task 5345): a 1-arg query `Q(<inline geometry call>)` sitting in a value
+/// cell is desugared into a synthetic geometry let so the query routes through
+/// the identical handle-dispatch path as the hand-written let-bound form.
+///
+/// **Deliberately excluded** (out of scope for the 1-arg inline-arg hoist):
+/// - the multi-arg queries `distance` / `contains` / `intersects` /
+///   `geo_equiv` / `angle` / `max_deviation` (two geometry/vector operands), and
+/// - the non-whole-handle 1-arg queries `length` / `perimeter` / `curvature` /
+///   `normal` / `feature` (topology-selector / at-point / projection queries
+///   that eval does NOT resolve via `resolve_geometry_handle_arg`).
+///
+/// **Parity contract**: this slice MUST equal the eval `is_geometry_query_call`
+/// name-set and remain a subset of [`GEOMETRY_QUERY_NAMES`]. Both directions
+/// are pinned by
+/// `tests/harness_geometry_solver/geometry_query_inline_arg_tests.rs`.
+pub const WHOLE_HANDLE_GEOMETRY_QUERY_NAMES: &[&str] =
+    &["volume", "area", "centroid", "bounding_box"];
+
+pub(crate) fn is_whole_handle_geometry_query(name: &str) -> bool {
+    WHOLE_HANDLE_GEOMETRY_QUERY_NAMES.contains(&name)
+}
+
 /// The complete set of stdlib **dynamics-query** helper names recognised by
 /// the compiler (RBD-β, task 3829). Sixth name family, structurally parallel
 /// to the five geometry families above ([`GEOMETRY_FUNCTION_NAMES`],
@@ -970,8 +1029,10 @@ pub(crate) fn is_dynamics_constructor(name: &str) -> bool {
 ///
 /// **Wiring**: `is_fea_envelope_query` is checked in `expr.rs`'s
 /// `NoUserFunctions` ladder BEFORE the first-arg fallback, alongside the
-/// `is_dynamics_query` / `is_dynamics_constructor` / `is_analysis_typed_fn`
-/// arms. Eval dispatch is unchanged (name-dispatched FunctionCall stays).
+/// `is_dynamics_query` / `is_dynamics_constructor` arms and the
+/// builtin-signature-registry arm that replaced `is_analysis_typed_fn` /
+/// `is_parse_typed_fn` (task #6001 α).
+/// Eval dispatch is unchanged (name-dispatched FunctionCall stays).
 ///
 /// **Disjointness contract**: all three names MUST be absent from every
 /// sibling classification family; pinned by
@@ -1717,22 +1778,12 @@ mod tests {
     // all eight sibling families (regression-lock: catches any future colliding
     // name added to EITHER the joint slice or a sibling slice).
     use crate::joint_signatures::JOINT_TYPED_FN_NAMES;
-    // FEA stress-analysis reduction family (FEA-5, task 2884) — single source
-    // of truth in `crate::analysis_signatures`, imported here to pin
-    // disjointness from all sibling families.
-    use crate::analysis_signatures::ANALYSIS_FN_NAMES;
     // Geometric-relation vocabulary (geometric-relations γ, task 4383) — single
     // source of truth in `crate::relation_signatures`, imported here to pin the
     // PURE relation family disjoint from every sibling family. The shared-verb
     // names `angle`/`distance` are deliberately NOT in this slice (they stay in
     // GEOMETRY_QUERY_NAMES and are arity-gated into relations in expr.rs).
     use crate::relation_signatures::RELATION_FN_NAMES;
-    // Fallible string→quantity parse family (task #4535) — single source of
-    // truth in `crate::parse_signatures`, imported here to pin disjointness
-    // from every sibling family (amendment: reviewer suggestion #3 — this is
-    // the newest family, so its disjointness test below checks against ALL
-    // existing sibling slices, not just those that preceded it).
-    use crate::parse_signatures::PARSE_FN_NAMES;
     // Orientation/transform/frame constructor family (task 5344) — single
     // source of truth in `crate::orientation_signatures`, imported here to pin
     // disjointness from every sibling family (regression-lock: catches any
@@ -1795,6 +1846,18 @@ mod tests {
     #[test]
     fn compile_geometry_offset_solid_recognized() {
         assert!(is_geometry_function("offset_solid"));
+    }
+
+    /// `offset_surface` (θ, task 4192) offsets a face along its normal by a
+    /// scalar distance (Skin mode of `BRepOffsetAPI_MakeOffsetShape`, distinct
+    /// from `offset_solid`'s `PerformBySimple` solid mode), producing a fresh
+    /// Surface. It must be recognised as a geometry-handle producer so the
+    /// compiler dispatches it through `compile_geometry_call` / `compile_modify_op`.
+    /// RED until step-6 adds "offset_surface" to GEOMETRY_FUNCTION_NAMES.
+    #[test]
+    fn compile_geometry_offset_surface_recognized() {
+        assert!(is_geometry_function("offset_surface"));
+        assert!(GEOMETRY_FUNCTION_NAMES.contains(&"offset_surface"));
     }
 
     #[test]
@@ -2403,11 +2466,6 @@ mod tests {
                  MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
             );
             assert!(
-                !ANALYSIS_FN_NAMES.contains(name),
-                "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
-                 ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
-            );
-            assert!(
                 !FEA_ENVELOPE_NAMES.contains(name),
                 "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
                  FEA_ENVELOPE_NAMES (FEA envelope family, task #4629 W2)"
@@ -2478,11 +2536,6 @@ mod tests {
                 !DYNAMICS_CONSTRUCTOR_NAMES.contains(name),
                 "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
                  DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
-            );
-            assert!(
-                !ANALYSIS_FN_NAMES.contains(name),
-                "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
-                 ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
             );
             assert!(
                 !FEA_ENVELOPE_NAMES.contains(name),
@@ -2587,11 +2640,6 @@ mod tests {
                 !DYNAMICS_CONSTRUCTOR_NAMES.contains(name),
                 "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
                  DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
-            );
-            assert!(
-                !ANALYSIS_FN_NAMES.contains(name),
-                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
-                 ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
             );
             assert!(
                 !FEA_ENVELOPE_NAMES.contains(name),
@@ -2717,11 +2765,6 @@ mod tests {
                  DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
             );
             assert!(
-                !ANALYSIS_FN_NAMES.contains(name),
-                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
-                 ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
-            );
-            assert!(
                 !FEA_ENVELOPE_NAMES.contains(name),
                 "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
                  FEA_ENVELOPE_NAMES (FEA envelope family, task #4629 W2)"
@@ -2814,11 +2857,6 @@ mod tests {
                 !DYNAMICS_CONSTRUCTOR_NAMES.contains(name),
                 "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
                  DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
-            );
-            assert!(
-                !ANALYSIS_FN_NAMES.contains(name),
-                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
-                 ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
             );
             assert!(
                 !FEA_ENVELOPE_NAMES.contains(name),
@@ -3811,92 +3849,8 @@ mod tests {
                  DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
             );
             assert!(
-                !ANALYSIS_FN_NAMES.contains(name),
-                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
-                 ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
-            );
-            assert!(
                 !FEA_ENVELOPE_NAMES.contains(name),
                 "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
-                 FEA_ENVELOPE_NAMES (FEA envelope family, task #4629 W2)"
-            );
-        }
-    }
-
-    /// Disjointness regression-lock for the FEA stress-analysis reduction
-    /// family (FEA-5, task 2884). Every `ANALYSIS_FN_NAMES` entry must be
-    /// absent from all sibling family slices so a name satisfies at most one
-    /// classification predicate in `expr.rs::resolve_function_overload`'s
-    /// `NoUserFunctions` ladder.
-    ///
-    /// The 5 analysis names are domain-specific and trivially disjoint — this
-    /// is a regression lock, not a behavioural change. Mirrors
-    /// `joint_typed_fn_names_are_disjoint_from_other_families`.
-    #[test]
-    fn analysis_fn_names_are_disjoint_from_other_families() {
-        for name in ANALYSIS_FN_NAMES {
-            // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
-            // (task 5344) — pins the OTHER direction so a collision is caught
-            // whichever slice it is added to.
-            assert!(
-                !ORIENTATION_TYPED_FN_NAMES.contains(name),
-                "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
-                 ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
-                 constructor family, task 5344)"
-            );
-            assert!(
-                !GEOMETRY_FUNCTION_NAMES.contains(name),
-                "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
-                 GEOMETRY_FUNCTION_NAMES (geometry-constructor family)"
-            );
-            assert!(
-                !GEOMETRY_QUERY_HELPER_NAMES.contains(name),
-                "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
-                 GEOMETRY_QUERY_HELPER_NAMES (conformance-query family)"
-            );
-            assert!(
-                !GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
-                "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
-                 GEOMETRY_KINEMATIC_QUERY_NAMES (kinematic-query family)"
-            );
-            assert!(
-                !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
-                "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
-                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES (topology-selector family)"
-            );
-            assert!(
-                !GEOMETRY_QUERY_NAMES.contains(name),
-                "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
-                 GEOMETRY_QUERY_NAMES (geometry-query family)"
-            );
-            assert!(
-                !DYNAMICS_QUERY_NAMES.contains(name),
-                "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
-                 DYNAMICS_QUERY_NAMES (dynamics-query family, RBD-β task 3829)"
-            );
-            assert!(
-                !DYNAMICS_CONSTRUCTOR_NAMES.contains(name),
-                "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
-                 DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
-            );
-            assert!(
-                !MATH_CONSTRUCTION_NAMES.contains(name),
-                "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
-                 MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179)"
-            );
-            assert!(
-                !MATH_OPERATION_NAMES.contains(name),
-                "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
-                 MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
-            );
-            assert!(
-                !JOINT_TYPED_FN_NAMES.contains(name),
-                "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
-                 JOINT_TYPED_FN_NAMES (joint-constructor family, task 4311)"
-            );
-            assert!(
-                !FEA_ENVELOPE_NAMES.contains(name),
-                "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
                  FEA_ENVELOPE_NAMES (FEA envelope family, task #4629 W2)"
             );
         }
@@ -4405,10 +4359,6 @@ mod tests {
                 "FEA_ENVELOPE_NAMES entry {name:?} must NOT also be in AFFINE_MAP_CONSTRUCTOR_NAMES"
             );
             assert!(
-                !ANALYSIS_FN_NAMES.contains(name),
-                "FEA_ENVELOPE_NAMES entry {name:?} must NOT also be in ANALYSIS_FN_NAMES"
-            );
-            assert!(
                 !FIELD_OP_NAMES.contains(name),
                 "FEA_ENVELOPE_NAMES entry {name:?} must NOT also be in FIELD_OP_NAMES"
             );
@@ -4535,11 +4485,6 @@ mod tests {
                  DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
             );
             assert!(
-                !ANALYSIS_FN_NAMES.contains(name),
-                "FIELD_OP_NAMES entry {name:?} must NOT also be in \
-                 ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
-            );
-            assert!(
                 !FEA_ENVELOPE_NAMES.contains(name),
                 "FIELD_OP_NAMES entry {name:?} must NOT also be in \
                  FEA_ENVELOPE_NAMES (FEA envelope family, task #4629 W2)"
@@ -4634,11 +4579,6 @@ mod tests {
                 !DYNAMICS_CONSTRUCTOR_NAMES.contains(name),
                 "RELATION_FN_NAMES entry {name:?} must NOT also be in \
                  DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
-            );
-            assert!(
-                !ANALYSIS_FN_NAMES.contains(name),
-                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
-                 ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
             );
             assert!(
                 !FEA_ENVELOPE_NAMES.contains(name),
@@ -5178,129 +5118,136 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Task #4535 amendment (reviewer suggestion #3) — exhaustive parse-family
-    // disjointness
+    // Task #6001 α — registry-derived family disjointness
     // -----------------------------------------------------------------------
 
-    /// Disjointness regression-lock for the fallible string→quantity parse
-    /// family (task #4535): every entry of `PARSE_FN_NAMES` must be absent
-    /// from every sibling classification family so `parse_length` /
-    /// `parse_length_r` route exclusively through the `is_parse_typed_fn` arm
-    /// in `expr.rs`'s `NoUserFunctions` ladder. Mirrors
-    /// `field_op_names_are_disjoint_from_other_families` /
-    /// `relation_fn_names_are_disjoint_from_other_families`, but — since this
-    /// is the newest family — checks against EVERY sibling slice that exists
-    /// today, not just the ones that preceded it (the original spot-check in
-    /// `parse_signatures.rs` only tried two hand-picked names).
+    /// Disjointness regression-lock for the **builtin-signature registry**
+    /// (`reify-builtins`, task #6001 α): no registry row name may also appear
+    /// in any legacy sibling family slice, so a registry-held name satisfies at
+    /// most one classification predicate in `expr.rs::resolve_function_overload`'s
+    /// `NoUserFunctions` ladder.
+    ///
+    /// This is the registry-derived successor to the two per-family
+    /// disjointness tests PRD §7.3(4) retires with the α swap —
+    /// `analysis_fn_names_are_disjoint_from_other_families` (FEA-5, task 2884)
+    /// and `parse_fn_names_are_disjoint_from_other_families` (task #4535). It
+    /// is not merely their union: it derives its name list from
+    /// `reify_builtins::rows()` rather than restating name literals, so every
+    /// later τ migration is auto-covered the moment its rows land, with no edit
+    /// here.
+    ///
+    /// **Why the property outlives the tests.** The single registry arm in the
+    /// ladder replaced two arms that sat at different positions (the analysis
+    /// arm above `fea_envelope_result_type`/`is_field_op`, the parse arm below
+    /// them). Folding both into the earlier position is unobservable *because*
+    /// of exactly this disjointness — no intervening arm can claim a registry
+    /// name — so retiring the covered tests without preserving the property
+    /// would delete the swap's own correctness argument.
     ///
     /// GREEN on arrival — a regression lock that fails if a colliding name is
-    /// later added to either `PARSE_FN_NAMES` or a sibling slice.
+    /// later added to either the registry or a sibling slice.
     #[test]
-    fn parse_fn_names_are_disjoint_from_other_families() {
-        for name in PARSE_FN_NAMES {
+    fn registry_row_names_are_disjoint_from_legacy_families() {
+        for name in reify_builtins::rows().iter().map(|r| r.name) {
+            let name = &name;
             // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
             // (task 5344) — pins the OTHER direction so a collision is caught
             // whichever slice it is added to.
             assert!(
                 !ORIENTATION_TYPED_FN_NAMES.contains(name),
-                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                "registry row {name:?} must NOT also be in \
                  ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
                  constructor family, task 5344)"
             );
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
-                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                "registry row {name:?} must NOT also be in \
                  GEOMETRY_FUNCTION_NAMES (geometry-constructor family)"
             );
             assert!(
                 !GEOMETRY_QUERY_HELPER_NAMES.contains(name),
-                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                "registry row {name:?} must NOT also be in \
                  GEOMETRY_QUERY_HELPER_NAMES (conformance-query family)"
             );
             assert!(
                 !GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
-                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                "registry row {name:?} must NOT also be in \
                  GEOMETRY_KINEMATIC_QUERY_NAMES (kinematic-query family)"
             );
             assert!(
                 !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
-                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                "registry row {name:?} must NOT also be in \
                  GEOMETRY_TOPOLOGY_SELECTOR_NAMES (topology-selector family)"
             );
             assert!(
                 !GEOMETRY_QUERY_NAMES.contains(name),
-                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                "registry row {name:?} must NOT also be in \
                  GEOMETRY_QUERY_NAMES (geometry-query family)"
             );
             assert!(
                 !DYNAMICS_QUERY_NAMES.contains(name),
-                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                "registry row {name:?} must NOT also be in \
                  DYNAMICS_QUERY_NAMES (dynamics-query family, RBD-β task 3829)"
             );
             assert!(
                 !DYNAMICS_CONSTRUCTOR_NAMES.contains(name),
-                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                "registry row {name:?} must NOT also be in \
                  DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
             );
             assert!(
                 !AFFINE_MAP_CONSTRUCTOR_NAMES.contains(name),
-                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                "registry row {name:?} must NOT also be in \
                  AFFINE_MAP_CONSTRUCTOR_NAMES (affine constructor family)"
             );
             assert!(
                 !TOLERANCING_MARKER_NAMES.contains(name),
-                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                "registry row {name:?} must NOT also be in \
                  TOLERANCING_MARKER_NAMES (tolerancing-marker family)"
             );
             assert!(
                 !FEA_ENVELOPE_NAMES.contains(name),
-                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                "registry row {name:?} must NOT also be in \
                  FEA_ENVELOPE_NAMES (FEA envelope family, task #4629 W2)"
             );
             assert!(
                 !FIELD_OP_NAMES.contains(name),
-                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                "registry row {name:?} must NOT also be in \
                  FIELD_OP_NAMES (field-op family, task 4219)"
             );
             assert!(
                 !MATH_CONSTRUCTION_NAMES.contains(name),
-                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                "registry row {name:?} must NOT also be in \
                  MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179)"
             );
             assert!(
                 !MATH_OPERATION_NAMES.contains(name),
-                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                "registry row {name:?} must NOT also be in \
                  MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
             );
             assert!(
                 !MATH_TRANSCENDENTAL_NAMES.contains(name),
-                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                "registry row {name:?} must NOT also be in \
                  MATH_TRANSCENDENTAL_NAMES (trig/transcendental family, task 4352)"
             );
             assert!(
                 !JOINT_TYPED_FN_NAMES.contains(name),
-                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                "registry row {name:?} must NOT also be in \
                  JOINT_TYPED_FN_NAMES (joint-constructor family, task 4311)"
             );
             assert!(
-                !ANALYSIS_FN_NAMES.contains(name),
-                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
-                 ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
-            );
-            assert!(
                 !RELATION_FN_NAMES.contains(name),
-                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                "registry row {name:?} must NOT also be in \
                  RELATION_FN_NAMES (geometric-relation family, task 4383)"
             );
             assert!(
                 !AFFINE_ALGEBRA_NAMES.contains(name),
-                "PARSE_FN_NAMES entry {name:?} must NOT also be an affine-algebra \
+                "registry row {name:?} must NOT also be an affine-algebra \
                  name (`affine_compose`/`affine_inverse`/`determinant` — earlier \
                  arm in the NoUserFunctions ladder would shadow it)"
             );
             assert!(
                 !LIST_HELPER_NAMES.contains(name),
-                "PARSE_FN_NAMES entry {name:?} must NOT also be a list-helper \
+                "registry row {name:?} must NOT also be a list-helper \
                  (`single`/`flat_map` — earlier arm in the NoUserFunctions \
                  ladder would shadow it)"
             );
@@ -5311,8 +5258,12 @@ mod tests {
     /// constructor family (task 5344): every `ORIENTATION_TYPED_FN_NAMES` entry
     /// must be absent from every sibling classification family so the
     /// `is_orientation_typed_fn` arm in `expr.rs`'s `NoUserFunctions` ladder is
-    /// the sole claimant. Mirrors `parse_fn_names_are_disjoint_from_other_families`,
-    /// and — since this is the newest family — checks against EVERY sibling slice
+    /// the sole claimant. Mirrors
+    /// `registry_row_names_are_disjoint_from_legacy_families`. (Task #6001 α
+    /// renamed the former `parse_fn_names_are_disjoint_from_other_families` to
+    /// that and folded the retired analysis lock into it.)
+    ///
+    /// Since this is the newest family, it checks against EVERY sibling slice
     /// that exists today, not just the ones that preceded it. The reciprocal
     /// direction is pinned by an `!ORIENTATION_TYPED_FN_NAMES.contains(name)`
     /// assert added to each of those 13 sibling tests, so a collision is caught
@@ -5342,9 +5293,17 @@ mod tests {
             assert!(!MATH_OPERATION_NAMES.contains(name), "{name:?} in MATH_OPERATION_NAMES");
             assert!(!MATH_TRANSCENDENTAL_NAMES.contains(name), "{name:?} in MATH_TRANSCENDENTAL_NAMES");
             assert!(!JOINT_TYPED_FN_NAMES.contains(name), "{name:?} in JOINT_TYPED_FN_NAMES");
-            assert!(!ANALYSIS_FN_NAMES.contains(name), "{name:?} in ANALYSIS_FN_NAMES");
             assert!(!RELATION_FN_NAMES.contains(name), "{name:?} in RELATION_FN_NAMES");
-            assert!(!PARSE_FN_NAMES.contains(name), "{name:?} in PARSE_FN_NAMES");
+            // The analysis and parse families no longer own compiler-side name
+            // slices: their signatures are rows in `reify-builtins` (task #6001
+            // α, PRD §7.3). The reciprocal leg is therefore over the registry
+            // row names, and covers BOTH former slices at once.
+            assert!(
+                reify_builtins::name_group(name).is_empty(),
+                "{name:?} is also a builtin-signature-registry row name \
+                 (reify-builtins — the former ANALYSIS_FN_NAMES / \
+                 PARSE_FN_NAMES families)"
+            );
             assert!(!FEA_ENVELOPE_NAMES.contains(name), "{name:?} in FEA_ENVELOPE_NAMES");
             assert!(!FIELD_OP_NAMES.contains(name), "{name:?} in FIELD_OP_NAMES");
         }
@@ -5402,6 +5361,13 @@ mod tests {
             "axis_x",
             "axis_y",
             "axis_z",
+            // BoundingBox constructor/accessors (task 6081). This fixture is
+            // the family's ONLY membership record — the resolver has no
+            // `*_NAMES` slice const — so listing them here is what proves the
+            // three new names collide with no sibling family.
+            "bbox",
+            "bbox_size",
+            "bbox_center",
         ];
         for name in DATUM_NAMES {
             // Premise guard: each fixture entry really is claimed by the datum
@@ -5424,9 +5390,17 @@ mod tests {
             assert!(!MATH_OPERATION_NAMES.contains(name), "{name:?} in MATH_OPERATION_NAMES");
             assert!(!MATH_TRANSCENDENTAL_NAMES.contains(name), "{name:?} in MATH_TRANSCENDENTAL_NAMES");
             assert!(!JOINT_TYPED_FN_NAMES.contains(name), "{name:?} in JOINT_TYPED_FN_NAMES");
-            assert!(!ANALYSIS_FN_NAMES.contains(name), "{name:?} in ANALYSIS_FN_NAMES");
             assert!(!RELATION_FN_NAMES.contains(name), "{name:?} in RELATION_FN_NAMES");
-            assert!(!PARSE_FN_NAMES.contains(name), "{name:?} in PARSE_FN_NAMES");
+            // The analysis and parse families no longer own compiler-side name
+            // slices: their signatures are rows in `reify-builtins` (task #6001
+            // α, PRD §7.3). The reciprocal leg is therefore over the registry
+            // row names, and covers BOTH former slices at once.
+            assert!(
+                reify_builtins::name_group(name).is_empty(),
+                "{name:?} is also a builtin-signature-registry row name \
+                 (reify-builtins — the former ANALYSIS_FN_NAMES / \
+                 PARSE_FN_NAMES families)"
+            );
             assert!(!FEA_ENVELOPE_NAMES.contains(name), "{name:?} in FEA_ENVELOPE_NAMES");
             assert!(!FIELD_OP_NAMES.contains(name), "{name:?} in FIELD_OP_NAMES");
             assert!(
@@ -5540,6 +5514,83 @@ mod tests {
         // `offset` arity gate, both sides — the construction-datum form is
         // arity 2; arity 3 is γ's `offset(Plane, Plane, Length) -> Relation`,
         // claimed by the earlier relation arm and NOT by this resolver.
+        assert_eq!(
+            datum_constructor_result_type("offset", &[length_arg(), length_arg()]),
+            Some(reify_core::Type::Plane),
+            "arity-2 offset must still resolve to Type::Plane"
+        );
+        assert_eq!(
+            datum_constructor_result_type("offset", &[length_arg(), length_arg(), length_arg()]),
+            None,
+            "arity-3 offset must still fall through to γ's relation arm"
+        );
+    }
+
+    // ── BoundingBox constructor/accessors (task 6081) ────────────────────────
+    //
+    // `bbox` / `bbox_size` / `bbox_center` appeared NOWHERE in reify-compiler
+    // before this task: they fell through the whole `expr.rs` `NoUserFunctions`
+    // ladder to the SILENT first-arg fallback, so `bbox(point3(0m,..), ..)`
+    // typed as `Point3<Length>` — its argument's type, not `BoundingBox` — and
+    // both accessors mirrored their `BoundingBox` argument identically. They
+    // are claimed here because they are the same shape as their neighbours
+    // above: pure kernel-free value-algebra constructors living in the very
+    // same `reify_stdlib::geometry::eval_geometry` match statement.
+    //
+    // The quantity slot is fixed at LENGTH by the task-6081 ruling: a bounding
+    // box is spatial by construction. That monomorphism is what makes these
+    // rows sound — the eval side emits Length components unconditionally.
+
+    #[test]
+    fn datum_constructor_result_type_bbox_is_bounding_box() {
+        assert_eq!(
+            datum_constructor_result_type("bbox", &[]),
+            Some(reify_core::Type::bounding_box())
+        );
+    }
+
+    #[test]
+    fn datum_constructor_result_type_bbox_size_is_vec3_length() {
+        assert_eq!(
+            datum_constructor_result_type("bbox_size", &[]),
+            Some(reify_core::Type::vec3(reify_core::Type::length()))
+        );
+    }
+
+    #[test]
+    fn datum_constructor_result_type_bbox_center_is_point3_length() {
+        assert_eq!(
+            datum_constructor_result_type("bbox_center", &[]),
+            Some(reify_core::Type::point3(reify_core::Type::length()))
+        );
+    }
+
+    /// Regression lock, mirroring
+    /// `datum_constructor_vocabulary_survives_the_neighbour_extension`:
+    /// extending the resolver with the three BoundingBox names must not
+    /// perturb the vocabulary it already claimed, and in particular must leave
+    /// `offset`'s arity-2 gate exactly as-is.
+    #[test]
+    fn datum_constructor_vocabulary_survives_the_bbox_extension() {
+        for name in ["midplane", "plane_through", "plane_xy"] {
+            assert_eq!(
+                datum_constructor_result_type(name, &[]),
+                Some(reify_core::Type::Plane),
+                "{name} must still resolve to Type::Plane"
+            );
+        }
+        for name in ["axis_through", "axis_x"] {
+            assert_eq!(
+                datum_constructor_result_type(name, &[]),
+                Some(reify_core::Type::Axis),
+                "{name} must still resolve to Type::Axis"
+            );
+        }
+        assert_eq!(
+            datum_constructor_result_type("frame_at", &[]),
+            Some(reify_core::Type::Frame(3)),
+            "frame_at must still resolve to Type::Frame(3)"
+        );
         assert_eq!(
             datum_constructor_result_type("offset", &[length_arg(), length_arg()]),
             Some(reify_core::Type::Plane),

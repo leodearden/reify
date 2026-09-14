@@ -1,0 +1,379 @@
+prd: docs/prds/v0_6/goal-oriented-error-estimation.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 7456
+  title: 'goal-oriented α: runtime (non-literal) payload construction for data-carrying enums — CompiledExprKind::VariantCtor
+    + reify-expr eval arm + enums.md/spec docs-truth'
+  capabilities:
+  - name: literal-only-payload-rule-is-real-and-task-less
+    binding: 'G6 rejection premise, OBSERVED TO FIRE at 191d6c85ba (2026-09-11): `reify check tests/prd-gate/fixtures/dce_runtime_payload.ri`
+      exits 1 with "non-constant payload value for field ''width'' of variant ''Rect'' is not yet supported".
+      The arm is variant_construct.rs''s CompiledExprKind::Literal-only payload match; its deferral comment
+      cites no task id; crates/reify-mcp/src/tools/chunks/enums.md "Payload limits" documents the rule.
+      No live task owns lifting it (task search 2026-09-11). This leaf implements the deferred runtime
+      constructor node.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: non-constant payload value
+      paths:
+      - crates/reify-compiler/src/variant_construct.rs
+      expect: absent
+  - name: structure-ctor-node-is-the-template
+    binding: capability->producer (substrate, wired-on-main). CompiledExprKind::StructureInstanceCtor
+      { ordered_args, defaults, lets, ... } in crates/reify-ir/src/expr.rs with its reify-expr eval arm
+      delegating to eval_structure_instance_ctor; Value::Enum.payload is an unconstrained Vec<(String,
+      Value)> that already carries nested enums on the production path (convergence_status_to_value).
+      A VariantCtor node mirrors a live shape rather than inventing one.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: VariantCtor
+      paths:
+      - crates/reify-ir/src/expr.rs
+      expect: present
+  - name: payload-field-types-already-resolve
+    binding: 'G3 substrate, probed 2026-09-11. Declaring an enum whose variant payload fields are typed
+      Point3<Length>, Length and Vector3<Dimensionless>, with `param q : Option<QoIDescriptor> = none`,
+      passes `reify check`; only construction with a non-literal value is blocked. So this leaf changes
+      the construction path alone, not type resolution.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a positive property of today's compiler; asserting it as a delivered_check would be vacuous.
+        The fixture-level eval is the alpha signal.
+  - name: docs-truth-chunk-and-spec-move-in-the-same-diff
+    binding: Docs-truth gate. enums.md "Payload limits" states "Construction payload values must be compile-time
+      literals" verbatim; docs/reify-language-spec.md sections 3.8/4.5 describe named-field payloads.
+      Both are language surface this leaf changes and must move in the same diff, never a prose-ordered
+      sibling.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: must be compile-time literals
+      paths:
+      - crates/reify-mcp/src/tools/chunks/enums.md
+      expect: absent
+- label: β
+  task_id: 7452
+  title: 'goal-oriented β: QuantityOfInterest trait + ball-mean LocalDisplacement/LocalNormalStress functionals
+    + dual-load assembler + compute_dual_weighted_indicator + fallible AdaptiveProblem seam (BT1-BT4)'
+  capabilities:
+  - name: ball-mean-functional-is-bounded-so-the-identity-holds
+    binding: 'CORRECTION to the draft (adversarial review), G6 branch 2. A point value d.u(x) in 3-D is
+      not bounded on H1 (Dirac load) and crates/reify-solver-elastic/tests/analytical_validation.rs''s
+      module doc records the single-node-force divergence (P1 error 2.3% -> 10.3% from 12^3 to 24^3),
+      reading deflection as a face mean for that reason. The shipped functional is a BALL MEAN over E
+      = {K : centroid in ball(at, radius)} with fallback {K containing at} - an L2 functional - so J(u)-J(u_h)
+      = a(e_z, e_u) holds and effectivity has a limit. E is never empty and g is never zero for a non-zero
+      direction; radius <= 0 is a typed QoiError.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a mathematical property of the functional, not a greppable artifact. Behavioural cover is
+        BT1 (reciprocity) and BT3 (patch exactness with a non-trivial dual).
+  - name: recovery-substrate-is-all-present
+    binding: capability->producer (substrate, wired-on-main), verified 2026-09-11. element_stress_p1,
+      recover_nodal_stress_p1, compute_zz_indicator's per-element eta_e^2 = V_e * dsigma^T S dsigma via
+      energy_density_voigt over compliance_matrix (positive definite on symmetric tensors), barycentric_p1,
+      locate_element_p1 (lowest index wins; scale-invariant barycentric slack), apply_point_load - all
+      pub in crates/reify-solver-elastic and all on the production path. compute_dual_weighted_indicator
+      does not exist today (count 0).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: compute_dual_weighted_indicator
+      paths:
+      - crates/reify-solver-elastic/src/error_estimator.rs
+      expect: present
+  - name: dual-is-a-second-cg-solve-on-the-borrowed-k
+    binding: capability->producer (substrate). solve_cg(k, f, opts, mode) borrows K; apply_dirichlet_row_elimination
+      zeroes row and column, sets a unit diagonal and pins f[i] = value, so the constrained K is symmetric,
+      and every DirichletBc.value on the cantilever path is 0.0. A second solve on (&k, &g), with g zeroed
+      at the constrained DOFs, needs no solver-crate API change; there is no factorization to reuse (Jacobi-PCG),
+      so the dual costs one primal-equivalent solve.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: an existing API property; a check on it would be vacuous. BT1 is the behavioural cover.
+  - name: estimator-seam-is-infallible-and-must-become-fallible
+    binding: 'CORRECTION to the draft (adversarial review), G3. AdaptiveProblem::solve_and_estimate(&mut
+      self) -> AdaptiveEstimate cannot fail and run_adaptive_refinement propagates only refine''s error,
+      so a QoI that becomes unresolvable on a later iteration would have no exit. PRD 5.5 authorizes exactly
+      two adaptive.rs changes: the Result return (propagated by the loop) and the global_indicator ->
+      relative_error rename with the qoi channel. The test stubs'' Infallible error type makes the migration
+      mechanical.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn solve_and_estimate\(&mut self\) -> Result<
+      paths:
+      - crates/reify-solver-elastic/src/adaptive.rs
+      expect: present
+  - name: self-dual-reduction-fixture-is-constructible
+    binding: G6 branch 2 / contract C3. The cantilever's tip load is distributed over every tip-face node
+      (force_per_tip over tip_nodes), so g proportional to f is impossible on that pencil; C3 is pinned
+      on a purpose-built solver-crate fixture whose primal load IS the QoI's own dual_load (f = g, F =
+      1) under SolverMode::Deterministic cold start, where z_h is bit-identical to u_h and eta_K = eta_e^2
+      bit-for-bit. Any other configuration agrees only to 10*cg_tolerance / (relative magnitude of dsigma),
+      which the test must state rather than "to rounding".
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the fixture lands inside this leaf; a grep would pin the test's shape rather than the capability.
+  - name: dorfler-weight-homogeneity-changes-by-design
+    binding: G6, disclosed. Z-Z marks on eta_e (a square root of energy); DWR marks on |eta_K| (an energy).
+      mark_dorfler's prefix rule is not invariant under squaring, so at theta = 0.5 the DWR marked set
+      is smaller and more concentrated than Z-Z's on the same field. Deliberate and documented; no test
+      may compare marked-set sizes across modes.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a documented convention with no asserting check by design.
+- label: γ
+  task_id: 7453
+  title: 'goal-oriented γ: QoIDescriptor variants + QoIEstimate (with NoQoi) + ElasticResult.qoi/qoi_relative_error
+    + extract_adaptive_params QoI read + dual solve in solve_cantilever_fea + six DiagnosticCode variants
+    + QoI in the FEA cache key'
+  capabilities:
+  - name: qoi-descriptor-is-an-empty-stub-with-four-pins
+    binding: G6 premise, measured 2026-09-11. `enum QoIDescriptor {}` has zero variants. Four tests in
+      crates/reify-compiler/tests/harness_geometry_solver/solver_elastic_tests.rs pin today's shape and
+      move in this diff - qoi_descriptor_enum_is_an_empty_stub, the Option<Enum("QoIDescriptor")> member-type
+      pin, the OptionNone default pin, and the ElasticResult exactly-13-param-cell assertion (13 -> 15).
+      Named so it is not discovered at merge. LocalDisplacement has zero hits today.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: LocalDisplacement
+      paths:
+      - crates/reify-compiler/stdlib/solver_elastic.ri
+      expect: present
+  - name: eval-never-reads-the-param
+    binding: G6 premise, measured 2026-09-11. Zero hits for target_quantity_of_interest / QoIDescriptor
+      under crates/reify-eval/ and crates/reify-solver-elastic/; extract_adaptive_params reads exactly
+      adaptive, target_accuracy, max_refinement_iterations, max_dofs. This leaf adds the read, so the
+      pattern is a genuine landing signal.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: target_quantity_of_interest
+      paths:
+      - crates/reify-eval/src/compute_targets/elastic_static.rs
+      expect: present
+  - name: dims-overload-reaches-the-adaptive-lane-from-the-cli
+    binding: 'CORRECTION to the draft (adversarial review), G6 branch 3, re-measured by the decompose
+      gate on the COMMITTED fixture tests/prd-gate/fixtures/dwr_cantilever_energy.ri with a cold REIFY_CACHE_DIR
+      (release 2026-09-01 and debug 2026-09-08 binaries agree): the dims overload with adaptive: true
+      runs the uniform lane end-to-end from the CLI - stderr ''adaptive refinement finished at 90375 DOFs
+      on a 240x4x24 grid'', convergence_status: NotConverged, global_relative_energy_error: Some(0.10577012532863311),
+      iterations: 719. That is the contract-C1 baseline. The body overload does NOT run from the CLI (no
+      gmsh kernel registered; the realization falls back; the trampoline never solves), so the fixture
+      pair uses the dims overload and the localized lane is asserted from the Rust e2e harness (BT6) with
+      coordinate BCs.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the signal is a comparison across two files through reify eval against a fresh cache dir;
+        the fixture headers record the cold-cache baseline numbers.
+  - name: variant-name-uniqueness-is-unenforced
+    binding: G3 substrate plus an obligation. Bare-variant construction resolves by silent first match
+      across all in-scope enum_defs (variant_construct.rs, pinned by local_result_enum_coexists_with_prelude_result_and_prelude_wins_first_match);
+      Cubic and Triangular already duplicate across enums; the stdlib collision gate indexes enum names,
+      not variant names. LocalDisplacement, LocalNormalStress, DisplacementEstimate, NormalStressEstimate
+      have zero hits today; this leaf lands a test asserting each is declared exactly once.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: NormalStressEstimate
+      paths:
+      - crates/reify-compiler/stdlib/solver_elastic.ri
+      expect: present
+  - name: six-diagnostic-variants-are-additive-substrate
+    binding: 'capability->producer (substrate). DiagnosticCode in crates/reify-core/src/diagnostics.rs
+      is a plain additive enum with rustdoc mnemonics; none of QoiRequiresAdaptive, QoiUnresolvable, QoiDualNotConverged,
+      QoiDegenerate, ElasticAdaptiveMaterialUnsupported, ElasticAdaptiveKnobInert exists (count 0, 2026-09-11).
+      The two existing adaptive-branch warnings in elastic_static.rs are code: None today and gain the
+      last two.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: QoiRequiresAdaptive
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+      expect: present
+  - name: three-producer-arms-write-the-new-fields
+    binding: INV-PD-2 / contract C7. The engine builds ElasticResult as an explicit Value::StructureInstance,
+      not via the .ri ctor; the a-posteriori triple is written by aposteriori_adaptive_fields, aposteriori_nonadaptive_default_fields,
+      and the non-isotropic fallback arm. All three must write qoi / qoi_relative_error (some or none)
+      for "no third state" to hold. The payload dimension rides the inline Value::Scalar { si_value, dimension
+      } form max_von_mises already uses.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: qoi_relative_error
+      paths:
+      - crates/reify-eval/src/compute_targets/elastic_static.rs
+      expect: present
+  - name: rejection-is-a-deliverable-not-a-property-of-main
+    binding: 'G6 branch 4, honestly scoped. tests/prd-gate/fixtures/dwr_qoi_without_adaptive.ri asserts
+      E_QoiRequiresAdaptive through reify eval; today reify check rejects it earlier ("unknown variant
+      ''LocalDisplacement'': no enum in scope declares it"), so the asserted rejection is unobservable
+      until alpha and gamma land. Bound as this leaf''s deliverable, not logged as motivation. Vehicle
+      is reify eval, which gates exit on Severity::Error; check converges when #5403/#5748 land.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a rejection that does not exist yet cannot be grepped without pinning the fix's shape; the
+        fixture header records today's observed behaviour and the eval-time assertion is the leaf's signal.
+  - name: committed-budget-does-not-guarantee-convergence
+    binding: 'G6 premise surfaced by the decompose-time verification gate (2026-09-11). NotConverged {
+      reason: BudgetReason } carries no final_indicator field - only Converged { final_indicator } does
+      - and the committed energy twin ends NotConverged at a relative energy error of 0.10577 against
+      its 0.02 target after 2 iterations. BT5''s ''final_indicator equals qoi_relative_error'' clause
+      is therefore CONDITIONAL on the Converged arm; qoi_relative_error is asserted populated in both
+      arms, and the PRD does not change the fixture budget.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a conditional assertion on a runtime outcome; the fixture header and PRD BT5 state the two
+        arms.
+  - name: qoi-enters-the-fea-cache-key
+    binding: 'G6 branch 3, surfaced by the decompose gate. reify eval is served by a persistent on-disk
+      FEA cache (crates/reify-eval/src/compute_persist.rs; default ~/.cache/reify/fea; REIFY_CACHE_DIR
+      overrides): a second run with the same cache dir returns byte-identical stdout and ZERO bytes of
+      stderr (diagnostics are not replayed on a hit). target_accuracy 0.02 -> 0.01 demonstrably produced
+      a second cache entry, but target_quantity_of_interest is unconstructible today so its membership
+      in the key is UNVERIFIED. Leaf gamma asserts, against one fresh cache dir, that the QoI twin is
+      a cache MISS after the energy twin and that E_QoiRequiresAdaptive re-fires on a second run (an Error
+      outcome is never served from cache). The missing diagnostic replay itself is pre-existing and unowned
+      (PRD section 7).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a runtime cache behaviour; the twin-run assertion in leaf gamma is the cover (PRD 11 Q7).
+        No grep pattern names it without pinning compute_persist.rs internals.
+  - name: readback-form-is-a-plain-enum-match-not-an-option-match
+    binding: 'CORRECTION to the draft, G3, surfaced by the decompose gate. `match o { some(e) => ...,
+      none => ... }` does NOT parse: tree-sitter-reify''s match_pattern admits variant-binding patterns,
+      bare identifiers and _, never a call form, and Option is the built-in Value::Option rather than
+      an enum. A NoQoi-carrying enum matched with a full-binding arm, a bare-variant arm and the unit
+      arm, plus unwrap_or / is_some over Option<Real>, passes reify check and reify eval at 191d6c85ba
+      - committed as tests/prd-gate/fixtures/dwr_qoi_readback.ri (a bare-variant VALUE is type-qualified,
+      patterns are not). ElasticResult.qoi is therefore `QoIEstimate` with a NoQoi unit variant, not Option<QoIEstimate>;
+      qoi_relative_error stays Option<Real> like global_relative_energy_error.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: NoQoi
+      paths:
+      - crates/reify-compiler/stdlib/solver_elastic.ri
+      expect: present
+- label: δ
+  task_id: 7454
+  title: 'goal-oriented δ: DWR effectivity study (cantilever + L-shaped) with relational-only gate assertions;
+    docs/notes/dwr-effectivity-2026.md'
+  capabilities:
+  - name: no-effectivity-band-is-asserted
+    binding: G6 branch 1. Recovery-form DWR effectivity on P1 tets has no achievability basis anywhere
+      in the repo, so the gate asserts only relational properties - sign agreement of the signed estimate
+      with J_ref - J(u_h), a decreasing qoi_error_bound across >= 2 iterations, and |J_ref - J| on the
+      final mesh not larger than on the seed mesh plus the model-offset floor analytical_validation.rs
+      records. Any band is filed as a follow-up from the measured numbers (PRD 11 Q5), the esc-3453-5/6
+      lesson.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: dwr-effectivity
+      paths:
+      - docs/notes
+      expect: present
+  - name: reference-fixtures-exist-and-are-heavy-filtered
+    binding: substrate, verified 2026-09-11. crates/reify-solver-elastic/tests/analytical_validation.rs
+      (Timoshenko cantilever; module doc records the P1 lock floor and the 3-D-vs-beam model offset) and
+      aposteriori_validation.rs (L-shaped domain, gmsh-gated with a printed skip) exist; analytical_validation
+      is in REIFY_HEAVY_NEXTEST_FILTER, aposteriori_validation is not. The leaf's gate test is placed
+      with that in mind and skips loudly without gmsh.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a placement decision inside the leaf; the merge gate reds on a mis-registered slow binary.
+  - name: no-monotonicity-under-remeshing
+    binding: 'G6 branch 1, inverted - asserts what may NOT be claimed. Refinement is a full gmsh remesh
+      from surface (non-nested spaces), and aposteriori_validation.rs already carries a #[ignore = "flaky:
+      ... after a full gmsh remesh-from-surface ..."] on this fixture family. Strict decrease of |J_ref
+      - J| is therefore not asserted; the gate uses the floor-tolerant form.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a negative obligation on the shape of the test, not a landing artifact.
+- label: ε
+  task_id: 7457
+  title: 'goal-oriented ε: flip ElasticOptions.target_quantity_of_interest to PDROP C1 honored; retire
+    every cite of this task (ownership transferred from #7177)'
+  capabilities:
+  - name: the-c1-declaration-surface-is-owned-elsewhere-so-check-do-not-assume
+    binding: 'G4 seam. The C1 honored/ignored/not_applicable mechanism is #7079''s, the ElasticOptions
+      declaration is #7080''s, the PDROP detector is #7085''s - none landed at 191d6c85ba (zero hits for
+      ParamNotHonored/PDROP in the Rust tree). This leaf flips whatever declaration exists and otherwise
+      records the honored state so the eventual declaration is written correctly; it never invents the
+      mechanism and adds no fourth C1 disposition.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the declaration syntax belongs to #7079 and is not fixed at this PRD''s authoring time,
+        so no pattern can be bound without guessing another task''s output format.'
+  - name: the-cite-retirement-is-not-vacuously-satisfiable
+    binding: 'PTODO/PDROP contract. #7177 appears in tracked source only in two rows of docs/prds/v0_6/trampoline-param-drop-closure.md,
+      which this landing repoints to epsilon''s own id; #7080 writes the source cite when it lands. An
+      unconditional expect:absent would pass vacuously today. Real cover is the PTODO fingerprint ratchet
+      (tests/infra/test_reify_audit_ptodo.sh), which reds on a cite to a terminal task.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: expect:absent would pass vacuously against today's main and prove nothing.
+- label: ζ
+  task_id: 7458
+  title: 'goal-oriented ζ: goal_oriented_refinement best-practices exemplar + INDEX row + reify-design
+    index line; FEA doc-chunk waiver and follow-up'
+  capabilities:
+  - name: fea-has-zero-doc-chunk-presence-so-the-fea-chunk-leaf-is-waived
+    binding: 'Docs-truth waiver evidence, re-measured 2026-09-11. None of the 17 files under crates/reify-mcp/src/tools/chunks/
+      mentions solve_elastic_static, ElasticOptions, adaptive or target_accuracy. The enums chunk IS updated
+      (in alpha). The exemplar, index line and intent-level discoverability obligations are delivered;
+      this leaf files the FEA chunk-coverage follow-up task (shared obligation with #7264 - whichever
+      lands first files it, the other cites it).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: goal_oriented_refinement
+      paths:
+      - examples/best_practices/INDEX.md
+      expect: present
+  - name: examples-corpus-is-compile-and-constraint-gated
+    binding: capability->producer (substrate, wired-on-main). examples_smoke.rs walks examples/ and best_practices_index_matches_corpus_directory
+      pins file<->row; best_practices_constraint_gate.rs requires every constraint Satisfied or pinned
+      Indeterminate. examples/*.ri has no carve-out in verify.sh's decide_scope and runs the full gate
+      - expected, not a defect.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: an existing harness property; a check on it would be vacuous. The INDEX.md check above is
+        the landing signal.
+- label: η
+  task_id: 7455
+  title: 'goal-oriented η: PRD close - terminal SHIPPED stamp, landed leaf ids, AS-AUTHORED freeze header'
+  capabilities:
+  - name: terminal-vocabulary-is-closed-and-this-leaf-is-the-only-stamper
+    binding: Reify PRD overlay, "PRD terminal status" - the terminal vocabulary is exactly {SHIPPED, SUPERSEDED,
+      WITHDRAWN}, matched case-insensitively on the first token after the Status label. Without a decompose-filed
+      close leaf nothing ever stamps one. This leaf depends by real add_dependency edges on every sibling;
+      a cancelled sibling counts as satisfied.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Status:\*\* \*\*SHIPPED
+      paths:
+      - docs/prds/v0_6/goal-oriented-error-estimation.md
+      expect: present
