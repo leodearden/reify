@@ -31676,9 +31676,7 @@
             &HashMap::new(),
             &mut diagnostics,
         );
-        let err = result
-            .err()
-            .expect("an Undef translation component must drop the op");
+        let err = result.expect_err("an Undef translation component must drop the op");
         assert!(
             err.contains("unresolved (Undef)") && err.contains("translation.x"),
             "Undef must use the DISTINCT unresolved wording naming the coordinate, not \
@@ -31917,9 +31915,7 @@
             &HashMap::new(),
             &mut diagnostics,
         );
-        let err = result
-            .err()
-            .expect("an Undef element translation component must drop the op");
+        let err = result.expect_err("an Undef element translation component must drop the op");
         assert!(
             err.contains("unresolved (Undef)") && err.contains("translation.x"),
             "Undef must use the DISTINCT unresolved wording naming the coordinate; \
