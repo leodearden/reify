@@ -36,7 +36,8 @@ use reify_ir::{GeometryKernel, VoxelResolution};
 use reify_kernel_openvdb::{OpenVdbKernel, test_fixtures::axis_aligned_box};
 #[cfg(has_openvdb)]
 use reify_shell_extract::{
-    MedialOptions, MinFeatureSize, compute_medial_mask, min_feature_size_measure,
+    MedialOptions, MinFeatureSize, MinWallThickness, compute_medial_mask, min_feature_size_measure,
+    min_wall_thickness,
 };
 
 /// Z offsets of the plate's bottom face, in units of the h = 0.25 voxel:
@@ -68,8 +69,8 @@ fn plate_sdf(z0: f32) -> reify_ir::value::SampledField {
         .expect("densify_grid_to_sampled must succeed for an ingested plate")
 }
 
-/// The mask must be non-empty, and `min_feature_size_measure` must land within
-/// one voxel of the true thickness, at EVERY sub-voxel placement of the plate.
+/// The mask must be non-empty, and both measurements must land on the plate's
+/// true thickness, at EVERY sub-voxel placement of the plate.
 ///
 /// Non-emptiness is asserted structurally — the voxel COUNT is a property of
 /// the voxelizer version (measured 1225 at four of the five offsets and 2730 at
@@ -77,11 +78,13 @@ fn plate_sdf(z0: f32) -> reify_ir::value::SampledField {
 ///
 /// Tolerance: the OpenVDB grid stores float32 (relative eps 1.19e-7), so `1e-6`
 /// is roughly 8 f32 ulp at this magnitude — headroom over the measured worst
-/// case rather than a fixture-fitted threshold. The lower bound is `t − h`, the
-/// documented ≤ 1-voxel bias-low of the `2|φ|` reduction.
+/// case rather than a fixture-fitted threshold. Anything near or below 1e-7
+/// would be asserting inside float32 noise. `min_feature`'s lower bound is
+/// additionally `t − h`, the documented ≤ 1-voxel bias-low of the `2|φ|`
+/// reduction; the min-wall walk has no such bias and is held to `t` directly.
 #[cfg(has_openvdb)]
 #[test]
-fn medial_mask_and_min_feature_are_alignment_invariant_on_the_real_voxelizer() {
+fn medial_measurements_are_alignment_invariant_on_the_real_voxelizer() {
     for z0 in PLATE_Z_OFFSETS {
         let sdf = plate_sdf(z0);
 
@@ -108,6 +111,16 @@ fn medial_mask_and_min_feature_are_alignment_invariant_on_the_real_voxelizer() {
             v >= PLATE_THICKNESS - h - 1e-6 && v <= PLATE_THICKNESS + 1e-6,
             "min-feature {v} outside [t − h, t] = [{}, {PLATE_THICKNESS}] at z0 = {z0}",
             PLATE_THICKNESS - h
+        );
+
+        let measured = min_wall_thickness(&sdf, h)
+            .expect("a densified openvdb grid is a structurally valid Regular3D field");
+        let MinWallThickness::Measured(v) = measured else {
+            panic!("expected Measured min-wall at z0 = {z0}; got {measured:?}");
+        };
+        assert!(
+            (v - PLATE_THICKNESS).abs() <= 1e-6,
+            "min-wall {v} differs from the plate's thickness {PLATE_THICKNESS} at z0 = {z0}"
         );
     }
 }

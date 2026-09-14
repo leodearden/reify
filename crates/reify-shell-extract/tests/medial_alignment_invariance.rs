@@ -35,7 +35,8 @@
 
 use reify_ir::value::{InterpolationKind, SampledField, SampledGridKind};
 use reify_shell_extract::{
-    MedialOptions, MinFeatureSize, compute_medial_mask, min_feature_size_measure,
+    MedialOptions, MinFeatureSize, MinWallThickness, compute_medial_mask, min_feature_size_measure,
+    min_wall_thickness,
 };
 use std::sync::atomic::AtomicBool;
 
@@ -192,6 +193,45 @@ fn min_feature_size_measure_is_alignment_invariant() {
     }
 }
 
+/// `min_wall_thickness` re-walks the mask voxels rather than reusing the
+/// distances `compute_medial_mask` already computed, so it decides the walk
+/// direction a SECOND time — and a non-empty mask is worth nothing if that
+/// second decision still skips every voxel in it.
+///
+/// Unlike the `2|φ|` reduction, the walk measures the wall exactly: `φ` is
+/// piecewise-linear along the walk axis and the trilinear interpolant
+/// reproduces it exactly outside the one cell holding the kink, which never
+/// contains a zero crossing for these thicknesses. So the expected value is `t`
+/// itself at every alignment, with no one-voxel allowance. The `1e-9` tolerance
+/// is headroom over a measured bit-exact result.
+///
+/// `BelowResolution` would itself be a regression here: the thinnest wall swept
+/// is `3h`, comfortably above the `2h` resolution floor.
+#[test]
+fn min_wall_thickness_is_alignment_invariant() {
+    for thickness_voxels in SWEEP_THICKNESS_VOXELS {
+        let thickness = thickness_voxels * SWEEP_H;
+        for offset in SUB_VOXEL_OFFSETS {
+            let mid = offset * SWEEP_H;
+            let sdf = slab_field(mid, thickness, SWEEP_H, SWEEP_N, SWEEP_BOUNDS_MIN);
+            let measured = min_wall_thickness(&sdf, SWEEP_H)
+                .expect("the analytic slab is a structurally valid Regular3D field");
+
+            let MinWallThickness::Measured(v) = measured else {
+                panic!(
+                    "expected Measured for a {thickness_voxels}-voxel wall at \
+                     offset {offset}; got {measured:?}"
+                );
+            };
+            assert!(
+                (v - thickness).abs() <= 1e-9,
+                "min-wall {v} differs from the true thickness {thickness} for a \
+                 {thickness_voxels}-voxel wall at offset {offset}"
+            );
+        }
+    }
+}
+
 /// The ridge fallback must tag the medial surface of a SOLID, and must NOT tag
 /// the medial surface of the GAP between two solids.
 ///
@@ -242,7 +282,9 @@ fn medial_mask_finds_interior_ridges_but_not_the_exterior_ridge_between_two_slab
 /// A square bar `φ = max(|x| − 2h, |z| − 2h)` degenerates the central difference
 /// on the x AND z axes simultaneously along its centre line, so the fallback has
 /// to choose between two equally sharp kinks. The mask must come back as exactly
-/// that centre line.
+/// that centre line, and the min-wall walk must return the bar's full `4h`
+/// cross-section — whichever of the two axes it picked has to be an axis that
+/// actually measures the bar, not merely one that got the voxel tagged.
 #[test]
 fn medial_mask_finds_a_medial_line_whose_two_kink_axes_both_lie_on_sample_planes() {
     let h = 1.0;
@@ -270,4 +312,15 @@ fn medial_mask_finds_a_medial_line_whose_two_kink_axes_both_lie_on_sample_planes
              (i = k = {centre})"
         );
     }
+
+    let expected = 2.0 * half_width;
+    let measured = min_wall_thickness(&sdf, h)
+        .expect("the square-bar field is a structurally valid Regular3D field");
+    let MinWallThickness::Measured(v) = measured else {
+        panic!("expected Measured min-wall for the square bar; got {measured:?}");
+    };
+    assert!(
+        (v - expected).abs() <= 1e-9,
+        "min-wall {v} differs from the bar's {expected} cross-section"
+    );
 }
