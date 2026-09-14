@@ -13,7 +13,7 @@
 //
 //   P_cr ≈ 42.15 kN
 //
-// The integration test at `crates/reify-eval/tests/buckling_p2_smoke.rs`
+// The integration test at `crates/reify-eval-fea-tests/tests/buckling_p2_smoke.rs`
 // asserts `crit = critical_load(result, 1000.0 * 1N)` is within 5% of this
 // analytical value. The P2-tet mesh at nx=ny=2 coarsened cross-section gives
 // <1% error (vs ~9.2% for P1 at nx=ny=8,nz=160), documented in task 4052

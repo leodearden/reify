@@ -18,7 +18,7 @@
 // This fixture runs at `element_order: ElementOrder.P2` (second-order, 10-node
 // quadratic tets — task 4066). P2 shape functions resolve bending curvature and
 // remove the P1 constant-strain bending lock (f ∝ √K, which biases P1 high), so
-// the integration test at `crates/reify-eval/tests/modal_analysis_e2e.rs` asserts
+// the integration test at `crates/reify-eval-fea-tests/tests/modal_analysis_e2e.rs` asserts
 // the first-mode frequency is within 2% of this analytic value — the
 // bending-lock-free P2 band, distinctly tighter than the prior P1 10% floor and
 // reachable only when the solve runs at P2. The honest measured P2 error is 1.35%
