@@ -75,7 +75,7 @@
 //! it.
 
 use crate::geometry_chunk_smoke::{
-    call_sites, called_names, phantom_name_panic, registry_family,
+    call_sites, called_names, phantom_name_panic, registry_family, section_body,
 };
 
 /// Marker that OPENS the cross-reference region in each REFERRING chunk.
@@ -267,6 +267,50 @@ fn strip_html_comments(markdown: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+// ── The live pointers ────────────────────────────────────────────────────────
+//
+// TWO separate `#[test]` fns rather than one loop over a table of chunks, so a
+// failure names its own chunk in the TEST NAME as well as in the panic. The
+// shared logic already lives in `xref_region_violations`, so this is not
+// duplication — it is the one thing a table would cost.
+
+/// Human-readable name of the marked region, for PANIC TEXT ONLY. Nothing
+/// matches on it, so each chunk may title its section however reads best —
+/// which is the entire reason the region is scoped by an inert marker.
+const XREF_REGION_TITLE: &str = "interference/clearance cross-reference";
+
+/// The chunk a designer is in when they write the GATE must route to the
+/// oracle, and the route must be whole.
+///
+/// This is the printer_v01 entry point: the question "how do I constrain these
+/// two parts not to foul?" is asked while writing a `constraint`, and chunk
+/// retrieval is per topic — so `geometry.md` being correct is no help unless
+/// something here points at it. Scope of what "whole" means, and of what is
+/// deliberately NOT checked: this module's doc.
+#[test]
+fn the_constraints_chunk_points_at_the_oracle() {
+    let markdown = std::fs::read_to_string(CONSTRAINTS_CHUNK_PATH).unwrap_or_else(|e| {
+        panic!(
+            "{CONSTRAINTS_CHUNK_PATH} must be readable ({e}) — update \
+             CONSTRAINTS_CHUNK_PATH if the chunk moved"
+        )
+    });
+
+    let region = section_body(
+        &markdown,
+        ORACLE_XREF_MARKER,
+        CONSTRAINTS_CHUNK_PATH,
+        XREF_REGION_TITLE,
+    );
+
+    let violations = xref_region_violations(&region, CONSTRAINTS_CHUNK_PATH);
+    assert!(
+        violations.is_empty(),
+        "{}",
+        violations.join("\n\n")
+    );
 }
 
 // ── Synthetic controls ───────────────────────────────────────────────────────
