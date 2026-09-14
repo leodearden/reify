@@ -645,10 +645,10 @@ pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_cor
 /// datum (the arity-3 form is a γ relation in
 /// [`crate::relation_signatures::RELATION_FN_NAMES`]). It is a member of this
 /// slice — membership is a NAME fact — but membership alone does not imply
-/// the resolver claims a given call. The test-only `DATUM_NAMES` fixture in
-/// `datum_constructor_names_are_disjoint_from_other_families` deliberately
-/// omits it for that reason; this production slice does not, because
-/// `is_known_builtin` asks a pure name question.
+/// the resolver claims a given call.
+/// `datum_constructor_names_are_disjoint_from_other_families` iterates this
+/// slice and deliberately SKIPS `offset` for that reason; the slice itself
+/// does not, because `is_known_builtin` asks a pure name question.
 ///
 /// Case-sensitive: Reify function names are snake_case.
 pub(crate) const DATUM_CONSTRUCTOR_NAMES: &[&str] = &[
@@ -5774,59 +5774,42 @@ mod tests {
     /// directly above, for the family this change extended with the six
     /// axis-aligned neighbours.
     ///
-    /// The datum family has no name SLICE (it is a resolver,
-    /// `datum_constructor_result_type`), so the fixture below is the local stand-in
-    /// for one. Without this lock the six new names had no disjointness cover at
-    /// all: if a future task added e.g. `axis_x` to `GEOMETRY_QUERY_NAMES` or any
-    /// other slice whose arm sits EARLIER in the `expr.rs` `NoUserFunctions`
-    /// ladder, that arm would silently win and the datum arm would go dead with no
-    /// failing test. This vocabulary already carries one deliberate cross-family
-    /// overlap (`offset`, below), so that is a live hazard class rather than a
-    /// theoretical one.
+    /// Driven by [`DATUM_CONSTRUCTOR_NAMES`] itself, matching the shape of
+    /// every other family's disjointness lock (task #5371 promoted the slice
+    /// out of the resolver's `match`, so this family now has one; before that
+    /// the test carried a hand-maintained fixture, which was merely a second
+    /// place for the vocabulary to drift). Without this lock a new datum name
+    /// has no disjointness cover at all: if a future task added e.g. `axis_x`
+    /// to `GEOMETRY_QUERY_NAMES` or any other slice whose arm sits EARLIER in
+    /// the `expr.rs` `NoUserFunctions` ladder, that arm would silently win and
+    /// the datum arm would go dead with no failing test. This vocabulary
+    /// already carries one deliberate cross-family overlap (`offset`, below),
+    /// so that is a live hazard class rather than a theoretical one.
     ///
-    /// **`offset` is deliberately NOT in the fixture.** It is genuinely in BOTH
-    /// this vocabulary and `RELATION_FN_NAMES`; the collision is resolved by an
+    /// **`offset` is deliberately SKIPPED.** It is genuinely in BOTH this
+    /// vocabulary and `RELATION_FN_NAMES`; the collision is resolved by an
     /// arity gate (arity-2 → `Type::Plane` here, arity-3 → `Type::Relation`
     /// there), pinned by `datum_constructor_vocabulary_survives_the_neighbour_extension`
     /// below. Asserting blanket absence for it would contradict that design.
     #[test]
     fn datum_constructor_names_are_disjoint_from_other_families() {
-        // The arity-blind datum names — every entry of the resolver's match
-        // except the arity-gated `offset`.
-        const DATUM_NAMES: &[&str] = &[
-            "midplane",
-            "plane_through",
-            "axis_through",
-            "frame_at",
-            "plane_xy",
-            "plane_xz",
-            "plane_yz",
-            "axis_x",
-            "axis_y",
-            "axis_z",
-            // BoundingBox constructor/accessors (task 6081). This fixture is
-            // the family's ONLY membership record — the resolver has no
-            // `*_NAMES` slice const — so listing them here is what proves the
-            // three new names collide with no sibling family.
-            "bbox",
-            "bbox_size",
-            "bbox_center",
-        ];
-        for name in DATUM_NAMES {
+        // The arity-blind datum names — every slice entry except the
+        // arity-gated `offset`.
+        for name in DATUM_CONSTRUCTOR_NAMES.iter().filter(|n| **n != "offset") {
             // Reciprocal of `first_arg_typed_names_are_disjoint_from_other_families`
             // (task #5371) — the type-preserving allowlist is a membership set, not
             // a ladder arm, so a name landing in BOTH would silently claim the
             // fallback is correct for a name this family already types.
             assert!(
                 !FIRST_ARG_TYPED_NAMES.contains(name),
-                "DATUM_NAMES entry {name:?} must NOT also be in \
+                "DATUM_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
                  FIRST_ARG_TYPED_NAMES (task #5371 type-preserving allowlist)"
             );
-            // Premise guard: each fixture entry really is claimed by the datum
+            // Premise guard: each slice entry really is claimed by the datum
             // resolver, so an absence assert below is meaningful.
             assert!(
                 datum_constructor_result_type(name, &[]).is_some(),
-                "fixture drift: {name:?} is no longer claimed by \
+                "slice drift: {name:?} is no longer claimed by \
                  datum_constructor_result_type"
             );
             assert!(!GEOMETRY_FUNCTION_NAMES.contains(name), "{name:?} in GEOMETRY_FUNCTION_NAMES");
