@@ -481,18 +481,16 @@ the user — `report_eval_output` (`main.rs:3508`) prints every diagnostic to st
    checker's misattributed `operator undefined for these operand kinds: StructureInstance`.
    The non-assertion hot path must keep its zero-allocation shape (tactical: a precomputed
    per-check boolean).
-2. Two production call sites share one helper,
+2. Three production call sites share one helper,
    `unenforced_representation_bound_diagnostic` (`tolerance_combine.rs`), and emit an
    **Error**-severity coded diagnostic when the module declares a bound the export path cannot
    demonstrate it honours: `engine_build.rs`'s `build_outputs` / `build_outputs_with_result`
-   (the occurrence-driven Mode-B export path); and `cmd_build`'s Mode-A `-o` path
+   (the occurrence-driven Mode-B export path); `cmd_build`'s Mode-A `-o` path
    (`crates/reify-cli/src/main.rs`), which calls the helper directly ahead of the write rather
-   than relying only on the pre-existing `Severity::Error` gate for its exit code. A third
-   export surface — the GUI (`gui/src-tauri/src/engine.rs`'s `Engine::export()` → `build()`) —
-   is a **known bypass, not a third enforcing site**: `build()` never calls the helper, only
-   `build_outputs`/`build_outputs_with_result` do. Task **6190** closes it (fix committed on
-   branch `task/6190`, not yet landed on `main`); this line records the as-shipped state, not
-   the post-6190 one.
+   than relying only on the pre-existing `Severity::Error` gate for its exit code; and the GUI's
+   `EngineSession::export` (`gui/src-tauri/src/engine.rs`), which calls the helper directly ahead
+   of `engine.build`, mirroring the CLI Mode-A siting term for term (task **6190**, landed on
+   `main`). All three surfaces are enforcing sites.
 
    Mode A and Mode B are also empirically asymmetric in what they report **on success**, independent
    of the refusal wiring above: Mode A (`reify build -o <path>`) prints a `Triangles: N` line that
@@ -666,8 +664,7 @@ with an export (§3.1(f)), so nothing regresses.
 *Modules:* three call sites (§5 C-SURFACE (2) has the full contract and the Mode-A/Mode-B reporting
 asymmetry): `crates/reify-eval/src/engine_build.rs` (`build_outputs`, `build_outputs_with_result` —
 Mode B); `crates/reify-cli/src/main.rs`'s `cmd_build` Mode-A `-o` path; and
-`gui/src-tauri/src/engine.rs` (still a bypass as of this writing — task 6190 closes it, not yet
-landed on `main`).
+`gui/src-tauri/src/engine.rs` (`EngineSession::export`, task 6190, landed on `main`).
 *Lock note:* `crates/reify-cli/src/main.rs` **is** touched — an earlier version of this note said "no
 CLI file is touched," which was stale: Mode A calls `unenforced_representation_bound_diagnostic`
 directly ahead of the write rather than relying only on `cmd_build`'s pre-existing
