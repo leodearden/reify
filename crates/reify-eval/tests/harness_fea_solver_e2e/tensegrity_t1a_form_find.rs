@@ -418,7 +418,14 @@ fn trampoline_out_of_range_surface_index_is_failed() {
         ]),
         Value::List(vec![Value::Real(1.0)]), // one σ>0 for the one triangle
     ];
-    assert_failed_infeasible(call_form_find(&value_inputs), "out of range");
+    // Assert the LOCATED text, not just the generic "out of range" tail: the
+    // `Tensegrity.surfaces[i].{corner}` context prefix IS the property under
+    // characterization, and a refactor that dropped it (say, passing a bare
+    // "surfaces" ctx to `check_index`) would still leave the tail intact.
+    assert_failed_infeasible(
+        call_form_find(&value_inputs),
+        "Tensegrity.surfaces[0].2 index 99 is out of range 0..5",
+    );
 }
 
 /// Fewer than three value_inputs (a caller that failed to let-bind all three

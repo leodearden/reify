@@ -1697,7 +1697,10 @@ mod tests {
         let (nodes, _surfaces, anchors) = tent_membrane();
         // Boundary index: 5 is the FIRST invalid index for the 5-node tent, so
         // this pins the `≥ n` comparison that a `> n` typo would let pass.
-        let surfaces = vec![(0usize, 1usize, 5usize)];
+        // The predicate ANDs three comparisons, so each sibling test puts the
+        // bad index in a different corner — FIRST here, second in the aniso
+        // test, third in `form_find_free`'s — pinning all three between them.
+        let surfaces = vec![(5usize, 1usize, 2usize)];
         let sigmas = vec![1.0];
         let members: Vec<(usize, usize)> = vec![];
         let kinds: Vec<MemberKind> = vec![];
@@ -2305,7 +2308,10 @@ mod tests {
         let (nodes, _surfaces, prestress, anchors) = tent_aniso_fixture();
         // Boundary index: 5 is the FIRST invalid index for the 5-node tent, so
         // this pins the `≥ n` comparison that a `> n` typo would let pass.
-        let surfaces = vec![(0usize, 1usize, 5usize)];
+        // The predicate ANDs three comparisons, so each sibling test puts the
+        // bad index in a different corner — SECOND here, first in the isotropic
+        // test, third in `form_find_free`'s — pinning all three between them.
+        let surfaces = vec![(0usize, 5usize, 2usize)];
         let pres = vec![prestress[0].clone()];
         let members: Vec<(usize, usize)> = vec![];
         let kinds: Vec<MemberKind> = vec![];

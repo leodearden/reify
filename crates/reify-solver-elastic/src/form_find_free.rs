@@ -2242,6 +2242,9 @@ mod tests {
         let guess = perturbed_prism_guess();
         // Boundary index: 6 is the FIRST invalid index for the 6-node triplex,
         // so this pins the `≥ n` comparison that a `> n` typo would let pass.
+        // The predicate ANDs three comparisons, so each sibling test puts the
+        // bad index in a different corner — THIRD here, first and second in the
+        // two anchored tests in `form_find` — pinning all three between them.
         let surfaces = vec![(0usize, 1usize, 6usize)];
         let sigmas = vec![0.2];
         let spec = ForceDensitySpec::GroupRatios {
