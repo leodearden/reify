@@ -60,7 +60,11 @@
 //! `elaborate_forall_connect`'s per-element loop goes through
 //! `ForallDiagnosticSink`, which reports each distinct diagnostic once per
 //! declaration and only ever filters — so the zero-diagnostic guarantees above
-//! are unaffected.
+//! are unaffected. The window covers that loop and nothing else:
+//! `elaborate_forall_constraint` below is NOT routed through a sink, so an
+//! element-independent body diagnostic (e.g. `unresolved name: <ident>` from
+//! `compile_expr`) is still reported once per element there. Extending the sink
+//! to it is filed as a follow-up.
 
 use super::*;
 use std::collections::HashMap;
@@ -320,19 +324,14 @@ fn resolve_count_cell_literal(
 /// Per-`forall`-declaration duplicate-diagnostic sink (task 7195).
 ///
 /// Invariant: **one `forall` declaration reports each distinct diagnostic at
-/// most once.** Two diagnostics are the same when they render identically —
-/// equal `severity`, `message`, `code` and `candidates`, and the same
-/// `(span, message)` for every label, in order. First occurrence wins, so the
-/// retained order is emission order minus the repeats.
+/// most once**, where two diagnostics are the same when every field compares
+/// equal — see [`fields_equal`]. First occurrence wins, so the retained order is
+/// emission order minus the repeats.
 ///
-/// The duplication collapsed here is manufactured by the per-element loop, not
-/// by the checks themselves: `compile_connection` runs once per collection
-/// element with `span: decl.span`, and its direction message interpolates only
-/// the two `PortDirection`s — never the port names — so an N-element collection
-/// produced N byte-identical errors. Per-element `CompiledConnection`s and their
-/// `connect_compat_*` constraints are unaffected:
-/// `connect_compat_vents[i].inlet_air_channel` still carries the per-element
-/// identity, so semantic enforcement does not depend on the diagnostic count.
+/// Nothing an author or a downstream consumer can distinguish is lost: the
+/// collapsed copies come from running one check once per collection element, and
+/// each element keeps its own `connect_compat_*` constraint, so the per-element
+/// failure set stays recoverable from the compiled template.
 ///
 /// Construct one immediately before a declaration's per-element loop and *after*
 /// collection resolution, so diagnostics raised by `resolve_forall_elements` and
@@ -360,22 +359,24 @@ impl<'a> ForallDiagnosticSink<'a> {
     }
 
     /// Run `emit` against a scratch diagnostics vector, then merge whatever it
-    /// pushed into `out`, dropping every entry that renders identically to one
-    /// already retained for this declaration.
+    /// pushed into `out`, dropping every entry equal to one already retained for
+    /// this declaration.
     ///
     /// The closure form makes the merge un-skippable: the buffer cannot be
     /// obtained without the merge running on return, so a call site added later
     /// inside the loop cannot half-use the protocol and silently lose
-    /// diagnostics. The retained window holds only the DISTINCT diagnostics of
-    /// one declaration (one, for every shape measured), so the linear scan costs
-    /// O(elements × distinct) and needs no hashing.
+    /// diagnostics. The window holds one entry per DISTINCT rendering — one for
+    /// an element-independent message (direction mismatch, invalid port
+    /// reference), N for a name-bearing one (`undefined port 'vents[i].inlet'`)
+    /// — so the linear scan is O(elements × distinct), worst case quadratic in
+    /// the collection size on a compile that is already failing.
     fn collecting<R>(&mut self, emit: impl FnOnce(&mut Vec<Diagnostic>) -> R) -> R {
         self.scratch.clear();
         let result = emit(&mut self.scratch);
         for diag in self.scratch.drain(..) {
             let already_reported = self.out[self.window_start..]
                 .iter()
-                .any(|kept| renders_identically(kept, &diag));
+                .any(|kept| fields_equal(kept, &diag));
             if !already_reported {
                 self.out.push(diag);
             }
@@ -384,14 +385,17 @@ impl<'a> ForallDiagnosticSink<'a> {
     }
 }
 
-/// Whether two diagnostics render identically, and are therefore
+/// Whether two diagnostics are equal in every field, and are therefore
 /// indistinguishable to an author and to any downstream consumer.
 ///
-/// Compares fields directly rather than a formatted key: `Severity`,
-/// `DiagnosticCode` and `SourceSpan` already derive `PartialEq`, and
-/// `DiagnosticLabel` — which derives only `Debug, Clone` — is compared pairwise
-/// on its two fields.
-fn renders_identically(a: &Diagnostic, b: &Diagnostic) -> bool {
+/// `Diagnostic` is `#[non_exhaustive]`, so a downstream crate cannot destructure
+/// it exhaustively and the compiler will not flag this function when a field is
+/// added in `reify-core`: a new field must be added to the comparison by hand.
+/// Fields are compared directly rather than through a formatted key —
+/// `Severity`, `DiagnosticCode` and `SourceSpan` already derive `PartialEq`, and
+/// `DiagnosticLabel`, which derives only `Debug, Clone`, is compared pairwise on
+/// its two fields.
+fn fields_equal(a: &Diagnostic, b: &Diagnostic) -> bool {
     a.severity == b.severity
         && a.message == b.message
         && a.code == b.code
@@ -1011,5 +1015,48 @@ pub(crate) fn elaborate_forall_connect(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod forall_diagnostic_sink_tests {
+    use super::*;
+
+    fn direction_error(span: SourceSpan) -> Diagnostic {
+        Diagnostic::error("incompatible port directions for connect: In -> In")
+            .with_label(DiagnosticLabel::new(span, "incompatible directions"))
+    }
+
+    /// A declaration collapses its own repeats, and only its own: a diagnostic
+    /// identical to one an EARLIER declaration already reported is still
+    /// reported, because each sink's window opens at the declaration it serves.
+    ///
+    /// Pinned here rather than by an `.ri` fixture because no fixture can reach
+    /// it: every diagnostic raised inside the per-element loop is labelled at a
+    /// span belonging to its own declaration (`decl.span`, or a substituted body
+    /// expression's span), so two declarations cannot emit field-equal
+    /// diagnostics today. Widening the window to all of `out` would therefore
+    /// pass every fixture in the suite while being wrong for the first
+    /// declaration-independent diagnostic added to the loop.
+    #[test]
+    fn window_spans_one_declaration_not_the_whole_compilation() {
+        let span = SourceSpan::new(0, 10);
+        let mut out = Vec::new();
+
+        for _ in 0..2 {
+            let mut sink = ForallDiagnosticSink::new(&mut out);
+            for _ in 0..3 {
+                sink.collecting(|element_diagnostics| {
+                    element_diagnostics.push(direction_error(span))
+                });
+            }
+        }
+
+        assert_eq!(
+            out.len(),
+            2,
+            "expected one survivor per declaration (3 identical copies each), got {:?}",
+            out
+        );
     }
 }

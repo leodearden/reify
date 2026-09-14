@@ -2802,6 +2802,20 @@ structure def S {
             messages
         );
     }
+
+    // Pin the exact multiset, not just membership: containment alone would still
+    // hold if a half-applied merge let duplicates of these two back in.
+    let undefined_port_errors: Vec<&&str> = messages
+        .iter()
+        .filter(|m| m.starts_with("undefined port '"))
+        .collect();
+    assert_eq!(
+        undefined_port_errors.len(),
+        2,
+        "expected exactly one undefined-port error per list element, got {}: {:?}",
+        undefined_port_errors.len(),
+        undefined_port_errors
+    );
 }
 
 /// The Chain arm of `elaborate_forall_connect` duplicates a direction error the
@@ -2880,6 +2894,62 @@ structure def S {
             .connections
             .iter()
             .map(|c| c.left_port.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Duplicate suppression is scoped to ONE `forall` declaration: two declarations
+/// that raise the same error each report it (task 7195).
+///
+/// Both `forall`s below produce `"incompatible port directions for connect: In
+/// -> In"` — `S` three times over, `U` twice — and each collapses to one, but to
+/// one EACH, anchored at its own `forall` span.
+///
+/// MEASURED: this fixture does NOT discriminate a per-declaration window from a
+/// compilation-wide one; the two survivors differ in their label span either
+/// way. No `.ri` fixture can, so that boundary is pinned by the
+/// `ForallDiagnosticSink` unit test in `forall_elaborate.rs` instead.
+#[test]
+fn forall_connect_duplicate_suppression_does_not_cross_declarations() {
+    let source = r#"
+trait Air { param d : Length }
+structure def Vent {
+    port inlet : in Air { param d : Length = 5mm }
+}
+structure def S {
+    sub vents : List<Vent>
+    constraint vents.count == 3
+    port air_channel : in Air { param d : Length = 5mm }
+    forall v in vents: connect v.inlet -> air_channel
+}
+structure def U {
+    sub ducts : List<Vent>
+    constraint ducts.count == 2
+    port duct_header : in Air { param d : Length = 5mm }
+    forall w in ducts: connect w.inlet -> duct_header
+}
+"#;
+    let module = compile_source(source);
+
+    let direction_error_spans: Vec<reify_core::SourceSpan> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("incompatible port directions"))
+        .flat_map(|d| d.labels.iter().map(|l| l.span))
+        .collect();
+    assert_eq!(
+        direction_error_spans,
+        vec![
+            find_forall_connect_span(source, "S"),
+            find_forall_connect_span(source, "U"),
+        ],
+        "expected one direction error per forall declaration, each anchored at \
+         its own forall span; got spans {:?} from messages {:?}",
+        direction_error_spans,
+        module
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
             .collect::<Vec<_>>()
     );
 }
