@@ -1717,39 +1717,24 @@ fn length_group_rejection(items: &[Value]) -> Option<ArgRejection> {
 /// Severity is split by fault class, and the split is deliberate:
 ///
 /// - The `affine_scale` arms are `Warning`, mirroring the existing degenerate-scale
-///   rejection in `reify_eval::geometry_ops` (TransformKind::Scale).
-/// - The two RULING #6126 dimension arms (`transform_log`, `transform_exp`) are
-///   `Severity::Error`, per Leo's severity amendment (2026-08-19, via esc-6080-6): a
-///   wrong dimension is a design-correctness fault, so `reify eval` must EXIT 1 rather
-///   than print and continue. `cmd_eval` gates its exit code on
+///   rejection in `reify_eval::geometry_ops` (TransformKind::Scale): the offending
+///   factor is discarded and evaluation proceeds.
+/// - EVERY dimension arm is `Severity::Error` — `transform_log` and `transform_exp`
+///   (RULING #6126), `bbox` (task 6081), and `affine_translate` / `affine_map`
+///   (task 5747, units-length ζ, PRD
+///   `docs/prds/v0_6/units-length-gate-completion.md` decision D11). ONE reason
+///   serves all five rather than one argued per family: a wrong dimension
+///   is a design-correctness fault and an outright CONSTRUCTION failure — no twist,
+///   no BoundingBox, no AffineMap is produced at all — not a drop-and-continue.
+///   Per Leo's severity amendment (2026-08-19, via esc-6080-6), `reify eval` must
+///   EXIT 1 rather than print and continue; `cmd_eval` gates its exit code on
 ///   `diagnostics.iter().any(|d| d.severity == Severity::Error)`, so the severity IS
 ///   the exit code here. #6080 plans the same Error/exit-1 for the sibling angular
 ///   half, so one fault class does not report two ways across one builtin family.
-/// - The units-length ζ arms (`affine_translate`, `affine_map`) are `Severity::Error`
-///   too, reached independently: PRD `docs/prds/v0_6/units-length-gate-completion.md`
-///   decision D11 / task 5747. The two rulings AGREE — LENGTH is the one admitted
-///   spatial dimension and every dimension fault on this hook exits 1 — so no caller
-///   sees one fault class reported two ways.
-/// - The `bbox` arm is `Severity::Error` for the same reason (task 6081): a
-///   non-Length corner is an outright CONSTRUCTION failure — no BoundingBox is
-///   produced at all — rather than a drop-and-continue like `affine_scale`,
-///   where the offending factor is discarded and evaluation proceeds.
 ///
-/// The `affine_scale` and RULING #6126 arms stay code-less (no `DiagnosticCode`): minting
-/// `DiagnosticCode::ArgDimensionMismatch` is owned by
-/// `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 1 (whose own direction is
-/// Error, not Warning), and `tolerancing.rs`'s code-less `Diagnostic::error` through
-/// this same hook is the standing in-crate precedent.
-///
-/// The ζ arms are the ONE exception, and they are not a counter-example to that: they
-/// carry `DiagnosticCode::DimensionedArgRejected` — a DIFFERENT, already-minted code
-/// that `units-length-gate-completion.md` owns and that task 5743 (β) minted for
-/// exactly this chokepoint, whose own doc in `reify-core::diagnostics` records it as
-/// deliberately distinct from the compile-layer `ArgTypeMismatch` and mandates ONE
-/// shared runtime code rather than per-dimension siblings. `ArgDimensionMismatch` is
-/// still unminted and still the readers PRD's to mint.
-/// `DiagnosticCode` is NOT uniform across the arms, but the three DIMENSION arms
-/// now agree. All THREE — `transform_log`, `transform_exp` and `bbox` — carry the
+/// `DiagnosticCode` is NOT uniform across the arms, but every DIMENSION arm
+/// agrees. All FIVE — `transform_log`, `transform_exp`, `bbox` and ζ's
+/// `affine_translate` / `affine_map` — carry the
 /// PRE-EXISTING [`reify_core::DiagnosticCode::DimensionedArgRejected`], which
 /// `reify_eval::geometry_ops` already attaches to exactly this fault class (a
 /// `Severity::Error` runtime dimension rejection of a positional argument).
@@ -1763,11 +1748,16 @@ fn length_group_rejection(items: &[Value]) -> Option<ArgRejection> {
 /// `DimensionedArgRejected` already IS that code. See §6 decision 1's
 /// RECONCILIATION block (landed b3ba3228f5). The `bbox` arm, which has carried
 /// the code since task 6081 (2026-08-27), was the shipped counter-example that
-/// made the point.
+/// made the point; ζ's two arms are another, carrying it from the start because
+/// task 5743 (β) minted it for exactly this chokepoint — its own doc in
+/// `reify-core::diagnostics` records it as deliberately distinct from the
+/// compile-layer `ArgTypeMismatch`, and mandates ONE shared runtime code rather
+/// than per-dimension siblings, which is ruling A7 stated one layer down.
 ///
 /// The `affine_scale` arms deliberately stay `Severity::Warning` and CODE-LESS.
 /// They are a different fault class — a dropped factor, drop-and-continue — and
 /// ruling A7 converges the DIMENSION reason, not every arm in this function.
+///
 /// Returns `None` for any other name, wrong arity, or valid input.
 pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
     match name {
