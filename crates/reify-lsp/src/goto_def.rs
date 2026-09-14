@@ -1238,6 +1238,39 @@ mod tests {
         );
     }
 
+    /// A declaration whose span does not contain its own name token must yield
+    /// `None`, not a span borrowed from elsewhere and not a zero-width span.
+    ///
+    /// Tree-sitter error recovery can produce a declaration node whose span is
+    /// truncated short of the name. Any span this function returns reaches the
+    /// `references.rs` rename write path, so the only answer that cannot
+    /// corrupt a buffer is a refusal.
+    #[test]
+    fn decl_name_span_in_refuses_when_decl_span_excludes_the_name_token() {
+        let source = "structure Widget {\n}\n";
+        let mut parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("_t"));
+
+        // Truncate the declaration span to cover only `struc`, the shape an
+        // error-recovery span can take. Mutating a REAL parse keeps every other
+        // field (AST node, content hash) honest.
+        let mut truncated = false;
+        if let reify_ast::Declaration::Structure(s) = &mut parsed.declarations[0] {
+            s.span = SourceSpan::new(0, 5);
+            truncated = true;
+        }
+        assert!(
+            truncated,
+            "fixture: declarations[0] must be the Structure whose span we truncate"
+        );
+
+        assert_eq!(
+            decl_name_span_in(&parsed, source, "Widget", false),
+            None,
+            "a declaration span that excludes its own name token must be refused, \
+             not answered with a span that would reach the rename write path"
+        );
+    }
+
     /// A SHORT declaration name must resolve to the declaration's NAME token,
     /// never to a character inside the leading keyword.
     ///
