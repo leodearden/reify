@@ -109,8 +109,53 @@
 
 use std::collections::HashSet;
 
-use reify_builtins::EvalBuiltinId;
+use reify_builtins::{BindingKind, BuiltinId, BuiltinRow, EvalBuiltinId, rows};
 use strum::{EnumCount, IntoEnumIterator};
+
+// ── membership: derived from the row table, never declared ──────────────────
+
+/// Every `BindingKind::EvalBuiltin` row, paired with the generated sub-enum id
+/// it is dispatched on — the harness's single membership source.
+///
+/// Derived from `reify_builtins::rows()` rather than declared, which is what
+/// makes PRD §9's "grows per τ" true on the membership side: a τ migration that
+/// registers rows is swept here with **no edit to this module**, and a row that
+/// is registered but somehow escapes this filter is caught by the cardinality
+/// pin in [`sweep_covers_every_eval_builtin_row`] rather than silently reducing
+/// coverage. There is deliberately no local name list and no local id list to
+/// fall out of step.
+///
+/// The `EvalBuiltinId` half of the pair is what [`representative_args`] keys
+/// on, so the same derivation feeds both the membership and the argument side.
+///
+/// Shape reuse, not a shared import: `crates/reify-stdlib/tests/
+/// registry_dispatch_seed_parity.rs`'s `eval_rows()` performs the identical
+/// `BindingKind::EvalBuiltin` filter, and its own doc-comment gives the same
+/// reason ("derived from the registry rather than restated … so a τ row added
+/// later is covered here automatically instead of silently escaping the
+/// sweep"). It cannot be imported — that is a `reify-stdlib` integration-test
+/// target, this is a `reify-eval` lib unit-test module, and test targets are
+/// separate compilation units with no path between them. Factoring the four
+/// lines into a shared crate would put a test helper into a production
+/// dependency to save four lines, so the shape is repeated and the repetition
+/// is recorded here instead.
+fn eval_builtin_rows() -> Vec<(EvalBuiltinId, &'static BuiltinRow<BuiltinId>)> {
+    rows()
+        .iter()
+        .filter(|row| row.binding == BindingKind::EvalBuiltin)
+        .map(|row| {
+            let id = row.id.as_eval_builtin().unwrap_or_else(|| {
+                panic!(
+                    "registry inconsistency: row {:?} declares \
+                     BindingKind::EvalBuiltin but its id {:?} does not narrow \
+                     to an EvalBuiltinId",
+                    row.name, row.id
+                )
+            });
+            (id, row)
+        })
+        .collect()
+}
 
 // ── coverage: the sweep sees every EvalBuiltin row ───────────────────────────
 
