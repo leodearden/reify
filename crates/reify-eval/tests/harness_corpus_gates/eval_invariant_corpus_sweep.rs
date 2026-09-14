@@ -831,3 +831,110 @@ fn each_invariant_keeps_its_own_pre_unification_corpus_scope() {
          still do so — no wider, no narrower"
     );
 }
+
+/// The second and third asymmetries the two old gates carry, pinned so
+/// unification cannot silently harmonise them.
+///
+/// Sharing the corpus EVALUATION is free. Sharing the residual list or the
+/// failure policy would not be: a single global exemption list would stop
+/// checking `examples/fdm_bracket.ri` for INV-EVAL-5, which it is NOT exempt
+/// from, and harmonising the policies would either strengthen INV-EVAL-5 to fail
+/// on a stale residual or weaken INV-EVAL-4's break-glass — each a semantic
+/// change outside a zero-loss restructuring, and each named as a follow-up
+/// instead of taken here.
+#[test]
+fn residual_exemptions_and_failure_policy_stay_per_invariant() {
+    let gate = |id: InvariantId| {
+        GATES
+            .iter()
+            .find(|g| g.id == id)
+            .unwrap_or_else(|| panic!("no gate declared for {id:?}"))
+    };
+    let stale = gate(InvariantId::StaleUndef);
+    let divergence = gate(InvariantId::SnapshotCacheDivergence);
+
+    // (a) The two residual lists are SEPARATE. Each of these files is exempt
+    //     from ONE invariant and must still be CHECKED for the other — a single
+    //     global exemption list reds here.
+    let fdm = "examples/fdm_bracket.ri";
+    assert!(
+        divergence.residual_reason(fdm).is_some(),
+        "{fdm} is a declared INV-EVAL-4 residual"
+    );
+    assert!(
+        stale.residual_reason(fdm).is_none() && stale.scope.covers(fdm),
+        "{fdm} is NOT exempt from INV-EVAL-5 and must still be checked for it"
+    );
+
+    let multi_load = "examples/multi_load_bracket.ri";
+    assert!(
+        stale.residual_reason(multi_load).is_some(),
+        "{multi_load} is a declared INV-EVAL-5 residual"
+    );
+    assert!(
+        divergence.residual_reason(multi_load).is_none() && divergence.scope.covers(multi_load),
+        "{multi_load} is NOT exempt from INV-EVAL-4 and must still be checked for it"
+    );
+
+    // (b) Residuals match by path SUFFIX against the repo-relative key, and every
+    //     declared entry matches EXACTLY ONE live corpus file. An entry matching
+    //     zero files is dead weight that masks nothing and hides that the
+    //     coverage it documented has silently moved or vanished; an entry
+    //     matching several would exempt files nobody root-caused.
+    let corpus = corpus_files();
+    assert_eq!(stale.residuals.len(), 4, "INV-EVAL-5 declared 4 residuals");
+    assert_eq!(divergence.residuals.len(), 2, "INV-EVAL-4 declared 2 residuals");
+    for g in GATES {
+        for (suffix, reason) in g.residuals {
+            let matched: Vec<&str> = corpus
+                .iter()
+                .filter(|f| f.rel.ends_with(suffix))
+                .map(|f| f.rel.as_str())
+                .collect();
+            assert_eq!(
+                matched.len(),
+                1,
+                "{}: residual {suffix:?} must match exactly one live corpus file, \
+                 matched {matched:?} — a renamed .ri must red here rather than \
+                 silently voiding the exemption",
+                g.label
+            );
+            assert!(
+                !reason.trim().is_empty(),
+                "{}: residual {suffix:?} must carry its root-cause reason",
+                g.label
+            );
+            assert!(
+                g.scope.covers(matched[0]),
+                "{}: residual {suffix:?} exempts {} from an invariant that does not \
+                 even cover it — dead weight",
+                g.label,
+                matched[0]
+            );
+        }
+    }
+
+    // (c) The failure POLICY is per-invariant, read from the declared fields
+    //     rather than from the process environment (no env mutation: these tests
+    //     run concurrently in-process with the shard tests).
+    assert_eq!(
+        divergence.bypass_env,
+        Some("REIFY_SNAPSHOT_CACHE_AUDIT_BYPASS"),
+        "INV-EVAL-4 shipped with a break-glass warn-downgrade knob"
+    );
+    assert!(
+        divergence.stale_residual_is_fatal,
+        "INV-EVAL-4 fails the sweep on a residual that no longer diverges, so the \
+         dead exemption gets deleted instead of masking recovered coverage"
+    );
+    assert_eq!(
+        stale.bypass_env, None,
+        "INV-EVAL-5 shipped with NO bypass knob — granting it one here would be a \
+         semantic change, not a restructuring"
+    );
+    assert!(
+        !stale.stale_residual_is_fatal,
+        "INV-EVAL-5 merely PRINTS its residuals; making them fatal here would be a \
+         semantic change, not a restructuring"
+    );
+}
