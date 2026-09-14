@@ -39,11 +39,12 @@
 //! than a gap is stated once, on the `mirror` / `circular_pattern` arms of
 //! `builtin_arg_slots` in `crates/reify-compiler/src/builtin_signatures.rs`.
 
-use reify_core::{DiagnosticCode, Severity};
+use reify_core::Severity;
 use reify_eval::{BuildResult, Engine};
 use reify_ir::{ExportFormat, GeometryOp};
 use reify_test_support::{
-    MockConstraintChecker, MockGeometryKernel, compile_source, parse_and_compile,
+    MockConstraintChecker, MockGeometryKernel, compile_expecting_only_arg_type_mismatch,
+    parse_and_compile,
 };
 
 // ── step-5: mirror consumer tests ─────────────────────────────────────────────
@@ -457,16 +458,21 @@ fn build_circular_ops_bare(source: &str) -> (usize, Vec<GeometryOp>) {
 /// Compile a source whose `mirror` / `circular_pattern` ORIGIN components are
 /// deliberately BARE (task 5662).
 ///
-/// Modelled on `compile_bare_spacing` in
-/// `crates/reify-eval/tests/pattern_spacing_units_e2e.rs` (task 5652) and
-/// `compile_bare_length` in
-/// `crates/reify-eval/tests/harness_geometry/primitive_profile_length_units_e2e.rs`
-/// (task 5750), which the two preceding leaves had to introduce for exactly this
-/// reason.
+/// Task 5662 gave those origin triples a compile-layer LENGTH slot, so the bare
+/// sources in this file no longer compile clean and the strict
+/// `parse_and_compile` — which hard-asserts zero Error diagnostics — would panic
+/// before eval ever ran. Delegates to the shared
+/// `reify_test_support::compile_expecting_only_arg_type_mismatch` (task #6636),
+/// the canonical home for an idiom that three preceding leaves had each had to
+/// introduce independently (`compile_bare_spacing` in
+/// `crates/reify-eval/tests/pattern_spacing_units_e2e.rs`, `compile_bare_length`
+/// in `crates/reify-eval/tests/harness_geometry/primitive_profile_length_units_e2e.rs`
+/// and its `modify_sweep_length_units_e2e.rs` sibling).
 ///
-/// Swapping the lenient `compile_source` in for the strict `parse_and_compile`
-/// is a TIGHTENING, not a loosening, because this helper re-asserts BOTH halves
-/// of what the strict one used to guarantee:
+/// That shared helper's two assertions are what make swapping the lenient
+/// `compile_source` in for the strict `parse_and_compile` a TIGHTENING rather
+/// than a loosening — they re-assert BOTH halves of what the strict one used to
+/// guarantee:
 ///
 /// (i) the compile-layer `ArgTypeMismatch` really IS emitted, so this file
 ///     cannot silently stop noticing if task 5662's slots regress; and
@@ -479,33 +485,7 @@ fn build_circular_ops_bare(source: &str) -> (usize, Vec<GeometryOp>) {
 /// never lowering, so the op is still emitted and must still be DROPPED at build
 /// by the eval gate — which is the thing these rows actually test.
 fn compile_bare_origin(source: &str) -> reify_compiler::CompiledModule {
-    let compiled = compile_source(source);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        !errors.is_empty(),
-        "a bare scalar mirror/circular_pattern origin must ALSO be rejected at \
-         compile time (task 5662 ArgTypeMismatch), not only at eval; got no Error \
-         diagnostics in: {:?}",
-        compiled.diagnostics
-    );
-    assert!(
-        errors
-            .iter()
-            .all(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch)),
-        "ArgTypeMismatch must be the ONLY compile Error in this fixture, else the \
-         callers' \"no op reached the kernel\" assertions could pass because \
-         compilation broke rather than because the eval gate dropped the op; \
-         unexpected errors: {:?}",
-        errors
-            .iter()
-            .filter(|d| d.code != Some(DiagnosticCode::ArgTypeMismatch))
-            .collect::<Vec<_>>()
-    );
-    compiled
+    compile_expecting_only_arg_type_mismatch(source, "scalar mirror/circular_pattern origin")
 }
 
 /// The kernel half of [`build_circular_ops`], shared with its bare counterpart.
