@@ -1158,50 +1158,99 @@ assert "2ac: three escapes across two files count 3, not 1 and not 2" \
     test "$_s2ac_count" -eq 3
 
 # ===========================================================================
-# Section 3: LIVE guard -- scan the real gui/src-tauri/src/tests for
-#             un-escaped hand-rolled deadlines and elapsed upper bounds.
+# Section 3: LIVE GUARD -- the ratchet, over EVERY Rust test root.
 #
-# This lands GREEN. Before task #6438 the live scan would have reported
-# exactly three violations, all in watcher_tests.rs: one Rule A (the 5s
-# hand-rolled poll deadline) and two Rule B (the 1s and 2s elapsed upper
-# bounds). That task deleted all three, so every remaining Rule A/B match in
-# the directory is the single escaped site, `far_future_stamp()`. If the
-# violation assertion ever fails, read the reported lines before reaching for
-# an escape: the three sanctioned fixes in the detector's remediation hint
-# come first, in that order.
+# Scope, since this is what task #6597 changed. #6438 shipped this guard
+# scoped to the single non-recursive directory gui/src-tauri/src/tests -- the
+# file where all four flakes happened, and, as its header said plainly, all it
+# scanned. It now covers every crates/*/tests (32 today, glob-expanded so a new
+# crate is covered the day it lands), both gui/src-tauri test roots, and
+# tree-sitter-reify/tests, recursively.
 #
-# TWO ASSERTIONS, NOT ONE (#6438 review). The violation scan alone does not
-# say what the paragraph above wants it to say. The detector skips an escaped
-# line without counting it, so its rc is 0 for one escape and for twenty
-# alike -- a second escape could be added and BOTH the header's allowlist and
-# this comment would go on claiming there was one. So the escape count is
-# asserted separately, against a number stated here. Adding an escape now
-# takes a diff to _ESC_ALLOWLIST_SIZE as well as to the annotated line, which
-# is exactly the "deliberate, reviewable act" the allowlist asks for -- and
-# the reviewer sees the count change rather than having to grep for it.
+# That widening cannot be a one-line change, because 19 violating lines across
+# 6 files already exist and would red the gate on day one. They are BASELINED
+# in tests/infra/wallclock-rust-deadline-baseline.txt -- pre-existing debt that
+# must not grow, which is a different and weaker claim than the escape
+# comment's "legitimate, argued at the site". Read that file's header before
+# touching a row.
+#
+# FOUR ASSERTIONS, and each one covers a way the other three can lie:
+#   (1) THE ROOT LIST IS REAL. Every entry exists, and the list contains the
+#       roots we know hold baselined sites. A glob that expanded to nothing
+#       would otherwise leave a shorter list that still passes everything else.
+#   (2) THE RATCHET HOLDS, in both directions -- no new violation, and no
+#       stale row.
+#   (3) THE FLOOR. Files were actually scanned. A subset oracle is trivially
+#       satisfied by the empty set, and once the baseline is drained to zero
+#       -- the goal -- nothing else here would notice a scan of nothing.
+#   (4) THE ESCAPE COUNT still matches the allowlist. The ratchet cannot see
+#       an escaped line at all, so widening the scan must not quietly admit an
+#       unargued escape from some other crate.
 # ===========================================================================
 echo ""
-echo "--- Section 3: live scan of gui/src-tauri/src/tests ---"
+echo "--- Section 3: live scan of every Rust test root ---"
 
-assert "live scan target directory exists" test -d "$_LIVE_DIR"
+_BASELINE_FILE="$SCRIPT_DIR/wallclock-rust-deadline-baseline.txt"
+
+# --- (1) the root list is real ---------------------------------------------
+assert "live scan: _LIVE_ROOTS is non-empty" \
+    test "${#_LIVE_ROOTS[@]}" -ne 0
+
+_s3_missing=0
+for _s3_root in "${_LIVE_ROOTS[@]}"; do
+    [ -d "$_s3_root" ] && continue
+    echo "_LIVE_ROOTS entry is not a directory: $_s3_root" >&2
+    _s3_missing=$((_s3_missing + 1))
+done
+assert "live scan: every _LIVE_ROOTS entry exists on disk" \
+    test "$_s3_missing" -eq 0
+
+# The named members are the ones that would make a collapsed glob obvious: a
+# `crates/*/tests` that matched nothing still leaves the three enumerated roots
+# behind, and the list would look plausible. Naming two crates known to hold
+# baselined sites means the list cannot shrink silently.
+for _s3_want in gui/src-tauri/src/tests gui/src-tauri/tests \
+                crates/reify-audit/tests crates/reify-fdm/tests \
+                tree-sitter-reify/tests; do
+    _s3_found=0
+    for _s3_root in "${_LIVE_ROOTS[@]}"; do
+        [ "$_s3_root" = "$_s3_want" ] && { _s3_found=1; break; }
+    done
+    assert "live scan: _LIVE_ROOTS contains $_s3_want" \
+        test "$_s3_found" -eq 1
+done
+
+# --- (2) the ratchet holds, in both directions -----------------------------
+assert "live scan: the baseline file exists" test -f "$_BASELINE_FILE"
 
 _s3_rc=0
-_detect_rust_wallclock_deadline "$_LIVE_DIR" 2>&1 || _s3_rc=$?
-assert "live scan: no un-escaped hand-rolled deadlines or elapsed upper bounds in gui/src-tauri/src/tests (returns 0)" \
+_wallclock_baseline_check "$_BASELINE_FILE" "${_LIVE_ROOTS[@]}" || _s3_rc=$?
+assert "live scan: no NEW hand-rolled deadlines or elapsed upper bounds, and no STALE baseline rows (returns 0)" \
     test "$_s3_rc" -eq 0
 
+# --- (3) the non-vacuity floor ---------------------------------------------
+# 1330 .rs files today. The floor is deliberately loose: it must catch a root
+# list that collapsed, without churning every time a test file is added or
+# deleted. It is a LOWER bound, which is the only direction that means
+# anything here -- an upper bound would red on a growing tree.
+_s3_files="$(_wallclock_files_scanned "${_LIVE_ROOTS[@]}")"
+assert "live scan: the floor -- at least 1000 .rs files were actually scanned" \
+    test "$_s3_files" -ge 1000
+
+# --- (4) the escape allowlist ----------------------------------------------
 # The allowlist as a NUMBER rather than as prose. One escape:
 # `far_future_stamp()` in watcher_tests.rs, argued in its own doc comment.
 # Changing this line is the reviewable act; see the header's ALLOWLIST
-# paragraph before you do.
+# paragraph before you do. Widening the scan did NOT raise it: the 19
+# pre-existing sites went into the baseline, not into escapes.
 _ESC_ALLOWLIST_SIZE=1
 
 _s3_esc_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s3_esc_tmpdir")
-_s3_esc_count="$(_count_rust_wallclock_escapes "$_LIVE_DIR" 2>"$_s3_esc_tmpdir/escapes.txt")"
+_s3_esc_count="$(_count_rust_wallclock_escapes "${_LIVE_ROOTS[@]}" 2>"$_s3_esc_tmpdir/escapes.txt")"
 
 if [ "$_s3_esc_count" != "$_ESC_ALLOWLIST_SIZE" ]; then
     echo "" >&2
-    echo "Escape-annotated lines under $_LIVE_DIR: $_s3_esc_count; the allowlist says $_ESC_ALLOWLIST_SIZE." >&2
+    echo "Escape-annotated lines across all Rust test roots: $_s3_esc_count; the allowlist says $_ESC_ALLOWLIST_SIZE." >&2
     echo "The annotated lines are:" >&2
     cat "$_s3_esc_tmpdir/escapes.txt" >&2
     echo "" >&2
@@ -1211,6 +1260,9 @@ if [ "$_s3_esc_count" != "$_ESC_ALLOWLIST_SIZE" ]; then
     echo "_ESC_ALLOWLIST_SIZE in this file so the change is visible in review. If a site was" >&2
     echo "REMOVED, lower it. Do not delete this assertion: it is the only thing standing" >&2
     echo "between one argued escape and an allowlist nobody reads." >&2
+    echo "NOTE an escape is NOT the remedy for a baselined site -- a baseline row says" >&2
+    echo "'debt, must not grow', an escape says 'legitimate'. Do not convert one to the" >&2
+    echo "other to quiet a red." >&2
 fi
 
 assert "live scan: escape-annotated line count matches the allowlist size" \
