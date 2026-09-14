@@ -396,10 +396,18 @@ pub fn min_wall_thickness(
     let (max_steps, walk_step, _max_walk_dist) = walk_params(min_spacing, &options);
 
     match medial_min_scalar(sdf, |idx| {
-        // World coordinate and normalised gradient for this medial voxel.
+        // World coordinate and walk direction for this medial voxel. The walk
+        // direction is decided here a SECOND time (this path re-walks the mask
+        // rather than caching compute_medial_mask's distances — see the
+        // Performance note above), so it MUST be decided the same way: both
+        // sites go through `medial_walk_direction`.
+        //
+        // `gradient_at_index` is the gradient source because this path has no
+        // precomputed gradient grid to draw on.
         let world = world_at_index(sdf, idx);
         let grad_raw = gradient_at_index(sdf, idx);
-        let g = normalize3(grad_raw)?; // None → skip (degenerate gradient)
+        // None → skip: neither a usable gradient nor an interior ridge axis.
+        let g = medial_walk_direction(sdf, idx, grad_raw)?;
         // Bidirectional walk: d⁺ + d⁻ for this voxel.
         let (d_plus, d_minus, _, _) =
             bidirectional_distances(sdf, world, g, max_steps, walk_step)?; // None → skip
