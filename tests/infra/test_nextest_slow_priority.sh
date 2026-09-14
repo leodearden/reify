@@ -341,17 +341,19 @@ assert "tensegrity_t0a priority (${P_T0A:-unset}) > determinism priority (${P_DE
     bash -c "[ -n '${P_T0A:-}' ] && [ -n '${P_DET:-}' ] && [ '${P_T0A:-0}' -gt '${P_DET:-0}' ]"
 
 # ---------------------------------------------------------------------------
-# Assertion F (task 5141): heavy-tier slow-timeout/terminate-after ceiling.
-# Each of the 5 heavy binaries additionally carries
-# slow-timeout = { period = "120s", terminate-after = 15 } (1800s/30min) on
-# its existing [[profile.default.overrides]] priority block — a larger
-# ceiling than the [profile.default] 1200s/20min default (test_occt_gated_scope.sh
-# Tests 16a-16d), sized to clear the worst legitimate straggler (tensegrity_t0a
-# >180s even at ~8x load ≈1440s < 1800s) while still bounding a true hang well
-# under the 3600s (60m) verify.sh pass-level wall.
+# Assertion F (task 5141; RETARGETED by task 6485): per-block
+# slow-timeout/terminate-after values, BY TIER.
+#
+# All five of these blocks used to carry terminate-after = 15 (1800s). Task 6485
+# split them: the four HEAVY binaries moved to the 12h offline ceiling
+# (terminate-after = 360), while representation_within_assertion is
+# GATE-RESIDENT — it still runs on the merge gate, so it keeps 1800s, strictly
+# under the 3600s pass-level wall. Pinning each tier's value separately here is
+# what makes a block silently changing tier fail; Assertion K enforces that the
+# two tiers exhaust every slow-timeout override in the file.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Assertion F (task 5141): heavy-tier slow-timeout present, terminate-after = 15 ---"
+echo "--- Assertion F (task 5141, retargeted 6485): heavy blocks at terminate-after = 360, gate-resident at 15 ---"
 
 ST_T0A="$(_slow_terminate_for reify-eval tensegrity_t0a)"
 ST_FEA="$(_slow_terminate_for reify-eval-fea-tests fea_diagnostics_e2e)"
@@ -359,20 +361,20 @@ ST_REPR="$(_slow_terminate_for reify-eval representation_within_assertion)"
 ST_ANAL="$(_slow_terminate_for reify-solver-elastic analytical_validation)"
 ST_DET="$(_slow_terminate_for reify-solver-elastic determinism)"
 
-assert "nextest.toml: tensegrity_t0a override has slow-timeout terminate-after = 15" \
-    test "${ST_T0A:-}" = "15"
+assert "nextest.toml: tensegrity_t0a override has slow-timeout terminate-after = 360 (heavy tier, 12h)" \
+    test "${ST_T0A:-}" = "360"
 
-assert "nextest.toml: fea_diagnostics_e2e override has slow-timeout terminate-after = 15" \
-    test "${ST_FEA:-}" = "15"
+assert "nextest.toml: fea_diagnostics_e2e override has slow-timeout terminate-after = 360 (heavy tier, 12h)" \
+    test "${ST_FEA:-}" = "360"
 
-assert "nextest.toml: representation_within_assertion override has slow-timeout terminate-after = 15" \
+assert "nextest.toml: representation_within_assertion override has slow-timeout terminate-after = 15 (gate-resident tier, 1800s)" \
     test "${ST_REPR:-}" = "15"
 
-assert "nextest.toml: analytical_validation override has slow-timeout terminate-after = 15" \
-    test "${ST_ANAL:-}" = "15"
+assert "nextest.toml: analytical_validation override has slow-timeout terminate-after = 360 (heavy tier, 12h)" \
+    test "${ST_ANAL:-}" = "360"
 
-assert "nextest.toml: determinism override has slow-timeout terminate-after = 15" \
-    test "${ST_DET:-}" = "15"
+assert "nextest.toml: determinism override has slow-timeout terminate-after = 360 (heavy tier, 12h)" \
+    test "${ST_DET:-}" = "360"
 
 # ---------------------------------------------------------------------------
 # Assertion G (task 5141): gen-nextest-config.sh preserves each heavy-tier
@@ -380,7 +382,7 @@ assert "nextest.toml: determinism override has slow-timeout terminate-after = 15
 # generator only runs sed on the occt max-threads line, never cargo/nextest).
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Assertion G (task 5141): gen-nextest-config.sh preserves heavy-tier slow-timeout ---"
+echo "--- Assertion G (task 5141, retargeted 6485): gen-nextest-config.sh preserves each tier's slow-timeout ---"
 
 _TMP_CFG_ST="$(REIFY_OCCT_NEXTEST_MAX_THREADS=24 bash "$GEN_CFG")"
 
@@ -392,20 +394,20 @@ _GST_DET="$(_slow_terminate_for_file "$_TMP_CFG_ST" reify-solver-elastic determi
 
 rm -f "$_TMP_CFG_ST"
 
-assert "gen-nextest-config.sh: tensegrity_t0a slow-timeout terminate-after = 15 preserved in generated config" \
-    test "${_GST_T0A:-}" = "15"
+assert "gen-nextest-config.sh: tensegrity_t0a slow-timeout terminate-after = 360 preserved in generated config" \
+    test "${_GST_T0A:-}" = "360"
 
-assert "gen-nextest-config.sh: fea_diagnostics_e2e slow-timeout terminate-after = 15 preserved in generated config" \
-    test "${_GST_FEA:-}" = "15"
+assert "gen-nextest-config.sh: fea_diagnostics_e2e slow-timeout terminate-after = 360 preserved in generated config" \
+    test "${_GST_FEA:-}" = "360"
 
 assert "gen-nextest-config.sh: representation_within_assertion slow-timeout terminate-after = 15 preserved in generated config" \
     test "${_GST_REPR:-}" = "15"
 
-assert "gen-nextest-config.sh: analytical_validation slow-timeout terminate-after = 15 preserved in generated config" \
-    test "${_GST_ANAL:-}" = "15"
+assert "gen-nextest-config.sh: analytical_validation slow-timeout terminate-after = 360 preserved in generated config" \
+    test "${_GST_ANAL:-}" = "360"
 
-assert "gen-nextest-config.sh: determinism slow-timeout terminate-after = 15 preserved in generated config" \
-    test "${_GST_DET:-}" = "15"
+assert "gen-nextest-config.sh: determinism slow-timeout terminate-after = 360 preserved in generated config" \
+    test "${_GST_DET:-}" = "360"
 
 # ---------------------------------------------------------------------------
 # Assertion H (task 5141; amended — reviewer test-quality finding): 2-tier
@@ -415,9 +417,19 @@ assert "gen-nextest-config.sh: determinism slow-timeout terminate-after = 15 pre
 # strictly greater than the [profile.default] ceiling (likewise extracted via
 # _default_slow_timeout_seconds_for_file; test_occt_gated_scope.sh Test 16c
 # performs the equivalent file-derived check of the default ceiling against
-# the 3600s wall) and strictly less than the 3600s (60m) pass-level wall.
-# Both tiers attribute-and-kill before the outer timeout fires exit 124 with
-# zero attribution.
+# the 3600s wall).
+#
+# RETARGETED by task 6485 — the `< 3600s` conjunct is now applied ONLY to the
+# gate-resident block (representation_within_assertion). The invariant it
+# encodes is unchanged and NOT dropped: every ceiling must attribute-and-kill
+# before its outer wall fires exit 124 with zero attribution. What changed is
+# that the applicable wall now differs BY TIER. A gate-resident block still runs
+# on the merge gate, so its wall is 3600s and it is still checked here. The four
+# heavy blocks no longer run on any gate path, so their wall is the offline
+# lane's 13h release wall — 12x larger than 3600s — and their reachability is
+# checked against that wall in Assertion L instead, with both operands derived
+# from files. Keeping a `< 3600` check on a heavy block here would assert a
+# bound that no path actually imposes on it.
 #
 # The original form of this assertion (`test $((120*15)) -gt $((120*10))`)
 # was pure arithmetic on literals that never read nextest.toml — it could
@@ -427,7 +439,7 @@ assert "gen-nextest-config.sh: determinism slow-timeout terminate-after = 15 pre
 # the ordering/wall invariant would now fail here.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Assertion H (task 5141): 2-tier ordering — heavy ceiling > default ceiling, both < 3600s wall (values extracted from nextest.toml) ---"
+echo "--- Assertion H (task 5141, retargeted 6485): every ceiling > default ceiling; gate-resident ceiling < its 3600s wall (values extracted from nextest.toml) ---"
 
 SP_T0A="$(_slow_period_for reify-eval tensegrity_t0a)"
 SP_FEA="$(_slow_period_for reify-eval-fea-tests fea_diagnostics_e2e)"
@@ -458,20 +470,14 @@ assert "analytical_validation heavy ceiling (${HS_ANAL}s = period ${SP_ANAL:-uns
 assert "determinism heavy ceiling (${HS_DET}s = period ${SP_DET:-unset}s * terminate-after ${ST_DET:-unset}) is strictly greater than the default ceiling (${DEFAULT_SECONDS:-unset}s), both extracted from nextest.toml" \
     bash -c "[ -n '${HS_DET:-}' ] && [ -n '${DEFAULT_SECONDS:-}' ] && [ '${HS_DET:-0}' -gt '${DEFAULT_SECONDS:-0}' ]"
 
-assert "tensegrity_t0a heavy ceiling (${HS_T0A}s, extracted from nextest.toml) is strictly less than the 3600s (60m) pass-level wall" \
-    bash -c "[ -n '${HS_T0A:-}' ] && [ '${HS_T0A:-0}' -lt 3600 ]"
 
-assert "fea_diagnostics_e2e heavy ceiling (${HS_FEA}s, extracted from nextest.toml) is strictly less than the 3600s (60m) pass-level wall" \
-    bash -c "[ -n '${HS_FEA:-}' ] && [ '${HS_FEA:-0}' -lt 3600 ]"
 
-assert "representation_within_assertion heavy ceiling (${HS_REPR}s, extracted from nextest.toml) is strictly less than the 3600s (60m) pass-level wall" \
+# The one surviving wall check: representation_within_assertion is
+# GATE-RESIDENT, so 3600s really is the wall that binds it.
+assert "representation_within_assertion gate-resident ceiling (${HS_REPR}s, extracted from nextest.toml) is strictly less than the 3600s (60m) pass-level wall that binds it" \
     bash -c "[ -n '${HS_REPR:-}' ] && [ '${HS_REPR:-0}' -lt 3600 ]"
 
-assert "analytical_validation heavy ceiling (${HS_ANAL}s, extracted from nextest.toml) is strictly less than the 3600s (60m) pass-level wall" \
-    bash -c "[ -n '${HS_ANAL:-}' ] && [ '${HS_ANAL:-0}' -lt 3600 ]"
 
-assert "determinism heavy ceiling (${HS_DET}s, extracted from nextest.toml) is strictly less than the 3600s (60m) pass-level wall" \
-    bash -c "[ -n '${HS_DET:-}' ] && [ '${HS_DET:-0}' -lt 3600 ]"
 
 # ---------------------------------------------------------------------------
 # Assertion I (task 5984): CO-PRESERVATION of BOTH sed anchors in ONE generate.
