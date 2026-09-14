@@ -5,33 +5,9 @@
 
 use reify_compiler::*;
 use reify_core::*;
-use reify_test_support::{compile_first_template, compile_source};
-
-/// Assert that `template.value_cells` contains exactly one cell whose member name equals
-/// `member`. Prints `context` in the failure message for easy diagnosis.
-/// Returns a reference to the matched cell so callers can inspect its properties.
-#[must_use = "inspect the returned cell or use `let _ =` to explicitly discard"]
-fn assert_single_value_cell<'a>(
-    template: &'a TopologyTemplate,
-    member: &str,
-    context: &str,
-) -> &'a ValueCellDecl {
-    let cells: Vec<_> = template
-        .value_cells
-        .iter()
-        .filter(|vc| vc.id.member == member)
-        .collect();
-    assert_eq!(
-        cells.len(),
-        1,
-        "{}: expected exactly 1 value cell '{}', got {}: {:?}",
-        context,
-        member,
-        cells.len(),
-        cells
-    );
-    cells[0]
-}
+use reify_test_support::{
+    compile_first_template, compile_source, get_value_cell_of, try_get_value_cell_of,
+};
 
 /// Step 1: Compile a trait declaration produces CompiledTrait in CompiledModule.trait_defs.
 #[test]
@@ -211,21 +187,8 @@ structure def S : HasSize {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // The template should contain a value cell for 'size' injected from the trait default.
-    let size_cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "size");
-    assert!(
-        size_cell.is_some(),
-        "expected 'size' value cell from trait default, got cells: {:?}",
-        template
-            .value_cells
-            .iter()
-            .map(|vc| &vc.id.member)
-            .collect::<Vec<_>>()
-    );
-
-    let size_cell = size_cell.unwrap();
+    // A missing cell panics here, naming every cell the template does carry.
+    let size_cell = get_value_cell_of(&template, "size");
     assert_eq!(size_cell.kind, ValueCellKind::Param);
     assert_eq!(
         size_cell.cell_type,
@@ -622,7 +585,7 @@ structure def S : A {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // x comes from D, reachable via both B->D and C->D paths; must appear exactly once.
-    let x_cell = assert_single_value_cell(&template, "x", "diamond_satisfies_once");
+    let x_cell = get_value_cell_of(&template, "x");
     assert_eq!(
         x_cell.cell_type,
         Type::length(),
@@ -805,7 +768,7 @@ structure def S : A {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // d comes from trait D, reachable via both B->D and C->D; must appear exactly once.
-    let d_cell = assert_single_value_cell(&template, "d", "diamond_default_from_D_once");
+    let d_cell = get_value_cell_of(&template, "d");
     assert_eq!(
         d_cell.cell_type,
         Type::length(),
@@ -895,10 +858,10 @@ structure def S : A {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // x comes from D, reachable via B->E->D and C->D; must appear exactly once.
-    let x_cell = assert_single_value_cell(&template, "x", "deep_diamond_A_B_E_D_C_D");
+    let x_cell = get_value_cell_of(&template, "x");
 
     // y comes from E, reachable via one path (B->E); must also appear exactly once.
-    let y_cell = assert_single_value_cell(&template, "y", "deep_diamond_A_B_E_D_C_D");
+    let y_cell = get_value_cell_of(&template, "y");
 
     assert_eq!(
         x_cell.cell_type,
@@ -978,7 +941,7 @@ structure def S : A {
     );
 
     // Even with a type conflict error, dedup must still produce exactly one cell for 'x'.
-    let x_cell = assert_single_value_cell(&template, "x", "diamond_type_conflict");
+    let x_cell = get_value_cell_of(&template, "x");
     assert_eq!(
         x_cell.cell_type,
         Type::length(),
@@ -1008,8 +971,10 @@ structure def S : Safe {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // Both param default and constraint should be injected.
-    let has_x = template.value_cells.iter().any(|vc| vc.id.member == "x");
-    assert!(has_x, "expected value cell 'x' from trait default");
+    assert!(
+        try_get_value_cell_of(&template, "x").is_some(),
+        "expected value cell 'x' from trait default"
+    );
 
     assert!(
         !template.constraints.is_empty(),
