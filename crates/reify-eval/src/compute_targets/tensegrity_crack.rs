@@ -12,7 +12,9 @@
 //! while removing the copy, so the next Tensegrity-consuming trampoline reuses
 //! rather than re-clones. The same treatment folds the unit-checking scalar
 //! crackers in here alongside them: [`crack_dimensioned_scalar`] was a verbatim
-//! pair across `tensegrity_load.rs` and `membrane_load.rs`.
+//! pair across `tensegrity_load.rs` and `membrane_load.rs`, and
+//! [`crack_loads`] — the vector lifting of it, alongside [`crack_scalar_list`]'s
+//! list lifting — was a third such pair across the same two files.
 //!
 //! # The four scalar/list crackers
 //!
@@ -252,6 +254,71 @@ pub(crate) fn crack_scalar_list(
             code,
             hint,
         )?);
+    }
+    Ok(out)
+}
+
+/// Crack `loads` (a `List<Vector3<Force>>`) into per-node `[f64; 3]` force
+/// vectors — the VECTOR lifting of [`crack_dimensioned_scalar`], sibling to
+/// [`crack_scalar_list`]'s list lifting, whose `code` / `hint` it likewise
+/// threads through unchanged.
+///
+/// Unlike [`crack_scalar_list`] it fixes `what` to `loads`, the expected unit to
+/// FORCE and the label to "Force" — both callers agree on all three — and labels
+/// each component `"loads[{i}].{x|y|z}"`, so a wrong-unit diagnostic names which
+/// entry AND which of its three numbers is wrong.
+///
+/// The loads-vs-nodes length check is performed in each caller's `run` (the
+/// trampoline) so a mismatch surfaces as a *located* `E_*Infeasible` error; the
+/// kernel's own `loads.len() != nodes.len()` guard is a redundant backstop. This
+/// cracker validates only per-entry shape (3-component) and per-component unit.
+/// Shared by `tensegrity_load.rs` and `membrane_load.rs`.
+pub(crate) fn crack_loads(v: &Value, code: &str, hint: &str) -> Result<Vec<[f64; 3]>, String> {
+    let list = match v {
+        Value::List(items) => items,
+        other => {
+            return Err(format!(
+                "{code}: loads must be a list of 3-component force vectors, got {other:?}"
+            ));
+        }
+    };
+    let mut out = Vec::with_capacity(list.len());
+    for (i, item) in list.iter().enumerate() {
+        match item {
+            Value::Vector(c) | Value::Point(c) if c.len() == 3 => {
+                out.push([
+                    crack_dimensioned_scalar(
+                        &c[0],
+                        &format!("loads[{i}].x"),
+                        DimensionVector::FORCE,
+                        "Force",
+                        code,
+                        hint,
+                    )?,
+                    crack_dimensioned_scalar(
+                        &c[1],
+                        &format!("loads[{i}].y"),
+                        DimensionVector::FORCE,
+                        "Force",
+                        code,
+                        hint,
+                    )?,
+                    crack_dimensioned_scalar(
+                        &c[2],
+                        &format!("loads[{i}].z"),
+                        DimensionVector::FORCE,
+                        "Force",
+                        code,
+                        hint,
+                    )?,
+                ]);
+            }
+            other => {
+                return Err(format!(
+                    "{code}: loads[{i}] must be a 3-component force vector, got {other:?}"
+                ));
+            }
+        }
     }
     Ok(out)
 }
