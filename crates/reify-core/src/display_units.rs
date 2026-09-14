@@ -415,6 +415,16 @@ pub fn ascii_label_spelling(label: &str) -> Option<String> {
 /// Stiffness's "N/m" is a compound unit EXPRESSION, not a bare symbol
 /// (`unit_symbol_to_si("N/m")` is `None`), exactly like the Density rung
 /// "kg/m^3".
+///
+/// SEEDING A LADDER IS NOT DISPLAY-ONLY. The GUI parameter editor derives its
+/// bare-number gate from this same table: `dimension_requires_unit`
+/// (`gui/src-tauri/src/engine.rs`) returns `Some` for exactly the dimensions
+/// that carry a ladder here, and `parse_value_string_for_cell` then REFUSES a
+/// bare number typed into a cell of that dimension, demanding an explicit unit.
+/// Adding a ladder therefore also narrows what a user may type for that
+/// dimension — safe only because every rung label parses back, which
+/// `every_curated_ladder_dimension_is_gated_and_names_a_rung_that_parses`
+/// asserts for every ladder, compound "N/m" included.
 pub fn unit_ladders() -> Vec<DimensionLadder> {
     vec![
         DimensionLadder {
@@ -731,16 +741,35 @@ mod tests {
         }
     }
 
-    /// PRD display-unit-preference §4: Force/Energy/Power are seeded as
-    /// single-rung ladders (coherent-SI N/J/W @ `si_scale: 1.0`,
-    /// `is_default: true`) supplying the curated derived-unit name. A single
-    /// `is_default` rung satisfies `every_ladder_has_exactly_one_default`,
-    /// and the names round-trip through `canonical_name` (they are
-    /// `NAMED_DIMENSIONS` keys — see the round-trip guard below).
+    /// PRD display-unit-preference §4: the coherent-SI dimensions are seeded as
+    /// single-rung ladders (N/J/W, and — §4's final bullet, which names them
+    /// explicitly — Hz and N/m) @ `si_scale: 1.0`, `is_default: true`, each
+    /// supplying the curated derived-unit name. A single `is_default` rung
+    /// satisfies `every_ladder_has_exactly_one_default`, and the names
+    /// round-trip through `canonical_name` (they are `NAMED_DIMENSIONS` keys
+    /// — see the round-trip guard below). Stiffness is keyed on "Stiffness",
+    /// `canonical_name`'s first-match answer for kg·s⁻², never the
+    /// "TranslationalStiffness" alias, which would be unreachable; its "N/m" is
+    /// a compound unit EXPRESSION rather than a bare symbol, the same shape the
+    /// Density rung "kg/m^3" already uses.
+    ///
+    /// What this table holds that its neighbours do not is the SHAPE — one rung,
+    /// and a `derived_unit_name` equal to it. The §5 auto-scale exclusion of all
+    /// five is pinned once, counted and named, by
+    /// `auto_scale_metadata_matches_prd_section5`, and each default rung's
+    /// `si_scale` is locked against its real source (`to_display_units`) by
+    /// `default_si_scale_matches_to_display_units_numeric_value`; neither is
+    /// restated here.
     #[test]
-    fn force_energy_power_ladders_seeded() {
+    fn single_rung_coherent_si_ladders_seeded() {
         let ladders = unit_ladders();
-        for (dimension, label) in [("Force", "N"), ("Energy", "J"), ("Power", "W")] {
+        for (dimension, label) in [
+            ("Force", "N"),
+            ("Energy", "J"),
+            ("Power", "W"),
+            ("Frequency", "Hz"),
+            ("Stiffness", "N/m"),
+        ] {
             let l = ladder(&ladders, dimension);
             assert_eq!(
                 l.units.len(),
@@ -757,40 +786,6 @@ mod tests {
             assert_eq!(
                 l.derived_unit_name, label,
                 "{dimension:?} derived_unit_name mismatch"
-            );
-        }
-    }
-
-    /// PRD display-unit-preference §4 (final bullet): the curated set grows
-    /// to Frequency and Stiffness, seeded exactly like Force/Energy/Power —
-    /// single-rung coherent-SI ladders (Hz / N/m @ `si_scale: 1.0`,
-    /// `is_default: true`) with no auto-scale posture (§5 excludes them).
-    /// "N/m" is a compound unit EXPRESSION rather than a bare symbol, the
-    /// same shape the Density rung "kg/m^3" already uses.
-    #[test]
-    fn frequency_stiffness_ladders_seeded() {
-        let ladders = unit_ladders();
-        for (dimension, label) in [("Frequency", "Hz"), ("Stiffness", "N/m")] {
-            let l = ladder(&ladders, dimension);
-            assert_eq!(
-                l.units.len(),
-                1,
-                "ladder {dimension:?} should have exactly one rung"
-            );
-            let rung = &l.units[0];
-            assert_eq!(rung.label, label, "{dimension:?} rung label mismatch");
-            assert_eq!(
-                rung.si_scale, 1.0,
-                "{dimension:?} rung si_scale must be 1.0"
-            );
-            assert!(rung.is_default, "{dimension:?} rung must be is_default");
-            assert_eq!(
-                l.derived_unit_name, label,
-                "{dimension:?} derived_unit_name mismatch"
-            );
-            assert_eq!(
-                l.auto_scale, None,
-                "{dimension:?} must be excluded from auto-scaling (auto_scale == None)"
             );
         }
     }
