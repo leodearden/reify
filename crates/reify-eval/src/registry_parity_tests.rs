@@ -668,14 +668,139 @@ struct ExemptionEntry {
 /// with entries that assert nothing.
 const PARITY_EXEMPTION_LEDGER: &[ExemptionEntry] = &[];
 
-/// Is this (row, verdict) pair accepted by the ledger?
+// ── adjudication: one rule, both directions ─────────────────────────────────
+
+/// One way a row's observed verdict fails to agree with the ledger.
 ///
-/// Both halves must match. An entry for the right row at the WRONG verdict does
-/// not exempt it — see [`ExemptionEntry::expected`].
-fn is_ledgered(id: EvalBuiltinId, verdict: ParityVerdict) -> bool {
-    PARITY_EXEMPTION_LEDGER
+/// Carries the row and the verdicts involved as DATA, so the human message is
+/// rendered at the point of failure by [`describe_failure`] rather than being
+/// pre-formatted into a string here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Failure {
+    /// The row does not pass and nothing accepted that.
+    Unledgered {
+        id: EvalBuiltinId,
+        observed: ParityVerdict,
+    },
+    /// The row PASSES but still carries an exemption. The entry must be
+    /// deleted — this is the direction that makes the ledger a ratchet.
+    Stale {
+        id: EvalBuiltinId,
+        ledgered: ParityVerdict,
+    },
+    /// The row still does not pass, but at a different disposition than the one
+    /// it was exempted at, so the exemption no longer describes it.
+    VerdictChanged {
+        id: EvalBuiltinId,
+        observed: ParityVerdict,
+        ledgered: ParityVerdict,
+    },
+}
+
+impl Failure {
+    /// The row this failure is about, for joining back to its observation.
+    fn id(&self) -> EvalBuiltinId {
+        match self {
+            Failure::Unledgered { id, .. }
+            | Failure::Stale { id, .. }
+            | Failure::VerdictChanged { id, .. } => *id,
+        }
+    }
+}
+
+/// The single adjudication rule, in both directions.
+///
+/// Pure over its two arguments so the real sweep and the synthetic-table tests
+/// share ONE implementation (SPOT): there is no second copy of this rule to
+/// drift, and the staleness direction is proven without mutating either the
+/// real ledger or a real row.
+///
+/// A ledger entry naming an id absent from `observed` needs no variant: every
+/// `EvalBuiltinId` variant is present in `eval_builtin_rows()` — pinned by
+/// [`sweep_covers_every_eval_builtin_row`]'s cardinality assertion — and a row
+/// a later τ deletes or re-homes to another `BindingKind` takes its variant with
+/// it, making its entry a compile error rather than a dead line. That is the
+/// point of keying on the id.
+fn adjudicate(
+    observed: &[(EvalBuiltinId, ParityVerdict)],
+    ledger: &[ExemptionEntry],
+) -> Vec<Failure> {
+    observed
         .iter()
-        .any(|entry| entry.id == id && entry.expected == verdict)
+        .filter_map(|&(id, verdict)| {
+            let entry = ledger.iter().find(|entry| entry.id == id);
+            match (verdict, entry) {
+                (ParityVerdict::Matches, None) => None,
+                (ParityVerdict::Matches, Some(entry)) => Some(Failure::Stale {
+                    id,
+                    ledgered: entry.expected,
+                }),
+                (observed, None) => Some(Failure::Unledgered { id, observed }),
+                (observed, Some(entry)) if entry.expected == observed => None,
+                (observed, Some(entry)) => Some(Failure::VerdictChanged {
+                    id,
+                    observed,
+                    ledgered: entry.expected,
+                }),
+            }
+        })
+        .collect()
+}
+
+/// What the sweep observed for one row — the evidence a [`Failure`] is rendered
+/// against.
+struct RowObservation {
+    id: EvalBuiltinId,
+    name: &'static str,
+    observed: Value,
+    declared: Type,
+    verdict: ParityVerdict,
+}
+
+/// Render one [`Failure`] as a reader-facing line, joining it back to the
+/// observation that produced it and to the ledger entry it concerns.
+///
+/// The observed value is printed in full rather than through a local
+/// variant-name table: the leading token of a Rust enum's `Debug` output IS its
+/// discriminant, and `reify_ir` owns the variant list — a name table here would
+/// be a silently drifting second copy of it (SPOT). For a `Vacuous` verdict this
+/// prints the bare `Undef`; for `Diverges` it prints the payload, which is
+/// exactly what the reader needs.
+fn describe_failure(
+    failure: &Failure,
+    observations: &[RowObservation],
+    ledger: &[ExemptionEntry],
+) -> String {
+    let id = failure.id();
+    let name = observations
+        .iter()
+        .find(|obs| obs.id == id)
+        .map(|obs| obs.name)
+        .unwrap_or("<no observation for this row>");
+    let why = ledger
+        .iter()
+        .find(|entry| entry.id == id)
+        .map(|entry| entry.why)
+        .unwrap_or("<no ledger entry>");
+
+    match failure {
+        Failure::Unledgered { observed, .. } => {
+            let obs = observations.iter().find(|obs| obs.id == id);
+            format!(
+                "  UNLEDGERED {id:?} ({name:?}) — verdict {observed:?}; observed                  {:?}, declared {:?}",
+                obs.map(|o| &o.observed),
+                obs.map(|o| &o.declared),
+            )
+        }
+        Failure::Stale { ledgered, .. } => format!(
+            "  STALE LEDGER ENTRY {id:?} ({name:?}) — the row now classifies              Matches but is still exempted at {ledgered:?}. Delete the entry;              its stated reason was: {why}"
+        ),
+        Failure::VerdictChanged {
+            observed, ledgered, ..
+        } => format!(
+            "  VERDICT CHANGED {id:?} ({name:?}) — exempted at {ledgered:?} but              now {observed:?}. Right row, wrong disposition: fix the divergence              or update the entry, whose stated reason was: {why}"
+        ),
+    }
 }
 
 // ── the executed sweep: the harness's headline assertion ────────────────────
@@ -714,49 +839,58 @@ fn is_ledgered(id: EvalBuiltinId, verdict: ParityVerdict) -> bool {
 /// the reader re-run the harness once per broken row.
 #[test]
 fn every_eval_builtin_row_agrees_with_its_executed_kind() {
-    let mut offenders: Vec<String> = Vec::new();
+    let observations: Vec<RowObservation> = eval_builtin_rows()
+        .into_iter()
+        .map(|(id, row)| {
+            let (values, types) = representative_args(id);
 
-    for (id, row) in eval_builtin_rows() {
-        let (values, types) = representative_args(id);
+            let declared = row
+                .result
+                .resolve(&types)
+                .expect("probe well-formedness (e) guarantees the resolver answers");
 
-        let declared = row
-            .result
-            .resolve(&types)
-            .expect("probe well-formedness (e) guarantees the resolver answers");
+            // The public path. `row.name` is a VARIABLE — see the doc above.
+            let observed = reify_stdlib::eval_builtin(row.name, &values);
+            let verdict = classify(&observed, &declared);
 
-        // The public path. `row.name` is a VARIABLE — see the doc above.
-        let observed = reify_stdlib::eval_builtin(row.name, &values);
-        let verdict = classify(&observed, &declared);
+            RowObservation {
+                id,
+                name: row.name,
+                observed,
+                declared,
+                verdict,
+            }
+        })
+        .collect();
 
-        if verdict != ParityVerdict::Matches && !is_ledgered(id, verdict) {
-            // The observed value is reported in full rather than through a
-            // local variant-name table: the leading token of a Rust enum's
-            // Debug output IS its discriminant, and reify_ir owns the variant
-            // list (SPOT — a 30-arm name table here would be a second copy of
-            // it, drifting silently). For a `Vacuous` verdict this prints the
-            // bare `Undef`; for `Diverges` it prints the payload, which is
-            // exactly what the reader needs.
-            offenders.push(format!(
-                "  {:?} ({:?}): observed {:?}, declared {:?} — verdict {:?}",
-                id, row.name, observed, declared, verdict
-            ));
-        }
-    }
+    // ONE adjudication rule, shared with the synthetic-table tests below.
+    let verdicts: Vec<(EvalBuiltinId, ParityVerdict)> = observations
+        .iter()
+        .map(|obs| (obs.id, obs.verdict))
+        .collect();
+    let failures = adjudicate(&verdicts, PARITY_EXEMPTION_LEDGER);
+
+    let report: Vec<String> = failures
+        .iter()
+        .map(|failure| describe_failure(failure, &observations, PARITY_EXEMPTION_LEDGER))
+        .collect();
 
     assert!(
-        offenders.is_empty(),
-        "static-vs-runtime parity: {} EvalBuiltin row(s) did not classify \
-         Matches and are not in PARITY_EXEMPTION_LEDGER.\n\n{}\n\n\
+        report.is_empty(),
+        "static-vs-runtime parity: {} EvalBuiltin row(s) disagree with \
+         PARITY_EXEMPTION_LEDGER.\n\n{}\n\n\
          A `Diverges` verdict means the row's declared `result` and its eval \
          body disagree about the KIND of the returned value — fix whichever is \
          wrong. A `Vacuous` verdict means the row evaluated to `Value::Undef`, \
          which `value_type_kind_matches` accepts for any type, so the parity \
-         assertion certifies NOTHING about the row; check the representative \
-         args first, since a mis-shaped probe produces exactly this. If the \
+         assertion certifies NOTHING about the row; check `representative_args` \
+         first, since a mis-shaped probe produces exactly this. If the \
          divergence genuinely belongs to a later leaf, add an entry to \
-         PARITY_EXEMPTION_LEDGER naming that leaf.",
-        offenders.len(),
-        offenders.join("\n")
+         PARITY_EXEMPTION_LEDGER naming that leaf. A STALE or VERDICT CHANGED \
+         line is the opposite problem: the ledger no longer describes the row, \
+         so the entry must be deleted or updated.",
+        report.len(),
+        report.join("\n")
     );
 }
 
