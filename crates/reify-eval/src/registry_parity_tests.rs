@@ -106,6 +106,78 @@
 //! Strings appear only inside assertion messages, which are FORMATTED from
 //! those types at the point of failure — never parsed, compared, or used as a
 //! key.
+//!
+//! # Mutation recipe — the proof these guards are not vacuously true
+//!
+//! Verified by temporary mutate-run-revert (task 6013 ψ, step 11). **No
+//! mutating test is committed**, here or anywhere: a committed mutation
+//! asserts the bug, not the contract. The permanent guards are the tests in
+//! this module; this recipe is the evidence that each one actually fires, and
+//! it is the thing to re-run when a τ migration makes you doubt them.
+//!
+//! Every failure line quoted below was **OBSERVED, never guessed**. The one
+//! edit to the observed text is a marked `…` standing in for
+//! `DimensionVector`'s ten-`Rational` `Debug` payload, which in all three legs
+//! is LENGTH — `[1/1, 0/1 × 9]` — and is quoted at full length nowhere because
+//! it is the same 300 characters each time.
+//!
+//! Run command for every leg: `cargo test -p reify-eval --lib registry_parity`.
+//!
+//! **Leg 1 — the row's DECLARED type is wrong** (the PRD §8 row 9 recipe). In
+//! `crates/reify-builtins/src/registry.rs`, change the `ParseLength` row's
+//! `result` from `Const(Type::Option(Box::new(Type::length())))` to
+//! `Const(Type::String)`. `every_eval_builtin_row_agrees_with_its_executed_kind`
+//! goes RED — 11 passed, 1 failed:
+//!
+//! ```text
+//!   UNLEDGERED ParseLength ("parse_length") — verdict Diverges; observed
+//!   Option(Some(Scalar { si_value: 0.012, dimension: DimensionVector([…]) })),
+//!   declared String
+//! ```
+//!
+//! Revert: restore the `Const(Type::Option(Box::new(Type::length())))` result.
+//!
+//! **Leg 2 — the EVAL BODY is wrong and the table is untouched.** This is the
+//! leg that proves the harness's distinctive claim. PRD §3 decision 12 names a
+//! buggy eval body as the residue the row table alone cannot close, and no
+//! table-only test can see it: here the registry is left exactly as shipped. In
+//! `crates/reify-stdlib/src/parse.rs`, change `parse_length`'s `Some(s)` arm
+//! from `Value::Option(parse_length_value(s).ok().map(Box::new))` to
+//! `Value::String(s.to_string())`. The same test goes RED — 11 passed, 1
+//! failed:
+//!
+//! ```text
+//!   UNLEDGERED ParseLength ("parse_length") — verdict Diverges; observed
+//!   String("12mm"), declared Option(Scalar { dimension: DimensionVector([…]) })
+//! ```
+//!
+//! Revert: restore the `Value::Option(..)` arm.
+//!
+//! **Leg 3 — the vacuity arm is live, and the probe guard is its second
+//! signal.** In THIS file, split [`representative_args`]' shared
+//! `ParseLength | ParseLengthR` arm and give `ParseLength` zero arguments
+//! (`EvalBuiltinId::ParseLength => (vec![], vec![])`). `single_string_arg`
+//! declines, the row evaluates to `Value::Undef`, and TWO tests go RED — 10
+//! passed, 2 failed. That pair is the intended double signal: the sweep reports
+//! an unledgered VACUOUS row, and the probe guard says the fault is in this
+//! file rather than in the row, which is exactly the misattribution it exists
+//! to prevent.
+//!
+//! ```text
+//!   UNLEDGERED ParseLength ("parse_length") — verdict Vacuous; observed Undef,
+//!   declared Option(Scalar { dimension: DimensionVector([…]) })
+//! ```
+//!
+//! ```text
+//! ParseLength: 0 representative arg(s) do not match the row's declared arity
+//! Exact(1) — the kernel would short-circuit to Value::Undef and the sweep
+//! would blame the row for this file's mistake
+//! ```
+//!
+//! Revert: restore the shared `ParseLength | ParseLengthR` arm.
+//!
+//! Legs 1 and 2 each transiently edit another crate, so `git status` must be
+//! clean of `registry.rs` and `parse.rs` before anything is committed.
 
 use std::collections::HashSet;
 
@@ -772,9 +844,8 @@ fn describe_failure(
     ledger: &[ExemptionEntry],
 ) -> String {
     let id = failure.id();
-    let name = observations
-        .iter()
-        .find(|obs| obs.id == id)
+    let observation = observations.iter().find(|obs| obs.id == id);
+    let name = observation
         .map(|obs| obs.name)
         .unwrap_or("<no observation for this row>");
     let why = ledger
@@ -785,13 +856,14 @@ fn describe_failure(
 
     match failure {
         Failure::Unledgered { observed, .. } => {
-            let obs = observations.iter().find(|obs| obs.id == id);
-            format!(
-                "  UNLEDGERED {id:?} ({name:?}) — verdict {observed:?}; \
-                 observed {:?}, declared {:?}",
-                obs.map(|o| &o.observed),
-                obs.map(|o| &o.declared),
-            )
+            // Rendered as one clause so the reader never sees the lookup's own
+            // `Option` wrapped around the row's value — `Value::Option` is
+            // itself a variant here, and `Some(Option(Some(..)))` reads as a
+            // defect in the row rather than as evidence about it.
+            let evidence = observation
+                .map(|obs| format!("observed {:?}, declared {:?}", obs.observed, obs.declared))
+                .unwrap_or_else(|| "no observation was recorded for it".to_string());
+            format!("  UNLEDGERED {id:?} ({name:?}) — verdict {observed:?}; {evidence}")
         }
         Failure::Stale { ledgered, .. } => format!(
             "  STALE LEDGER ENTRY {id:?} ({name:?}) — the row now \
