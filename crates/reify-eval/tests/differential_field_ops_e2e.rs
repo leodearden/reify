@@ -195,8 +195,8 @@ fn differential_field_ops_integration_gate() {
     let check_result = engine.check(&compiled);
     assert_eq!(
         check_result.constraint_results.len(),
-        8,
-        "expected exactly 8 constraint results (matching the 8 `constraint` \
+        10,
+        "expected exactly 10 constraint results (matching the 10 `constraint` \
          statements in differential_field_ops.ri), got {} — a regression may \
          have silently dropped constraint registration or evaluation",
         check_result.constraint_results.len()
