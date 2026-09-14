@@ -144,11 +144,17 @@ where
 /// for every non-keyed shape: a sub with no overrides previously fell through
 /// to `_ => {}` and now reaches a walker that visits nothing.
 ///
-/// We descend into `MemberDecl::GuardedGroup.{members, else_members}` so a
-/// specialization scope that lives inside a top-level
-/// `where { … } else { … }` is still discovered (spec §6.4 +
-/// shadow_lint.rs:39-43 — guarded-group branches are siblings in the
-/// enclosing scope).
+/// We descend into `MemberDecl::GuardedGroup.{members, else_members}` and into
+/// each `MemberDecl::MatchArmDeclGroup` arm's member — the same two cells
+/// `reify_ast`'s `walk_members` recurses into UNCONDITIONALLY, so this
+/// root-finder stays congruent with the walker it feeds. Both declare siblings
+/// of the enclosing scope (spec §6.4 + shadow_lint.rs:39-43), so a
+/// specialization scope inside a top-level `where … else …` or `match … { }`
+/// is discovered like any other. The match-arm cell is congruence rather than
+/// a reachable fix: the grammar rejects a specialization body inside an arm
+/// today (`match h { Hex => sub s : T { param q } }` is a parse error,
+/// measured), so only a hand-built AST reaches it — but the AST type admits it,
+/// and task 2370 left the asymmetry as a known silent miss.
 ///
 /// We do NOT descend into a sub's overrides here — that is the job of
 /// [`walk_specialization_scope_members`] itself (which recurses through nested
@@ -171,6 +177,15 @@ where
                 find_specialization_scopes(&g.members, visitor, depth + 1);
                 find_specialization_scopes(&g.else_members, visitor, depth + 1);
             }
+            MemberDecl::MatchArmDeclGroup(g) => {
+                for arm in &g.arms {
+                    find_specialization_scopes(
+                        std::slice::from_ref(&*arm.member),
+                        visitor,
+                        depth + 1,
+                    );
+                }
+            }
             _ => {}
         }
     }
@@ -179,7 +194,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_ast::{GuardedGroupDecl, MemberDecl};
+    use reify_ast::{
+        GuardedGroupDecl, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MemberDecl,
+    };
     use reify_core::{Diagnostic, DiagnosticCode, ModulePath, Severity};
     use reify_test_support::specialization_fixtures::*;
 
@@ -879,6 +896,68 @@ structure S {
             diagnostics[1].message.contains("'param'") && diagnostics[1].message.contains("'q'"),
             "second diagnostic must be the leaf param, got: {:?}",
             diagnostics[1].message
+        );
+    }
+
+    // ── root-finding congruence: match-arm decl groups ───────────────────────
+
+    /// A specialization scope declared inside a top-level `match` arm is found,
+    /// exactly as one inside a top-level `where … else …` branch is.
+    ///
+    /// Hand-built AST deliberately: the grammar rejects a specialization body
+    /// inside a match arm today, so no `.ri` source reaches this. What it pins
+    /// is that `find_specialization_scopes` recurses into the same two cells
+    /// `reify_ast`'s `walk_members` recurses into unconditionally — the
+    /// asymmetry task 2370 left behind, documented there as "placing the
+    /// match-arm-group at top-level would silently miss the inner forbidden
+    /// decls".
+    ///
+    /// Two arms, so a `.first()`-shaped descent fails here. The arms' own
+    /// `sub`s are NOT reported: a top-level sub sits in no specialization
+    /// scope, so only the `param` inside each one's body is forbidden.
+    #[test]
+    fn validate_module_reports_forbidden_decls_in_a_top_level_match_arm_scope() {
+        let first_param_span = param_span();
+        let second_param_span = port_span();
+        // structure S { match head_type { Hex => sub head : Foo { param x }
+        //                                 Socket => sub head : Foo { param y } } }
+        let arm = |pattern: &str, param: MemberDecl| MatchArmDeclArmDecl {
+            patterns: vec![pattern.to_string()],
+            member: Box::new(make_sub_with_body("head", sub_span(), vec![param])),
+            span: dummy_span(),
+        };
+        let group = MemberDecl::MatchArmDeclGroup(MatchArmDeclGroupDecl {
+            discriminant: dummy_expr(),
+            arms: vec![
+                arm("Hex", make_param("x", first_param_span)),
+                arm("Socket", make_param("y", second_param_span)),
+            ],
+            span: dummy_span(),
+            content_hash: dummy_hash(),
+        });
+        let parsed = parsed_module_with_structure_members(vec![group]);
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        validate_module(&parsed, &mut diagnostics);
+
+        assert_eq!(
+            diagnostics.len(),
+            2,
+            "each arm's sub opens a specialization scope, so each body param is \
+             forbidden; got: {diagnostics:?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code == Some(DiagnosticCode::SpecializationForbiddenDecl)),
+            "both diagnostics must carry SpecializationForbiddenDecl"
+        );
+        assert_eq!(
+            diagnostics
+                .iter()
+                .map(|d| d.labels[0].span)
+                .collect::<Vec<_>>(),
+            vec![first_param_span, second_param_span],
+            "every arm is descended into, in declaration order"
         );
     }
 }
