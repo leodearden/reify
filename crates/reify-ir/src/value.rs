@@ -3144,8 +3144,8 @@ fn format_engineering(mantissa: f64, exponent: i32) -> String {
 ///
 /// Widened from a private helper by task λ (#5788, §11 Q2) so task μ can read
 /// the curated raw-SI label across the crate boundary. Task #6674 then added
-/// the first real consumer — the `Value::Scalar` arm of
-/// [`Display`](std::fmt::Display), which sources the `reify eval` cell's unit
+/// the first real consumers — the `Value::Scalar` and `Value::Complex` arms of
+/// [`Display`](std::fmt::Display), which source the `reify eval` cell's unit
 /// from here — so the `&DimensionVector -> Cow<'static, str>` shape is now
 /// settled as adequate for a label-only caller. That consumer is IN-CRATE,
 /// though: the CROSS-CRATE `pub` widening λ made for μ still has no non-test
