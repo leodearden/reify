@@ -14,50 +14,50 @@ use reify_test_support::ctor_conformance::{
     CTOR_CONFORMANCE_CODES, ctor_diagnostic_names_arg, is_ctor_conformance_code,
 };
 
-/// Every admitted code is admitted. Iterates the SET rather than restating the
-/// list, so the predicate and the set it is derived from cannot drift apart —
-/// an ADDITION to `CTOR_CONFORMANCE_CODES` that the predicate does not honour
-/// goes red here instead of silently widening nothing.
+/// EXACT membership of the admission set, pinned whole so an ADDITION and a
+/// DELETION are each red here — the one place either is visible. A per-member
+/// containment loop over the set would be tautological against the
+/// `contains`-based predicate, and a per-member loop over a restated list sees
+/// additions not at all.
+///
+/// Membership is the union of the α type codes (tasks 5302 / 4584 / 4598 /
+/// 4622 / 4444) and ε's two structural codes (task 5303), which belong
+/// together because both families are emitted at the same
+/// `CTOR_FIELD_CONFORMANCE_SEVERITY` knob and δ flips them as one.
 #[test]
-fn every_member_of_the_code_set_is_admitted() {
-    assert!(
-        !CTOR_CONFORMANCE_CODES.is_empty(),
-        "the admission set must not be empty — an empty set would make \
-         `is_ctor_conformance_code` vacuously false everywhere and every \
-         count-based pin that filters through it vacuously green"
+fn the_admission_set_is_exactly_the_seven_ctor_conformance_codes() {
+    assert_eq!(
+        CTOR_CONFORMANCE_CODES,
+        &[
+            DiagnosticCode::ArgTypeMismatch,
+            DiagnosticCode::SelectorKindMismatch,
+            DiagnosticCode::TypeNotConformingToTrait,
+            DiagnosticCode::TypeNotConformingToStructureRef,
+            DiagnosticCode::TypeNotConformingToVector,
+            DiagnosticCode::CtorUnknownField,
+            DiagnosticCode::CtorArity,
+        ],
+        "the ctor-conformance admission set changed. A DROPPED code silently \
+         un-filters every count-based pin that narrows through it; an EMPTY \
+         set makes `is_ctor_conformance_code` vacuously false everywhere and \
+         every such pin vacuously green. An ADDED code is fine on purpose — \
+         update this list deliberately, having checked the narrowing pins that \
+         read it"
     );
+}
+
+/// The predicate honours every member of the set it is derived from.
+///
+/// Inert against today's one-line `CTOR_CONFORMANCE_CODES.contains(&c)` — that
+/// is the point: this arm pins the INTERFACE, so a re-implementation that
+/// spells the set out again (a hand-written `matches!`, which is exactly what
+/// the four deleted copies were) goes red instead of drifting silently.
+#[test]
+fn the_predicate_admits_every_member_of_the_set() {
     for code in CTOR_CONFORMANCE_CODES {
         assert!(
             is_ctor_conformance_code(Some(*code)),
             "`{code:?}` is in CTOR_CONFORMANCE_CODES but the predicate rejects it"
-        );
-    }
-}
-
-/// The seven variants named explicitly, so a DELETION from the set goes red
-/// rather than silently shrinking the admission surface. The iterating test
-/// above cannot see a deletion — it would still pass over the smaller set.
-///
-/// Membership here is the union of the α type codes (tasks 5302 / 4584 / 4598
-/// / 4622 / 4444) and ε's two structural codes (task 5303), which belong
-/// together because both families are emitted at the same
-/// `CTOR_FIELD_CONFORMANCE_SEVERITY` knob and δ flips them as one.
-#[test]
-fn the_seven_admitted_codes_are_all_present() {
-    for code in [
-        DiagnosticCode::ArgTypeMismatch,
-        DiagnosticCode::SelectorKindMismatch,
-        DiagnosticCode::TypeNotConformingToTrait,
-        DiagnosticCode::TypeNotConformingToStructureRef,
-        DiagnosticCode::TypeNotConformingToVector,
-        DiagnosticCode::CtorUnknownField,
-        DiagnosticCode::CtorArity,
-    ] {
-        assert!(
-            CTOR_CONFORMANCE_CODES.contains(&code),
-            "`{code:?}` must stay in the ctor-conformance admission set; \
-             dropping it silently un-filters every count-based pin that \
-             narrows through it"
         );
     }
 }

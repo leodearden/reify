@@ -11,13 +11,30 @@
 //! OBSERVED variant; never on full message prose.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Mutex;
 
 use reify_core::dimension::{DimensionVector, FORCE};
 use reify_ir::Value;
 use reify_test_support::{assert_dimensioned, mm, newton};
 
+/// Serialises the panic-hook swap in [`panic_message`].
+///
+/// The hook is PROCESS-global while libtest runs these tests as parallel
+/// threads of ONE process, so two unserialised take/set pairs interleave:
+/// `A:take` (gets the default, installs its silencer) → `B:take` (gets A's
+/// silencer) → `A:set(default)` → `B:set(A's silencer)` leaves a silencer
+/// installed for the remainder of the binary, and a GENUINE failure in any
+/// later test then reports no payload at all. The mirror interleave restores
+/// the default early and prints the four deliberate panics as noise. Either
+/// way it degrades exactly the diagnosability these pins exist to provide.
+static PANIC_HOOK: Mutex<()> = Mutex::new(());
+
 /// Capture a panic payload as a `String`, or `None` if the closure returned.
 fn panic_message(f: impl FnOnce()) -> Option<String> {
+    // Poison-tolerant: the guard protects only the swap below, which is
+    // restored on every path, so a poisoned lock guards no invalid state and
+    // refusing on it would turn an unrelated failure into a cascade.
+    let _serialised = PANIC_HOOK.lock().unwrap_or_else(|e| e.into_inner());
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     let outcome = catch_unwind(AssertUnwindSafe(f));

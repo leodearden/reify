@@ -5205,8 +5205,9 @@ structure CtorMisspelledLabelProbe {
          `Warning` pre-δ. The knob is `pub(crate)` inside a private \
          `conformance` module, so an integration-test binary cannot name it \
          and has to restate the value — δ's one-const flip must therefore move \
-         THIS line together with the contract-home pin in \
-         `struct_ctor_field_conformance_tests.rs`. Got: {:?}",
+         THIS line together with every other restatement of it: the sibling \
+         `Severity::Warning` pins earlier in this file and the ones in \
+         `harness_mechanics/modal_options_validation_tests.rs`. Got: {:?}",
         judging[0]
     );
     assert!(

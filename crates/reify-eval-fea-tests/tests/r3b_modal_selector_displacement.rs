@@ -648,7 +648,7 @@ structure R3bUnmigratedRayleighCtorControl {
         assert!(
             control_hits
                 .iter()
-                .any(|m| m.contains(&format!("{CTOR_DIAGNOSTIC_ARG_PREFIX}{param}'"))),
+                .any(|m| ctor_diagnostic_names_arg(m, param)),
             "POSITIVE CONTROL: one ctor-arg diagnostic must name `{param}`; \
              got: {:#?}",
             control_hits
