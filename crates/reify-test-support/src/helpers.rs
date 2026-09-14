@@ -2549,6 +2549,101 @@ mod tests {
         super::get_value_cell_in(&module, "Bracket", "x");
     }
 
+    // ── get_value_cell_of / try_get_value_cell_of ─────────────────────────
+
+    /// Resolves a cell from a template the caller holds DIRECTLY, with no
+    /// module in scope — the case `get_value_cell_in` cannot serve, because
+    /// `compile_first_template` consumes the module it compiled. Asserts the
+    /// full declaration comes back (kind, cell_type and default expr), not
+    /// just the expr `get_let_expr_in_template` would yield.
+    #[test]
+    fn test_get_value_cell_of_returns_cell_from_held_template() {
+        let (template, _) = super::compile_first_template(r#"structure Alpha { let v = 1.5 }"#);
+        let cell = super::get_value_cell_of(&template, "v");
+        assert_eq!(
+            cell.kind,
+            reify_compiler::ValueCellKind::Let,
+            "expected cell.kind == ValueCellKind::Let for Alpha.v (pins that the \
+             helper returns the full declaration, not just an expr), got {:?}",
+            cell.kind
+        );
+        assert_eq!(
+            cell.cell_type,
+            reify_core::Type::dimensionless_scalar(),
+            "expected cell_type == Type::dimensionless_scalar() for Alpha.v, got {:?}",
+            cell.cell_type
+        );
+        assert_real_literal(
+            cell.default_expr
+                .as_ref()
+                .expect("Alpha.v should have a default expr"),
+            1.5,
+        );
+    }
+
+    /// A defaultless cell (an `auto` param) comes back as-is rather than
+    /// panicking: this helper resolves declarations, so "has no default expr"
+    /// stays the `get_let_expr*` family's panic, never this one's.
+    #[test]
+    fn test_get_value_cell_of_returns_cell_with_no_default_expr() {
+        let module = auto_param_module();
+        let template = module
+            .templates
+            .first()
+            .expect("auto_param_module builds exactly one template");
+        let cell = super::get_value_cell_of(template, "x");
+        assert!(
+            cell.default_expr.is_none(),
+            "auto_param_module's fixture guarantees default_expr = None; \
+             get_value_cell_of must return the cell as-is, not synthesize a default"
+        );
+    }
+
+    /// Pins that the not-found panic's `; has: [...]` available-cells suffix
+    /// survives promoting the shared walk to a public entry point — that
+    /// suffix is what makes a missing-cell failure diagnosable without a
+    /// reproduction run.
+    #[test]
+    #[should_panic(expected = "[\"First.x\", \"Second.x\"]")]
+    fn test_get_value_cell_of_missing_cell_panic_lists_available_cells() {
+        super::get_value_cell_of(&ambiguous_x_template(), "y");
+    }
+
+    /// The tolerant variant yields the declaration for a present member.
+    #[test]
+    fn test_try_get_value_cell_of_returns_some_for_present_member() {
+        let (template, _) = super::compile_first_template(r#"structure Alpha { let v = 1.5 }"#);
+        let cell = super::try_get_value_cell_of(&template, "v")
+            .expect("Alpha declares 'v', so the tolerant lookup must yield it");
+        assert_eq!(
+            cell.id.member, "v",
+            "expected the cell named 'v', got {:?}",
+            cell.id.member
+        );
+    }
+
+    /// `None` for an absent member, with NO panic — the whole point of the
+    /// tolerant variant, and the only way a caller can assert a cell is
+    /// ABSENT (as `guard_compilation.rs` does for guarded params).
+    #[test]
+    fn test_try_get_value_cell_of_returns_none_for_absent_member() {
+        let (template, _) = super::compile_first_template(r#"structure Alpha { let v = 1.5 }"#);
+        assert!(
+            super::try_get_value_cell_of(&template, "nope").is_none(),
+            "expected None for a member 'Alpha' does not declare"
+        );
+    }
+
+    /// Ambiguity is NOT folded into `None`: the tolerant variant still
+    /// panics on a collision, so `None` means ABSENT and only absent. A
+    /// caller checking absence can therefore never read "no such cell" when
+    /// the truth is "two cells matched".
+    #[test]
+    #[should_panic(expected = "ambiguous cell name")]
+    fn test_try_get_value_cell_of_panics_on_ambiguous_member() {
+        let _ = super::try_get_value_cell_of(&ambiguous_x_template(), "x");
+    }
+
     // ── get_let_expr_in_template ────────────────────────────────────────────
 
     /// get_let_expr_in_template should return the default_expr of the named
