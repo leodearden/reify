@@ -2225,7 +2225,32 @@ mod tests {
         );
     }
 
-    // (c) Empty surfaces: form_find_free_surfaces with empty surfaces/stresses
+    // (c) A surface triangle corner that indexes past the node array is
+    // infeasible input — `assemble_surface_matrix` would panic on its
+    // `nodes[gi]` index. The module contract promises infeasible input becomes
+    // a clean typed error, never a panic.
+    #[test]
+    fn surfaces_free_out_of_range_index_is_dimension_mismatch() {
+        let (members, kinds) = triplex_topology();
+        let guess = perturbed_prism_guess();
+        // Boundary index: 6 is the FIRST invalid index for the 6-node triplex,
+        // so this pins the `≥ n` comparison that a `> n` typo would let pass.
+        let surfaces = vec![(0usize, 1usize, 6usize)];
+        let sigmas = vec![0.2];
+        let spec = ForceDensitySpec::GroupRatios {
+            group_ids: triplex_group_ids(),
+            seed_ratios: vec![-1.0, 1.0, 1.0],
+            reference_group: 1,
+        };
+
+        assert_eq!(
+            form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &sigmas, &spec)
+                .unwrap_err(),
+            FreeFormError::DimensionMismatch,
+        );
+    }
+
+    // (d) Empty surfaces: form_find_free_surfaces with empty surfaces/stresses
     // must return a result that matches form_find_free in all line-only fields
     // (nodes / member_forces / force_densities / nullity / converged) and
     // carries an empty (NEVER absent) surface_stresses echo.
