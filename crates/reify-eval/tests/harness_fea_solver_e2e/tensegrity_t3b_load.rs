@@ -446,6 +446,61 @@ fn trampoline_swapped_section_units_is_failed() {
     assert_failed_infeasible(call_tensegrity_load(&value_inputs), "wrong unit");
 }
 
+/// (b5) The `loads` slot is a `List<Vector3<Force>>`, so every *component* of
+/// every entry is unit-checked individually, not just the entry as a whole. A
+/// Length in the y component of the middle entry must surface a located
+/// `E_TensegrityLoadInfeasible` "wrong unit" diagnostic naming `loads[1].y` —
+/// both the offending entry index and the offending component letter, so the
+/// author is told exactly which of the nine numbers is wrong.
+///
+/// Three load entries are supplied for the three nodes of `two_cable_string`,
+/// and corrupting a single *component* leaves that entry count intact, so the
+/// `loads.len() != nodes.len()` guard provably cannot be what fires; `loads` is
+/// cracked at input [4] ahead of every count guard in `run`. The located
+/// `loads[{i}].{x|y|z}` labelling is what this test exists to pin: index 1 (not
+/// 0) distinguishes a real entry index from a hardcoded constant, and component
+/// `y` (not `x`) distinguishes per-component labels from one label copy-pasted
+/// across all three reads.
+#[test]
+fn trampoline_length_in_load_component_is_failed() {
+    let value_inputs = vec![
+        two_cable_string(2.0),
+        Value::List(vec![force(5_000.0), force(5_000.0)]),
+        pressure(200.0e9),
+        area(1.0e-4),
+        Value::List(vec![
+            force_vec(0.0, 0.0, 0.0),
+            // loads[1].y is a Length where a Force belongs.
+            Value::Vector(vec![force(0.0), length(50.0), force(0.0)]),
+            force_vec(0.0, 0.0, 0.0),
+        ]),
+        Value::List(vec![Value::Int(0), Value::Int(2)]),
+    ];
+    assert_failed_infeasible(call_tensegrity_load(&value_inputs), "wrong unit");
+    assert_failed_infeasible(call_tensegrity_load(&value_inputs), "expected a Force");
+    assert_failed_infeasible(call_tensegrity_load(&value_inputs), "loads[1].y");
+
+    // Negative guard: a cracker that collapsed the entry index to a constant 0
+    // would still satisfy every needle above, so pin that the *uncorrupted*
+    // entry 0 is not the one named. `assert_failed_infeasible` only carries
+    // positive needles, so this one is spelled out inline rather than weakening
+    // that helper's contract.
+    match call_tensegrity_load(&value_inputs) {
+        ComputeOutcome::Failed { diagnostics, .. } => {
+            let joined = diagnostics
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect::<Vec<_>>()
+                .join(" | ");
+            assert!(
+                !joined.contains("loads[0]"),
+                "the entry index must locate the corrupted entry, not a constant 0: {joined}"
+            );
+        }
+        other => panic!("expected ComputeOutcome::Failed, got {other:?}"),
+    }
+}
+
 // ── step-13: dedicated solver::tensegrity_load target registration ───────────
 //
 // PRD §11 Q2: the load solver is wired as its OWN ComputeNode target (not an

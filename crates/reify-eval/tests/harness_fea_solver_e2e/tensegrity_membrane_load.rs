@@ -711,3 +711,52 @@ fn trampoline_force_in_surface_prestress_slot_is_failed() {
     assert_failed_infeasible(call_membrane_load(&value_inputs), "expected a Pressure");
     assert_failed_infeasible(call_membrane_load(&value_inputs), "surface_prestress[0]");
 }
+
+/// (f5) The VECTOR path — `loads` is a `List<Vector3<Force>>`, so each of the
+/// three *components* of each entry is unit-checked individually. A Length in
+/// the y component of entry [1] must be rejected with the located
+/// `loads[1].y` labelling: the entry index tells the author *which* node's load
+/// is wrong, the component letter *which* of its three numbers. Five entries
+/// are supplied, matching the pavilion's five nodes, and corrupting a single
+/// component leaves that count intact, so the `loads.len() != nodes.len()`
+/// guard is provably not what fires. This is the membrane mirror of
+/// `tensegrity_t3b_load.rs`'s `trampoline_length_in_load_component_is_failed`;
+/// the PAIR matters, because each file's `assert_failed_infeasible` pins its
+/// OWN mnemonic, so together they prove each trampoline keeps its own
+/// `E_*Infeasible` code once `crack_loads` takes that code as a parameter
+/// instead of hardcoding it.
+#[test]
+fn trampoline_length_in_load_component_is_failed() {
+    let mut value_inputs = combined_pavilion_payload();
+    // [4] loads := five entries (one per node) with loads[1].y a Length.
+    value_inputs[4] = Value::List(vec![
+        force_vec(0.0, 0.0, 0.0),
+        Value::Vector(vec![force(0.0), length(50.0), force(0.0)]),
+        force_vec(0.0, 0.0, 0.0),
+        force_vec(0.0, 0.0, 0.0),
+        force_vec(0.0, 0.0, 0.0),
+    ]);
+    assert_failed_infeasible(call_membrane_load(&value_inputs), "wrong unit");
+    assert_failed_infeasible(call_membrane_load(&value_inputs), "expected a Force");
+    assert_failed_infeasible(call_membrane_load(&value_inputs), "loads[1].y");
+
+    // Negative guard: a cracker that collapsed the entry index to a constant 0
+    // would still satisfy every needle above, so pin that the *uncorrupted*
+    // entry 0 is not the one named. `assert_failed_infeasible` carries only
+    // positive needles, so this is spelled out inline rather than weakening
+    // that helper's contract.
+    match call_membrane_load(&value_inputs) {
+        ComputeOutcome::Failed { diagnostics, .. } => {
+            let joined = diagnostics
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect::<Vec<_>>()
+                .join(" | ");
+            assert!(
+                !joined.contains("loads[0]"),
+                "the entry index must locate the corrupted entry, not a constant 0: {joined}"
+            );
+        }
+        other => panic!("expected ComputeOutcome::Failed, got {other:?}"),
+    }
+}
