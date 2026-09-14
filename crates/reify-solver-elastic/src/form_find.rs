@@ -271,7 +271,8 @@ const MAX_SURFACE_ITERS: usize = 5000;
 /// [`FormFindSolve`] whose `surface_stresses` echoes the prescribed σ.
 ///
 /// # Errors
-/// - [`FormFindError::DimensionMismatch`] — `members`/`kinds`/`q` disagree.
+/// - [`FormFindError::DimensionMismatch`] — `members`/`kinds`/`q` disagree, or
+///   a `surfaces` triangle corner indexes past `nodes`.
 /// - [`FormFindError::SurfaceCountMismatch`] — `surfaces`/`surface_stresses`
 ///   disagree.
 /// - [`FormFindError::SignViolation`] — a member violates its q-sign contract.
@@ -314,6 +315,12 @@ pub fn form_find_anchored_surfaces(
         if s <= 0.0 {
             return Err(FormFindError::NonTensionSurfaceStress);
         }
+    }
+    // Surface node-index contract: a triangle corner past `nodes` would panic
+    // on the `nodes[i]` index in `assemble_d`. PRD §8.1 promises a clean
+    // diagnostic, never a panic.
+    if !surface_indices_in_range(surfaces, n) {
+        return Err(FormFindError::DimensionMismatch);
     }
 
     // Partition node indices into anchored A and free F (both ascending).
