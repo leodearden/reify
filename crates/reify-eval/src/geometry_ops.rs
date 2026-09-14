@@ -1011,10 +1011,20 @@ fn accept_variadic_length_args(
 /// a bare one is usually bare in EVERY component; short-circuiting would hand
 /// the author one coordinate name per rebuild.
 ///
-/// A wrong SHAPE is deliberately NOT a units rejection: it returns the
-/// caller-supplied `shape_err()` VERBATIM and pushes no diagnostic. This helper
-/// replaces [`point3_components`]' ACCEPTANCE policy, not its shape check, so
-/// every pre-δ wrong-variant / wrong-arity message survives byte-identical.
+/// A wrong SHAPE is deliberately NOT a units rejection: it hands the caller's
+/// `shape_err` the diagnostic sink and returns its `String` VERBATIM, minting
+/// nothing of its own. This helper replaces [`point3_components`]' ACCEPTANCE
+/// policy, not its shape check, so every pre-δ wrong-variant / wrong-arity
+/// message survives byte-identical.
+///
+/// `shape_err` takes the sink so that ONE closure owns BOTH halves of a shape
+/// rejection — the `Diagnostic` a caller wants the user to see AND the `Err`
+/// text — and cannot be forwarded in a form that keeps only half. δ's own three
+/// callers push nothing (their outer layer owns the Warning) and so ignore the
+/// argument; ζ's [`accept_transform_to_arrays`] pushes, and before this
+/// parameter existed it had to wrap its two-part closure as
+/// `|| f(&mut Vec::new())` — which dropped the Warning on the floor the moment
+/// this arm became reachable.
 ///
 /// `names` is `[N; 3]` with `N: Display + Copy` rather than `[&str; 3]` so a
 /// caller whose names are COMPUTED can hand over lazy renderers instead of
@@ -1047,14 +1057,15 @@ fn accept_length_point3<N: std::fmt::Display + Copy>(
     value: &reify_ir::Value,
     names: [N; 3],
     kind_label: impl std::fmt::Display + Copy,
-    shape_err: impl FnOnce() -> String,
+    shape_err: impl FnOnce(&mut Vec<Diagnostic>) -> String,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<[f64; 3], String> {
     // SHAPE check, mirroring `point3_components` exactly — same variants, same
-    // arity. A mismatch keeps the caller's pre-δ wording and emits nothing.
+    // arity. A mismatch keeps the caller's pre-δ wording and mints nothing here:
+    // whatever the caller's `shape_err` pushes is the whole of it.
     let comps = match value {
         reify_ir::Value::Point(c) | reify_ir::Value::Vector(c) if c.len() == 3 => c,
-        _ => return Err(shape_err()),
+        _ => return Err(shape_err(diagnostics)),
     };
 
     let mut out = [0.0_f64; 3];
@@ -1879,7 +1890,7 @@ pub(crate) fn decode_plane(
         origin_val,
         ["ox", "oy", "oz"],
         kind_label,
-        || "Plane origin is not a valid 3-component numeric Point/Vector".to_string(),
+        |_| "Plane origin is not a valid 3-component numeric Point/Vector".to_string(),
         diagnostics,
     )?;
     // The plane NORMAL is a dimensionless unit vector — stays bare f64, exactly
@@ -1958,7 +1969,7 @@ pub(crate) fn decode_axis(
         origin_val,
         ["ox", "oy", "oz"],
         kind_label,
-        || "Axis origin is not a valid 3-component numeric Point/Vector".to_string(),
+        |_| "Axis origin is not a valid 3-component numeric Point/Vector".to_string(),
         diagnostics,
     )?;
     // The axis DIRECTION is a dimensionless unit vector — stays bare f64, exactly
@@ -2282,7 +2293,7 @@ pub(crate) fn compile_geometry_op(
                                     GridCoordName::z(ri, ci),
                                 ],
                                 kind,
-                                || {
+                                |_| {
                                     format!(
                                         "nurbs_surface: control_points[{}][{}] must be \
                                          a Point3<Length>, got {:?}",
@@ -11926,7 +11937,9 @@ pub(crate) fn realization_is_aux(realization: &reify_compiler::RealizationDecl) 
 ///   that is not a 3-component `Vector`) calls `on_shape_mismatch` and returns
 ///   ITS `String` as the `Err`. The closure both PUSHES the caller's pre-ζ
 ///   `Diagnostic` and RETURNS its pre-ζ `Err` text, which is what keeps every
-///   caller's shape wording byte-identical across ζ;
+///   caller's shape wording byte-identical across ζ. It is forwarded WHOLE to
+///   [`accept_length_point3`]'s own `shape_err`, so the two halves travel
+///   together down every path and neither can be dropped;
 /// - a wrong DIMENSION is a UNITS rejection, handed WHOLE to
 ///   [`accept_length_point3`] under the names `translation.x|y|z`. That helper
 ///   already owns the C1 wording, the `Severity::Error` +
@@ -11968,14 +11981,15 @@ fn accept_transform_to_arrays(
         return Err(on_shape_mismatch(diagnostics));
     }
     // The translation SHAPE is already known good, so `accept_length_point3`'s
-    // own `shape_err` arm is unreachable from here; it is wired to the same
-    // closure anyway so a future widening of that helper cannot silently fork
-    // the two wordings.
+    // own `shape_err` arm is unreachable from here (the guard above admits a
+    // strict SUBSET of what the helper does). It is wired to the SAME closure
+    // anyway, forwarded WHOLE, so a future widening of either shape check keeps
+    // both halves of the rejection — the pushed `Diagnostic` and the `Err` text.
     let t = accept_length_point3(
         translation.as_ref(),
         ["translation.x", "translation.y", "translation.z"],
         kind_label,
-        || on_shape_mismatch(&mut Vec::new()),
+        on_shape_mismatch,
         diagnostics,
     )?;
     Ok(([*w, *x, *y, *z], t))

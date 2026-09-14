@@ -24387,7 +24387,7 @@
             &length_point3(0.01, 0.02, 0.03),
             ["ox", "oy", "oz"],
             "mirror",
-            || SHAPE_SENTINEL.to_string(),
+            |_| SHAPE_SENTINEL.to_string(),
             &mut diagnostics,
         );
         assert_eq!(
@@ -24420,7 +24420,7 @@
             &bare_real_vector3(0.01, 0.02, 0.03),
             ["ox", "oy", "oz"],
             "mirror",
-            || SHAPE_SENTINEL.to_string(),
+            |_| SHAPE_SENTINEL.to_string(),
             &mut diagnostics,
         );
 
@@ -24481,7 +24481,7 @@
             &value,
             ["ox", "oy", "oz"],
             "circular",
-            || SHAPE_SENTINEL.to_string(),
+            |_| SHAPE_SENTINEL.to_string(),
             &mut diagnostics,
         );
 
@@ -24527,7 +24527,7 @@
             &value,
             ["ox", "oy", "oz"],
             "mirror",
-            || SHAPE_SENTINEL.to_string(),
+            |_| SHAPE_SENTINEL.to_string(),
             &mut diagnostics,
         );
         assert_eq!(
@@ -24559,7 +24559,7 @@
             &value,
             ["ox", "oy", "oz"],
             "mirror",
-            || SHAPE_SENTINEL.to_string(),
+            |_| SHAPE_SENTINEL.to_string(),
             &mut diagnostics,
         );
         assert_eq!(
@@ -24608,7 +24608,7 @@
                 &value,
                 ["ox", "oy", "oz"],
                 "mirror",
-                || SHAPE_SENTINEL.to_string(),
+                |_| SHAPE_SENTINEL.to_string(),
                 &mut diagnostics,
             );
             assert_eq!(
@@ -24647,7 +24647,7 @@
                 GridCoordName::z(0, 1),
             ],
             "nurbs_surface",
-            || SHAPE_SENTINEL.to_string(),
+            |_| SHAPE_SENTINEL.to_string(),
             &mut diagnostics,
         );
 
@@ -31661,6 +31661,149 @@
             );
         }
 
+        // (ii-b) The `names` array is rendered POSITIONALLY, and every row above
+        // puts its offender at index 0 — so slots 1 and 2 of
+        // `["translation.x", "translation.y", "translation.z"]` would never be
+        // rendered by any test. A transposed literal (`[.., "translation.x", ..]`)
+        // would then misdirect an author to the wrong coordinate with the whole
+        // suite still green, and naming the exact offending axis is the entire
+        // value of the per-coordinate message over a generic one.
+        for (offender_at, expected_name) in [(1_usize, "translation.y"), (2, "translation.z")] {
+            let mut components = [
+                reify_ir::Value::length(0.005),
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+            ];
+            components[offender_at] = reify_ir::Value::Scalar {
+                si_value: 5.0,
+                dimension: reify_core::DimensionVector::MASS,
+            };
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let err = compile_geometry_op(
+                &apply_transform_with(transform_with_translation(components)),
+                &values,
+                &step_handles,
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            )
+            .expect_err("a MASS component anywhere in the triple must drop the op");
+            assert!(
+                err.contains(expected_name),
+                "an offender at index {offender_at} must name {expected_name}; got: {err:?}"
+            );
+            let rejections: Vec<&Diagnostic> = diagnostics
+                .iter()
+                .filter(|d| d.message.contains("argument expects Length"))
+                .collect();
+            assert_eq!(
+                rejections.len(),
+                1,
+                "index {offender_at}: exactly ONE rejection diagnostic; got: {diagnostics:?}"
+            );
+            assert!(
+                rejections[0].message.contains(expected_name),
+                "index {offender_at}: the diagnostic must name {expected_name}; got: {:?}",
+                rejections[0].message
+            );
+        }
+
+        // (ii-c) FIRST error wins ACROSS the triple — `accept_length_point3`'s
+        // documented precedence, "an `Unresolved` member must not be masked by a
+        // later `Invalid` one". Every row above carries exactly ONE offender, so
+        // the `first_err.is_none()` guard never sees a competitor and the
+        // precedence itself goes unexercised.
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let err = compile_geometry_op(
+            &apply_transform_with(transform_with_translation([
+                reify_ir::Value::Undef,
+                reify_ir::Value::Scalar {
+                    si_value: 5.0,
+                    dimension: reify_core::DimensionVector::MASS,
+                },
+                reify_ir::Value::length(0.0),
+            ])),
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        )
+        .expect_err("a triple with two bad components must drop the op");
+        assert!(
+            err.contains("unresolved (Undef)") && err.contains("translation.x"),
+            "the FIRST error (the Undef at index 0) must win over the later MASS one; \
+             got: {err:?}"
+        );
+        // …and the later component is still VISITED and diagnosed: all-failures-at-once
+        // applies WITHIN one triple, so the author sees the MASS fault too rather than
+        // one coordinate per rebuild.
+        let rejections: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|d| d.message.contains("argument expects Length"))
+            .collect();
+        assert_eq!(
+            rejections.len(),
+            1,
+            "the losing component must still be diagnosed; got: {diagnostics:?}"
+        );
+        assert!(
+            rejections[0].message.contains("translation.y"),
+            "the losing component's diagnostic must name ITS coordinate; got: {:?}",
+            rejections[0].message
+        );
+
+        // (ii-d) A NON-FINITE LENGTH is `Invalid`, and ζ MOVED its wording. Pre-ζ
+        // the decoder carried its own `is_finite()` guard, so a NaN surfaced as the
+        // generic `'transform' arg is not a valid Transform<3>`; post-ζ the check
+        // lives in `accept_length_value`, which names the offending COORDINATE.
+        // That is the intended reading — a NaN in `translation.x` is exactly as
+        // locatable as a wrong-dimension one — and it is pinned HERE so it cannot
+        // drift back unnoticed, the way the SHAPE wording is pinned by
+        // `compile_geometry_op_apply_transform_shape_mismatch_keeps_its_pre_zeta_wording`.
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let err = compile_geometry_op(
+            &apply_transform_with(transform_with_translation([
+                reify_ir::Value::length(f64::NAN),
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+            ])),
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        )
+        .expect_err("a non-finite LENGTH translation component must drop the op");
+        assert_eq!(
+            err,
+            "missing or non-Length argument 'translation.x' for apply_transform"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "a non-finite component must push exactly one diagnostic; got: {diagnostics:?}"
+        );
+        assert_eq!(
+            diagnostics[0].message,
+            "argument 'translation.x' for apply_transform evaluated to a non-finite Length"
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Warning,
+            "a non-finite value is NOT a units rejection and keeps Warning severity; \
+             got: {:?}",
+            diagnostics[0]
+        );
+        assert_eq!(
+            diagnostics[0].code, None,
+            "a non-finite value is NOT a units rejection and carries no code; got: {:?}",
+            diagnostics[0]
+        );
+
         // (iii) UNDEFINED — D10: its own wording, and no rejection diagnostic.
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let result = compile_geometry_op(
@@ -31690,10 +31833,19 @@
         );
     }
 
-    /// A wrong SHAPE is deliberately NOT a units rejection: both pins below must
-    /// stay byte-identical to their pre-ζ Warning and `Err`, and must carry ZERO
+    /// A wrong SHAPE is deliberately NOT a units rejection: every pin below must
+    /// stay byte-identical to its pre-ζ Warning and `Err`, and must carry ZERO
     /// `DimensionedArgRejected` diagnostics. This is `accept_length_point3`'s
     /// `shape_err` discipline, lifted from δ/5745.
+    ///
+    /// The `Point` row pins the one place the two shape checks DIFFER.
+    /// `accept_transform_to_arrays` admits only `Vector`; `accept_length_point3`
+    /// admits `Point | Vector`, so the decoder's guard is a strict SUBSET and the
+    /// helper's own shape arm is unreachable from it. A `Point` translation must
+    /// therefore take the SHAPE path — the generic pre-ζ wording — and never the
+    /// units one. Relaxing the decoder's guard to admit `Point` flips this row,
+    /// which is the signal to check that the shape rejection still reaches the
+    /// user through whichever check now owns it.
     #[test]
     fn compile_geometry_op_apply_transform_shape_mismatch_keeps_its_pre_zeta_wording() {
         let values = ValueMap::new();
@@ -31725,9 +31877,24 @@
             ])),
         };
 
+        let translation_is_a_point = reify_ir::Value::Transform {
+            rotation: Box::new(reify_ir::Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(reify_ir::Value::Point(vec![
+                reify_ir::Value::length(0.005),
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+            ])),
+        };
+
         for (label, v) in [
             ("rotation is a Vector, not an Orientation", rotation_not_orientation),
             ("translation is a 2-component Vector", translation_two_components),
+            ("translation is a Point, not a Vector", translation_is_a_point),
         ] {
             let mut diagnostics: Vec<Diagnostic> = Vec::new();
             let result = compile_geometry_op(
@@ -32016,7 +32183,7 @@
     // arrival; the whole value of this section is FAILING if a later change
     // widens ζ past its charter.
 
-    /// (a) The two QUIET pose routes stay quiet AND stay working.
+    /// (a) The two QUIET pose routes stay WORKING.
     ///
     /// `decompose_transform_to_arrays`' remaining callers are
     /// `interferes` / `min_clearance`'s per-body `world_transform` and
@@ -32031,8 +32198,18 @@
     /// would DOUBLE-REPORT a failure the pose producer has already diagnosed.
     ///
     /// Do not "fix" the silence: it is a caller policy, not a hole.
+    ///
+    /// The SILENCE itself is pinned by
+    /// `decompose_transform_to_arrays_rejects_dimensionless_translation_quietly`,
+    /// which is the only way to observe it: it drives the same value through the
+    /// LOUD entry point, shows a diagnostic IS produced there, and shows the
+    /// quiet wrapper returns `None` instead. This test cannot add to that — the
+    /// wrapper takes no sink, so a caller has nothing for it to write into, and
+    /// threading one in would be a compile error at the call site rather than a
+    /// failed assertion. What this test owns is the other half: that ζ's gate did
+    /// not break the production-shaped pose decode.
     #[test]
-    fn zeta_scope_lock_quiet_pose_routes_decode_length_and_stay_silent() {
+    fn zeta_scope_lock_quiet_pose_routes_still_decode_length() {
         // Minted exactly as `identity_pose_transform` / `compose_pose_chain`'s
         // seed do — a LENGTH translation triple.
         let pose = reify_ir::Value::Transform {
@@ -32055,8 +32232,9 @@
              wrapper — ζ must not break the FK/pose readers"
         );
 
-        // And a rejection through the quiet wrapper pushes NOTHING into a
-        // caller-visible sink.
+        // And ζ's gate still fires through the wrapper: a dimensionless
+        // translation collapses to `None`, which every pose caller reads as
+        // "identity / not decomposable".
         let dimensionless = transform_with_translation([
             reify_ir::Value::Scalar {
                 si_value: 5.0,
@@ -32065,22 +32243,9 @@
             reify_ir::Value::length(0.0),
             reify_ir::Value::length(0.0),
         ]);
-        let mut sink: Vec<Diagnostic> = Vec::new();
-        let decoded = decompose_transform_to_arrays(&dimensionless);
-        assert!(decoded.is_none(), "ζ rejects a dimensionless translation");
         assert!(
-            sink.is_empty(),
-            "the quiet wrapper must never reach a caller's diagnostic sink; got: {sink:?}"
-        );
-        // Belt and braces: the sink is untouched because the wrapper owns its own
-        // throwaway one, so a future signature change that threads the caller's
-        // sink through would fail HERE rather than silently doubling pose reports.
-        sink.push(Diagnostic::warning("sentinel".to_string()));
-        assert!(decompose_transform_to_arrays(&dimensionless).is_none());
-        assert_eq!(
-            sink.len(),
-            1,
-            "the quiet wrapper must not append to a caller's sink; got: {sink:?}"
+            decompose_transform_to_arrays(&dimensionless).is_none(),
+            "ζ rejects a dimensionless translation"
         );
     }
 
