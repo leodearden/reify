@@ -39,12 +39,12 @@
 //! four grounds:
 //!
 //! 1. **Decisive: [`crate::value_type_kind_matches`] is private** — a plain
-//!    `fn` at `crates/reify-eval/src/lib.rs:300`, not even `pub(crate)`. I-REG-4
+//!    `fn` at `crates/reify-eval/src/lib.rs:313`, not even `pub(crate)`. I-REG-4
 //!    requires asserting against *that* function with **no second derivation**,
 //!    and an integration test is a separate crate that cannot reach it. Making
 //!    it `pub` would widen reify-eval's public API solely to host a test. The
 //!    in-tree cost of the alternative is already visible: `crates/reify-compiler/
-//!    tests/harness_type_checking/mul_div_static_runtime_parity.rs:180-198`
+//!    tests/harness_type_checking/mul_div_static_runtime_parity.rs:177`
 //!    re-authored its own `value_kind_matches_type` because it could not reach
 //!    reify-eval's — precisely the second derivation I-REG-4 forbids.
 //! 2. **Exact in-crate precedent**, for the identical reason and stated as
@@ -69,7 +69,7 @@
 //!
 //! This is the load-bearing design constraint, and a two-way `true`/`false`
 //! harness gets it wrong. [`crate::value_type_kind_matches`] returns `true` for
-//! `Value::Undef` **unconditionally** (`crates/reify-eval/src/lib.rs:313` — the
+//! `Value::Undef` **unconditionally** (`crates/reify-eval/src/lib.rs:326` — the
 //! Auto/no-value sentinel arm), and `Value::Undef` is where every failure mode
 //! in this workspace funnels:
 //!
@@ -212,7 +212,7 @@ enum ParityVerdict {
 /// `Value::Undef` is tested FIRST and short-circuits to
 /// [`ParityVerdict::Vacuous`], **before** the matcher is consulted. That order
 /// is load-bearing, not stylistic: `crate::value_type_kind_matches` answers
-/// `true` for `Undef` against every type (`crates/reify-eval/src/lib.rs:313`),
+/// `true` for `Undef` against every type (`crates/reify-eval/src/lib.rs:326`),
 /// so consulting it first would erase the distinction this enum exists to
 /// draw. Reversing these two statements makes the harness green over rows it
 /// never probed.
@@ -223,7 +223,7 @@ enum ParityVerdict {
 /// derivation" requires, and it is the reason this module is in-crate at all
 /// (the oracle is private). Do not re-author a local kind matcher here as
 /// `crates/reify-compiler/tests/harness_type_checking/
-/// mul_div_static_runtime_parity.rs:180-198` was forced to.
+/// mul_div_static_runtime_parity.rs:177` was forced to.
 ///
 /// # Why `registry: None`, stated as a boundary
 ///
@@ -541,7 +541,7 @@ fn classify_mismatching_kind_is_diverges() {
 /// **The load-bearing arm.** `Value::Undef` must be `Vacuous`, never `Matches`.
 ///
 /// `crate::value_type_kind_matches` accepts `Value::Undef` for ANY type
-/// unconditionally (`crates/reify-eval/src/lib.rs:313` — the Auto/no-value
+/// unconditionally (`crates/reify-eval/src/lib.rs:326` — the Auto/no-value
 /// sentinel arm). A two-way `true`/`false` harness would therefore report a
 /// pass for every row whose eval body fell off a match arm, which is exactly
 /// the residue PRD §3 decision 12 says this harness exists to close. Three

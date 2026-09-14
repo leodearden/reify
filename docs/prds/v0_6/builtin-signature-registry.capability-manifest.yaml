@@ -288,8 +288,12 @@ tasks:
   title: registry-driven executed static-vs-runtime parity harness
   capabilities:
   - name: value-kind-check-primitive-exists
-    binding: wired — grep:crates/reify-eval/src/lib.rs:307-333 value_type_kind_matches;
-      reify-eval deps reify-compiler + reify-stdlib (Cargo.toml)
+    binding: wired — grep:crates/reify-eval/src/lib.rs:313 value_type_kind_matches, still PRIVATE
+      (a plain fn, not even pub(crate)). ANCHOR CORRECTED 2026-09-14 — the old :307-333 named
+      main 823502024d's fn line plus its `match value` block; psi's own mod hook moves the fn
+      line to :313 and the `Value::Undef => true` sentinel arm to :326. reify-eval deps reify-compiler
+      + reify-stdlib (Cargo.toml); psi adds reify-builtins as a DEV-dep only, so `cargo tree
+      -e no-dev -p reify-eval` and crates/reify-eval/engine_hash_closure.txt are unchanged
     verdict: PASS
     delivered_check:
       kind: grep
@@ -297,6 +301,75 @@ tasks:
       paths:
       - crates/reify-eval/src
       expect: present
+  - name: executed-static-vs-runtime-parity-harness
+    binding: DELIVERED — crates/reify-eval/src/registry_parity_tests.rs, hooked at crates/reify-eval/src/lib.rs:118;
+      run `cargo test -p reify-eval --lib registry_parity` (12 tests, 12 passed / 0 failed,
+      measured 2026-09-14). Membership is DERIVED from reify_builtins::rows() filtered on BindingKind::EvalBuiltin,
+      so each tau's rows join with no edit to the module; argument data is compile-forced by
+      an exhaustive `match EvalBuiltinId` with no `_` arm (the I-REG-2 forcing shape registry_dispatch::dispatch
+      uses). The verdict is THREE-way — Matches / Vacuous / Diverges — because value_type_kind_matches
+      accepts Value::Undef for EVERY type (crates/reify-eval/src/lib.rs:326), so a two-way harness
+      is defeated by exactly the buggy-eval-body residue PRD section 3 decision 12 names. Asserts
+      through the public reify_stdlib::eval_builtin with row.name passed as a VARIABLE — I-REG-1
+      clean, no builtin-name literal anywhere in the file
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: every_eval_builtin_row_agrees_with_its_executed_kind
+      paths:
+      - crates/reify-eval/src
+      expect: present
+  - name: exemption-ledger-empty-and-enforced-both-ways
+    binding: measured 2026-09-14, not stubbed — all 7 seed rows classify Matches under the executed
+      sweep, so PARITY_EXEMPTION_LEDGER has no entries. The PRD's named seed entry (piecewise_polynomial,
+      sections 4 and 9) CANNOT be present yet, because that name has no registry row and is
+      still answered by the legacy string arm at crates/reify-stdlib/src/trajectory/mod.rs:107;
+      it joins as a Vacuous entry when tau-mechanism/trajectory migrates. The empty ledger has
+      teeth because `adjudicate` enforces BOTH directions — an unledgered non-Matches row fails,
+      and so does a stale entry whose row now passes — so it cannot be padded with entries that
+      assert nothing. Non-vacuity OBSERVED by 3-leg mutate-run-revert (wrong declared type;
+      buggy eval body with the table untouched; zero representative args), verbatim failure
+      text in the module header
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: PARITY_EXEMPTION_LEDGER
+      paths:
+      - crates/reify-eval/src
+      expect: present
+  - name: open-question-5-resolved-harness-placement
+    binding: 'RESOLVED — in-crate reify-eval module, NOT crates/reify-compiler/tests/. Deciding
+      argument: value_type_kind_matches is private (crates/reify-eval/src/lib.rs:313) and I-REG-4
+      requires asserting against THAT function with no second derivation — an integration test
+      is a separate crate and cannot reach it, and making it pub would widen reify-eval''s public
+      API solely to host a test. The cost of the alternative is already in-tree: crates/reify-compiler/tests/harness_type_checking/mul_div_static_runtime_parity.rs:177
+      re-authored its own value_kind_matches_type for precisely this reason. Three corroborating
+      grounds (the sibling registry_drift_tests precedent, no new production dependency edge,
+      no new gate artifact) are in the module header. Recorded here so the next tau author does
+      not re-litigate it; docs/prds/v0_6/builtin-signature-registry.md is deliberately NOT edited,
+      because every sibling tau leaf shares that file'
+    verdict: PASS — Q5 answered
+    delivered_check:
+      kind: manual
+      reason: adjudication of a PRD open question; the resolution is recorded here and in the
+        module header, and has no single stable source pattern
+  - name: drift-guard-no-registration-needed
+    binding: VERIFIED, not assumed — the trigger (.claude/skills/prd/project.md:170) is scoped
+      to a new gate-resident crates/*/tests/*.rs binary or a new tests/infra/test_*.sh, and
+      psi ships an in-crate `#[cfg(test)] mod`, which is neither. Per-anchor, measured 2026-09-14
+      on task/6013 — (1) tests/infra/run-all-classification.manifest has 238 rows and 0 matching
+      `crates/`, its header scopes it to tests/infra/test_*.sh, and discovery at run-all-classification-lib.sh:177
+      globs "$_dir"/test_*.sh only; (2) no wallclock budget file exists, and tests/infra/test_no_new_wallclock_upper_bounds.sh:107
+      iterates "$dir"/*.sh only; (3) .config/nextest.toml contains 0 occurrences of `partition`
+      and already routes package(reify-eval) into the occt test-group at :224 — adding a priority
+      override there would turn tests/infra/test_nextest_slow_priority.sh assertion D (:259-277,
+      the crates/<pkg>/tests/<binary>.rs source file exists on disk) RED, because an in-crate
+      lib module has no such file
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a negative adjudication — the evidence is the ABSENCE of a matching row, partition
+        and budget in three named files, not a pattern present in one
 - label: omega
   task_id: 6014
   title: delete terminal first-arg fallback + 5371 interim allowlist family
