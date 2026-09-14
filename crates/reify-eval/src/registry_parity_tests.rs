@@ -114,6 +114,72 @@ use reify_core::Type;
 use reify_ir::Value;
 use strum::{EnumCount, IntoEnumIterator};
 
+// ── the verdict vocabulary ──────────────────────────────────────────────────
+
+/// One row's parity disposition: whether its declared result type and its
+/// executed result agree, disagree, or were never really compared.
+///
+/// Three-way rather than two-way is the whole design of this harness — see the
+/// module header's "Why `Value::Undef` is `Vacuous`, not a pass".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParityVerdict {
+    /// The row evaluated to a real value whose kind its declared type accepts.
+    /// The only pass.
+    Matches,
+    /// The row evaluated to `Value::Undef`. The matcher accepts this for any
+    /// type, so the comparison certifies NOTHING about the row — it is not a
+    /// pass, and it needs a [`ExemptionEntry`] saying which leaf retires it.
+    Vacuous,
+    /// The row evaluated to a real value whose kind its declared type rejects.
+    /// Either the row's `result` column or its eval body is wrong.
+    Diverges,
+}
+
+/// Classify one (executed value, declared type) pair.
+///
+/// `Value::Undef` is tested FIRST and short-circuits to
+/// [`ParityVerdict::Vacuous`], **before** the matcher is consulted. That order
+/// is load-bearing, not stylistic: `crate::value_type_kind_matches` answers
+/// `true` for `Undef` against every type (`crates/reify-eval/src/lib.rs:313`),
+/// so consulting it first would erase the distinction this enum exists to
+/// draw. Reversing these two statements makes the harness green over rows it
+/// never probed.
+///
+/// Otherwise the answer is delegated to `crate::value_type_kind_matches` — the
+/// workspace's single static-vs-runtime kind oracle, and the ONLY one this
+/// harness may consult. That is literally what I-REG-4's "no second
+/// derivation" requires, and it is the reason this module is in-crate at all
+/// (the oracle is private). Do not re-author a local kind matcher here as
+/// `crates/reify-compiler/tests/harness_type_checking/
+/// mul_div_static_runtime_parity.rs:180-198` was forced to.
+///
+/// # Why `registry: None`, stated as a boundary
+///
+/// The oracle's third argument is an optional `StructureRegistry`, and this
+/// harness passes `None`. That is sufficient and correct for every row today:
+/// the `Type::StructureRef` arm compares `type_name` only, which is exactly
+/// what `analysis::stress_invariants` needs — it builds a registry-free
+/// `Value::StructureInstance` whose `type_id` is a sentinel and whose
+/// `type_name` is `"StressInvariants"`.
+///
+/// It is NOT sufficient for `Type::TraitObject`, whose conformance check needs
+/// a live registry from a constructed `Engine`. So a future τ row declaring a
+/// trait-object result will read as [`ParityVerdict::Diverges`] here, and the
+/// right response is a ledger entry naming that τ — NOT widening this call
+/// into engine construction, which would drag the harness out of a unit test
+/// and into the engine's whole startup surface.
+fn classify(value: &Value, declared: &Type) -> ParityVerdict {
+    // Order matters — see the doc above. `Undef` before the matcher, always.
+    if matches!(value, Value::Undef) {
+        return ParityVerdict::Vacuous;
+    }
+    if crate::value_type_kind_matches(value, declared, None) {
+        ParityVerdict::Matches
+    } else {
+        ParityVerdict::Diverges
+    }
+}
+
 // ── membership: derived from the row table, never declared ──────────────────
 
 /// Every `BindingKind::EvalBuiltin` row, paired with the generated sub-enum id
