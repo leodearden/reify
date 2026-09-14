@@ -194,9 +194,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_ast::{
-        GuardedGroupDecl, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MemberDecl,
-    };
+    use reify_ast::{GuardedGroupDecl, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MemberDecl};
     use reify_core::{Diagnostic, DiagnosticCode, ModulePath, Severity};
     use reify_test_support::specialization_fixtures::*;
 
