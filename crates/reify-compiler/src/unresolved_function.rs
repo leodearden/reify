@@ -923,6 +923,19 @@ mod tests {
                      by {family} — remove it from the manifest"
                 );
             }
+            // The registry is a family like any other for this purpose, and
+            // the one that will actually fire: every τ task exists to move
+            // names out of this manifest and into a row. Asked of
+            // `name_group` directly rather than through
+            // `builtin_registry`'s predicate, so the manifest is checked
+            // against the row table itself and not against the same
+            // production answer `is_known_builtin` already trusts.
+            assert!(
+                reify_builtins::name_group(name).is_empty(),
+                "EVAL_DEFERRED_BUILTIN_NAMES entry {name:?} now holds a \
+                 builtin-signature-registry row — remove it from the \
+                 manifest; the deferral it records has been discharged"
+            );
             assert!(
                 !FIRST_ARG_TYPED_NAMES.contains(name),
                 "{name:?} is in BOTH manifests. They make different claims — \
