@@ -198,7 +198,7 @@ pub const FIRST_ARG_TYPED_NAMES: &[&str] = &[
 /// leaving **82** names from this route.
 ///
 /// **A second route contributed the remaining 2, for 84 total.** The corpus
-/// sweep (`tests/unresolved_function_corpus_sweep.rs`) found
+/// sweep (`tests/harness_compilation_surface/unresolved_function_corpus_sweep.rs`) found
 /// `__flexure_compliance_get` and `RepresentationWithin` — both genuinely
 /// eval-reachable, neither reachable by the walk above: the first is an
 /// undeclared accessor intrinsic dispatched by a bare `if name == …` outside the
@@ -514,7 +514,7 @@ pub fn is_known_builtin(name: &str) -> bool {
 /// documented on `AFFINE_ALGEBRA_NAMES` itself. They are listed anyway as
 /// defense-in-depth against a ladder reorder, and
 /// `affine_algebra_names_never_reach_the_terminal_fallback` (in
-/// `tests/unresolved_function_tests.rs`) is the guard that makes such a reorder
+/// `tests/harness_type_checking/unresolved_function_tests.rs`) is the guard that makes such a reorder
 /// visible instead of silent.
 pub(crate) fn arg_shape_expectation(name: &str) -> Option<&'static str> {
     // Guarded by the family predicates rather than by this `match` alone, so a

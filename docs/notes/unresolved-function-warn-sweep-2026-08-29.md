@@ -3,7 +3,7 @@
 **Measured** 2026-08-29 on branch `task/5371`, base `1d4417977673`;
 **re-measured** 2026-09-14 against base `ed7f60c635` — same two dispositions,
 no new violations, see "Re-measurement" below.
-**Gate:** `crates/reify-compiler/tests/unresolved_function_corpus_sweep.rs`.
+**Gate:** `crates/reify-compiler/tests/harness_compilation_surface/unresolved_function_corpus_sweep.rs`.
 **Consumers:** #5997 (flips the Warning to an Error; names this sweep as a
 precondition) and #6014 (registry ω; deletes the terminal first-arg fallback,
 and seeds its family-by-family migration from this list).

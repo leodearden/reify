@@ -887,6 +887,7 @@ pub(crate) fn tolerancing_marker_result_type(name: &str) -> Option<reify_core::T
 ///   whose arm sits LATER — so a non-`AffineMap` first arg returns `None`
 ///   here and is then claimed by the math arm (that is the matrix-determinant
 ///   behaviour this resolver deliberately preserves).
+///
 /// Neither can therefore reach the terminal first-arg fallback.
 ///
 /// Case-sensitive: Reify function names are snake_case.
