@@ -943,4 +943,143 @@ fi
 assert "live scan: escape-annotated line count matches the allowlist size" \
     test "$_s3_esc_count" -eq "$_ESC_ALLOWLIST_SIZE"
 
+# ===========================================================================
+# Section 4a: FINGERPRINT EMISSION -- hermetic fixtures for
+#             `_wallclock_fingerprints <root>...`, the engine the detector
+#             above and the baseline ratchet below are both built on.
+#
+# A fingerprint is `<path> :: <whitespace-trimmed-line-text>`, one record per
+# violating LINE, sorted. Line numbers are deliberately erased: a record must
+# survive an edit ABOVE its site, or the baseline would red on every unrelated
+# insertion. Same rationale as ptodo.rs::fingerprint.
+#
+# Every fixture here is a mktemp dir, never the real tree.
+# ===========================================================================
+echo ""
+echo "--- Section 4a: fingerprint emission ---"
+
+# ---------------------------------------------------------------------------
+# 4a-1: THE COLON TRAP, and the reason this section leads with it. Rust source
+#       is full of `::`, so parsing grep's `file:line:text` with `awk -F:` or
+#       `cut -d: -f3` MANGLES it -- a dry run of that design emitted
+#       `Instant  now()` for this very fixture, i.e. a baseline row that could
+#       never match its own source line again. The record must carry the line
+#       BYTE-EXACT after trimming, `::` and all.
+# ---------------------------------------------------------------------------
+_s4a1_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4a1_tmpdir")
+_fixture "$_s4a1_tmpdir" "fixture.rs" \
+    '    let deadline = Instant::now() + Duration::from_secs(5);'
+
+_s4a1_out="$(_wallclock_fingerprints "$_s4a1_tmpdir" 2>/dev/null || true)"
+assert "4a-1: one violating line emits exactly its own record, path and text intact" \
+    test "$_s4a1_out" = "$_s4a1_tmpdir/fixture.rs :: let deadline = Instant::now() + Duration::from_secs(5);"
+
+_s4a1_keeps_colons=0
+case "$_s4a1_out" in *'Instant::now()'*) _s4a1_keeps_colons=1 ;; esac
+assert "4a-1: the emitted record preserves the literal Instant::now() (no colon field-split)" \
+    test "$_s4a1_keeps_colons" -eq 1
+
+# ---------------------------------------------------------------------------
+# 4a-2: WHITESPACE IS TRIMMED, leading and trailing. Indentation is not part
+#       of what a site IS, so a reindentation (an added `if` block, a rustfmt
+#       width change) must not churn the baseline. Two fixtures indented
+#       differently must produce the SAME text half.
+# ---------------------------------------------------------------------------
+_s4a2_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4a2_tmpdir")
+_fixture "$_s4a2_tmpdir" "a.rs" \
+    '            elapsed < Duration::from_secs(2),   '
+_fixture "$_s4a2_tmpdir" "b.rs" \
+    'elapsed < Duration::from_secs(2),'
+
+_s4a2_out="$(_wallclock_fingerprints "$_s4a2_tmpdir" 2>/dev/null || true)"
+assert "4a-2: leading and trailing whitespace are trimmed, so indentation does not churn the baseline" \
+    test "$_s4a2_out" = "$(printf '%s\n%s' \
+        "$_s4a2_tmpdir/a.rs :: elapsed < Duration::from_secs(2)," \
+        "$_s4a2_tmpdir/b.rs :: elapsed < Duration::from_secs(2),")"
+
+# ---------------------------------------------------------------------------
+# 4a-3: AN ESCAPE-ANNOTATED LINE EMITS NO RECORD. The escape and the baseline
+#       are different claims -- "legitimate, argued at the site" versus
+#       "pre-existing debt that must not grow" -- and an escaped site belongs
+#       to the FIRST. If escaped lines reached the fingerprint stream they
+#       would need baseline rows too, which would blur exactly that
+#       distinction and double-count the one argued site.
+# ---------------------------------------------------------------------------
+_s4a3_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4a3_tmpdir")
+_fixture "$_s4a3_tmpdir" "fixture.rs" \
+    "    let stamp = Instant::now().checked_add(Duration::from_secs(3600)); // $_ESC_TOKEN -- reason"
+
+_s4a3_out="$(_wallclock_fingerprints "$_s4a3_tmpdir" 2>/dev/null || true)"
+assert "4a-3: an escape-annotated violation emits no record" \
+    test "$_s4a3_out" = ""
+
+# ---------------------------------------------------------------------------
+# 4a-4: NON-.rs FILES ARE OUT OF SCOPE, the fingerprint-stream twin of
+#       fixture 2k. This also protects the baseline FILE itself, which holds
+#       verbatim copies of every forbidden shape below and would otherwise
+#       fingerprint itself into permanent self-reference.
+# ---------------------------------------------------------------------------
+_s4a4_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4a4_tmpdir")
+_fixture "$_s4a4_tmpdir" "fixture.rs.txt" \
+    '    let deadline = Instant::now() + Duration::from_secs(5);'
+
+_s4a4_out="$(_wallclock_fingerprints "$_s4a4_tmpdir" 2>/dev/null || true)"
+assert "4a-4: a violation in a non-.rs file emits no record" \
+    test "$_s4a4_out" = ""
+
+# ---------------------------------------------------------------------------
+# 4a-5: RECURSION INTO SUBDIRECTORIES -- the single most load-bearing fixture
+#       in this section. The shipped detector globbed `"$dir"/*.rs`, which is
+#       NON-recursive, and the real roots this guard now covers are full of
+#       subdirectories: 5 of the 19 baselined sites live in one
+#       (harness_cli_surface/, harness_traits/, harness_stress_scenarios/).
+#       A non-recursive engine would report those as clean AND turn their
+#       baseline rows stale -- red for the wrong reason, then green the moment
+#       someone "fixed" it by deleting the rows.
+# ---------------------------------------------------------------------------
+_s4a5_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4a5_tmpdir")
+mkdir -p "$_s4a5_tmpdir/nested/deeper"
+_fixture "$_s4a5_tmpdir/nested/deeper" "buried.rs" \
+    '    let deadline = Instant::now() + Duration::from_secs(5);'
+
+_s4a5_out="$(_wallclock_fingerprints "$_s4a5_tmpdir" 2>/dev/null || true)"
+assert "4a-5: a violation in a SUBDIRECTORY of the root is emitted (the scan recurses)" \
+    test "$_s4a5_out" = "$_s4a5_tmpdir/nested/deeper/buried.rs :: let deadline = Instant::now() + Duration::from_secs(5);"
+
+# ---------------------------------------------------------------------------
+# 4a-6: A CLEAN ROOT EMITS NOTHING AND SUCCEEDS. grep's rc 1 ("no matches")
+#       must not be allowed to abort the engine under `set -euo pipefail`, nor
+#       to be confused with its rc 2 ("error"), which 4e pins as fatal.
+# ---------------------------------------------------------------------------
+_s4a6_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4a6_tmpdir")
+_fixture "$_s4a6_tmpdir" "clean.rs" \
+    '    let t0 = Instant::now();' \
+    '    assert!(start.elapsed() >= Duration::from_millis(150), "should block");'
+
+_s4a6_rc=0
+_s4a6_out="$(_wallclock_fingerprints "$_s4a6_tmpdir" 2>/dev/null)" || _s4a6_rc=$?
+assert "4a-6: a clean root emits nothing and returns 0 (grep rc 1 is not an error)" \
+    test "$_s4a6_rc" -eq 0
+assert "4a-6: a clean root's output is empty" \
+    test "$_s4a6_out" = ""
+
+# ---------------------------------------------------------------------------
+# 4a-7: MULTIPLE ROOTS in one call, and the output is SORTED across all of
+#       them -- not concatenated per root. `comm` below compares two sorted
+#       streams, so an engine that emitted root-major order would desynchronise
+#       the comparison and report phantom `+`/`-` records.
+# ---------------------------------------------------------------------------
+_s4a7_r1="$(mktemp -d)"; _TMPDIRS+=("$_s4a7_r1")
+_s4a7_r2="$(mktemp -d)"; _TMPDIRS+=("$_s4a7_r2")
+_fixture "$_s4a7_r1" "z.rs" \
+    '    let deadline = Instant::now() + Duration::from_secs(9);'
+_fixture "$_s4a7_r2" "a.rs" \
+    '    let deadline = Instant::now() + Duration::from_secs(1);'
+
+_s4a7_out="$(_wallclock_fingerprints "$_s4a7_r1" "$_s4a7_r2" 2>/dev/null || true)"
+assert "4a-7: two roots in one call emit both records, globally sorted" \
+    test "$_s4a7_out" = "$(printf '%s\n%s' \
+        "$_s4a7_r1/z.rs :: let deadline = Instant::now() + Duration::from_secs(9);" \
+        "$_s4a7_r2/a.rs :: let deadline = Instant::now() + Duration::from_secs(1);" | LC_ALL=C sort)"
+
 test_summary
