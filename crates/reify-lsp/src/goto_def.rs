@@ -257,6 +257,20 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 ///
 /// Declarations are scanned in source order, so in the (ill-formed) case of an
 /// alias and a structure sharing one name, the earlier declaration wins.
+///
+/// A matched declaration whose span does not actually contain its own name
+/// token is REFUSED — `None`, and without resuming the scan. The previous
+/// locator instead fell back to a `name.len()`-wide span anchored at the
+/// declaration start; that bogus WIDE span flowed into the `references.rs`
+/// rename write path and emitted a destructive edit over the declaration's
+/// leading keyword. Resuming the scan would be the mirror-image hazard, letting
+/// a later same-named declaration donate its token — exactly what bounding the
+/// search to the declaration's own span exists to prevent.
+///
+/// Both consumers of the refusal are benign: `resolve_cross_file_home`
+/// (references.rs) only tests `.is_some()`, so it falls through to the import
+/// arm, and `compute_references_cross_file` uses the value only to drop the
+/// declaration token when `include_declaration = false`.
 fn decl_name_span_in(
     parsed: &reify_ast::ParsedModule,
     source: &str,
@@ -276,7 +290,11 @@ fn decl_name_span_in(
         };
         if decl_name == name {
             // Point to the name within the declaration, not the entire span.
-            return Some(name_token_span(source, span, name));
+            // An empty span is `name_token_span`'s documented not-found
+            // fallback, and an exact discriminator here because a declaration
+            // name is never the empty string.
+            let token = name_token_span(source, span, name);
+            return (!token.is_empty()).then_some(token);
         }
     }
     None
