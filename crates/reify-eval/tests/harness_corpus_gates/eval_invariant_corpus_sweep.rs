@@ -481,3 +481,94 @@ fn hash_sharding_partitions_the_corpus_within_measured_bounds() {
         histogram()
     );
 }
+
+/// The whole CPU saving in one assertion: BOTH invariants are asserted per file
+/// off a SINGLE compile+eval.
+///
+/// Before unification each sweep compiled and evaluated its own copy of the
+/// overlapping corpus — 299 evals for INV-EVAL-5 plus 264 for INV-EVAL-4 across
+/// 48 test processes. The merge is sound because `Engine::check_no_stale_undef`
+/// (`invariants.rs`) and `Engine::check_snapshot_cache_divergence`
+/// (`cache_divergence.rs`) are both `&self` reads of the same retained
+/// `eval_state()` snapshot, and neither mutates the engine.
+///
+/// `examples/fdm_bracket.ri` is the fixture deliberately: it is a live
+/// KNOWN_RESIDUAL divergence entry, so at least one invariant returns a NON-empty
+/// finding list here and (b)'s comparison cannot pass vacuously.
+#[test]
+fn one_corpus_evaluation_feeds_both_invariant_checkers() {
+    let root = workspace_root();
+    let rel = "examples/fdm_bracket.ri";
+    let path = root.join(rel);
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+    let compiled = reify_test_support::compile_source_with_stdlib(&source);
+    let errors = reify_test_support::collect_errors(&compiled.diagnostics);
+    assert!(errors.is_empty(), "{rel} must compile cleanly: {errors:#?}");
+
+    // ONE engine, ONE eval — everything below reads that single snapshot.
+    let mut engine = eval_gate_support::gate_engine(true);
+    engine.eval(&compiled);
+
+    let outcome = check_file(&engine, rel);
+
+    // (a) Exactly two invariants, exactly these two. A future edit that drops one
+    //     from the sweep reds HERE, instead of silently halving the coverage.
+    let ids: Vec<InvariantId> = outcome.per_invariant.iter().map(|(id, _)| *id).collect();
+    assert_eq!(
+        ids,
+        vec![InvariantId::StaleUndef, InvariantId::SnapshotCacheDivergence],
+        "every corpus file must be checked for BOTH invariants, no more and no fewer"
+    );
+    assert_eq!(outcome.rel, rel, "the outcome must carry its own corpus key");
+
+    // (b) The adapters neither filter nor reorder: each invariant's findings are
+    //     exactly what the Engine wrapper returns on this same engine.
+    let direct_stale: Vec<reify_core::ValueCellId> =
+        engine.check_no_stale_undef().into_iter().map(|v| v.cell).collect();
+    let direct_divergence: Vec<reify_core::ValueCellId> = engine
+        .check_snapshot_cache_divergence()
+        .into_iter()
+        .map(|d| d.cell)
+        .collect();
+
+    let cells = |id: InvariantId| -> Vec<reify_core::ValueCellId> {
+        outcome
+            .findings(id)
+            .expect("both invariants present per (a)")
+            .iter()
+            .map(|f| f.cell.clone())
+            .collect()
+    };
+    assert_eq!(cells(InvariantId::StaleUndef), direct_stale);
+    assert_eq!(cells(InvariantId::SnapshotCacheDivergence), direct_divergence);
+
+    assert!(
+        !direct_stale.is_empty() || !direct_divergence.is_empty(),
+        "non-vacuity: {rel} was chosen because it is a live KNOWN_RESIDUAL entry, so \
+         at least one invariant must report findings here — otherwise (b) compares \
+         two empty lists and proves nothing about filtering or reordering"
+    );
+
+    // (c) No order dependence, in either direction. Both wrappers are `&self`
+    //     reads of the same retained snapshot, so neither running the routine
+    //     twice nor swapping the two checkers' order may change the result. This
+    //     is the "no new order-dependent red" half of the user-observable signal.
+    assert_eq!(
+        check_file(&engine, rel),
+        outcome,
+        "check_file must be a pure read of the post-eval engine"
+    );
+    let reversed_divergence: Vec<reify_core::ValueCellId> = engine
+        .check_snapshot_cache_divergence()
+        .into_iter()
+        .map(|d| d.cell)
+        .collect();
+    let reversed_stale: Vec<reify_core::ValueCellId> =
+        engine.check_no_stale_undef().into_iter().map(|v| v.cell).collect();
+    assert_eq!(
+        (reversed_stale, reversed_divergence),
+        (direct_stale, direct_divergence),
+        "running the two checkers in the reverse order must give identical findings"
+    );
+}
