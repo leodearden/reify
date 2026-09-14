@@ -34,6 +34,7 @@
 use reify_ir::value::SampledField;
 
 use crate::grid_validation::{GridValidationError, validate_regular3d};
+use crate::walk_direction::medial_walk_direction;
 
 /// Sparse voxel mask: indices `(i, j, k)` of every voxel tagged as medial
 /// by [`compute_medial_mask`].
@@ -533,6 +534,11 @@ fn walk_params(min_spacing: f64, options: &MedialOptions) -> (usize, f64, f64) {
 /// tag the voxel as medial iff (a) `|d⁺ − d⁻| / max(d⁺, d⁻) <
 /// distance_tolerance` AND (b) the gradients sampled at the two hit
 /// points are roughly antiparallel (`g_a · g_b < normal_antiparallel_threshold`).
+///
+/// At a voxel the medial surface passes exactly through, the central
+/// difference cancels by symmetry and carries no direction; there the walk
+/// direction comes instead from the one-sided ridge axis (see
+/// [`crate::walk_direction`]).
 pub fn compute_medial_mask(
     sdf: &SampledField,
     options: &MedialOptions,
@@ -655,7 +661,9 @@ pub fn compute_medial_mask(
                                 continue;
                             }
 
-                            // (b) gradient at the voxel; reject degenerate.
+                            // (b) walk direction at the voxel; reject voxels
+                            // that offer neither a usable gradient nor a
+                            // ridge axis.
                             //
                             // Invariant: `precompute_gradient_grid` only computes
                             // slots where |φ| ≤ band_width; out-of-band slots are
@@ -672,12 +680,9 @@ pub fn compute_medial_mask(
                                  |phi|={phi} > band_width={band_width}"
                             );
                             let grad = gradient_grid_ref[i * ny * nz + j * nz + k];
-                            let gnorm =
-                                (grad[0] * grad[0] + grad[1] * grad[1] + grad[2] * grad[2]).sqrt();
-                            if gnorm < GRADIENT_EPSILON {
+                            let Some(g) = medial_walk_direction(sdf, [i, j, k], grad) else {
                                 continue;
-                            }
-                            let g = [grad[0] / gnorm, grad[1] / gnorm, grad[2] / gnorm];
+                            };
 
                             // (c) bidirectional ray walk from the voxel's
                             // world coordinate in ±g, with sub-voxel
@@ -1213,7 +1218,7 @@ pub(crate) fn surface_patches_distinct(
     dot < threshold
 }
 
-fn normalize3(v: [f64; 3]) -> Option<[f64; 3]> {
+pub(crate) fn normalize3(v: [f64; 3]) -> Option<[f64; 3]> {
     let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
     if n < GRADIENT_EPSILON {
         None
@@ -1257,7 +1262,9 @@ mod tests {
     /// central-difference gradient (every axis collapses to a single
     /// sample) so the lone voxel is rejected by the
     /// `GRADIENT_EPSILON` degenerate-gradient filter, NOT by the
-    /// narrow-band threshold. The test still validates that the
+    /// narrow-band threshold. The ridge-axis fallback declines it
+    /// twice over: `phi = +1.0` is exterior, and no axis has an
+    /// interior neighbour pair. The test still validates that the
     /// public surface compiles and the function returns Ok regardless
     /// of which guard fires.
     #[test]
@@ -1469,21 +1476,12 @@ mod tests {
     /// load-bearing assertion complementing
     /// [`compute_medial_mask_flags_slab_centerline_voxels`].
     ///
-    /// **Why this test, not an odd-N sphere/thick-block?** The natural
-    /// "add a positive assertion to the radial fixtures" idea fails
-    /// because point-medial geometry on this algorithm is fundamentally
-    /// un-flaggable: on even-N grids no voxel sits at the exact medial,
-    /// and on odd-N grids the exact-medial voxel has degenerate
-    /// (zero-by-symmetry) central-difference gradient and is skipped by
-    /// `GRADIENT_EPSILON`; the off-by-one voxels then fail the
-    /// equality test by construction (their `abs_diff/dmax` exceeds the
-    /// default tolerance + absolute slack). A second slab
-    /// orientation gives a clean positive assertion that exercises a
-    /// genuinely different code path: gradient indexing along the
-    /// outer-loop axis (`i`) rather than the inner-loop axis (`k`). A
-    /// regression that swapped i↔k somewhere in the inner loop, or that
-    /// only exercised gradient_at_index's z-axis branch, would fail
-    /// this test while leaving the z-slab test green.
+    /// **Why a second slab orientation?** It exercises a genuinely
+    /// different code path from the z-slab test: gradient indexing
+    /// along the outer-loop axis (`i`) rather than the inner-loop axis
+    /// (`k`). A regression that swapped i↔k somewhere in the inner
+    /// loop, or that only exercised gradient_at_index's z-axis branch,
+    /// would fail this test while leaving the z-slab test green.
     ///
     /// Asserts the same three load-bearing properties as the z-slab
     /// test, but on the i-index instead of k.
