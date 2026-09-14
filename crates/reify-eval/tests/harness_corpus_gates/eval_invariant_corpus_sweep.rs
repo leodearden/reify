@@ -509,24 +509,107 @@ struct Finding {
     detail: String,
 }
 
+/// What one invariant made of one corpus file.
+///
+/// `OutOfScope` is a distinct variant rather than an empty finding list on
+/// purpose: "this invariant does not cover this file" and "this invariant
+/// covered this file and found nothing" are different facts, and collapsing them
+/// would let a silently narrowed scope read as a clean pass.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum InvariantOutcome {
+    OutOfScope,
+    Checked(Vec<Finding>),
+}
+
 /// What one corpus file's single evaluation produced, per invariant.
+///
+/// Every invariant in [`GATES`] appears here for EVERY file, in scope or not, so
+/// the shape is uniform across the corpus and a missing entry is unambiguously a
+/// defect rather than a scope decision.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FileOutcome {
     rel: String,
-    per_invariant: Vec<(InvariantId, Vec<Finding>)>,
+    per_invariant: Vec<(InvariantId, InvariantOutcome)>,
 }
 
 impl FileOutcome {
-    /// This file's findings for `id`, or `None` if the sweep did not carry that
-    /// invariant at all — which
+    /// This file's findings for `id`. `None` means this file was NOT checked for
+    /// `id` — either it is out of that invariant's scope, or the sweep does not
+    /// carry the invariant at all, which
     /// `one_corpus_evaluation_feeds_both_invariant_checkers` asserts never happens.
+    /// `Some(&[])` is the materially different "checked, and clean".
     fn findings(&self, id: InvariantId) -> Option<&[Finding]> {
-        self.per_invariant
-            .iter()
-            .find(|(i, _)| *i == id)
-            .map(|(_, f)| f.as_slice())
+        match self.per_invariant.iter().find(|(i, _)| *i == id) {
+            Some((_, InvariantOutcome::Checked(f))) => Some(f.as_slice()),
+            _ => None,
+        }
     }
 }
+
+/// Which corpus files an invariant covers.
+///
+/// Explicit, structured data rather than an implicit consequence of which file
+/// the sweep used to live in — before unification each sweep's scope was simply
+/// whatever directory walk its own `corpus_files()` happened to do, which is
+/// exactly the kind of fact that gets lost in a move.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CorpusScope {
+    /// The whole corpus: reify-eval's `tests/fixtures/`, `examples/`, and the
+    /// explicit prd-gate leaf. INV-EVAL-5's pre-unification scope.
+    Union,
+    /// `examples/` only.
+    ///
+    /// A FAITHFUL reproduction of INV-EVAL-4's pre-unification scope, NOT an
+    /// oversight to be helpfully "fixed": that sweep walked `examples/` and
+    /// nothing else. Widening it to the 34 reify-eval fixture files would be a
+    /// coverage CHANGE that could surface fresh residuals, which is outside a
+    /// zero-loss restructuring — named as a follow-up, deliberately not taken
+    /// here. Pinned by `each_invariant_keeps_its_own_pre_unification_corpus_scope`.
+    ExamplesOnly,
+}
+
+impl CorpusScope {
+    /// Whether this scope covers the corpus file keyed `rel`.
+    ///
+    /// Matches on the repo-relative key's leading component — which is precisely
+    /// why the key is normalised to a worktree-independent `/`-separated string
+    /// (see [`repo_relative`]): an absolute path would carry a per-checkout
+    /// prefix and `ExamplesOnly` would match nothing in any lane.
+    fn covers(self, rel: &str) -> bool {
+        match self {
+            CorpusScope::Union => true,
+            CorpusScope::ExamplesOnly => rel.starts_with("examples/"),
+        }
+    }
+}
+
+/// One invariant's declaration: what it is, what it is called in a report, and
+/// which corpus files it covers.
+struct InvariantGate {
+    id: InvariantId,
+    /// How this invariant names itself in sweep output, so a red says which
+    /// invariant broke without the reader decoding an enum variant.
+    label: &'static str,
+    scope: CorpusScope,
+}
+
+/// Every invariant this sweep asserts, with its per-invariant scope.
+///
+/// Exactly two entries — pinned by
+/// `one_corpus_evaluation_feeds_both_invariant_checkers`, so dropping one reds
+/// rather than silently halving the coverage.
+const GATES: &[InvariantGate] = &[
+    InvariantGate {
+        id: InvariantId::StaleUndef,
+        label: "INV-EVAL-5 (no stale Undef)",
+        scope: CorpusScope::Union,
+    },
+    InvariantGate {
+        id: InvariantId::SnapshotCacheDivergence,
+        label: "INV-EVAL-4 (snapshot↔cache divergence)",
+        scope: CorpusScope::ExamplesOnly,
+    },
+];
 
 /// INV-EVAL-5's adapter: ONE `Engine` wrapper call, mapped to [`Finding`].
 ///
@@ -566,16 +649,24 @@ fn snapshot_cache_divergence_findings(engine: &reify_eval::Engine) -> Vec<Findin
 /// `eval()` installed, and neither mutates the engine — so one evaluation feeds
 /// both, in either order, with no order-dependent result.
 fn check_file(engine: &reify_eval::Engine, rel: &str) -> FileOutcome {
-    FileOutcome {
-        rel: rel.to_string(),
-        per_invariant: vec![
-            (InvariantId::StaleUndef, stale_undef_findings(engine)),
-            (
-                InvariantId::SnapshotCacheDivergence,
-                snapshot_cache_divergence_findings(engine),
-            ),
-        ],
-    }
+    let per_invariant = GATES
+        .iter()
+        .map(|gate| {
+            let outcome = if gate.scope.covers(rel) {
+                InvariantOutcome::Checked(match gate.id {
+                    InvariantId::StaleUndef => stale_undef_findings(engine),
+                    InvariantId::SnapshotCacheDivergence => {
+                        snapshot_cache_divergence_findings(engine)
+                    }
+                })
+            } else {
+                InvariantOutcome::OutOfScope
+            };
+            (gate.id, outcome)
+        })
+        .collect();
+
+    FileOutcome { rel: rel.to_string(), per_invariant }
 }
 
 /// The whole CPU saving in one assertion: BOTH invariants are asserted per file
