@@ -78,13 +78,17 @@ structure CantileverBeamModes {
     // participation mass is projected (the slender bending direction).
     //
     // Ctor args bind BY NAME (task 4522), so these labels are load-bearing and
-    // position-independent. Every param is still spelled out — sigma / tol /
-    // max_iters at their ModalOptions defaults (0.0 / 1e-9 / 200) — because a
-    // MISSPELLED label is diagnosed (`E_CTOR_UNKNOWN_FIELD`) yet STILL bound
-    // leniently, leaving `element_order` at its `ElementOrder.P1` default and
-    // quietly reinstating the bending lock this fixture exists to avoid. The
-    // binder rule, the lenient fallback and the CURRENT severity are stated
-    // once, in
+    // position-independent. The trap is a MISSPELLED label: it is diagnosed
+    // (`E_CTOR_UNKNOWN_FIELD`) yet STILL bound leniently as `__arg{i}` and
+    // never claims a param slot, so `element_order` falls back to its
+    // `ElementOrder.P1` default and quietly reinstates the bending lock this
+    // fixture exists to avoid. Spelling the other params out does not prevent
+    // that — the mis-bind is independent of them. Every param is written
+    // anyway — sigma / tol / max_iters at their ModalOptions defaults (0.0 /
+    // 1e-9 / 200) — for one reason: an exhaustive, in-order call keeps a
+    // typo'd label visible under review whatever the diagnostic's current
+    // severity. The binder rule, the lenient fallback and the CURRENT
+    // severity are stated once, in
     // `crates/reify-compiler/tests/harness_mechanics/modal_options_validation_tests.rs::misspelled_ctor_label_is_diagnosed_but_still_leniently_appended`.
     let opts = ModalOptions(
         n_modes: 3,
