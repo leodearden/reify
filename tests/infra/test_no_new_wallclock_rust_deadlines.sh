@@ -190,6 +190,108 @@ _fixture() {
 }
 
 # ---------------------------------------------------------------------------
+# _wallclock_fingerprints <root>...
+#
+# THE ENGINE. Every rule-matching path in this file goes through here: the
+# detector below is a reporting wrapper over it, and the baseline ratchet
+# compares its output against a committed file. Rule A and Rule B therefore
+# exist in exactly ONE place (SPOT) -- a second copy for the baseline path
+# would be a straight duplication of the one thing this guard actually knows.
+#
+# Prints, to stdout, one FINGERPRINT per violating line across all <root>s,
+# recursively, `*.rs` only, escape-annotated lines excluded:
+#
+#     <path> :: <whitespace-trimmed-line-text>
+#
+# LINE NUMBERS ARE ERASED on purpose. A fingerprint names a SITE, and an edit
+# above a site does not move the site -- baselining `file:216:` instead would
+# red the gate on every unrelated insertion in the same file. Same rationale
+# as ptodo.rs::fingerprint.
+#
+# PATHS ARE ECHOED AS THE ROOT WAS NAMED -- grep resolves each <root> against
+# the CURRENT DIRECTORY and prints paths under it verbatim. So a repo-relative
+# root yields repo-relative records (what the baseline file holds) and an
+# absolute mktemp root yields absolute ones (what the fixtures assert). The
+# function itself knows nothing about the repo; fixing the cwd is the caller's
+# job, and Section 3 does it once for the whole script.
+#
+# OUTPUT IS SORTED, GLOBALLY and under LC_ALL=C. Both halves matter. The
+# ratchet compares two streams with `comm`, which is only correct if they were
+# sorted the SAME way, so the collation is pinned rather than inherited: the
+# 19 live records sort DIFFERENTLY under en_US.UTF-8 than under C (measured --
+# the `Ok(None) if ...` row moves), and a baseline generated on one machine
+# would otherwise report phantom +/- records on another.
+#
+# OUTPUT IS A MULTISET, NOT A SET -- see Section 4b and the `sort` below.
+#
+# EXIT CODES, following grep's: 0 with records, 0 with none (grep's rc 1 means
+# "clean", not "broken"), and grep's rc >= 2 PROPAGATED, because an unreadable
+# or non-existent root must never reach the comparison looking clean.
+# ---------------------------------------------------------------------------
+_wallclock_fingerprints() {
+    # The escape token is split across two adjacent single-quoted strings so
+    # this source file holds no contiguous copy of it (see SELF-MATCH SAFETY
+    # in the header).
+    local _esc_re; _esc_re='wallcl''ock:allow'
+    local _rule_a
+    _rule_a='(Instant::now\(\)[[:space:]]*(\+|\.checked_add|[<>]=?))'
+    _rule_a="${_rule_a}"'|([<>]=?[[:space:]]*Instant::now\(\))'
+    local _rule_b
+    _rule_b='(<=?[[:space:]]*Duration::)|(Duration::[a-z_]*\([^)]*\)[[:space:]]*>)'
+    # Scalar-accessor family, composed in rather than spelled inline so the
+    # accessor list appears once instead of twice (the same composition idiom
+    # the sibling guard uses for its `_wc_var_sfx`). The `<expr>` before the
+    # accessor in the reversed alternative is deliberately narrow -- an
+    # identifier with dots -- because a blanket `.*` there would let any `>`
+    # earlier on the line (a `->` return arrow, a generic close) drag an
+    # innocent line in.
+    local _scal; _scal='(millis|micros|nanos|secs_f32|secs_f64|secs)'
+    _rule_b="${_rule_b}"'|(\.as_'"${_scal}"'\(\)[[:space:]]*<=?)'
+    _rule_b="${_rule_b}"'|(>=?[[:space:]]*[A-Za-z_][A-Za-z0-9_.]*\.as_'"${_scal}"'\(\))'
+
+    # ONE grep for the whole scan, not one [[ =~ ]] per line. The detector
+    # this replaced justified its per-line bash loop against `echo | grep` per
+    # line -- true, but it never weighed one grep for the ENTIRE scan.
+    # Measured on this tree: the bash loop over ONE ~30-file directory takes
+    # 0.518s, while this whole function over all 35 roots (1330 files, 677k
+    # lines) takes 0.108s end to end -- 0.070s of it the grep itself. The loop
+    # at that scale would cost ~30s in a gate that is supposed to be instant.
+    local _hits _rc=0
+    _hits="$(grep -rnE --include='*.rs' -e "$_rule_a" -e "$_rule_b" -- "$@")" || _rc=$?
+    [ "$_rc" -le 1 ] || return "$_rc"
+
+    # Escape filtering is its own pass for the same reason: it is one fork,
+    # not one per line. rc 1 here means "every hit was escaped", which is a
+    # clean result, so only rc >= 2 propagates.
+    local _kept _krc=0
+    _kept="$(printf '%s' "$_hits" | grep -vE "$_esc_re")" || _krc=$?
+    [ "$_krc" -le 1 ] || return "$_krc"
+    [ -n "$_kept" ] || return 0
+
+    local _m _p _rest _text
+    while IFS= read -r _m; do
+        # NEVER a colon field-split. `awk -F:`/`cut -d: -f3` would cut inside
+        # Rust's `::` and emit `Instant  now()` for a line containing
+        # `Instant::now()` -- a fingerprint that can never match its own
+        # source line again (fixture 4a-1; found by dry-running the generator).
+        # Two anchored prefix strips take exactly the path and the line
+        # number, leaving every later colon untouched by construction.
+        _p="${_m%%:*}"       # path: up to the FIRST colon
+        _rest="${_m#*:}"     # drop the path
+        _text="${_rest#*:}"  # drop the line number; all later colons survive
+
+        # Trim in bash rather than forking sed per line. A single stream `sed`
+        # is not an option: it would have to tell the ` :: ` separator apart
+        # from a `::` in the source text, and the separator does not exist yet
+        # at that point.
+        _text="${_text#"${_text%%[![:space:]]*}"}"
+        _text="${_text%"${_text##*[![:space:]]}"}"
+
+        printf '%s :: %s\n' "$_p" "$_text"
+    done <<< "$_kept" | LC_ALL=C sort
+}
+
+# ---------------------------------------------------------------------------
 # _detect_rust_wallclock_deadline <dir>
 #
 # Scans all *.rs files in <dir> for hand-rolled real-clock deadlines and
