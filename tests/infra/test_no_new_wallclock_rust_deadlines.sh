@@ -1184,4 +1184,75 @@ assert "4a-7: two roots in one call emit both records, globally sorted" \
         "$_s4a7_r1/z.rs :: let deadline = Instant::now() + Duration::from_secs(9);" \
         "$_s4a7_r2/a.rs :: let deadline = Instant::now() + Duration::from_secs(1);" | LC_ALL=C sort)"
 
+# ===========================================================================
+# Section 4b: FINGERPRINTS ARE A MULTISET, NOT A SET.
+#
+# This is the section that stops a whole class of silent regression, and it is
+# NOT hypothetical -- the live tree has duplicates today:
+#   * `while Instant::now() < deadline {` appears 3x in
+#     crates/reify-audit/tests/jcodemunch_session_live.rs
+#   * `elapsed < Duration::from_secs(10),` appears 2x in
+#     crates/reify-fdm/tests/slice.rs
+# Line numbers are erased from a fingerprint, so those copies are BYTE-EQUAL
+# records. Under a `sort -u` emission path, or any set-membership comparison,
+# the baseline would carry one row for each and a FOURTH and THIRD copy could
+# land fully green. The ratchet would then be counting distinct SPELLINGS
+# rather than sites, which is not what it claims to guard.
+#
+# Note this is a deliberate divergence from ptodo.rs::fingerprint, which
+# collapses identical markers on purpose; see the comment at the `sort`.
+# ===========================================================================
+echo ""
+echo "--- Section 4b: fingerprints are a multiset ---"
+
+# ---------------------------------------------------------------------------
+# 4b-1: the live shape -- the SAME line twice in one file and a third time in
+#       a sibling. Three occurrences, three records.
+# ---------------------------------------------------------------------------
+_s4b1_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4b1_tmpdir")
+_fixture "$_s4b1_tmpdir" "a.rs" \
+    '    while Instant::now() < deadline {' \
+    '        std::thread::sleep(RUN_POLL_INTERVAL);' \
+    '    while Instant::now() < deadline {'
+_fixture "$_s4b1_tmpdir" "b.rs" \
+    '    while Instant::now() < deadline {'
+
+_s4b1_out="$(_wallclock_fingerprints "$_s4b1_tmpdir" 2>/dev/null || true)"
+_s4b1_n="$(printf '%s\n' "$_s4b1_out" | grep -c . || true)"
+assert "4b-1: three occurrences of one line across two files emit THREE records, not one" \
+    test "$_s4b1_n" -eq 3
+
+# ---------------------------------------------------------------------------
+# 4b-2: two byte-identical lines inside a SINGLE file. Asserted separately
+#       from 4b-1 because the two collapse differently: a per-file `sort -u`
+#       would pass 4b-1 (the paths differ) and fail here, while a global one
+#       fails both.
+# ---------------------------------------------------------------------------
+_s4b2_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4b2_tmpdir")
+_fixture "$_s4b2_tmpdir" "slice.rs" \
+    '        elapsed < Duration::from_secs(10),' \
+    '        "first bound"' \
+    '        elapsed < Duration::from_secs(10),'
+
+_s4b2_out="$(_wallclock_fingerprints "$_s4b2_tmpdir" 2>/dev/null || true)"
+_s4b2_n="$(printf '%s\n' "$_s4b2_out" | grep -c . || true)"
+assert "4b-2: two identical lines within one file emit TWO records, not one" \
+    test "$_s4b2_n" -eq 2
+
+# ---------------------------------------------------------------------------
+# 4b-3: duplicates that differ only by INDENTATION collapse to the same
+#       record and are still counted twice. Trimming (4a-2) and multiset
+#       counting interact here: trimming makes them byte-equal, so this is
+#       exactly the pair a set would eat.
+# ---------------------------------------------------------------------------
+_s4b3_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4b3_tmpdir")
+_fixture "$_s4b3_tmpdir" "c.rs" \
+    '    elapsed < Duration::from_secs(10),' \
+    '                elapsed < Duration::from_secs(10),'
+
+_s4b3_out="$(_wallclock_fingerprints "$_s4b3_tmpdir" 2>/dev/null || true)"
+_s4b3_n="$(printf '%s\n' "$_s4b3_out" | grep -c . || true)"
+assert "4b-3: two occurrences equal only after trimming are still counted twice" \
+    test "$_s4b3_n" -eq 2
+
 test_summary
