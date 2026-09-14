@@ -2834,12 +2834,12 @@ const CTOR_CONFORMANCE_CORPUS_RESIDUAL: &[(&str, &str, &str, &str)] = &[
 
 /// The repo-relative prefix of the `examples/` corpus.
 ///
-/// [`CTOR_CONFORMANCE_MIGRATION_DEBT`](super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT)
+/// [`CTOR_CONFORMANCE_MIGRATION_DEBT`](reify_test_support::ctor_conformance_debt::CTOR_CONFORMANCE_MIGRATION_DEBT)
 /// is keyed relative to that directory; every key in THIS module is
 /// repo-relative. This const is the whole of the difference.
 const EXAMPLES_PREFIX: &str = "examples/";
 
-/// Whether a [`CTOR_CONFORMANCE_MIGRATION_DEBT`](super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT)
+/// Whether a [`CTOR_CONFORMANCE_MIGRATION_DEBT`](reify_test_support::ctor_conformance_debt::CTOR_CONFORMANCE_MIGRATION_DEBT)
 /// entry describes the REPO-RELATIVE site `(file, param)`.
 ///
 /// The single place the two tables' key forms are bridged. The debt list is
@@ -2850,14 +2850,15 @@ const EXAMPLES_PREFIX: &str = "examples/";
 /// [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`] has to exist as a sibling table.
 ///
 /// The `(file, param)` matching RULE is not restated here; it is
-/// `examples_smoke`'s `debt_entry_matches`, called through.
+/// `reify_test_support::ctor_conformance_debt::debt_entry_matches`, called through.
 fn debt_entry_describes(entry: &(&str, &str, &str), file: &str, param: Option<&str>) -> bool {
-    file.strip_prefix(EXAMPLES_PREFIX)
-        .is_some_and(|key| super::examples_smoke::debt_entry_matches(entry, key, param))
+    file.strip_prefix(EXAMPLES_PREFIX).is_some_and(|key| {
+        reify_test_support::ctor_conformance_debt::debt_entry_matches(entry, key, param)
+    })
 }
 
 /// The reason every
-/// [`CTOR_CONFORMANCE_MIGRATION_DEBT`](super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT)
+/// [`CTOR_CONFORMANCE_MIGRATION_DEBT`](reify_test_support::ctor_conformance_debt::CTOR_CONFORMANCE_MIGRATION_DEBT)
 /// site is deferred.
 ///
 /// That table carries no `why` column — it predates this one, and every entry in
@@ -2925,7 +2926,7 @@ impl Disposition {
 }
 
 /// Resolve `site`'s disposition from [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`] and
-/// [`CTOR_CONFORMANCE_MIGRATION_DEBT`](super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT).
+/// [`CTOR_CONFORMANCE_MIGRATION_DEBT`](reify_test_support::ctor_conformance_debt::CTOR_CONFORMANCE_MIGRATION_DEBT).
 ///
 /// The ONLY place the two tables are unioned. The tables are the single source
 /// of truth and the artifact is a projection of them, so nothing else re-derives
@@ -2976,7 +2977,7 @@ fn disposition_of(site: &SurveySite) -> Disposition {
         return Disposition::Deferred { owning_task, why };
     }
 
-    if let Some(&(_, _, owning_task)) = super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT
+    if let Some(&(_, _, owning_task)) = reify_test_support::ctor_conformance_debt::CTOR_CONFORMANCE_MIGRATION_DEBT
         .iter()
         .find(|entry| debt_entry_describes(entry, &site.file, Some(param)))
     {
@@ -3059,7 +3060,7 @@ fn assert_no_unwaived_ctor_conformance_warnings(run: &SurveyRun) {
             )
         })
     });
-    let stale_debt = super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT
+    let stale_debt = reify_test_support::ctor_conformance_debt::CTOR_CONFORMANCE_MIGRATION_DEBT
         .iter()
         .filter_map(|entry| {
             let matched = waived
@@ -3202,7 +3203,7 @@ fn ctor_conformance_corpus_residual_is_sorted_and_duplicate_free() {
 }
 
 /// [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`] and
-/// [`CTOR_CONFORMANCE_MIGRATION_DEBT`](super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT)
+/// [`CTOR_CONFORMANCE_MIGRATION_DEBT`](reify_test_support::ctor_conformance_debt::CTOR_CONFORMANCE_MIGRATION_DEBT)
 /// describe DISJOINT sites.
 ///
 /// The two tables are siblings, not a merge: one site described in both would
@@ -3214,7 +3215,7 @@ fn ctor_conformance_corpus_residual_is_disjoint_from_migration_debt() {
     let overlap: Vec<String> = CTOR_CONFORMANCE_CORPUS_RESIDUAL
         .iter()
         .filter(|(path, param, _, _)| {
-            super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT
+            reify_test_support::ctor_conformance_debt::CTOR_CONFORMANCE_MIGRATION_DEBT
                 .iter()
                 .any(|entry| debt_entry_describes(entry, path, Some(param)))
         })
@@ -4261,7 +4262,7 @@ fn render_survey_resolves_each_site_disposition_from_the_tables() {
     ];
 
     let residual = CTOR_CONFORMANCE_CORPUS_RESIDUAL.first();
-    let debt = super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT.first();
+    let debt = reify_test_support::ctor_conformance_debt::CTOR_CONFORMANCE_MIGRATION_DEBT.first();
     let debt_path = debt.map(|(key, _, _)| format!("{EXAMPLES_PREFIX}{key}"));
     if let Some((path, param, _, _)) = residual {
         sites.push(synth_site(path, 1, "Widget", param, Owner::NonFea));
