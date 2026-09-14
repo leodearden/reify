@@ -640,9 +640,9 @@ pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_cor
 /// understands — suppressing the very `UnresolvedFunction` warning this module
 /// exists to emit.
 ///
-/// **`offset` is arity-gated**, not arity-blind like its ten siblings: only
-/// the arity-2 `offset(Plane, Length) -> Plane` form is a construction datum
-/// (the arity-3 form is a γ relation in
+/// **`offset` is arity-gated**, not arity-blind like its thirteen siblings:
+/// only the arity-2 `offset(Plane, Length) -> Plane` form is a construction
+/// datum (the arity-3 form is a γ relation in
 /// [`crate::relation_signatures::RELATION_FN_NAMES`]). It is a member of this
 /// slice — membership is a NAME fact — but membership alone does not imply
 /// the resolver claims a given call. The test-only `DATUM_NAMES` fixture in
@@ -662,6 +662,13 @@ pub(crate) const DATUM_CONSTRUCTOR_NAMES: &[&str] = &[
     "axis_x",
     "axis_y",
     "axis_z",
+    // BoundingBox constructor and its two accessors (task 6081's
+    // bounding-box vocabulary). Arity-blind like their siblings: the
+    // quantity slot is fixed at LENGTH by the 6081 ruling, so no argument
+    // needs inspecting to type them.
+    "bbox",
+    "bbox_size",
+    "bbox_center",
     // Arity-gated: construction datum at arity 2 only (see above).
     "offset",
 ];

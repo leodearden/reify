@@ -268,16 +268,19 @@ pub const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[
     "joint_range",
     "joint_ratio",
     "joint_offset",
-    // --- orientation decomposers + BoundingBox — owner #6004 (registry τ2) --
+    // --- orientation decomposers — owner #6004 (registry τ2) ---------------
     // The four decomposers return heterogeneous Maps that τ2 gives nominal
-    // structures (`AxisAngle`, `Twist`); the bbox trio is ruled by #6081.
+    // structures (`AxisAngle`, `Twist`).
+    //
+    // The `bbox`/`bbox_size`/`bbox_center` trio USED to sit here awaiting
+    // #6081's Length-valued ruling. That ruling landed, and #6081 registered
+    // all three in `units::DATUM_CONSTRUCTOR_NAMES`, so they are no longer
+    // deferred — `eval_deferred_names_are_disjoint_from_every_registered_family`
+    // is what named the overlap when this task made the slice authoritative.
     "orient_log",
     "orient_to_axis_angle",
     "orient_to_euler",
     "transform_log",
-    "bbox",
-    "bbox_center",
-    "bbox_size",
     // --- fea / flexures / stackup / dfm / tolerancing / loads / tensegrity --
     // --- owner #6006 (registry τ4) -----------------------------------------
     // The `std.fea` MultiCaseResult accessors (fea.rs:47-102) are the group
