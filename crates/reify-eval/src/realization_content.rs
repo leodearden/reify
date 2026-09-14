@@ -8,9 +8,10 @@
 // arms in `project_realization_read_handle` with real kernel projection + store
 // insert.  δ (Sdf/Voxel→densify) has already landed (task 4510).
 //
-// PRD §10 OQ-2 (eviction): the store is unbounded in v1; eviction is deferred
-// to a future task.  Content is immutable once keyed (realization identity is
-// content-addressed), so stale entries are unreachable rather than incorrect.
+// PRD §10 OQ-2 (eviction): the store has no SIZE cap in v1 — an LRU is still
+// deferred.  CORRECTNESS eviction is not: see the eviction note on
+// `RealizationProjectionStore`, and `RealizationProjectionStore::evict`, which
+// `engine_edit::invalidate_realization_dirty_cone` drives (#7332).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -60,12 +61,24 @@ const MESH_PROJECTION_SENTINEL_TOL: f64 = 0.0001;
 /// itself is shared, so both the store and the caller observe the same heap
 /// allocation — `Arc::ptr_eq` on the inner pointer holds.
 ///
-/// ## Eviction (PRD §10 OQ-2)
+/// ## Eviction (PRD §10 OQ-2, corrected by #7332)
 ///
-/// The store is unbounded in v1.  Because realization identity is
-/// content-addressed, a stale entry (content_hash that is no longer current for
-/// a given node) is simply never looked up again — it is unreachable, not
-/// incorrect.  A future task may add an LRU cap.
+/// The store has no SIZE cap in v1; a future task may add an LRU one.  It does
+/// have a CORRECTNESS eviction, and that one is load-bearing: the second key is
+/// `RealizationNodeData::content_hash`, a Debug render of the op IR, which
+/// provably does NOT move when a parameter VALUE changes.  So a
+/// `(node_id, content_hash)` key really is re-looked-up verbatim after an
+/// `edit_param`, and an un-evicted entry is served as if fresh.
+///
+/// This note previously claimed the opposite — that a stale entry "is simply
+/// never looked up again — it is unreachable, not incorrect".  That was false
+/// on its own terms; it merely stayed latent while nothing re-projected a
+/// realization within one engine lifetime.  #7332 removed that accident, so the
+/// invariant is now upheld where it belongs, in the caller:
+/// `engine_edit::invalidate_realization_dirty_cone` [`evict`](Self::evict)s
+/// every realization whose EVALUATED input cone moved — keyed on
+/// `RealizationNodeData::input_cone_hash` precisely because `content_hash`
+/// cannot see a value-driven change.
 #[allow(dead_code)] // consumed by project_realization_read_handle / step-4
 pub(crate) struct RealizationProjectionStore {
     memo: HashMap<RealizationNodeId, HashMap<ContentHash, RealizedContent>>,
@@ -109,6 +122,20 @@ impl RealizationProjectionStore {
             .entry(node_id)
             .or_default()
             .insert(content_hash, content);
+    }
+
+    /// Drop every memoized projection of `node_id`, whatever its content hash.
+    ///
+    /// The unit is the whole node rather than one `(node_id, content_hash)`
+    /// pair because the caller knows the realization's geometry moved but not
+    /// which key the now-stale content was filed under — and the second key
+    /// cannot tell a moved value apart from an unmoved one (see the eviction
+    /// note on the type).  Over-eviction costs one re-projection;
+    /// under-eviction serves stale geometry.
+    ///
+    /// Idempotent: evicting an absent node is a no-op.
+    pub(crate) fn evict(&mut self, node_id: &RealizationNodeId) {
+        self.memo.remove(node_id);
     }
 }
 

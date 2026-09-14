@@ -578,6 +578,28 @@ fn assert_realization_ids_unchanged<'a>(
 /// `None` for a node that carries none, so the non-Compute kinds cost one
 /// map lookup.
 ///
+/// # The memoized projection store is evicted too (#7332)
+///
+/// A fifth realization-keyed dependent kind lives outside the reverse index:
+/// `Engine::realization_projection_store`, the `(realization_ref,
+/// content_hash) -> RealizedContent` memo that
+/// `project_realization_read_handle` serves `@optimized` consumers from. Its
+/// second key is the STATIC `content_hash`, which never moves on a
+/// value-driven change (the same property [`compute_changed_realizations`]
+/// exists to work around), so a post-edit lookup re-hits the pre-edit entry
+/// verbatim — that is a stale read, not the unreachable entry the store's own
+/// doc used to claim. Dropping the cache entry alone does not fix it: the
+/// re-dispatch it forces projects through the store and gets the stale content
+/// back.
+///
+/// Both halves of the moved set are evicted. The seeds themselves are absent
+/// from the returned cone by construction (`compute_dirty_cone_with_realizations`
+/// keeps them out of `dirty`), so they are evicted directly from
+/// `changed_realizations`; the downstream `GeomRef::Sub` consumers the walk
+/// reaches DO arrive as `NodeId::Realization` entries in the cone, and are
+/// evicted there. Neither half needs a new derivation — the precise set is the
+/// one this function is already handed.
+///
 /// # Which reverse index is used
 ///
 /// Edge #10 is registered by
@@ -631,6 +653,7 @@ fn assert_realization_ids_unchanged<'a>(
 fn invalidate_realization_dirty_cone(
     cache: &mut CacheStore,
     warm_pool: &mut WarmStatePool,
+    projection_store: &mut crate::realization_content::RealizationProjectionStore,
     graph: &EvaluationGraph,
     compiled_fields: &[reify_compiler::CompiledField],
     prebuilt_index: Option<&crate::deps::ReverseDependencyIndex>,
@@ -638,6 +661,12 @@ fn invalidate_realization_dirty_cone(
 ) -> HashSet<NodeId> {
     if seeds.is_empty() {
         return HashSet::new();
+    }
+    // The seeds' own memoized projections — see "The memoized projection store
+    // is evicted too" above. Done before the walk because the seeds are the one
+    // part of the moved set the cone deliberately does not carry.
+    for rid in changed_realizations {
+        projection_store.evict(rid);
     }
     let rebuilt;
     let index = match prebuilt_index {
@@ -667,6 +696,12 @@ fn invalidate_realization_dirty_cone(
             warm_pool.donate_with_cost(node.clone(), state, cost);
         }
         cache.invalidate(node);
+        // A downstream `GeomRef::Sub` consumer of a moved realization: its own
+        // geometry moved with its operand, so its memo is stale for the same
+        // reason the seeds' is.
+        if let NodeId::Realization(rid) = node {
+            projection_store.evict(rid);
+        }
     }
     dirty
 }
@@ -2900,6 +2935,7 @@ impl Engine {
             let cone = invalidate_realization_dirty_cone(
                 &mut self.cache,
                 &mut self.warm_pool,
+                &mut self.realization_projection_store,
                 graph,
                 &self.compiled_fields,
                 reusable_index,
@@ -4696,6 +4732,7 @@ impl Engine {
             let cone = invalidate_realization_dirty_cone(
                 &mut self.cache,
                 &mut self.warm_pool,
+                &mut self.realization_projection_store,
                 &new_snapshot.graph,
                 &self.compiled_fields,
                 None,
