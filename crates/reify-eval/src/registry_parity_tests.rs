@@ -760,3 +760,87 @@ fn every_eval_builtin_row_agrees_with_its_executed_kind() {
     );
 }
 
+
+// ── the ledger's second direction, tested over synthetic tables ─────────────
+//
+// These five tests drive [`adjudicate`] over LOCAL tables rather than over the
+// real rows. That is deliberate, and it is what lets the real ledger be
+// legitimately EMPTY while the ledger MECHANISM is still proven: the
+// divergence, staleness and verdict-change paths are all exercised without
+// committing a single mutating test against `PARITY_EXEMPTION_LEDGER` or
+// against any registry row.
+//
+// The staleness direction is what gives an empty ledger teeth. Without it the
+// ledger could be padded with entries that assert nothing, and a divergence
+// fixed by a later τ would leave a permanent false exemption behind.
+
+/// A synthetic ledger entry, so the tests below never touch the real one.
+fn synthetic(id: EvalBuiltinId, expected: ParityVerdict) -> ExemptionEntry {
+    ExemptionEntry {
+        id,
+        expected,
+        why: "synthetic — belongs to this test only, never to the real ledger",
+    }
+}
+
+/// (a) A divergence nobody accepted must be reported.
+#[test]
+fn adjudicate_flags_an_unledgered_divergence() {
+    let observed = [(EvalBuiltinId::ParseLength, ParityVerdict::Diverges)];
+    assert_eq!(
+        adjudicate(&observed, &[]),
+        vec![Failure::Unledgered {
+            id: EvalBuiltinId::ParseLength,
+            observed: ParityVerdict::Diverges,
+        }]
+    );
+}
+
+/// (b) A divergence with a matching entry is accepted — the residue is counted,
+/// not forbidden.
+#[test]
+fn adjudicate_accepts_a_ledgered_divergence() {
+    let observed = [(EvalBuiltinId::ParseLength, ParityVerdict::Diverges)];
+    let ledger = [synthetic(EvalBuiltinId::ParseLength, ParityVerdict::Diverges)];
+    assert_eq!(adjudicate(&observed, &ledger), vec![]);
+}
+
+/// (c) **The staleness direction.** A row that now passes must not keep its
+/// exemption: the entry has to be DELETED, and the ledger must SHRINK.
+#[test]
+fn adjudicate_flags_a_stale_entry_whose_row_now_passes() {
+    let observed = [(EvalBuiltinId::ParseLength, ParityVerdict::Matches)];
+    let ledger = [synthetic(EvalBuiltinId::ParseLength, ParityVerdict::Diverges)];
+    assert_eq!(
+        adjudicate(&observed, &ledger),
+        vec![Failure::Stale {
+            id: EvalBuiltinId::ParseLength,
+            ledgered: ParityVerdict::Diverges,
+        }]
+    );
+}
+
+/// (d) Right row, wrong disposition. A row ledgered as `Diverges` that is now
+/// `Vacuous` (or vice versa) is still not passing, but the exemption no longer
+/// describes it — so it is reported rather than absorbed. This is the case an
+/// id-only ledger could not express.
+#[test]
+fn adjudicate_flags_a_ledgered_row_whose_verdict_changed() {
+    let observed = [(EvalBuiltinId::ParseLength, ParityVerdict::Vacuous)];
+    let ledger = [synthetic(EvalBuiltinId::ParseLength, ParityVerdict::Diverges)];
+    assert_eq!(
+        adjudicate(&observed, &ledger),
+        vec![Failure::VerdictChanged {
+            id: EvalBuiltinId::ParseLength,
+            observed: ParityVerdict::Vacuous,
+            ledgered: ParityVerdict::Diverges,
+        }]
+    );
+}
+
+/// (e) Nothing observed, nothing ledgered, nothing to report — the degenerate
+/// case, pinned so the adjudicator cannot manufacture a failure from thin air.
+#[test]
+fn adjudicate_is_silent_on_empty_tables() {
+    assert_eq!(adjudicate(&[], &[]), vec![]);
+}
