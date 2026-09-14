@@ -2277,3 +2277,184 @@ mod parametric_alias_def_site_enum_body {
         );
     }
 }
+
+/// Use-site resolution of a PARAMETRIC alias whose body names an ENTITY, with
+/// no prelude in play at all (task #6477, step-3 RED → step-4 GREEN).
+///
+/// Task 6477's title says "cross-module"; it is not. MEASURED on `main`
+/// (823502024d), a purely module-local `enum Zq { … }` + `type Jq<T> =
+/// Option<Zq>` + `param p : Jq<Real>` already reports `unresolved type:
+/// Jq<Real>`. The prelude is incidental — the root cause is that
+/// `resolve_parameterized_alias` resolves the body through
+/// `resolve_type_alias_expr_with_subst`, whose terminal `Named` fallback
+/// hard-codes EMPTY structure/trait sets and consults no enum namespace,
+/// while its own caller is already holding the real ones.
+///
+/// The same defect at the NON-parametric spelling is what #6259 fixed; the
+/// `alias_to_entity_type_parity` module above is its lock. This module is the
+/// parametric register of exactly those rows, which is why it asserts the same
+/// thing in the same shape: `alias_ty == direct_ty` against an oracle module
+/// that spells the body directly, never a frozen literal `Type` variant. The
+/// oracle's own cleanliness is asserted FIRST, so a parity row cannot pass
+/// vacuously with both sides `Type::Error`.
+mod parametric_alias_entity_body_use_site {
+    use super::alias_to_entity_type_parity::param_type_and_errors;
+    use super::*;
+
+    /// One use-site row. The alias is always declared as `type AL<T> = {body}`
+    /// and used as `param p : AL<Real>`; `direct` is that same body with the
+    /// alias's `T` already substituted by the use-site argument `Real`, so the
+    /// two spellings denote the same type by construction.
+    struct UseSiteCase {
+        label: &'static str,
+        /// What `main` produced for this row before step-4 landed.
+        measured_on_main: &'static str,
+        decls: &'static str,
+        body: &'static str,
+        direct: &'static str,
+    }
+
+    const ENUM: &str = "enum Zq { Close, Medium }";
+    const STRUCTURE: &str = "structure def Sq {\n    param w : Length = 1.0mm\n}";
+    const OCCURRENCE: &str = "occurrence def Oq {\n    param w : Length = 1.0mm\n}";
+    const TRAIT: &str = "trait Hq {\n    param w : Length\n}";
+
+    /// All four entity kinds an alias body may name, bare and nested, plus the
+    /// row where the alias's own param and an entity name appear TOGETHER.
+    const USE_SITE_CASES: &[UseSiteCase] = &[
+        UseSiteCase {
+            label: "bare enum body",
+            measured_on_main: "RED — unresolved type: AL<Real>",
+            decls: ENUM,
+            body: "Zq",
+            direct: "Zq",
+        },
+        UseSiteCase {
+            label: "bare structure-def body",
+            measured_on_main: "RED — unresolved type: AL<Real>",
+            decls: STRUCTURE,
+            body: "Sq",
+            direct: "Sq",
+        },
+        UseSiteCase {
+            label: "bare occurrence-def body",
+            measured_on_main: "RED — unresolved type: AL<Real>",
+            decls: OCCURRENCE,
+            body: "Oq",
+            direct: "Oq",
+        },
+        UseSiteCase {
+            label: "bare trait body",
+            measured_on_main: "RED — unresolved type: AL<Real>",
+            decls: TRAIT,
+            body: "Hq",
+            direct: "Hq",
+        },
+        UseSiteCase {
+            label: "nested enum body",
+            measured_on_main: "RED — unresolved type: AL<Real>",
+            decls: ENUM,
+            body: "Option<Zq>",
+            direct: "Option<Zq>",
+        },
+        UseSiteCase {
+            label: "nested structure-def body",
+            measured_on_main: "RED — unresolved type: AL<Real>",
+            decls: STRUCTURE,
+            body: "Option<Sq>",
+            direct: "Option<Sq>",
+        },
+        UseSiteCase {
+            // The row that matters most: the substitution and the entity
+            // lookup must COMPOSE. If step-4 threads the namespaces but loses
+            // `subst` on the way (or vice versa) this is the row that reds.
+            label: "param-using body that also names an enum",
+            measured_on_main: "RED — unresolved type: AL<Real>",
+            decls: ENUM,
+            body: "Map<T, Zq>",
+            direct: "Map<Real, Zq>",
+        },
+        UseSiteCase {
+            label: "param-using body that also names a structure def",
+            measured_on_main: "RED — unresolved type: AL<Real>",
+            decls: STRUCTURE,
+            body: "Map<T, Sq>",
+            direct: "Map<Real, Sq>",
+        },
+    ];
+
+    fn alias_source(case: &UseSiteCase) -> String {
+        format!(
+            "{decls}\ntype AL<T> = {body}\nstructure def D {{\n    param p : AL<Real>\n}}\n",
+            decls = case.decls,
+            body = case.body
+        )
+    }
+
+    fn direct_source(case: &UseSiteCase) -> String {
+        format!(
+            "{decls}\nstructure def D {{\n    param p : {direct}\n}}\n",
+            decls = case.decls,
+            direct = case.direct
+        )
+    }
+
+    #[test]
+    fn parametric_alias_to_entity_body_lowers_identically_to_the_direct_spelling() {
+        let mut failures: Vec<String> = Vec::new();
+
+        for case in USE_SITE_CASES {
+            let direct_src = direct_source(case);
+            let alias_src = alias_source(case);
+
+            // The DIRECT spelling is the oracle — if it is not clean the row
+            // says nothing about the alias path, so fail loudly on the fixture
+            // rather than letting a broken-equals-broken parity pass.
+            let (direct_ty, direct_errs) = param_type_and_errors(&direct_src, "D", "p");
+            assert!(
+                direct_errs.is_empty(),
+                "[{}] DIRECT baseline must compile cleanly for the parity oracle to \
+                 mean anything; got: {:?}\n--- source ---\n{}",
+                case.label,
+                direct_errs,
+                direct_src
+            );
+            assert!(
+                !direct_ty.is_error(),
+                "[{}] DIRECT baseline must lower to a real type, not the `Type::Error` \
+                 poison; got: {:?}",
+                case.label,
+                direct_ty
+            );
+
+            let (alias_ty, alias_errs) = param_type_and_errors(&alias_src, "D", "p");
+            if !alias_errs.is_empty() {
+                failures.push(format!(
+                    "[{}] (on main: {}) `type AL<T> = {}` used as `AL<Real>` produced \
+                     Error diagnostics: {:?}",
+                    case.label, case.measured_on_main, case.body, alias_errs
+                ));
+            }
+            if alias_ty != direct_ty {
+                failures.push(format!(
+                    "[{}] (on main: {}) `type AL<T> = {}` lowered `D.p` to {:?}, but \
+                     the direct spelling `{}` lowers it to {:?}",
+                    case.label,
+                    case.measured_on_main,
+                    case.body,
+                    alias_ty,
+                    case.direct,
+                    direct_ty
+                ));
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "a PARAMETRIC alias body must resolve its entity names exactly as the \
+             direct spelling does at the same use site — #6259's recorded decision \
+             gives alias bodies no separate name-resolution rule:\n  {}",
+            failures.join("\n  ")
+        );
+    }
+}
