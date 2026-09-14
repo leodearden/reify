@@ -2795,7 +2795,7 @@ structure def S {
         "undefined port 'q' in connect statement",
     ] {
         assert!(
-            messages.iter().any(|m| *m == expected),
+            messages.contains(&expected),
             "expected {:?} to survive per-declaration duplicate suppression \
              (it differs from its sibling only in the port name), got: {:?}",
             expected,

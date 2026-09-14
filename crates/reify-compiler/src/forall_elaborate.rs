@@ -311,6 +311,92 @@ fn resolve_count_cell_literal(
     }
 }
 
+/// Per-`forall`-declaration duplicate-diagnostic sink (task 7195).
+///
+/// Invariant: **one `forall` declaration reports each distinct diagnostic at
+/// most once.** Two diagnostics are the same when they render identically —
+/// equal `severity`, `message`, `code` and `candidates`, and the same
+/// `(span, message)` for every label, in order. First occurrence wins, so the
+/// retained order is emission order minus the repeats.
+///
+/// The duplication collapsed here is manufactured by the per-element loop, not
+/// by the checks themselves: `compile_connection` runs once per collection
+/// element with `span: decl.span`, and its direction message interpolates only
+/// the two `PortDirection`s — never the port names — so an N-element collection
+/// produced N byte-identical errors. Per-element `CompiledConnection`s and their
+/// `connect_compat_*` constraints are unaffected:
+/// `connect_compat_vents[i].inlet_air_channel` still carries the per-element
+/// identity, so semantic enforcement does not depend on the diagnostic count.
+///
+/// Construct one immediately before a declaration's per-element loop and *after*
+/// collection resolution, so diagnostics raised by `resolve_forall_elements` and
+/// by the `ResolveForallOutcome::Deferred` arm — each already emitted exactly
+/// once — stay outside the window.
+struct ForallDiagnosticSink<'a> {
+    /// The caller's diagnostics vector; retained entries are appended here.
+    out: &'a mut Vec<Diagnostic>,
+    /// Index in `out` at which this declaration's window opens. Only entries at
+    /// or after it participate in the duplicate comparison, so a repeat raised
+    /// by an unrelated earlier declaration is never suppressed.
+    window_start: usize,
+    /// Reusable buffer lent to the closure in [`Self::collecting`].
+    scratch: Vec<Diagnostic>,
+}
+
+impl<'a> ForallDiagnosticSink<'a> {
+    fn new(out: &'a mut Vec<Diagnostic>) -> Self {
+        let window_start = out.len();
+        Self {
+            out,
+            window_start,
+            scratch: Vec::new(),
+        }
+    }
+
+    /// Run `emit` against a scratch diagnostics vector, then merge whatever it
+    /// pushed into `out`, dropping every entry that renders identically to one
+    /// already retained for this declaration.
+    ///
+    /// The closure form makes the merge un-skippable: the buffer cannot be
+    /// obtained without the merge running on return, so a call site added later
+    /// inside the loop cannot half-use the protocol and silently lose
+    /// diagnostics. The retained window holds only the DISTINCT diagnostics of
+    /// one declaration (one, for every shape measured), so the linear scan costs
+    /// O(elements × distinct) and needs no hashing.
+    fn collecting<R>(&mut self, emit: impl FnOnce(&mut Vec<Diagnostic>) -> R) -> R {
+        self.scratch.clear();
+        let result = emit(&mut self.scratch);
+        for diag in self.scratch.drain(..) {
+            let already_reported = self.out[self.window_start..]
+                .iter()
+                .any(|kept| renders_identically(kept, &diag));
+            if !already_reported {
+                self.out.push(diag);
+            }
+        }
+        result
+    }
+}
+
+/// Whether two diagnostics render identically, and are therefore
+/// indistinguishable to an author and to any downstream consumer.
+///
+/// Compares fields directly rather than a formatted key: `Severity`,
+/// `DiagnosticCode` and `SourceSpan` already derive `PartialEq`, and
+/// `DiagnosticLabel` — which derives only `Debug, Clone` — is compared pairwise
+/// on its two fields.
+fn renders_identically(a: &Diagnostic, b: &Diagnostic) -> bool {
+    a.severity == b.severity
+        && a.message == b.message
+        && a.code == b.code
+        && a.candidates == b.candidates
+        && a.labels.len() == b.labels.len()
+        && a.labels
+            .iter()
+            .zip(b.labels.iter())
+            .all(|(x, y)| x.span == y.span && x.message == y.message)
+}
+
 /// Drive per-element constraint emission for a `forall ... : constraint ...`
 /// or `forall ... : constraint Inst(...)` declaration.
 ///
@@ -784,6 +870,12 @@ pub(crate) fn elaborate_forall_connect(
         trait_registry,
     };
 
+    // Open the per-declaration duplicate-diagnostic window (task 7195). It opens
+    // HERE — after collection resolution and the `Deferred` early return — so the
+    // non-iterable-collection error and the deferred-path info diagnostics, each
+    // already emitted exactly once, stay outside it.
+    let mut sink = ForallDiagnosticSink::new(diagnostics);
+
     // PRD criterion 6 — empty-collection path: when `elements` is empty (either
     // a `ListLiteral([])` or a count-cell-zero collection sub), this loop
     // iterates zero times and emits no connections and no diagnostics. The
@@ -814,24 +906,26 @@ pub(crate) fn elaborate_forall_connect(
                     value_cells,
                     pending_connect_auto_params,
                 };
-                compile_connection(
-                    &ctx,
-                    &ConnectInput {
-                        left_expr: &left_substituted,
-                        operator: cd.operator,
-                        right_expr: &right_substituted,
-                        connector_type: cd.connector_type.as_deref(),
-                        params: &params_substituted,
-                        port_mappings: &cd.port_mappings,
-                        // Anchor the emitted connection at the source forall
-                        // declaration so per-element diagnostics cite the
-                        // forall site and the element index travels in the
-                        // synthetic compatibility constraint label.
-                        span: decl.span,
-                    },
-                    diagnostics,
-                    &mut acc,
-                );
+                sink.collecting(|element_diagnostics| {
+                    compile_connection(
+                        &ctx,
+                        &ConnectInput {
+                            left_expr: &left_substituted,
+                            operator: cd.operator,
+                            right_expr: &right_substituted,
+                            connector_type: cd.connector_type.as_deref(),
+                            params: &params_substituted,
+                            port_mappings: &cd.port_mappings,
+                            // Anchor the emitted connection at the source forall
+                            // declaration so per-element diagnostics cite the
+                            // forall site and the element index travels in the
+                            // synthetic compatibility constraint label.
+                            span: decl.span,
+                        },
+                        element_diagnostics,
+                        &mut acc,
+                    );
+                });
                 let _ = i; // element index currently encoded only via the
                 // synthetic `connect_compat_<l>_<r>` label produced
                 // by `compile_connection` (the substituted port
@@ -862,7 +956,11 @@ pub(crate) fn elaborate_forall_connect(
                 // doing so would fire the diagnostic for the empty-list case
                 // (breaking criterion 6) and for the undef-count deferred case.
                 if cd.elements.len() < 2 {
-                    diagnostics.push(
+                    // TRANSIENT (task 7195 step-2): the Chain arm still writes
+                    // straight through to the sink's output, so it keeps today's
+                    // per-element duplication. Step-4 routes both Chain-arm
+                    // emissions through `sink.collecting`.
+                    sink.out.push(
                         Diagnostic::error("chain statement requires at least two elements")
                             .with_label(DiagnosticLabel::new(decl.span, "too few elements")),
                     );
@@ -899,7 +997,7 @@ pub(crate) fn elaborate_forall_connect(
                             port_mappings: &[],
                             span: decl.span,
                         },
-                        diagnostics,
+                        sink.out,
                         &mut acc,
                     );
                 }
