@@ -170,34 +170,38 @@ fn resolve_decl_name(
 /// `(name, statement span)` pair its kind yields — or `None` when that token
 /// cannot be located inside the declaration's span.
 ///
-/// Callers obtain `(name, decl_span)` from
-/// [`crate::analysis::decl_name_and_span`], whose wildcard-free exhaustive match
-/// is what makes same-file go-to-definition uniform across declaration kinds
-/// instead of a per-kind allowlist.
+/// The crate's one narrow-and-refuse rule for a declaration name, shared by BOTH
+/// goto-def scans: the same-file [`resolve_decl_name`], which sources
+/// `(name, decl_span)` from [`crate::analysis::decl_name_and_span`]'s
+/// wildcard-free exhaustive match, and the cross-file [`decl_name_span_in`],
+/// which sources it from its own `include_aliases`-gated allowlist. Sharing the
+/// NARROWING is deliberate and is NOT the oracle merge
+/// [`find_declaration_name_span`]'s doc forbids — reasoning at the
+/// [`decl_name_span_in`] call site.
 ///
 /// Narrowing uses [`crate::analysis::name_token_span`] — whole-word, bounded to
-/// the declaration's own span, UTF-8-boundary-snapping.
+/// the declaration's own span, UTF-8-boundary-snapping. Its documented
+/// ZERO-WIDTH fallback (the name is absent within the span, e.g. a recovered AST
+/// node) becomes `None`: a zero-width `Location` is never a useful jump target,
+/// and an empty span is an exact discriminator because a declaration name is
+/// never the empty string. What refusing costs each consumer is enumerated on
+/// [`decl_name_span_in`].
 ///
-/// `name_token_span` falls back to a ZERO-WIDTH span at `span.start` when the
-/// name is absent within the declaration span (e.g. a recovered AST node). A
-/// zero-width `Location` is never a useful jump target, so that case becomes
-/// `None` here.
-///
-/// SEPARATE BY DESIGN from [`find_declaration_name_span`], which also feeds
-/// rename/references. Two non-goals follow from keeping them apart:
+/// Two non-goals of the SAME-FILE scan that feeds this, following from keeping
+/// [`crate::analysis::decl_name_and_span`] separate from the narrower scan
+/// [`find_declaration_name_span`] shares with rename/references:
 /// - a `structure def` nested inside a `purpose` body lives in
 ///   `PurposeDef.structures`, is not a top-level declaration, and is not
 ///   resolved (see `goto_def_purpose_nested_structure_is_not_top_level`);
-/// - CROSS-file goto-def does NOT route through here at all: it resolves via
-///   [`find_declaration_in_source`], whose scan is the narrower
-///   [`decl_name_span_in`] one. That scan admits TypeAlias — #6341 gave the
-///   cross-file path `include_aliases = true` — so an alias IS cross-file
-///   navigable; it is Purpose/Constraint/Unit/Joint that this task leaves
-///   SAME-FILE-only. Widening the cross-file side means covering their
-///   type-position use sites first, which is #6972's remit.
+/// - CROSS-file goto-def does not use that scan: it resolves via
+///   [`find_declaration_in_source`] over [`decl_name_span_in`], which admits
+///   TypeAlias — #6341 gave the cross-file path `include_aliases = true` — so an
+///   alias IS cross-file navigable; it is Purpose/Constraint/Unit/Joint that
+///   this task leaves SAME-FILE-only. Widening the cross-file side means
+///   covering their type-position use sites first, which is #6972's remit.
 fn decl_name_token(source: &str, name: &str, decl_span: SourceSpan) -> Option<SourceSpan> {
-    let tok = crate::analysis::name_token_span(source, decl_span, name);
-    (tok.start != tok.end).then_some(tok)
+    let token = name_token_span(source, decl_span, name);
+    (!token.is_empty()).then_some(token)
 }
 
 /// Compute go-to-definition with cross-file import resolution.
@@ -466,11 +470,18 @@ fn decl_name_span_in(
         };
         if decl_name == name {
             // Point to the name within the declaration, not the entire span.
-            // An empty span is `name_token_span`'s documented not-found
-            // fallback, and an exact discriminator here because a declaration
-            // name is never the empty string.
-            let token = name_token_span(source, span, name);
-            return (!token.is_empty()).then_some(token);
+            //
+            // Calling the same-file path's helper is NOT the oracle merge
+            // that this function's doc and `find_declaration_name_span`'s
+            // forbid. That split is over which declaration KINDS a SCAN admits
+            // — `analysis::decl_name_and_span`'s wildcard-free 11 versus the
+            // `include_aliases`-gated 7 matched above — never over how an
+            // ALREADY-SELECTED declaration's name token is narrowed. Both
+            // scans already shared `analysis::name_token_span` for that, so
+            // this only removes the second copy of the narrow-and-refuse
+            // wrapper around it; the kind lists stay exactly as far apart as
+            // they were.
+            return decl_name_token(source, decl_name, span);
         }
     }
     None
