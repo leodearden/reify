@@ -205,8 +205,10 @@ fn baseline_is_well_formed() {
 // `validate_baseline_content` validator, so every grammar/taxonomy/sort rule has
 // real coverage that does not depend on what the committed file contains. They
 // were written while the baseline was empty — when `baseline_is_well_formed`
-// alone would have exercised only the `path.exists()` branch — and they remain
-// the permanent home of that coverage now that it is not.
+// alone would have exercised only the `path.exists()` branch — and they are the
+// permanent home of that coverage whatever the committed file holds. Their
+// coverage does not depend on the baseline's state either way — that is the
+// point.
 // -----------------------------------------------------------------------
 
 #[test]
