@@ -48,11 +48,11 @@
 //!
 //! # Suite census (the locked oracle L5 must preserve)
 //!
-//! 10 `CompiledGeometryOp` variant families × 53 nested kinds, across 11 tests:
-//! Primitive 8, Boolean 3, Modify 9 (+3 edges-selector branch cases), Transform
+//! 10 `CompiledGeometryOp` variant families × 54 nested kinds, across 11 tests:
+//! Primitive 8, Boolean 3, Modify 10 (+3 edges-selector branch cases), Transform
 //! 7, Pattern 5 (+2 value-form branch cases), Sweep 9, Curve 6, Profile 4,
-//! Surface 1, Isosurface 1 (8+3+9+7+5+9+6+4+1+1 = 53). The `coverage_*` test pins
-//! the 10-family / 53-kind census; the per-family `characterize_*` tests plus
+//! Surface 1, Isosurface 1 (8+3+10+7+5+9+6+4+1+1 = 54). The `coverage_*` test pins
+//! the 10-family / 54-kind census; the per-family `characterize_*` tests plus
 //! `_assert_variant_families_exhaustive` are the compile-time tripwires for a
 //! newly-added variant or nested kind. L5 MUST keep all 11 tests byte-identical
 //! green.
@@ -1745,7 +1745,7 @@ fn modify_step_handles() -> Vec<GeometryHandleId> {
 /// count — so adding a new `ModifyKind` in `reify-compiler` without updating
 /// this array fails the test at runtime even if the exhaustive matches were
 /// already patched.
-const ALL_MODIFY: [ModifyKind; 9] = [
+const ALL_MODIFY: [ModifyKind; 10] = [
     ModifyKind::Fillet,
     ModifyKind::Chamfer,
     ModifyKind::ChamferAsymmetric,
@@ -1754,6 +1754,7 @@ const ALL_MODIFY: [ModifyKind; 9] = [
     ModifyKind::Thicken,
     ModifyKind::ZoneSlab,
     ModifyKind::OffsetSolid,
+    ModifyKind::OffsetSurface,
     ModifyKind::OffsetCurve,
 ];
 
@@ -1781,6 +1782,7 @@ fn modify_case(k: ModifyKind) -> CompiledGeometryOp {
         ModifyKind::Thicken => vec![("offset".to_string(), lit_len(0.003))],
         ModifyKind::ZoneSlab => vec![("width".to_string(), lit_len(0.01))],
         ModifyKind::OffsetSolid => vec![("distance".to_string(), lit_len(0.002))],
+        ModifyKind::OffsetSurface => vec![("distance".to_string(), lit_len(0.002))],
         ModifyKind::OffsetCurve => vec![("distance".to_string(), lit_len(0.002))],
     };
     CompiledGeometryOp::Modify {
@@ -2198,6 +2200,60 @@ fn modify_golden(k: ModifyKind) -> &'static str {
 )"#,
         ModifyKind::OffsetSolid => r#"Ok(
     OffsetSolid {
+        target: GeometryHandleId(
+            50,
+        ),
+        distance: Scalar {
+            si_value: 0.002,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
+    },
+)"#,
+        ModifyKind::OffsetSurface => r#"Ok(
+    OffsetSurface {
         target: GeometryHandleId(
             50,
         ),
@@ -3733,7 +3789,7 @@ fn _assert_variant_families_exhaustive(op: &CompiledGeometryOp) {
 /// Kept as a named constant so the prose and the assertion cannot drift apart
 /// silently: the test compares this against the sum of the nine
 /// `VARIANT_COUNT`s, so if the doc arithmetic is wrong the test fails.
-const DOCUMENTED_KIND_FAMILY_CENSUS: usize = 52;
+const DOCUMENTED_KIND_FAMILY_CENSUS: usize = 53;
 
 /// Runtime census cross-check for the 10-family / 53-nested-kind oracle
 /// (nine kind families totalling 52, plus the Isosurface marker family).
@@ -3776,8 +3832,8 @@ const DOCUMENTED_KIND_FAMILY_CENSUS: usize = 52;
 /// variant is added, forcing the author through `ALL`. `VARIANT_COUNT` then
 /// catches the unregistered registry row.
 ///
-/// Census: 8 + 3 + 9 + 7 + 5 + 9 + 6 + 4 + 1 = 52 across the nine kind families
-/// (53 including the `ALL_ISOSURFACE` marker family).
+/// Census: 8 + 3 + 10 + 7 + 5 + 9 + 6 + 4 + 1 = 53 across the nine kind families
+/// (54 including the `ALL_ISOSURFACE` marker family).
 #[test]
 fn coverage_all_variant_families_and_nested_kinds() {
     // Per-family array widths, each cross-checked against the compiler's
@@ -3789,7 +3845,7 @@ fn coverage_all_variant_families_and_nested_kinds() {
     // and Boolean/Surface beside theirs above.)
     assert_eq!(ALL_PRIMITIVE.len(), PrimitiveKind::VARIANT_COUNT, "ALL_PRIMITIVE is out of sync with PrimitiveKind::VARIANT_COUNT — update both together");
     assert_eq!(ALL_BOOLEAN.len(), BooleanOp::VARIANT_COUNT, "ALL_BOOLEAN is out of sync with BooleanOp::VARIANT_COUNT — update both together");
-    assert_eq!(ALL_MODIFY.len(), 9, "ALL_MODIFY census");
+    assert_eq!(ALL_MODIFY.len(), 10, "ALL_MODIFY census");
     assert_eq!(ALL_TRANSFORM.len(), TransformKind::VARIANT_COUNT, "ALL_TRANSFORM is out of sync with TransformKind::VARIANT_COUNT — update both together");
     assert_eq!(ALL_PATTERN.len(), PatternKind::VARIANT_COUNT, "ALL_PATTERN is out of sync with PatternKind::VARIANT_COUNT — update both together");
     assert_eq!(ALL_SWEEP.len(), SweepKind::VARIANT_COUNT, "ALL_SWEEP is out of sync with SweepKind::VARIANT_COUNT — update both together");
@@ -3853,5 +3909,5 @@ fn coverage_all_variant_families_and_nested_kinds() {
     // Total nested-kind census across all ten families (the nine kind families
     // plus the Isosurface marker).
     let total: usize = family_widths.iter().sum();
-    assert_eq!(total, 53, "total nested-kind census; update if any ALL_* array is resized");
+    assert_eq!(total, 54, "total nested-kind census; update if any ALL_* array is resized");
 }

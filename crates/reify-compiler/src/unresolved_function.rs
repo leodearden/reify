@@ -56,7 +56,6 @@
 //!   migration is seeded by this task's warn-sweep violation list
 //!   (`docs/notes/unresolved-function-warn-sweep-2026-08-29.md`).
 
-use crate::analysis_signatures::ANALYSIS_FN_NAMES;
 use crate::expr::DETERMINACY_PREDICATE_NAMES;
 use crate::joint_signatures::JOINT_TYPED_FN_NAMES;
 use crate::list_helpers::LIST_HELPER_NAMES;
@@ -64,7 +63,6 @@ use crate::math_signatures::{
     MATH_CONSTRUCTION_NAMES, MATH_OPERATION_NAMES, MATH_TRANSCENDENTAL_NAMES,
 };
 use crate::orientation_signatures::ORIENTATION_TYPED_FN_NAMES;
-use crate::parse_signatures::PARSE_FN_NAMES;
 use crate::relation_signatures::{RELATION_FN_NAMES, is_relation_shared_verb};
 use crate::units::{
     AFFINE_ALGEBRA_NAMES, AFFINE_MAP_CONSTRUCTOR_NAMES, DATUM_CONSTRUCTOR_NAMES,
@@ -408,7 +406,7 @@ pub const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[
 ///
 /// Case-sensitive — Reify function names are snake_case.
 pub fn is_known_builtin(name: &str) -> bool {
-    // --- The 19 name slices the ladder consults, in ladder order. ---
+    // --- The name slices the ladder consults, in ladder order. ---
     GEOMETRY_QUERY_HELPER_NAMES.contains(&name)
         || GEOMETRY_KINEMATIC_QUERY_NAMES.contains(&name)
         || GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(&name)
@@ -423,10 +421,8 @@ pub fn is_known_builtin(name: &str) -> bool {
         || MATH_OPERATION_NAMES.contains(&name)
         || MATH_TRANSCENDENTAL_NAMES.contains(&name)
         || JOINT_TYPED_FN_NAMES.contains(&name)
-        || ANALYSIS_FN_NAMES.contains(&name)
         || FEA_ENVELOPE_NAMES.contains(&name)
         || FIELD_OP_NAMES.contains(&name)
-        || PARSE_FN_NAMES.contains(&name)
         || ORIENTATION_TYPED_FN_NAMES.contains(&name)
         // --- The four resolver-only families, promoted to production slices
         // --- by this task so the union can see them (they were previously
@@ -524,13 +520,11 @@ pub(crate) fn arg_shape_expectation(name: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis_signatures::ANALYSIS_FN_NAMES;
     use crate::joint_signatures::JOINT_TYPED_FN_NAMES;
     use crate::math_signatures::{
         MATH_CONSTRUCTION_NAMES, MATH_OPERATION_NAMES, MATH_TRANSCENDENTAL_NAMES,
     };
     use crate::orientation_signatures::ORIENTATION_TYPED_FN_NAMES;
-    use crate::parse_signatures::PARSE_FN_NAMES;
     use crate::relation_signatures::RELATION_FN_NAMES;
     use crate::units::{
         AFFINE_MAP_CONSTRUCTOR_NAMES, DYNAMICS_CONSTRUCTOR_NAMES, DYNAMICS_QUERY_NAMES,
@@ -542,8 +536,13 @@ mod tests {
     /// Every name slice the `NoUserFunctions` ladder consults, paired with its
     /// identifier so a failure names the family that regressed.
     ///
-    /// Nineteen families; each `*_are_disjoint_from_other_families` test in
-    /// `units.rs` loops the other **18** (it excludes its own).
+    /// One entry per registered family slice; each
+    /// `*_are_disjoint_from_other_families` test in `units.rs` loops the
+    /// others (it excludes its own).
+    ///
+    /// The analysis and parse families are absent because #6001 α moved their
+    /// signatures into `reify-builtins` rows — they no longer have a
+    /// compiler-side slice to iterate.
     const ALL_FAMILY_SLICES: &[(&str, &[&str])] = &[
         ("GEOMETRY_FUNCTION_NAMES", GEOMETRY_FUNCTION_NAMES),
         ("GEOMETRY_QUERY_HELPER_NAMES", GEOMETRY_QUERY_HELPER_NAMES),
@@ -565,17 +564,15 @@ mod tests {
         ("MATH_CONSTRUCTION_NAMES", MATH_CONSTRUCTION_NAMES),
         ("MATH_OPERATION_NAMES", MATH_OPERATION_NAMES),
         ("MATH_TRANSCENDENTAL_NAMES", MATH_TRANSCENDENTAL_NAMES),
-        ("ANALYSIS_FN_NAMES", ANALYSIS_FN_NAMES),
         ("RELATION_FN_NAMES", RELATION_FN_NAMES),
         ("JOINT_TYPED_FN_NAMES", JOINT_TYPED_FN_NAMES),
-        ("PARSE_FN_NAMES", PARSE_FN_NAMES),
         ("ORIENTATION_TYPED_FN_NAMES", ORIENTATION_TYPED_FN_NAMES),
     ];
 
     /// The four families promoted from resolver-only `match` arms to real
     /// slices by #5371 — kept separate from `ALL_FAMILY_SLICES` because the
-    /// fifteen pre-existing `*_are_disjoint_from_other_families` tests in
-    /// `units.rs` iterate the nineteen registered slices only.
+    /// pre-existing `*_are_disjoint_from_other_families` tests in `units.rs`
+    /// iterate the registered slices only.
     const RESOLVER_ONLY_FAMILY_SLICES: &[(&str, &[&str])] = &[
         ("DATUM_CONSTRUCTOR_NAMES", DATUM_CONSTRUCTOR_NAMES),
         ("SELECTOR_COMPOSITION_NAMES", SELECTOR_COMPOSITION_NAMES),

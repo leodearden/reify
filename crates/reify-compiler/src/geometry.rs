@@ -292,7 +292,7 @@ fn geometry_arg_indices(name: &str) -> &'static [usize] {
         | "circular_pattern" | "linear_pattern" | "mirror" | "arbitrary_pattern"
         | "linear_pattern_2d" | "extrude" | "extrude_symmetric" | "extrude_infinite"
         | "revolve" | "revolve_full" | "shell" | "shell_open" | "thicken" | "offset_solid"
-        | "offset_curve" | "draft" | "chamfer" | "chamfer_asymmetric" | "fillet" | "fillet_all"
+        | "offset_surface" | "offset_curve" | "draft" | "chamfer" | "chamfer_asymmetric" | "fillet" | "fillet_all"
         | "zone_slab" | "zone_cylinder" | "zone_annulus" | "zone_profile" | "isosurface" => &[0],
         "sweep" => &[0, 1],
         "sweep_guided" => &[0, 1, 2],
@@ -2885,7 +2885,7 @@ fn compile_geometry_call_inner(
         // --- Modify extensions ---
         // These modifiers take a geometry target as their first argument (correctly
         // resolved from geom_refs via geom_ref(0)) and are registered in geometry_arg_indices().
-        "shell" | "shell_open" | "thicken" | "offset_solid" | "offset_curve" | "draft"
+        "shell" | "shell_open" | "thicken" | "offset_solid" | "offset_surface" | "offset_curve" | "draft"
         | "chamfer" | "chamfer_asymmetric" | "fillet" | "fillet_all" | "zone_slab" => {
             compile_modify_op(
                 name,

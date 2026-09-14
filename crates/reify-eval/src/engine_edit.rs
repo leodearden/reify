@@ -22,6 +22,113 @@
 //! `(Undef, Auto)`, destroying solver work and causing `eval(guard=T)` to
 //! diverge from `eval(guard=¬T) → edit_param(guard, T)` for the same final
 //! configuration.
+//!
+//! # Warm-Resolution back-prop sync set
+//!
+//! Four entry points resolve Auto params through the constraint solver and
+//! back-propagate the result: [`Engine::eval`], [`Engine::eval_cached`],
+//! [`Engine::edit_param`], and [`Engine::edit_source`]. Between them there
+//! are six write-back arms, because, per template index, [`Engine::eval`] and
+//! [`Engine::eval_cached`] each take a mutually exclusive merged-cluster
+//! branch through `dispatch_merged_cluster_solve` /
+//! `dispatch_merged_cluster_solve_cached` (task #5118).
+//!
+//! Each arm writes some subset of eight legs. Four are uniform across
+//! all six arms; four are not. Legs 1-4 describe the MAIN resolution
+//! write-back of each arm; wave-2 and post-wave2 phases are covered
+//! per-arm in leg 5.
+//!
+//! 1. `values` — uniform
+//! 2. snapshot map as `Determined` — uniform
+//! 3. cache entry — uniform
+//! 4. `param_overrides` — [`Engine::edit_param`] / [`Engine::edit_source`] only
+//! 5. journal — mechanism differs per arm:
+//!    - [`Engine::eval`] per-template arm — hand-rolled `Started`/`Completed`
+//!      pairs around the solver write-back. Two exceptions: the
+//!      pinned-connector-auto write-back
+//!      (`write_solved_pinned_connector_autos`, task #4710), which fires
+//!      first and is un-journaled by design — its own doc says "Does NOT
+//!      touch the journal" — and, separately, a later post-solve phase,
+//!      `materialize_dependent_cells`, which writes `values` and marks the
+//!      snapshot `Determined` for cross-scope Let-coupled cells with no
+//!      cache entry and no journal call. Its sibling post-solve phase,
+//!      `evaluate_let_bindings`, DOES journal via `commit_cell_result`, so
+//!      it needs no exception entry.
+//!    - [`Engine::eval`]'s merged-cluster branch
+//!      (`dispatch_merged_cluster_solve`) — hand-rolled `Started`/
+//!      `Completed` pairs, same shape as the per-template arm. No
+//!      pinned-connector write-back here (the merged builder already
+//!      excludes strict connector-instance autos), so no pinned-connector
+//!      exception — but it shares the per-template arm's
+//!      `materialize_dependent_cells` exception above.
+//!    - [`Engine::eval_cached`] per-template arm — TWO un-journaled
+//!      write-backs: the pinned-connector-auto write-back (same
+//!      exception as the `eval` per-template arm) and, separately, its
+//!      own solver-resolved-value write-back, a bare cache record with
+//!      no journal event. Its wave-2 downstream let-cone re-eval, by
+//!      contrast, DOES journal, via `commit_cell_result`.
+//!    - [`Engine::eval_cached`]'s merged-cluster branch
+//!      (`dispatch_merged_cluster_solve_cached`) — `commit_cell_result`
+//!      for both the main write-back and its wave-2. No pinned-connector
+//!      write-back (same exclusion as `eval`'s merged-cluster branch).
+//!    - [`Engine::edit_param`] — `commit_cell_result` for the main
+//!      write-back and the wave-2 downstream reseed's active-member leg
+//!      (both `CacheLeg::Record`); that same wave-2 reseed's
+//!      inactive-guarded-member leg instead calls
+//!      [`deactivate_if_not_auto`] (no cache, no journal). A third phase,
+//!      the post-wave2 driver-ordered guard-member reseed, follows: its
+//!      active-member leg also routes through `commit_cell_result`, but
+//!      with `CacheLeg::Skip("post-wave2 guard-member reseed")` —
+//!      journals, does not cache. No un-journaled *resolution*
+//!      write-back — its inactive-guarded-member leg, like the wave-2
+//!      reseed's, also calls [`deactivate_if_not_auto`], writing
+//!      `values`/snapshot only (no cache, no journal), by design; see
+//!      the canonical Auto-cell lifecycle rule above.
+//!    - [`Engine::edit_source`] — main write-back journals via
+//!      `commit_cell_result`; its wave-2 ("Second propagation wave")
+//!      does NOT — a bare `values`/snapshot insert plus
+//!      `cache.record_evaluation`, no journal event. A third phase, the
+//!      post-wave2 driver-ordered guard-member reseed's active-member
+//!      leg, has NEITHER: a bare `values`/snapshot insert with no cache
+//!      write and no journal call at all.
+//! 6. `resolved_params` — `eval`'s two arms, [`Engine::edit_param`] and
+//!    [`Engine::edit_source`]; NOT written by either `eval_cached` arm
+//! 7. `objective_provenance` — `eval`'s two arms only
+//! 8. `resolved_ids` / `all_resolved_ids` — uniform: every arm populates
+//!    a local resolved-ids set seeded from the solver's resolved
+//!    values. In [`Engine::eval`]'s and [`Engine::eval_cached`]'s
+//!    per-template arms it is a superset of that — strict when
+//!    `pinned_connector_autos` is non-empty, equal otherwise:
+//!    `write_solved_pinned_connector_autos` (in `engine_eval.rs`) also
+//!    inserts each pinned connector-instance auto (their merged-cluster
+//!    branches take no pinned-connector write-back, per leg 5 above, so
+//!    this superset is per-template-arm only). For `eval_cached` this
+//!    is load-bearing: its wave-2 dirty-cone seed reads directly from
+//!    this same `resolved_ids` set, so a pinned auto omitted from it
+//!    would also skip re-eval of its downstream cone.
+//!    `eval`'s two arms feed the set into `SnapshotProvenance::Resolution {
+//!    resolved }`; the other four arms (`eval_cached`'s two arms,
+//!    [`Engine::edit_param`], [`Engine::edit_source`]) use it instead to
+//!    seed the wave-2 downstream dirty cone. Omitting a newly resolved
+//!    cell here silently skips its downstream re-eval.
+//!
+//! Legs 6-7 are a deliberate, documented divergence, not drift:
+//! `dispatch_merged_cluster_solve_cached`'s own doc records that its arm
+//! still emits no `resolved_params` and no `objective_provenance` —
+//! consult that doc's `resolved_params`/`objective_provenance` clause
+//! for the rationale before "fixing" `eval_cached` to write them. That
+//! same clause's "migrated per-template sibling" remark — it sits in the
+//! same sentence, joined by "but" — is about a different topic (task
+//! #5118's `commit_cell_result` migration, not legs 6-7) and is not
+//! authoritative for leg 5 above — treat leg 5 as this file's canonical
+//! account of journal behavior per arm.
+//!
+//! Check all eight legs when modifying warm Resolution back-prop.
+//!
+//! A further arm, `resolve_concurrent_edit` — the fourth member of this
+//! roster's original four-site form, before [`Engine::edit_source`] and the
+//! merged-cluster branches were added — was removed with `concurrent.rs` in
+//! ffb85f0627 (task ο, #5065).
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -40,7 +147,9 @@ use reify_ir::{
 };
 
 use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
-use crate::cell_commit::{CacheLeg, CommitLegs, DeterminacyRule, TraceSource, commit_cell_result};
+use crate::cell_commit::{
+    CacheLeg, CommitLegs, DeterminacyRule, TraceSource, commit_cell_result, commit_cell_result_at,
+};
 use crate::cell_eval_ctx::cell_eval_ctx;
 use crate::deps::{DependencyTrace, extract_dependency_trace};
 use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
@@ -1188,7 +1297,7 @@ impl Engine {
         let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &self.demand, &state.trace_map);
 
         // θ2 (task 4531) + ν (task 5045): the value re-evaluation below walks the
-        // SAME unified driver order as cold/build/concurrent — making "warm output
+        // SAME unified driver order as cold/build — making "warm output
         // == cold output" structural on the edit surface — and `eval_set` IS that
         // order. `dirty::compute_eval_set` sorts through `dirty::topological_sort`,
         // which delegates to `engine_fixpoint::run_unified_pass_seeded` (the ONE
@@ -1713,7 +1822,7 @@ impl Engine {
         if let Some(ref solver) = self.solver {
             // Group auto params by entity (template) name.
             //
-            // Four-site sync note (task #4710): connector-instance auto cells
+            // Warm-resolution sync note (task #4710): connector-instance auto cells
             // (e.g. `Parent.__connector_0.gain`) are keyed by their full entity
             // string `"Parent.__connector_0"` — a distinct group that contains no
             // filtered_constraints (no parent-scope constraint reads the instance
@@ -1722,8 +1831,11 @@ impl Engine {
             // `constraints_dirty = false` for that group and the solver is never
             // invoked for it; the cold-eval value written by
             // `engine_eval::connector_pin_if_determined` (task #4710 step-2) is
-            // preserved automatically.  This is the edit_param site of the
-            // four-site sync invariant (see concurrent.rs module header).
+            // preserved automatically.  This is the `edit_param` arm of the
+            // warm-Resolution back-prop sync set — see the roster in this
+            // file's module-level doc comment ("# Warm-Resolution back-prop
+            // sync set") for the full membership, the eight legs to check,
+            // and the `resolve_concurrent_edit` provenance note.
             let mut entity_groups: HashMap<String, (Vec<AutoParam>, HashSet<ValueCellId>)> =
                 HashMap::new();
 
@@ -1860,7 +1972,7 @@ impl Engine {
             // read them may NOT be in the original edit dirty cone. RE-DIRTY the
             // resolved autos' downstream cone and reseed the SAME unified driver
             // (`run_unified_pass_seeded`) for one additional value pass — the
-            // ordering core cold/build/concurrent use — replacing BOTH the legacy
+            // ordering core cold/build use — replacing BOTH the legacy
             // hand-rolled "second propagation wave" (`compute_eval_set`-ordered)
             // AND its cross-phase `reapply_guard_deactivations_post_wave2` cleanup.
             //
@@ -1937,6 +2049,7 @@ impl Engine {
                     } else if let Some(node) = graph.value_cells.get(vcid)
                         && let Some(ref expr) = node.default_expr
                     {
+                        let start = Instant::now();
                         let val = reify_expr::eval_expr(
                             expr,
                             &cell_eval_ctx(
@@ -1952,7 +2065,23 @@ impl Engine {
                         // Commit via the cell-commit primitive (task δ #5056):
                         // atomically writes values/snapshot/cache/journal
                         // (INV-EVAL-1).
-                        commit_cell_result(
+                        //
+                        // Paired with edit_source's `Second propagation wave`
+                        // commit (task #6423) — this pair had been silently
+                        // diverged (edit_source's wave2 wrote no journal leg
+                        // at all until #6423 migrated it); change them
+                        // together.
+                        //
+                        // `commit_cell_result_at(start, ..)`, not the plain
+                        // `commit_cell_result`: `start` is captured above,
+                        // before `reify_expr::eval_expr`, so the emitted
+                        // Started/Completed pair brackets the full
+                        // resolution rather than just the commit itself —
+                        // see `commit_cell_result_at`'s doc (#5238
+                        // amendment). The paired edit_source wave2 site below
+                        // does the same; change them together.
+                        commit_cell_result_at(
+                            start,
                             CommitLegs {
                                 values: &mut values,
                                 snapshot_values: &mut new_snapshot.values,
@@ -3395,7 +3524,7 @@ impl Engine {
         let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &new_demand, &new_trace_map);
 
         // θ2 (task 4713) + ν (task 5045): the value re-evaluation below walks the
-        // SAME unified driver order as cold/build/concurrent, and `eval_set` IS that
+        // SAME unified driver order as cold/build, and `eval_set` IS that
         // order — `compute_eval_set` sorts through `dirty::topological_sort`, which
         // delegates to `engine_fixpoint::run_unified_pass_seeded` (the ONE
         // scheduling core, INV-EVAL-5). Note the sort above already used
@@ -4050,7 +4179,7 @@ impl Engine {
         if let Some(ref solver) = self.solver {
             // Group auto params by entity (template) name.
             //
-            // Four-site sync note (task #4710): connector-instance auto cells
+            // Warm-resolution sync note (task #4710): connector-instance auto cells
             // (e.g. `Parent.__connector_0.gain`) are keyed by their full entity
             // string `"Parent.__connector_0"` — a distinct group that contains no
             // filtered_constraints (no parent-scope constraint reads the instance
@@ -4059,8 +4188,11 @@ impl Engine {
             // `constraints_dirty = false` for that group and the solver is never
             // invoked for it; the cold-eval value written by
             // `engine_eval::connector_pin_if_determined` (task #4710 step-2) is
-            // preserved automatically.  This is the edit_source site of the
-            // four-site sync invariant (see concurrent.rs module header).
+            // preserved automatically.  This is the `edit_source` arm of the
+            // warm-Resolution back-prop sync set — see the roster in this
+            // file's module-level doc comment ("# Warm-Resolution back-prop
+            // sync set") for the full membership, the eight legs to check,
+            // and the `resolve_concurrent_edit` provenance note.
             let mut entity_groups: HashMap<String, (Vec<AutoParam>, HashSet<ValueCellId>)> =
                 HashMap::new();
 
@@ -4193,6 +4325,9 @@ impl Engine {
             // For edit_source we MUST use the NEW reverse_index / trace_map
             // / demand (rather than self.eval_state's stale pre-edit
             // structures) because dependency edges may have shifted.
+            // The write-back below is now primitive-routed (task #6423);
+            // see the commit_cell_result call's own comment for the
+            // edit_param sync pointer.
             if !all_resolved_ids.is_empty() {
                 let wave2_dirty = crate::dirty::compute_dirty_cone(
                     &all_resolved_ids,
@@ -4207,24 +4342,54 @@ impl Engine {
                         && let Some(node) = new_snapshot.graph.value_cells.get(vcid)
                         && let Some(ref expr) = node.default_expr
                     {
+                        let start = Instant::now();
                         let val = reify_expr::eval_expr(
                             expr,
                             &eval_ctx_with_meta(&values, &functions, &self.meta_map)
                                 .with_runtime_diagnostics(&runtime_sink),
                         );
-                        values.insert(vcid.clone(), val.clone());
-                        new_snapshot
-                            .values
-                            .insert(vcid.clone(), (val.clone(), DeterminacyState::Determined));
 
-                        // Update cache for re-evaluated node
-                        let trace = extract_dependency_trace(expr);
-                        let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
-                        self.cache.record_evaluation(
-                            node_id.clone(),
-                            cached_result,
+                        // Commit via the cell-commit primitive (task #6423):
+                        // atomically writes values/snapshot/cache/journal
+                        // (INV-EVAL-1). Paired with edit_param's own
+                        // `Resolution reseed` wave2 commit (task δ #5056) —
+                        // both sites now route through commit_cell_result_at
+                        // with the identical UnconditionalDetermined/
+                        // EditReeval/Record selection; change them together.
+                        //
+                        // `commit_cell_result_at(start, ..)`, not the plain
+                        // `commit_cell_result`: `start` is captured above,
+                        // before `reify_expr::eval_expr`, so the emitted
+                        // Started/Completed pair brackets the full
+                        // resolution rather than just the commit itself —
+                        // see `commit_cell_result_at`'s doc (#5238
+                        // amendment) and the paired edit_param wave2 site
+                        // above, which has the same shape.
+                        //
+                        // `UnconditionalDetermined` mirrors the pre-migration
+                        // hand-rolled write, which stamped `Determined`
+                        // unconditionally regardless of `val`. Whether `val`
+                        // can actually be `Value::Undef` here (which would
+                        // make this diverge from `DeterminacyRule::
+                        // DeriveFromValue`) is not exercised by this file's
+                        // test coverage — see
+                        // `edit_source_recorded_sites_route_through_commit_primitive`'s
+                        // doc comment below.
+                        commit_cell_result_at(
+                            start,
+                            CommitLegs {
+                                values: &mut values,
+                                snapshot_values: &mut new_snapshot.values,
+                                cache: &mut self.cache,
+                                journal: &mut self.journal,
+                            },
+                            vcid.clone(),
+                            val,
+                            DeterminacyRule::UnconditionalDetermined,
+                            TraceSource::EditReeval,
+                            extract_dependency_trace(expr),
                             VersionId(version_id),
-                            trace,
+                            CacheLeg::Record,
                         );
                     }
                 }
@@ -4779,33 +4944,13 @@ mod tests {
         ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, Severity, SourceSpan, Type,
         ValueCellId,
     };
-    use reify_expr::ContainmentQuery;
     use reify_ir::{CompiledExpr, DeterminacyState, PersistentMap, Value, ValueMap};
+    use reify_test_support::mocks::MockContainmentQuery;
 
     use std::cell::RefCell;
     use std::collections::{HashMap, HashSet};
 
     use crate::graph::{EvaluationGraph, GuardedGroupInfo, ValueCellNode};
-
-    /// Trivial `ContainmentQuery` impl for `reelaborate_guarded_group` tests
-    /// below (task δ #5056): none of them exercise `restrict`/`sample`
-    /// containment resolution, so a no-op stub suffices — mirrors
-    /// `cell_eval_ctx.rs`'s own `NoContainment` test double. That
-    /// duplication (reviewer amend, round 3) is a known, drift-prone wart:
-    /// hoisting one shared `NoContainment`/`AlwaysInside` pair into
-    /// `reify_test_support::mocks` would remove it, but doing so requires
-    /// editing `cell_eval_ctx.rs` and the `reify-test-support` crate, both
-    /// outside δ's locked scope (`engine_edit.rs` +
-    /// `edit_param_cell_commit_migration.rs` only) — left for a follow-up
-    /// task or whichever migration leaf (ε/ι) next needs to touch both
-    /// files.
-    struct NoContainment;
-
-    impl ContainmentQuery for NoContainment {
-        fn contains(&self, _region: &Value, _point: &Value) -> Option<bool> {
-            None
-        }
-    }
 
     use super::{
         deactivate_if_not_auto, dedup_diagnostics_preserve_order, guard_value_unchanged,
@@ -4849,7 +4994,7 @@ mod tests {
         let mut values = ValueMap::default();
         let mut snapshot_values = PersistentMap::default();
         let sink = RefCell::new(Vec::new());
-        let containment = NoContainment;
+        let containment = MockContainmentQuery { result: None };
         reelaborate_guarded_group(
             &graph,
             &group,
@@ -5483,7 +5628,7 @@ mod tests {
             let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
                 PersistentMap::default();
             let sink = RefCell::new(Vec::new());
-            let containment = NoContainment;
+            let containment = MockContainmentQuery { result: None };
 
             reelaborate_guarded_group(
                 &graph,
@@ -5528,7 +5673,7 @@ mod tests {
             let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
                 PersistentMap::default();
             let sink = RefCell::new(Vec::new());
-            let containment = NoContainment;
+            let containment = MockContainmentQuery { result: None };
 
             reelaborate_guarded_group(
                 &graph,
@@ -6996,16 +7141,32 @@ mod tests {
         }
     }
 
-    /// Task #6373: pins that `edit_source`'s `SolveResult::Solved` resolution
-    /// back-prop arm (the per-cell write-back inside the per-entity-group
-    /// solver loop) is wired through the `commit_cell_result` primitive
+    /// Task #6373 (resolution back-prop arm) and task #6423 (its SECOND
+    /// PROPAGATION WAVE dependent-re-eval sibling, gated on
+    /// `if !all_resolved_ids.is_empty()`): pins that both of `edit_source`'s
+    /// write-back sites that wrote the cache leg with NO journal leg at all
+    /// — the Solved back-prop arm and the wave2 dependent re-eval — are wired
+    /// through the `commit_cell_result`/`commit_cell_result_at` primitive
     /// (`cell_commit.rs`) rather than the hand-rolled
-    /// values-insert/snapshot-insert/record_evaluation copy that writes no
-    /// journal leg at all. This is the `edit_source` half of the
-    /// edit_param/edit_source resolution-arm sync pair (INV-EVAL-1): its
-    /// mirror is `edit_param_dependent_reeval_routes_through_commit_primitive`
-    /// above, and the edit_param side of this exact migration has its own
-    /// suite at `crates/reify-eval/tests/harness_engine/edit_param_cell_commit_migration.rs`.
+    /// values-insert/snapshot-insert/record_evaluation copy. `edit_source`'s
+    /// MAIN per-cell eval loop (this file's step-(12) "Per-cell eval loop")
+    /// remains hand-rolled too, but it DOES emit a journal Started/Completed
+    /// pair (with `payload: None`, so no `TraceSource` provenance slug) — a
+    /// different defect class, out of scope here (see plan.json design
+    /// decision D1 / follow-up task #6998). This is the `edit_source` half
+    /// of the edit_param/edit_source resolution-arm AND wave2 sync pairs
+    /// (INV-EVAL-1): the mirrors are
+    /// `edit_param_dependent_reeval_routes_through_commit_primitive` above
+    /// and `edit_param_recorded_sites_route_through_commit_primitive` below,
+    /// and the edit_param side of the resolution-arm migration has its own
+    /// suite at
+    /// `crates/reify-eval/tests/harness_engine/edit_param_cell_commit_migration.rs`.
+    /// The single `edit_source` call below drives BOTH sites in one flow —
+    /// `x` is resolved by the per-entity-group solver loop (resolution arm)
+    /// and `y` is re-evaluated by the wave2 loop that follows it — so one
+    /// fixture covers both without needing two separate models, mirroring
+    /// `edit_param_recorded_sites_route_through_commit_primitive`'s T4/T5
+    /// precedent.
     ///
     /// FIXTURE: two `.ri` sources differing only in the constraint's target —
     /// SRC_A seeds the solver at x = 20mm via cold `eval()`, SRC_B retargets
@@ -7014,8 +7175,9 @@ mod tests {
     /// above already pins as reaching `SolveResult::Solved` post-#4700 —
     /// forcing a real Nelder-Mead search, not the initially-feasible
     /// early-exit — so `MOVED_AUTO_TOL = 1e-6` is used for every value
-    /// assertion here, exactly as that test uses it (see its doc comment for
-    /// why `1e-9` would be wrong for a search-path fixture).
+    /// assertion here, INCLUDING `y`'s (which carries x's full solver error,
+    /// since `y = x + 5mm`) — see that test's doc comment for why `1e-9`
+    /// would be wrong for a search-path fixture.
     ///
     /// RED on base: `x` is declared `auto`, so its `value_cells` node carries
     /// no `default_expr`; both edit_source's main eval walk and its wave2
@@ -7023,17 +7185,23 @@ mod tests {
     /// neither touches `x` — the Solved arm's hand-rolled write-back is the
     /// only site that resolves `x`, and it calls no `self.journal.record(..)`
     /// today. Assertion (1) below (the `resolved_params` guard) already
-    /// passes on base; assertion (2) (the journal pair) is the RED signal.
+    /// passes on base; assertion (2) (the journal pair for `x`) is the RED
+    /// signal for the resolution arm. For the wave2 site: `y` moves from
+    /// 0.025 to 0.015 (observed error 1.77e-15 against the expected value,
+    /// i.e. far inside `MOVED_AUTO_TOL`) but on base appends zero journal
+    /// events for `y` — assertion (4)'s journal-delta check is the RED
+    /// signal for wave2, and its trailing `dependency_trace` check pins that
+    /// the wave2 commit records the expr-derived trace
+    /// (`extract_dependency_trace(expr)`) rather than the resolution arm's
+    /// `DependencyTrace::default()` (structurally empty there, since a
+    /// solver-resolved auto has no static expr to trace).
     #[test]
-    fn edit_source_resolution_back_prop_routes_through_commit_primitive() {
+    fn edit_source_recorded_sites_route_through_commit_primitive() {
         use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
         use reify_core::ValueCellId;
-        use reify_ir::DeterminacyState;
         use reify_test_support::compile_source;
 
-        use crate::cache::{CachedResult, NodeId};
-        use crate::cell_commit::TraceSource;
-        use crate::journal::{EventKind, EventPayload};
+        use crate::cache::NodeId;
 
         const MOVED_AUTO_TOL: f64 = 1e-6;
 
@@ -7058,6 +7226,10 @@ mod tests {
         let x_node = NodeId::Value(x_id.clone());
         let events_before = engine.journal().events_for_node(&x_node).len();
 
+        let y_id = ValueCellId::new("WarmAutoSrcCommit", "y");
+        let y_node = NodeId::Value(y_id.clone());
+        let y_events_before = engine.journal().events_for_node(&y_node).len();
+
         let compiled_b = compile_source(SRC_B);
         let result = engine
             .edit_source(&compiled_b)
@@ -7076,11 +7248,12 @@ mod tests {
             "edit_source moved-auto: x must be resolved to 0.01 m (10mm), not the seeded 20mm",
         );
 
-        // (2) RED SIGNAL — journal: the primitive's own Started/Completed
-        // pair, with the EditReeval provenance slug recorded on Started.
-        // Checks the LAST two events (rather than assuming an exact total)
-        // since cold eval() may itself record journal events for x before
-        // edit_source runs.
+        // (2) RED SIGNAL — journal delta: the primitive's own Started/
+        // Completed pair, appended above the pre-edit baseline. This is the
+        // actual RED signal for the resolution arm —
+        // `assert_recorded_via_commit_primitive_with_tol` below only checks
+        // an absolute `>= 2` floor, which cold eval() may already satisfy
+        // for x on its own.
         let events_after = engine.journal().events_for_node(&x_node);
         assert!(
             events_after.len() >= events_before + 2,
@@ -7088,32 +7261,12 @@ mod tests {
              had {events_before} events before, {} after",
             events_after.len()
         );
-        let started = events_after[events_after.len() - 2];
-        let completed = events_after[events_after.len() - 1];
-        assert!(
-            matches!(started.kind, EventKind::Started),
-            "expected the second-to-last event to be Started, got {:?}",
-            started.kind
-        );
-        match &started.payload {
-            Some(EventPayload::Custom(slug)) => assert_eq!(
-                slug,
-                TraceSource::EditReeval.as_str(),
-                "Started payload must carry the edit-reeval provenance slug"
-            ),
-            other => panic!(
-                "expected Started payload Custom(\"{}\"), got {other:?}",
-                TraceSource::EditReeval.as_str()
-            ),
-        }
-        assert!(
-            matches!(completed.kind, EventKind::Completed { .. }),
-            "expected the last event to be Completed, got {:?}",
-            completed.kind
-        );
 
-        // (3) Three-leg agreement: result.values, snapshot, and cache all
-        // carry (0.01 m, Determined) for x.
+        // (3) result.values[x] — the returned EvalResult, which the shared
+        // helper below does not check (it reads the engine's snapshot/cache,
+        // not the edit's return value) — plus the journal shape/provenance
+        // and snapshot/cache three-leg agreement, via the same helper the
+        // wave2 (y) assertions below use.
         let x_result_val = result
             .values
             .get(&x_id)
@@ -7124,49 +7277,19 @@ mod tests {
             MOVED_AUTO_TOL,
             "result.values[x] must be 0.01 m (10mm) after back-prop",
         );
-
-        let snapshot = engine
-            .snapshot()
-            .expect("snapshot must exist after edit_source");
-        let (snap_x, snap_det) = snapshot
-            .values
-            .get(&x_id)
-            .expect("x must be in snapshot.values after edit_source");
-        assert_eq!(
-            *snap_det,
-            DeterminacyState::Determined,
-            "snapshot.values[x] must be Determined"
-        );
-        assert_scalar_si_approx_eq(
-            snap_x,
+        assert_recorded_via_commit_primitive_with_tol(
+            &engine,
+            &x_id,
             0.01,
             MOVED_AUTO_TOL,
-            "snapshot.values[x] must be 0.01 m (10mm) after back-prop",
+            "edit_source resolution back-prop (x)",
         );
 
-        let cache_entry = engine
-            .cache_store()
-            .get(&x_node)
-            .expect("x must have a cache entry after edit_source");
-        match &cache_entry.result {
-            CachedResult::Value(v, d) => {
-                assert_eq!(
-                    *d,
-                    DeterminacyState::Determined,
-                    "cache[x] determinacy must be Determined"
-                );
-                assert_scalar_si_approx_eq(
-                    v,
-                    0.01,
-                    MOVED_AUTO_TOL,
-                    "cache[x] must be 0.01 m (10mm)",
-                );
-            }
-            other => panic!("expected CachedResult::Value, got {other:?}"),
-        }
-
-        // (4) Downstream reseed unaffected: y = x + 5mm = 15mm.
-        let y_id = ValueCellId::new("WarmAutoSrcCommit", "y");
+        // (4) Downstream reseed: y = x + 5mm = 15mm — positive control that
+        // the wave2 loop actually ran (`x` is `auto` and carries no
+        // `default_expr`, so the wave2 loop, guarded on
+        // `node.default_expr.is_some()`, structurally cannot touch `x`;
+        // only `y` can exercise it).
         let y_val = result
             .values
             .get(&y_id)
@@ -7177,19 +7300,72 @@ mod tests {
             MOVED_AUTO_TOL,
             "edit_source reseed: y must be 0.015 m (15mm = x + 5mm)",
         );
+
+        // RED SIGNAL (task #6423, wave2): on base this appends zero journal
+        // events for `y` despite its value moving from 0.025 to 0.015.
+        let y_events_after = engine.journal().events_for_node(&y_node);
+        assert!(
+            y_events_after.len() >= y_events_before + 2,
+            "edit_source wave2 must append at least a Started+Completed pair for y, \
+             had {y_events_before} events before, {} after",
+            y_events_after.len()
+        );
+        assert_recorded_via_commit_primitive_with_tol(
+            &engine,
+            &y_id,
+            0.015,
+            MOVED_AUTO_TOL,
+            "edit_source wave2 dependent re-eval (y)",
+        );
+
+        // Pin that the wave2 commit records the expr-derived dependency
+        // trace (`extract_dependency_trace(expr)`) rather than the
+        // resolution arm's `DependencyTrace::default()` — a copy-paste that
+        // swapped one for the other would silently drop y's
+        // reverse-dependency edge on x (breaking downstream invalidation on
+        // a later edit) while every assertion above still passes.
+        let y_cache_entry = engine
+            .cache_store()
+            .get(&y_node)
+            .expect("y must have a cache entry after edit_source wave2 reseed");
+        assert!(
+            y_cache_entry.dependency_trace.reads.contains(&x_id),
+            "y's cache entry dependency_trace.reads must contain x after the wave2 commit, got {:?}",
+            y_cache_entry.dependency_trace.reads
+        );
     }
 
     /// Assert that `id`'s journal, snapshot, and cache all show the effects of
     /// a `commit_cell_result(.., TraceSource::EditReeval, .., CacheLeg::Record)`
     /// commit: a `Started`/`Completed` journal pair with the edit-reeval
     /// provenance slug, and `(expected_si, DeterminacyState::Determined)` in
-    /// both the snapshot and the cache. Shared by the recorded-site fixtures
-    /// below (task δ #5056 step-3) so each site's test is a thin setup +
-    /// one-line assertion, mirroring `assert_scalar_si_approx_eq` above.
+    /// both the snapshot and the cache, within the default `1e-9` tolerance.
+    /// Shared by the recorded-site fixtures below (task δ #5056 step-3) so
+    /// each site's test is a thin setup + one-line assertion, mirroring
+    /// `assert_scalar_si_approx_eq` above. Early-exit fixtures (the solver
+    /// lands exactly on the target with no search) satisfy `1e-9`; a
+    /// search-path fixture (a real Nelder-Mead solve, whose error is bounded
+    /// by the solver's own convergence tolerance rather than by floating
+    /// point) needs `assert_recorded_via_commit_primitive_with_tol` instead
+    /// — see `edit_param_back_props_moved_auto`'s doc comment for why.
     fn assert_recorded_via_commit_primitive(
         engine: &crate::Engine,
         id: &reify_core::ValueCellId,
         expected_si: f64,
+        label: &str,
+    ) {
+        assert_recorded_via_commit_primitive_with_tol(engine, id, expected_si, 1e-9, label);
+    }
+
+    /// Same as `assert_recorded_via_commit_primitive`, but with an explicit
+    /// tolerance for the snapshot/cache value comparisons (the journal shape
+    /// and determinacy checks are always exact) — for search-path fixtures
+    /// where `1e-9` is the wrong bound; see that function's doc comment.
+    fn assert_recorded_via_commit_primitive_with_tol(
+        engine: &crate::Engine,
+        id: &reify_core::ValueCellId,
+        expected_si: f64,
+        tol: f64,
         label: &str,
     ) {
         use crate::cache::{CachedResult, NodeId};
@@ -7239,7 +7415,7 @@ mod tests {
             DeterminacyState::Determined,
             "{label}: snapshot determinacy"
         );
-        assert_scalar_si_approx_eq(snap_v, expected_si, 1e-9, &format!("{label}: snapshot value"));
+        assert_scalar_si_approx_eq(snap_v, expected_si, tol, &format!("{label}: snapshot value"));
 
         let cache_entry = engine
             .cache_store()
@@ -7252,7 +7428,7 @@ mod tests {
                     DeterminacyState::Determined,
                     "{label}: cache determinacy"
                 );
-                assert_scalar_si_approx_eq(v, expected_si, 1e-9, &format!("{label}: cache value"));
+                assert_scalar_si_approx_eq(v, expected_si, tol, &format!("{label}: cache value"));
             }
             other => panic!("{label}: expected CachedResult::Value, got {other:?}"),
         }

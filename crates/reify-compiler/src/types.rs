@@ -1587,6 +1587,12 @@ pub enum ModifyKind {
     Thicken,
     ZoneSlab,
     OffsetSolid,
+    /// Offset a surface along its normal by a scalar distance
+    /// `offset_surface(surface, distance)` (θ, task 4192). Uses the Skin
+    /// (surface) mode of `BRepOffsetAPI_MakeOffsetShape`, distinct from
+    /// `OffsetSolid`'s `PerformBySimple` solid mode. Produces a fresh Surface.
+    /// Collapses to `Operation::ModifyOffsetSurface` (BRep kernel capability).
+    OffsetSurface,
     /// Planar/spatial curve offset `offset_curve(curve, distance[, reference|direction])`
     /// (ι, task 4193). Produces a fresh Wire offset from the target curve by
     /// `distance`. The optional 3rd arg — a reference Surface or a direction
@@ -1609,7 +1615,7 @@ impl ModifyKind {
     /// `const _: () = assert!(CASES.len() == ModifyKind::VARIANT_COUNT, ...)` in
     /// `geometry_modify::single_geom_target_kinds()` fires at `cargo check`, forcing the
     /// matching `CASES` row to be added.
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::Fillet,
         Self::Chamfer,
         Self::ChamferAsymmetric,
@@ -1618,6 +1624,7 @@ impl ModifyKind {
         Self::Thicken,
         Self::ZoneSlab,
         Self::OffsetSolid,
+        Self::OffsetSurface,
         Self::OffsetCurve,
     ];
 
@@ -1640,6 +1647,7 @@ impl std::fmt::Display for ModifyKind {
             ModifyKind::Thicken => f.write_str("thicken"),
             ModifyKind::ZoneSlab => f.write_str("zone_slab"),
             ModifyKind::OffsetSolid => f.write_str("offset_solid"),
+            ModifyKind::OffsetSurface => f.write_str("offset_surface"),
             ModifyKind::OffsetCurve => f.write_str("offset_curve"),
         }
     }
@@ -1741,13 +1749,28 @@ impl PatternKind {
     pub const VARIANT_COUNT: usize = Self::ALL.len();
 }
 
+/// CONTRACT: these labels are USER-FACING, not variant nicknames.
+///
+/// `reify_eval::geometry_ops` interpolates this `Display` as the `kind_label`
+/// of its Contract C diagnostics (`{kind_label}: 'spacing' argument expects
+/// Length, got Int`), so each label MUST be the builtin name the `.ri` author
+/// actually TYPED — the only token they can grep for. Rendering the internal
+/// nickname instead (`linear` for `linear_pattern`) names a symbol that appears
+/// nowhere in their source.
+///
+/// Non-compliant today, and user-reachable on this same surface: `Circular`,
+/// `Arbitrary` — see #6874, which owns the flip, its call-site migration, and
+/// deleting this sentence.
+///
+/// Pinned by `pattern_kind_display` below — change a label there and here
+/// together, and migrate the call sites the change newly rejects (C6).
 impl std::fmt::Display for PatternKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PatternKind::Linear => f.write_str("linear"),
+            PatternKind::Linear => f.write_str("linear_pattern"),
             PatternKind::Circular => f.write_str("circular"),
             PatternKind::Mirror => f.write_str("mirror"),
-            PatternKind::Linear2D => f.write_str("linear_2d"),
+            PatternKind::Linear2D => f.write_str("linear_pattern_2d"),
             PatternKind::Arbitrary => f.write_str("arbitrary"),
         }
     }
@@ -2188,6 +2211,7 @@ mod kind_display_tests {
             (ModifyKind::Thicken, "thicken"),
             (ModifyKind::ZoneSlab, "zone_slab"),
             (ModifyKind::OffsetSolid, "offset_solid"),
+            (ModifyKind::OffsetSurface, "offset_surface"),
             (ModifyKind::OffsetCurve, "offset_curve"),
         ]);
     }
@@ -2215,10 +2239,10 @@ mod kind_display_tests {
     #[test]
     fn pattern_kind_display() {
         check(&[
-            (PatternKind::Linear, "linear"),
+            (PatternKind::Linear, "linear_pattern"),
             (PatternKind::Circular, "circular"),
             (PatternKind::Mirror, "mirror"),
-            (PatternKind::Linear2D, "linear_2d"),
+            (PatternKind::Linear2D, "linear_pattern_2d"),
             (PatternKind::Arbitrary, "arbitrary"),
         ]);
     }

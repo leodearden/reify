@@ -137,7 +137,7 @@ tasks:
       kind: manual
       reason: exit-code behaviour asserted by ε's e2e on the #5386 repro shape (boundary rows 5-7)
   - name: healthy-path-error-exists
-    binding: 'signal premise — code-less Error "no registered compute trampoline" on kernel-less FEA check (engine_compute.rs:654, engine_admin.rs:1519, engine_eval.rs:8301); disposition owned by #5311 (pending); the seed entry cites it'
+    binding: 'signal premise — code-less Error "no registered compute trampoline" on kernel-less FEA check; FOUR emission sites, not the three listed here, and those line numbers are stale — resolve by symbol (engine_eval.rs evaluate_params_and_lets_unified + evaluate_let_bindings = SOFT/body-inline; engine_admin.rs dispatch_compute_node + engine_compute.rs run_compute_dispatch = HARD/Err). Corrected 2026-09-01 (esc-5311-3). Disposition owned by #5311 (pending): DiagnosticCode at all four, fns.is_empty() Warning predicate at the two SOFT sites only — see check-diagnostic-truthfulness.md D4 RULING 2026-09-01. The seed entry cites it.'
     verdict: PASS
     delivered_check:
       kind: manual

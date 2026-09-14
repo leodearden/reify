@@ -356,6 +356,17 @@ pub fn ri_compound_unit_expr(dim: &DimensionVector) -> Option<String> {
     // cannot write `/s^128`).
     let mut factors: Vec<(&'static str, i8)> = Vec::new();
     for (i, r) in dim.0.iter().enumerate() {
+        // TODO(#7151): this `?` is the fracture-toughness carve-out. `Rational::as_i8`
+        // returns None on any non-integer exponent, so a rational-exponent dimension is
+        // dropped here silently — the `?` discards the reason. Today that is exactly one
+        // dimension, FRACTURE_TOUGHNESS (Length = Rational(-1, 2), see dimension.rs:262),
+        // which therefore has no unit-expression spelling and is EXCLUDED from invariant R
+        // (task #5789) rather than gated by it. The carve-out exists only because
+        // `UnitExpr::Pow` is integral; #7151 makes rational exponents round-trip end to end
+        // and retires it. Retire the sibling assertions with it: units.rs (the
+        // `no integral UnitExpr::Pow spelling` test below), reify-ir/src/ri_literal.rs,
+        // reify-syntax/src/ts_parser.rs, and the "fractional-exponent exemption" in
+        // reify-compiler/tests/struct_ctor_field_conformance_tests.rs.
         let exponent = r.as_i8()?;
         if exponent == 0 {
             continue;

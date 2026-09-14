@@ -26,19 +26,35 @@
 #     cause directly, rather than being left to fail as "the guard derived
 #     nothing".
 #
-# COST — MEASURED, not estimated (task 6426 review). 16s wall for 123
-# assertions on an idle tree, 35s for the same 123 under concurrent load —
-# quote the range, not a single number, since this suite runs inside the
-# concurrent tests/infra/run_all.sh pool at the merge gate, where the loaded
-# figure is the realistic one. Either way it is against a previously fork-free
-# suite. Know where the time goes before adding to it, because clause 4b is
-# LAZY and that makes the
-# cost model counter-intuitive: EVERY exit-1 assertion falls through all the
-# static clauses and so reaches the fork, while exit-0 and exit-2 assertions
-# return without one. The budget is roughly: two make_runnable_verify_fixture
-# tree copies, the --print-plan captures (each up to 3 capture_print_plan
-# attempts), the >=3s deliberate wait in the BOUNDED case, and one fork per
-# remaining forking assertion.
+# COST — MEASURED, not estimated (task 6426 review; re-measured at task 6857's
+# amendment pass). 143 assertions in 21-53s wall, across three consecutive
+# runs on a 32-core host at 1-min loadavg 126-149, plus 15s and 68s measured
+# earlier in the same session under lighter and heavier load respectively.
+# Quote the RANGE, not a single number, and note WHY the range is this wide:
+# this suite runs inside the concurrent tests/infra/run_all.sh pool at the
+# merge gate, where the loaded figure is the realistic one, and LOAD dominates
+# everything else — the same unchanged suite spanned 15-68s within one
+# session, a spread far larger than any change a normal edit makes. No
+# idle-tree figure is quoted because none was measured here — do not read the
+# 15s low end as one. For reference the pre-6857 suite measured 26-37s for 123
+# assertions on the SAME host in the SAME session, so neither the 19
+# assertions task 6857 added nor the amendment pass's net +1 moved the wall
+# clock out of its own run-to-run noise.
+#
+# Know where the time goes before adding to it, because clause 4b is LAZY and
+# that makes the cost model counter-intuitive: EVERY requires-full-gate exit-1
+# assertion falls through all the static clauses and so reaches the fork, while
+# exit-0 and exit-2 assertions return without one. The budget is roughly: two
+# make_runnable_verify_fixture tree copies, the --print-plan captures (each up
+# to 3 capture_print_plan attempts), the >=3s deliberate wait in the BOUNDED
+# case, and one fork per remaining forking assertion.
+#
+# `is-registered` sits OUTSIDE that model entirely and is the cheap way to add
+# a membership assertion: it never calls derive_plan_paths (see its arm in the
+# guard for why that forfeits no coverage), so it is fork-free on BOTH verdict
+# routes — unlike requires-full-gate, whose exit-1 route always forks. That is
+# also why switching Pair C clause (d) to it cost nothing: those assertions were
+# already exit-0 and so already fork-free.
 #
 # TO KEEP IT THERE, a new exit-1 assertion that is not specifically about
 # clause 4b should use run_guard_nofork rather than run_guard — same derived
@@ -208,6 +224,7 @@ make_runnable_verify_fixture() {
         lib_clock_stop.sh \
         cpu-admit.sh \
         lib_proc_reaper.sh \
+        lib_git_env_scrub.sh \
         gen-nextest-config.sh \
         heavy-test-filter-lib.sh \
         verify-pipeline-infra-tests.txt
@@ -222,6 +239,47 @@ make_runnable_verify_fixture() {
     # plan" failure further down.
     assert_source_closure_copied "$REPO_ROOT/scripts" "$_dir/scripts" verify.sh || return 1
     printf -v "$_outvar" '%s' "$_dir/scripts/verify.sh"
+}
+
+# derive_plan_leaves [verify.sh-path] (task 6296) — the LIVE plan-leaf set of
+# <verify.sh-path> (default: the real tree's): every directory-qualified,
+# repo-relative *.sh path named by a plan-emission statement, one per line,
+# sort -u'd. Takes the path as a parameter so (a-bis)'s NEGATIVE CONTROL can
+# drive it against a fixture rather than the real tree.
+#
+# THIS IS AN INDEPENDENT REIMPLEMENTATION of the guard's clause-4a extraction,
+# deliberately NOT a call into `--list` or `--list-plan-derived`. Sourcing the
+# leaf list FROM the guard in order to test the guard is circular: if clause
+# 4a/4b's extraction ever regresses, a guard-sourced list shrinks in LOCKSTEP
+# and every "is this leaf load-bearing" assertion below passes VACUOUSLY —
+# precisely the silent-vacuity failure this sweep exists to prevent. Two
+# independent derivations must AGREE, so any divergence reds.
+#
+# The duplicated regex is bounded and deliberate. It is modelled on the guard's
+# shared _SH_PATH_ERE / _SH_PATH_NORMALIZE_SED pair (scripts/verify-pipeline-
+# guard.sh; the boundary rationale lives with them and is not restated here):
+# the same '^[[:space:]]*add(_tool)?[[:space:]]+' STATEMENT anchor, which is
+# what excludes '#'-prefixed comment mentions; the same '(^|[^A-Za-z0-9_./-])'
+# LEFT and '([^A-Za-z0-9_.-]|$)' RIGHT boundaries, which stop the
+# 'other/scripts/x.sh' tail and 'scripts/x.sha256sums' over-matches; and the
+# same directory-qualified '+(/…)+' shape, which keeps a bare basename inside a
+# diagnostic string out of the set. Those properties are pinned from the GUARD's
+# side by Pair E (c); this copy is kept honest from the TEST's side by (a-bis)'s
+# set-equality assertion against the hard-coded ground truth, so the duplication
+# is self-checking in both directions rather than a second thing to maintain
+# blind.
+#
+# The trailing `|| true` is load-bearing under `set -euo pipefail`: grep exits 1
+# on no match, which is a LEGITIMATE EMPTY RESULT here (the guard documents the
+# same at its own call sites), and an empty derivation must red LOUDLY at
+# (a-bis)'s equality assertion rather than abort the suite mid-file.
+derive_plan_leaves() {
+    local _vsh="${1:-$REPO_ROOT/scripts/verify.sh}"
+    grep -E '^[[:space:]]*add(_tool)?[[:space:]]+' "$_vsh" \
+        | grep -oE '(^|[^A-Za-z0-9_./-])(\./)?[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+\.sh([^A-Za-z0-9_.-]|$)' \
+        | sed -E 's|^[^A-Za-z0-9_./-]?(\./)?([A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+\.sh)[^A-Za-z0-9_.-]?$|\2|' \
+        | sort -u \
+        || true
 }
 
 # ---------------------------------------------------------------------------
@@ -423,12 +481,31 @@ fi
 assert_exit "PRECISION: docs/notes/unregistered-example.md NOT in doc-sync-paths.txt -> fast-path-safe (exit 1)" 1 \
     run_guard_nofork requires-full-gate docs/notes/unregistered-example.md
 
-# (d) ANTI-DRIFT sweep: independently re-derive every doc-sync doc by
-# grepping tests/infra/*.sh for the $REPO_ROOT/docs/...\.md literal form each
-# doc-sync check uses to locate its target, and assert EACH one routes to the
-# full gate. This is the recurrence guard: a FUTURE doc-sync grep added on a
-# new doc that is not registered in doc-sync-paths.txt goes RED here until it
-# is registered.
+# (d) ANTI-DRIFT sweep: independently re-derive every doc a tests/infra check
+# cites by grepping tests/infra/*.sh for the $REPO_ROOT/docs/...\.md literal
+# form each such check uses to locate its target, and assert EACH one is
+# REGISTERED. This is the recurrence guard: a FUTURE doc-sync grep added on a
+# new doc that is registered in NEITHER registry goes RED here until it is.
+#
+# THE PREDICATE IS "REGISTERED", NOT "REQUIRES FULL GATE" (task 6857, filed
+# from esc-6758-2). It used to be the latter, which sees only ONE of reify's
+# two registration cost points and so called a surgical-only registration
+# drift; the only remedy that left a task was to stop matching the grep above,
+# which silently shrinks this population and teaches the next author the same
+# dodge. Asking `is-registered` removes the false positive without touching the
+# population heuristic, whose whole value is that it enrols docs by TEXTUAL
+# COINCIDENCE — i.e. without the author's cooperation.
+#
+# CANONICAL WRITE-UP — the two cost points, the full matched-set list, and the
+# caution that exit 0 there means REGISTERED and not FULL GATE REQUIRED: the
+# `is-registered` entry in scripts/verify-pipeline-guard.sh's header. It owns
+# that rationale; this file deliberately carries no second copy of it.
+#
+# THE RECURRENCE GUARD IS UNCHANGED IN STRENGTH: membership in either registry
+# is always a deliberate registration, so a genuinely unregistered new doc still
+# goes RED here. And no full-gate coverage is lost by the switch — sub-block (b)
+# SELF-HEALING already asserts requires-full-gate exit 0 for EVERY
+# doc-sync-paths.txt entry, independently of this population.
 #
 # The regex is anchored to the literal "$REPO_ROOT/docs/" prefix, which
 # deliberately (i) excludes the bare-path negative fixtures used above and in
@@ -436,11 +513,201 @@ assert_exit "PRECISION: docs/notes/unregistered-example.md NOT in doc-sync-paths
 # the $REPO_ROOT/ prefix), and (ii) does not self-match this grep's own
 # pattern text below -- the character class [A-Za-z0-9._/-] excludes '[', so
 # the match breaks immediately after ".../docs/" at the literal '[' character.
+#
+# NON-VACUITY FIRST. The population is derived, so a silently-broken derivation
+# regex would make this entire clause a no-op that reds NOTHING: the loop body
+# would never execute, the suite's assertion count would quietly drop, and the
+# recurrence guard would be dead while looking perfectly healthy. Capture the
+# population and assert it is non-empty BEFORE looping over it — the same
+# anti-vacuity net Pair E (c-bis)(a) gives the plan-derived clause.
+_ANTI_DRIFT_DOCS="$(grep -hoE '\$REPO_ROOT/docs/[A-Za-z0-9._/-]*\.md' "$SCRIPT_DIR"/*.sh \
+                    | sed 's#^\$REPO_ROOT/##' | sort -u)"
+
+assert "NON-VACUITY: the ANTI-DRIFT sweep derived a NON-EMPTY doc population (a broken regex would silently make every assertion below vanish)" \
+    bash -c '[ -n "$1" ]' _ "$_ANTI_DRIFT_DOCS"
+
 while IFS= read -r _doc; do
-    assert_exit "ANTI-DRIFT: $_doc (grepped from tests/infra/*.sh) is load-bearing (exit 0)" 0 \
-        run_guard requires-full-gate "$_doc"
-done < <(grep -hoE '\$REPO_ROOT/docs/[A-Za-z0-9._/-]*\.md' "$SCRIPT_DIR"/*.sh \
-         | sed 's#^\$REPO_ROOT/##' | sort -u)
+    [ -n "$_doc" ] || continue
+    assert_exit "ANTI-DRIFT: $_doc (grepped from tests/infra/*.sh) is registered — add it to scripts/doc-sync-paths.txt for the full gate, or scripts/verify-pipeline-infra-tests.txt for the citing-test subset (exit 0)" 0 \
+        run_guard is-registered "$_doc"
+done <<< "$_ANTI_DRIFT_DOCS"
+
+# (e) The `is-registered` membership predicate (task 6857, filed from esc-6758-2)
+#
+# CONTRACT PINS for the subcommand clause (d) above now asks. The rationale for
+# the switch lives in exactly ONE place -- the `is-registered` entry in
+# scripts/verify-pipeline-guard.sh's header, which owns the matched sets, the
+# two registration cost points, and the caution that exit 0 there means
+# REGISTERED and not FULL GATE REQUIRED. What follows PINS that contract rather
+# than restating it: each assertion's comment says only what THAT case buys.
+# The NO-LEAK pins at the end are what keep the two subcommands' shared exit-0
+# spelling from converging into one answer.
+
+# POSITIVE (doc-sync registry): the blunt cost point still answers 0.
+assert_exit "IS-REGISTERED: docs/notes/verify-pipeline-knobs.md is registered (doc-sync-paths.txt; exit 0)" 0 \
+    run_guard is-registered docs/notes/verify-pipeline-knobs.md
+
+# POSITIVE (surgical registry ONLY) -- THE observed instance from esc-6758-2.
+# It is a key in scripts/verify-pipeline-infra-tests.txt (row ->
+# tests/infra/test_spec_anchor_lint.sh) and is deliberately NOT in
+# doc-sync-paths.txt: a prose note whose only coupling is one link-rot grep
+# must not route every edit of itself to a global gate.
+assert_exit "IS-REGISTERED: docs/notes/spec-anchor-contract.md is registered SURGICALLY ONLY (verify-pipeline-infra-tests.txt row; exit 0)" 0 \
+    run_guard is-registered docs/notes/spec-anchor-contract.md
+
+# POSITIVE (path-kind agnostic): the predicate is not docs/-only. This map key
+# is a .py script that requires-full-gate reports 1 for (measured), so it is a
+# genuine RED against a docs-only or full-gate-only reading of the predicate.
+assert_exit "IS-REGISTERED: scripts/prd-capability-check.py is registered (map key, non-doc; exit 0)" 0 \
+    run_guard is-registered scripts/prd-capability-check.py
+
+# NEGATIVE -- the recurrence guard's teeth. A path in NEITHER registry (nor any
+# other static clause) is unregistered, so a genuinely new unregistered doc-sync
+# grep still reds clause (d). Same fixture path Pair C (c) PRECISION uses.
+assert_exit "IS-REGISTERED: docs/notes/unregistered-example.md in NEITHER registry -> not registered (exit 1)" 1 \
+    run_guard is-registered docs/notes/unregistered-example.md
+
+# NEGATIVE -- the widened set is still BOUNDED: unioning _SORTED_SET and the
+# map keys did not blanket-register docs/.
+assert_exit "IS-REGISTERED: docs/note.md is not registered (widened set is still bounded; exit 1)" 1 \
+    run_guard is-registered docs/note.md
+
+# ARITY -- a membership query takes EXACTLY one path. requires-full-gate uses
+# ANY-semantics over many paths because "does this DIFF need the gate" is
+# genuinely a disjunction; "is this path registered" reads as a conjunction, so
+# a multi-arg form would silently pick one of two plausible meanings. Refusing
+# it makes the surface state the question instead of guessing.
+assert_exit "ARITY: is-registered with ZERO args is a usage error (exit 2; no stdin mode)" 2 \
+    bash -c 'bash "$1" is-registered < /dev/null' _ "$GUARD_SH"
+
+assert_exit "ARITY: is-registered with TWO paths is a usage error (ANY/ALL ambiguity refused, not guessed; exit 2)" 2 \
+    run_guard is-registered docs/notes/verify-pipeline-knobs.md docs/note.md
+
+# STDOUT PIN -- the merge worker parses the guard's stdout as `result=$(...)`.
+# is-registered must write NOTHING there on EITHER route, so a future caller
+# cannot come to depend on output this subcommand does not promise. stderr is
+# left UNREDIRECTED on purpose: a diagnostic written to stderr is permitted,
+# one written to stdout is not, and only leaving stderr alone tells them apart.
+assert "STDOUT CONTRACT: is-registered prints NOTHING on stdout on the MATCH route (exit 0)" \
+    bash -c '_o=$(bash "$1" is-registered docs/notes/spec-anchor-contract.md); [ -z "$_o" ]' \
+    _ "$GUARD_SH"
+
+assert "STDOUT CONTRACT: is-registered prints NOTHING on stdout on the NO-MATCH route (exit 1)" \
+    bash -c '_o=$(bash "$1" is-registered docs/note.md) || true; [ -z "$_o" ]' \
+    _ "$GUARD_SH"
+
+# NO-LEAK PINS — the mechanical encoding of task 6857's RULED-SEPARATELY
+# decision: the surgical registry is read LAZILY inside the is-registered
+# branch and is never folded into _SET. Folding it in would route every edit of
+# every surgically registered artifact to the full global gate -- spending
+# exactly the throughput Pair C (c) PRECISION exists to protect, and silently
+# rewriting the cross-repo merge-worker contract that consumes exit 0.
+assert_exit "NO-LEAK: docs/notes/spec-anchor-contract.md stays fast-path-safe for requires-full-gate (surgical != full gate; exit 1)" 1 \
+    run_guard_nofork requires-full-gate docs/notes/spec-anchor-contract.md
+
+assert "NO-LEAK: --list does NOT contain docs/notes/spec-anchor-contract.md (map keys never enter _SET)" \
+    bash -c '! bash "$1" --list | grep -qxF "docs/notes/spec-anchor-contract.md"' \
+    _ "$GUARD_SH"
+
+# (e-bis) SYNTHETIC / PRECISION for the SURGICAL registry (task 6857).
+#
+# A direct transposition of the SYNTHETIC / DERIVATION PRECISION pair the
+# doc-sync manifest already has (just below), onto the second registry. Both
+# halves matter: SYNTHETIC proves the clause is SELF-HEALING — a future
+# verify-pipeline-infra-tests.txt row is auto-covered with no edit to this test
+# — and PRECISION proves it flags only the rows the map actually carries.
+#
+# The two ROW-SHAPE cases are the ones that could not be written against the
+# real map at all, because it carries no malformed row today: they pin that the
+# query point's notion of an ACTIVE ROW matches verify.sh's select_infra_tests(),
+# which is the consumer that decides what a row actually buys.
+_SYNTH_INFRA_MAP_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_SYNTH_INFRA_MAP_DIR")
+_SYNTH_INFRA_MAP="$_SYNTH_INFRA_MAP_DIR/verify-pipeline-infra-tests.txt"
+cat > "$_SYNTH_INFRA_MAP" <<'SYNTH_MAP_EOF'
+# synthetic map (task 6857) — comment rows must be skipped like the real one
+docs/zzz-synthetic-surgical.md    tests/infra/test_zzz_synthetic.sh
+docs/zzz-no-glob.md
+docs/zzz-key.md    scripts/zzz-not-a-key.sh
+SYNTH_MAP_EOF
+
+# SYNTHETIC — the SELF-HEALING half: a key present only in the INJECTED map
+# answers 0, so a future row in the real map is auto-covered with no edit to
+# this test. It doubles as the pin that the knob is honoured AT ALL — without
+# it, every case below could be reading the real map and passing for the wrong
+# reason.
+assert_exit "SYNTHETIC: docs/zzz-synthetic-surgical.md auto-covered after map injection (self-healing; exit 0)" 0 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_INFRA_TESTS_MAP="$1" bash "$2" is-registered docs/zzz-synthetic-surgical.md' \
+    _ "$_SYNTH_INFRA_MAP" "$GUARD_SH"
+
+# The cases below are regression pins on the ROW PARSE — what the guard counts
+# as an ACTIVE ROW, and which field of one is a KEY. Each is driven through the
+# same injected map, so each states a property of the PARSE rather than of the
+# real registry's current contents.
+
+# PRECISION: a sibling not listed in the injected map stays unregistered —
+# the clause does not blanket-register every docs/zzz-*.md.
+assert_exit "PRECISION: docs/zzz-not-in-map.md absent from the injected map -> not registered (exit 1)" 1 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_INFRA_TESTS_MAP="$1" bash "$2" is-registered docs/zzz-not-in-map.md' \
+    _ "$_SYNTH_INFRA_MAP" "$GUARD_SH"
+
+# MALFORMED-ROW: a ONE-FIELD row is NOT an active registration. verify.sh's
+# select_infra_tests() requires BOTH fields non-empty before it selects
+# anything, so such a row selects no test and buys nothing; calling it
+# "registered" would let the anti-drift sweep pass on a path that is in truth
+# unguarded. The query point must not disagree with the consumer.
+assert_exit "MALFORMED-ROW: docs/zzz-no-glob.md has no glob field -> selects no test -> not registered (exit 1)" 1 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_INFRA_TESTS_MAP="$1" bash "$2" is-registered docs/zzz-no-glob.md' \
+    _ "$_SYNTH_INFRA_MAP" "$GUARD_SH"
+
+# GLOB-FIELD PRECISION: only the FIRST field is a KEY. The second field is a
+# test-selection glob, not a registered artifact, and must never be harvested as
+# one -- otherwise every guarding test in the map would silently register
+# itself and the map's second column would become an unreviewed registry.
+# Spelled with a non-infra glob (scripts/zzz-not-a-key.sh) precisely so the
+# tests/infra/*.sh clause cannot mask the answer.
+assert_exit "GLOB-FIELD PRECISION: scripts/zzz-not-a-key.sh is only a row's SECOND field -> not a key -> not registered (exit 1)" 1 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_INFRA_TESTS_MAP="$1" bash "$2" is-registered scripts/zzz-not-a-key.sh' \
+    _ "$_SYNTH_INFRA_MAP" "$GUARD_SH"
+
+# ...and the companion that makes the case above legible: an infra-test path IS
+# registered, but via the OPEN-ENDED GLOB CLAUSE, never because some row happens
+# to name it. TAKEN ALONE this assertion cannot tell those two mechanisms apart
+# -- the injected map's first row names exactly this path, so a (hypothetical)
+# second-field harvest would answer 0 here too. The MISSING-MAP pair below
+# supplies the discriminator, by taking the map away entirely.
+assert_exit "GLOB-CLAUSE: tests/infra/test_zzz_synthetic.sh is registered via the tests/infra/*.sh glob, not via the row that names it (exit 0)" 0 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_INFRA_TESTS_MAP="$1" bash "$2" is-registered tests/infra/test_zzz_synthetic.sh' \
+    _ "$_SYNTH_INFRA_MAP" "$GUARD_SH"
+
+# MISSING MAP — the graceful degradation registry_keys() promises
+# (`[ -f "$_infra_tests_map" ] || return 0`: an absent map yields NO KEYS rather
+# than an error). It is the one failure mode that arm explicitly handles, and it
+# would regress SILENTLY: drop the -f test and a missing map becomes a `set -e`
+# abort or a bare grep error, both of which surface as a non-zero exit that
+# every caller reads as an ordinary NOT-REGISTERED verdict. The exit code alone
+# is therefore NOT a sufficient pin, so the first assertion additionally
+# requires the arm to REACH its own documented no-match diagnostic, and to do so
+# without grep ever having been handed the missing file.
+_MISSING_INFRA_MAP="$_SYNTH_INFRA_MAP_DIR/does-not-exist.txt"
+
+assert "MISSING MAP: is-registered REACHES its documented no-match route (exit 1 + the guard's own diagnostic, no grep error) instead of aborting en route" \
+    bash -c '
+        _err=$(REIFY_VERIFY_PIPELINE_GUARD_INFRA_TESTS_MAP="$1" \
+               bash "$2" is-registered docs/notes/spec-anchor-contract.md 2>&1 >/dev/null) \
+            && _rc=0 || _rc=$?
+        [ "$_rc" -eq 1 ]                                  || exit 1
+        case "$_err" in *"NOT registered"*) ;; *) exit 1 ;; esac
+        case "$_err" in *"No such file"*) exit 1 ;; esac
+    ' _ "$_MISSING_INFRA_MAP" "$GUARD_SH"
+
+# ...and the discriminator the GLOB-CLAUSE case above needs: with NO map at all
+# the same infra-test path STILL answers 0, which can only be the glob clause
+# talking. Together the two MISSING-MAP assertions cover both verdict routes
+# through an absent map, so the degradation cannot regress on one of them only.
+assert_exit "MISSING MAP: the glob clause alone still answers 0 with no map whatsoever (the verdict is not row-derived; exit 0)" 0 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_INFRA_TESTS_MAP="$1" bash "$2" is-registered tests/infra/test_zzz_synthetic.sh' \
+    _ "$_MISSING_INFRA_MAP" "$GUARD_SH"
 
 # SYNTHETIC self-healing: build a throwaway doc-sync manifest containing only
 # a synthetic path, prove the classifier auto-covers it via
@@ -564,9 +831,21 @@ echo "-- Pair E: emitted-gate plan-line derivation --"
 # anti-drift net. Mirrors Pair B's REAL-LIB-loop + GROUND-TRUTH split and Pair
 # C's (a)/(b) split for the same reason.
 #
-# RED until step-2 adds the emitted-gate derivation clause for the first SEVEN
-# entries (measured exit 1 at HEAD fee75336ca); the last two are already GREEN
-# via their task-6243 rows in scripts/verify-pipeline-paths.txt.
+# THAT RATIONALE STILL HOLDS — and is why this tier was not replaced by a
+# derivation when task 6296 arrived. What CHANGED is what keeps it honest.
+# Hand-maintained is exactly how it rotted: it sat at ten entries while
+# verify.sh's plan grew to thirteen. It is now pinned by (a-bis)'s SET-EQUALITY
+# assertion against the live derivation, so this list stays the anti-vacuity net
+# it was written to be while no longer being the thing that silently goes stale.
+#
+# HISTORICAL (task 6320's TDD note, kept for provenance): this list was RED
+# until 6320's own step-2 added the emitted-gate derivation clause, for the
+# seven entries from check-manifold-deps.sh through test_pm_standardization.sh
+# (measured exit 1 at HEAD fee75336ca). check-nan-safe-ordering.sh and
+# check-compute-trampoline-registration.sh were already GREEN via their
+# task-6243 rows in scripts/verify-pipeline-paths.txt. Named rather than
+# described by POSITION, because task 6296 appended three more entries below and
+# a positional reference ("the last two") silently retargeted.
 #
 # AMENDMENT (reviewer_comprehensive completeness): tests/sync_comments_test.sh
 # is the TENTH emitted gate and shares the identical ambush class -- verify.sh
@@ -577,24 +856,248 @@ echo "-- Pair E: emitted-gate plan-line derivation --"
 # Listing it HERE, in the prefix-agnostic ground truth, is what keeps the
 # clause honest about covering the whole emitted-gate class rather than one
 # directory of it.
-for _gate in \
-    scripts/check-manifold-deps.sh \
-    scripts/check-infra-classification-manifest.sh \
-    scripts/check-harness-baseline-registration.sh \
-    scripts/tree-sitter-generate.sh \
-    scripts/ensure-gui-sidecar-placeholder.sh \
-    scripts/check_event_inventory.sh \
-    scripts/test_pm_standardization.sh \
-    scripts/check-nan-safe-ordering.sh \
-    scripts/check-compute-trampoline-registration.sh \
+_PAIR_E_PLAN_LEAF_GROUND_TRUTH=(
+    scripts/check-manifold-deps.sh
+    scripts/check-infra-classification-manifest.sh
+    scripts/check-harness-baseline-registration.sh
+    scripts/tree-sitter-generate.sh
+    scripts/ensure-gui-sidecar-placeholder.sh
+    scripts/check_event_inventory.sh
+    scripts/test_pm_standardization.sh
+    scripts/check-nan-safe-ordering.sh
+    scripts/check-compute-trampoline-registration.sh
     tests/sync_comments_test.sh
-do
-    assert_exit "GROUND-TRUTH: $_gate is load-bearing (emitted by verify.sh's plan; exit 0)" 0 \
+    # The three below were added by task 6296, each for a DIFFERENT reason. The
+    # notes are not decoration: two of them look odd enough that a future reader
+    # would otherwise be tempted to "clean them up" out of the list, which would
+    # red (a-bis) and invite editing the assertion instead of the array.
+    #
+    # THE DRIFT ITSELF. Emitted twice by verify.sh's plan — once as `ensure`,
+    # once as `check`. Landed with task #5629 and was never added here, which is
+    # the gap task 6296 was filed for; this file did not mention it at all.
+    # Covered by the guard's emitted-gate clause, so it needs NO
+    # verify-pipeline-paths.txt row.
+    scripts/tree-sitter-freshness.sh
+    # verify.sh invokes ITSELF as a plan leaf (the psi-gate and compile-gate
+    # sub-invocations). Its exit-0 verdict is OVER-DETERMINED — it is also the
+    # guard's clause-1 anchor, asserted directly in Pair A — so it proves
+    # nothing new about the guard. It is listed because it IS a plan leaf and
+    # set equality against the live derivation demands it; dropping it to tidy
+    # the "redundant" entry breaks (a-bis).
+    scripts/verify.sh
+    # Emitted by the infra-test plan line. Also over-determined: separately
+    # covered BOTH by the guard's in-code tests/infra/*.sh glob clause and by an
+    # explicit verify-pipeline-paths.txt row. Same reasoning as above — listed
+    # because the derivation sees it, not because this is its only coverage.
+    tests/infra/run_all.sh
+)
+
+# (a-bis) COMPLETENESS SWEEP (task 6296) — assert SET EQUALITY between the
+# hard-coded ground truth above and the LIVE plan-leaf set derived from
+# verify.sh by derive_plan_leaves (see that helper for why the test derives its
+# own rather than asking the guard).
+#
+# WHY EQUALITY AND NOT CONTAINMENT, and why the hard-coded tier survives.
+# Task 6296 observed that restating the leaf list by hand is how the drift it
+# was filed for arose: scripts/tree-sitter-freshness.sh became a plan leaf with
+# task #5629 (verify.sh emits it as `ensure` and again as `check`) and was
+# simply never added here — this file did not mention it AT ALL. But (a)'s own
+# rationale above is also right that a derivation-driven loop ALONE goes
+# silently VACUOUS, not red, if a future plan-emission refactor breaks the
+# extraction. Set equality satisfies both at once and is the reason neither tier
+# can be dropped: an empty or broken derivation FAILS equality against a
+# hard-coded list and reds immediately, so vacuity is impossible; and a leaf
+# REMOVED from verify.sh leaves a stale ground-truth entry, which mere
+# containment in either direction would never catch.
+#
+# The failure message prints a TWO-WAY delta and names the list to edit. A bare
+# "sets differ" is what gets a guard of this class disabled rather than fixed.
+assert_plan_leaf_ground_truth_complete() {
+    local _derived _ground _only_derived _only_ground
+    _derived="$(derive_plan_leaves)"
+    _ground="$(printf '%s\n' "${_PAIR_E_PLAN_LEAF_GROUND_TRUTH[@]}" | sort -u)"
+    [ "$_derived" = "$_ground" ] && return 0
+
+    _only_derived="$(comm -23 <(printf '%s\n' "$_derived") <(printf '%s\n' "$_ground"))"
+    _only_ground="$(comm -13 <(printf '%s\n' "$_derived") <(printf '%s\n' "$_ground"))"
+    echo "PLAN-LEAF DRIFT: verify.sh's live plan leaves and Pair E (a)'s hard-coded"
+    echo "ground truth have diverged (derived $(printf '%s\n' "$_derived" | grep -c .), ground truth $(printf '%s\n' "$_ground" | grep -c .))."
+    if [ -n "$_only_derived" ]; then
+        echo "  EMITTED BY verify.sh BUT MISSING FROM THE GROUND TRUTH (new plan leaves):"
+        printf '    + %s\n' $_only_derived
+    fi
+    if [ -n "$_only_ground" ]; then
+        echo "  IN THE GROUND TRUTH BUT NO LONGER EMITTED (stale entries):"
+        printf '    - %s\n' $_only_ground
+    fi
+    echo "  FIX: update the _PAIR_E_PLAN_LEAF_GROUND_TRUTH array in this file"
+    echo "  (tests/infra/test_verify_pipeline_guard.sh, Pair E (a)) to match, adding a"
+    echo "  one-line note for each entry saying WHY it is a plan leaf."
+    return 1
+}
+assert "COMPLETENESS: Pair E (a)'s ground truth is SET-EQUAL to verify.sh's live plan leaves" \
+    assert_plan_leaf_ground_truth_complete
+
+# THE LOAD-BEARING SWEEP — every leaf verify.sh actually emits is classified
+# load-bearing by the guard. This is the assertion task 6296 item (c) asks for.
+#
+# ORDERING IS LOAD-BEARING: the equality assertion above MUST run BEFORE this
+# loop, and must not be moved below it or folded into it. A loop over a silently
+# empty derivation asserts nothing while reporting green, which is the exact
+# vacuity failure Pair E (a) warns about; equality-against-a-fixed-list run
+# FIRST is what licenses the loop to assert anything at all. Do not "tidy" the
+# two into one pass. (The iteration-count assertion AFTER the loop is a second,
+# independent net over the same property — it catches a loop that was drained
+# part-way rather than one that started empty. Two nets, not a duplicate.)
+#
+# HONESTLY: this loop is a REGRESSION GUARD and was GREEN ON ARRIVAL — all
+# thirteen live leaves already measured exit 0 when it was written, because
+# clauses 4a/4b derive them automatically. It is not a bug fix, and its value is
+# entirely in the next regression, not this commit. That is also why the
+# NEGATIVE CONTROL below exists: auto-derivation makes every real leaf
+# load-bearing BY CONSTRUCTION, so without a case proving the sweep can still
+# say NO, a green loop here would be indistinguishable from a tautology.
+#
+# EFFICIENCY: each guard SET is captured ONCE and matched per leaf IN-PROCESS,
+# never forked per leaf. Every --list / --list-plan-derived run pays clause 4b's
+# --print-plan fork (measured warm at 0.35s and 0.43s; up to ~1.4s cold), so
+# per-entry invocation would add ~10s to a suite whose own header budgets
+# 21-53s. The membership test is a pure-bash function for the same reason: a
+# `bash -c 'printf | grep -qxF'` per leaf is 26 more forks bought for nothing.
+# The `requires-full-gate` calls stay in the loop — they all exit 0 via the
+# source-text floor, which is the LAZY route that never forks 4b at all
+# (~0.09s each, pinned by the LAZY case in (c-bis)).
+#
+# CAPTURED WITH `|| true`, NOT BARE, under `set -euo pipefail`. A bare
+# `_x="$(...)"` whose command exits non-zero aborts the suite mid-file with no
+# PASS/FAIL line at all — the opaque-failure mode (c-bis)'s PRECONDITION
+# assertions were added to avoid. Both captures are instead pinned NON-EMPTY by
+# named preconditions below, so a broken subcommand reds BY NAME.
+_PAIR_E_LIST_CAPTURE=""
+_PAIR_E_LIST_CAPTURE="$(bash "$GUARD_SH" --list)" || true
+_PAIR_E_PD_CAPTURE=""
+_PAIR_E_PD_CAPTURE="$(bash "$GUARD_SH" --list-plan-derived)" || true
+
+# Exact-line membership without a fork. The `*` wildcards are UNQUOTED (glob)
+# while the needle is QUOTED, so `$1` is matched LITERALLY — a leaf name
+# containing a glob metacharacter cannot turn this into a pattern match. The
+# newline sentinels on both sides give `grep -qxF` semantics (whole line),
+# which is what keeps `scripts/x.sh` from matching `other/scripts/x.sh`.
+_pair_e_list_has() { [[ $'\n'"$_PAIR_E_LIST_CAPTURE"$'\n' == *$'\n'"$1"$'\n'* ]]; }
+_pair_e_pd_has() { [[ $'\n'"$_PAIR_E_PD_CAPTURE"$'\n' == *$'\n'"$1"$'\n'* ]]; }
+
+assert "PRECONDITION: the guard's --list capture is non-empty (if THIS fails, every SWEEP --list assertion below is expected to fail too — fix the subcommand, not the sweep)" \
+    test -n "$_PAIR_E_LIST_CAPTURE"
+
+# The plan-derived capture has a SECOND way to come back empty that is not a
+# bug: the guard's documented fail-soft route when the live tree's --print-plan
+# hard-fails (the usual cause is a present-but-failing cargo-nextest probe).
+# (c-bis)(a)'s PRECONDITION assertion is the one that distinguishes the two —
+# consult it FIRST if this reds, before suspecting the derivation.
+assert "PRECONDITION: the guard's --list-plan-derived capture is non-empty (an empty one is ALSO the documented --print-plan fail-soft — see (c-bis)(a)'s PRECONDITION before blaming clause 4b)" \
+    test -n "$_PAIR_E_PD_CAPTURE"
+
+# WHY BOTH SETS ARE CHECKED, and why --list alone was not enough. --list is the
+# UNION of every clause — the clause-1 anchor, the manifests, doc-sync, the
+# sourced-lib clause and the emitted-gate clause — so union membership does not
+# pin the emitted-gate clause at all. Two of the thirteen leaves are
+# over-determined by construction and prove it: scripts/verify.sh is the
+# clause-1 anchor, and tests/infra/run_all.sh has BOTH a verify-pipeline-
+# paths.txt row and the tests/infra/*.sh glob. A regression that broke the
+# emitted-gate derivation for those two would leave a --list-only sweep fully
+# green. --list-plan-derived prints clause 4b in ISOLATION, so it is the
+# assertion that actually pins the derivation this task is about, and it is
+# what finally makes good on derive_plan_leaves' header claim that two
+# independent derivations must AGREE.
+#
+# CONTAINMENT, NOT EQUALITY — deliberate, do not "tighten" it. The two sets are
+# byte-identical on this tree today (measured 13/13), but they are derived
+# differently: derive_plan_leaves reads verify.sh's SOURCE TEXT, clause 4b reads
+# the RESOLVED --print-plan output. A future variable-assembled plan line is
+# exactly the residual gap 4b exists to close, and it would legitimately make
+# 4b a strict SUPERSET. Equality would red on that correct change; containment
+# still reds on a broken or empty 4b, which is the failure this guards.
+_PAIR_E_SWEEP_COUNT=0
+while IFS= read -r -u 3 _gate; do
+    [ -z "$_gate" ] && continue
+    _PAIR_E_SWEEP_COUNT=$((_PAIR_E_SWEEP_COUNT + 1))
+    assert_exit "SWEEP: $_gate is load-bearing (derived from verify.sh's plan; exit 0)" 0 \
         run_guard requires-full-gate "$_gate"
-    assert "--list includes $_gate (emitted gate; hard-coded ground truth)" \
-        bash -c 'bash "$1" --list | grep -qxF "$2"' \
-        _ "$GUARD_SH" "$_gate"
-done
+    assert "SWEEP: --list includes $_gate (derived plan leaf, union verdict)" \
+        _pair_e_list_has "$_gate"
+    assert "SWEEP: --list-plan-derived includes $_gate (pins the emitted-gate clause in ISOLATION, not the union)" \
+        _pair_e_pd_has "$_gate"
+# THE LEAF LIST IS ON FD 3, AND THE BODY'S STDIN IS /dev/null. Both halves are
+# load-bearing; neither is style. `done < <(derive_plan_leaves)` would leave the
+# pipe as the loop body's STDIN, and `requires-full-gate` falls back to reading
+# paths from stdin when it gets zero positional args — which is why the guard's
+# own header tells callers to close stdin with `< /dev/null`. Today the
+# non-empty `$_gate` keeps that fallback unreachable, so nothing drains the
+# pipe; but a guard change, or any future asserted command in this body that
+# reads stdin, would swallow the remaining leaves and the loop would still
+# report GREEN with silently fewer assertions. That is the exact vacuity the
+# paragraphs above spend their length preventing, so it is closed structurally
+# rather than left resting on an argument.
+done 3< <(derive_plan_leaves) < /dev/null
+
+# Belt-and-braces against the loop being drained anyway: the iteration count
+# must match the ground truth the equality assertion above already pinned. A
+# sweep that ran zero or three times instead of thirteen is caught HERE by name
+# rather than showing up as a quietly shorter PASS list nobody counts.
+assert "NON-VACUITY: the SWEEP iterated once per ground-truth leaf (${#_PAIR_E_PLAN_LEAF_GROUND_TRUTH[@]} expected, $_PAIR_E_SWEEP_COUNT seen)" \
+    test "$_PAIR_E_SWEEP_COUNT" -eq "${#_PAIR_E_PLAN_LEAF_GROUND_TRUTH[@]}"
+
+# NEGATIVE CONTROL for the sweep's DISCRIMINATING POWER — the proof that the
+# loop above is not a tautology. Auto-derivation makes every REAL leaf
+# load-bearing by construction, so a green sweep cannot by itself distinguish
+# "the guard covers these thirteen" from "this loop cannot say NO to anything".
+#
+# WHAT THE PAIR DOES AND DOES NOT SHOW, stated precisely because the obvious
+# reading overstates it. The halves are asserted against DIFFERENT verify.sh
+# files: the derivation reads a fixture that HAS the new plan line, while the
+# guard (via run_guard_nofork) reads $_NOFORK_VERIFY — a pristine, byte-identical
+# copy of the real verify.sh — which does not. Half one shows the derivation grows
+# when verify.sh does; half two shows the guard answers NO for a leaf its
+# clauses cannot see. The PAIR — not either half — is the control: it shows the
+# sweep's two components are INDEPENDENT and CAN disagree, which is the entire
+# basis for the loop asserting anything.
+#
+# Half two does NOT show the guard reasoning about the injected line; it never
+# sees it. Taken as a statement about the guard ALONE it is the same property
+# the (c) case "PRECISION: scripts/zzz-not-emitted.sh never emitted ->
+# fast-path-safe" pins in isolation further down. It is restated here only
+# because the pair needs both halves to mean anything.
+#
+# A MINIMAL SYNTHETIC FIXTURE, not `cp scripts/verify.sh`: derive_plan_leaves
+# only GREPS its argument (it never executes it), so copying the ~3k-line real
+# file bought nothing and coupled this control to verify.sh's contents. Two
+# lines exercise the derivation identically and buy a STRONGER assertion a copy
+# could not support — on this fixture the whole derived set is the one injected
+# leaf, so exact-set equality also pins that derive_plan_leaves HONOURS its path
+# parameter instead of silently falling back to the real tree's default.
+_NEGCTL_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_NEGCTL_DIR")
+_NEGCTL_VERIFY="$_NEGCTL_DIR/verify.sh"
+cat > "$_NEGCTL_VERIFY" <<'NEGCTL_FIXTURE_EOF'
+# Synthetic plan-emission fixture (task 6296 negative control). Read, never run.
+add_tool "./scripts/zzz-unregistered-leaf.sh"
+NEGCTL_FIXTURE_EOF
+
+# Checked via a function, not `bash -c`: derive_plan_leaves is a shell function
+# of THIS shell and is not exported, so a subshell would not have it. `assert`
+# runs its command directly in this shell, so a function works as-is.
+_negctl_derivation_sees_new_leaf() {
+    [ "$(derive_plan_leaves "$_NEGCTL_VERIFY")" = "scripts/zzz-unregistered-leaf.sh" ]
+}
+assert "NEGATIVE CONTROL: derive_plan_leaves on the fixture derives EXACTLY the newly-emitted leaf (also pins that the path parameter is honoured)" \
+    _negctl_derivation_sees_new_leaf
+
+# run_guard_nofork, not run_guard: this is an exit-1 assertion and therefore the
+# forking route, which the suite header directs to the nofork helper. Safe here
+# for the documented reason — clause 4b is MONOTONE, so dropping it can only
+# turn exit 0 into exit 1, never the reverse.
+assert_exit "NEGATIVE CONTROL: the guard, reading the REAL verify.sh, does NOT consider that leaf load-bearing (exit 1)" 1 \
+    run_guard_nofork requires-full-gate scripts/zzz-unregistered-leaf.sh
 
 # (b) DIFF-SHAPE coverage, mirroring Pair A / Pair D, driven through
 # scripts/check-manifold-deps.sh -- an emitted gate that is NOT in any
@@ -960,9 +1463,12 @@ assert "NON-VACUITY: --list-plan-derived contains scripts/check-manifold-deps.sh
     bash -c 'bash "$1" --list-plan-derived | grep -qxF scripts/check-manifold-deps.sh' \
     _ "$GUARD_SH"
 
-# PIN (green on arrival) — adding a subcommand must not loosen the documented
-# 0/1/2 exit contract for a genuinely unknown flag.
-assert_exit "CONTRACT: an unknown flag still exits 2 (0/1/2 contract not loosened by the new subcommand)" 2 \
+# PIN — the 0/1/2 exit contract is CLOSED to new subcommands: whatever joins
+# the dispatch (--list-plan-derived at task 6426, is-registered at task 6857,
+# whatever comes next), a genuinely unknown flag must still be a usage error.
+# This is the SINGLE home for that pin — do not add a per-subcommand copy of it
+# alongside each new arm; the code path under test is the same `*)` arm.
+assert_exit "CONTRACT: an unknown flag exits 2 — the 0/1/2 contract is closed to new subcommands" 2 \
     run_guard --list-bogus
 
 # (b) FAIL-SOFT / NEVER-FAIL-OPEN — the property that makes the hybrid safe.

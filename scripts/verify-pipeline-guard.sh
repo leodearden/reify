@@ -32,11 +32,46 @@
 #                                   test — and an operator debugging a
 #                                   surprising classification — see that half
 #                                   on its own.
+#   is-registered <path>          — read-only membership query over reify's
+#                                   registries: exit 0 if <path> is registered
+#                                   as load-bearing by ANY route below, 1 if it
+#                                   is registered by none, 2 on a usage error.
+#                                   Takes EXACTLY ONE path (no stdin mode); zero
+#                                   or two-or-more is exit 2 — see the arity note
+#                                   under the matched sets below. Writes NOTHING
+#                                   to stdout on either verdict route; the
+#                                   which-registry diagnostic goes to stderr.
+#                                   CAUTION — EXIT 0 HERE MEANS "REGISTERED",
+#                                   NOT "FULL GATE REQUIRED". This subcommand
+#                                   and requires-full-gate share an exit-0
+#                                   spelling and answer DIFFERENT questions: a
+#                                   path registered only as a
+#                                   verify-pipeline-infra-tests.txt row is
+#                                   load-bearing at the cheaper SURGICAL cost
+#                                   point (it SELECTS its guarding infra test at
+#                                   task scope) and is deliberately still exit 1
+#                                   for requires-full-gate. Never route a diff
+#                                   on this subcommand's exit code.
+#                                   MATCHED SETS: the static load-bearing set
+#                                   (clauses 1/2/3/4a/5 below) UNION the
+#                                   open-ended tests/infra/*.sh glob UNION the
+#                                   ACTIVE-ROW KEYS of
+#                                   scripts/verify-pipeline-infra-tests.txt.
+#                                   Deliberately WIDER than the two registries:
+#                                   a path load-bearing by any existing route
+#                                   must answer 0, or the anti-drift sweep that
+#                                   consumes this (tests/infra/test_verify_pipeline_guard.sh
+#                                   Pair C clause (d), task 6857) reds on a
+#                                   legitimate registration. The map keys are
+#                                   read LAZILY here and are never folded into
+#                                   the requires-full-gate set.
 #
 # Exit-code contract:
 #   0 — full gate REQUIRED (at least one load-bearing file in the diff)
 #   1 — fast-path safe (no load-bearing file found)
 #   2 — usage error (unknown subcommand or flag)
+# For is-registered the 0/1 pair re-reads as REGISTERED / NOT REGISTERED (2 is
+# unchanged). Same three codes, different question — see its CAUTION above.
 #
 # The load-bearing set is the union of:
 #   anchor:   scripts/verify.sh (always load-bearing)
@@ -109,6 +144,22 @@
 #             manifest (testability / synthetic-injection + operator override;
 #             mirrors REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH above). Defaults to
 #             scripts/doc-sync-paths.txt.
+#   REIFY_VERIFY_PIPELINE_GUARD_INFRA_TESTS_MAP — override path to the
+#             citing-test map read by `is-registered` clause (iii)
+#             (testability / synthetic-injection + operator override; the exact
+#             sibling of the doc-sync knob above, same
+#             ${VAR:-$SCRIPT_DIR/...} default shape and same graceful
+#             degradation to "no keys" when the file is absent). Defaults to
+#             scripts/verify-pipeline-infra-tests.txt.
+#             UNLIKE REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH, this one is
+#             READ-ONLY: the map is parsed, never executed, and nothing named
+#             in it is run. Pointing it somewhere chooses what the guard
+#             PARSES, not what it RUNS — so it does not carry that knob's
+#             "you are choosing what code the guard executes" caveat.
+#             It affects `is-registered` ONLY. requires-full-gate, --list and
+#             --list-plan-derived never read this map, by design (see the
+#             is-registered arm's note (1)), so setting this knob cannot change
+#             any diff verdict.
 #
 # Usage by the dark-factory merge worker (cross-repo seam — wiring tracked
 # separately; reify ships the oracle, dark-factory does the wiring):
@@ -296,7 +347,10 @@ fi
 #
 #    HOW MUCH IT BUYS TODAY: NOTHING — and that is the honest reading, not a
 #    defect. Measured on this tree, `--list-plan-derived` is BYTE-IDENTICAL to
-#    clause 4a's source-text set (12 paths). verify.sh has no live plan line
+#    clause 4a's source-text set (13 paths; re-measured by task 6296 after
+#    scripts/tree-sitter-freshness.sh joined the plan with #5629 — the
+#    byte-identity itself still holds, only the count moved). verify.sh has no
+#    live plan line
 #    that names a *.sh path from behind a variable. (The `_gui_cmd` /
 #    `_sidecar_cmd` / `_ts_cmd` triple — grep `_gui_cmd=` in scripts/verify.sh
 #    — IS variable-assembled, but its value is a pure npm shell snippet
@@ -331,8 +385,8 @@ fi
 #    verify-pipeline-paths.txt row (or a rewrite to a literal path, or to a
 #    branch the canonical invocation reaches). The five widenings in that
 #    invocation are load-bearing precisely because they shrink this residual:
-#    measured, dropping --include-infra and role=merge takes the derived set
-#    from 12 gates to 6.
+#    measured (task 6296), dropping --include-infra and role=merge takes the
+#    derived set from 13 gates to 7.
 #
 #    Shares the $_verify_sh resolved at clause 3 — one knob, three clauses, no
 #    second env var. NOTE that the knob's semantics WIDEN here from READ to
@@ -387,8 +441,11 @@ derive_plan_paths() {
     # action=all, --scope all, --profile both, --include-infra,
     # DF_VERIFY_ROLE=merge. Every one of those five widenings is load-bearing
     # rather than decoration. Measured on this tree: plain
-    # `all --scope all --profile both` derives only 6 of the 12 gates; adding
-    # --include-infra reaches 11; role=merge is what adds tests/infra/run_all.sh.
+    # `all --scope all --profile both` derives only 7 of the 13 gates; adding
+    # --include-infra reaches 12; role=merge is what adds tests/infra/run_all.sh.
+    # (Counts re-measured by task 6296; every one moved by exactly +1 when
+    # scripts/tree-sitter-freshness.sh joined the plan, and each claim about
+    # WHICH widening buys what still holds as written.)
     # With all five, the derived set is byte-identical BOTH to clause 4a's
     # source-text set AND to the union over a 4-action x 3-scope x 4-role,
     # 48-invocation matrix — so ONE fork is the exact superset today, and an
@@ -399,7 +456,7 @@ derive_plan_paths() {
     # to export. verify.sh reads ~38 REIFY_*/DF_* knobs and several of them
     # narrow the plan, so an inherited one silently shrinks this clause. That is
     # not hypothetical: MEASURED on this tree, an ambient
-    # REIFY_INFRA_SUITE_ACTIVE=1 takes the derived set from 12 paths to 11 (it
+    # REIFY_INFRA_SUITE_ACTIVE=1 takes the derived set from 13 paths to 12 (it
     # is verify.sh's re-entrancy sentinel — see its RE-ENTRANCY GUARD comment —
     # and suppresses the very tests/infra/run_all.sh line that role=merge is
     # here to add). Monotonicity means such a loss can never fail OPEN, but
@@ -412,7 +469,7 @@ derive_plan_paths() {
     # -u REIFY_VERIFY_PREBUILD_TIMEOUT` in test_occt_flock_gate.sh, a shorter
     # one in test_run_all_ambient_isolation.sh), and the two knobs most likely
     # to be named first — REIFY_AFFECTED_CRATES_OVERRIDE and
-    # REIFY_RELEASE_DELTA_SKIP — measure as NON-narrowing here (12 -> 12), while
+    # REIFY_RELEASE_DELTA_SKIP — measure as NON-narrowing here (13 -> 13), while
     # the one that does narrow is neither. Scrubbing the whole REIFY_*/DF_*
     # prefix is self-healing in the same way clauses 3/4a/4b are: a future
     # narrowing knob is neutralized with no edit here.
@@ -551,6 +608,50 @@ fi
 _SORTED_SET="$(printf '%s\n' "$_SET" | sort -u)"
 
 # ---------------------------------------------------------------------------
+# SURGICAL registry: active-row keys of verify-pipeline-infra-tests.txt
+# ---------------------------------------------------------------------------
+#
+# Reify's SECOND registration cost point (task 4955). A row here does not route
+# the diff to the full --scope all gate; it makes verify.sh SELECT the row's
+# guarding infra test at task scope. That is a first-class registration, just a
+# cheaper and more precise one — which is why `is-registered` counts it and
+# `requires-full-gate` deliberately does not.
+#
+# READ LAZILY, by the is-registered arm ONLY. These keys are never appended to
+# _SET: see that arm's note (1) for why folding them in would be a throughput
+# regression and a silent rewrite of the cross-repo merge-worker contract.
+#
+# REIFY_VERIFY_PIPELINE_GUARD_INFRA_TESTS_MAP overrides the map path for
+# testability (synthetic-row injection) and operator use — the exact sibling of
+# the REIFY_VERIFY_PIPELINE_GUARD_DOC_SYNC_PATHS idiom at clause 5, and READ-ONLY
+# (see the header entry).
+_infra_tests_map="${REIFY_VERIFY_PIPELINE_GUARD_INFRA_TESTS_MAP:-$SCRIPT_DIR/verify-pipeline-infra-tests.txt}"
+
+# registry_keys — print one active-row KEY per line (unsorted, possibly empty).
+#
+# THE PARSE BELOW IS A DELIBERATE MIRROR of verify.sh's select_infra_tests()
+# (grep `^select_infra_tests() {` in scripts/verify.sh) and MUST NOT DRIFT FROM
+# IT. Specifically: same active-row filter, same two-field `read`, and the same
+# requirement that BOTH fields be non-empty. A one-field row selects no test, so
+# treating it as a registration would let the anti-drift sweep pass on a path
+# whose "registration" buys nothing — the query point must not disagree with the
+# consumer about what an active row means. Only the FIRST field is a key; the
+# second is a test-selection glob, not a registered artifact.
+#
+# A missing map degrades to "no keys" rather than erroring, the same
+# graceful-degradation shape select_infra_tests() and clause 5 already use.
+registry_keys() {
+    local _line _artifact _glob
+    [ -f "$_infra_tests_map" ] || return 0
+    while IFS= read -r _line; do
+        read -r _artifact _glob <<< "$_line"
+        [ -n "$_artifact" ] || continue
+        [ -n "$_glob" ]     || continue
+        printf '%s\n' "$_artifact"
+    done < <(grep -v '^\s*#' "$_infra_tests_map" | grep -v '^\s*$')
+}
+
+# ---------------------------------------------------------------------------
 # Subcommand dispatch
 # ---------------------------------------------------------------------------
 
@@ -648,10 +749,95 @@ case "$_subcmd" in
         fi
         exit 1
         ;;
+    is-registered)
+        # Read-only membership query over reify's registries (task 6857, filed
+        # from esc-6758-2). See the header's is-registered entry for the full
+        # contract; the two things worth repeating at the code are:
+        #
+        #   (1) EXIT 0 HERE IS NOT "FULL GATE REQUIRED". The infra-tests map
+        #       keys are read LAZILY inside this arm and are NEVER appended to
+        #       _SET, so requires-full-gate's derived set and --list stay
+        #       byte-identical. That is deliberate and load-bearing: folding
+        #       the surgical registry into _SET would route every edit of every
+        #       surgically registered artifact — including a prose note whose
+        #       only coupling is one link-rot grep — to the full global
+        #       --scope all gate, spending exactly the throughput the doc-sync
+        #       clause's precision exists to protect and silently rewriting the
+        #       cross-repo merge-worker contract that consumes exit 0.
+        #       Pinned by the NO-LEAK assertions in Pair C (e) of
+        #       tests/infra/test_verify_pipeline_guard.sh.
+        #
+        #   (2) THIS QUERY IS FORK-FREE, and provably loses nothing by it: it
+        #       deliberately never calls derive_plan_paths. Clause 4b derives
+        #       only *.sh paths NAMED BY THE RESOLVED PLAN, so it can contribute
+        #       neither a doc nor a registry key — the two path kinds this query
+        #       is asked about. Skipping it therefore forfeits no coverage while
+        #       keeping a per-path membership query out of the ~0.4-1.4s
+        #       --print-plan fork that its only caller (the anti-drift sweep)
+        #       would otherwise pay once per swept path.
+        shift
+        # ARITY: exactly one path. requires-full-gate uses ANY-semantics over
+        # many paths because "does this DIFF need the gate" is genuinely a
+        # disjunction; "is this path registered" reads as a conjunction, so a
+        # multi-arg form would silently pick one of two plausible meanings.
+        # Refusing >1 makes the surface state the question instead of guessing.
+        # No stdin mode for the same reason — there is no set-shaped answer here.
+        if [ "$#" -ne 1 ]; then
+            printf '%s: is-registered takes EXACTLY ONE path (got %d); it is a\n' "$(basename "$0")" "$#" >&2
+            printf '  single-path membership query, not a set predicate — there is no\n' >&2
+            printf '  ANY/ALL reading to pick from, and no stdin mode. Query one path per call.\n' >&2
+            exit 2
+        fi
+        # Same normalization idiom requires-full-gate uses: strip a leading
+        # './' so './foo/bar' matches the clean repo-relative registered form.
+        _query=$(printf '%s\n' "$1" | sed 's|^\./||')
+
+        # MATCH IDIOM — capture-then-test with `|| true`, NOT `grep -q`, and the
+        # `|| true` is NOT optional boilerplate. `set -o pipefail` is in force,
+        # and every short-circuiting grep (-q / -m1) can close the pipe while
+        # its producer is still writing; the producer then dies of SIGPIPE and
+        # pipefail reports the pipeline as 141, turning a genuine MATCH into a
+        # silent no-match. Measured here on clause (iii): `registry_keys | grep
+        # -qxF <a-key-that-is-present>` returns 141, not 0. `|| true` absorbs
+        # that, and the captured string — not the exit status — is the verdict.
+        # This is the same idiom requires-full-gate's greps already use.
+        #
+        # (i) STATIC load-bearing set — clauses 1/2/3/4a/5 (anchor, manifest,
+        #     sourced libs, emitted-gate source text, doc-sync docs). Reused
+        #     wholesale rather than re-derived, so this query and
+        #     requires-full-gate can never disagree about the static set.
+        _hit=$(printf '%s\n' "$_SORTED_SET" | grep -xF -m1 -- "$_query" 2>/dev/null || true)
+        if [ -n "$_hit" ]; then
+            printf 'is-registered: %s — registered via the static load-bearing set (--list)\n' "$_query" >&2
+            exit 0
+        fi
+        # (ii) The open-ended infra-test glob clause, same regex
+        #      requires-full-gate carries (task 5256).
+        _hit=$(printf '%s\n' "$_query" | grep -m1 -E '^tests/infra/[^/]*\.sh$' 2>/dev/null || true)
+        if [ -n "$_hit" ]; then
+            printf 'is-registered: %s — registered via the tests/infra/*.sh glob clause\n' "$_query" >&2
+            exit 0
+        fi
+        # (iii) ACTIVE-ROW KEYS of the infra-tests map — the SURGICAL registry.
+        _hit=$(registry_keys | grep -xF -m1 -- "$_query" 2>/dev/null || true)
+        if [ -n "$_hit" ]; then
+            printf 'is-registered: %s — registered SURGICALLY as a %s row (selects its guarding infra test at task scope; NOT a full-gate route)\n' \
+                "$_query" "$(basename "$_infra_tests_map")" >&2
+            exit 0
+        fi
+        printf 'is-registered: %s — NOT registered. Searched: the static load-bearing set\n' "$_query" >&2
+        printf '  (scripts/doc-sync-paths.txt, scripts/verify-pipeline-paths.txt and the live\n' >&2
+        printf '  verify.sh derivations — see --list), the tests/infra/*.sh glob, and the\n' >&2
+        printf '  active rows of scripts/verify-pipeline-infra-tests.txt.\n' >&2
+        exit 1
+        ;;
     *)
-        printf 'Usage: %s requires-full-gate [file...] | --list | --list-plan-derived\n' "$(basename "$0")" >&2
+        printf 'Usage: %s requires-full-gate [file...] | is-registered <path> | --list | --list-plan-derived\n' "$(basename "$0")" >&2
         printf '  requires-full-gate: exits 0 if any file is load-bearing (full gate required),\n' >&2
         printf '                      1 if none (fast-path safe); reads stdin when no args.\n' >&2
+        printf '  is-registered: exits 0 if the ONE given path is registered as load-bearing by\n' >&2
+        printf '                 any route (incl. a surgical verify-pipeline-infra-tests.txt row),\n' >&2
+        printf '                 1 if by none. NOT a full-gate verdict — never route a diff on it.\n' >&2
         printf '  --list: print the canonical load-bearing path set (one path per line).\n' >&2
         printf '  --list-plan-derived: print only the --print-plan-derived subset of that set\n' >&2
         printf '                       (diagnostic; exit 0, possibly empty on the fail-soft route).\n' >&2

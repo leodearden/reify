@@ -20,6 +20,15 @@ reify-eval = { workspace = true, features = ["test-instrumentation"] }
 reify-test-support = { workspace = true, features = ["eval-helpers"] }
 reify-core.workspace = true
 reify-ir.workspace = true
+# von_mises_sampled_stress_reduction_e2e.rs drives the analysis wrapper +
+# field reduction (`max(von_mises(<stress field>))`) through
+# `reify_expr::eval_expr` on hand-built `CompiledExpr`s rather than through
+# `.ri` source: `analysis_signatures::tensor_quantity` still has no
+# `Type::Field` arm, so the `.ri` spelling would be entangled with the
+# un-landed compile-time typing gap tracked by #6577. This is a test-only
+# edge onto a crate already in the transitive graph (reify-eval depends on
+# reify-expr), so it adds no new layering edge.
+reify-expr.workspace = true
 reify-constraints.workspace = true
 reify-compiler.workspace = true
 reify-stdlib.workspace = true

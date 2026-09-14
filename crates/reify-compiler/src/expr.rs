@@ -45,6 +45,12 @@
 
 use super::*;
 
+// The compiler's single entry point into the builtin-signature registry
+// (task #6001 α). Named explicitly rather than reached via `super::*` because
+// `builtin_registry` is deliberately NOT glob-re-exported in `lib.rs` — one
+// module, one call site, one seam. `registry_owns` is that same seam's cheap
+// name-only precheck — see the ladder arm below for why the call site needs it.
+use crate::builtin_registry::{registry_owns, registry_result_type};
 use crate::datum_projection::{
     datum_projection_result_type, datum_projection_unavailable_hint, DatumProjectionResolution,
     DATUM_PROJECTION_MEMBERS,
@@ -3418,9 +3424,11 @@ fn compile_expr_guarded_with_expected_inner(
                     // `infer_list_helper_return_type` → `is_dynamics_query` →
                     // `is_dynamics_constructor` → `is_affine_map_constructor` →
                     // `is_math_typed_fn` → `is_joint_typed_fn` →
-                    // `is_analysis_typed_fn` → `fea_envelope_result_type` (#4629 W2) →
-                    // `is_field_op` → `is_parse_typed_fn` →
-                    // `is_orientation_typed_fn` (task 5344) →
+                    // `registry_result_type` (the builtin-signature registry,
+                    // task #6001 α — one arm replacing the former
+                    // `is_analysis_typed_fn` and `is_parse_typed_fn` arms) →
+                    // `fea_envelope_result_type` (#4629 W2) →
+                    // `is_field_op` → `is_orientation_typed_fn` (task 5344) →
                     // first-arg fallback. The five geometry-name families plus the
                     // RBD-β `is_dynamics_query` family (task 3829), the task-4278
                     // `is_dynamics_constructor` family, the std.fields α
@@ -3751,24 +3759,51 @@ fn compile_expr_guarded_with_expected_inner(
                         // families by the units.rs disjointness test, so this
                         // arm's position in the ladder is unobservable.
                         joint_ctor_result_type(name, &compiled_args)
-                    } else if is_analysis_typed_fn(name) {
-                        // FEA stress-analysis reduction family (FEA-5, task
-                        // 2884): von_mises / principal_stresses / max_shear /
-                        // safety_factor / stress_invariants. These are pure
-                        // eval-builtins dispatched by name in
-                        // `reify_stdlib::eval_builtin` (analysis.rs). Setting
-                        // their result types here PREVENTS the first-arg Tensor
-                        // drift in the fallback below — e.g.
-                        // `von_mises(stress)` would otherwise mis-type as
-                        // `Tensor<Pressure>` instead of `Scalar<Pressure>`.
+                    } else if registry_owns(name)
+                        && let Some(t) = registry_result_type(
+                            name,
+                            &compiled_args
+                                .iter()
+                                .map(|a| a.result_type.clone())
+                                .collect::<Vec<_>>(),
+                        )
+                    {
+                        // ── The builtin-signature registry (task #6001 α) ──────
                         //
-                        // The call STAYS a `FunctionCall` (eval untouched, name-
-                        // dispatched to existing Rust kernels).  The family is
-                        // pinned disjoint from all sibling families by the
-                        // `analysis_fn_names_are_disjoint_from_other_families`
-                        // test in `units.rs`, so this arm's position in the
-                        // ladder is unobservable.
-                        analysis_fn_result_type(name, &compiled_args)
+                        // ONE arm replacing the two family arms this ladder
+                        // used to carry, `is_analysis_typed_fn` (here) and
+                        // `is_parse_typed_fn` (formerly ~75 lines below). Both
+                        // families' signatures are now rows in
+                        // `reify-builtins`, and `builtin_registry` is this
+                        // crate's single entry point into that table; the
+                        // answers are the ones the deleted arms gave, byte for
+                        // byte, since α moves the source of truth and corrects
+                        // nothing (PRD §7.3(6)).
+                        //
+                        // Folding parse into the analysis POSITION is
+                        // unobservable: `units.rs`'s
+                        // `registry_row_names_are_disjoint_from_legacy_families`
+                        // pins every row name absent from every legacy sibling
+                        // family slice, so at most one arm can ever claim a
+                        // given name.
+                        //
+                        // `registry_owns` guards the `Vec<Type>` projection,
+                        // which allocates and deep-clones every argument type
+                        // on an arm reached by nearly every call in a program.
+                        // It is `registry_result_type`'s own precondition, so
+                        // this is a cost change, not a behaviour change —
+                        // pinned by `harness_builtin_registry`'s
+                        // `registry_owns_is_exactly_registry_result_type_s_precondition`.
+                        // The projection itself is needed because
+                        // `reify-builtins` cannot see `reify-ir` (PRD decision
+                        // 3), so arg TYPES cross the boundary, not
+                        // `CompiledExpr`s.
+                        //
+                        // `None` means "not a registry row", so unseeded names
+                        // fall through to the arms below exactly as before —
+                        // I-REG-3's pre-ω carve-out. The call stays a
+                        // `FunctionCall`: eval is untouched.
+                        t
                     } else if is_fea_envelope_query(name) {
                         // FEA multi-load-case envelope builtins (task #4629 W2):
                         //   envelope_von_mises / envelope_max_principal →
@@ -3827,32 +3862,6 @@ fn compile_expr_guarded_with_expected_inner(
                         // (units.rs `field_op_names_are_disjoint_from_other_families`),
                         // so this arm's position in the ladder is unobservable.
                         t
-                    } else if is_parse_typed_fn(name) {
-                        // Fallible string→quantity parse builtins (task #4535):
-                        //   parse_length(String)   → Option<Length>
-                        //   parse_length_r(String) → the PRELUDE Result<T,E>
-                        //     (dependency task #4035, reused — NOT redeclared),
-                        //     registered as Type::Enum("Result").
-                        //
-                        // Pure eval-builtins (reify_stdlib::parse::eval_parse,
-                        // dispatched via reify-expr's fallthrough to
-                        // reify_stdlib::eval_builtin — no reify-expr production
-                        // change) — the result type is arg-INDEPENDENT, unlike
-                        // the math-linalg family above. Without this arm both
-                        // names would fall through to the first-arg `String`
-                        // fallback below, breaking the consumer's
-                        // `match{Some/None}`/`{Ok/Err}` type-check and the
-                        // eval-time `value_type_kind_matches` guard (the eval'd
-                        // value is a real `Value::Option`/`Value::Enum`, never a
-                        // `Value::String`). The family is pinned disjoint from
-                        // all sibling families by the `units.rs`
-                        // `parse_fn_names_are_disjoint_from_other_families`
-                        // disjointness test (amendment: reviewer suggestion
-                        // #3 — the exhaustive check lives there, mirroring
-                        // every other family, rather than in
-                        // `parse_signatures.rs`'s own two-name spot-check), so
-                        // this arm's position in the ladder is unobservable.
-                        parse_fn_result_type(name)
                     } else if is_orientation_typed_fn(name) {
                         // Orientation / transform / frame constructor family
                         // (task 5344) — 18 names, each with a FIXED nominal
@@ -8642,7 +8651,7 @@ pub structure Rack {
     /// - `prismatic` (driving kind) → StructureRef("Prismatic")
     /// - `couple` (coupling kind) → StructureRef("Coupling")
     /// - `bind` (JointBinding) → StructureRef("JointBinding")
-    /// - `joint_jacobian` (Twist) → StructureRef("Twist")
+    /// - `joint_jacobian` (Jacobian column) → StructureRef("JacobianColumn")
     ///
     /// Mirrors `body_mass_props_resolves_to_function_call_returning_mass_properties`.
     /// RED until step-6 wires the `is_joint_typed_fn` arm into the ladder.
@@ -8690,8 +8699,12 @@ pub structure Rack {
         );
         // JointBinding → JointBinding.
         check("bind", 2, Type::StructureRef("JointBinding".to_string()));
-        // Twist / joint Jacobian → Twist.
-        check("joint_jacobian", 1, Type::StructureRef("Twist".to_string()));
+        // Joint Jacobian → JacobianColumn (task 6102: dpose/dq, not a Twist).
+        check(
+            "joint_jacobian",
+            1,
+            Type::StructureRef("JacobianColumn".to_string()),
+        );
     }
 
     /// `TraitStaticCall` dispatch arm (task η 3945) — after the placeholder is

@@ -1451,6 +1451,7 @@ mkdir -p "$BR_FIX/scripts" "$BR_FIX/.config"
 for _f in verify.sh occt-scope-lib.sh occt-touching-crates.txt release-scope-lib.sh \
           release-sensitive-crates.txt affected-crates-lib.sh lib_test_semaphore.sh \
           lib_slot_acquire.sh lib_clock_stop.sh cpu-admit.sh lib_proc_reaper.sh \
+          lib_git_env_scrub.sh \
           gen-nextest-config.sh heavy-test-filter-lib.sh; do
     cp "$REPO_ROOT/scripts/$_f" "$BR_FIX/scripts/$_f"
 done
@@ -1578,6 +1579,7 @@ mkdir -p "$ST_FIX/scripts" "$ST_FIX/.config"
 for _f in verify.sh occt-scope-lib.sh occt-touching-crates.txt release-scope-lib.sh \
           release-sensitive-crates.txt affected-crates-lib.sh lib_test_semaphore.sh \
           lib_slot_acquire.sh lib_clock_stop.sh cpu-admit.sh lib_proc_reaper.sh \
+          lib_git_env_scrub.sh \
           gen-nextest-config.sh heavy-test-filter-lib.sh; do
     cp "$REPO_ROOT/scripts/$_f" "$ST_FIX/scripts/$_f"
 done

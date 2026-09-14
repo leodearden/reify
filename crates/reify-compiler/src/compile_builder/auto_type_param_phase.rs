@@ -17,7 +17,28 @@
 //!   3. on success, rewrites the matching `SubComponentDecl.type_args[position]`
 //!      placeholder (`Type::TypeParam("__auto_<bound>")`) to a concrete
 //!      `Type::StructureRef(resolved_template_name)` so the downstream
-//!      bound-check sees the resolved candidate,
+//!      bound-check sees the resolved candidate — this per-position rewrite
+//!      applies unconditionally, independent of step 3a below,
+//!      3a. separately, monomorph synthesis (cloning `target`, clearing its
+//!      `type_params`, and substituting `Type::TypeParam` → `Type::StructureRef`
+//!      into the clone's cells/exprs) additionally requires FULL coverage —
+//!      every entry of `target.type_params` must be bound in `sigma`. An
+//!      explicitly-supplied type-arg never produces an `auto:` clause, so a
+//!      mixed use-site like `Widget<SealA, auto: Gasket>()` would otherwise
+//!      leave a declared type parameter out of `sigma` without ever entering
+//!      the per-param resolver at all. Before coverage is measured, `sigma`
+//!      is seeded from every non-`auto:` position's already-resolved
+//!      `SubComponentDecl.type_args` entry — an explicitly-supplied type-arg
+//!      is not unbound, only unbound *by this resolver* — so full coverage,
+//!      and therefore synthesis, is now the norm rather than the exception
+//!      for mixed use-sites. The residual skip-synthesis path is reached for
+//!      a genuinely unbound `auto:` param (shapes A/B) or an explicit
+//!      type-arg that is not a concrete `Type::StructureRef` and so cannot
+//!      be seeded; either way the use-site is left pointing at the generic
+//!      template. Shapes A/B stay silent here — they already carry the
+//!      resolver's own `NoCandidate` / `Ambiguous` error — while the
+//!      un-seedable residual is diagnosed with a dedicated compile error
+//!      instead of failing silently (#6854),
 //!   4. accumulates `(param_name, template_name)` substitution pairs across all
 //!      requests, deduping first-wins, into `ctx.auto_type_substitution`.
 //!
@@ -256,8 +277,145 @@ pub(crate) fn phase_auto_type_param_resolution(
                 subst_pairs.push((param_name.clone(), template_name.clone()));
             }
 
-            // Synthesize a monomorph if at least one type-param was resolved.
-            if !sigma.is_empty() {
+            // Seed `sigma` and `candidates_by_position` from this use-site's
+            // already-resolved EXPLICIT type-args before measuring coverage
+            // below. `entity.rs` only pushes an `AutoClause` for an `Auto`
+            // type-arg, so an explicitly-supplied arg (e.g. the `SealA` in
+            // `Widget<SealA, auto: Gasket>()`) never enters
+            // `outcome.substitution` above, and `sigma` would otherwise stay
+            // short of full coverage even though the position is already
+            // resolved — just not by this resolver (#6854).
+            if let Some(owner) = template_registry.get(req.owner_structure.as_str())
+                && let Some(sub) = owner.sub_components.get(req.sub_index)
+            {
+                for (position, tp) in target.type_params.iter().enumerate() {
+                    // Positions this use-site supplied as an `auto:` clause
+                    // are the resolver's to bind; a failure there is a
+                    // genuine unbound param (shapes A/B), not something to
+                    // seed here.
+                    if req.auto_clauses.iter().any(|c| c.position == position) {
+                        continue;
+                    }
+                    // An explicitly-supplied type-arg is ALREADY RESOLVED —
+                    // just not by this resolver. Seed it so coverage below
+                    // sees the truth. A non-`StructureRef` slot (e.g. an
+                    // enclosing generic's own `TypeParam`) is left unseeded
+                    // and falls through to the partial-coverage skip below.
+                    //
+                    // When the position carries NO type-arg at all, fall back
+                    // to the type parameter's DECLARED DEFAULT (shape D,
+                    // #6854 review round 3). This mirrors `effective_arg` in
+                    // `check_type_param_bounds` (entity.rs), which treats an
+                    // omitted arg with a default as supplied rather than
+                    // missing — `TypeParam::default` is a supported language
+                    // feature, so `Widget<U: Gasket, T: Seal = SealA>`
+                    // instantiated as `Widget<auto: Gasket>()` is a VALID
+                    // use-site with T already resolved to `SealA`. Without
+                    // this fallback such a use-site reaches residual-partial
+                    // coverage and is rejected by the un-seedable diagnostic
+                    // below, whose message ("an explicitly-supplied
+                    // type-argument that is not a concrete structure") does
+                    // not even describe what happened — the arg was omitted.
+                    // A default is already-resolved information exactly like
+                    // an explicit arg, so seeding it is the correct remedy.
+                    let effective_arg: Option<&Type> =
+                        sub.type_args.get(position).or(tp.default.as_ref());
+                    if let Some(Type::StructureRef(name)) = effective_arg {
+                        sigma.insert(tp.name.clone(), Type::StructureRef(name.clone()));
+                        candidates_by_position.push((position, name.clone()));
+                    }
+                }
+            }
+
+            // Synthesize a monomorph only when EVERY type parameter DECLARED
+            // BY THE TARGET is covered by `sigma` — not merely every
+            // `auto:`-clause param. Coverage must be measured against
+            // `target.type_params` rather than against `params` (this
+            // use-site's auto-clause list): an explicitly-supplied type-arg
+            // (e.g. the `SealA` in `Widget<SealA, auto: Gasket>()`) never
+            // produces an `AutoClause` at all, so `params.len()` can be
+            // strictly less than `target.type_params.len()` even though the
+            // omitted param is a real, declared type parameter of `target`
+            // (#6854). `sigma`'s keys are always a subset of
+            // `target.type_params` names (`name_to_position` above is itself
+            // built from `target.type_params`), so this check is exactly
+            // "every declared type parameter is bound".
+            //
+            // The seeding loop directly above fills `sigma` for explicitly-
+            // supplied positions too, so a mixed use-site like
+            // `Widget<SealA, auto: Gasket>()` now normally reaches full
+            // coverage rather than being treated as partial. An explicitly-
+            // supplied type-arg is not unbound — it is already resolved,
+            // just not by this resolver — so seeding it is the correct
+            // remedy, not merely a workaround: skipping synthesis is only a
+            // safe degradation when there is a sound generic template to
+            // fall back to, and for a mixed use-site there is not.
+            // `assert_value_cell_types_representable` walks the HYDRATED
+            // GRAPH, not `compiled.templates`, so a generic `Widget` is
+            // inert only while nothing points at it — leaving the use-site
+            // on the generic is precisely what drags its `Type::TypeParam`
+            // cells into the graph and panics at hydration (#6854 review
+            // round 2).
+            //
+            // On residual PARTIAL coverage — a genuinely unbound `auto:`
+            // param (shapes A/B), or a non-`auto:` position whose effective
+            // type-arg (explicit arg, else declared default) is not a
+            // concrete `Type::StructureRef` and so could not be seeded
+            // — synthesis must still be skipped: the block below clears
+            // `mono.type_params` — advertising the clone as fully concrete —
+            // while any cell whose type-param was NOT in `sigma` keeps its
+            // raw `Type::TypeParam(name)`. That is the one shape no
+            // downstream `type_params.is_empty()` filter can ever detect,
+            // since the clone itself claims to have zero free type-params.
+            // The un-seedable residual (below) is diagnosed rather than left
+            // silent; shapes A/B are not — they already carry the resolver's
+            // own `NoCandidate`/`Ambiguous` error.
+            let sigma_covers_all_type_params = !target.type_params.is_empty()
+                && target
+                    .type_params
+                    .iter()
+                    .all(|tp| sigma.contains_key(tp.name.as_str()));
+
+            // Diagnose the residual un-seedable case: the resolver bound
+            // every `auto:`-clause param it was asked to (so this is NOT
+            // shape A/B, which already carries its own `NoCandidate` /
+            // `Ambiguous` error and must not be double-reported), yet full
+            // `target.type_params` coverage is still not reached — meaning
+            // a non-`auto:` position's EFFECTIVE type-arg (its explicit arg,
+            // else its declared default) was something other than a concrete
+            // `Type::StructureRef` (e.g. an enclosing generic's own
+            // `TypeParam`, #6854) and the seeding loop above could not bind
+            // it. Gating on "the resolver bound everything it was asked to
+            // bind" rather than scanning `diagnostics` for newly-pushed
+            // errors avoids depending on which `Severity` the resolver
+            // assigns each halt reason.
+            let all_auto_clause_params_bound =
+                params.iter().all(|p| sigma.contains_key(p.name.as_str()));
+            if !sigma_covers_all_type_params && all_auto_clause_params_bound {
+                let unbound: Vec<&str> = target
+                    .type_params
+                    .iter()
+                    .map(|tp| tp.name.as_str())
+                    .filter(|n| !sigma.contains_key(*n))
+                    .collect();
+                let sub_name = template_registry
+                    .get(req.owner_structure.as_str())
+                    .and_then(|owner| owner.sub_components.get(req.sub_index))
+                    .map(|sub| sub.name.as_str())
+                    .unwrap_or("<unknown>");
+                let owner_structure = req.owner_structure.as_str();
+                let target_name = req.target_name.as_str();
+                diagnostics.push(Diagnostic::error(format!(
+                    "sub-component '{sub_name}' of '{owner_structure}' instantiates \
+                     generic '{target_name}' with a non-`auto:` type-argument that \
+                     does not resolve to a concrete structure (type parameter(s) \
+                     {unbound:?} could not be bound), so no monomorph can be \
+                     synthesized; the sub-component would retain unsubstituted type \
+                     parameters at evaluation time"
+                )));
+            }
+
+            if sigma_covers_all_type_params {
                 // Sort by position to guarantee deterministic mangle order
                 // regardless of outcome.substitution iteration order.
                 candidates_by_position.sort_by_key(|(pos, _)| *pos);
@@ -411,6 +569,27 @@ pub(crate) fn phase_auto_type_param_resolution(
                     //   - sub_components[*].args  (CompiledExpr call-site values)
                     //   - realizations, connections, objective (geometry/eval exprs)
                     //   - match_arm_groups, forall_templates, assoc_fns, assoc_types
+                    //
+                    // Defensive invariant pin (#6854): the guard above now
+                    // guarantees every declared type parameter of `target` is
+                    // in `sigma`, so no top-level `value_cells` entry should
+                    // retain a direct, unsubstituted `Type::TypeParam` for one
+                    // of `target`'s own params. Deliberately scoped to
+                    // top-level `value_cells` and to the direct variant only —
+                    // the α partial-coverage note directly above lists the
+                    // collections (sub_components[*].args, realizations,
+                    // connections, objective, match_arm_groups,
+                    // forall_templates, assoc_fns, assoc_types) that are
+                    // knowingly NOT substituted; asserting over those would
+                    // fire on healthy input.
+                    debug_assert!(
+                        !mono.value_cells.iter().any(|cell| matches!(
+                            &cell.cell_type,
+                            Type::TypeParam(n) if target.type_params.iter().any(|tp| &tp.name == n)
+                        )),
+                        "monomorph `{mono_name}` retains an unsubstituted type parameter in its top-level \
+                         value cells despite full sigma coverage (#6854)",
+                    );
                     // Mix the mono name into the content_hash so two distinct
                     // monomorphs that clone the same source hash (e.g. Bearing$A
                     // vs Bearing$B) produce different cache keys.

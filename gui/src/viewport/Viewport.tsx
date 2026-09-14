@@ -12,7 +12,7 @@ import { FeaModeToolbar } from './FeaModeToolbar';
 import { bakeColours } from './colormap';
 import { computeScalarRange } from './scalarRange';
 import { channelUnit } from './channelTags';
-import { pickDefaultScalarChannel, PREFERRED_FEA_CHANNELS } from './defaultScalarChannel';
+import { pickDefaultScalarChannel } from './defaultScalarChannel';
 import { feaToolbarChannels } from './feaToolbarChannels';
 import type { ViewportStore, CameraState, FeaModeStore } from '../stores';
 import { subscribeFeaCaseToStore, setActiveFeaCase } from '../bridge';
@@ -118,64 +118,15 @@ export function Viewport(props: ViewportProps) {
     return s ? computeScalarRange(props.meshes, s.state.channel) : null;
   });
 
-  // FEA toolbar channel dropdown options (task 5669).
-  //
-  // feaToolbarChannels() returns a fixed base list (+ errorIndicator when
-  // present) that deliberately excludes shell sub-channels
-  // (vonMises_top/_mid/_bottom) — see its own docstring. But
-  // pickDefaultScalarChannel legitimately auto-selects 'vonMises_top' for a
-  // shell mesh (PREFERRED_FEA_CHANNELS), so feaModeStore.state.channel can be
-  // a value absent from feaToolbarChannels' list, desyncing the rendered
-  // <select> from the store. Widen the option list here so the dropdown
-  // always has a matching <option> for the store's current channel.
-  //
-  // Two widening sources, deliberately narrow (both are needed; neither is
-  // sufficient alone):
-  //
-  //  1. The store's *current* channel, seeded before the mesh scan. This is
-  //     what actually closes the desync in full generality — including for a
-  //     channel outside PREFERRED_FEA_CHANNELS entirely, since
-  //     pickDefaultScalarChannel's last-resort branch auto-selects the
-  //     lexicographically smallest non-empty channel whatever it is named.
-  //     It is seeded from the store rather than derived from the live mesh
-  //     set because auto-enable is one-shot (autoEnabledOnce, below), so a
-  //     later mesh-set replacement (e.g. a shell result swapped for a
-  //     solid-only rebuild) can leave store.state.channel pointing at a
-  //     channel absent from the *new* mesh set entirely. Without this seed
-  //     the option list would collapse back to the base list on that second
-  //     delivery and reopen the exact desync this memo exists to prevent.
-  //
-  //  2. Members of PREFERRED_FEA_CHANNELS carrying non-empty data somewhere
-  //     in the active mesh set. This is what makes the *sibling* shell
-  //     surfaces selectable: with only (1), a shell mesh would offer
-  //     'vonMises_top' but the user could never switch to '_mid'/'_bottom'.
-  //
-  // The mesh scan is deliberately restricted to PREFERRED_FEA_CHANNELS rather
-  // than admitting every non-empty scalar channel present: a design carrying
-  // arbitrary vertex scalars would otherwise list them all as selectable
-  // "FEA" channels, which is a broader change than the defect requires and
-  // would cost the toolbar its FEA-specific meaning. Anything outside the
-  // preference list still reaches the dropdown via (1) when it is in fact the
-  // selected channel, which is the only case that can desync.
-  const feaChannelOptions = createMemo(() => {
-    const base = feaToolbarChannels(props.meshes);
-    const extra = new Set<string>();
-    const currentChannel = props.feaModeStore?.state.channel;
-    if (currentChannel && !base.includes(currentChannel)) {
-      extra.add(currentChannel);
-    }
-    for (const mesh of Object.values(props.meshes)) {
-      if (!mesh.scalar_channels) continue;
-      for (const name of PREFERRED_FEA_CHANNELS) {
-        if (base.includes(name) || extra.has(name)) continue;
-        const data = mesh.scalar_channels[name];
-        if (data && data.length > 0) {
-          extra.add(name);
-        }
-      }
-    }
-    return extra.size > 0 ? [...base, ...[...extra].sort()] : base;
-  });
+  // FEA toolbar channel dropdown options. The whole policy — base list,
+  // 'errorIndicator' extension, current-channel seed and PREFERRED_FEA_CHANNELS
+  // scan — is one pure function owned by ./feaToolbarChannels (task 5669, moved
+  // here → there by 5828); see its docstring for the rationale. The store's
+  // current channel is threaded in so the rendered <select> can never desync
+  // from the store.
+  const feaChannelOptions = createMemo(() =>
+    feaToolbarChannels(props.meshes, props.feaModeStore?.state.channel),
+  );
 
   onMount(() => {
     const rect = containerRef.getBoundingClientRect();

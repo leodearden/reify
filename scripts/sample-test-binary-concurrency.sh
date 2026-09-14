@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Sample the HOST-WIDE peak number of concurrently-running Rust test binaries.
 #
-# Task 6018's ACCEPTANCE instrument (the residual deliverable of task 5984
-# carry-over 1, esc-5984-2).  Task 6018 un-narrowed the global nextest pool —
-# `[profile.default] test-threads` went from a fixed 16 to the host CPU count —
-# and the acceptance clause asks for an OBSERVED peak concurrency, not a computed
-# one.  This is that observation's instrument.
+# Task 6018's ACCEPTANCE instrument (residual of task 5984 carry-over 1,
+# esc-5984-2): 6018 un-narrowed the global nextest pool ([profile.default]
+# test-threads: a fixed 16 -> the host CPU count) and its acceptance clause asks
+# for an OBSERVED peak concurrency, not a computed one.
 #
 # Contract guard: tests/infra/test_test_binary_concurrency_sampler.sh.
 #
@@ -21,9 +20,14 @@
 #                   count (default `*/target/*/deps/*`).
 #
 # Emits ONE summary line on stdout; all diagnostics go to stderr.  Exit 0 on an
-# empty host — absence of test binaries is DATA, not an error (this is meant to
-# be launched beside a verify without being coupled to it, so a window that
-# starts early or outlives the run must not fail whatever launched it).
+# empty host — absence of test binaries is DATA, not an error: it is launched
+# beside a verify without being coupled to it, so a window that starts early or
+# outlives the run must not fail whatever launched it.
+#
+# ENVIRONMENT — two injection seams; the contract guard drives both.
+#   REIFY_SAMPLER_PROC_ROOT  the /proc to read (default /proc).
+#   REIFY_SAMPLER_PIDS_CMD   OVERRIDE for candidate discovery.  Unset or empty
+#                            — the default — enumerates <PROC_ROOT>/*/exe.
 #
 # ---------------------------------------------------------------------------
 # WHY THE ARGV MATCH ALONE IS WRONG (defect (a), measured).
@@ -44,13 +48,36 @@
 # test-binary reaper (scripts/lib_proc_reaper.sh:197-205); keeping one definition
 # of "is this process a test binary" across the repo is deliberate.
 #
-# WHY THE PREFILTER IS STILL THERE.  Confirmation is exact but readlink-per-pid
-# over all of /proc is what made the earlier attempt unaffordable: at loadavg 78
-# a whole-/proc scan degraded from the intended 1 Hz to about 0.05 Hz, so the
-# sampler was blind for 20 s at a time — precisely the phase-aliasing that
-# produced defect (b).  The argv prefilter cuts the confirmation set to a handful
-# of pids: measured 0.28 s per pass in this worktree at its then-current load,
-# which makes 1 Hz affordable.  Prefilter for SPEED, confirm for TRUTH.
+# ---------------------------------------------------------------------------
+# WHY THE PREFILTER HAD TO GO (defect (d), measured).
+#
+# That confirmation was originally paid for with ONE readlink FORK PER CANDIDATE,
+# behind a `pgrep -f` argv prefilter.  Both halves leak the same way, and fixing
+# only one leaves the defect intact:
+#
+#   1. PER-CANDIDATE CONFIRMATION.  Every fork widens the gap between "this pid
+#      was listed" and "this pid's exe was read".  Test binaries live 0.2-0.8 s,
+#      so candidates that were genuinely running when the sample began were
+#      recorded as vanished by the time their turn came.
+#   2. THE PREFILTER ITSELF.  `pgrep -f` walks argv across all of /proc, so the
+#      list it returned had already decayed before confirmation started.
+#      Batching the confirmation of a stale list still confirms a stale list,
+#      however fast the batch is.
+#
+# MEASURED: the pre-fix instrument UNDERCOUNTS a batched whole-/proc snapshot by
+# 35-65%, and the old affordability objection to such a scan (that it degrades
+# from the intended 1 Hz to about 0.05 Hz under load) was an objection to ONE
+# FORK PER PID, which one fork TOTAL removes.  Both A/B series, the method, and
+# the per-pass costs live in
+# docs/notes/nextest-global-pool-concurrency-observation.md -> "Prefilter->confirm
+# race", which is their single owner; they are cited here, not restated, because
+# a measurement copied into three files has already been seen to diverge over
+# which copy is authoritative.
+#
+# ONE consequence belongs here, because it governs how this instrument's own
+# output must be read: that note's window 1 peak=14 is a FLOOR, not a bound that
+# held.  Discovery and confirmation are now ONE pass over ONE snapshot, which is
+# what a race-free sample requires.
 #
 # ---------------------------------------------------------------------------
 # WHY nonzero_samples EXISTS (defect (b), measured).
@@ -94,10 +121,12 @@
 # The split is therefore done ONCE, at parse time, under `set -f`: that
 # suppresses pathname expansion while leaving word-splitting intact, which is
 # exactly the half we need and exactly the half we must keep.  `set +f` restores
-# globbing immediately afterwards — that restore is load-bearing, not cosmetic:
-# REIFY_SAMPLER_PIDS_CMD is a caller-supplied command that may legitimately rely
-# on globbing.  Splitting once rather than per-pid also removes a per-sample cost
-# blowup that contradicted the 0.28 s/pass figure above.
+# globbing immediately afterwards — that restore is load-bearing, not cosmetic,
+# and now doubly so: the DEFAULT candidate discovery is itself a glob over
+# <PROC_ROOT>/*/exe, and REIFY_SAMPLER_PIDS_CMD is a caller-supplied command that
+# may legitimately rely on globbing too.  Splitting once rather than per-pid also
+# removes a per-sample cost blowup, which matters against the per-pass figures
+# recorded under defect (d) above.
 #
 # A whitespace-only --deps-glob is rejected for the same reason: it passes a
 # naive non-empty check but splits to ZERO patterns, after which every sample
@@ -141,10 +170,27 @@ set +f
 [ "${#DEPS_GLOBS[@]}" -gt 0 ] || \
     _die "--deps-glob must contain at least one non-whitespace pattern, got '$DEPS_GLOB'"
 
-# Injection seams (testability; the contract guard drives both).  Defaults are
-# the real host: /proc, and the argv prefilter described above.
+# Preflight the two external tools the batched confirmation depends on, for the
+# same reason the --deps-glob guards above exist: every failure of that one
+# invocation collapses into an empty result, then `confirmed=0`, then a summary
+# line byte-for-byte indistinguishable from a genuine INCONCLUSIVE window (a
+# missing `xargs` yields peak=0 samples=1 nonzero_samples=0 and exit 0 —
+# measured with a stub that exits 127).  Batching made that blast radius the
+# WHOLE sample, where a per-candidate readlink lost one pid; `xargs` is also a
+# dependency this script did not previously have.  Die loudly here instead: the
+# missing-tool case is fully in this script's control, unlike the residual
+# "present but every operand denied" case (sandbox/ptrace, task #7500).
+for _tool in readlink xargs; do
+    command -v "$_tool" >/dev/null 2>&1 || \
+        _die "$_tool not found on PATH — required for the batched exe confirmation"
+done
+unset _tool
+
+# Injection seams (testability; the contract guard drives both).  PIDS_CMD is an
+# OVERRIDE: unset or empty — the default, and what a real run uses — means
+# enumerate PROC_ROOT itself, with no prefilter (defect (d) above).
 PROC_ROOT="${REIFY_SAMPLER_PROC_ROOT:-/proc}"
-PIDS_CMD="${REIFY_SAMPLER_PIDS_CMD:-pgrep -f 'target/.*/deps/'}"
+PIDS_CMD="${REIFY_SAMPLER_PIDS_CMD:-}"
 
 _host_nproc() {
     local n=""
@@ -157,24 +203,83 @@ _host_nproc() {
 }
 HOST_NPROC="$(_host_nproc)"
 
-# ---------------------------------------------------------------------------
-# _confirmed_count — one sample.  Prefilter for speed, confirm for truth.
+# _candidate_exe_links — the <PROC_ROOT>/<pid>/exe links to confirm, one per
+# line.  Always succeeds: a candidate source that matches nothing is data, not
+# an error.
 #
-# The prefilter is allowed to fail (pgrep exits 1 when nothing matches; a
-# candidate may also exit between the two steps, leaving no <root>/<pid>) — both
-# are normal, not errors, so every step is guarded and the function always
-# succeeds with a count on stdout.
+# IT YIELDS LINK PATHS, NOT PIDS, because that is what the confirmation consumes.
+# An earlier shape had the default branch strip each globbed path back to a bare
+# pid only for _confirmed_count to re-assemble it — a lossy round-trip that
+# existed solely to make the production path speak the pid-shaped vocabulary of
+# the test-only override seam, and that split the "one pass over one snapshot"
+# property across two functions.
+#
+# DEFAULT: read PROC_ROOT directly.  A bash glob is readdir only — no fork, no
+# argv walk — so discovery and the confirmation that follows it are one pass over
+# one snapshot, and the glob already holds exactly the paths needed.  Non-numeric
+# entries (self, thread-self, ...) come through harmlessly: their exe targets
+# resolve to this script's own helper processes, which cannot match a
+# */target/*/deps/* pattern.
+#
+# OVERRIDE: REIFY_SAMPLER_PIDS_CMD still speaks PIDS — the natural thing for a
+# caller to produce — so its lines are mapped to links here, and the digits-only
+# filter lives here too, where the untrusted input actually is.  Both branches
+# converge on the SAME batched confirmation, which is what keeps the contract
+# guard pinning the code a real run takes rather than a test-only branch.
+_candidate_exe_links() {
+    if [ -n "$PIDS_CMD" ]; then
+        local pids pid
+        pids="$(eval "$PIDS_CMD" 2>/dev/null || true)"
+        [ -n "$pids" ] || return 0
+        while IFS= read -r pid; do
+            case "${pid:-}" in (''|*[!0-9]*) continue ;; esac
+            printf '%s\n' "$PROC_ROOT/$pid/exe"
+        done <<EOF
+$pids
+EOF
+        return 0
+    fi
+    local -a exes=()
+    shopt -s nullglob
+    exes=( "$PROC_ROOT"/*/exe )
+    shopt -u nullglob
+    [ "${#exes[@]}" -gt 0 ] || return 0
+    printf '%s\n' "${exes[@]}"
+}
+
+# ---------------------------------------------------------------------------
+# _confirmed_count — one sample.  ONE batched confirmation, never one per pid.
+#
+# Candidate discovery may legitimately yield nothing (a host with no test
+# binaries), and any candidate may exit before it is confirmed, leaving no
+# <root>/<pid> — both are normal, not errors, so every step is guarded and the
+# function always succeeds with a count on stdout.
+#
+# The confirmation is a SINGLE multi-operand `readlink`: it prints one line per
+# resolvable operand, silently omits the unresolvable ones, and exits 1 if any
+# failed.  That omission IS the "a vanished pid is skipped, not fatal" contract
+# (A5) — now satisfied structurally rather than by a per-pid guard — and the
+# single invocation is what closes the prefilter->confirm race (defect (d), B1).
+# `xargs -0` keeps it ARG_MAX-safe on a pathological host; on a realistic one
+# (~1200 processes) the whole set is a single batch.  Both tools are preflighted
+# at startup, so an empty result here means the operands were unresolvable — not
+# that the confirmation never ran.
 # ---------------------------------------------------------------------------
 _confirmed_count() {
-    local pids pid exe glob n=0 matched
-    pids="$(eval "$PIDS_CMD" 2>/dev/null || true)"
-    [ -n "$pids" ] || { printf '%s' 0; return 0; }
-    while IFS= read -r pid; do
-        case "${pid:-}" in (''|*[!0-9]*) continue ;; esac
-        # Race: the process may have exited since the prefilter listed it, in
-        # which case its whole directory is gone and readlink yields nothing.
-        # Permission denied (a pid we cannot inspect) lands here identically.
-        exe="$(readlink "$PROC_ROOT/$pid/exe" 2>/dev/null || echo "")"
+    local candidates link exe glob resolved n=0 matched
+    local -a links=()
+    candidates="$(_candidate_exe_links)"
+    [ -n "$candidates" ] || { printf '%s' 0; return 0; }
+    while IFS= read -r link; do
+        [ -n "$link" ] || continue
+        links+=( "$link" )
+    done <<EOF
+$candidates
+EOF
+    [ "${#links[@]}" -gt 0 ] || { printf '%s' 0; return 0; }
+    resolved="$(printf '%s\0' "${links[@]}" | xargs -0 readlink 2>/dev/null || true)"
+    [ -n "$resolved" ] || { printf '%s' 0; return 0; }
+    while IFS= read -r exe; do
         [ -n "$exe" ] || continue
         matched=0
         # Iterate the pre-split ARRAY, never the raw string (defect (c)).  The
@@ -187,7 +292,7 @@ _confirmed_count() {
         done
         [ "$matched" -eq 1 ] && n=$((n + 1))
     done <<EOF
-$pids
+$resolved
 EOF
     printf '%s' "$n"
 }

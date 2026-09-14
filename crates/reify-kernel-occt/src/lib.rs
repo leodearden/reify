@@ -256,8 +256,8 @@ fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
 /// boundary. Neither subsumes the other, so this one keeps working if the
 /// first is bypassed or has a hole.
 ///
-/// `OcctKernel::execute`'s 46 numeric-extraction sites split 46 = 41 + 3 + 2:
-/// the 41 LENGTH-semantic ones come here, while `HalfSpace`'s `nx`/`ny`/`nz`
+/// `OcctKernel::execute`'s 47 numeric-extraction sites split 47 = 42 + 3 + 2:
+/// the 42 LENGTH-semantic ones come here, while `HalfSpace`'s `nx`/`ny`/`nz`
 /// (dimensionless unit-normal components) and `CircularPattern.angle` /
 /// `Draft.angle` (ANGLE — PRD 3's surface) stay on the context-free
 /// [`extract_f64`], each marked at its call site with a
@@ -1699,9 +1699,11 @@ impl OcctKernel {
     /// fused-result handle alongside the per-parent face/edge history
     /// records (Modified / Generated / Deleted).
     ///
-    /// The result handle is registered with `BRepKind::Solid` (matching
-    /// the existing `boolean_fuse` arm of `execute(GeometryOp::Union)`).
-    /// The history records describe the parent ↔ result correspondence
+    /// The result is NORMALIZED (unwrapped to the tightest topology-preserving
+    /// type, then same-domain-unified) exactly like the plain `boolean_fuse`
+    /// arm, and the handle's `BRepKind` is classified from that real shape —
+    /// so a disjoint fuse registers as the multi-body `BRepKind::Compound`,
+    /// not `Solid`. The history records describe the parent ↔ result correspondence
     /// emitted by `BRepAlgoAPI_Fuse::Modified()`, `.Generated()`, and
     /// `.IsDeleted()` for each parent's faces and edges; consumers (the
     /// v0.2 propagation helper in `reify-eval`) use them to copy parent
@@ -1727,7 +1729,13 @@ impl OcctKernel {
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
             decode_six_buffer_history(history, &BOOLEAN_OP_ACCESSORS)
         };
-        let handle = self.store_with_repr(result_shape, BRepKind::Solid);
+        // Stamp the repr from the ACTUAL result shape, matching the plain
+        // boolean arms: `extract_boolean_history` normalizes its result too
+        // (task 7054), so a disjoint fuse genuinely yields a COMPSOLID and a
+        // hardcoded `BRepKind::Solid` would be a lie to any `repr_of()`
+        // consumer that trusts it to tell one solid from a multi-body result.
+        let repr = brep_kind_of_shape(&result_shape)?;
+        let handle = self.store_with_repr(result_shape, repr);
         Ok((handle, records))
     }
 
@@ -1752,7 +1760,13 @@ impl OcctKernel {
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
             decode_six_buffer_history(history, &BOOLEAN_OP_ACCESSORS)
         };
-        let handle = self.store_with_repr(result_shape, BRepKind::Solid);
+        // Stamp the repr from the ACTUAL result shape, matching the plain
+        // boolean arms: `extract_boolean_history` normalizes its result too
+        // (task 7054), so a disjoint fuse genuinely yields a COMPSOLID and a
+        // hardcoded `BRepKind::Solid` would be a lie to any `repr_of()`
+        // consumer that trusts it to tell one solid from a multi-body result.
+        let repr = brep_kind_of_shape(&result_shape)?;
+        let handle = self.store_with_repr(result_shape, repr);
         Ok((handle, records))
     }
 
@@ -1777,7 +1791,13 @@ impl OcctKernel {
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
             decode_six_buffer_history(history, &BOOLEAN_OP_ACCESSORS)
         };
-        let handle = self.store_with_repr(result_shape, BRepKind::Solid);
+        // Stamp the repr from the ACTUAL result shape, matching the plain
+        // boolean arms: `extract_boolean_history` normalizes its result too
+        // (task 7054), so a disjoint fuse genuinely yields a COMPSOLID and a
+        // hardcoded `BRepKind::Solid` would be a lie to any `repr_of()`
+        // consumer that trusts it to tell one solid from a multi-body result.
+        let repr = brep_kind_of_shape(&result_shape)?;
+        let handle = self.store_with_repr(result_shape, repr);
         Ok((handle, records))
     }
 
@@ -1814,6 +1834,25 @@ impl OcctKernel {
         // Passing a Face / Edge / Wire / Shell / Compound would either crash inside
         // OCCT or silently produce a misclassified result.  Guard up-front so both
         // `fillet_with_history` and `chamfer_with_history` receive the check for free.
+        //
+        // REACH (task 7054 amendment): this is the shared body of the ALL-edge
+        // variants (`fillet_with_history`, `chamfer_with_history`) AND the
+        // curated-edge ones (`fillet_edges_with_history`,
+        // `chamfer_edges_with_history`, `chamfer_asymmetric_edges_with_history`),
+        // so it is the guard the designer-facing `fillet(body, edges_at_height(..), r)`
+        // idiom hits. Task 7054 made the binary-boolean arms stamp the TRUE repr
+        // instead of an unconditional `BRepKind::Solid`, which means a
+        // `union(a, b)` of DISJOINT operands now classifies as `BRepKind::Compound`
+        // (a COMPSOLID underneath) and is REJECTED here where it previously fell
+        // through on the strength of a false Solid stamp. That is deliberate, not
+        // incidental: the n-ary `fuse_all` path has classified from the real shape
+        // since task 5213, so `fillet(pattern(...))` over disjoint instances
+        // already errored the same way — the binary path now merely agrees with
+        // it, and the alternative is handing a multi-body aggregate to an API that
+        // assumes one. `apply_transform_to_handle` propagates the repr, so
+        // `fillet(translate(union(a, b)), ...)` is rejected too. Pinned by
+        // `curated_fillet_over_a_disjoint_fuse_is_rejected_as_non_solid` in
+        // `boolean_result_normalization_integration.rs`.
         match self.repr_of(shape_id) {
             Some(BRepKind::Solid) => {}
             Some(other) => {
@@ -2747,23 +2786,44 @@ impl OcctKernel {
                 ffi::ffi::make_half_space(px, py, pz, nx, ny, nz)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            // The three binary booleans return EARLY rather than falling
+            // through to the shared `Ok(self.store(shape))` tail below, which
+            // hardcodes `BRepKind::Solid`. Since task 7054 the C++ side
+            // normalizes every boolean result (`normalize_boolean_result`), so
+            // a fuse of disjoint operands genuinely yields a COMPSOLID and a
+            // hardcoded Solid would be a lie to any `repr_of()` consumer that
+            // trusts it to tell a single solid from a multi-body aggregate.
+            // Classified through the SAME `brep_kind_of_shape` helper `fuse_all`
+            // already uses — deliberately not a second classifier.
+            //
+            // One consumer does more than READ the repr: `run_local_feature_with_history`
+            // REJECTS anything that is not `BRepKind::Solid`, so a disjoint
+            // `union` that now classifies as `Compound` can no longer be filleted
+            // or chamfered. See the reach note on that guard for why that is the
+            // intended outcome rather than a regression.
             GeometryOp::Union { left, right } => {
                 let l = self.get_shape(*left)?;
                 let r = self.get_shape(*right)?;
-                ffi::ffi::boolean_fuse(l, r)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let fused = ffi::ffi::boolean_fuse(l, r)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                let repr = brep_kind_of_shape(&fused)?;
+                return Ok(self.store_with_repr(fused, repr));
             }
             GeometryOp::Difference { left, right } => {
                 let l = self.get_shape(*left)?;
                 let r = self.get_shape(*right)?;
-                ffi::ffi::boolean_cut(l, r)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let cut = ffi::ffi::boolean_cut(l, r)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                let repr = brep_kind_of_shape(&cut)?;
+                return Ok(self.store_with_repr(cut, repr));
             }
             GeometryOp::Intersection { left, right } => {
                 let l = self.get_shape(*left)?;
                 let r = self.get_shape(*right)?;
-                ffi::ffi::boolean_common(l, r)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let common = ffi::ffi::boolean_common(l, r)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                let repr = brep_kind_of_shape(&common)?;
+                return Ok(self.store_with_repr(common, repr));
             }
             GeometryOp::Fillet {
                 target,
@@ -3048,6 +3108,18 @@ impl OcctKernel {
                 let d = extract_length_f64(distance, op, "distance")?;
                 ffi::ffi::offset_solid_shape(shape, d)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
+            GeometryOp::OffsetSurface { target, distance } => {
+                let shape = self.get_shape(*target)?;
+                let d = extract_length_f64(distance, op, "distance")?;
+                let out = ffi::ffi::make_offset_surface(shape, d)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                // `BRepKind::Face` assumes a single-face input/result, true
+                // for every current DSL surface producer. See
+                // `make_offset_surface`'s header doc comment (occt_wrapper.h)
+                // for the shell-input caveat this would need if that ever
+                // changes.
+                return Ok(self.store_with_repr(out, BRepKind::Face));
             }
             GeometryOp::Shell {
                 target,
@@ -8421,6 +8493,42 @@ mod tests {
         assert!(
             ffi::ffi::offset_solid_shape(&b, -100.0).is_err(),
             "inward offset >> inradius should fail (degenerate)"
+        );
+    }
+
+    #[test]
+    fn make_offset_surface_ffi_contract() {
+        // 20mm x 10mm rectangle face at z=0 (metres).
+        let face = ffi::ffi::make_rectangle_face(0.020, 0.010, 0.0)
+            .expect("make_rectangle_face(0.020, 0.010, 0.0) should succeed");
+        assert!(
+            ffi::ffi::make_offset_surface(&face, 0.002).is_ok(),
+            "2mm surface offset should succeed"
+        );
+        assert!(
+            ffi::ffi::make_offset_surface(&face, 0.0).is_err(),
+            "zero-distance surface offset should fail (degenerate)"
+        );
+
+        // Negative distance: offsets along the face's -normal, opposite the
+        // +0.002 case above. Previously uncovered (reviewer finding) — pin
+        // the *sign*, not just success, via query_bbox: the result must land
+        // at z ≈ -0.002m, catching a regression that mis-signs the normal
+        // or silently no-ops on inward/negative offsets.
+        let neg = ffi::ffi::make_offset_surface(&face, -0.002)
+            .expect("-2mm surface offset should succeed (-normal direction)");
+        let bb = ffi::ffi::query_bbox(&neg).expect("query_bbox should succeed");
+        let expected_z = -0.002_f64;
+        let tol = 0.0005_f64; // 0.5mm, matching offset_surface_e2e's bbox tolerance
+        assert!(
+            (bb.zmin - expected_z).abs() < tol,
+            "-2mm surface offset: bbox.zmin should be ≈-0.002m, got {}",
+            bb.zmin
+        );
+        assert!(
+            (bb.zmax - expected_z).abs() < tol,
+            "-2mm surface offset: bbox.zmax should be ≈-0.002m, got {}",
+            bb.zmax
         );
     }
 
@@ -14079,7 +14187,7 @@ mod tests {
 
     /// The anti-over-reach control: the FIVE deliberately ungated OCCT fields.
     ///
-    /// The PRD's split is 46 = 41 + 3 + 2. The 3 are `HalfSpace`'s `nx`/`ny`/`nz`
+    /// The PRD's split is 47 = 42 + 3 + 2. The 3 are `HalfSpace`'s `nx`/`ny`/`nz`
     /// — dimensionless unit-normal components, not lengths. The 2 are
     /// `CircularPattern.angle` and `Draft.angle` — ANGLE, which is PRD 3's
     /// surface, not this one. All five must stay on the plain, context-free
@@ -14215,7 +14323,7 @@ mod tests {
 
     /// **Full 41-field enumeration (step-9B).**
     ///
-    /// The completeness check for the PRD's 46 = 41 + 3 + 2 split, proved by
+    /// The completeness check for the PRD's 47 = 42 + 3 + 2 split, proved by
     /// OBSERVATION rather than by asserting a table against itself: every one of
     /// the 41 LENGTH-semantic `(op, field)` pairs is driven through
     /// `OcctKernel::execute` with a bare `Value::Real` in the field under test
@@ -14621,7 +14729,7 @@ mod tests {
         assert_eq!(
             cases.len(),
             41,
-            "the PRD's 46 = 41 + 3 + 2 split: 41 LENGTH-semantic (op, field) pairs"
+            "the PRD's 47 = 42 + 3 + 2 split: 41 LENGTH-semantic (op, field) pairs"
         );
 
         for (op, op_kind, field) in cases {

@@ -3952,7 +3952,12 @@ describe('reify.grammar snippets — joint definitions', () => {
  * ledger movement would ever reveal it if they did not.
  */
 describe('reify.grammar snippets — `·` as unit multiplication', () => {
-  // Corpus-attested VERBATIM: tests/prd-gate/fixtures/unit_middot_mul.ri:25.
+  // Corpus-attested VERBATIM: the `torque_like` binding of
+  // tests/prd-gate/fixtures/unit_middot_mul.ri. Cited by BINDING NAME, not by
+  // line: task #5784 refreshed that fixture's header and shifted every line
+  // number, and verify.sh's _RUST_COUPLED_RI_FIXTURES comment records why the
+  // repo avoids file:line citations — nothing validates them and they rot on
+  // the first edit.
   it('parses a middot-composed unit', () => {
     const src = 'structure def S { let torque_like = 5N·m }';
     expect(countErrorNodes(src)).toBe(0);
@@ -3960,7 +3965,7 @@ describe('reify.grammar snippets — `·` as unit multiplication', () => {
   });
 
   /**
-   * :26. Asserted on a COUNT: the `/rad` is part of the UNIT, not a division,
+   * The `with_div` binding. Asserted on a COUNT: the `/rad` is part of the UNIT, not a division,
    * so the wrong tree — one quantity divided by an identifier — would also
    * reach 0 errors and an error count alone would sail past it.
    */
@@ -3970,7 +3975,10 @@ describe('reify.grammar snippets — `·` as unit multiplication', () => {
     expect(countNodesNamed(src, 'QuantityLiteral')).toBe(1);
   });
 
-  // :27 — `·` composed with `^` and a negative exponent, in one literal.
+  // The `composed` binding — `·` composed with `^` and a negative exponent, in
+  // one literal. Cited by BINDING NAME for the same reason as its two siblings
+  // above: the fixture's line numbers moved under #5784 and nothing validates a
+  // file:line cite.
   it('composes middots with unit exponents', () => {
     const src = 'structure def S { let composed = 5m^2·kg·s^-2 }';
     expect(countErrorNodes(src)).toBe(0);
