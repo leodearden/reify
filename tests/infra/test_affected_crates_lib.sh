@@ -49,6 +49,12 @@
 #      non-.ri, non-inert content under examples/ still widens; plus
 #      RI-CORPUS-DRIFT, a derived-⊆-declared guard that keeps the declared
 #      reader list honest against the repo's real Rust sources
+#  19. (task 7096) a per-crate manifest touch (crates/*/Cargo.toml,
+#      gui/src-tauri/Cargo.toml) additionally contributes the crate that
+#      hosts the workspace crate-DAG gate, a non-manifest source touch
+#      does not, and the ALL sentinel is never unioned with it; plus a drift
+#      guard pinning _REIFY_DAG_GATE_CRATE to a real workspace member that
+#      hosts the gate
 
 set -euo pipefail
 
@@ -566,6 +572,78 @@ assert "reify-eval closure INCLUDES reify-gui (GV-2's run premise)" \
     _check_contains reify-gui crates/reify-eval/src/lib.rs
 
 # ---------------------------------------------------------------------------
+# Task 7096: a per-crate manifest touch pulls in the crate-DAG gate.
+#
+# Rule and rationale — why a per-crate Cargo.toml edit can restructure the
+# crate DAG with no Cargo.lock delta (so C4 never fires), and why the gate's
+# host crate is unioned into the closure's result rather than seeded into it:
+# docs/prds/verify-scope-contract.md §3, "Per-crate manifest touches also
+# contribute the crate-DAG gate".
+#
+# The non-manifest assertion is the discrimination half: it refuses a
+# degenerate "always append the gate crate" implementation, which would
+# permanently widen every narrowed verify.
+#
+# Real-cargo assertions, so they share the placement constraint the Fix #1
+# block above documents: they must sit BEFORE the stub sections at the end of
+# this file, each of which redefines cargo() for the rest of this shell and
+# never unsets it.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Task 7096: per-crate manifest touch pulls in the crate-DAG gate ---"
+
+assert "crates/*/Cargo.toml touch pulls in reify-build-utils, so the workspace DAG gate runs at task-verify time" \
+    _check_contains reify-build-utils crates/reify-expr/Cargo.toml
+
+assert "gui/src-tauri/Cargo.toml touch pulls in reify-build-utils (the second per-crate manifest location in this workspace)" \
+    _check_contains reify-build-utils gui/src-tauri/Cargo.toml
+
+assert "a non-manifest source touch does NOT pull in reify-build-utils — the rule keys on the manifest, not on the crate" \
+    _check_not_contains reify-build-utils crates/reify-expr/src/lib.rs
+
+_check_manifest_mixed_not_ALL() {
+    local out
+    out="$(affected_crates docs/x.md crates/reify-expr/Cargo.toml)"
+    [ "$out" != "ALL" ]
+}
+assert "mixed docs + manifest diff is NOT the ALL sentinel (manifest rule composes with the non-crate allowlist)" \
+    _check_manifest_mixed_not_ALL
+
+_check_manifest_mixed_contains_gate() {
+    affected_crates docs/x.md crates/reify-expr/Cargo.toml | grep -qx reify-build-utils
+}
+assert "mixed docs + manifest diff still contains reify-build-utils (the allowlist does not short-circuit the manifest rule)" \
+    _check_manifest_mixed_contains_gate
+
+# SPOT drift guard: scripts/affected-crates-lib.sh hardcodes the gate's host
+# crate name in _REIFY_DAG_GATE_CRATE, and nothing downstream validates it —
+# the name is appended OUTSIDE the reverse closure, so cargo never sees it
+# until verify.sh expands it into `-p <crate>`. Both assertions below READ the
+# constant rather than restating its value, so they pin it in the direction
+# that has teeth: a stale constant (gate relocated, crate renamed) reds here
+# instead of hard-failing every branch verify that touches a manifest with
+# "package ID specification did not match any packages".
+assert "_REIFY_DAG_GATE_CRATE names the crate that hosts the DAG gate (crates/<crate>/tests/crate_dag_assertion.rs)" \
+    test -f "$REPO_ROOT/crates/$_REIFY_DAG_GATE_CRATE/tests/crate_dag_assertion.rs"
+
+# Workspace membership is a fact distinct from directory layout: the root
+# Cargo.toml lists members explicitly, and a package name need not equal its
+# directory name. --no-deps restricts `packages` to the workspace members
+# exactly — the set a `-p` selector resolves against. Matched on that package
+# list rather than by grepping the raw JSON, because each member's nested
+# `dependencies` array carries `name` keys too, so a name still referenced as
+# a dependency would pass a plain grep after being dropped from `members`.
+# python3 is already a hard dependency of this suite via _reify_compile_closure.
+_check_gate_crate_is_workspace_member() {
+    echo "_REIFY_DAG_GATE_CRATE=[$_REIFY_DAG_GATE_CRATE]"
+    ( cd "$REPO_ROOT" && cargo metadata --format-version 1 --locked --offline --no-deps 2>/dev/null ) \
+        | python3 -c 'import json,sys; meta=json.load(sys.stdin); sys.exit(0 if sys.argv[1] in {p["name"] for p in meta["packages"]} else 1)' \
+            "$_REIFY_DAG_GATE_CRATE"
+}
+assert "_REIFY_DAG_GATE_CRATE is a real workspace member, so the -p selector verify.sh emits for it resolves" \
+    _check_gate_crate_is_workspace_member
+
+# ---------------------------------------------------------------------------
 # Amendment (code-review follow-up, task 6277): --locked non-mutation check.
 #
 # --locked's whole purpose is refusing to rewrite Cargo.lock rather than
@@ -737,6 +815,52 @@ assert "cargo metadata failure -> ALL" _check_cargo_fail_all
 
 assert "global anywhere in list -> ALL" \
     test "$(affected_crates crates/reify-cli/src/main.rs Cargo.lock)" = "ALL"
+
+# Sentinel integrity (task 7096). The manifest rule must never union anything
+# ONTO the ALL sentinel: ALL is a sentinel, not a crate name. verify.sh's
+# NARROW_ACTIVE assignment reads any non-empty value other than exactly `ALL`
+# as a narrowed -p list, so a two-line `ALL\nreify-build-utils` would expand to
+# `-p ALL -p reify-build-utils` — converting a deliberate C5 fail-WIDE into a
+# false NARROW carrying a bogus package selector, which is precisely the
+# under-approximation docs/prds/verify-scope-contract.md §3 calls shipped
+# breakage.
+#
+# Both checkers compare with `=` against the WHOLE captured value. A grep or
+# substring check would pass on exactly the corrupt `ALL\nreify-build-utils`
+# value and so would assert nothing.
+#
+# Each dumps the captured value from inside the checker, per the
+# _cold_cache_report convention above: assert() discards a passing checker's
+# output, so a corrupt sentinel stays legible from the FAIL line alone.
+
+_SENTINEL_MANIFEST_OUT=""
+_sentinel_manifest_report() {
+    echo "cargo-failure on a manifest path: affected_crates -> [$_SENTINEL_MANIFEST_OUT]"
+}
+
+# Same local failing-cargo stub idiom as _check_cargo_fail_all above, so this
+# does not depend on that checker's stub having leaked into this shell.
+_check_manifest_cargo_failure_is_exactly_ALL() {
+    cargo() { return 1; }
+    _SENTINEL_MANIFEST_OUT="$(affected_crates crates/reify-expr/Cargo.toml)"
+    _sentinel_manifest_report
+    [ "$_SENTINEL_MANIFEST_OUT" = "ALL" ]
+}
+assert "C5 integrity: cargo failure on a MANIFEST path -> exactly ALL, never ALL unioned with the DAG-gate crate" \
+    _check_manifest_cargo_failure_is_exactly_ALL
+
+_SENTINEL_C4_OUT=""
+_sentinel_c4_report() {
+    echo "global alongside a manifest path: affected_crates -> [$_SENTINEL_C4_OUT]"
+}
+
+_check_manifest_plus_global_is_exactly_ALL() {
+    _SENTINEL_C4_OUT="$(affected_crates crates/reify-expr/Cargo.toml Cargo.lock)"
+    _sentinel_c4_report
+    [ "$_SENTINEL_C4_OUT" = "ALL" ]
+}
+assert "C4 precedence: a global path alongside a MANIFEST path -> exactly ALL (global short-circuits ahead of the manifest rule)" \
+    _check_manifest_plus_global_is_exactly_ALL
 
 # ---------------------------------------------------------------------------
 # Amendment (code-review follow-up, task 6277; extended by task 6292): argv
