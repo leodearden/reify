@@ -47,6 +47,53 @@
 
 use crate::eval_gate_support;
 
+// ── Shard keying ──────────────────────────────────────────────────
+
+/// Number of shards the corpus sweep is split across — one shard per
+/// `corpus_sweep_shard_NN` `#[test]` fn below.
+///
+/// Kept at 24, the count BOTH pre-unification sweeps used, and for their
+/// reason verbatim. The user-observable debug-gate signal is that every corpus
+/// `.ri` file produces zero findings for the invariants in its scope. Running
+/// that as ONE sequential test takes long enough — as the last test left
+/// running, with nothing to interleave its output with — to trip the verify
+/// pipeline's heartbeat-idle backstop despite every file passing (task 4952
+/// debugged exactly that). Sharding into independent `#[test]` fns lets
+/// cargo-nextest schedule them as separate, concurrently-run processes, each
+/// reporting its own PASS/SLOW line, so the worst-case silent gap is bounded by
+/// one shard's share of the corpus rather than the whole corpus.
+///
+/// Unification does not disturb that rationale: this sweep does ONE compile+eval
+/// per file where the two old sweeps each did their own, so a shard's wall time
+/// is if anything lower than either predecessor's at the same shard count.
+/// Re-tuning the count is a separate, measurement-driven change.
+const CORPUS_SHARD_COUNT: usize = 24;
+
+/// Which shard owns `rel_path` — keyed on a hash of the repo-relative path, NOT
+/// on the file's index in a sorted corpus listing.
+///
+/// Index keying (what both pre-unification sweeps used) is perfectly balanced
+/// but insert-unstable: one added, deleted or renamed `.ri` file shifts every
+/// later index and so reassigns roughly 23/24 of the corpus. Hash keying
+/// reassigns ONLY the file that changed, which is what makes "this reproduction
+/// is in shard 7" survive an unrelated corpus edit — the concrete win, pinned by
+/// `shard_of_is_independent_of_corpus_membership`. The balance it costs is
+/// bounded and measured by
+/// `hash_sharding_partitions_the_corpus_within_measured_bounds`.
+///
+/// [`reify_core::ContentHash`] rather than `std::collections::hash_map::DefaultHasher`
+/// because xxh3-128 is a FIXED algorithm: a path's shard is then reproducible
+/// across toolchain versions and across this repo's linked worktrees, which is
+/// the entire point. `DefaultHasher`'s output is explicitly not guaranteed
+/// stable across Rust releases, so it would silently repartition the corpus on a
+/// toolchain bump. `reify-core` is already a reify-eval dev-dependency, so this
+/// reuse adds no dependency.
+///
+/// The key MUST be repo-relative — see [`repo_relative`].
+fn shard_of(rel_path: &str) -> usize {
+    (reify_core::ContentHash::of_str(rel_path).0 % CORPUS_SHARD_COUNT as u128) as usize
+}
+
 /// Every live corpus `.ri` file, as repo-relative shard keys.
 ///
 /// S1-local scaffolding: the real `corpus_files()` lands later in this file and
