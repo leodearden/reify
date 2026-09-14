@@ -1427,4 +1427,164 @@ _wallclock_baseline_check "$_s4c4_tmpdir/baseline.txt" "$_s4c4_tmpdir/src" \
 assert "4c-4: an empty baseline reports every live record as new (returns 1)" \
     test "$_s4c4_rc" -eq 1
 
+# ===========================================================================
+# Section 4d: BASELINE CHECK -- the STALE direction, and the multiset
+#             property end to end.
+#
+# A baseline row matching nothing live is ALSO a red. That is what makes this
+# ratchet SHRINK-ONLY rather than a pile that accretes dead rows: fix a site
+# and you must delete its row in the same diff, so the file can only get
+# smaller. It is the harness-layout-baseline.manifest precedent (which reds on
+# orphan rows), deliberately NOT ptodo-baseline.txt's subset-only rule -- that
+# one has no forcing function to drain it, a limitation #6859 accepts openly
+# and this guard need not inherit at 19 hand-auditable rows.
+#
+# The stale direction also happens to be what stops the SUBSET-ORACLE VACUITY
+# hole today: a scan that silently matched nothing would turn all 19 rows
+# stale and red. That cover EVAPORATES once the baseline is drained to zero,
+# which is the goal state -- hence the explicit floor in Section 4e.
+# ===========================================================================
+echo ""
+echo "--- Section 4d: baseline check, STALE direction ---"
+
+# ---------------------------------------------------------------------------
+# 4d-1: A FIXED SITE. The baseline names a record the live scan no longer
+#       produces. rc 1, and the row is named prefixed `-`, so the reader is
+#       told to delete it rather than left guessing why a clean tree is red.
+# ---------------------------------------------------------------------------
+_s4d1_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4d1_tmpdir")
+mkdir -p "$_s4d1_tmpdir/src"
+_fixture "$_s4d1_tmpdir/src" "a.rs" \
+    '    let t0 = Instant::now();'
+_fixture "$_s4d1_tmpdir" "baseline.txt" \
+    "$_s4d1_tmpdir/src/a.rs :: let deadline = Instant::now() + Duration::from_secs(5);"
+
+_s4d1_rc=0
+_wallclock_baseline_check "$_s4d1_tmpdir/baseline.txt" "$_s4d1_tmpdir/src" \
+    > "$_s4d1_tmpdir/out.txt" 2>&1 || _s4d1_rc=$?
+assert "4d-1: a baseline row matching nothing live returns 1 (the ratchet shrinks)" \
+    test "$_s4d1_rc" -eq 1
+
+_s4d1_named=0
+case "$(cat "$_s4d1_tmpdir/out.txt")" in
+    *'- '"$_s4d1_tmpdir"'/src/a.rs :: let deadline = Instant::now() + Duration::from_secs(5);'*)
+        _s4d1_named=1 ;;
+esac
+assert "4d-1: the stale row is reported by name, prefixed -" \
+    test "$_s4d1_named" -eq 1
+
+# ---------------------------------------------------------------------------
+# 4d-2: A DELETED FILE is the same shape as a fixed site. Pinned separately
+#       because a file that no longer exists is the likelier way a row goes
+#       stale (a rename, a test moved between crates -- #7365 moved
+#       cli_lsp_protocol.rs and 4 of the 19 rows with it), and an
+#       implementation keyed on per-file comparison rather than on the whole
+#       multiset could pass 4d-1 and miss this.
+# ---------------------------------------------------------------------------
+_s4d2_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4d2_tmpdir")
+mkdir -p "$_s4d2_tmpdir/src"
+_fixture "$_s4d2_tmpdir/src" "still_here.rs" \
+    '    let deadline = Instant::now() + Duration::from_secs(5);'
+_fixture "$_s4d2_tmpdir" "baseline.txt" \
+    "$_s4d2_tmpdir/src/still_here.rs :: let deadline = Instant::now() + Duration::from_secs(5);" \
+    "$_s4d2_tmpdir/src/renamed_away.rs :: let deadline = Instant::now() + Duration::from_secs(9);"
+
+_s4d2_rc=0
+_wallclock_baseline_check "$_s4d2_tmpdir/baseline.txt" "$_s4d2_tmpdir/src" \
+    > "$_s4d2_tmpdir/out.txt" 2>&1 || _s4d2_rc=$?
+assert "4d-2: a row naming a file that no longer exists is stale (returns 1)" \
+    test "$_s4d2_rc" -eq 1
+
+# ---------------------------------------------------------------------------
+# 4d-3: MULTISET, END TO END, NEW direction. The baseline carries a record
+#       TWICE; two live copies are clean, and a THIRD is reported as new. This
+#       is the whole reason Section 4b exists, asserted through the ratchet
+#       rather than through the engine alone -- a set-based comparison here
+#       would pass 4b (the engine emits three records) and still swallow the
+#       third copy at the comparison.
+# ---------------------------------------------------------------------------
+_s4d3_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4d3_tmpdir")
+mkdir -p "$_s4d3_tmpdir/src"
+_fixture "$_s4d3_tmpdir/src" "a.rs" \
+    '    while Instant::now() < deadline {' \
+    '    while Instant::now() < deadline {'
+_fixture "$_s4d3_tmpdir" "baseline.txt" \
+    "$_s4d3_tmpdir/src/a.rs :: while Instant::now() < deadline {" \
+    "$_s4d3_tmpdir/src/a.rs :: while Instant::now() < deadline {"
+
+_s4d3_rc=0
+_wallclock_baseline_check "$_s4d3_tmpdir/baseline.txt" "$_s4d3_tmpdir/src" \
+    > "$_s4d3_tmpdir/out2.txt" 2>&1 || _s4d3_rc=$?
+assert "4d-3: two baselined copies against two live copies is clean (returns 0)" \
+    test "$_s4d3_rc" -eq 0
+
+_fixture "$_s4d3_tmpdir/src" "a.rs" \
+    '    while Instant::now() < deadline {' \
+    '    while Instant::now() < deadline {' \
+    '    while Instant::now() < deadline {'
+
+_s4d3b_rc=0
+_wallclock_baseline_check "$_s4d3_tmpdir/baseline.txt" "$_s4d3_tmpdir/src" \
+    > "$_s4d3_tmpdir/out3.txt" 2>&1 || _s4d3b_rc=$?
+assert "4d-3: a THIRD copy of a 2x-baselined record is reported as new (returns 1)" \
+    test "$_s4d3b_rc" -eq 1
+
+_s4d3_once=0
+_s4d3_plus="$(grep -c '^  + ' "$_s4d3_tmpdir/out3.txt" || true)"
+[ "$_s4d3_plus" = "1" ] && _s4d3_once=1
+assert "4d-3: exactly ONE record is reported new, not all three copies" \
+    test "$_s4d3_once" -eq 1
+
+# ---------------------------------------------------------------------------
+# 4d-4: MULTISET, END TO END, STALE direction -- the mirror of 4d-3. Two
+#       baselined copies against ONE live copy leaves exactly one stale row.
+#       Without this, draining a duplicate pair by deleting only one of its
+#       two rows would go unnoticed.
+# ---------------------------------------------------------------------------
+_s4d4_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4d4_tmpdir")
+mkdir -p "$_s4d4_tmpdir/src"
+_fixture "$_s4d4_tmpdir/src" "a.rs" \
+    '        elapsed < Duration::from_secs(10),'
+_fixture "$_s4d4_tmpdir" "baseline.txt" \
+    "$_s4d4_tmpdir/src/a.rs :: elapsed < Duration::from_secs(10)," \
+    "$_s4d4_tmpdir/src/a.rs :: elapsed < Duration::from_secs(10),"
+
+_s4d4_rc=0
+_wallclock_baseline_check "$_s4d4_tmpdir/baseline.txt" "$_s4d4_tmpdir/src" \
+    > "$_s4d4_tmpdir/out.txt" 2>&1 || _s4d4_rc=$?
+assert "4d-4: two baselined copies against one live copy returns 1" \
+    test "$_s4d4_rc" -eq 1
+
+_s4d4_once=0
+_s4d4_minus="$(grep -c '^  - ' "$_s4d4_tmpdir/out.txt" || true)"
+[ "$_s4d4_minus" = "1" ] && _s4d4_once=1
+assert "4d-4: exactly ONE row is reported stale, not both copies" \
+    test "$_s4d4_once" -eq 1
+
+# ---------------------------------------------------------------------------
+# 4d-5: BOTH DIRECTIONS AT ONCE. A tree that fixed one site and added another
+#       must report a `-` AND a `+` and red -- not net out to "one row in, one
+#       row out, nothing to see". A count-based implementation would pass every
+#       fixture above and fail exactly here.
+# ---------------------------------------------------------------------------
+_s4d5_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4d5_tmpdir")
+mkdir -p "$_s4d5_tmpdir/src"
+_fixture "$_s4d5_tmpdir/src" "a.rs" \
+    '    assert!(elapsed < Duration::from_secs(2), "brand new");'
+_fixture "$_s4d5_tmpdir" "baseline.txt" \
+    "$_s4d5_tmpdir/src/a.rs :: let deadline = Instant::now() + Duration::from_secs(5);"
+
+_s4d5_rc=0
+_wallclock_baseline_check "$_s4d5_tmpdir/baseline.txt" "$_s4d5_tmpdir/src" \
+    > "$_s4d5_tmpdir/out.txt" 2>&1 || _s4d5_rc=$?
+assert "4d-5: one site fixed and one added returns 1 (the two do not net out)" \
+    test "$_s4d5_rc" -eq 1
+
+_s4d5_both=0
+_s4d5_np="$(grep -c '^  + ' "$_s4d5_tmpdir/out.txt" || true)"
+_s4d5_nm="$(grep -c '^  - ' "$_s4d5_tmpdir/out.txt" || true)"
+[ "$_s4d5_np" = "1" ] && [ "$_s4d5_nm" = "1" ] && _s4d5_both=1
+assert "4d-5: both directions are reported -- one + record and one - row" \
+    test "$_s4d5_both" -eq 1
+
 test_summary
