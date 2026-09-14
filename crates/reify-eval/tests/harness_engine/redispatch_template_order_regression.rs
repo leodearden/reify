@@ -1108,3 +1108,95 @@ fn a_warm_build_snapshot_after_edit_param_re_dispatches_the_geometry_consuming_n
          Warm records: {warm:?}"
     );
 }
+
+/// Task #7332 opened a SECOND way into
+/// `redispatch_geometry_consuming_compute_nodes` — the warm `build_snapshot`
+/// surface — and #5951's content guard must hold on it exactly as it does on
+/// the cold one.
+///
+/// `latch_is_not_tripped_when_the_rebuilt_inputs_carry_no_realized_content`
+/// above proves the guard on a single cold `build()`. Before #7332 that was the
+/// only path that could reach the guard at all, because the candidate gate
+/// latched the node out of every later build. Now a warm rebuild re-admits it,
+/// so the guard is re-evaluated against a freshly re-realized body on every
+/// tick — and a kernel that realizes but cannot tessellate keeps projecting to
+/// `content: None` forever.
+///
+/// The three assertions are the cold twin's two, restated across both builds,
+/// plus the one that is genuinely new: the end-of-build report must fire on the
+/// warm surface too. `emit_contentless_redispatch_warnings` is called from
+/// `build_snapshot`'s own template loop, but until #7332 no node ever reached
+/// it there — the pass had no candidates to skip.
+#[test]
+fn a_warm_rebuild_still_refuses_to_latch_on_contentless_inputs() {
+    reset_records();
+    let source = format!("{WARM_CONSUMER_STRUCTURE}{}", trailing_structures(3));
+    let (mut engine, compiled, _cold_diagnostics) =
+        build_with_probe_capturing_module(&source, Box::new(NonTessellatingKernel::default()));
+
+    engine
+        .edit_param(
+            reify_core::ValueCellId::new("WarmConsumer", "width"),
+            Value::length(0.012),
+        )
+        .expect("edit_param must succeed against the WarmConsumer.width Length param");
+
+    let warm = engine
+        .build_snapshot(&compiled, ExportFormat::Step)
+        .expect("build_snapshot must return a BuildResult after edit_param");
+
+    // (a) #5951's door, over records from BOTH builds. Same predicate as the
+    //     cold twin; step-4 hoists the two copies into one helper.
+    let records = recorded();
+    let contentless: Vec<_> = records
+        .iter()
+        .filter(|r| r.realization_inputs_len > 0 && !r.any_realized_content)
+        .collect();
+    assert!(
+        contentless.is_empty(),
+        "no probe invocation may be handed non-empty `realization_inputs` in \
+         which every `RealizationReadHandle::content()` is None — on the WARM \
+         `build_snapshot` surface (#7332) exactly as on the cold `build()` one \
+         (#5951 fix (B)). Such a write delivers nothing to the trampoline yet \
+         still ends the node's redispatch for the rest of that build. Offending \
+         invocations: {contentless:?} of all records: {records:?}"
+    );
+
+    // (b) Still a candidate after the warm build, so a later tick — a repaired
+    //     kernel, a re-realized body — can still do the real work.
+    assert_eq!(
+        probe_node_realization_inputs(&engine),
+        vec![0],
+        "the probe's compute node must STILL have empty `realization_inputs` \
+         after a warm rebuild that could not project any content. A non-empty \
+         value here means the warm path wrote content-free inputs, which is \
+         #5951's door reopened on the surface #7332 just made reachable."
+    );
+
+    // (c) The degradation must not be silent on the warm surface either — and
+    //     must be reported once per NODE, not once per trailing template. The
+    //     fixture carries three, so a per-template report would read 4.
+    let strand_warnings: Vec<_> = warm
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == reify_core::Severity::Warning
+                && d.message.contains("projected no content")
+        })
+        .collect();
+    assert_eq!(
+        strand_warnings.len(),
+        1,
+        "the warm `build_snapshot` must emit exactly ONE Warning reporting the \
+         stranded node. Zero means `emit_contentless_redispatch_warnings` never \
+         reports on this surface, so a warm-path strand is as silent as the \
+         pre-#5951 defect was; more than one means it reports per per-template \
+         redispatch call rather than per node. Got: {strand_warnings:?}"
+    );
+    assert!(
+        strand_warnings[0].message.contains(ORDER_PROBE_TARGET),
+        "the Warning must name the @optimized target so the user can find the \
+         degraded node: {:?}",
+        strand_warnings[0]
+    );
+}
