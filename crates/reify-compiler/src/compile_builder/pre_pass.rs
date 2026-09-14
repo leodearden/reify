@@ -36,12 +36,26 @@ use crate::type_resolution::convert_type_params;
 /// when imported and accepted when compiled alone; and it is real defence-in-depth for
 /// LIBRARY consumers that hand a parse-error-bearing `ParsedModule` straight to `compile*`.
 ///
-/// It changes no in-tree PRODUCTION behaviour, because every such surface already gates on
-/// `parsed.errors` and returns BEFORE compiling — `reify-cli`'s two entry points,
-/// `mcp_context.rs`'s three, `gui/src-tauri/src/engine.rs`, and `reify-lsp`'s
-/// `diagnostics.rs`. Those gates are LOAD-BEARING, not made redundant by this severity:
+/// It changes no in-tree PRODUCTION behaviour. The surfaces that PUBLISH these diagnostics
+/// all gate on `parsed.errors` and return BEFORE compiling — `reify-cli`'s two entry points,
+/// `mcp_context.rs`'s three, `gui/src-tauri/src/engine.rs`, and the only `reify-lsp` entry the
+/// running server publishes from, `diagnostics.rs::compute_diagnostics_with_state` (called at
+/// `server.rs:196`/`238`). Those gates are LOAD-BEARING, not made redundant by this severity:
 /// each converts the parse errors itself, so removing one would start showing an editor user
 /// every parse error twice — once converted there, once again as `parse error: …` from here.
+///
+/// Two `reify-lsp` entry points compile UNGATED, and a new caller must supply its own gate
+/// rather than assume one:
+///
+/// - `diagnostics.rs::compute_diagnostics`, the stateless sibling, converts every parse error
+///   and then calls `compile_with_stdlib` with no early return, so each parse error now
+///   appears twice at ERROR severity where it was previously error + warning. Nothing in the
+///   running server calls it (its callers are that crate's own tests and
+///   `reify-lsp/tests/lifecycle.rs`), so the reach is reify-lsp's public API.
+/// - `analysis.rs::AnalysisContext::from_parsed` compiles ungated and IS live — hover
+///   (`server.rs:283`) and completion (`server.rs:379`) both build a context through it. It
+///   is invisible today only because those providers read `compiled.templates` /
+///   `type_aliases` and never `compiled.diagnostics`.
 pub(crate) fn forward_parse_errors(ctx: &mut CompilationCtx, parsed: &ParsedModule) {
     for err in &parsed.errors {
         ctx.diagnostics.push(
