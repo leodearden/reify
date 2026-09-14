@@ -210,8 +210,8 @@
 - **Blocks:** Real end-to-end shell extraction from user geometry (M-018, M-022, M-023).
 - **Note:** This is the PRD's hard precondition. It's not part of the shells task list (it's in the v0.2 multi-kernel PRD's territory) but the shells PRD assumes it ships.
 
-> **CORRECTION 2026-09-14 (task 6560, landed in merge `fe7e200c93` / commits `2ba79b7159` +
-> `07a2a28bbe`) — M-025's State and Evidence above are SUPERSEDED.** This is a dated audit snapshot
+> **CORRECTION 2026-09-14 (task 6560, landed in merge `fe7e200c93` / commits `eee72dc436` +
+> `bf7cfa9a5a`) — M-025's State and Evidence above are SUPERSEDED.** This is a dated audit snapshot
 > (**Date:** 2026-05-12), so the bullets above are preserved as the record of what was measured then.
 > What task 6560 changed:
 >
