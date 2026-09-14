@@ -587,14 +587,18 @@ mod tests {
     /// added to any family slice is covered the moment it lands, with no
     /// parallel edit here.
     ///
-    /// The four **resolver-only** families (datum-constructor, affine-map
-    /// algebra, list-helper, selector-composition) have no production slice to
-    /// iterate at this point in the task, so they are covered by representative
-    /// names; step-2 promotes real slices for them and step-3 pins those
-    /// slices against their resolvers.
+    /// Three sources, none of them hand-copied: the registered family slices,
+    /// the four **resolver-only** families #5371 promoted to slices, and the
+    /// builtin-signature registry (#6001 α), whose rows replaced the departed
+    /// `ANALYSIS_FN_NAMES` / `PARSE_FN_NAMES` slices. The vocabularies with no
+    /// list anywhere — the arity-gated relation verbs and the determinacy
+    /// predicates — are named explicitly below, each behind a premise guard.
     #[test]
     fn is_known_builtin_recognises_every_compiler_family() {
-        for (family, slice) in ALL_FAMILY_SLICES {
+        for (family, slice) in ALL_FAMILY_SLICES
+            .iter()
+            .chain(RESOLVER_ONLY_FAMILY_SLICES.iter())
+        {
             for name in *slice {
                 assert!(
                     is_known_builtin(name),
@@ -603,34 +607,22 @@ mod tests {
             }
         }
 
-        // Resolver-only families — no production name slice exists yet.
-        for name in [
-            // datum-constructor (units.rs `datum_constructor_result_type`)
-            "frame_at",
-            "midplane",
-            "plane_through",
-            "axis_through",
-            "plane_xy",
-            "axis_x",
-            // affine-map algebra (units.rs `affine_map_algebra_result_type`);
-            // `determinant` / `affine_apply` are omitted here because they are
-            // already claimed by MATH_OPERATION_NAMES / GEOMETRY_FUNCTION_NAMES.
-            "affine_compose",
-            "affine_inverse",
-            // list-helper (list_helpers.rs `infer_list_helper_return_type`)
-            "single",
-            "flat_map",
-            "generate",
-            // selector composition (units.rs `selector_composition_result_type`);
-            // `union` / `difference` are also CSG geometry functions, `intersect`
-            // is selector-only.
-            "union",
-            "intersect",
-            "difference",
-        ] {
+        // The builtin-signature registry (#6001 α) — successor to the deleted
+        // `ANALYSIS_FN_NAMES` / `PARSE_FN_NAMES` slices, and the shape the
+        // surviving slices migrate INTO under #6014.
+        //
+        // Sourced from `rows()`, never from a copy of the seven α-seeded names:
+        // a copy would silently stop covering the first τ task that registers a
+        // row, which is precisely when this oracle needs to be right.
+        assert!(
+            !reify_builtins::rows().is_empty(),
+            "premise guard: the builtin-signature registry holds no rows, so \
+             the loop below asserts nothing"
+        );
+        for name in reify_builtins::rows().iter().map(|r| r.name) {
             assert!(
                 is_known_builtin(name),
-                "{name:?} is claimed by a resolver-only family but \
+                "{name:?} is a builtin-signature-registry row name but \
                  is_known_builtin rejects it"
             );
         }
