@@ -2118,3 +2118,162 @@ mod alias_body_shadow_semantics {
         }
     }
 }
+
+/// Definition-site validation of a `pub` PARAMETRIC alias whose body names an
+/// ENUM (task #6477, step-1 RED → step-2 GREEN).
+///
+/// MEASURED on `main` (823502024d) before step-2: a module declaring
+/// `enum Zq { Close, Medium }` plus `pub type Gq<T> = Option<Zq>` emits
+/// `["type alias 'Gq' body references unknown name 'Zq'"]` — a FALSE error, on
+/// a name that is plainly declared in the same module.  The cause is that
+/// `validate_pub_parametric_alias_def_site`'s `is_known` disjunction consults
+/// builtins, parameterized builtins, aliases, structures and traits, but has
+/// no ENUM arm.
+///
+/// The rejection and pub/non-pub locks below exist so the fix cannot be a
+/// blanket weakening of the check: a genuinely undeclared body name must still
+/// be rejected, the structure-def body must stay clean (which is what makes
+/// the gap enum-SPECIFIC rather than a wholesale absence of the guard), and
+/// the `is_pub` asymmetry must close by `pub` agreeing with non-`pub` — not by
+/// the false rejection spreading to non-`pub` as well.
+///
+/// Every source here is definition-site ONLY: the aliases are declared and
+/// never used, so a use-site resolution failure cannot contaminate the
+/// measurement.  The use-site half is `parametric_alias_entity_body_use_site`.
+mod parametric_alias_def_site_enum_body {
+    use super::*;
+    use reify_test_support::compile_source_with_stdlib;
+
+    /// Error-severity messages from compiling `source` against stdlib.
+    fn def_site_errors(source: &str) -> Vec<String> {
+        let module = compile_source_with_stdlib(source);
+        errors_only(&module)
+            .iter()
+            .map(|d| d.message.clone())
+            .collect()
+    }
+
+    /// One definition-site row: declarations in scope plus the `pub`
+    /// parametric alias declared against them.
+    struct DefSiteCase {
+        label: &'static str,
+        /// What `main` emitted for this row before step-2 landed.
+        measured_on_main: &'static str,
+        source: &'static str,
+    }
+
+    const ENUM_DECL: &str = "enum Zq { Close, Medium }\n";
+
+    /// Bodies that name only DECLARED entities — every row must be accepted.
+    const ACCEPTED_CASES: &[DefSiteCase] = &[
+        DefSiteCase {
+            label: "bare enum body",
+            measured_on_main: "RED — body references unknown name 'Zq'",
+            source: "enum Zq { Close, Medium }\n\
+                     pub type Lq<T> = Zq\n",
+        },
+        DefSiteCase {
+            label: "nested enum body",
+            measured_on_main: "RED — body references unknown name 'Zq'",
+            source: "enum Zq { Close, Medium }\n\
+                     pub type Gq<T> = Option<Zq>\n",
+        },
+        DefSiteCase {
+            label: "param-using body that also names an enum",
+            measured_on_main: "RED — body references unknown name 'Zq'",
+            source: "enum Zq { Close, Medium }\n\
+                     pub type Iq<T> = Map<T, Zq>\n",
+        },
+        DefSiteCase {
+            // The gap is enum-SPECIFIC: `structure_names.contains` already
+            // covers this row, so it was GREEN before step-2 and must stay so.
+            label: "structure-def body (already accepted — proves the gap is enum-specific)",
+            measured_on_main: "GREEN",
+            source: "structure def Box2<T: Dimension> {\n    param x : Real\n}\n\
+                     pub type Wq<U: Dimension> = Box2<U>\n",
+        },
+    ];
+
+    #[test]
+    fn pub_parametric_alias_naming_a_declared_entity_is_accepted_at_its_definition_site() {
+        let mut failures: Vec<String> = Vec::new();
+
+        for case in ACCEPTED_CASES {
+            let errs = def_site_errors(case.source);
+            if !errs.is_empty() {
+                failures.push(format!(
+                    "[{}] (on main: {}) expected ZERO def-site errors, got: {:?}\n\
+                     --- source ---\n{}",
+                    case.label, case.measured_on_main, errs, case.source
+                ));
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "a pub parametric alias whose body names a DECLARED entity must not be \
+             rejected at its own definition site:\n  {}",
+            failures.join("\n  ")
+        );
+    }
+
+    /// Bodies naming something declared NOWHERE — every row must stay rejected.
+    const REJECTED_CASES: &[DefSiteCase] = &[
+        DefSiteCase {
+            // The `parametric_alias_def_site_reject.ri` flaw-(a) shape.
+            label: "undeclared name, no enum in scope",
+            measured_on_main: "RED (correctly) — unknown name 'NotExportedThing'",
+            source: "pub type LeakName<Q: Dimension> = Q / NotExportedThing\n",
+        },
+        DefSiteCase {
+            // The sharp one for step-2: an enum IS in scope, so the new enum
+            // arm is live, and it still must not make an unrelated name known.
+            label: "undeclared name WITH an enum in scope",
+            measured_on_main: "RED (correctly) — unknown name 'NotDeclaredAnywhere'",
+            source: "enum Zq { Close, Medium }\n\
+                     pub type Nq<T> = Option<NotDeclaredAnywhere>\n",
+        },
+    ];
+
+    #[test]
+    fn pub_parametric_alias_naming_an_undeclared_name_is_still_rejected() {
+        for case in REJECTED_CASES {
+            let errs = def_site_errors(case.source);
+            assert!(
+                errs.iter().any(|m| m.contains("references unknown name")),
+                "[{}] (on main: {}) the def-site name-existence check must still fire \
+                 for a name declared in NO namespace; got: {:?}\n--- source ---\n{}",
+                case.label,
+                case.measured_on_main,
+                errs,
+                case.source
+            );
+        }
+    }
+
+    /// The `is_pub` gate asymmetry measured on `main`: def-site validation runs
+    /// only for `is_pub` entries, so the identical non-`pub` alias was silently
+    /// accepted while the `pub` one was falsely rejected.  The fix must close
+    /// that by making `pub` agree with non-`pub` — never the reverse.
+    #[test]
+    fn pub_and_non_pub_parametric_alias_def_sites_agree_on_an_enum_body() {
+        let pub_src = format!("{ENUM_DECL}pub type Gq<T> = Option<Zq>\n");
+        let non_pub_src = format!("{ENUM_DECL}type Gq<T> = Option<Zq>\n");
+
+        let non_pub_errs = def_site_errors(&non_pub_src);
+        assert!(
+            non_pub_errs.is_empty(),
+            "the NON-pub spelling was measured clean on main and must stay clean — \
+             if this row reds, the fix extended the false rejection instead of \
+             removing it; got: {non_pub_errs:?}"
+        );
+
+        let pub_errs = def_site_errors(&pub_src);
+        assert_eq!(
+            pub_errs, non_pub_errs,
+            "`pub` and non-`pub` spellings of the same parametric alias must agree \
+             at the definition site; `pub` got {pub_errs:?}, non-`pub` got \
+             {non_pub_errs:?}"
+        );
+    }
+}
