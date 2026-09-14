@@ -4065,18 +4065,34 @@ pub enum DiagnosticCode {
     /// round-trips automatically (follows the `TraitRefinementChainTooDeep`
     /// too-deep precedent).
     ExpressionNestingTooDeep,
-    /// Origin: `crates/reify-eval/src/geometry_ops.rs` — the eval-layer
-    /// `arg_acceptance`-backed chokepoints, i.e. `eval_named_arg_length`
-    /// (every LENGTH-semantic geometry arg: primitive/profile dimensions,
-    /// pattern spacing, mirror-plane and circular-pattern axis origins), plus
-    /// the two quiet-degrade readers `resolve_spec_arg` and
-    /// `resolve_density_arg`.
+    /// Origin: every `arg_acceptance`-backed chokepoint, on BOTH sides of the
+    /// eval/stdlib split. The original (task 5743) is
+    /// `crates/reify-eval/src/geometry_ops.rs` — `eval_named_arg_length` (every
+    /// LENGTH-semantic geometry arg: primitive/profile dimensions, pattern
+    /// spacing, mirror-plane and circular-pattern axis origins), plus the two
+    /// quiet-degrade readers `resolve_spec_arg` and `resolve_density_arg`.
+    ///
+    /// Since task 5791 the origin ALSO covers the reify-stdlib READER and FIELD
+    /// surface: `reify_ir::arg_acceptance::accept_field` (the struct-field
+    /// sibling of `accept_arg`), the reify-stdlib `diagnose` classifiers (the 8
+    /// `*_diagnose` re-exports in `crates/reify-stdlib/src/lib.rs`), and the
+    /// `ComputeOutcome::Failed { diagnostics, .. }` transport that carries them
+    /// out. That widening is not speculative: the `bbox` arm at
+    /// `crates/reify-stdlib/src/geometry.rs:1670-1681` (task 6081) has carried
+    /// this code since 2026-08-27, which is the already-shipped counter-example
+    /// proving the old eval-only line was too narrow.
+    ///
+    /// One code for one rejection REASON, across both surfaces — BINDING ruling
+    /// A7 (Leo, 2026-08-30, esc-5791-3) and PRD
+    /// `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 1's
+    /// RECONCILIATION block (landed b3ba3228f5). `ArgDimensionMismatch` is
+    /// deliberately NOT minted.
     ///
     /// Canonical message form:
     /// `"{builtin}: {arg_name} argument expects {expected}, got {got}; {hint}"`
     ///
     /// The wording is owned SOLELY by
-    /// `crates/reify-eval/src/arg_acceptance::ArgRejection::message` — producers
+    /// `crates/reify-ir/src/arg_acceptance.rs`'s `ArgRejection::message` — producers
     /// attach this code, they never re-phrase the text. That single-owner rule is
     /// what lets the ANGLE (PRD 3) and reader (PRD 5) follow-ups inherit
     /// byte-identical diagnostics, and it is why the migration hint (e.g.
@@ -4273,6 +4289,47 @@ pub enum DiagnosticCode {
     /// the workspace, so adding one variant is purely additive and round-trips
     /// through the feature-gated serde derives automatically.
     NoRegisteredComputeTrampoline,
+    /// Origin: the FEA load-kind read surface,
+    /// `crates/reify-eval/src/compute_targets/elastic_static.rs::extract_loads`
+    /// (:4111-4152), whose `PointLoad` / `PressureLoad` / `Gravity`
+    /// if/else-if chain has NO `else` arm and therefore silently DISCARDS every
+    /// other `type_name`. The two kinds this code exists for are stdlib-declared
+    /// but solver-unreachable: `TractionLoad`
+    /// (`crates/reify-compiler/stdlib/fea_multi_case.ri:447`) and `BodyForce`
+    /// (:477). An author who writes either one today gets a silently
+    /// zero-contribution solve rather than a fault.
+    ///
+    /// Emitted at `Severity::Error`. Per PRD
+    /// `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 6, BOTH kinds
+    /// self-identify in their own `.ri` comments as PLACEHOLDERS needing a
+    /// type-surface extension this PRD does not own, so INV-SF-3 forbids the
+    /// silent no-op and they get an explicit NAMED REJECTION rather than a
+    /// wire-up. CONSTRUCTING a `TractionLoad`/`BodyForce` value stays legal —
+    /// only passing one to a solver errors.
+    ///
+    /// Canonical message form:
+    /// `"{solver}: unsupported FEA load kind '{type_name}'"`
+    ///
+    /// PRD-prose mnemonic: `E_FeaLoadKindUnsupported` (severity convention:
+    /// `E_*` → Error).
+    ///
+    /// The EMITTING call site is leaf γ3's, NOT task 5791's — α mints the
+    /// vocabulary only. Note that the existing guard
+    /// `extract_loads_unknown_type_name_is_silently_skipped`
+    /// (`elastic_static.rs:8493-8524`) asserts ZERO NUMERIC CONTRIBUTION and
+    /// NOT the absence of a diagnostic, so γ3 can start emitting without
+    /// retargeting it.
+    ///
+    /// Minting rationale: `DiagnosticCode` is `#[non_exhaustive]` with no
+    /// `impl` block anywhere in the workspace (no `as_str`/`Display`/`FromStr`/
+    /// exhaustive match-on-self), no exhaustiveness test, no docs registry, no
+    /// `reify-audit` check and no mirrored GUI enum
+    /// (`crates/reify-lsp/src/convert.rs:435-459` is a deliberate 4-variant
+    /// representative spread, not a census) — so this is a one-variant addition
+    /// that is non-breaking for downstream consumers and round-trips through
+    /// the feature-gated serde derives automatically (same measured argument as
+    /// `DimensionedArgRejected` and `EvalCachedGuardedGroupsFallback` above).
+    FeaLoadKindUnsupported,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -4769,8 +4826,9 @@ mod tests {
     //
     // This is the shared RUNTIME code for "a builtin argument that must carry a
     // physical dimension was given a bare / wrongly-dimensioned value", emitted
-    // from `crates/reify-eval/src/geometry_ops.rs`'s `arg_acceptance`-backed
-    // chokepoints.
+    // from the `crates/reify-ir/src/arg_acceptance.rs`-backed chokepoints in
+    // `crates/reify-eval/src/geometry_ops.rs` and in reify-stdlib's `diagnose`
+    // classifiers.
     //
     // As with `DimensionMismatch` above, Copy/Clone/PartialEq/Eq/Hash/Debug are
     // already covered by the variant-agnostic `diagnostic_code_derives` test, so
@@ -4792,6 +4850,54 @@ mod tests {
     // That ruling lives in the variant's own doc comment and in
     // `docs/prds/v0_6/units-length-gate-completion.md`; it is a naming decision,
     // not a runtime behaviour a test can pin.
+
+    // --- FeaLoadKindUnsupported tests (dimension-checked-readers α, task 5791) ---
+    //
+    // The ONE variant this task mints. Per BINDING ruling A7 (Leo, 2026-08-30,
+    // esc-5791-3) `ArgDimensionMismatch` is NOT minted — the dimension
+    // rejection reason reuses the shipped `DimensionedArgRejected` — so there
+    // is deliberately no test for it here.
+    //
+    // No exhaustiveness test is written over `DiagnosticCode`. MEASURED: the
+    // enum is `#[non_exhaustive]`, there is no `impl DiagnosticCode` anywhere
+    // in the workspace, no `as_str`/`Display`/`FromStr`, no exhaustiveness
+    // test, no docs registry and no mirrored GUI enum
+    // (`crates/reify-lsp/src/convert.rs:435-459` is a deliberate 4-variant
+    // representative spread, not a census). A variant addition therefore has
+    // exactly zero other update obligations.
+
+    /// Under `feature = "serde"`, `DiagnosticCode::FeaLoadKindUnsupported`
+    /// serializes as `"FeaLoadKindUnsupported"` (PascalCase, from
+    /// `rename_all = "PascalCase"`), and deserializes back to the same variant.
+    /// This is the wire form downstream tooling reads as an opaque string, so
+    /// it is a compatibility surface.
+    ///
+    /// RED until step-12 adds the variant.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn fea_load_kind_unsupported_serializes_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::FeaLoadKindUnsupported).unwrap();
+        assert_eq!(s, "\"FeaLoadKindUnsupported\"");
+
+        let back: DiagnosticCode = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, DiagnosticCode::FeaLoadKindUnsupported);
+    }
+
+    /// The variant attaches through the ordinary builder and reads back, at
+    /// `Severity::Error` — PRD §6 decision 6: the stdlib-declared but
+    /// solver-unreachable FEA load kinds get an explicit named REJECTION rather
+    /// than the silent no-op INV-SF-3 forbids.
+    ///
+    /// RED until step-12 adds the variant.
+    #[test]
+    fn fea_load_kind_unsupported_attaches_to_a_diagnostic() {
+        use super::Severity;
+
+        let d = Diagnostic::error("unsupported FEA load kind 'TractionLoad'")
+            .with_code(DiagnosticCode::FeaLoadKindUnsupported);
+        assert_eq!(d.code, Some(DiagnosticCode::FeaLoadKindUnsupported));
+        assert_eq!(d.severity, Severity::Error);
+    }
 
     /// Under `feature = "serde"`, `DiagnosticCode::DimensionedArgRejected`
     /// serializes as `"DimensionedArgRejected"` (PascalCase, from
