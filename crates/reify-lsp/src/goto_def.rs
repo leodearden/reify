@@ -1147,7 +1147,9 @@ mod tests {
         let source = "unit meter : Length\nstructure S {\n    param x : Length = 5meter\n}";
         let parsed = parse_clean(source);
 
-        let suffix = source.rfind("meter").expect("fixture uses a `5meter` literal");
+        let suffix = source
+            .rfind("meter")
+            .expect("fixture uses a `5meter` literal");
         // Fixture guard: the scanned word really IS the fused literal, so the
         // None below pins the documented boundary rather than an unrelated miss.
         assert_eq!(

@@ -4582,7 +4582,6 @@ structure Assembly {
         }
     }
 
-
     // --- κ step-9 (task 4210): cross-file rename WorkspaceEdit (Invariant 5) ---
 
     /// Apply LSP `TextEdit`s to `source`, splicing in DESCENDING start order so
