@@ -1,20 +1,16 @@
 //! Instance-scope counterpart of the template-scope ordering fix in
 //! `param_default_sibling_let_order.rs` (task #4317).
 //!
-//! That file covers `engine_eval.rs`, where task #4317 collapsed the
-//! kind-partitioned two-pass into ONE dependency-ordered pass over all non-Auto
-//! body cells. THIS file covers `unfold.rs::elaborate_child_params_only` — the
-//! phase-1 param loop that runs when a template is instantiated under a `sub`.
-//! Instance scope never got the analogous treatment, so a param default reading
-//! a sibling param declared AFTER it evaluated against a `child_values` that did
-//! not hold the sibling yet and degraded to `Undef`, silently, while the
-//! template cell held the evaluated default.
+//! That file covers `engine_eval.rs`, where #4317 collapsed the kind-partitioned
+//! two-pass into ONE dependency-ordered pass over all non-Auto body cells. THIS
+//! file covers `unfold.rs::elaborate_child_params_only` — the phase-1 param loop
+//! that runs when a template is instantiated under a `sub`.
 //!
 //! The property these tests pin is TWO-SCOPE AGREEMENT: each assertion compares
 //! the instance cell against the template cell as an equality AND against the
 //! expected literal. The equality alone would be satisfied by both scopes
-//! degrading together; the literal alone would let a future regression that
-//! degrades both scopes pass. Together they pin what the ticket asks for.
+//! degrading together; the literal alone would let a regression that degrades
+//! both scopes pass. Together they pin what the ticket asks for.
 
 use reify_compiler::CompiledModule;
 use reify_core::{Severity, ValueCellId};
@@ -336,6 +332,73 @@ fn param_default_reading_a_sibling_let_still_degrades_at_instance_scope() {
          Int(6), that gap has closed and this arm should become an equality \
          against the template cell"
     );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// amendment: the Auto-precedence branch under the dependency-ordered loop
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// What a sibling read of an Auto-OVERRIDDEN param sees, made executable.
+///
+/// `derived` is declared BEFORE the `base` it reads, so the dependency order
+/// visits `base` first — and `base` is the task-3806-γ case: the parent pushed
+/// an `= auto` override, so the snapshot entry carries `DeterminacyState::Auto`
+/// and the loop takes the Auto-precedence branch. That branch does NOT skip
+/// `child_values` entirely: it inserts the snapshot's `Undef` placeholder before
+/// its `continue`, so `derived`'s default reads `Some(Undef)` — not `None`, and
+/// not the template's evaluated `6mm`.
+///
+/// MEASURED 2026-09-14: instance `base` is `(Undef, Auto)` in the snapshot and
+/// `derived` commits `Undef`, while template `AutoInner.derived` is `6mm`. The
+/// Auto state reaching the solver as `(Undef, Auto)` is what the ordering change
+/// had to leave undisturbed, so it is asserted here rather than described.
+#[test]
+fn sibling_read_of_an_auto_overridden_param_sees_the_solver_placeholder() {
+    let mut engine = fresh_engine();
+    let module = compile_source(
+        "structure AutoInner { \
+            param derived : Length = base + 1mm \
+            param base : Length = 5mm \
+        } \
+        structure AutoOuter { \
+            sub b : AutoInner { base = auto } \
+            constraint self.b.base == 10mm \
+        }",
+    );
+
+    let result = engine.eval(&module);
+    let snap = engine.snapshot().expect("snapshot after eval");
+
+    assert_eq!(
+        snap.values.get(&ValueCellId::new("AutoOuter.b", "base")),
+        Some(&(Value::Undef, DeterminacyState::Auto)),
+        "the parent's `= auto` override must survive the dependency-ordered \
+         param loop as the (Undef, Auto) pair `build_solver_problem` consumes. \
+         Anything else means the reorder let the child default overwrite it"
+    );
+
+    assert_eq!(
+        result
+            .values
+            .get(&ValueCellId::new("AutoOuter.b", "derived")),
+        Some(&Value::Undef),
+        "`derived` reads an Auto-overridden sibling, so it sees the `Some(Undef)` \
+         placeholder the Auto branch inserted. A `None` read and this placeholder \
+         both yield Undef here, but they are different inputs to the `@optimized` \
+         reuse gate's read comparison, which is why the branch inserts at all"
+    );
+    let template_derived = result
+        .values
+        .get(&ValueCellId::new("AutoInner", "derived"))
+        .expect("template AutoInner.derived must exist");
+    assert!(
+        matches!(template_derived, Value::Scalar { si_value, .. } if *si_value == 0.006),
+        "template scope has no Auto override, so it resolves `derived` to 6mm — \
+         which is what makes the instance Undef above the OVERRIDE's consequence \
+         and not an ordering failure. Got: {template_derived:?}"
+    );
+
+    assert_no_error_diagnostics(&result, "an Auto-overridden param read by a sibling");
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

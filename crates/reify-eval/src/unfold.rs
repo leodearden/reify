@@ -1311,35 +1311,27 @@ fn eval_child_expr(
 }
 
 /// The Param cells of `child_template` in dependency order, so a default that
-/// reads a sibling param sees it already in `child_values`.
+/// reads a sibling param sees it already in `child_values`. Same
+/// [`extract_dependency_trace`] + [`topological_sort`] pair
+/// [`elaborate_child_lets_only`] uses for lets: `run_unified_pass_seeded` counts
+/// only in-seed predecessors, so a read naming a let, a global or another entity
+/// contributes no edge and needs no filtering here.
 ///
-/// Same [`extract_dependency_trace`] + [`topological_sort`] pair
-/// [`elaborate_child_lets_only`] uses for lets. `run_unified_pass_seeded` counts
-/// only in-seed predecessors, so a read naming a let, a global, or another
-/// entity contributes no edge and needs no filtering here.
+/// Two rules are invisible from the call site, and both are pinned by
+/// tests/harness_engine/instance_scope_param_default_order.rs:
 ///
-/// Edges come from the expression that will ACTUALLY be evaluated in child
-/// scope, which is why `args` is a parameter. A param named by the ctor args
-/// never evaluates its `default_expr`: the arg is evaluated against the PARENT's
-/// `values` — the same scope asymmetry the `@optimized` wiring comment at the
-/// args arm calls out — so its reads are parent-scoped ids that could never name
-/// a cell of this child's param seed, and it contributes no edge either way.
-/// Taking edges from the unused `default_expr` instead INVENTS dependencies, and
-/// an invented 2-cycle (`param p = q  param q = p` with `q` arg-supplied) sends
-/// both cells into the declaration-order residue below, reproducing for
-/// arg-supplied instances the very bug this ordering closes.
-///
-/// [`topological_sort`] (Kahn) reports a cycle by OMISSION. Cyclic params are
-/// therefore appended afterwards in declaration order rather than dropped:
-/// `structure Cyc { param a = b  param b = a }` instantiated under a sub
-/// commits BOTH cells as `Undef`, and dropping them would delete cells that
-/// exist — a worse member of the same stale-Undef family this ordering fix
-/// belongs to. The cycle is already reported once, by template scope, so this
-/// site stays silent rather than double-reporting, the mistake
-/// [`phase15_cycle_members`]' doc comment was written to prevent. Both halves
-/// are pinned by `cyclic_param_defaults_are_still_committed_at_instance_scope`
-/// (tests/harness_engine/instance_scope_param_default_order.rs), whose message
-/// says what a missing cell would mean.
+/// - A param named by `args` contributes NO edge. Its `default_expr` is never
+///   evaluated — the arg is evaluated against the PARENT's `values`, the same
+///   scope asymmetry the `@optimized` wiring comment at the args arm calls out —
+///   so edges taken from it are INVENTED, and an invented 2-cycle (`param p = q
+///   param q = p` with `q` arg-supplied) would send both cells into the residue
+///   below, reproducing for arg-supplied instances the bug this ordering closes.
+/// - [`topological_sort`] (Kahn) reports a cycle by OMISSION, so omitted cells
+///   are APPENDED in declaration order rather than dropped: they commit as
+///   `Undef` today, and dropping them would delete cells that exist. The cycle
+///   is already reported once by template scope, so this site stays silent
+///   rather than double-reporting — the mistake [`phase15_cycle_members`]' doc
+///   comment was written to prevent.
 fn params_in_dependency_order<'t>(
     child_template: &'t TopologyTemplate,
     args: &[(String, reify_ir::CompiledExpr)],
@@ -1350,52 +1342,77 @@ fn params_in_dependency_order<'t>(
         .filter(|c| c.kind == ValueCellKind::Param)
         .collect();
 
-    let cells_by_node: HashMap<NodeId, &reify_compiler::ValueCellDecl> = param_cells
-        .iter()
-        .map(|c| (NodeId::Value(c.id.clone()), *c))
-        .collect();
-    // Two param cells of one template cannot share a member name, so the map is
-    // a bijection with `param_cells`. Fires loud in debug/test builds; in
-    // release a collision would silently drop a cell from the sort and the
-    // residue append below would still commit it, in declaration order.
+    // This runs for EVERY param of EVERY instance, collection elements
+    // included, so the cheap exits come first: fewer than two params admits no
+    // edge at all and needs no expression walk, and below, no sibling read
+    // means declaration order is ALREADY a dependency order. Only the third
+    // path pays for [`topological_sort`], whose ready set is a
+    // `BTreeSet<DebugOrd>` that formats both operands on every comparison.
+    if param_cells.len() < 2 {
+        return param_cells;
+    }
+
+    // Borrowed, so the common path below allocates no `NodeId` at all.
+    let sibling_ids: HashSet<&ValueCellId> = param_cells.iter().map(|c| &c.id).collect();
+    // Two param cells of one template cannot share a member name. Fires loud in
+    // debug/test builds; in release a collision costs ordering only, because
+    // the residue below is keyed on the declaration INDEX rather than on node
+    // identity, so the shadowed cell stays unplaced and is still committed.
     debug_assert_eq!(
-        cells_by_node.len(),
+        sibling_ids.len(),
         param_cells.len(),
         "params_in_dependency_order: duplicate param member name in template {}",
         child_template.name,
     );
 
-    let node_ids: HashSet<NodeId> = cells_by_node.keys().cloned().collect();
-    let traces: HashMap<NodeId, DependencyTrace> = cells_by_node
+    let traces_by_index: Vec<DependencyTrace> = param_cells
         .iter()
-        .map(|(nid, cell)| {
+        .map(|cell| {
             // The SAME predicate the loop body uses to pick the args arm, so the
             // two sites cannot disagree about which params are arg-supplied.
-            let arg_supplied = args.iter().any(|(name, _)| *name == cell.id.member);
-            let trace = if arg_supplied {
+            if args.iter().any(|(name, _)| *name == cell.id.member) {
                 DependencyTrace::default()
             } else {
                 cell.default_expr
                     .as_ref()
                     .map(extract_dependency_trace)
                     .unwrap_or_default()
-            };
-            (nid.clone(), trace)
+            }
         })
         .collect();
 
-    let sorted = topological_sort(&node_ids, &traces);
-    let sorted_set: HashSet<&NodeId> = sorted.iter().collect();
-
-    let mut ordered: Vec<&reify_compiler::ValueCellDecl> = sorted
+    let reads_a_sibling = traces_by_index
         .iter()
-        .filter_map(|nid| cells_by_node.get(nid).copied())
+        .flat_map(|t| &t.reads)
+        .any(|r| sibling_ids.contains(&r));
+    if !reads_a_sibling {
+        return param_cells;
+    }
+
+    let nodes: Vec<NodeId> = param_cells
+        .iter()
+        .map(|c| NodeId::Value(c.id.clone()))
         .collect();
+    let node_ids: HashSet<NodeId> = nodes.iter().cloned().collect();
+    let traces: HashMap<NodeId, DependencyTrace> =
+        nodes.iter().cloned().zip(traces_by_index).collect();
+
+    let sorted = topological_sort(&node_ids, &traces);
+    let mut placed = vec![false; param_cells.len()];
+    let mut ordered: Vec<&reify_compiler::ValueCellDecl> = Vec::with_capacity(param_cells.len());
+    for nid in &sorted {
+        // First not-yet-placed cell carrying this node id, so one sorted node
+        // consumes one declaration slot; see the `debug_assert_eq!` above.
+        let next = (0..param_cells.len()).find(|i| !placed[*i] && &nodes[*i] == nid);
+        if let Some(i) = next {
+            placed[i] = true;
+            ordered.push(param_cells[i]);
+        }
+    }
     ordered.extend(
-        param_cells
-            .iter()
-            .filter(|c| !sorted_set.contains(&NodeId::Value(c.id.clone())))
-            .copied(),
+        (0..param_cells.len())
+            .filter(|i| !placed[*i])
+            .map(|i| param_cells[i]),
     );
     ordered
 }
@@ -1514,36 +1531,29 @@ fn elaborate_child_params_only<'f>(
             // closes, the gate flips to true and this site starts reporting,
             // which is the point of wiring it now.
             //
-            // SIBLING-PARAM READS. This loop walks `params_in_dependency_order`,
-            // so a default that reads a sibling PARAM finds it already in
-            // `child_values` whatever order the two are declared in. The gate no
-            // longer compares `None` (instance) against `Some(v)` (global) for a
-            // purely positional reason, and the value no longer degrades to
-            // `Undef` while the template cell holds the evaluated default —
-            // which is what the older claim here, that the fallback
-            // `eval_child_expr` recovers the missing read from `snapshot.values`,
-            // wrongly asserted was already true. Both halves are pinned by
+            // SIBLING READS. This loop walks `params_in_dependency_order`, so a
+            // default that reads a sibling PARAM finds it in `child_values`
+            // whatever order the two are declared in, and the gate no longer
+            // compares `None` (instance) against `Some(v)` (global) for a purely
+            // positional reason. The Auto-precedence branch above does insert —
+            // the snapshot's `Undef` placeholder — before its `continue`, so a
+            // read of an Auto-OVERRIDDEN sibling sees `Some(Undef)` rather than
+            // the evaluated default, and the gate compares that against the
+            // global value and declines. That is correct: the cell's value is
+            // the solver's to resolve, not this loop's.
+            //
+            // STILL OPEN: a default that reads a sibling LET. This whole
+            // function runs before `elaborate_child_lets_only`, so no ordering
+            // of params among themselves reaches it; closing it is the
+            // instance-scope analogue of task #4317's template-scope phase
+            // unification, filed as ticket `tkt_0RTKT9B322NQ9VTT2SY6DK5AYN` (no
+            // `#NNNN` cite because the curator assigns task ids asynchronously).
+            //
+            // All three are pinned by
+            // tests/harness_engine/instance_scope_param_default_order.rs, and
+            // the `@optimized` arm additionally by
             // `instance_scope_optimized_param_default_reading_a_later_sibling_is_silent`
-            // (tests/compute_dispatch_registry.rs) and by
-            // tests/harness_engine/instance_scope_param_default_order.rs.
-            //
-            // The Auto-precedence branch above still `continue`s without
-            // inserting, so an Auto-overridden sibling read still sees `None` —
-            // that is the branch working as designed, not an ordering gap.
-            //
-            // STILL OPEN: a default that reads a sibling LET. Ordering params
-            // among themselves cannot reach it, because this whole function runs
-            // before `elaborate_child_lets_only`; closing it is the instance-scope
-            // analogue of task #4317's template-scope phase unification. Measured
-            // and pinned by `param_default_reading_a_sibling_let_still_degrades_at_instance_scope`
-            // (tests/harness_engine/instance_scope_param_default_order.rs), filed
-            // as ticket `tkt_0RTKT9B322NQ9VTT2SY6DK5AYN` (not cited as `#NNNN`
-            // because the curator assigns the task id asynchronously).
-            //
-            // The DECLINE remains free: the registered-target gate is
-            // unconditionally false here, so nothing is reported. #6750 flips
-            // that gate, and what it then reports will name a genuine input
-            // difference rather than declaration order.
+            // (tests/compute_dispatch_registry.rs).
             if let OptimizedInstanceResolution::Unreusable { target, cause } = &resolution {
                 report_optimized_instance_decline(
                     diagnostics,

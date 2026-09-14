@@ -1758,34 +1758,22 @@ fn instance_scope_optimized_param_default_decline_is_silent_while_template_scope
 }
 
 /// The #6750 contingency, made executable — over a forward-referencing param
-/// default whose VALUE half is now fixed.
+/// default, where the VALUE half is now fixed.
 ///
-/// `elaborate_child_params_only` used to walk `child_template.value_cells` in
-/// DECLARATION order, so an `@optimized` param default reading a SIBLING param
-/// declared AFTER it compared `None` (instance, not yet inserted) against
-/// `Some(v)` (global) and declined for a purely positional reason — and, worse,
-/// the instance cell came out `Undef` while the template cell held `Int(0)`.
-/// This test is what measured that second half, refuting `unfold.rs`'s claim
-/// that "the fallback `eval_child_expr` resolves the missing read from
-/// `snapshot.values` anyway".
+/// Both arms assert two-scope AGREEMENT (instance equals template) because
+/// `elaborate_child_params_only` visits params in dependency order. The `q`
+/// control is what shows the fix belongs to the param loop and not to #6662's
+/// reuse gate: `q` calls a non-`@optimized` fn, so
+/// `resolve_optimized_instance_cell` returns `NotOptimized` and the read
+/// comparison never runs, yet `q` degraded before the fix and resolves after it
+/// exactly like `p`.
 ///
-/// The value half is CLOSED: the param loop is now dependency-ordered, so both
-/// arms below assert two-scope AGREEMENT — instance equals template — rather
-/// than characterizing a divergence. The `q` control is what shows the fix
-/// belongs to the param loop and not to #6662's reuse gate: `q` calls a
-/// non-`@optimized` fn, so `resolve_optimized_instance_cell` returns
-/// `NotOptimized` and the read comparison never runs, yet `q` degraded before
-/// the fix and resolves after it, exactly like `p`.
-///
-/// The NAME still holds, and names the half that is still contingent. "is
-/// silent" is about the DECLINE, not the value: the registered-target gate is
-/// unconditionally false for param defaults (template scope lowers only LET
-/// cells to ComputeNodes), so nothing is reported. When #6750 closes the
-/// template-scope gap that gate flips to true and the warning assertion below
-/// REDS. What it will then be reporting is a genuine input difference, not
-/// declaration order — the reason the gate saw `None` for a sibling read is
-/// gone.
-
+/// The NAME names the half that is still contingent. "is silent" is about the
+/// DECLINE, not the value: the registered-target gate is unconditionally false
+/// for param defaults (template scope lowers only LET cells to ComputeNodes),
+/// so nothing is reported. When #6750 closes the template-scope gap that gate
+/// flips to true and the warning assertion below REDS — and what it reports
+/// will be a genuine input difference, not declaration order.
 #[test]
 fn instance_scope_optimized_param_default_reading_a_later_sibling_is_silent() {
     // `p` and `q` both read `seed`, which is declared AFTER them — the ordering
