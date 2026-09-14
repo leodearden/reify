@@ -99,6 +99,65 @@ fn repo_relative(path: &std::path::Path, root: &std::path::Path) -> String {
         .join("/")
 }
 
+// ── Corpus enumeration ─────────────────────────────────────────
+
+/// One corpus member: the absolute path used to READ the file, and the
+/// repo-relative shard key, carried together.
+///
+/// The key travels with the path so no caller ever re-derives it — it is the
+/// shard key, the residual-exemption match target and the scope discriminator,
+/// and three independent derivations of one string is three chances to disagree.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct CorpusFile {
+    path: std::path::PathBuf,
+    rel: String,
+}
+
+/// The full corpus: reify-eval's own `tests/fixtures/`, every `examples/` file,
+/// and the ONE explicit #4946 R3f-bridge premise fixture.
+///
+/// CRITICAL — the prd-gate fixture is referenced as that explicit `<name>.ri`
+/// LEAF and never as its directory. `verify.sh`'s `tests/prd-gate/fixtures/*.ri`
+/// no-heavy carve-out rests on the premise that no `*.rs` globs that directory,
+/// and `test_verify_scope.sh`'s PG-DRIFT-DIR guard reds on a directory
+/// reference. Walking it would silently widen the carve-out's blast radius.
+///
+/// `files.sort()` is retained even though the sorted position no longer
+/// determines the shard: listings, skip reports and diagnostics stay
+/// deterministically ordered, which is what makes two runs' output diffable.
+///
+/// Cheap (a directory walk, no compilation) — recomputing it once per shard is
+/// not worth caching, and keeps the shard processes free of shared state.
+fn corpus_files() -> Vec<CorpusFile> {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = workspace_root();
+
+    let mut files = Vec::new();
+    eval_gate_support::collect_ri_files(&manifest_dir.join("tests/fixtures"), &mut files);
+    eval_gate_support::collect_ri_files(&manifest_dir.join("../../examples"), &mut files);
+    files.push(manifest_dir.join("../../tests/prd-gate/fixtures/geometry_let_selector_consumer.ri"));
+
+    let mut corpus: Vec<CorpusFile> = files
+        .into_iter()
+        .map(|path| {
+            let rel = repo_relative(&path, &root);
+            CorpusFile { path, rel }
+        })
+        .collect();
+    corpus.sort();
+    corpus
+}
+
+/// The corpus slice this shard owns. Every shard runs this independently, so the
+/// partition must be derivable from the key alone — which is exactly what
+/// [`shard_of`] gives, with no state shared between the shard processes.
+fn shard_files(shard_index: usize) -> Vec<CorpusFile> {
+    corpus_files()
+        .into_iter()
+        .filter(|f| shard_of(&f.rel) == shard_index)
+        .collect()
+}
+
 // ── Shard keying ──────────────────────────────────────────────────
 
 /// Number of shards the corpus sweep is split across — one shard per
@@ -144,25 +203,6 @@ const CORPUS_SHARD_COUNT: usize = 24;
 /// The key MUST be repo-relative — see [`repo_relative`].
 fn shard_of(rel_path: &str) -> usize {
     (reify_core::ContentHash::of_str(rel_path).0 % CORPUS_SHARD_COUNT as u128) as usize
-}
-
-/// Every live corpus `.ri` file, as repo-relative shard keys.
-///
-/// S1-local scaffolding: the real `corpus_files()` lands later in this file and
-/// carries its key alongside the absolute path. Until then this walk is what
-/// gives the range property below real data (299 paths today) instead of three
-/// hand-picked literals. It routes through [`repo_relative`], so there is still
-/// exactly ONE relativizer in this file.
-fn live_corpus_keys() -> Vec<String> {
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let root = workspace_root();
-
-    let mut files = Vec::new();
-    eval_gate_support::collect_ri_files(&manifest_dir.join("tests/fixtures"), &mut files);
-    eval_gate_support::collect_ri_files(&root.join("examples"), &mut files);
-    files.push(root.join("tests/prd-gate/fixtures/geometry_let_selector_consumer.ri"));
-
-    files.iter().map(|p| repo_relative(p, &root)).collect()
 }
 
 /// The headline behaviour change task #7431 makes: a corpus file's shard is a
@@ -228,13 +268,13 @@ fn shard_of_is_independent_of_corpus_membership() {
     );
 
     // (c) Range property, over the live corpus rather than hand-picked literals.
-    let keys = live_corpus_keys();
+    let corpus = corpus_files();
     assert!(
-        keys.len() > 250,
+        corpus.len() > 250,
         "non-vacuity: expected the live corpus to hold hundreds of .ri files, got {}",
-        keys.len()
+        corpus.len()
     );
-    for key in &keys {
+    for CorpusFile { rel: key, .. } in &corpus {
         let shard = shard_of(key);
         assert!(
             shard < CORPUS_SHARD_COUNT,
