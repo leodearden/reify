@@ -787,18 +787,23 @@ fn describe_failure(
         Failure::Unledgered { observed, .. } => {
             let obs = observations.iter().find(|obs| obs.id == id);
             format!(
-                "  UNLEDGERED {id:?} ({name:?}) — verdict {observed:?}; observed                  {:?}, declared {:?}",
+                "  UNLEDGERED {id:?} ({name:?}) — verdict {observed:?}; \
+                 observed {:?}, declared {:?}",
                 obs.map(|o| &o.observed),
                 obs.map(|o| &o.declared),
             )
         }
         Failure::Stale { ledgered, .. } => format!(
-            "  STALE LEDGER ENTRY {id:?} ({name:?}) — the row now classifies              Matches but is still exempted at {ledgered:?}. Delete the entry;              its stated reason was: {why}"
+            "  STALE LEDGER ENTRY {id:?} ({name:?}) — the row now \
+             classifies Matches but is still exempted at {ledgered:?}. \
+             Delete the entry; its stated reason was: {why}"
         ),
         Failure::VerdictChanged {
             observed, ledgered, ..
         } => format!(
-            "  VERDICT CHANGED {id:?} ({name:?}) — exempted at {ledgered:?} but              now {observed:?}. Right row, wrong disposition: fix the divergence              or update the entry, whose stated reason was: {why}"
+            "  VERDICT CHANGED {id:?} ({name:?}) — exempted at {ledgered:?} \
+             but now {observed:?}. Right row, wrong disposition: fix the \
+             divergence or update the entry, whose stated reason was: {why}"
         ),
     }
 }
@@ -893,7 +898,6 @@ fn every_eval_builtin_row_agrees_with_its_executed_kind() {
         report.join("\n")
     );
 }
-
 
 // ── the ledger's second direction, tested over synthetic tables ─────────────
 //
