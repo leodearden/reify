@@ -668,3 +668,75 @@ fn one_corpus_evaluation_feeds_both_invariant_checkers() {
         "running the two checkers in the reverse order must give identical findings"
     );
 }
+
+/// What makes this restructuring ZERO-LOSS rather than a coverage change: the
+/// two old sweeps did NOT cover the same corpus, and unification must not
+/// quietly widen either one.
+///
+/// INV-EVAL-5 swept the 299-file UNION (reify-eval's `tests/fixtures/` +
+/// `examples/` + the prd-gate leaf). INV-EVAL-4 swept `examples/` ONLY. Sharing
+/// the evaluation is free; sharing the SCOPE would not be — widening INV-EVAL-4
+/// to the 34 fixture files is a coverage CHANGE that could surface fresh
+/// residuals, which is outside a zero-loss restructuring. It is deliberately NOT
+/// done here and is named as a follow-up instead, so a future reader cannot
+/// mistake the narrower scope for an oversight.
+#[test]
+fn each_invariant_keeps_its_own_pre_unification_corpus_scope() {
+    let scope = |id: InvariantId| {
+        GATES
+            .iter()
+            .find(|g| g.id == id)
+            .unwrap_or_else(|| panic!("no gate declared for {id:?}"))
+            .scope
+    };
+    let stale = scope(InvariantId::StaleUndef);
+    let divergence = scope(InvariantId::SnapshotCacheDivergence);
+
+    // (a) A reify-eval fixture: INV-EVAL-5 only.
+    let fixture = "crates/reify-eval/tests/fixtures/undef_trace.ri";
+    assert!(stale.covers(fixture), "{fixture} was in the INV-EVAL-5 corpus");
+    assert!(
+        !divergence.covers(fixture),
+        "{fixture} was NOT in the INV-EVAL-4 corpus (examples/ only) — covering it \
+         now would be a coverage change, not a restructuring"
+    );
+
+    // (b) The explicit #4946 prd-gate leaf: likewise INV-EVAL-5 only.
+    let leaf = "tests/prd-gate/fixtures/geometry_let_selector_consumer.ri";
+    assert!(stale.covers(leaf), "{leaf} was in the INV-EVAL-5 corpus");
+    assert!(!divergence.covers(leaf), "{leaf} was NOT in the INV-EVAL-4 corpus");
+
+    // (c) An examples/ member: BOTH, including a nested one.
+    for example in ["examples/fdm_bracket.ri", "examples/auto/bearing_constraint_select.ri"] {
+        assert!(stale.covers(example), "{example} was in the INV-EVAL-5 corpus");
+        assert!(divergence.covers(example), "{example} was in the INV-EVAL-4 corpus");
+    }
+
+    // (d) Counted over the LIVE corpus, so neither invariant can silently gain or
+    //     lose files as the corpus grows.
+    let corpus = corpus_files();
+    let examples: Vec<&CorpusFile> = corpus
+        .iter()
+        .filter(|f| f.rel.starts_with("examples/"))
+        .collect();
+    assert!(
+        !examples.is_empty() && examples.len() < corpus.len(),
+        "non-vacuity: the corpus must hold both examples/ and non-examples/ members \
+         ({} of {}), or (d) cannot distinguish the two scopes",
+        examples.len(),
+        corpus.len()
+    );
+
+    let covered = |s: CorpusScope| corpus.iter().filter(|f| s.covers(&f.rel)).count();
+    assert_eq!(
+        covered(stale),
+        corpus.len(),
+        "INV-EVAL-5 swept the whole union before unification and must still do so"
+    );
+    assert_eq!(
+        covered(divergence),
+        examples.len(),
+        "INV-EVAL-4 swept exactly the examples/ subset before unification and must \
+         still do so — no wider, no narrower"
+    );
+}
