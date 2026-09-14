@@ -1239,4 +1239,124 @@ _s4b3_n="$(printf '%s\n' "$_s4b3_out" | grep -c . || true)"
 assert "4b-3: two occurrences equal only after trimming are still counted twice" \
     test "$_s4b3_n" -eq 2
 
+# ===========================================================================
+# Section 4c: BASELINE CHECK -- the NEW direction.
+#
+# `_wallclock_baseline_check <baseline-file> <root>...` compares the live
+# fingerprint multiset against a committed one. A record present LIVE but
+# absent from the baseline is a NEW violation: someone hand-rolled a deadline
+# or an elapsed upper bound today, and the gate must red.
+#
+# SILENCE ON SUCCESS IS AN ASSERTION HERE, NOT A STYLE POINT. test_helpers.sh's
+# assert dumps a checker's captured output only on FAIL, so a passing run of
+# this suite is byte-stable -- and a function that chattered on success would
+# put 19 baselined records into every green run's log, training every reader
+# to ignore exactly the lines that matter when it eventually reds.
+#
+# The STALE direction (a baseline row matching nothing live) is Section 4d.
+# ===========================================================================
+echo ""
+echo "--- Section 4c: baseline check, NEW direction ---"
+
+# ---------------------------------------------------------------------------
+# 4c-1: EXACT MATCH -- live multiset equals the baseline. rc 0, and not one
+#       byte on stdout or stderr.
+# ---------------------------------------------------------------------------
+_s4c1_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4c1_tmpdir")
+mkdir -p "$_s4c1_tmpdir/src"
+_fixture "$_s4c1_tmpdir/src" "a.rs" \
+    '    let deadline = Instant::now() + Duration::from_secs(5);'
+_fixture "$_s4c1_tmpdir" "baseline.txt" \
+    "$_s4c1_tmpdir/src/a.rs :: let deadline = Instant::now() + Duration::from_secs(5);"
+
+_s4c1_rc=0
+_wallclock_baseline_check "$_s4c1_tmpdir/baseline.txt" "$_s4c1_tmpdir/src" \
+    > "$_s4c1_tmpdir/out.txt" 2>&1 || _s4c1_rc=$?
+assert "4c-1: live multiset equal to the baseline returns 0" \
+    test "$_s4c1_rc" -eq 0
+assert "4c-1: an exact match is SILENT on stdout and stderr" \
+    test "$(cat "$_s4c1_tmpdir/out.txt")" = ""
+
+# ---------------------------------------------------------------------------
+# 4c-2: A NEW VIOLATION -- live carries a record the baseline does not. rc 1,
+#       and the offending record is named, prefixed `+`, so the reader is told
+#       WHICH line to fix rather than being handed a bare red.
+# ---------------------------------------------------------------------------
+_s4c2_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4c2_tmpdir")
+mkdir -p "$_s4c2_tmpdir/src"
+_fixture "$_s4c2_tmpdir/src" "a.rs" \
+    '    let deadline = Instant::now() + Duration::from_secs(5);' \
+    '    assert!(elapsed < Duration::from_secs(2), "brand new");'
+_fixture "$_s4c2_tmpdir" "baseline.txt" \
+    "$_s4c2_tmpdir/src/a.rs :: let deadline = Instant::now() + Duration::from_secs(5);"
+
+_s4c2_rc=0
+_wallclock_baseline_check "$_s4c2_tmpdir/baseline.txt" "$_s4c2_tmpdir/src" \
+    > "$_s4c2_tmpdir/out.txt" 2>&1 || _s4c2_rc=$?
+assert "4c-2: a live record absent from the baseline returns 1" \
+    test "$_s4c2_rc" -eq 1
+
+_s4c2_named=0
+case "$(cat "$_s4c2_tmpdir/out.txt")" in
+    *'+ '"$_s4c2_tmpdir"'/src/a.rs :: assert!(elapsed < Duration::from_secs(2), "brand new");'*)
+        _s4c2_named=1 ;;
+esac
+assert "4c-2: the new record is reported by name, prefixed +" \
+    test "$_s4c2_named" -eq 1
+
+_s4c2_quiet=0
+case "$(cat "$_s4c2_tmpdir/out.txt")" in
+    *'+ '"$_s4c2_tmpdir"'/src/a.rs :: let deadline'*) ;;
+    *) _s4c2_quiet=1 ;;
+esac
+assert "4c-2: the already-baselined record is NOT reported as new" \
+    test "$_s4c2_quiet" -eq 1
+
+# ---------------------------------------------------------------------------
+# 4c-3: BASELINE COMMENTS AND BLANK LINES ARE IGNORED. The committed baseline
+#       opens with a ~55-line `#` header explaining what a row means; if the
+#       loader counted those as rows, every one of them would be a permanent
+#       stale record and the gate could never be green. Blank lines likewise.
+#       Same stripping rule as tests/infra/harness-layout-baseline.manifest
+#       (and deliberately NOT ptodo-baseline.txt, which forbids comments).
+# ---------------------------------------------------------------------------
+_s4c3_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4c3_tmpdir")
+mkdir -p "$_s4c3_tmpdir/src"
+_fixture "$_s4c3_tmpdir/src" "a.rs" \
+    '    let deadline = Instant::now() + Duration::from_secs(5);'
+_fixture "$_s4c3_tmpdir" "baseline.txt" \
+    '# a header comment' \
+    '' \
+    '    # an INDENTED comment' \
+    '   ' \
+    "$_s4c3_tmpdir/src/a.rs :: let deadline = Instant::now() + Duration::from_secs(5);" \
+    ''
+
+_s4c3_rc=0
+_wallclock_baseline_check "$_s4c3_tmpdir/baseline.txt" "$_s4c3_tmpdir/src" \
+    > "$_s4c3_tmpdir/out.txt" 2>&1 || _s4c3_rc=$?
+assert "4c-3: comment and blank lines in the baseline are not rows (returns 0)" \
+    test "$_s4c3_rc" -eq 0
+assert "4c-3: a baseline with a comment header stays silent on an exact match" \
+    test "$(cat "$_s4c3_tmpdir/out.txt")" = ""
+
+# ---------------------------------------------------------------------------
+# 4c-4: AN EMPTY BASELINE against a violating tree. The end state this ratchet
+#       is aimed at is a DRAINED baseline, so the zero-row case must behave --
+#       every live record is new, and none of them may be swallowed by an
+#       "empty baseline means nothing to compare" short circuit.
+# ---------------------------------------------------------------------------
+_s4c4_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4c4_tmpdir")
+mkdir -p "$_s4c4_tmpdir/src"
+_fixture "$_s4c4_tmpdir/src" "a.rs" \
+    '    let deadline = Instant::now() + Duration::from_secs(5);'
+_fixture "$_s4c4_tmpdir" "baseline.txt" \
+    '# nothing baselined'
+
+_s4c4_rc=0
+_wallclock_baseline_check "$_s4c4_tmpdir/baseline.txt" "$_s4c4_tmpdir/src" \
+    > "$_s4c4_tmpdir/out.txt" 2>&1 || _s4c4_rc=$?
+assert "4c-4: an empty baseline reports every live record as new (returns 1)" \
+    test "$_s4c4_rc" -eq 1
+
 test_summary
