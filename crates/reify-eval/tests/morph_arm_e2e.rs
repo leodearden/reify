@@ -299,23 +299,31 @@ fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
          zero-refire pin below is vacuous"
     );
 
-    // MEASURED STATE, NOT A DESIRED CONTRACT. The one-shot Phase-1 candidate
-    // latch (engine_build.rs:10022/:10234) means build_snapshot() — which
-    // reuses eval_state.snapshot.graph verbatim and never calls eval() — has no
-    // remaining dispatch surface for this node. So the probe cannot observe the
-    // morphed mesh, and the pre/post `tet_indices` comparison this test used to
-    // make read one thread-local slot twice.
+    // #7332 LANDED. MEASURED (release, real OCCT + gmsh): EXACTLY ONE, where
+    // the pre-fix measurement was zero.
     //
-    // WHEN #7332 LANDS THIS GOES RED. Tighten it back into a genuine
-    // pre-morph-vs-post-morph connectivity comparison (`source_tets` is still
-    // captured above for exactly that purpose) — do NOT widen it to accept a
-    // re-fire, and do NOT delete it.
+    // Why one and not another number. The redispatch-once signal is now
+    // build-scoped (`RedispatchPassState::redispatched`) instead of being read
+    // off the node's graph-lifetime `realization_inputs`, so the cold build's
+    // write no longer latches the node out of this one. `morph_box.ri` declares
+    // a SINGLE template, so `build_snapshot`'s per-template loop calls
+    // `redispatch_geometry_consuming_compute_nodes` once — and unlike the cold
+    // `build()` (2: the original `Value::Undef`-bodied dispatch plus its
+    // redispatch) the warm surface never calls `eval()`, so it has no
+    // "original dispatch" half to add.
+    //
+    // Pinned as `== 1`, not `>= 1`: a count above one would mean the pass
+    // stopped being idempotent within a build, which is exactly what
+    // `RedispatchPassState` exists to prevent.
     assert_eq!(
-        fires_across_tick, 0,
-        "#7332: the redispatch candidate gate is a one-shot latch, so the warm \
-         build_snapshot() must not re-invoke the geometry-consuming @optimized \
-         consumer. A non-zero count here means #7332 landed — restore the \
-         connectivity assertion (see this test's doc comment)"
+        fires_across_tick, 1,
+        "#7332: the warm build_snapshot() must re-invoke the geometry-consuming \
+         @optimized consumer EXACTLY once. 0 means the candidate gate went back \
+         to reading the node's `realization_inputs` — a graph-lifetime \
+         dependency record — so the cold build's write re-latched the node out \
+         of every later build. >1 means the within-build idempotence in \
+         `RedispatchPassState` broke and the pass is re-doing a node's work once \
+         per template."
     );
     // Exactly one successful morph recorded (the morph_stats RPC data source).
     // Snapshot-bound so a failure names the BUCKET, not just `left: 0, right: 1`.
