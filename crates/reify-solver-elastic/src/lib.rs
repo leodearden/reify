@@ -667,6 +667,11 @@ pub use shell_solve::{FlatPlateShellSolve, solve_flat_plate_shell};
 // Task 2996: Z-Z error indicator — kernel-layer a-posteriori error estimator.
 // PRD: docs/prds/v0_4/a-posteriori-error-estimation.md, Task decomposition #1.
 pub use error_estimator::{ZzIndicator, compute_zz_indicator};
+// Task 7452/β: goal-oriented error estimation — quantity-of-interest surface.
+// PRD: docs/prds/v0_6/goal-oriented-error-estimation.md §5.1, §6 C2–C6.
+pub use qoi::{
+    LocalDisplacementQoi, P1TetMeshRef, QoiError, QoiKind, QuantityOfInterest,
+};
 // Task 3451: buckling eigensolver kernel — shift-invert Lanczos + dense fallback.
 // Task 3882: generic shift-invert Lanczos over arbitrary SPD operator pairs.
 // PRD: docs/prds/v0_5/buckling-eigensolver.md §5 / §13 phase 2 task β.
