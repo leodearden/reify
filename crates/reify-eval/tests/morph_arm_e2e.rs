@@ -124,11 +124,15 @@ fn morph_probe_capture_fn(
     }
 }
 
-/// Read back the most-recently-captured body handle's `tet_indices`, asserting
-/// the probe actually captured a VolumeMesh (clear failure rather than an
+/// Run `f` over the most-recently-captured body handle's `VolumeMesh`,
+/// asserting the probe actually captured one (a clear failure rather than an
 /// index-out-of-bounds panic if the redispatch did not fire).
+///
+/// Two independent observations are made of each capture — its connectivity and
+/// its x-extent — so the slot read and the `volume_mesh()` unwrap live here
+/// once rather than in each accessor.
 #[cfg(has_gmsh)]
-fn captured_tet_indices(stage: &str) -> Vec<u32> {
+fn with_captured_volume_mesh<T>(stage: &str, f: impl FnOnce(&reify_ir::VolumeMesh) -> T) -> T {
     MORPH_PROBE_CAPTURED.with(|slot| {
         let captured = slot.borrow();
         assert!(
@@ -136,18 +140,41 @@ fn captured_tet_indices(stage: &str) -> Vec<u32> {
             "{stage}: the redispatch must invoke the probe with the body's \
              RealizationReadHandle; captured nothing"
         );
-        captured[0]
-            .volume_mesh()
-            .unwrap_or_else(|| {
-                panic!(
-                    "{stage}: the captured body handle's volume_mesh() must be \
-                     Some — the VolumeMesh-demand → execute → project → read path \
-                     must deliver a tet mesh, not a None-content (BRep-only) handle"
-                )
-            })
-            .tet_indices()
+        let mesh = captured[0].volume_mesh().unwrap_or_else(|| {
+            panic!(
+                "{stage}: the captured body handle's volume_mesh() must be \
+                 Some — the VolumeMesh-demand → execute → project → read path \
+                 must deliver a tet mesh, not a None-content (BRep-only) handle"
+            )
+        });
+        f(mesh)
+    })
+}
+
+/// Read back the most-recently-captured body handle's `tet_indices`.
+#[cfg(has_gmsh)]
+fn captured_tet_indices(stage: &str) -> Vec<u32> {
+    with_captured_volume_mesh(stage, |mesh| {
+        mesh.tet_indices()
             .expect("morph arm operates on tet-only meshes")
             .to_vec()
+    })
+}
+
+/// The largest vertex x-coordinate of the most-recently-captured body handle's
+/// `VolumeMesh`, in metres.
+///
+/// `VolumeMesh::vertices` is flat `[x0, y0, z0, x1, ...]`, so this is every
+/// third element reduced by max. It is the observation that answers "did the
+/// capture actually MOVE across the tick?" — connectivity alone cannot, since a
+/// morph preserves it by definition.
+#[cfg(has_gmsh)]
+fn captured_max_vertex_x(stage: &str) -> f32 {
+    with_captured_volume_mesh(stage, |mesh| {
+        mesh.vertices
+            .chunks_exact(3)
+            .map(|v| v[0])
+            .fold(f32::NEG_INFINITY, f32::max)
     })
 }
 
@@ -265,6 +292,7 @@ fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
     engine.build(&compiled, ExportFormat::Step);
     let fires_after_cold = MORPH_PROBE_INVOCATIONS.with(|n| n.get());
     let source_tets = captured_tet_indices("first build (source)");
+    let source_max_x = captured_max_vertex_x("first build (source)");
     assert!(
         !source_tets.is_empty() && source_tets.len().is_multiple_of(4),
         "source must be a valid P1 tet mesh (len % 4 == 0, > 0); got {} indices",
@@ -315,6 +343,13 @@ fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
     // Pinned as `== 1`, not `>= 1`: a count above one would mean the pass
     // stopped being idempotent within a build, which is exactly what
     // `RedispatchPassState` exists to prevent.
+    //
+    // Keep this adjacent to the two assertions below, which it guards.
+    // `MORPH_PROBE_CAPTURED` is written with `=`, so a capture taken after a
+    // tick that re-dispatched ZERO times is the COLD capture read a second
+    // time — under which `morphed_tets == source_tets` holds vacuously and the
+    // x-extent could not have moved. This count is what makes both of them
+    // claims about the morph rather than about the thread-local slot.
     assert_eq!(
         fires_across_tick, 1,
         "#7332: the warm build_snapshot() must re-invoke the geometry-consuming \
@@ -325,7 +360,56 @@ fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
          `RedispatchPassState` broke and the pass is re-doing a node's work once \
          per template."
     );
-    // Exactly one successful morph recorded (the morph_stats RPC data source).
+    // (a) CONNECTIVITY PRESERVED. A morph moves nodes and keeps elements; a
+    //     remesh would renumber and re-count them. Meaningful only because the
+    //     capture above is genuinely re-taken — see the count pin.
+    let morphed_tets = captured_tet_indices("warm rebuild (morphed)");
+    assert_eq!(
+        morphed_tets, source_tets,
+        "the morph must PRESERVE tet connectivity across a non-structural tick \
+         — identical element count and identical node ordering. A difference \
+         here means the arm silently fell back to a from-scratch remesh (which \
+         would also have to show up as morphed == 0 below), or that the morph \
+         renumbered nodes, which would break every attribution that indexes \
+         into this mesh. source {} indices, morphed {} indices",
+        source_tets.len(),
+        morphed_tets.len()
+    );
+
+    // (b) THE CAPTURE REALLY MOVED. Connectivity equality is preserved by a
+    //     morph BY DEFINITION, so on its own it cannot distinguish "the morph
+    //     ran" from "nothing happened". The geometry has to have changed too.
+    //
+    //     Primary form is threshold-free: the box grew 10mm → 10.5mm, so its
+    //     x-extent must strictly grow.
+    let morphed_max_x = captured_max_vertex_x("warm rebuild (morphed)");
+    assert!(
+        morphed_max_x > source_max_x,
+        "the morphed mesh's x-extent must have GROWN across the tick — the \
+         width went 10mm → 10.5mm. Equal extents mean the captured mesh is the \
+         pre-tick one (so the warm redispatch delivered a stale handle) or the \
+         morph displaced nothing. source_max_x = {source_max_x}, \
+         morphed_max_x = {morphed_max_x}"
+    );
+
+    //     Secondary, exact: `box(width, depth, height)` is ORIGIN-CENTRED, so
+    //     max_x is the half-width. 10mm measures -0.005..0.005, hence
+    //     0.0105 / 2 = 0.00525 m for the ticked width. The constant is derived
+    //     from that identity and the measured 10mm baseline, not tuned; the
+    //     1e-4 tolerance is well inside the 2.5e-4 gap between the two extents,
+    //     so this discriminates the morphed mesh from the source one.
+    const MORPHED_HALF_WIDTH_M: f32 = 0.00525;
+    assert!(
+        (morphed_max_x - MORPHED_HALF_WIDTH_M).abs() < 1e-4,
+        "the morphed mesh's boundary must land on the NEW box face: \
+         half-width 0.0105 / 2 = {MORPHED_HALF_WIDTH_M} m. Got \
+         morphed_max_x = {morphed_max_x} (source_max_x = {source_max_x}). A \
+         value stuck at the source half-width means the boundary nodes were \
+         never projected onto the new BRep; a value beyond it means the \
+         displacement overshot."
+    );
+
+    // (c) Exactly one successful morph recorded (the morph_stats RPC data source).
     // Snapshot-bound so a failure names the BUCKET, not just `left: 0, right: 1`.
     // This blind spot is why the task-6635 Stage A bug survived: the bare form
     // made a Stage-A over-reject, a Stage-B reject and a quality-gate reject
