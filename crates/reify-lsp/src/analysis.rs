@@ -2655,6 +2655,84 @@ mod tests {
         }
     }
 
+    /// Map a parsed declaration to a dense index over the NAMED `Declaration`
+    /// variants — a SECOND wildcard-free match, existing only so that adding a
+    /// variant is a compile error here too.
+    ///
+    /// [`decl_name_and_span`]'s exhaustive match already forces a new variant to
+    /// get an explicit named-vs-unnamed decision. It does NOT force the FIXTURE
+    /// that exercises it: a new variant plus its arm compiles and passes with no
+    /// [`NAMED_DECL_SNIPPETS`] row, leaving both per-kind tests silently
+    /// under-covering the new kind — the exact silent-omission failure mode the
+    /// design claims to eliminate. Paired with
+    /// `named_decl_snippets_cover_every_named_kind` below, this extends the
+    /// forcing function from the oracle to its fixture.
+    fn kind_index(decl: &Declaration) -> Option<u8> {
+        match decl {
+            Declaration::Structure(_) => Some(0),
+            Declaration::Occurrence(_) => Some(1),
+            Declaration::Enum(_) => Some(2),
+            Declaration::Function(_) => Some(3),
+            Declaration::Trait(_) => Some(4),
+            Declaration::Field(_) => Some(5),
+            Declaration::Purpose(_) => Some(6),
+            Declaration::Constraint(_) => Some(7),
+            Declaration::Unit(_) => Some(8),
+            Declaration::TypeAlias(_) => Some(9),
+            Declaration::Joint(_) => Some(10),
+            Declaration::Import(_) => None,
+            Declaration::Module(_) => None,
+            Declaration::Default(_) => None,
+        }
+    }
+
+    /// The number of NAMED `Declaration` variants: the `Some` arms of
+    /// [`kind_index`], which are the named arms of [`decl_name_and_span`].
+    const NAMED_KIND_COUNT: u8 = 11;
+
+    #[test]
+    fn named_decl_snippets_cover_every_named_kind() {
+        let mut seen: Vec<u8> = Vec::new();
+        for (source, expected_name) in NAMED_DECL_SNIPPETS {
+            let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+            assert!(
+                parsed.errors.is_empty(),
+                "snippet must parse clean, got {:?} for source: {source}",
+                parsed.errors
+            );
+            assert_eq!(
+                parsed.declarations.len(),
+                1,
+                "expected exactly one declaration for source: {source}"
+            );
+
+            let index = kind_index(&parsed.declarations[0]).unwrap_or_else(|| {
+                panic!(
+                    "row {expected_name:?} parsed to an UNNAMED declaration kind, \
+                     so it covers none of the named kinds: {source}"
+                )
+            });
+            assert!(
+                !seen.contains(&index),
+                "two rows parse to the same kind (index {index}), which leaves \
+                 another named kind with no snippet at all: {source}"
+            );
+            seen.push(index);
+        }
+
+        seen.sort_unstable();
+        assert_eq!(
+            seen,
+            (0..NAMED_KIND_COUNT).collect::<Vec<u8>>(),
+            "NAMED_DECL_SNIPPETS must hold exactly one snippet per NAMED \
+             Declaration variant. A variant newly admitted to `decl_name_and_span` \
+             and `kind_index` needs a row here too, or \
+             `decl_name_and_span_returns_name_and_span_for_every_named_kind` and \
+             `goto_def::tests::goto_def_cursor_on_declaration_name_resolves_for_every_kind` \
+             silently under-cover it."
+        );
+    }
+
     #[test]
     fn decl_name_and_span_returns_none_for_unnamed_kinds() {
         // The three variants that declare no name of their own: Import binds a
