@@ -86,8 +86,8 @@ structure SimplySupportedBeamModes {
     // leniently, leaving `element_order` at its `ElementOrder.P1` default and
     // quietly reinstating the bending lock this fixture exists to avoid. The
     // binder rule, the lenient fallback and the CURRENT severity are stated
-    // once, in `misspelled_ctor_label_is_diagnosed_but_still_leniently_appended`
-    // (crates/reify-compiler/tests/modal_options_validation_tests.rs).
+    // once, in
+    // `crates/reify-compiler/tests/harness_mechanics/modal_options_validation_tests.rs::misspelled_ctor_label_is_diagnosed_but_still_leniently_appended`.
     // n_modes = 8 (not 3): this beam is wide (b=10mm) and thin (h=2mm), so the
     // lateral Y-bending family is ≈ (b/h) = 5× stiffer in frequency than the
     // vertical Z-bending family. The first lateral mode (≈ 5·f₁,z ≈ 579 Hz) lands

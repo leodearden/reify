@@ -32,9 +32,8 @@
 // at its `ElementOrder.P1` default and quietly reinstating the bending lock
 // this fixture exists to avoid. The binder rule, the lenient fallback and the
 // CURRENT severity are stated once, in
-// `misspelled_ctor_label_is_diagnosed_but_still_leniently_appended`
-// (crates/reify-compiler/tests/modal_options_validation_tests.rs). Mirrors the
-// `let opts = ModalOptions(...)` pattern in
+// `crates/reify-compiler/tests/harness_mechanics/modal_options_validation_tests.rs::misspelled_ctor_label_is_diagnosed_but_still_leniently_appended`.
+// Mirrors the `let opts = ModalOptions(...)` pattern in
 // examples/modal/cantilever_beam_modes.ri.
 
 structure BucklingColumnP2 {
