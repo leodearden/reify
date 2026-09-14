@@ -25,8 +25,8 @@
 
 use reify_compiler::CompiledModule;
 use reify_core::{DiagnosticCode, Severity, Type};
-use reify_ir::{CompiledExpr, CompiledExprKind, Value};
-use reify_test_support::compile_source_with_stdlib;
+use reify_ir::{CompiledExprKind, Value};
+use reify_test_support::{compile_source_with_stdlib, get_let_expr_in};
 
 // ── helpers (mirror enum_generic_construction_inference_tests.rs) ──────────
 
@@ -48,24 +48,6 @@ fn has_error_code(module: &CompiledModule, code: DiagnosticCode) -> bool {
         .diagnostics
         .iter()
         .any(|d| d.severity == Severity::Error && d.code == Some(code))
-}
-
-/// Locate the compiled default/init expr of the named value cell (`param` or
-/// `let`) on the `Widget` structure's `TopologyTemplate`.
-fn widget_value_cell<'a>(module: &'a CompiledModule, member: &str) -> &'a CompiledExpr {
-    let widget = module
-        .templates
-        .iter()
-        .find(|t| t.name == "Widget")
-        .expect("Widget template should be present in module.templates");
-    let cell = widget
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == member)
-        .unwrap_or_else(|| panic!("Widget should declare a '{member}' value cell"));
-    cell.default_expr
-        .as_ref()
-        .unwrap_or_else(|| panic!("'{member}' value cell should carry a compiled default_expr"))
 }
 
 /// Build a `structure def` source whose single param `r : <annotation>`
@@ -134,7 +116,7 @@ fn prelude_ok_construction_infers_cleanly_and_builds_enum_value() {
         error_codes(&module)
     );
 
-    let expr = widget_value_cell(&module, "r");
+    let expr = get_let_expr_in(&module, "Widget", "r");
     assert_eq!(
         expr.result_type,
         Type::Enum("Result".to_string()),
@@ -202,7 +184,7 @@ fn prelude_err_construction_checks_clean_and_builds_enum_value() {
         error_codes(&module)
     );
 
-    let expr = widget_value_cell(&module, "e");
+    let expr = get_let_expr_in(&module, "Widget", "e");
     assert_eq!(
         expr.result_type,
         Type::Enum("Result".to_string()),
@@ -351,7 +333,7 @@ fn local_result_enum_coexists_with_prelude_result_and_prelude_wins_first_match()
         error_codes(&module)
     );
 
-    let expr = widget_value_cell(&module, "r");
+    let expr = get_let_expr_in(&module, "Widget", "r");
     match &expr.kind {
         CompiledExprKind::Literal(Value::Enum { payload, .. }) => {
             assert_eq!(
