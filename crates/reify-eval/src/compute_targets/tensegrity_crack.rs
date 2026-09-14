@@ -833,4 +833,167 @@ mod tests {
             "must locate the entry, not merely the list: {err}"
         );
     }
+
+    // ---- crack_loads (task #6535) -------------------------------------------
+    //
+    // The VECTOR lifting of `crack_dimensioned_scalar`, exactly as
+    // `crack_scalar_list` above is its LIST lifting: it reads each of a load
+    // entry's three components through that cracker and labels them
+    // `loads[{i}].{x|y|z}`. It was the THIRD near-verbatim pair across
+    // `tensegrity_load.rs` and `membrane_load.rs`, the two copies differing only
+    // in their hardcoded `E_*Infeasible` mnemonic — so, as with the two pairs
+    // above, the wrong-unit message is asserted against BOTH real caller
+    // (code, hint) pairs. That cross-pair assertion is what proves neither
+    // mnemonic nor hint got baked back into the shared helper.
+
+    /// A Force-typed `Scalar` (SI newtons) — a well-formed load component.
+    fn force(n: f64) -> Value {
+        Value::Scalar {
+            si_value: n,
+            dimension: DimensionVector::FORCE,
+        }
+    }
+
+    /// A Length-typed `Scalar` (SI metres) — the wrong unit in a load slot, and
+    /// the realistic mistake: a `point3`-shaped literal passed as a load.
+    fn length(m: f64) -> Value {
+        Value::Scalar {
+            si_value: m,
+            dimension: DimensionVector::LENGTH,
+        }
+    }
+
+    /// Both container spellings read. `Value::Vector` and `Value::Point` share
+    /// one or-pattern arm in both copies today — a `point3(..)` literal lowers
+    /// to `Point`, a `vec3(..)` to `Vector`, and a load list may legitimately
+    /// carry either — so that acceptance must survive the hoist.
+    #[test]
+    fn crack_loads_accepts_vector_and_point_entries() {
+        let entries = Value::List(vec![
+            Value::Vector(vec![force(1.0), force(2.0), force(3.0)]),
+            Value::Point(vec![force(4.0), force(5.0), force(6.0)]),
+        ]);
+        assert_eq!(
+            crack_loads(&entries, TL_CODE, TL_HINT),
+            Ok(vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]),
+        );
+    }
+
+    /// The bare-`Real` ergonomic escape hatch is inherited per COMPONENT from
+    /// [`crack_dimensioned_scalar`], so a `[0, 0, -50]`-style literal keeps
+    /// working alongside dimensioned components in the same entry.
+    #[test]
+    fn crack_loads_accepts_bare_real_components() {
+        let entries = Value::List(vec![Value::Vector(vec![
+            Value::Real(0.0),
+            force(0.0),
+            Value::Real(-50.0),
+        ])]);
+        assert_eq!(
+            crack_loads(&entries, TL_CODE, TL_HINT),
+            Ok(vec![[0.0, 0.0, -50.0]]),
+        );
+    }
+
+    /// THE load-bearing test: the located `loads[{i}].{x|y|z}` labelling, pinned
+    /// by full-string equality against BOTH real caller pairs. An author who put
+    /// a Length in the y component of their second load must be told exactly
+    /// that — which entry, and which of its three numbers.
+    #[test]
+    fn crack_loads_labels_the_offending_entry_and_component() {
+        let second_entry_y_wrong = Value::List(vec![
+            Value::Vector(vec![force(0.0), force(0.0), force(0.0)]),
+            Value::Vector(vec![force(0.0), length(50.0), force(0.0)]),
+        ]);
+
+        let tl_err = crack_loads(&second_entry_y_wrong, TL_CODE, TL_HINT).unwrap_err();
+        assert_eq!(
+            tl_err,
+            "E_TensegrityLoadInfeasible: loads[1].y has the wrong unit — expected a Force; \
+             check the call argument order (youngs_modulus is a Pressure, area is an Area, and \
+             prestress / loads are Forces)"
+        );
+
+        let ml_err = crack_loads(&second_entry_y_wrong, ML_CODE, ML_HINT).unwrap_err();
+        assert_eq!(
+            ml_err,
+            "E_MembraneLoadInfeasible: loads[1].y has the wrong unit — expected a Force; \
+             check the call argument order (youngs_modulus / membrane_youngs are Pressures, \
+             area is an Area, membrane_thickness is a Length, and prestress / loads are Forces)"
+        );
+
+        // Guards against all three degenerate labellings: a constant entry
+        // index, a bare `loads` with no index at all, and the `.x` component
+        // label copy-pasted across all three reads.
+        assert!(!tl_err.contains("loads[0]"), "must name entry 1: {tl_err}");
+        assert!(
+            tl_err.contains("loads[1]"),
+            "must carry a located index: {tl_err}"
+        );
+        assert!(
+            !tl_err.contains(".x"),
+            "must name the y component, not a constant .x: {tl_err}"
+        );
+    }
+
+    /// The other two component letters, so all three are pinned distinct and
+    /// positionally correct. The whole-message shape is already pinned above, so
+    /// these stay compact.
+    #[test]
+    fn crack_loads_labels_each_component_letter() {
+        let first_entry_x_wrong = Value::List(vec![Value::Vector(vec![
+            length(1.0),
+            force(0.0),
+            force(0.0),
+        ])]);
+        assert!(
+            crack_loads(&first_entry_x_wrong, TL_CODE, TL_HINT)
+                .unwrap_err()
+                .contains("loads[0].x")
+        );
+
+        let third_entry_z_wrong = Value::List(vec![
+            Value::Vector(vec![force(0.0), force(0.0), force(0.0)]),
+            Value::Vector(vec![force(0.0), force(0.0), force(0.0)]),
+            Value::Vector(vec![force(0.0), force(0.0), length(1.0)]),
+        ]);
+        assert!(
+            crack_loads(&third_entry_z_wrong, TL_CODE, TL_HINT)
+                .unwrap_err()
+                .contains("loads[2].z")
+        );
+    }
+
+    /// The list-SHAPE arm: `loads` is not a list at all. Carries the mnemonic
+    /// but no unit advice — the unit is not the problem. The `{other:?}` Debug
+    /// tail is deliberately left unpinned, as in `crack_scalar_list_rejects_non_list`.
+    #[test]
+    fn crack_loads_rejects_non_list() {
+        let err = crack_loads(&Value::Real(1.0), TL_CODE, TL_HINT).unwrap_err();
+        assert!(
+            err.starts_with(
+                "E_TensegrityLoadInfeasible: loads must be a list of 3-component force vectors, \
+                 got "
+            ),
+            "unexpected list-shape message: {err}"
+        );
+    }
+
+    /// The entry-ARITY arm: a 2-component entry is not a force vector. The entry
+    /// index is located here too, so a nine-node payload with one short vector
+    /// names the offender rather than the list.
+    #[test]
+    fn crack_loads_rejects_wrong_arity_entry() {
+        let second_entry_short = Value::List(vec![
+            Value::Vector(vec![force(0.0), force(0.0), force(0.0)]),
+            Value::Vector(vec![force(0.0), force(0.0)]),
+        ]);
+        let err = crack_loads(&second_entry_short, TL_CODE, TL_HINT).unwrap_err();
+        assert!(
+            err.starts_with(
+                "E_TensegrityLoadInfeasible: loads[1] must be a 3-component force vector, got "
+            ),
+            "unexpected entry-arity message: {err}"
+        );
+    }
 }
