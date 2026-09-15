@@ -507,8 +507,16 @@ _wallclock_fingerprints() {
     # lines) takes ~0.13s end to end -- about 0.10s of it the grep itself, over
     # a 0.10-0.44s spread across eight runs on a busy host. The loop at that
     # scale would cost ~30s in a gate that is supposed to be instant.
+    # `-a` IS NOT OPTIONAL. Without it GNU grep stops at the first NUL byte in
+    # a file, prints "binary file matches" to STDERR and contributes NOTHING to
+    # the captured stdout -- so a violating line in such a file would vanish
+    # from the record stream while rc stayed 0, and the guard would report "we
+    # looked, and there were none" about a file it never read. The floor cannot
+    # notice, because it counts with `find` and still counts the skipped file.
+    # A silent skip is the one failure mode this guard is built not to have
+    # (fixture 4e-8).
     local _hits _rc=0
-    _hits="$(grep -rnE --include='*.rs' -e "$_rule_a" -e "$_rule_b" -- "$@")" || _rc=$?
+    _hits="$(grep -arnE --include='*.rs' -e "$_rule_a" -e "$_rule_b" -- "$@")" || _rc=$?
     [ "$_rc" -le 1 ] || return "$_rc"
 
     # Escape filtering is its own pass for the same reason: it is one fork,
@@ -759,8 +767,11 @@ _count_rust_wallclock_escapes() {
     # per line. `-n` keeps the "file:lineno: <content>" listing the contract
     # below promises. rc 1 means zero escapes -- a legitimate answer, not a
     # failure -- so only rc >= 2 propagates.
+    # `-a` for the same reason as the engine, in the more dangerous direction:
+    # a skipped file lowers the COUNT, and Section 3 compares that count against
+    # _ESC_ALLOWLIST_SIZE for equality (fixture 4e-9).
     local _hits _rc=0
-    _hits="$(grep -rnE --include='*.rs' -e "$_esc_re" -- "$@")" || _rc=$?
+    _hits="$(grep -arnE --include='*.rs' -e "$_esc_re" -- "$@")" || _rc=$?
     [ "$_rc" -le 1 ] || return "$_rc"
 
     if [ -z "$_hits" ]; then
@@ -2205,6 +2216,44 @@ _wallclock_files_scanned "$_s4e7_tmpdir/notadir.rs" \
     > "$_s4e7_tmpdir/out.txt" 2>&1 || _s4e7_rc=$?
 assert "4e-7: a root that is a file, not a directory, is a hard error (non-zero)" \
     test "$_s4e7_rc" -ne 0
+
+# ---------------------------------------------------------------------------
+# 4e-8: A FILE GREP WOULD CLASSIFY AS BINARY IS STILL SCANNED. The floor above
+#       counts a root's .rs files with `find`, so it counts a file whether or
+#       not grep can read it -- which leaves room for a skip the floor cannot
+#       see. GNU grep stops at the first NUL byte in a file and reports
+#       "binary file matches" on STDERR, contributing NOTHING to the captured
+#       record stream: the guard would then say "we looked, and there were
+#       none" about a file it never read. That is the same vacuity hole this
+#       section exists to close, one layer down -- and a SILENT one, which is
+#       against the whole design. `-a` is what makes the scan total.
+#
+#       A NUL in a .rs file is not a realistic thing to write by hand. It is
+#       a realistic thing to arrive by accident (a bad merge, a truncated
+#       checkout, a generated file), and the failure direction is the bad one:
+#       the violation disappears rather than announcing itself.
+# ---------------------------------------------------------------------------
+_s4e8_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4e8_tmpdir")
+printf 'fn stray() {}\n\0\nlet deadline = Instant::now() + Duration::from_secs(5);\n' \
+    > "$_s4e8_tmpdir/nul.rs"
+
+_s4e8_out="$(_wallclock_fingerprints "$_s4e8_tmpdir" 2>/dev/null || true)"
+assert "4e-8: a violation after a NUL byte is still fingerprinted, not silently skipped" \
+    test "$_s4e8_out" = "$_s4e8_tmpdir/nul.rs :: let deadline = Instant::now() + Duration::from_secs(5);"
+
+# ---------------------------------------------------------------------------
+# 4e-9: THE SAME FOR THE ESCAPE COUNTER, where the skip is worse. A missed
+#       violation is a missed red; a missed ESCAPE moves the count AWAY from
+#       _ESC_ALLOWLIST_SIZE, and two cancelling skips would move it back
+#       toward the allowlist -- a number Section 3 trusts to be exact.
+# ---------------------------------------------------------------------------
+_s4e9_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4e9_tmpdir")
+printf 'fn stray() {}\n\0\nlet a = Instant::now() + Duration::from_secs(1); // %s -- reason\n' \
+    "$_ESC_TOKEN" > "$_s4e9_tmpdir/nul.rs"
+
+_s4e9_count="$(_count_rust_wallclock_escapes "$_s4e9_tmpdir" 2>/dev/null)"
+assert "4e-9: an escape after a NUL byte is still counted" \
+    test "$_s4e9_count" -eq 1
 
 # ===========================================================================
 # Section 4f: ROOT-SET COMPLETENESS -- is the root LIST itself right?
