@@ -153,7 +153,7 @@ fn constraint_violation_set_thickness_1mm() {
     let state = {
         let mut session = engine.lock().unwrap();
         session
-            .set_parameter("Bracket.thickness", "1mm")
+            .preview_parameter("Bracket.thickness", "1mm")
             .expect("set thickness should succeed")
     };
 
@@ -427,7 +427,7 @@ fn constraint_violation_and_recovery() {
 
     // Set thickness=1mm → violates "thickness > 2mm"
     let state = session
-        .set_parameter("Bracket.thickness", "1mm")
+        .preview_parameter("Bracket.thickness", "1mm")
         .expect("set thickness=1mm");
 
     let violated_count = state
@@ -453,7 +453,7 @@ fn constraint_violation_and_recovery() {
 
     // Set back to 5mm → all satisfied again
     let state = session
-        .set_parameter("Bracket.thickness", "5mm")
+        .preview_parameter("Bracket.thickness", "5mm")
         .expect("set thickness=5mm");
 
     for c in &state.constraints {
@@ -891,7 +891,7 @@ fn set_parameter_impl_recovers_from_poisoned_mutex() {
             .values
             .iter()
             .any(|v| v.cell_id == "Bracket.thickness" && v.value == "5" && v.unit == "mm"),
-        "set_parameter should have applied thickness=5mm after poison recovery"
+        "set_parameter_impl should have applied thickness=5mm after poison recovery"
     );
 }
 
@@ -899,7 +899,7 @@ fn set_parameter_impl_recovers_from_poisoned_mutex() {
 /// (`sync_observed_demand_impl`) registers the GUI's observed-demand sources
 /// through the same `&Mutex<EngineSession>` session shim the other command
 /// tests use, leaves production evaluation unchanged, and the NEXT
-/// `set_parameter` surfaces the passive would-prune measurement on the returned
+/// `set_parameter_impl` surfaces the passive would-prune measurement on the returned
 /// `GuiState.demand_prune_measurement`.
 ///
 /// RED until `sync_observed_demand_impl` exists (step-9).
@@ -910,7 +910,7 @@ fn sync_observed_demand_impl_is_zero_behavior_change_and_surfaces_measurement() 
     // ── Control: drive the edit through the command shim with NO sync. ────────
     let control = Mutex::new(make_loaded_session());
     let control_state =
-        set_parameter_impl(&control, "Bracket.thickness", "2mm").expect("control set_parameter");
+        set_parameter_impl(&control, "Bracket.thickness", "2mm").expect("control set_parameter_impl");
 
     // ── Synced: register the visible realization R0 + the displayed thickness
     //    cell through the COMMAND shim before the edit. No panel constraints, so
@@ -924,7 +924,7 @@ fn sync_observed_demand_impl_is_zero_behavior_change_and_surfaces_measurement() 
     )
     .expect("sync_observed_demand_impl should succeed");
     let synced_state =
-        set_parameter_impl(&synced, "Bracket.thickness", "2mm").expect("synced set_parameter");
+        set_parameter_impl(&synced, "Bracket.thickness", "2mm").expect("synced set_parameter_impl");
 
     // (a) Zero behavior change through the command path: parameter values are
     //     byte-identical to the no-sync control.
@@ -1014,7 +1014,7 @@ fn engine_state_json_surfaces_demand_prune_measurement_and_last_dispatch_count_p
         &[],
     )
     .expect("sync_observed_demand_impl should succeed");
-    set_parameter_impl(&synced, "Bracket.thickness", "2mm").expect("synced set_parameter");
+    set_parameter_impl(&synced, "Bracket.thickness", "2mm").expect("synced set_parameter_impl");
 
     // Project the engine state through the debug-MCP helper.
     let mut session = synced
@@ -1321,7 +1321,7 @@ fn demand_dispatch_json_attributes_zero_dispatch_to_hidden_body() {
     // Hide body_b (R1): only body_a (R0) is visible/demanded.
     sync_demand_impl(&synced, &[body_a_key.to_string()]).expect("sync_demand_impl should succeed");
     // Slider edit drives the warm selective tessellate (body_b stays pruned).
-    set_parameter_impl(&synced, "SelectiveMultiBody.w", "12mm").expect("slider set_parameter");
+    set_parameter_impl(&synced, "SelectiveMultiBody.w", "12mm").expect("slider set_parameter_impl");
 
     let mut session = synced
         .into_inner()
@@ -1451,9 +1451,9 @@ fn debug_mcp_selective_demand_boundary_rows_2_3_4() {
     let ticks = ["12mm", "16mm", "20mm"];
     for (i, w) in ticks.iter().enumerate() {
         set_parameter_impl(&session, w_cell, w)
-            .unwrap_or_else(|e| panic!("tick {i}: set_parameter({w}) must succeed: {e}"));
+            .unwrap_or_else(|e| panic!("tick {i}: set_parameter_impl({w}) must succeed: {e}"));
 
-        // `demand_dispatch_json` is a PURE engine read reflecting set_parameter's
+        // `demand_dispatch_json` is a PURE engine read reflecting the edit's
         // internal tessellate — read it BEFORE any re-tessellating projection so
         // body_a's freshly-dirtied dispatch is still visible (a later
         // `engine_state_json` re-tessellate would find body_a cached → 0).
@@ -2106,7 +2106,7 @@ fn get_initial_state_impl_runs_correctly_through_worker() {
 /// The cell id is DISCOVERED from the engine's own initial state rather than
 /// hardcoded, so the guard cannot rot into a no-op if the fixture's parameter
 /// names change; setting a cell to its OWN current value keeps the edit a
-/// genuine round-trip through `set_parameter` without changing the model.
+/// genuine round-trip through `preview_parameter` without changing the model.
 ///
 /// The round trip has to REJOIN `ValueData`'s two halves to be a round trip at
 /// all — see the comment on `value` below.
@@ -3152,13 +3152,13 @@ fn rigid_mass_props_determined_across_all_gui_load_paths() {
 /// docs), and the granularity a `: Rigid` body's entity-level mass-prop cells
 /// actually live at.
 ///
-/// Body A's `depth` is hoisted into a defaulted `param` so a warm `set_parameter`
+/// Body A's `depth` is hoisted into a defaulted `param` so a warm `preview_parameter`
 /// can re-dispatch body A while body B stays hash-exempt
 /// (`warm_edit_does_not_collaterally_drop_another_bodys_retained_mass_props`). It
 /// is INERT for the consumers that never edit: at load `depth = 300mm`, so the box
 /// receives the same scalar args a literal would give it, and
 /// `compute_realization_upstream_values_hash_from_ops` folds the op's arg VALUES —
-/// the input cone only moves once `set_parameter` is actually called. That is why
+/// the input cone only moves once `preview_parameter` is actually called. That is why
 /// one fixture serves all three consumers; an earlier round carried a second,
 /// literal-armed copy of this source on a constant-cone premise that hoisting does
 /// not in fact disturb.
@@ -3449,7 +3449,7 @@ fn degenerate_geometry_after_rebuild_clears_the_retained_mass_props() {
 /// `density_scale : Real` rather than a `Density`-typed param is deliberate, but
 /// the ORIGINAL reason has expired. It was that `parse_value_string` (engine.rs)
 /// knew only a five-entry `deg`/`rad`/`mm`/`cm`/`m` table, so a `Density`-typed
-/// param was not editable through `set_parameter` at all. Task #5757 retired that
+/// param was not editable through `preview_parameter` at all. Task #5757 retired that
 /// table for an index composed from the curated display ladders plus
 /// `reify_core::BUILTIN_UNITS`, and `kg/m^3` now resolves — so a `Density` param
 /// IS editable today.
@@ -3483,7 +3483,7 @@ const RIGID_DENSITY_SCALE_SRC: &str = r#"structure def RigidDensityScale : Rigid
 /// RED before the accompanying `engine.rs` change, and the chain is entirely
 /// measurable on this branch:
 ///
-///  * `set_parameter` (engine.rs) commits through `core.commit_check`, which
+///  * `preview_parameter` (engine.rs) commits through `core.commit_check`, which
 ///    touches only `last_check`. The `geometry_derived_cache.clear()` lives in
 ///    `commit_state`, which a warm edit NEVER reaches — so retention survives the
 ///    edit untouched.
@@ -3530,8 +3530,8 @@ fn warm_edit_of_a_non_op_arg_mass_input_does_not_replay_a_stale_mass() {
     // (2) The warm edit. `density_scale` doubles the body's density, so every
     //     mass prop is now wrong by construction — but no geometry op arg moved.
     let state = session
-        .set_parameter("RigidDensityScale.density_scale", "2.0")
-        .expect("set_parameter should succeed for the Real density multiplier");
+        .preview_parameter("RigidDensityScale.density_scale", "2.0")
+        .expect("preview_parameter should succeed for the Real density multiplier");
     let scale = state
         .values
         .iter()
@@ -3573,7 +3573,7 @@ fn warm_edit_of_a_non_op_arg_mass_input_does_not_replay_a_stale_mass() {
 ///
 /// Expected GREEN both before and after the accompanying `engine.rs` change: it
 /// exists to forbid the obvious over-correction. A blunt
-/// `geometry_derived_cache.clear()` on every `set_parameter` would drop every
+/// `geometry_derived_cache.clear()` on every `preview_parameter` would drop every
 /// UNAFFECTED entity's retention too, and those entities stay hash-exempt until
 /// the next recompile — so their mass-prop cells would read `Undef` indefinitely,
 /// which is #5338 itself, re-opened for every body the user did not touch. This
@@ -3601,8 +3601,8 @@ fn warm_edit_does_not_collaterally_drop_another_bodys_retained_mass_props() {
 
     // (2) Edit ONE body's op arg.
     let state = session
-        .set_parameter("RigidBodyA.depth", "250mm")
-        .expect("set_parameter should succeed for body A's depth");
+        .preview_parameter("RigidBodyA.depth", "250mm")
+        .expect("preview_parameter should succeed for body A's depth");
     let depth = state
         .values
         .iter()

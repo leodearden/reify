@@ -139,7 +139,7 @@ mod core_state {
     /// - `commit_state` — five-field atomic commit after a successful compile cycle
     ///   (`file_path` is updated when `FilePathUpdate::Set` is passed; `FilePathUpdate::Preserve`
     ///   leaves it unchanged)
-    /// - `commit_check` — single-field commit for `last_check` (used by `set_parameter`)
+    /// - `commit_check` — single-field commit for `last_check` (used by `preview_parameter`)
     ///
     /// `engine_mut()` exposes `&mut Engine` for method dispatch and does not touch the
     /// invariant-bearing fields.  The `#[cfg(test)]` mutators (`break_module_name`,
@@ -229,11 +229,11 @@ mod core_state {
         /// Atomically commit a fresh `CheckResult` into `last_check`.
         ///
         /// This is the **single** write-point for `last_check` used by
-        /// `EngineSession::set_parameter` after a successful `engine.edit_check`.
+        /// `EngineSession::preview_parameter` after a successful `engine.edit_check`.
         /// Callers may rely on this method touching **only** `last_check` — no
         /// other core field is modified.  This guarantee is what lets
         /// `engine_lock::with_engine_lock` safely recover from a poisoned mutex:
-        /// a panic inside `set_parameter` between `edit_check` and `commit_check`
+        /// a panic inside `preview_parameter` between `edit_check` and `commit_check`
         /// leaves `last_check` as the previous value, not a partially-updated one.
         pub(crate) fn commit_check(&mut self, check: CheckResult) {
             self.last_check = Some(check);
@@ -618,7 +618,7 @@ pub struct EngineSession {
     ///   result is never served as Final") is discharged, so every entry reaching
     ///   a rebuild belongs to a demanded ENTITY. See that method for the
     ///   entity-vs-realization granularity limitation qualifying it;
-    /// * `invalidate_geometry_derived_cache_for_entity`, from `set_parameter` —
+    /// * `invalidate_geometry_derived_cache_for_entity`, from `preview_parameter` —
     ///   the warm edit whose realization stays hash-exempt, where no fresh delta
     ///   entry can ever exist to outrank the retained one.
     ///
@@ -745,7 +745,7 @@ pub trait SolveCancellationSink: Send + Sync {
 /// RAII guard that fires `sink.solve_finished()` on drop.
 ///
 /// Ensures `solve_finished` is called even if the surrounding block exits
-/// via a `?` early-return (e.g., the `edit_check` path in `set_parameter`).
+/// via a `?` early-return (e.g., the `edit_check` path in `preview_parameter`).
 /// When the sink is `None`, `drop` is a no-op.
 struct SolveFinishedGuard(Option<Arc<dyn SolveCancellationSink>>);
 
@@ -1549,7 +1549,7 @@ impl EngineSession {
         // every slider tick, so a reset there would wipe warm shapes on each
         // parameter change; reify-eval Engine::check()/build() are also reached
         // by CLI build() and relate_solve sub-builds. The slider path
-        // (set_parameter → edit_check) deliberately BYPASSES check_with_solve_slot,
+        // (preview_parameter → edit_check) deliberately BYPASSES check_with_solve_slot,
         // so a parameter drag never triggers a reset — exactly the behaviour the
         // reload-wiring regression test pins.
         self.core.engine_mut().reset_geometry_for_reload();
@@ -1600,7 +1600,7 @@ impl EngineSession {
     /// The single post-engine-call telemetry choke-point (INV-GUI-2).
     ///
     /// Every engine-mutating entry point (`check_and_emit_for_test`,
-    /// `load_from_source`, `set_parameter`, `load_file`, `update_source`,
+    /// `load_from_source`, `preview_parameter`, `load_file`, `update_source`,
     /// `load_from_compiled`) calls this ONE method after committing state,
     /// instead of hand-rolling its own copy of the five-call emit sequence.
     /// Collapsing to a single call site means every entry point fires the
@@ -1608,7 +1608,7 @@ impl EngineSession {
     /// source-introspection guard for this; the invariant is enforced by each
     /// entry point's own behavioral emitter regression test (e.g.
     /// `load_from_compiled_emits_fea_diagnostics`,
-    /// `fea_diagnostics_emitter_fires_on_set_parameter`), which fails if that
+    /// `fea_diagnostics_emitter_fires_on_preview_parameter`), which fails if that
     /// entry point ever stops routing through here.
     ///
     /// Accepted tradeoff (awareness, not enforcement): the entry-point list
@@ -1740,7 +1740,7 @@ impl EngineSession {
     }
 
     /// Return a reference to the last `CheckResult` produced by `load_from_source`,
-    /// `load_file`, `update_source`, or `set_parameter`.
+    /// `load_file`, `update_source`, or `preview_parameter`.
     ///
     /// Mirrors the established `#[cfg(test)] pub(crate)` test-support pattern
     /// (emit_fea_case_for_test_with_result, drain_and_emit_warm_pool_events_for_test,
@@ -2192,7 +2192,7 @@ impl EngineSession {
         // Emit auto-resolve events after committing state.
         //
         // Cross-cutting ordering invariant: all four mutating entry points
-        // (load_from_source, load_file, update_source, set_parameter) emit AFTER all
+        // (load_from_source, load_file, update_source, preview_parameter) emit AFTER all
         // session state mutations are committed.  Combined with `core.commit_state` /
         // `core.commit_check` writing `last_check` unconditionally, a panic during state
         // commit cannot leak phantom auto-resolve events to the GUI.
@@ -2206,8 +2206,8 @@ impl EngineSession {
     /// otherwise.
     ///
     /// Both entry points that mutate a parameter's value run it — the ephemeral
-    /// engine-state edit ([`Self::set_parameter`], what the property-panel
-    /// slider drives today, which needs the type to make its parse
+    /// engine-state edit ([`Self::preview_parameter`], what the frames of a
+    /// slider drag drive, which needs the type to make its parse
     /// dimension-aware per task #5757) and the INV-GUI-3 source write-back
     /// ([`Self::resolve_rewritable_default_span`], which
     /// [`Self::apply_param_to_source`] resolves through and which needs only the
@@ -2223,7 +2223,7 @@ impl EngineSession {
     ///
     /// The type is BORROWED out of `compiled()` rather than cloned, so the
     /// existence-only caller ([`Self::require_known_cell`], the write-back's
-    /// gate) pays nothing for a value it discards. `set_parameter`, the one
+    /// gate) pays nothing for a value it discards. `preview_parameter`, the one
     /// caller that genuinely needs an owned `Type` — it needs `&mut self`
     /// afterwards, which this borrow would block — clones at its own call site.
     fn resolve_known_cell_type(
@@ -2247,14 +2247,15 @@ impl EngineSession {
     /// `cell_id` names a value cell of some compiled template.
     ///
     /// The write-back path splices a source literal and has no use for the
-    /// declared type — but it must refuse exactly the cell ids `set_parameter`
+    /// declared type — but it must refuse exactly the cell ids `preview_parameter`
     /// refuses, so it asks the same function and discards the type rather than
     /// carrying a second predicate.
     fn require_known_cell(&self, cell_id: &ValueCellId, cell_id_str: &str) -> Result<(), String> {
         self.resolve_known_cell_type(cell_id, cell_id_str).map(|_| ())
     }
 
-    /// Set a parameter value by cell ID string and value string.
+    /// Show `value_str` for `cell_id_str` as TRANSIENT drag feedback, without
+    /// making it durable.
     ///
     /// `cell_id_str` is "Entity.member" (e.g., "Bracket.width").
     /// `value_str` is a quantity literal (e.g., "120mm"), a boolean, or — for an
@@ -2262,7 +2263,24 @@ impl EngineSession {
     /// plain number. A plain number for a covered dimension is refused with a
     /// message naming a rung of that cell's own ladder; `parse_value_string_for_cell`
     /// owns that rule and states why it is keyed on expressibility (task #5757).
-    pub fn set_parameter(
+    ///
+    /// # This is a preview, and previews expire
+    ///
+    /// The edit lands in `last_check` and NOWHERE else: `source_map` and the
+    /// canonical `.ri` on disk are untouched, so the value is an engine-state
+    /// override that anything re-resolving from the module's declared defaults
+    /// — `Engine::build`, hence `export` — simply does not see. That is the
+    /// esc-7281-4 defect when it is the ONLY thing a user gesture does, and the
+    /// right behaviour for the frames of a drag, where a full recompile per
+    /// frame is the task-1861 regression.
+    ///
+    /// So a preview is half of a gesture and never the whole of one. It MUST be
+    /// followed by [`Self::commit_parameter`], which is what makes the value
+    /// durable — or, if the write-back is refused, what discards the preview so
+    /// the engine cannot be left holding a value the source does not carry.
+    /// This method is the one declared-transient value-mutation path in the GUI
+    /// (INV-GUI-3, task 5099 η); every other one writes the source back.
+    pub fn preview_parameter(
         &mut self,
         cell_id_str: &str,
         value_str: &str,
@@ -2313,6 +2331,30 @@ impl EngineSession {
         self.invalidate_geometry_derived_cache_for_entity(&edited_entity);
         self.post_engine_call_telemetry();
         self.build_gui_state()
+    }
+
+    /// Make `value_str` the durable value of `cell_id_str` by writing it back
+    /// into the session's canonical `.ri` source.
+    ///
+    /// This is the INV-GUI-3 entry point for the USER path — the property
+    /// panel's edit box on Enter/blur, and the mechanism slider on release
+    /// (task 5099 η). It is deliberately the SAME mechanism the reify-debug
+    /// MCP `reify_set_parameter` tool already routes through (task 5097 δ), so
+    /// the AI path and the user path cannot diverge about what a value change
+    /// means: both end at [`Self::apply_param_to_source`], whose doc owns the
+    /// phase order, the four-surface atomicity ledger, and the discriminated
+    /// rejection taxonomy. Nothing about the splice, the serialization, the
+    /// unit hint, the disk write or the refusals is re-stated or re-implemented
+    /// here.
+    ///
+    /// Pair it with [`Self::preview_parameter`], which shows a value during a
+    /// drag without making it durable.
+    pub fn commit_parameter(
+        &mut self,
+        cell_id_str: &str,
+        value_str: &str,
+    ) -> Result<GuiState, String> {
+        self.apply_param_to_source_str(cell_id_str, value_str)
     }
 
     /// Write `value` back into the session's canonical `.ri` file as the
@@ -2598,12 +2640,12 @@ impl EngineSession {
     /// itself; it asks for the composed front door instead of growing a second
     /// copy of the parse.
     ///
-    /// # It is deliberately `set_parameter`'s parse
+    /// # It is deliberately `preview_parameter`'s parse
     ///
-    /// The body is `set_parameter`'s resolve-then-parse prefix verbatim
+    /// The body is `preview_parameter`'s resolve-then-parse prefix verbatim
     /// (cell lookup BEFORE parse, so "Unknown parameter" stays ahead of any
     /// parse diagnostic; the `Type` cloned at this call site for the same
-    /// borrow reason `set_parameter` documents), differing only in what it
+    /// borrow reason `preview_parameter` documents), differing only in what it
     /// hands the parsed value to. That sharing is the point (task #5757): the
     /// AI path and the property-panel slider must never disagree about what a
     /// value string denotes, and a bare `"120"` on a `Length` cell must be
@@ -2635,7 +2677,7 @@ impl EngineSession {
 
     /// Resolve the byte range [`Self::apply_param_to_source`] may splice over,
     /// or a DISCRIMINATED rejection saying which of the four preconditions
-    /// failed (PRD §7 B7 — δ, the MCP `set_parameter` tool, is the consumer
+    /// failed (PRD §7 B7 — δ, the MCP `reify_set_parameter` tool, is the consumer
     /// that maps these categories into its tool result).
     ///
     /// α's [`Self::resolve_param_default_span`] collapses every one of these
@@ -2650,7 +2692,7 @@ impl EngineSession {
     /// 2. **Unknown parameter** — the cell id is well-formed but names no cell
     ///    in `compiled.templates[].value_cells`. Checked through the SHARED
     ///    [`Self::require_known_cell`] rather than a second copy of the
-    ///    predicate, deliberately: this entry point and [`Self::set_parameter`]
+    ///    predicate, deliberately: this entry point and [`Self::preview_parameter`]
     ///    must agree about what a cell id denotes, or the slider and the
     ///    write-back would disagree about which params exist.
     /// 3. **Not the entry file's entity** — the cell exists, but its entity is
@@ -2764,7 +2806,7 @@ impl EngineSession {
     ///
     /// The retention contract's other half — "a fresh non-`Undef` delta entry
     /// always wins over the retained one" — is structurally UNAVAILABLE here. A
-    /// warm `set_parameter` can change an input that reaches a mass-prop cell
+    /// warm `preview_parameter` can change an input that reaches a mass-prop cell
     /// without changing any geometry-op scalar argument: `mass` is
     /// `volume(geometry) * material.density` and `moment_of_inertia` is
     /// `moment_of_inertia(geometry, body_density)`, so editing a density (or any
@@ -3753,7 +3795,7 @@ impl EngineSession {
         // `moi_principal[0] > 0` PD constraint is Indeterminate there. Surface the
         // kernel-derived cells / re-checked constraints from the kernel-bearing
         // `tessellate_snapshot` result via a shared helper, so every entry point
-        // that rebuilds GuiState (load_file, update_source, set_parameter)
+        // that rebuilds GuiState (load_file, update_source, preview_parameter)
         // surfaces them identically and the load / warm-edit paths cannot diverge
         // (the helper keys on `ValueCellId`, not the reallocated kernel handle).
         // `set_active_fea_case` is the one rebuild that does NOT pass through here
@@ -4754,7 +4796,7 @@ impl EngineSession {
     /// registers a port member under the COMPOSITE name
     /// `ValueCellId(entity, "<port>.<param>")` and files it in
     /// `CompiledPort.members`, which is never merged into
-    /// `TopologyTemplate.value_cells` — the only map [`Self::set_parameter`] and
+    /// `TopologyTemplate.value_cells` — the only map [`Self::preview_parameter`] and
     /// the property panel key off. So a port-body param is not an editable cell
     /// under EITHER spelling, and returning a span for its bare name would hand
     /// a caller a range it must not splice.
@@ -4801,7 +4843,7 @@ impl EngineSession {
     /// without an AST borrow; it is not dead by oversight, but it has no
     /// in-tree caller today beyond its own tests.
     pub fn resolve_param_default_expr(&self, cell_id_str: &str) -> Option<&reify_ast::Expr> {
-        // Reuse `parse_cell_id` — the SAME parse `set_parameter` uses — so this
+        // Reuse `parse_cell_id` — the SAME parse `preview_parameter` uses — so this
         // resolver and the entry point that will consume it cannot disagree
         // about what a cell_id denotes.
         let cell = parse_cell_id(cell_id_str).ok()?;
@@ -5093,7 +5135,7 @@ pub(crate) fn build_constraints(
 /// (the same values CLI `reify eval` reads from `build().values`).
 ///
 /// This helper is invoked ONCE from `build_gui_state`, the shared rebuild path for
-/// EVERY GuiState entry point (load_file, update_source, set_parameter), so the
+/// EVERY GuiState entry point (load_file, update_source, preview_parameter), so the
 /// load and warm-edit paths cannot diverge. It keys on `ValueCellId`
 /// (entity+member), which is stable across rebuilds, so a warm edit that clears the
 /// realization cache and re-executes geometry under a fresh `GeometryHandleId`
@@ -5154,7 +5196,7 @@ pub(crate) fn build_constraints(
 ///
 /// "The fresh one wins" only bites when the realization actually runs, and a warm
 /// edit of a non-op-arg input (a density folded into `Material(...)`) leaves it
-/// hash-exempt, so no fresh entry can exist to win. `EngineSession::set_parameter`
+/// hash-exempt, so no fresh entry can exist to win. `EngineSession::preview_parameter`
 /// closes that half via `invalidate_geometry_derived_cache_for_entity` — the second
 /// half of the guarantee, not an optional extra.
 ///
@@ -7816,8 +7858,9 @@ fn unwrap_optional(ty: &reify_core::Type) -> &reify_core::Type {
 /// [`dimension_requires_unit`] reports a curated ladder, because the 1000×
 /// ambiguity it targets presupposes a unit COULD have been typed. Where none
 /// can be, refusing removes the cell's last accepted input and makes the row
-/// permanently uneditable through `set_parameter` — in the panel AND on the GUI
-/// MCP surface.
+/// permanently uneditable through every cadence that parses a value string —
+/// preview, commit, and the GUI MCP surface alike, since all three reach this
+/// gate through `parse_value_string_for_cell`.
 ///
 /// Each conjunct, and what pins it:
 ///

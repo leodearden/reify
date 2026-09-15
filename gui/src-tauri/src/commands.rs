@@ -80,7 +80,7 @@ pub fn set_parameter_impl(
     cell_id: &str,
     value: &str,
 ) -> Result<GuiState, String> {
-    crate::engine_lock::with_engine_lock(engine, |s| s.set_parameter(cell_id, value))
+    crate::engine_lock::with_engine_lock(engine, |s| s.preview_parameter(cell_id, value))
         .and_then(std::convert::identity)
 }
 

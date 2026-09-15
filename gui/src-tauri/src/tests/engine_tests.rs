@@ -186,7 +186,7 @@ fn load_from_source_with_invalid_source_returns_err() {
 }
 
 #[test]
-fn set_parameter_changes_width() {
+fn preview_parameter_changes_width() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -196,8 +196,8 @@ fn set_parameter_changes_width() {
         .expect("initial load");
 
     let state = session
-        .set_parameter("Bracket.width", "120mm")
-        .expect("set_parameter should succeed");
+        .preview_parameter("Bracket.width", "120mm")
+        .expect("preview_parameter should succeed");
 
     let width = state
         .values
@@ -725,8 +725,8 @@ fn get_mechanism_descriptors_current_value_si_reflects_initial_param() {
 }
 
 #[test]
-fn get_mechanism_descriptors_current_value_si_updates_after_set_parameter() {
-    // Step-23 RED (part 2): after set_parameter("Kinematic.y_pos", "150mm"), a
+fn get_mechanism_descriptors_current_value_si_updates_after_preview_parameter() {
+    // Step-23 RED (part 2): after preview_parameter("Kinematic.y_pos", "150mm"), a
     // fresh get_mechanism_descriptors call must report current_value_si = Some(0.15).
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
@@ -737,8 +737,8 @@ fn get_mechanism_descriptors_current_value_si_updates_after_set_parameter() {
 
     // Scrub the slider by setting y_pos to 150mm.
     session
-        .set_parameter("Kinematic.y_pos", "150mm")
-        .expect("set_parameter should succeed");
+        .preview_parameter("Kinematic.y_pos", "150mm")
+        .expect("preview_parameter should succeed");
 
     // Re-fetch descriptors after the edit.
     let descriptors = session.get_mechanism_descriptors();
@@ -752,7 +752,7 @@ fn get_mechanism_descriptors_current_value_si_updates_after_set_parameter() {
     assert_eq!(
         joint.current_value_si,
         Some(0.15),
-        "current_value_si should be 0.15 (150mm) after set_parameter; got {:?}",
+        "current_value_si should be 0.15 (150mm) after preview_parameter; got {:?}",
         joint.current_value_si
     );
 }
@@ -821,10 +821,10 @@ fn get_mechanism_descriptors_param_bind_promotes_binding_to_param_bound() {
     );
 }
 
-/// After `set_parameter("Kinematic.y_pos", "150mm")` the `binding` field on the
+/// After `preview_parameter("Kinematic.y_pos", "150mm")` the `binding` field on the
 /// joint descriptor must reflect the updated value in `ParamBound.current_value_si`.
 #[test]
-fn get_mechanism_descriptors_param_bind_binding_updates_after_set_parameter() {
+fn get_mechanism_descriptors_param_bind_binding_updates_after_preview_parameter() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -833,8 +833,8 @@ fn get_mechanism_descriptors_param_bind_binding_updates_after_set_parameter() {
         .expect("load snapshot+param source");
 
     session
-        .set_parameter("Kinematic.y_pos", "150mm")
-        .expect("set_parameter should succeed");
+        .preview_parameter("Kinematic.y_pos", "150mm")
+        .expect("preview_parameter should succeed");
 
     let descriptors = session.get_mechanism_descriptors();
     let m1_desc = descriptors
@@ -849,7 +849,7 @@ fn get_mechanism_descriptors_param_bind_binding_updates_after_set_parameter() {
             param_cell_id: "Kinematic.y_pos".to_string(),
             current_value_si: Some(0.15),
         },
-        "after set_parameter(150mm), binding must show current_value_si=Some(0.15); got {:?}",
+        "after preview_parameter(150mm), binding must show current_value_si=Some(0.15); got {:?}",
         joint.binding
     );
 }
@@ -1366,7 +1366,7 @@ fn resolve_driving_params_emits_debug_for_param_checked_match() {
 }
 
 #[test]
-fn set_parameter_invalid_cell_id_returns_err() {
+fn preview_parameter_invalid_cell_id_returns_err() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -1375,12 +1375,12 @@ fn set_parameter_invalid_cell_id_returns_err() {
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
 
-    let result = session.set_parameter("Nonexistent.param", "50mm");
+    let result = session.preview_parameter("Nonexistent.param", "50mm");
     assert!(result.is_err(), "invalid cell_id should return Err");
 }
 
 #[test]
-fn set_parameter_constraints_still_correct() {
+fn preview_parameter_constraints_still_correct() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -1391,8 +1391,8 @@ fn set_parameter_constraints_still_correct() {
 
     // width = 120mm, thickness = 5mm → thickness > 2mm satisfied, thickness < 120/4=30mm satisfied
     let state = session
-        .set_parameter("Bracket.width", "120mm")
-        .expect("set_parameter should succeed");
+        .preview_parameter("Bracket.width", "120mm")
+        .expect("preview_parameter should succeed");
 
     assert_eq!(state.constraints.len(), 3);
     for c in &state.constraints {
@@ -1476,7 +1476,7 @@ fn constraint_violation_roundtrip() {
 
     // Set thickness=1mm → violates "thickness > 2mm"
     let state = session
-        .set_parameter("Bracket.thickness", "1mm")
+        .preview_parameter("Bracket.thickness", "1mm")
         .expect("set thickness should succeed");
 
     let violated = state.constraints.iter().any(|c| c.status == "violated");
@@ -1487,7 +1487,7 @@ fn constraint_violation_roundtrip() {
 
     // Set back to 5mm → all satisfied again
     let state = session
-        .set_parameter("Bracket.thickness", "5mm")
+        .preview_parameter("Bracket.thickness", "5mm")
         .expect("set thickness back should succeed");
 
     for c in &state.constraints {
@@ -2840,7 +2840,7 @@ fn parse_value_string_widening_does_not_disturb_the_non_ladder_paths() {
     assert!(parse_value_string("10zPa").is_err(), "`10zPa` must not parse");
 }
 
-// --- set_parameter: bare numbers are not valid for a dimensioned cell ---
+// --- preview_parameter: bare numbers are not valid for a dimensioned cell ---
 //
 // Task #5757 defect 1. `parse_value_string("120")` yields `Value::Int(120)`,
 // and reify-eval then ACCEPTS it into a `Length` cell: `value_type_kind_matches`
@@ -2880,7 +2880,7 @@ const BARE_NUMBER_GATE_SRC: &str = r#"structure def GateScope {
 /// `USD` lives only in the compiler's per-module `UnitRegistry`, which the
 /// composed index deliberately excludes. Pairing it with a `Length` neighbour
 /// is what lets the covered and uncovered rules be shown DISCRIMINATED in one
-/// session, the way `set_parameter_still_accepts_a_bare_number_for_an_undimensioned_cell`
+/// session, the way `preview_parameter_still_accepts_a_bare_number_for_an_undimensioned_cell`
 /// already does for the dimensionless axis.
 const BARE_NUMBER_COVERAGE_SRC: &str = r#"structure def MoneyScope {
     param cost : Money = 5USD
@@ -2891,7 +2891,7 @@ const BARE_NUMBER_COVERAGE_SRC: &str = r#"structure def MoneyScope {
 /// A bare number typed into a dimensioned cell is refused, and the message
 /// names both the expected dimension and the offending input.
 #[test]
-fn set_parameter_rejects_a_bare_number_for_a_dimensioned_cell() {
+fn preview_parameter_rejects_a_bare_number_for_a_dimensioned_cell() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -2900,7 +2900,7 @@ fn set_parameter_rejects_a_bare_number_for_a_dimensioned_cell() {
         .expect("initial load");
 
     let err = session
-        .set_parameter("Bracket.width", "120")
+        .preview_parameter("Bracket.width", "120")
         .expect_err("a bare number must not be accepted for a Length cell");
     assert!(
         err.contains("Length"),
@@ -2915,7 +2915,7 @@ fn set_parameter_rejects_a_bare_number_for_a_dimensioned_cell() {
     // The float spelling is the same defect, and reify-eval's Int/Real wildcard
     // covers both — so the gate must too.
     let err = session
-        .set_parameter("Bracket.width", "120.5")
+        .preview_parameter("Bracket.width", "120.5")
         .expect_err("a bare float must not be accepted for a Length cell either");
     assert!(
         err.contains("Length") && err.contains("120.5"),
@@ -2926,7 +2926,7 @@ fn set_parameter_rejects_a_bare_number_for_a_dimensioned_cell() {
 /// The gate must not narrow what a dimensioned cell accepts WITH a unit —
 /// including a unit the retired five-entry table lacked.
 #[test]
-fn set_parameter_still_accepts_united_literals_for_a_dimensioned_cell() {
+fn preview_parameter_still_accepts_united_literals_for_a_dimensioned_cell() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -2935,13 +2935,13 @@ fn set_parameter_still_accepts_united_literals_for_a_dimensioned_cell() {
         .expect("initial load");
 
     session
-        .set_parameter("Bracket.width", "120mm")
+        .preview_parameter("Bracket.width", "120mm")
         .expect("a Length literal in a legacy-table unit must still be accepted");
 
     // `in` was in the DSL builtin registry all along and absent from the GUI's
     // five-entry table — PRD §6 boundary row 17.
     session
-        .set_parameter("Bracket.width", "3in")
+        .preview_parameter("Bracket.width", "3in")
         .expect("`in` must be accepted now that the accept-set is composed");
 }
 
@@ -2971,7 +2971,7 @@ fn set_parameter_still_accepts_united_literals_for_a_dimensioned_cell() {
 /// `EngineError::DimensionMismatch`'s message instead of freezing a snapshot of
 /// it.
 #[test]
-fn set_parameter_leaves_a_cross_dimension_literal_to_reify_evals_dimension_mismatch() {
+fn preview_parameter_leaves_a_cross_dimension_literal_to_reify_evals_dimension_mismatch() {
     use reify_core::{DimensionVector, Type};
 
     // (1) The GUI boundary does NOT refuse it, and does not coerce it either:
@@ -3008,7 +3008,7 @@ fn set_parameter_leaves_a_cross_dimension_literal_to_reify_evals_dimension_misma
         .expect("initial load");
 
     let err = session
-        .set_parameter("Bracket.width", "5kg")
+        .preview_parameter("Bracket.width", "5kg")
         .expect_err("a Mass literal in a Length cell must be a hard error, not a warning");
     assert!(
         err.contains(&format!(
@@ -3024,7 +3024,7 @@ fn set_parameter_leaves_a_cross_dimension_literal_to_reify_evals_dimension_misma
     // Refused BEFORE anything is committed, so the session is untouched and a
     // subsequent good edit still lands.
     session
-        .set_parameter("Bracket.width", "120mm")
+        .preview_parameter("Bracket.width", "120mm")
         .expect("the failed cross-dimension edit must not have poisoned the session");
 }
 
@@ -3034,7 +3034,7 @@ fn set_parameter_leaves_a_cross_dimension_literal_to_reify_evals_dimension_misma
 /// `Scalar { DIMENSIONLESS }` cells are untouched. Without this the gate would
 /// break every dimensionless slider in the panel.
 #[test]
-fn set_parameter_still_accepts_a_bare_number_for_an_undimensioned_cell() {
+fn preview_parameter_still_accepts_a_bare_number_for_an_undimensioned_cell() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -3043,15 +3043,15 @@ fn set_parameter_still_accepts_a_bare_number_for_an_undimensioned_cell() {
         .expect("initial load");
 
     session
-        .set_parameter("GateScope.scale", "2.0")
+        .preview_parameter("GateScope.scale", "2.0")
         .expect("a Real cell must still take a bare number");
     session
-        .set_parameter("GateScope.scale", "3")
+        .preview_parameter("GateScope.scale", "3")
         .expect("a Real cell must still take a bare integer");
 
     // Same session, same panel: the dimensioned neighbour is still gated.
     let err = session
-        .set_parameter("GateScope.width", "120")
+        .preview_parameter("GateScope.width", "120")
         .expect_err("the dimensioned neighbour must still reject a bare number");
     assert!(err.contains("Length"), "got {err:?}");
 }
@@ -3064,14 +3064,15 @@ fn set_parameter_still_accepts_a_bare_number_for_an_undimensioned_cell() {
 /// for ANY non-dimensionless `Type::Scalar`, but `parse_value_string` can only
 /// resolve the ten curated ladders' rungs plus `BUILTIN_UNITS` — so a dimension
 /// outside that union has NO accepted input at all and its cells become
-/// permanently uneditable through `set_parameter` (property editor AND the GUI
-/// MCP surface). Accepting the bare number restores the pre-#5757 SI-number
+/// permanently uneditable through every cadence that parses a value string
+/// (preview, commit, and the GUI MCP surface). Accepting the bare number
+/// restores the pre-#5757 SI-number
 /// behaviour for exactly those cells rather than inventing a new one.
 ///
 /// Asserts the RULE — EXPRESSIBILITY, not dimensionedness — never an
 /// enumeration of dimension names.
 #[test]
-fn set_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_covers() {
+fn preview_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_covers() {
     use reify_core::DimensionVector;
 
     // (a) PREMISE, asserted not assumed. If a future task adds a Money ladder
@@ -3131,7 +3132,7 @@ fn set_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_covers(
     );
 
     let state = session
-        .set_parameter("MoneyScope.cost", "6")
+        .preview_parameter("MoneyScope.cost", "6")
         .expect("a Money cell has no expressible unit, so its bare number must be accepted");
     let cost = cost_cell(&state);
     assert_eq!(
@@ -3148,11 +3149,11 @@ fn set_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_covers(
     // (c) The COVERED neighbour, in the SAME session, is untouched by the
     // relaxation — it has a ladder, so a unit is expressible and required.
     let err = session
-        .set_parameter("MoneyScope.width", "120")
+        .preview_parameter("MoneyScope.width", "120")
         .expect_err("a Length cell has a curated ladder, so it must still reject a bare number");
     assert!(err.contains("Length"), "got {err:?}");
     session
-        .set_parameter("MoneyScope.width", "120mm")
+        .preview_parameter("MoneyScope.width", "120mm")
         .expect("a united Length literal must still be accepted");
 
     // (d) The honest statement of what makes (b) necessary: `USD` is NOT
@@ -3160,7 +3161,7 @@ fn set_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_covers(
     // `UnitRegistry`, which the composed index deliberately excludes — so
     // refusing the bare number would leave the cell with no accepted input.
     let err = session
-        .set_parameter("MoneyScope.cost", "6USD")
+        .preview_parameter("MoneyScope.cost", "6USD")
         .expect_err("`USD` is outside the composed index — pinned as fact, not aspiration");
     assert!(
         err.contains("Cannot parse value") && err.contains("6USD"),
@@ -3182,7 +3183,7 @@ fn set_parameter_accepts_a_bare_number_for_a_dimension_no_curated_ladder_covers(
 /// gate on namedness (either polarity) splits them and fails here.
 ///
 /// Driven at `parse_value_string_for_cell` directly rather than through
-/// `set_parameter`, because no `.ri` param type reaches that function carrying a
+/// `preview_parameter`, because no `.ri` param type reaches that function carrying a
 /// nameless dimension: the surface syntax names its dimension, so every compiled
 /// cell that gets here has a canonical name.
 #[test]
@@ -3460,7 +3461,7 @@ fn every_dimension_the_frontend_floor_gates_is_gated_here_too() {
             panic!(
                 "the frontend's static floor gates {dimension_name} unconditionally, so this \
                  side must gate it too — otherwise a ladders-less panel refuses a bare number \
-                 inline that `set_parameter` would have accepted"
+                 inline that `preview_parameter` would have accepted"
             )
         });
         assert_eq!(
@@ -3591,10 +3592,10 @@ fn the_bare_number_refusal_suggests_a_literal_in_the_canonical_spelling() {
 ///
 /// The gate is scoped to `Value::Int`/`Value::Real` precisely so every other
 /// variant keeps producing reify-eval's own diagnostics — here the
-/// `TypeKindMismatch` that `set_parameter_edit_check_err_still_fires_solve_finished`
+/// `TypeKindMismatch` that `preview_parameter_edit_check_err_still_fires_solve_finished`
 /// depends on. A broader gate would silently change that test's observable.
 #[test]
-fn set_parameter_bool_for_a_length_cell_still_yields_the_engine_type_kind_mismatch() {
+fn preview_parameter_bool_for_a_length_cell_still_yields_the_engine_type_kind_mismatch() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -3603,7 +3604,7 @@ fn set_parameter_bool_for_a_length_cell_still_yields_the_engine_type_kind_mismat
         .expect("initial load");
 
     let err = session
-        .set_parameter("Bracket.width", "true")
+        .preview_parameter("Bracket.width", "true")
         .expect_err("a Bool for a Length cell must still be rejected");
     assert!(
         err.contains("type-kind mismatch"),
@@ -3615,7 +3616,7 @@ fn set_parameter_bool_for_a_length_cell_still_yields_the_engine_type_kind_mismat
 /// An unknown cell still reports "Unknown parameter", which also locks in the
 /// cell-lookup-before-parse ordering the dimension-aware parse requires.
 #[test]
-fn set_parameter_unknown_cell_still_reports_unknown_parameter() {
+fn preview_parameter_unknown_cell_still_reports_unknown_parameter() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -3624,7 +3625,7 @@ fn set_parameter_unknown_cell_still_reports_unknown_parameter() {
         .expect("initial load");
 
     let err = session
-        .set_parameter("Nonexistent.param", "50mm")
+        .preview_parameter("Nonexistent.param", "50mm")
         .expect_err("an unknown cell must still be rejected");
     assert!(
         err.contains("Unknown parameter"),
@@ -3749,7 +3750,7 @@ fn build_gui_state_tessellation_preserves_values_and_constraints() {
 }
 
 #[test]
-fn set_parameter_produces_updated_meshes() {
+fn preview_parameter_produces_updated_meshes() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -3765,12 +3766,12 @@ fn set_parameter_produces_updated_meshes() {
 
     // Set parameter and verify meshes are still produced
     let updated_state = session
-        .set_parameter("Bracket.width", "120mm")
-        .expect("set_parameter should succeed");
+        .preview_parameter("Bracket.width", "120mm")
+        .expect("preview_parameter should succeed");
 
     assert!(
         !updated_state.meshes.is_empty(),
-        "updated state should have meshes after set_parameter"
+        "updated state should have meshes after preview_parameter"
     );
 }
 
@@ -9690,13 +9691,13 @@ fn engine_session_auto_resolve_emitter_fires_start_iter_complete_when_solver_res
     }
 }
 
-/// Step-11: `set_parameter` must re-fire the emit sequence when the solver resolves auto params.
+/// Step-11: `preview_parameter` must re-fire the emit sequence when the solver resolves auto params.
 ///
 /// Setup: session with `S.x` (regular param, settable) + `S.thickness` (auto param).
-/// After initial check drains the recorder, `set_parameter("S.x", "10mm")` triggers
+/// After initial check drains the recorder, `preview_parameter("S.x", "10mm")` triggers
 /// `edit_check` → solver resolves `thickness` again → [Start, Iteration, Complete].
 #[test]
-fn engine_session_auto_resolve_emitter_fires_on_set_parameter_when_solver_present() {
+fn engine_session_auto_resolve_emitter_fires_on_preview_parameter_when_solver_present() {
     use std::sync::Arc;
 
     let thickness_id = ValueCellId::new("S", "thickness");
@@ -9731,19 +9732,19 @@ fn engine_session_auto_resolve_emitter_fires_on_set_parameter_when_solver_presen
 
     // Initial check: gives engine a snapshot and fires 3 events.
     session.check_and_emit_for_test(&compiled);
-    // Inject compiled so set_parameter can validate the cell exists.
+    // Inject compiled so preview_parameter can validate the cell exists.
     session.inject_compiled_for_test(compiled);
-    // Drain recorder before the set_parameter call.
+    // Drain recorder before the preview_parameter call.
     events.lock().unwrap().clear();
 
     // Changing S.x dirties the constraint (which reads S.x) → solver re-runs → emit fires.
-    session.set_parameter("S.x", "10mm").expect("set_parameter should succeed");
+    session.preview_parameter("S.x", "10mm").expect("preview_parameter should succeed");
 
     let events = events.lock().unwrap();
     assert_eq!(
         events.len(),
         3,
-        "set_parameter must emit [Start, Iteration, Complete], got {} events",
+        "preview_parameter must emit [Start, Iteration, Complete], got {} events",
         events.len()
     );
     assert!(matches!(events[0], EmitEvent::Start), "event[0] must be Start");
@@ -9927,7 +9928,7 @@ fn engine_session_auto_resolve_emitter_emits_real_entry_for_option_some_scalar_r
 ///
 /// Pins that load_from_source emits AFTER state is committed (correct ordering).
 /// Acts as a characterization safety-net for the step-7 reorder of load_file /
-/// update_source / set_parameter.
+/// update_source / preview_parameter.
 ///
 /// Expected to pass immediately — load_from_source already has correct ordering.
 #[test]
@@ -10082,10 +10083,10 @@ fn engine_session_exposes_core_state_with_read_accessors() {
 }
 
 /// Behavioral test for `CoreState::commit_check`:
-/// `set_parameter` must update `last_check` and leave the other five core fields
+/// `preview_parameter` must update `last_check` and leave the other five core fields
 /// (`engine`, `compiled`, `source_map`, `file_path`, `module_name`) untouched.
 #[test]
-fn set_parameter_updates_only_last_check_via_commit_check() {
+fn preview_parameter_updates_only_last_check_via_commit_check() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
@@ -10094,7 +10095,7 @@ fn set_parameter_updates_only_last_check_via_commit_check() {
         .load_from_source(bracket_source(), "bracket")
         .expect("load_from_source should succeed");
 
-    // Snapshot the five non-last_check core fields before calling set_parameter.
+    // Snapshot the five non-last_check core fields before calling preview_parameter.
     let pre_module_name: Option<String> = session
         .core_state_for_test()
         .module_name()
@@ -10111,15 +10112,15 @@ fn set_parameter_updates_only_last_check_via_commit_check() {
         .file_path()
         .map(|p| p.to_path_buf());
 
-    // Trigger commit_check internally via set_parameter.
+    // Trigger commit_check internally via preview_parameter.
     session
-        .set_parameter("Bracket.width", "100mm")
-        .expect("set_parameter ok");
+        .preview_parameter("Bracket.width", "100mm")
+        .expect("preview_parameter ok");
 
-    // last_check must be Some after set_parameter.
+    // last_check must be Some after preview_parameter.
     assert!(
         session.core_state_for_test().last_check().is_some(),
-        "last_check must be Some after set_parameter"
+        "last_check must be Some after preview_parameter"
     );
 
     // The other five core fields must be byte-for-byte identical to the pre-call
@@ -10127,12 +10128,12 @@ fn set_parameter_updates_only_last_check_via_commit_check() {
     assert_eq!(
         session.core_state_for_test().module_name().map(|s| s.to_string()),
         pre_module_name,
-        "module_name must not change after set_parameter"
+        "module_name must not change after preview_parameter"
     );
     assert_eq!(
         session.core_state_for_test().compiled().is_some(),
         pre_compiled_is_some,
-        "compiled presence must not change after set_parameter"
+        "compiled presence must not change after preview_parameter"
     );
     let post_source_map_keys: std::collections::BTreeSet<String> = session
         .core_state_for_test()
@@ -10143,21 +10144,21 @@ fn set_parameter_updates_only_last_check_via_commit_check() {
     assert_eq!(
         post_source_map_keys,
         pre_source_map_keys,
-        "source_map keys must not change after set_parameter"
+        "source_map keys must not change after preview_parameter"
     );
     assert_eq!(
         session.core_state_for_test().file_path().map(|p| p.to_path_buf()),
         pre_file_path,
-        "file_path must not change after set_parameter"
+        "file_path must not change after preview_parameter"
     );
 
-    // A second set_parameter call must also keep last_check Some.
+    // A second preview_parameter call must also keep last_check Some.
     session
-        .set_parameter("Bracket.width", "80mm")
-        .expect("second set_parameter ok");
+        .preview_parameter("Bracket.width", "80mm")
+        .expect("second preview_parameter ok");
     assert!(
         session.core_state_for_test().last_check().is_some(),
-        "last_check must remain Some after second set_parameter"
+        "last_check must remain Some after second preview_parameter"
     );
 }
 
@@ -12195,14 +12196,14 @@ fn solve_publishes_then_clears_cancel_handle() {
     let _ = handle;
 }
 
-/// set_parameter success path fires the solve-cancel slot lifecycle.
+/// preview_parameter success path fires the solve-cancel slot lifecycle.
 ///
-/// Exercises the `with_solve_slot` wrapper inside `set_parameter` on the happy
+/// Exercises the `with_solve_slot` wrapper inside `preview_parameter` on the happy
 /// path — edit_check succeeds, so [Started, Finished] must be recorded in
 /// order.  Complements `solve_publishes_then_clears_cancel_handle` (which
 /// exercises `load_from_source` → `check_with_solve_slot` path).
 #[test]
-fn set_parameter_success_fires_solve_lifecycle() {
+fn preview_parameter_success_fires_solve_lifecycle() {
     use std::sync::Arc;
 
     let checker = SimpleConstraintChecker;
@@ -12213,21 +12214,21 @@ fn set_parameter_success_fires_solve_lifecycle() {
     let captured_events = Arc::clone(&sink.events);
     session.set_solve_cancel_sink(Arc::new(sink));
 
-    // load_from_source also fires the lifecycle; clear before set_parameter.
+    // load_from_source also fires the lifecycle; clear before preview_parameter.
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
     captured_events.lock().unwrap().clear();
 
     session
-        .set_parameter("Bracket.width", "120mm")
-        .expect("set_parameter should succeed");
+        .preview_parameter("Bracket.width", "120mm")
+        .expect("preview_parameter should succeed");
 
     let events = captured_events.lock().unwrap();
     assert_eq!(
         events.len(),
         2,
-        "expected exactly [Started, Finished] from set_parameter success path; got {} events",
+        "expected exactly [Started, Finished] from preview_parameter success path; got {} events",
         events.len()
     );
     assert!(
@@ -12240,7 +12241,7 @@ fn set_parameter_success_fires_solve_lifecycle() {
     );
 }
 
-/// set_parameter edit_check Err path still fires solve_finished.
+/// preview_parameter edit_check Err path still fires solve_finished.
 ///
 /// Passing a `Bool` value for a `Length` cell causes `edit_check` to return
 /// `EngineError::TypeKindMismatch`, which is mapped to `Err(String)` and
@@ -12250,7 +12251,7 @@ fn set_parameter_success_fires_solve_lifecycle() {
 ///
 /// This is the specific failure mode the guard was introduced to handle.
 #[test]
-fn set_parameter_edit_check_err_still_fires_solve_finished() {
+fn preview_parameter_edit_check_err_still_fires_solve_finished() {
     use std::sync::Arc;
 
     let checker = SimpleConstraintChecker;
@@ -12263,7 +12264,7 @@ fn set_parameter_edit_check_err_still_fires_solve_finished() {
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
 
-    // Install sink AFTER load so only set_parameter events are captured.
+    // Install sink AFTER load so only preview_parameter events are captured.
     let sink = RecordingSolveCancelSink::new();
     let captured_events = Arc::clone(&sink.events);
     session.set_solve_cancel_sink(Arc::new(sink));
@@ -12271,10 +12272,10 @@ fn set_parameter_edit_check_err_still_fires_solve_finished() {
     // "true" parses to Value::Bool(true).  Bracket.width expects a Length →
     // validate_param_override returns TypeKindMismatch → edit_check returns Err
     // → the `?` inside with_solve_slot short-circuits.
-    let result = session.set_parameter("Bracket.width", "true");
+    let result = session.preview_parameter("Bracket.width", "true");
     assert!(
         result.is_err(),
-        "type-mismatched value must produce Err from set_parameter"
+        "type-mismatched value must produce Err from preview_parameter"
     );
 
     let events = captured_events.lock().unwrap();
@@ -16062,8 +16063,8 @@ fn sync_observed_demand_is_zero_behavior_change_and_records_measurement() {
         .load_from_source(bracket_source(), "bracket")
         .expect("control load_from_source should succeed");
     let control_state = control
-        .set_parameter("Bracket.thickness", "2mm")
-        .expect("control set_parameter should succeed");
+        .preview_parameter("Bracket.thickness", "2mm")
+        .expect("control preview_parameter should succeed");
     let control_eval_set: Vec<_> = control
         .core_state_for_test()
         .engine()
@@ -16086,8 +16087,8 @@ fn sync_observed_demand_is_zero_behavior_change_and_records_measurement() {
         &[],
     );
     let synced_state = synced
-        .set_parameter("Bracket.thickness", "2mm")
-        .expect("synced set_parameter should succeed");
+        .preview_parameter("Bracket.thickness", "2mm")
+        .expect("synced preview_parameter should succeed");
     let synced_eval_set: Vec<_> = synced
         .core_state_for_test()
         .engine()
@@ -18339,23 +18340,23 @@ fn fea_diagnostics_emitter_fires_empty_for_no_diagnostics() {
     );
 }
 
-/// fea_diagnostics_emitter_fires_on_set_parameter.
+/// fea_diagnostics_emitter_fires_on_preview_parameter.
 ///
-/// Pins that `set_parameter` — the exact production path that `handleSetParameter`
-/// invokes and then discards the GuiState from — emits a `fea-diagnostics-changed`
-/// event via the installed emitter.
+/// Pins that `preview_parameter` — the per-frame path a slider drag drives and
+/// then discards the GuiState from — emits a `fea-diagnostics-changed` event via
+/// the installed emitter.
 ///
 /// Setup:
 ///   1. Load bracket_source() (non-FEA design, no structured_detail).
 ///   2. THEN install RecordingFeaDiagnosticsEmitter (events only counted from here).
-///   3. Call set_parameter("Bracket.width", "120mm").
+///   3. Call preview_parameter("Bracket.width", "120mm").
 ///
 /// Assert: recorder captured exactly ONE event (empty Vec for non-FEA design).
 ///
-/// RED: emit_fea_diagnostics is not yet called from set_parameter, so zero events
+/// RED: emit_fea_diagnostics is not yet called from preview_parameter, so zero events
 /// are recorded.
 #[test]
-fn fea_diagnostics_emitter_fires_on_set_parameter() {
+fn fea_diagnostics_emitter_fires_on_preview_parameter() {
     use std::sync::Arc;
 
     let checker = SimpleConstraintChecker;
@@ -18365,20 +18366,20 @@ fn fea_diagnostics_emitter_fires_on_set_parameter() {
         .load_from_source(bracket_source(), "bracket")
         .expect("load bracket source");
 
-    // Install AFTER load so that only set_parameter's emit is counted.
+    // Install AFTER load so that only preview_parameter's emit is counted.
     let recorder = RecordingFeaDiagnosticsEmitter::new();
     let captured = Arc::clone(&recorder.events);
     session.set_fea_diagnostics_emitter(Arc::new(recorder));
 
     session
-        .set_parameter("Bracket.width", "120mm")
-        .expect("set_parameter should succeed");
+        .preview_parameter("Bracket.width", "120mm")
+        .expect("preview_parameter should succeed");
 
     let events = captured.lock().unwrap();
     assert_eq!(
         events.len(),
         1,
-        "set_parameter must fire exactly one fea-diagnostics-changed event; got {}",
+        "preview_parameter must fire exactly one fea-diagnostics-changed event; got {}",
         events.len()
     );
     assert!(
@@ -18399,7 +18400,7 @@ fn fea_diagnostics_emitter_fires_on_set_parameter() {
 ///
 /// Setup: install RecordingFeaDiagnosticsEmitter BEFORE calling
 /// `load_from_compiled` (there is no prior load to exclude here, unlike
-/// `fea_diagnostics_emitter_fires_on_set_parameter`).
+/// `fea_diagnostics_emitter_fires_on_preview_parameter`).
 ///
 /// RED on current main: load_from_compiled never calls emit_fea_diagnostics,
 /// so zero events are recorded.
@@ -18528,7 +18529,7 @@ fn load_file_emits_fea_diagnostics() {
 ///   1. Load bracket_source() (non-FEA design, no structured_detail) to prime
 ///      the session.
 ///   2. THEN install RecordingFeaDiagnosticsEmitter (events only counted from
-///      here), mirroring fea_diagnostics_emitter_fires_on_set_parameter.
+///      here), mirroring fea_diagnostics_emitter_fires_on_preview_parameter.
 ///   3. Call update_source("bracket.ri", bracket_source_with_width("120mm")).
 #[test]
 fn update_source_emits_fea_diagnostics() {
@@ -18803,16 +18804,16 @@ fn fea_convergence_emitter_fires_not_converged_with_reason() {
     );
 }
 
-/// fea_convergence_emitter_fires_on_set_parameter (INV-GUI-2 / gui-state-sync L3 step-3).
+/// fea_convergence_emitter_fires_on_preview_parameter (INV-GUI-2 / gui-state-sync L3 step-3).
 ///
-/// Pins that `set_parameter` — the exact production path that `handleSetParameter`
-/// invokes and then discards the GuiState from — emits a `fea-convergence-changed`
+/// Pins that `preview_parameter` — the per-frame path a slider drag drives and
+/// then discards the GuiState from — emits a `fea-convergence-changed`
 /// event via the installed emitter.
 ///
 /// Setup:
 ///   1. Load bracket_source() (non-FEA design, no ElasticResult).
 ///   2. THEN install RecordingFeaConvergenceEmitter (events only counted from here).
-///   3. Call set_parameter("Bracket.width", "120mm").
+///   3. Call preview_parameter("Bracket.width", "120mm").
 ///
 /// Assert: recorder captured exactly ONE event with payload None (non-FEA design
 /// has no ElasticResult).
@@ -18820,7 +18821,7 @@ fn fea_convergence_emitter_fires_not_converged_with_reason() {
 /// RED: emit_fea_convergence is not yet called from the post_engine_call_telemetry
 /// commit path, so zero events are recorded.
 #[test]
-fn fea_convergence_emitter_fires_on_set_parameter() {
+fn fea_convergence_emitter_fires_on_preview_parameter() {
     use std::sync::Arc;
 
     let checker = SimpleConstraintChecker;
@@ -18830,20 +18831,20 @@ fn fea_convergence_emitter_fires_on_set_parameter() {
         .load_from_source(bracket_source(), "bracket")
         .expect("load bracket source");
 
-    // Install AFTER load so that only set_parameter's emit is counted.
+    // Install AFTER load so that only preview_parameter's emit is counted.
     let recorder = RecordingFeaConvergenceEmitter::new();
     let captured = Arc::clone(&recorder.events);
     session.set_fea_convergence_emitter(Arc::new(recorder));
 
     session
-        .set_parameter("Bracket.width", "120mm")
-        .expect("set_parameter should succeed");
+        .preview_parameter("Bracket.width", "120mm")
+        .expect("preview_parameter should succeed");
 
     let events = captured.lock().unwrap();
     assert_eq!(
         events.len(),
         1,
-        "set_parameter must fire exactly one fea-convergence-changed event; got {}",
+        "preview_parameter must fire exactly one fea-convergence-changed event; got {}",
         events.len()
     );
     assert_eq!(
@@ -19765,11 +19766,11 @@ fn rigid_mass_props_surface_as_determined_on_load() {
     );
 }
 
-/// Task 5194 (step-3): after a warm `set_parameter` edit, the `: Rigid` body's
+/// Task 5194 (step-3): after a warm `preview_parameter` edit, the `: Rigid` body's
 /// auto-derived mass-property cells must STAY `determined` (and the PD constraint
 /// Satisfied) — the surfacing fix must be path-agnostic across load and warm edit.
 ///
-/// `set_parameter` → `edit_check` (kernel-less) → `build_gui_state` →
+/// `preview_parameter` → `edit_check` (kernel-less) → `build_gui_state` →
 /// `tessellate_snapshot` clears the realization cache and re-executes the box,
 /// allocating a FRESH `GeometryHandleId` (the mock's `next_id` is monotonic and
 /// not reset between builds). The overlay keys on `ValueCellId`, not the kernel
@@ -19786,8 +19787,8 @@ fn rigid_mass_props_stay_determined_after_warm_edit() {
     // Warm edit: perturb the box depth. This clears the realization cache, so the
     // subsequent build re-executes the box under a fresh kernel handle.
     let state = session
-        .set_parameter("RigidMassSmoke.depth", "250mm")
-        .expect("set_parameter(RigidMassSmoke.depth, 250mm) should succeed");
+        .preview_parameter("RigidMassSmoke.depth", "250mm")
+        .expect("preview_parameter(RigidMassSmoke.depth, 250mm) should succeed");
 
     // The edit must have taken effect (depth == 250mm), proving we rebuilt.
     let depth = state
@@ -19814,7 +19815,7 @@ fn rigid_mass_props_stay_determined_after_warm_edit() {
             });
         assert_eq!(
             cell.determinacy, "determined",
-            "`{name}` must remain `determined` after a warm set_parameter edit \
+            "`{name}` must remain `determined` after a warm preview_parameter edit \
              (re-surfaced from the fresh-handle rebuild); got determinacy={:?}, reason={:?}",
             cell.determinacy, cell.reason
         );
@@ -20731,7 +20732,7 @@ fn assert_writeback_untouched(
 
 #[test]
 fn apply_param_to_source_discriminates_its_resolve_phase_rejections() {
-    // PRD §7 B7 requires a STRUCTURED error: δ (the MCP `set_parameter` tool)
+    // PRD §7 B7 requires a STRUCTURED error: δ (the MCP `reify_set_parameter` tool)
     // is the consumer that must map "you named something that does not exist"
     // apart from "that param's default is not a literal I may rewrite". α's
     // `Option`-returning span resolver collapses all of these into one `None`,
@@ -21453,7 +21454,7 @@ fn apply_param_to_source_refuses_a_param_declared_in_an_imported_module() {
         "an imported param is known, just not rewritable here, got: {err}"
     );
     session
-        .set_parameter("Helper.x", "20mm")
+        .preview_parameter("Helper.x", "20mm")
         .expect("the ephemeral edit path must still accept the same cell id");
 }
 
@@ -21723,7 +21724,7 @@ fn apply_param_to_source_str_refuses_a_bare_number_on_a_dimensioned_cell() {
 fn apply_param_to_source_str_rejects_an_unknown_cell() {
     // Cell resolution precedes the parse, so an unknown cell reads as
     // "Unknown parameter" rather than as a parse diagnostic — the same
-    // ordering `set_parameter` documents, and the taxonomy δ maps into its
+    // ordering `preview_parameter` documents, and the taxonomy δ maps into its
     // tool result.
     let (_dir, path, mut session) = writeback_session();
 
@@ -21909,7 +21910,7 @@ fn holds_rejected_source_tracks_the_compile_failure() {
 /// `EngineSession::check_with_solve_slot`, which must reset the geometry kernel
 /// — freeing the prior design's resident native shapes — and clear the
 /// realization cache exactly once per reload (via
-/// `Engine::reset_geometry_for_reload`). The slider path (`set_parameter` →
+/// `Engine::reset_geometry_for_reload`). The slider path (`preview_parameter` →
 /// `edit_check`) deliberately BYPASSES that funnel, so a parameter edit must
 /// NOT reset the kernel (otherwise every slider tick would wipe the warm
 /// shapes). Together these two facts bound OCCT native-shape memory across a
@@ -21963,15 +21964,15 @@ fn whole_file_reload_resets_geometry_kernel_once_per_reload_slider_does_not() {
          (== 2 after two reloads)",
     );
 
-    // Slider path — set_parameter → edit_check BYPASSES check_with_solve_slot,
+    // Slider path — preview_parameter → edit_check BYPASSES check_with_solve_slot,
     // so it must NOT reset (a reset here would wipe warm shapes on every tick).
     session
-        .set_parameter("Bracket.width", "120mm")
+        .preview_parameter("Bracket.width", "120mm")
         .expect("slider edit should succeed");
     assert_eq!(
         *reset_calls.lock().unwrap(),
         2,
-        "a slider (set_parameter) edit must NOT reset the geometry kernel — the \
+        "a slider (preview_parameter) edit must NOT reset the geometry kernel — the \
          reload wiring lives on the check_with_solve_slot funnel, which the \
          slider path bypasses",
     );

@@ -238,7 +238,7 @@ impl ReifyToolContext for TauriToolContext {
             .lock()
             .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
         let gui_state = session
-            .set_parameter(cell_id, value)
+            .preview_parameter(cell_id, value)
             .map_err(ToolError::EngineError)?;
 
         // Find the updated parameter in the returned GuiState
