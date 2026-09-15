@@ -1145,8 +1145,9 @@ is_occt_crate() {
 # basenames NAMED BY a compiled Rust test target, and so EXCLUDED from
 # decide_scope's no-heavy-checks carve-out for that directory:
 #   proven runtime reads (a #[test] builds the path and opens the file):
-#     geometry_let_selector_consumer.ri (pushed into no_stale_undef_invariant_
-#     gate.rs's corpus_files()), geometry_let_selector_consumer_edit.ri,
+#     geometry_let_selector_consumer.ri (pushed into corpus_files() by
+#     harness_corpus_gates/eval_invariant_corpus_sweep.rs),
+#     geometry_let_selector_consumer_edit.ri,
 #     stdlib_ns_buckling_mode_coexist.ri, unit_nm_torque_immediate.ri
 #     (read via std::fs::read_to_string by torque_unit_tests.rs, task 5786),
 #     unit_curated_labels_ascii.ri (likewise, by volume_unit_tests.rs, task 5788),
