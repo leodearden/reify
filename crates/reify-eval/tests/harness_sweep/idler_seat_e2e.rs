@@ -1169,18 +1169,34 @@ fn circle_fit(pts: &[(f64, f64)]) -> ((f64, f64), f64) {
 
 /// ABSOLUTE tolerance, in metres, for a mesh read against a design cell.
 ///
-/// Sized from the measurement, per this task's plan, not copied: the four reads
-/// the mesh gate makes were measured on this branch at 0.0035 µm (outer radius),
-/// 0.0027 µm (seat opening), 0.0028 µm RMS (seat-arc fit) and 0.0006 µm (seat
-/// bottom). Worst case 0.0035 µm, and that floor is f32 vertex QUANTIZATION —
+/// Sized from the measurement, not copied. Measured on this branch against the
+/// COMPENSATED geometry — i.e. against the tree this constant actually gates,
+/// over 1252 mesh vertices (350 on the rim shell, 528 on the seat):
+///
+/// | read                          | residual |
+/// |-------------------------------|----------|
+/// | axial half-extent vs sheave_w/2 | 0.0027 µm |
+/// | outer radius vs sheave_r        | 0.0035 µm |
+/// | seat arc radius vs groove_r     | 0.0002 µm |
+/// | seat arc centre vs seat_c       | 0.0001 µm |
+/// | seat arc axial offset           | 0.0000 µm |
+/// | seat bottom vs the identity     | 0.0001 µm |
+/// | seat opening vs mouth_w         | 0.0138 µm |
+/// | meridian fit RMS                | 0.0027 µm |
+///
+/// Worst case 0.0138 µm, and that floor is f32 vertex QUANTIZATION —
 /// `MeshSurface::vertices` is `f32`, whose ~7 significant digits give ~0.001 µm
 /// at an 18 mm radius — not kernel error, so it will not drift with a
 /// tessellation-density change.
 ///
-/// 5 µm is therefore ~1400× the measured noise floor and still 36× inside the
+/// 5 µm is therefore 362× the worst measured residual and still 36× inside the
 /// smallest regression it must catch (the 0.180 mm pitch-circle sink) and 70×
 /// inside the 0.350 mm seat-opening signal. Both of the plan's conditions hold
-/// with room to spare: ≥3× the worst residual, and ≤0.060 mm.
+/// with room to spare: ≥3× the worst residual (which would allow 0.041 µm), and
+/// ≤0.060 mm. Had the worst residual exceeded 20 µm no band could satisfy both,
+/// and that was a real risk: the plan's own seat-bottom read, taken as the
+/// minimum radius over vertices on the tessellated torus, measures 21.9 µm. The
+/// meridian [`circle_fit`] is what brought it to 0.0001 µm.
 ///
 /// Deliberately NOT [`super::capstan_groove_e2e`]'s `MESH_RADIAL_TOL_FRAC`
 /// (`0.10 · groove_r`). That is 318 µm here and would not catch the 0.180 mm

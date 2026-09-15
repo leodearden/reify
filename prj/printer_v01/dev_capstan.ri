@@ -31,35 +31,43 @@ module dev_capstan
 //    DEFAULTS placed by pose only (`at` works), so 4147 never bites here. The
 //    ShuttlePlate size is hand-matched to the idler corner spacing for the same
 //    reason (can't pass sizes through the `sub`).
-//  - DIN 15061 oversize seat arc (task 5683) is Capstan-only, NOT extended to
-//    IdlerPulley — a SCOPE call, not a geometric one. The 0.53 factor squarely
-//    APPLIES to that seat: it is a torus of tube radius groove_width/2 == the
-//    tendon radius, i.e. exactly the equal-radii slip fit DIN 15061 opens up
-//    (#4157 landed the round seat; `torus` is not missing). This copy must stay
-//    verbatim: printer.ri is out of 5683's scope, so re-seating here alone
-//    forks the two. Extending the arc to both copies in step is the follow-up.
+//  - DIN 15061 oversize seat arc: extended from the Capstan (#5683) to
+//    IdlerPulley by #6135, in lockstep across BOTH copies. The seat is now a
+//    torus of tube radius 0.53*tendon_dia with its arc centre pushed OUTBOARD of
+//    the rim to seat_c, so the seated rope's centreline still lands on the pitch
+//    circle and sheave_od/2 == r_pitch survives — see the structure doc below.
+//    This copy must stay code-identical to printer.ri's, and that is now GATED
+//    rather than merely asked for: `idler_seat_e2e::idler_copies_stay_in_lockstep`
+//    compares every cell and the constraint count across the two files.
 
 #version(0.1)
 
 // ── Idler routing pulley (copied verbatim from printer.ri) ──────────────────
 /// 608ZZ ball bearing (8mm bore, 22mm OD, 7mm wide) with a grooved sheave pressed
-/// on its OD; modelled along local +Z (spin axis), centred. SEMICIRCULAR seat: a
-/// torus (tube radius = groove_width/2) cut at the mid-plane with its tube centre
-/// ON the rim surface — rope pitch circle at sheave_r (#4157 landed). One inlined
-/// union/difference tree so only `body` surfaces.
+/// on its OD; modelled along local +Z (spin axis), centred. DIN 15061 OVERSIZE
+/// seat arc: a torus of tube radius groove_r = 0.53*tendon_dia cut at the
+/// mid-plane, its tube centre at seat_c — OUTBOARD of the rim, not on it. That
+/// compensation is what keeps the seated ROPE's centreline (not the arc centre)
+/// on the pitch circle: seat bottom = seat_c - groove_r = sheave_r -
+/// tendon_dia/2, and seated centreline = sheave_r == sheave_od/2 == r_pitch,
+/// both independent of seat_arc_ratio. One inlined union/difference tree so only
+/// `body` surfaces. (#4157 landed the round seat; #6135 oversized the arc.)
 pub structure IdlerPulley {
     param brg_od    : Length = 22mm
     param brg_bore  : Length = 8mm
     param brg_width : Length = 7mm
     param sheave_od    : Length = 36mm
-    param groove_width : Length = 6mm
+    param tendon_dia   : Length = 6mm
     param flange_width : Length = 2mm
+    param seat_arc_ratio : Real = 0.53
 
     let brg_r       = brg_od / 2
     let sheave_r    = sheave_od / 2
-    let groove_half = groove_width / 2
-    let sheave_w    = groove_width + flange_width * 2
-    let bore_len    = groove_width + flange_width * 3
+    let groove_r    = tendon_dia * seat_arc_ratio
+    let seat_c      = sheave_r + groove_r - tendon_dia / 2
+    let mouth_w     = tendon_dia * sqrt(seat_arc_ratio * 4.0 - 1.0)
+    let sheave_w    = tendon_dia + flange_width * 2
+    let bore_len    = tendon_dia + flange_width * 3
 
     let body = union(
         difference(
@@ -69,14 +77,16 @@ pub structure IdlerPulley {
         difference(
             difference(
                 translate(cylinder(sheave_r, sheave_w), 0mm, 0mm, 0mm - sheave_w / 2),
-                torus(sheave_r, groove_half)
+                torus(seat_c, groove_r)
             ),
             translate(cylinder(brg_r, bore_len), 0mm, 0mm, 0mm - bore_len / 2)
         )
     )
 
     constraint sheave_od > brg_od
-    constraint sheave_r - groove_half > brg_r
+    constraint seat_c - groove_r > brg_r
+    constraint mouth_w > tendon_dia
+    constraint sheave_w > mouth_w
     constraint brg_od > brg_bore
 }
 
