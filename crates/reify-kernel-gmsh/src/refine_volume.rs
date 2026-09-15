@@ -149,7 +149,7 @@ pub fn refine_volume_with_size_field(
     }
 
     // --- Acquire lock + initialise ---
-    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = init::lock();
     init::ensure_initialized();
     ffi::clear()?;
     ffi::option_set_number("General.Terminal", 0.0)?;
@@ -395,11 +395,6 @@ pub fn refine_volume_with_size_field(
     init::mesh_generate_with_recovery(&_guard, 3)?;
 
     // --- Readback (mirrors mesh_to_volume verbatim) ---
-    let elem_type = match order {
-        ElementOrderTag::P1 => 4,
-        ElementOrderTag::P2 => 11,
-    };
-
     let (out_node_tags, coord_buf) = ffi::get_nodes_all()?;
     if coord_buf.len() != out_node_tags.len() * 3 {
         return Err(GeometryError::OperationFailed(format!(
@@ -410,8 +405,7 @@ pub fn refine_volume_with_size_field(
             out_node_tags.len() * 3,
         )));
     }
-    let (_elem_tags, elem_node_tags) = ffi::get_elements_by_type(elem_type)?;
-    init::verify_tet_readback("refine_volume_with_size_field", &elem_node_tags, order)?;
+    let elem_node_tags = init::read_tet_connectivity("refine_volume_with_size_field", order)?;
 
     let mut paired: Vec<(u64, [f64; 3])> = out_node_tags
         .iter()

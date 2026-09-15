@@ -5,7 +5,7 @@
 //! option table, `gmshModelMeshGenerate(3)` operates on whatever model is
 //! current. Two threads concurrently calling [`crate::GmshKernel::mesh_to_volume`]
 //! would race on this state. [`GMSH_LOCK`] is the single static `Mutex<()>`
-//! we acquire at every public entry point that touches the gmsh library.
+//! behind every gmsh library call; [`lock`] is how this crate acquires it.
 //!
 //! [`ensure_initialized`] OnceLock-guards the `gmshInitialize` call so
 //! repeated `mesh_to_volume` invocations pay a one-cached-cell branch
@@ -20,13 +20,13 @@
 //! re-initialize must be an inseparable pair or that cached fact becomes a
 //! lie.
 //!
-//! [`verify_tet_readback`] is the other half of that ownership. A broken
-//! mesher's characteristic output is an EMPTY element buffer, so every entry
-//! point that meshes a volume reads its tets back through one shared check
-//! rather than three near-identical copies of it.
+//! [`read_tet_connectivity`] is that recovery's companion on the way out: a
+//! broken mesher's characteristic output is an EMPTY element buffer, so all
+//! three meshers read their tets back through one shared, checked call.
 //!
 //! Only compiled when `cfg(has_gmsh)` is set by `build.rs`.
 
+use std::ops::Deref;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use reify_ir::{ElementOrderTag, GeometryError};
@@ -35,12 +35,43 @@ use crate::ffi;
 
 /// Process-global serialisation lock for every gmsh library call.
 ///
-/// Acquire at the head of any public method that touches gmsh state — FFI
-/// reads, FFI writes, or both. The lock is exposed `pub` so this crate's
-/// integration test binaries (separate compilation units that cannot reach
-/// `pub(crate)` symbols) can serialise their own gmsh access against the
-/// production code path.
+/// This crate's own entry points take it through [`lock`]. The static stays
+/// `pub` for this crate's integration test binaries — separate compilation
+/// units that cannot reach `pub(crate)` symbols — whose need is only to
+/// serialise their own raw-FFI access against the production path.
 pub static GMSH_LOCK: Mutex<()> = Mutex::new(());
+
+/// Proof that its holder acquired [`GMSH_LOCK`] — not merely *a* mutex.
+///
+/// [`lock`] is the only constructor and the field is private, so a function
+/// that asks for a `&GmshGuard` cannot be reached without the real
+/// process-global lock held. [`mesh_generate_with_recovery`] needs exactly
+/// that: it finalizes libgmsh, which no thread inside the library survives. A
+/// `&MutexGuard<'_, ()>` parameter would have been satisfied by a guard
+/// borrowed from any `Mutex<()>` the caller cared to declare.
+///
+/// Derefs to the guard it wraps, so it still serves as the lifetime witness
+/// [`crate::mesh_size_clamp::MeshSizeClampReset::armed`] borrows.
+pub struct GmshGuard(MutexGuard<'static, ()>);
+
+impl Deref for GmshGuard {
+    type Target = MutexGuard<'static, ()>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// Acquire [`GMSH_LOCK`] for a gmsh entry point.
+///
+/// Recovers from a poisoned lock rather than propagating the failure: every
+/// entry point in this crate opens with `ffi::clear()`, which wipes whatever
+/// half-built model state a panicked prior call left behind. Without this, one
+/// panic anywhere under the lock would disable meshing for the rest of the
+/// process lifetime.
+pub fn lock() -> GmshGuard {
+    GmshGuard(GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner()))
+}
 
 /// `OnceLock`-guarded `gmshInitialize`. Idempotent: the first caller pays
 /// the FFI cost; subsequent callers hit the cached `()` and return
@@ -79,10 +110,14 @@ pub fn ensure_initialized() {
 /// `_guard` is taken purely for its lifetime — the guard itself is never
 /// touched. Finalizing gmsh while another thread is inside the library frees
 /// the world out from under it, so "caller must hold [`GMSH_LOCK`]" is
-/// enforced by the signature rather than by a comment a refactor can
-/// quietly violate: the only way to call this is to already hold the lock.
-/// Same idiom, and the same "purely for its lifetime" phrasing, as
-/// [`crate::mesh_size_clamp::MeshSizeClampReset::armed`].
+/// enforced by the signature rather than by a comment a refactor can quietly
+/// violate. [`GmshGuard`] is what makes that enforcement real rather than
+/// suggestive: one constructor, private field, so the only way to reach this
+/// function is to already hold the process-global lock.
+/// [`crate::mesh_size_clamp::MeshSizeClampReset::armed`] is the same idiom one
+/// notch weaker — it accepts any `&MutexGuard` — which is proportionate there,
+/// where a violation restores two options at the wrong moment, and is not here,
+/// where it tears the library down.
 ///
 /// # Aborts
 ///
@@ -95,16 +130,12 @@ pub fn ensure_initialized() {
 /// stance [`ensure_initialized`] takes for its own `gmshInitialize` failure.
 /// That panic leaves state consistent — the `OnceLock` cell stays unset, gmsh
 /// stays uninitialized, a retry re-attempts init — whereas this one unwinds
-/// holding [`GMSH_LOCK`], and every entry point in this crate deliberately
-/// recovers from a poisoned lock (`unwrap_or_else(|e| e.into_inner())`), so
-/// the next caller would walk straight into the finalized library instead of
-/// being stopped. The unwind is unsound in its own right: it drops
+/// holding [`GMSH_LOCK`], and [`lock`] deliberately recovers from a poisoned
+/// lock, so the next caller would walk straight into the finalized library
+/// instead of being stopped. The unwind is unsound in its own right: it drops
 /// [`crate::mesh_size_clamp::MeshSizeClampReset`], whose `Drop` calls back
 /// into gmsh to restore the size clamp.
-pub fn mesh_generate_with_recovery(
-    _guard: &MutexGuard<'_, ()>,
-    dim: i32,
-) -> Result<(), GeometryError> {
+pub fn mesh_generate_with_recovery(_guard: &GmshGuard, dim: i32) -> Result<(), GeometryError> {
     let original = match ffi::mesh_generate(dim) {
         Ok(()) => return Ok(()),
         Err(e) => e,
@@ -139,23 +170,28 @@ pub fn mesh_generate_with_recovery(
     Err(original)
 }
 
-/// Rejects a tet readback that cannot be a real mesh.
+/// Read this call's tetrahedra back out of gmsh, rejecting a buffer that
+/// cannot be a real mesh.
 ///
-/// Every entry point in this crate that meshes a volume calls
-/// `gmshModelMeshGetElementsByType` and then walks the returned buffer flat,
-/// so both ways that buffer can be unusable are checked here instead of being
-/// re-derived at each of them:
+/// Both numbers the element order fixes come from one [`tet_element_spec`]
+/// lookup. Derived separately — the type code at the readback, the stride at
+/// the check — they were two facts taken from one dimension of variability at
+/// four sites, and a site that asked gmsh for 10-node tets while validating
+/// against a 4-node stride would mis-slice the connectivity into plausible
+/// nonsense.
 ///
-///   - a length that is not a whole number of tets, which would silently
-///     mis-slice the connectivity into plausible nonsense; and
+/// Two ways the buffer can be unusable are therefore rejected here rather than
+/// returned:
+///
+///   - a length that is not a whole number of tets; and
 ///   - an EMPTY buffer, which would become an `Ok` `VolumeMesh` holding no
 ///     tetrahedra — a wrong answer no caller can tell from a right one.
 ///
 /// The emptiness half is the output-side twin of the empty-INPUT rejection in
 /// [`crate::GmshKernel::mesh_to_volume`]: gmsh accepts the degenerate case and
 /// yields a zero-tet mesh, which is never a useful caller outcome. Stating it
-/// once, here, is what keeps that invariant uniform across the three
-/// readbacks rather than enforced in whichever of them was edited last.
+/// once, here, is what keeps that invariant uniform across the three readbacks
+/// rather than enforced in whichever of them was edited last.
 ///
 /// Since every `mesh_generate` in this crate routes through
 /// [`mesh_generate_with_recovery`], no path measured today reaches the empty
@@ -164,16 +200,40 @@ pub fn mesh_generate_with_recovery(
 /// reports `ierr=0` having produced nothing at all.
 ///
 /// `caller` names the entry point in the error message — three of them share
-/// this check, and the buffer says nothing about where it came from.
-pub fn verify_tet_readback(
+/// this readback, and the buffer says nothing about where it came from.
+pub fn read_tet_connectivity(
+    caller: &str,
+    element_order: ElementOrderTag,
+) -> Result<Vec<u64>, GeometryError> {
+    let (elem_type, _) = tet_element_spec(element_order);
+    let (_elem_tags, elem_node_tags) = ffi::get_elements_by_type(elem_type)?;
+    verify_tet_readback(caller, &elem_node_tags, element_order)?;
+    Ok(elem_node_tags)
+}
+
+/// The two numbers a tet's element order fixes: gmsh's element-type code for
+/// [`ffi::get_elements_by_type`], and the nodes-per-element stride of the flat
+/// buffer that call returns.
+///
+/// One table because they are one fact — gmsh numbers its element types by
+/// shape AND order (4 = 4-node tet, 11 = 10-node tet), so the code and the
+/// stride are never independently chosen.
+fn tet_element_spec(element_order: ElementOrderTag) -> (i32, usize) {
+    match element_order {
+        ElementOrderTag::P1 => (4, 4),
+        ElementOrderTag::P2 => (11, 10),
+    }
+}
+
+/// The half of [`read_tet_connectivity`] that the buffer alone decides — split
+/// out so both rejections are reachable from a unit test with no live gmsh
+/// model behind them.
+fn verify_tet_readback(
     caller: &str,
     elem_node_tags: &[u64],
     element_order: ElementOrderTag,
 ) -> Result<(), GeometryError> {
-    let nodes_per_elem: usize = match element_order {
-        ElementOrderTag::P1 => 4,
-        ElementOrderTag::P2 => 10,
-    };
+    let (_, nodes_per_elem) = tet_element_spec(element_order);
     if !elem_node_tags.len().is_multiple_of(nodes_per_elem) {
         return Err(GeometryError::OperationFailed(format!(
             "{caller}: gmsh get_elements_by_type stride mismatch: \
@@ -191,4 +251,54 @@ pub fn verify_tet_readback(
         )));
     }
     Ok(())
+}
+
+/// Both [`verify_tet_readback`] rejections, over both element orders.
+///
+/// The empty-buffer rejection is unreachable from any measured production path
+/// (see [`read_tet_connectivity`]), so without these a guard inverted or
+/// deleted outright would ship green.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_empty_tet_buffer_is_rejected_and_names_its_caller() {
+        let err = verify_tet_readback("some_mesher", &[], ElementOrderTag::P1)
+            .expect_err("an empty element buffer is never a real mesh");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("no P1 tetrahedra"),
+            "the empty case must say the model holds no tets of the requested order; got: {msg}"
+        );
+        assert!(
+            msg.contains("some_mesher"),
+            "three meshers share this check, so the message must name which one; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn a_buffer_that_is_not_a_whole_number_of_tets_is_rejected() {
+        let err = verify_tet_readback("some_mesher", &[1, 2, 3], ElementOrderTag::P1)
+            .expect_err("3 node tags cannot be a whole number of 4-node tets");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("stride mismatch"),
+            "a partial tet must be reported as a stride mismatch, not as an empty \
+             readback; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn the_stride_is_read_from_the_element_order() {
+        verify_tet_readback("some_mesher", &[1, 2, 3, 4], ElementOrderTag::P1)
+            .expect("four node tags are exactly one P1 tet");
+        let err = verify_tet_readback("some_mesher", &[1, 2, 3, 4], ElementOrderTag::P2)
+            .expect_err("a P2 tet is 10 nodes, so the same four tags are a partial one");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("stride mismatch") && msg.contains("multiple of 10"),
+            "the P2 stride must come from the order, not from a P1 constant; got: {msg}"
+        );
+    }
 }

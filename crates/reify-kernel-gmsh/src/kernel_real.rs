@@ -201,12 +201,10 @@ impl GmshKernel {
             )));
         }
 
-        // Recover from a poisoned lock rather than propagating the failure:
-        // every call begins with `ffi::clear()` immediately below, which
-        // wipes any half-built model state left over from a panicked prior
-        // call. Without this, a single panic anywhere under the lock would
-        // permanently disable meshing for the rest of the process lifetime.
-        let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // `init::lock` rather than `GMSH_LOCK.lock()`: it carries the
+        // poisoned-lock recovery every entry point here needs, and its
+        // `GmshGuard` is the witness `mesh_generate_with_recovery` demands.
+        let _guard = init::lock();
         init::ensure_initialized();
 
         // --- Mesh-size clamp: leave nothing behind (task #6298) ---
@@ -386,12 +384,6 @@ impl GmshKernel {
         // library is recycled. See that function for the measured behaviour.
         init::mesh_generate_with_recovery(&_guard, 3)?;
 
-        // Element type for readback: P1 = 4 (4-node tet), P2 = 11 (10-node tet).
-        let elem_type = match element_order {
-            ElementOrderTag::P1 => 4,
-            ElementOrderTag::P2 => 11,
-        };
-
         let (node_tags, coord_buf) = ffi::get_nodes_all()?;
         // Defend the chunks_exact zip below: if gmsh ever returns mismatched
         // buffers, surfacing the real readback-stride mismatch beats a
@@ -406,8 +398,7 @@ impl GmshKernel {
                 node_tags.len() * 3,
             )));
         }
-        let (_elem_tags, elem_node_tags) = ffi::get_elements_by_type(elem_type)?;
-        init::verify_tet_readback("mesh_to_volume", &elem_node_tags, element_order)?;
+        let elem_node_tags = init::read_tet_connectivity("mesh_to_volume", element_order)?;
 
         // Build (gmsh_tag → 0-based local idx) by sorting node tags and
         // assigning indices in tag order. Vertices are emitted in the same
