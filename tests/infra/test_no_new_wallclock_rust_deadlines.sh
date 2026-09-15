@@ -305,6 +305,17 @@ _fixture() {
 # that as one missing path and, with the baseline drained to zero, everything
 # downstream would be consistent and empty. So the check is on the root list,
 # before any scanning, and it is loud.
+#
+# IT ALSO REJECTS AN OVERLAPPING PAIR -- one root equal to, or nested inside,
+# another. That is a DIFFERENT failure with the same remedy. Every root is
+# scanned RECURSIVELY, so grep visits a nested root's files once per root and
+# the engine emits each violating line twice; because the baseline comparison
+# is a deliberate MULTISET, those second copies arrive as `+` records that
+# read exactly like new violations. Nothing downstream can tell them apart,
+# and the completeness check cannot warn about them either -- it treats a
+# descendant as COVERED by design (4f-2), which is correct for its own
+# question and blind to this one. So the list is checked for overlap here,
+# once, before any scanning (fixtures 4e-10, 4e-11).
 # ---------------------------------------------------------------------------
 _wallclock_assert_roots() {
     local _r
@@ -319,6 +330,42 @@ _wallclock_assert_roots() {
             echo "  that glob matched nothing and bash left the pattern string behind." >&2
         fi
         return 2
+    done
+
+    # OVERLAP, by POSITION rather than by value: the duplicate case is `$i` and
+    # `$j` holding the SAME string, so a `[ "$_a" = "$_b" ] && continue` guard
+    # over a value pair would skip the very case it most needs to catch.
+    #
+    # The pattern is quoted except for the trailing `/*`, exactly as in
+    # _wallclock_uncovered_test_roots: a root is a PATH, not a pattern, and the
+    # separator is what makes one root a parent of another. An unquoted
+    # `${_roots[_i]}*` would call `src2` a child of `src` and reject a list that
+    # is fine (fixture 4e-11).
+    #
+    # Lexical, deliberately: it compares the strings as written, so `a/tests`
+    # and `./a/tests` read as distinct. The lists this guards are written by
+    # hand in one style, and resolving paths here would trade a cheap exact
+    # check for a symlink-following one with its own surprises.
+    local -a _roots=("$@")
+    local _i _j _n="${#_roots[@]}"
+    for (( _i = 0; _i < _n; _i++ )); do
+        for (( _j = 0; _j < _n; _j++ )); do
+            [ "$_i" -eq "$_j" ] && continue
+            case "${_roots[_j]}" in
+                "${_roots[_i]}")
+                    echo "ERROR: wallclock scan root listed twice: ${_roots[_i]}" >&2
+                    ;;
+                "${_roots[_i]}"/*)
+                    echo "ERROR: wallclock scan root ${_roots[_j]} is nested inside ${_roots[_i]}" >&2
+                    ;;
+                *) continue ;;
+            esac
+            echo "  Roots are scanned RECURSIVELY, so the inner one is already covered and" >&2
+            echo "  every violating line beneath it would be fingerprinted TWICE. The ratchet" >&2
+            echo "  compares MULTISETS, so those second copies would be reported as new" >&2
+            echo "  violations that no edit can fix. Drop the redundant entry." >&2
+            return 2
+        done
     done
     return 0
 }
@@ -2254,6 +2301,78 @@ printf 'fn stray() {}\n\0\nlet a = Instant::now() + Duration::from_secs(1); // %
 _s4e9_count="$(_count_rust_wallclock_escapes "$_s4e9_tmpdir" 2>/dev/null)"
 assert "4e-9: an escape after a NUL byte is still counted" \
     test "$_s4e9_count" -eq 1
+
+# ---------------------------------------------------------------------------
+# 4e-10: A ROOT NESTED INSIDE ANOTHER IS A HARD ERROR. Every root is scanned
+#        RECURSIVELY, so a nested entry is not merely redundant -- grep visits
+#        its files once per root, and the engine emits each violating line
+#        TWICE. The baseline comparison is a deliberate MULTISET, so those
+#        second copies surface as `+` records indistinguishable from a real new
+#        violation, and the reader is sent hunting for a line that was already
+#        baselined.
+#
+#        Nothing else can catch this. `_wallclock_assert_roots` used to check
+#        only that each root was a directory, and the completeness check in
+#        Section 3 treats a descendant as COVERED by design (4f-2) -- so it
+#        will never report a nested root and can never warn against adding one.
+#        Meanwhile Section 3's own remediation text says "Add it to _LIVE_ROOTS
+#        above", which is exactly the hand-edit that would introduce one.
+# ---------------------------------------------------------------------------
+_s4e10_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4e10_tmpdir")
+mkdir -p "$_s4e10_tmpdir/src/sub"
+_fixture "$_s4e10_tmpdir/src/sub" "a.rs" \
+    '    let deadline = Instant::now() + Duration::from_secs(5);'
+
+_s4e10_rc=0
+_wallclock_fingerprints "$_s4e10_tmpdir/src" "$_s4e10_tmpdir/src/sub" \
+    > "$_s4e10_tmpdir/out.txt" 2>&1 || _s4e10_rc=$?
+assert "4e-10: a root nested inside another is a hard error, not a double count" \
+    test "$_s4e10_rc" -eq 2
+
+_s4e10_named=0
+case "$(cat "$_s4e10_tmpdir/out.txt")" in
+    *"$_s4e10_tmpdir/src/sub"*) _s4e10_named=1 ;;
+esac
+assert "4e-10: the error names the nested root" \
+    test "$_s4e10_named" -eq 1
+
+# A REFUSED SCAN EMITS NO RECORDS. Without this the assertion above passes in
+# the RED state by accident -- the doubled records themselves contain the
+# nested path. ` :: ` is the fingerprint separator, so its absence says the
+# scan was refused rather than performed and reported.
+_s4e10_records=0
+case "$(cat "$_s4e10_tmpdir/out.txt")" in
+    *" :: "*) _s4e10_records=1 ;;
+esac
+assert "4e-10: the refused scan emits no records at all, doubled or otherwise" \
+    test "$_s4e10_records" -eq 0
+
+# ---------------------------------------------------------------------------
+# 4e-11: THE SAME ROOT TWICE, which is the degenerate case of 4e-10 and the
+#        likelier typo -- a copy-paste into the list, or a glob whose expansion
+#        already contains an enumerated entry. It doubles every record in the
+#        subtree, so it is rejected on the same terms.
+#
+#        THE PREFIX TRAP is pinned here too, in the safe direction: `src2` is
+#        NOT nested in `src`, and rejecting it would red a list that is fine.
+#        Same quoting as _wallclock_uncovered_test_roots -- a root is a path,
+#        not a pattern, so only the trailing `/` is what makes one a parent.
+# ---------------------------------------------------------------------------
+_s4e11_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4e11_tmpdir")
+mkdir -p "$_s4e11_tmpdir/src" "$_s4e11_tmpdir/src2"
+_fixture "$_s4e11_tmpdir/src" "a.rs" '    fn main() {}'
+_fixture "$_s4e11_tmpdir/src2" "b.rs" '    fn main() {}'
+
+_s4e11_rc=0
+_wallclock_files_scanned "$_s4e11_tmpdir/src" "$_s4e11_tmpdir/src" \
+    > /dev/null 2>&1 || _s4e11_rc=$?
+assert "4e-11: the same root listed twice is a hard error" \
+    test "$_s4e11_rc" -eq 2
+
+_s4e11_sib="$(_wallclock_files_scanned "$_s4e11_tmpdir/src" "$_s4e11_tmpdir/src2" \
+    2>/dev/null || echo "ERR")"
+assert "4e-11: src2 is NOT nested in src -- a string prefix is not a parent" \
+    test "$_s4e11_sib" -eq 2
 
 # ===========================================================================
 # Section 4f: ROOT-SET COMPLETENESS -- is the root LIST itself right?
