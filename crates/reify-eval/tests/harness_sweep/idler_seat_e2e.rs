@@ -760,8 +760,8 @@ fn assert_idler_constraints_ok(entries: &[ConstraintCheckEntry]) -> Vec<&Constra
 ///     oversizing: a load-ovalised braid cannot wedge against the seat walls.
 ///
 /// (d) **the rim shoulder survives the widened opening** — `sheave_w > mouth_w`,
-///     10.000 against 6.349803 mm, leaving 1.825099 mm per side against the
-///     nominal `flange_width` of 2 mm. The 0.174901 mm narrowing is ACCEPTED:
+///     10.000 against 6.349803 mm, leaving 1.825098 mm per side against the
+///     nominal `flange_width` of 2 mm. The 0.174902 mm narrowing is ACCEPTED:
 ///     `sheave_w` is deliberately NOT re-derived from the mouth, which would
 ///     widen the part to 10.3498 mm across 31 hand-placed instances plus a
 ///     hand-matched `ShuttlePlate` — an unreviewable ripple bought for 0.175 mm

@@ -212,6 +212,14 @@ pub structure IdlerPulley {
     // seated rope's centreline lands exactly back on the pitch circle. With an
     // equal-radii seat the two coincide, which is why this cell did not exist before.
     let seat_c      = sheave_r + groove_r - tendon_dia / 2
+    // The seat's OPENING at the rim, and three readings of one chord: the seat's
+    // rim opening, the rope's clearance in it, and twice the per-side anti-pinch
+    // clearance at the rope's widest section. They coincide because the seated
+    // rope's centreline lies ON the rim, so the rope's widest section plane IS
+    // the rim plane. Collapsed from 2*sqrt(groove_r^2 - (seat_c - sheave_r)^2) by
+    // substituting seat_c: one term instead of five, and the sqrt argument is
+    // DIMENSIONLESS.
+    let mouth_w     = tendon_dia * sqrt(seat_arc_ratio * 4.0 - 1.0)
     let sheave_w    = tendon_dia + flange_width * 2     // full rim width
     let bore_len    = tendon_dia + flange_width * 3     // through-bore length (> sheave width)
 
@@ -235,6 +243,13 @@ pub structure IdlerPulley {
 
     constraint sheave_od > brg_od
     constraint seat_c - groove_r > brg_r   // bore clearance, off the TRUE seat bottom
+    // The DIN 15061 clearance. Algebraically this is exactly groove_r >
+    // tendon_dia / 2, so clearance at the mouth and anti-pinch at the rope's
+    // widest section are ONE statement — the same single constraint #5683 landed
+    // on the Capstan.
+    constraint mouth_w > tendon_dia
+    // …and the oversize arc must not eat the rim shoulders.
+    constraint sheave_w > mouth_w
     constraint brg_od > brg_bore
 }
 
