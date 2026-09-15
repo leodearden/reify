@@ -794,7 +794,7 @@ _T17_ERR="$(mktemp)"
 _T17_RAW=""
 capture_print_plan _T17_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
         env -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE \
-        -u REIFY_GATE_EXCLUDE_HEAVY DF_VERIFY_ROLE=merge \
+        -u REIFY_GATE_EXCLUDE_HEAVY -u REIFY_RELEASE_DELTA_SKIP DF_VERIFY_ROLE=merge \
         bash "$REPO_ROOT/scripts/verify.sh" test \
         --profile both --scope all --print-plan 2>"$_T17_ERR" || true
 assert "T17: --print-plan capture complete (structural markers present, load-robust)" \
@@ -847,7 +847,7 @@ _T17AMB_RAW=""
 capture_print_plan _T17AMB_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
         env REIFY_RELEASE_DELTA_SKIP=1 REIFY_AFFECTED_CRATES_OVERRIDE="$_T17AMB_NONSENSITIVE_CRATE" \
         env -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE \
-        -u REIFY_GATE_EXCLUDE_HEAVY DF_VERIFY_ROLE=merge \
+        -u REIFY_GATE_EXCLUDE_HEAVY -u REIFY_RELEASE_DELTA_SKIP DF_VERIFY_ROLE=merge \
         bash "$REPO_ROOT/scripts/verify.sh" test \
         --profile both --scope all --print-plan 2>"$_T17AMB_ERR" || true
 assert "T17-AMB: --print-plan capture complete (structural markers present, load-robust)" \
