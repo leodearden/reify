@@ -380,7 +380,13 @@ fn printer_compiled() -> &'static reify_compiler::CompiledModule {
 /// The panic names the cell AND the file on purpose: a contract this module
 /// states but the design does not declare must read as "this file does not
 /// declare this cell", which is exactly what a RED step here means.
-fn entity_cell(values: &ValueMap, entity: &str, cell: &str, expected_dim: DimensionVector) -> f64 {
+fn entity_cell(
+    values: &ValueMap,
+    file: &str,
+    entity: &str,
+    cell: &str,
+    expected_dim: DimensionVector,
+) -> f64 {
     let id = ValueCellId::new(entity, cell);
     match values.get(&id) {
         Some(Value::Scalar {
@@ -395,8 +401,40 @@ fn entity_cell(values: &ValueMap, entity: &str, cell: &str, expected_dim: Dimens
         }
         other => panic!(
             "{entity}.{cell} must be a Value::Scalar with dimension {expected_dim:?}, \
-             got {other:?} — is the cell declared in {PRINTER_RI}?"
+             got {other:?} — is the cell declared in {file}?"
         ),
+    }
+}
+
+/// Read a dimensionless (`: Real`) cell of `entity` out of a value map.
+///
+/// Separate from [`entity_cell`] because the evaluator does NOT wrap a
+/// dimensionless quantity in `Value::Scalar { dimension: DIMENSIONLESS }`: a
+/// `: Real` cell comes back as a bare `Value::Real`. Both spellings are accepted
+/// — they denote the same mathematical object — but a `Value::Scalar` carrying
+/// any real dimension is rejected, since that would mean the ratio had silently
+/// acquired units.
+fn entity_real(values: &ValueMap, file: &str, entity: &str, cell: &str) -> f64 {
+    match values.get(&ValueCellId::new(entity, cell)) {
+        Some(Value::Real(v)) => *v,
+        Some(Value::Scalar {
+            si_value,
+            dimension,
+        }) if *dimension == DimensionVector::DIMENSIONLESS => *si_value,
+        other => panic!(
+            "{entity}.{cell} must be a dimensionless real (a ratio), i.e. a \
+             `Value::Real` or a DIMENSIONLESS `Value::Scalar`, got {other:?} — is \
+             the cell declared in {file}, and is it still `: Real`?"
+        ),
+    }
+}
+
+/// Read one [`IDLER_CELLS`] entry off a given file's value map — `None`
+/// dimension marks the `: Real` cell, which needs [`entity_real`].
+fn idler_cell_of(values: &ValueMap, file: &str, cell: &str, dim: Option<DimensionVector>) -> f64 {
+    match dim {
+        Some(d) => entity_cell(values, file, IDLER_ENTITY, cell, d),
+        None => entity_real(values, file, IDLER_ENTITY, cell),
     }
 }
 
@@ -407,32 +445,18 @@ fn entity_cell(values: &ValueMap, entity: &str, cell: &str, expected_dim: Dimens
 /// parameter overrides through a `sub`, so the BARE TEMPLATE is the form to
 /// read and every instance carries these same numbers.
 fn idler_cell(cell: &str, expected_dim: DimensionVector) -> f64 {
-    entity_cell(&printer_checked().values, IDLER_ENTITY, cell, expected_dim)
+    entity_cell(
+        &printer_checked().values,
+        PRINTER_RI,
+        IDLER_ENTITY,
+        cell,
+        expected_dim,
+    )
 }
 
-/// Read a dimensionless (`: Real`) cell of [`IDLER_ENTITY`] — the seat arc
-/// ratio is the only one.
-///
-/// Separate from [`idler_cell`] because the evaluator does NOT wrap a
-/// dimensionless quantity in `Value::Scalar { dimension: DIMENSIONLESS }`: a
-/// `: Real` cell comes back as a bare `Value::Real`. Both spellings are
-/// accepted — they denote the same mathematical object — but a `Value::Scalar`
-/// carrying any real dimension is rejected, since that would mean the ratio had
-/// silently acquired units.
+/// [`entity_real`] fixed to [`IDLER_ENTITY`] on printer.ri's surface.
 fn idler_real(cell: &str) -> f64 {
-    let id = ValueCellId::new(IDLER_ENTITY, cell);
-    match printer_checked().values.get(&id) {
-        Some(Value::Real(v)) => *v,
-        Some(Value::Scalar {
-            si_value,
-            dimension,
-        }) if *dimension == DimensionVector::DIMENSIONLESS => *si_value,
-        other => panic!(
-            "{IDLER_ENTITY}.{cell} must be a dimensionless real (a ratio), i.e. a \
-             `Value::Real` or a DIMENSIONLESS `Value::Scalar`, got {other:?} — is \
-             the cell declared in {PRINTER_RI}, and is it still `: Real`?"
-        ),
-    }
+    entity_real(&printer_checked().values, PRINTER_RI, IDLER_ENTITY, cell)
 }
 
 /// Relative error of `actual` against a non-zero `expected`.
@@ -610,6 +634,7 @@ fn idler_seat_keeps_the_rope_on_the_pitch_circle() {
 
     let r_pitch = entity_cell(
         &printer_checked().values,
+        PRINTER_RI,
         DRIVE_ENTITY,
         "r_pitch",
         DimensionVector::LENGTH,
@@ -947,4 +972,510 @@ fn idler_seat_clears_the_tendon() {
 
     // …and all of them hold, strictly, on this surface.
     assert_idler_constraints_ok(&printer_checked().constraint_results);
+}
+
+// ── The second copy, and the fabricated solid ────────────────────────────────
+
+/// The design file carrying the SECOND copy of `IdlerPulley` — a standalone
+/// sketch, because v0.1 has no cross-file import.
+const DEV_CAPSTAN_RI: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../prj/printer_v01/dev_capstan.ri"
+);
+
+/// dev_capstan.ri's own `volume()` consumers — the same two
+/// [`super::capstan_groove_e2e`] enumerates for its own surface.
+const DEV_CAPSTAN_VOLUME_UNRESOLVED: &[&str] = &["Capstan.blank_volume", "Capstan.body_volume"];
+
+/// EMPTY, and measured so: unlike printer.ri, dev_capstan.ri names no qualified
+/// enum variant, so it compiles with zero Error diagnostics. An allowlist that
+/// tolerated them here would be tolerating something that does not happen.
+const DEV_CAPSTAN_ENUM_PATH_UNRESOLVED: &[&str] = &[];
+
+/// Every scalar cell the `IdlerPulley` structure computes, as
+/// `(name, Some(dimension))` — or `None` for the one `: Real` cell.
+///
+/// **This inventory is the lockstep gate's single source for "what the structure
+/// computes".** A cell added to one copy and not the other fails on the READ
+/// rather than passing unnoticed, which is the property that keeps the two files
+/// from forking again — so it must be populated from the structure, not from
+/// whichever cells happened to seem interesting.
+///
+/// `body` is deliberately ABSENT: it is a geometry handle, not a scalar, so
+/// there is no number to compare. The shape it names is held to the design's
+/// numbers by `idler_sheave_mesh_has_the_declared_seat` instead.
+const IDLER_CELLS: &[(&str, Option<DimensionVector>)] = &[
+    ("brg_od", Some(DimensionVector::LENGTH)),
+    ("brg_bore", Some(DimensionVector::LENGTH)),
+    ("brg_width", Some(DimensionVector::LENGTH)),
+    ("sheave_od", Some(DimensionVector::LENGTH)),
+    ("tendon_dia", Some(DimensionVector::LENGTH)),
+    ("seat_arc_ratio", None),
+    ("flange_width", Some(DimensionVector::LENGTH)),
+    ("brg_r", Some(DimensionVector::LENGTH)),
+    ("sheave_r", Some(DimensionVector::LENGTH)),
+    ("groove_r", Some(DimensionVector::LENGTH)),
+    ("seat_c", Some(DimensionVector::LENGTH)),
+    ("mouth_w", Some(DimensionVector::LENGTH)),
+    ("sheave_w", Some(DimensionVector::LENGTH)),
+    ("bore_len", Some(DimensionVector::LENGTH)),
+];
+
+/// dev_capstan.ri's shared COMPILATION.
+fn dev_capstan_compiled() -> &'static reify_compiler::CompiledModule {
+    static M: OnceLock<reify_compiler::CompiledModule> = OnceLock::new();
+    M.get_or_init(|| {
+        // `dev_capstan`, NOT `printer`: both files declare a structure literally
+        // named `IdlerPulley` — which is this gate's whole subject — so they must
+        // not both claim the same module path.
+        compile_design(
+            DEV_CAPSTAN_RI,
+            "dev_capstan",
+            DEV_CAPSTAN_ENUM_PATH_UNRESOLVED,
+        )
+    })
+}
+
+/// dev_capstan.ri's shared kernel-free surface.
+fn dev_capstan_checked() -> &'static CheckResult {
+    static M: OnceLock<CheckResult> = OnceLock::new();
+    M.get_or_init(|| {
+        check_design(
+            dev_capstan_compiled(),
+            DEV_CAPSTAN_RI,
+            DEV_CAPSTAN_VOLUME_UNRESOLVED,
+        )
+    })
+}
+
+/// dev_capstan.ri tessellated with a real OCCT kernel, once.
+///
+/// dev_capstan.ri and not printer.ri: `Engine::tessellate_realizations` takes no
+/// entity or scope argument, so tessellating printer.ri would tessellate all 32
+/// of its structures — see this module's header for the measurement.
+///
+/// Constraint VIOLATIONS are routed out of the Error filter for the reason
+/// [`super::capstan_groove_e2e`]'s `Strictness` records; it bites harder here,
+/// because this surface evaluates and constraint-checks BEFORE it tessellates,
+/// so one broken design relation left in the filter would panic here and take the
+/// mesh gate down under a message about geometry that is false for that failure.
+fn dev_capstan_tessellated() -> &'static reify_eval::TessellateResult {
+    static M: OnceLock<reify_eval::TessellateResult> = OnceLock::new();
+    M.get_or_init(|| {
+        let mut planner = reify_geometry::SingleKernelHolder::new();
+        planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+        let mut engine = reify_eval::Engine::new(
+            Box::new(reify_constraints::SimpleConstraintChecker),
+            Some(Box::new(planner)),
+        );
+        let result = engine.tessellate_realizations(dev_capstan_compiled());
+        let geom_errors: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .filter(|d| d.code != Some(reify_core::DiagnosticCode::ConstraintViolated))
+            .collect();
+        assert!(
+            geom_errors.is_empty(),
+            "unexpected geometry errors tessellating {DEV_CAPSTAN_RI} (constraint \
+             violations are routed to the satisfaction gates and are not this \
+             fixture's business): {geom_errors:#?}"
+        );
+        result
+    })
+}
+
+/// The `sub` chain dev_capstan.ri's `CapstanDrive` binds the front-upper shuttle
+/// idler under — `CapstanDrive.shuttle.idler_fu` (dev_capstan.ri `Fairlead`).
+const IDLER_INSTANCE_PREFIX: &str = "CapstanDrive.shuttle.idler_fu#realization[";
+
+/// The tessellated surface backing that idler's `body`.
+///
+/// The realization index is read off the `body` cell's `Value::GeometryHandle`
+/// rather than hard-coded, the trick [`super::capstan_groove_e2e`]'s
+/// `capstan_body_path` uses. The panic lists every mesh path, which is also how
+/// the instance prefix above was discovered.
+fn idler_sheave(result: &reify_eval::TessellateResult) -> &reify_eval::MeshSurface {
+    let index = match result.values.get(&ValueCellId::new(IDLER_ENTITY, "body")) {
+        Some(Value::GeometryHandle {
+            realization_ref, ..
+        }) => realization_ref.index,
+        other => panic!("{IDLER_ENTITY}.body must be a realized Value::GeometryHandle, got {other:?}"),
+    };
+    let path = format!("{IDLER_INSTANCE_PREFIX}{index}]");
+    result
+        .meshes
+        .iter()
+        .find(|s| s.entity_path == path)
+        .unwrap_or_else(|| {
+            panic!(
+                "no tessellated surface at `{path}` (the idler sheave); all \
+                 surfaces: {:?}",
+                result.meshes.iter().map(|s| &s.entity_path).collect::<Vec<_>>()
+            )
+        })
+}
+
+/// Least-squares (Kåsa) circle through points known to lie on one — returns the
+/// centre and the mean radius about it.
+///
+/// **Why a fit rather than an extent or a mean.** Tessellation vertices lie ON
+/// the analytic surface, so a circle through them is exact — but only a FIT
+/// recovers it. Measured on this branch, against `sheave_r` = 18.000 mm:
+/// the whole-mesh vertex centroid is off by 280 µm, the bounding-box midpoint by
+/// 24 µm (the two radial extremes are not equally facet-deficient), the mean over
+/// the planar end faces by 188 µm, and the mean of a max-radius shell diverges
+/// outright — the mean of an ARC is not its centre. This fit lands the centre
+/// exactly and the radius within 0.0035 µm, which is what makes
+/// [`MESH_ABS_TOL`] possible at all: at 24 µm no band satisfying both of that
+/// constant's conditions exists.
+///
+/// Data is centred before solving, so the 3×3 normal equations collapse to a 2×2
+/// and stay well conditioned at an 18 mm radius offset 180 mm from the origin.
+fn circle_fit(pts: &[(f64, f64)]) -> ((f64, f64), f64) {
+    let n = pts.len() as f64;
+    let (mu, mv) = (
+        pts.iter().map(|p| p.0).sum::<f64>() / n,
+        pts.iter().map(|p| p.1).sum::<f64>() / n,
+    );
+    let (mut a11, mut a12, mut a22, mut b1, mut b2) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    for &(u, v) in pts {
+        let (du, dv) = (u - mu, v - mv);
+        let w = du * du + dv * dv;
+        a11 += du * du;
+        a12 += du * dv;
+        a22 += dv * dv;
+        b1 += w * du;
+        b2 += w * dv;
+    }
+    let det = a11 * a22 - a12 * a12;
+    assert!(
+        det.abs() > 0.0,
+        "degenerate circle fit over {} points — they are collinear, so no centre \
+         is determined",
+        pts.len()
+    );
+    let centre = (
+        mu + 0.5 * (b1 * a22 - b2 * a12) / det,
+        mv + 0.5 * (a11 * b2 - a12 * b1) / det,
+    );
+    let r = pts
+        .iter()
+        .map(|p| (p.0 - centre.0).hypot(p.1 - centre.1))
+        .sum::<f64>()
+        / n;
+    ((centre.0, centre.1), r)
+}
+
+/// ABSOLUTE tolerance, in metres, for a mesh read against a design cell.
+///
+/// Sized from the measurement, per this task's plan, not copied: the four reads
+/// the mesh gate makes were measured on this branch at 0.0035 µm (outer radius),
+/// 0.0027 µm (seat opening), 0.0028 µm RMS (seat-arc fit) and 0.0006 µm (seat
+/// bottom). Worst case 0.0035 µm, and that floor is f32 vertex QUANTIZATION —
+/// `MeshSurface::vertices` is `f32`, whose ~7 significant digits give ~0.001 µm
+/// at an 18 mm radius — not kernel error, so it will not drift with a
+/// tessellation-density change.
+///
+/// 5 µm is therefore ~1400× the measured noise floor and still 36× inside the
+/// smallest regression it must catch (the 0.180 mm pitch-circle sink) and 70×
+/// inside the 0.350 mm seat-opening signal. Both of the plan's conditions hold
+/// with room to spare: ≥3× the worst residual, and ≤0.060 mm.
+///
+/// Deliberately NOT [`super::capstan_groove_e2e`]'s `MESH_RADIAL_TOL_FRAC`
+/// (`0.10 · groove_r`). That is 318 µm here and would not catch the 0.180 mm
+/// regression this gate exists for — it would be looser than the signal.
+const MESH_ABS_TOL: f64 = 5e-6;
+
+/// The two copies of `IdlerPulley` must not have forked.
+///
+/// dev_capstan.ri carries its own copy because it is a standalone sketch and
+/// v0.1 has no cross-file import; its header states the contract ("copied
+/// verbatim from printer.ri") and until #6135 nothing held it. This is the
+/// assertion that makes "must stay verbatim" enforceable instead of advisory —
+/// and it is also what licenses `idler_sheave_mesh_has_the_declared_seat` taking
+/// its EXPECTATIONS from printer.ri and its MESH from dev_capstan.ri.
+///
+/// Semantic, not textual: it compares EVALUATED cells, so it is blind to
+/// formatting and comment differences (the two blocks' comments are deliberately
+/// not identical — dev_capstan.ri's are abridged) and sensitive to any fork that
+/// changes what the part IS.
+///
+/// Two claims:
+///   1. every [`IDLER_CELLS`] entry reads equal across the two value maps. A
+///      cell present in one copy and missing from the other fails on the READ,
+///      naming the file — which is the property that keeps the inventory honest
+///      as the structure grows;
+///   2. the two constraint sets agree in COUNT and every entry is `Satisfied` in
+///      BOTH files. The count is what claim (1) cannot see: a copy can reproduce
+///      every cell exactly and still drop `mouth_w > tendon_dia`, leaving the
+///      numbers free to be edited back to a slip fit with nothing objecting.
+#[test]
+fn idler_copies_stay_in_lockstep() {
+    let printer = &printer_checked().values;
+    let sketch = &dev_capstan_checked().values;
+
+    for &(cell, dim) in IDLER_CELLS {
+        let a = idler_cell_of(printer, PRINTER_RI, cell, dim);
+        let b = idler_cell_of(sketch, DEV_CAPSTAN_RI, cell, dim);
+        let err = if a == 0.0 { (a - b).abs() } else { rel_err(b, a) };
+        assert!(
+            err <= SCALAR_REL_TOL,
+            "{IDLER_ENTITY}.{cell} has FORKED between the two copies: printer.ri \
+             reads {a:?} and dev_capstan.ri reads {b:?} (rel err {err:.3e}, tol \
+             {SCALAR_REL_TOL:.0e}). dev_capstan.ri's copy is held byte-equal to \
+             printer.ri's by this gate; printer.ri is the original and owns the \
+             contract, so the fix is to bring dev_capstan.ri to it, not the \
+             reverse."
+        );
+    }
+
+    let scoped = |entries: &[ConstraintCheckEntry]| -> Vec<ConstraintNodeId> {
+        entries
+            .iter()
+            .filter(|c| c.id.entity == IDLER_ENTITY)
+            .map(|c| c.id.clone())
+            .collect()
+    };
+    let a_cons = assert_idler_constraints_ok(&printer_checked().constraint_results);
+    let b_ids = scoped(&dev_capstan_checked().constraint_results);
+    assert!(
+        !b_ids.is_empty(),
+        "no `{IDLER_ENTITY}` constraint results at all from {DEV_CAPSTAN_RI} — an \
+         empty set would satisfy the satisfaction filter below vacuously."
+    );
+    let bad: Vec<_> = dev_capstan_checked()
+        .constraint_results
+        .iter()
+        .filter(|c| c.id.entity == IDLER_ENTITY && c.satisfaction != Satisfaction::Satisfied)
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "{DEV_CAPSTAN_RI} must satisfy every `{IDLER_ENTITY}` constraint at its \
+         defaults — {} did not: {bad:#?}",
+        bad.len()
+    );
+    assert_eq!(
+        a_cons.len(),
+        b_ids.len(),
+        "the two `{IDLER_ENTITY}` copies declare DIFFERENT numbers of constraints \
+         — printer.ri {} and dev_capstan.ri {}. The cell comparison above cannot \
+         see this: a copy can reproduce every number exactly and still have \
+         dropped a constraint, which leaves those numbers free to be edited back \
+         to a zero-clearance slip fit with nothing objecting.",
+        a_cons.len(),
+        b_ids.len(),
+    );
+}
+
+/// The solid the kernel actually fabricates must HAVE the seat the design
+/// declares — not merely have cells that describe one.
+///
+/// The arithmetic gates above are scalar algebra over a handful of cells and
+/// would stay green for a torus placed at the wrong radius, a boolean that never
+/// breaks through, or a seat that never opens at the rim. This reads the finished
+/// sheave back off the mesh.
+///
+/// **Expectations from printer.ri, mesh from dev_capstan.ri**, licensed by
+/// [`idler_copies_stay_in_lockstep`] — the split is deliberate and its reason is
+/// in this module's header: printer.ri is the original and owns the contract,
+/// dev_capstan.ri is the copy and is the only one affordable to tessellate.
+///
+/// Four reads, in the idler's OWN frame. The frame was measured, not assumed:
+/// the shuttle idlers are posed by `rot_to_x`, so the spin axis is world +X, and
+/// the tell is that the de-posed half-extent along x is exactly `sheave_w/2` =
+/// 5.000 mm while the other two axes span the rim diameter. The axial centre
+/// comes from the two PLANAR end faces, which tessellate exactly; the radial
+/// centre from a [`circle_fit`] on the rim.
+///   1. the outermost surface is the rim, at `sheave_r`;
+///   2. the seat's ARC, fitted in the meridian (axial, radial) plane, has centre
+///      radius `seat_c` and arc radius `groove_r`. This is the read with teeth:
+///      the seat BOTTOM alone cannot tell the two seats apart — measured at
+///      15.000 mm under the pre-#6135 conformal seat AND under the compensated
+///      one, which is exactly the identity step 4 was built to preserve — whereas
+///      the arc's centre and radius move 18.000→18.180 and 3.000→3.180;
+///   3. the bottom that arc implies is still `sheave_r - tendon_dia/2`, the
+///      statement that never mentions `groove_r` and so holds for any arc radius;
+///   4. the seat's axial opening at the rim is `mouth_w`.
+#[test]
+fn idler_sheave_mesh_has_the_declared_seat() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let sheave_r = idler_cell("sheave_r", DimensionVector::LENGTH);
+    let groove_r = idler_cell("groove_r", DimensionVector::LENGTH);
+    let seat_c = idler_cell("seat_c", DimensionVector::LENGTH);
+    let tendon_dia = idler_cell("tendon_dia", DimensionVector::LENGTH);
+    let mouth_w = idler_cell("mouth_w", DimensionVector::LENGTH);
+    let brg_r = idler_cell("brg_r", DimensionVector::LENGTH);
+    let sheave_w = idler_cell("sheave_w", DimensionVector::LENGTH);
+
+    let surface = idler_sheave(dev_capstan_tessellated());
+    let verts: Vec<(f64, f64, f64)> = surface
+        .mesh
+        .vertices
+        .chunks_exact(3)
+        .map(|c| (c[0] as f64, c[1] as f64, c[2] as f64))
+        .collect();
+    assert!(
+        verts.len() > 64,
+        "the idler sheave tessellated to only {} vertices — too few to read a \
+         seat off; the solid is not where the design says it is",
+        verts.len()
+    );
+
+    // ---- The idler's own frame, recovered from the mesh ----
+    // Axial: world +X, from the planar end faces.
+    let (mut xlo, mut xhi) = (f64::MAX, f64::MIN);
+    for q in &verts {
+        xlo = xlo.min(q.0);
+        xhi = xhi.max(q.0);
+    }
+    let x0 = 0.5 * (xlo + xhi);
+    let half_w = 0.5 * (xhi - xlo);
+    assert!(
+        (half_w - sheave_w / 2.0).abs() <= MESH_ABS_TOL,
+        "the idler's axial half-extent must be sheave_w/2 = {:.6} mm — that is \
+         the measurement identifying world +X as the spin axis under this \
+         instance's `rot_to_x` pose — but the mesh spans {:.6} mm. If this fails, \
+         the pose changed and every read below is in the wrong frame.",
+        sheave_w * 0.5e3,
+        half_w * 1e3,
+    );
+    // Radial: a circle fit on the rim shell, located with a first pass off the
+    // bounding box (good to ~24 µm, which is ample to SELECT the shell).
+    let (mut ylo, mut yhi, mut zlo, mut zhi) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+    for q in &verts {
+        ylo = ylo.min(q.1);
+        yhi = yhi.max(q.1);
+        zlo = zlo.min(q.2);
+        zhi = zhi.max(q.2);
+    }
+    let seed = (0.5 * (ylo + yhi), 0.5 * (zlo + zhi));
+    let seed_rmax = verts
+        .iter()
+        .map(|q| (q.1 - seed.0).hypot(q.2 - seed.1))
+        .fold(f64::MIN, f64::max);
+    let rim_shell: Vec<(f64, f64)> = verts
+        .iter()
+        .filter(|q| (q.1 - seed.0).hypot(q.2 - seed.1) > seed_rmax - 50.0 * MESH_ABS_TOL)
+        .map(|q| (q.1, q.2))
+        .collect();
+    let ((y0, z0), _) = circle_fit(&rim_shell);
+    let r_of = |q: &(f64, f64, f64)| (q.1 - y0).hypot(q.2 - z0);
+
+    // ---- (1) The outermost surface is the rim ----
+    let r_outer = verts.iter().map(r_of).fold(f64::MIN, f64::max);
+    assert!(
+        (r_outer - sheave_r).abs() <= MESH_ABS_TOL,
+        "the sheave's outermost surface must be the rim at sheave_r = {:.6} mm, \
+         but the mesh reaches {:.6} mm (tol {:.4} µm, residual {:.4} µm). The rim \
+         is what all 31 hand-derived placements position against.",
+        sheave_r * 1e3,
+        r_outer * 1e3,
+        MESH_ABS_TOL * 1e6,
+        (r_outer - sheave_r).abs() * 1e6,
+    );
+
+    // ---- (2) The seat's ARC, fitted in the meridian plane ----
+    // The torus seat's meridian section is a circle of radius groove_r centred at
+    // (0, seat_c). Everything strictly inside the rim and outside the bore cut is
+    // that surface: the cut sits at the midpoint of brg_r and the seat bottom, so
+    // nothing lives between it and either surface it separates.
+    let bore_clear = 0.5 * (brg_r + (sheave_r - tendon_dia / 2.0));
+    let seat_pts: Vec<(f64, f64)> = verts
+        .iter()
+        .filter(|q| r_of(q) > bore_clear && r_of(q) < r_outer - 10.0 * MESH_ABS_TOL)
+        .map(|q| (q.0 - x0, r_of(q)))
+        .collect();
+    assert!(
+        seat_pts.len() >= 16,
+        "only {} mesh vertices lie on the seat surface (strictly inside the rim \
+         {:.6} mm and outside the bore cut {:.6} mm) — the seat was never cut, or \
+         never broke through the rim, so the sheave renders smooth",
+        seat_pts.len(),
+        r_outer * 1e3,
+        bore_clear * 1e3,
+    );
+    let ((seat_ax, fit_c), fit_groove) = circle_fit(&seat_pts);
+    assert!(
+        seat_ax.abs() <= MESH_ABS_TOL,
+        "the seat arc must be centred on the sheave's mid-plane, but the fit puts \
+         it {:.6} mm off axially (tol {:.4} µm)",
+        seat_ax * 1e3,
+        MESH_ABS_TOL * 1e6,
+    );
+    assert!(
+        (fit_groove - groove_r).abs() <= MESH_ABS_TOL,
+        "the seat arc's RADIUS in the fabricated solid must be groove_r = {:.6} \
+         mm — DIN 15061's oversize arc — but the mesh's arc fits {:.6} mm (tol \
+         {:.4} µm, residual {:.4} µm). A conformal slip-fit seat fits \
+         tendon_dia/2 = {:.6} mm here.",
+        groove_r * 1e3,
+        fit_groove * 1e3,
+        MESH_ABS_TOL * 1e6,
+        (fit_groove - groove_r).abs() * 1e6,
+        tendon_dia * 0.5e3,
+    );
+    assert!(
+        (fit_c - seat_c).abs() <= MESH_ABS_TOL,
+        "the seat arc's CENTRE radius in the fabricated solid must be seat_c = \
+         {:.6} mm — outboard of the rim by exactly the pitch-circle compensation \
+         — but the mesh's arc is centred at {:.6} mm (tol {:.4} µm, residual \
+         {:.4} µm). An UNCOMPENSATED seat centres the arc on the rim at {:.6} mm \
+         instead, and that is the 0.180 mm that would move all 31 placements.",
+        seat_c * 1e3,
+        fit_c * 1e3,
+        MESH_ABS_TOL * 1e6,
+        (fit_c - seat_c).abs() * 1e6,
+        sheave_r * 1e3,
+    );
+
+    // ---- (3) The bottom that arc implies is the seated rope's underside ----
+    let bottom = fit_c - fit_groove;
+    let want_bottom = sheave_r - tendon_dia / 2.0;
+    assert!(
+        (bottom - want_bottom).abs() <= MESH_ABS_TOL,
+        "the fabricated seat's bottom must be sheave_r − tendon_dia/2 = {:.6} mm \
+         — a reference that never mentions groove_r, so it holds for any arc \
+         radius — but the fitted arc bottoms at {:.6} mm (tol {:.4} µm). Below \
+         this the seat eats into the bore clearance (brg_r = {:.6} mm).",
+        want_bottom * 1e3,
+        bottom * 1e3,
+        MESH_ABS_TOL * 1e6,
+        brg_r * 1e3,
+    );
+
+    // ---- (4) The seat's axial opening at the rim ----
+    // Rim vertices exist only outside the seat's mouth, so twice the smallest
+    // |axial| among them IS the opening — and the seat's own break-through edge
+    // lies exactly on the rim radius, at exactly mouth_w/2.
+    let half_mouth = verts
+        .iter()
+        .filter(|q| (r_of(q) - r_outer).abs() <= MESH_ABS_TOL)
+        .map(|q| (q.0 - x0).abs())
+        .fold(f64::MAX, f64::min);
+    assert!(
+        half_mouth.is_finite(),
+        "no mesh vertices sit on the rim radius {:.6} mm — the opening cannot be \
+         read",
+        r_outer * 1e3,
+    );
+    assert!(
+        (2.0 * half_mouth - mouth_w).abs() <= MESH_ABS_TOL,
+        "the seat's OPENING at the rim must be mouth_w = {:.6} mm, but the \
+         fabricated solid opens {:.6} mm (tol {:.4} µm, residual {:.4} µm). This \
+         is the chord the rope is laid in through, and it is also twice the \
+         per-side anti-pinch clearance at the rope's widest section — one \
+         measurement, both readings, because the compensation puts the rope's \
+         centreline on the rim. A conformal slip-fit seat opens exactly \
+         tendon_dia = {:.6} mm here and pinches.",
+        mouth_w * 1e3,
+        2.0 * half_mouth * 1e3,
+        MESH_ABS_TOL * 1e6,
+        (2.0 * half_mouth - mouth_w).abs() * 1e6,
+        tendon_dia * 1e3,
+    );
 }
