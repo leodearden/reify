@@ -1522,6 +1522,189 @@ mod tests {
         );
     }
 
+    /// A collapsed element sitting BESIDE a good one is a typed error too.
+    ///
+    /// The `Σ_K V_K` guard above is a SET-level check, so a single
+    /// zero-volume tet in a ball that *also* catches healthy tets leaves
+    /// the sum strictly positive: the set passes, and every consumer then
+    /// goes on to index the broken element. [`element_stress_p1`]'s own
+    /// degenerate-Jacobian guard is a `debug_assert!`, so in RELEASE
+    /// `inverse_transpose_3x3` divides by `det == 0` and the `NaN` escapes
+    /// into the dual load.
+    ///
+    /// # `LocalNormalStressQoi` is the witnessing arm
+    ///
+    /// MEASURED on this exact fixture in a `--release` build, before the
+    /// per-element guard existed:
+    ///
+    /// | call | result |
+    /// |---|---|
+    /// | `LocalNormalStressQoi::evaluate` | `Ok(NaN)` |
+    /// | `LocalNormalStressQoi::dual_load` | `Ok(g)`, 12 of 15 entries non-finite |
+    /// | `LocalDisplacementQoi::evaluate` | `Ok(-0.0225)` |
+    /// | `LocalDisplacementQoi::dual_load` | `Ok(g)`, 0 non-finite entries |
+    ///
+    /// That mostly-`NaN` `g` is what [`solve_dual_cg`] hands straight to
+    /// CG. The displacement ball mean inverts no Jacobian, so its
+    /// `0.0 · finite` term genuinely vanishes and it never `NaN`s — which
+    /// makes a displacement-only version of this test one that would have
+    /// passed VACUOUSLY before the fix. It is asserted anyway, labelled as
+    /// the non-witnessing direction, because the guard lives in the shared
+    /// [`resolve`] and must reject uniformly across both functionals.
+    ///
+    /// A plain `#[test]` — no `should_panic`, no reliance on a debug
+    /// assertion — so the RELEASE leg of the verify pipeline is the one
+    /// that pins this; release callers are exactly the ones who cannot see
+    /// the `debug_assert!`. (In debug the pre-fix code panicked at
+    /// `result.rs`'s guard instead of returning `Ok(NaN)`. After the fix
+    /// `resolve` rejects before either primitive runs, so both profiles
+    /// take the same path and this assertion holds in both.)
+    #[test]
+    fn a_collapsed_element_beside_a_good_one_yields_a_typed_error() {
+        // tet0 is the canonical unit tet (V = 1/6). tet1 shares its face
+        // {0,1,2} and closes onto node 4, whose z = 0 like theirs — four
+        // COPLANAR nodes, so V = 0 exactly.
+        let coords = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 1.0, 0.0],
+        ];
+        let tets = vec![[0, 1, 2, 3], [0, 1, 2, 4]];
+        let mesh = P1TetMeshRef {
+            coords: &coords,
+            tets: &tets,
+        };
+        let mat = dimensionless_steel_like();
+        let u = two_tet_fan_u();
+        // Both centroids — (0.25, 0.25, 0.25) and (0.5, 0.5, 0.0) — sit
+        // well inside this ball, so the centroid arm selects BOTH and the
+        // `locate_containing_element` fallback never runs.
+        let at = [0.4, 0.4, 0.2];
+        let radius = 5.0;
+        let direction = [0.0, -1.0, 0.0];
+
+        let good = tet_volume_p1(&[coords[0], coords[1], coords[2], coords[3]]);
+        let collapsed = tet_volume_p1(&[coords[0], coords[1], coords[2], coords[4]]);
+        assert_eq!(
+            collapsed, 0.0,
+            "fixture premise: element 1 must be EXACTLY zero-volume, or \
+             this exercises a merely ill-conditioned tet instead",
+        );
+        assert!(
+            good + collapsed > 0.0,
+            "fixture premise: the SET must stay viable (Σ V_K = {} must be \
+             > 0), or this exercises the set-level guard rather than the \
+             per-element one",
+            good + collapsed,
+        );
+
+        let expected = QoiError::DegenerateElement {
+            at,
+            element: 1,
+            volume: 0.0,
+        };
+        let reject = |qoi: &dyn QuantityOfInterest, arm: &str| {
+            assert_eq!(
+                qoi.evaluate(mesh, &mat, &u),
+                Err(expected.clone()),
+                "{arm}: evaluate must NAME the collapsed element rather \
+                 than average over it",
+            );
+            assert_eq!(
+                qoi.dual_load(mesh, &mat, &u),
+                Err(expected.clone()),
+                "{arm}: dual_load must reject from its own direction too \
+                 (C4), not hand the solver a g carrying non-finite entries",
+            );
+        };
+        reject(
+            &LocalNormalStressQoi {
+                at,
+                radius,
+                normal: direction,
+            },
+            "LocalNormalStress (the witnessing arm)",
+        );
+        reject(
+            &LocalDisplacementQoi {
+                at,
+                radius,
+                direction,
+            },
+            "LocalDisplacement (the non-witnessing arm)",
+        );
+    }
+
+    /// The containment fallback can never select a degenerate element — a
+    /// RELEASE-only characterization.
+    ///
+    /// The per-element guard sits where both selection arms funnel into one
+    /// `elements` vector, so it covers the fallback too. This test pins the
+    /// SEPARATE reason the fallback was already safe, so that a later edit
+    /// to either arm cannot widen the surface unnoticed.
+    ///
+    /// With a lone collapsed element and a radius too small for the
+    /// centroid rule, `resolve` falls back to `locate_containing_element`.
+    /// [`barycentric_p1`] carries only a `debug_assert!`, so in release its
+    /// `det == 0` produces non-finite barycentric coordinates, every
+    /// [`point_in_tet_p1`] comparison against a `NaN` is false, and no
+    /// element is selected at all. MEASURED: `Err(PointOutsideBody)` from
+    /// both functionals.
+    ///
+    /// The `cfg` is not a convenience. In DEBUG this fixture panics inside
+    /// `interpolation.rs`'s guard before any `Result` exists, so no single
+    /// assertion is true of both profiles — and release is the profile
+    /// whose behaviour needs pinning anyway, being the one with no
+    /// assertion to fall back on.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn the_containment_fallback_never_selects_a_degenerate_element() {
+        let coords = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+        ];
+        let tets = vec![[0, 1, 2, 3]];
+        let mesh = P1TetMeshRef {
+            coords: &coords,
+            tets: &tets,
+        };
+        let mat = dimensionless_steel_like();
+        let u = vec![0.01_f64; 12];
+        // The element centroid is (0.5, 0.5, 0.0); this ball misses it by
+        // far more than its radius, which is what forces the fallback arm.
+        let at = [0.1, 0.1, 0.0];
+        let radius = 0.05;
+        let direction = [0.0, -1.0, 0.0];
+
+        let expected = QoiError::PointOutsideBody { at };
+        assert_eq!(
+            LocalDisplacementQoi {
+                at,
+                radius,
+                direction,
+            }
+            .evaluate(mesh, &mat, &u),
+            Err(expected.clone()),
+            "the fallback must decline to select the degenerate element, \
+             leaving `at` outside every element of this mesh",
+        );
+        assert_eq!(
+            LocalNormalStressQoi {
+                at,
+                radius,
+                normal: direction,
+            }
+            .evaluate(mesh, &mat, &u),
+            Err(expected),
+            "and identically for the stress functional — the fallback is \
+             in the shared `resolve`",
+        );
+    }
+
     /// A non-unit direction states a DIRECTION, not a scale.
     ///
     /// Nothing upstream of this module guarantees the `vec3` a designer
