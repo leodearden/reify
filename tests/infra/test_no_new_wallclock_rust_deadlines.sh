@@ -1596,9 +1596,22 @@ assert "live scan: no NEW hand-rolled deadlines or elapsed upper bounds, and no 
 # list that collapsed, without churning every time a test file is added or
 # deleted. It is a LOWER bound, which is the only direction that means
 # anything here -- an upper bound would red on a growing tree.
-_s3_files="$(_wallclock_files_scanned "${_LIVE_ROOTS[@]}")"
+#
+# RC IS CAPTURED, NOT INHERITED. A bad root returns the validator's 2, and an
+# unguarded command substitution under `set -euo pipefail` would abort the
+# whole script on it -- taking Sections 4a-4f and the "Results:" summary with
+# it, so the run that found the problem could not report anything, including
+# the problem. Verified before this was fixed: breaking the glob to
+# `crates/*/testsXX` exited 2 here and printed no summary line at all. The two
+# live calls above already capture rc this way; these two did not.
+_s3_files_rc=0
+_s3_files="$(_wallclock_files_scanned "${_LIVE_ROOTS[@]}")" || _s3_files_rc=$?
+assert "live scan: the floor runs -- every root was scannable (returns 0)" \
+    test "$_s3_files_rc" -eq 0
+# The default keeps a broken scan reporting a second named FAIL rather than a
+# bare "integer expression expected" from an empty capture.
 assert "live scan: the floor -- at least 1000 .rs files were actually scanned" \
-    test "$_s3_files" -ge 1000
+    test "${_s3_files:-0}" -ge 1000
 
 # --- (4) the escape allowlist ----------------------------------------------
 # The allowlist as a NUMBER rather than as prose. One escape:
@@ -1609,7 +1622,17 @@ assert "live scan: the floor -- at least 1000 .rs files were actually scanned" \
 _ESC_ALLOWLIST_SIZE=1
 
 _s3_esc_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s3_esc_tmpdir")
-_s3_esc_count="$(_count_rust_wallclock_escapes "${_LIVE_ROOTS[@]}" 2>"$_s3_esc_tmpdir/escapes.txt")"
+
+# Same rc capture as the floor, and for the same reason.
+_s3_esc_rc=0
+_s3_esc_count="$(_count_rust_wallclock_escapes "${_LIVE_ROOTS[@]}" \
+    2>"$_s3_esc_tmpdir/escapes.txt")" || _s3_esc_rc=$?
+assert "live scan: the escape counter runs -- every root was scannable (returns 0)" \
+    test "$_s3_esc_rc" -eq 0
+# -1 rather than 0 as the broken-scan default: 0 is a legitimate answer this
+# assertion could one day be asked to accept, and a sentinel that could never
+# be right is the honest stand-in for "there is no answer".
+_s3_esc_count="${_s3_esc_count:--1}"
 
 if [ "$_s3_esc_count" != "$_ESC_ALLOWLIST_SIZE" ]; then
     echo "" >&2
