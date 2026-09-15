@@ -1691,7 +1691,27 @@ pub structure CoreXY {
     // at the current envelope but no longer coupled — change y_rail_offset and only
     // the X rails follow.
     let x_rail_len = y_rail_offset * 2
-    let y_rail_len = 800mm
+    /// Y-rail length. A PARAM, not a `let`, so it is editable from the property
+    /// panel and by an AI agent through `reify_set_parameter` — which rewrites a
+    /// parameter's default literal and has nothing to rewrite on a `let`.
+    /// `x_rail_len` above stays derived: it is the formula that keeps the gantry
+    /// spanning between the Y rails.
+    ///
+    /// MEASURED CASCADE if you lengthen this (#5098 drives the pair as a gate):
+    /// setting it to 1100mm flips exactly ONE pin, `rail_span_m > y_rail_len -
+    /// slack` in Printer below, to VIOLATED. Setting `AFrame.rail_span_m` to
+    /// 1100mm as well clears that pin and carries `AFrame.travel_avail` 510 ->
+    /// 810mm, which finally covers the 800mm build_y — and then knocks TWO more
+    /// things loose, both expected and neither a defect in this edit:
+    ///   * `ToolDock.yh_min_today` (145mm) is a pinned literal tracking
+    ///     `centre_y - travel_avail/2`, so its Printer pin goes VIOLATED and the
+    ///     literal has to be re-pinned to the new reach.
+    ///   * `AFrame.vol_vs_analytic` goes INDETERMINATE, because the interim
+    ///     socket bridges INVERT rather than merely shrinking to nothing:
+    ///     `brf_y1 = y1 - pil_wy = 885mm` does not depend on `rail_span_m` while
+    ///     `brf_y0 = centre_y + rail_span_m/2 = 950mm`, so the bridge box is
+    ///     built with a -65mm Y extent.
+    param y_rail_len : Length = 800mm
 
     let rot_to_y   = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)   // leaf +Z → +Y
     let rot_to_x   = orient_axis_angle(vec3(0mm, 1m, 0mm), 90deg)   // leaf +Z → +X
