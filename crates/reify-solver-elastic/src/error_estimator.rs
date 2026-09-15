@@ -422,13 +422,24 @@ fn recovery_error(recovered: &[[f64; 3]; 3], discrete: &[[f64; 3]; 3]) -> [[f64;
 /// indicator bit for bit
 /// (`tests::dual_weighted_indicator_with_a_self_dual_field_reduces_to_the_zz_indicator_bitwise`).
 ///
+/// # `η_K` is weighted by the PRIMAL element's volume
+///
+/// `el_z.volume` is not read. The two fields describe the same elements in
+/// the same order — the pairing the length assert below pins — so the two
+/// volumes are the same number; saying WHICH one is used keeps that from
+/// being incidental.
+///
 /// # Panics
 ///
-/// If `primal` and `dual` have different lengths, or if any element carries
-/// non-P1 (non-4-node) connectivity. Both are caller errors rather than user
-/// data, so they are unconditional `assert!`s per the crate's contract
-/// convention — a truncating zip would otherwise return an indicator over a
-/// subset of the mesh, an under-estimate indistinguishable from convergence.
+/// If `primal` and `dual` have different lengths, or if any element on
+/// EITHER side carries non-P1 (non-4-node) connectivity. Both are caller
+/// errors rather than user data, so they are unconditional `assert!`s per
+/// the crate's contract convention — a truncating zip would otherwise
+/// return an indicator over a subset of the mesh, an under-estimate
+/// indistinguishable from convergence, and a dual element carrying, say,
+/// 10-node P2 connectivity would have its recovered stress averaged over
+/// ten nodes instead of four: a plausible-looking indicator that is simply
+/// wrong.
 pub fn compute_dual_weighted_indicator(
     primal: &[StressElement<'_>],
     dual: &[StressElement<'_>],
@@ -454,12 +465,11 @@ pub fn compute_dual_weighted_indicator(
     let mut qoi_error_bound = 0.0_f64;
 
     for (el_u, el_z) in primal.iter().zip(dual) {
-        let n = el_u.connectivity.len();
-        assert_eq!(
-            n,
-            4,
+        let (n_u, n_z) = (el_u.connectivity.len(), el_z.connectivity.len());
+        assert!(
+            n_u == 4 && n_z == 4,
             "compute_dual_weighted_indicator currently supports P1 tets only; \
-             got connectivity of length {n}",
+             got connectivity of length {n_u} (primal) and {n_z} (dual)",
         );
 
         let diff_u = recovery_error(
@@ -1379,6 +1389,43 @@ mod tests {
             boundary: None,
         };
         compute_dual_weighted_indicator(&elements, &elements, &mesh, &mat);
+    }
+
+    /// P2-length connectivity on the DUAL side panics too.
+    ///
+    /// The sibling above passes one slice as both arguments, so it trips on
+    /// the primal element and says nothing about the dual one — yet it is
+    /// `el_z.connectivity` that `centroid_smoothed_stress` averages the
+    /// recovered DUAL stress over, dividing by its length. Unchecked, a
+    /// 10-node connectivity there averages over ten nodes instead of four
+    /// and returns an indicator that is wrong while looking entirely
+    /// plausible: no `NaN`, no panic, just a quietly mis-weighted `η_K`.
+    #[test]
+    #[should_panic(expected = "P1 tets only")]
+    fn dual_weighted_indicator_panics_when_only_the_dual_carries_p2_connectivity() {
+        let mat = dimensionless_steel_like();
+        let conn_p1 = [0_usize, 1, 2, 3];
+        let conn_p2 = [0_usize; 10];
+        let primal = [StressElement {
+            connectivity: &conn_p1,
+            stress: diag_xx(1.0),
+            volume: 1.0 / 6.0,
+        }];
+        let dual = [StressElement {
+            connectivity: &conn_p2,
+            stress: diag_xx(1.0),
+            volume: 1.0 / 6.0,
+        }];
+        let mesh = VolumeMesh {
+            vertices: vec![0.0_f32; 30],
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0; 10],
+                order: ElementOrderTag::P1,
+            },
+            normals: None,
+            boundary: None,
+        };
+        compute_dual_weighted_indicator(&primal, &dual, &mesh, &mat);
     }
 
     /// Mismatched primal/dual lengths panic with a descriptive message.
