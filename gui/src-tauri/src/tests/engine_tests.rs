@@ -21658,6 +21658,52 @@ fn apply_param_to_source_preserves_an_existing_staleness_banner_when_it_rejects(
     assert_writeback_untouched(&mut session, &path, writeback_rejection_source());
 }
 
+#[test]
+fn commit_parameter_refuses_a_fileless_session_and_still_discards_the_preview() {
+    // A `load_from_source` session has no canonical `.ri` to be canonical about,
+    // so INV-GUI-3 requires a REFUSAL rather than a silent degrade to the
+    // ephemeral path — degrading is precisely the behaviour the invariant
+    // replaces. The refusal must still leave the postcondition intact: state ≡
+    // source, with the preview gone.
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+
+    let previewed = session
+        .preview_parameter("Bracket.width", "100mm")
+        .expect("preview_parameter should succeed on a fileless session");
+    let width = previewed
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Bracket.width")
+        .expect("Bracket.width should be present in the preview GuiState");
+    assert_eq!(
+        (width.value.as_str(), width.unit.as_str()),
+        ("100", "mm"),
+        "the preview must have taken, or this test is not exercising a discard"
+    );
+
+    let err = session
+        .commit_parameter("Bracket.width", "100mm")
+        .expect_err("a session with no on-disk .ri must be REFUSED");
+    assert!(
+        err.contains("session has no on-disk .ri file to write"),
+        "the write-back's own refusal must stay readable — an unmasked discard \
+         failure would report the wrong problem, got: {err}"
+    );
+
+    assert_eq!(
+        gui_value_of(&mut session, "Bracket.width"),
+        ("80".to_string(), "mm".to_string()),
+        "the discard must run on a session with no file_path too — the preview \
+         may not outlive the commit that refused it"
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // task 5097 δ — EngineSession::apply_param_to_source_str (string-typed front
 // door for the reify-debug `reify_set_parameter` write tool)
