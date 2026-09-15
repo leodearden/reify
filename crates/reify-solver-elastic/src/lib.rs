@@ -674,7 +674,7 @@ pub use error_estimator::{DualWeightedIndicator, compute_dual_weighted_indicator
 // PRD: docs/prds/v0_6/goal-oriented-error-estimation.md §5.1, §6 C2–C6.
 pub use qoi::{
     LocalDisplacementQoi, LocalNormalStressQoi, P1TetMeshRef, QoiError, QoiKind,
-    QuantityOfInterest,
+    QuantityOfInterest, solve_dual_cg,
 };
 // Task 3451: buckling eigensolver kernel — shift-invert Lanczos + dense fallback.
 // Task 3882: generic shift-invert Lanczos over arbitrary SPD operator pairs.

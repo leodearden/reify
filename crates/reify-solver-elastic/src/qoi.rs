@@ -31,9 +31,13 @@
 
 use std::fmt;
 
+use faer::sparse::SparseRowMat;
+
+use crate::boundary::dirichlet::DirichletBc;
 use crate::constitutive::IsotropicElastic;
 use crate::interpolation::{LocatableTet, locate_element_p1};
 use crate::result::{element_stress_p1, tet_volume_p1};
+use crate::solver::{CgResult, CgSolverOptions, SolverMode, solve_cg};
 
 /// Borrowed P1 tet mesh view: the f64 coordinates and connectivity the
 /// solve actually ran on.
@@ -573,6 +577,77 @@ impl QuantityOfInterest for LocalNormalStressQoi {
     fn kind(&self) -> QoiKind {
         QoiKind::LocalNormalStress
     }
+}
+
+// ---------------------------------------------------------------------------
+// The dual-solve seam (§5.3)
+// ---------------------------------------------------------------------------
+
+/// Assemble a QoI's dual load, constrain it, and solve `K z_h = g`.
+///
+/// PRD §5.3. This is the whole adjoint solve behind ONE call, so a caller
+/// wiring goal-oriented refinement never has to re-derive the BC treatment or
+/// re-assemble anything.
+///
+/// # `k` is the primal's ALREADY-ELIMINATED matrix, reused verbatim
+///
+/// The dual system shares the primal's operator — that is what makes the
+/// adjoint solve cheap, and it is also a correctness precondition, not just
+/// an optimisation. Re-assembling or re-eliminating would give a `K` equal
+/// only to within assembly round-off, and BT2's bit-identity (a self-dual
+/// load must reproduce the primal solution exactly) would fail. For the same
+/// reason the caller passes its `CgSolverOptions` through unchanged: PRD §11
+/// Q4 derives BT1's `10 · tolerance` slack and BT2's bit-identity from the
+/// two solves sharing one tolerance, so the two must move together.
+///
+/// # The dual is ALWAYS homogeneously constrained
+///
+/// `g` is zeroed at every constrained DOF, whatever values the PRIMAL
+/// prescribed. The adjoint of a problem with non-homogeneous Dirichlet data
+/// still has homogeneous data: prescribed DOFs are not unknowns, so the
+/// functional cannot be sensitive to a residual there.
+///
+/// This is deliberately ONE loop rather than half of
+/// [`apply_dirichlet_row_elimination`]. That function's other half — folding
+/// the eliminated columns into the right-hand side — must NOT run here: `k`
+/// arrives already row-eliminated, so those columns are already gone, and
+/// applying the correction a second time would corrupt `g`.
+///
+/// # A non-converged dual is the caller's diagnostic
+///
+/// The returned [`CgResult`] carries `converged`; this function does not
+/// treat `false` as an error. The estimate built from a partially-converged
+/// `z_h` is still worth reporting alongside a warning — refusing to report
+/// one would turn a quality signal into a hard failure.
+///
+/// # No warm start across meshes
+///
+/// Each mesh gets a cold solve. A remesh preserves no DOF numbering, so a
+/// previous `z_h` is not merely a poor initial guess on the new mesh — it is
+/// a vector whose entries refer to different nodes entirely.
+///
+/// # Errors
+///
+/// [`QoiError`] if the QoI cannot be resolved on `mesh` (C4). No dual solve
+/// is attempted in that case: an unresolvable QoI has no dual load, and
+/// solving with a zero `g` would return the zero field and report an error
+/// estimate of exactly zero — convergence.
+#[allow(clippy::too_many_arguments)]
+pub fn solve_dual_cg(
+    k: &SparseRowMat<usize, f64>,
+    qoi: &dyn QuantityOfInterest,
+    mesh: P1TetMeshRef<'_>,
+    material: &IsotropicElastic,
+    u: &[f64],
+    bcs: &[DirichletBc],
+    opts: CgSolverOptions,
+    mode: SolverMode,
+) -> Result<CgResult, QoiError> {
+    let mut g = qoi.dual_load(mesh, material, u)?;
+    for bc in bcs {
+        g[bc.dof] = 0.0;
+    }
+    Ok(solve_cg(k, &g, opts, mode))
 }
 
 #[cfg(test)]

@@ -384,6 +384,10 @@ fn cantilever_pencil(
 #[test]
 fn bt1_reciprocity_holds_for_both_qoi_kinds_across_pencils_and_material_scales() {
     let opts = CgSolverOptions::default();
+    // Captured before the by-value uses below: CgSolverOptions is Clone but
+    // not Copy, and the bound must be derived from the SAME tolerance the
+    // solves ran at.
+    let cg_tolerance = opts.tolerance;
 
     for (nx, ny, nz) in [(4, 1, 1), (6, 2, 2), (8, 2, 2), (10, 3, 3)] {
         for youngs_modulus in [1.0_f64, 200.0e9] {
@@ -391,7 +395,7 @@ fn bt1_reciprocity_holds_for_both_qoi_kinds_across_pencils_and_material_scales()
                 youngs_modulus,
                 poisson_ratio: 0.3,
             };
-            let p = cantilever_pencil(nx, ny, nz, &material, opts);
+            let p = cantilever_pencil(nx, ny, nz, &material, opts.clone());
             let mesh = P1TetMeshRef {
                 coords: &p.nodes,
                 tets: &p.conns,
@@ -445,7 +449,7 @@ fn bt1_reciprocity_holds_for_both_qoi_kinds_across_pencils_and_material_scales()
                     &material,
                     u,
                     &p.bcs,
-                    opts,
+                    opts.clone(),
                     SolverMode::Deterministic,
                 )
                 .unwrap_or_else(|e| panic!("{case}: the dual solve must resolve, got {e}"));
@@ -455,7 +459,7 @@ fn bt1_reciprocity_holds_for_both_qoi_kinds_across_pencils_and_material_scales()
                 );
 
                 let f_dot_z: f64 = p.f.iter().zip(dual.u()).map(|(fi, zi)| fi * zi).sum();
-                let bound = 10.0 * opts.tolerance * j.abs();
+                let bound = 10.0 * cg_tolerance * j.abs();
                 assert!(
                     (j - f_dot_z).abs() <= bound,
                     "{case}: reciprocity J(u_h) == fᵀz_h must hold to \
