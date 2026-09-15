@@ -244,11 +244,16 @@ function leafLabelFor(leaf, idx) {
 // no index guessing is needed to find it. The label AT that position is
 // leafLabelFor(leaves[j], j): the leaf's own signal/text, falling back to the
 // index only when the leaf has neither.
+//
+// The label carries the index explicitly (`<dropped-leaf:${j}:...>`), not
+// just the name: two dropped leaves can share an identical signal, and the
+// index is what lines this label up with both the per-leaf `[idx] ...` log
+// line below and the runtime's own `pipeline[<index>] failed: ...` record.
 // ---------------------------------------------------------------------------
 
 function droppedLeafLabels(leaves, leaf_verdicts) {
     return leaf_verdicts
-        .map((v, j) => (v ? null : `<dropped-leaf:${leafLabelFor(leaves[j], j)}>`))
+        .map((v, j) => (v ? null : `<dropped-leaf:${j}:${leafLabelFor(leaves[j], j)}>`))
         .filter(Boolean);
 }
 
@@ -275,7 +280,29 @@ const _wfResult = await (async function runWorkflow() {
 
     if (leaves.length === 0) {
         log("No leaves provided — γ verification skipped."); // eslint-disable-line no-undef
-        return { blocks: false, leaf_verdicts: [], summary: "No leaves to verify." };
+        // Full key set (task #7369 review): this early return used to omit
+        // `blocking`/`disposition`/the counters that the aggregation tail
+        // below always produces, so a consumer written against the documented
+        // shape (verdict.blocking.length, verdict.disposition === 'PASS')
+        // got undefined on this one path. Zero leaves is vacuously PASS by
+        // the same rule the tail applies: nothing blocked, and there is no
+        // unenumerated/not-verified/malformed/fixture-absent leaf to make it
+        // INCOMPLETE.
+        return {
+            blocks: false,
+            blocking: [],
+            leaf_verdicts: [],
+            summary: "No leaves to verify.",
+            disposition: "PASS",
+            leaves_total: 0,
+            leaves_probed: 0,
+            leaves_unenumerated: 0,
+            leaves_not_verified: 0,
+            unenumerated_leaves: [],
+            not_verified_leaves: [],
+            malformed_records: 0,
+            fixture_absent_records: 0,
+        };
     }
 
     log(`γ verification: ${leaves.length} leaf(ves)`); // eslint-disable-line no-undef
@@ -528,21 +555,14 @@ REQUIRED by the schema — report 0/0, because nothing was adjudicated):
     // filtered out above.  Treating 'could not evaluate' as PASS is a false
     // negative for a verification gate — block instead.
     //
-    // `dropped` has two independent derivations — a length diff and a count of
-    // named holes — that agree as long as leaf_verdicts stays index-aligned
-    // with leaves (the documented pipeline contract above). Take the larger of
-    // the two so a broken contract (e.g. the pipeline compacting instead of
-    // nulling) still fails closed, and say so loudly rather than silently
-    // agreeing on a count while disagreeing on WHICH leaves were dropped.
+    // `dropped` is droppedBlocking.length, not a separate length-diff check:
+    // pipeline() returns an array of exactly leaves.length, with null at each
+    // failed item's own index (workflow-authoring reference: "A stage that
+    // throws drops that item to null and skips its remaining stages"), so
+    // leaves.length - filtered.length and the count of named holes are the
+    // same fact read two ways, not two derivations that could disagree.
     const droppedBlocking = droppedLeafLabels(leaves, leaf_verdicts);
-    const droppedByLengthDiff = leaves.length - filtered.length;
-    if (droppedByLengthDiff !== droppedBlocking.length) {
-        log(`WARNING: dropped-leaf accounting disagrees — length-diff says ` // eslint-disable-line no-undef
-            + `${droppedByLengthDiff}, named-holes says ${droppedBlocking.length}. `
-            + `leaf_verdicts may not be index-aligned with leaves; the pipeline `
-            + `contract this aggregation relies on may have changed.`);
-    }
-    const dropped = Math.max(droppedByLengthDiff, droppedBlocking.length);
+    const dropped = droppedBlocking.length;
 
     const anyBlocks = dropped > 0 || filtered.some(v => v.blocks);
     const allBlocking = [
