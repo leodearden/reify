@@ -554,7 +554,7 @@ struct SwitchableKernel {
 impl SwitchableKernel {
     /// The boxed kernel, plus the switch handle that outlives the engine's
     /// ownership of it.
-    fn new() -> (Box<dyn GeometryKernel>, KernelSwitches) {
+    fn boxed_with_switches() -> (Box<dyn GeometryKernel>, KernelSwitches) {
         let switches = KernelSwitches::default();
         let kernel = Self {
             inner: reify_test_support::MockGeometryKernel::new(),
@@ -1223,9 +1223,8 @@ fn a_warm_build_snapshot_after_edit_param_re_dispatches_the_geometry_consuming_n
     // needs two projections of the same body to be distinguishable, and the
     // plain mock's `tessellate` returns a constant mesh. Every assertion above
     // that pin reads identically under either kernel.
-    let (kernel, _switches) = SwitchableKernel::new();
-    let (mut engine, compiled, diagnostics) =
-        build_with_probe_capturing_module(&source, kernel);
+    let (kernel, _switches) = SwitchableKernel::boxed_with_switches();
+    let (mut engine, compiled, diagnostics) = build_with_probe_capturing_module(&source, kernel);
 
     let errors: Vec<_> = diagnostics
         .iter()
@@ -1308,9 +1307,9 @@ fn a_warm_build_snapshot_after_edit_param_re_dispatches_the_geometry_consuming_n
          is the only dispatch surface it has. The redispatch-once signal belongs \
          in the build-scoped `RedispatchPassState`, not in `realization_inputs`."
     );
-    let warm_dispatch = warm.iter().find(|r| {
-        r.kernel_backed_arg && r.any_realized_content && r.realization_inputs_len == 1
-    });
+    let warm_dispatch = warm
+        .iter()
+        .find(|r| r.kernel_backed_arg && r.any_realized_content && r.realization_inputs_len == 1);
     assert!(
         warm_dispatch.is_some(),
         "#7332: the warm `build_snapshot`'s redispatch must deliver the SAME \
@@ -1339,10 +1338,14 @@ fn a_warm_build_snapshot_after_edit_param_re_dispatches_the_geometry_consuming_n
     // reify pins no OCCT version and preflights none, so that test can stop
     // running silently.
     let cold_fingerprint = last.content_fingerprint.expect(
-        "premise: the cold build's post-hydration redispatch carried content          (`any_realized_content` was just asserted), so it must have a          fingerprint",
+        "premise: the cold build's post-hydration redispatch carried content \
+         (`any_realized_content` was just asserted), so it must have a \
+         fingerprint",
     );
     assert_eq!(
-        warm.iter().filter(|r| r.content_fingerprint.is_some()).count(),
+        warm.iter()
+            .filter(|r| r.content_fingerprint.is_some())
+            .count(),
         1,
         "premise: exactly one warm invocation may carry content, or \
          `warm_dispatch` below is not the one this pin is about. Warm records: \
@@ -1448,7 +1451,7 @@ fn a_warm_rebuild_still_refuses_to_latch_on_contentless_inputs() {
 fn a_warm_rebuild_that_loses_tessellation_still_reports_the_strand() {
     reset_records();
     let source = format!("{WARM_CONSUMER_STRUCTURE}{}", trailing_structures(3));
-    let (kernel, switches) = SwitchableKernel::new();
+    let (kernel, switches) = SwitchableKernel::boxed_with_switches();
     let (mut engine, compiled, _cold_diagnostics) =
         build_with_probe_capturing_module(&source, kernel);
 
@@ -1488,10 +1491,7 @@ fn a_warm_rebuild_that_loses_tessellation_still_reports_the_strand() {
         .expect("build_snapshot must return a BuildResult after edit_param");
 
     // The strand itself: re-admitted as a candidate, handed nothing.
-    assert_no_contentless_latch(
-        "warm build_snapshot after losing tessellation",
-        &recorded(),
-    );
+    assert_no_contentless_latch("warm build_snapshot after losing tessellation", &recorded());
 
     // ── THE PIN ────────────────────────────────────────────────────────────
     assert_one_strand_warning(
@@ -1536,7 +1536,7 @@ fn a_warm_rebuild_that_loses_tessellation_still_reports_the_strand() {
 #[test]
 fn a_warm_rebuild_must_not_narrow_realization_inputs() {
     reset_records();
-    let (kernel, switches) = SwitchableKernel::new();
+    let (kernel, switches) = SwitchableKernel::boxed_with_switches();
     let (mut engine, compiled, _cold_diagnostics) =
         build_with_probe_capturing_module(MIXED_ARG_STRUCTURE, kernel);
 
@@ -1594,7 +1594,11 @@ fn a_warm_rebuild_must_not_narrow_realization_inputs() {
 
     // ── THE PIN ────────────────────────────────────────────────────────────
     let warm_inputs = probe_node_realization_input_refs(&engine, MIXED_PROBE_TARGET);
-    assert_eq!(warm_inputs.len(), 1, "still exactly one node: {warm_inputs:?}");
+    assert_eq!(
+        warm_inputs.len(),
+        1,
+        "still exactly one node: {warm_inputs:?}"
+    );
     assert!(
         warm_inputs[0].contains(&ghost_ref),
         "the newly-symbolic sibling's realization `{ghost_ref:?}` must SURVIVE \
