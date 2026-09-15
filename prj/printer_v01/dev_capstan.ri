@@ -38,7 +38,9 @@ module dev_capstan
 //    circle and sheave_od/2 == r_pitch survives — see the structure doc below.
 //    This copy must stay code-identical to printer.ri's, and that is now GATED
 //    rather than merely asked for: `idler_seat_e2e::idler_copies_stay_in_lockstep`
-//    compares every cell and the constraint count across the two files.
+//    compares every cell, the constraint count, and the two structures' compiled
+//    content hash — the last of which covers the body tree, so "code-identical"
+//    is substantiated rather than approximated.
 
 #version(0.1)
 

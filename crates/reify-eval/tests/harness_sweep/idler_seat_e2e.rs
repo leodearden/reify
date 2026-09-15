@@ -36,9 +36,35 @@
 //! (`crates/reify-compiler/tests/harness_constructor_typing/orientation_constructor_typing_tests.rs`),
 //! so the kernel-free surface is proven affordable. The OCCT mesh readback
 //! therefore comes from `prj/printer_v01/dev_capstan.ri` (345 lines, ~5 s),
-//! which carries four `IdlerPulley` instances in its `Fairlead` shuttle — and
-//! `idler_copies_stay_in_lockstep` is precisely the assertion that licenses
-//! taking the EXPECTATIONS from one file and the MESH from the other.
+//! which carries four `IdlerPulley` instances in its `Fairlead` shuttle.
+//!
+//! That split turns out to be load-bearing rather than merely thrifty.
+//! MEASURED while verifying #6135: `reify check prj/printer_v01/printer.ri`
+//! SEGFAULTS (exit 139, no output), deterministically, inside OCCT 7.8's
+//! `BOPAlgo_PaveFiller::ProcessDE` → `Geom2d_Curve::Value` under a boolean
+//! fuse. It reproduces identically on the pre-#6135 file at main
+//! `03d762223c` — which carries `torus(sheave_r, groove_half)` and no
+//! `seat_arc_ratio` at all — so it predates this task and is not the oversize
+//! arc. dev_capstan.ri checks clean. The kernel-free surface this module reads
+//! printer.ri through is unaffected and green; a gate here that reached for
+//! printer.ri's kernel would not merely be slow, it would crash the runner.
+//! Already tracked, independently of #6135: #7383 bisects and fixes the crash,
+//! #7385 gives the OCCT kernel actor thread a crash-reporting boundary so a
+//! native SIGSEGV stops being a silent zero-output exit 139.
+//!
+//! **What licenses reading the expectations off one file and the mesh off the
+//! other**, in three links: `idler_copies_stay_in_lockstep` asserts the two
+//! `IdlerPulley` `TopologyTemplate`s have equal `content_hash`, so printer.ri's
+//! structure is semantically identical to dev_capstan.ri's down to tree shape
+//! and argument order; `idler_sheave_mesh_has_the_declared_seat` proves
+//! dev_capstan.ri's SOLID has the declared seat; therefore printer.ri's does.
+//! The hash equality is what makes that an argument rather than a hand-wave —
+//! before it, the lockstep gate compared named cells and a constraint count,
+//! and neither implies the two `body` trees agree. One thing the chain cannot
+//! see: an edit applied to BOTH copies in lockstep keeps the hashes equal and
+//! moves both solids together. That is covered instead by the `body` read-set
+//! pin in `idler_seat_keeps_the_rope_on_the_pitch_circle`, which is anchored to
+//! printer.ri's tree alone.
 //!
 //! # The measured kernel-free surface of printer.ri (task #6135, pre-2)
 //!
@@ -1097,9 +1123,14 @@ const DEV_CAPSTAN_ENUM_PATH_UNRESOLVED: &[&str] = &[];
 /// from forking again — so it must be populated from the structure, not from
 /// whichever cells happened to seem interesting.
 ///
-/// `body` is deliberately ABSENT: it is a geometry handle, not a scalar, so
-/// there is no number to compare. The shape it names is held to the design's
-/// numbers by `idler_sheave_mesh_has_the_declared_seat` instead.
+/// `body` is deliberately ABSENT from THIS inventory: it is a geometry handle,
+/// not a scalar, so there is no number for a value comparison to compare. It is
+/// held elsewhere, by the two gates that read the compiled TREE rather than the
+/// evaluated values — the template `content_hash` equality in this same
+/// `idler_copies_stay_in_lockstep`, and the read-set pin
+/// [`IDLER_BODY_READS`] in `idler_seat_keeps_the_rope_on_the_pitch_circle`.
+/// Neither is a number comparison, which is exactly why `body` cannot join this
+/// list.
 const IDLER_CELLS: &[(&str, Option<DimensionVector>)] = &[
     ("brg_od", Some(DimensionVector::LENGTH)),
     ("brg_bore", Some(DimensionVector::LENGTH)),
