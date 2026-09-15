@@ -14,7 +14,7 @@ use reify_core::{DiagnosticInfo, ModulePath, SourceLocationInfo, Type, ValueCell
 
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref};
 
-use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, build_constraints, build_template_node, module_key, parse_value_string, unit_hint_from_default_literal};
+use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, MergedTraitDefs, build_constraints, build_template_node, module_key, parse_value_string, unit_hint_from_default_literal};
 use crate::mcp_context::TauriToolContext;
 use crate::tests::test_helpers::{
     assert_rigid_mass_props_determined, find_moi_principal_constraint,
@@ -6188,7 +6188,8 @@ fn build_template_node_self_reference_does_not_stack_overflow() {
     // BEFORE step-16 fix: this call recurses infinitely → stack overflow.
     // AFTER step-16 fix: the is_recursive check stops recursion and returns
     // a sub node with empty children.
-    let node = build_template_node(a_template, "A", &compiled, &[], None, false);
+    let node =
+        build_template_node(a_template, "A", &compiled, &MergedTraitDefs::empty(), None, false);
 
     let sub_x = node
         .children
@@ -6232,8 +6233,10 @@ fn build_template_node_mutual_recursion_does_not_stack_overflow() {
     // BEFORE step-16 fix: A → B → A → … stack overflow.
     // AFTER step-16 fix: A.b has empty children (B is_recursive), B.a has
     // empty children (A is_recursive).
-    let node_a = build_template_node(a_template, "A", &compiled, &[], None, false);
-    let node_b = build_template_node(b_template, "B", &compiled, &[], None, false);
+    let node_a =
+        build_template_node(a_template, "A", &compiled, &MergedTraitDefs::empty(), None, false);
+    let node_b =
+        build_template_node(b_template, "B", &compiled, &MergedTraitDefs::empty(), None, false);
 
     let sub_b = node_a
         .children
@@ -6288,7 +6291,14 @@ fn build_template_node_non_recursive_parent_stops_at_recursive_child() {
     // BEFORE step-16 fix: Container → A → A → … stack overflow.
     // AFTER step-16 fix: Container expands normally, Container.a (pointing to
     // recursive A) has empty children instead of expanding A.
-    let node = build_template_node(container_template, "Container", &compiled, &[], None, false);
+    let node = build_template_node(
+        container_template,
+        "Container",
+        &compiled,
+        &MergedTraitDefs::empty(),
+        None,
+        false,
+    );
 
     // Container should have exactly one sub child
     let sub_a = node
@@ -13699,7 +13709,7 @@ fn get_entity_tree_consumed_realizations_default_visible_false() {
 /// #5195 step-3 RED: the realization node for a `Physical` structure's
 /// `geometry` member must carry `trait_geometry == true`, matching its
 /// value-cell sibling (`build_template_node`'s value-cell loop already sets
-/// `is_geometry_member && parent_has_physical`). A non-trait `let helper`
+/// `is_geometry_member && geometry_is_trait_mandated`). A non-trait `let helper`
 /// realization stays `false`.
 ///
 /// Fails today because the realization loop hard-codes `trait_geometry: false`
@@ -14074,7 +14084,8 @@ fn examples_m5_geometry_flange_hides_consumed_intermediates() {
     // Resolved contract: the flag follows the refinement chain
     // `BoltFlange : Rigid : Physical` (stdlib/structural_physical.ri),
     // resolved by `reify_eval::conforms_to_trait` against the merged module +
-    // prelude trait defs. See `build_template_node`'s `parent_has_physical`.
+    // prelude trait defs. See `build_template_node`'s
+    // `geometry_is_trait_mandated`.
     //
     // Asserted node-by-node rather than as a blanket count: a blanket
     // `any(|n| n.trait_geometry)` would also be satisfied by the flag being
