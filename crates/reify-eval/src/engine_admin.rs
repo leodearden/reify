@@ -732,7 +732,7 @@ impl Engine {
     /// hook points pinned by tests
     /// `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
     /// and `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
-    /// in `tests/tolerance_wiring_e2e.rs`). This method is the escape hatch
+    /// in `tests/harness_tolerance/tolerance_wiring_e2e.rs`). This method is the escape hatch
     /// for scenarios that fall OUTSIDE those hook points; it is NOT a
     /// required pre-`build_snapshot` step.
     ///
@@ -758,27 +758,17 @@ impl Engine {
     /// **What this method does NOT reset**: the cache's
     /// [`realization_entries`](crate::realization_cache::RealizationCache::realization_entries)
     /// counter, surfaced as [`CacheStats::realization_entries`](crate::CacheStats::realization_entries).
-    /// It is a monotonic count of realizations PERFORMED over the engine's
-    /// lifetime, not of entries currently resident, so it deliberately survives
-    /// the flush (task 4152) — `clear` empties the buckets in place and cannot
-    /// reach the counter, so this holds by construction rather than by a
-    /// save/restore convention here. Since `edit_param` and `edit_source` both
-    /// flush here, resetting it would zero the metric on every edit. Pinned by
-    /// `realization_entries_survives_clear_realization_cache` in
-    /// `tests/tolerance_wiring_e2e.rs` and by
-    /// `clear_empties_the_cache_but_preserves_realization_entries` in
-    /// `src/realization_cache.rs`.
+    /// It is a monotonic count of realizations PERFORMED over the engine's lifetime, not of
+    /// entries currently resident, so it deliberately survives this flush (task 4152). Why
+    /// that holds by construction, and the tests that pin it, are documented at
+    /// [`RealizationCache::clear`](crate::realization_cache::RealizationCache::clear).
     ///
     /// Pinned by `clear_realization_cache_public_api_resets_cache_for_production_callers`
-    /// in `tests/tolerance_wiring_e2e.rs`.
+    /// in `tests/harness_tolerance/tolerance_wiring_e2e.rs`.
     pub fn clear_realization_cache(&mut self) {
-        // Task 4152: `RealizationCache::clear` drops every entry in place and
-        // structurally cannot reach the monotonic `realization_entries`
-        // counter, so the lifetime metric survives the flush by construction.
-        // Do NOT "simplify" this back to a reseat
-        // (`self.realization_cache = RealizationCache::new()`): that zeroes the
-        // counter, and `edit_param`/`edit_source` flush on every edit, so the
-        // metric would be unusable across edits.
+        // Must stay a clear-in-place; never a reseat to `RealizationCache::new()`.
+        // See `RealizationCache::clear` for why the lifetime counter's survival
+        // depends on that (task 4152).
         self.realization_cache.clear();
     }
 
