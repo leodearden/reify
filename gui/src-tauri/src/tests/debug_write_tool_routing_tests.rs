@@ -530,6 +530,52 @@ pub async fn reify_export_on_engine_and_refresh_baseline(
 }
 "#;
 
+/// A fixture whose `ToolDef` registry advertises BOTH `reify_alpha` and
+/// `reify_beta` while `dispatch_tool` carries a literal arm for `reify_alpha`
+/// only — `reify_beta` falls through to the `_ =>` frontend-delegation
+/// catch-all, the shape the live `dispatch_tool` has at
+/// `debug_server.rs:1329`, so it is dispatched but never seen by the arm scan.
+///
+/// No widening of the arm parser can reach this shape: there is no arm to
+/// read. Only a second, independent enumeration of the tool set catches it.
+const ADVERTISED_BUT_UNDISPATCHED_SOURCE: &str = r#"
+fn tool_definitions() -> Vec<ToolDef> {
+    vec![
+        ToolDef {
+            name: "reify_alpha",
+            description: "Set alpha.",
+            input_schema: json!({ "type": "object" }),
+        },
+        ToolDef {
+            name: "reify_beta",
+            description: "Set beta.",
+            input_schema: json!({ "type": "object" }),
+        },
+    ]
+}
+
+async fn dispatch_tool(
+    state: &DebugServerState,
+    name: &str,
+    params: Value,
+) -> Result<Value, String> {
+    match name {
+        "reify_alpha" => handle_reify_alpha(state, params).await,
+        _ => state.debug_bridge.query_frontend(name, params).await,
+    }
+}
+
+async fn handle_reify_alpha(state: &DebugServerState, params: Value) -> Result<Value, String> {
+    let value = reify_alpha_params(&params)?;
+    let gs = write_on_engine_and_refresh_baseline(&state.engine, &state.last_state, move |s| {
+        s.set_alpha(&value)
+    })
+    .await?;
+    push_gui_state(&state.debug_bridge, &gs, None).await?;
+    Ok(reify_alpha_envelope(&gs))
+}
+"#;
+
 #[test]
 fn bypassing_fixture_is_flagged() {
     assert_eq!(
@@ -661,5 +707,17 @@ fn every_refresh_baseline_seam_actually_refreshes() {
         Vec::<String>::new(),
         "a fn named `*_and_refresh_baseline` never reaches `crate::diff::compute_delta`, \
          so INV-GUI-2's routing check would be resting on that name rather than on behaviour"
+    );
+}
+
+/// The soundness net for the arm scan: a tool the scan CANNOT SEE must red as
+/// a set difference, never vanish. The registry is an independent textual
+/// enumeration of the same set, so whatever the reason an arm is unreadable —
+/// including reasons nobody has thought of — the tool still shows up here.
+#[test]
+fn advertised_tools_must_all_appear_in_the_dispatch_scan() {
+    assert_eq!(
+        unenumerated_tools(ADVERTISED_BUT_UNDISPATCHED_SOURCE),
+        vec!["reify_beta".to_string()],
     );
 }
