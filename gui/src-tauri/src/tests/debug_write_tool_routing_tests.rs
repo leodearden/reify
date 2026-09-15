@@ -80,6 +80,50 @@ fn dispatch_arms(source: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Names every `reify_*` tool the `ToolDef` registry ADVERTISES, in source
+/// order (`debug_server.rs:1026/1056/1084/1101/1115`). `code` must already be
+/// comment-stripped.
+///
+/// This is the gate's SECOND, independent enumeration of the same tool set,
+/// read from a struct-literal field rather than from a match pattern. The
+/// `name: "reify_` key cannot collide: every `"reify_*"` literal in the real
+/// file is either a registry entry or a dispatch arm, and nothing else.
+fn registry_tool_names(code: &str) -> Vec<String> {
+    code.lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("name:")?.trim_start();
+            let (tool_suffix, _) = rest.strip_prefix("\"reify_")?.split_once('"')?;
+            Some(format!("reify_{tool_suffix}"))
+        })
+        .collect()
+}
+
+/// Names the advertised `reify_*` tools the dispatch scan never saw, sorted.
+///
+/// REDUNDANT ENUMERATION: reading the tool set from two independent textual
+/// shapes is what makes an arm the scanner cannot read fail CLOSED. Without
+/// it, [`dispatch_arms`] silently DROPS such an arm and the tool vanishes from
+/// the sweep entirely — a false GREEN, the one direction this module must
+/// never have. Here it reds as a set difference instead, whatever the reason
+/// the arm was unreadable, including reasons nobody has anticipated.
+///
+/// It also catches a shape no arm parser could reach at all: a
+/// registry-advertised tool dispatched by a non-literal path, falling into the
+/// `_ =>` frontend-delegation catch-all at `debug_server.rs:1329`.
+fn unenumerated_tools(source: &str) -> Vec<String> {
+    let code = strip_comments(source);
+    let dispatched: Vec<String> = dispatch_arms(&code)
+        .into_iter()
+        .map(|(tool, _)| tool)
+        .collect();
+    let mut missing: Vec<String> = registry_tool_names(&code)
+        .into_iter()
+        .filter(|tool| !dispatched.contains(tool))
+        .collect();
+    missing.sort();
+    missing
+}
+
 /// Parses the fn name out of a (trimmed) line that looks like a fn signature,
 /// stripping leading `pub`/`pub(...)`/`async`/`unsafe` modifiers first.
 /// Returns `None` if the line isn't a fn signature. Modelled on
@@ -615,15 +659,36 @@ fn every_debug_write_tool_routes_through_the_delta_choke_point() {
     // vacuously (same shape as `every_test_module_file_is_declared`'s floor).
     // It also fail-closes the split debug_server.rs weighed under "WHY THE
     // CLUSTER LIVES IN THIS FILE" (:1987-2006): if
-    // the write-tool cluster moves to its own module the arms vanish here,
-    // this fires, and someone must re-point the checker.
-    let arms = dispatch_arms(&strip_comments(&source));
+    // the write-tool cluster moves to its own module the registry vanishes
+    // here, this fires, and someone must re-point the checker.
+    //
+    // Anchored on the REGISTRY rather than on the arms, which is what makes
+    // the headroom sound: if the arm parser breaks the arms go empty while the
+    // registry still reads five, so the set-difference assertion below fires
+    // first and only a gross REGISTRY-parser failure ever reaches this floor.
+    // The headroom is a fix in its own right — pinned to today's exact count,
+    // this floor would false-red a legitimate tool REMOVAL while still doing
+    // nothing about a dropped sixth tool, which is what it was doing before.
+    let advertised = registry_tool_names(&strip_comments(&source));
     assert!(
-        arms.len() >= 5,
-        "dispatch-arm scan of debug_server.rs found only {} `reify_*` tool(s) (expected >= 5) — \
-         the checker may be reading the wrong file, the arm parser may have stopped matching, \
-         or the write tools may have moved to another module",
-        arms.len()
+        advertised.len() >= 3,
+        "ToolDef-registry scan of debug_server.rs found only {} `reify_*` tool(s) (expected \
+         >= 3) — the checker may be reading the wrong file, the registry parser may have \
+         stopped matching, or the write tools may have moved to another module",
+        advertised.len()
+    );
+
+    // COMPLETENESS — strictly orthogonal to the floor above (one assertion,
+    // one job): the floor catches gross breakage, this catches ONE tool going
+    // missing regardless of count, and it is what makes "a new write tool
+    // cannot skip this gate silently" actually true.
+    assert_eq!(
+        unenumerated_tools(&source),
+        Vec::<String>::new(),
+        "the ToolDef registry advertises `reify_*` write tool(s) the dispatch-arm scan never \
+         saw, so NEITHER half of INV-GUI-2 would sweep them: either the arm is in a shape the \
+         scanner cannot read, or the tool is dispatched by a non-literal path and falls into \
+         the `_ =>` frontend-delegation catch-all"
     );
 
     let bypasses = write_tool_bypasses(&source);
