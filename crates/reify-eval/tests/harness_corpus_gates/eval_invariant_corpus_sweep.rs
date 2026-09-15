@@ -112,23 +112,23 @@ fn workspace_root() -> std::path::PathBuf {
 /// hashed. Hashing a `Path`/`OsStr` directly would reintroduce that prefix and
 /// silently reassign the whole corpus per lane.
 ///
-/// Canonicalising both sides, rather than hand-rolling a `..` collapser, is what
+/// Canonicalising `path`, rather than hand-rolling a `..` collapser, is what
 /// resolves the hops the corpus-root joins introduce
-/// (`crates/reify-eval/../../examples/x.ri` → `examples/x.ri`) and any symlink on
-/// either side. A side that does not exist on this filesystem — a synthetic path
-/// in a test — falls back to itself, which is lexically correct for a path that
+/// (`crates/reify-eval/../../examples/x.ri` → `examples/x.ri`) and any symlink it
+/// carries. A path that does not exist on this filesystem — a synthetic one in a
+/// test — falls back to itself, which is lexically correct for a path that
 /// carries no `..` to begin with.
+///
+/// `root` must ALREADY be canonical, and is not re-resolved here. [`workspace_root`]
+/// is its only producer and canonicalises once; re-resolving per call would spend
+/// a `canonicalize` syscall on an unchanging value for every one of the ~299
+/// corpus members, in a restructuring whose whole point is spending less.
 ///
 /// Returns an owned `String`: the shard key is a VALUE, not a borrow into a path
 /// buffer whose lifetime a caller would then have to manage.
 fn repo_relative(path: &std::path::Path, root: &std::path::Path) -> String {
-    fn resolved(p: &std::path::Path) -> std::path::PathBuf {
-        p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
-    }
-
-    let path = resolved(path);
-    let root = resolved(root);
-    let rel = path.strip_prefix(&root).unwrap_or_else(|_| {
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let rel = path.strip_prefix(root).unwrap_or_else(|_| {
         panic!(
             "corpus path {} does not sit under the repo root {} — the shard key \
              would carry a per-checkout prefix",
@@ -144,6 +144,27 @@ fn repo_relative(path: &std::path::Path, root: &std::path::Path) -> String {
 }
 
 // ── Corpus enumeration ─────────────────────────────────────────
+
+/// The `examples/` corpus root, as it appears at the head of a repo-relative
+/// shard key.
+///
+/// Spelled once because three separate decisions read it: which root
+/// [`corpus_files`] walks, which files [`CorpusScope::ExamplesOnly`] covers, and
+/// the live-corpus count that
+/// `each_invariant_keeps_its_own_pre_unification_corpus_scope` holds that scope
+/// to. Three copies would be three chances for INV-EVAL-4's scope to drift away
+/// from the walk it is meant to reproduce exactly.
+const EXAMPLES_ROOT: &str = "examples/";
+
+/// The explicit #4946 R3f-bridge premise fixture — the one corpus member that is
+/// NAMED rather than walked — as the repo-relative key every use derives from.
+///
+/// Spelled once, here. Referenced as this LEAF and never as its containing
+/// directory; see [`corpus_files`] for why that matters to `verify.sh`. A rename
+/// that updated one of several copies would leave the rest compiling and passing
+/// while silently dropping the premise, which is exactly the failure this const
+/// forecloses.
+const SELECTOR_CONSUMER_REL: &str = "tests/prd-gate/fixtures/geometry_let_selector_consumer.ri";
 
 /// One corpus member: the absolute path used to READ the file, and the
 /// repo-relative shard key, carried together.
@@ -180,8 +201,8 @@ fn corpus_files() -> Vec<CorpusFile> {
 
     let mut files = Vec::new();
     eval_gate_support::collect_ri_files(&manifest_dir.join("tests/fixtures"), &mut files);
-    eval_gate_support::collect_ri_files(&manifest_dir.join("../../examples"), &mut files);
-    files.push(manifest_dir.join("../../tests/prd-gate/fixtures/geometry_let_selector_consumer.ri"));
+    eval_gate_support::collect_ri_files(&root.join(EXAMPLES_ROOT), &mut files);
+    files.push(root.join(SELECTOR_CONSUMER_REL));
 
     let mut corpus: Vec<CorpusFile> = files
         .into_iter()
@@ -194,14 +215,29 @@ fn corpus_files() -> Vec<CorpusFile> {
     corpus
 }
 
+/// The whole corpus grouped by owning shard, from ONE walk.
+///
+/// The single definition of "which files does shard N sweep": [`shard_files`]
+/// reads its slice out of this, so a shard process and the tests that reason
+/// about the partition AS a partition cannot disagree about the split. Callers
+/// wanting every slice get them for one walk instead of `CORPUS_SHARD_COUNT` of
+/// them.
+fn corpus_partition() -> Vec<Vec<CorpusFile>> {
+    let mut shards: Vec<Vec<CorpusFile>> = vec![Vec::new(); CORPUS_SHARD_COUNT];
+    for file in corpus_files() {
+        shards[shard_of(&file.rel)].push(file);
+    }
+    shards
+}
+
 /// The corpus slice this shard owns. Every shard runs this independently, so the
 /// partition must be derivable from the key alone — which is exactly what
 /// [`shard_of`] gives, with no state shared between the shard processes.
 fn shard_files(shard_index: usize) -> Vec<CorpusFile> {
-    corpus_files()
+    corpus_partition()
         .into_iter()
-        .filter(|f| shard_of(&f.rel) == shard_index)
-        .collect()
+        .nth(shard_index)
+        .unwrap_or_else(|| panic!("shard {shard_index} is outside 0..{CORPUS_SHARD_COUNT}"))
 }
 
 // ── Shard keying ──────────────────────────────────────────────────
@@ -220,10 +256,24 @@ fn shard_files(shard_index: usize) -> Vec<CorpusFile> {
 /// reporting its own PASS/SLOW line, so the worst-case silent gap is bounded by
 /// one shard's share of the corpus rather than the whole corpus.
 ///
-/// Unification does not disturb that rationale: this sweep does ONE compile+eval
-/// per file where the two old sweeps each did their own, so a shard's wall time
-/// is if anything lower than either predecessor's at the same shard count.
-/// Re-tuning the count is a separate, measurement-driven change.
+/// Unification leaves that rationale intact but does NOT lower a shard's wall
+/// time, and this task's own measurement refutes the claim that it would
+/// (`docs/notes/eval-slow-tail-profile-2026-09.md` §1, "Correction: shard size
+/// does NOT predict shard wall time"). What unification bought is CPU: 702.9s
+/// over 48 test processes became 352.1s over 24, a 50% cut. What it COST is the
+/// straggler, which rose from 160.2s to 184.9s and re-ran at 238.4s and 158.2s —
+/// treat 158-240s as the observed band, never a single run as a point value.
+///
+/// The reason is that per-file cost is strongly non-uniform: a handful of
+/// FEA/OCCT-bearing examples dominate, so a shard's wall time is set by WHICH
+/// expensive files it drew, not by how many it holds. `corpus_sweep_shard_02`
+/// holds the LARGEST slice at 23 files and finishes in ~62s.
+///
+/// 24 is nonetheless retained, because nothing measured forces a change: 240s
+/// clears the inherited `[profile.default]` slow-timeout in `.config/nextest.toml`
+/// (period 120s x terminate-after 10 = 1200s) five times over, so the regression
+/// is makespan, not a hard-kill risk. Re-tuning stays a separate change — one
+/// that should now be driven by the numbers above rather than by a projection.
 const CORPUS_SHARD_COUNT: usize = 24;
 
 /// Which shard owns `rel_path` — keyed on a hash of the repo-relative path, NOT
@@ -268,7 +318,7 @@ fn shard_of_is_independent_of_corpus_membership() {
     //     for two independently-constructed equal `&str`s (so the result cannot
     //     be keyed on a pointer, a length, or interning).
     let target = "examples/fdm_bracket.ri";
-    let rebuilt: String = ["examples/", "fdm_bracket", ".ri"].concat();
+    let rebuilt: String = [EXAMPLES_ROOT, "fdm_bracket", ".ri"].concat();
     assert_eq!(rebuilt, target, "the rebuilt key must be equal by value");
     assert_eq!(
         shard_of(target),
@@ -387,14 +437,14 @@ fn shard_key_is_worktree_independent() {
     let live: Vec<std::path::PathBuf> = vec![
         manifest_dir.join("tests/fixtures/undef_trace.ri"),
         manifest_dir.join("../../examples/fdm_bracket.ri"),
-        manifest_dir.join("../../tests/prd-gate/fixtures/geometry_let_selector_consumer.ri"),
+        manifest_dir.join("../..").join(SELECTOR_CONSUMER_REL),
     ];
     // Two walked roots, plus the ONE explicitly-named prd-gate leaf. Matching
     // that leaf exactly, rather than by directory prefix, is both more precise
     // (the corpus holds exactly one member from there) and required: naming the
     // directory in any `*.rs` string reds `test_verify_scope.sh`'s PG-DRIFT-DIR
     // guard, which is the carve-out's load-bearing premise.
-    let walked_roots = ["examples/", "crates/reify-eval/tests/fixtures/"];
+    let walked_roots = [EXAMPLES_ROOT, "crates/reify-eval/tests/fixtures/"];
     for path in &live {
         assert!(path.exists(), "premise: {} must exist", path.display());
         let rel = repo_relative(path, &root);
@@ -437,21 +487,29 @@ fn shard_key_is_worktree_independent() {
 /// silently stops being swept — the failure both old
 /// `corpus_shard_count_matches_generated_tests` guards existed to prevent.
 ///
-/// (b) and (c) are statistical, so their thresholds are MEASURED rather than
-/// picked. Over the real 299 relative corpus paths, three independent
-/// well-distributed 128-bit hashes (blake2b-128, sha256[:16], md5) gave a max
-/// shard of 19 / 21 / 20 and a min of 7 / 6 / 8 against a mean of 12.46. A
-/// 20 000-trial Monte-Carlo of multinomial(299, 24) gave max-bucket p50 20,
-/// p90 22, p99 25, p99.9 28, absolute max 32; and P(some shard empty) is
-/// 24·(23/24)^299 ≈ 9.3e-5. xxh3-128 is a well-distributed hash, so its residues
-/// mod 24 are statistically indistinguishable from those samples.
+/// (b) and (c) are statistical, so their thresholds are MEASURED — and measured
+/// on the hash this file actually SHIPS, xxh3-128, not on a surrogate. Over the
+/// live 299-path corpus it partitions to min 6, max 23, mean 12.46: the very
+/// histogram this test prints below, recorded in full in
+/// `docs/notes/eval-slow-tail-profile-2026-09.md` §1 "Shard partition". That is
+/// a 3.8x spread where index keying gave a flat 12-13 per shard, and it is the
+/// mechanism behind the straggler regression [`CORPUS_SHARD_COUNT`] records —
+/// the price hash keying charges for insert-stability, stated rather than hidden.
+///
+/// Whether a max of 23 is ordinary variance or a degenerate key is the question
+/// the bound has to separate, and that is what the reference distributions are
+/// for: three independent well-distributed 128-bit hashes (blake2b-128,
+/// sha256[:16], md5) over these same paths gave max 19 / 21 / 20 and min 7 / 6 /
+/// 8, while a 20 000-trial Monte-Carlo of multinomial(299, 24) gave max-bucket
+/// p50 20, p90 22, p99 25, p99.9 28, absolute max 32, with P(some shard empty) =
+/// 24·(23/24)^299 ≈ 9.3e-5. xxh3's 23 is worse than every point sample but sits
+/// between that p90 and p99 — variance, not a degenerate key.
 ///
 /// The bound in (c) — 3× the ceiling mean, = 39 at 299 files — therefore clears
-/// every measured point sample by ≥1.85× and the simulated absolute max by
-/// 1.22×, while still reddening on the pathologies that actually matter: a
-/// constant-keyed hash (all 299 in one shard) or a truncated modulus (shards
-/// left empty). It is stated as a FORMULA over the live corpus, so growing the
-/// corpus cannot make it fragile.
+/// the OBSERVED max by 1.7× and the simulated absolute max by 1.22×, while still
+/// reddening on the pathologies that actually matter: a constant-keyed hash (all
+/// 299 in one shard) or a truncated modulus (shards left empty). It is stated as
+/// a FORMULA over the live corpus, so growing the corpus cannot make it fragile.
 #[test]
 fn hash_sharding_partitions_the_corpus_within_measured_bounds() {
     let corpus = corpus_files();
@@ -461,7 +519,7 @@ fn hash_sharding_partitions_the_corpus_within_measured_bounds() {
         "non-vacuity: expected hundreds of corpus files, got {total}"
     );
 
-    let shards: Vec<Vec<CorpusFile>> = (0..CORPUS_SHARD_COUNT).map(shard_files).collect();
+    let shards = corpus_partition();
     let sizes: Vec<usize> = shards.iter().map(Vec::len).collect();
     let histogram = || {
         sizes
@@ -516,10 +574,10 @@ fn hash_sharding_partitions_the_corpus_within_measured_bounds() {
     assert!(
         max <= bound,
         "the largest shard holds {max} file(s), over the bound of {bound} \
-         (3 x ceil({total}/{CORPUS_SHARD_COUNT})). Measured point samples over this \
-         corpus with three independent 128-bit hashes were 19/21/20, so a breach \
-         here is a degenerate key (a constant hash puts every file in one shard), \
-         not ordinary variance; shard sizes:\n{}",
+         (3 x ceil({total}/{CORPUS_SHARD_COUNT})). xxh3 measured max 23 over this \
+         corpus (min 6, mean 12.46), so a breach here is a degenerate key (a \
+         constant hash puts every file in one shard), not ordinary variance; \
+         shard sizes:\n{}",
         histogram()
     );
 
@@ -626,7 +684,7 @@ impl CorpusScope {
     fn covers(self, rel: &str) -> bool {
         match self {
             CorpusScope::Union => true,
-            CorpusScope::ExamplesOnly => rel.starts_with("examples/"),
+            CorpusScope::ExamplesOnly => rel.starts_with(EXAMPLES_ROOT),
         }
     }
 }
@@ -870,7 +928,12 @@ fn check_file(engine: &reify_eval::Engine, rel: &str) -> FileOutcome {
 ///
 /// `examples/fdm_bracket.ri` is the fixture deliberately: it is a live
 /// KNOWN_RESIDUAL divergence entry, so at least one invariant returns a NON-empty
-/// finding list here and (b)'s comparison cannot pass vacuously.
+/// finding list here and (b)'s comparison cannot pass vacuously. It is also one
+/// of the corpus's heavier files, and this test evaluates it a second time (the
+/// shard that owns it evaluates it too) — unavoidable rather than wasteful: the
+/// shards run as separate processes, so there is no engine to borrow, and this
+/// test's whole subject is `check_file`'s agreement with the raw wrappers on one
+/// engine it can see.
 #[test]
 fn one_corpus_evaluation_feeds_both_invariant_checkers() {
     let root = workspace_root();
@@ -982,7 +1045,7 @@ fn each_invariant_keeps_its_own_pre_unification_corpus_scope() {
     );
 
     // (b) The explicit #4946 prd-gate leaf: likewise INV-EVAL-5 only.
-    let leaf = "tests/prd-gate/fixtures/geometry_let_selector_consumer.ri";
+    let leaf = SELECTOR_CONSUMER_REL;
     assert!(stale.covers(leaf), "{leaf} was in the INV-EVAL-5 corpus");
     assert!(!divergence.covers(leaf), "{leaf} was NOT in the INV-EVAL-4 corpus");
 
@@ -997,7 +1060,7 @@ fn each_invariant_keeps_its_own_pre_unification_corpus_scope() {
     let corpus = corpus_files();
     let examples: Vec<&CorpusFile> = corpus
         .iter()
-        .filter(|f| f.rel.starts_with("examples/"))
+        .filter(|f| f.rel.starts_with(EXAMPLES_ROOT))
         .collect();
     assert!(
         !examples.is_empty() && examples.len() < corpus.len(),
@@ -1130,11 +1193,6 @@ fn residual_exemptions_and_failure_policy_stay_per_invariant() {
 
 // ── The sweep body ───────────────────────────────────────────────────────────
 
-/// The explicit #4946 R3f-bridge premise fixture — the one corpus member that is
-/// named rather than walked. Referenced as this LEAF and never as its directory;
-/// see [`corpus_files`] for why that matters to `verify.sh`.
-const SELECTOR_CONSUMER_REL: &str = "tests/prd-gate/fixtures/geometry_let_selector_consumer.ri";
-
 /// What the sweep made of one corpus file.
 enum FileSweep {
     /// The file did not compile. SKIPPED and printed, exactly as both old sweeps
@@ -1233,6 +1291,160 @@ impl GateTally {
     }
 }
 
+/// One gate's failure report, and where the shard routed it.
+#[derive(Debug, PartialEq, Eq)]
+struct RoutedReport {
+    /// The declared bypass key that downgraded this report to a warn, or `None`
+    /// if it FAILS the shard.
+    downgraded_by: Option<&'static str>,
+    text: String,
+}
+
+/// Route every non-clean gate's report according to ITS OWN declared policy.
+///
+/// The per-gate pairing is what stops one invariant's break-glass silencing
+/// another's report. Before unification this was two hand-written branches, one
+/// per sweep file, each exercised only by its own sweep; it is now ONE dispatch
+/// that both invariants depend on, so it is pinned directly by
+/// `report_routing_honours_each_gates_own_policy`.
+///
+/// `bypassed` is injected rather than read from `std::env` in here, so the
+/// routing is a pure function of declared data and that test can exercise the
+/// downgrade branch without mutating an environment it shares with the
+/// concurrently-running shard tests.
+fn route_reports(
+    gates: &[InvariantGate],
+    tallies: &[GateTally],
+    bypassed: impl Fn(&InvariantGate) -> bool,
+) -> Vec<RoutedReport> {
+    gates
+        .iter()
+        .zip(tallies)
+        .filter_map(|(gate, tally)| {
+            let text = tally.failure(gate)?;
+            let downgraded_by =
+                bypassed(gate).then(|| gate.bypass_env.expect("a bypassed gate declares a key"));
+            Some(RoutedReport { downgraded_by, text })
+        })
+        .collect()
+}
+
+/// The break-glass hint appended to a shard failure, naming the gates that
+/// actually DECLARE a bypass key — and only those.
+///
+/// Derived rather than spelled out: everything around it is generic over
+/// [`GATES`], so a literal knob name here would go on naming a removed knob, or
+/// name the wrong invariant the moment a third gate arrived with its own.
+fn bypass_hint(gates: &[InvariantGate]) -> String {
+    let declared: Vec<String> = gates
+        .iter()
+        .filter_map(|g| g.bypass_env.map(|key| format!("{} only: set {key}=1", g.label)))
+        .collect();
+    if declared.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\n(break-glass downgrade to a warning, per invariant — {})",
+            declared.join("; ")
+        )
+    }
+}
+
+/// The per-gate report routing, exercised as BEHAVIOUR rather than only as the
+/// declared field values `residual_exemptions_and_failure_policy_stay_per_invariant`
+/// pins.
+///
+/// Before unification the downgrade and the stale-residual branch were two
+/// hand-written pieces of code, one per sweep file, each exercised by its own
+/// sweep. They are now one data-driven dispatch BOTH invariants depend on, so a
+/// defect in it — a bypass silencing the gate that never declared one, or
+/// `stale_residual_is_fatal` read off the wrong gate — stays invisible for as
+/// long as the corpus is green. That is the same silent-drift class (task 5578)
+/// this unification exists to foreclose, so the dispatch is pinned here.
+///
+/// Synthetic gates and tallies throughout: these are pure functions of data, so
+/// the test needs no corpus evaluation and, critically, no env mutation.
+#[test]
+fn report_routing_honours_each_gates_own_policy() {
+    const RESIDUAL: &[(&str, &str)] = &[("examples/residual.ri", "a declared residual")];
+    let gate = |label, stale_residual_is_fatal, bypass_env| InvariantGate {
+        id: InvariantId::StaleUndef,
+        label,
+        scope: CorpusScope::Union,
+        residuals: RESIDUAL,
+        stale_residual_is_fatal,
+        bypass_env,
+    };
+    let offender = || GateTally {
+        offenders: vec![(
+            "examples/offender.ri".to_string(),
+            vec![Finding {
+                cell: reify_core::ValueCellId::new("Widget", "span"),
+                detail: "residual Undef".to_string(),
+            }],
+        )],
+        ..GateTally::default()
+    };
+
+    // (c) A clean tally is not a failure at all.
+    let lenient = gate("LENIENT", false, None);
+    let strict = gate("STRICT", true, Some("SOME_BYPASS_KEY"));
+    assert_eq!(GateTally::default().failure(&lenient), None);
+    assert_eq!(GateTally::default().failure(&strict), None);
+
+    // (a) Offenders with `stale_residual_is_fatal` OFF: the offender section
+    //     only, even with a stale residual sitting in the very same tally.
+    let mut with_stale = offender();
+    with_stale.stale_residuals.push("examples/residual.ri".to_string());
+    let lenient_report = with_stale.failure(&lenient).expect("offenders are a failure");
+    assert!(lenient_report.contains("examples/offender.ri"));
+    assert!(
+        !lenient_report.contains("stale residual exemption"),
+        "a gate with stale_residual_is_fatal OFF must not pick up the second \
+         section from a sibling's policy:\n{lenient_report}"
+    );
+
+    // (b) The SAME tally under `stale_residual_is_fatal` ON gains that section,
+    //     so the flag is read off the gate being reported and no other.
+    let strict_report = with_stale.failure(&strict).expect("offenders are a failure");
+    assert!(strict_report.contains("examples/offender.ri"));
+    assert!(
+        strict_report.contains("stale residual exemption"),
+        "stale_residual_is_fatal must add the stale-residual section:\n{strict_report}"
+    );
+
+    // (d) With only ONE gate bypassed, the other's report still FAILS the shard.
+    let gates = [lenient, strict];
+    let tallies = [offender(), with_stale];
+    let routed = route_reports(&gates, &tallies, |g| g.bypass_env.is_some());
+    assert_eq!(routed.len(), 2, "both gates had something to report");
+    assert_eq!(
+        routed[0].downgraded_by, None,
+        "LENIENT declares no bypass key, so its report must reach the failures \
+         even while its sibling is bypassed"
+    );
+    assert_eq!(
+        routed[1].downgraded_by,
+        Some("SOME_BYPASS_KEY"),
+        "a gate is downgraded by its OWN declared key"
+    );
+    assert!(
+        route_reports(&gates, &tallies, |_| false)
+            .iter()
+            .all(|r| r.downgraded_by.is_none()),
+        "with nothing bypassed every report fails — the downgrade is the exception"
+    );
+
+    // The hint offers only the knobs that exist.
+    let hint = bypass_hint(&gates);
+    assert!(hint.contains("SOME_BYPASS_KEY") && hint.contains("STRICT"), "{hint}");
+    assert!(
+        !hint.contains("LENIENT"),
+        "a gate with no bypass key must not be offered one: {hint}"
+    );
+    assert_eq!(bypass_hint(&gates[..1]), "", "no declared key, no hint");
+}
+
 /// Sweep the corpus slice owned by `shard_index`, asserting EVERY invariant in
 /// [`GATES`] against ONE evaluation per file.
 ///
@@ -1304,26 +1516,24 @@ fn run_corpus_shard(shard_index: usize) {
         }
     }
 
-    // INV-EVAL-4's break-glass downgrades ITS findings only — applying it to
-    // INV-EVAL-5, which never shipped a bypass, would silently widen the knob.
+    // Each gate's break-glass downgrades ITS OWN findings only — applying
+    // INV-EVAL-4's knob to INV-EVAL-5, which never shipped one, would silently
+    // widen it. See `report_routing_honours_each_gates_own_policy`.
     let mut failures: Vec<String> = Vec::new();
-    for (gate, tally) in GATES.iter().zip(tallies.iter()) {
-        let Some(report) = tally.failure(gate) else {
-            continue;
-        };
-        if gate.bypassed() {
-            let key = gate.bypass_env.expect("bypassed() implies a declared key");
-            eprintln!("[{key}] shard {shard_index}: DOWNGRADED to warn:\n{report}");
-            continue;
+    for report in route_reports(GATES, &tallies, InvariantGate::bypassed) {
+        match report.downgraded_by {
+            Some(key) => {
+                eprintln!("[{key}] shard {shard_index}: DOWNGRADED to warn:\n{}", report.text)
+            }
+            None => failures.push(report.text),
         }
-        failures.push(report);
     }
 
     assert!(
         failures.is_empty(),
-        "{}\n\n(INV-EVAL-4 failures only: set REIFY_SNAPSHOT_CACHE_AUDIT_BYPASS=1 to \
-         downgrade them to a warning as a break-glass escape hatch)",
-        failures.join("\n\n")
+        "{}{}",
+        failures.join("\n\n"),
+        bypass_hint(GATES)
     );
 
     // The #4946 R3f-bridge premise, asserted by whichever shard owns that path —
@@ -1375,7 +1585,7 @@ fn diag_per_file_timing() {
 /// What this test adds is the partition fact and the per-file outcome.
 #[test]
 fn selector_consumer_premise_fixture_is_swept_by_exactly_one_shard() {
-    let rel = "tests/prd-gate/fixtures/geometry_let_selector_consumer.ri";
+    let rel = SELECTOR_CONSUMER_REL;
     let corpus = corpus_files();
     let file = corpus
         .iter()
@@ -1384,8 +1594,11 @@ fn selector_consumer_premise_fixture_is_swept_by_exactly_one_shard() {
 
     // (a) EXACTLY one shard owns it, asserted over the whole partition rather
     //     than against a computed index.
-    let owning: Vec<usize> = (0..CORPUS_SHARD_COUNT)
-        .filter(|i| shard_files(*i).iter().any(|f| f.rel == rel))
+    let owning: Vec<usize> = corpus_partition()
+        .iter()
+        .enumerate()
+        .filter(|(_, slice)| slice.iter().any(|f| f.rel == rel))
+        .map(|(i, _)| i)
         .collect();
     assert_eq!(
         owning,
