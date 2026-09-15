@@ -52,6 +52,15 @@ pub mod ffi {
     /// model-wide tally would not.
     struct StepGuardProbeResult {
         content: String,
+        /// The guard's refusal text, empty iff the export was ACCEPTED.
+        ///
+        /// Only `step_guard_probe_for_test` can ever set this:
+        /// `export_step_with_injected_fault_for_test` throws a refusal, as
+        /// production does, and so returns no result at all. When it is
+        /// non-empty, `content` is empty — a reported refusal still writes
+        /// nothing — and the text is byte-identical to the thrown diagnostic
+        /// minus its `"export_step: "` prefix.
+        refusal: String,
         contexts: u32,
         plane_angle_units: u32,
         radian_ok: u32,
@@ -1379,6 +1388,23 @@ pub mod ffi {
         /// `make_null_shape_for_test` above. See the C++ header for the
         /// accepted `fault` values.
         fn export_step_with_injected_fault_for_test(
+            shape: &OcctShape,
+            schema: &str,
+            fault: &str,
+        ) -> Result<StepGuardProbeResult>;
+
+        /// The same injected export, REPORTING the guard's finding in
+        /// `StepGuardProbeResult::refusal` instead of throwing it.
+        ///
+        /// Identical in every other respect — same mutex, same
+        /// `wrap_occt_call("export_step")` label, same `export_step_locked`
+        /// body, same `fault` vocabulary. It exists so a test can read the
+        /// audit counts as NUMBERS on the refusing path, where they are
+        /// otherwise reachable only as digits embedded in an English
+        /// diagnostic. A refused export still writes nothing (`content` is
+        /// empty), and `refusal` is byte-identical to the thrown diagnostic
+        /// minus its `"export_step: "` prefix.
+        fn step_guard_probe_for_test(
             shape: &OcctShape,
             schema: &str,
             fault: &str,

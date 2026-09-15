@@ -2392,7 +2392,7 @@ mod tests {
     /// share one unit instance, so an OCCT bump that deduped unit entities
     /// would have failed the proxy on a perfectly correct file. Walking the
     /// association is the form task #6344's runtime guard uses too: this
-    /// helper's model-level mirror is `enforce_step_plane_angle_radians` in
+    /// helper's model-level mirror is `audit_step_plane_angle_units` in
     /// `cpp/occt_wrapper.cpp`, pinned by
     /// `tests/harness_step_export/step_plane_angle_guard_integration.rs`. That
     /// guard refuses the export before any bytes are written; this pin quantifies

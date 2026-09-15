@@ -1680,8 +1680,41 @@ std::unique_ptr<OcctShape> apply_test_placement_for_test(
 ///
 /// Throws (as a `ContractViolation`, i.e. surfacing as `"export_step: …"`) on
 /// an unrecognised `fault`, so a typo in a test reads as a rejected fault name
-/// rather than as a silently-skipped injection that passes vacuously.
+/// rather than as a silently-skipped injection that passes vacuously — and, of
+/// course, on a guard REFUSAL, which is the production behaviour these tests
+/// exist to pin. `StepGuardProbeResult::refusal` is therefore always empty
+/// here; use `step_guard_probe_for_test` to read a refusal's counts.
 StepGuardProbeResult export_step_with_injected_fault_for_test(
+    const OcctShape& shape,
+    rust::Str schema,
+    rust::Str fault
+);
+
+/// The same injected export, REPORTING the guard's finding instead of throwing
+/// it (#6344). Test-only, and identical to
+/// `export_step_with_injected_fault_for_test` in every other respect: same
+/// mutex, same `wrap_occt_call("export_step")` label, same
+/// `export_step_locked` body, same `fault` vocabulary.
+///
+/// WHY IT EXISTS. On the refusing path the audit counts are reachable only as
+/// digits embedded in an English diagnostic, so every negative test had to
+/// hand-roll a scanner over the message — the meaningful-strings shape the
+/// house heuristics forbid, and fragile in a way that mattered (a scanner
+/// keyed on the first `"contexts="` in the text silently changes meaning when
+/// a line is prepended). This entry point hands the same numbers back as
+/// `u32` fields.
+///
+/// CONTRACT. `refusal` is empty iff the export was accepted. When it is
+/// non-empty NO file was written and `content` is empty, so this reports a
+/// refusal without weakening it into a warning; and the text is byte-identical
+/// to what the refusing hook throws minus its `"export_step: "` prefix,
+/// because both render it from one `step_export_guard_refusal` call. A test
+/// asserting that equality is what keeps the two dispositions from drifting.
+///
+/// Still THROWS for a fault that could not be injected and for an unrecognised
+/// fault name: those are fixture defects, not findings about the model, and
+/// reporting them as a refusal would let a typo read as a guard hit.
+StepGuardProbeResult step_guard_probe_for_test(
     const OcctShape& shape,
     rust::Str schema,
     rust::Str fault

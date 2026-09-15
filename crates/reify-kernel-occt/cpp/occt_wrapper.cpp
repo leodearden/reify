@@ -150,7 +150,7 @@
 
 // OCCT STEP model introspection — the plane-angle unit refusal guard (#6344)
 // walks the transferred `Interface_InterfaceModel` entity by entity and
-// classifies every angular unit it finds. See `enforce_step_plane_angle_radians`
+// classifies every angular unit it finds. See `step_export_guard_refusal`
 // below for what each of these is used for; the two `…And…` composite classes
 // are the shapes an SI angular unit and a degree/grad unit actually take in an
 // emitted file (a plain `StepBasic_PlaneAngleUnit` downcast finds neither).
@@ -7278,23 +7278,27 @@ StepPlaneAngleAuditCounts audit_step_plane_angle_units(
     return counts;
 }
 
-/// Run `audit_step_plane_angle_units` and REFUSE the export if it found
-/// anything.
+/// Walk `model` and render the plane-angle refusal, or "" when it may be
+/// written.
 ///
-/// Throws `ContractViolation`, not `std::runtime_error`, so `wrap_occt_call`
-/// renders it as `"export_step: <message>"` (a Reify-authored diagnostic)
-/// rather than misattributing it as `"OCCT export_step: unexpected: …"`. Per
-/// that type's contract the message must NOT repeat the op name — the wrapper
-/// already prefixes it.
+/// A PURE FUNCTION, deliberately: it renders, it does not throw. The
+/// disposition — refuse the export, or report the finding and let a test read
+/// the counts — belongs to the caller, and keeping the RENDERING in one place
+/// is what guarantees the two dispositions cannot report different text for the
+/// same model.
 ///
-/// Returns the counts on the accepting path so callers that want them (the
-/// fixture hook) need not walk the model twice.
-StepPlaneAngleAuditCounts enforce_step_plane_angle_radians(
-    const Handle(Interface_InterfaceModel)& model) {
+/// `*counts` (when non-null) always receives what the walk saw, refusal or not:
+/// on the accepting path they prove the walk was not vacuous, and on the
+/// refusing path they are the structured half of the diagnostic.
+std::string step_plane_angle_refusal(const Handle(Interface_InterfaceModel)& model,
+                                     StepPlaneAngleAuditCounts* counts) {
     std::vector<std::string> violations;
-    StepPlaneAngleAuditCounts counts = audit_step_plane_angle_units(model, &violations);
+    StepPlaneAngleAuditCounts walked = audit_step_plane_angle_units(model, &violations);
+    if (counts != nullptr) {
+        *counts = walked;
+    }
     if (violations.empty()) {
-        return counts;
+        return std::string();
     }
     std::ostringstream oss;
     // The orphan count belongs in this header: the three association counts
@@ -7303,14 +7307,14 @@ StepPlaneAngleAuditCounts enforce_step_plane_angle_radians(
     // file directly above a line saying the file is not.
     oss << "refusing to write STEP: INV-AD-4 requires every representation "
            "context to declare the unprefixed SI radian for plane angles "
-           "(contexts=" << counts.contexts
-        << " plane_angle_units=" << counts.plane_angle_units
-        << " radian_ok=" << counts.radian_ok
-        << " orphan_angular_units=" << counts.orphan_angular_units << ")";
+           "(contexts=" << walked.contexts
+        << " plane_angle_units=" << walked.plane_angle_units
+        << " radian_ok=" << walked.radian_ok
+        << " orphan_angular_units=" << walked.orphan_angular_units << ")";
     for (const std::string& v : violations) {
         oss << "\n  - " << v;
     }
-    throw ContractViolation(oss.str());
+    return oss.str();
 }
 
 /// The FIFTH arm, independent of the four declaration arms above: refuse the
@@ -7334,18 +7338,21 @@ StepPlaneAngleAuditCounts enforce_step_plane_angle_radians(
 /// OBSERVE ONLY, NEVER SET. The #6184 contract states reify "never sets this
 /// static, and MUST NOT" — setting it to Deg is what produces the
 /// self-inconsistent file in the first place. This arm reads it and refuses.
-void enforce_step_angle_mode_not_degrees() {
+///
+/// Pure, for the same reason `step_plane_angle_refusal` is: returns the
+/// refusal text, or "" when the export may proceed.
+std::string step_angle_mode_refusal() {
     if (Interface_Static::IsPresent("step.angleunit.mode") != Standard_True) {
         // Absent is OK, deliberately: an OCCT build that never registered the
         // static cannot be in the degree regime, and refusing on absence would
         // hard-block every export on such a build for no reason at all.
-        return;
+        return std::string();
     }
     const Standard_Integer mode = Interface_Static::IVal("step.angleunit.mode");
     if (mode <= 1) {
         // 0 = File, 1 = Rad — measured byte-identical, and the values
         // `InitializeFactors` maps to a plane-angle factor of exactly 1.0.
-        return;
+        return std::string();
     }
     std::ostringstream oss;
     oss << REIFY_INV_AD_4_ARM("MODE")
@@ -7361,8 +7368,42 @@ void enforce_step_angle_mode_not_degrees() {
            "a degrees file, which is why this is refused rather than declared. "
            "reify never sets this static, so an observed degree value was set "
            "by something else in this process.";
-    throw ContractViolation(oss.str());
+    return oss.str();
 }
+
+/// Both guards, in the order a reader needs them: "" when the export may be
+/// written, otherwise the ONE refusal text every caller reports.
+///
+/// MODE ARM FIRST. It is the cheaper check and by far the more actionable
+/// diagnostic, and it describes a defect the declaration walk provably cannot
+/// see, so reporting unit findings ahead of it would bury the lede. It also
+/// SHORT-CIRCUITS the walk, which keeps `*counts` honest: all-zero counts say
+/// "the declaration walk did not run", not "it ran and found nothing".
+std::string step_export_guard_refusal(const Handle(Interface_InterfaceModel)& model,
+                                      StepPlaneAngleAuditCounts* counts) {
+    std::string mode = step_angle_mode_refusal();
+    if (!mode.empty()) {
+        return mode;
+    }
+    return step_plane_angle_refusal(model, counts);
+}
+
+/// What `export_step_locked` does when `step_export_guard_refusal` finds
+/// something.
+///
+/// An enum rather than a bool because the two values are not "on/off" — they
+/// are two different contracts about what the caller receives, and a bare
+/// `true` at a call site says neither of them.
+enum class StepGuardDisposition {
+    /// THROW, as production does. A refusal must STOP the file from being
+    /// written, not merely be reported alongside it.
+    Refuse,
+    /// Return the refusal in `StepExportLockedResult::refusal`, still writing
+    /// no file. Test-only, and it exists for one reason: it is what lets a test
+    /// read the guard's COUNTS as numbers instead of scraping digits back out
+    /// of the diagnostic's English.
+    Report,
+};
 
 /// A fault `export_step_locked` injects into the transferred model at ONE
 /// documented point, immediately before the guard runs.
@@ -7508,7 +7549,7 @@ StepGuardFault parse_step_guard_fault(const std::string& name) {
 /// one negative test into a cascade of unrelated failures. Restoring from a
 /// destructor covers the throwing path, which is the only path this fault ever
 /// takes: the export it enables is refused by
-/// `enforce_step_angle_mode_not_degrees` by construction.
+/// `step_angle_mode_refusal` by construction.
 ///
 /// Constructed while the caller already holds `g_step_export_mutex`, so the
 /// temporary value is never observable by a concurrent export either.
@@ -8005,6 +8046,12 @@ struct StepExportLockedResult {
     std::string content;
     bool ap242_fell_back = false;
     StepPlaneAngleAuditCounts audit;
+    /// The guard's refusal text, or empty when the export was accepted.
+    ///
+    /// Only ever non-empty under `StepGuardDisposition::Report`: under
+    /// `Refuse` — every production path — the same text has already left as a
+    /// `ContractViolation` and no result is returned at all.
+    std::string refusal;
 };
 
 // Scope the arm-tag macro to the guard block by hand. A `#define` is NOT
@@ -8027,7 +8074,8 @@ struct StepExportLockedResult {
 /// so the exception taxonomy the user sees is identical on both paths.
 static StepExportLockedResult export_step_locked(const OcctShape& shape,
                                                  rust::Str schema,
-                                                 StepGuardFault fault) {
+                                                 StepGuardFault fault,
+                                                 StepGuardDisposition disposition) {
     // Register the STEP statics BEFORE setting them. STEPControl_Controller
     // ::Init() is the idempotent call that REGISTERS the
     // `write.step.schema` Interface_Static; calling SetCVal before any
@@ -8188,7 +8236,7 @@ static StepExportLockedResult export_step_locked(const OcctShape& shape,
     // the model's unit contexts, which the measurement below shows are
     // byte-identical in all three modes. #6344 therefore closes that trap
     // with a SEPARATE arm that reads the static directly
-    // (`enforce_step_angle_mode_not_degrees`), not as a consequence of the
+    // (`step_angle_mode_refusal`), not as a consequence of the
     // unit walk. Do not read either guard as covering the other.
     //
     // PINS: export_step_declares_si_radians_in_every_unit_context (BRep /
@@ -8200,9 +8248,9 @@ static StepExportLockedResult export_step_locked(const OcctShape& shape,
     //
     // INV-AD-4's THIRD ARM — the runtime refusal guard — LANDED in #6344 and
     // runs a few lines below, between Transfer and Write:
-    // `enforce_step_angle_mode_not_degrees()` (the separate mode arm named in
+    // `step_angle_mode_refusal()` (the separate mode arm named in
     // THE TRAP paragraph above) and
-    // `enforce_step_plane_angle_radians()`, whose four declaration arms are
+    // `step_plane_angle_refusal()`, whose four declaration arms are
     // (V1) the model carries at least one unit-assigned context, (V2) every
     // context reaches at least one angular unit, (V3) every angular unit a
     // context reaches is the unprefixed SI radian, (V4) every angular unit no
@@ -8281,12 +8329,22 @@ static StepExportLockedResult export_step_locked(const OcctShape& shape,
     // Production callers pass StepGuardFault::None, so this is a no-op there.
     apply_step_guard_fault(step_model, fault);
 
-    // Mode arm FIRST: it is the cheaper check and by far the more actionable
-    // diagnostic, and it describes a defect the declaration walk provably
-    // cannot see, so reporting unit findings ahead of it would bury the lede.
-    enforce_step_angle_mode_not_degrees();
-
-    StepPlaneAngleAuditCounts audit = enforce_step_plane_angle_radians(step_model);
+    StepPlaneAngleAuditCounts audit;
+    std::string refusal = step_export_guard_refusal(step_model, &audit);
+    if (!refusal.empty()) {
+        if (disposition == StepGuardDisposition::Refuse) {
+            throw ContractViolation(refusal);
+        }
+        // Reporting disposition: hand the refusal back WITH the counts, and
+        // still write nothing. A test reads the numbers as numbers, and the
+        // byte-identical text proves it is describing the same finding the
+        // production path throws.
+        StepExportLockedResult reported;
+        reported.ap242_fell_back = ap242_fell_back;
+        reported.audit = audit;
+        reported.refusal = std::move(refusal);
+        return reported;
+    }
 
     // Write to a temporary file, then read back
     char tmpname[] = "/tmp/reify_step_XXXXXX";
@@ -8315,11 +8373,27 @@ static StepExportLockedResult export_step_locked(const OcctShape& shape,
     return result;
 }
 
+/// Narrow one locked export to the FFI probe shape.
+///
+/// Shared by both fixture hooks so the two dispositions cannot drift in what
+/// they report; the only field that differs between them is `refusal`, which
+/// the refusing hook can never populate because that path throws instead.
+static StepGuardProbeResult step_guard_probe(StepExportLockedResult locked) {
+    StepGuardProbeResult out;
+    out.content = rust::String(locked.content);
+    out.refusal = rust::String(locked.refusal);
+    out.contexts = locked.audit.contexts;
+    out.plane_angle_units = locked.audit.plane_angle_units;
+    out.radian_ok = locked.audit.radian_ok;
+    out.orphan_angular_units = locked.audit.orphan_angular_units;
+    return out;
+}
+
 ExportStepResult export_step(const OcctShape& shape, rust::Str schema) {
     std::lock_guard<std::mutex> lock(g_step_export_mutex);
     return wrap_occt_call("export_step", [&]() {
-        StepExportLockedResult locked =
-            export_step_locked(shape, schema, StepGuardFault::None);
+        StepExportLockedResult locked = export_step_locked(
+            shape, schema, StepGuardFault::None, StepGuardDisposition::Refuse);
         // The audit counts are deliberately dropped here: the production
         // signature is unchanged by #6344, and a violation has already been
         // turned into a refusal by the time control reaches this line.
@@ -8342,14 +8416,21 @@ StepGuardProbeResult export_step_with_injected_fault_for_test(const OcctShape& s
     // production diagnostic drift without reddening anything.
     return wrap_occt_call("export_step", [&]() {
         StepGuardFault injected = parse_step_guard_fault(std::string(fault));
-        StepExportLockedResult locked = export_step_locked(shape, schema, injected);
-        StepGuardProbeResult out;
-        out.content = rust::String(locked.content);
-        out.contexts = locked.audit.contexts;
-        out.plane_angle_units = locked.audit.plane_angle_units;
-        out.radian_ok = locked.audit.radian_ok;
-        out.orphan_angular_units = locked.audit.orphan_angular_units;
-        return out;
+        return step_guard_probe(
+            export_step_locked(shape, schema, injected, StepGuardDisposition::Refuse));
+    });
+}
+
+StepGuardProbeResult step_guard_probe_for_test(const OcctShape& shape,
+                                               rust::Str schema,
+                                               rust::Str fault) {
+    // Same mutex, same production op name and same locked body as the refusing
+    // hook above — the ONLY difference is the disposition.
+    std::lock_guard<std::mutex> lock(g_step_export_mutex);
+    return wrap_occt_call("export_step", [&]() {
+        StepGuardFault injected = parse_step_guard_fault(std::string(fault));
+        return step_guard_probe(
+            export_step_locked(shape, schema, injected, StepGuardDisposition::Report));
     });
 }
 

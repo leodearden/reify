@@ -52,7 +52,7 @@
 #![cfg(all(has_occt, feature = "test-fixtures"))]
 
 use reify_ir::{ExportError, GeometryHandleId, GeometryOp, Value};
-use reify_kernel_occt::OcctKernel;
+use reify_kernel_occt::{OcctKernel, StepGuardProbeResult};
 
 // ---------------------------------------------------------------------------
 // Fixture
@@ -231,43 +231,53 @@ fn refusal_message(kernel: &OcctKernel, id: GeometryHandleId, fault: &str) -> St
     }
 }
 
-/// The three counts the refusal diagnostic reports, parsed back out of it.
+/// Run one fault through BOTH dispositions and return the production
+/// diagnostic next to the guard's structured audit of that same corruption.
 ///
-/// The counts are part of the user-visible message on purpose: "which unit is
-/// wrong" is only half the diagnosis, and "how many of the file's contexts are
-/// still correct" is the half that tells a reader whether they are looking at
-/// a whole-file regression or a partial flip.
-fn parse_counts(msg: &str) -> RefusalCounts {
-    fn field(msg: &str, key: &str) -> u32 {
-        let at = msg
-            .find(key)
-            .unwrap_or_else(|| panic!("refusal must report {key:?}; got: {msg}"));
-        let rest = &msg[at + key.len()..];
-        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-        digits
-            .parse()
-            .unwrap_or_else(|_| panic!("{key:?} must be followed by a number; got: {msg}"))
-    }
-    RefusalCounts {
-        contexts: field(msg, "contexts="),
-        plane_angle_units: field(msg, "plane_angle_units="),
-        radian_ok: field(msg, "radian_ok="),
-        orphan_angular_units: field(msg, "orphan_angular_units="),
-    }
-}
-
-/// The counts a refusal header reports.
+/// WHY BOTH, AND WHY NEITHER ALONE. The refusing hook is where the production
+/// behaviour lives: a violation must surface as `ExportError::FormatError`
+/// carrying Reify's own attribution, and must yield no file. The reporting
+/// probe is what makes the audit available as `u32` fields. Before it, every
+/// negative test re-extracted those four numbers from the English header with
+/// a hand-rolled digit scanner — the meaningful-strings-instead-of-structured-
+/// data shape, and load-bearing rather than merely ugly: the scanner keyed on
+/// the FIRST `"contexts="` anywhere in the message, so prepending any line that
+/// mentioned a count silently changed what every assertion read.
 ///
-/// `orphan_angular_units` is here because the other three cannot see an
-/// orphan: they count (context, unit) ASSOCIATIONS, and a unit no context
-/// references contributes to none of them. Without it a V4-only refusal would
-/// print `contexts=3 plane_angle_units=3 radian_ok=3` — a description of a
-/// perfectly healthy file — immediately above the line saying the file is not.
-struct RefusalCounts {
-    contexts: u32,
-    plane_angle_units: u32,
-    radian_ok: u32,
-    orphan_angular_units: u32,
+/// THE EQUALITY ASSERTION IS THE SEAM. Both dispositions render from one
+/// `step_export_guard_refusal` call, so the probe's `refusal` must be the
+/// thrown diagnostic minus its op prefix. Pinning that is what stops the
+/// reported text — and therefore the counts asserted against it — from drifting
+/// away from what a user actually sees.
+fn refusal(
+    kernel: &OcctKernel,
+    id: GeometryHandleId,
+    fault: &str,
+) -> (String, StepGuardProbeResult) {
+    let msg = refusal_message(kernel, id, fault);
+    let probe = kernel
+        .step_guard_probe_for_test(id, "AP214", fault)
+        .unwrap_or_else(|e| {
+            panic!(
+                "the reporting probe must reach the same finding the refusing \
+                 hook did for fault {fault:?} — an error here means the two \
+                 dispositions no longer run the same body; got {e:?}"
+            )
+        });
+    assert_eq!(
+        msg,
+        format!("export_step: {}", probe.refusal),
+        "the probe must REPORT byte-for-byte what the production path THROWS, \
+         or the counts read off the probe describe a different run from the \
+         message asserted beside them"
+    );
+    assert!(
+        probe.content.is_empty(),
+        "a refused export must produce NO bytes — reporting a refusal instead \
+         of throwing it must not weaken it into a warning; got {} bytes",
+        probe.content.len()
+    );
+    (msg, probe)
 }
 
 /// Assert exactly which arms and qualifiers the guard emitted.
@@ -311,15 +321,39 @@ fn assert_arms(msg: &str, expected: &[&str], forbidden: &[&str]) {
 /// cannot be acted on: the file has several contexts and the reader needs to
 /// know WHICH one to open.
 fn assert_names_a_context_index(msg: &str) {
+    entity_index_after(msg, "context #");
+}
+
+/// Pull the entity index a message reports after `marker`.
+///
+/// The counts moved to `StepGuardProbeResult`, but WHICH entity a violation
+/// blames is not a count — it is the located half of the diagnostic, and it
+/// exists only in the text a user reads. So this one scan stays, shared by
+/// every arm that names an entity rather than reimplemented per test.
+///
+/// The index has to be a real model entity number:
+/// `Interface_InterfaceModel::Number` returns 0 for an entity the model does
+/// not carry, and "plane-angle unit #0" sends a reader looking for something
+/// that is not in the file.
+fn entity_index_after(msg: &str, marker: &str) -> u32 {
     let at = msg
-        .find("context #")
-        .unwrap_or_else(|| panic!("refusal must name the offending context as \"context #N\"; got: {msg}"));
-    let rest = &msg[at + "context #".len()..];
+        .find(marker)
+        .unwrap_or_else(|| panic!("refusal must name the entity as {marker:?} + index; got: {msg}"));
+    let rest = &msg[at + marker.len()..];
     let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
     assert!(
         !digits.is_empty(),
-        "\"context #\" must be followed by the context's entity index; got: {msg}"
+        "{marker:?} must be followed by the entity index; got: {msg}"
     );
+    let index: u32 = digits.parse().expect("digits parse");
+    assert!(
+        index > 0,
+        "the reported entity index must be a real model entity number — \
+         Interface_InterfaceModel::Number returns 0 for an entity the model \
+         does not carry, and an index of 0 is not something a reader can look \
+         up; got: {msg}"
+    );
+    index
 }
 
 // ---------------------------------------------------------------------------
@@ -340,8 +374,9 @@ fn assert_names_a_context_index(msg: &str) {
 fn guard_refuses_a_non_radian_plane_angle_declaration() {
     let (kernel, union_id) = two_cone_union_kernel();
 
-    // (a) + (b): refused, with Reify attribution rather than OCCT's.
-    let msg = refusal_message(&kernel, union_id, "non_radian");
+    // (a) + (b): refused, with Reify attribution rather than OCCT's, and the
+    // same finding read back structurally.
+    let (msg, probe) = refusal(&kernel, union_id, "non_radian");
 
     // (c) The offending unit is NAMED. `.STERADIAN.` is the STEP token for
     // what the fault installs; `sunSteradian` is the OCCT enumerator spelling.
@@ -359,14 +394,31 @@ fn guard_refuses_a_non_radian_plane_angle_declaration() {
     // is a stronger and differently-actionable claim than "could not read it".
     assert_arms(&msg, &["V3"], &["V1", "V2", "V4", "UNVERIFIABLE"]);
 
-    // (d) The counts are reported, and they show a PARTIAL defect.
-    let counts = parse_counts(&msg);
-    let RefusalCounts {
+    // (d) THE COUNTS ARE IN THE USER-VISIBLE HEADER. Asserted here and nowhere
+    // else: the numbers ARE part of the message on purpose ("how many of the
+    // file's contexts are still correct" is what tells a reader whether they
+    // are looking at a whole-file regression or a partial flip), so one test
+    // pins that they are rendered, and the rest read them off the struct. The
+    // expected text is BUILT from the struct rather than scanned out of the
+    // message, so this is a containment check and not a second parser.
+    assert!(
+        msg.contains(&format!(
+            "contexts={} plane_angle_units={} radian_ok={} orphan_angular_units={}",
+            probe.contexts, probe.plane_angle_units, probe.radian_ok,
+            probe.orphan_angular_units
+        )),
+        "the refusal header must report the audit counts the guard computed, \
+         in that order — they are the half of the diagnosis that says how much \
+         of the file is still correct; got: {msg}"
+    );
+
+    // (e) And they show a PARTIAL defect.
+    let StepGuardProbeResult {
         contexts,
         plane_angle_units,
         radian_ok,
         ..
-    } = counts;
+    } = probe;
     assert!(
         contexts >= 2,
         "the fixture must still carry several contexts for this to be a \
@@ -403,7 +455,7 @@ fn guard_refuses_a_prefixed_radian_declaration() {
     let (kernel, union_id) = two_cone_union_kernel();
 
     // (a) Refused, with the same Reify attribution as the non-radian arm.
-    let msg = refusal_message(&kernel, union_id, "prefixed");
+    let (msg, probe) = refusal(&kernel, union_id, "prefixed");
 
     // (b) The PREFIX is named. "wrong unit" is not enough here — the reader
     // has to be told the unit is a MILLIradian, or the natural next move is to
@@ -431,11 +483,11 @@ fn guard_refuses_a_prefixed_radian_declaration() {
     assert_arms(&msg, &["V3"], &["V1", "V2", "V4", "UNVERIFIABLE"]);
 
     // The counts still show a partial defect: only one unit was prefixed.
-    let RefusalCounts {
+    let StepGuardProbeResult {
         plane_angle_units,
         radian_ok,
         ..
-    } = parse_counts(&msg);
+    } = probe;
     assert!(
         radian_ok < plane_angle_units,
         "a prefixed radian must NOT count as radian_ok — that is exactly the \
@@ -457,7 +509,7 @@ fn guard_refuses_a_context_with_no_plane_angle_declaration() {
     let (kernel, union_id) = two_cone_union_kernel();
 
     // (a) Refused, same attribution arms.
-    let msg = refusal_message(&kernel, union_id, "missing");
+    let (msg, probe) = refusal(&kernel, union_id, "missing");
 
     // (b) The offending context is named by entity index, and the units it DID
     // reach are listed. When a context declares nothing, the diagnostic
@@ -488,11 +540,11 @@ fn guard_refuses_a_context_with_no_plane_angle_declaration() {
 
     // (d) Again a PARTIAL defect: the surviving contexts still reach radians,
     // so the file still contains `.RADIAN.` and a grep still passes.
-    let RefusalCounts {
+    let StepGuardProbeResult {
         contexts,
         radian_ok,
         ..
-    } = parse_counts(&msg);
+    } = probe;
     assert!(
         radian_ok < contexts,
         "one context lost its declaration, so the radian associations must no \
@@ -529,7 +581,7 @@ fn guard_refuses_a_conversion_based_degree_declaration() {
     let (kernel, union_id) = two_cone_union_kernel();
 
     // (a) Refused, with the same Reify attribution as every other arm.
-    let msg = refusal_message(&kernel, union_id, "conversion_based");
+    let (msg, probe) = refusal(&kernel, union_id, "conversion_based");
 
     // (b) V3 — the unit is REFERENCED, so this is the association arm. And
     // NOT UNVERIFIABLE: the guard recognised this form and rejected it, which
@@ -555,11 +607,11 @@ fn guard_refuses_a_conversion_based_degree_declaration() {
     // to a later branch: to `UnrecognisedAngular` (which would red the
     // UNVERIFIABLE assertion above) or to `NotAngular`, which would drop it out
     // of `plane_angle_units` entirely and make these two equal again.
-    let RefusalCounts {
+    let StepGuardProbeResult {
         plane_angle_units,
         radian_ok,
         ..
-    } = parse_counts(&msg);
+    } = probe;
     assert!(
         radian_ok < plane_angle_units,
         "the conversion-based unit must be COUNTED as a plane-angle unit and \
@@ -597,7 +649,7 @@ fn guard_refuses_the_half_wired_degree_angle_mode() {
     let (kernel, union_id) = two_cone_union_kernel();
 
     // (a) Refused, same attribution arms as every other refusal.
-    let msg = refusal_message(&kernel, union_id, "angle_mode_deg");
+    let (msg, probe) = refusal(&kernel, union_id, "angle_mode_deg");
 
     // (b) The diagnostic names the static VERBATIM and explains the mechanism.
     // "some angle setting is wrong" would send the reader looking through the
@@ -635,6 +687,27 @@ fn guard_refuses_the_half_wired_degree_angle_mode() {
     // and a diagnostic claiming one of them fired would be claiming something
     // the guard's own evidence log contradicts.
     assert_arms(&msg, &["MODE"], &["V1", "V2", "V3", "V4", "UNVERIFIABLE"]);
+
+    // (b3) The declaration walk did not even RUN. The mode arm is ordered
+    // ahead of it and short-circuits, which is what keeps these counts honest:
+    // all-zero says "not walked", not "walked and found nothing". A reader who
+    // saw `contexts=3 radian_ok=3` beside a MODE refusal would reasonably
+    // conclude the walk had cleared the file, which is a claim nobody made.
+    assert_eq!(
+        (
+            probe.contexts,
+            probe.plane_angle_units,
+            probe.radian_ok,
+            probe.orphan_angular_units
+        ),
+        (0, 0, 0, 0),
+        "the MODE arm must short-circuit the declaration walk; got \
+         contexts={} plane_angle_units={} radian_ok={} orphan_angular_units={}",
+        probe.contexts,
+        probe.plane_angle_units,
+        probe.radian_ok,
+        probe.orphan_angular_units
+    );
 
     // (c) NO LEAK. `step.angleunit.mode` is a process-global Interface_Static
     // and this harness runs its tests as threads in ONE process, so a fault
@@ -674,7 +747,7 @@ fn guard_refuses_an_orphaned_non_radian_plane_angle_unit() {
     let (kernel, union_id) = two_cone_union_kernel();
 
     // (a) Refused, with the same Reify attribution as every other arm.
-    let msg = refusal_message(&kernel, union_id, "orphan_non_radian");
+    let (msg, probe) = refusal(&kernel, union_id, "orphan_non_radian");
 
     // (b) V4 fired, and it is the arm that names the finding. V3 must NOT:
     // no context reaches this unit any more, so blaming a context would point
@@ -713,54 +786,26 @@ fn guard_refuses_an_orphaned_non_radian_plane_angle_unit() {
     // blind to an orphan by construction, so on a V4-only refusal they read as
     // a completely healthy file. A reader parsing them must be able to see
     // where the finding came from.
-    let counts = parse_counts(&msg);
     assert!(
-        counts.orphan_angular_units > 0,
-        "the refusal header must report the orphan the violation line blames, \
+        probe.orphan_angular_units > 0,
+        "the refusal must report the orphan the violation line blames, \
          otherwise the counts describe a healthy file directly above a line \
          saying it is not; got orphan_angular_units={} in: {msg}",
-        counts.orphan_angular_units
+        probe.orphan_angular_units
     );
     assert_eq!(
-        counts.radian_ok, counts.plane_angle_units,
+        probe.radian_ok, probe.plane_angle_units,
         "the surviving ASSOCIATIONS are untouched by this fault — every \
          context still reaches a radian. If these diverge the fault corrupted \
          a referenced unit too, and this test is no longer about an orphan; \
          got radian_ok={} plane_angle_units={} in: {msg}",
-        counts.radian_ok, counts.plane_angle_units
+        probe.radian_ok, probe.plane_angle_units
     );
 }
 
 // ---------------------------------------------------------------------------
 // The UNVERIFIABLE-form arms — a plane-angle unit this guard cannot read
 // ---------------------------------------------------------------------------
-
-/// Helper: pull the entity index a message reports after `marker`.
-///
-/// Every arm that blames a specific entity has to say WHICH one, and the index
-/// has to be a real model entity number — `Interface_InterfaceModel::Number`
-/// returns 0 for an entity the model does not carry, and "plane-angle unit #0"
-/// sends a reader looking for something that is not in the file.
-fn entity_index_after(msg: &str, marker: &str) -> u32 {
-    let at = msg
-        .find(marker)
-        .unwrap_or_else(|| panic!("refusal must name the entity as {marker:?} + index; got: {msg}"));
-    let rest = &msg[at + marker.len()..];
-    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-    assert!(
-        !digits.is_empty(),
-        "{marker:?} must be followed by the entity index; got: {msg}"
-    );
-    let index: u32 = digits.parse().expect("digits parse");
-    assert!(
-        index > 0,
-        "the reported entity index must be a real model entity number — \
-         Interface_InterfaceModel::Number returns 0 for an entity the model \
-         does not carry, and an index of 0 is not something a reader can look \
-         up; got: {msg}"
-    );
-    index
-}
 
 /// A REFERENCED plane-angle unit in a form the guard cannot inspect is
 /// REFUSED — and reported as unverifiable, not as verified-wrong.
@@ -784,7 +829,7 @@ fn guard_refuses_an_unverifiable_plane_angle_declaration() {
     let (kernel, union_id) = two_cone_union_kernel();
 
     // (a) Refused, with the same Reify attribution as every other arm.
-    let msg = refusal_message(&kernel, union_id, "unrecognised_angular");
+    let (msg, probe) = refusal(&kernel, union_id, "unrecognised_angular");
 
     // (b) V3 — the unit is still REFERENCED by a context, so this is the
     // association arm. V2 must stay silent: something IS declared here.
@@ -816,11 +861,11 @@ fn guard_refuses_an_unverifiable_plane_angle_declaration() {
     // counted) but not as a radian. If the third downcast were removed, the
     // bare unit would classify as NotAngular, drop out of `plane_angle_units`
     // entirely, and these two would be equal again.
-    let RefusalCounts {
+    let StepGuardProbeResult {
         plane_angle_units,
         radian_ok,
         ..
-    } = parse_counts(&msg);
+    } = probe;
     assert!(
         plane_angle_units > radian_ok,
         "the substituted unit must be COUNTED as a plane-angle unit and must \
@@ -845,7 +890,7 @@ fn guard_refuses_an_orphaned_unverifiable_plane_angle_unit() {
     let (kernel, union_id) = two_cone_union_kernel();
 
     // (a) Refused, same attribution.
-    let msg = refusal_message(&kernel, union_id, "orphan_unrecognised");
+    let (msg, probe) = refusal(&kernel, union_id, "orphan_unrecognised");
 
     // (b) V4 alone, qualified UNVERIFIABLE. Nothing existing was touched, so a
     // hit on any other arm means the fault did more than it claims to; and V4
@@ -866,20 +911,19 @@ fn guard_refuses_an_orphaned_unverifiable_plane_angle_unit() {
     // three association counts are blind to an orphan by construction, so they
     // must be untouched — and `orphan_angular_units` must be exactly the one
     // this fault added, because the accept-path test pins a clean export at 0.
-    let counts = parse_counts(&msg);
     assert_eq!(
-        counts.orphan_angular_units, 1,
+        probe.orphan_angular_units, 1,
         "this fault adds exactly ONE unreferenced angular unit to a model that \
          `guard_accepts_a_real_multi_context_export` pins at zero orphans; a \
          different number means the fault or the fixture changed shape; got \
          orphan_angular_units={} in: {msg}",
-        counts.orphan_angular_units
+        probe.orphan_angular_units
     );
     assert_eq!(
-        counts.radian_ok, counts.plane_angle_units,
+        probe.radian_ok, probe.plane_angle_units,
         "every CONTEXT is untouched by this fault and must still reach only \
          radians; got radian_ok={} plane_angle_units={} in: {msg}",
-        counts.radian_ok, counts.plane_angle_units
+        probe.radian_ok, probe.plane_angle_units
     );
 }
 
@@ -918,7 +962,7 @@ fn guard_resolves_the_two_part_complex_context_spelling() {
         .export_step_with_injected_fault_for_test(union_id, "AP214", "none")
         .expect("the uncorrupted export must be accepted");
 
-    let msg = refusal_message(&kernel, union_id, "two_part_context");
+    let (msg, probe) = refusal(&kernel, union_id, "two_part_context");
 
     // (a) The finding is attributed to the CONTEXT that declares the unit —
     // arm V3 — and NOT to V4, which is where an unresolved context's unit
@@ -934,26 +978,25 @@ fn guard_resolves_the_two_part_complex_context_spelling() {
     // export saw. A guard that skips this spelling reports the same count as
     // the clean run while still refusing (via V4), which is why the count and
     // the arm are both pinned.
-    let counts = parse_counts(&msg);
     assert_eq!(
-        counts.contexts,
+        probe.contexts,
         clean.contexts + 1,
         "the two-part complex context must be resolved and counted like any \
          other — an unchanged count means `step_unit_assigned_context` skipped \
          the spelling entirely; clean run saw {}, refusal reports {} in: {msg}",
         clean.contexts,
-        counts.contexts
+        probe.contexts
     );
 
     // (c) Nothing became an orphan. This is the direct discriminator: if the
     // context were skipped, its steradian would be referenced by no *visible*
     // context and would be counted here instead.
     assert_eq!(
-        counts.orphan_angular_units, 0,
+        probe.orphan_angular_units, 0,
         "the added unit IS referenced — by the added context. Counting it as \
          an orphan means the context it hangs off was not resolved; got \
          orphan_angular_units={} in: {msg}",
-        counts.orphan_angular_units
+        probe.orphan_angular_units
     );
 }
 
@@ -981,7 +1024,7 @@ fn guard_refuses_a_model_with_no_unit_assigned_context() {
     let (kernel, union_id) = two_cone_union_kernel();
 
     // (a) Refused, same attribution.
-    let msg = refusal_message(&kernel, union_id, "no_context");
+    let (msg, probe) = refusal(&kernel, union_id, "no_context");
 
     // (b) V1 alone. V2 cannot fire (it quantifies over contexts, and there are
     // none); V3 likewise; V4 sees the now-unreferenced units but they are all
@@ -1011,24 +1054,23 @@ fn guard_refuses_a_model_with_no_unit_assigned_context() {
 
     // (d) The counts agree with the finding: nothing was resolved, so nothing
     // could be checked.
-    let counts = parse_counts(&msg);
     assert_eq!(
-        counts.contexts, 0,
+        probe.contexts, 0,
         "V1 fires precisely when no unit-assigned context resolved; got \
          contexts={} in: {msg}",
-        counts.contexts
+        probe.contexts
     );
     assert_eq!(
-        counts.plane_angle_units, 0,
+        probe.plane_angle_units, 0,
         "with no context there are no (context, unit) associations to count; \
          got plane_angle_units={} in: {msg}",
-        counts.plane_angle_units
+        probe.plane_angle_units
     );
     assert_eq!(
-        counts.radian_ok, 0,
+        probe.radian_ok, 0,
         "with no associations none of them can be radian; got radian_ok={} \
          in: {msg}",
-        counts.radian_ok
+        probe.radian_ok
     );
 
     // (e) THE UNITS ARE STILL IN THE FILE. Only the references were removed,
@@ -1036,12 +1078,12 @@ fn guard_refuses_a_model_with_no_unit_assigned_context() {
     // tokens. A guard built on a file-wide grep passes this model; only
     // quantifying over CONTEXTS refuses it.
     assert!(
-        counts.orphan_angular_units > 0,
+        probe.orphan_angular_units > 0,
         "the plane-angle unit entities must still be present and merely \
          unreferenced — if they vanished too, this test would no longer show \
          that a file full of .RADIAN. tokens is refused when nothing reaches \
          them; got orphan_angular_units={} in: {msg}",
-        counts.orphan_angular_units
+        probe.orphan_angular_units
     );
 }
 
