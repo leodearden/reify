@@ -2374,6 +2374,58 @@ _s4e11_sib="$(_wallclock_files_scanned "$_s4e11_tmpdir/src" "$_s4e11_tmpdir/src2
 assert "4e-11: src2 is NOT nested in src -- a string prefix is not a parent" \
     test "$_s4e11_sib" -eq 2
 
+# ---------------------------------------------------------------------------
+# 4e-12: AN UNREADABLE BASELINE IS A HARD ERROR. The other input to the ratchet
+#        is the baseline FILE, and it has the same vacuity failure as a bad
+#        root: if it cannot be read, "no rows" and "no baseline" become the
+#        same state.
+#
+#        `_wallclock_baseline_check` loads rows with a single `grep -v` for
+#        exactly this reason -- one rc, so grep's error 2 ("cannot read the
+#        baseline") stays distinguishable from its 1 ("the baseline has no
+#        rows") -- and its doc comment argues at length that a blanket
+#        `|| true` there would collapse the first into a clean pass. Nothing
+#        pinned it. 4e-6 covers a bad ROOT through the ratchet; 4c-3/4c-4 only
+#        ever hand it a readable file.
+#
+#        Verified against the regression it exists to catch, rather than
+#        assumed: replacing the loader's rc handling with a blanket `|| true`
+#        turns this fixture and 4e-13 RED and leaves the other 108 assertions
+#        in this file green -- so the pair is the only thing standing between
+#        that refactor and a guard that passes while reading nothing.
+# ---------------------------------------------------------------------------
+_s4e12_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4e12_tmpdir")
+mkdir -p "$_s4e12_tmpdir/src"
+_fixture "$_s4e12_tmpdir/src" "a.rs" \
+    '    let deadline = Instant::now() + Duration::from_secs(5);'
+
+_s4e12_rc=0
+_wallclock_baseline_check "$_s4e12_tmpdir/no-such-baseline.txt" "$_s4e12_tmpdir/src" \
+    > /dev/null 2>&1 || _s4e12_rc=$?
+assert "4e-12: a baseline that cannot be read is rc 2 -- not 0, and not 1 either" \
+    test "$_s4e12_rc" -eq 2
+
+# ---------------------------------------------------------------------------
+# 4e-13: THE SAME, OVER A CLEAN TREE -- which is where the vacuous green
+#        actually lands, and so the sharper half of the pair. With a violating
+#        tree above, a `|| true` loader still reports the live record as `+`
+#        and reds for the wrong reason; with NOTHING to report, both sides are
+#        empty and it returns a confident 0.
+#
+#        That is the goal state of this ratchet, which is what makes it worth
+#        an assertion: once the baseline is drained, "the file is missing" and
+#        "the file is empty" differ by nothing except this rc.
+# ---------------------------------------------------------------------------
+_s4e13_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s4e13_tmpdir")
+mkdir -p "$_s4e13_tmpdir/src"
+_fixture "$_s4e13_tmpdir/src" "clean.rs" '    let t0 = Instant::now();'
+
+_s4e13_rc=0
+_wallclock_baseline_check "$_s4e13_tmpdir/no-such-baseline.txt" "$_s4e13_tmpdir/src" \
+    > /dev/null 2>&1 || _s4e13_rc=$?
+assert "4e-13: a missing baseline over a CLEAN tree is rc 2, never a vacuous 0" \
+    test "$_s4e13_rc" -eq 2
+
 # ===========================================================================
 # Section 4f: ROOT-SET COMPLETENESS -- is the root LIST itself right?
 #
