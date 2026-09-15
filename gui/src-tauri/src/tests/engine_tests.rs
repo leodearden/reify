@@ -21739,6 +21739,129 @@ fn apply_param_to_source_str_rejects_an_unknown_cell() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// task 5099 η — the user-path cadence pair: `preview_parameter` (TRANSIENT drag
+// feedback) and `commit_parameter` (the durable INV-GUI-3 write-back)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `(value, unit)` for `cell_id` in a freshly built `GuiState` of `session`.
+fn gui_value_of(session: &mut EngineSession, cell_id: &str) -> (String, String) {
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should succeed");
+    let cell = state
+        .values
+        .iter()
+        .find(|v| v.cell_id == cell_id)
+        .unwrap_or_else(|| panic!("{cell_id} should be present in the GuiState"));
+    (cell.value.clone(), cell.unit.clone())
+}
+
+/// `(value, unit)` for `cell_id` as a session that has only just `load_file`d
+/// `path` reads it.
+///
+/// This is the EXPORT half of esc-7281-4, pinned at the level this crate can
+/// observe. `EngineSession::export` calls `engine.build(compiled, …)`, which
+/// re-resolves every param from the module's DECLARED DEFAULTS
+/// (`Snapshot::from_compiled_module`) and therefore discards an ephemeral
+/// engine-state override — so a fresh `load_file` of the written file reads
+/// exactly what a later export would build from. Asserting on the exported
+/// BYTES instead would prove nothing: `MockGeometryKernel::export` writes a
+/// fixed `b"MOCK_EXPORT_DATA"` whatever the geometry.
+fn reloaded_value_of(path: &Path, cell_id: &str) -> (String, String) {
+    let mut fresh = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    fresh.load_file(path).expect("load_file should succeed");
+    gui_value_of(&mut fresh, cell_id)
+}
+
+#[test]
+fn commit_parameter_makes_the_edit_durable_in_the_module_defaults() {
+    // The whole point of η: the user path's commit is the SAME source-canonical
+    // mechanism δ already routes the MCP tool through, so the four INV-GUI-3
+    // surfaces (disk, source_map, eval state, and what a later build re-resolves
+    // from) all agree after a slider release.
+    let (_dir, path, mut session) = writeback_session();
+
+    let state = session
+        .commit_parameter("Part.width", "120mm")
+        .expect("commit_parameter should succeed on a literal-defaulted cell");
+
+    // (a) disk carries the edit.
+    let disk_text = std::fs::read_to_string(&path).expect("disk file should be readable");
+    assert!(
+        disk_text.contains("param width: Length = 120mm"),
+        "disk text should carry the committed default, got: {disk_text}"
+    );
+    assert!(
+        !disk_text.contains("80mm"),
+        "disk text should no longer carry the pre-edit default, got: {disk_text}"
+    );
+
+    // (b) source_map ≡ disk.
+    let (_key, source_map_text) = session
+        .resolve_source_for_test()
+        .expect("resolve_source_for_test should succeed after a commit");
+    assert_eq!(
+        source_map_text, disk_text,
+        "source_map text must equal disk text after a commit (INV-GUI-3)"
+    );
+
+    // (c) the returned GuiState already reports the new value.
+    let width = state
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Part.width")
+        .expect("Part.width should be present in the returned GuiState");
+    assert_eq!((width.value.as_str(), width.unit.as_str()), ("120", "mm"));
+
+    // (d) the export half: what a fresh build re-resolves from moved too.
+    assert_eq!(
+        reloaded_value_of(&path, "Part.width"),
+        ("120".to_string(), "mm".to_string()),
+        "a freshly loaded session must read the committed default — this is what \
+         `Engine::build` re-resolves from on export (esc-7281-4)"
+    );
+}
+
+#[test]
+fn preview_parameter_leaves_the_ri_file_untouched() {
+    // The negative control for the test above, and the honest statement of what
+    // the renamed method does: a preview is TRANSIENT drag feedback living only
+    // in `last_check`. It must move the eval state (or the viewport would not
+    // track the drag) and must move nothing else.
+    let (_dir, path, mut session) = writeback_session();
+
+    let state = session
+        .preview_parameter("Part.width", "120mm")
+        .expect("preview_parameter should succeed");
+
+    let width = state
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Part.width")
+        .expect("Part.width should be present in the returned GuiState");
+    assert_eq!(
+        (width.value.as_str(), width.unit.as_str()),
+        ("120", "mm"),
+        "a preview must move the eval state so the viewport tracks the drag"
+    );
+
+    let disk_text = std::fs::read_to_string(&path).expect("disk file should be readable");
+    assert_eq!(
+        disk_text,
+        writeback_source(),
+        "a preview must leave the canonical .ri byte-identical"
+    );
+    assert_eq!(
+        reloaded_value_of(&path, "Part.width"),
+        ("80".to_string(), "mm".to_string()),
+        "a preview must not move the declared default a later build resolves from"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // task 5097 δ — EngineSession::holds_rejected_source (the write-back interlock)
 // ─────────────────────────────────────────────────────────────────────────────
 
