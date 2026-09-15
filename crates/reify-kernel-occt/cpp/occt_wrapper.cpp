@@ -7097,9 +7097,15 @@ StepPlaneAngleAuditCounts audit_step_plane_angle_units(
     // unit at entity 5 may be referenced by a context at entity 200), which is
     // why the orphan decision is deferred rather than made inline.
     struct AngularCandidate {
-        const Standard_Transient* key;
-        Standard_Integer index;
-        StepAngleUnitKind kind;
+        // Default-initialised, matching `StepPlaneAngleAuditCounts`. Today the
+        // loop below writes both before `push_back`, so nothing indeterminate
+        // is ever read — but that safety rests only on the write ORDER, and
+        // the V4 loop feeds `key` to `referenced.count(...)`, where a garbage
+        // pointer is a silent wrong answer rather than a crash in the one arm
+        // whose whole job is deciding whether a unit is an orphan.
+        const Standard_Transient* key = nullptr;
+        Standard_Integer index = 0;
+        StepAngleUnitKind kind = StepAngleUnitKind::NotAngular;
         std::string detail;
     };
     std::set<const Standard_Transient*> referenced;
@@ -7288,14 +7294,14 @@ StepPlaneAngleAuditCounts enforce_step_plane_angle_radians(
 /// `InitializeFactors(lenFactor, anglemode <= 1 ? 1. : M_PI/180., 1.)`, but its
 /// only write-side consumer is `TopoDSToStep_MakeStepFace::Init` ->
 /// `GeomConvert_Units::RadianToDegree`, which rescales PCURVE PARAMETER space.
-/// The unit declaration ignores it completely: the #6184 measurement logged in
-/// `export_step_locked` below exported one cone under all three enum values and
-/// found the `PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.)` entity byte-identical in
-/// every one, the sole difference being a pcurve `CARTESIAN_POINT` moving from
-/// `(-6.28318530718,0.)` to `(-360.,0.)`. The payload moves; the declaration
-/// does not. So no amount of walking declarations can see this, and a guard
-/// that claimed otherwise would be claiming something its own evidence log
-/// contradicts.
+/// The unit declaration ignores it completely — the payload moves, the
+/// declaration does not — so no amount of walking declarations can see this,
+/// and a guard that claimed otherwise would be claiming something its own
+/// evidence contradicts. The measured three-mode diff that establishes this is
+/// the DATED OBSERVATION LOG in `export_step_locked` below, which is the ONE
+/// place those numbers live; do not restate them here, or the copies drift
+/// apart on the next OCCT bump while only the log carries a date to judge them
+/// by.
 ///
 /// OBSERVE ONLY, NEVER SET. The #6184 contract states reify "never sets this
 /// static, and MUST NOT" — setting it to Deg is what produces the
@@ -8102,7 +8108,7 @@ static StepExportLockedResult export_step_locked(const OcctShape& shape,
     // Interface_Static can drive a real export into them. They are therefore
     // exercised through `export_step_with_injected_fault_for_test`, which runs
     // this same body under this same lock with exactly one corruption applied;
-    // see crates/reify-kernel-occt/tests/harness_occt/
+    // see crates/reify-kernel-occt/tests/harness_step_export/
     // step_plane_angle_guard_integration.rs.
     //
     // ------------------------------------------------------------------

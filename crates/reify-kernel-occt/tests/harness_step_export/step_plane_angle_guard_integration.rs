@@ -501,15 +501,15 @@ fn guard_refuses_a_context_with_no_plane_angle_declaration() {
 /// THE DECLARATION WALK CANNOT CATCH THIS, and the guard does not pretend it
 /// can. `step.angleunit.mode` is a registered `Interface_Static` whose only
 /// write-side consumer is `TopoDSToStep_MakeStepFace::Init` ->
-/// `GeomConvert_Units::RadianToDegree`, which rescales PCURVE PARAMETER space.
-/// The unit declaration ignores it entirely: the #6184 measurement recorded in
-/// `cpp/occt_wrapper.cpp` exported one cone under all three enum values and
-/// found `#84 = ( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.) )`
-/// byte-identical in every one, with the only difference a pcurve
-/// `CARTESIAN_POINT` moving from `(-6.28318530718,0.)` to `(-360.,0.)`. The
-/// payload moves; the declaration does not. So the four declaration arms above
-/// provably cannot see this, and it needs its own check of the static —
-/// which is also a far more actionable diagnostic than any unit walk could be.
+/// `GeomConvert_Units::RadianToDegree`, which rescales PCURVE PARAMETER space;
+/// the unit declaration ignores it entirely. The payload moves; the
+/// declaration does not. So the four declaration arms above provably cannot
+/// see this, and it needs its own check of the static — which is also a far
+/// more actionable diagnostic than any unit walk could be. The dated
+/// three-mode measurement behind that claim lives in exactly one place, the
+/// OBSERVATION LOG in `export_step_locked` (`cpp/occt_wrapper.cpp`); it is not
+/// restated here, because a copy with no date beside it cannot be judged
+/// stale after an OCCT bump.
 ///
 /// Setting the static to Deg produces degree pcurves under a radian header:
 /// a silently self-inconsistent file, NOT a degrees file.

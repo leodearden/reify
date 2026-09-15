@@ -2394,8 +2394,8 @@ mod tests {
     /// association is the form task #6344's runtime guard uses too: this
     /// helper's model-level mirror is `enforce_step_plane_angle_radians` in
     /// `cpp/occt_wrapper.cpp`, pinned by
-    /// `tests/harness_occt/step_plane_angle_guard_integration.rs`. That guard
-    /// refuses the export before any bytes are written; this pin quantifies
+    /// `tests/harness_step_export/step_plane_angle_guard_integration.rs`. That
+    /// guard refuses the export before any bytes are written; this pin quantifies
     /// over the bytes that were.
     fn plane_angle_unit_audit(stripped: &str) -> PlaneAngleAudit {
         // Instance table: `#N` -> whole record (`#N=(...)`), for every Part-21
