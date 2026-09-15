@@ -218,36 +218,24 @@ fn assert_result_param_dimension(member: &str, expected: DimensionVector) {
     );
 }
 
-/// RULING Q7 posture 2 (task 6165): pins that the five stress-bearing params
+/// The five stress-bearing params on `AnalysisResult`, whose declared type
+/// RULING Q7 posture 2 (task 6165) tightened from `Real` to `Stress`.
+const STRESS_PARAMS: [&str; 5] = [
+    "von_mises_stress",
+    "principal_stress_1",
+    "principal_stress_2",
+    "principal_stress_3",
+    "max_shear_stress",
+];
+
+/// RULING Q7 posture 2 (task 6165): pins that all five stress-bearing params
 /// on `AnalysisResult` are `Scalar<PRESSURE>` (via the `Stress` alias) — NOT
 /// the dimension-agnostic `Real` placeholder.
 #[test]
-fn analysis_result_von_mises_stress_is_scalar_pressure() {
-    assert_result_param_dimension("von_mises_stress", DimensionVector::PRESSURE);
-}
-
-/// See `analysis_result_von_mises_stress_is_scalar_pressure`.
-#[test]
-fn analysis_result_principal_stress_1_is_scalar_pressure() {
-    assert_result_param_dimension("principal_stress_1", DimensionVector::PRESSURE);
-}
-
-/// See `analysis_result_von_mises_stress_is_scalar_pressure`.
-#[test]
-fn analysis_result_principal_stress_2_is_scalar_pressure() {
-    assert_result_param_dimension("principal_stress_2", DimensionVector::PRESSURE);
-}
-
-/// See `analysis_result_von_mises_stress_is_scalar_pressure`.
-#[test]
-fn analysis_result_principal_stress_3_is_scalar_pressure() {
-    assert_result_param_dimension("principal_stress_3", DimensionVector::PRESSURE);
-}
-
-/// See `analysis_result_von_mises_stress_is_scalar_pressure`.
-#[test]
-fn analysis_result_max_shear_stress_is_scalar_pressure() {
-    assert_result_param_dimension("max_shear_stress", DimensionVector::PRESSURE);
+fn analysis_result_stress_params_are_scalar_pressure() {
+    for member in STRESS_PARAMS {
+        assert_result_param_dimension(member, DimensionVector::PRESSURE);
+    }
 }
 
 /// `safety_factor_value` STAYS `Real` (dimensionless) — the regression fence
@@ -282,6 +270,27 @@ fn analysis_result_max_shear_stress_matches_builtin_cell_type() {
     assert_eq!(
         trait_ty, builtin_ty,
         "AnalysisResult.max_shear_stress ({trait_ty:?}) must equal max_shear(stress)'s cell type ({builtin_ty:?})"
+    );
+}
+
+/// Compile `source` against the stdlib and assert it is rejected with a
+/// `TypeMismatchForTraitMember` diagnostic naming `member`.
+fn assert_trait_member_type_mismatch(source: &str, member: &str) {
+    let module = compile_with_stdlib_helper(source);
+    let errs: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    let matched = errs.iter().any(|d| {
+        d.code == Some(DiagnosticCode::TypeMismatchForTraitMember)
+            && d.message.contains("type mismatch for trait member")
+            && d.message.contains(member)
+    });
+    assert!(
+        matched,
+        "expected a TypeMismatchForTraitMember diagnostic for '{member}' \
+         against AnalysisResult's declared type; got: {errs:?}"
     );
 }
 
@@ -336,29 +345,28 @@ structure def MisTypedAnalysis : AnalysisResult {
     param safety_factor_value : Real = 1.0
 }
 "#;
-    let module = compile_with_stdlib_helper(source);
-    let errs: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    for member in [
-        "von_mises_stress",
-        "principal_stress_1",
-        "principal_stress_2",
-        "principal_stress_3",
-        "max_shear_stress",
-    ] {
-        let matched = errs.iter().any(|d| {
-            d.code == Some(DiagnosticCode::TypeMismatchForTraitMember)
-                && d.message.contains("type mismatch for trait member")
-                && d.message.contains(member)
-        });
-        assert!(
-            matched,
-            "expected a TypeMismatchForTraitMember diagnostic for '{member}' \
-             when it is Real-typed against AnalysisResult's Stress \
-             requirement; got: {errs:?}"
-        );
+    for member in STRESS_PARAMS {
+        assert_trait_member_type_mismatch(source, member);
     }
+}
+
+/// The other reject half, fencing the "stays Real" clause behaviourally
+/// rather than only through the declared-type pin above: an otherwise
+/// conforming structure that declares `safety_factor_value : Stress` must be
+/// rejected too. Without it, a compiler change that started accepting a
+/// dimensioned scalar where the trait requires a dimensionless one would
+/// leave every other test in this file green.
+#[test]
+fn analysis_result_dimensioned_safety_factor_value_is_rejected() {
+    let source = r#"
+structure def DimensionedSafetyFactor : AnalysisResult {
+    param von_mises_stress : Stress = 1.0Pa
+    param principal_stress_1 : Stress = 1.0Pa
+    param principal_stress_2 : Stress = 1.0Pa
+    param principal_stress_3 : Stress = 1.0Pa
+    param max_shear_stress : Stress = 1.0Pa
+    param safety_factor_value : Stress = 1.0Pa
+}
+"#;
+    assert_trait_member_type_mismatch(source, "safety_factor_value");
 }

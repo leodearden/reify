@@ -425,9 +425,13 @@ the ruling rationale, the zero-conformers measurement and the posture-3 upgrade 
 reclassified `genuine-dimensionless` rather than left open. `Analysis.yield_strength`
 remains a genuinely open `structural-contract` site — it belongs to dimension-checked-readers
 decision 9 / **task #5807**, not to this ruling, and was deliberately left untouched.
-Behaviour is regression-locked by `tests/analysis_stress_fn_compile.rs::{analysis_result_conforming_structure_compiles_clean,
-analysis_result_real_typed_stress_param_is_rejected}` plus the six per-param declared-dimension
-pins (five `PRESSURE`, one `DIMENSIONLESS`).
+Behaviour is regression-locked by `tests/analysis_stress_fn_compile.rs`'s accept/reject trio
+(`analysis_result_conforming_structure_compiles_clean`,
+`analysis_result_real_typed_stress_param_is_rejected`, and — the behavioural fence on the
+"stays `Real`" clause — `analysis_result_dimensioned_safety_factor_value_is_rejected`), plus
+the declared-dimension pins `analysis_result_stress_params_are_scalar_pressure` (five
+`PRESSURE`) and `analysis_result_safety_factor_value_stays_dimensionless` (one
+`DIMENSIONLESS`).
 
 ---
 
