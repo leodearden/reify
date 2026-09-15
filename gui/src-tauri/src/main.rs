@@ -341,6 +341,7 @@ fn get_initial_state(
     result
 }
 
+/// The DURABLE parameter write (INV-GUI-3, task 5099 η) — one per user gesture.
 #[tauri::command]
 fn set_parameter(
     app: tauri::AppHandle,
@@ -353,6 +354,28 @@ fn set_parameter(
     let engine = Arc::clone(&state.engine);
     let result = reify_gui::large_stack::run_on_worker(move || {
         reify_gui::commands::set_parameter_impl(&engine, &cell_id, &value)
+    });
+    if let Ok(ref gui_state) = result {
+        let delta = compute_delta(&state.last_state, gui_state);
+        emit_delta(&app, &delta);
+    }
+    result
+}
+
+/// The TRANSIENT parameter preview — one per slider-drag frame. Identical
+/// plumbing to `set_parameter` above; only the engine cadence differs.
+#[tauri::command]
+fn preview_parameter(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    cell_id: String,
+    value: String,
+) -> Result<reify_gui::types::GuiState, String> {
+    emit_status(&app, "evaluating");
+    let _idle = IdleGuard(app.clone());
+    let engine = Arc::clone(&state.engine);
+    let result = reify_gui::large_stack::run_on_worker(move || {
+        reify_gui::commands::preview_parameter_impl(&engine, &cell_id, &value)
     });
     if let Ok(ref gui_state) = result {
         let delta = compute_delta(&state.last_state, gui_state);
@@ -1050,6 +1073,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_initial_state,
             set_parameter,
+            preview_parameter,
             sync_observed_demand,
             sync_demand,
             update_source,

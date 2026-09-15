@@ -74,8 +74,34 @@ pub fn get_initial_state_impl(engine: &Mutex<EngineSession>) -> Result<GuiState,
         .and_then(std::convert::identity)
 }
 
-/// Set a parameter value and return updated state.
+/// Set a parameter value DURABLY — write it back into the canonical `.ri` — and
+/// return updated state.
+///
+/// This is the INV-GUI-3 user-path command (task 5099 η): the property panel's
+/// edit box on Enter/blur, and the mechanism slider on release. It is the same
+/// mechanism the reify-debug MCP write tool uses, so what a user does and what
+/// the AI does mean the same thing. See [`EngineSession::commit_parameter`].
+///
+/// Pair it with [`preview_parameter_impl`], which is what the frames of a drag
+/// call.
 pub fn set_parameter_impl(
+    engine: &Mutex<EngineSession>,
+    cell_id: &str,
+    value: &str,
+) -> Result<GuiState, String> {
+    crate::engine_lock::with_engine_lock(engine, |s| s.commit_parameter(cell_id, value))
+        .and_then(std::convert::identity)
+}
+
+/// Show a parameter value TRANSIENTLY and return updated state, without making
+/// it durable.
+///
+/// The per-frame cadence of a slider drag: it keeps the viewport tracking the
+/// pointer at RAF rate, where running `set_parameter_impl`'s full recompile and
+/// disk write per frame would be the task-1861 regression. The value it shows
+/// is an engine-state override and expires — [`set_parameter_impl`] is what
+/// makes it durable, or discards it. See [`EngineSession::preview_parameter`].
+pub fn preview_parameter_impl(
     engine: &Mutex<EngineSession>,
     cell_id: &str,
     value: &str,

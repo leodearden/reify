@@ -875,11 +875,11 @@ fn get_initial_state_impl_recovers_from_poisoned_mutex() {
 }
 
 #[test]
-fn set_parameter_impl_recovers_from_poisoned_mutex() {
-    use crate::commands::set_parameter_impl;
+fn preview_parameter_impl_recovers_from_poisoned_mutex() {
+    use crate::commands::preview_parameter_impl;
 
     let engine = poison_engine(Arc::new(Mutex::new(make_loaded_session())));
-    let result = set_parameter_impl(&engine, "Bracket.thickness", "5mm");
+    let result = preview_parameter_impl(&engine, "Bracket.thickness", "5mm");
     assert!(
         result.is_ok(),
         "expected Ok recovery from poisoned mutex, got {:?}",
@@ -891,7 +891,7 @@ fn set_parameter_impl_recovers_from_poisoned_mutex() {
             .values
             .iter()
             .any(|v| v.cell_id == "Bracket.thickness" && v.value == "5" && v.unit == "mm"),
-        "set_parameter_impl should have applied thickness=5mm after poison recovery"
+        "preview_parameter_impl should have applied thickness=5mm after poison recovery"
     );
 }
 
@@ -899,18 +899,18 @@ fn set_parameter_impl_recovers_from_poisoned_mutex() {
 /// (`sync_observed_demand_impl`) registers the GUI's observed-demand sources
 /// through the same `&Mutex<EngineSession>` session shim the other command
 /// tests use, leaves production evaluation unchanged, and the NEXT
-/// `set_parameter_impl` surfaces the passive would-prune measurement on the returned
+/// `preview_parameter_impl` surfaces the passive would-prune measurement on the returned
 /// `GuiState.demand_prune_measurement`.
 ///
 /// RED until `sync_observed_demand_impl` exists (step-9).
 #[test]
 fn sync_observed_demand_impl_is_zero_behavior_change_and_surfaces_measurement() {
-    use crate::commands::{set_parameter_impl, sync_observed_demand_impl};
+    use crate::commands::{preview_parameter_impl, sync_observed_demand_impl};
 
     // ── Control: drive the edit through the command shim with NO sync. ────────
     let control = Mutex::new(make_loaded_session());
     let control_state =
-        set_parameter_impl(&control, "Bracket.thickness", "2mm").expect("control set_parameter_impl");
+        preview_parameter_impl(&control, "Bracket.thickness", "2mm").expect("control preview_parameter_impl");
 
     // ── Synced: register the visible realization R0 + the displayed thickness
     //    cell through the COMMAND shim before the edit. No panel constraints, so
@@ -924,7 +924,7 @@ fn sync_observed_demand_impl_is_zero_behavior_change_and_surfaces_measurement() 
     )
     .expect("sync_observed_demand_impl should succeed");
     let synced_state =
-        set_parameter_impl(&synced, "Bracket.thickness", "2mm").expect("synced set_parameter_impl");
+        preview_parameter_impl(&synced, "Bracket.thickness", "2mm").expect("synced preview_parameter_impl");
 
     // (a) Zero behavior change through the command path: parameter values are
     //     byte-identical to the no-sync control.
@@ -998,7 +998,7 @@ fn sync_observed_demand_impl_is_zero_behavior_change_and_surfaces_measurement() 
 /// absent from the projection today, so the `get(..).expect(..)` lookups panic.
 #[test]
 fn engine_state_json_surfaces_demand_prune_measurement_and_last_dispatch_count_post_refresh() {
-    use crate::commands::{engine_state_json, set_parameter_impl, sync_observed_demand_impl};
+    use crate::commands::{engine_state_json, preview_parameter_impl, sync_observed_demand_impl};
 
     // Drive an observed-demand slider edit through the command shim (mirrors the
     // pattern at commands_tests.rs:740): register the visible realization R0 + the
@@ -1014,7 +1014,7 @@ fn engine_state_json_surfaces_demand_prune_measurement_and_last_dispatch_count_p
         &[],
     )
     .expect("sync_observed_demand_impl should succeed");
-    set_parameter_impl(&synced, "Bracket.thickness", "2mm").expect("synced set_parameter_impl");
+    preview_parameter_impl(&synced, "Bracket.thickness", "2mm").expect("synced preview_parameter_impl");
 
     // Project the engine state through the debug-MCP helper.
     let mut session = synced
@@ -1307,7 +1307,7 @@ const SELECTIVE_MULTIBODY_SRC: &str = r#"pub structure SelectiveMultiBody {
 /// binary fails to compile until step-8 adds it.
 #[test]
 fn demand_dispatch_json_attributes_zero_dispatch_to_hidden_body() {
-    use crate::commands::{demand_dispatch_json, set_parameter_impl, sync_demand_impl};
+    use crate::commands::{demand_dispatch_json, preview_parameter_impl, sync_demand_impl};
 
     let body_a_key = "SelectiveMultiBody#realization[0]";
     let body_b_key = "SelectiveMultiBody#realization[1]";
@@ -1321,7 +1321,7 @@ fn demand_dispatch_json_attributes_zero_dispatch_to_hidden_body() {
     // Hide body_b (R1): only body_a (R0) is visible/demanded.
     sync_demand_impl(&synced, &[body_a_key.to_string()]).expect("sync_demand_impl should succeed");
     // Slider edit drives the warm selective tessellate (body_b stays pruned).
-    set_parameter_impl(&synced, "SelectiveMultiBody.w", "12mm").expect("slider set_parameter_impl");
+    preview_parameter_impl(&synced, "SelectiveMultiBody.w", "12mm").expect("slider preview_parameter_impl");
 
     let mut session = synced
         .into_inner()
@@ -1424,7 +1424,7 @@ fn demand_dispatch_json_attributes_zero_dispatch_to_hidden_body() {
 #[test]
 fn debug_mcp_selective_demand_boundary_rows_2_3_4() {
     use crate::commands::{
-        demand_dispatch_json, engine_state_json, set_parameter_impl, sync_demand_impl,
+        demand_dispatch_json, engine_state_json, preview_parameter_impl, sync_demand_impl,
         sync_observed_demand_impl,
     };
 
@@ -1450,8 +1450,8 @@ fn debug_mcp_selective_demand_boundary_rows_2_3_4() {
     //    0 ops EACH tick and is absent from the eval-set. ───────────────────────
     let ticks = ["12mm", "16mm", "20mm"];
     for (i, w) in ticks.iter().enumerate() {
-        set_parameter_impl(&session, w_cell, w)
-            .unwrap_or_else(|e| panic!("tick {i}: set_parameter_impl({w}) must succeed: {e}"));
+        preview_parameter_impl(&session, w_cell, w)
+            .unwrap_or_else(|e| panic!("tick {i}: preview_parameter_impl({w}) must succeed: {e}"));
 
         // `demand_dispatch_json` is a PURE engine read reflecting the edit's
         // internal tessellate — read it BEFORE any re-tessellating projection so
@@ -1535,7 +1535,7 @@ fn debug_mcp_selective_demand_boundary_rows_2_3_4() {
         &[],
     )
     .expect("sync_observed_demand_impl");
-    set_parameter_impl(&obs, w_cell, "12mm").expect("observed-channel edit");
+    preview_parameter_impl(&obs, w_cell, "12mm").expect("observed-channel edit");
     let obs_es = {
         let mut guard = obs.lock().expect("session lock");
         engine_state_json(&mut guard).expect("engine_state_json")
@@ -1563,7 +1563,7 @@ fn debug_mcp_selective_demand_boundary_rows_2_3_4() {
     )
     .expect("un-hide sync_demand");
     // A fresh edit under the now-full cone re-realizes body_b and recomputes sb.
-    set_parameter_impl(&session, w_cell, "25mm").expect("post-un-hide edit");
+    preview_parameter_impl(&session, w_cell, "25mm").expect("post-un-hide edit");
 
     // (a) body_b re-realizes (dispatch >= 1) and re-enters the eval-set.
     let dd = {
@@ -1596,7 +1596,7 @@ fn debug_mcp_selective_demand_boundary_rows_2_3_4() {
     //     fresh cold full-scope build at the same param (no stale value).
     let oracle = load_session();
     let oracle_state =
-        set_parameter_impl(&oracle, w_cell, "25mm").expect("oracle full-scope edit");
+        preview_parameter_impl(&oracle, w_cell, "25mm").expect("oracle full-scope edit");
     let oracle_sb = oracle_state
         .values
         .iter()
@@ -2098,8 +2098,8 @@ fn get_initial_state_impl_runs_correctly_through_worker() {
     assert_same_salient_state(&wrapped, &direct, "get_initial_state_impl");
 }
 
-/// `set_parameter_impl` through `run_on_worker` returns the same salient state
-/// as a direct call.
+/// `preview_parameter_impl` through `run_on_worker` returns the same salient
+/// state as a direct call.
 ///
 /// This is the command the whole tier exists for: it fires per slider-drag
 /// frame, which is why a fresh 256 MiB mapping per call was the wrong mechanism.
@@ -2111,8 +2111,8 @@ fn get_initial_state_impl_runs_correctly_through_worker() {
 /// The round trip has to REJOIN `ValueData`'s two halves to be a round trip at
 /// all — see the comment on `value` below.
 #[test]
-fn set_parameter_impl_runs_correctly_through_worker() {
-    use crate::commands::{get_initial_state_impl, set_parameter_impl};
+fn preview_parameter_impl_runs_correctly_through_worker() {
+    use crate::commands::{get_initial_state_impl, preview_parameter_impl};
 
     let engine_direct = make_test_engine_for_commands();
     let probe =
@@ -2133,7 +2133,7 @@ fn set_parameter_impl_runs_correctly_through_worker() {
     // round trip — the engine rejects it outright ("expects Length, got the
     // bare number '80'; pass a dimensioned Length literal such as '80mm'").
     // Rejoining the halves reconstructs the literal a user would have typed,
-    // which is what every other `set_parameter_impl` call site in this file
+    // which is what every other parameter-command call site in this file
     // passes by hand (`"5mm"`, `"250mm"`) — recovered here by DISCOVERY rather
     // than hardcoded, so the guard still cannot rot into a no-op. A
     // dimensionless param carries `unit == ""`, so the concatenation degrades
@@ -2143,18 +2143,18 @@ fn set_parameter_impl_runs_correctly_through_worker() {
         format!("{}{}", param.value, param.unit),
     );
 
-    let direct = set_parameter_impl(&engine_direct, &cell_id, &value)
-        .unwrap_or_else(|e| panic!("direct set_parameter_impl({cell_id}, {value}) failed: {e}"));
+    let direct = preview_parameter_impl(&engine_direct, &cell_id, &value)
+        .unwrap_or_else(|e| panic!("direct preview_parameter_impl({cell_id}, {value}) failed: {e}"));
 
     let engine_wrapped = make_test_engine_for_commands();
     let engine = Arc::clone(&engine_wrapped);
     let (wrapped_cell, wrapped_value) = (cell_id.clone(), value.clone());
     let wrapped = crate::large_stack::run_on_worker(move || {
-        set_parameter_impl(&engine, &wrapped_cell, &wrapped_value)
+        preview_parameter_impl(&engine, &wrapped_cell, &wrapped_value)
     })
-    .unwrap_or_else(|e| panic!("set_parameter_impl through run_on_worker failed: {e}"));
+    .unwrap_or_else(|e| panic!("preview_parameter_impl through run_on_worker failed: {e}"));
 
-    assert_same_salient_state(&wrapped, &direct, "set_parameter_impl");
+    assert_same_salient_state(&wrapped, &direct, "preview_parameter_impl");
 }
 
 /// `get_entity_tree_impl` through `run_on_worker` returns the same tree as a
@@ -3105,7 +3105,7 @@ fn resolve_initial_file_path_then_load_initial_file_impl_round_trips_relative_ar
 /// | `argv`           | `load_initial_file_impl`                          |
 /// | `open_file`      | `open_file_engine_impl`                           |
 /// | `watcher`        | open, then `reload_for_watch_impl`                |
-/// | `warm edit_param`| open, then `set_parameter_impl(depth, 250mm)`     |
+/// | `warm edit_param`| open, then `preview_parameter_impl(depth, 250mm)`     |
 ///
 /// The last row covers the path task 5194's own details flagged as unverified.
 ///
@@ -3126,7 +3126,7 @@ fn resolve_initial_file_path_then_load_initial_file_impl_round_trips_relative_ar
 fn rigid_mass_props_determined_across_all_gui_load_paths() {
     use crate::commands::{
         get_initial_state_impl, load_initial_file_impl, open_file_engine_impl,
-        reload_for_watch_impl, set_parameter_impl, sync_demand_impl,
+        reload_for_watch_impl, preview_parameter_impl, sync_demand_impl,
     };
 
     /// How a row gets its first `GuiState`. Each variant is a real production
@@ -3166,8 +3166,8 @@ fn rigid_mass_props_determined_across_all_gui_load_paths() {
             Entry::WarmEditParam => {
                 open_file_engine_impl(&engine, &path)
                     .unwrap_or_else(|e| panic!("[{row}] open before edit: {e}"));
-                let edited = set_parameter_impl(&engine, "RigidMassSmoke.depth", "250mm")
-                    .unwrap_or_else(|e| panic!("[{row}] set_parameter_impl: {e}"));
+                let edited = preview_parameter_impl(&engine, "RigidMassSmoke.depth", "250mm")
+                    .unwrap_or_else(|e| panic!("[{row}] preview_parameter_impl: {e}"));
                 let depth = edited
                     .values
                     .iter()
@@ -3467,8 +3467,8 @@ fn degenerate_geometry_after_rebuild_clears_the_retained_mass_props() {
     //     explicitly configured to fail (`fail_after_n_dispatches(2)` above),
     //     regardless of which exact handle number the dispatch allocates.
     let ops_before = dispatch_log.lock().unwrap().len();
-    let state = crate::commands::set_parameter_impl(&engine, "RigidMassSmoke.depth", "250mm")
-        .expect("set_parameter_impl");
+    let state = crate::commands::preview_parameter_impl(&engine, "RigidMassSmoke.depth", "250mm")
+        .expect("preview_parameter_impl");
     assert!(
         dispatch_log.lock().unwrap().len() > ops_before,
         "the depth edit must have re-DISPATCHED the realization — with no new op the \
