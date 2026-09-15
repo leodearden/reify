@@ -96,13 +96,26 @@ pub use compute_targets::elastic_static::PROGRESS_STRIDE;
 pub use engine_eval::ASSERT_MSG_PREFIX;
 #[doc(hidden)]
 pub use engine_eval::is_representable_cell_type;
-pub(crate) mod arg_acceptance;
+// Task 5791 (PRD docs/prds/v0_6/dimension-checked-readers.md §3 Leg A):
+// `arg_acceptance` was RELOCATED to `crates/reify-ir/src/arg_acceptance.rs`
+// so `reify-stdlib` — which cannot depend on `reify-eval` — shares the same
+// dimension-acceptance rule. This crate-private re-export keeps every
+// pre-existing `crate::arg_acceptance::…` spelling in this crate compiling
+// unchanged, at exactly the former visibility (a `pub use` would widen
+// reify-eval's public API for no reason).
+pub(crate) use reify_ir::arg_acceptance;
 mod engine_purposes;
 pub(crate) mod structural_query;
 mod engine_tolerance;
 mod geometry_ops;
 #[cfg(test)]
 mod registry_drift_tests;
+// Task 6013 (registry ψ): the executed static-vs-runtime parity harness for the
+// builtin-signature registry. In-crate for the same reason as the sibling above
+// — it asserts against the private `value_type_kind_matches`, unreachable from
+// an integration test. See that module's header for PRD open question 5.
+#[cfg(test)]
+mod registry_parity_tests;
 // Task #4673 (geom-dispatch-registry L4): cfg-gated cross-crate test seam exposing
 // a 1:1 delegate to the `pub(crate)` `geometry_ops::compile_geometry_op` for the
 // characterization/golden harness in `tests/compile_geometry_op_characterization.rs`.

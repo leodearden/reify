@@ -739,8 +739,14 @@ fn self_inside_lambda_in_fn_body_errors() {
     // is_entity_scope=false from the enclosing fn scope (via scope.clone()), so
     // `self` falls through to the unresolved-name error path.
     // Mirror the dual-path pattern used by self_error_in_fn_body (step-7).
+    //
+    // The `;` after the `let` is load-bearing (task #5392, INV-SF-7). Without it the fn body
+    // does not parse at all, so this test took its parse-error branch and passed on a
+    // diagnostic that mentioned `self` only because the old message ECHOED the whole source
+    // slice back. It never reached the lambda-scope logic it names. With the separator the
+    // source parses, and the assertion below actually exercises the compiler rejection.
     let source = r#"fn f(x: Length) -> Length {
-    let g = |y| y + self.x
+    let g = |y| y + self.x;
     g(x)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_self"));

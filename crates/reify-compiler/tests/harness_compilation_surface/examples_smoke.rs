@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use reify_test_support::missing_paths_under;
+use reify_test_support::{CTOR_DIAGNOSTIC_ARG_PREFIX, is_ctor_conformance_code};
 
 /// Absolute path to the workspace `examples/` directory, resolved at compile
 /// time from this crate's manifest directory (two levels up).
@@ -660,27 +661,6 @@ fn smoke_one(path: &Path, rel_key: &str, failures: &mut Vec<(String, String)>) {
     }
 }
 
-/// True when `code` is one of the diagnostic codes emitted by the struct-ctor
-/// field-conformance surface (tasks 5302 / 5303 / 4584 / 4598 / 4622 / 4444).
-///
-/// The admission set itself lives in the sibling `ctor_conformance_corpus_survey`
-/// module — a `#[path]` module of the SAME test binary — as
-/// `CTOR_CONFORMANCE_CODES`, and this gate reads it rather than restating it, so
-/// the α corpus gate and the β survey cannot drift apart (task #5304). It used to
-/// be a hand-written copy kept in sync by convention.
-///
-/// A third copy remains in
-/// `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs`
-/// — a separate test binary, which this `#[path]` module cannot reach. That is
-/// NOT a floor: the `reify-test-support` hop that would collapse all three
-/// already exists and is already used by both files. It was left for follow-up
-/// only because it needs edits outside #5304's lock set. See
-/// `CTOR_CONFORMANCE_CODES`'s own doc comment for the full rationale and the
-/// intended destination.
-fn is_ctor_conformance_code(code: Option<reify_core::diagnostics::DiagnosticCode>) -> bool {
-    crate::ctor_conformance_corpus_survey::is_ctor_conformance_code(code)
-}
-
 /// One ctor-conformance diagnostic observed during the corpus walk.
 ///
 /// Carries the offending param name alongside file / code / message so the gate
@@ -737,10 +717,6 @@ fn ctor_conformance_corpus_walk() -> &'static CtorConformanceWalk {
     })
 }
 
-/// The `emit_arg_type_mismatch` message prefix that introduces the offending
-/// param name (`crates/reify-compiler/src/conformance/mod.rs`).
-const CTOR_DIAGNOSTIC_ARG_PREFIX: &str = "argument '";
-
 /// Recover the offending param name from a ctor-conformance diagnostic message.
 ///
 /// A `Diagnostic` carries no structured param field, so the only handle the
@@ -752,7 +728,12 @@ const CTOR_DIAGNOSTIC_ARG_PREFIX: &str = "argument '";
 /// This is a real coupling to diagnostic prose, and it is deliberately guarded
 /// rather than merely commented: if the wording ever drifts so extraction stops
 /// matching, [`ctor_conformance_migration_debt_entries_are_all_live`] goes red
-/// naming the entry that stopped matching.
+/// naming the entry that stopped matching. The prefix it keys on is the shared
+/// `reify_test_support::ctor_conformance::CTOR_DIAGNOSTIC_ARG_PREFIX`, whose
+/// doc comment is where that coupling is recorded.
+///
+/// Single copy, not a duplication: this EXTRACTS the param name, where the
+/// shared `ctor_diagnostic_names_arg` only TESTS for a given one.
 fn param_name_from_ctor_diagnostic(message: &str) -> Option<String> {
     let start = message.find(CTOR_DIAGNOSTIC_ARG_PREFIX)? + CTOR_DIAGNOSTIC_ARG_PREFIX.len();
     let rest = &message[start..];

@@ -219,6 +219,69 @@ is close to unreachable anyway — `apply_param_to_source_str` refuses an unknow
 `cell_id` before committing anything — but a client that learned "success
 implies a value" on the other surface should read this paragraph, not infer it.
 
+**Constraint statuses ride the write-tool payload.** A write tool's push is a
+whole `GuiState`, so a constraint that CHANGED STATUS because of the edit
+travels on the same frame as the values and meshes that moved — there is no
+separate constraint channel to fall out of sync with. `GuiState.constraints` is
+declared `diffed keyed(key=node_id, item="constraint", update="constraint-update",
+changed=changed_constraints)` (`types.rs`), so it rides the same delta
+choke-point as `values` and `meshes`, and each `ConstraintData` carries
+`{node_id, expression, status, label, parameter_ids}` with `status` drawn from
+exactly `satisfied` / `violated` / `indeterminate` — LOWER-CASE; the PascalCase
+spelling names the `Satisfaction` enum variants, not the wire tokens, and
+`engine::satisfaction_token` is the sole producer (contract canonical on
+`ConstraintData.status` in `types.rs`). Prefer
+`parameter_ids` — `collect_value_refs(expr)` — over the positional `node_id`
+when naming a constraint you care about: `Printer#constraint[45]` renumbers when
+a constraint is added anywhere above it. Pinned end to end
+(serialize → `DebugTransport` → deserialize) by
+`debug_boundary_tests::write_tool_payload_carries_a_flipped_constraint_status`,
+which routes one parameter edit through `write_tool_frontend_payload` and
+asserts the flipped status and its `parameter_ids` survive the wire
+byte-identical.
+
+**`parameter_ids` and `cell_id` are TWO namespaces — only one spelling crosses.**
+A `parameter_ids` entry is an INSTANCE PATH rooted at the entity that DECLARES
+the constraint, so its shape depends on what the expression reaches for:
+
+| reference in `structure Printer` | `parameter_ids` entry | valid `reify_set_parameter` `cell_id`? |
+|---|---|---|
+| `o1_pin_slack` / `self.o1_pin_slack` (own member) | `Printer.o1_pin_slack` | YES |
+| `self.a_frame.rail_span_m` (cross-sub) | `Printer.a_frame.rail_span_m` | NO — it is `AFrame.rail_span_m` there |
+
+`build_constraints` fills `parameter_ids` from `collect_value_refs`, where a
+root binding carries `scoped_entity = scope.entity_name` for `self` but
+`format!("{}.{}", scope.entity_name, sub_name)` for a sub root
+(`member_path.rs`), so a cross-sub access names the SUB (`a_frame`).
+`build_values` — and therefore `reify_set_parameter` — instead walks
+`compiled.templates[].value_cells`, and a template is per STRUCTURE, so it keys
+on the TYPE: the same cell is `AFrame.rail_span_m` there.
+`apply_param_to_source_str` → `resolve_known_cell_type` looks the id up in that
+type-keyed table, so feeding it a cross-sub `parameter_ids` entry is rejected
+with `Unknown parameter 'Printer.a_frame.rail_span_m'`. The two coincide only in
+a flat single-structure module, where every reference is same-entity. To drive
+an edit from a constraint you selected by `parameter_ids`, re-spell the id in
+the TYPE namespace first — do not pass it through. Worked derivation, with the
+selector constants kept deliberately separate for this reason:
+`gui/test/visual/railLengtheningGate.mjs`'s `PIN_RAIL_SPAN_CELL` docblock.
+
+**The no-stale-baseline invariant is NOT observable from this surface, by
+design.** §6.2 caveat (i) — restated on `write_on_engine_and_refresh_baseline` —
+has the debug path DISCARD the `StateDelta` and push the full `GuiState`
+instead, so no tool here returns a delta or a changed-set, and none is
+missing: a client cannot ask whether the baseline advanced, and does not need
+to. The invariant (a command following an AI write diffs against the
+AI-ADVANCED baseline, not a pre-AI stale one — INV-GUI-2, survey bug #7) is
+pinned where `compute_delta` and `last_state` both are, by
+`debug_server::tests::write_tools::write_helper_refreshes_the_delta_baseline` —
+which drives the real `write_on_engine_and_refresh_baseline` seam, not
+`compute_delta` directly, and asserts both that the baseline moved to S1 and
+that a second diff against S1 emits no events at all. Driving the SEAM is what
+gives it teeth: `compute_delta` advances the baseline unconditionally, so a test
+calling it directly would stay green against the very bug this guards — a write
+wrapper that mutates the engine and forgets to refresh. Read an absent delta
+tool as this design decision, not as a gap to fill.
+
 **`reify_save_file` and `reify_export` are pure I/O — but they still push.**
 Neither commits new engine state, yet both route through
 `write_on_engine_and_refresh_baseline` so §6.2 invariant (a) holds across the

@@ -256,6 +256,12 @@ entries:
     origin_phase: implement
     manifested_phase: verify
     note: grep -rn on multiple paths (crates/*/src/, docs/notes/) returns exit code 2; exits indicate I/O/path error, not pattern-not-found, but agent may retry by changing search string rather than diagnosing path
+  - date: '2026-09-14'
+    project: reify
+    session: 6cb85565-ac5d-47bf-922a-57d858bd09bd
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Two grep exit-2 errors (turns 12, 26) with 2>/dev/null suppressing stderr, followed by identical failure despite pattern variation (backslash escaping). Path/IO error masked as pattern-not-found, retry loop assumes search string was the issue.
 - id: entry-cand-20260725-1
   title: Escalation-watcher script location unknown for non-dark-factory target projects
   severity: medium
@@ -459,6 +465,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: 'Symlinked plan.json directly visible: `.task/plan.json -> /home/leo/src/warm-lanes/worktrees/.task-meta/_lane-55/plan.json`. Session exhibits zero-output CLI hang during investigation; symlink indirection may contribute to file-resolution delays or timeouts.'
+  - date: '2026-09-14'
+    project: reify
+    session: 498999d6-8d92-4b73-b378-8ead0466e31d
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Symlinked plan.json indirection correlates with 3 tool_errors and 2 not_found signals; multiple failed attempts to access plan through broken symlink likely triggered expensive resolution paths
 - id: entry-cand-20260722-2
   title: Foreground polling loop for async completion marker hits hard timeout, discarding the wait
   severity: medium
@@ -831,6 +843,12 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: 'Turn 382: TaskOutput polled with task_id ''b9uojrxhe'' returns ''No task found'' error. Background task ID no longer present in live registry, suggesting cleanup or session expiry.'
+  - date: '2026-09-14'
+    project: reify
+    session: d1faeaec-464a-4e4a-b9a0-cc6599aacd62
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Turn 393: TaskOutput polled with task_id ''ba89efkp5'' that does not exist in the live registry'
 - id: entry-cand-20260731-1
   title: Blocked sleep+tail poll fallback into repeated-Read retry loop
   severity: medium
@@ -1132,6 +1150,12 @@ entries:
     origin_phase: unknown
     manifested_phase: implement
     note: ls .task/*.md .task/*.json 2>/dev/null produces exit code 2 (path/IO error) but actual error is suppressed; conflates real path failure with glob non-match
+  - date: '2026-09-14'
+    project: reify
+    session: 9137b195-4aed-4936-82f0-0caa6a1d4b17
+    origin_phase: unknown
+    manifested_phase: ops
+    note: Bash command uses `cat .task/metadata.json 2>/dev/null` which suppresses real path/IO error (file not found) instead of pattern-match failure.
 - id: entry-cand-20260730-4
   title: watcher-rearm.sh CEILING timeout retried 5x with only cosmetic changes, ending in user interrupt
   severity: medium
@@ -2086,6 +2110,19 @@ entries:
     origin_phase: implement
     manifested_phase: verify
     note: 'Heredoc git commit message containing § (section) symbols and parentheses breaks under eval: ''syntax error near unexpected token (''; message body includes prose with special markdown-like formatting characters'
+  - date: '2026-09-14'
+    project: reify
+    session: 04ed92c5-8a2a-4e99-b7db-f87fb6ed7ebf
+    origin_phase: implement
+    manifested_phase: implement
+    invariant_violated: heredoc quoting under nested ssh context
+    note: 'Turn 599: SSH heredoc deployment of orchestrator shim fails with ''here-document at line 1 delimited by end-of-file (wanted `EOF'')'' — quote escaping breaks in the nested ssh ''cat > /usr/local/bin/orchestrator <<EOF'' context'
+  - date: '2026-09-14'
+    project: reify
+    session: d1faeaec-464a-4e4a-b9a0-cc6599aacd62
+    origin_phase: implement
+    manifested_phase: implement
+    note: 'Turn 133: heredoc commit message with literal parentheses (Shape×Point, ClosestPointOnShape) breaks under eval-wrapped bash execution — syntax error near unexpected token'
 - id: entry-cand-20260725-4
   title: Concurrent background commit retries collide on git index.lock with no serialization
   severity: medium
@@ -2692,6 +2729,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: identical watcher-rearm.sh command re-issued after hitting CEILING; no variation in invocation across 8 retries despite repeated timeout
+  - date: '2026-09-14'
+    project: reify
+    session: 4f9719bc-8911-4f2c-b9fb-454fe968f28b
+    origin_phase: unknown
+    manifested_phase: ops
+    note: Watcher-rearm.sh invoked with identical --timeout 3600 at turns 209 and 219, both hitting exit 124 (CEILING), then retried with reduced --timeout 1329 at turn 234, also hitting CEILING
 - id: entry-cand-20260726-8
   title: Warm-lane .task/plan.json symlink resolves to empty/unreadable target with no error surfaced
   severity: medium
@@ -2823,6 +2866,12 @@ entries:
     origin_phase: implement
     manifested_phase: verify
     note: Warm-lane .task/plan.json either missing or symlinked to empty/unreadable target; cat command fails with exit 1 when probing .task/ metadata during verification
+  - date: '2026-09-14'
+    project: reify
+    session: 498999d6-8d92-4b73-b378-8ead0466e31d
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Warm-lane .task/plan.json symlink target at /home/leo/src/warm-lanes/worktrees/.task-meta/_lane-46/plan.json does not exist; symlink itself is readable (64 bytes) but `wc -c` reports 'No such file or directory', Read tool fails with 'does not exist'
 - id: entry-cand-20260722-4
   title: Escalation watcher re-attempts a path-scope-guarded cross-project operation after the guard already fired
   severity: medium
@@ -3202,6 +3251,12 @@ entries:
     origin_phase: recon
     manifested_phase: unknown
     note: Escalation-steward session (esc-6619-2) making cross-project MCP calls to /home/leo/src/reify from warm-lanes worktree; timeout-to-connection-failure cascade suggests filesystem search or missing DARK_FACTORY_ROOT + project_root configuration
+  - date: '2026-09-14'
+    project: reify
+    session: 66c26b12-a01e-453e-8196-c920add61b57
+    origin_phase: unknown
+    manifested_phase: merge
+    note: Orchestrated-task agent spawned in warm-lanes worktree (cross-project context) likely without DARK_FACTORY_ROOT, causing three MCP task submission failures with timeout/connection errors. Matches root cause pattern—missing environment variable in cross-project session—though manifestation (MCP socket access) differs from escalation-watcher filesystem-find timeout described in entry.
 - id: entry-cand-20260728-7
   title: Warm-lane .task-meta path assumed at warm-lanes root instead of under worktrees/
   severity: medium
@@ -3446,6 +3501,12 @@ entries:
     origin_phase: implement
     manifested_phase: verify
     note: Warm-lane .task-meta path assumed at wrong location; agent probes .task/ in worktree root but required metadata structure absent or in different layout
+  - date: '2026-09-14'
+    project: reify
+    session: 9137b195-4aed-4936-82f0-0caa6a1d4b17
+    origin_phase: merge
+    manifested_phase: ops
+    note: Warm-lanes worktree (_lane-47) session probing .task/metadata.json and .task/plan.json; both not found. Path resolution in warm-lanes context assumed incorrect location.
 - id: entry-cand-20260728-8
   title: Warm-lane task-meta path ambiguity (sibling vs nested-under-worktrees)
   severity: medium
@@ -3793,6 +3854,24 @@ entries:
     origin_phase: implement
     manifested_phase: verify
     note: Warm-lane worktree .task/ metadata path ambiguity; multiple expected files (metadata.json, plan.json, iterations.jsonl) inaccessible or missing, breaking task state inspection during post-merge verification
+  - date: '2026-09-14'
+    project: reify
+    session: 8bc01aba-acce-40b6-a558-ac07c4f512da
+    origin_phase: decompose
+    manifested_phase: unknown
+    note: 9 not_found signals across turns (26, 74, 81, 95, 103, 124, 251, 269) in warm-lanes _lane-10 worktree. Likely probing wrong .task-meta path variants (sibling vs nested-under-worktrees ambiguity).
+  - date: '2026-09-14'
+    project: reify
+    session: fe7c8003-dc86-48a7-9738-c97634c25ddc
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Warm-lane task-meta path ambiguity (sibling vs nested-under-worktrees) matches repeated path resolution failures across turns 63–146
+  - date: '2026-09-14'
+    project: reify
+    session: c5b69524-7799-4cc5-b2f5-86f68953a45c
+    origin_phase: architect
+    manifested_phase: ops
+    note: Agent in /home/leo/src/warm-lanes/worktrees/_lane-7 attempted cat .task/metadata.json and .task/plan.json with exit 1; consistent with confusion over whether .task/ lives at worktree root or as sibling/parent .task-meta structure
 - id: entry-cand-20260714-3
   title: Watcher rearm invoked without DARK_FACTORY_ROOT despite explicit project-root injection
   severity: medium
@@ -4195,6 +4274,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: 'Fragile grep-into-sed line-range construction fails parsing backtick-substituted output; sed: unknown command `,` at position 1 when extracting assert() function from tests/infra/test_harness_kloc_cap.sh'
+  - date: '2026-09-14'
+    project: reify
+    session: 8bc01aba-acce-40b6-a558-ac07c4f512da
+    origin_phase: architect
+    manifested_phase: verify
+    note: 'Turn 211: sed -n ''1,/^# Section 1:/p'' with pattern-based line range fails (exit 1). Fragile construction; likely pattern mismatch or file missing.'
 - id: entry-cand-20260703-4
   title: Autonomous watcher conflates interactive auto-memory (Write-tool markdown files) with project fused-memory MCP writes
   severity: medium
@@ -5389,6 +5474,12 @@ entries:
     origin_phase: implement
     manifested_phase: verify
     note: Per-lane iterations.jsonl not found at expected path; bash command chain fails when attempting to read .task/iterations.jsonl in warm-lanes worktree
+  - date: '2026-09-14'
+    project: reify
+    session: fe7c8003-dc86-48a7-9738-c97634c25ddc
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Per-lane task-meta iterations.jsonl missing pattern consistent with 7 sequential file-not-found errors in warm-lane _lane-10 worktree context
 - id: entry-cand-20260727-8
   title: No cross-session visibility into which concurrent sessions own which blocked tasks
   severity: medium
@@ -5654,6 +5745,12 @@ entries:
     origin_phase: implement
     manifested_phase: verify
     note: Warm-lane task bootstrap missing plan.json; .task/plan.json referenced but inaccessible in worktree
+  - date: '2026-09-14'
+    project: reify
+    session: 9137b195-4aed-4936-82f0-0caa6a1d4b17
+    origin_phase: merge
+    manifested_phase: ops
+    note: Warm-lane task bootstrap in _lane-47 missing plan.json; cwd is /home/leo/src/warm-lanes/worktrees/_lane-47, not dark-factory worktree.
 - id: entry-cand-20260719-8
   title: Sandbox blocks naive sleep+check polling chains
   severity: medium
@@ -5714,6 +5811,12 @@ entries:
     manifested_phase: verify
     invariant_violated: Agent assumes compiled/installed binaries are available in task worktree without checking prerequisites
     note: 'Turn 49: Bash exit 2 on ptodo-baseline-gen invocation in warm-lanes worktree; generalizes ripgrep pattern to project-specific build artifacts'
+  - date: '2026-09-14'
+    project: reify
+    session: 5d19c579-c23c-440c-85eb-1cb3147e69a3
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Bash rg invocations in turns 12 and 49 both fail with 'rg' not found; ripgrep binary absent from warm-lane worktree environment
 - id: entry-cand-20260801-6
   title: Grep tool rejects PCRE look-around — agent assumes full PCRE regex support
   severity: medium
@@ -18064,3 +18167,198 @@ candidates:
     origin_phase: review
     manifested_phase: review
     evidence_quote: A current suggestion that matches only a DEFERRED, still-open prior concern has NOT been settled and must still be emitted. Classify 'settled' ONLY when you are confident the concern was actually resolved earlier, never merely because it resembles something raised before.
+- id: cand-20260914-1
+  title: Agent embeds MCP envelope markup in add_memory content field
+  cause: Agent generates add_memory content containing code samples or nested documentation with backticks and angle-bracket syntax (e.g., inline code like `→` or code snippets) that pattern-match MCP envelope closing tags, triggering mcp_markup_detected guard
+  area: fused-memory/add_memory parameter serialization
+  first_seen: '2026-09-14'
+  disposition: pending
+  sightings:
+  - date: '2026-09-14'
+    project: reify
+    session: f30f7232-4248-4f8f-8bc9-134c77685421
+    origin_phase: architect
+    manifested_phase: architect
+    evidence_quote: 'Tool call rejected: mcp_markup_detected in ''content'' field, matched_pattern: "</content>", error_type: mcp_markup_detected, tool: add_memory'
+- id: cand-20260914-2
+  title: Python -c with multi-statement code missing newline separators
+  cause: Agent concatenates multiple Python statements into single string for `python3 -c` without embedded `\n` separators, causing IndentationError in parser
+  area: Command-line Python one-liners / heredoc script generation
+  first_seen: '2026-09-14'
+  disposition: pending
+  sightings:
+  - date: '2026-09-14'
+    project: reify
+    session: 8bc01aba-acce-40b6-a558-ac07c4f512da
+    origin_phase: architect
+    manifested_phase: verify
+    evidence_quote: 'Turn 336: python3 -c "import json p=json.load(open(...)) ..." → IndentationError: unexpected indent. Statements run together on logical line without newline breaks.'
+- id: cand-20260914-3
+  title: Privileged Operation Assumed from Unprivileged SSH Session
+  cause: Agent attempted to deploy a mitigation shim by modifying /usr/local/bin/orchestrator on remote laptop via unprivileged SSH. Both heredoc deployment (turn 599) and in-place sed modification (turn 1103) failed with permission denied, assuming write access that requires root/sudo.
+  area: remote-ops / mitigation-deployment
+  first_seen: '2026-09-14'
+  disposition: pending
+  sightings:
+  - date: '2026-09-14'
+    project: reify
+    session: 04ed92c5-8a2a-4e99-b7db-f87fb6ed7ebf
+    origin_phase: verify
+    manifested_phase: implement
+    evidence_quote: 'Turn 599: ''cp: cannot create regular file ''/usr/local/bin/orchestrator.bak-2026-09-14'': Permission denied''. Turn 1103: ''sed: couldn''t open temporary file /usr/local/bin/sedht8tEb: Permission denied'' — both attempts to modify remote system binary fail, but strategy assumed unprivileged write access.'
+- id: cand-20260914-4
+  title: Kernel OOM Kills Background Monitor Task Mid-Flight
+  cause: Background task tracking first post-mitigation verify verdict was killed by the kernel due to system memory pressure, not timeout. Monitor stream was active and tracking SSH child process, but task was reaped mid-flight with 'killed' status while HEARTBEAT_STALL events were still being emitted on the orchestrator side.
+  area: resource-constraints / background-task-management
+  first_seen: '2026-09-14'
+  disposition: pending
+  sightings:
+  - date: '2026-09-14'
+    project: reify
+    session: 04ed92c5-8a2a-4e99-b7db-f87fb6ed7ebf
+    origin_phase: verify
+    manifested_phase: verify
+    evidence_quote: 'Turn 939: task notification b02sep9rc status=''killed'' summary=''stopped because the system is running low on memory''. Concurrent monitor task bzmn2dudj continues to emit HEARTBEAT_STALL events after the background task is killed.'
+- id: cand-20260914-5
+  title: Watcher-rearm CEILING persists across timeout reduction
+  cause: 'Escalation-watcher retries watcher-rearm with diminishing timeout windows after hitting CEILING, but script continues returning exit 124 regardless of timeout value, indicating either: (a) queue remains blocked beyond any timeout horizon, (b) CEILING is not a retriable condition and should trigger different recovery path, or (c) timeout reduction strategy is ineffective for this queue''s wait semantics'
+  area: escalation-watcher / watcher-rearm.sh
+  first_seen: '2026-09-14'
+  disposition: pending
+  sightings:
+  - date: '2026-09-14'
+    project: reify
+    session: 4f9719bc-8911-4f2c-b9fb-454fe968f28b
+    origin_phase: unknown
+    manifested_phase: ops
+    evidence_quote: 'Three consecutive watcher-rearm.sh invocations all return exit 124 (CEILING): --timeout 3600 (turns 209, 219), --timeout 1329 (turn 234)'
+- id: cand-20260914-6
+  title: Warm-lanes session digest shows phantom turns and missing metadata
+  cause: Session referenced non-existent turn numbers (46, 71, 148, 158) in 'not_found' signals; interactive session class with n_user_turns=0 is inconsistent; cwd in `/warm-lanes/worktrees/_lane-15` suggests task-meta or plan.json access attempted but failed
+  area: warm-lanes bootstrap / task-metadata resolution
+  first_seen: '2026-09-14'
+  disposition: pending
+  sightings:
+  - date: '2026-09-14'
+    project: reify
+    session: 7aacb8c4-27b0-4c1f-812e-f500896227e6
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'cwd: "/home/leo/src/warm-lanes/worktrees/_lane-15"; agent_class: "interactive" but n_user_turns: 0; signal_counts show only ''not_found: 4'' at turns that don''t exist in transcript'
+- id: cand-20260914-7
+  title: Repeated file-not-found across non-sequential turns in warm-lane worktree without path correction
+  cause: Agent assumes task metadata file exists at a specific path; file is either never created during warm-lane bootstrap or located elsewhere; agent probes repeatedly across discontinuous turns (63, 75, 85, 102, 117, 125, 146) without adaptive path search or error escalation
+  area: warm-lanes
+  first_seen: '2026-09-14'
+  disposition: pending
+  sightings:
+  - date: '2026-09-14'
+    project: reify
+    session: fe7c8003-dc86-48a7-9738-c97634c25ddc
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 7 'does not exist' signals at non-sequential turns spanning 83 turn-window in warm-lane _lane-10 worktree; no single failure triggers path-discovery or fallback
+- id: cand-20260914-8
+  title: Pre-rebase duplicate commits resolve locally but fail remotely in shared-.git worktrees
+  cause: Agent cites commits that appear valid locally (correct dates/subjects, resolvable via `git show`) but are pre-rebase duplicates in the shared-.git object pool, unreachable from main via ancestry checks. Local resolution via `git show` does not prove provenance.
+  area: git/worktree/commit-identity/overlay-authoring
+  first_seen: '2026-09-14'
+  disposition: pending
+  sightings:
+  - date: '2026-09-14'
+    project: reify
+    session: c4ebd4fa-f909-4ccf-92fd-676e8ab42272
+    origin_phase: implement
+    manifested_phase: review
+    evidence_quote: 'commits 2ba79b7159 + 07a2a28bbe resolvable via `git show` in this worktree yet unreachable from both main and the merge they are attributed to; they are pre-rebase duplicates: objects that survive locally in shared-.git but will not resolve in a fresh clone'
+- id: cand-20260914-9
+  title: MCP markup rejection during design-decision submission
+  cause: 'Agent repeatedly encounters `mcp_markup_detected` rejections when submitting design decisions via add_design_decision tool. Raw MCP close tags (`</invoke>`, `</rationale>`) appear in rationale field. Origin unclear: possible sources are briefing/context contamination, memory injection, or agent quoting failed tool errors in retry attempts.'
+  area: MCP-tool-calls/context-assembly
+  first_seen: '2026-09-14'
+  disposition: pending
+  sightings:
+  - date: '2026-09-14'
+    project: reify
+    session: c4ebd4fa-f909-4ccf-92fd-676e8ab42272
+    origin_phase: unknown
+    manifested_phase: implement
+    evidence_quote: 'six tool_error rejections turns 122-153 for `mcp__plan-tools__add_design_decision` with matched_pattern `</rationale>`, system hint to override with `metadata={''allow_mcp_markup'': True}`'
+- id: cand-20260914-10
+  title: MCP envelope markup serialized into tool-parameter payload
+  cause: Agent's tool-call envelope generation embeds XML-style closing tags (`</invoke>`, `</rationale>`) into the `rationale` field instead of keeping them in the envelope structure. Occurs across multiple sequential `add_design_decision` calls with multi-line rationale strings.
+  area: MCP tool serialization / envelope generation
+  first_seen: '2026-09-14'
+  disposition: pending
+  sightings:
+  - date: '2026-09-14'
+    project: reify
+    session: e907f9c5-e973-4e2e-b667-15af217d56e2
+    origin_phase: architect
+    manifested_phase: architect
+    evidence_quote: 'Three consecutive add_design_decision calls rejected with error_type=''mcp_markup_detected'': turn 347 matched_pattern=''</invoke>'', turn 360 matched_pattern=''</invoke>'' + ''</rationale>'', turn 368 matched_pattern=''</rationale>''. Each shows field=''rationale'' and error message ''caller serialized part of its own tool-call envelope into the payload''.'
+- id: cand-20260914-11
+  title: Unverified file path citations in prose documentation
+  cause: Agent asserts file paths in documentation without verifying they exist before submission
+  area: documentation
+  first_seen: '2026-09-14'
+  disposition: pending
+  sightings:
+  - date: '2026-09-14'
+    project: reify
+    session: 1506ba29-a70d-4449-8425-8ba5e9c2fa97
+    origin_phase: implement
+    manifested_phase: review
+    evidence_quote: 'All three new cross-references cite `crates/reify-compiler/tests/modal_options_validation_tests.rs`, which does not exist. The test lives at `crates/reify-compiler/tests/harness_mechanics/modal_options_validation_tests.rs` (verified: `ls crates/reify-compiler/tests/modal_options_validation_tests.rs` → No such file)'
+- id: cand-20260914-12
+  title: Logically inconsistent rationale in prose documentation
+  cause: Agent provides non-sequitur reasoning that does not logically support documented claims, caught only during review
+  area: documentation
+  first_seen: '2026-09-14'
+  disposition: pending
+  sightings:
+  - date: '2026-09-14'
+    project: reify
+    session: 1506ba29-a70d-4449-8425-8ba5e9c2fa97
+    origin_phase: implement
+    manifested_phase: review
+    evidence_quote: 'The new rationale is a non-sequitur: ''The 6 preceding params are stil...'' — the reasoning does not follow from the premises and contradicts established conventions (sibling examples show correct form)'
+- id: cand-20260914-13
+  title: 'Cross-project worktree bootstrap mismatch: warm-lanes lacks .task/ directory structure'
+  cause: Task dispatched into warm-lanes worktree (_lane-47) attempts to read .task/metadata.json and .task/plan.json, but warm-lanes worktree layout does not include .task/ directory populated with these files; code assumes dark-factory worktree structure.
+  area: worktree/bootstrap
+  first_seen: '2026-09-14'
+  disposition: pending
+  sightings:
+  - date: '2026-09-14'
+    project: reify
+    session: 9137b195-4aed-4936-82f0-0caa6a1d4b17
+    origin_phase: merge
+    manifested_phase: ops
+    evidence_quote: 'cwd: "/home/leo/src/warm-lanes/worktrees/_lane-47" ... Bash(... cat .task/metadata.json 2>/dev/null && ... .task/plan.json 2>/dev/null ...) -> [exit 1] ... Not Found: (turn 42) does not exist; (turn 52) does not exist'
+- id: cand-20260914-14
+  title: Review rounds lose visibility into settled vs. deferred concerns
+  cause: No structured tracking distinguishing review concerns actually resolved in prior amendment rounds from those merely deferred to follow-up tasks; adjudicator must manually maintain prior-round context to avoid re-litigating closed decisions
+  area: Review workflow, amendment rounds, decision tracking
+  first_seen: '2026-09-14'
+  disposition: pending
+  sightings:
+  - date: '2026-09-14'
+    project: reify
+    session: b8a7418a-8599-439e-bf06-c75661bb29e4
+    origin_phase: review
+    manifested_phase: review
+    evidence_quote: PRIOR-ROUND SUGGESTIONS (raised in earlier rounds; some resolved, some only DEFERRED and still open)... Classify 'settled' ONLY when you are confident the concern was actually resolved earlier, never merely because it resembles something raised before.
+- id: cand-20260914-15
+  title: De-staling rewrite introduces freshly-false facts contradicting colocated correct docs
+  cause: When an agent is tasked with removing stale claims from a comment or docstring, it may replace them with new false claims while leaving the file self-contradictory, especially if it doesn't verify new assertions against current state or other documentation in the same file.
+  area: code-documentation
+  first_seen: '2026-09-14'
+  disposition: pending
+  sightings:
+  - date: '2026-09-14'
+    project: reify
+    session: 744dc48d-7c23-4e63-b1ae-6084ba917878
+    origin_phase: implement
+    manifested_phase: review
+    evidence_quote: 'The new clause says the synthetic tests ''are load-bearing again now that #6934 has burned it back down to empty'', but `ptodo-baseline.txt` currently contains 6 entries (not zero), and the same file''s module doc at lines 25-27 correctly states ''It currently holds 6 entries''. So a change whose sole purpose is to remove a stale claim replaces it with a freshly-wrong one and leaves the file self-contradictory.'

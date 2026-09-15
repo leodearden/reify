@@ -93,8 +93,8 @@ Payloads shipped in v0.6; these bounds apply to the current surface.
   (`Parse error: invalid param: ...`). Write `Circle { radius: 2mm }`. Match *patterns* are
   likewise always unqualified (see Match Expressions above).
 - **Empty-brace construction does not parse.** `Point {}` reports
-  `Parse error: syntax error: {}` — write the bare variant as `Point`. This is a
-  grammar-level restriction rather than a PRD-deferred item.
+  `Parse error: syntax error in structure body` — write the bare variant as `Point`.
+  This is a grammar-level restriction rather than a PRD-deferred item.
 - **Not supported:** positional/tuple payloads (`ScalarForce(Real)` — named-field is the
   sole form), partial binding (`Rect { width: w, .. }`), nested destructuring within one
   pattern (`Rect { width: Circle { ... } }`), payload-value guards, and pipe-alternation
