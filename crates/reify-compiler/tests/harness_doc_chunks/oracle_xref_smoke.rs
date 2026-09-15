@@ -560,6 +560,84 @@ See the `geometry` chunk — topic `geometry` of `reify_language_reference`.
     );
 }
 
+/// An editor note that QUOTES its own terminator is not fully a comment, and
+/// the debris that survives the stripper is REPORTED rather than silently
+/// charged to the pointer's line budget.
+///
+/// Shaped like the LIVE defect this class was minted for: `stdlib.md` shipped a
+/// placement note whose closing sentence quoted the `ORACLE-XREF` marker in
+/// full, terminator and all, so the note ended four lines early and two lines of
+/// its own text landed in the rendered chunk — where they also ate two lines of
+/// pointer budget that nothing was spending.
+///
+/// The class is decidable and wording-blind, which is what makes it worth
+/// having: a terminator surviving into stripped prose is definitionally an
+/// UNOPENED one, so it can only mean a comment closed earlier than its author
+/// intended. Nothing here reads the note's words.
+#[test]
+fn a_region_whose_editor_note_quotes_its_own_terminator_is_reported_as_debris() {
+    let region = "\
+<!--
+PLACEMENT IS LOAD-BEARING — do not tidy this pointer back into the ops table above.
+The region below is guarded by oracle_xref_smoke.rs, matched on the
+`<!-- ORACLE-XREF -->` marker line, never on this heading — retitling is free.
+-->
+
+Over let-bound geometry: `intersects(a, b) -> Bool` and `distance(a, b) -> Length`.
+
+The posed form and the traps are in the `geometry` chunk — topic `geometry` of
+`reify_language_reference`.
+";
+
+    let violations = xref_region_violations(region, "synthetic.md");
+
+    assert_eq!(
+        violations.len(),
+        1,
+        "expected exactly the comment-debris violation — the pointer itself is \
+         well-formed, so anything else here is a class firing for the wrong \
+         reason: {violations:#?}"
+    );
+    assert!(
+        violations[0].contains(HTML_COMMENT_CLOSE),
+        "the violation must quote the terminator that survived, because that \
+         string is the whole evidence and is what the fixer searches the chunk \
+         for: {}",
+        violations[0]
+    );
+}
+
+/// ...and a WELL-FORMED editor note still costs nothing.
+///
+/// The negative control that stops the class above from degenerating into a ban
+/// on editor notes. [`POINTER_SIZED_REGION`] cannot cover this: it carries no
+/// comment at all, so it would stay green against a stripper that had started
+/// reporting every note. House convention puts placement notes and SYNC blocks
+/// inside exactly these marked regions, and this is what keeps that free.
+#[test]
+fn a_region_with_a_well_formed_editor_note_is_clean() {
+    let region = "\
+<!--
+PLACEMENT IS LOAD-BEARING — do not tidy this pointer back into the ops table above.
+The region below is guarded by oracle_xref_smoke.rs, matched on the
+`ORACLE-XREF` marker line, never on this heading — retitling is free.
+-->
+
+Over let-bound geometry: `intersects(a, b) -> Bool` and `distance(a, b) -> Length`.
+
+The posed form and the traps are in the `geometry` chunk — topic `geometry` of
+`reify_language_reference`.
+";
+
+    assert_eq!(
+        xref_region_violations(region, "synthetic.md"),
+        Vec::<String>::new(),
+        "a multi-line editor note that never quotes its own terminator is a whole \
+         comment: it must be stripped, cost the pointer ceiling nothing, and be \
+         scanned for nothing"
+    );
+}
+
 // ── Scanner unit tests ───────────────────────────────────────────────────────
 //
 // `strip_html_comments` is this module's ONLY hand-rolled text helper, and every
@@ -586,5 +664,38 @@ fn an_unterminated_html_comment_consumes_the_remainder() {
     assert_eq!(
         strip_html_comments("visible\n<!-- swallowed\n`intersects(a, b)`\n"),
         "visible\n"
+    );
+}
+
+/// A comment whose body QUOTES a terminator ends AT THE QUOTE, and the rest of
+/// the author's note survives as visible text.
+///
+/// The third case, which the well-formed and unterminated cases above left
+/// uncovered between them. It is pinned as CORRECT, not fixed: HTML comments do
+/// not nest and HTML defines no escape sequence inside one, so the first `-->`
+/// closes it. Backticks are MARKDOWN, and markdown is not processed inside a
+/// comment — every real renderer does exactly this, and the chunk the assistant
+/// is served is the rendered one.
+///
+/// A bespoke backtick-aware rule here would be strictly worse twice over: it
+/// would invent a convention no renderer implements, so this module would
+/// disagree with what the reader actually sees; and it would HIDE genuine
+/// early-termination defects, which are how an editor note silently leaks into
+/// a chunk. Reporting beats rewriting — the debris this leaves is what
+/// `a_region_whose_editor_note_quotes_its_own_terminator_is_reported_as_debris`
+/// pins as a violation class, which is what turns this property from a silent
+/// hazard into a named, actionable one.
+#[test]
+fn a_quoted_terminator_closes_the_comment_early() {
+    assert_eq!(
+        strip_html_comments(
+            "prose above\n\
+             <!--\n\
+             The region below is guarded by oracle_xref_smoke.rs, matched on the\n\
+             `<!-- ORACLE-XREF -->` marker line — retitling is free.\n\
+             -->\n\
+             prose below\n"
+        ),
+        "prose above\n` marker line — retitling is free.\n-->\nprose below\n"
     );
 }
