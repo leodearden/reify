@@ -620,6 +620,87 @@ async fn handle_reify_alpha(state: &DebugServerState, params: Value) -> Result<V
 }
 "#;
 
+/// The three shapes of ordinary Rust the review's probe confirmed the original
+/// per-line arm parser DROPPED — wrapped, block and or-pattern — each
+/// advertised in a matching `ToolDef` entry so the fixture exercises the
+/// registry cross-check alongside the scan.
+///
+/// With that cross-check in place these shapes already fail CLOSED, so
+/// widening the parser is false-POSITIVE reduction rather than a soundness
+/// fix. It is still worth doing: a gate that reds on ordinary Rust is a gate
+/// the next author weakens to get past. The or-pattern matters twice over —
+/// dropping one silently drops BOTH names.
+const ARM_SHAPES_SOURCE: &str = r#"
+fn tool_definitions() -> Vec<ToolDef> {
+    vec![
+        ToolDef {
+            name: "reify_wrapped",
+            description: "Handler on the following line.",
+            input_schema: json!({ "type": "object" }),
+        },
+        ToolDef {
+            name: "reify_blocked",
+            description: "Handler inside a block arm.",
+            input_schema: json!({ "type": "object" }),
+        },
+        ToolDef {
+            name: "reify_first",
+            description: "Shares one handler with reify_second.",
+            input_schema: json!({ "type": "object" }),
+        },
+        ToolDef {
+            name: "reify_second",
+            description: "Shares one handler with reify_first.",
+            input_schema: json!({ "type": "object" }),
+        },
+    ]
+}
+
+async fn dispatch_tool(
+    state: &DebugServerState,
+    name: &str,
+    params: Value,
+) -> Result<Value, String> {
+    match name {
+        "reify_wrapped" =>
+            handle_reify_wrapped(state, params).await,
+        "reify_blocked" => { handle_reify_blocked(state, params).await }
+        "reify_first" | "reify_second" => handle_shared(state, params).await,
+        _ => state.debug_bridge.query_frontend(name, params).await,
+    }
+}
+"#;
+
+/// A tool handled INLINE, with no handler fn anywhere in the file.
+///
+/// The trap: `Ok` IS an identifier followed by `(`, so a first-call-expression
+/// rule resolves the handler to `Ok` and then reports `NoBaselineRefresh` —
+/// telling the reader the handler skips the seam when the truth is that the
+/// checker never found a handler at all. Those two warrant different fixes, so
+/// they get different names.
+const INLINE_ARM_SOURCE: &str = r#"
+fn tool_definitions() -> Vec<ToolDef> {
+    vec![
+        ToolDef {
+            name: "reify_inline",
+            description: "Answered inline, with no handler fn.",
+            input_schema: json!({ "type": "object" }),
+        },
+    ]
+}
+
+async fn dispatch_tool(
+    state: &DebugServerState,
+    name: &str,
+    params: Value,
+) -> Result<Value, String> {
+    match name {
+        "reify_inline" => Ok(Value::Null),
+        _ => state.debug_bridge.query_frontend(name, params).await,
+    }
+}
+"#;
+
 #[test]
 fn bypassing_fixture_is_flagged() {
     assert_eq!(
@@ -784,5 +865,47 @@ fn advertised_tools_must_all_appear_in_the_dispatch_scan() {
     assert_eq!(
         unenumerated_tools(ADVERTISED_BUT_UNDISPATCHED_SOURCE),
         vec!["reify_beta".to_string()],
+    );
+}
+
+/// Every ordinary arm shape must ENUMERATE. A shape the scan cannot read is
+/// caught by the registry cross-check either way, but a gate that reds on
+/// ordinary Rust invites the next author to weaken it.
+#[test]
+fn ordinary_arm_shapes_are_all_enumerated() {
+    assert_eq!(
+        dispatch_arms(&strip_comments(ARM_SHAPES_SOURCE)),
+        vec![
+            (
+                "reify_wrapped".to_string(),
+                "handle_reify_wrapped".to_string()
+            ),
+            (
+                "reify_blocked".to_string(),
+                "handle_reify_blocked".to_string()
+            ),
+            ("reify_first".to_string(), "handle_shared".to_string()),
+            ("reify_second".to_string(), "handle_shared".to_string()),
+        ],
+    );
+
+    // The anti-regression half: the two enumerations now AGREE on a fixture
+    // where before they did not, so the widening removed the red rather than
+    // moving it somewhere else.
+    assert_eq!(unenumerated_tools(ARM_SHAPES_SOURCE), Vec::<String>::new());
+}
+
+/// A tool whose `"reify_*"` pattern the scan HAS seen is never dropped: if its
+/// handler resolves to nothing the checker can find, that is what the report
+/// says, rather than a confident claim about a seam the handler never had.
+#[test]
+fn an_arm_with_no_resolvable_handler_is_reported() {
+    assert_eq!(
+        write_tool_bypasses(INLINE_ARM_SOURCE),
+        vec![Bypass {
+            tool: "reify_inline".to_string(),
+            handler: "Ok".to_string(),
+            kind: BypassKind::UnresolvedHandler,
+        }],
     );
 }
