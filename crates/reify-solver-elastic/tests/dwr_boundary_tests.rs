@@ -1020,6 +1020,122 @@ fn bt3_the_constant_strain_patch_yields_zero_contributions_against_a_real_dual()
     }
 }
 
+// ─── §5.3: the dual is ALWAYS homogeneously constrained ───────────────────
+
+/// `solve_dual_cg` zeroes `g` at every constrained DOF — the one line of
+/// §5.3 that neither BT2 nor BT3 puts any load on.
+///
+/// Both of those fixtures place the QoI ball far from the clamped face, so
+/// their `g` is already zero there (BT3 asserts exactly that, as the
+/// precondition licensing its reciprocity check on non-homogeneous Dirichlet
+/// data). Deleting the zeroing loop would leave both of them — and the rest
+/// of the suite — green.
+///
+/// Here the ball is centred ON the clamped face, so `dual_load` puts real
+/// weight on constrained DOFs. Row elimination leaves those rows as the
+/// identity, which is what makes the second assertion a clean discriminator:
+/// an unzeroed `g[dof]` comes straight back out as `z_h[dof] = g[dof]`, a
+/// non-zero adjoint "displacement" at a DOF that is not an unknown.
+///
+/// The closing half covers the `# Errors` clause BT4 cannot reach: BT4
+/// short-circuits on `evaluate`'s `?` before `solve_dual_cg` is ever called,
+/// so "no dual solve is attempted" is pinned here instead.
+#[test]
+fn solve_dual_cg_zeroes_the_dual_load_at_constrained_dofs_and_refuses_an_unresolvable_qoi() {
+    let material = IsotropicElastic {
+        youngs_modulus: 1.0,
+        poisson_ratio: 0.3,
+    };
+    let opts = CgSolverOptions::default();
+    let (lx, ly, lz) = (2.0_f64, 1.0, 1.0);
+    let (nodes, conns) = box_p1_mesh(lx, ly, lz, 4, 2, 2);
+    let mesh = P1TetMeshRef {
+        coords: &nodes,
+        tets: &conns,
+    };
+    let tol = 1e-9;
+    // ON the clamped face, unlike BT2's tip ball.
+    let qoi = LocalDisplacementQoi {
+        at: [0.0, ly / 2.0, lz / 2.0],
+        radius: 0.6 * ly,
+        direction: [0.0, -1.0, 0.0],
+    };
+    let end = end_face_nodes(&nodes, lx, tol);
+    let raw_f = rhs_from_point_loads(nodes.len(), &distributed_tip_load(&end, 1.0e-3));
+    let (k, _f, bcs, primal) = assemble_eliminate_and_solve(
+        &nodes,
+        &conns,
+        &material,
+        dirichlet_fix_face(&nodes, 0, 0.0, tol),
+        &raw_f,
+        opts.clone(),
+    );
+
+    // Premise: on THIS fixture the loop has something to do.
+    let g = qoi
+        .dual_load(mesh, &material, primal.u())
+        .expect("the QoI must resolve on this fixture");
+    let loaded: Vec<usize> = bcs
+        .iter()
+        .map(|bc| bc.dof)
+        .filter(|&dof| g[dof] != 0.0)
+        .collect();
+    assert!(
+        !loaded.is_empty(),
+        "fixture premise: the RAW dual load must be non-zero at some \
+         constrained DOF, or the zeroing loop has nothing to do here either \
+         and this test is as vacuous as the ones it exists to complement",
+    );
+
+    let dual = solve_dual_cg(
+        &k,
+        &qoi,
+        mesh,
+        &material,
+        primal.u(),
+        &bcs,
+        opts.clone(),
+        SolverMode::Deterministic,
+    )
+    .expect("the dual solve must resolve");
+    assert!(dual.converged, "the dual solve must converge on this fixture");
+    for bc in &bcs {
+        assert_eq!(
+            dual.u()[bc.dof],
+            0.0,
+            "z_h[{}] must be zero at a constrained DOF — the adjoint of a \
+             constrained problem is homogeneously constrained whatever the \
+             primal prescribed — but the raw g carried {} there",
+            bc.dof,
+            g[bc.dof],
+        );
+    }
+
+    // `# Errors`: an unresolvable QoI never reaches the solver.
+    let outside = [10.0 * lx, ly / 2.0, lz / 2.0];
+    let err = solve_dual_cg(
+        &k,
+        &LocalDisplacementQoi {
+            at: outside,
+            radius: 1e-3,
+            direction: [0.0, -1.0, 0.0],
+        },
+        mesh,
+        &material,
+        primal.u(),
+        &bcs,
+        opts,
+        SolverMode::Deterministic,
+    )
+    .expect_err("a QoI outside the body has no dual load to solve with");
+    assert_eq!(
+        err,
+        QoiError::PointOutsideBody { at: outside },
+        "the typed error must come back verbatim rather than as a zero g \
+         solved to a zero adjoint field",
+    );
+}
+
 // ─── BT4 at the SEAM level: an unresolvable QoI ends the loop (§5.5) ───────
 
 /// An [`AdaptiveProblem`] whose `refine` remeshes onto a SMALLER domain,
@@ -1102,7 +1218,21 @@ impl AdaptiveProblem for ShrinkingDomainProblem {
             // A QoI-RELATIVE error: the dimensionless quantity §5.5 has the
             // loop compare against `target_accuracy` on the goal-oriented
             // path, in place of the energy-norm ratio.
-            relative_error: dwr.qoi_error_bound / value.abs(),
+            //
+            // The zero-J guard is part of what this stub models for real
+            // implementations: `J(u_h) == 0` is ordinary for a QoI (a
+            // displacement projected on a direction at a symmetry point is
+            // exactly zero), and the raw ratio is then `inf` or `NaN` — a
+            // value that takes NEITHER the target nor the stall exit, so the
+            // loop would burn its whole budget on garbage. See
+            // `AdaptiveEstimate::relative_error`. With no scale to normalise
+            // by, the bound itself is the conservative finite stand-in: it
+            // never reads as converged.
+            relative_error: if value.abs() > 0.0 {
+                dwr.qoi_error_bound / value.abs()
+            } else {
+                dwr.qoi_error_bound
+            },
             per_element: dwr.marking_weights(),
             n_dofs: 3 * solve.nodes.len(),
             qoi: Some(QoiEstimate {
@@ -1163,14 +1293,18 @@ fn bt4_a_qoi_that_stops_resolving_mid_run_ends_the_loop_with_its_typed_error() {
     let seed = problem
         .solve_and_estimate()
         .expect("the QoI must resolve on the seed mesh");
+    let seed_qoi = seed
+        .qoi
+        .as_ref()
+        .expect("the stub fills `qoi` unconditionally");
     assert!(
-        seed.qoi.is_some(),
-        "the seed estimate must carry a QoI result — otherwise this exercises \
-         the Z-Z path and says nothing about §5.5",
-    );
-    assert!(
-        seed.per_element.iter().all(|&w| w >= 0.0),
-        "marking weights are magnitudes",
+        seed_qoi.value != 0.0 && seed.relative_error.is_finite(),
+        "the seed solve must produce a USABLE goal-oriented estimate: a zero \
+         J(u_h) makes the QoI-relative error non-finite, and the loop below \
+         would then take neither the target nor the stall exit and reach its \
+         second solve for the wrong reason; got J = {}, relative_error = {}",
+        seed_qoi.value,
+        seed.relative_error,
     );
     problem.solves = 0;
 
