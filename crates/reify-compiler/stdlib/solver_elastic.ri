@@ -558,8 +558,6 @@ structure def ElasticResult {
     //   `Vector3<Dimensionless>` and must NOT be retyped: `result.curl` is
     //   type-identical to `curl(result.displacement)`, and retyping it would
     //   put a radian into the operator algebra rather than at a crossing.
-    //   A future reader tempted to "fix" curl for symmetry should read #6164
-    //   first — the asymmetry is the decision, not an oversight.
     //
     //   VALIDITY: ω is an angle only in the small-deformation regime
     //   (‖∇u‖ ≪ 1), where sin θ ≈ θ makes the axial vector of the
@@ -573,9 +571,8 @@ structure def ElasticResult {
     //   time (×½), so it shares bit-identical Regular3D grid metadata with
     //   displacement/stress/divergence/gradient/curl and costs no extra BVH
     //   pass. Shell population: Value::Undef (PRD §7, honest-absence),
-    //   matching the divergence/gradient/curl convention above.
-    //   Note for future runtime-type-checking implementors: Value::Undef must
-    //   remain accepted for this Field-typed param on shell results.
+    //   matching the divergence/gradient/curl convention above — including
+    //   `curl`'s note that Value::Undef must stay accepted here.
     param rotation : Field<Point3<Length>, Vector3<Angle>>
     param frame : Field<Point3<Length>, Matrix<3, 3, Real>>
     param shell_channels : ShellStress

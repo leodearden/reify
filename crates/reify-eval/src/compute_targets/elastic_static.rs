@@ -2483,19 +2483,24 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
         Some(sf) => super::sampled_gradient_field(sf),
         None => Value::Undef,
     };
-    let curl_field = match build_sf(er.curl.clone(), "curl") {
-        Some(sf) => super::sampled_curl_field(sf),
-        None => Value::Undef,
-    };
     // ruling #6164: rotation is DERIVED from the SAME reconstructed curl slab,
     // never persisted — the compute-contract wire header is frozen (`curl_len`
     // at a fixed byte offset, byte-exact golden test), and rotation is a pure
     // ×½ of a slab already on the wire. Deriving here means every EXISTING
     // persisted cache entry gains a correct `.rotation` for free, with no
     // format version bump and no new `elastic_result_from_value` extract arm.
-    let rotation_field = match build_sf(er.curl.clone(), "curl") {
-        Some(sf) => super::sampled_rotation_field(super::rotation_sf_from_curl(&sf)),
-        None => Value::Undef,
+    //
+    // ONE `build_sf` feeds BOTH channels, mirroring the live tet path's single
+    // `curl_sf`. Splitting them into two independent `match` arms would both
+    // rebuild the slab twice on the cache-HIT path (the cheap one) and let a
+    // future edit to curl's reconstruction land on one arm only, silently
+    // desynchronising the two channels.
+    let (curl_field, rotation_field) = match build_sf(er.curl.clone(), "curl") {
+        Some(sf) => {
+            let rotation = super::sampled_rotation_field(super::rotation_sf_from_curl(&sf));
+            (super::sampled_curl_field(sf), rotation)
+        }
+        None => (Value::Undef, Value::Undef),
     };
 
     // shell_channels: None → Value::Undef; Some(ch) → ShellStress StructureInstance.
@@ -12828,37 +12833,11 @@ mod tests {
         }
     }
 
-    /// Shared helper: assert `rot` is `curl` halved bit-exactly (0 ULP) on the
-    /// bit-identical grid. Only `data` and `name` may differ.
-    ///
-    /// 0 ULP is a numeric-premise claim, not laziness: IEEE-754 division by 2.0
-    /// only decrements the exponent, so it is exact for every normal operand
-    /// (subnormal underflow is unreachable at physical strain magnitudes).
-    fn rot6164_assert_is_half_of(rot: &SampledField, curl: &SampledField, path: &str) {
-        assert_eq!(
-            rot.data.len(),
-            curl.data.len(),
-            "{path}: rotation must have the same node/stride count as curl"
-        );
-        let expected: Vec<f64> = curl.data.iter().map(|c| c / 2.0).collect();
-        assert_eq!(
-            rot.data, expected,
-            "{path}: rotation data must be curl data halved element-wise, bit-exactly (0 ULP)"
-        );
-        // Grid metadata carried through verbatim — this is also what proves the
-        // channel was DERIVED from curl rather than independently resampled
-        // (an independent resample would need a 6th `resample_multi_nodal_to_grid`
-        // entry and a `nodal_rotation_flat` slab, neither of which exists).
-        assert_eq!(rot.kind, curl.kind, "{path}: grid kind");
-        assert_eq!(rot.bounds_min, curl.bounds_min, "{path}: bounds_min");
-        assert_eq!(rot.bounds_max, curl.bounds_max, "{path}: bounds_max");
-        assert_eq!(rot.spacing, curl.spacing, "{path}: spacing");
-        assert_eq!(rot.axis_grids, curl.axis_grids, "{path}: axis_grids");
-        assert_eq!(
-            rot.interpolation, curl.interpolation,
-            "{path}: interpolation"
-        );
-    }
+    // The `rotation == curl/2 on the bit-identical grid` assertion is
+    // enumerated ONCE, beside `rotation_sf_from_curl` itself, so the tet path
+    // and the cache-reconstruction path below cannot drift apart from each
+    // other or from the wrapper unit test.
+    use super::super::assert_rotation_is_half_of;
 
     /// (a) TET path — the live `solve_elastic_static_trampoline` tet/solid route
     /// must emit a `"rotation"` key whose SampledField is the `"curl"` field
@@ -12904,7 +12883,7 @@ mod tests {
             !curl_sf.data.is_empty(),
             "fixture sanity: the tet curl channel must be populated"
         );
-        rot6164_assert_is_half_of(&rot_sf, &curl_sf, "tet");
+        assert_rotation_is_half_of(&rot_sf, &curl_sf, "tet");
 
         // The declared codomain is the whole point: Vector3<Angle>, not
         // vec3(dimensionless_scalar()) like curl.
@@ -13037,7 +13016,7 @@ mod tests {
             curl_sf.data, curl,
             "fixture sanity: the curl slab must round-trip unchanged"
         );
-        rot6164_assert_is_half_of(&rot_sf, &curl_sf, "cache");
+        assert_rotation_is_half_of(&rot_sf, &curl_sf, "cache");
 
         // Cross-path identity: the cache route must produce exactly what the
         // live tet route's wrap step produces from the same curl SampledField.

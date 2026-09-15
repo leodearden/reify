@@ -453,9 +453,10 @@ fn differential_field_ops_integration_gate() {
     // BIT-EXACT ×½ identity, asserted at 0 ULP.
     //
     // G6 numeric-premise discipline (the example file states this convention
-    // itself at :121-129): this is not a guessed tolerance, it is an exactness
-    // claim.  IEEE-754 division by 2.0 only decrements the exponent, so it is
-    // exact for every normal operand; subnormal underflow is unreachable at
+    // itself, above its `g_mag` bound): this is not a guessed tolerance, it is
+    // an exactness claim.  IEEE-754 division by 2.0 only decrements the
+    // exponent, so it is exact for every normal operand; subnormal
+    // underflow is unreachable at
     // physical strain magnitudes (|∇×u| here is ~1e-3, and halving reaches the
     // subnormal range only below ~1e-308).  Do NOT soften this to a tolerance.
     for (i, (&r, &c)) in rot_data.iter().zip(curl_data.iter()).enumerate() {
@@ -520,7 +521,7 @@ fn differential_field_ops_integration_gate() {
     // no existing stdlib or example code exercises.
     //
     // This assertion is load-bearing rather than decorative: an out-of-bounds
-    // sample returns `Value::Undef` (reify-expr/src/sampled.rs:89-104), and a
+    // sample returns `Value::Undef` (`sample_at_point`'s bounds-reject path), and a
     // hollow Undef would sail past the no-Error-diagnostics check at (a) above,
     // leaving the .ri pin asserting nothing.  Pinning the ANGLE dimension here
     // also confirms the rad tag survives the round trip out through the call
@@ -567,33 +568,11 @@ fn differential_field_ops_integration_gate() {
         other => panic!("rot_probe must be a Scalar[ANGLE], got: {:?}", other),
     }
 
-    // ── (d5) The `orient_exp` composition — a forward reference ──────────────
-    //
-    // Three measured facts, recorded so the absence of an `orient_exp`
-    // assertion beside (d3)/(d4) reads as deliberate rather than as a hole in
-    // the crossing:
-    //
-    //   1. `rotation`'s `Vector3<Angle>` codomain is exactly the shape a
-    //      rotation-vector consumer wants.  Ruling #6080's second ruling (B)
-    //      narrows `orient_exp` to accept ANGLE canonically and ONLY ANGLE,
-    //      rejecting DIMENSIONLESS with a spanned diagnostic — so once that
-    //      lands, `orient_exp(sample(result.rotation, p))` becomes the
-    //      canonical spelling for turning the infinitesimal rotation vector
-    //      into an orientation.
-    //
-    //   2. It is not asserted here because on main that gate still rejects
-    //      ANGLE. `crates/reify-stdlib/src/orientation.rs:535` reads
-    //      `if dim != DimensionVector::DIMENSIONLESS { return Some(Value::Undef); }`
-    //      inside the `"orient_exp"` arm, so the composition evaluates to
-    //      `Value::Undef` today (read first-hand 2026-08-30, #6080 unlanded).
-    //      An assertion on it could not be made to pass from this channel's
-    //      file scope, and one written to tolerate `Undef` would pin nothing.
-    //
-    //   3. #6080 owns that gate — its own work item 2 names this exact line —
-    //      and this channel needs no edit when it lands.  The crossing is
-    //      already ANGLE-typed on both sides of the call boundary, which is
-    //      the whole point of ruling #6164: the radian enters once, here, and
-    //      every downstream ANGLE consumer inherits it unchanged.
+    // No `orient_exp(rotation)` assertion sits beside (d3)/(d4) on purpose:
+    // `orient_exp`'s dimension gate in `reify-stdlib`'s `orientation` module
+    // still returns `Value::Undef` for an ANGLE argument until ruling #6080
+    // lands, so such an assertion could only pin `Undef`. #6080 owns that gate
+    // and this channel needs no edit when it lands.
 
     // ── (e) Phase 2 — exact polynomial fixture assertions ────────────────────
     //

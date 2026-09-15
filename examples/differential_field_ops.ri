@@ -68,11 +68,9 @@ field def linear : Length -> Real {
 // ── Ruling #6164: the rotation crossing at a call boundary ────────────────────
 //
 // This fn exists to prove `Vector3<Angle>` is ACCEPTED as a user-function
-// parameter type — the one position in the capability chain that no existing
-// stdlib or example code exercises (structure params already carry
-// `Vector3<Force>`, e.g. tensegrity.ri:468, but no `fn` anywhere takes a
-// `Vector3<Q>`).  It is deliberately trivial: it reduces the vector to a
-// scalar and lets the constraints below do the comparing.
+// parameter type — the one position in the capability chain that the e2e gate
+// could not otherwise reach.  It is deliberately trivial: it reduces the
+// vector to a scalar and lets the constraints below do the comparing.
 //
 // `magnitude` of a Vector3<Angle> is an Angle, so the crossing's radian tag
 // survives the round trip through the call boundary and back out.  That

@@ -1348,18 +1348,13 @@ fn elastic_result_struct_has_correct_param_shape() {
                 codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
             },
         ),
-        // ruling #6164: `param rotation : Field<Point3<Length>, Vector3<Angle>>` added here,
-        // immediately after `curl` so this table mirrors the .ri declaration order.
-        //
-        // NOTE THE ASYMMETRY — and it is deliberate, not an oversight.  The three
-        // sibling derivative channels above (divergence, gradient, curl) all put
-        // `Type::dimensionless_scalar()` in the codomain quantity slot; `rotation`
-        // is the FIRST and only one putting `Type::angle()` there.  That contrast
-        // IS the ruling: the derivative algebra stays quotient-pure (∇×u is
-        // Length/Length, hence dimensionless), and the radian enters only at a
-        // named primitive that asserts an arc measure — here, the infinitesimal
-        // rotation vector ω = ∇×u / 2.  A future reader who "fixes" the `curl`
-        // entry above to `Type::angle()` for symmetry would be reverting #6164.
+        // ruling #6164: `param rotation : Field<Point3<Length>, Vector3<Angle>>`,
+        // placed immediately after `curl` so this table mirrors .ri declaration
+        // order.  It is the only entry here with `Type::angle()` in the codomain
+        // quantity slot — the three sibling derivative channels above stay
+        // `Type::dimensionless_scalar()`.  That asymmetry IS the ruling (rationale
+        // on `param rotation` in solver_elastic.ri); "fixing" the `curl` entry
+        // above to `Type::angle()` for symmetry would be reverting #6164.
         (
             "rotation",
             Type::Field {

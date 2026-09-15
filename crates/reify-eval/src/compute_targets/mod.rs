@@ -194,10 +194,10 @@ pub(crate) fn sampled_curl_field(sf: SampledField) -> Value {
 ///
 /// The ANGLE tag on the DECLARED codomain is what makes the runtime emit
 /// angle-dimensioned components, with no runtime change anywhere:
-/// `sample_at_point` (`reify-expr/src/sampled.rs:137-143`) takes the stride>1
-/// branch and extracts `component_type` from `Type::Vector { quantity }`, then
-/// `wrap_result` (`:294-303`) emits `Value::Scalar { dimension }` for any
-/// non-dimensionless codomain. Nothing else has to know about rotation.
+/// `reify-expr`'s `sample_at_point` takes its stride>1 branch and extracts
+/// `component_type` from `Type::Vector { quantity }`, then its `wrap_result`
+/// helper emits `Value::Scalar { dimension }` for any non-dimensionless
+/// codomain. Nothing else has to know about rotation.
 pub(crate) fn sampled_rotation_field(sf: SampledField) -> Value {
     Value::Field {
         domain_type: reify_core::Type::point3(reify_core::Type::length()),
@@ -223,9 +223,9 @@ pub(crate) fn sampled_rotation_field(sf: SampledField) -> Value {
 /// ## Why rotation is DERIVED at wrap time and never stored
 ///
 /// `crates/reify-compute-contract/src/elastic_result.rs` carries a FROZEN binary
-/// wire header with `curl_len: u64` at a fixed byte offset, guarded by a
-/// byte-exact golden test (`:2068-2148`, which pins `curl_len` as literal hex).
-/// Adding a `rotation_len` slab would break that header, invalidate every
+/// wire header with `curl_len: u64` at a fixed byte offset, guarded by that
+/// module's byte-exact golden header test (which pins `curl_len` as literal
+/// hex). Adding a `rotation_len` slab would break that header, invalidate every
 /// persisted cache entry, and force a format version bump — all to carry data
 /// that is a pure ×½ of a slab already on the wire. Deriving instead means
 /// existing cache entries gain a correct `.rotation` for free.
@@ -236,6 +236,45 @@ pub(crate) fn rotation_sf_from_curl(curl_sf: &SampledField) -> SampledField {
         *c /= 2.0;
     }
     sf
+}
+
+/// Assert `rot` is exactly what [`rotation_sf_from_curl`] must produce from
+/// `curl`: the same slab halved at 0 ULP, renamed, on the bit-identical grid.
+///
+/// Lives beside the function it pins, and is the SINGLE enumeration of the
+/// grid-metadata field list — the tet path, the cache-reconstruction path and
+/// the wrapper unit test all call through here, so a new [`SampledField`] field
+/// gets checked in every path the moment it is added below.
+///
+/// 0 ULP is a numeric-premise claim, not laziness: IEEE-754 division by 2.0
+/// only decrements the exponent, so it is exact for every normal operand
+/// (subnormal underflow is unreachable at physical strain magnitudes).
+#[cfg(test)]
+pub(crate) fn assert_rotation_is_half_of(rot: &SampledField, curl: &SampledField, path: &str) {
+    assert_eq!(
+        rot.data.len(),
+        curl.data.len(),
+        "{path}: rotation must have the same node/stride count as curl"
+    );
+    let expected: Vec<f64> = curl.data.iter().map(|c| c / 2.0).collect();
+    assert_eq!(
+        rot.data, expected,
+        "{path}: rotation data must be curl data halved element-wise, bit-exactly (0 ULP)"
+    );
+    assert_eq!(rot.name, "rotation", "{path}: derived field is renamed");
+    // Grid metadata carried through verbatim — this is also what proves the
+    // channel was DERIVED from curl rather than independently resampled (an
+    // independent resample would need a 6th `resample_multi_nodal_to_grid`
+    // entry and a `nodal_rotation_flat` slab, neither of which exists).
+    assert_eq!(rot.kind, curl.kind, "{path}: grid kind");
+    assert_eq!(rot.bounds_min, curl.bounds_min, "{path}: bounds_min");
+    assert_eq!(rot.bounds_max, curl.bounds_max, "{path}: bounds_max");
+    assert_eq!(rot.spacing, curl.spacing, "{path}: spacing");
+    assert_eq!(rot.axis_grids, curl.axis_grids, "{path}: axis_grids");
+    assert_eq!(
+        rot.interpolation, curl.interpolation,
+        "{path}: interpolation"
+    );
 }
 
 /// Wrap a [`SampledField`] as an error-indicator `Value::Field`.
@@ -769,7 +808,7 @@ mod tests {
     /// DESIGNATED CROSSING where the radian enters the elastic-result algebra.
     /// This test pins the whole mechanism by which the `rad` tag reaches the
     /// runtime: `sampled_rotation_field` DECLARES a `Vector3<Angle>` codomain,
-    /// and `sample_at_point` (`reify-expr/src/sampled.rs:137-143` + `:294-303`)
+    /// and `reify-expr`'s `sample_at_point` / `wrap_result`
     /// reads that declared codomain to decide what `Value::Scalar { dimension }`
     /// to emit per component. Declaring the codomain is therefore sufficient —
     /// no runtime change is needed anywhere.
@@ -852,30 +891,13 @@ mod tests {
             panic!("expected lambda to be a Value::SampledField, got {lambda:?}")
         };
 
-        // Bit-exact halving, 0 ULP. Do NOT soften this to a tolerance.
-        let expected: Vec<f64> = curl_sf.data.iter().map(|c| c / 2.0).collect();
-        assert_eq!(
-            out.data, expected,
-            "rotation data must be the curl data halved element-wise, bit-exactly"
-        );
+        // Bit-exact halving at 0 ULP, rename, and verbatim grid metadata.
+        // Do NOT soften this to a tolerance.
+        super::assert_rotation_is_half_of(out, &curl_sf, "wrapper");
         assert_eq!(
             out.data,
             vec![1.5, 2.5, 3.5, -1.5, -2.5, -3.5],
             "sanity: literal expected halves of the non-power-of-two fixture"
         );
-        assert_eq!(
-            out.data.len(),
-            curl_sf.data.len(),
-            "rotation must have the same node/stride count as curl"
-        );
-
-        // Grid metadata preserved verbatim — only `data` and `name` may differ.
-        assert_eq!(out.name, "rotation", "derived field is renamed to rotation");
-        assert_eq!(out.kind, curl_sf.kind);
-        assert_eq!(out.bounds_min, curl_sf.bounds_min);
-        assert_eq!(out.bounds_max, curl_sf.bounds_max);
-        assert_eq!(out.spacing, curl_sf.spacing);
-        assert_eq!(out.axis_grids, curl_sf.axis_grids);
-        assert_eq!(out.interpolation, curl_sf.interpolation);
     }
 }
