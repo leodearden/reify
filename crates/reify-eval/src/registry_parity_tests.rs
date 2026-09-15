@@ -28,7 +28,7 @@
 //! Membership is DERIVED, never declared: no builtin name, id, or count is
 //! restated here. A τ migration that adds rows is swept with no edit to this
 //! module (see [`eval_builtin_rows`]), and the argument side is forced by an
-//! exhaustive `match` with no `_` arm (see [`representative_args`]), so a row
+//! exhaustive `match` with no `_` arm (see [`representative_probes`]), so a row
 //! that lands without representative args stops this crate's test build rather
 //! than being swept with degenerate args.
 //!
@@ -96,6 +96,35 @@
 //! stub already "passes". The ledger's real semantics are *rows whose parity
 //! assertion cannot be made non-vacuously*, with `Undef` as the mechanism.
 //!
+//! # What this harness cannot see
+//!
+//! Stated so the claims above are read at their real width, and so the next τ
+//! author does not assume a gap here is covered.
+//!
+//! **The `Type::Field` branch of the `ArgAware` resolvers is not parity-checked
+//! here, and structurally cannot be.** `reduce_tensor_arg`
+//! (`crates/reify-builtins/src/resolvers.rs`) has two branches — a `Type::Field`
+//! arm added by #6577 and a concrete fall-through — so `von_mises`, `max_shear`,
+//! `principal_stresses` and `safety_factor` each declare a `Field<D, ..>` result
+//! for a Field argument. Every probe in this module is concrete, and a Field
+//! probe cannot be added: `reify_stdlib::eval_builtin` has no Field handling at
+//! all. The lazy wrap that produces a `Value::Field` is `wrap_tensor_field` in
+//! `crates/reify-expr/src/analysis.rs`, reached through reify-expr's evaluator
+//! ladder and not through the `eval_builtin` path this harness executes — so a
+//! Field probe here would evaluate to `Value::Undef` and read `Vacuous`,
+//! certifying nothing.
+//!
+//! The residue PRD §3 decision 12 names therefore remains OPEN for the Field
+//! half of those four rows, and closing it is reify-expr's to do, not ψ's.
+//! [`representative_probes`] returns a LIST precisely so that a leaf which
+//! routes Field evaluation through this path can register a Field shape
+//! alongside the concrete one rather than replacing it.
+//!
+//! The resolvers' own `Type`-level Field contract IS covered — by
+//! `reify_builtins::resolvers`' unit tests, ported from #6577 — but that is a
+//! type-algebra test on one side of the pair, which is exactly the kind of
+//! one-sided check this module exists to join.
+//!
 //! # Vocabulary
 //!
 //! Every concept this module reasons about is a Rust type, never a meaningful
@@ -154,7 +183,7 @@
 //! Revert: restore the `Value::Option(..)` arm.
 //!
 //! **Leg 3 — the vacuity arm is live, and the probe guard is its second
-//! signal.** In THIS file, split [`representative_args`]' shared
+//! signal.** In THIS file, split [`representative_probes`]' shared
 //! `ParseLength | ParseLengthR` arm and give `ParseLength` zero arguments
 //! (`EvalBuiltinId::ParseLength => (vec![], vec![])`). `single_string_arg`
 //! declines, the row evaluates to `Value::Undef`, and TWO tests go RED — 10
@@ -207,6 +236,26 @@ enum ParityVerdict {
     /// The row evaluated to a real value whose kind its declared type rejects.
     /// Either the row's `result` column or its eval body is wrong.
     Diverges,
+}
+
+impl ParityVerdict {
+    /// Severity rank: `Matches` < `Vacuous` < `Diverges`.
+    ///
+    /// A row swept at several probes is only as certified as its WEAKEST probe
+    /// — one shape that matches says nothing about a shape that was never
+    /// really compared — so [`worst_probe`] reports a row's most severe probe,
+    /// and a row with one `Vacuous` shape needs a ledger entry even when its
+    /// other shapes match.
+    ///
+    /// Spelled as an explicit rank rather than a derived `Ord`, which would
+    /// silently rebind this ordering to the variants' declaration order.
+    fn severity(self) -> u8 {
+        match self {
+            ParityVerdict::Matches => 0,
+            ParityVerdict::Vacuous => 1,
+            ParityVerdict::Diverges => 2,
+        }
+    }
 }
 
 /// Classify one (executed value, declared type) pair.
@@ -282,7 +331,7 @@ fn classify(value: &Value, declared: &Type) -> ParityVerdict {
 /// coverage. There is deliberately no local name list and no local id list to
 /// fall out of step.
 ///
-/// The `EvalBuiltinId` half of the pair is what [`representative_args`] keys
+/// The `EvalBuiltinId` half of the pair is what [`representative_probes`] keys
 /// on, so the same derivation feeds both the membership and the argument side.
 ///
 /// Shape reuse, not a shared import: `crates/reify-stdlib/tests/
@@ -419,7 +468,37 @@ fn pressure_tensor_type() -> Type {
     }
 }
 
-/// Representative `(values, static types)` for one row's call.
+/// One probe of one row: the `(value, static type)` pair for each ARGUMENT of a
+/// single call.
+///
+/// Paired rather than two parallel lists so "same length" and "describes the
+/// same argument" are unrepresentable-when-wrong instead of asserted at runtime
+/// (house heuristic 10 — enforce an invariant in the type wherever the type can
+/// carry it). The two halves are unzipped at the two call sites, because
+/// `ResultSpec::ArgAware` resolves from `&[Type]` while `eval_builtin` takes
+/// `&[Value]`; the pairing is what guarantees those two views describe the same
+/// arguments.
+type Probe = Vec<(Value, Type)>;
+
+/// The one-argument concrete-tensor probe the analysis reductions share.
+fn concrete_tensor_probe() -> Probe {
+    vec![(uniaxial_stress(), pressure_tensor_type())]
+}
+
+/// Every probe one row is swept at.
+///
+/// # Why a LIST of probes, not one
+///
+/// A row can have more than one argument SHAPE whose result type its resolver
+/// answers differently, and one probe per row can only ever check one of them.
+/// Four of α's seven rows are `ResultSpec::ArgAware` over `reduce_tensor_arg`
+/// (`crates/reify-builtins/src/resolvers.rs`), which has two branches — a
+/// `Type::Field` arm added by #6577 and the concrete fall-through — and only
+/// the concrete branch is probed here. Returning a list means a τ row registers
+/// its Field shape ALONGSIDE its concrete one rather than replacing it, instead
+/// of the one-shape-per-row ceiling being frozen in by the signature. See the
+/// module header's "What this harness cannot see" for why that Field probe
+/// cannot be written today.
 ///
 /// # Why an exhaustive `match` with no `_` arm
 ///
@@ -456,66 +535,52 @@ fn pressure_tensor_type() -> Type {
 /// vocabulary (dimension checks, `SameDimensionAs(slot)`) arrives in τ-numeric;
 /// when it does, part of this function can become a derivation.
 ///
-/// # Why a paired `(Vec<Value>, Vec<Type>)`
-///
-/// `ResultSpec::ArgAware` resolves the declared type from the STATIC arg types
-/// (`fn(&[Type]) -> Option<Type>`), so the sweep needs both halves of each
-/// argument, and they must describe the same argument. The pairing is
-/// self-validated by [`representative_args_are_well_formed_for_every_row`], so
-/// a mis-built probe fails at the probe rather than being misattributed to the
-/// row under test.
-fn representative_args(id: EvalBuiltinId) -> (Vec<Value>, Vec<Type>) {
+/// Every probe returned here is self-validated by
+/// [`representative_probes_are_well_formed_for_every_row`], so a mis-built
+/// probe fails AT THE PROBE rather than being misattributed to the row under
+/// test.
+fn representative_probes(id: EvalBuiltinId) -> Vec<Probe> {
     // NO `_` ARM. See the doc-comment: its absence is the I-REG-2-shaped
     // forcing function that makes a τ row without representative args a BUILD
     // failure rather than a silent vacuous pass.
     match id {
         // `parse::parse_length` matches on `Value::String` and returns
         // `Value::Undef` for any other argument kind.
-        EvalBuiltinId::ParseLength | EvalBuiltinId::ParseLengthR => (
-            vec![Value::String("12mm".to_string())],
-            vec![Type::String],
-        ),
+        EvalBuiltinId::ParseLength | EvalBuiltinId::ParseLengthR => {
+            vec![vec![(Value::String("12mm".to_string()), Type::String)]]
+        }
 
         // `analysis::{von_mises, max_shear}` read a 3×3 window through
         // `matrix_components_f64` and reduce it to a scalar carrying the
         // element dimension.
-        EvalBuiltinId::VonMises | EvalBuiltinId::MaxShear => {
-            (vec![uniaxial_stress()], vec![pressure_tensor_type()])
-        }
+        EvalBuiltinId::VonMises | EvalBuiltinId::MaxShear => vec![concrete_tensor_probe()],
 
         // `analysis::principal_stresses` needs the same 3×3 window; it returns
         // the three eigenvalues as a `Value::List`.
-        EvalBuiltinId::PrincipalStresses => {
-            (vec![uniaxial_stress()], vec![pressure_tensor_type()])
-        }
+        EvalBuiltinId::PrincipalStresses => vec![concrete_tensor_probe()],
 
         // `analysis::safety_factor` is `binary(tensor, yield)`: arg0 is the
         // same 3×3 window, arg1 must answer `as_f64` or the kernel returns
         // `Value::Undef`. The ratio cancels, so the result is a bare
         // `Value::Real` whatever dimension arg1 carries.
-        EvalBuiltinId::SafetyFactor => (
-            vec![
-                uniaxial_stress(),
+        EvalBuiltinId::SafetyFactor => vec![vec![
+            (uniaxial_stress(), pressure_tensor_type()),
+            (
                 Value::Scalar {
                     si_value: YIELD_PA,
                     dimension: DimensionVector::PRESSURE,
                 },
-            ],
-            vec![
-                pressure_tensor_type(),
                 Type::Scalar {
                     dimension: DimensionVector::PRESSURE,
                 },
-            ],
-        ),
+            ),
+        ]],
 
         // `analysis::stress_invariants` returns `Value::Undef` for ANYTHING
         // but a 3×3 tensor (`crates/reify-stdlib/src/analysis.rs:487`) — the
         // strictest shape requirement among the seeds, and the one that makes
         // a degenerate probe here read as a vacuous pass.
-        EvalBuiltinId::StressInvariants => {
-            (vec![uniaxial_stress()], vec![pressure_tensor_type()])
-        }
+        EvalBuiltinId::StressInvariants => vec![concrete_tensor_probe()],
     }
 }
 
@@ -633,8 +698,8 @@ fn classify_against_the_error_type_is_vacuous_even_for_a_real_value() {
 
 // ── the probe itself must be well-formed before it can blame a row ──────────
 
-/// Every row's representative arguments must be a well-formed probe for THAT
-/// row, checked five ways.
+/// Every probe must be well-formed for the row it probes, checked four ways —
+/// and every row must have at least one.
 ///
 /// This test exists so that a defective probe fails AT THE PROBE instead of
 /// being misattributed to the row under test. Without it, the most likely
@@ -643,66 +708,130 @@ fn classify_against_the_error_type_is_vacuous_even_for_a_real_value() {
 /// reports the row `Vacuous` for a reason that has nothing to do with the row's
 /// signature. The harness would then be accusing the registry of a fault in
 /// this file.
+///
+/// The "same number of values as types" check this test used to open with is
+/// gone, deliberately: [`Probe`] is a list of PAIRS, so that invariant is now
+/// carried by the type and cannot be violated.
 #[test]
-fn representative_args_are_well_formed_for_every_row() {
+fn representative_probes_are_well_formed_for_every_row() {
     for (id, row) in eval_builtin_rows() {
-        let (values, types) = representative_args(id);
+        let probes = representative_probes(id);
 
-        // (a) the two halves are one list of pairs, spelled as two lists.
-        assert_eq!(
-            values.len(),
-            types.len(),
-            "{:?}: representative_args returned {} value(s) but {} type(s)",
-            id,
-            values.len(),
-            types.len()
-        );
-
-        // (b) the kernel must actually run. `helpers::{unary,binary}` return
-        // Value::Undef on the wrong argc (reify-stdlib/src/helpers.rs:7-20),
-        // so a mis-counted probe reads as Vacuous with no bearing on the row.
+        // A row with no probe is never executed at all, and its parity
+        // assertion would pass without ever running.
         assert!(
-            row.arity.matches(values.len()),
-            "{:?}: {} representative arg(s) do not match the row's declared \
-             arity {:?} — the kernel would short-circuit to Value::Undef and \
-             the sweep would blame the row for this file's mistake",
-            id,
-            values.len(),
-            row.arity
+            !probes.is_empty(),
+            "{id:?}: representative_probes registered no probe, so this row \
+             would be swept at no argument shape whatsoever"
         );
 
-        // (c) one probe argument per declared slot.
-        assert_eq!(
-            values.len(),
-            row.arg_slots.len(),
-            "{:?}: {} representative arg(s) against {} declared arg_slots",
-            id,
-            values.len(),
-            row.arg_slots.len()
-        );
+        let probe_count = probes.len();
+        for (i, probe) in probes.iter().enumerate() {
+            let at = format!("{id:?} probe {} of {probe_count}", i + 1);
 
-        // (d) each pair is internally consistent under the SAME oracle the
-        // verdict uses, so a value typed as something it is not cannot make a
-        // row look like it diverges.
-        for (i, (value, ty)) in values.iter().zip(types.iter()).enumerate() {
+            // (a) the kernel must actually run. `helpers::{unary,binary}`
+            // return Value::Undef on the wrong argc, so a mis-counted probe
+            // reads as Vacuous with no bearing on the row.
             assert!(
-                crate::value_type_kind_matches(value, ty, None),
-                "{id:?}: representative arg {i} is mis-paired — its Value \
-                 does not satisfy the Type this probe claims for it \
-                 ({value:?} vs {ty:?})"
+                row.arity.matches(probe.len()),
+                "{at}: {} argument(s) do not match the row's declared arity \
+                 {:?} — the kernel would short-circuit to Value::Undef and \
+                 the sweep would blame the row for this file's mistake",
+                probe.len(),
+                row.arity
+            );
+
+            // (b) one probe argument per declared slot.
+            assert_eq!(
+                probe.len(),
+                row.arg_slots.len(),
+                "{at}: {} argument(s) against {} declared arg_slots",
+                probe.len(),
+                row.arg_slots.len()
+            );
+
+            // (c) each pair is internally consistent under the SAME oracle the
+            // verdict uses, so a value typed as something it is not cannot
+            // make a row look like it diverges.
+            for (slot, (value, ty)) in probe.iter().enumerate() {
+                assert!(
+                    crate::value_type_kind_matches(value, ty, None),
+                    "{at}: argument {slot} is mis-paired — its Value does not \
+                     satisfy the Type this probe claims for it ({value:?} vs \
+                     {ty:?})"
+                );
+            }
+
+            // (d) the row's own resolver must accept the probe's static types.
+            // An ArgAware resolver answering None means the probe is
+            // mis-shaped for the row, which would otherwise surface as an
+            // unexplained skip.
+            let types: Vec<Type> = probe.iter().map(|(_, ty)| ty.clone()).collect();
+            assert!(
+                row.result.resolve(&types).is_some(),
+                "{at}: the row's ResultSpec declined these arg types \
+                 {types:?}, so this probe cannot produce a declared type to \
+                 compare against"
             );
         }
-
-        // (e) the row's own resolver must accept the probe's static types. An
-        // ArgAware resolver answering None means the probe is mis-shaped for
-        // the row, which would otherwise surface as an unexplained skip.
-        assert!(
-            row.result.resolve(&types).is_some(),
-            "{id:?}: the row's ResultSpec declined the probe's arg types \
-             {types:?}, so this probe cannot produce a declared type to \
-             compare against"
-        );
     }
+}
+
+/// A row's reported probe is its MOST SEVERE one, ties broken to the first.
+///
+/// Driven over synthetic [`ProbeOutcome`]s rather than real rows, in the same
+/// dialect as the synthetic-table adjudication tests below and for the same
+/// reason: every α row registers exactly ONE probe, so the aggregation rule
+/// would otherwise be unobservable — a rule that silently reported the row's
+/// BEST probe would pass the whole suite today and hollow the harness out the
+/// moment a τ row registered a second shape.
+#[test]
+fn worst_probe_reports_the_most_severe_and_breaks_ties_to_the_first() {
+    let outcome = |index, verdict| ProbeOutcome {
+        index,
+        observed: Value::Undef,
+        declared: Type::String,
+        verdict,
+    };
+
+    // A shape that matches does NOT cover a shape that was never really
+    // compared — this is the whole reason the rule is "worst", not "any".
+    let worst = worst_probe(vec![
+        outcome(1, ParityVerdict::Matches),
+        outcome(2, ParityVerdict::Vacuous),
+    ])
+    .expect("non-empty");
+    assert_eq!(worst.verdict, ParityVerdict::Vacuous);
+    assert_eq!(
+        worst.index, 2,
+        "the failure line must point at the probe that actually failed"
+    );
+
+    // Diverges outranks Vacuous.
+    assert_eq!(
+        worst_probe(vec![
+            outcome(1, ParityVerdict::Vacuous),
+            outcome(2, ParityVerdict::Diverges),
+        ])
+        .expect("non-empty")
+        .verdict,
+        ParityVerdict::Diverges
+    );
+
+    // Ties report the first, so the reported line is stable across runs.
+    assert_eq!(
+        worst_probe(vec![
+            outcome(1, ParityVerdict::Diverges),
+            outcome(2, ParityVerdict::Diverges),
+        ])
+        .expect("non-empty")
+        .index,
+        1
+    );
+
+    // No probe at all is not a pass. `observe_row` panics on this rather than
+    // manufacturing a verdict for a row it never executed.
+    assert!(worst_probe(vec![]).is_none());
 }
 
 // ── the exemption ledger ────────────────────────────────────────────────────
@@ -856,14 +985,95 @@ fn adjudicate(
         .collect()
 }
 
-/// What the sweep observed for one row — the evidence a [`Failure`] is rendered
-/// against.
-struct RowObservation {
-    id: EvalBuiltinId,
-    name: &'static str,
+/// What the sweep observed at ONE probe of one row.
+struct ProbeOutcome {
+    /// 1-based position in the row's probe list, so a failure line points at
+    /// the shape that actually failed.
+    index: usize,
     observed: Value,
     declared: Type,
     verdict: ParityVerdict,
+}
+
+/// The probe a row is reported at: its most severe, ties broken to the first.
+///
+/// A row is only as certified as its WEAKEST probe (see
+/// [`ParityVerdict::severity`]), so a row with one `Vacuous` shape is reported
+/// `Vacuous` and needs a ledger entry even when its other shapes match. Ties
+/// resolve to the first so the reported line is stable across runs.
+///
+/// `None` only for an empty probe list, which [`observe_row`] rejects outright:
+/// a row swept at no shape has not been checked, and must not read as a pass.
+fn worst_probe(outcomes: Vec<ProbeOutcome>) -> Option<ProbeOutcome> {
+    outcomes.into_iter().reduce(|worst, next| {
+        if next.verdict.severity() > worst.verdict.severity() {
+            next
+        } else {
+            worst
+        }
+    })
+}
+
+/// What the sweep observed for one row — the evidence a [`Failure`] is rendered
+/// against, taken from the row's [`worst_probe`].
+struct RowObservation {
+    id: EvalBuiltinId,
+    name: &'static str,
+    /// 1-based index of the reported probe, and how many the row was swept at.
+    probe_index: usize,
+    probe_count: usize,
+    observed: Value,
+    declared: Type,
+    verdict: ParityVerdict,
+}
+
+/// Sweep one row at every probe it registers, and report its most severe.
+fn observe_row(id: EvalBuiltinId, row: &'static BuiltinRow<BuiltinId>) -> RowObservation {
+    let probes = representative_probes(id);
+    let probe_count = probes.len();
+
+    let outcomes: Vec<ProbeOutcome> = probes
+        .into_iter()
+        .enumerate()
+        .map(|(i, probe)| {
+            let (values, types): (Vec<Value>, Vec<Type>) = probe.into_iter().unzip();
+
+            let declared = row
+                .result
+                .resolve(&types)
+                .expect("probe well-formedness (d) guarantees the resolver answers");
+
+            // The public path. `row.name` is a VARIABLE — see the sweep's doc.
+            let observed = reify_stdlib::eval_builtin(row.name, &values);
+            let verdict = classify(&observed, &declared);
+
+            ProbeOutcome {
+                index: i + 1,
+                observed,
+                declared,
+                verdict,
+            }
+        })
+        .collect();
+
+    let worst = worst_probe(outcomes).unwrap_or_else(|| {
+        panic!(
+            "{id:?}: no representative probe, so this row would be swept at no \
+             argument shape at all — see \
+             representative_probes_are_well_formed_for_every_row, which reports \
+             the same fault with the remedy"
+        )
+    });
+
+    RowObservation {
+        id,
+        name: row.name,
+        probe_index: worst.index,
+        probe_count,
+        observed: worst.observed,
+        declared: worst.declared,
+        verdict: worst.verdict,
+    }
 }
 
 /// The stated reason of the ledger entry a [`Failure`] concerns.
@@ -905,9 +1115,12 @@ fn describe_failure(
 
     match failure {
         Failure::Unledgered { observed, .. } => format!(
-            "  UNLEDGERED {id:?} ({name:?}) — verdict {observed:?}; observed \
-             {:?}, declared {:?}",
-            observation.observed, observation.declared
+            "  UNLEDGERED {id:?} ({name:?}) — verdict {observed:?} at probe \
+             {} of {}; observed {:?}, declared {:?}",
+            observation.probe_index,
+            observation.probe_count,
+            observation.observed,
+            observation.declared
         ),
         Failure::Stale { ledgered, .. } => format!(
             "  STALE LEDGER ENTRY {id:?} ({name:?}) — the row now \
@@ -964,26 +1177,7 @@ fn describe_failure(
 fn every_eval_builtin_row_agrees_with_its_executed_kind() {
     let observations: Vec<RowObservation> = eval_builtin_rows()
         .into_iter()
-        .map(|(id, row)| {
-            let (values, types) = representative_args(id);
-
-            let declared = row
-                .result
-                .resolve(&types)
-                .expect("probe well-formedness (e) guarantees the resolver answers");
-
-            // The public path. `row.name` is a VARIABLE — see the doc above.
-            let observed = reify_stdlib::eval_builtin(row.name, &values);
-            let verdict = classify(&observed, &declared);
-
-            RowObservation {
-                id,
-                name: row.name,
-                observed,
-                declared,
-                verdict,
-            }
-        })
+        .map(|(id, row)| observe_row(id, row))
         .collect();
 
     // ONE adjudication rule, shared with the synthetic-table tests below.
@@ -1010,10 +1204,13 @@ fn every_eval_builtin_row_agrees_with_its_executed_kind() {
          PARITY_EXEMPTION_LEDGER.\n\n{}\n\n\
          A `Diverges` verdict means the row's declared `result` and its eval \
          body disagree about the KIND of the returned value — fix whichever is \
-         wrong. A `Vacuous` verdict means the row evaluated to `Value::Undef`, \
-         which `value_type_kind_matches` accepts for any type, so the parity \
-         assertion certifies NOTHING about the row; check `representative_args` \
-         first, since a mis-shaped probe produces exactly this. If the \
+         wrong. A `Vacuous` verdict means one side of the pair was a \
+         trivial-accept sentinel — the row evaluated to `Value::Undef`, or its \
+         resolver answered `Type::Error` — either of which \
+         `value_type_kind_matches` accepts unconditionally, so the parity \
+         assertion certifies NOTHING about the row; check \
+         `representative_probes` first, since a mis-shaped probe produces \
+         exactly this. The line names the probe it is about. If the \
          divergence genuinely belongs to a later leaf, add an entry to \
          PARITY_EXEMPTION_LEDGER naming that leaf. A STALE or VERDICT CHANGED \
          line is the opposite problem: the ledger no longer describes the row, \
