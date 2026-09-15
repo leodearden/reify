@@ -80,6 +80,8 @@
 //!    MEMBERSHIP — the symbolic sibling's `realization_ref` must not be in it.
 
 use std::cell::RefCell;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use reify_ir::{ExportFormat, GeometryKernel, Value};
 
@@ -101,6 +103,46 @@ struct ProbeRecord {
     /// Did any `realization_inputs` handle carry real projected content
     /// (`RealizationReadHandle::content()` is `Some`)?
     any_realized_content: bool,
+    /// [`content_fingerprint`] of the handed content, or `None` when no handle
+    /// carried any.
+    ///
+    /// `any_realized_content` answers "was there content?"; this answers "was
+    /// it the SAME content?". That second question is the only way a
+    /// mock-kernel test can observe `RealizationProjectionStore::evict`: the
+    /// store's key is `(realization_ref, content_hash)` and `content_hash` is a
+    /// Debug render of the op IR, so it does not move when a parameter VALUE
+    /// does — an un-evicted memo is re-served verbatim after an `edit_param`,
+    /// and every OTHER field of this record reads identically whether the warm
+    /// redispatch was handed the freshly re-projected content or the pre-edit
+    /// one.
+    content_fingerprint: Option<u64>,
+}
+
+/// Hash the GEOMETRY of the first content payload in `handles`; `None` when no
+/// handle carries one.
+///
+/// Deliberately not a copy of `RealizationReadHandle::content_hash`: that field
+/// is the projection store's own second key, and #7332's finding is precisely
+/// that it does NOT move on a value-driven change. Fingerprinting it would
+/// agree with a stale memo instead of catching one.
+fn content_fingerprint(handles: &[reify_eval::RealizationReadHandle]) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    match handles.iter().find_map(|h| h.content())? {
+        reify_eval::RealizedContent::SurfaceMesh(mesh) => {
+            for v in &mesh.vertices {
+                v.to_bits().hash(&mut hasher);
+            }
+            mesh.indices.hash(&mut hasher);
+        }
+        // No fixture here realizes an Sdf or a VolumeMesh. Hashing the
+        // discriminant rather than panicking keeps the failure in the assertion
+        // that READS the fingerprint — whose message explains what an unmoving
+        // fingerprint means — rather than in this helper.
+        other => std::mem::discriminant(other).hash(&mut hasher),
+    }
+    Some(hasher.finish())
 }
 
 // Per-thread capture slot. Each cargo test runs on its own thread and
@@ -133,6 +175,7 @@ fn order_probe_fn(
         }),
         realization_inputs_len: realization_inputs.len(),
         any_realized_content: realization_inputs.iter().any(|h| h.content().is_some()),
+        content_fingerprint: content_fingerprint(realization_inputs),
     };
     PROBE_RECORDS.with(|slot| slot.borrow_mut().push(record));
     reify_eval::ComputeOutcome::Completed {
@@ -448,6 +491,132 @@ impl GeometryKernel for SphereRefusingKernel {
         tolerance: f64,
     ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
         self.inner.tessellate(handle, tolerance)
+    }
+}
+
+/// Shared, flippable control surface for [`SwitchableKernel`].
+///
+/// Cloned into the kernel the engine takes ownership of, so a test that no
+/// longer holds the kernel can still change its behaviour BETWEEN BUILDS. That
+/// lifetime is the whole point: [`NonTessellatingKernel`] and
+/// [`SphereRefusingKernel`] answer the same way on every call, which is all a
+/// single cold `build()` can observe — but every contract the warm
+/// `build_snapshot` surface introduces has the shape "build 1 saw X, build 2
+/// sees Y", and only a between-build flip can hold that shape.
+#[derive(Clone, Default)]
+struct KernelSwitches {
+    refuse_spheres: Arc<AtomicBool>,
+    refuse_tessellation: Arc<AtomicBool>,
+    tessellations: Arc<AtomicUsize>,
+}
+
+impl KernelSwitches {
+    /// From the next `execute` on, refuse `sphere(..)`: a body that realized on
+    /// an earlier build stops realizing, holding ONE arg of a mixed-arg
+    /// `@optimized` node symbolic while its sibling stays hydrated.
+    fn start_refusing_spheres(&self) {
+        self.refuse_spheres.store(true, Ordering::SeqCst);
+    }
+
+    /// From the next `tessellate` on, fail: a body that projected real content
+    /// on an earlier build projects `None` on this one.
+    fn start_refusing_tessellation(&self) {
+        self.refuse_tessellation.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Metres of translation per tessellation serial. Large enough to survive the
+/// `f32` round-trip through `Mesh::vertices`, small enough to keep the stamped
+/// body near the origin.
+const TESSELLATION_STAMP_STEP: f32 = 0.5;
+
+/// A `MockGeometryKernel` decorator with BETWEEN-BUILD switches and a MOVING
+/// tessellation.
+///
+/// Same decorator shape as [`NonTessellatingKernel`] and
+/// [`SphereRefusingKernel`] — every trait method forwards to `inner` — with two
+/// differences, each load-bearing for one warm-surface contract:
+///
+/// 1. The refusals live in a shared [`KernelSwitches`], so they can be flipped
+///    between the cold `build()` and the warm `build_snapshot`.
+/// 2. `tessellate` TRANSLATES the mock's canned mesh by a per-call offset.
+///    `MockGeometryKernel::tessellate` returns a CONSTANT `minimal_valid_mesh`
+///    independent of handle and geometry, so two projections of the same body
+///    are byte-identical — which makes a stale `RealizationProjectionStore`
+///    memo invisible to any assertion a mock-kernel test could otherwise
+///    write. A rigid translation leaves the mesh valid (same topology, same
+///    normals, same welding) while making every call's output unique.
+struct SwitchableKernel {
+    inner: reify_test_support::MockGeometryKernel,
+    switches: KernelSwitches,
+}
+
+impl SwitchableKernel {
+    /// The boxed kernel, plus the switch handle that outlives the engine's
+    /// ownership of it.
+    fn new() -> (Box<dyn GeometryKernel>, KernelSwitches) {
+        let switches = KernelSwitches::default();
+        let kernel = Self {
+            inner: reify_test_support::MockGeometryKernel::new(),
+            switches: switches.clone(),
+        };
+        (Box::new(kernel), switches)
+    }
+}
+
+impl GeometryKernel for SwitchableKernel {
+    fn execute(
+        &mut self,
+        op: &reify_ir::GeometryOp,
+    ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+        if self.switches.refuse_spheres.load(Ordering::SeqCst)
+            && matches!(op, reify_ir::GeometryOp::Sphere { .. })
+        {
+            return Err(reify_ir::GeometryError::OperationFailed(
+                "SwitchableKernel refuses sphere(): the body stays symbolic so the \
+                 consuming @optimized node has one hydrated and one unhydrated \
+                 geometry arg"
+                    .into(),
+            ));
+        }
+        self.inner.execute(op)
+    }
+
+    fn query(
+        &self,
+        query: &reify_ir::GeometryQuery,
+    ) -> Result<reify_ir::Value, reify_ir::QueryError> {
+        self.inner.query(query)
+    }
+
+    fn export(
+        &self,
+        handle: reify_ir::GeometryHandleId,
+        format: ExportFormat,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<(), reify_ir::ExportError> {
+        self.inner.export(handle, format, writer)
+    }
+
+    fn tessellate(
+        &self,
+        handle: reify_ir::GeometryHandleId,
+        tolerance: f64,
+    ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
+        if self.switches.refuse_tessellation.load(Ordering::SeqCst) {
+            return Err(reify_ir::TessError::TessellationFailed(
+                "SwitchableKernel refuses tessellation on this build: the projection \
+                 store stays empty so the realization projects to content: None"
+                    .into(),
+            ));
+        }
+        let mut mesh = self.inner.tessellate(handle, tolerance)?;
+        let serial = self.switches.tessellations.fetch_add(1, Ordering::SeqCst);
+        let offset = serial as f32 * TESSELLATION_STAMP_STEP;
+        for v in &mut mesh.vertices {
+            *v += offset;
+        }
+        Ok(mesh)
     }
 }
 
@@ -1050,10 +1219,13 @@ fn a_permanently_stranded_node_is_reported_once_at_end_of_build() {
 fn a_warm_build_snapshot_after_edit_param_re_dispatches_the_geometry_consuming_node() {
     reset_records();
     let source = format!("{WARM_CONSUMER_STRUCTURE}{}", trailing_structures(3));
-    let (mut engine, compiled, diagnostics) = build_with_probe_capturing_module(
-        &source,
-        Box::new(reify_test_support::MockGeometryKernel::new()),
-    );
+    // The STAMPING kernel, not the plain mock: the eviction pin at the bottom
+    // needs two projections of the same body to be distinguishable, and the
+    // plain mock's `tessellate` returns a constant mesh. Every assertion above
+    // that pin reads identically under either kernel.
+    let (kernel, _switches) = SwitchableKernel::new();
+    let (mut engine, compiled, diagnostics) =
+        build_with_probe_capturing_module(&source, kernel);
 
     let errors: Vec<_> = diagnostics
         .iter()
@@ -1136,16 +1308,57 @@ fn a_warm_build_snapshot_after_edit_param_re_dispatches_the_geometry_consuming_n
          is the only dispatch surface it has. The redispatch-once signal belongs \
          in the build-scoped `RedispatchPassState`, not in `realization_inputs`."
     );
+    let warm_dispatch = warm.iter().find(|r| {
+        r.kernel_backed_arg && r.any_realized_content && r.realization_inputs_len == 1
+    });
     assert!(
-        warm.iter().any(|r| r.kernel_backed_arg
-            && r.any_realized_content
-            && r.realization_inputs_len == 1),
+        warm_dispatch.is_some(),
         "#7332: the warm `build_snapshot`'s redispatch must deliver the SAME \
          shape the cold one did — a KERNEL-BACKED `Value::GeometryHandle`, \
          exactly one `realization_inputs` entry, and real projected content — \
          otherwise the node was re-admitted as a candidate but handed nothing \
          the `@optimized` fn can use, which is a re-dispatch in name only. \
          Warm records: {warm:?}"
+    );
+    let warm_dispatch = warm_dispatch.expect("`warm_dispatch.is_some()` was just asserted");
+
+    // ── THE EVICTION PIN (#7332's second half) ─────────────────────────────
+    //
+    // Re-admitting the node is necessary but not sufficient: it must be handed
+    // the body as it is NOW, not the body as it was before `edit_param`.
+    // `RealizationProjectionStore` is keyed `(realization_ref, content_hash)`,
+    // and `content_hash` is a Debug render of the op IR — it provably does not
+    // move on a value-driven change — so without
+    // `invalidate_realization_dirty_cone`'s eviction the post-edit lookup hits
+    // the PRE-edit entry verbatim and the redispatch re-consumes stale
+    // geometry. Every other field of a `ProbeRecord` is identical either way,
+    // which is why the fingerprint exists.
+    //
+    // This is the always-runs twin of `morph_arm_e2e.rs`'s x-extent assertion,
+    // which is `#[cfg(has_gmsh)]` AND soft-returns without system OCCT — and
+    // reify pins no OCCT version and preflights none, so that test can stop
+    // running silently.
+    let cold_fingerprint = last.content_fingerprint.expect(
+        "premise: the cold build's post-hydration redispatch carried content          (`any_realized_content` was just asserted), so it must have a          fingerprint",
+    );
+    assert_eq!(
+        warm.iter().filter(|r| r.content_fingerprint.is_some()).count(),
+        1,
+        "premise: exactly one warm invocation may carry content, or \
+         `warm_dispatch` below is not the one this pin is about. Warm records: \
+         {warm:?}"
+    );
+    assert_ne!(
+        warm_dispatch.content_fingerprint,
+        Some(cold_fingerprint),
+        "#7332: the warm redispatch must be handed FRESHLY PROJECTED content, \
+         and was handed byte-identical content to the cold build's. The \
+         `RealizationProjectionStore` memo for this realization survived \
+         `edit_param`: its second key is the STATIC `content_hash`, which does \
+         not move when a parameter value does, so the post-edit lookup re-hits \
+         the pre-edit entry. `invalidate_realization_dirty_cone` must \
+         `RealizationProjectionStore::evict` every realization whose evaluated \
+         input cone moved. Cold: {cold_fingerprint:?}, warm: {warm_dispatch:?}"
     );
 }
 
@@ -1209,5 +1422,202 @@ fn a_warm_rebuild_still_refuses_to_latch_on_contentless_inputs() {
     assert_one_strand_warning(
         "warm build_snapshot, 3 trailing template(s)",
         &warm.diagnostics,
+    );
+}
+
+/// Task #7332 (amendment): a node that tessellated on an EARLIER build and can
+/// project nothing on THIS one must still be reported as stranded.
+///
+/// `a_warm_rebuild_still_refuses_to_latch_on_contentless_inputs` above cannot
+/// reach this: it uses a kernel that never tessellates, on either build, so the
+/// probe's `realization_inputs` never become non-empty and
+/// `emit_contentless_redispatch_warnings`' filter is never exercised in its
+/// non-empty state. Flipping the refusal BETWEEN the two builds is what reaches
+/// it — build 1 tessellates and writes the dependency record, build 2 cannot,
+/// so the content guard strands the node while build 1's record still stands.
+///
+/// The filter therefore cannot ask `realization_inputs.is_empty()`: that is a
+/// GRAPH-lifetime record answering a BUILD-lifetime question, the same
+/// conflation #7332 removed from the Phase-1 candidate gate, and it was sound
+/// only while a cold `build()` was the one way into the pass. It must be
+/// `contentless_skips` MINUS `redispatched`, both build-scoped. Restore the old
+/// predicate and this test reds at ZERO warnings — the node stranded on a
+/// degraded result for a whole build with no diagnostic, which is #5951's root
+/// complaint reproduced on the surface #7332 opened.
+#[test]
+fn a_warm_rebuild_that_loses_tessellation_still_reports_the_strand() {
+    reset_records();
+    let source = format!("{WARM_CONSUMER_STRUCTURE}{}", trailing_structures(3));
+    let (kernel, switches) = SwitchableKernel::new();
+    let (mut engine, compiled, _cold_diagnostics) =
+        build_with_probe_capturing_module(&source, kernel);
+
+    // ── Premise: the COLD build really did tessellate and write the record.
+    //    Without this the warm build has nothing non-empty to be dropped by,
+    //    and the test degenerates into the existing never-tessellates case.
+    let cold = recorded();
+    assert!(
+        cold.iter()
+            .any(|r| r.kernel_backed_arg && r.any_realized_content),
+        "premise: the cold build must complete a real post-hydration \
+         redispatch, or there is no earlier-build record for the warm build's \
+         report to be wrongly filtered by. Cold records: {cold:?}"
+    );
+    assert_eq!(
+        probe_node_realization_inputs(&engine),
+        vec![1],
+        "premise: the cold build's write must stand on the node — NON-EMPTY \
+         `realization_inputs` is exactly what the pre-amendment filter read as \
+         `not stranded`, so an empty value here would make the warm assertion \
+         below pass for the wrong reason"
+    );
+
+    engine
+        .edit_param(
+            reify_core::ValueCellId::new("WarmConsumer", "width"),
+            Value::length(0.012),
+        )
+        .expect("edit_param must succeed against the WarmConsumer.width Length param");
+
+    // The kernel loses tessellation for the warm build only.
+    switches.start_refusing_tessellation();
+
+    reset_records();
+    let warm = engine
+        .build_snapshot(&compiled, ExportFormat::Step)
+        .expect("build_snapshot must return a BuildResult after edit_param");
+
+    // The strand itself: re-admitted as a candidate, handed nothing.
+    assert_no_contentless_latch(
+        "warm build_snapshot after losing tessellation",
+        &recorded(),
+    );
+
+    // ── THE PIN ────────────────────────────────────────────────────────────
+    assert_one_strand_warning(
+        "warm build_snapshot after losing tessellation, 3 trailing template(s)",
+        &warm.diagnostics,
+    );
+
+    // And the record from build 1 really was still standing while that warning
+    // was emitted — i.e. the assertion above was carried by the build-scoped
+    // predicate and not by an incidentally-empty `realization_inputs`.
+    assert_eq!(
+        probe_node_realization_inputs(&engine),
+        vec![1],
+        "the earlier build's dependency record must survive a warm build that \
+         could not project content: the record is the Realization→Compute \
+         reverse edge, and dropping it would under-evict on a later \
+         `edit_param`"
+    );
+}
+
+/// Task #7332 (amendment): a warm redispatch must not NARROW the node's
+/// `realization_inputs`.
+///
+/// While the Phase-1 gate read that field, the pass's write was a once-per-graph
+/// FIRST write — the gate guaranteed the pass only ever reached a node whose
+/// record was empty. Build-scoping the gate makes it a repeated write across
+/// builds, and the incoming set comes from `realization_probe_args`, which
+/// DROPS any arg whose handle is symbolic. So a REPLACING write narrows a
+/// mixed-arg node's record from [solid, ghost] to [solid] the first time
+/// `ghost` fails to realize.
+///
+/// That is not cosmetic: `deps.rs` builds the Realization→Compute reverse edge
+/// (#10) by iterating this field, so a later `edit_param` moving `ghost` would
+/// compute a realization cone that no longer reaches this compute node — the
+/// UNDER-eviction direction `compute_changed_realizations`' own doc calls
+/// unsafe, and the same hazard `invalidate_realization_dirty_cone` explicitly
+/// refuses to create by clearing the field. The write unions instead.
+///
+/// `a_symbolic_sibling_arg_is_kept_out_of_realization_inputs` is the cold twin
+/// and cannot see this: there `ghost` is refused on the ONLY build, so the
+/// record is [solid] from birth and narrowing has nothing to narrow from.
+#[test]
+fn a_warm_rebuild_must_not_narrow_realization_inputs() {
+    reset_records();
+    let (kernel, switches) = SwitchableKernel::new();
+    let (mut engine, compiled, _cold_diagnostics) =
+        build_with_probe_capturing_module(MIXED_ARG_STRUCTURE, kernel);
+
+    let solid_ref = geometry_cell_realization(&engine, "MixedConsumer", "solid");
+    let ghost_ref = geometry_cell_realization(&engine, "MixedConsumer", "ghost");
+    assert_ne!(
+        solid_ref, ghost_ref,
+        "the two geometry lets must bind DISTINCT realizations"
+    );
+
+    // ── Premise: with spheres still allowed, BOTH args hydrate, so the cold
+    //    build records both realizations. This is the state the warm build can
+    //    narrow away from; without it the test pins nothing.
+    let cold_inputs = probe_node_realization_input_refs(&engine, MIXED_PROBE_TARGET);
+    assert_eq!(
+        cold_inputs.len(),
+        1,
+        "exactly one compute node must dispatch to `{MIXED_PROBE_TARGET}`; \
+         got {cold_inputs:?}"
+    );
+    assert!(
+        cold_inputs[0].contains(&solid_ref) && cold_inputs[0].contains(&ghost_ref),
+        "premise: with `sphere()` still accepted, BOTH geometry args hydrate \
+         and both realizations must be recorded — that two-entry record is \
+         what the warm build must not narrow. Recorded: {:?}",
+        cold_inputs[0]
+    );
+
+    engine
+        .edit_param(
+            reify_core::ValueCellId::new("MixedConsumer", "width"),
+            Value::length(0.012),
+        )
+        .expect("edit_param must succeed against the MixedConsumer.width Length param");
+
+    // `ghost` stops realizing for the warm build only, so the warm probe set
+    // is [solid] alone.
+    switches.start_refusing_spheres();
+
+    reset_records();
+    engine
+        .build_snapshot(&compiled, ExportFormat::Step)
+        .expect("build_snapshot must return a BuildResult after edit_param");
+
+    // Premise: the warm build really did re-dispatch and really did write —
+    // `solid` still carries content, so #5951's content guard is inert here.
+    let warm = recorded();
+    assert!(
+        warm.iter()
+            .any(|r| r.kernel_backed_arg && r.any_realized_content),
+        "premise: the warm `build_snapshot` must reach the write — `solid` is \
+         still hydrated, so the content guard cannot fire. Without a write \
+         there is no narrowing to observe. Warm records: {warm:?}"
+    );
+
+    // ── THE PIN ────────────────────────────────────────────────────────────
+    let warm_inputs = probe_node_realization_input_refs(&engine, MIXED_PROBE_TARGET);
+    assert_eq!(warm_inputs.len(), 1, "still exactly one node: {warm_inputs:?}");
+    assert!(
+        warm_inputs[0].contains(&ghost_ref),
+        "the newly-symbolic sibling's realization `{ghost_ref:?}` must SURVIVE \
+         in `realization_inputs` across the warm rebuild. The pass's write \
+         unions the probed set into the record rather than replacing it, \
+         because the record is the Realization→Compute reverse edge \
+         (`deps.rs` edge #10) and `realization_probe_args` drops symbolic args \
+         — so a replacing write would delete the edge for the very realization \
+         that just stopped resolving, and a later `edit_param` moving it would \
+         under-evict this node. Recorded: {:?}",
+        warm_inputs[0]
+    );
+    assert!(
+        warm_inputs[0].contains(&solid_ref),
+        "the still-hydrated body `{solid_ref:?}` must remain recorded: {:?}",
+        warm_inputs[0]
+    );
+    assert_eq!(
+        warm_inputs[0].len(),
+        2,
+        "the union must not DUPLICATE the re-probed `{solid_ref:?}` — \
+         `compute_cache_key` debug-asserts that `realization_inputs` carries no \
+         duplicate `RealizationNodeId`. Recorded: {:?}",
+        warm_inputs[0]
     );
 }

@@ -4139,7 +4139,7 @@ impl Engine {
             // content guard skipped and that no later template's pass rescued.
             // Emitted here — after the loop — so a node redispatched for real
             // during its own template is not reported.
-            self.emit_contentless_redispatch_warnings(&redispatch_pass_state, &mut diagnostics);
+            Self::emit_contentless_redispatch_warnings(&redispatch_pass_state, &mut diagnostics);
 
             if step_handles.is_empty() {
                 // Only emit the summary diagnostic when ops were actually declared
@@ -5014,7 +5014,7 @@ impl Engine {
             // content guard skipped and that no later template's pass rescued.
             // Emitted here — after the loop — so a node redispatched for real
             // during its own template is not reported.
-            self.emit_contentless_redispatch_warnings(&redispatch_pass_state, &mut diagnostics);
+            Self::emit_contentless_redispatch_warnings(&redispatch_pass_state, &mut diagnostics);
 
             if step_handles.is_empty() {
                 // No geometry handles available — nothing to export.
@@ -10386,10 +10386,39 @@ impl Engine {
             // The insert deliberately sits AFTER the content guard above: a
             // contentless node must stay a candidate for trailing templates,
             // which is #5951's whole point.
+            //
+            // The dependency record is UNIONED, never replaced (#7332
+            // amendment). While Phase 1 gated on `realization_inputs` this was
+            // a once-per-graph FIRST write — the gate guaranteed the pass only
+            // ever reached a node whose record was empty. Build scoping makes
+            // it a repeated write across builds, and the incoming set comes
+            // from `realization_probe_args`, which DROPS any arg whose handle
+            // is symbolic. A replacing write would therefore NARROW a MIXED-arg
+            // node's record from [A, B] to [A] on a warm tick where B failed to
+            // realize; `deps.rs` builds the Realization→Compute reverse edge by
+            // iterating this field, so a later `edit_param` moving B would
+            // compute a realization cone that no longer reaches this node. That
+            // is UNDER-eviction — the direction `compute_changed_realizations`'
+            // own doc calls unsafe — and the same hazard
+            // `invalidate_realization_dirty_cone` explicitly refuses to create
+            // by clearing the field.
+            //
+            // Union cannot over-grow past the structural truth: an `@optimized`
+            // node's consumed realizations are fixed by its arg list, and a
+            // structural change routes through `eval()`, which installs a fresh
+            // graph whose `compute_nodes` map is empty. Nor can it introduce an
+            // id `compute_cache_key` would panic on — every id it PRESERVES was
+            // already written into this same field against this same graph. The
+            // `contains` check keeps the list duplicate-free, which that
+            // function's `debug_assert!` requires.
             if let Some(state) = self.eval_state.as_mut()
                 && let Some(node) = state.snapshot.graph.get_compute_node_mut(&cand.c_id)
             {
-                node.realization_inputs = realization_inputs;
+                for rid in realization_inputs {
+                    if !node.realization_inputs.contains(&rid) {
+                        node.realization_inputs.push(rid);
+                    }
+                }
                 pass_state.redispatched.insert(cand.c_id.clone());
             }
             // `state` mut-borrow dropped.
@@ -10441,9 +10470,23 @@ impl Engine {
     /// `build_with_geometry_output` and `build_snapshot` — not from inside the
     /// pass, which runs per template. A node skipped while an earlier template
     /// was building may well be redispatched for real during its own
-    /// template's call; only a node whose `realization_inputs` are STILL empty
-    /// at the end of the build is genuinely stranded, so only that node is
-    /// reported. One `Severity::Warning` per node, never per template call.
+    /// template's call, so the reported set is `contentless_skips` MINUS
+    /// `redispatched`: skipped in this build and never rescued in this build.
+    /// One `Severity::Warning` per node, never per template call.
+    ///
+    /// Both terms are BUILD-scoped, which is the whole of the predicate's
+    /// correctness (#7332 amendment). This used to ask the node's own
+    /// `realization_inputs` whether it was still empty — the same
+    /// graph-lifetime-record-read-as-build-lifetime-flag conflation the Phase-1
+    /// candidate gate carried, and sound for exactly as long as only a cold
+    /// `build()` could reach the pass (its `compute_nodes` map starts empty, so
+    /// empty really did mean "this build never wrote it"). On the warm
+    /// `build_snapshot` surface #7332 opened, `realization_inputs` may be
+    /// non-empty from an EARLIER build: a node that tessellated in build 1 and
+    /// projects to nothing in build 2 is genuinely stranded for the whole of
+    /// build 2, and the old filter dropped it — silently, which is #5951's root
+    /// complaint reproduced on the newly reachable surface. Pinned by
+    /// `a_warm_rebuild_that_loses_tessellation_still_reports_the_strand`.
     ///
     /// Why this exists: the guard's stated intent is that the strand becomes
     /// *retried* rather than permanent. For a body that can never project
@@ -10459,27 +10502,16 @@ impl Engine {
     /// Emission order is sorted by `(entity, index)`: `compute_nodes` is an
     /// `im::HashMap`, whose iteration order is not stable across processes.
     fn emit_contentless_redispatch_warnings(
-        &self,
         pass_state: &RedispatchPassState,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
         if pass_state.contentless_skips.is_empty() {
             return;
         }
-        let Some(state) = self.eval_state.as_ref() else {
-            return;
-        };
         let mut stranded: Vec<(&reify_core::ComputeNodeId, &String)> = pass_state
             .contentless_skips
             .iter()
-            .filter(|(c_id, _)| {
-                state
-                    .snapshot
-                    .graph
-                    .compute_nodes
-                    .get(*c_id)
-                    .is_some_and(|n| n.realization_inputs.is_empty())
-            })
+            .filter(|(c_id, _)| !pass_state.redispatched.contains(*c_id))
             .collect();
         stranded
             .sort_by(|(a, _), (b, _)| a.entity.cmp(&b.entity).then_with(|| a.index.cmp(&b.index)));
