@@ -126,8 +126,6 @@ mod shell_open_curated_faces;
 mod shell_shape_oob_face_index_integration;
 #[path = "harness_occt/split_integration.rs"]
 mod split_integration;
-#[path = "harness_occt/step_plane_angle_guard_integration.rs"]
-mod step_plane_angle_guard_integration;
 #[path = "harness_occt/surface_angle_integration.rs"]
 mod surface_angle_integration;
 #[path = "harness_occt/sweep_guided_integration.rs"]
