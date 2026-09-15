@@ -1789,18 +1789,19 @@ const OBJECT_LEAVES = [{ signal: "sig-a" }, { text: "txt-b" }, {}];
 
         # The defect: index 0 never named, index 4 named twice.
         self.assertEqual(
-            cases["non_contiguous_head_and_tail"], ["<dropped-leaf:leaf0>", "<dropped-leaf:leaf4>"],
+            cases["non_contiguous_head_and_tail"],
+            ["<dropped-leaf:0:leaf0>", "<dropped-leaf:4:leaf4>"],
             "each dropped index must be named exactly once, at its own position",
         )
 
         # The defect: a knowable mid-array index was reported as "?".
         self.assertEqual(
-            cases["single_drop_mid_array"], ["<dropped-leaf:leaf1>"],
+            cases["single_drop_mid_array"], ["<dropped-leaf:1:leaf1>"],
             "a knowable dropped index must never fall back to '?'",
         )
 
         # Regression guard: the one case the pre-fix arithmetic got right by luck.
-        self.assertEqual(cases["single_drop_tail"], ["<dropped-leaf:leaf4>"])
+        self.assertEqual(cases["single_drop_tail"], ["<dropped-leaf:4:leaf4>"])
 
         # No drops -> no labels, and the count always matches the null count.
         self.assertEqual(cases["no_drops"], [])
@@ -1811,17 +1812,17 @@ const OBJECT_LEAVES = [{ signal: "sig-a" }, { text: "txt-b" }, {}];
         self.assertEqual(len(cases["no_drops"]), 0)
 
         # Object-leaf branches: signal, then text, then the leaf-${idx} fallback.
-        self.assertEqual(cases["object_leaf_signal"], ["<dropped-leaf:sig-a>"])
-        self.assertEqual(cases["object_leaf_text"], ["<dropped-leaf:txt-b>"])
-        self.assertEqual(cases["object_leaf_neither"], ["<dropped-leaf:leaf-2>"])
+        self.assertEqual(cases["object_leaf_signal"], ["<dropped-leaf:0:sig-a>"])
+        self.assertEqual(cases["object_leaf_text"], ["<dropped-leaf:1:txt-b>"])
+        self.assertEqual(cases["object_leaf_neither"], ["<dropped-leaf:2:leaf-2>"])
 
         # leafLabelFor must be total: a null leaf element, or a leaves array
         # shorter than leaf_verdicts (so leaves[j] is undefined), must label
         # via the index fallback rather than throwing.
-        self.assertEqual(cases["null_leaf_element"], ["<dropped-leaf:leaf-0>"])
+        self.assertEqual(cases["null_leaf_element"], ["<dropped-leaf:0:leaf-0>"])
         self.assertEqual(
             cases["short_leaves_array"],
-            ["<dropped-leaf:a>", "<dropped-leaf:leaf-1>"],
+            ["<dropped-leaf:0:a>", "<dropped-leaf:1:leaf-1>"],
         )
 
 
@@ -2545,6 +2546,7 @@ console.log(MARK + JSON.stringify(schemas));
 
 _MJS_RESULT_MARK = "SCENARIO_RESULT:"
 _MJS_PHASES_MARK = "SCENARIO_PHASES:"
+_MJS_LOGS_MARK = "SCENARIO_LOGS:"
 
 
 def _mjs_scenario_source(leaves_js: str, responses_js: str) -> str:
@@ -2567,6 +2569,7 @@ import {{ readFileSync }} from "node:fs";
 const MJS_PATH = "{mjs_abs}";
 const RESULT_MARK = "{_MJS_RESULT_MARK}";
 const PHASES_MARK = "{_MJS_PHASES_MARK}";
+const LOGS_MARK = "{_MJS_LOGS_MARK}";
 
 // ── mock: agent(prompt, opts) — parameterized, and records each phase ────────
 globalThis.__PHASES = [];
@@ -2582,7 +2585,14 @@ globalThis.agent = async (prompt, opts = {{}}) => {{
 
 // ── mock: pipeline(items, ...stages) — threads each item through in order,
 // dropping to null (at the item's own index) if any stage throws — mirrors
-// the documented real-pipeline contract the aggregation code relies on ──────
+// the documented real-pipeline contract the aggregation code relies on: the
+// workflow-authoring reference states "A stage that throws drops that item
+// to null and skips its remaining stages", implemented there via
+// Promise.allSettled + an index-preserving map. Record the caught error the
+// same way the real runtime does (`pipeline[<index>] failed: <message>`)
+// instead of discarding it — otherwise a genuine .mjs stage defect (a
+// TypeError from a renamed field, a bad JSON.stringify arg) is invisible in
+// these scenario tests, indistinguishable from an intentionally-thrown mock.
 globalThis.pipeline = async (items, ...stages) => {{
     const results = [];
     for (const item of items) {{
@@ -2592,6 +2602,7 @@ globalThis.pipeline = async (items, ...stages) => {{
                 val = await stage(val, item, results.length);
             }}
         }} catch (e) {{
+            globalThis.__LOG_LINES.push(`pipeline[${{results.length}}] failed: ` + e.message);
             val = null;
         }}
         results.push(val);
@@ -2614,6 +2625,7 @@ const AsyncFunction = Object.getPrototypeOf(async function () {{}}).constructor;
 const result = await new AsyncFunction(src)();
 console.log(RESULT_MARK + JSON.stringify(result));
 console.log(PHASES_MARK + JSON.stringify(globalThis.__PHASES));
+console.log(LOGS_MARK + JSON.stringify(globalThis.__LOG_LINES));
 """
 
 
@@ -2672,6 +2684,24 @@ class _MjsScenarioMixin:
         verdict = json.loads(res_lines[-1][len(_MJS_RESULT_MARK):])
         phases = json.loads(ph_lines[-1][len(_MJS_PHASES_MARK):])
         return verdict, phases
+
+    def _run_scenario_logs(self, leaves_js: str, responses_js: str):
+        """Return the captured globalThis.log() lines for a scenario.
+
+        Kept separate from _run_scenario rather than widening its (verdict,
+        phases) return tuple — that tuple is unpacked at ~15 call sites across
+        this file that have no use for log lines. _run_node_module is cached
+        on the exact generated source (see its docstring), so calling this
+        with the same (leaves_js, responses_js) already passed to
+        _run_scenario in the same test costs no extra node spawn.
+        """
+        rc, out, err = _run_node_module(_mjs_scenario_source(leaves_js, responses_js))
+        self.assertEqual(
+            rc, 0, f"node exited {rc}; stderr: {err!r}; stdout: {out!r}")
+        log_lines = [ln for ln in out.splitlines()
+                     if ln.startswith(_MJS_LOGS_MARK)]
+        self.assertTrue(log_lines, f"no logs marker; stdout: {out!r}")
+        return json.loads(log_lines[-1][len(_MJS_LOGS_MARK):])
 
 
 # ---------------------------------------------------------------------------
@@ -2885,13 +2915,22 @@ class TestMjsBatchDisposition(unittest.TestCase, _MjsScenarioMixin):
 }"""
 
     def _assert_consumer_contract(self, verdict):
-        """The pre-existing keys β/D4 consume must survive every change."""
-        for key in ("blocks", "leaf_verdicts", "summary"):
+        """The pre-existing keys β/D4 consume must survive every change.
+
+        `blocking`/`disposition` joined this contract in the task #7369
+        review: `blocking` is the field that finally carries dropped-leaf
+        labels to a caller, and `disposition` is the documented PASS/BLOCKS/
+        INCOMPLETE headline — both must be present on every return path, not
+        just the aggregation-tail one.
+        """
+        for key in ("blocks", "blocking", "leaf_verdicts", "summary", "disposition"):
             self.assertIn(key, verdict,
                           f"consumer-contract key {key!r} missing; got {sorted(verdict)}")
         self.assertIsInstance(verdict["blocks"], bool)
+        self.assertIsInstance(verdict["blocking"], list)
         self.assertIsInstance(verdict["leaf_verdicts"], list)
         self.assertIsInstance(verdict["summary"], str)
+        self.assertIsInstance(verdict["disposition"], str)
 
     # ── (A) a mixed batch is INCOMPLETE, not PASS ────────────────────────────
 
@@ -3045,7 +3084,44 @@ class TestMjsBatchDisposition(unittest.TestCase, _MjsScenarioMixin):
         self.assertEqual(verdict.get("disposition"), "BLOCKS")
         self.assertIn("blocking", verdict,
                       f"batch verdict has no blocking; keys {sorted(verdict)}")
-        self.assertEqual(verdict["blocking"], ["<dropped-leaf:doomed leaf (theta)>"])
+        # "doomed leaf (theta)" is leaves[1] — the label must carry that index.
+        self.assertEqual(verdict["blocking"], ["<dropped-leaf:1:doomed leaf (theta)>"])
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_pipeline_dropped_leaf_logs_the_caught_error(self):
+        """The mock pipeline()'s catch must record the throw, not swallow it
+        (task #7369 review): a genuine .mjs stage defect and an intentionally
+        -thrown mock error both used to look identical — a dropped leaf with
+        no trace of why. Assert the throw path actually fired, the way the
+        real runtime's own `pipeline[<index>] failed: <message>` record would
+        let a reader confirm it, instead of only inferring it from the verdict.
+        """
+        logs = self._run_scenario_logs(self._E_LEAVES, self._E_RESPONSES)
+        combined = "\n".join(logs)
+        self.assertIn(
+            "pipeline[1] failed: enumerator exploded", combined,
+            f"expected the caught enumerator error at index 1 in the log; got {logs!r}",
+        )
+
+    # ── (F) zero leaves — the empty-batch early return owes the same contract ─
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_zero_leaf_batch_has_full_consumer_contract(self):
+        """The empty-batch early return must not omit fields a consumer would
+        reasonably read off any other return path (task #7369 review): before
+        this test, `blocking`/`disposition`/the counters existed only on the
+        aggregation-tail path, so `verdict.blocking.length` or
+        `verdict.disposition === 'PASS'` was `undefined` on a zero-leaf batch
+        instead of the vacuously-true answer.
+        """
+        verdict, phases = self._run_scenario("[]", "{}")
+        self._assert_consumer_contract(verdict)
+        self.assertEqual(verdict.get("disposition"), "PASS")
+        self.assertFalse(verdict["blocks"])
+        self.assertEqual(verdict.get("blocking"), [])
+        self.assertEqual(verdict.get("leaves_total"), 0)
+        self.assertEqual(verdict.get("leaves_probed"), 0)
+        self.assertEqual(phases, [], "zero leaves must never invoke any agent stage")
 
 
 # ---------------------------------------------------------------------------
