@@ -2397,6 +2397,82 @@ fn make_test_engine_for_commands() -> Arc<Mutex<EngineSession>> {
     Arc::new(Mutex::new(session))
 }
 
+/// [`make_test_engine_for_commands`] with a canonical `.ri` ON DISK: writes
+/// `bracket_source()` to `<tmp>/bracket.ri` and `load_file`s it, so the durable
+/// command has a file to write back to (INV-GUI-3, task 5099 η).
+///
+/// Only the parameter-write tests need one — the in-memory sibling stays the
+/// cheap default for everything else. The returned `TempDir` must be kept alive
+/// (bind it, don't discard it) for as long as the engine is used; the shape is
+/// copied from `engine_tests.rs`'s `writeback_session`.
+fn make_test_engine_on_disk() -> (tempfile::TempDir, std::path::PathBuf, Arc<Mutex<EngineSession>>) {
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let path = dir.path().join("bracket.ri");
+    std::fs::write(&path, bracket_source()).expect("write bracket.ri should succeed");
+
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    session.load_file(&path).expect("load_file should succeed");
+
+    (dir, path, Arc::new(Mutex::new(session)))
+}
+
+#[test]
+fn set_parameter_impl_writes_the_value_back_to_the_ri_file() {
+    // The wire name `set_parameter` keeps its spelling and acquires the meaning
+    // it always claimed: setting a parameter is the DURABLE operation. This is
+    // the command the property panel's edit box already calls on Enter/blur, so
+    // re-homing it is what makes typed entry durable with no component change.
+    use crate::commands::set_parameter_impl;
+
+    let (_dir, path, engine) = make_test_engine_on_disk();
+
+    let state = set_parameter_impl(&engine, "Bracket.width", "120mm")
+        .expect("set_parameter_impl should succeed on a literal-defaulted cell");
+
+    let disk_text = std::fs::read_to_string(&path).expect("disk file should be readable");
+    assert_eq!(
+        disk_text,
+        bracket_source().replace("80mm", "120mm"),
+        "the durable command must splice exactly the default span, got: {disk_text}"
+    );
+    assert!(
+        state
+            .values
+            .iter()
+            .any(|v| v.cell_id == "Bracket.width" && v.value == "120" && v.unit == "mm"),
+        "the returned GuiState must already report the committed value"
+    );
+}
+
+#[test]
+fn preview_parameter_impl_leaves_the_ri_file_untouched() {
+    // Its counterpart, and the reason the split exists: the per-frame command a
+    // slider drag drives must move the viewport without recompiling and
+    // rewriting the design 60 times a second.
+    use crate::commands::preview_parameter_impl;
+
+    let (_dir, path, engine) = make_test_engine_on_disk();
+
+    let state = preview_parameter_impl(&engine, "Bracket.width", "120mm")
+        .expect("preview_parameter_impl should succeed");
+
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("disk file should be readable"),
+        bracket_source(),
+        "a preview must leave the canonical .ri byte-identical"
+    );
+    assert!(
+        state
+            .values
+            .iter()
+            .any(|v| v.cell_id == "Bracket.width" && v.value == "120" && v.unit == "mm"),
+        "a preview must still move the eval state so the viewport tracks the drag"
+    );
+}
+
 /// (step-4 GREEN-a) update_source_impl must record staleness when update_source
 /// returns Err (here: compile error from invalid source syntax).
 ///
