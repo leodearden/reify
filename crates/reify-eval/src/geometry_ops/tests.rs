@@ -5812,9 +5812,8 @@
             &HashMap::new(),
             &mut diagnostics,
         );
-        let err = result
-            .err()
-            .expect("no valid plane handle — the pre-existing failure δ leaves alone");
+        let err =
+            result.expect_err("no valid plane handle — the pre-existing failure δ leaves alone");
         assert_eq!(
             err, "no valid plane handle available for Draft",
             "a dimensioned angle must fall through to the PRE-EXISTING plane \
