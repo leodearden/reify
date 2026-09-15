@@ -88,9 +88,12 @@ Consequences, stated plainly:
 
 - The straggler moved 160.2s → 184.9s, i.e. **+24.7s (1.15×)** — far better than
   the 1.85× a file-count model would have feared, but not the ~61s it projected.
-- A second full run of the unified shards, under different host contention,
-  measured a Summary wall of **238.393s**. Treat 185–240s as the observed band,
-  not 185s as a point value.
+- **Run-to-run spread is large and is the headline caveat.** Three runs of
+  `corpus_sweep_shard_20` measured **184.9s, 238.4s and 158.2s**. Treat
+  **158–240s** as the observed band; no single run is a point value. Notably the
+  FASTEST of the three was the run with the MOST concurrent load (all three
+  affected binaries together, 151 tests), so the spread is not a simple function
+  of host contention — scheduling order matters at least as much.
 - This materially weakens the plan's stated basis for leaving
   `.config/nextest.toml` alone — see §4.
 
@@ -215,13 +218,15 @@ in the plan does **not** survive measurement and should not be relied on:
 
 - The plan argued an LPT `priority` buys nothing because "the unified shards'
   ~61s worst-case straggler cannot move a makespan floor set by the >180s
-  `tensegrity_t0a` LPT tier-1 straggler". **The measured straggler is 184.9s,
-  with a second run at 238.4s** — i.e. AT or ABOVE that floor, not far below it.
-  On this evidence a `priority` entry for `harness_corpus_gates` is a live
-  lever, not a dead one, and should be evaluated against a real Summary-wall
-  measurement.
-- The slow-timeout argument is weaker than stated but still holds: 185–240s
-  against the inherited `[profile.default]` 1200s ceiling is ~5–6.5× headroom.
+  `tensegrity_t0a` LPT tier-1 straggler". **The measured straggler STRADDLES
+  that floor rather than sitting far below it** — 158.2s / 184.9s / 238.4s across
+  three runs, i.e. below it once and above it twice. The plan's premise is not
+  simply wrong, but it is not established either, and ~61s is certainly not the
+  right input. On this evidence a `priority` entry for `harness_corpus_gates` is
+  a lever that must be settled by a real Summary-wall measurement rather than
+  ruled out a priori.
+- The slow-timeout argument is weaker than stated but still holds: 158–240s
+  against the inherited `[profile.default]` 1200s ceiling is ~5–7.6× headroom.
   It is worth noting that at the 8× contention of esc-5097-3 a 238s nominal
   would reach ~1900s and breach that ceiling, so this is not unlimited margin.
 
