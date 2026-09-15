@@ -589,6 +589,46 @@ fn the_generator_rejects_an_unknown_flag() {
     );
 }
 
+/// `--help` exits NON-ZERO with nothing on stdout.
+///
+/// The exit code is the load-bearing half. Under the documented recipe the
+/// shell truncates `pdiag-baseline.txt` before this process starts, so a help
+/// path that exits 0 with empty stdout leaves a ZERO-BYTE manifest and reports
+/// success — worse than the `swept == 0` case exit 3 exists for, because
+/// `parse_baseline("")` SUCCEEDS and the ratchet would then read an empty
+/// baseline and flag every code-less file as a `NewFile` High. Asserting
+/// stdout-is-empty alone would pass on exactly that broken binary.
+#[test]
+fn the_generator_refuses_to_report_success_for_help() {
+    if !git_available("the_generator_refuses_to_report_success_for_help") {
+        return;
+    }
+    let dir = staged_fixture(&[("crates/reify-eval/src/geometry_ops.rs", codeless_src(1))]);
+
+    for flag in ["--help", "-h"] {
+        let out = run_generator(dir.path(), &[flag]);
+
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{flag} renders no manifest, so it must exit 2 like every other non-census \
+             path — exit 0 here silently blesses a truncated pdiag-baseline.txt; \
+             stderr:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            out.stdout.is_empty(),
+            "{flag} must keep usage text on stderr — anything on stdout lands IN the \
+             manifest under the documented redirect. Got:\n{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("Usage:"),
+            "{flag} must still print its usage, on stderr"
+        );
+    }
+}
+
 // -----------------------------------------------------------------------
 // (A) The committed manifest exists and parses
 // -----------------------------------------------------------------------

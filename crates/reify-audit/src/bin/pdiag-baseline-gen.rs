@@ -26,7 +26,10 @@
 //!
 //! Exit codes: `0` on a census that reached at least one swept file — this tool
 //! reports the tree, it does not judge it, so a big backlog still exits 0
-//! (judging is `reify-audit --pattern PDIAG`'s job). `2` on a bad argument.
+//! (judging is `reify-audit --pattern PDIAG`'s job). `2` on a bad argument, and
+//! on `-h`/`--help`, which produces no census either: exit 0 is reserved for a
+//! run that actually rendered a manifest, so no invocation can leave the
+//! redirect target truncated AND report success.
 //! `3` on a DEGENERATE census: `git ls-files` reached zero swept files, so
 //! stdout stays empty and the recipe above cannot truncate the ratchet's own
 //! manifest to a header-only file. `RealGitOps::ls_files` degrades to an empty
@@ -73,7 +76,18 @@ fn main() {
                      crates/reify-audit/pdiag-baseline.txt.\n\
                      Policy + remediation: docs/notes/diagnostic-severity-policy.md"
                 );
-                return;
+                // Exit 2, NOT 0. Help produces no census, and under the
+                // documented recipe the shell has already truncated the
+                // redirect target before this process started — so a
+                // successful exit with empty stdout leaves a ZERO-BYTE
+                // manifest and reports success. That is strictly worse than
+                // the `swept == 0` case exit 3 guards: `parse_baseline("")`
+                // SUCCEEDS, so the ratchet would then read an empty baseline
+                // and flag every code-less file as a `NewFile` High. Every
+                // path that reaches the end of this process without a census
+                // exits non-zero, so the invariant is uniform rather than
+                // per-flag.
+                std::process::exit(2);
             }
             other if !other.starts_with('-') => project_root = other.to_string(),
             other => {
