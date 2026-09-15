@@ -12,6 +12,13 @@
 //! earned it. The failing call itself is expected to be loud; what is under
 //! test is the state it leaves behind.
 //!
+//! Two of this crate's four `mesh_generate` sites are driven from here —
+//! `mesh_to_volume` and `refine_volume_with_size_field`, in both directions.
+//! The other two are uncovered for a measured reason stated at each site:
+//! `mesh_profile_2d.rs` (no cheap 2D geometry that fails `mesh_generate(2)`
+//! was identified) and `mesh_boundary.rs` (its watertight preflight rejects
+//! every unmeshable fixture this binary has before gmsh is reached).
+//!
 //! These tests live in their own binary rather than in
 //! `mesh_to_volume_tests.rs` so that a recovery regression reds one binary
 //! whose name states the cause, instead of reddening unrelated assertions
@@ -24,7 +31,7 @@
 
 #![cfg(has_gmsh)]
 
-use reify_ir::{ElementOrderTag, Mesh};
+use reify_ir::{ElementOrderTag, GeometryError, Mesh};
 use reify_kernel_gmsh::{GmshKernel, MeshingOptions, refine_volume_with_size_field};
 use reify_test_support::fixtures::unit_cube_mesh;
 
@@ -44,156 +51,115 @@ fn unmeshable_open_triangle() -> Mesh {
     }
 }
 
-/// A `mesh_to_volume` that fails at the mesher must not take the next
-/// caller's mesh down with it.
+/// The premise every test in this binary rests on: the call failed AT THE
+/// MESHER, so there is real damage for the recovery to repair.
 ///
-/// Meshes the open triangle (expected `Err` from `gmshModelMeshGenerate`),
-/// then meshes a known-good closed cube through the same entry point and
-/// requires a real tet mesh back.
+/// The `ierr=` is load-bearing, which is why it is asserted in ONE place: the
+/// FFI layer formats a real failure as `<symbol>: ierr=<n> (<msg>)`, whereas
+/// the zero-tet backstop in `init::read_tet_connectivity` opens
+/// `gmshModelMeshGenerate reported success but …`. Matching the bare symbol
+/// name would let a test pass having poisoned nothing and exercised no
+/// recovery — and a per-test copy of this assertion is exactly what drifts
+/// into that weaker form.
+#[track_caller]
+fn assert_failed_at_the_mesher<T>(entry_point: &str, result: Result<T, GeometryError>) {
+    let Err(err) = result else {
+        panic!("{entry_point}: an open triangle bounds no volume — it must report a failure");
+    };
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("gmshModelMeshGenerate: ierr="),
+        "{entry_point} was expected to fail at the mesher itself, leaving the \
+         process-global mesher damaged; it failed somewhere earlier instead, so \
+         this test would prove nothing about recovery. Got: {msg}"
+    );
+}
+
+/// Poison the shared mesher through `GmshKernel::mesh_to_volume`.
+fn poison_via_mesh_to_volume() {
+    assert_failed_at_the_mesher(
+        "mesh_to_volume",
+        GmshKernel::new().mesh_to_volume(
+            &unmeshable_open_triangle(),
+            &MeshingOptions::default(),
+            ElementOrderTag::P1,
+        ),
+    );
+}
+
+/// Poison the shared mesher through `refine_volume_with_size_field`.
+///
+/// One size hint per surface vertex; the open triangle has three.
+fn poison_via_refine() {
+    assert_failed_at_the_mesher(
+        "refine_volume_with_size_field",
+        refine_volume_with_size_field(
+            &unmeshable_open_triangle(),
+            &[0.5, 0.5, 0.5],
+            &MeshingOptions::default(),
+            ElementOrderTag::P1,
+        ),
+    );
+}
+
+/// Require `mesh_to_volume` to hand back a real tet mesh for a known-good
+/// closed cube — what a caller who did nothing wrong is entitled to.
+///
+/// `after` names the failure being recovered from, so a red run says which
+/// poisoning path leaked rather than merely that one did.
+///
+/// A loud `Err` here is a failure too, and deliberately so: it is a materially
+/// milder regression than a silent empty mesh, but a caller whose own input is
+/// fine should never see either. The panic message tells the two apart.
 ///
 /// The tet assertion is `> 0`, never an exact count: measured counts for this
 /// same cube varied 744/748/752 across runs under multithreaded HXT, a jitter
 /// `mesh_to_volume_tests.rs::cuboid_round_trip_within_count_variation_budget`
 /// already acknowledges in tree.
-#[test]
-fn a_failed_mesh_to_volume_leaves_the_mesher_usable_for_the_next_caller() {
-    let kernel = GmshKernel::new();
-    let options = MeshingOptions::default();
-
-    let poisoning =
-        kernel.mesh_to_volume(&unmeshable_open_triangle(), &options, ElementOrderTag::P1);
-    let err = poisoning
-        .expect_err("an open triangle bounds no volume; mesh_to_volume must report a failure");
-    let msg = format!("{err:?}");
-    assert!(
-        msg.contains("gmshModelMeshGenerate: ierr="),
-        "this test's premise is that the fixture fails AT THE MESHER itself. The \
-         `ierr=` is load-bearing: `ffi.rs` formats a real FFI failure as \
-         `<symbol>: ierr=<n> (<msg>)`, whereas the zero-tet backstop in \
-         `kernel_real.rs` opens `gmshModelMeshGenerate reported success but ...`. \
-         Matching the bare symbol would let this test pass having poisoned \
-         nothing and exercised no recovery. Got: {msg}"
-    );
-
-    let recovered = kernel
-        .mesh_to_volume(&unit_cube_mesh(), &options, ElementOrderTag::P1)
-        .expect(
-            "a closed unit cube must still mesh after an unrelated meshing failure — \
-             the failed call must not leave the process-global mesher unusable",
-        );
-    let tets = recovered
-        .tet_indices()
-        .expect("a P1 volume mesh must carry tet_indices");
-    assert!(
-        !tets.is_empty(),
-        "the cube meshed to ZERO tets after an earlier meshing failure: the mesher is \
-         still poisoned, and the zero-tet result reached the caller as a silent Ok",
-    );
-}
-
-/// `mesh_to_volume` never hands back an `Ok` `VolumeMesh` with no tetrahedra.
-///
-/// That is the invariant a caller actually needs, so it is what this test
-/// states — not whichever of the two remedies happens to reach it first. A
-/// loud `Err` satisfies the contract just as well as a real mesh does; the
-/// only forbidden outcome is a silent empty answer.
-///
-/// It is driven through `refine_volume_with_size_field` as a REPRESENTATIVE
-/// second entry point into the same process-global mesher — not because that
-/// sibling is unprotected; it routes through the recovery wrapper too. The
-/// failing call and the call under test are deliberately different entry
-/// points, since a caller's exposure to someone else's failed mesh is the
-/// only way this contract can be breached in practice.
-///
-/// `a_failed_sibling_mesher_leaves_mesh_to_volume_usable` below drives the
-/// identical sequence and demands the stronger outcome. Both are kept: when
-/// they disagree — strong red, this one green — the process degraded to
-/// failing LOUDLY, which is a materially different regression from returning
-/// a silent empty mesh, and worth being able to tell apart at a glance.
-#[test]
-fn mesh_to_volume_never_returns_ok_with_zero_tets() {
-    let poisoning = refine_volume_with_size_field(
-        &unmeshable_open_triangle(),
-        &[0.5, 0.5, 0.5],
-        &MeshingOptions::default(),
-        ElementOrderTag::P1,
-    );
-    let err = poisoning.expect_err(
-        "an open triangle bounds no volume; refine_volume_with_size_field must report a failure",
-    );
-    let msg = format!("{err:?}");
-    assert!(
-        msg.contains("gmshModelMeshGenerate: ierr="),
-        "this test's premise is that the sibling fails AT THE MESHER itself — the \
-         `ierr=` distinguishes a real FFI failure from the zero-tet backstop, \
-         whose message also names that symbol; got: {msg}"
-    );
-
-    let result = GmshKernel::new().mesh_to_volume(
-        &unit_cube_mesh(),
-        &MeshingOptions::default(),
-        ElementOrderTag::P1,
-    );
-    // An `Err` is deliberately NOT asserted against: a loud failure satisfies
-    // this contract just as well, because the caller learns something went
-    // wrong instead of acting on an empty mesh. Only the `Ok` case can breach it.
-    if let Ok(vm) = result {
-        assert!(
-            vm.tet_indices().is_some_and(|tets| !tets.is_empty()),
-            "mesh_to_volume returned Ok with ZERO tetrahedra — a silent wrong answer. \
-             A caller cannot distinguish it from a real mesh; failing loudly is the \
-             only acceptable alternative to meshing successfully",
-        );
-    }
-}
-
-/// A failed SIBLING mesher must leave `mesh_to_volume` fully usable — not
-/// merely loud.
-///
-/// The strong form of `mesh_to_volume_never_returns_ok_with_zero_tets`
-/// above: that test accepts an `Err` as satisfying its contract, because a
-/// loud failure is at least honest. This one requires a real mesh, which is
-/// what a caller who did nothing wrong is entitled to. The four meshers in
-/// this crate share ONE process-global gmsh mesher, so a failure in one that
-/// degrades another is a cross-mesher defect, not a local one.
-#[test]
-fn a_failed_sibling_mesher_leaves_mesh_to_volume_usable() {
-    let poisoning = refine_volume_with_size_field(
-        &unmeshable_open_triangle(),
-        &[0.5, 0.5, 0.5],
-        &MeshingOptions::default(),
-        ElementOrderTag::P1,
-    );
-    let err = poisoning.expect_err(
-        "an open triangle bounds no volume; refine_volume_with_size_field must report a failure",
-    );
-    let msg = format!("{err:?}");
-    assert!(
-        msg.contains("gmshModelMeshGenerate: ierr="),
-        "this test's premise is that the sibling fails AT THE MESHER itself — the \
-         `ierr=` distinguishes a real FFI failure from the zero-tet backstop, \
-         whose message also names that symbol; got: {msg}"
-    );
-
+#[track_caller]
+fn assert_cube_still_meshes(after: &str) {
     let recovered = GmshKernel::new()
         .mesh_to_volume(
             &unit_cube_mesh(),
             &MeshingOptions::default(),
             ElementOrderTag::P1,
         )
-        .expect(
-            "a closed unit cube must still mesh after a SIBLING mesher failed — the \
-             meshers share one process-global gmsh mesher, so a sibling's failure \
-             must not reach this caller at all",
-        );
+        .unwrap_or_else(|e| {
+            panic!(
+                "a closed unit cube must still mesh after {after} — it failed LOUDLY \
+                 instead, so the mesher is still damaged even though nothing silently \
+                 wrong reached the caller: {e:?}"
+            )
+        });
     let tets = recovered
         .tet_indices()
         .expect("a P1 volume mesh must carry tet_indices");
     assert!(
         !tets.is_empty(),
-        "the cube meshed to ZERO tets after a SIBLING mesher failed: the sibling's \
-         failure left the shared mesher unusable",
+        "the cube meshed to ZERO tets after {after}: the mesher is still poisoned, and \
+         the empty result reached the caller as a SILENT Ok it cannot tell from a real \
+         mesh",
     );
+}
+
+/// A `mesh_to_volume` that fails at the mesher must not take the next
+/// caller's mesh down with it.
+#[test]
+fn a_failed_mesh_to_volume_leaves_the_mesher_usable_for_the_next_caller() {
+    poison_via_mesh_to_volume();
+    assert_cube_still_meshes("a failed mesh_to_volume");
+}
+
+/// A failed SIBLING mesher must leave `mesh_to_volume` fully usable.
+///
+/// The four meshers in this crate share ONE process-global gmsh mesher, so a
+/// failure in one that degrades another is a cross-mesher defect, not a local
+/// one. Measured before this task, this sequence returned an `Ok` cube holding
+/// zero tets.
+#[test]
+fn a_failed_sibling_mesher_leaves_mesh_to_volume_usable() {
+    poison_via_refine();
+    assert_cube_still_meshes("a failed refine_volume_with_size_field");
 }
 
 /// …and the reverse direction: a failed `mesh_to_volume` must leave the
@@ -211,12 +177,7 @@ fn a_failed_sibling_mesher_leaves_mesh_to_volume_usable() {
 /// `kernel_real.rs` and this test reds.
 #[test]
 fn a_failed_mesh_to_volume_leaves_the_sibling_meshers_usable() {
-    let poisoning = GmshKernel::new().mesh_to_volume(
-        &unmeshable_open_triangle(),
-        &MeshingOptions::default(),
-        ElementOrderTag::P1,
-    );
-    poisoning.expect_err("an open triangle bounds no volume; mesh_to_volume must report a failure");
+    poison_via_mesh_to_volume();
 
     // The unit cube has 8 vertices, and this entry point requires one size
     // hint per surface vertex.
