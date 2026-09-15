@@ -12,11 +12,10 @@
 //! while removing the copy, so the next Tensegrity-consuming trampoline reuses
 //! rather than re-clones. The same treatment folds the unit-checking scalar
 //! crackers in here alongside them: [`crack_dimensioned_scalar`] was a verbatim
-//! pair across `tensegrity_load.rs` and `membrane_load.rs`, and
-//! [`crack_loads`] — the vector lifting of it, alongside [`crack_scalar_list`]'s
-//! list lifting — was a third such pair across the same two files.
+//! pair across `tensegrity_load.rs` and `membrane_load.rs`, and [`crack_loads`]
+//! was a third such pair across the same two files.
 //!
-//! # The four scalar/list crackers
+//! # The scalar/list crackers
 //!
 //! Two PAIRS, one per acceptance set, each a scalar cracker plus its list
 //! lifting:
@@ -27,7 +26,10 @@
 //! - [`crack_dimensionless_scalar`] / [`crack_dimensionless_list`] — the
 //!   position is a bare RATIO; a `Scalar` in *any* unit is rejected.
 //!
-//! They stay four functions rather than one parameterised over an
+//! [`crack_loads`] belongs to this vocabulary too, but as a CONSUMER of the
+//! first pair rather than a fifth member of the set; its own doc says how.
+//!
+//! Those four stay separate functions rather than one parameterised over an
 //! `Option<DimensionVector>` because "no dimension at all" is not one more
 //! choice on the same axis: it changes which `Value` variants read (`Int` is a
 //! ratio spelling but not a Force spelling) and which advice the diagnostic
@@ -903,15 +905,11 @@ mod tests {
 
     // ---- crack_loads (task #6535) -------------------------------------------
     //
-    // The VECTOR lifting of `crack_dimensioned_scalar`, exactly as
-    // `crack_scalar_list` above is its LIST lifting: it reads each of a load
-    // entry's three components through that cracker and labels them
-    // `loads[{i}].{x|y|z}`. It was the THIRD near-verbatim pair across
-    // `tensegrity_load.rs` and `membrane_load.rs`, the two copies differing only
-    // in their hardcoded `E_*Infeasible` mnemonic — so, as with the two pairs
-    // above, the wrong-unit message is asserted against BOTH real caller
-    // (code, hint) pairs. That cross-pair assertion is what proves neither
-    // mnemonic nor hint got baked back into the shared helper.
+    // What it lifts, and why it was hoisted, is on `crack_loads`' own doc. What
+    // is specific to these tests: as with the two pairs above, the wrong-unit
+    // message is asserted against BOTH real caller (code, hint) pairs, and that
+    // cross-pair assertion is what proves neither mnemonic nor hint got baked
+    // back into the shared helper.
 
     /// A Force-typed `Scalar` (SI newtons) — a well-formed load component.
     fn force(n: f64) -> Value {
