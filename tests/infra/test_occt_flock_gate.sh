@@ -807,6 +807,59 @@ assert "T17: DF_VERIFY_ROLE=merge: debug nextest pass still renders the 60m defa
     occt_plan_grep_or_dump 'timeout --kill-after=60 60m .*cargo nextest run --workspace' "$_T17_PLAN" "$_T17_ERR"
 rm -f "$_T17_ERR"
 
+# -- Test T17-AMB (task 7580): T17's capture must stay ambient-hermetic --------
+# T17's env line above does not `-u REIFY_RELEASE_DELTA_SKIP`. In production,
+# dark-factory-orchestrator.yaml's verify_env sets that knob to "1"
+# unconditionally, so on a delta-clean merge it silently replaces the 90m
+# release nextest pass with the frozen `RELEASE-PASS: skipped (delta-clean)`
+# marker (scripts/verify.sh _RELEASE_DELTA_SKIP block). T17 itself cannot expose
+# this: its capture carries no ambient REIFY_RELEASE_DELTA_SKIP, and
+# _derive_merge_delta() is underivable on a task lane's linear HEAD anyway, so
+# the leak reaches only a real merge commit's delta. This companion reproduces
+# the hostile ambient directly, forcing the delta-clean decision via
+# REIFY_AFFECTED_CRATES_OVERRIDE (verify.sh short-circuits delta derivation
+# entirely when it is set), so the guard is deterministic on any HEAD shape.
+echo ""
+echo "--- Test T17-AMB (task 7580): T17's capture stays hermetic against an ambient REIFY_RELEASE_DELTA_SKIP=1 ---"
+
+# Non-vacuity guard: reify-cli must genuinely be absent from the declared
+# release-sensitive set, or the override below would force delta-clean for a
+# reason unrelated to what this test intends to prove (mirrors
+# tests/infra/test_verify_release_delta_skip.sh:73-81).
+_T17AMB_NONSENSITIVE_CRATE="reify-cli"
+assert "T17-AMB: chosen non-sensitive crate ($_T17AMB_NONSENSITIVE_CRATE) is genuinely absent from scripts/release-sensitive-crates.txt (guards against a vacuous pass)" \
+    bash -c '! grep -qxF "$1" "$2"' _ "$_T17AMB_NONSENSITIVE_CRATE" "$REPO_ROOT/scripts/release-sensitive-crates.txt"
+
+# Fork-free negation predicate for the marker-absence assert below (mirrors
+# tests/infra/test_verify_release_delta_skip.sh's _lacks_skip_marker; must run in
+# THIS shell via assert's "$@" — never through `bash -c`, which would not see
+# plan_match, per plan_capture_lib.sh:194-195).
+_t17amb_lacks_skip_marker() { ! plan_match "$1" 'RELEASE-PASS: skipped \(delta-clean\)'; }
+
+_T17AMB_ERR="$(mktemp)"
+_T17AMB_RAW=""
+# Retry-on-truncation capture (task 6247): `|| true` is required because
+# capture_print_plan returns 1 on exhaustion and would otherwise trip
+# `set -euo pipefail` before the completeness assertion below can report.
+#
+# T17's exact env line (below), wrapped in a hostile ambient
+# REIFY_RELEASE_DELTA_SKIP=1 + REIFY_AFFECTED_CRATES_OVERRIDE=<non-sensitive>.
+capture_print_plan _T17AMB_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env REIFY_RELEASE_DELTA_SKIP=1 REIFY_AFFECTED_CRATES_OVERRIDE="$_T17AMB_NONSENSITIVE_CRATE" \
+        env -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE \
+        -u REIFY_GATE_EXCLUDE_HEAVY DF_VERIFY_ROLE=merge \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T17AMB_ERR" || true
+assert "T17-AMB: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T17AMB_RAW"
+_T17AMB_PLAN="$(plan_strip_comments "$_T17AMB_RAW")"
+export _T17AMB_PLAN
+assert "T17-AMB: DF_VERIFY_ROLE=merge under an ambient REIFY_RELEASE_DELTA_SKIP=1 (delta forced clean): release nextest pass still renders the 90m default (T17's capture is ambient-hermetic, not merely default-hermetic)" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 90m .*cargo nextest run .*--release' "$_T17AMB_PLAN" "$_T17AMB_ERR"
+assert "T17-AMB: the frozen 'RELEASE-PASS: skipped (delta-clean)' marker is ABSENT from the plan (the leak this companion guards against)" \
+    _t17amb_lacks_skip_marker "$_T17AMB_PLAN"
+rm -f "$_T17AMB_ERR"
+
 # -- Test 18: wrapper does not leak the lock fd into background daemons --------
 # Regression test for the 2026-04-20 merge-queue wedge: sccache (spawned as a
 # detached daemon by cargo via RUSTC_WRAPPER) inherited FD 9 and outlived
