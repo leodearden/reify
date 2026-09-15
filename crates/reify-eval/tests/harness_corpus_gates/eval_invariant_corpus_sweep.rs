@@ -161,10 +161,12 @@ struct CorpusFile {
 /// and the ONE explicit #4946 R3f-bridge premise fixture.
 ///
 /// CRITICAL — the prd-gate fixture is referenced as that explicit `<name>.ri`
-/// LEAF and never as its directory. `verify.sh`'s `tests/prd-gate/fixtures/*.ri`
+/// LEAF and never as its containing directory. `verify.sh`'s prd-gate `*.ri`
 /// no-heavy carve-out rests on the premise that no `*.rs` globs that directory,
 /// and `test_verify_scope.sh`'s PG-DRIFT-DIR guard reds on a directory
-/// reference. Walking it would silently widen the carve-out's blast radius.
+/// reference — including one written in prose, which is why the path is spelled
+/// only as the full leaf anywhere in this file. Walking it would silently widen
+/// the carve-out's blast radius.
 ///
 /// `files.sort()` is retained even though the sorted position no longer
 /// determines the shard: listings, skip reports and diagnostics stay
@@ -387,11 +389,12 @@ fn shard_key_is_worktree_independent() {
         manifest_dir.join("../../examples/fdm_bracket.ri"),
         manifest_dir.join("../../tests/prd-gate/fixtures/geometry_let_selector_consumer.ri"),
     ];
-    let expected_roots = [
-        "examples/",
-        "crates/reify-eval/tests/fixtures/",
-        "tests/prd-gate/fixtures/",
-    ];
+    // Two walked roots, plus the ONE explicitly-named prd-gate leaf. Matching
+    // that leaf exactly, rather than by directory prefix, is both more precise
+    // (the corpus holds exactly one member from there) and required: naming the
+    // directory in any `*.rs` string reds `test_verify_scope.sh`'s PG-DRIFT-DIR
+    // guard, which is the carve-out's load-bearing premise.
+    let walked_roots = ["examples/", "crates/reify-eval/tests/fixtures/"];
     for path in &live {
         assert!(path.exists(), "premise: {} must exist", path.display());
         let rel = repo_relative(path, &root);
@@ -406,8 +409,9 @@ fn shard_key_is_worktree_independent() {
              `examples/x.ri` or two spellings of one file would key to two shards"
         );
         assert!(
-            expected_roots.iter().any(|p| rel.starts_with(p)),
-            "{rel} must sit under one of the three corpus roots {expected_roots:?}"
+            walked_roots.iter().any(|p| rel.starts_with(p)) || rel == SELECTOR_CONSUMER_REL,
+            "{rel} must sit under a walked corpus root {walked_roots:?} or be the \
+             explicitly-named prd-gate leaf {SELECTOR_CONSUMER_REL}"
         );
     }
 

@@ -1386,11 +1386,12 @@ decide_scope() {
                 # .capability-manifest.yaml + its .ri fixtures, gated by
                 # hooks/pre-commit -> `--scope staged`) stays a seconds-long
                 # hook instead of escalating to a full workspace nextest run.
-                #   • Nothing globs this directory: reify-eval's
-                #     no_stale_undef_invariant_gate.rs corpus_files() walks only
-                #     its own tests/fixtures + examples/, then pushes ONE
-                #     explicit prd-gate path — so ADDING a fixture provably
-                #     cannot change any Rust target's inputs. EDITING one of the
+                #   • Nothing globs this directory: reify-eval's unified corpus
+                #     sweep (harness_corpus_gates/eval_invariant_corpus_sweep.rs,
+                #     corpus_files()) walks only its own tests/fixtures +
+                #     examples/, then pushes ONE explicit prd-gate path — so
+                #     ADDING a fixture provably cannot change any Rust target's
+                #     inputs. EDITING one of the
                 #     names in _RUST_COUPLED_RI_FIXTURES can, hence the exclusion
                 #     below (a blanket rule would let such an edit reach `main`
                 #     through the hook-gated docs path with no heavy checks and

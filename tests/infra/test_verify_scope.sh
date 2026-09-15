@@ -189,11 +189,13 @@ assert "PG-1/docs+fixture: hook still completes in seconds — no cargo nextest 
 echo ""
 echo "--- Scenario PG-2: Rust-consumed prd-gate fixture -> stays conservative (control, green before AND after) ---"
 # geometry_let_selector_consumer.ri is pushed into corpus_files() by
-# crates/reify-eval/tests/no_stale_undef_invariant_gate.rs:772 — it is a
-# runtime input to a compiled test target, so EDITING it must keep today's
-# conservative classification even though ADDING an unrelated fixture is inert.
+# crates/reify-eval/tests/harness_corpus_gates/eval_invariant_corpus_sweep.rs
+# (no line number: the previous cite had already drifted, so a fresh one would
+# only re-drift) — it is a runtime input to a compiled test target, so EDITING it
+# must keep today's conservative classification even though ADDING an unrelated
+# fixture is inert.
 plan_for staged tests/prd-gate/fixtures/geometry_let_selector_consumer.ri
-assert "PG-2/coupled fixture: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (read by no_stale_undef_invariant_gate.rs)" \
+assert "PG-2/coupled fixture: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (read by eval_invariant_corpus_sweep.rs)" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_OUT"
 
 echo ""
