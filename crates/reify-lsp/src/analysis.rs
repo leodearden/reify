@@ -804,12 +804,16 @@ fn make_symbol(
 ///
 /// Declaration AST nodes carry only `name: String` plus the full declaration
 /// span (no separate name-token span), so the name's byte offset must be
-/// recovered from the source. LSP requires `selection_range ⊆ range` and ideally
-/// on the name token; this performs a *word-boundary* search bounded to the
-/// declaration's own span, falling back to `span.start` when the name cannot be
-/// located (defensive; should not happen for well-formed declarations).
+/// recovered from the source — via [`name_token_span`], the crate's single
+/// name-token locator, which matches whole-word and only within the
+/// declaration's own span. LSP requires `selection_range ⊆ range` and ideally on
+/// the name token; [`name_token_span`]'s empty-span fallback (no whole-word
+/// match inside the span) degrades to `span.start` here, which still satisfies
+/// the subset invariant (defensive; should not happen for well-formed
+/// declarations).
 fn name_selection_range(source: &str, span: SourceSpan, name: &str) -> Range {
-    let name_offset = find_name_offset_in_span(source, span, name);
+    let token = name_token_span(source, span, name);
+    let name_offset = if token.is_empty() { span.start } else { token.start };
     // Clamp the selection end to the declaration span's end so the LSP
     // `selection_range ⊆ range` invariant holds even for degenerate or
     // error-recovery spans shorter than the name. When the name is located
@@ -822,56 +826,6 @@ fn name_selection_range(source: &str, span: SourceSpan, name: &str) -> Range {
         start: offset_to_position(source, name_offset),
         end: offset_to_position(source, name_end),
     }
-}
-
-/// Find the byte offset of `name` as a *whole identifier* within
-/// `[span.start, span.end)`, returning `span.start` if no word-boundary match
-/// is found.
-///
-/// A naive substring search is unsafe — e.g. the member name `a` would match
-/// inside the `param` keyword — so a match must have non-identifier neighbours
-/// (or a source boundary) on both sides. Search bounds are clamped to the
-/// source length and snapped forward to UTF-8 character boundaries, mirroring
-/// the safety pattern in `convert::offset_to_position`.
-fn find_name_offset_in_span(source: &str, span: SourceSpan, name: &str) -> u32 {
-    if name.is_empty() {
-        return span.start;
-    }
-    let len = source.len();
-    let mut start = (span.start as usize).min(len);
-    let mut end = (span.end as usize).min(len);
-    // Snap both ends forward to valid UTF-8 boundaries so the slice is valid
-    // even when tree-sitter error-recovery spans land mid-character.
-    while start < len && !source.is_char_boundary(start) {
-        start += 1;
-    }
-    while end < len && !source.is_char_boundary(end) {
-        end += 1;
-    }
-    if start >= end {
-        return span.start;
-    }
-
-    let hay = &source[start..end];
-    let bytes = source.as_bytes();
-    let name_len = name.len();
-    let mut search_from = 0usize;
-    while search_from < hay.len() {
-        let Some(rel) = hay[search_from..].find(name) else {
-            break;
-        };
-        let abs = start + search_from + rel; // absolute byte offset of the match
-        // Left and right neighbours must be non-identifier bytes (or source
-        // boundaries) for this to be a whole-word match.
-        let left_ok = abs == 0 || !is_ident_byte(bytes[abs - 1]);
-        let right = abs + name_len;
-        let right_ok = right >= len || !is_ident_byte(bytes[right]);
-        if left_ok && right_ok {
-            return abs as u32;
-        }
-        search_from += rel + 1;
-    }
-    span.start
 }
 
 /// Narrow a member-statement span down to the span of just its NAME identifier
@@ -894,10 +848,12 @@ fn find_name_offset_in_span(source: &str, span: SourceSpan, name: &str) -> u32 {
 /// the `s` of `structure s`. The UTF-8 char-boundary snap mirrors
 /// `convert::offset_to_position`.
 ///
-/// The crate's single name-token locator: `references.rs` uses it for the
-/// declaration name-token span, the `include_declaration` token, and the
-/// prepare/compute-rename declaration path, and `goto_def::decl_name_span_in`
-/// uses it for top-level declarations.
+/// The crate's single name-token locator — no second implementation of this
+/// search exists: `references.rs` uses it for the declaration name-token span,
+/// the `include_declaration` token and the prepare/compute-rename declaration
+/// path; `goto_def::decl_name_span_in` uses it for top-level declarations; and
+/// `name_selection_range` uses it for the LSP `selection_range`, degrading the
+/// empty-span fallback to the declaration start.
 pub fn name_token_span(source: &str, member_span: SourceSpan, name: &str) -> SourceSpan {
     let mut start = (member_span.start as usize).min(source.len());
     // Snap forward to a valid UTF-8 boundary if we landed mid-character.
