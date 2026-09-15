@@ -198,9 +198,11 @@ enum ParityVerdict {
     /// The row evaluated to a real value whose kind its declared type accepts.
     /// The only pass.
     Matches,
-    /// The row evaluated to `Value::Undef`. The matcher accepts this for any
-    /// type, so the comparison certifies NOTHING about the row — it is not a
-    /// pass, and it needs a [`ExemptionEntry`] saying which leaf retires it.
+    /// One side of the pair was a trivial-accept sentinel — the row evaluated
+    /// to `Value::Undef`, or its declared type resolved to `Type::Error`. The
+    /// matcher accepts either unconditionally, so the comparison certifies
+    /// NOTHING about the row — it is not a pass, and it needs an
+    /// [`ExemptionEntry`] saying which leaf retires it.
     Vacuous,
     /// The row evaluated to a real value whose kind its declared type rejects.
     /// Either the row's `result` column or its eval body is wrong.
@@ -209,13 +211,27 @@ enum ParityVerdict {
 
 /// Classify one (executed value, declared type) pair.
 ///
-/// `Value::Undef` is tested FIRST and short-circuits to
-/// [`ParityVerdict::Vacuous`], **before** the matcher is consulted. That order
-/// is load-bearing, not stylistic: `crate::value_type_kind_matches` answers
-/// `true` for `Undef` against every type (`crates/reify-eval/src/lib.rs:326`),
-/// so consulting it first would erase the distinction this enum exists to
-/// draw. Reversing these two statements makes the harness green over rows it
-/// never probed.
+/// # Both trivial-accept sentinels are tested BEFORE the matcher
+///
+/// `crate::value_type_kind_matches` has two paths that answer `true` while
+/// carrying no information — one on each side of the pair, each able to hollow
+/// this harness out from its own side:
+///
+/// - **`Value::Undef`**, the Auto/no-value sentinel, accepted for every type;
+/// - **`Type::Error`**, the type-inference poison sentinel, accepted for every
+///   VALUE — and short-circuited by the matcher's anti-cascade guard *before*
+///   it inspects the value at all.
+///
+/// Either one alone makes the comparison certify nothing, so both classify as
+/// [`ParityVerdict::Vacuous`], and both are tested before the matcher is
+/// consulted. That order is load-bearing, not stylistic: reversing these
+/// statements makes the harness green over rows it never probed.
+///
+/// A declared `Type::Error` is unreachable on α's rows — every seed resolver is
+/// total and answers a concrete type — but it is exactly what a τ resolver
+/// wired to return `None` / `E_BuiltinArgShape` diagnostics (PRD §3 decision 5)
+/// begins producing, and such a row must surface as an unledgered `Vacuous`
+/// rather than as a silent pass for whatever it happened to evaluate to.
 ///
 /// Otherwise the answer is delegated to `crate::value_type_kind_matches` — the
 /// workspace's single static-vs-runtime kind oracle, and the ONLY one this
@@ -241,8 +257,9 @@ enum ParityVerdict {
 /// into engine construction, which would drag the harness out of a unit test
 /// and into the engine's whole startup surface.
 fn classify(value: &Value, declared: &Type) -> ParityVerdict {
-    // Order matters — see the doc above. `Undef` before the matcher, always.
-    if matches!(value, Value::Undef) {
+    // Order matters — see the doc above. BOTH sentinels before the matcher,
+    // always; it answers `true` for either one.
+    if matches!(value, Value::Undef) || declared.is_error() {
         return ParityVerdict::Vacuous;
     }
     if crate::value_type_kind_matches(value, declared, None) {
@@ -581,17 +598,37 @@ fn classify_undef_is_vacuous_for_every_declared_type() {
     }
 }
 
-/// Both trivial-accept paths present at once: `Undef` (the value sentinel) and
-/// `Type::Error` (the type-inference poison sentinel, which
-/// `value_type_kind_matches` short-circuits to `true` before it even inspects
-/// the value). `Vacuous` must win, so the row is not certified by a pair in
-/// which neither side carries information.
+/// **The second trivial-accept path**, pinned at the case the `Undef` guard
+/// does NOT already cover: a REAL value against `Type::Error`.
+///
+/// `value_type_kind_matches` short-circuits `Type::Error` to `true` before it
+/// inspects the value at all, so without its own guard [`classify`] would
+/// report `Matches` for ANY observed value whenever a row's resolver answered
+/// `Error` — the same hollowing-out the `Undef` guard prevents, arriving from
+/// the other side of the pair.
+///
+/// Pairing `Type::Error` with `Value::Undef` alone cannot pin this: that case
+/// is `Vacuous` on the `Undef` guard whether or not the `Error` guard exists,
+/// so it would pass for the wrong reason.
 #[test]
-fn classify_undef_against_error_type_is_vacuous() {
-    assert_eq!(
-        classify(&Value::Undef, &Type::Error),
-        ParityVerdict::Vacuous
+fn classify_against_the_error_type_is_vacuous_even_for_a_real_value() {
+    let real = Value::String("12mm".to_string());
+
+    assert!(
+        crate::value_type_kind_matches(&real, &Type::Error, None),
+        "premise of this test: the matcher accepts a REAL value for \
+         Type::Error, which is why classify needs a guard of its own"
     );
+    assert_eq!(
+        classify(&real, &Type::Error),
+        ParityVerdict::Vacuous,
+        "a declared Type::Error certifies nothing about the row, whatever the \
+         row evaluated to"
+    );
+
+    // Both sentinels at once. Still Vacuous — and neither guard may be the
+    // reason the other one looks tested.
+    assert_eq!(classify(&Value::Undef, &Type::Error), ParityVerdict::Vacuous);
 }
 
 // ── the probe itself must be well-formed before it can blame a row ──────────
