@@ -83,12 +83,25 @@ pub(crate) struct CompilationScope<'u> {
     /// withholds a diagnostic. Forward references still do not resolve; that is
     /// `functions_phase`'s documented contract and #6014's business.
     ///
-    /// Populated only on the scopes built by `functions.rs::compile_function`,
-    /// which are the ones that compile against a function table that is still
-    /// being built. Entity bodies compile after `ctx.resolution_functions` is
-    /// merged and so never reach the fallback with a declared name; leaving the
-    /// set empty there keeps the field's meaning exact rather than approximately
-    /// true everywhere.
+    /// Populated on the scopes built by `functions.rs` — `compile_function`
+    /// (both halves) and `compile_assoc_function` (structure half only). Which
+    /// half a site needs follows from WHEN it compiles, and the two questions
+    /// come apart:
+    ///
+    /// * the FN half matters only where the function table is still being
+    ///   built, i.e. inside `phase_functions`. After it, a declared free fn
+    ///   resolves and never reaches the fallback, so `compile_assoc_function`
+    ///   (reached from conformance, later) leaves that half empty by decision.
+    /// * the STRUCTURE half matters wherever no template registry is set, which
+    ///   is `phase_traits`'s static fn bodies AND `compile_assoc_function`'s
+    ///   bodies: there `Widget(w: 2mm)` is never claimed as a
+    ///   `StructureInstanceCtor` and falls through with a declared name
+    ///   (esc-5371-12).
+    ///
+    /// Entity bodies proper need neither and leave the set empty. Populating a
+    /// half a site cannot need would make the field approximately true
+    /// everywhere instead of exactly true somewhere, and would hide the next
+    /// site that acquires a genuine need.
     pub(crate) declared_callable_names: HashSet<String>,
     /// Trait member index for qualified access validation: trait_name → set of member names.
     /// Populated from trait_registry in compile_entity.

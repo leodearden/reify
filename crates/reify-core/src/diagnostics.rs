@@ -1842,9 +1842,10 @@ pub enum DiagnosticCode {
     ///
     /// The fallback has THREE outcomes, not two, and the third is silence: a
     /// callee the enclosing module declares but that this body cannot yet
-    /// resolve (a forward-referenced sibling `fn`, or a constructor inside a
-    /// trait static fn body) emits neither this code nor `UnresolvedFunction`
-    /// nor the legacy zero-arg warning, and is still typed from arg0. That
+    /// resolve (a forward-referenced sibling `fn`, or a constructor inside any
+    /// trait fn body — static or assoc) emits neither this code nor
+    /// `UnresolvedFunction` nor the legacy zero-arg warning, and is still typed
+    /// from arg0. That
     /// silence is narrower than the pre-#5371 open-world silence: it is granted
     /// only to names the module demonstrably declares. Pinned by
     /// `forward_referenced_sibling_emits_neither_warning` and

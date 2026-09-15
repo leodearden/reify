@@ -318,6 +318,7 @@ three silent after it, none of them changing any type:
 | mutually-referential `fn` pair | `unresolved function: odd` | same, and UNFIXABLE by reordering |
 | structure constructor in a TRAIT STATIC fn body | `unresolved function: Widget` | `traits_phase` passes `None` for the template registry |
 | `fn` param default calling a later sibling | `unresolved function: later` | same table, `compile_function`'s neutral scope |
+| structure constructor in an ASSOC fn body — trait default, or either kind of structure override | `unresolved function: Widget` | `compile_assoc_function` likewise sets no template registry (esc-5371-12) |
 
 Five controls bound the fix and were measured green throughout; two of them are
 routes a reading of the code suggests are broken and which measurement shows are
@@ -355,13 +356,28 @@ contract, not a defect this warn-only task introduced; but #5997 should not read
 the silence as "nothing is wrong here". Closing it means giving fn bodies a
 complete table, which is #6014 (registry ω) territory.
 
-**The trait-static constructor route is silenced, not fixed.** `Widget(w: 2mm)`
-inside a trait static fn body still does not lower to a `StructureInstanceCtor`,
-because `traits_phase` still passes `None` for `prelude_template_registry`
-("v1"). Passing `Some(&merged_registry)` there would change how those bodies
+**The constructor routes are silenced, not fixed, in BOTH trait-fn positions.**
+`Widget(w: 2mm)` still does not lower to a `StructureInstanceCtor` inside a
+trait STATIC fn body (`traits_phase` passes `None` for
+`prelude_template_registry`, "v1") nor inside an ASSOC fn body —
+`compile_assoc_function`, reached from conformance for a trait default and for
+either kind of structure override, sets no registry either (esc-5371-12).
+Passing `Some(&merged_registry)` at either site would change how those bodies
 TYPE constructor calls, which is outside a warn-only task's remit and was
-deliberately not done. So a bad field name in that position is still not caught,
-where the same call in a regular fn body is.
+deliberately not done. So a bad field name in either position is still not
+caught, where the same call in a regular fn body raises `E_CTOR_UNKNOWN_FIELD`.
+
+Note the two halves of the declared-callable set are needed at DIFFERENT sites,
+which is why neither is populated everywhere: the FN half matters only while
+`phase_functions` is still growing the table, and the STRUCTURE half matters
+wherever no template registry is set. `compile_assoc_function` runs after
+`phase_functions`, so it needs the structure half only — measured, not assumed.
+
+A caution for #5997 drawn from getting this wrong once: a probe that declares a
+trait with a default body but NO conforming structure never invokes
+`compile_assoc_function` at all, so it measures clean VACUOUSLY. Route (4) was
+initially missed exactly that way. Any probe of an assoc-fn route must include a
+structure that actually conforms.
 
 **What is NOT a gap.** Imported user modules arrive as the `prelude` slice
 (`module_dag.rs` collects each import's `CompiledModule` and hands it to
