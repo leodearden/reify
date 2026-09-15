@@ -22,8 +22,11 @@
 //! residue PRD decision 12 names: **a buggy eval body returning the wrong
 //! kind**, which is invisible to a table-only test and invisible to a
 //! value-only test whose expectation was authored from the same buggy body.
-//! This module is the join, and it is the only place the two sides meet under
-//! execution.
+//! This module is the join — the only place the two sides meet under execution
+//! — but it is a join over the argument shapes it actually probes, and not
+//! every shape a row declares is reachable through the `eval_builtin` path.
+//! Read "What this harness cannot see" below before treating a green sweep as
+//! closing decision 12 for a whole row.
 //!
 //! Membership is DERIVED, never declared: no builtin name, id, or count is
 //! restated here. A τ migration that adds rows is swept with no edit to this
