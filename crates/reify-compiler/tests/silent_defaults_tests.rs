@@ -532,7 +532,7 @@ fn range_valid_compiles_without_ice() {
 /// its registry row, e.g. `world()` — is pinned by
 /// `unresolved_function_tests::zero_arg_known_but_unregistered_callee_keeps_only_the_legacy_warning`.
 #[test]
-fn stdlib_fn_no_args_emits_type_inference_warning() {
+fn zero_arg_unresolvable_callee_emits_exactly_one_unresolved_function_warning() {
     let source = r#"
         structure S {
             let x = __test_zero_arg_fn()

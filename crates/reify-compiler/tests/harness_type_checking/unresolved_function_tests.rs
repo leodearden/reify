@@ -28,29 +28,39 @@
 //! the fallback in `expr.rs` emits it.
 
 use reify_core::{DimensionVector, Severity, Type};
-use reify_test_support::{compile_source_with_stdlib, get_let_expr_in};
+use reify_test_support::{compile_source_with_stdlib, errors_only, get_let_expr_in, warnings_only};
 
-/// Every `UnresolvedFunction`-coded diagnostic in `module`, in source order.
+/// Every diagnostic in `module` carrying `code`, in source order.
 ///
 /// Matches on the CODE, never on message text: the message is explicitly not a
 /// stable contract (`diagnostics.rs` says so for every coded diagnostic), and a
 /// text match would make this file break on rewording rather than on behaviour.
-fn unresolved_function_diags(
+fn diags_with_code(
     module: &reify_compiler::CompiledModule,
+    code: reify_core::DiagnosticCode,
 ) -> Vec<&reify_core::Diagnostic> {
     module
         .diagnostics
         .iter()
-        .filter(|d| d.code == Some(reify_core::DiagnosticCode::UnresolvedFunction))
+        .filter(|d| d.code == Some(code))
         .collect()
 }
 
-/// Every Error-severity diagnostic message in `module`, in source order.
+/// Every `UnresolvedFunction`-coded diagnostic in `module`, in source order.
+fn unresolved_function_diags(
+    module: &reify_compiler::CompiledModule,
+) -> Vec<&reify_core::Diagnostic> {
+    diags_with_code(module, reify_core::DiagnosticCode::UnresolvedFunction)
+}
+
+/// Every Error-severity diagnostic MESSAGE in `module`, in source order.
+///
+/// A message-level view over `reify_test_support::errors_only`, kept local only
+/// because the assertions below compare against `Vec::<&str>::new()`, whose
+/// failure dump reads far better than a `Vec<&Diagnostic>`.
 fn errors(module: &reify_compiler::CompiledModule) -> Vec<&str> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
+    errors_only(module)
+        .into_iter()
         .map(|d| d.message.as_str())
         .collect()
 }
@@ -239,17 +249,6 @@ fn known_builtins_never_emit_an_unresolved_function_warning() {
 // the zero-arg interaction: two warnings, mutually exclusive
 // ---------------------------------------------------------------------------
 
-/// Every Warning-severity diagnostic in `module`, in source order. Used by the
-/// zero-arg tests, which assert on the TOTAL warning count rather than on a
-/// single code — the whole point there is that no second warning sneaks in.
-fn warnings(module: &reify_compiler::CompiledModule) -> Vec<&reify_core::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Warning)
-        .collect()
-}
-
 /// Does `module` carry the legacy pre-#5371 zero-arg warning?
 ///
 /// Matched on TEXT, unavoidably: that warning predates the coded-diagnostic
@@ -302,10 +301,10 @@ fn zero_arg_unknown_callee_is_not_double_diagnosed() {
             .collect::<Vec<_>>()
     );
     assert_eq!(
-        warnings(&module).len(),
+        warnings_only(&module).len(),
         1,
         "exactly one warning total; got {:?}",
-        warnings(&module)
+        warnings_only(&module)
             .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>()
@@ -371,10 +370,10 @@ fn zero_arg_known_but_unregistered_callee_keeps_only_the_legacy_warning() {
             .collect::<Vec<_>>()
     );
     assert_eq!(
-        warnings(&module).len(),
+        warnings_only(&module).len(),
         1,
         "exactly one warning total; got {:?}",
-        warnings(&module)
+        warnings_only(&module)
             .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>()
@@ -401,13 +400,12 @@ fn zero_arg_known_but_unregistered_callee_keeps_only_the_legacy_warning() {
 // the new warning with the old inferred type.
 
 /// Every `BuiltinArgShapeUnrecognized`-coded diagnostic in `module`, in source
-/// order. Matches on the CODE, never on message text.
+/// order.
 fn arg_shape_diags(module: &reify_compiler::CompiledModule) -> Vec<&reify_core::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == Some(reify_core::DiagnosticCode::BuiltinArgShapeUnrecognized))
-        .collect()
+    diags_with_code(
+        module,
+        reify_core::DiagnosticCode::BuiltinArgShapeUnrecognized,
+    )
 }
 
 /// Is `text` present in the diagnostic's message or in any of its labels?
@@ -673,10 +671,10 @@ fn zero_arg_mis_shaped_known_builtin_is_not_double_diagnosed() {
             .collect::<Vec<_>>()
     );
     assert_eq!(
-        warnings(&module).len(),
+        warnings_only(&module).len(),
         1,
         "exactly one warning total; got {:?}",
-        warnings(&module)
+        warnings_only(&module)
             .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>()
@@ -1020,15 +1018,15 @@ fn forward_referenced_sibling_emits_neither_warning() {
             !has_legacy_zero_arg_warning(&module),
             "{shape}: the legacy zero-arg warning must not leak in through the \
              `known` guard; got {:?}",
-            warnings(&module)
+            warnings_only(&module)
                 .iter()
                 .map(|d| &d.message)
                 .collect::<Vec<_>>()
         );
         assert!(
-            warnings(&module).is_empty(),
+            warnings_only(&module).is_empty(),
             "{shape}: this state emits ZERO warnings; got {:?}",
-            warnings(&module)
+            warnings_only(&module)
                 .iter()
                 .map(|d| &d.message)
                 .collect::<Vec<_>>()
@@ -1094,7 +1092,7 @@ fn genuinely_undeclared_zero_arg_callee_still_yields_exactly_one_warning() {
         unresolved_function_diags(&module).len(),
         1,
         "the stronger claim still fires; got {:?}",
-        warnings(&module)
+        warnings_only(&module)
             .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>()
@@ -1102,16 +1100,16 @@ fn genuinely_undeclared_zero_arg_callee_still_yields_exactly_one_warning() {
     assert!(
         !has_legacy_zero_arg_warning(&module),
         "…and the legacy warning still does not double-report it; got {:?}",
-        warnings(&module)
+        warnings_only(&module)
             .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>()
     );
     assert_eq!(
-        warnings(&module).len(),
+        warnings_only(&module).len(),
         1,
         "exactly one warning total; got {:?}",
-        warnings(&module)
+        warnings_only(&module)
             .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>()
@@ -1196,10 +1194,14 @@ fn genuinely_undeclared_callee_in_an_assoc_fn_body_still_warns() {
     );
 
     let diags = unresolved_function_diags(&module);
-    assert!(
-        !diags.is_empty(),
-        "'nope_not_a_thing' is declared nowhere and must still warn; got {:?}",
-        warnings(&module)
+    assert_eq!(
+        diags.len(),
+        1,
+        "'nope_not_a_thing' is declared nowhere and must still warn EXACTLY once \
+         — matching the sibling control `genuinely_undeclared_callee_in_a_fn_body\
+         _still_warns`, since one-line-per-defect is the load-bearing property of \
+         the #5371 split; got {:?}",
+        warnings_only(&module)
             .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>()
@@ -1252,4 +1254,205 @@ fn assoc_fn_calling_a_declared_fn_stays_clean() {
                 .collect::<Vec<_>>()
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// (l) A function-TYPED value applied by bare name is a real callee.
+// ---------------------------------------------------------------------------
+
+/// `f(x)` where `f` is a `(Length) -> Real` PARAMETER must not warn.
+///
+/// `f` is an ordinary value binding, so it lives in the scope's `names` map and
+/// NOT in the module's declared callable vocabulary, and no ladder arm above
+/// the fallback claims a call whose callee is a local of `Type::Function`.
+///
+/// MEASURED on the branch tip before the fix: `warning: unresolved function: f`.
+/// Today's corpus cannot catch it — the only function-typed params in the
+/// stdlib (`map_or` in `option_recovery.ri`, `map_err` in `result.ri`) have stub
+/// bodies that never apply their parameter — so the sweep stays green either
+/// way. #5997 flips this Warning to an Error, at which point the first real
+/// higher-order body becomes a hard compile failure.
+#[test]
+fn function_typed_parameter_applied_by_bare_name_is_not_unresolved() {
+    let module = compile_source_with_stdlib(
+        r#"
+        pub fn apply_once(f: (Length) -> Real, x: Length) -> Length { f(x) }
+    "#,
+    );
+
+    assert!(
+        unresolved_function_diags(&module).is_empty(),
+        "'f' is a function-typed parameter in scope, not an unknown name; got {:?}",
+        unresolved_function_diags(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(errors(&module), Vec::<&str>::new());
+
+    // Typing is UNCHANGED: withholding the warning did not quietly teach the
+    // fallback to read `f`'s declared `-> Real` return type. The two candidate
+    // answers differ, so this is positive evidence.
+    assert_eq!(
+        fn_body_result_type(&module, "apply_once"),
+        scalar_length(),
+        "still typed from arg0, NOT from the function type's `-> Real` codomain"
+    );
+}
+
+/// Control: the guard is bounded by what the scope actually binds.
+///
+/// A bare name that is neither a builtin, nor declared by the module, nor bound
+/// as a function-typed value must STILL warn — otherwise the fix above is a
+/// blanket disable for fn bodies that happen to take a function parameter.
+#[test]
+fn undeclared_callee_beside_a_function_typed_parameter_still_warns() {
+    let module = compile_source_with_stdlib(
+        r#"
+        pub fn apply_once(f: (Length) -> Real, x: Length) -> Length { not_a_thing(x) }
+    "#,
+    );
+
+    assert_eq!(
+        unresolved_function_diags(&module).len(),
+        1,
+        "'not_a_thing' is declared nowhere; got {:?}",
+        warnings_only(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (m) End-to-end coverage for every REACHABLE `arg_shape_expectation` arm.
+// ---------------------------------------------------------------------------
+
+/// Each reachable arm of `arg_shape_expectation` produces exactly one
+/// `BuiltinArgShapeUnrecognized` naming the builtin AND its declared parameter
+/// list.
+///
+/// The unit test `arg_shape_expectation_covers_every_arg_aware_family_member`
+/// only checks that each slice entry lands on a match arm; it never exercises
+/// the fallback. So a ladder reorder that shadowed one of these names out of
+/// the terminal arm would leave every other test in this file green. This is
+/// the test that notices.
+///
+/// Two groups are deliberately absent, each with its own premise guard: the
+/// AFFINE family (section (j)) and `compose` (below).
+#[test]
+fn every_reachable_arg_shape_arm_warns_once_with_its_parameter_list() {
+    // (callee, mis-shaped call, a substring of the family's declared params)
+    let cases: &[(&str, &str, &str)] = &[
+        // list-helper — list_helpers.rs
+        ("single", "single(42)", "List<T>"),
+        ("flat_map", "flat_map(42, 7)", "(A) -> List<B>"),
+        ("generate", "generate(3, 7)", "(Int, (Int) -> B)"),
+        // field-op — units.rs, PRD §5.1 signature table
+        ("fn_field", "fn_field(42)", "(D) -> C"),
+        ("from_samples", "from_samples(42, 7, 0)", "List<D>"),
+        ("restrict", "restrict(42, 7)", "Geometry"),
+        ("sample", "sample(42, 7)", "Field<D, C>"),
+        ("gradient", "gradient(42)", "(Field<D, C>)"),
+        ("divergence", "divergence(42)", "(Field<D, C>)"),
+        ("curl", "curl(42)", "(Field<D, C>)"),
+        ("laplacian", "laplacian(42)", "(Field<D, C>)"),
+    ];
+
+    for (callee, call, expected_params) in cases {
+        let module = compile_source_with_stdlib(&format!(
+            r#"
+            structure ArgShapeCase {{
+                let x = {call}
+            }}
+        "#
+        ));
+
+        let diags = arg_shape_diags(&module);
+        assert_eq!(
+            diags.len(),
+            1,
+            "{callee}: expected exactly one BuiltinArgShapeUnrecognized for \
+             `{call}`; got {:?}",
+            module
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            diags[0].severity,
+            Severity::Warning,
+            "{callee}: #5371 is warn-mode-first"
+        );
+        assert!(
+            mentions(diags[0], callee),
+            "{callee}: the diagnostic must name the builtin; got {:?}",
+            diags[0].message
+        );
+        assert!(
+            mentions(diags[0], expected_params),
+            "{callee}: the diagnostic must carry the family's declared parameter \
+             list — that is the whole actionable content; wanted {expected_params:?}, \
+             got message {:?} labels {:?}",
+            diags[0].message,
+            diags[0].labels.iter().map(|l| &l.message).collect::<Vec<_>>()
+        );
+
+        // A mis-shaped call to a name the compiler DOES know is never also
+        // reported unresolved, and never changes typing in warn mode.
+        assert!(
+            unresolved_function_diags(&module).is_empty(),
+            "{callee}: a known builtin must not also be reported unresolved"
+        );
+        assert_eq!(
+            errors(&module),
+            Vec::<&str>::new(),
+            "{callee}: warn-mode-first — a mis-shaped call must not fail the build"
+        );
+    }
+}
+
+/// PREMISE GUARD: `compose` is the one `arg_shape_expectation` arm that cannot
+/// be reached from a call site, so it is excluded from the table above.
+///
+/// It is the only one of the thirteen names that is ALSO a real stdlib
+/// declaration — `pub fn compose<A, B, C>(f: Field<B, C>, g: Field<A, B>)` at
+/// `stdlib/fields.ri:122` — so user-function overload resolution claims the
+/// name long before the `NoUserFunctions` ladder, let alone its terminal
+/// fallback. Its arm stays in `arg_shape_expectation` because `compose` is a
+/// genuine member of `FIELD_OP_NAMES` and
+/// `arg_shape_expectation_covers_every_arg_aware_family_member` requires every
+/// slice entry to land on one; it is simply dead at this site.
+///
+/// This assertion is the tripwire in both directions: if the stdlib `fn` is
+/// ever removed, `compose` starts reaching the fallback and belongs back in the
+/// positive table above.
+#[test]
+fn compose_is_claimed_by_its_stdlib_fn_and_never_reaches_the_fallback() {
+    let module = compile_source_with_stdlib(
+        r#"
+        structure ComposePremise {
+            let x = compose(42, 7)
+        }
+    "#,
+    );
+
+    assert!(
+        arg_shape_diags(&module).is_empty(),
+        "`compose` resolves as a stdlib `fn`, so the terminal fallback never \
+         sees it and cannot diagnose its arg shape; got {:?}",
+        arg_shape_diags(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        unresolved_function_diags(&module).is_empty(),
+        "`compose` is declared in the stdlib prelude; got {:?}",
+        unresolved_function_diags(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
 }

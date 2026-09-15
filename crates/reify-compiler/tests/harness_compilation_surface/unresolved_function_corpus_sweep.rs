@@ -182,7 +182,7 @@ fn collect_ri_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Every `.ri` file across all three corpus roots, sorted.
+/// Every `.ri` file across both corpus roots, sorted.
 fn discover_corpus() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     for root in CORPUS_ROOTS {
