@@ -32,6 +32,15 @@
 //! negative assertion on prose fails OPEN: reword the sentence and the
 //! assertion becomes trivially true while silently ceasing to check anything.
 //!
+//! `UNVERIFIABLE` is a QUALIFIER carried in the same bracketed form, appended
+//! to whichever arm fired. It separates "the guard read the declaration and it
+//! is wrong" from "the guard could not read the declaration at all" — a fork
+//! the contract draws repeatedly, spanning both V3 (a referenced unit) and V4
+//! (an orphan), whose two message branches word it differently. Asserting the
+//! qualifier in both directions is what catches the branches being collapsed
+//! into one wording; the English phrasings (`cannot verify` / `cannot be
+//! verified`) are deliberately no longer asserted.
+//!
 //! FIXTURE. Two disjoint 30 mm cones, unioned — the same fixture the #6184
 //! text-level pin uses (`src/handle.rs`), because it is already MEASURED to
 //! emit THREE `GLOBAL_UNIT_ASSIGNED_CONTEXT` entities. That multiplicity is
@@ -261,7 +270,7 @@ struct RefusalCounts {
     orphan_angular_units: u32,
 }
 
-/// Assert exactly which arms of the guard fired.
+/// Assert exactly which arms and qualifiers the guard emitted.
 ///
 /// PIN THE TAG, NOT THE PROSE. Each violation line is prefixed with an
 /// identifier-shaped `[INV-AD-4/Vn]` marker precisely so these assertions
@@ -271,6 +280,10 @@ struct RefusalCounts {
 /// message and the assertion becomes trivially true, silently ceasing to
 /// distinguish the two cases it exists to separate. A missing tag reds the
 /// positive assertion first, which is the correct failure direction.
+///
+/// Takes arms (`V1`..`V4`, `MODE`) and the `UNVERIFIABLE` qualifier
+/// interchangeably: both are spelled `[INV-AD-4/<tag>]`, and the qualifier is
+/// as much a behavioural claim as the arm is.
 fn assert_arms(msg: &str, expected: &[&str], forbidden: &[&str]) {
     for arm in expected {
         let tag = format!("[INV-AD-4/{arm}]");
@@ -341,8 +354,10 @@ fn guard_refuses_a_non_radian_plane_angle_declaration() {
     assert_names_a_context_index(&msg);
 
     // (c2) A REFERENCED wrong unit is arm V3, not the unreferenced-unit arm
-    // V4 and not the missing-declaration arm V2.
-    assert_arms(&msg, &["V3"], &["V1", "V2", "V4"]);
+    // V4 and not the missing-declaration arm V2. UNVERIFIABLE must stay
+    // silent too: the guard READ this declaration and found it wrong, which
+    // is a stronger and differently-actionable claim than "could not read it".
+    assert_arms(&msg, &["V3"], &["V1", "V2", "V4", "UNVERIFIABLE"]);
 
     // (d) The counts are reported, and they show a PARTIAL defect.
     let counts = parse_counts(&msg);
@@ -411,8 +426,9 @@ fn guard_refuses_a_prefixed_radian_declaration() {
     );
 
     // (d) Same arm as the non-radian flip: the unit is still REFERENCED, it is
-    // simply wrong, so this is V3 and nothing else.
-    assert_arms(&msg, &["V3"], &["V1", "V2", "V4"]);
+    // simply wrong, so this is V3 and nothing else — and it was READ, so not
+    // UNVERIFIABLE either.
+    assert_arms(&msg, &["V3"], &["V1", "V2", "V4", "UNVERIFIABLE"]);
 
     // The counts still show a partial defect: only one unit was prefixed.
     let RefusalCounts {
@@ -468,7 +484,7 @@ fn guard_refuses_a_context_with_no_plane_angle_declaration() {
     // good unprefixed radian — it is merely unreferenced now — and V4 refuses
     // only orphans that are NOT the radian. A V4 hit here would mean the guard
     // had started treating "unreferenced" as a defect in itself.
-    assert_arms(&msg, &["V2"], &["V1", "V3", "V4"]);
+    assert_arms(&msg, &["V2"], &["V1", "V3", "V4", "UNVERIFIABLE"]);
 
     // (d) Again a PARTIAL defect: the surviving contexts still reach radians,
     // so the file still contains `.RADIAN.` and a grep still passes.
@@ -555,7 +571,7 @@ fn guard_refuses_the_half_wired_degree_angle_mode() {
     // this defect (the declaration is byte-identical under every enum value),
     // and a diagnostic claiming one of them fired would be claiming something
     // the guard's own evidence log contradicts.
-    assert_arms(&msg, &["MODE"], &["V1", "V2", "V3", "V4"]);
+    assert_arms(&msg, &["MODE"], &["V1", "V2", "V3", "V4", "UNVERIFIABLE"]);
 
     // (c) NO LEAK. `step.angleunit.mode` is a process-global Interface_Static
     // and this harness runs its tests as threads in ONE process, so a fault
@@ -607,7 +623,7 @@ fn guard_refuses_an_orphaned_non_radian_plane_angle_unit() {
     // legitimately reaches no angular unit any more and V2 is a true finding.
     // Forbidding it would pin an OCCT detail this test has no business
     // depending on.
-    assert_arms(&msg, &["V4"], &["V1", "V3"]);
+    assert_arms(&msg, &["V4"], &["V1", "V3", "UNVERIFIABLE"]);
 
     // (c) The offending ENTITY is named by index, and by unit name. This is
     // V4's own message-formatting branch — distinct from V3's, which names a
@@ -709,19 +725,15 @@ fn guard_refuses_an_unverifiable_plane_angle_declaration() {
 
     // (b) V3 — the unit is still REFERENCED by a context, so this is the
     // association arm. V2 must stay silent: something IS declared here.
-    assert_arms(&msg, &["V3"], &["V1", "V2", "V4"]);
-
-    // (c) The diagnostic says it could not VERIFY the declaration. Pinned as a
-    // positive assertion on the wording that distinguishes this branch from
-    // the verified-wrong one: "not the unprefixed SI radian" would be a claim
-    // the guard never established, and would point at a defect that may not
-    // exist.
-    assert!(
-        msg.contains("cannot verify"),
-        "an unreadable declaration must be reported as UNVERIFIABLE — the \
-         guard did not establish that it is wrong, only that it could not \
-         read it; got: {msg}"
-    );
+    //
+    // (c) …and the finding is qualified UNVERIFIABLE. That is the claim this
+    // whole arm exists to make: "not the unprefixed SI radian" would assert
+    // something the guard never established and point at a defect that may not
+    // exist. Pinned by tag rather than by the English `cannot verify`, so a
+    // reword is noise-free while a COLLAPSE of the two V3 branches into the
+    // verified-wrong wording still reds here — which the substring check could
+    // not distinguish from a rename.
+    assert_arms(&msg, &["V3", "UNVERIFIABLE"], &["V1", "V2", "V4"]);
 
     // (d) The actual OCCT class name is echoed, from `DynamicType()->Name()`.
     // That string is the whole point of the arm: it tells a reader what
@@ -772,16 +784,15 @@ fn guard_refuses_an_orphaned_unverifiable_plane_angle_unit() {
     // (a) Refused, same attribution.
     let msg = refusal_message(&kernel, union_id, "orphan_unrecognised");
 
-    // (b) V4 alone. Nothing existing was touched, so a hit on any other arm
-    // means the fault did more than it claims to.
-    assert_arms(&msg, &["V4"], &["V1", "V2", "V3"]);
+    // (b) V4 alone, qualified UNVERIFIABLE. Nothing existing was touched, so a
+    // hit on any other arm means the fault did more than it claims to; and V4
+    // must report an unreadable orphan as unverifiable rather than as a unit it
+    // checked and rejected. V4 formats its finding separately from V3 (it names
+    // an entity, not a context), so this is a second branch that V3's test
+    // cannot reach and that needs its own tag pin.
+    assert_arms(&msg, &["V4", "UNVERIFIABLE"], &["V1", "V2", "V3"]);
 
-    // (c) V4's own wording for the unverifiable case, and the class name.
-    assert!(
-        msg.contains("cannot be verified"),
-        "V4 must report an unreadable orphan as UNVERIFIABLE rather than as a \
-         unit it checked and rejected; got: {msg}"
-    );
+    // (c) The orphan's OCCT class name.
     assert!(
         msg.contains("StepBasic_PlaneAngleUnit"),
         "the refusal must name the orphan's OCCT class; got: {msg}"
@@ -849,7 +860,7 @@ fn guard_resolves_the_two_part_complex_context_spelling() {
     // (a) The finding is attributed to the CONTEXT that declares the unit —
     // arm V3 — and NOT to V4, which is where an unresolved context's unit
     // lands once nothing is seen to reference it.
-    assert_arms(&msg, &["V3"], &["V1", "V2", "V4"]);
+    assert_arms(&msg, &["V3"], &["V1", "V2", "V4", "UNVERIFIABLE"]);
     assert_names_a_context_index(&msg);
     assert!(
         msg.contains(".STERADIAN.") || msg.contains("sunSteradian"),
@@ -912,7 +923,7 @@ fn guard_refuses_a_model_with_no_unit_assigned_context() {
     // (b) V1 alone. V2 cannot fire (it quantifies over contexts, and there are
     // none); V3 likewise; V4 sees the now-unreferenced units but they are all
     // still correct unprefixed radians, which it skips by design.
-    assert_arms(&msg, &["V1"], &["V2", "V3", "V4"]);
+    assert_arms(&msg, &["V1"], &["V2", "V3", "V4", "UNVERIFIABLE"]);
 
     // (c) The NON-NULL-model branch, distinguished from the null-model one by
     // the entity count it reports. Both are V1, and the two say different

@@ -7008,6 +7008,17 @@ StepAngleUnitKind classify_step_angle_unit(const Handle(Standard_Transient)& ent
 /// true, stopping distinguishing exactly the two cases it exists to separate.
 /// An identifier-shaped tag cannot rot that way — rename it and the POSITIVE
 /// assertions red first, which is the direction a guard's tests must fail in.
+///
+/// TWO KINDS OF TAG, same spelling. `V1`..`V4` and `MODE` are ARMS: exactly one
+/// of them opens every violation line. `UNVERIFIABLE` is a QUALIFIER that
+/// follows an arm tag and never appears alone; it marks the sub-case where the
+/// guard could not READ a declaration, as opposed to having read one and found
+/// it wrong. That distinction is a real behavioural fork the contract calls out
+/// repeatedly (see `StepAngleUnitKind::UnrecognisedAngular`) and it spans two
+/// arms — V3 for a referenced unit, V4 for an orphan — so pinning it by the
+/// English of either branch would both rot on a reword and fail to catch the
+/// two branches being collapsed into one wording. Tagging it gives the sub-case
+/// the same identifier-shaped treatment the arm has.
 #define REIFY_INV_AD_4_ARM(tag) "[INV-AD-4/" tag "] "
 
 /// The units a context reaches, rendered for a diagnostic — built LAZILY.
@@ -7152,20 +7163,26 @@ StepPlaneAngleAuditCounts audit_step_plane_angle_units(
                 if (kind == StepAngleUnitKind::SiRadian) {
                     counts.radian_ok += 1;
                 } else if (violations != nullptr) {
-                    // V3
+                    // V3. An unreadable declaration is deliberately NOT given
+                    // the "is not the unprefixed SI radian" wording: this guard
+                    // did not establish that. It failed to read the declaration
+                    // at all, and saying otherwise would send the reader
+                    // looking for a wrong unit that may not exist. The
+                    // UNVERIFIABLE qualifier is what makes that fork
+                    // machine-readable rather than a matter of phrasing.
+                    const bool unverifiable =
+                        kind == StepAngleUnitKind::UnrecognisedAngular;
                     std::ostringstream oss;
-                    oss << REIFY_INV_AD_4_ARM("V3") << "context #" << i
-                        << " reaches plane-angle unit #" << model->Number(unit);
-                    if (kind == StepAngleUnitKind::UnrecognisedAngular) {
-                        // Deliberately NOT the "is not the unprefixed SI
-                        // radian" wording: this guard did not establish that.
-                        // It failed to read the declaration at all, and saying
-                        // otherwise would send the reader looking for a wrong
-                        // unit that may not exist.
-                        oss << ", which it cannot verify: " << detail;
-                    } else {
-                        oss << ", which is not the unprefixed SI radian: " << detail;
+                    oss << REIFY_INV_AD_4_ARM("V3");
+                    if (unverifiable) {
+                        oss << REIFY_INV_AD_4_ARM("UNVERIFIABLE");
                     }
+                    oss << "context #" << i << " reaches plane-angle unit #"
+                        << model->Number(unit)
+                        << (unverifiable
+                                ? ", which it cannot verify: "
+                                : ", which is not the unprefixed SI radian: ")
+                        << detail;
                     violations->push_back(oss.str());
                 }
             }
@@ -7236,14 +7253,21 @@ StepPlaneAngleAuditCounts audit_step_plane_angle_units(
         if (violations == nullptr || candidate.kind == StepAngleUnitKind::SiRadian) {
             continue;
         }
+        // Same UNVERIFIABLE fork as V3 above, and it needs its own tag for the
+        // same reason: V4 formats its finding separately (it names an entity,
+        // not a context), so a collapse of the two wordings here is invisible
+        // to anything asserted on V3's branch.
+        const bool unverifiable =
+            candidate.kind == StepAngleUnitKind::UnrecognisedAngular;
         std::ostringstream oss;
-        oss << REIFY_INV_AD_4_ARM("V4") << "unreferenced plane-angle unit #"
-            << candidate.index;
-        if (candidate.kind == StepAngleUnitKind::UnrecognisedAngular) {
-            oss << " cannot be verified: " << candidate.detail;
-        } else {
-            oss << " is not the unprefixed SI radian: " << candidate.detail;
+        oss << REIFY_INV_AD_4_ARM("V4");
+        if (unverifiable) {
+            oss << REIFY_INV_AD_4_ARM("UNVERIFIABLE");
         }
+        oss << "unreferenced plane-angle unit #" << candidate.index
+            << (unverifiable ? " cannot be verified: "
+                             : " is not the unprefixed SI radian: ")
+            << candidate.detail;
         violations->push_back(oss.str());
     }
 
