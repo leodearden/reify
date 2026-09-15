@@ -8312,9 +8312,10 @@ static StepExportLockedResult export_step_locked(const OcctShape& shape,
 
     // The `angle_mode_deg` fault must be installed BEFORE Transfer, which is
     // what consumes `step.angleunit.mode` (via STEPControl_ActorWrite::Transfer
-    // -> InitializeFactors). It restores itself on the way out, including when
-    // the guard below throws. Production callers pass StepGuardFault::None, so
-    // this constructs inert.
+    // -> InitializeFactors). It restores itself on the way out — on the
+    // throwing path under `Refuse` and on the early return under `Report`
+    // alike. Production callers pass StepGuardFault::None, so this constructs
+    // inert.
     StepAngleModeOverride angle_mode_override(fault == StepGuardFault::AngleModeDeg);
 
     writer.Transfer(shape.shape, STEPControl_AsIs);
@@ -8329,6 +8330,8 @@ static StepExportLockedResult export_step_locked(const OcctShape& shape,
     // Production callers pass StepGuardFault::None, so this is a no-op there.
     apply_step_guard_fault(step_model, fault);
 
+    // Both arms, rendered once. Under `Refuse` — every production path — a
+    // finding leaves as a `ContractViolation` and no file is written.
     StepPlaneAngleAuditCounts audit;
     std::string refusal = step_export_guard_refusal(step_model, &audit);
     if (!refusal.empty()) {
