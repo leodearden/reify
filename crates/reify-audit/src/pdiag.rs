@@ -56,9 +56,11 @@
 //! tail of the comment-mask bullet (a string-literal `/*` can mask a site's own
 //! `.with_code(` line, which [`code_in_window`] then never sees). Both are
 //! accepted rather than lexed away because neither occurs in the swept corpus
-//! and one `pdiag:allow` clears either. (A third false-RED route — a nested
-//! `/* /* */ */` region reading as live code — was a real defect and is now
-//! closed by [`comment_mask`]'s depth counter.)
+//! and one `pdiag:allow` clears either. (Two FURTHER false-RED routes were
+//! real defects and are closed rather than accepted: a nested `/* /* */ */`
+//! region reading as live code, by [`comment_mask`]'s depth counter; and a
+//! type whose name merely ENDS in `Diagnostic` — `FeaDiagnostic::error(` —
+//! anchoring as a site, by [`anchor_positions`]' left word boundary.)
 //!
 //! - An anchor token inside a string literal on a code line is counted as a
 //!   site (none observed in the corpus; `pdiag:allow` escapes it). This is the
@@ -72,6 +74,17 @@
 //!   sibling of the escape leak [`escape_in_window`] closes, left standing
 //!   because the two probes need opposite bounds (see that function's docs),
 //!   and is tracked as its own work item — #5887.
+//! - The SAME-LINE half of that probe has the same hole in the other
+//!   direction. [`scan_file`] probes rightwards from the anchor so an EARLIER
+//!   constructor's code cannot mark a later one, but the converse stands: in
+//!   `push(Diagnostic::error(m)); push(Diagnostic::warning(m2).with_code(c));`
+//!   the first anchor's rightward slice contains the second's `.with_code(`,
+//!   so a brand-new code-less site parked to the LEFT of a coded one on one
+//!   line is censused as coded. Bounding the scan at the next anchor on the
+//!   line is NOT the fix — it would false-RED the one-line severity-dispatch
+//!   shape `if bad { Diagnostic::error(m) } else { Diagnostic::warning(m) }
+//!   .with_code(c)`, whose code attaches after both constructors. Same work
+//!   item as the bullet above — #5887.
 //! - The comment mask is line-granular and keyed on each line's FIRST
 //!   non-whitespace token, so nothing mid-line is ever stripped. That is
 //!   deliberate: stripping `//`-to-end-of-line would let a `//` inside a string
@@ -332,11 +345,20 @@ fn comment_mask(lines: &[&str]) -> Vec<bool> {
 
 /// Byte offsets of every anchor constructor occurrence in `line`, ascending.
 ///
-/// An occurrence counts only when the next non-whitespace character after the
-/// path is `(` — so `Diagnostic::error_with_span(` and a bare `Diagnostic::error`
-/// used as a function value are both correctly non-anchors, while the
-/// `Diagnostic::error (msg)` spacing survives (this repo has no rustfmt gate,
-/// see CLAUDE.md § Formatting).
+/// An occurrence counts only when it is a whole identifier at BOTH ends:
+///
+/// - **Right.** The next non-whitespace character after the path is `(` — so
+///   `Diagnostic::error_with_span(` and a bare `Diagnostic::error` used as a
+///   function value are both correctly non-anchors, while the
+///   `Diagnostic::error (msg)` spacing survives (this repo has no rustfmt
+///   gate, see CLAUDE.md § Formatting).
+/// - **Left.** The byte before the match is not `[A-Za-z0-9_]`, so a DIFFERENT
+///   type whose name merely ENDS in `Diagnostic` — `FeaDiagnostic::error(` —
+///   is not an anchor. Without this the type would census as a code-less site
+///   and a new file carrying one would be a `NewFile` High: a false RED over a
+///   constructor INV-SF-6 does not govern. `:` is deliberately NOT a boundary
+///   breaker, so a fully-qualified `reify_core::Diagnostic::error(` still
+///   anchors.
 fn anchor_positions(line: &str) -> Vec<usize> {
     let mut out = Vec::new();
     for ident in ANCHOR_IDENTS {
@@ -344,7 +366,16 @@ fn anchor_positions(line: &str) -> Vec<usize> {
         while let Some(rel) = line[from..].find(ident) {
             let at = from + rel;
             let after = at + ident.len();
-            if line[after..].trim_start().starts_with('(') {
+            // `at` is a char boundary, so byte `at - 1` is either a whole
+            // ASCII char or the tail of a multi-byte one; the latter is not
+            // ASCII-alphanumeric and so reads as a boundary, which is right —
+            // no Rust path segment can end in a non-ASCII identifier char and
+            // then continue into `Diagnostic` without a `_`.
+            let left_boundary = at == 0 || {
+                let prev = line.as_bytes()[at - 1];
+                !prev.is_ascii_alphanumeric() && prev != b'_'
+            };
+            if left_boundary && line[after..].trim_start().starts_with('(') {
                 out.push(at);
             }
             from = after;
@@ -1534,6 +1565,29 @@ mod tests {
         // the 37 `ErrorRef::new` sites harmless.
         let src = "    ErrorRef::new(span, msg).with_code(DiagnosticCode::Foo)";
         assert_eq!(sites(src), none());
+    }
+
+    #[test]
+    fn a_type_whose_name_ends_in_diagnostic_is_not_an_anchor() {
+        // The left word boundary in `anchor_positions`. Without it any type
+        // ending in `Diagnostic` censuses as a code-less site, and a new file
+        // introducing one goes RED as a `NewFile` High over a constructor
+        // INV-SF-6 does not govern.
+        let src = "    out.push(FeaDiagnostic::error(msg));";
+        assert_eq!(sites(src), none());
+        let src = "    out.push(ShellDiagnostic::warning(msg));";
+        assert_eq!(sites(src), none());
+        let src = "    out.push(my_diagnostic::error(msg));";
+        assert_eq!(sites(src), none());
+    }
+
+    #[test]
+    fn a_fully_qualified_path_still_anchors() {
+        // `:` is not a boundary breaker — the module qualifier in front of the
+        // type must keep anchoring, or the boundary check above would trade
+        // one false RED for a hole in the gate.
+        let src = "    reify_core::Diagnostic::error(msg)";
+        assert_eq!(sites(src), vec![(1, false)]);
     }
 
     #[test]
