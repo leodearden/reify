@@ -1026,8 +1026,9 @@ fn tool_defs() -> Vec<ToolDef> {
             name: "reify_set_parameter",
             description: "Set a parameter's value by CELL ID, rewriting the parameter's default \
                           literal in the `.ri` SOURCE ON DISK (the user's canonical document), \
-                          then recompiling. This is the durable counterpart of dragging the \
-                          property-panel slider, which only overrides engine state ephemerally. \
+                          then recompiling. This is the same mechanism the property panel \
+                          commits through, so an AI edit and a user edit are indistinguishable \
+                          once made; only a slider's in-flight DRAG is ephemeral. \
                           Only the default literal's own span is rewritten — comments, \
                           formatting and every other declaration are left byte-identical. \
                           Returns { success, new_value, unit, diagnostics }.",
@@ -2162,13 +2163,15 @@ pub(crate) fn reify_export_envelope(output_path: &str) -> Value {
 /// via γ's [`EngineSession::apply_param_to_source_str`]), then refresh the
 /// delta baseline.
 ///
-/// This is the AI counterpart of the property-panel slider, and it is
-/// deliberately NOT the slider's mechanism: the slider's
-/// `EngineSession::set_parameter` is an EPHEMERAL engine-state override,
-/// while this writes the user's canonical document. Both share one
-/// dimension-aware parse (#5757), so `value` is a UNIT-BEARING literal
-/// (`"120mm"`) on any dimensioned cell — see `apply_param_to_source_str`
-/// for the full unit contract.
+/// This is the AI counterpart of the property panel, and since η it is
+/// deliberately the SAME mechanism: the panel's commit routes through
+/// `EngineSession::commit_parameter`, which is this `apply_param_to_source_str`
+/// with a preview discard in front of its error arm. Only a slider's in-flight
+/// DRAG is an ephemeral engine-state override
+/// (`EngineSession::preview_parameter`), and it never outlives the gesture.
+/// The dimension-aware parse is shared too (#5757), so `value` is a
+/// UNIT-BEARING literal (`"120mm"`) on any dimensioned cell — see
+/// `apply_param_to_source_str` for the full unit contract.
 ///
 /// Extracted from [`handle_reify_set_parameter`] so the routing is
 /// unit-testable without a [`DebugServerState`]/`AppHandle` (mirrors
