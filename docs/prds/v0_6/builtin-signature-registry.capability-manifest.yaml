@@ -311,7 +311,16 @@ tasks:
       accepts Value::Undef for EVERY type (crates/reify-eval/src/lib.rs:326), so a two-way harness
       is defeated by exactly the buggy-eval-body residue PRD section 3 decision 12 names. Asserts
       through the public reify_stdlib::eval_builtin with row.name passed as a VARIABLE — I-REG-1
-      clean, no builtin-name literal anywhere in the file
+      clean, no builtin-name literal anywhere in the file. AMENDED 2026-09-15 (review pass,
+      13 tests / 13 passed) — (a) the verdict is driven by BOTH of value_type_kind_matches'
+      trivial-accept paths, not just one — a declared Type::Error short-circuits its anti-cascade
+      guard to true BEFORE the value is inspected, so it classifies Vacuous alongside Value::Undef;
+      unreachable on alpha's total resolvers, but exactly where a tau resolver wired to
+      E_BuiltinArgShape diagnostics (section 3 decision 5) starts landing. (b) representative_probes
+      returns a LIST of probes per row (each a Vec<(Value, Type)>), so a tau row can register
+      a second argument SHAPE alongside its first instead of the exhaustive match freezing
+      in one shape per row forever; a row is reported at its most severe probe (worst_probe),
+      because a shape that matches does not certify a shape never compared
     verdict: PASS
     delivered_check:
       kind: grep
@@ -328,12 +337,42 @@ tasks:
       teeth because `adjudicate` enforces BOTH directions — an unledgered non-Matches row fails,
       and so does a stale entry whose row now passes — so it cannot be padded with entries that
       assert nothing. Non-vacuity OBSERVED by 3-leg mutate-run-revert (wrong declared type;
-      buggy eval body with the table untouched; zero representative args), verbatim failure
-      text in the module header
+      buggy eval body with the table untouched; an argument-less probe). AMENDED 2026-09-15 —
+      the module header records each leg's EDIT and expected verdict CLASS, no longer the
+      verbatim failure text — that transcription embedded pass/fail tallies which are a function
+      of the module's test count and went stale the moment this pass added a test, with nothing
+      in the tree able to detect it. Two further legs observed at this pass and likewise recorded
+      by class rather than transcript — deleting classify's Type::Error guard (RED, left Matches /
+      right Vacuous) and inverting worst_probe so it reports a row's BEST probe (RED) — in
+      both runs every OTHER test stayed green, confirming each new guard is the only thing
+      holding its rule
     verdict: PASS
     delivered_check:
       kind: grep
       pattern: PARITY_EXEMPTION_LEDGER
+      paths:
+      - crates/reify-eval/src
+      expect: present
+  - name: residue-psi-does-not-close-type-field-half-of-argaware-rows
+    binding: Recorded 2026-09-15 so the next tau author does not read the harness wider than
+      it is. reduce_tensor_arg (crates/reify-builtins/src/resolvers.rs) has TWO branches —
+      a Type::Field arm (task 6577) and a concrete fall-through — so von_mises / max_shear
+      / principal_stresses / safety_factor each declare a Field<D, ..> result for a Field
+      argument. Every psi probe is concrete, and a Field probe CANNOT be added to this harness —
+      reify_stdlib::eval_builtin has no Field handling at all (crates/reify-stdlib/src/analysis.rs
+      contains zero Value::Field), because the lazy wrap_tensor_field that produces one lives
+      in crates/reify-expr/src/analysis.rs behind reify-expr's evaluator ladder — so a Field
+      probe here would evaluate to Value::Undef and certify nothing. The section 3 decision
+      12 residue therefore stays OPEN for the Field half of those four rows; it is reify-expr's
+      to close, not psi's. What IS covered is one side of the pair only — the resolvers' Type-level
+      Field contract has unit tests in crates/reify-builtins/src/resolvers.rs (ported from
+      6577), which is type algebra with no execution in it. Filed as follow-up (ticket
+      tkt_0RTNCFGC08S8W935JZPBZ0CR8J); psi's representative_probes already returns a LIST
+      so that shape can be registered when a leaf routes Field evaluation through this path
+    verdict: PASS — ceiling RECORDED (the residue itself stays open, by scope, not by waiver)
+    delivered_check:
+      kind: grep
+      pattern: What this harness cannot see
       paths:
       - crates/reify-eval/src
       expect: present
