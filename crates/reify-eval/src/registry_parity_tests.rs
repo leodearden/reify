@@ -39,12 +39,12 @@
 //! four grounds:
 //!
 //! 1. **Decisive: [`crate::value_type_kind_matches`] is private** — a plain
-//!    `fn` at `crates/reify-eval/src/lib.rs:313`, not even `pub(crate)`. I-REG-4
+//!    `fn` in `crates/reify-eval/src/lib.rs`, not even `pub(crate)`. I-REG-4
 //!    requires asserting against *that* function with **no second derivation**,
 //!    and an integration test is a separate crate that cannot reach it. Making
 //!    it `pub` would widen reify-eval's public API solely to host a test. The
 //!    in-tree cost of the alternative is already visible: `crates/reify-compiler/
-//!    tests/harness_type_checking/mul_div_static_runtime_parity.rs:177`
+//!    tests/harness_type_checking/mul_div_static_runtime_parity.rs`
 //!    re-authored its own `value_kind_matches_type` because it could not reach
 //!    reify-eval's — precisely the second derivation I-REG-4 forbids.
 //! 2. **Exact in-crate precedent**, for the identical reason and stated as
@@ -65,20 +65,21 @@
 //!    before scanning. The per-anchor adjudication is recorded in
 //!    `docs/prds/v0_6/builtin-signature-registry.capability-manifest.md`.
 //!
-//! # Why `Value::Undef` is `Vacuous`, not a pass
+//! # Why a trivial-accept pair is `Vacuous`, not a pass
 //!
 //! This is the load-bearing design constraint, and a two-way `true`/`false`
-//! harness gets it wrong. [`crate::value_type_kind_matches`] returns `true` for
-//! `Value::Undef` **unconditionally** (`crates/reify-eval/src/lib.rs:326` — the
-//! Auto/no-value sentinel arm), and `Value::Undef` is where every failure mode
-//! in this workspace funnels:
+//! harness gets it wrong. [`crate::value_type_kind_matches`] has two arms that
+//! answer `true` while carrying no information, one on each side of the pair:
+//! its Auto/no-value sentinel arm accepts `Value::Undef` for every type, and
+//! its anti-cascade guard accepts every VALUE for a declared `Type::Error`,
+//! returning before it inspects the value at all.
 //!
-//! - `reify_stdlib::helpers::{unary, binary}` return it on the wrong argc
-//!   (`crates/reify-stdlib/src/helpers.rs:7-20`);
-//! - `analysis::stress_invariants` returns it for anything but a 3×3 tensor
-//!   (`crates/reify-stdlib/src/analysis.rs:487`);
-//! - `eval_builtin` returns it as its unresolved-name terminus
-//!   (`crates/reify-stdlib/src/lib.rs:325`).
+//! `Value::Undef` is the dangerous half today, because it is where every
+//! failure mode in this workspace funnels:
+//!
+//! - `reify_stdlib::helpers::{unary, binary}` return it on the wrong argc;
+//! - `analysis::stress_invariants` returns it for anything but a 3×3 tensor;
+//! - `reify_stdlib::eval_builtin` returns it as its unresolved-name terminus.
 //!
 //! So a naive harness would be silently defeated by **exactly** the class of
 //! bug it exists to catch: an eval body that falls off a match arm yields
@@ -91,7 +92,7 @@
 //! ([`ParityVerdict`]) — and only `Matches` is a pass. That this is the PRD's
 //! intent rather than an embellishment is corroborated by the exemption the PRD
 //! names as the ledger's seed: the `piecewise_polynomial` stub returns exactly
-//! `Some(Value::Undef)` (`crates/reify-stdlib/src/trajectory/mod.rs:107`). Its
+//! `Some(Value::Undef)` (`crates/reify-stdlib/src/trajectory/mod.rs`). Its
 //! ledger entry would be unexplainable under a two-way verdict, because the
 //! stub already "passes". The ledger's real semantics are *rows whose parity
 //! assertion cannot be made non-vacuously*, with `Undef` as the mechanism.
@@ -138,72 +139,47 @@
 //!
 //! # Mutation recipe — the proof these guards are not vacuously true
 //!
-//! Verified by temporary mutate-run-revert (task 6013 ψ, step 11). **No
-//! mutating test is committed**, here or anywhere: a committed mutation
-//! asserts the bug, not the contract. The permanent guards are the tests in
-//! this module; this recipe is the evidence that each one actually fires, and
-//! it is the thing to re-run when a τ migration makes you doubt them.
+//! Each leg below was OBSERVED by temporary mutate-run-revert, never guessed
+//! (task 6013 ψ step 11, re-confirmed at the amendment pass). **No mutating
+//! test is committed**, here or anywhere: a committed mutation asserts the bug,
+//! not the contract. The permanent guards are the tests in this module; this
+//! recipe is how you re-confirm each one still fires when a τ migration makes
+//! you doubt it.
 //!
-//! Every failure line quoted below was **OBSERVED, never guessed**. The one
-//! edit to the observed text is a marked `…` standing in for
-//! `DimensionVector`'s ten-`Rational` `Debug` payload, which in all three legs
-//! is LENGTH — `[1/1, 0/1 × 9]` — and is quoted at full length nowhere because
-//! it is the same 300 characters each time.
+//! Only the EDIT and the expected verdict CLASS are recorded. The observed
+//! failure text is deliberately NOT transcribed here: it carries run-specific
+//! detail — pass/fail tallies that shift the moment a row or a test is added,
+//! and a 300-character `DimensionVector` Debug payload — which would go stale
+//! with nothing in the tree able to detect it. The verdict class is the part
+//! that carries the claim.
 //!
 //! Run command for every leg: `cargo test -p reify-eval --lib registry_parity`.
 //!
 //! **Leg 1 — the row's DECLARED type is wrong** (the PRD §8 row 9 recipe). In
 //! `crates/reify-builtins/src/registry.rs`, change the `ParseLength` row's
 //! `result` from `Const(Type::Option(Box::new(Type::length())))` to
-//! `Const(Type::String)`. `every_eval_builtin_row_agrees_with_its_executed_kind`
-//! goes RED — 11 passed, 1 failed:
+//! `Const(Type::String)`. Expect
+//! `every_eval_builtin_row_agrees_with_its_executed_kind` RED, reporting
+//! `ParseLength` UNLEDGERED at verdict `Diverges`. Revert the row.
 //!
-//! ```text
-//!   UNLEDGERED ParseLength ("parse_length") — verdict Diverges; observed
-//!   Option(Some(Scalar { si_value: 0.012, dimension: DimensionVector([…]) })),
-//!   declared String
-//! ```
-//!
-//! Revert: restore the `Const(Type::Option(Box::new(Type::length())))` result.
-//!
-//! **Leg 2 — the EVAL BODY is wrong and the table is untouched.** This is the
-//! leg that proves the harness's distinctive claim. PRD §3 decision 12 names a
-//! buggy eval body as the residue the row table alone cannot close, and no
-//! table-only test can see it: here the registry is left exactly as shipped. In
+//! **Leg 2 — the EVAL BODY is wrong and the table is untouched.** The leg that
+//! proves this harness's distinctive claim. PRD §3 decision 12 names a buggy
+//! eval body as the residue the row table alone cannot close, and no table-only
+//! test can see it — here the registry is left exactly as shipped. In
 //! `crates/reify-stdlib/src/parse.rs`, change `parse_length`'s `Some(s)` arm
 //! from `Value::Option(parse_length_value(s).ok().map(Box::new))` to
-//! `Value::String(s.to_string())`. The same test goes RED — 11 passed, 1
-//! failed:
-//!
-//! ```text
-//!   UNLEDGERED ParseLength ("parse_length") — verdict Diverges; observed
-//!   String("12mm"), declared Option(Scalar { dimension: DimensionVector([…]) })
-//! ```
-//!
-//! Revert: restore the `Value::Option(..)` arm.
+//! `Value::String(s.to_string())`. Same test RED, same `Diverges` verdict, with
+//! the declared type untouched. Revert the kernel.
 //!
 //! **Leg 3 — the vacuity arm is live, and the probe guard is its second
 //! signal.** In THIS file, split [`representative_probes`]' shared
-//! `ParseLength | ParseLengthR` arm and give `ParseLength` zero arguments
-//! (`EvalBuiltinId::ParseLength => (vec![], vec![])`). `single_string_arg`
-//! declines, the row evaluates to `Value::Undef`, and TWO tests go RED — 10
-//! passed, 2 failed. That pair is the intended double signal: the sweep reports
-//! an unledgered VACUOUS row, and the probe guard says the fault is in this
-//! file rather than in the row, which is exactly the misattribution it exists
-//! to prevent.
-//!
-//! ```text
-//!   UNLEDGERED ParseLength ("parse_length") — verdict Vacuous; observed Undef,
-//!   declared Option(Scalar { dimension: DimensionVector([…]) })
-//! ```
-//!
-//! ```text
-//! ParseLength: 0 representative arg(s) do not match the row's declared arity
-//! Exact(1) — the kernel would short-circuit to Value::Undef and the sweep
-//! would blame the row for this file's mistake
-//! ```
-//!
-//! Revert: restore the shared `ParseLength | ParseLengthR` arm.
+//! `ParseLength | ParseLengthR` arm and give `ParseLength` an argument-less
+//! probe (`vec![vec![]]`). The kernel's arity guard yields `Value::Undef` and
+//! TWO tests go RED: the sweep reports `ParseLength` UNLEDGERED at verdict
+//! `Vacuous`, and `representative_probes_are_well_formed_for_every_row` fails
+//! its check (a). That pair is the intended double signal — the second says the
+//! fault is in THIS file rather than in the row, which is exactly the
+//! misattribution it exists to prevent. Revert the arm.
 //!
 //! Legs 1 and 2 each transiently edit another crate, so `git status` must be
 //! clean of `registry.rs` and `parse.rs` before anything is committed.
@@ -288,7 +264,7 @@ impl ParityVerdict {
 /// derivation" requires, and it is the reason this module is in-crate at all
 /// (the oracle is private). Do not re-author a local kind matcher here as
 /// `crates/reify-compiler/tests/harness_type_checking/
-/// mul_div_static_runtime_parity.rs:177` was forced to.
+/// mul_div_static_runtime_parity.rs` was forced to.
 ///
 /// # Why `registry: None`, stated as a boundary
 ///
@@ -339,12 +315,19 @@ fn classify(value: &Value, declared: &Type) -> ParityVerdict {
 /// `BindingKind::EvalBuiltin` filter, and its own doc-comment gives the same
 /// reason ("derived from the registry rather than restated … so a τ row added
 /// later is covered here automatically instead of silently escaping the
-/// sweep"). It cannot be imported — that is a `reify-stdlib` integration-test
-/// target, this is a `reify-eval` lib unit-test module, and test targets are
-/// separate compilation units with no path between them. Factoring the four
-/// lines into a shared crate would put a test helper into a production
-/// dependency to save four lines, so the shape is repeated and the repetition
-/// is recorded here instead.
+/// sweep"). It cannot be imported as it stands — that is a `reify-stdlib`
+/// integration-test target, this is a `reify-eval` lib unit-test module, and
+/// test targets are separate compilation units with no path between them.
+///
+/// **The duplication is a scope deferral, not a design conclusion** (recorded
+/// at task 6013's amendment pass, correcting an earlier claim here that a
+/// shared home would drag a test helper into a production dependency — it would
+/// not). The right home is `reify_builtins` itself: a
+/// `rows_bound_by(BindingKind)` accessor beside `rows()` is ordinary production
+/// code over the row table, involves no test helper at all, and would give both
+/// callers ONE derivation. That accessor lives in
+/// `crates/reify-builtins/src/lib.rs`, outside this task's lock set, so it is
+/// filed as follow-up work rather than reached for here.
 fn eval_builtin_rows() -> Vec<(EvalBuiltinId, &'static BuiltinRow<BuiltinId>)> {
     rows()
         .iter()
@@ -424,11 +407,15 @@ const YIELD_PA: f64 = 250e6;
 /// carrying `dimension`.
 ///
 /// Shape reuse of `crates/reify-stdlib/tests/registry_dispatch_seed_parity.rs`'s
-/// `dimensioned_matrix` (:82-99) — the nesting is what
-/// `analysis::matrix_components_f64` reads, so getting it wrong makes every
-/// analysis kernel answer `Value::Undef`. Same cross-target constraint as
-/// [`eval_builtin_rows`]: it cannot be imported, so the shape is repeated and
-/// said so.
+/// `dimensioned_matrix` — the nesting is what `analysis::matrix_components_f64`
+/// reads, so getting it wrong makes every analysis kernel answer `Value::Undef`.
+///
+/// **A third copy, and a scope deferral rather than a design conclusion.** The
+/// right home is `reify_test_support::values`, which already holds exactly this
+/// class of `Value` fixture (`mm`, `newton`, `matrix3x3`, …) and is ALREADY a
+/// dev-dependency of BOTH reify-eval and reify-stdlib — so sharing it would
+/// cost no production dependency edge. That crate is outside this task's lock
+/// set; filed as follow-up work together with the row filter above.
 fn dimensioned_matrix_3x3(rows_f64: &[[f64; 3]; 3], dimension: DimensionVector) -> Value {
     Value::Tensor(
         rows_f64
@@ -451,7 +438,7 @@ fn dimensioned_matrix_3x3(rows_f64: &[[f64; 3]; 3], dimension: DimensionVector) 
 ///
 /// `quantity` is a real `Scalar<PRESSURE>` rather than a bare placeholder
 /// because the analysis resolvers read arg0's quantity out of exactly this
-/// field (`resolvers::tensor_quantity`, `crates/reify-builtins/src/resolvers.rs:41-51`)
+/// field (`resolvers::tensor_quantity`, `crates/reify-builtins/src/resolvers.rs`)
 /// and DEFAULT TO `DIMENSIONLESS` when they cannot find one. A placeholder here
 /// would silently route every analysis row through `scalar_or_real`'s
 /// dimensionless branch and compare the executed `Scalar<PRESSURE>` against a
@@ -514,7 +501,7 @@ fn concrete_tensor_probe() -> Probe {
 ///
 /// until representative args exist. That is the same forcing function
 /// `reify_stdlib::registry_dispatch::dispatch`
-/// (`crates/reify-stdlib/src/registry_dispatch.rs:37-47`) uses for I-REG-2, and
+/// (`crates/reify-stdlib/src/registry_dispatch.rs`) uses for I-REG-2, and
 /// it is strictly better than a test that must remember to complain. **Adding a
 /// `_` arm here deletes the property.**
 ///
@@ -528,7 +515,7 @@ fn concrete_tensor_probe() -> Probe {
 /// Slot-driven synthesis is **impossible today, not merely unchosen**. Every
 /// seed row declares `arg_slots: [Any]` / `[Any, Any]`, and `ArgSlot` has
 /// exactly one variant — `Any`, "no constraint on this slot"
-/// (`crates/reify-builtins/src/row.rs:116-119`) — which carries no shape to
+/// (`crates/reify-builtins/src/row.rs`) — which carries no shape to
 /// synthesize from. Nor could the registry supply a `Value`: by PRD decision 3
 /// reify-builtins depends on `reify-core` only and holds no `Value` at all,
 /// structurally locked by its own `tests/dag_invariant.rs`. The richer slot
@@ -577,7 +564,7 @@ fn representative_probes(id: EvalBuiltinId) -> Vec<Probe> {
         ]],
 
         // `analysis::stress_invariants` returns `Value::Undef` for ANYTHING
-        // but a 3×3 tensor (`crates/reify-stdlib/src/analysis.rs:487`) — the
+        // but a 3×3 tensor (`crates/reify-stdlib/src/analysis.rs`) — the
         // strictest shape requirement among the seeds, and the one that makes
         // a degenerate probe here read as a vacuous pass.
         EvalBuiltinId::StressInvariants => vec![concrete_tensor_probe()],
@@ -623,19 +610,12 @@ fn classify_mismatching_kind_is_diverges() {
 /// **The load-bearing arm.** `Value::Undef` must be `Vacuous`, never `Matches`.
 ///
 /// `crate::value_type_kind_matches` accepts `Value::Undef` for ANY type
-/// unconditionally (`crates/reify-eval/src/lib.rs:326` — the Auto/no-value
-/// sentinel arm). A two-way `true`/`false` harness would therefore report a
-/// pass for every row whose eval body fell off a match arm, which is exactly
-/// the residue PRD §3 decision 12 says this harness exists to close. Three
-/// in-tree funnels reach `Undef` without any registry involvement at all, so
-/// this is not a hypothetical:
-///
-/// - `reify_stdlib::helpers::{unary, binary}` on the wrong argc
-///   (`crates/reify-stdlib/src/helpers.rs:7-20`);
-/// - `analysis::stress_invariants` on a non-3×3 tensor
-///   (`crates/reify-stdlib/src/analysis.rs:487`);
-/// - `eval_builtin`'s unresolved-name terminus
-///   (`crates/reify-stdlib/src/lib.rs:325`).
+/// unconditionally, in its Auto/no-value sentinel arm. A two-way `true`/`false`
+/// harness would therefore report a pass for every row whose eval body fell off
+/// a match arm — exactly the residue PRD §3 decision 12 says this harness
+/// exists to close. The module header lists the three in-tree funnels that
+/// reach `Undef` with no registry involvement at all, which is why this is not
+/// a hypothetical.
 ///
 /// The type is swept deliberately rather than probed once: the point is that
 /// `Undef` is `Vacuous` for EVERY declared type, so no row can be certified by
@@ -876,7 +856,7 @@ struct ExemptionEntry {
 /// Two of those pairings are worth naming because they look like mismatches and
 /// are not. `safety_factor` returns a bare `Value::Real` while its resolver
 /// answers `Type::dimensionless_scalar()`, which IS
-/// `Type::Scalar{DIMENSIONLESS}` (`crates/reify-core/src/ty.rs:631`) — there is
+/// `Type::Scalar{DIMENSIONLESS}` (`crates/reify-core/src/ty.rs`) — there is
 /// no `Type::Real` variant, and the matcher's `Value::Real` arm accepts
 /// `Type::Scalar{..}`. `stress_invariants` returns a registry-free
 /// `StructureInstance` whose `type_id` is a sentinel, and the matcher's
@@ -889,7 +869,7 @@ struct ExemptionEntry {
 /// entry. It CANNOT be present: that name has no registry row, so it is not in
 /// `eval_builtin_rows()` at all and the sweep never reaches it. It is still
 /// answered by the surviving legacy string arm at
-/// `crates/reify-stdlib/src/trajectory/mod.rs:107`
+/// `crates/reify-stdlib/src/trajectory/mod.rs`
 /// (`"piecewise_polynomial" => Some(Value::Undef)`), and it joins this ledger —
 /// as a `Vacuous` entry, which is why that verdict class must exist — when
 /// τ-mechanism/trajectory migrates the family.
@@ -898,7 +878,7 @@ struct ExemptionEntry {
 ///
 /// One WHY sentence per entry naming the leaf that retires it, exactly as
 /// `SEED_STRING_DISPATCH_LEDGER`
-/// (`crates/reify-builtins/tests/i_reg_1_seed_string_dispatch_gate.rs:145-156`)
+/// (`crates/reify-builtins/tests/i_reg_1_seed_string_dispatch_gate.rs`)
 /// and `registry_drift_tests`' `QUERY_CALL_LEDGER` do. The point is that the
 /// residue is COUNTED, not that it is acceptable. An empty ledger is only
 /// meaningful because it is enforced in BOTH directions — an unledgered
@@ -1152,7 +1132,7 @@ fn describe_failure(
 /// # Why the public path, not α's id-keyed shim
 ///
 /// `reify_stdlib::eval_builtin` runs the full 26-arm dispatch chain with the
-/// registry hoisted to its front (`crates/reify-stdlib/src/lib.rs:253`), so it
+/// registry hoisted to its front (`registry_dispatch::try_dispatch`), so it
 /// asserts strictly more than `__registry_dispatch_for_test` would: a later
 /// family arm that shadowed a registered name — a live migration hazard while
 /// the great majority of builtin names are still string-matched — surfaces here
