@@ -33,6 +33,7 @@ use std::fmt;
 
 use faer::sparse::SparseRowMat;
 
+use crate::assembly::tet::tet_p1_centroid;
 use crate::boundary::dirichlet::DirichletBc;
 use crate::constitutive::IsotropicElastic;
 use crate::interpolation::{LocatableTet, locate_element_p1};
@@ -96,6 +97,21 @@ pub enum QoiError {
         /// The offending query point.
         at: [f64; 3],
     },
+    /// The contributing set resolved, but carries no usable total volume to
+    /// average over — every ball mean here divides by `Σ_K V_K`.
+    ///
+    /// [`tet_volume_p1`] returns exactly `0.0` for four coplanar nodes, so a
+    /// collapsed tet is not hypothetical. Without this arm the division
+    /// yields `NaN`, and an all-`NaN` `g` reaches the solver as plausible
+    /// garbage. Unconditional rather than a `debug_assert!`, because the
+    /// caller who would be handed that `NaN` is a RELEASE caller.
+    DegenerateContributingSet {
+        /// The query point whose ball resolved to the degenerate set.
+        at: [f64; 3],
+        /// `Σ_K V_K` over the contributing set: zero, negative, or
+        /// non-finite.
+        total_volume: f64,
+    },
 }
 
 impl fmt::Display for QoiError {
@@ -115,6 +131,13 @@ impl fmt::Display for QoiError {
                 f,
                 "quantity-of-interest point ({}, {}, {}) lies outside every \
                  element of this mesh",
+                at[0], at[1], at[2],
+            ),
+            QoiError::DegenerateContributingSet { at, total_volume } => write!(
+                f,
+                "quantity-of-interest point ({}, {}, {}) resolved to a \
+                 contributing set of total volume {total_volume}; the mesh \
+                 carries degenerate (zero-volume) tets there",
                 at[0], at[1], at[2],
             ),
         }
@@ -189,14 +212,21 @@ struct ContributingElement {
 
 /// The elements a QoI's ball mean runs over on one particular mesh.
 ///
-/// Constructed only by [`resolve`], which guarantees the invariant every
-/// consumer divides by: `elements` is non-empty and `total_volume` is
-/// strictly positive.
+/// Constructed only by [`resolve`], which guarantees the three invariants
+/// every consumer relies on: `elements` is non-empty, `total_volume` is
+/// finite and strictly positive, and `direction` is unit length.
 struct ContributingSet {
     /// Contributing elements in ascending element index.
     elements: Vec<ContributingElement>,
     /// `V_E = Σ_K V_K` over `elements`.
     total_volume: f64,
+    /// The QoI's direction (or stress normal), NORMALIZED.
+    ///
+    /// Both functionals project onto this rather than onto the raw vector
+    /// the caller supplied, so `‖d‖ = 1` holds by construction at the one
+    /// site that can enforce it uniformly, instead of being a precondition
+    /// each consumer would have to restate and none could verify.
+    direction: [f64; 3],
 }
 
 /// Resolve a QoI's contributing set on `mesh`, validating every C4 condition.
@@ -211,11 +241,12 @@ struct ContributingSet {
 ///    [`QoiError::NonPositiveRadius`].
 /// 2. `direction`'s L2 norm finite and strictly positive, else
 ///    [`QoiError::ZeroDirection`].
-/// 3. `debug_assert!` that `direction` is unit length. Directions are
-///    normalized by the extractor, so this is a *caller precondition*, not a
-///    runtime branch. It must come AFTER check 2: a zero vector has to reach
-///    the typed error rather than trip this assertion, or C4's
-///    `direction = vec3(0,0,0)` case is unpassable in a debug build.
+/// 3. NORMALIZE `direction`, and hand that unit vector to every consumer
+///    through [`ContributingSet`]. Normalizing here rather than asserting
+///    unit length removes the precondition altogether: a caller mapping a
+///    DSL `vec3(0, -2, 0)` straight through gets the ball mean along that
+///    direction, not one silently scaled by two. It must come AFTER check
+///    2, which is what rules out the division by a zero norm.
 /// 4. `E = { K : ‖centroid(K) − at‖ ≤ radius }`, in ascending element index.
 /// 5. If that `E` is empty, fall back to the single element CONTAINING
 ///    `at`; only if no element contains it is the QoI unresolvable.
@@ -235,6 +266,8 @@ struct ContributingSet {
 /// [`QoiError`] per the check order above.
 /// [`QoiError::PointOutsideBody`] when the ball catches no centroid AND
 /// `at` lies inside no element.
+/// [`QoiError::DegenerateContributingSet`] when the resolved elements carry
+/// no usable total volume.
 fn resolve(
     at: [f64; 3],
     radius: f64,
@@ -262,19 +295,19 @@ fn resolve(
     if !norm_sq.is_finite() || norm_sq <= 0.0 {
         return Err(QoiError::ZeroDirection);
     }
-    debug_assert!(
-        (norm_sq.sqrt() - 1.0).abs() <= 1e-9,
-        "quantity-of-interest direction must be unit length (the extractor \
-         normalizes it); got ‖d‖ = {}",
-        norm_sq.sqrt(),
-    );
+    let norm = norm_sq.sqrt();
+    let unit = [
+        direction[0] / norm,
+        direction[1] / norm,
+        direction[2] / norm,
+    ];
 
     let radius_sq = radius * radius;
     let mut elements = Vec::new();
     let mut total_volume = 0.0_f64;
     for (index, tet) in mesh.tets.iter().enumerate() {
         let nodes = tet_nodes(mesh, tet);
-        let c = centroid(&nodes);
+        let c = tet_p1_centroid(&nodes);
         let d_sq = (c[0] - at[0]) * (c[0] - at[0])
             + (c[1] - at[1]) * (c[1] - at[1])
             + (c[2] - at[2]) * (c[2] - at[2]);
@@ -292,17 +325,13 @@ fn resolve(
         elements.push(ContributingElement { index, volume });
     }
 
-    debug_assert!(
-        total_volume > 0.0,
-        "contributing set of {} element(s) has non-positive total volume {} \
-         — the mesh has degenerate tets near {:?}",
-        elements.len(),
-        total_volume,
-        at,
-    );
+    if !total_volume.is_finite() || total_volume <= 0.0 {
+        return Err(QoiError::DegenerateContributingSet { at, total_volume });
+    }
     Ok(ContributingSet {
         elements,
         total_volume,
+        direction: unit,
     })
 }
 
@@ -346,22 +375,6 @@ fn locate_containing_element(mesh: P1TetMeshRef<'_>, at: [f64; 3]) -> Option<usi
     locate_element_p1(&locatable, at, LOCATE_BARYCENTRIC_SLACK)
 }
 
-/// Arithmetic mean of a tet's four corners — its centroid, since the P1
-/// barycentric coordinates there are `(¼, ¼, ¼, ¼)`.
-#[inline]
-fn centroid(nodes: &[[f64; 3]; 4]) -> [f64; 3] {
-    let mut c = [0.0_f64; 3];
-    for n in nodes {
-        for k in 0..3 {
-            c[k] += n[k];
-        }
-    }
-    for cell in &mut c {
-        *cell *= 0.25;
-    }
-    c
-}
-
 // ---------------------------------------------------------------------------
 // LocalDisplacement
 // ---------------------------------------------------------------------------
@@ -398,8 +411,9 @@ pub struct LocalDisplacementQoi {
     pub at: [f64; 3],
     /// Ball radius. Required, finite and strictly positive (C4).
     pub radius: f64,
-    /// Unit direction the displacement is projected onto. Normalized by the
-    /// caller; a zero vector is [`QoiError::ZeroDirection`].
+    /// Direction the displacement is projected onto. NORMALIZED on resolve,
+    /// so a non-unit vector states a direction rather than a scale factor; a
+    /// zero vector is [`QoiError::ZeroDirection`].
     pub direction: [f64; 3],
 }
 
@@ -416,7 +430,7 @@ impl QuantityOfInterest for LocalDisplacementQoi {
             let mut q = 0.0_f64;
             for &node in &mesh.tets[el.index] {
                 for k in 0..3 {
-                    q += self.direction[k] * u[3 * node + k];
+                    q += set.direction[k] * u[3 * node + k];
                 }
             }
             weighted += el.volume * (0.25 * q);
@@ -436,7 +450,7 @@ impl QuantityOfInterest for LocalDisplacementQoi {
             let w = (el.volume / set.total_volume) * 0.25;
             for &node in &mesh.tets[el.index] {
                 for k in 0..3 {
-                    g[3 * node + k] += w * self.direction[k];
+                    g[3 * node + k] += w * set.direction[k];
                 }
             }
         }
@@ -503,10 +517,12 @@ pub struct LocalNormalStressQoi {
     pub at: [f64; 3],
     /// Ball radius. Required, finite and strictly positive (C4).
     pub radius: f64,
-    /// Unit normal of the plane the stress is resolved across. Normalized by
-    /// the caller; a zero vector is [`QoiError::ZeroDirection`] — the same
-    /// variant a zero displacement direction yields, since in both cases it
-    /// is the vector the functional projects onto that has vanished.
+    /// Normal of the plane the stress is resolved across. NORMALIZED on
+    /// resolve — which matters more here than for a displacement, since
+    /// `n·σ·n` scales QUADRATICALLY in `‖n‖`. A zero vector is
+    /// [`QoiError::ZeroDirection`] — the same variant a zero displacement
+    /// direction yields, since in both cases it is the vector the functional
+    /// projects onto that has vanished.
     pub normal: [f64; 3],
 }
 
@@ -526,7 +542,7 @@ impl QuantityOfInterest for LocalNormalStressQoi {
                 material,
                 &element_displacements(u, tet),
             );
-            weighted += el.volume * contract_normal_stress(&sigma, self.normal);
+            weighted += el.volume * contract_normal_stress(&sigma, set.direction);
         }
         Ok(weighted / set.total_volume)
     }
@@ -568,7 +584,7 @@ impl QuantityOfInterest for LocalNormalStressQoi {
                 let sigma = element_stress_p1(&nodes, material, &probe);
                 probe[col] = 0.0;
                 g[3 * tet[col / 3] + col % 3] +=
-                    w * contract_normal_stress(&sigma, self.normal);
+                    w * contract_normal_stress(&sigma, set.direction);
             }
         }
         Ok(g)
@@ -626,6 +642,16 @@ impl QuantityOfInterest for LocalNormalStressQoi {
 /// previous `z_h` is not merely a poor initial guess on the new mesh — it is
 /// a vector whose entries refer to different nodes entirely.
 ///
+/// # Panics
+///
+/// If `k.nrows() != 3 · mesh.coords.len()`. That is exactly the stale-state
+/// desynchronisation the note above describes — a `(k, bcs)` pair eliminated
+/// on the pre-remesh mesh, handed the post-remesh one — and it is checked
+/// HERE because the BC-zeroing loop would otherwise index `g` out of bounds
+/// first, reporting a bare offset that names neither the operator nor the
+/// mesh. [`apply_dirichlet_row_elimination`] and [`solve_cg`] assert the
+/// same shape with the same diagnostic.
+///
 /// # Errors
 ///
 /// [`QoiError`] if the QoI cannot be resolved on `mesh` (C4). No dual solve
@@ -643,6 +669,16 @@ pub fn solve_dual_cg(
     opts: CgSolverOptions,
     mode: SolverMode,
 ) -> Result<CgResult, QoiError> {
+    assert_eq!(
+        k.nrows(),
+        3 * mesh.coords.len(),
+        "k.nrows() = {} but the mesh has {} nodes (expected {} DOFs); the \
+         operator, the BC set and the mesh must all come from the SAME \
+         solve — see \"No warm start across meshes\" above",
+        k.nrows(),
+        mesh.coords.len(),
+        3 * mesh.coords.len(),
+    );
     let mut g = qoi.dual_load(mesh, material, u)?;
     for bc in bcs {
         g[bc.dof] = 0.0;
@@ -703,6 +739,42 @@ mod tests {
             0.02, 0.06, -0.05, // node 3
             0.09, 0.03, 0.08, // node 4
         ]
+    }
+
+    /// Largest `|u|` entry of [`two_tet_fan_u`] — the fan fixture's own
+    /// magnitude, and hence the absolute floor [`assert_close`] uses on it.
+    const FAN_U_SCALE: f64 = 0.09;
+
+    /// Stress scale of the Kuhn-cube fixtures: `E · max|u| / L`, with the
+    /// dimensionless material's `E = 1`, the unit cube's `L = 1`, and
+    /// `max|u| ≤ 0.06` across both cube displacement fields. No `σ` these
+    /// fixtures can produce is more than an order of magnitude from it.
+    const CUBE_STRESS_SCALE: f64 = 0.06;
+
+    /// Assert `got` matches `want` to `rel` RELATIVE, with an absolute floor
+    /// of `rel · scale`.
+    ///
+    /// The floor is the whole point. A relative-only bound collapses to a
+    /// demand for BIT equality wherever `want == 0`, and `want == 0` is not
+    /// hypothetical here: with `d = [0, 0, 1]` over tet0 alone, the fan
+    /// field's z-components (0.00, 0.01, 0.04, −0.05) cancel EXACTLY in f64
+    /// — `0.01 + 0.04` rounds to exactly `double(0.05)`. The two sides of
+    /// these comparisons are summed in different orders (`evaluate` element
+    /// by element, the expectation node by node), so demanding bit equality
+    /// of them would pass only by coincidence of rounding, test nothing
+    /// about the tolerance in the meantime, and turn any reordering or
+    /// fixture edit into a spurious failure. Flooring at the FIXTURE's own
+    /// magnitude keeps the bound meaningful at `want == 0` without loosening
+    /// it where `want` is large.
+    #[track_caller]
+    fn assert_close(got: f64, want: f64, rel: f64, scale: f64, case: &str) {
+        let tol = rel * want.abs().max(scale);
+        let delta = (got - want).abs();
+        assert!(
+            delta <= tol,
+            "{case}: expected {want}, got {got} (|Δ| = {delta} exceeds the \
+             tolerance {tol} = {rel} · max(|expected|, fixture scale {scale}))",
+        );
     }
 
     /// Assert that BOTH `evaluate` and `dual_load` reject `qoi` with an error
@@ -773,15 +845,14 @@ mod tests {
     /// * `at` outside every element, with a radius too small to catch any
     ///   centroid → [`QoiError::PointOutsideBody`].
     ///
-    /// # The zero-direction case runs without `#[should_panic]` deliberately
+    /// # The zero-direction case pins the check ORDER
     ///
-    /// Directions are normalized by the extractor, and `resolve` asserts
-    /// unit length as a caller precondition — but that assertion is a
-    /// `debug_assert!`, and this test runs with `debug_assertions` on. A zero
-    /// vector must therefore reach the typed error *before* the unit-length
-    /// assertion fires. If the check order were reversed, this test would
-    /// panic rather than fail an assertion, which is why the ordering inside
-    /// `resolve` is fixed and documented rather than incidental.
+    /// `resolve` NORMALIZES the direction, so a zero vector has to reach the
+    /// typed error *before* that division. Reversed, C4's named
+    /// `direction = vec3(0,0,0)` case would come back as a `NaN`-direction
+    /// ball mean instead of [`QoiError::ZeroDirection`] — a `NaN` the
+    /// module's contract says is unrepresentable. That is why the ordering
+    /// inside `resolve` is fixed and documented rather than incidental.
     ///
     /// # TDD red→green
     ///
@@ -888,9 +959,15 @@ mod tests {
     /// `LocalDisplacementQoi` reports the displacement one.
     ///
     /// "Exactly two" is asserted structurally by the wildcard-free `match`
-    /// below: adding a third variant makes this function fail to compile.
+    /// below: adding a third variant makes `label` fail to compile.
     /// `kind()` is what tells the result layer which `QoIEstimate` variant —
     /// hence which dimension — `evaluate` returned.
+    ///
+    /// There is deliberately no assertion ON `label`. Checking that a
+    /// function defined six lines above returns the string literal its own
+    /// body is written to return exercises no production code; `label` earns
+    /// its place through the compile-time claim, and by naming the offending
+    /// variant when one of the assertions below fails.
     #[test]
     fn qoi_kind_has_exactly_the_two_shipped_variants_and_local_displacement_reports_its_own() {
         fn label(k: QoiKind) -> &'static str {
@@ -900,15 +977,28 @@ mod tests {
             }
         }
 
-        assert_eq!(label(QoiKind::LocalDisplacement), "LocalDisplacement");
-        assert_eq!(label(QoiKind::LocalNormalStress), "LocalNormalStress");
-
-        let qoi = LocalDisplacementQoi {
+        let displacement = LocalDisplacementQoi {
             at: [0.25, 0.25, 0.25],
             radius: 0.1,
             direction: [0.0, -1.0, 0.0],
         };
-        assert_eq!(qoi.kind(), QoiKind::LocalDisplacement);
+        let stress = LocalNormalStressQoi {
+            at: [0.25, 0.25, 0.25],
+            radius: 0.1,
+            normal: [0.0, -1.0, 0.0],
+        };
+        assert_eq!(
+            displacement.kind(),
+            QoiKind::LocalDisplacement,
+            "LocalDisplacementQoi must report the displacement kind, got {}",
+            label(displacement.kind()),
+        );
+        assert_eq!(
+            stress.kind(),
+            QoiKind::LocalNormalStress,
+            "LocalNormalStressQoi must report the normal-stress kind, got {}",
+            label(stress.kind()),
+        );
     }
 
     // ── §5.1 contributing-set semantics, functional/dual algebra (step-3) ──
@@ -1100,10 +1190,12 @@ mod tests {
              four nodes — node 4 belongs to tet1 alone and must stay zero",
         );
         let expected = direction_dot_nodal_mean(&[0, 1, 2, 3], &u, d);
-        assert!(
-            (j - expected).abs() <= 1e-12 * expected.abs(),
-            "a single-element contributing set makes J the plain nodal mean \
-             d·ū_0 = {expected}, got {j}",
+        assert_close(
+            j,
+            expected,
+            1e-12,
+            FAN_U_SCALE,
+            "a single-element contributing set makes J the plain nodal mean d·ū_0",
         );
     }
 
@@ -1198,9 +1290,15 @@ mod tests {
     ///
     /// Both functionals are strictly linear in `u` with no affine offset, so
     /// the only defect is floating-point summation ORDER — `evaluate` sums
-    /// element-by-element, `gᵀu` node-by-node. That is `O(n_e · ε) ≈ 1e-14`
-    /// here, so the 1e-12 relative bound carries ~100× margin and would still
-    /// catch any genuine algebraic discrepancy.
+    /// element-by-element, `gᵀu` node-by-node. That is `O(n_e · ε)` against a
+    /// fixture of magnitude [`FAN_U_SCALE`], so the bound carries many orders
+    /// of margin and would still catch any genuine algebraic discrepancy.
+    ///
+    /// The bound is relative to `J` but FLOORED at that fixture scale (see
+    /// [`assert_close`]), because one case in the matrix below —
+    /// `d = [0, 0, 1]` over tet0 alone — makes `J` exactly zero. Relative
+    /// only, that case would demand bit equality between two summation
+    /// orders and assert nothing about the tolerance at all.
     #[test]
     fn evaluate_equals_the_dual_load_contracted_with_the_displacement_field() {
         let u = two_tet_fan_u();
@@ -1228,10 +1326,15 @@ mod tests {
                     &case,
                 );
                 let contracted: f64 = g.iter().zip(&u).map(|(gi, ui)| gi * ui).sum();
-                assert!(
-                    (j - contracted).abs() <= 1e-12 * j.abs(),
-                    "{case}: J(u_h) = gᵀu_h must hold to 1e-12 relative; \
-                     evaluate gave {j}, gᵀu_h gave {contracted}",
+                assert_close(
+                    contracted,
+                    j,
+                    1e-12,
+                    FAN_U_SCALE,
+                    &format!(
+                        "{case}: J(u_h) = gᵀu_h must hold (evaluate is the \
+                         expectation, gᵀu_h the measurement)"
+                    ),
                 );
             }
         }
@@ -1330,13 +1433,166 @@ mod tests {
             },
             "volume-weighted mean over both elements",
         );
-        assert!(
-            (j - weighted).abs() <= 1e-15 * weighted.abs(),
-            "J must be the volume-weighted mean {weighted} (= -0.0275 by \
-             hand), got {j}; the unweighted mean would be {unweighted}",
+        assert_close(
+            j,
+            weighted,
+            1e-15,
+            FAN_U_SCALE,
+            &format!(
+                "J must be the volume-weighted mean (= -0.0275 by hand); the \
+                 unweighted mean would be {unweighted}"
+            ),
         );
     }
 
+
+    /// A contributing set with no volume is a TYPED error — in release too.
+    ///
+    /// [`tet_volume_p1`] returns exactly `0.0` for four coplanar nodes, so a
+    /// collapsed element is reachable from real mesh data rather than only
+    /// from a hand-built pathology. Both ball means divide by `Σ_K V_K`, so
+    /// without an unconditional check `evaluate` returns `0.0/0.0 = NaN` and
+    /// `dual_load` an all-`NaN` `g` that the dual solve consumes as if it
+    /// were a load — the one hole a `debug_assert!` left open in the
+    /// module's "typed error, never a `NaN`" contract (C4), and it was open
+    /// for exactly the callers who cannot see assertions.
+    #[test]
+    fn a_collapsed_element_yields_a_typed_error_rather_than_a_nan_ball_mean() {
+        // Four COPLANAR nodes (every z = 0), i.e. a zero-volume "tet".
+        let coords = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+        ];
+        let tets = vec![[0, 1, 2, 3]];
+        let mesh = P1TetMeshRef {
+            coords: &coords,
+            tets: &tets,
+        };
+        let mat = dimensionless_steel_like();
+        let u = vec![0.01_f64; 12];
+        // The ball is centred ON the element centroid, so the centroid rule
+        // selects it and the fallback arm never runs.
+        let at = [0.5, 0.5, 0.0];
+
+        assert_eq!(
+            tet_volume_p1(&[coords[0], coords[1], coords[2], coords[3]]),
+            0.0,
+            "fixture premise: the element must be EXACTLY zero-volume, or \
+             this exercises a merely ill-conditioned tet instead",
+        );
+
+        let expected = QoiError::DegenerateContributingSet {
+            at,
+            total_volume: 0.0,
+        };
+        let displacement = LocalDisplacementQoi {
+            at,
+            radius: 0.5,
+            direction: [0.0, -1.0, 0.0],
+        };
+        assert_eq!(
+            displacement.evaluate(mesh, &mat, &u),
+            Err(expected.clone()),
+            "evaluate must report the degenerate set, not a NaN ball mean",
+        );
+        assert_eq!(
+            displacement.dual_load(mesh, &mat, &u),
+            Err(expected.clone()),
+            "dual_load must report it from its own direction too (C4), not \
+             hand the solver an all-NaN g",
+        );
+
+        let stress = LocalNormalStressQoi {
+            at,
+            radius: 0.5,
+            normal: [0.0, -1.0, 0.0],
+        };
+        assert_eq!(
+            stress.evaluate(mesh, &mat, &u),
+            Err(expected.clone()),
+            "the check lives in the shared `resolve`, so the stress \
+             functional reports the same error on the same mesh",
+        );
+        assert_eq!(
+            stress.dual_load(mesh, &mat, &u),
+            Err(expected),
+            "and from its dual-load direction as well",
+        );
+    }
+
+    /// A non-unit direction states a DIRECTION, not a scale.
+    ///
+    /// Nothing upstream of this module guarantees the `vec3` a designer
+    /// wrote was normalized, and both functionals are pure projections onto
+    /// it: an un-normalized direction would scale `J` AND `g` together, so
+    /// the resulting error estimate would be wrong by that factor while
+    /// still reporting as perfectly valid. `resolve` normalizes instead, so
+    /// the premise is discharged rather than assumed.
+    ///
+    /// `[0, −2, 0]` normalizes to `[0, −1, 0]` EXACTLY in f64 — its norm is
+    /// a power of two — which is what lets this be a BITWISE comparison
+    /// rather than one carrying a tolerance that could mask a partial fix.
+    #[test]
+    fn a_non_unit_direction_resolves_to_the_same_functional_as_its_unit_form() {
+        let at = FAN_CENTROIDS[0];
+        let (j_unit, g_unit) = eval_and_dual_on_fan(
+            &LocalDisplacementQoi {
+                at,
+                radius: 0.44,
+                direction: [0.0, -1.0, 0.0],
+            },
+            "unit direction",
+        );
+        let (j_scaled, g_scaled) = eval_and_dual_on_fan(
+            &LocalDisplacementQoi {
+                at,
+                radius: 0.44,
+                direction: [0.0, -2.0, 0.0],
+            },
+            "the same direction, twice as long",
+        );
+        assert_eq!(
+            j_scaled.to_bits(),
+            j_unit.to_bits(),
+            "J must be the ball mean along the direction, not one scaled by \
+             ‖d‖; got {j_scaled} against {j_unit}",
+        );
+        assert_eq!(
+            g_scaled, g_unit,
+            "and the dual load must be scale-free for the same reason — a \
+             scaled g solves to a scaled adjoint field",
+        );
+
+        // `n·σ·n` is QUADRATIC in ‖n‖, so an un-normalized normal would be
+        // off by FOUR here rather than two.
+        let u = unit_cube_nonuniform_u();
+        let (s_unit, _) = eval_and_dual_on_cube(
+            &LocalNormalStressQoi {
+                at: [0.5, 0.5, 0.5],
+                radius: 0.4,
+                normal: [0.0, -1.0, 0.0],
+            },
+            &u,
+            "unit normal",
+        );
+        let (s_scaled, _) = eval_and_dual_on_cube(
+            &LocalNormalStressQoi {
+                at: [0.5, 0.5, 0.5],
+                radius: 0.4,
+                normal: [0.0, -2.0, 0.0],
+            },
+            &u,
+            "the same normal, twice as long",
+        );
+        assert_eq!(
+            s_scaled.to_bits(),
+            s_unit.to_bits(),
+            "the normal-stress mean must not scale with ‖n‖² either; got \
+             {s_scaled} against {s_unit}",
+        );
+    }
 
     // ── LocalNormalStressQoi (step-5) ──────────────────────────────────────
 
@@ -1509,10 +1765,7 @@ mod tests {
                     &u,
                     &case,
                 );
-                assert!(
-                    (j - expected).abs() <= 1e-12 * expected.abs(),
-                    "{case}: expected {expected}, got {j}",
-                );
+                assert_close(j, expected, 1e-12, CUBE_STRESS_SCALE, &case);
             }
         }
     }
@@ -1557,10 +1810,15 @@ mod tests {
                     &case,
                 );
                 let contracted: f64 = g.iter().zip(&u).map(|(gi, ui)| gi * ui).sum();
-                assert!(
-                    (j - contracted).abs() <= 1e-12 * j.abs(),
-                    "{case}: J(u_h) = gᵀu_h must hold to 1e-12 relative; \
-                     evaluate gave {j}, gᵀu_h gave {contracted}",
+                assert_close(
+                    contracted,
+                    j,
+                    1e-12,
+                    CUBE_STRESS_SCALE,
+                    &format!(
+                        "{case}: J(u_h) = gᵀu_h must hold (evaluate is the \
+                         expectation, gᵀu_h the measurement)"
+                    ),
                 );
             }
         }
