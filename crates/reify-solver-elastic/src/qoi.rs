@@ -33,7 +33,7 @@ use std::fmt;
 
 use crate::constitutive::IsotropicElastic;
 use crate::interpolation::{LocatableTet, locate_element_p1};
-use crate::result::tet_volume_p1;
+use crate::result::{element_stress_p1, tet_volume_p1};
 
 /// Borrowed P1 tet mesh view: the f64 coordinates and connectivity the
 /// solve actually ran on.
@@ -441,6 +441,137 @@ impl QuantityOfInterest for LocalDisplacementQoi {
 
     fn kind(&self) -> QoiKind {
         QoiKind::LocalDisplacement
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LocalNormalStress
+// ---------------------------------------------------------------------------
+
+/// `n · σ · n` — the normal component of a Cauchy stress tensor across the
+/// plane with unit normal `n`.
+#[inline]
+fn contract_normal_stress(sigma: &[[f64; 3]; 3], n: [f64; 3]) -> f64 {
+    let mut s = 0.0_f64;
+    for i in 0..3 {
+        for j in 0..3 {
+            s += n[i] * sigma[i][j] * n[j];
+        }
+    }
+    s
+}
+
+/// Gather an element's twelve DOFs from the global displacement vector.
+///
+/// Convention `u_e[3·local + axis] = u[3·global + axis]`, matching
+/// [`element_stress_p1`]'s expectation and `buckling_kernel`'s gathers.
+#[inline]
+fn element_displacements(u: &[f64], tet: &[usize; 4]) -> [f64; 12] {
+    let mut u_e = [0.0_f64; 12];
+    for (local, &global) in tet.iter().enumerate() {
+        for axis in 0..3 {
+            u_e[3 * local + axis] = u[3 * global + axis];
+        }
+    }
+    u_e
+}
+
+/// Mean of `n · σ · n` over the ball of radius `radius` centred at `at`
+/// (PRD §5.1) — a pressure.
+///
+/// `J(u_h) = Σ_{K∈E} V_K (nᵀσ_K n) / Σ_{K∈E} V_K`, with `σ_K` the constant
+/// P1 element stress from [`element_stress_p1`]. The ball resolves to
+/// elements by exactly the same rules as [`LocalDisplacementQoi`] — see that
+/// type's doc block for §11 Q1/Q2 — because both functionals share one
+/// private `resolve`.
+///
+/// # Why a ball mean and not a point value
+///
+/// P1 stress is element-wise CONSTANT and discontinuous across faces, so a
+/// pointwise normal stress is not even well defined on a face or an edge,
+/// and on a refining mesh a point value does not converge. Averaging over a
+/// fixed physical ball is what makes this a bounded functional with a mesh
+/// limit — the same reason the displacement QoI is a ball mean, but here the
+/// discontinuity makes it not merely preferable but necessary.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocalNormalStressQoi {
+    /// Ball centre, in the same coordinates as `P1TetMeshRef::coords`.
+    pub at: [f64; 3],
+    /// Ball radius. Required, finite and strictly positive (C4).
+    pub radius: f64,
+    /// Unit normal of the plane the stress is resolved across. Normalized by
+    /// the caller; a zero vector is [`QoiError::ZeroDirection`] — the same
+    /// variant a zero displacement direction yields, since in both cases it
+    /// is the vector the functional projects onto that has vanished.
+    pub normal: [f64; 3],
+}
+
+impl QuantityOfInterest for LocalNormalStressQoi {
+    fn evaluate(
+        &self,
+        mesh: P1TetMeshRef<'_>,
+        material: &IsotropicElastic,
+        u: &[f64],
+    ) -> Result<f64, QoiError> {
+        let set = resolve(self.at, self.radius, self.normal, mesh, u)?;
+        let mut weighted = 0.0_f64;
+        for el in &set.elements {
+            let tet = &mesh.tets[el.index];
+            let sigma = element_stress_p1(
+                &tet_nodes(mesh, tet),
+                material,
+                &element_displacements(u, tet),
+            );
+            weighted += el.volume * contract_normal_stress(&sigma, self.normal);
+        }
+        Ok(weighted / set.total_volume)
+    }
+
+    /// # Implementation: the dual load by twelve unit probes
+    ///
+    /// The columns of a linear map are the images of the basis vectors, so
+    /// this recovers each contributing element's row of `g` by applying
+    /// [`element_stress_p1`] to each of the twelve unit element
+    /// displacements and contracting the image with `n ⊗ n`.
+    ///
+    /// That extraction is EXACT, not an approximation:
+    /// `element_stress_p1` forms `ε = B·u_e` with `B` independent of `u_e`
+    /// and `σ = D·ε`, so it is strictly linear with no affine offset —
+    /// `u_e = 0` maps to `σ = 0` exactly, with nothing for the probes to
+    /// leave behind.
+    ///
+    /// Probing rather than exposing a B-matrix is deliberate. The crate has
+    /// no public B, and adding one would put the Voigt/engineering-shear
+    /// convention (`γ = 2ε`) in a second place that could drift from
+    /// `assembly::tet`'s. The twelve probes keep it in exactly one. The
+    /// O(12) cost per contributing element is negligible: `E` is a handful
+    /// of elements around a point, never the mesh.
+    fn dual_load(
+        &self,
+        mesh: P1TetMeshRef<'_>,
+        material: &IsotropicElastic,
+        u: &[f64],
+    ) -> Result<Vec<f64>, QoiError> {
+        let set = resolve(self.at, self.radius, self.normal, mesh, u)?;
+        let mut g = vec![0.0_f64; 3 * mesh.coords.len()];
+        for el in &set.elements {
+            let tet = &mesh.tets[el.index];
+            let nodes = tet_nodes(mesh, tet);
+            let w = el.volume / set.total_volume;
+            let mut probe = [0.0_f64; 12];
+            for col in 0..12 {
+                probe[col] = 1.0;
+                let sigma = element_stress_p1(&nodes, material, &probe);
+                probe[col] = 0.0;
+                g[3 * tet[col / 3] + col % 3] +=
+                    w * contract_normal_stress(&sigma, self.normal);
+            }
+        }
+        Ok(g)
+    }
+
+    fn kind(&self) -> QoiKind {
+        QoiKind::LocalNormalStress
     }
 }
 
@@ -1502,6 +1633,71 @@ mod tests {
             "normal-stress `at` far outside the body",
             |e| *e == QoiError::PointOutsideBody { at: far_outside },
         );
+    }
+
+
+    /// The three [`CUBE_BALLS`] configurations really do select three
+    /// different contributing sets.
+    ///
+    /// Every other cube test loops over all three and expects the same
+    /// answer from each. That is only evidence of anything if the three
+    /// genuinely differ — on a uniform-strain field, in particular, σ is the
+    /// same in every element, so those assertions would pass unchanged even
+    /// if all three balls resolved to one identical set. This test is what
+    /// makes "a disagreement BETWEEN configurations localises the bug to the
+    /// weighting" a true statement about the suite rather than a hope.
+    ///
+    /// Membership is probed with `LocalDisplacementQoi`, not the stress
+    /// functional: its `g_i = (V_K/V_E)·¼·d` is non-zero at every node of
+    /// every contributing element for any non-zero `d`, so its support is
+    /// exactly the union of those elements' nodes. The stress functional's
+    /// support is a SUBSET — an individual probe's contraction can vanish
+    /// for a particular normal and node — so it cannot pin membership. Both
+    /// share one `resolve`, so what is measured here holds for both.
+    #[test]
+    fn the_three_cube_ball_configurations_select_three_different_contributing_sets() {
+        let coords = unit_cube_coords();
+        let tets = unit_cube_kuhn_tets();
+        let mesh = P1TetMeshRef {
+            coords: &coords,
+            tets: &tets,
+        };
+        let mat = dimensionless_steel_like();
+        let u = unit_cube_nonuniform_u();
+
+        // Expected support, and how many centroids the ball catches — the
+        // latter is what separates "one element by the centroid rule" from
+        // "one element via the fallback arm".
+        let expected: [(Vec<usize>, usize); 3] = [
+            ((0..8).collect(), 6),
+            (vec![0, 1, 3, 7], 1),
+            (vec![0, 1, 3, 7], 0),
+        ];
+
+        for ((at, radius, label), (support, n_centroids)) in CUBE_BALLS.iter().zip(expected) {
+            let caught = CUBE_CENTROIDS
+                .iter()
+                .filter(|c| dist(*at, **c) <= *radius)
+                .count();
+            assert_eq!(
+                caught, n_centroids,
+                "{label}: expected the ball to catch {n_centroids} element \
+                 centroid(s), it catches {caught}",
+            );
+
+            let g = LocalDisplacementQoi {
+                at: *at,
+                radius: *radius,
+                direction: [0.0, -1.0, 0.0],
+            }
+            .dual_load(mesh, &mat, &u)
+            .unwrap_or_else(|e| panic!("{label}: must resolve, got {e}"));
+            assert_eq!(
+                dual_load_support(&g),
+                support,
+                "{label}: contributing set differs from the one its label claims",
+            );
+        }
     }
 
 }
