@@ -2390,6 +2390,107 @@ mod tests {
         );
     }
 
+    /// Companion to `server_recovers_from_eval_state_lock_poisoning` above:
+    /// recovery must also be REPORTED, and reported over the protocol
+    /// channel rather than to stderr (task #6329).
+    ///
+    /// Same poisoning technique as that test, verbatim — clone the
+    /// `eval_state` Arc, panic a thread while it holds the lock, join, and
+    /// confirm `lock().is_err()`. The differences are the sink
+    /// (`RecordingSink`, so log lines are observable at all) and that BOTH
+    /// `did_open` and `did_change` are driven, since each has its own
+    /// recover-and-report closure and the two must not drift.
+    ///
+    /// ERROR, not WARNING: a poisoned `eval_state` means a prior panic ran
+    /// inside the evaluator. That is strictly more serious than a client
+    /// sending a bad URI (which is `MessageType::WARNING`), and flattening
+    /// the two onto one level would throw away the only signal a user has
+    /// that the server, rather than their document, is what went wrong.
+    ///
+    /// Keeps the sibling test's "diagnostics were captured" check so this
+    /// test cannot pass by having broken recovery and merely logged about
+    /// it.
+    #[tokio::test]
+    async fn eval_state_poison_recovery_is_reported_on_the_log_channel() {
+        let sink = Arc::new(RecordingSink::default());
+        let (service, _socket) =
+            LspService::new(|client| ReifyLanguageServer::with_sink(client, sink.clone()));
+        let server = service.inner();
+        let uri = test_uri();
+
+        // Poison the eval_state Mutex by panicking while holding the lock.
+        let eval_state_arc = server.eval_state().clone();
+        let handle = std::thread::spawn(move || {
+            let _guard = eval_state_arc.lock().unwrap();
+            panic!("intentional panic to poison the mutex");
+        });
+        let _ = handle.join();
+        assert!(
+            server.eval_state().lock().is_err(),
+            "lock should be poisoned after panic"
+        );
+
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: reify_test_support::bracket_source().to_string(),
+                },
+            })
+            .await;
+        server
+            .did_change(DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: uri.clone(),
+                    version: 2,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: reify_test_support::bracket_source().to_string(),
+                }],
+            })
+            .await;
+
+        let log_calls = sink.take_log_calls();
+        let recoveries: Vec<_> = log_calls
+            .iter()
+            .filter(|(_, message)| message.contains("eval_state lock poisoned, recovering"))
+            .collect();
+        assert_eq!(
+            recoveries.len(),
+            2,
+            "expected one poisoned-lock recovery notice per handler (did_open and did_change), \
+             delivered over the sink rather than written to stderr (task #6329); \
+             got log calls: {log_calls:?}"
+        );
+        for (typ, message) in &recoveries {
+            assert_eq!(
+                *typ,
+                MessageType::ERROR,
+                "a poisoned eval_state means a prior panic ran inside the evaluator — it must \
+                 be reported at ERROR, not flattened onto the WARNING level an unknown-URI \
+                 didChange uses. Got {typ:?} for: {message}"
+            );
+        }
+
+        // Recovery itself, not merely the report of it, still happened.
+        let state = server.state().read().await;
+        let captured = state
+            .last_diagnostics_for(&uri)
+            .expect("diagnostics should be captured even after poison recovery");
+        let errors: Vec<_> = captured
+            .iter()
+            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "valid source should have no errors after poison recovery, got: {errors:?}"
+        );
+    }
+
     #[tokio::test]
     async fn did_close_removes_document_from_store() {
         let (service, _socket) = test_service();
