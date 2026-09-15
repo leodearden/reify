@@ -477,25 +477,40 @@ fn indexed_sub_is_rejected_with_interim_diagnostic_and_elaborates_to_one_instanc
 structure Rig {
     sub legs[k in 0..3] = Leg()
 }"#;
-    // `compile_source_with_stdlib` cannot be used here: it routes through
-    // `parse_with_stdlib_or_panic`, which PANICS on any parse error, so it
-    // would abort rather than fail informatively now that α rejects at parse
-    // time. The `_allow_parse_errors` variant forwards the parse diagnostics
-    // and still compiles the (here complete) AST, so the rejection and the
-    // elaboration shape can both be asserted in one test.
-    let compiled = reify_test_support::compile_source_with_stdlib_allow_parse_errors(source);
+    // The PRODUCTION single-module path is used directly here — what the CLI and
+    // GUI do — rather than either test-support helper, because each would distort
+    // the very count this test pins:
+    //
+    // - `compile_source_with_stdlib` routes through `parse_with_stdlib_or_panic`,
+    //   which PANICS on any parse error, so it would abort rather than fail
+    //   informatively now that α rejects at parse time.
+    // - `compile_source_with_stdlib_allow_parse_errors` PREPENDS its own
+    //   `Diagnostic::error` per parse error (`helpers.rs`'s
+    //   `parse_errors_as_diagnostics`) and THEN compiles, so every parse error
+    //   is reported TWICE — see the severity note on the filter below.
+    //
+    // `compile_with_stdlib` forwards the parse diagnostics itself (via
+    // `compile_builder::pre_pass::forward_parse_errors`) and still compiles the
+    // (here complete) AST, so the rejection and the elaboration shape can both
+    // be asserted in one test, off exactly the diagnostics a real caller sees.
+    let parsed = reify_compiler::parse_with_stdlib(source, reify_core::ModulePath::single("test"));
+    let compiled = reify_compiler::compile_with_stdlib(&parsed);
 
     // Filter on the `#5482` cite, not on `Severity::Error` alone — an unrelated
     // future compile error on this snippet must not fail a test whose message
     // blames β. Filtering on the cite rather than the full wording also keeps
     // the wording contract in ONE crate (reify-syntax), where it is pinned.
     //
-    // Severity is still required, because the same parse error appears TWICE by
-    // design: `compile_source_with_stdlib_allow_parse_errors` prepends it as
-    // `Diagnostic::error` (reify-test-support helpers.rs), while
-    // `compile_builder::pre_pass::forward_parse_errors` independently pushes it
-    // as `Diagnostic::warning("parse error: …")`. That duplication is the
-    // helper's contract, not a bug to "fix".
+    // Severity is still required to keep an unrelated future WARNING on this
+    // snippet from counting as a rejection. It no longer separates the parse
+    // layer from the compile layer, though: before task #5392,
+    // `forward_parse_errors` pushed `Diagnostic::warning("parse error: …")`,
+    // so filtering on `Severity::Error` silently discarded it and left only the
+    // `_allow_parse_errors` helper's prepended copy. #5392 made parse errors
+    // hard errors on this path too (INV-SF-7: a refused parse must not be
+    // silently accepted), so the two copies now agree on severity and that
+    // filter no longer deduplicates them — hence compiling through the
+    // production path above, which emits each parse error exactly once.
     let rejections: Vec<String> = compiled
         .diagnostics
         .iter()

@@ -9,6 +9,12 @@ use std::collections::{HashMap, HashSet};
 use reify_ast::*;
 use reify_core::{ContentHash, ModulePath, PortDirection, SourceSpan, SpannedIdent};
 
+mod fault_diagnosis;
+
+use fault_diagnosis::{
+    MAX_DIAGNOSTICS, collect_let_anchors, faults_strictly_inside, last_let_anchor_before,
+};
+
 /// Check a child node for errors before lowering it. If the node has errors,
 /// push a parse error and return None. Otherwise, evaluate the lowering expression.
 macro_rules! check_and_lower {
@@ -216,6 +222,206 @@ impl<'a> Lowering<'a> {
         self.errors.borrow_mut().push(ParseError { message, span });
     }
 
+    /// Push a parse error for a faulty subtree, narrowing the span to the first
+    /// ERROR/MISSING descendant so the diagnostic points at the fault itself
+    /// rather than at the whole enclosing construct.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
+    /// task #5392: when a subtree carries an ERROR or MISSING node the lowered
+    /// AST no longer corresponds to the source, so the construct must be refused
+    /// loudly rather than lowered best-effort. Dropping it silently is what let a
+    /// missing `;` in a function body evaporate a `let` binding and change the
+    /// program's value with no diagnostic at all.
+    ///
+    /// Deliberately does NOT interpolate `node_text` into the message: echoing a
+    /// multi-line slice of source is what made these diagnostics unreadable and
+    /// mislocated. `message` must be a fixed, one-line description.
+    fn push_fault_error(&self, node: tree_sitter::Node, message: impl Into<String>) {
+        let anchor = first_error_or_missing_descendant(node).unwrap_or(node);
+        self.push_error(message.into(), self.span(anchor));
+    }
+
+    /// Diagnose an `ERROR` node, anchoring the report to the `let` binding whose missing `;`
+    /// caused tree-sitter's recovery to fuse two statements.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+    ///
+    /// The former behaviour spanned the WHOLE `ERROR` node and interpolated its entire source
+    /// slice into the message. For the shape this task exists to fix, that meant one
+    /// four-line diagnostic covering an entire `fn` declaration — and for a file with two
+    /// broken sibling fns, ONE diagnostic covering BOTH, which is how the error came to be
+    /// reported against an unrelated later line.
+    ///
+    /// Span choice, measured on the t9 shape
+    /// `fn f(i: Int) -> Real {\n  let x0 = cos(0deg)\n  x0 * sgn(i, 0)\n}`:
+    /// the enclosing ERROR spans the whole declaration; the first fault descendant sits on
+    /// the ABSORBED line, one row too late; only the `let` token sits on the ABSORBING line
+    /// — the line a user must actually edit. Spanning `[let_token.start, fault.start)` also
+    /// highlights exactly the text that was silently fused.
+    ///
+    /// Emits one diagnostic per ABSORBING `let`, not per `ERROR` node: recovery collapses
+    /// several broken declarations into one node (see [`faults_strictly_inside`]), so a
+    /// first-fault-only report silently drops every later declaration's break. Deduplicating by
+    /// anchoring `let` keeps the recovery debris around a single break from multiplying into
+    /// several diagnostics for the same missing separator.
+    ///
+    /// `context` (`"source file"`, `"structure body"`) names only the DISPATCH ARM, not the
+    /// construct the fault is in — the t9 shape reaches this method as a `"source file"` ERROR
+    /// yet the fault is inside a function body — so it is used only in the generic arm's
+    /// message. The separator arm instead earns its "in function body" wording from
+    /// [`fault_diagnosis::LetAnchor::in_fn_body`], which is a property of the anchoring
+    /// `let` itself.
+    ///
+    /// The CST-walking half of this — innermost-fault selection, the `let` anchor table and
+    /// its search, and the [`MAX_DIAGNOSTICS`] budget — lives in [`fault_diagnosis`]; what
+    /// stays here is the policy that reads those facts and decides which fault earns which
+    /// message, which is the only part that needs `self`.
+    fn diagnose_error_node(&self, node: tree_sitter::Node, context: &str) {
+        let mut faults = faults_strictly_inside(node);
+        if faults.is_empty() {
+            // An `ERROR` leaf with nothing broken below it is its own single fault.
+            faults.push(node);
+        }
+
+        // Hoisted out of the fault loop: one walk for the whole `ERROR` node, then a binary
+        // search per fault. Re-walking the subtree per fault made a badly broken file cost
+        // O(faults × nodes) on the LSP's per-keystroke path.
+        let let_anchors = collect_let_anchors(node);
+
+        // Classify every fault before emitting any of it, so the budget can be spent on the
+        // reports worth keeping rather than on whichever faults the walk reached first.
+        // `located` holds `(absorbing let start byte, fault node)` deduplicated per `let`;
+        // `generic` holds the faults no `let` explains, deduplicated per ROW. Both stay in
+        // source order because `faults` is. Each is bounded by `MAX_DIAGNOSTICS` at emission,
+        // and the dedupe keys are few enough that a linear `contains` beats a set.
+        let mut located: Vec<(usize, tree_sitter::Node)> = Vec::new();
+        let mut generic: Vec<tree_sitter::Node> = Vec::new();
+
+        for fault in faults {
+            // Two conditions must BOTH hold before a missing `;` is a supportable diagnosis.
+            //
+            // The fault must sit on a LATER LINE than the `let` — that fusing of two lines is
+            // the whole mechanism (see `collect_let_anchors`). Once recovery has derailed at
+            // the first fault, later debris can land on the same line as an entirely
+            // well-formed binding; measured on
+            // `structure T { fn f(..) { let x0 = 1 <NL> x0 * 2 } let v = 1 }`, tree-sitter emits
+            // a second `ERROR` at `v`, whose nearest preceding `let` is the well-formed
+            // `let v = 1`.
+            //
+            // And the `let` must be a FUNCTION-BODY binding. Only `fn_let_binding` requires a
+            // `;`; a structure/module member `let` is newline-separated, so telling a user to
+            // add a separator there names a construct that is not a function body and demands
+            // an edit the grammar rejects.
+            //
+            // Either way the failure is the same point-at-an-unrelated-line defect this method
+            // exists to remove, so such a fault falls through to the generic branch instead:
+            // honest about the debris, silent about a cause it cannot support.
+            let anchoring_let = last_let_anchor_before(&let_anchors, fault.start_byte())
+                .filter(|a| a.in_fn_body && fault.start_position().row > a.row);
+            match anchoring_let {
+                Some(let_tok) => {
+                    if !located.iter().any(|(anchor, _)| *anchor == let_tok.start_byte) {
+                        located.push((let_tok.start_byte, fault));
+                    }
+                }
+                // No `let` to blame — the fault itself is the report, span-narrowed and with
+                // no source echo (mechanism M3), deduplicated per ROW rather than once per
+                // `ERROR` node. Recovery collapses several independently-broken declarations
+                // into ONE node (see `faults_strictly_inside`), so a once-per-node report
+                // drops every later declaration's break — the same silent-drop defect the
+                // located arm exists to remove, on the arm that has no `let` to blame. A row
+                // is the unit a user edits, so per-row still collapses the debris around a
+                // single break into one report.
+                None => {
+                    let row = fault.start_position().row;
+                    if !generic.iter().any(|f| f.start_position().row == row) {
+                        generic.push(fault);
+                    }
+                }
+            }
+        }
+
+        // Located reports get FIRST claim on the budget: one that names a cause and points at
+        // the line to edit outranks one that can only say "something is broken here".
+        // Measured on the 24-broken-function corpus
+        // (`a_file_of_broken_functions_is_bounded_and_says_so`): the debris of the first break
+        // fans out across seven rows, so spending the budget in walk order left ONE located
+        // report and seven generic ones — the cap REPLACING the report rather than bounding it.
+        let located_kept = located.len().min(MAX_DIAGNOSTICS);
+        let generic_kept = generic.len().min(MAX_DIAGNOSTICS - located_kept);
+
+        // Re-sorted by position before emission: prioritising by kind is a budget decision,
+        // not a reason to hand a reader diagnostics out of source order. Stable, so faults
+        // sharing a start byte keep their walk order.
+        let mut reports: Vec<(usize, String, SourceSpan)> =
+            Vec::with_capacity(located_kept + generic_kept);
+        for &(anchor, fault) in &located[..located_kept] {
+            reports.push((
+                anchor,
+                "missing ';' after `let` binding in function body".to_string(),
+                SourceSpan::new(anchor as u32, fault.start_byte() as u32),
+            ));
+        }
+        for &fault in &generic[..generic_kept] {
+            reports.push((
+                fault.start_byte(),
+                format!("syntax error in {context}"),
+                self.span(fault),
+            ));
+        }
+        reports.sort_by_key(|(start, _, _)| *start);
+        for (_, message, span) in reports {
+            self.push_error(message, span);
+        }
+
+        // Truncation is announced, and anchored at the EARLIEST fault declined — not at
+        // `node`, whose span is the blob location this method exists to eliminate.
+        let first_declined = located[located_kept..]
+            .iter()
+            .map(|&(_, fault)| fault)
+            .chain(generic[generic_kept..].iter().copied())
+            .min_by_key(|fault| fault.start_byte());
+        if let Some(fault) = first_declined {
+            self.push_error(
+                format!("syntax error in {context} (further errors suppressed)"),
+                self.span(fault),
+            );
+        }
+    }
+
+    /// Lower a `function_definition` / `function_signature` subtree, refusing it outright
+    /// when it carries a CST fault and guaranteeing that such a fault always produces at
+    /// least one diagnostic.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
+    /// task #5392. Two properties, both required:
+    ///
+    /// - **Refusal.** A faulty subtree yields `None`, so the caller never pushes a
+    ///   declaration whose AST disagrees with its source. This matches what every other
+    ///   member kind already gets from `check_and_lower!`; the fn arms were the sole
+    ///   exception, which is how a nested MISSING node evaporated a `let` binding in
+    ///   silence.
+    /// - **Loudness.** The inner lowering is still run FIRST, purely for its diagnostics,
+    ///   so specific, well-located messages it already emits (e.g. "syntax error in type
+    ///   argument list", or the fn-body separator diagnostics) are preserved verbatim.
+    ///   `push_fault_error` fires only as a backstop, when that pass stayed silent — a
+    ///   blanket pre-emptive guard would REPLACE the precise message with a vague one.
+    ///
+    /// A well-formed bodyless `function_signature` is not faulty and lowers unchanged to
+    /// `body: None`.
+    fn lower_function_checked(&self, node: tree_sitter::Node) -> Option<FnDef> {
+        if !(node.is_error() || node.has_error()) {
+            return self.lower_function(node);
+        }
+        let before = self.errors.borrow().len();
+        // Run for diagnostics only; the result is deliberately discarded.
+        let _ = self.lower_function(node);
+        if self.errors.borrow().len() == before {
+            self.push_fault_error(node, "syntax error in function definition");
+        }
+        None
+    }
+
     /// Extract the source text for a node.
     fn node_text(&self, node: tree_sitter::Node) -> &'a str {
         &self.source[node.start_byte()..node.end_byte()]
@@ -231,11 +437,36 @@ impl<'a> Lowering<'a> {
         ContentHash::of_str(self.node_text(node))
     }
 
+    /// A short, single-line excerpt of a node's source text, safe to interpolate into a
+    /// diagnostic message.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392:
+    /// a diagnostic that reprints a block of source is unreadable, and on a recovered parse
+    /// the node in question can span an entire declaration. Truncates at the first newline,
+    /// then to at most 40 characters, appending an ellipsis when anything was cut.
+    ///
+    /// Truncation is on a CHARACTER boundary via `char_indices`, never a byte slice: the
+    /// source is UTF-8 and `&s[..40]` would panic mid-codepoint on any non-ASCII input.
+    fn snippet(&self, node: tree_sitter::Node) -> String {
+        const MAX_CHARS: usize = 40;
+        let text = self.node_text(node);
+        let (first_line, had_newline) = match text.find('\n') {
+            Some(i) => (&text[..i], true),
+            None => (text, false),
+        };
+        match first_line.char_indices().nth(MAX_CHARS) {
+            Some((byte_idx, _)) => format!("{}…", &first_line[..byte_idx]),
+            None if had_newline => format!("{first_line}…"),
+            None => first_line.to_string(),
+        }
+    }
+
     /// Emit a diagnostic for an unexpected named child in a lowering context.
     ///
     /// Skips anonymous tokens and extras (comments). For named, non-extra
     /// children that don't match any expected arm, pushes an error with the
-    /// child's kind and source text.
+    /// child's kind and a BOUNDED excerpt of its source text (see [`Self::snippet`] —
+    /// INV-SF-7, task #5392). The `unexpected '<kind>' in <context>` prefix is unchanged.
     fn warn_unexpected_child(&mut self, child: tree_sitter::Node, context: &str) {
         if child.is_named() && !child.is_extra() {
             self.push_error(
@@ -243,7 +474,7 @@ impl<'a> Lowering<'a> {
                     "unexpected '{}' in {}: {}",
                     child.kind(),
                     context,
-                    self.node_text(child)
+                    self.snippet(child)
                 ),
                 self.span(child),
             );
@@ -377,10 +608,17 @@ impl<'a> Lowering<'a> {
                         self.declarations.push(Declaration::Enum(decl));
                     }
                 }
+                // INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
+                // task #5392: routed through `lower_function_checked` so a faulty subtree is
+                // refused AND diagnosed, like every sibling arm's `check_and_lower!`. Without
+                // that guard a `function_definition` carrying a nested MISSING node (e.g.
+                // `fn f(x: Int) -> Int { let y = ; x }`) lowered cleanly with the malformed
+                // binding silently dropped — zero diagnostics for a module whose values no
+                // longer match its source.
                 "function_definition" => {
                     let annotations = std::mem::take(&mut pending_annotations);
                     let _ = std::mem::take(&mut pending_cfg);
-                    if let Some(mut decl) = self.lower_function(child) {
+                    if let Some(mut decl) = self.lower_function_checked(child) {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Function(decl));
                     }
@@ -533,10 +771,7 @@ impl<'a> Lowering<'a> {
                     // leak past a syntax error to the next successfully-parsed declaration.
                     let _ = std::mem::take(&mut pending_annotations);
                     let _ = std::mem::take(&mut pending_cfg);
-                    self.push_error(
-                        format!("syntax error: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    self.diagnose_error_node(child, "source file");
                 }
                 _ => self.warn_unexpected_child(child, "source file"),
             }
@@ -2172,18 +2407,42 @@ impl<'a> Lowering<'a> {
         let mut let_bindings = Vec::new();
 
         // Collect fn_let_binding children (zero for the expression form).
+        //
+        // INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
+        // task #5392: a binding that fails to lower is REPORTED, never dropped. The former
+        // `if kind == "fn_let_binding" && let Some(..)` shape had no else arm, so a
+        // malformed binding vanished from the AST with no diagnostic — the module then
+        // evaluated to a value its source never described.
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if child.kind() == "fn_let_binding"
-                && let Some(let_decl) = self.lower_fn_let_binding(child)
-            {
-                let_bindings.push(let_decl);
+            if child.kind() == "fn_let_binding" {
+                match self.lower_fn_let_binding(child) {
+                    Some(let_decl) => let_bindings.push(let_decl),
+                    None => self.push_fault_error(child, "invalid let binding in function body"),
+                }
             }
         }
 
         // The result expression is the 'result' field — present in both arms.
-        let result_node = node.child_by_field_name("result")?;
-        let result_expr = self.lower_expr(result_node)?;
+        // Same INV-SF-7 rule: a body we cannot lower is refused with a diagnostic, not
+        // returned as a bare `None` that the caller silently discards.
+        let Some(result_node) = node.child_by_field_name("result") else {
+            self.push_fault_error(node, "function body has no result expression");
+            return None;
+        };
+        // Distinct from the arm above, and reported only as a backstop. Here the result node
+        // EXISTS and merely failed to lower, so "has no result expression" would be factually
+        // wrong; and `lower_expr` has usually already pushed a more specific, better-located
+        // message, which this must not duplicate. Same growth check as
+        // `lower_function_checked`: speak only when the inner pass stayed silent.
+        let before = self.errors.borrow().len();
+        let lowered = self.lower_expr(result_node);
+        let Some(result_expr) = lowered else {
+            if self.errors.borrow().len() == before {
+                self.push_fault_error(result_node, "invalid result expression in function body");
+            }
+            return None;
+        };
 
         Some(FnBody {
             let_bindings,
@@ -2338,8 +2597,17 @@ impl<'a> Lowering<'a> {
                 .map(MemberDecl::AssociatedType),
             // Trait-body fn members: `fn f(self) -> T { ... }` (function_definition)
             // or `fn req(self) -> T` (bodyless function_signature).
+            //
+            // INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
+            // task #5392: this was the ONE member kind without a `has_error()` guard, so a
+            // fault inside a member fn body evaporated silently. Routed through
+            // `lower_function_checked` rather than `check_and_lower!` so the diagnostic
+            // avoids that macro's `node_text` source echo and so a more specific inner
+            // message is not overwritten by a vague outer one. A bodyless
+            // `function_signature` is well-formed and lowers to `body: None` as before —
+            // the guard fires on CST faults, never on a legitimately absent body.
             "function_definition" | "function_signature" => {
-                self.lower_function(child).map(MemberDecl::Fn)
+                self.lower_function_checked(child).map(MemberDecl::Fn)
             }
             "port_declaration" => check_and_lower!(
                 self,
@@ -2386,10 +2654,7 @@ impl<'a> Lowering<'a> {
                 self.lower_forall_statement(child)
             ),
             "ERROR" => {
-                self.push_error(
-                    format!("syntax error: {}", self.node_text(child)),
-                    self.span(child),
-                );
+                self.diagnose_error_node(child, "structure body");
                 None
             }
             _ => None,
@@ -2420,10 +2685,18 @@ impl<'a> Lowering<'a> {
                 "ERROR" => {
                     // Consume pending annotations so they don't leak past a syntax error.
                     let _ = std::mem::take(&mut pending_annotations);
-                    self.push_error(
-                        format!("syntax error: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    // INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
+                    // task #5392. This arm SHADOWS `lower_member`'s own `"ERROR"` arm: an
+                    // `ERROR` child is matched here and never reaches it, so converting only
+                    // that one left every member-position fault reporting the old
+                    // blob-spanning, source-echoing message. Measured before this change, a
+                    // member fn whose `let` was missing its `;` reported
+                    // `2:3: syntax error: fn f(i: Int) -> Real {\n…` — five lines of echoed
+                    // source, anchored to the `fn` header rather than the absorbing `let`, and
+                    // swallowing the following member. A member fn collapses into an `ERROR`
+                    // here exactly as a top-level one collapses in `lower_source_file`, so it
+                    // gets the same let-anchored treatment.
+                    self.diagnose_error_node(child, "structure body");
                 }
                 _ => {
                     // Drain pending annotations before lowering the member.
@@ -4590,13 +4863,18 @@ impl<'a> Lowering<'a> {
     /// the arity of the enclosing call and re-label every argument after it:
     /// `plain(1, a.b.c(), 3)` measured as a TWO-argument `FunctionCall` before
     /// this was fixed, with `3` sliding into position 1. That matters even
-    /// though the enclosing parse always carries an error, because
-    /// `reify_compiler`'s `forward_parse_errors` downgrades every parse error to
-    /// a WARNING — so a library consumer that compiles and reads diagnostics
-    /// sees the mis-arity'd call with no error at all. The slot is filled with
-    /// `ExprKind::Undef`, whose documented job is exactly this (it absorbs the
-    /// type cascade via `Type::Error`), and any label the argument carried is
-    /// preserved so `args`/`arg_names` stay length-matched and aligned.
+    /// though the enclosing parse always carries an error: the lowered AST is
+    /// observable independently of the diagnostics, so a consumer that inspects
+    /// it without bailing on the error list still reads the mis-arity'd call.
+    /// This is a lowering-local contract — it does not rest on how any
+    /// downstream crate grades the accompanying diagnostic. (Task #5392 later
+    /// made `reify_compiler`'s `forward_parse_errors` push an ERROR rather than
+    /// the WARNING this comment once cited as the motivating hazard; the
+    /// invariant is unchanged, because it never depended on that severity.)
+    /// The slot is filled with `ExprKind::Undef`, whose documented job is exactly
+    /// this (it absorbs the type cascade via `Type::Error`), and any label the
+    /// argument carried is preserved so `args`/`arg_names` stay length-matched
+    /// and aligned.
     ///
     /// The placeholder is pushed ONLY when the failed lowering also pushed a
     /// DIAGNOSTIC. A `None` with no diagnostic is a silent skip — a `line_comment`
@@ -8157,5 +8435,73 @@ mod tests {
             "a recognised operator must not diagnose, got {:?}",
             lowering.errors.borrow()
         );
+    }
+
+    // The three `snippet` tests below borrow `fault_diagnosis::with_root` rather than keeping
+    // a second parse-and-hand-me-the-root helper here; `snippet` itself is a `Lowering` method,
+    // so the tests stay with it.
+
+    /// `snippet` truncates on a CHARACTER boundary, never a byte one.
+    ///
+    /// INV-SF-7, task #5392. The doc on `snippet` calls this out specifically: `&s[..40]` on a
+    /// non-ASCII string panics mid-codepoint, and the source is UTF-8, so a string literal or
+    /// comment full of multi-byte characters would abort the parse instead of describing it.
+    #[test]
+    fn snippet_truncates_long_multibyte_text_on_a_character_boundary() {
+        // 45 two-byte characters — comfortably past the 40-char cap, and every candidate cut
+        // point past index 0 is mid-codepoint under byte slicing.
+        let long = "α".repeat(45);
+        let source = format!("structure S {{\n  let a = \"{long}\"\n}}\n");
+
+        fault_diagnosis::with_root(&source, |root| {
+            let node = find_node_by_kind(root, "string_literal")
+                .expect("fixture must contain a string_literal");
+            let lowering = Lowering::new(&source);
+            let snippet = lowering.snippet(node);
+
+            assert!(
+                snippet.ends_with('…'),
+                "a truncated snippet must announce the truncation, got {snippet:?}",
+            );
+            assert_eq!(
+                snippet.chars().count(),
+                41,
+                "40 characters plus the ellipsis, got {snippet:?}",
+            );
+            assert!(
+                snippet.chars().filter(|c| *c == 'α').count() >= 39,
+                "the truncated prefix should be the node's own text, got {snippet:?}",
+            );
+        });
+    }
+
+    /// The other truncation branch: a first line SHORTER than the cap, followed by more lines,
+    /// is still marked as truncated.
+    #[test]
+    fn snippet_marks_truncation_when_only_later_lines_are_dropped() {
+        let source = "structure S {\n  let a = 1\n}\n";
+        fault_diagnosis::with_root(source, |root| {
+            let node = find_node_by_kind(root, "structure_definition")
+                .expect("fixture must contain a structure_definition");
+            let lowering = Lowering::new(source);
+            let snippet = lowering.snippet(node);
+            assert_eq!(
+                snippet, "structure S {…",
+                "a multi-line node must be cut at its first newline and marked",
+            );
+            assert!(!snippet.contains('\n'), "snippets are always one line");
+        });
+    }
+
+    /// A single-line node shorter than the cap is reproduced verbatim, with no ellipsis.
+    #[test]
+    fn snippet_leaves_short_single_line_text_alone() {
+        let source = "structure S {\n  let a = 1\n}\n";
+        fault_diagnosis::with_root(source, |root| {
+            let node = find_node_by_kind(root, "let_declaration")
+                .expect("fixture must contain a let_declaration");
+            let lowering = Lowering::new(source);
+            assert_eq!(lowering.snippet(node), "let a = 1");
+        });
     }
 }
