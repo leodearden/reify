@@ -64,100 +64,101 @@ fn index_access(object: CompiledExpr, index: CompiledExpr) -> CompiledExpr {
     }
 }
 
-/// The independent trial-point reference.
+/// The probe point an AD row is checked against: the model's base values, its
+/// autos in column order, the trial vector, the dependent-cell fold and the
+/// user functions.
 ///
-/// This deliberately does NOT call the solver's own `build_trial_values`: it is
-/// the reference the AD path is checked against, so sharing code with the thing
-/// under test would make the comparison vacuous.  It mirrors the same
-/// mapping — `params[i] ↔ x[i]`, each auto inserted as a `Value::Scalar`
-/// carrying its declared dimension.
-fn trial_values(
-    base: &ValueMap,
-    params: &[AutoParam],
-    x: &[f64],
-    dependent_cells: &[(ValueCellId, CompiledExpr)],
-    functions: &[CompiledFunction],
-) -> ValueMap {
-    assert_eq!(params.len(), x.len());
-    let mut values = base.clone();
-    for (param, &val) in params.iter().zip(x.iter()) {
-        let dimension = match &param.param_type {
-            Type::Scalar { dimension } => *dimension,
-            _ => DimensionVector::DIMENSIONLESS,
-        };
-        values.insert(param.id.clone(), Value::Scalar { si_value: val, dimension });
+/// These five travel together through every reference computation below, so
+/// they are named once here rather than re-threaded by hand at each hop.
+struct Probe<'a> {
+    base: &'a ValueMap,
+    params: &'a [AutoParam],
+    x: &'a [f64],
+    dependent_cells: &'a [(ValueCellId, CompiledExpr)],
+    functions: &'a [CompiledFunction],
+}
+
+impl<'a> Probe<'a> {
+    /// A model with no dependent cells and no user functions — the common case.
+    /// The richer shapes spell the difference: `Probe { dependent_cells: …,
+    /// ..Probe::new(…) }`.
+    fn new(base: &'a ValueMap, params: &'a [AutoParam], x: &'a [f64]) -> Self {
+        Self { base, params, x, dependent_cells: &[], functions: &[] }
     }
-    // Fold in STORED ORDER against the RUNNING map, so an earlier dependent
-    // cell is visible to a later one — the same guarantee the solver's own fold
-    // gives, re-derived here rather than borrowed, because this is the
-    // reference the subject is checked against.
-    for (id, expr) in dependent_cells {
-        let v = {
-            let ctx = EvalContext::new(&values, functions);
-            eval_expr(expr, &ctx)
-        };
-        values.insert(id.clone(), v);
+
+    /// The independent trial-point reference.
+    ///
+    /// This deliberately does NOT call the solver's own `build_trial_values`: it
+    /// is the reference the AD path is checked against, so sharing code with the
+    /// thing under test would make the comparison vacuous.  It mirrors the same
+    /// mapping — `params[i] ↔ x[i]`, each auto inserted as a `Value::Scalar`
+    /// carrying its declared dimension.
+    fn trial_values(&self, x: &[f64]) -> ValueMap {
+        assert_eq!(self.params.len(), x.len());
+        let mut values = self.base.clone();
+        for (param, &val) in self.params.iter().zip(x.iter()) {
+            let dimension = match &param.param_type {
+                Type::Scalar { dimension } => *dimension,
+                _ => DimensionVector::DIMENSIONLESS,
+            };
+            values.insert(param.id.clone(), Value::Scalar { si_value: val, dimension });
+        }
+        // Fold in STORED ORDER against the RUNNING map, so an earlier dependent
+        // cell is visible to a later one — the same guarantee the solver's own
+        // fold gives, re-derived here rather than borrowed, because this is the
+        // reference the subject is checked against.
+        for (id, expr) in self.dependent_cells {
+            let v = {
+                let ctx = EvalContext::new(&values, self.functions);
+                eval_expr(expr, &ctx)
+            };
+            values.insert(id.clone(), v);
+        }
+        values
     }
-    values
-}
 
-fn eval_at(
-    expr: &CompiledExpr,
-    base: &ValueMap,
-    params: &[AutoParam],
-    x: &[f64],
-    dependent_cells: &[(ValueCellId, CompiledExpr)],
-    functions: &[CompiledFunction],
-) -> f64 {
-    let values = trial_values(base, params, x, dependent_cells, functions);
-    let ctx = EvalContext::new(&values, functions);
-    eval_expr(expr, &ctx).as_f64().expect("residual must be a scalar at the probe point")
-}
+    /// `expr` at an arbitrary trial vector for this model.
+    fn eval_at(&self, expr: &CompiledExpr, x: &[f64]) -> f64 {
+        let values = self.trial_values(x);
+        let ctx = EvalContext::new(&values, self.functions);
+        eval_expr(expr, &ctx).as_f64().expect("residual must be a scalar at the probe point")
+    }
 
-/// `∂expr/∂x_j` by central differences at the same step shape the rest of the
-/// codebase uses (`calculus.rs:714`).
-fn central_difference(
-    expr: &CompiledExpr,
-    base: &ValueMap,
-    params: &[AutoParam],
-    x: &[f64],
-    j: usize,
-    dependent_cells: &[(ValueCellId, CompiledExpr)],
-    functions: &[CompiledFunction],
-) -> f64 {
-    let h = 1e-6_f64 * x[j].abs().max(1e-3);
-    let mut plus = x.to_vec();
-    plus[j] += h;
-    let mut minus = x.to_vec();
-    minus[j] -= h;
-    (eval_at(expr, base, params, &plus, dependent_cells, functions)
-        - eval_at(expr, base, params, &minus, dependent_cells, functions))
-        / (2.0 * h)
-}
+    /// `expr` at this probe's own point.
+    fn eval(&self, expr: &CompiledExpr) -> f64 {
+        self.eval_at(expr, self.x)
+    }
 
-fn assert_row_matches_cd(
-    label: &str,
-    row: &[f64],
-    expr: &CompiledExpr,
-    base: &ValueMap,
-    params: &[AutoParam],
-    x: &[f64],
-    dependent_cells: &[(ValueCellId, CompiledExpr)],
-    functions: &[CompiledFunction],
-) {
-    assert_eq!(row.len(), params.len(), "{label}: every row is exactly auto_params wide");
-    for (j, &ad) in row.iter().enumerate() {
-        let cd = central_difference(expr, base, params, x, j, dependent_cells, functions);
-        assert!(
-            cd.abs() >= 0.1,
-            "{label} column {j}: probe point must have |∂r/∂x_j| >= 0.1 in SI units so the \
-             relative arm of the tolerance binds; got {cd:?}"
+    /// `∂expr/∂x_j` by central differences at the same step shape the rest of
+    /// the codebase uses (`calculus.rs:714`).
+    fn central_difference(&self, expr: &CompiledExpr, j: usize) -> f64 {
+        let h = 1e-6_f64 * self.x[j].abs().max(1e-3);
+        let mut plus = self.x.to_vec();
+        plus[j] += h;
+        let mut minus = self.x.to_vec();
+        minus[j] -= h;
+        (self.eval_at(expr, &plus) - self.eval_at(expr, &minus)) / (2.0 * h)
+    }
+
+    fn assert_row_matches_cd(&self, label: &str, row: &[f64], expr: &CompiledExpr) {
+        assert_eq!(
+            row.len(),
+            self.params.len(),
+            "{label}: every row is exactly auto_params wide"
         );
-        let tol = 1e-6 * cd.abs() + 1e-8;
-        assert!(
-            (ad - cd).abs() <= tol,
-            "{label} column {j}: ad={ad:?} vs central difference {cd:?} (tol {tol:?})"
-        );
+        for (j, &ad) in row.iter().enumerate() {
+            let cd = self.central_difference(expr, j);
+            assert!(
+                cd.abs() >= 0.1,
+                "{label} column {j}: probe point must have |∂r/∂x_j| >= 0.1 in SI units so the \
+                 relative arm of the tolerance binds; got {cd:?}"
+            );
+            let tol = 1e-6 * cd.abs() + 1e-8;
+            assert!(
+                (ad - cd).abs() <= tol,
+                "{label} column {j}: ad={ad:?} vs central difference {cd:?} (tol {tol:?})"
+            );
+        }
     }
 }
 
@@ -257,7 +258,8 @@ fn every_jacobian_entry_agrees_with_central_differences_over_the_same_residuals(
     let (params, residuals, base, x) = two_auto_model();
     let j = jac(&params, &residuals, &base, &x);
     for (i, expr) in residuals.iter().enumerate() {
-        assert_row_matches_cd(&format!("r{i}"), &j.rows[i], expr, &base, &params, &x, &[], &[]);
+        Probe::new(&base, &params, &x)
+            .assert_row_matches_cd(&format!("r{i}"), &j.rows[i], expr);
     }
 }
 
@@ -273,7 +275,7 @@ fn the_reported_residuals_match_ordinary_evaluation_at_the_same_point() {
     let (params, residuals, base, x) = two_auto_model();
     let j = jac(&params, &residuals, &base, &x);
     for (i, expr) in residuals.iter().enumerate() {
-        let expected = eval_at(expr, &base, &params, &x, &[], &[]);
+        let expected = Probe::new(&base, &params, &x).eval(expr);
         assert_eq!(
             j.residuals[i], expected,
             "residual {i}: AD path reported {:?}, ordinary evaluation gives {expected:?}",
@@ -308,7 +310,7 @@ fn an_angle_auto_and_a_length_auto_both_get_correct_si_unit_columns() {
     let x = vec![0.5, 3.0];
     let j = jac(&params, std::slice::from_ref(&expr), &base, &x);
 
-    assert_row_matches_cd("mixed_units", &j.rows[0], &expr, &base, &params, &x, &[], &[]);
+    Probe::new(&base, &params, &x).assert_row_matches_cd("mixed_units", &j.rows[0], &expr);
     // ∂r/∂a = cos(a)·w ≈ 2.633 per radian; ∂r/∂w = sin(a) ≈ 0.479 per metre.
     assert!((j.rows[0][0] - 0.5_f64.cos() * 3.0).abs() < 1e-9);
     assert!((j.rows[0][1] - 0.5_f64.sin()).abs() < 1e-9);
@@ -421,16 +423,8 @@ fn a_residual_reading_a_derived_cell_gets_a_nonzero_column_for_the_auto_behind_i
         "without a dual-carrying fold this column is exactly 0.0 — the residual would look \
          flat in the very variable it is a function of"
     );
-    assert_row_matches_cd(
-        "line_cost",
-        &j.rows[0],
-        &residual,
-        &base,
-        &params,
-        &x,
-        &dependent,
-        &[],
-    );
+    Probe { dependent_cells: &dependent, ..Probe::new(&base, &params, &x) }
+        .assert_row_matches_cd("line_cost", &j.rows[0], &residual);
     assert!((j.rows[0][0] - 3.0).abs() < 1e-9, "∂r/∂q = unit_cost = 3");
     assert_eq!(j.residuals[0], 3.0, "the primal still comes from the folded value path");
 }
@@ -461,7 +455,8 @@ fn a_chain_of_dependent_cells_propagates_through_every_hop_in_stored_order() {
         "∂r/∂q = 40; got {:?} — a second hop that cannot see the first would give 20",
         j.rows[0][0]
     );
-    assert_row_matches_cd("chain", &j.rows[0], &residual, &base, &params, &x, &dependent, &[]);
+    Probe { dependent_cells: &dependent, ..Probe::new(&base, &params, &x) }
+        .assert_row_matches_cd("chain", &j.rows[0], &residual);
 }
 
 // ---------------------------------------------------------------------------
@@ -1041,9 +1036,10 @@ fn a_user_function_residual_reaches_the_callee_body_through_the_adapter() {
     let base = ValueMap::new();
     let x = vec![3.0, 4.0];
 
-    let j = residual_jacobian(&params, &[residual.clone()], &base, &x, &[], &functions, None)
+    let j = residual_jacobian(&params, std::slice::from_ref(&residual), &base, &x, &[], &functions, None)
         .expect("a user function of smooth algebra is differentiable");
-    assert_row_matches_cd("hyp", &j.rows[0], &residual, &base, &params, &x, &[], &functions);
+    Probe { functions: &functions, ..Probe::new(&base, &params, &x) }
+        .assert_row_matches_cd("hyp", &j.rows[0], &residual);
     assert!((j.residuals[0] - 0.0).abs() < 1e-12, "hyp(3,4) − 5 = 0");
 
     // The premise, asserted rather than assumed: drop the slice and the seam
@@ -1117,7 +1113,7 @@ fn two_jacobians_with_different_row_counts_differ_at_the_first_missing_row() {
     let smooth = binop(BinOp::Mul, w(), literal(Value::Real(3.0)));
     let kinked = call("abs", vec![w()], DimensionVector::DIMENSIONLESS);
 
-    let one = jac(&params, &[smooth.clone()], &base, &x);
+    let one = jac(&params, std::slice::from_ref(&smooth), &base, &x);
     let two_smooth = jac(&params, &[smooth.clone(), smooth.clone()], &base, &x);
     let two_kinked = jac(&params, &[smooth, kinked], &base, &x);
 
