@@ -687,3 +687,243 @@ fn zero_arg_mis_shaped_known_builtin_is_not_double_diagnosed() {
         "typing is UNCHANGED — a zero-arg fallback call still defaults to Real"
     );
 }
+
+// ---------------------------------------------------------------------------
+// (f) FALSE POSITIVES: the warning must not fire for a name this module DECLARES
+// ---------------------------------------------------------------------------
+//
+// `is_known_builtin` answers "is this a BUILTIN?", and it answers correctly:
+// a user `fn` is not a builtin. The fallback's defect is that it read that
+// `false` as "exists nowhere", which only holds when the caller's function
+// table was COMPLETE. It is not complete inside a `fn` body:
+// `compile_builder/functions_phase.rs` compiles each body against
+// `&ctx.functions`, the user-only table that GROWS as the loop walks source
+// order, and only builds the merged `ctx.resolution_functions` afterwards.
+// So a call to a later-declared sibling yields `OverloadResolution::
+// NoUserFunctions` and lands on the terminal fallback with a name that is
+// perfectly real. Entity bodies, compiled after that merge, never see this.
+//
+// Each route below was reproduced first-hand before being written down. The
+// CONTROLS in section (g) bound the fix: they are the routes that are already
+// correct, and a fix that silences them too has become a blanket disable.
+//
+// Typing is NOT in question here — these tests remove a diagnostic and assert
+// nothing about types. `forward_reference_typing_is_byte_identical` in section
+// (h) is where the type answer is pinned.
+
+/// Route (1): a `fn` body calling a LATER-declared sibling `fn`.
+///
+/// Reversing the two declarations compiles clean (control (a)), which is the
+/// proof that the trigger is SOURCE ORDER and not a real lookup miss.
+#[test]
+fn fn_body_calling_a_later_declared_sibling_is_not_unresolved() {
+    let module = compile_source_with_stdlib(
+        r#"
+        pub fn a(x: Real) -> Real { b(x) }
+        pub fn b(x: Real) -> Real { x }
+    "#,
+    );
+
+    assert_eq!(
+        unresolved_function_diags(&module).len(),
+        0,
+        "'b' is declared in this very module; got {:?}",
+        unresolved_function_diags(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Route (2): a mutually-referential `fn` pair.
+///
+/// The load-bearing route. Unlike (1) there is NO declaration order that makes
+/// this quiet, so the warning is unfixable by the user — it tells them to
+/// remove a call to a function they can see two lines below.
+#[test]
+fn mutually_referential_fn_pair_is_not_unresolved() {
+    let module = compile_source_with_stdlib(
+        r#"
+        pub fn even(n: Int) -> Int { odd(n) }
+        pub fn odd(n: Int) -> Int { even(n) }
+    "#,
+    );
+
+    assert_eq!(
+        unresolved_function_diags(&module).len(),
+        0,
+        "neither half of a mutually-referential pair can be reordered into \
+         scope; got {:?}",
+        unresolved_function_diags(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Route (3): a structure CONSTRUCTOR called from a TRAIT STATIC fn body.
+///
+/// Distinct cause from (1)/(2): `compile_builder/traits_phase.rs` passes `None`
+/// for `compile_function`'s `prelude_template_registry` ("v1: no prelude
+/// template registry for static fn bodies"), so the constructor is never
+/// claimed and rides the fallback. Control (c) pins that the SAME call from a
+/// regular fn body is already clean, which is what confines this route to the
+/// trait-static site.
+#[test]
+fn struct_constructor_in_a_trait_static_fn_body_is_not_unresolved() {
+    let module = compile_source_with_stdlib(
+        r#"
+        structure Widget { let w: Length = 1mm }
+        trait Maker { fn build() -> Real { let x = Widget(w: 2mm) 1.0 } }
+    "#,
+    );
+
+    assert_eq!(
+        unresolved_function_diags(&module).len(),
+        0,
+        "'Widget' is a declared structure in this module; got {:?}",
+        unresolved_function_diags(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (g) CONTROLS: the routes that bound the fix
+// ---------------------------------------------------------------------------
+
+/// Control (a): reversing route (1)'s declaration order is — and stays — clean.
+///
+/// Pinned as its own test rather than as a comment on route (1), because it is
+/// the assertion that makes "the trigger is source order" falsifiable.
+#[test]
+fn fn_body_calling_an_earlier_declared_sibling_stays_clean() {
+    let module = compile_source_with_stdlib(
+        r#"
+        pub fn b(x: Real) -> Real { x }
+        pub fn a(x: Real) -> Real { b(x) }
+    "#,
+    );
+
+    assert_eq!(
+        unresolved_function_diags(&module).len(),
+        0,
+        "an earlier sibling resolves normally; got {:?}",
+        unresolved_function_diags(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Control (b): a genuinely-undeclared callee inside a `fn` body STILL warns.
+///
+/// The single most important control. The cheap wrong fix — suppress
+/// `UnresolvedFunction` inside fn bodies — passes every test in section (f)
+/// and fails this one, which is exactly why it is here.
+#[test]
+fn genuinely_undeclared_callee_in_a_fn_body_still_warns() {
+    let module = compile_source_with_stdlib(
+        r#"
+        pub fn a(x: Real) -> Real { definitely_not_a_builtin(x) }
+    "#,
+    );
+
+    assert_eq!(
+        unresolved_function_diags(&module).len(),
+        1,
+        "the closed world must still be closed inside fn bodies; got {:?}",
+        unresolved_function_diags(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Control (c): a struct constructor from a REGULAR fn body is clean in BOTH
+/// declaration orders — `functions_phase` passes `Some(&merged_registry)`.
+///
+/// This is what confines route (3) to `traits_phase`'s `None`. A fix that
+/// needs to widen past that site has misdiagnosed the cause.
+#[test]
+fn struct_constructor_in_a_regular_fn_body_stays_clean_in_both_orders() {
+    for (order, source) in [
+        (
+            "structure first",
+            r#"
+            structure Widget { let w: Length = 1mm }
+            pub fn make() -> Real { let x = Widget(w: 2mm) 1.0 }
+        "#,
+        ),
+        (
+            "fn first",
+            r#"
+            pub fn make() -> Real { let x = Widget(w: 2mm) 1.0 }
+            structure Widget { let w: Length = 1mm }
+        "#,
+        ),
+    ] {
+        let module = compile_source_with_stdlib(source);
+        assert_eq!(
+            unresolved_function_diags(&module).len(),
+            0,
+            "{order}: constructor calls from a regular fn body resolve via the \
+             merged template registry; got {:?}",
+            unresolved_function_diags(&module)
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+/// Control (d): a trait static fn calling a FORWARD-declared top-level `fn` is
+/// ALREADY clean — `traits_phase` runs after `functions_phase`, so by then
+/// `ctx.functions` is complete.
+///
+/// Written down because the obvious generalisation from route (3) is that this
+/// warns too. Measured: it does not. Pinning a bug that never existed would
+/// mislead the next reader into "fixing" a route that was always correct.
+#[test]
+fn trait_static_fn_calling_a_forward_declared_fn_stays_clean() {
+    let module = compile_source_with_stdlib(
+        r#"
+        trait Maker { fn build() -> Real { helper(1.0) } }
+        pub fn helper(x: Real) -> Real { x }
+    "#,
+    );
+
+    assert_eq!(
+        unresolved_function_diags(&module).len(),
+        0,
+        "`ctx.functions` is complete by the time traits_phase runs; got {:?}",
+        unresolved_function_diags(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Control (e): a builtin called from a `fn` body stays clean.
+///
+/// `is_known_builtin` is a name fact and does not care which body asks; this
+/// pins that the fn-body routes above did not disturb the builtin answer.
+#[test]
+fn builtin_called_from_a_fn_body_stays_clean() {
+    let module = compile_source_with_stdlib(
+        r#"
+        pub fn a(x: Real) -> Real { sqrt(x) }
+    "#,
+    );
+
+    assert_eq!(
+        unresolved_function_diags(&module).len(),
+        0,
+        "`sqrt` is a builtin; got {:?}",
+        unresolved_function_diags(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
