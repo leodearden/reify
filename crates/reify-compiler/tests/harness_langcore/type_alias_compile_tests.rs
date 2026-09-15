@@ -2595,6 +2595,123 @@ mod parametric_alias_entity_body_use_site {
     }
 }
 
+/// Known gap: an alias body naming an ENUM in APPLIED position (task #6477,
+/// step-11).
+///
+/// Step-10 gave the alias-body path the two applied arms that live in the
+/// shared name resolver — structure-with-args and trait-with-args. It does not
+/// reach the third applied form, because that one is not in the resolver at
+/// all: the generic-enum `Type::Applied` path lives in
+/// `entity.rs::resolve_enum_type_with_args`, a CALLER-level arm reached only
+/// once the shared resolver returns `None`, and it needs `&[EnumDef]` — arity
+/// and `type_params`, not merely names — which the alias-body path does not
+/// carry. Threading that is a different plumbing axis from step-10's and out of
+/// this task's scope; filed as a follow-up.
+///
+/// MEASURED on this tip, after step-10:
+///
+///   `type W<U> = Ge<U>` used as `W<Real>` → `Type::Error` + ["unresolved type:
+///       W<Real>"];  direct `Ge<Real>` → `Applied{Ge,[Real]}`, errs=[]
+///   `type W<U> = Zq<U>` used as `W<Real>` → `Type::Error` + ["unresolved type:
+///       W<Real>"];  direct `Zq<Real>` → `Enum("Zq")` + ["enum `Zq` does not
+///       accept type arguments"] — loud on both sides, messages differ
+///
+/// This is a parity gap of a DIFFERENT KIND from the one steps 9-10 closed, and
+/// that difference is why it is pinned rather than fixed: it is LOUD on the
+/// alias side rather than silently wrong, and it is not a regression — before
+/// step-4, EVERY entity-bodied parametric alias failed in exactly this way.
+///
+/// So the lock states the invariant that actually matters instead of freezing
+/// today's message: the alias spelling must either lower exactly as the direct
+/// spelling does, or report an error — never accept the body silently while
+/// dropping its arguments, which is the failure mode step-9 caught for
+/// structures and traits. Freezing "unresolved type: W<Real>" would make the
+/// eventual fix red with a bare inequality and tell its reader nothing; this
+/// way, closing the gap keeps this module green and only closing it WRONGLY
+/// trips it.
+mod parametric_alias_applied_enum_known_gap {
+    use super::alias_to_entity_type_parity::param_type_and_errors;
+
+    /// One gap row: the alias is declared `type W<U> = {body}` and used as
+    /// `param p : W<Real>`, against the `direct` spelling of the same thing.
+    struct GapRow {
+        label: &'static str,
+        /// What the ALIAS spelling was measured to do when this lock was
+        /// written, so a future reader sees the verdict this row was pinned
+        /// against rather than inferring it from the assertion.
+        measured_today: &'static str,
+        decls: &'static str,
+        body: &'static str,
+        direct: &'static str,
+        /// The diagnostic the DIRECT spelling owes the user; `None` means it
+        /// must resolve cleanly. Either way it is this row's reference point.
+        direct_error: Option<&'static str>,
+    }
+
+    #[test]
+    fn an_enum_body_carrying_type_args_is_loud_rather_than_silently_wrong() {
+        const ROWS: &[GapRow] = &[
+            GapRow {
+                label: "generic enum applied to the alias's own param",
+                measured_today: "Type::Error + [\"unresolved type: W<Real>\"]",
+                decls: "enum Ge<T> { Both { a: T } }",
+                body: "Ge<U>",
+                direct: "Ge<Real>",
+                direct_error: None,
+            },
+            GapRow {
+                label: "plain enum handed type args it does not declare",
+                measured_today: "Type::Error + [\"unresolved type: W<Real>\"]",
+                decls: "enum Zq { Close, Medium }",
+                body: "Zq<U>",
+                direct: "Zq<Real>",
+                direct_error: Some("does not accept type arguments"),
+            },
+        ];
+
+        for row in ROWS {
+            let GapRow {
+                label,
+                measured_today,
+                decls,
+                body,
+                direct,
+                direct_error,
+            } = row;
+            let alias_src = format!(
+                "{decls}\ntype W<U> = {body}\nstructure def D {{\n    param p : W<Real>\n}}\n"
+            );
+            let direct_src =
+                format!("{decls}\nstructure def D {{\n    param p : {direct}\n}}\n");
+
+            let (direct_ty, direct_errs) = param_type_and_errors(&direct_src, "D", "p");
+            match direct_error {
+                None => assert!(
+                    direct_errs.is_empty() && !direct_ty.is_error(),
+                    "[{label}] the direct spelling `{direct}` is this row's reference \
+                     point and must still resolve cleanly; got {direct_ty:?} with \
+                     {direct_errs:?}"
+                ),
+                Some(expected) => assert!(
+                    direct_errs.iter().any(|m| m.contains(expected)),
+                    "[{label}] the direct spelling `{direct}` must still report \
+                     `{expected}`; got {direct_errs:?}"
+                ),
+            }
+
+            let (alias_ty, alias_errs) = param_type_and_errors(&alias_src, "D", "p");
+            assert!(
+                alias_ty == direct_ty || !alias_errs.is_empty(),
+                "[{label}] `type W<U> = {body}` must either lower exactly as the direct \
+                 spelling `{direct}` does or report an error — never accept the body \
+                 silently while dropping its type arguments. Measured when this lock was \
+                 written: {measured_today}. Now: alias {alias_ty:?} errs={alias_errs:?}; \
+                 direct {direct_ty:?} errs={direct_errs:?}"
+            );
+        }
+    }
+}
+
 /// Hygiene locks for the PARAMETRIC alias path: a parametric body must bind
 /// exactly its OWN type params and nothing ambient (task #6477, step-6).
 ///
