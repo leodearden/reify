@@ -267,10 +267,28 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 /// a later same-named declaration donate its token — exactly what bounding the
 /// search to the declaration's own span exists to prevent.
 ///
-/// Both consumers of the refusal are benign: `resolve_cross_file_home`
-/// (references.rs) only tests `.is_some()`, so it falls through to the import
-/// arm, and `compute_references_cross_file` uses the value only to drop the
-/// declaration token when `include_declaration = false`.
+/// What a refusal costs is enumerated per consumer rather than summarised,
+/// because they do not all behave alike — three are inert and one is not:
+/// - [`find_declaration_in_source`] (goto-def) is read-only: no jump. Inert.
+/// - `references.rs::resolve_cross_file_home` step 2 tests only `.is_some()`,
+///   so a structure declared in the primary document stops being recognised as
+///   the home and the query falls through to the import arm — which, in the
+///   home document itself, resolves to nothing. A wholesale `None`. Inert.
+/// - `references.rs::compute_references_cross_file` uses the value only to drop
+///   the declaration token when `include_declaration = false`; with no token to
+///   drop, that filter is a no-op. Inert.
+/// - `references.rs::collect_structure_name_spans` pushes this token into the
+///   span set that `compute_rename_cross_file` turns into edits. A refusal
+///   silently OMITS it, so a rename driven from an IMPORTING document (where
+///   the home resolves through the import arm, never consulting this function)
+///   rewrites every construction site and import token but leaves the
+///   declaration behind — a partial rename. Still strictly better than the old
+///   locator, which rewrote the declaration's leading keyword, but not free.
+///   Making the rename path refuse wholesale when the home token cannot be
+///   located is a follow-up; it is not reachable today, because no parse
+///   observed so far yields a surviving declaration whose span excludes its own
+///   name token (error recovery either keeps the name inside the span or emits
+///   no declaration at all, which this function already answers with `None`).
 fn decl_name_span_in(
     parsed: &reify_ast::ParsedModule,
     source: &str,
@@ -1257,20 +1275,33 @@ mod tests {
     }
 
     /// A declaration whose span does not contain its own name token must yield
-    /// `None`, not a span borrowed from elsewhere and not a zero-width span.
+    /// `None`, not a span borrowed from elsewhere and not a zero-width span —
+    /// and the scan must NOT resume past the refusal.
     ///
     /// Tree-sitter error recovery can produce a declaration node whose span is
     /// truncated short of the name. Any span this function returns reaches the
     /// `references.rs` rename write path, so the only answer that cannot
     /// corrupt a buffer is a refusal.
+    ///
+    /// The fixture carries TWO same-named declarations on purpose: with a
+    /// single declaration, `return None` and `continue` are indistinguishable.
+    /// Here they are not — a `continue` would hand back the SECOND
+    /// declaration's name token for the FIRST declaration, which is the
+    /// borrow-a-token-from-elsewhere hazard that bounding the search to the
+    /// declaration's own span exists to prevent.
     #[test]
-    fn decl_name_span_in_refuses_when_decl_span_excludes_the_name_token() {
-        let source = "structure Widget {\n}\n";
+    fn decl_name_span_in_refuses_without_resuming_the_declaration_scan() {
+        let source = "structure Widget {\n}\nstructure Widget {\n}\n";
         let mut parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("_t"));
+        assert_eq!(
+            parsed.declarations.len(),
+            2,
+            "fixture: both same-named declarations must survive the parse"
+        );
 
-        // Truncate the declaration span to cover only `struc`, the shape an
-        // error-recovery span can take. Mutating a REAL parse keeps every other
-        // field (AST node, content hash) honest.
+        // Truncate the FIRST declaration's span to cover only `struc`, the shape
+        // an error-recovery span can take. Mutating a REAL parse keeps every
+        // other field (AST node, content hash) honest.
         let mut truncated = false;
         if let reify_ast::Declaration::Structure(s) = &mut parsed.declarations[0] {
             s.span = SourceSpan::new(0, 5);
@@ -1281,11 +1312,24 @@ mod tests {
             "fixture: declarations[0] must be the Structure whose span we truncate"
         );
 
+        // Anti-vacuity: the second declaration's name token IS locatable, so a
+        // scan that resumed past the refusal would have something to return.
+        let reify_ast::Declaration::Structure(second) = &parsed.declarations[1] else {
+            panic!("fixture: declarations[1] must be the second Structure");
+        };
+        let donor = name_token_span(source, second.span, "Widget");
+        assert!(
+            !donor.is_empty(),
+            "fixture: the second declaration's name token must be locatable, \
+             otherwise a resumed scan would return `None` for the wrong reason"
+        );
+
         assert_eq!(
             decl_name_span_in(&parsed, source, "Widget", false),
             None,
-            "a declaration span that excludes its own name token must be refused, \
-             not answered with a span that would reach the rename write path"
+            "a declaration span that excludes its own name token must be refused \
+             outright: neither a span that would reach the rename write path, nor \
+             the later declaration's token at {donor:?}"
         );
     }
 
