@@ -1962,6 +1962,63 @@ structure S {
         );
     }
 
+    /// The pipeline REPORTS its server-log lines by RETURNING them, so it
+    /// stays a pure function of its inputs and one module (`server.rs`)
+    /// owns the transport (task #6329).
+    ///
+    /// Reuses `cold_start_branch_taken_when_engine_uninitialized_with_matching_hash`'s
+    /// trigger exactly — inject `last_content_hash` while the engine is
+    /// still uninitialized — so the engine-init guard fires deterministically
+    /// from a state the suite already knows how to build, and so a future
+    /// change to the guard's precondition breaks both tests together rather
+    /// than silently making this one vacuous.
+    ///
+    /// `#[cfg(debug_assertions)]`-GATED, matching the guard itself. Tests
+    /// run in debug by default so it is live in the merge gate; under a
+    /// release-profile run the whole test disappears, and that absence is a
+    /// gate on the guard's own gating, not a silent hole.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn engine_init_guard_warning_is_returned_not_written_to_stderr() {
+        let mut state = EvalState::new();
+        let uri = test_uri();
+        let source = "structure S {\n    let a = b + 1\n    let b = a + 1\n}";
+
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        let compiled = compile_like_production(&parsed);
+        state.last_content_hash = Some(compiled.content_hash);
+        assert!(
+            !state.is_engine_initialized(),
+            "engine must be uninitialized after EvalState::new() + hash injection"
+        );
+
+        let result = compute_diagnostics_with_state(&mut state, source, &uri);
+
+        let guard_lines: Vec<_> = result
+            .log_messages
+            .iter()
+            .filter(|line| line.message.contains("engine-init guard"))
+            .collect();
+        assert_eq!(
+            guard_lines.len(),
+            1,
+            "expected the engine-init guard's warning to be RETURNED in \
+             DiagnosticsResult.log_messages for the caller to route, rather than written to \
+             stderr by the pipeline itself; got log_messages: {:?}",
+            result
+                .log_messages
+                .iter()
+                .map(|line| (line.typ, line.message.as_str()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            guard_lines[0].typ,
+            lsp_types::MessageType::WARNING,
+            "the engine-init guard reports a recoverable internal inconsistency (cold-start is \
+             forced, no diagnostics are lost), so WARNING — not ERROR"
+        );
+    }
+
     /// Canary: `eval_cached()` currently returns empty diagnostics by construction
     /// (engine_eval.rs:1183 — `let diagnostics = Vec::new()` is never appended to).
     ///
