@@ -3268,6 +3268,24 @@ fn resolve_instance_color(
 /// surface it had. A flag scoped to this state cannot outlive the build by
 /// construction.
 ///
+/// COST OF THAT SCOPE, stated as plainly as `failed_pretessellations`' cost is
+/// above. Build-scoping makes the redispatch UNCONDITIONAL PER BUILD: every
+/// compute node with a kernel-backed geometry arg is re-dispatched once on
+/// every `build_snapshot`, whether or not anything upstream moved. There is no
+/// in-memory result cache under it — `run_compute_dispatch` goes straight to
+/// the trampoline unless a `persistent_cache_dir` is configured, and nothing
+/// outside tests configures one — so an idle warm rebuild re-runs every
+/// geometry-consuming `@optimized` trampoline (an FEA solve, a mesh morph)
+/// from scratch, O(such nodes) per tick.
+///
+/// That is not a live regression: `build_snapshot` has no non-test callers
+/// today, and the alternative — re-latching across builds — is exactly the
+/// defect this scope exists to fix. It DOES have to be paid down before
+/// `build_snapshot` acquires a production caller, and the direction is a
+/// FRESHNESS gate (skip when the output cell's cache freshness is `Final` and
+/// no realization in the node's `realization_inputs` moved on this tick), NOT
+/// a re-widening of this flag's lifetime.
+///
 /// COVERAGE, stated honestly. `failed_pretessellations` and
 /// `contentless_skips` are each pinned by a counterfactual test in
 /// `reify-eval/tests/harness_engine/redispatch_template_order_regression.rs`

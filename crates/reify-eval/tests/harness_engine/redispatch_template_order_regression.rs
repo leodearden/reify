@@ -1185,8 +1185,8 @@ fn a_warm_rebuild_still_refuses_to_latch_on_contentless_inputs() {
         .build_snapshot(&compiled, ExportFormat::Step)
         .expect("build_snapshot must return a BuildResult after edit_param");
 
-    // (a) #5951's door, over records from BOTH builds. Same predicate as the
-    //     cold twin; step-4 hoists the two copies into one helper.
+    // (a) #5951's door, over records from BOTH builds — same predicate as the
+    //     cold twin.
     assert_no_contentless_latch(
         "cold build + warm build_snapshot, non-tessellating kernel",
         &recorded(),

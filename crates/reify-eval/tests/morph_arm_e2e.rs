@@ -288,10 +288,7 @@ fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
 
     // (1) Cold build → from-scratch source VolumeMesh. `build()` establishes
     //     the eval_state snapshot internally (the redispatch + a later
-    //     `edit_param` both require it), so no separate `eval()` is needed — and
-    //     a separate `eval()` would finalize the probe cell, leaving the body's
-    //     compute node with non-empty realization_inputs so `build()`'s
-    //     redispatch skips it (capturing nothing).
+    //     `edit_param` both require it), so no separate `eval()` is needed.
     engine.build(&compiled, ExportFormat::Step);
     let fires_after_cold = MORPH_PROBE_INVOCATIONS.with(|n| n.get());
     let source_tets = captured_tet_indices("first build (source)");
