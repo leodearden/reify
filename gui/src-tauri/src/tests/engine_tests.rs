@@ -13833,6 +13833,69 @@ fn get_entity_tree_trait_geometry_follows_refinement_chain() {
     );
 }
 
+/// #5558: the merged trait defs must survive the RECURSION, not just reach the
+/// top-level templates.
+///
+/// `build_template_node` forwards `trait_defs` verbatim into its sub-component
+/// recursion. Every other `trait_geometry` test asserts on a ROOT template's
+/// children, so all of them stay green if that forwarding is replaced by an
+/// empty set — which is exactly the silent degradation (refinement chain back
+/// down to direct-bound matching) that the MERGED-set precondition on
+/// `MergedTraitDefs` exists to prevent.
+///
+/// `Assembly` declares no trait bounds of its own; the `: Rigid` structure is
+/// reached only as `sub flange : Flange`, so the assertions below read
+/// `Assembly.flange`'s children and are false unless the merged set survives
+/// one level of recursion. The root `Flange` node in the same tree is
+/// deliberately NOT what this test reads — it would pass either way.
+#[test]
+fn get_entity_tree_trait_geometry_follows_refinement_chain_in_sub_component() {
+    let source = r#"structure def Flange : Rigid {
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+
+    param geometry : Solid = box(10mm, 10mm, 10mm)
+}
+structure Assembly {
+    sub flange : Flange at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+}"#;
+    let mut session = make_session();
+    session.load_from_source(source, "assembly").expect("load");
+
+    let tree = session.get_entity_tree();
+    let assembly = tree
+        .iter()
+        .find(|n| n.entity_path == "Assembly")
+        .expect("Assembly root must exist");
+    let flange = assembly
+        .children
+        .iter()
+        .find(|n| n.entity_path == "Assembly.flange")
+        .expect("Assembly.flange sub node must exist");
+
+    let geometry_cell = flange
+        .children
+        .iter()
+        .find(|n| n.entity_path == "Assembly.flange.geometry" && n.kind != "realization")
+        .expect("value-cell node for the nested 'geometry' must be present");
+    assert!(
+        geometry_cell.trait_geometry,
+        "value-cell `Assembly.flange.geometry` must report trait_geometry — the \
+         merged module + prelude trait defs must be forwarded into the \
+         sub-component recursion, not only used at the top level"
+    );
+
+    let geometry_realization = flange
+        .children
+        .iter()
+        .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some("geometry"))
+        .expect("realization node for the nested 'geometry' must be present");
+    assert!(
+        geometry_realization.trait_geometry,
+        "the nested `geometry` realization must agree with its value-cell \
+         sibling (#4954/#5195) one level down as well"
+    );
+}
+
 /// #5558 step-2 RED: the OTHER direction of the substring bug — a user trait
 /// merely NAMED like `Physical` must not be mistaken for it.
 ///
