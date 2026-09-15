@@ -139,15 +139,27 @@ fn seeded_rigid_mass_props_kernel(
 /// `suggestion_hash 5338-mock-kernel-query-failure-seeding`); implemented as
 /// task #6471 because the knob lives in `crates/reify-test-support`, outside
 /// #5338's locked scope. Filed under ticket `tkt_0RSRP1HKTPG0E9XB0YWQVC0RT0`.
+///
+/// Returns the session alongside the mock's shared operation log
+/// (`MockGeometryKernel::operations_ref`), fetched BEFORE the kernel is boxed
+/// into the session — the log is push-only from `GeometryKernel::execute`, so
+/// a caller that snapshots its length before an edit and compares after can
+/// assert the edit actually re-DISPATCHED, independent of the pass/fail
+/// verdict the `fail_after_n_dispatches` knob controls.
 pub(crate) fn rigid_mass_props_session_seeded_then_failing(
     good_ids: std::ops::RangeInclusive<u64>,
-) -> crate::engine::EngineSession {
+) -> (
+    crate::engine::EngineSession,
+    std::sync::Arc<std::sync::Mutex<Vec<reify_test_support::GeometryOpRecord>>>,
+) {
     use reify_constraints::SimpleConstraintChecker;
 
     let checker = SimpleConstraintChecker;
     let ceiling = *good_ids.end();
     let kernel = seeded_rigid_mass_props_kernel(good_ids).fail_after_n_dispatches(ceiling);
-    crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
+    let dispatch_log = kernel.operations_ref();
+    let session = crate::engine::EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    (session, dispatch_log)
 }
 
 /// Absolute path to the committed `examples/rigid_mass_props_smoke.ri` fixture,
