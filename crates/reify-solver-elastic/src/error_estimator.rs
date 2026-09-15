@@ -838,4 +838,365 @@ mod tests {
             );
         }
     }
+
+    // ── compute_dual_weighted_indicator (step-7) ───────────────────────────
+
+    /// Connectivity of the 3-tet fan: all three tets share ONLY vertex 0.
+    ///
+    /// The same topology `l_corner_style_hot_element_localisation_dominates_
+    /// uniform_neighbours` builds inline; extracted here rather than shared
+    /// with it, to keep this step from churning a landed golden test.
+    ///
+    /// Single-shared-vertex is what makes MIXED SIGNS reachable. On the
+    /// 2-tet fan the two elements share a whole face, so their recovered
+    /// stress errors are forced anti-parallel and every `η_K` comes out with
+    /// the same sign whatever the dual — measured. Three elements meeting at
+    /// one node decouple them enough for the primal and dual errors to
+    /// disagree on some elements and agree on others.
+    const THREE_TET_FAN_CONN: [[usize; 4]; 3] = [[0, 1, 2, 3], [0, 4, 5, 6], [0, 7, 8, 9]];
+
+    /// `VolumeMesh` companion to [`THREE_TET_FAN_CONN`] — 10 nodes.
+    ///
+    /// Only `vertices.len()` is read by the indicator (for `n_nodes`), which
+    /// is why the coordinates may be all-zero here: recovery is
+    /// volume-weighted by the caller-supplied `volume`, never by geometry.
+    fn three_tet_fan_mesh() -> VolumeMesh {
+        VolumeMesh {
+            vertices: vec![0.0_f32; 30],
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3, 0, 4, 5, 6, 0, 7, 8, 9],
+                order: ElementOrderTag::P1,
+            },
+            normals: None,
+            boundary: None,
+        }
+    }
+
+    /// `diag(xx, 0, 0)`.
+    fn diag_xx(xx: f64) -> [[f64; 3]; 3] {
+        [[xx, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+    }
+
+    /// Stress elements over [`THREE_TET_FAN_CONN`], all of volume 1/6.
+    fn three_tet_fan_elements(stresses: [[[f64; 3]; 3]; 3]) -> [StressElement<'static>; 3] {
+        let v = 1.0_f64 / 6.0;
+        [
+            StressElement {
+                connectivity: &THREE_TET_FAN_CONN[0],
+                stress: stresses[0],
+                volume: v,
+            },
+            StressElement {
+                connectivity: &THREE_TET_FAN_CONN[1],
+                stress: stresses[1],
+                volume: v,
+            },
+            StressElement {
+                connectivity: &THREE_TET_FAN_CONN[2],
+                stress: stresses[2],
+                volume: v,
+            },
+        ]
+    }
+
+    /// The mixed-sign fixture: primal hot on tet 0, dual hot on tet 1.
+    ///
+    /// Measured `η_K` signs: `[−, −, +]`, so `Σ η_K` and `Σ |η_K|` genuinely
+    /// differ and C5's bound assertion is not vacuous.
+    fn mixed_sign_primal_and_dual() -> ([StressElement<'static>; 3], [StressElement<'static>; 3]) {
+        let zero = [[0.0_f64; 3]; 3];
+        (
+            three_tet_fan_elements([diag_xx(100.0), zero, zero]),
+            three_tet_fan_elements([zero, diag_xx(1.0), zero]),
+        )
+    }
+
+    /// C3 — with the dual field equal to the primal, the dual-weighted
+    /// indicator REDUCES to the Z-Z indicator, bit for bit.
+    ///
+    /// This is the anchor that keeps the goal-oriented estimator honest: the
+    /// DWR contraction is a genuine generalisation of the energy-norm one,
+    /// not a separate computation that happens to look similar. Any drift in
+    /// the recovery, the centroid interpolation, or the compliance
+    /// contraction shows up here as a bit difference.
+    ///
+    /// # Why `√(signed)` and not `per_element²`
+    ///
+    /// The natural-looking assertion
+    /// `per_element_signed[i] == zz.per_element[i].powi(2)` is a DOOMED
+    /// test, and was measured to be: `ZzIndicator::per_element` stores
+    /// `η_e = √(η_e²)`, and squaring an already-rounded square root is a
+    /// lossy round-trip. On a real 96-element fixture that form held on only
+    /// 51 of 96 elements, while `per_element_signed[i].sqrt()` matched
+    /// `zz.per_element[i]` on 96 of 96, worst ulp difference 0.
+    ///
+    /// Taking `√` of the signed value is therefore the strongest assertion
+    /// the PUBLIC surface admits, since `η_e²` itself is not exposed. It is
+    /// weaker than true bit-equality of the underlying `η²` by at most the
+    /// one rounding `sqrt` introduces — i.e. ≤ 1 ulp — which is far tighter
+    /// than any bound that would let a real algorithmic divergence through.
+    #[test]
+    fn dual_weighted_indicator_with_a_self_dual_field_reduces_to_the_zz_indicator_bitwise() {
+        let mat = dimensionless_steel_like();
+        let mesh = two_tet_fan_mesh();
+        let conn_a = [0_usize, 1, 2, 3];
+        let conn_b = [1_usize, 2, 3, 4];
+        let v = 1.0_f64 / 6.0;
+        let elements = [
+            StressElement {
+                connectivity: &conn_a,
+                stress: diag_xx(100.0),
+                volume: v,
+            },
+            StressElement {
+                connectivity: &conn_b,
+                stress: [[0.0_f64, 7.0, 0.0], [7.0, -30.0, 2.0], [0.0, 2.0, 5.0]],
+                volume: v,
+            },
+        ];
+
+        let zz = compute_zz_indicator(&elements, &mesh, &mat);
+        let dwr = compute_dual_weighted_indicator(&elements, &elements, &mesh, &mat);
+
+        assert_eq!(
+            dwr.per_element_signed.len(),
+            elements.len(),
+            "one signed contribution per input element, in input order",
+        );
+        for (i, (signed, eta)) in dwr
+            .per_element_signed
+            .iter()
+            .zip(&zz.per_element)
+            .enumerate()
+        {
+            assert!(
+                *signed >= 0.0,
+                "element {i}: a self-dual contraction is the energy of a \
+                 single tensor and cannot be negative; got {signed}",
+            );
+            assert_eq!(
+                signed.sqrt().to_bits(),
+                eta.to_bits(),
+                "element {i}: √(η_K) = {} must be bit-identical to the Z-Z \
+                 η_e = {eta}",
+                signed.sqrt(),
+            );
+        }
+    }
+
+    /// The contraction is BILINEAR: negating the dual field negates every
+    /// per-element contribution exactly, and leaves the bound's magnitude
+    /// untouched.
+    ///
+    /// Sign-correctness is what separates a dual-weighted estimate from a
+    /// dual-weighted *bound*. `η_K` must be free to be negative — a local
+    /// contribution that pulls the QoI error back toward zero is real
+    /// information, and an implementation that took `|·|` or a square
+    /// somewhere inside would silently destroy it while still producing
+    /// plausible-looking output. This test would catch that: under a negated
+    /// dual, a magnitude-only implementation returns the SAME values rather
+    /// than negated ones.
+    ///
+    /// Bitwise rather than approximate because IEEE-754 negation is exact
+    /// and round-to-nearest is symmetric under it, so the negated run must
+    /// agree to the last bit. The fixture is asserted to contain no zero
+    /// contribution, since `0.0` and `-0.0` have different bit patterns and
+    /// would make the comparison fail for an uninteresting reason.
+    #[test]
+    fn negating_the_dual_field_negates_every_per_element_contribution_exactly() {
+        let mat = dimensionless_steel_like();
+        let mesh = three_tet_fan_mesh();
+        let (primal, dual) = mixed_sign_primal_and_dual();
+        let negated: Vec<StressElement<'_>> = dual
+            .iter()
+            .map(|el| {
+                let mut s = el.stress;
+                for row in &mut s {
+                    for cell in row.iter_mut() {
+                        *cell = -*cell;
+                    }
+                }
+                StressElement {
+                    connectivity: el.connectivity,
+                    stress: s,
+                    volume: el.volume,
+                }
+            })
+            .collect();
+
+        let base = compute_dual_weighted_indicator(&primal, &dual, &mesh, &mat);
+        let flipped = compute_dual_weighted_indicator(&primal, &negated, &mesh, &mat);
+
+        assert!(
+            base.per_element_signed.iter().all(|&x| x != 0.0),
+            "fixture premise: no contribution may be zero, or ±0.0's \
+             differing bit patterns would fail this comparison spuriously",
+        );
+        for (i, (b, f)) in base
+            .per_element_signed
+            .iter()
+            .zip(&flipped.per_element_signed)
+            .enumerate()
+        {
+            assert_eq!(
+                f.to_bits(),
+                (-b).to_bits(),
+                "element {i}: negating the dual must negate η_K exactly; \
+                 got {f} against −({b})",
+            );
+        }
+        assert_eq!(
+            flipped.qoi_error_bound.to_bits(),
+            base.qoi_error_bound.to_bits(),
+            "the bound sums magnitudes, so it is invariant under a dual sign \
+             flip",
+        );
+        assert_eq!(
+            flipped.qoi_error_estimate.to_bits(),
+            (-base.qoi_error_estimate).to_bits(),
+            "the estimate sums signed values, so it flips with the dual",
+        );
+    }
+
+    /// C5 — `qoi_error_estimate` is the SIGNED sum and `qoi_error_bound` the
+    /// sum of magnitudes, with `bound ≥ |estimate|`, on a fixture where the
+    /// two genuinely differ.
+    ///
+    /// The mixed-sign premise is asserted, not assumed. On a same-sign
+    /// fixture `bound == |estimate|` identically, and the inequality — the
+    /// whole content of C5 — would hold for free; such a test would pass
+    /// against an implementation that simply returned `|Σ η_K|` for both.
+    ///
+    /// Equality with the test's own sums is exact rather than toleranced
+    /// because both sides are a left fold from `0.0` over the same values in
+    /// element order, so IEEE-754 makes them bit-identical. That also pins
+    /// the accumulation ORDER, which a future parallel reduction would
+    /// change.
+    #[test]
+    fn qoi_error_estimate_is_the_signed_sum_and_the_bound_sums_magnitudes() {
+        let mat = dimensionless_steel_like();
+        let mesh = three_tet_fan_mesh();
+        let (primal, dual) = mixed_sign_primal_and_dual();
+        let dwr = compute_dual_weighted_indicator(&primal, &dual, &mesh, &mat);
+
+        let min = dwr.per_element_signed.iter().cloned().fold(f64::MAX, f64::min);
+        let max = dwr.per_element_signed.iter().cloned().fold(f64::MIN, f64::max);
+        assert!(
+            min < 0.0 && max > 0.0,
+            "fixture premise: contributions must be genuinely mixed-sign \
+             (got min {min}, max {max}), or bound ≥ |estimate| is vacuous",
+        );
+
+        let signed_sum: f64 = dwr.per_element_signed.iter().sum();
+        let magnitude_sum: f64 = dwr.per_element_signed.iter().map(|x| x.abs()).sum();
+        assert_eq!(
+            dwr.qoi_error_estimate.to_bits(),
+            signed_sum.to_bits(),
+            "qoi_error_estimate must be Σ η_K accumulated in element order",
+        );
+        assert_eq!(
+            dwr.qoi_error_bound.to_bits(),
+            magnitude_sum.to_bits(),
+            "qoi_error_bound must be Σ |η_K| accumulated in element order",
+        );
+        assert!(
+            dwr.qoi_error_bound > dwr.qoi_error_estimate.abs(),
+            "C5: the bound must dominate the estimate, STRICTLY on this \
+             mixed-sign fixture; got bound {} vs |estimate| {}",
+            dwr.qoi_error_bound,
+            dwr.qoi_error_estimate.abs(),
+        );
+    }
+
+    /// Bilinearity in the PRIMAL slot: a uniform primal stress field gives
+    /// exactly zero everywhere, whatever the dual.
+    ///
+    /// The Zienkiewicz patch-test property, lifted to the dual-weighted
+    /// form. A uniform field recovers to itself at every node, so the primal
+    /// error vanishes identically and the contraction must too — including
+    /// against a large, wildly non-uniform dual, which is what makes this a
+    /// check on the primal slot specifically rather than on both at once.
+    ///
+    /// Absolute rather than relative tolerance: the exact answer is zero, so
+    /// there is no scale to be relative to. The dual's magnitude (1e6) is
+    /// deliberately large, so a contraction that leaked any dependence on
+    /// the dual would exceed 1e-12 by many orders.
+    #[test]
+    fn a_uniform_primal_stress_field_yields_zero_contributions_against_any_dual() {
+        let mat = dimensionless_steel_like();
+        let mesh = three_tet_fan_mesh();
+        let uniform = diag_xx(42.0);
+        let primal = three_tet_fan_elements([uniform, uniform, uniform]);
+        let dual = three_tet_fan_elements([
+            diag_xx(1.0e6),
+            [[0.0_f64, -3.0e5, 0.0], [-3.0e5, 8.0e5, 1.0e5], [0.0, 1.0e5, -2.0e5]],
+            [[0.0_f64; 3]; 3],
+        ]);
+
+        let dwr = compute_dual_weighted_indicator(&primal, &dual, &mesh, &mat);
+
+        assert_eq!(dwr.per_element_signed.len(), primal.len());
+        for (i, signed) in dwr.per_element_signed.iter().enumerate() {
+            assert!(
+                signed.abs() <= 1e-12,
+                "element {i}: a uniform primal field has zero recovered \
+                 error, so η_K must vanish for ANY dual; got {signed}",
+            );
+        }
+        assert!(
+            dwr.qoi_error_estimate.abs() <= 1e-12 && dwr.qoi_error_bound.abs() <= 1e-12,
+            "both aggregates must vanish too; got estimate {} bound {}",
+            dwr.qoi_error_estimate,
+            dwr.qoi_error_bound,
+        );
+    }
+
+    /// P2-length connectivity panics in ALL build modes, as
+    /// `compute_zz_indicator` does.
+    ///
+    /// Centroid interpolation assumes the P1 barycentric coords (¼,…,¼), so
+    /// higher-order connectivity would be silently mis-averaged rather than
+    /// rejected. `assert_eq!` and not `debug_assert_eq!` for the same reason
+    /// the Z-Z guard was promoted: a release-mode caller would otherwise get
+    /// plausible garbage.
+    #[test]
+    #[should_panic(expected = "P1 tets only")]
+    fn dual_weighted_indicator_panics_when_called_with_p2_length_connectivity() {
+        let mat = dimensionless_steel_like();
+        let conn_p2 = [0_usize; 10];
+        let elements = [StressElement {
+            connectivity: &conn_p2,
+            stress: diag_xx(1.0),
+            volume: 1.0 / 6.0,
+        }];
+        let mesh = VolumeMesh {
+            vertices: vec![0.0_f32; 30],
+            connectivity: VolumeConnectivity::Tet {
+                indices: vec![0; 10],
+                order: ElementOrderTag::P1,
+            },
+            normals: None,
+            boundary: None,
+        };
+        compute_dual_weighted_indicator(&elements, &elements, &mesh, &mat);
+    }
+
+    /// Mismatched primal/dual lengths panic with a descriptive message.
+    ///
+    /// The two slices are zipped element-for-element, so a length mismatch
+    /// is a caller error that would otherwise truncate silently to the
+    /// shorter one and return an indicator over a subset of the mesh — an
+    /// under-estimate that looks like convergence. A mesh/field
+    /// desynchronisation is a caller bug rather than user data, so it is an
+    /// unconditional `assert!` per the crate's contract convention.
+    #[test]
+    #[should_panic(expected = "same number of elements")]
+    fn dual_weighted_indicator_panics_when_primal_and_dual_lengths_differ() {
+        let mat = dimensionless_steel_like();
+        let mesh = three_tet_fan_mesh();
+        let zero = [[0.0_f64; 3]; 3];
+        let primal = three_tet_fan_elements([diag_xx(100.0), zero, zero]);
+        compute_dual_weighted_indicator(&primal, &primal[..2], &mesh, &mat);
+    }
+
 }
