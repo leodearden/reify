@@ -1600,16 +1600,18 @@ enum PointCloudFormat { PLY, PCD, XYZ, LAS }
 
 ```
 trait Analysis {
+    // yield_strength deliberately stays `Real`: it belongs to task 5807, not to
+    // RULING Q7 posture 2 (#6165), which scoped itself to AnalysisResult.
     param yield_strength : Real        // material yield strength for safety-factor (Pa; Real placeholder)
     constraint yield_strength > 0
 }
 
 trait AnalysisResult {
-    param von_mises_stress    : Real
-    param principal_stress_1  : Real
-    param principal_stress_2  : Real
-    param principal_stress_3  : Real
-    param max_shear_stress    : Real
+    param von_mises_stress    : Stress
+    param principal_stress_1  : Stress
+    param principal_stress_2  : Stress
+    param principal_stress_3  : Stress
+    param max_shear_stress    : Stress
     param safety_factor_value : Real
     constraint von_mises_stress >= 0
     constraint max_shear_stress >= 0
@@ -1617,12 +1619,20 @@ trait AnalysisResult {
 }
 ```
 
-`AnalysisResult` is a **structural contract**: each param uses `Real` as a
-dimension-agnostic placeholder (the runtime stress builtins below produce
-correctly-dimensioned values, e.g. `Scalar<Pressure>` for the stresses and a
-dimensionless `Real` for `safety_factor_value`), and the trait does **not**
-participate in dimension checking — it will not reject dimensioned conforming
-values. (The v0.1 doc's `mesh_resolution`/`convergence_target` on `Analysis`
+`AnalysisResult` **participates in dimension checking**. Its five stress params
+— `von_mises_stress`, `principal_stress_1/2/3`, `max_shear_stress` — are
+dimension-checked `Scalar<Pressure>`, spelled via the `Stress` alias documented
+above; they were tightened from `Real` by RULING Q7 posture 2 (task #6165) so
+that a trait member's declared type matches the `Scalar<Pressure>` the producing
+builtins under "Stress post-processing" below already yield. `safety_factor_value`
+stays `Real` because it is genuinely dimensionless. The user-visible consequence:
+a conformer that declares any of the five stress params `: Real` is **rejected at
+compile time** (`TypeMismatchForTraitMember`, one diagnostic per member) — declare
+them `: Stress` (equivalently `: Pressure`) with Pa-valued defaults. The bare `0`
+in the positivity constraints above is correct as written: a syntactic zero
+comparison operand is coerced to its sibling operand's dimension, so do **not**
+spell it `0Pa`. `Analysis.yield_strength` deliberately remains `Real`, pending
+task 5807. (The v0.1 doc's `mesh_resolution`/`convergence_target` on `Analysis`
 and `source`/`mesh` on `AnalysisResult` were never shipped — task 341.)
 
 **Stress post-processing (`std.analysis.stress`):**
