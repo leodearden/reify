@@ -75,7 +75,7 @@ pub enum BudgetReason {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConvergenceStatus {
     /// The solve reached its accuracy target; `final_indicator` carries the
-    /// final global relative energy-norm error (dimensionless).
+    /// [`AdaptiveEstimate::relative_error`] (dimensionless).
     Converged { final_indicator: f64 },
     /// The adaptive loop stopped before hitting the target; `reason` explains
     /// why (budget cap or stall). Per the PRD this is a warning + downgraded
@@ -87,8 +87,9 @@ pub enum ConvergenceStatus {
 /// it"), mirroring `ElasticOptions` in `solver_elastic.ri`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RefinementBudget {
-    /// Relative energy-norm error target; the loop converges once the global
-    /// indicator is `<=` this value. (`ElasticOptions.target_accuracy`.)
+    /// Relative error target FOR THE SELECTED ESTIMATOR; the loop converges
+    /// once [`AdaptiveEstimate::relative_error`] is `<=` this value.
+    /// (`ElasticOptions.target_accuracy`.)
     pub target_accuracy: f64,
     /// Upper bound on refinement iterations. `0` is legitimate (one solve, no
     /// refinement). (`ElasticOptions.max_refinement_iterations`.)
@@ -199,20 +200,68 @@ pub fn should_run_refinement(trigger: RefineTrigger) -> bool {
     )
 }
 
+/// The scalar result of a goal-oriented (dual-weighted) estimate.
+///
+/// PRD `docs/prds/v0_6/goal-oriented-error-estimation.md` §5.5. Carried by
+/// [`AdaptiveEstimate::qoi`] when the loop is driven by a quantity of
+/// interest; absent on the energy-norm path.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QoiEstimate {
+    /// `J(u_h)` — the quantity of interest on the current discrete solution,
+    /// in the QoI's own units (a length, a pressure, …).
+    pub value: f64,
+    /// Signed estimate of `J(u) − J(u_h)`, from
+    /// [`crate::error_estimator::DualWeightedIndicator::qoi_error_estimate`].
+    pub error_estimate: f64,
+    /// Cancellation-free bound `Σ |η_K| ≥ |error_estimate|`, from
+    /// [`crate::error_estimator::DualWeightedIndicator::qoi_error_bound`].
+    pub error_bound: f64,
+}
+
 /// One iteration's solve-and-estimate output.
 ///
-/// Mirrors [`crate::error_estimator::ZzIndicator`]: `global_indicator` is the
-/// `global_relative_energy_error` (compared against `target_accuracy` and used
-/// for stall detection) and `per_element` feeds [`mark_dorfler`]. `n_dofs` is
-/// the current mesh's degree-of-freedom count for the `max_dofs` budget gate.
+/// The loop is estimator-AGNOSTIC: it compares `relative_error` against
+/// `target_accuracy`, marks on `per_element`, and gates on `n_dofs`, without
+/// knowing which estimator produced them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AdaptiveEstimate {
-    /// Global relative energy-norm error of the current solve.
-    pub global_indicator: f64,
-    /// Per-element error indicator η_e (element order), the Dörfler input.
+    /// The estimator-defined DIMENSIONLESS quantity compared against
+    /// [`RefinementBudget::target_accuracy`] and fed to [`is_stalled`].
+    ///
+    /// For the Z-Z estimator this is
+    /// [`crate::error_estimator::ZzIndicator::global_relative_energy_error`];
+    /// for a goal-oriented one it is a QoI-relative error. The name
+    /// deliberately does not say which — its predecessor, `global_indicator`,
+    /// baked the energy norm into a seam both estimators pass through.
+    pub relative_error: f64,
+
+    /// Per-element NON-NEGATIVE marking weights (element order), the
+    /// [`mark_dorfler`] input.
+    ///
+    /// `η_e` for the Z-Z estimator;
+    /// [`crate::error_estimator::DualWeightedIndicator::marking_weights`]
+    /// (`|η_K|`) for the dual-weighted one.
+    ///
+    /// # Marked-set sizes are NOT comparable across estimators
+    ///
+    /// PRD §5.2: the two are not homogeneous of the same degree — Z-Z marks
+    /// on a square root, the dual-weighted indicator on an energy — and
+    /// Dörfler's prefix rule is not invariant under squaring. The same mesh
+    /// and the same θ can therefore mark a different NUMBER of elements
+    /// depending on the estimator, by design. No test may assert that the
+    /// two agree on marked-set size.
     pub per_element: Vec<f64>,
+
     /// Degrees of freedom of the current mesh.
     pub n_dofs: usize,
+
+    /// The goal-oriented estimate, when one was computed.
+    ///
+    /// `None` on the energy-norm path. The loop CARRIES this without reading
+    /// it — nothing in the termination, marking or stall logic branches on it
+    /// — so that the landed Z-Z behaviour cannot drift as the goal-oriented
+    /// path is built out around it.
+    pub qoi: Option<QoiEstimate>,
 }
 
 /// Dependency-injection seam for the adaptive refinement loop.
@@ -226,12 +275,23 @@ pub struct AdaptiveEstimate {
 /// control be exercised with the task's "stub indicator + refiner" strategy,
 /// independent of the heavy solve pipeline.
 pub trait AdaptiveProblem {
-    /// Error type returned by [`refine`](AdaptiveProblem::refine) (e.g.
-    /// [`crate::volume_refine::RefineError`], or `Infallible` for stubs).
+    /// Error type returned by BOTH seam methods (e.g.
+    /// [`crate::volume_refine::RefineError`], or `Infallible` for stubs that
+    /// cannot fail either way).
     type Error;
 
     /// Solve on the current mesh and return the a-posteriori estimate.
-    fn solve_and_estimate(&mut self) -> AdaptiveEstimate;
+    ///
+    /// # Errors
+    ///
+    /// Estimation is fallible because a goal-oriented estimator can stop
+    /// being computable part-way through a run: a coordinate-addressed QoI
+    /// (`crate::qoi`) is re-resolved against every mesh the loop produces,
+    /// and one of them may place its point outside the body. An infallible
+    /// signature left such an estimator only two options — panic, or invent
+    /// a number — and an invented error estimate is indistinguishable from
+    /// convergence.
+    fn solve_and_estimate(&mut self) -> Result<AdaptiveEstimate, Self::Error>;
 
     /// Refine the mesh, targeting the Dörfler-`marked` elements.
     fn refine(&mut self, marked: &[usize]) -> Result<(), Self::Error>;
@@ -416,16 +476,22 @@ pub fn dorfler_size_hints(marked: &[usize], current_sizes: &[f64]) -> Vec<f64> {
 ///
 /// Each iteration solves on the current mesh, then evaluates the termination
 /// conditions in **first-match precedence**; if none fire it Dörfler-marks the
-/// per-element indicators (fraction `theta`) and refines before re-solving.
+/// per-element weights (fraction `theta`) and refines before re-solving.
+///
+/// # Errors
+///
+/// Propagates `P::Error` from EITHER seam — `solve_and_estimate` as well as
+/// `refine` — at the point of failure, leaving the problem in whatever state
+/// the failing call left it.
 ///
 /// # Termination precedence: target > stall > max-iter > max-dofs
 ///
-/// 1. **Target** — `global_indicator <= target_accuracy` ⇒
+/// 1. **Target** — `relative_error <= target_accuracy` ⇒
 ///    [`ConvergenceStatus::Converged`]. Success outranks every budget reason,
 ///    so a solve that meets the target while also tripping a cap still reports
 ///    `Converged`.
 /// 2. **Stall** (only after the first solve) — [`is_stalled`] of the previous
-///    vs current global indicator ⇒ [`BudgetReason::Stalled`]. Diminishing
+///    vs current `relative_error` ⇒ [`BudgetReason::Stalled`]. Diminishing
 ///    returns: refining further is unproductive.
 /// 3. **Max iterations** — `iter >= max_refinement_iterations` ⇒
 ///    [`BudgetReason::MaxIterations`]. `max_refinement_iterations == 0` is
@@ -447,17 +513,17 @@ pub fn run_adaptive_refinement<P: AdaptiveProblem>(
     let mut prev_global: Option<f64> = None;
 
     loop {
-        let est = problem.solve_and_estimate();
+        let est = problem.solve_and_estimate()?;
 
         // (1) Target — success outranks every budget reason.
-        if est.global_indicator <= budget.target_accuracy {
+        if est.relative_error <= budget.target_accuracy {
             return Ok(ConvergenceStatus::Converged {
-                final_indicator: est.global_indicator,
+                final_indicator: est.relative_error,
             });
         }
         // (2) Stall — only meaningful once there is a prior iteration.
         if let Some(prev) = prev_global
-            && is_stalled(prev, est.global_indicator)
+            && is_stalled(prev, est.relative_error)
         {
             return Ok(ConvergenceStatus::NotConverged {
                 reason: BudgetReason::Stalled,
@@ -478,7 +544,7 @@ pub fn run_adaptive_refinement<P: AdaptiveProblem>(
 
         let marked = mark_dorfler(&est.per_element, theta);
         problem.refine(&marked)?;
-        prev_global = Some(est.global_indicator);
+        prev_global = Some(est.relative_error);
         iter += 1;
     }
 }

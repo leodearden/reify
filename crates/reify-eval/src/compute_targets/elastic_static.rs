@@ -1408,7 +1408,7 @@ pub fn solve_elastic_static_trampoline(
                     bc_override.clone(),
                 );
                 let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
-                    .expect("CantileverAdaptiveProblem::refine is Infallible");
+                    .expect("CantileverAdaptiveProblem's AdaptiveProblem seam is Infallible");
                 // Perf-cost visibility (reviewer_comprehensive/performance,
                 // task 4902 amendment): `refine` uniformly doubles all three
                 // grid axes per iteration (~8x DOF growth), so an
@@ -3530,7 +3530,7 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
     /// same `Infallible` for its synthetic stubs).
     type Error = std::convert::Infallible;
 
-    fn solve_and_estimate(&mut self) -> AdaptiveEstimate {
+    fn solve_and_estimate(&mut self) -> Result<AdaptiveEstimate, Self::Error> {
         // The refinement loop is interruptible at CG granularity: a cancel
         // raised mid-loop bails out of the current solve and is turned into
         // `ComputeOutcome::Cancelled` by the wiring site's post-loop check. A
@@ -3583,11 +3583,12 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
         self.last_global_indicator = zz.global_relative_energy_error;
         self.last_n_dofs = n_dofs;
 
-        AdaptiveEstimate {
-            global_indicator: zz.global_relative_energy_error,
+        Ok(AdaptiveEstimate {
+            relative_error: zz.global_relative_energy_error,
             per_element: zz.per_element,
             n_dofs,
-        }
+            qoi: None,
+        })
     }
 
     fn refine(&mut self, _marked: &[usize]) -> Result<(), Self::Error> {
@@ -3795,7 +3796,7 @@ impl RealizedAdaptiveProblem {
     /// fail on its first solve. Making that promise real in the SIGNATURE (an
     /// earlier revision returned `Self` and swallowed the rejection into an
     /// empty `current_sizes`) is what keeps `solve_and_estimate` free of a
-    /// degenerate arm that would have reported `global_indicator: 0.0` — read
+    /// degenerate arm that would have reported `relative_error: 0.0` — read
     /// by `run_adaptive_refinement` as "converged with zero error" on a mesh
     /// that was never solved.
     #[allow(clippy::too_many_arguments)]
@@ -3852,7 +3853,7 @@ impl AdaptiveProblem for RealizedAdaptiveProblem {
     ///
     /// Never touches `surface` — only `refine` does — so this runs in a
     /// gmsh-free build exactly as it does in a gmsh build.
-    fn solve_and_estimate(&mut self) -> AdaptiveEstimate {
+    fn solve_and_estimate(&mut self) -> Result<AdaptiveEstimate, Self::Error> {
         // REUSE: `volume_mesh_to_solver_mesh` already performs both the P1
         // gate AND the orphan-vertex compaction that real gmsh output demands
         // (an element-unreferenced node gets no stiffness contribution,
@@ -3861,9 +3862,9 @@ impl AdaptiveProblem for RealizedAdaptiveProblem {
         // `new` returns `None` for a non-widenable seed and `refine` raises a
         // `RefineError` for a non-widenable remesh result, so `self.volume_mesh`
         // is always widenable here. An earlier revision carried a "degrade
-        // honestly" arm returning `global_indicator: 0.0`; that was the opposite
+        // honestly" arm returning `relative_error: 0.0`; that was the opposite
         // of honest — `run_adaptive_refinement` tests
-        // `est.global_indicator <= budget.target_accuracy` FIRST, so 0.0 reads as
+        // `est.relative_error <= budget.target_accuracy` FIRST, so 0.0 reads as
         // `Converged { final_indicator: 0.0 }` and the caller is told the solve
         // converged perfectly on a mesh that was never solved
         // (reviewer_comprehensive amendment).
@@ -3924,11 +3925,12 @@ impl AdaptiveProblem for RealizedAdaptiveProblem {
         self.last_global_indicator = zz.global_relative_energy_error;
         self.last_n_dofs = n_dofs;
 
-        AdaptiveEstimate {
-            global_indicator: zz.global_relative_energy_error,
+        Ok(AdaptiveEstimate {
+            relative_error: zz.global_relative_energy_error,
             per_element: zz.per_element,
             n_dofs,
-        }
+            qoi: None,
+        })
     }
 
     /// Consume the Dörfler-marked set by remeshing the volume under a
@@ -6138,7 +6140,7 @@ mod tests {
     /// step-11 RED (task 4902): `CantileverAdaptiveProblem::solve_and_estimate`
     /// solves the coarse isotropic cantilever (tip load) at its current grid
     /// resolution and reports a Z-Z `AdaptiveEstimate`:
-    /// - `global_indicator` finite and in `[0, 1)` — this MEASURES the
+    /// - `relative_error` finite and in `[0, 1)` — this MEASURES the
     ///   empirical η_global magnitude the step-15 e2e converged-target `0.9`
     ///   must exceed (achievability basis for e2e case (a); see plan design
     ///   decisions — error energy cannot exceed solution energy in relative
@@ -6147,7 +6149,7 @@ mod tests {
     /// - `per_element.len()` == the solve's tet count.
     /// - `n_dofs` == `3 * n_nodes`.
     /// - the problem records `last_global_indicator` == the returned
-    ///   `global_indicator` (threaded into `aposteriori_adaptive_fields` even
+    ///   `relative_error` (threaded into `aposteriori_adaptive_fields` even
     ///   on a budget-capped `NotConverged` outcome — see step-7/8).
     ///
     /// RED: `CantileverAdaptiveProblem` does not exist yet → compile-fail
@@ -6171,12 +6173,14 @@ mod tests {
             None,
         );
 
-        let est = problem.solve_and_estimate();
+        let est = problem
+            .solve_and_estimate()
+            .expect("this problem's AdaptiveProblem seam cannot fail");
 
         assert!(
-            est.global_indicator.is_finite() && (0.0..1.0).contains(&est.global_indicator),
-            "global_indicator must be finite and in [0, 1), got {}",
-            est.global_indicator
+            est.relative_error.is_finite() && (0.0..1.0).contains(&est.relative_error),
+            "relative_error must be finite and in [0, 1), got {}",
+            est.relative_error
         );
 
         // Default synthetic_grid_counts(1.0, 0.1) = (nx=60, ny=1, nz=6).
@@ -6195,8 +6199,8 @@ mod tests {
         );
 
         assert_eq!(
-            problem.last_global_indicator, est.global_indicator,
-            "the problem must record the returned global_indicator"
+            problem.last_global_indicator, est.relative_error,
+            "the problem must record the returned relative_error"
         );
     }
 
@@ -6270,7 +6274,9 @@ mod tests {
         // `refine` ran at least once: a fresh solve_and_estimate at the
         // problem's now-current (post-loop) grid resolution must report
         // strictly more dofs than the initial resolution.
-        let final_est = problem.solve_and_estimate();
+        let final_est = problem
+            .solve_and_estimate()
+            .expect("this problem's AdaptiveProblem seam cannot fail");
         assert!(
             final_est.n_dofs > initial_dofs,
             "expected refine() to have grown the mesh past the initial {} dofs, got {}",
@@ -11976,7 +11982,9 @@ mod tests {
         )
         .expect("a widenable P1 tet mesh seeds a RealizedAdaptiveProblem");
 
-        let est = problem.solve_and_estimate();
+        let est = problem
+            .solve_and_estimate()
+            .expect("this problem's AdaptiveProblem seam cannot fail");
 
         assert_eq!(
             est.per_element.len(),
@@ -11988,13 +11996,13 @@ mod tests {
             "n_dofs must be 3 * the POST-COMPACTION node count",
         );
         assert!(
-            est.global_indicator.is_finite() && est.global_indicator >= 0.0,
-            "global_indicator must be finite and non-negative, got {}",
-            est.global_indicator,
+            est.relative_error.is_finite() && est.relative_error >= 0.0,
+            "relative_error must be finite and non-negative, got {}",
+            est.relative_error,
         );
         assert_eq!(
-            problem.last_global_indicator, est.global_indicator,
-            "the problem must record the returned global_indicator",
+            problem.last_global_indicator, est.relative_error,
+            "the problem must record the returned relative_error",
         );
         assert_eq!(
             problem.last_n_dofs, est.n_dofs,
@@ -12114,7 +12122,9 @@ mod tests {
 
         let mut problem = gmsh_realized_problem(0.05);
 
-        let est = problem.solve_and_estimate();
+        let est = problem
+            .solve_and_estimate()
+            .expect("this problem's AdaptiveProblem seam cannot fail");
         let marked = reify_solver_elastic::mark_dorfler(&est.per_element, DORFLER_THETA);
         assert!(
             !marked.is_empty(),
@@ -12176,7 +12186,7 @@ mod tests {
         // from the same seed is what proves the growth above was driven by the
         // MARKS and not merely by re-meshing.
         let mut unmarked = gmsh_realized_problem(0.05);
-        unmarked.solve_and_estimate();
+        let _ = unmarked.solve_and_estimate();
         unmarked
             .refine(&[])
             .expect("an empty marked set must still remesh cleanly");

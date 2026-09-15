@@ -564,7 +564,7 @@ pub mod warm_state;
 // docs/prds/v0_4/a-posteriori-error-estimation.md Task decomposition #2.
 pub mod adaptive;
 pub use adaptive::{
-    AdaptiveEstimate, AdaptiveProblem, BudgetReason, ConvergenceStatus, DORFLER_THETA,
+    AdaptiveEstimate, AdaptiveProblem, BudgetReason, ConvergenceStatus, DORFLER_THETA, QoiEstimate,
     RefinementBudget, STALL_MIN_RELATIVE_DROP, dorfler_size_hints, is_stalled, mark_dorfler,
     refine_marked_elements, run_adaptive_refinement,
 };
