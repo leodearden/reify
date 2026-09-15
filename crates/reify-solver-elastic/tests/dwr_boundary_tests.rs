@@ -48,6 +48,7 @@ use reify_solver_elastic::{
 };
 
 use reify_solver_elastic::DualWeightedIndicator;
+use reify_ir::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
 
 // ─── ported FEA harness helpers (tests/aposteriori_validation.rs) ──────────
 
@@ -290,6 +291,278 @@ fn assemble_eliminate_and_solve(
     let result = solve_cg(&k, &f, opts, SolverMode::Deterministic);
 
     (k, f, bcs, result)
+}
+
+// ─── BT2/BT3 harness: one solve, both indicators ──────────────────────────
+
+/// A completed primal+dual solve on one mesh, with everything both
+/// indicators need.
+struct DualSolve {
+    nodes: Vec<[f64; 3]>,
+    conns: Vec<[usize; 4]>,
+    /// The ELIMINATED right-hand side.
+    f: Vec<f64>,
+    bcs: Vec<DirichletBc>,
+    primal: CgResult,
+    dual: CgResult,
+}
+
+/// Per-element `StressElement`s for a displacement field on this mesh.
+///
+/// Both indicators consume the same shape, so building them through one
+/// function is what keeps the primal and dual sides of the contraction
+/// strictly comparable — a difference in element ORDER or volume between the
+/// two would silently pair up the wrong tensors.
+fn stress_elements<'a>(
+    nodes: &[[f64; 3]],
+    conns: &'a [[usize; 4]],
+    material: &IsotropicElastic,
+    field: &[f64],
+    stress: &'a mut Vec<[[f64; 3]; 3]>,
+    volume: &'a mut Vec<f64>,
+) -> Vec<StressElement<'a>> {
+    stress.clear();
+    volume.clear();
+    for conn in conns {
+        let elem_nodes = [
+            nodes[conn[0]],
+            nodes[conn[1]],
+            nodes[conn[2]],
+            nodes[conn[3]],
+        ];
+        stress.push(element_stress_p1(
+            &elem_nodes,
+            material,
+            &gather_u_p1(field, conn),
+        ));
+        volume.push(tet_volume_p1(&elem_nodes));
+    }
+    conns
+        .iter()
+        .enumerate()
+        .map(|(i, conn)| StressElement {
+            connectivity: conn.as_slice(),
+            stress: stress[i],
+            volume: volume[i],
+        })
+        .collect()
+}
+
+/// The `VolumeMesh` the indicators read `n_nodes` from.
+///
+/// Only `vertices.len()` is consumed; the `f32` coordinates never enter the
+/// arithmetic, which is why the f64 solve mesh is not degraded by passing
+/// through here.
+fn indicator_mesh(n_nodes: usize) -> VolumeMesh {
+    VolumeMesh {
+        vertices: vec![0.0_f32; 3 * n_nodes],
+        connectivity: VolumeConnectivity::Tet {
+            indices: Vec::new(),
+            order: ElementOrderTag::P1,
+        },
+        normals: None,
+        boundary: None,
+    }
+}
+
+/// `(Z-Z on the primal, dual-weighted from primal × dual)` for one solve.
+fn dwr_and_zz_from_solve(
+    solve: &DualSolve,
+    material: &IsotropicElastic,
+) -> (ZzIndicator, DualWeightedIndicator) {
+    let mesh = indicator_mesh(solve.nodes.len());
+    let (mut su, mut vu) = (Vec::new(), Vec::new());
+    let primal = stress_elements(
+        &solve.nodes,
+        &solve.conns,
+        material,
+        solve.primal.u(),
+        &mut su,
+        &mut vu,
+    );
+    let (mut sz, mut vz) = (Vec::new(), Vec::new());
+    let dual = stress_elements(
+        &solve.nodes,
+        &solve.conns,
+        material,
+        solve.dual.u(),
+        &mut sz,
+        &mut vz,
+    );
+    let zz = compute_zz_indicator(&primal, &mesh, material);
+    let dwr = compute_dual_weighted_indicator(&primal, &dual, &mesh, material);
+    (zz, dwr)
+}
+
+/// The Z-Z indicator of the DUAL field — the `η_z,K` of BT3's
+/// Cauchy–Schwarz check.
+fn zz_of_dual(solve: &DualSolve, material: &IsotropicElastic) -> ZzIndicator {
+    let mesh = indicator_mesh(solve.nodes.len());
+    let (mut s, mut v) = (Vec::new(), Vec::new());
+    let dual = stress_elements(
+        &solve.nodes,
+        &solve.conns,
+        material,
+        solve.dual.u(),
+        &mut s,
+        &mut v,
+    );
+    compute_zz_indicator(&dual, &mesh, material)
+}
+
+/// Prescribe the full 3-DOF displacement `field(x)` on every node on any of
+/// the six bounding planes of `[0,lx] × [0,ly] × [0,lz]`.
+///
+/// Ported from `tests/aposteriori_validation.rs`. Prescribing the exact
+/// linear field on the WHOLE boundary is what makes the interior solution
+/// that same field — P1 tets represent it exactly — giving the uniform
+/// stress state BT3's patch exactness is stated against.
+fn dirichlet_prescribe_boundary_field(
+    nodes: &[[f64; 3]],
+    lx: f64,
+    ly: f64,
+    lz: f64,
+    tol: f64,
+    field: impl Fn([f64; 3]) -> [f64; 3],
+) -> Vec<DirichletBc> {
+    let mut bcs = Vec::new();
+    for (node, &p) in nodes.iter().enumerate() {
+        let on_boundary = p[0].abs() < tol
+            || (p[0] - lx).abs() < tol
+            || p[1].abs() < tol
+            || (p[1] - ly).abs() < tol
+            || p[2].abs() < tol
+            || (p[2] - lz).abs() < tol;
+        if on_boundary {
+            for (dof_idx, &val) in field(p).iter().enumerate() {
+                bcs.push(DirichletBc {
+                    dof: node * 3 + dof_idx,
+                    value: val,
+                });
+            }
+        }
+    }
+    bcs
+}
+
+/// A solve whose fixture also needs its raw dual load `g` inspected.
+struct DualSolveWithLoad {
+    solve: DualSolve,
+    /// The QoI's raw `dual_load` output, BEFORE any BC zeroing.
+    g: Vec<f64>,
+    /// The ELIMINATED primal RHS.
+    f: Vec<f64>,
+    bcs: Vec<DirichletBc>,
+}
+
+/// BT2's `f = g` fixture: a clamped box whose PRIMAL load IS a QoI's own
+/// dual load, at `F = 1`.
+///
+/// Constructible only because `dual_load` does not depend on `u`: `g` is
+/// assembled against the mesh alone, then handed to the primal solve as its
+/// right-hand side. Dirichlet data is homogeneous throughout, which is what
+/// makes elimination degenerate to zeroing.
+fn self_dual_box(material: &IsotropicElastic, opts: CgSolverOptions) -> DualSolveWithLoad {
+    let (lx, ly, lz) = (2.0_f64, 1.0, 1.0);
+    let (nodes, conns) = box_p1_mesh(lx, ly, lz, 4, 2, 2);
+    let mesh = P1TetMeshRef {
+        coords: &nodes,
+        tets: &conns,
+    };
+    let qoi = LocalDisplacementQoi {
+        at: [lx, ly / 2.0, lz / 2.0],
+        radius: 0.6 * ly,
+        direction: [0.0, -1.0, 0.0],
+    };
+    // `u` is unused by `dual_load`; a zero field makes that explicit.
+    let zero = vec![0.0_f64; 3 * nodes.len()];
+    let g = qoi
+        .dual_load(mesh, material, &zero)
+        .expect("the BT2 QoI must resolve on its own fixture");
+
+    let bcs = dirichlet_fix_face(&nodes, 0, 0.0, 1e-9);
+    let (k, f, bcs, primal) =
+        assemble_eliminate_and_solve(&nodes, &conns, material, bcs, &g, opts.clone());
+    let dual = solve_dual_cg(
+        &k,
+        &qoi,
+        mesh,
+        material,
+        primal.u(),
+        &bcs,
+        opts,
+        SolverMode::Deterministic,
+    )
+    .expect("the BT2 dual solve must resolve");
+
+    DualSolveWithLoad {
+        f: f.clone(),
+        bcs: bcs.clone(),
+        g,
+        solve: DualSolve {
+            nodes,
+            conns,
+            f,
+            bcs,
+            primal,
+            dual,
+        },
+    }
+}
+
+/// BT3's constant-strain patch fixture: the unit cube with `u = (γ·y, 0, 0)`
+/// prescribed on the whole boundary, plus a real dual for `qoi`.
+///
+/// 4³ cells: coarse enough to stay fast, fine enough that a ball of radius
+/// ≤ 0.30 at the centre has only interior contributing nodes — the
+/// precondition BT3 asserts.
+fn patch_cube(
+    material: &IsotropicElastic,
+    gamma: f64,
+    qoi: &LocalDisplacementQoi,
+    opts: CgSolverOptions,
+) -> DualSolveWithLoad {
+    let (nodes, conns) = box_p1_mesh(1.0, 1.0, 1.0, 4, 4, 4);
+    let mesh = P1TetMeshRef {
+        coords: &nodes,
+        tets: &conns,
+    };
+    let bcs = dirichlet_prescribe_boundary_field(&nodes, 1.0, 1.0, 1.0, 1e-9, |p| {
+        [gamma * p[1], 0.0, 0.0]
+    });
+    let raw_f = vec![0.0_f64; 3 * nodes.len()];
+    let (k, f, bcs, primal) =
+        assemble_eliminate_and_solve(&nodes, &conns, material, bcs, &raw_f, opts.clone());
+
+    let zero = vec![0.0_f64; 3 * nodes.len()];
+    let g = qoi
+        .dual_load(mesh, material, &zero)
+        .expect("the BT3 QoI must resolve on the patch cube");
+    let dual = solve_dual_cg(
+        &k,
+        qoi,
+        mesh,
+        material,
+        primal.u(),
+        &bcs,
+        opts,
+        SolverMode::Deterministic,
+    )
+    .expect("the BT3 dual solve must resolve");
+
+    DualSolveWithLoad {
+        f: f.clone(),
+        bcs: bcs.clone(),
+        g,
+        solve: DualSolve {
+            nodes,
+            conns,
+            f,
+            bcs,
+            primal,
+            dual,
+        },
+    }
 }
 
 // ─── BT1: reciprocity (PRD §6 C2) ─────────────────────────────────────────
