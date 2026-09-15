@@ -2,7 +2,9 @@ use reify_ast::ImportKind;
 use reify_core::{ModulePath, SourceSpan};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
-use crate::analysis::{enclosing_decl_at, find_named_member_span, module_name_from_uri};
+use crate::analysis::{
+    enclosing_decl_at, find_named_member_span, module_name_from_uri, name_token_span,
+};
 use crate::convert::{find_word_at_offset, position_to_offset, span_to_range};
 
 /// Compute go-to-definition for the symbol at the given position.
@@ -234,7 +236,10 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 
 /// Scan an already-parsed module for the name-token span of the declaration
 /// named `name`, returning the byte [`SourceSpan`] of just the NAME identifier
-/// (located via [`find_name_offset_in_decl`]).
+/// (located via [`crate::analysis::name_token_span`], which matches
+/// whole-word and only within the declaration's own span — a declaration span
+/// starts at its keyword, so an unbounded substring search finds the `s` of
+/// `structure` before the `s` of `structure s`).
 ///
 /// Takes `&ParsedModule` rather than `&str` so a caller that needs more than one
 /// declaration shape pays for exactly one parse; `source` is still required
@@ -252,6 +257,38 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 ///
 /// Declarations are scanned in source order, so in the (ill-formed) case of an
 /// alias and a structure sharing one name, the earlier declaration wins.
+///
+/// A matched declaration whose span does not actually contain its own name
+/// token is REFUSED — `None`, and without resuming the scan. The previous
+/// locator instead fell back to a `name.len()`-wide span anchored at the
+/// declaration start; that bogus WIDE span flowed into the `references.rs`
+/// rename write path and emitted a destructive edit over the declaration's
+/// leading keyword. Resuming the scan would be the mirror-image hazard, letting
+/// a later same-named declaration donate its token — exactly what bounding the
+/// search to the declaration's own span exists to prevent.
+///
+/// What a refusal costs is enumerated per consumer rather than summarised,
+/// because they do not all behave alike — three are inert and one is not:
+/// - [`find_declaration_in_source`] (goto-def) is read-only: no jump. Inert.
+/// - `references.rs::resolve_cross_file_home` step 2 tests only `.is_some()`,
+///   so a structure declared in the primary document stops being recognised as
+///   the home and the query falls through to the import arm — which, in the
+///   home document itself, resolves to nothing. A wholesale `None`. Inert.
+/// - `references.rs::compute_references_cross_file` uses the value only to drop
+///   the declaration token when `include_declaration = false`; with no token to
+///   drop, that filter is a no-op. Inert.
+/// - `references.rs::collect_structure_name_spans` pushes this token into the
+///   span set that `compute_rename_cross_file` turns into edits. A refusal
+///   silently OMITS it, so a rename driven from an IMPORTING document (where
+///   the home resolves through the import arm, never consulting this function)
+///   rewrites every construction site and import token but leaves the
+///   declaration behind — a partial rename. Still strictly better than the old
+///   locator, which rewrote the declaration's leading keyword, but not free.
+///   Making the rename path refuse wholesale when the home token cannot be
+///   located is a follow-up; it is not reachable today, because no parse
+///   observed so far yields a surviving declaration whose span excludes its own
+///   name token (error recovery either keeps the name inside the span or emits
+///   no declaration at all, which this function already answers with `None`).
 fn decl_name_span_in(
     parsed: &reify_ast::ParsedModule,
     source: &str,
@@ -271,34 +308,14 @@ fn decl_name_span_in(
         };
         if decl_name == name {
             // Point to the name within the declaration, not the entire span.
-            // Find the name's byte position within the declaration text.
-            let name_offset = find_name_offset_in_decl(source, span.start, name);
-            return Some(SourceSpan::new(name_offset, name_offset + name.len() as u32));
+            // An empty span is `name_token_span`'s documented not-found
+            // fallback, and an exact discriminator here because a declaration
+            // name is never the empty string.
+            let token = name_token_span(source, span, name);
+            return (!token.is_empty()).then_some(token);
         }
     }
     None
-}
-
-/// Find the byte offset of a declaration's name within the source.
-///
-/// Searches from `decl_start` forward for the name string, returning its offset.
-/// Falls back to `decl_start` if not found (shouldn't happen for valid declarations).
-fn find_name_offset_in_decl(source: &str, decl_start: u32, name: &str) -> u32 {
-    // Clamp to source length to prevent out-of-bounds panic.
-    let mut start = (decl_start as usize).min(source.len());
-
-    // Snap forward to the next valid UTF-8 character boundary if we
-    // landed mid-character (e.g., on a continuation byte 0x80..0xBF).
-    // This mirrors the pattern in offset_to_position (convert.rs:11-18).
-    while start < source.len() && !source.is_char_boundary(start) {
-        start += 1;
-    }
-
-    if let Some(rel_offset) = source[start..].find(name) {
-        (start + rel_offset) as u32
-    } else {
-        decl_start
-    }
 }
 
 #[cfg(test)]
@@ -1011,44 +1028,10 @@ mod tests {
         );
     }
 
-    // --- find_name_offset_in_decl robustness tests (step-16: panic_on_invalid_span) ---
-
-    #[test]
-    fn find_name_offset_decl_start_exceeds_source_len() {
-        // (a) decl_start=100 but source is only 20 bytes — must not panic.
-        let source = "structure Foo { }"; // 17 bytes
-        let result = find_name_offset_in_decl(source, 100, "Foo");
-        // Should fall back to decl_start since the slice is invalid
-        assert_eq!(result, 100);
-    }
-
-    #[test]
-    fn find_name_offset_decl_start_on_continuation_byte() {
-        // (b) decl_start lands on a UTF-8 continuation byte — must not panic.
-        // "aéb" = [0x61, 0xC3, 0xA9, 0x62], byte 2 is continuation byte 0xA9
-        let source = "a\u{00E9}b Foo";
-        // source = [0x61, 0xC3, 0xA9, 0x62, 0x20, 0x46, 0x6F, 0x6F]
-        //           a     é(1)  é(2)  b     ' '   F     o     o
-        // decl_start=2 is the continuation byte
-        let result = find_name_offset_in_decl(source, 2, "Foo");
-        // Should snap forward and find "Foo" at byte 5
-        assert_eq!(result, 5);
-    }
-
-    #[test]
-    fn find_name_offset_decl_start_exactly_source_len() {
-        // (c) decl_start is exactly source.len() (empty trailing slice) — must not panic.
-        let source = "structure Foo { }";
-        let len = source.len() as u32; // 17
-        let result = find_name_offset_in_decl(source, len, "Foo");
-        // Should fall back to decl_start since there's nothing after
-        assert_eq!(result, len);
-    }
-
     #[test]
     fn find_declaration_in_source_with_multibyte_before_decl() {
         // End-to-end: target source has multi-byte chars before a structure declaration.
-        // Parser should still find the declaration, and find_name_offset_in_decl
+        // Parser should still find the declaration, and the name-token locator
         // should handle any tricky offsets gracefully.
         let target_source =
             "// comment with é accent\nstructure Widget {\n    param size: Length = 5mm\n}";
@@ -1289,5 +1272,102 @@ mod tests {
             find_declaration_name_span("type Speed = Length / Time\n", "Speed").is_none(),
             "the shared helper must not resolve type aliases (rename safety)"
         );
+    }
+
+    /// A declaration whose span does not contain its own name token must yield
+    /// `None`, not a span borrowed from elsewhere and not a zero-width span —
+    /// and the scan must NOT resume past the refusal.
+    ///
+    /// Tree-sitter error recovery can produce a declaration node whose span is
+    /// truncated short of the name. Any span this function returns reaches the
+    /// `references.rs` rename write path, so the only answer that cannot
+    /// corrupt a buffer is a refusal.
+    ///
+    /// The fixture carries TWO same-named declarations on purpose: with a
+    /// single declaration, `return None` and `continue` are indistinguishable.
+    /// Here they are not — a `continue` would hand back the SECOND
+    /// declaration's name token for the FIRST declaration, which is the
+    /// borrow-a-token-from-elsewhere hazard that bounding the search to the
+    /// declaration's own span exists to prevent.
+    #[test]
+    fn decl_name_span_in_refuses_without_resuming_the_declaration_scan() {
+        let source = "structure Widget {\n}\nstructure Widget {\n}\n";
+        let mut parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("_t"));
+        assert_eq!(
+            parsed.declarations.len(),
+            2,
+            "fixture: both same-named declarations must survive the parse"
+        );
+
+        // Truncate the FIRST declaration's span to cover only `struc`, the shape
+        // an error-recovery span can take. Mutating a REAL parse keeps every
+        // other field (AST node, content hash) honest.
+        let mut truncated = false;
+        if let reify_ast::Declaration::Structure(s) = &mut parsed.declarations[0] {
+            s.span = SourceSpan::new(0, 5);
+            truncated = true;
+        }
+        assert!(
+            truncated,
+            "fixture: declarations[0] must be the Structure whose span we truncate"
+        );
+
+        // Anti-vacuity: the second declaration's name token IS locatable, so a
+        // scan that resumed past the refusal would have something to return.
+        let reify_ast::Declaration::Structure(second) = &parsed.declarations[1] else {
+            panic!("fixture: declarations[1] must be the second Structure");
+        };
+        let donor = name_token_span(source, second.span, "Widget");
+        assert!(
+            !donor.is_empty(),
+            "fixture: the second declaration's name token must be locatable, \
+             otherwise a resumed scan would return `None` for the wrong reason"
+        );
+
+        assert_eq!(
+            decl_name_span_in(&parsed, source, "Widget", false),
+            None,
+            "a declaration span that excludes its own name token must be refused \
+             outright: neither a span that would reach the rename write path, nor \
+             the later declaration's token at {donor:?}"
+        );
+    }
+
+    /// A SHORT declaration name must resolve to the declaration's NAME token,
+    /// never to a character inside the leading keyword.
+    ///
+    /// Every declaration span starts at its keyword (`structure`, `fn`, `enum`,
+    /// `trait`, `occurrence def`), and the grammar admits one-character
+    /// identifiers, so a locator that is not whole-word matches the `s` of
+    /// `structure` before the `s` of `structure s`. The resulting span reaches
+    /// the `references.rs` rename write path, where it rewrites byte 0 of the
+    /// user's file.
+    #[test]
+    fn find_declaration_name_span_short_name_is_name_token_not_keyword_prefix() {
+        // (source, name, byte offset of the NAME token)
+        let rows: &[(&str, &str, u32)] = &[
+            ("structure s {\n}\n", "s", 10),
+            ("fn n() -> Length {\n    1mm\n}\n", "n", 3),
+            ("enum e {\n    A,\n}\n", "e", 5),
+            ("trait t {\n}\n", "t", 6),
+            ("occurrence def o {\n}\n", "o", 15),
+            // Control: a name that cannot occur inside its keyword already works.
+            ("structure Widget {\n}\n", "Widget", 10),
+        ];
+
+        for (source, name, name_offset) in rows {
+            let expected = SourceSpan::new(*name_offset, name_offset + name.len() as u32);
+            assert_eq!(
+                &source[expected.start as usize..expected.end as usize],
+                *name,
+                "fixture is wrong: offset {name_offset} in {source:?} is not {name:?}"
+            );
+            assert_eq!(
+                find_declaration_name_span(source, name),
+                Some(expected),
+                "declaration name {name:?} in {source:?} must resolve to its own \
+                 NAME token, not to a character inside the leading keyword"
+            );
+        }
     }
 }
