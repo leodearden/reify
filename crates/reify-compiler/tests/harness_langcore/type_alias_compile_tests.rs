@@ -2295,8 +2295,18 @@ mod parametric_alias_def_site_enum_body {
 /// parametric register of exactly those rows, which is why it asserts the same
 /// thing in the same shape: `alias_ty == direct_ty` against an oracle module
 /// that spells the body directly, never a frozen literal `Type` variant. The
-/// oracle's own cleanliness is asserted FIRST, so a parity row cannot pass
+/// oracle's own verdict is asserted FIRST, so a parity row cannot pass
 /// vacuously with both sides `Type::Error`.
+///
+/// Step-9 extends the same row list to APPLIED bodies — an entity name carrying
+/// type arguments, `Box2<T>` rather than bare `Box2`. Those rows are where the
+/// stakes change: an entity-NAME row that fails is loud (`unresolved type`),
+/// whereas an applied row that fails is SILENT — the arguments are dropped and
+/// the body lowers to a bare `StructureRef` / `TraitObject` with no diagnostic
+/// at all, so `Wrap<Length>` and `Wrap<Mass>` become the same type. Parity is
+/// therefore stated as one rule over one row list: the alias reaches the same
+/// verdict as the direct spelling, whether that verdict is a clean type or a
+/// diagnostic (`expect_shared_error`).
 mod parametric_alias_entity_body_use_site {
     use super::alias_to_entity_type_parity::param_type_and_errors;
 
@@ -2306,79 +2316,161 @@ mod parametric_alias_entity_body_use_site {
     /// two spellings denote the same type by construction.
     struct UseSiteCase {
         label: &'static str,
-        /// What `main` produced for this row before step-4 landed.
-        measured_on_main: &'static str,
+        /// What the ALIAS spelling produced before the step that fixed this
+        /// row, so a later reader can tell a repaired row from a never-broken
+        /// one. The baseline differs between the two row groups and each
+        /// string names its own: the entity-NAME rows were measured on `main`
+        /// (823502024d) before step-4, the APPLIED rows on this branch after
+        /// step-4 and before step-10.
+        measured_before_fix: &'static str,
         decls: &'static str,
         body: &'static str,
         direct: &'static str,
+        /// The diagnostic BOTH spellings must produce, for rows whose verdict
+        /// is an error rather than a clean type.
+        ///
+        /// `None` is the clean-row case: the direct baseline must compile
+        /// cleanly and lower to a real type, and the alias must match it with
+        /// no diagnostics of its own.
+        ///
+        /// `Some(msg)` names the rows whose DIRECT spelling is deliberately an
+        /// error — an arity violation, or a trait handed type arguments. The
+        /// oracle role is unchanged: parity means the alias reaches the SAME
+        /// verdict, so it must report `msg` too and must not pile on extra
+        /// diagnostics. Matched as a substring because both spellings echo the
+        /// arguments as WRITTEN (`T` inside the body, `Real` at the direct use
+        /// site), a cosmetic difference that says nothing about the verdict.
+        expect_shared_error: Option<&'static str>,
     }
 
     const ENUM: &str = "enum Zq { Close, Medium }";
     const STRUCTURE: &str = "structure def Sq {\n    param w : Length = 1.0mm\n}";
     const OCCURRENCE: &str = "occurrence def Oq {\n    param w : Length = 1.0mm\n}";
     const TRAIT: &str = "trait Hq {\n    param w : Length\n}";
+    /// The declaration the committed fixture `parametric_alias_def_site_ok.ri`
+    /// uses for `pub type Wrap<U: Dimension> = Box2<U>`, reproduced here so the
+    /// applied rows exercise the shipped shape rather than a synthetic one.
+    const GENERIC_STRUCTURE: &str = "structure def Box2<T: Dimension> {\n    param x : Real\n}";
 
     /// All four entity kinds an alias body may name, bare and nested, plus the
-    /// row where the alias's own param and an entity name appear TOGETHER.
+    /// row where the alias's own param and an entity name appear TOGETHER —
+    /// then the same names in APPLIED position, where the failure is silent.
     const USE_SITE_CASES: &[UseSiteCase] = &[
         UseSiteCase {
             label: "bare enum body",
-            measured_on_main: "RED — unresolved type: AL<Real>",
+            measured_before_fix: "RED on main — unresolved type: AL<Real>",
             decls: ENUM,
             body: "Zq",
             direct: "Zq",
+            expect_shared_error: None,
         },
         UseSiteCase {
             label: "bare structure-def body",
-            measured_on_main: "RED — unresolved type: AL<Real>",
+            measured_before_fix: "RED on main — unresolved type: AL<Real>",
             decls: STRUCTURE,
             body: "Sq",
             direct: "Sq",
+            expect_shared_error: None,
         },
         UseSiteCase {
             label: "bare occurrence-def body",
-            measured_on_main: "RED — unresolved type: AL<Real>",
+            measured_before_fix: "RED on main — unresolved type: AL<Real>",
             decls: OCCURRENCE,
             body: "Oq",
             direct: "Oq",
+            expect_shared_error: None,
         },
         UseSiteCase {
             label: "bare trait body",
-            measured_on_main: "RED — unresolved type: AL<Real>",
+            measured_before_fix: "RED on main — unresolved type: AL<Real>",
             decls: TRAIT,
             body: "Hq",
             direct: "Hq",
+            expect_shared_error: None,
         },
         UseSiteCase {
             label: "nested enum body",
-            measured_on_main: "RED — unresolved type: AL<Real>",
+            measured_before_fix: "RED on main — unresolved type: AL<Real>",
             decls: ENUM,
             body: "Option<Zq>",
             direct: "Option<Zq>",
+            expect_shared_error: None,
         },
         UseSiteCase {
             label: "nested structure-def body",
-            measured_on_main: "RED — unresolved type: AL<Real>",
+            measured_before_fix: "RED on main — unresolved type: AL<Real>",
             decls: STRUCTURE,
             body: "Option<Sq>",
             direct: "Option<Sq>",
+            expect_shared_error: None,
         },
         UseSiteCase {
-            // The row that matters most: the substitution and the entity
-            // lookup must COMPOSE. If step-4 threads the namespaces but loses
-            // `subst` on the way (or vice versa) this is the row that reds.
+            // The row that matters most among the entity-NAME rows: the
+            // substitution and the entity lookup must COMPOSE. If step-4
+            // threads the namespaces but loses `subst` on the way (or vice
+            // versa) this is the row that reds.
             label: "param-using body that also names an enum",
-            measured_on_main: "RED — unresolved type: AL<Real>",
+            measured_before_fix: "RED on main — unresolved type: AL<Real>",
             decls: ENUM,
             body: "Map<T, Zq>",
             direct: "Map<Real, Zq>",
+            expect_shared_error: None,
         },
         UseSiteCase {
             label: "param-using body that also names a structure def",
-            measured_on_main: "RED — unresolved type: AL<Real>",
+            measured_before_fix: "RED on main — unresolved type: AL<Real>",
             decls: STRUCTURE,
             body: "Map<T, Sq>",
             direct: "Map<Real, Sq>",
+            expect_shared_error: None,
+        },
+        UseSiteCase {
+            // The shipped shape: `pub type Wrap<U: Dimension> = Box2<U>` is a
+            // committed fixture, and step-1's ACCEPTED_CASES blesses it at its
+            // DEFINITION site — so before step-10 the branch accepted this
+            // alias where it is declared and silently dropped its argument at
+            // every use of it.
+            label: "structure def carrying type args",
+            measured_before_fix: "SILENTLY WRONG on this branch — StructureRef(\"Box2\"), errs=[]",
+            decls: GENERIC_STRUCTURE,
+            body: "Box2<T>",
+            direct: "Box2<Real>",
+            expect_shared_error: None,
+        },
+        UseSiteCase {
+            // Dropping the arguments does not merely lose information, it
+            // disables the checks that read them: with no `Type::Applied` node
+            // there is nothing for `entities_phase`'s arity walk to inspect.
+            label: "structure def carrying the WRONG number of type args",
+            measured_before_fix: "SILENTLY WRONG on this branch — StructureRef(\"Box2\"), errs=[]",
+            decls: GENERIC_STRUCTURE,
+            body: "Box2<T, T>",
+            direct: "Box2<Real, Real>",
+            expect_shared_error: Some("wrong number of type arguments for 'Box2'"),
+        },
+        UseSiteCase {
+            // A NON-generic entity handed an argument is the same arity
+            // violation seen from the other side: expected 0, got 1.
+            label: "occurrence def carrying type args it does not declare",
+            measured_before_fix: "SILENTLY WRONG on this branch — StructureRef(\"Oq\"), errs=[]",
+            decls: OCCURRENCE,
+            body: "Oq<T>",
+            direct: "Oq<Real>",
+            expect_shared_error: Some("wrong number of type arguments for 'Oq'"),
+        },
+        UseSiteCase {
+            // Trait type-arguments are not a language feature at all (#5049 α),
+            // so the direct spelling is deliberately an ERROR here. That makes
+            // it no less an oracle: parity is "same verdict", and the verdict
+            // for this shape is a rejection both spellings owe the user.
+            label: "trait carrying type args",
+            measured_before_fix: "SILENTLY WRONG on this branch — TraitObject(\"Hq\"), errs=[]",
+            decls: TRAIT,
+            body: "Hq<T>",
+            direct: "Hq<Real>",
+            expect_shared_error: Some(
+                "E_TYPE_ARG_ON_TRAIT: trait 'Hq' does not accept type arguments",
+            ),
         },
     ];
 
@@ -2406,40 +2498,84 @@ mod parametric_alias_entity_body_use_site {
             let direct_src = direct_source(case);
             let alias_src = alias_source(case);
 
-            // The DIRECT spelling is the oracle — if it is not clean the row
-            // says nothing about the alias path, so fail loudly on the fixture
-            // rather than letting a broken-equals-broken parity pass.
+            // The DIRECT spelling is the oracle — if it does not reach the
+            // verdict this row claims, the row says nothing about the alias
+            // path, so fail loudly on the fixture rather than letting a
+            // broken-equals-broken parity pass.
             let (direct_ty, direct_errs) = param_type_and_errors(&direct_src, "D", "p");
-            assert!(
-                direct_errs.is_empty(),
-                "[{}] DIRECT baseline must compile cleanly for the parity oracle to \
-                 mean anything; got: {:?}\n--- source ---\n{}",
-                case.label,
-                direct_errs,
-                direct_src
-            );
-            assert!(
-                !direct_ty.is_error(),
-                "[{}] DIRECT baseline must lower to a real type, not the `Type::Error` \
-                 poison; got: {:?}",
-                case.label,
-                direct_ty
-            );
+            match case.expect_shared_error {
+                None => {
+                    assert!(
+                        direct_errs.is_empty(),
+                        "[{}] DIRECT baseline must compile cleanly for the parity oracle to \
+                         mean anything; got: {:?}\n--- source ---\n{}",
+                        case.label,
+                        direct_errs,
+                        direct_src
+                    );
+                    assert!(
+                        !direct_ty.is_error(),
+                        "[{}] DIRECT baseline must lower to a real type, not the `Type::Error` \
+                         poison; got: {:?}",
+                        case.label,
+                        direct_ty
+                    );
+                }
+                Some(expected) => {
+                    assert!(
+                        direct_errs.iter().any(|m| m.contains(expected)),
+                        "[{}] DIRECT baseline must report `{}` for the parity oracle to mean \
+                         anything; got: {:?}\n--- source ---\n{}",
+                        case.label,
+                        expected,
+                        direct_errs,
+                        direct_src
+                    );
+                }
+            }
 
             let (alias_ty, alias_errs) = param_type_and_errors(&alias_src, "D", "p");
-            if !alias_errs.is_empty() {
-                failures.push(format!(
-                    "[{}] (on main: {}) `type AL<T> = {}` used as `AL<Real>` produced \
-                     Error diagnostics: {:?}",
-                    case.label, case.measured_on_main, case.body, alias_errs
-                ));
+            match case.expect_shared_error {
+                None => {
+                    if !alias_errs.is_empty() {
+                        failures.push(format!(
+                            "[{}] (before the fix: {}) `type AL<T> = {}` used as `AL<Real>` \
+                             produced Error diagnostics: {:?}",
+                            case.label, case.measured_before_fix, case.body, alias_errs
+                        ));
+                    }
+                }
+                Some(expected) => {
+                    if !alias_errs.iter().any(|m| m.contains(expected)) {
+                        failures.push(format!(
+                            "[{}] (before the fix: {}) `type AL<T> = {}` used as `AL<Real>` did \
+                             not report `{}`, which the direct spelling `{}` does report — the \
+                             alias silently accepted what the direct spelling rejects; alias \
+                             errors: {:?}",
+                            case.label,
+                            case.measured_before_fix,
+                            case.body,
+                            expected,
+                            case.direct,
+                            alias_errs
+                        ));
+                    }
+                    if alias_errs.len() != direct_errs.len() {
+                        failures.push(format!(
+                            "[{}] `type AL<T> = {}` must report exactly what the direct spelling \
+                             `{}` reports and nothing further — the same verdict means no extra \
+                             cascade; alias errors: {:?}, direct errors: {:?}",
+                            case.label, case.body, case.direct, alias_errs, direct_errs
+                        ));
+                    }
+                }
             }
             if alias_ty != direct_ty {
                 failures.push(format!(
-                    "[{}] (on main: {}) `type AL<T> = {}` lowered `D.p` to {:?}, but \
+                    "[{}] (before the fix: {}) `type AL<T> = {}` lowered `D.p` to {:?}, but \
                      the direct spelling `{}` lowers it to {:?}",
                     case.label,
-                    case.measured_on_main,
+                    case.measured_before_fix,
                     case.body,
                     alias_ty,
                     case.direct,
@@ -2450,8 +2586,9 @@ mod parametric_alias_entity_body_use_site {
 
         assert!(
             failures.is_empty(),
-            "a PARAMETRIC alias body must resolve its entity names exactly as the \
-             direct spelling does at the same use site — #6259's recorded decision \
+            "a PARAMETRIC alias body must reach the same verdict as the direct \
+             spelling at the same use site — for the entity names it mentions AND \
+             for the type arguments it applies to them; #6259's recorded decision \
              gives alias bodies no separate name-resolution rule:\n  {}",
             failures.join("\n  ")
         );
@@ -2908,5 +3045,62 @@ mod parametric_alias_population_regression {
                  sentinel; got {ty:?} with errors {errs:?}"
             );
         }
+    }
+
+    /// The use-site half of the `parametric_alias_def_site_ok.ri` fixture:
+    /// `pub type Wrap<U: Dimension> = Box2<U>` is blessed at its DEFINITION
+    /// site by `parametric_alias_def_site_validation_tests`, and nothing
+    /// checked what it denotes where someone actually uses it.
+    ///
+    /// MEASURED on this branch before step-10: `Wrap<Length>` and `Wrap<Mass>`
+    /// both lower to `StructureRef("Box2")` and compare EQUAL, with zero
+    /// diagnostics — the argument is dropped on the floor. That is what makes
+    /// the applied-body gap bite rather than merely look untidy: two types that
+    /// must be distinguishable are one type, so an assignability check that
+    /// must fail silently passes.
+    ///
+    /// The direct spelling is the oracle, as everywhere else in this file:
+    /// `Box2<Length>` and `Box2<Mass>` are asserted distinct FIRST, so this
+    /// cannot pass by both sides collapsing together.
+    #[test]
+    fn a_parametric_alias_over_a_generic_structure_keeps_its_argument() {
+        const DECL: &str = "structure def Box2<T: Dimension> {\n    param x : Real\n}";
+
+        let direct_src = format!(
+            "{DECL}\nstructure def D {{\n    param p : Box2<Length>\n    \
+             param q : Box2<Mass>\n}}\n"
+        );
+        let (direct_p, direct_errs) = param_type_and_errors(&direct_src, "D", "p");
+        let (direct_q, _) = param_type_and_errors(&direct_src, "D", "q");
+        assert!(
+            direct_errs.is_empty(),
+            "the direct oracle must compile cleanly; got: {direct_errs:?}"
+        );
+        assert_ne!(
+            direct_p, direct_q,
+            "oracle: `Box2<Length>` and `Box2<Mass>` must be distinct types"
+        );
+
+        let alias_src = format!(
+            "{DECL}\npub type Wrap<U: Dimension> = Box2<U>\nstructure def D {{\n    \
+             param p : Wrap<Length>\n    param q : Wrap<Mass>\n}}\n"
+        );
+        let (alias_p, alias_errs) = param_type_and_errors(&alias_src, "D", "p");
+        let (alias_q, _) = param_type_and_errors(&alias_src, "D", "q");
+        assert!(
+            alias_errs.is_empty(),
+            "the fixture's own alias shape must compile cleanly; got: {alias_errs:?}"
+        );
+        assert_ne!(
+            alias_p, alias_q,
+            "`Wrap<Length>` and `Wrap<Mass>` must be distinct types — both lowered to \
+             {alias_p:?}, so the alias dropped its type argument and two types that must \
+             not be interchangeable became one"
+        );
+        assert_eq!(
+            (&alias_p, &alias_q),
+            (&direct_p, &direct_q),
+            "and each must lower exactly as the direct spelling does"
+        );
     }
 }
