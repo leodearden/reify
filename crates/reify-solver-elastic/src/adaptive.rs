@@ -233,6 +233,22 @@ pub struct AdaptiveEstimate {
     /// for a goal-oriented one it is a QoI-relative error. The name
     /// deliberately does not say which — its predecessor, `global_indicator`,
     /// baked the energy norm into a seam both estimators pass through.
+    ///
+    /// # Must be FINITE
+    ///
+    /// A `NaN` slips past every termination test in
+    /// [`run_adaptive_refinement`]: both `relative_error <= target_accuracy`
+    /// and [`is_stalled`]'s `curr >= (1 − drop) · prev` are `false` for
+    /// `NaN`, so the loop takes NEITHER exit and burns
+    /// `max_refinement_iterations` full remesh-and-solve cycles on a value
+    /// that means nothing. Non-finite is easy to produce on the
+    /// goal-oriented path, whose natural definition is
+    /// `error_bound / |J(u_h)|` and whose `J(u_h)` is exactly zero for a
+    /// displacement QoI evaluated at a symmetry point. An estimator that
+    /// cannot form a meaningful ratio must report a conservative FINITE
+    /// value, or fail with its own typed error, rather than pass the
+    /// division through — which is what the Z-Z path's zero-energy guard
+    /// ([`crate::error_estimator::compute_zz_indicator`]) already does.
     pub relative_error: f64,
 
     /// Per-element NON-NEGATIVE marking weights (element order), the
@@ -514,6 +530,14 @@ pub fn run_adaptive_refinement<P: AdaptiveProblem>(
 
     loop {
         let est = problem.solve_and_estimate()?;
+        debug_assert!(
+            est.relative_error.is_finite(),
+            "AdaptiveEstimate::relative_error must be finite (see its doc); \
+             got {} — a non-finite value takes neither the target nor the \
+             stall exit, so the loop would spend its whole iteration budget \
+             refining against a meaningless number",
+            est.relative_error,
+        );
 
         // (1) Target — success outranks every budget reason.
         if est.relative_error <= budget.target_accuracy {
