@@ -30,6 +30,50 @@
 //! descriptor. This unit shares the expensive part (compile + eval) and nothing
 //! else.
 //!
+//! # Residual reconciliation against the production registration (task #7431)
+//!
+//! The INV-EVAL-4 residuals were root-caused while that sweep built its engine
+//! with the bare `register_compute_fns`. This sweep unified on
+//! `gate_engine(true)` (`register_production_compute_fns`), a strict SUPERSET —
+//! and `examples/fea_shell_too_thick_annotated.ri` is precisely the file
+//! `eval_gate_support::gate_engine`'s doc names as having been swept on a
+//! DEGRADED dispatch (`shell-extract::extract`: no registered compute
+//! trampoline), so its divergence might have been an ARTEFACT of that
+//! registration rather than a real eval-surface limitation.
+//!
+//! MEASURED on this tree rather than assumed — all 24 shards run under the
+//! unified production registration, finding counts read from their own printed
+//! residual-skip lines:
+//!
+//! | residual | invariant | findings |
+//! |---|---|---|
+//! | `examples/integration_corner_cases.ri` | INV-EVAL-5 | 2 |
+//! | `crates/reify-eval/tests/fixtures/match_block_decls_bolt.ri` | INV-EVAL-5 | 1 |
+//! | `examples/multi_load_bracket.ri` | INV-EVAL-5 | 1 |
+//! | `examples/surface_finish_functional.ri` | INV-EVAL-5 | 1 |
+//! | `examples/fdm_bracket.ri` | INV-EVAL-4 | 1 |
+//! | `examples/fea_shell_too_thick_annotated.ri` | INV-EVAL-4 | 1 |
+//!
+//! OUTCOME: every one of the six still produces findings, so NO entry is
+//! deleted. In particular the superset registration did NOT resolve
+//! `fea_shell_too_thick_annotated.ri` — its divergence is a genuine
+//! compute-dispatch eval-surface limitation of the same class as
+//! `fdm_bracket.ri`, exactly as its reason string already claimed, and not an
+//! artefact of the degraded dispatch. Recorded here so a future reader does not
+//! re-litigate it. `fdm_bracket.ri` persisting was the expectation (its
+//! `@optimized solve_elastic_static` dispatch is registered under BOTH
+//! configurations) and is likewise confirmed rather than assumed.
+//!
+//! This is self-reporting from here on: INV-EVAL-4 declares
+//! `stale_residual_is_fatal`, so a residual of ITS that stops diverging reds the
+//! sweep and forces the dead entry's deletion. The sweep passing with zero stale
+//! residuals is what the table above rests on. INV-EVAL-5 keeps its
+//! pre-unification print-only policy, so its four entries are re-confirmed by the
+//! counts above rather than by a gate. Separately,
+//! `residual_exemptions_and_failure_policy_stay_per_invariant` asserts every one
+//! of the six still matches EXACTLY ONE live corpus file, so a renamed `.ri`
+//! cannot silently void an exemption.
+//!
 //! # Anti-silent-accept guards
 //!
 //! A corpus sweep asserting "zero findings" is vacuous unless the checkers are
