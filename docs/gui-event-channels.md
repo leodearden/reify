@@ -25,6 +25,7 @@ For the naming/payload convention governing new entries see §3 of the source PR
 | `evaluation-status` | `{phase: String, progress: Option<f32>}` | `main.rs::emit_status` | `onEvaluationStatus` | RAII IdleGuard emits `idle` on Drop |
 | `kernel-status` | `KernelStatus {available, message}` | `main.rs` Tauri `setup()` | `onKernelStatus` | One-shot at startup |
 | `diagnostics` | `{uri, diagnostics}` (LSP-shaped) | `main.rs::TauriNotificationSink` | *(none)* | LSP-routed; emitted only — no frontend subscriber since task 6227 |
+| `lsp-log` | `{type, message}` (LSP `LogMessageParams`-shaped) | `main.rs::TauriNotificationSink` | *(none)* | LSP-routed; emitted only — no frontend subscriber; new in task 6329 |
 | `file-changed` | `FileData {path, content}` | `main.rs::create_watcher` | `onFileChanged` | File-watcher-driven |
 | `file-removed` | `{path: String}` | `main.rs::create_watcher` | `bridge.ts::onFileRemoved` | File-watcher-driven; signals file deleted on disk |
 | `focus-entity` | `String` (entity_path) | `focus_entity` command + MCP `focus_entity` tool | `onFocusEntity` | Bidirectional (UI ↔ MCP) |
