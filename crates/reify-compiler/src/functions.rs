@@ -55,12 +55,13 @@ fn push_signature_type_error(
 /// wrong.
 ///
 /// Structure names earn their place because a constructor call IS a call whose
-/// callee is a declared name: `traits_phase` compiles static fn bodies with no
-/// template registry ("v1"), so `Widget(w: 2mm)` is never claimed as a
-/// `StructureInstanceCtor` there and rides the fallback. Withholding the
+/// callee is a declared name: neither `traits_phase` (static fn bodies, "v1")
+/// nor [`compile_assoc_function`] (trait-default bodies and structure
+/// overrides) sets a template registry, so `Widget(w: 2mm)` is never claimed as
+/// a `StructureInstanceCtor` in either and rides the fallback. Withholding the
 /// warning is the typing-neutral half of that; making such a call actually
-/// LOWER to a constructor would change how trait static fn bodies type, which
-/// is outside a warn-only task's remit.
+/// LOWER to a constructor would change how those bodies type, which is outside
+/// a warn-only task's remit.
 fn declared_callable_names(
     declared_fn_names: &HashSet<String>,
     structure_names: &HashSet<String>,
@@ -688,9 +689,29 @@ pub(crate) fn compile_assoc_function(
         params.push((p.name.clone(), ty));
     }
 
+    // The module's declared callable vocabulary, for the terminal first-arg
+    // fallback in `expr.rs` (task #5371, esc-5371-12). Only the STRUCTURE half
+    // is populated here; the empty fn half is a decision, not an omission.
+    //
+    // Structures need it for the same reason `phase_traits` does: this function
+    // sets no template registry, so a constructor call in a trait-default body
+    // or in a structure's override — `Widget(w: 2mm)`, the ordinary "build one
+    // of these in an instance method" shape — is never claimed as a
+    // `StructureInstanceCtor` and reaches the fallback carrying a name the
+    // module plainly declares.
+    //
+    // Free fns do NOT need it: conformance runs after `phase_functions`, so the
+    // `functions` table these bodies resolve against is already COMPLETE and a
+    // call to any declared fn resolves instead of falling through. That is the
+    // same reason `compile_function`'s in-progress table DOES need the fn half.
+    // Pinned from both sides by `assoc_fn_calling_a_declared_fn_stays_clean`
+    // and `genuinely_undeclared_callee_in_an_assoc_fn_body_still_warns`.
+    let declared_callables = declared_callable_names(&HashSet::new(), structure_names);
+
     // Compile default expressions in a neutral scope (definition-time semantics,
     // matching `compile_function`). The `self` receiver never carries a default.
-    let neutral_scope = CompilationScope::new(&fn_def.name);
+    let mut neutral_scope = CompilationScope::new(&fn_def.name);
+    neutral_scope.declared_callable_names = declared_callables.clone();
     let param_defaults: Vec<Option<CompiledExpr>> = fn_def
         .params
         .iter()
@@ -731,6 +752,7 @@ pub(crate) fn compile_assoc_function(
     // Body scope with all params (including the `self` receiver) registered so a
     // body that names `self` resolves against the conformer type.
     let mut scope = CompilationScope::new(&fn_def.name);
+    scope.declared_callable_names = declared_callables;
     for (name, ty) in &params {
         scope.register(name, ty.clone());
     }

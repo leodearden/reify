@@ -1117,3 +1117,139 @@ fn genuinely_undeclared_zero_arg_callee_still_yields_exactly_one_warning() {
             .collect::<Vec<_>>()
     );
 }
+
+/// Route (4): a structure CONSTRUCTOR called from a trait-INSTANCE assoc fn
+/// body — a trait-default body, or a structure's override of one.
+///
+/// Same cause as route (3), different compiler: `conformance/checker.rs`
+/// resolves the assoc-fn table through `functions::compile_assoc_function`,
+/// the sibling of `compile_function`, which likewise sets no template
+/// registry. So `Widget(w: 2mm)` is never claimed as a
+/// `StructureInstanceCtor` and rides the terminal fallback with a name the
+/// module plainly declares. Route (3)'s fix touched only `compile_function`
+/// and left this path warning on ordinary, idiomatic code (esc-5371-12).
+///
+/// Both halves are exercised because they reach `compile_assoc_function` from
+/// two different call sites in `check_phase_resolve_assoc_fns` — the
+/// default-body loop and the bodyless-requirement override loop — and a fix
+/// applied inside the callee must cover both.
+#[test]
+fn struct_constructor_in_a_trait_instance_assoc_fn_body_is_not_unresolved() {
+    for (shape, source) in [
+        (
+            "trait-default body",
+            r#"
+            structure Widget { let w: Length = 1mm }
+            trait Maker { fn make_it(self) -> Widget = Widget(w: 2mm) }
+            structure Host : Maker { let n: Real = 1.0 }
+        "#,
+        ),
+        (
+            "structure override of a trait default",
+            r#"
+            structure Widget { let w: Length = 1mm }
+            trait Maker { fn make_it(self) -> Widget = Widget(w: 1mm) }
+            structure Host : Maker {
+                let n: Real = 1.0
+                fn make_it(self) -> Widget = Widget(w: 2mm)
+            }
+        "#,
+        ),
+        (
+            "structure override of a bodyless requirement",
+            r#"
+            structure Widget { let w: Length = 1mm }
+            trait Maker { fn make_it(self) -> Widget }
+            structure Host : Maker {
+                let n: Real = 1.0
+                fn make_it(self) -> Widget = Widget(w: 2mm)
+            }
+        "#,
+        ),
+    ] {
+        let module = compile_source_with_stdlib(source);
+        assert_eq!(
+            unresolved_function_diags(&module).len(),
+            0,
+            "{shape}: 'Widget' is a declared structure in this module; got {:?}",
+            unresolved_function_diags(&module)
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+/// Control (i): route (4)'s fix must NOT silence a genuinely-undeclared callee
+/// in the same bodies.
+///
+/// The fix widens `declared_callable_names` at the assoc-fn sites; this is the
+/// assertion that the widening is bounded by what the module actually
+/// declares, not a blanket suppression for assoc-fn bodies.
+#[test]
+fn genuinely_undeclared_callee_in_an_assoc_fn_body_still_warns() {
+    let module = compile_source_with_stdlib(
+        r#"
+        trait Maker { fn make_it(self) -> Real = nope_not_a_thing(1.0) }
+        structure Host : Maker { let n: Real = 1.0 }
+    "#,
+    );
+
+    let diags = unresolved_function_diags(&module);
+    assert!(
+        !diags.is_empty(),
+        "'nope_not_a_thing' is declared nowhere and must still warn; got {:?}",
+        warnings(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        diags.iter().all(|d| d.severity == Severity::Warning),
+        "warn-mode only",
+    );
+}
+
+/// Control (j): an assoc-fn body calling a declared top-level `fn` is ALREADY
+/// clean — conformance runs after `phase_functions`, so `resolution_functions`
+/// is complete and the call RESOLVES rather than reaching the fallback.
+///
+/// This is the falsifiable half of route (4)'s fix: it populates only the
+/// STRUCTURE half of `declared_callable_names` at the assoc-fn sites, and this
+/// test is what makes "the fn half would be dead weight there" a measurement
+/// rather than an assumption. If this ever reds, the fn half must be threaded
+/// in too. Sibling of control (d), which pins the same fact for trait STATIC
+/// fn bodies.
+#[test]
+fn assoc_fn_calling_a_declared_fn_stays_clean() {
+    for (order, source) in [
+        (
+            "fn first",
+            r#"
+            pub fn helper(x: Real) -> Real { x }
+            trait Maker { fn make_it(self) -> Real = helper(1.0) }
+            structure Host : Maker { let n: Real = 1.0 }
+        "#,
+        ),
+        (
+            "trait first",
+            r#"
+            trait Maker { fn make_it(self) -> Real = helper(1.0) }
+            structure Host : Maker { let n: Real = 1.0 }
+            pub fn helper(x: Real) -> Real { x }
+        "#,
+        ),
+    ] {
+        let module = compile_source_with_stdlib(source);
+        assert_eq!(
+            unresolved_function_diags(&module).len(),
+            0,
+            "{order}: `resolution_functions` is complete by the time conformance \
+             runs; got {:?}",
+            unresolved_function_diags(&module)
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+    }
+}

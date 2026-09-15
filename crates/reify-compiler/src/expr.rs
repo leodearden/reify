@@ -4004,9 +4004,15 @@ fn compile_expr_guarded_with_expected_inner(
                         //
                         // Withholding the warning does NOT make the call
                         // resolve: it is still typed from arg0 below, exactly as
-                        // before. Entity bodies never take this branch (they
-                        // compile after `ctx.resolution_functions` is merged),
-                        // so their scopes leave the set empty.
+                        // before. Entity bodies need only the STRUCTURE half of
+                        // the set: they compile after `ctx.resolution_functions`
+                        // is merged, so a declared free fn resolves and never
+                        // arrives here, but a structure CONSTRUCTOR still can —
+                        // neither `phase_traits` nor `compile_assoc_function`
+                        // sets a template registry, so `Widget(w: 2mm)` in a
+                        // trait static or instance fn body is not claimed as a
+                        // `StructureInstanceCtor` and falls through with a name
+                        // the module declares (esc-5371-12).
                         let declared_here = scope.declared_callable_names.contains(name);
                         // Mutually exclusive with the arg-shape warning above
                         // without needing a guard: all three arg-aware families
