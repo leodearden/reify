@@ -1131,4 +1131,377 @@ mod tests {
         );
     }
 
+
+    // ── LocalNormalStressQoi (step-5) ──────────────────────────────────────
+
+    /// The 8 corners of the unit cube, indexed so corner `i + 2j + 4k` sits
+    /// at `(i, j, k)`.
+    fn unit_cube_coords() -> Vec<[f64; 3]> {
+        let mut c = Vec::with_capacity(8);
+        for k in 0..2 {
+            for j in 0..2 {
+                for i in 0..2 {
+                    c.push([i as f64, j as f64, k as f64]);
+                }
+            }
+        }
+        c
+    }
+
+    /// The unit cube Kuhn-split into 6 P1 tets, each of volume 1/6.
+    ///
+    /// Each tet is one monotone corner-0-to-corner-7 path, so tet `t` is the
+    /// region where the coordinates are sorted in that path's order — tet 0
+    /// is `1 ≥ x ≥ y ≥ z ≥ 0`, tet 1 is `1 ≥ x ≥ z ≥ y ≥ 0`, and so on.
+    /// That makes "which element contains this point" answerable by
+    /// inspection, which is what the fallback configuration below relies on.
+    ///
+    /// A box rather than the 2-tet fan because the normal-stress functional
+    /// is a *gradient* quantity: it needs elements of several distinct
+    /// orientations before a transposed or mis-strided extraction has
+    /// anywhere to hide.
+    fn unit_cube_kuhn_tets() -> Vec<[usize; 4]> {
+        vec![
+            [0, 1, 3, 7],
+            [0, 1, 5, 7],
+            [0, 2, 3, 7],
+            [0, 2, 6, 7],
+            [0, 4, 5, 7],
+            [0, 4, 6, 7],
+        ]
+    }
+
+    /// Centroid of each tet of [`unit_cube_kuhn_tets`], in element order.
+    ///
+    /// All six lie at the same distance `√0.125 ≈ 0.354` from the cube
+    /// centre, by the symmetry of the Kuhn split.
+    const CUBE_CENTROIDS: [[f64; 3]; 6] = [
+        [0.75, 0.5, 0.25],
+        [0.75, 0.25, 0.5],
+        [0.5, 0.75, 0.25],
+        [0.25, 0.75, 0.5],
+        [0.5, 0.25, 0.75],
+        [0.25, 0.5, 0.75],
+    ];
+
+    /// `u(x) = (a·x, 0, 0)` sampled at `coords`: the uniaxial-strain patch
+    /// field whose closed-form stress `element_stress_p1` already pins.
+    fn uniaxial_strain_u(coords: &[[f64; 3]], a: f64) -> Vec<f64> {
+        let mut u = vec![0.0_f64; 3 * coords.len()];
+        for (n, c) in coords.iter().enumerate() {
+            u[3 * n] = a * c[0];
+        }
+        u
+    }
+
+    /// A deliberately NON-linear nodal field over the cube's 8 nodes.
+    ///
+    /// Non-linear matters: a linear field has a globally constant gradient,
+    /// so every element sees the *same* σ, and an extraction that read the
+    /// wrong element — or strided node/component the wrong way within an
+    /// element — could still agree with `evaluate`. With this field each
+    /// element's σ differs, so the contraction test has something to catch.
+    fn unit_cube_nonuniform_u() -> Vec<f64> {
+        vec![
+            0.000, 0.000, 0.000, // node 0
+            0.031, -0.012, 0.024, // node 1
+            -0.018, 0.045, -0.007, // node 2
+            0.052, 0.009, 0.038, // node 3
+            0.014, -0.033, 0.021, // node 4
+            -0.026, 0.017, 0.049, // node 5
+            0.043, 0.028, -0.015, // node 6
+            -0.009, 0.036, 0.011, // node 7
+        ]
+    }
+
+    /// `(J(u_h), g)` for `qoi` on the Kuhn cube with the supplied field.
+    fn eval_and_dual_on_cube(
+        qoi: &dyn QuantityOfInterest,
+        u: &[f64],
+        case: &str,
+    ) -> (f64, Vec<f64>) {
+        let coords = unit_cube_coords();
+        let tets = unit_cube_kuhn_tets();
+        let mesh = P1TetMeshRef {
+            coords: &coords,
+            tets: &tets,
+        };
+        let mat = dimensionless_steel_like();
+        let j = qoi
+            .evaluate(mesh, &mat, u)
+            .unwrap_or_else(|e| panic!("{case}: evaluate must resolve, got {e}"));
+        let g = qoi
+            .dual_load(mesh, &mat, u)
+            .unwrap_or_else(|e| panic!("{case}: dual_load must resolve, got {e}"));
+        (j, g)
+    }
+
+    /// Three ball configurations selecting very different contributing sets
+    /// on the Kuhn cube: `(at, radius, label)`.
+    ///
+    /// All six elements; exactly one element by the centroid rule; and one
+    /// element via the step-4 fallback arm (`at` is strictly inside tet 0,
+    /// since `1 > 0.8 > 0.5 > 0.2 > 0`, and the nearest centroid is ≈0.071
+    /// away — well outside the 0.01 ball).
+    const CUBE_BALLS: [([f64; 3], f64, &str); 3] = [
+        ([0.5, 0.5, 0.5], 0.4, "all six elements"),
+        ([0.75, 0.5, 0.25], 0.05, "tet0 alone, by centroid"),
+        ([0.8, 0.5, 0.2], 0.01, "tet0 alone, via the fallback arm"),
+    ];
+
+    /// The Lamé constants of the shared test material, recomputed from `E`
+    /// and `ν` exactly as `result.rs`'s and `constitutive.rs`'s patch tests
+    /// do — independently of `d_matrix`, so this test can disagree with it.
+    fn lame() -> (f64, f64) {
+        let mat = dimensionless_steel_like();
+        let nu = mat.poisson_ratio;
+        let factor = mat.youngs_modulus / ((1.0 + nu) * (1.0 - 2.0 * nu));
+        (factor * nu, factor * (1.0 - 2.0 * nu))
+    }
+
+    /// On a uniform-strain field, `LocalNormalStressQoi` recovers the Lamé
+    /// diagonal exactly — whichever elements the ball selects.
+    ///
+    /// `u(x) = (a·x, 0, 0)` gives `σ = diag((λ+2μ)a, λa, λa)` in every
+    /// element (`element_stress_p1`'s own patch test,
+    /// `element_stress_p1_uniaxial_strain_patch_test_recovers_lame_diagonal`,
+    /// pins that closed form and the Voigt layout behind it). A
+    /// volume-weighted mean of a constant is that constant, so the ball mean
+    /// must lift the closed form through unchanged — which is why the same
+    /// three expected values hold across all three contributing sets, and
+    /// why disagreement between the configurations would localise the bug to
+    /// the weighting rather than to the stress kernel.
+    ///
+    /// `n·σ·n` for the three axis normals reads off the diagonal directly,
+    /// so this also pins that `evaluate` contracts σ with `n ⊗ n` rather
+    /// than, say, taking a trace or a von Mises norm.
+    ///
+    /// # TDD red→green
+    ///
+    /// **RED** (step-5): `LocalNormalStressQoi` does not exist, so this fails
+    /// to COMPILE. **GREEN** (step-6).
+    #[test]
+    fn local_normal_stress_recovers_the_lame_diagonal_on_a_uniform_strain_field() {
+        let a = 0.01_f64;
+        let coords = unit_cube_coords();
+        let u = uniaxial_strain_u(&coords, a);
+        let (lambda, two_mu) = lame();
+
+        for (at, radius, label) in CUBE_BALLS {
+            for (normal, expected, which) in [
+                ([1.0, 0.0, 0.0], (lambda + two_mu) * a, "σ_xx = (λ+2μ)a"),
+                ([0.0, 1.0, 0.0], lambda * a, "σ_yy = λa"),
+                ([0.0, 0.0, 1.0], lambda * a, "σ_zz = λa"),
+            ] {
+                let case = format!("{label}, {which}");
+                let (j, _) = eval_and_dual_on_cube(
+                    &LocalNormalStressQoi {
+                        at,
+                        radius,
+                        normal,
+                    },
+                    &u,
+                    &case,
+                );
+                assert!(
+                    (j - expected).abs() <= 1e-12 * expected.abs(),
+                    "{case}: expected {expected}, got {j}",
+                );
+            }
+        }
+    }
+
+    /// `J(v) = gᵀv` for the normal-stress functional too — the real check
+    /// that the twelve-unit-displacement column extraction reproduces the
+    /// same linear map `element_stress_p1` applies.
+    ///
+    /// The extraction recovers `g`'s element row by feeding
+    /// `element_stress_p1` the twelve unit element displacements and
+    /// contracting each image with `n ⊗ n`. That is exact rather than
+    /// approximate only because the map really is linear with no affine
+    /// offset. This test is what would catch a transposed or mis-strided
+    /// node/component index in that probe loop: a wrong stride still
+    /// produces a plausible non-zero `g`, but not one whose contraction with
+    /// `u` reproduces `evaluate`.
+    ///
+    /// Run on the NON-linear field, where each element's σ differs — see
+    /// [`unit_cube_nonuniform_u`].
+    #[test]
+    fn local_normal_stress_evaluate_equals_the_dual_load_contracted_with_the_field() {
+        let u = unit_cube_nonuniform_u();
+        let third = 1.0 / 3.0;
+        let two_thirds = 2.0 / 3.0;
+
+        for (at, radius, label) in CUBE_BALLS {
+            for normal in [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [third, two_thirds, two_thirds],
+                [-two_thirds, third, -two_thirds],
+            ] {
+                let case = format!("{label}, n = {normal:?}");
+                let (j, g) = eval_and_dual_on_cube(
+                    &LocalNormalStressQoi {
+                        at,
+                        radius,
+                        normal,
+                    },
+                    &u,
+                    &case,
+                );
+                let contracted: f64 = g.iter().zip(&u).map(|(gi, ui)| gi * ui).sum();
+                assert!(
+                    (j - contracted).abs() <= 1e-12 * j.abs(),
+                    "{case}: J(u_h) = gᵀu_h must hold to 1e-12 relative; \
+                     evaluate gave {j}, gᵀu_h gave {contracted}",
+                );
+            }
+        }
+    }
+
+    /// `dual_load` does not depend on `u` — BITWISE.
+    ///
+    /// This is the property that lets a caller assemble `g` BEFORE the primal
+    /// solve, which is what makes the `f = g` self-dual fixture (BT2)
+    /// constructible at all: there is no chicken-and-egg between "solve for
+    /// `u_h`" and "build the load". `evaluate`'s `u` argument exists so a
+    /// linearized nonlinear functional fits the same seam later; for both
+    /// functionals shipped today the dual load ignores it, and the assertion
+    /// is bitwise rather than approximate so that a `g` computed by
+    /// differencing around `u` could not slip through.
+    #[test]
+    fn local_normal_stress_dual_load_is_independent_of_the_displacement_field() {
+        let coords = unit_cube_coords();
+        let tets = unit_cube_kuhn_tets();
+        let mesh = P1TetMeshRef {
+            coords: &coords,
+            tets: &tets,
+        };
+        let mat = dimensionless_steel_like();
+        let zero = vec![0.0_f64; 3 * coords.len()];
+        let nonzero = unit_cube_nonuniform_u();
+
+        for (at, radius, label) in CUBE_BALLS {
+            let qoi = LocalNormalStressQoi {
+                at,
+                radius,
+                normal: [0.0, 1.0, 0.0],
+            };
+            let g_zero = qoi.dual_load(mesh, &mat, &zero).expect("resolves on zero u");
+            let g_nonzero = qoi
+                .dual_load(mesh, &mat, &nonzero)
+                .expect("resolves on a non-zero u");
+            assert_eq!(g_zero.len(), g_nonzero.len(), "{label}: length differs");
+            for (i, (a, b)) in g_zero.iter().zip(&g_nonzero).enumerate() {
+                assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "{label}: g[{i}] depends on u ({a} vs {b}); the dual load \
+                     must be assemblable before the primal solve",
+                );
+            }
+        }
+    }
+
+    /// C4's positive half for the stress functional, plus `kind()`.
+    ///
+    /// A silently zero `g` here would be just as fatal as for the
+    /// displacement functional: `K z_h = 0` solves to the zero dual field and
+    /// reports an error estimate of exactly zero — convergence — on every
+    /// mesh.
+    #[test]
+    fn local_normal_stress_dual_load_is_never_zero_and_reports_its_own_kind() {
+        let u = unit_cube_nonuniform_u();
+        let third = 1.0 / 3.0;
+        let two_thirds = 2.0 / 3.0;
+
+        for (at, radius, label) in CUBE_BALLS {
+            for normal in [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [third, two_thirds, two_thirds],
+            ] {
+                let case = format!("{label}, n = {normal:?}");
+                let qoi = LocalNormalStressQoi {
+                    at,
+                    radius,
+                    normal,
+                };
+                assert_eq!(
+                    qoi.kind(),
+                    QoiKind::LocalNormalStress,
+                    "{case}: kind() is what tells the result layer which \
+                     dimension evaluate() returned",
+                );
+                let (_, g) = eval_and_dual_on_cube(&qoi, &u, &case);
+                assert!(
+                    g.iter().any(|&x| x != 0.0),
+                    "{case}: C4 — g is never zero for a non-zero normal",
+                );
+                assert!(
+                    g.iter().all(|x| x.is_finite()),
+                    "{case}: C4 — g never contains NaN or infinity",
+                );
+            }
+        }
+    }
+
+    /// BT4 / C4 for `LocalNormalStressQoi`: the SAME typed-error arms as the
+    /// displacement functional, from both `evaluate` and `dual_load`.
+    ///
+    /// Reusing `assert_both_directions_reject` verbatim is the point. Both
+    /// functionals validate through one shared `resolve`, so the contract is
+    /// enforced in exactly one place — and this test asserts that sameness
+    /// rather than restating it: if a future functional grew its own
+    /// validation path, only the shared helper's expectations would still
+    /// hold here.
+    ///
+    /// A zero `normal` maps to [`QoiError::ZeroDirection`], the same variant
+    /// a zero displacement direction produces: in both cases it is the vector
+    /// the functional projects onto that has vanished.
+    #[test]
+    fn local_normal_stress_qoi_returns_typed_error_from_both_directions_for_every_unresolvable_input()
+    {
+        let good_at = [0.25, 0.25, 0.25];
+        let good_normal = [1.0, 0.0, 0.0];
+
+        for bad_radius in [0.0_f64, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_both_directions_reject(
+                &LocalNormalStressQoi {
+                    at: good_at,
+                    radius: bad_radius,
+                    normal: good_normal,
+                },
+                &format!("normal-stress radius = {bad_radius}"),
+                |e| {
+                    matches!(e, QoiError::NonPositiveRadius { radius }
+                             if radius.to_bits() == bad_radius.to_bits())
+                },
+            );
+        }
+
+        assert_both_directions_reject(
+            &LocalNormalStressQoi {
+                at: good_at,
+                radius: 0.1,
+                normal: [0.0, 0.0, 0.0],
+            },
+            "normal = [0,0,0]",
+            |e| *e == QoiError::ZeroDirection,
+        );
+
+        let far_outside = [100.0, 100.0, 100.0];
+        assert_both_directions_reject(
+            &LocalNormalStressQoi {
+                at: far_outside,
+                radius: 0.1,
+                normal: good_normal,
+            },
+            "normal-stress `at` far outside the body",
+            |e| *e == QoiError::PointOutsideBody { at: far_outside },
+        );
+    }
+
 }
