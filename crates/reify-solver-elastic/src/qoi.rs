@@ -32,6 +32,7 @@
 use std::fmt;
 
 use crate::constitutive::IsotropicElastic;
+use crate::interpolation::{LocatableTet, locate_element_p1};
 use crate::result::tet_volume_p1;
 
 /// Borrowed P1 tet mesh view: the f64 coordinates and connectivity the
@@ -212,6 +213,8 @@ struct ContributingSet {
 ///    the typed error rather than trip this assertion, or C4's
 ///    `direction = vec3(0,0,0)` case is unpassable in a debug build.
 /// 4. `E = { K : ‖centroid(K) − at‖ ≤ radius }`, in ascending element index.
+/// 5. If that `E` is empty, fall back to the single element CONTAINING
+///    `at`; only if no element contains it is the QoI unresolvable.
 ///
 /// `u` is passed only so its length is validated here too, keeping all three
 /// of the trait's arguments checked at one site; the ball rule itself does
@@ -225,9 +228,9 @@ struct ContributingSet {
 ///
 /// # Errors
 ///
-/// [`QoiError`] per the check order above. An empty `E` is
-/// [`QoiError::PointOutsideBody`]; step-4 adds the `locate_element_p1`
-/// fallback arm ahead of that.
+/// [`QoiError`] per the check order above.
+/// [`QoiError::PointOutsideBody`] when the ball catches no centroid AND
+/// `at` lies inside no element.
 fn resolve(
     at: [f64; 3],
     radius: f64,
@@ -279,7 +282,10 @@ fn resolve(
     }
 
     if elements.is_empty() {
-        return Err(QoiError::PointOutsideBody { at });
+        let index = locate_containing_element(mesh, at).ok_or(QoiError::PointOutsideBody { at })?;
+        let volume = tet_volume_p1(&tet_nodes(mesh, &mesh.tets[index]));
+        total_volume = volume;
+        elements.push(ContributingElement { index, volume });
     }
 
     debug_assert!(
@@ -305,6 +311,35 @@ fn tet_nodes(mesh: P1TetMeshRef<'_>, tet: &[usize; 4]) -> [[f64; 3]; 4] {
         mesh.coords[tet[2]],
         mesh.coords[tet[3]],
     ]
+}
+
+/// Barycentric slack for the [`locate_containing_element`] fallback.
+///
+/// PRD §11 Q2: an ABSOLUTE slack on barycentric coordinates, which live in
+/// `[0, 1]` for any non-degenerate tet whatever its physical size — so this
+/// is scale-invariant by construction and is NEVER scaled by an edge length.
+/// Scaling it would make the same coordinate-addressed query (C6) resolve
+/// differently on a millimetre model and a metre one.
+const LOCATE_BARYCENTRIC_SLACK: f64 = 1e-9;
+
+/// The LOWEST-indexed element of `mesh` containing `at`, or `None` when `at`
+/// lies outside the body.
+///
+/// The owned per-element node arrays must outlive the `LocatableTet` view
+/// that borrows them, which is why they are materialized into a local
+/// binding rather than built inline in the `map`.
+///
+/// On a shared face several elements contain `at`; the lowest index wins,
+/// which is [`locate_element_p1`]'s documented rule. Any deterministic
+/// tie-break would do — what matters is that it IS deterministic, since the
+/// alternative is a QoI whose contributing set depends on element ordering.
+fn locate_containing_element(mesh: P1TetMeshRef<'_>, at: [f64; 3]) -> Option<usize> {
+    let owned: Vec<[[f64; 3]; 4]> = mesh.tets.iter().map(|t| tet_nodes(mesh, t)).collect();
+    let locatable: Vec<LocatableTet<'_>> = owned
+        .iter()
+        .map(|nodes| LocatableTet { phys_nodes: nodes })
+        .collect();
+    locate_element_p1(&locatable, at, LOCATE_BARYCENTRIC_SLACK)
 }
 
 /// Arithmetic mean of a tet's four corners — its centroid, since the P1
@@ -335,6 +370,24 @@ fn centroid(nodes: &[[f64; 3]; 4]) -> [f64; 3] {
 /// pointwise: as `h → 0` it converges to the true ball mean, an `L²`
 /// functional bounded on `H¹`, so the DWR identity holds and effectivity has
 /// a limit. A point delta would not — §3 measured its divergence.
+///
+/// # How the ball resolves to elements (§11 Q1, Q2)
+///
+/// **Membership is by CENTROID, and an element straddling the sphere is in
+/// or out wholesale.** Sphere–tet clipping was rejected at v1: it makes the
+/// contributing set a function of the intersection geometry, so an
+/// arbitrarily small mesh perturbation moves `J` discontinuously — and a
+/// discontinuous functional has no meaningful dual.
+///
+/// **A ball that catches no centroid falls back to the element containing
+/// `at`.** Otherwise the QoI would only be addressable at radii comparable
+/// to the local element size: a radius that resolved fine one refinement
+/// iteration ago would start reporting [`QoiError::PointOutsideBody`] for a
+/// point manifestly inside the body, purely because the mesh around it
+/// changed. With the fallback, "inside the body" is the real precondition.
+/// That location test uses a scale-invariant barycentric slack
+/// ([`LOCATE_BARYCENTRIC_SLACK`]) that is never scaled by an edge length,
+/// and on a shared face the lowest containing element index wins.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocalDisplacementQoi {
     /// Ball centre, in the same coordinates as `P1TetMeshRef::coords`.
@@ -800,7 +853,6 @@ mod tests {
     #[test]
     fn contributing_set_falls_back_to_the_containing_element_when_no_centroid_is_in_the_ball() {
         let coords = two_tet_fan_coords();
-        let tets = two_tet_fan_tets();
         let u = two_tet_fan_u();
         let at = [0.05, 0.05, 0.05];
         let radius = 0.01;
