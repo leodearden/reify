@@ -82,13 +82,6 @@ pub(crate) fn rigid_mass_props_session() -> crate::engine::EngineSession {
 /// [`rigid_mass_props_session_seeded_then_failing`] (which seeds a narrower
 /// range and fails everything past it) so both draw the seeded reply shapes
 /// from one source of truth (task #6471).
-///
-/// If a test ever needs to assert against DISPATCH directly — e.g. that a
-/// rebuild re-executed the box — call `kernel.operations_ref()` on the return
-/// value BEFORE boxing it into an `EngineSession`; only
-/// `GeometryKernel::execute` pushes to that log, so
-/// `GeometryOpRecord::result_handle` is exactly the handle a dispatched op
-/// allocated. No test in this crate needs it today, so no wrapper exposes it.
 fn seeded_rigid_mass_props_kernel(
     ids: std::ops::RangeInclusive<u64>,
 ) -> reify_test_support::MockGeometryKernel {
