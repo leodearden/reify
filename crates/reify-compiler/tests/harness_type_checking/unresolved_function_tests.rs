@@ -944,3 +944,176 @@ fn builtin_called_from_a_fn_body_stays_clean() {
             .collect::<Vec<_>>()
     );
 }
+
+// ---------------------------------------------------------------------------
+// (h) the THIRD state: declared here, not resolvable from here, zero warnings
+// ---------------------------------------------------------------------------
+//
+// Steps 11-12 pinned a TWO-state invariant — the fallback's two warnings are
+// "complements, not a hierarchy; exactly one fires, never both". Sections (f)
+// and (g) added a state those tests do not describe: the callee IS declared in
+// this module but is not resolvable from this body's table, and NEITHER warning
+// fires.
+//
+// Pinned explicitly so the next reader cannot mistake that silence for a
+// regression, nor for a return of the pre-#5371 open-world silence. The two are
+// not the same: open-world silence covered every unknown name, whereas this
+// silence is granted only to names the module demonstrably declares — which is
+// what control (b) in section (g) keeps honest.
+//
+// Both tests below were confirmed DISCRIMINATING by measurement, not by
+// inspection: with the declared-name gate in `expr.rs` disabled, each source
+// here emits `unresolved function: b`, one-arg and zero-arg alike.
+
+/// The result type of `fn_name`'s body expression.
+///
+/// Reads the same public IR surface `boundary2_producer` reads for value cells;
+/// the assertions below are about the compiler's OUTPUT, not its internals.
+fn fn_body_result_type(module: &reify_compiler::CompiledModule, fn_name: &str) -> Type {
+    module
+        .functions
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("no compiled fn named '{fn_name}'"))
+        .body
+        .result_expr
+        .result_type
+        .clone()
+}
+
+/// A forward-referenced sibling emits NEITHER warning — including zero-arg.
+///
+/// The zero-arg half is the one with a back door. `expr.rs`'s legacy guard is
+/// `if known && arg_shape_expected.is_none()`, so an implementation that made
+/// `known` true for a declared fn would silence `UnresolvedFunction` and then
+/// leak the legacy "cannot infer return type of zero-arg function" warning in
+/// its place — trading one false positive for another. `known` must stay a
+/// BUILTIN fact; declaredness is asked separately.
+#[test]
+fn forward_referenced_sibling_emits_neither_warning() {
+    for (shape, source) in [
+        (
+            "one-arg",
+            r#"
+            pub fn a(x: Real) -> Real { b(x) }
+            pub fn b(x: Real) -> Real { x }
+        "#,
+        ),
+        (
+            "zero-arg",
+            r#"
+            pub fn a() -> Real { b() }
+            pub fn b() -> Real { 1.0 }
+        "#,
+        ),
+    ] {
+        let module = compile_source_with_stdlib(source);
+        assert!(
+            unresolved_function_diags(&module).is_empty(),
+            "{shape}: no UnresolvedFunction; got {:?}",
+            unresolved_function_diags(&module)
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !has_legacy_zero_arg_warning(&module),
+            "{shape}: the legacy zero-arg warning must not leak in through the \
+             `known` guard; got {:?}",
+            warnings(&module)
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            warnings(&module).is_empty(),
+            "{shape}: this state emits ZERO warnings; got {:?}",
+            warnings(&module)
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+/// The RESULT TYPE at a forward-referenced call is the pre-fix answer, exactly.
+///
+/// Asserted, never assumed: #5371 removes a diagnostic and moves no type, and
+/// #5997 flips this Warning to an Error against whatever baseline it finds.
+///
+/// Both cases are built so the two candidate answers DIFFER, which makes each
+/// assertion positive evidence that the forward reference still does NOT
+/// resolve — silencing the warning did not quietly complete the lookup, which
+/// remains `functions_phase`'s contract and #6014's business.
+///   * one-arg: `b` is declared `-> Real` and called with a `Length`.
+///     Resolution would say `Real`; the first-arg fallback says `Scalar<LENGTH>`.
+///   * zero-arg: `b` is declared `-> Length`. Resolution would say
+///     `Scalar<LENGTH>`; the zero-arg fallback defaults to `Real`.
+#[test]
+fn forward_reference_typing_is_byte_identical() {
+    let one_arg = compile_source_with_stdlib(
+        r#"
+        pub fn a(x: Length) -> Length { b(x) }
+        pub fn b(x: Length) -> Real { 1.0 }
+    "#,
+    );
+    assert_eq!(
+        fn_body_result_type(&one_arg, "a"),
+        scalar_length(),
+        "still typed from arg0, NOT from b's declared `-> Real` return type"
+    );
+
+    let zero_arg = compile_source_with_stdlib(
+        r#"
+        pub fn a() -> Real { b() }
+        pub fn b() -> Length { 1mm }
+    "#,
+    );
+    assert_eq!(
+        fn_body_result_type(&zero_arg, "a"),
+        Type::dimensionless_scalar(),
+        "a zero-arg fallback call still defaults to Real, NOT to b's `-> Length`"
+    );
+}
+
+/// The two-state invariant survives wherever it still applies: a genuinely
+/// undeclared zero-arg callee yields EXACTLY ONE warning.
+///
+/// Sections (f)/(g) added a third state; they did not merge the first two.
+/// `UnresolvedFunction` and the legacy zero-arg warning are still complements
+/// for a name that really does exist nowhere.
+#[test]
+fn genuinely_undeclared_zero_arg_callee_still_yields_exactly_one_warning() {
+    let module = compile_source_with_stdlib(
+        r#"
+        pub fn a() -> Real { definitely_not_a_builtin() }
+    "#,
+    );
+
+    assert_eq!(
+        unresolved_function_diags(&module).len(),
+        1,
+        "the stronger claim still fires; got {:?}",
+        warnings(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !has_legacy_zero_arg_warning(&module),
+        "…and the legacy warning still does not double-report it; got {:?}",
+        warnings(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        warnings(&module).len(),
+        1,
+        "exactly one warning total; got {:?}",
+        warnings(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
