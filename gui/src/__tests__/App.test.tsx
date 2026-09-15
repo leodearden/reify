@@ -5620,6 +5620,117 @@ describe('App MechanismPanel integration', () => {
   });
 });
 
+
+// ─── Slider cadence: a drag previews, the release writes the source ──────────
+
+describe('App slider parameter cadence', () => {
+  /** One prismatic joint driven by `Kinematic.y_pos`, so the panel renders a slider. */
+  function mockOneSliderMechanism(): void {
+    vi.mocked((bridge as any).getMechanismDescriptors).mockResolvedValue([
+      {
+        cell_id: 'Kinematic.m',
+        entity_path: 'Kinematic',
+        name: 'm',
+        bodies_count: 2,
+        joints: [
+          {
+            joint_index: 0,
+            kind: 'prismatic',
+            dimension: 'length',
+            range_lower_si: 0.0,
+            range_upper_si: 0.8,
+            axis: [0, 1, 0],
+            driving_param_cell_id: 'Kinematic.y_pos',
+            current_value_si: 0.1,
+            binding: { kind: 'param_bound' as const, param_cell_id: 'Kinematic.y_pos', current_value_si: 0.1 },
+          },
+        ],
+      },
+    ]);
+  }
+
+  async function renderSlider(): Promise<HTMLInputElement> {
+    mockOneSliderMechanism();
+    await renderAndWaitForReady();
+    const panel = await waitFor(() => screen.getByTestId('mechanism-panel'));
+    return within(panel).getByRole('slider') as HTMLInputElement;
+  }
+
+  it('a drag frame reaches bridge.previewParameter, never bridge.setParameter', async () => {
+    const slider = await renderSlider();
+
+    fireEvent.input(slider, { target: { value: '400' } });
+
+    await waitFor(() => {
+      expect(vi.mocked((bridge as any).previewParameter)).toHaveBeenCalledWith('Kinematic.y_pos', '400mm');
+    });
+    expect(vi.mocked(bridge.setParameter)).not.toHaveBeenCalled();
+  });
+
+  it('a refused preview raises no toast — a drag would storm one per frame', async () => {
+    await withSuppressedRejectionsAndErrorSpy(async (errorSpy) => {
+      vi.mocked((bridge as any).previewParameter).mockRejectedValue(new Error('parameter is not a literal'));
+      const slider = await renderSlider();
+
+      fireEvent.input(slider, { target: { value: '400' } });
+
+      await waitFor(() => {
+        expect(vi.mocked((bridge as any).previewParameter)).toHaveBeenCalled();
+      });
+      await flushMacrotasks();
+
+      expect(screen.queryByTestId('toast')).toBeNull();
+      expect(errorSpy).toHaveBeenCalled();
+    });
+  });
+
+  it('releasing the slider reaches bridge.setParameter with the final value', async () => {
+    const slider = await renderSlider();
+
+    fireEvent.input(slider, { target: { value: '400' } });
+    fireEvent.change(slider, { target: { value: '400' } });
+
+    await waitFor(() => {
+      expect(vi.mocked(bridge.setParameter)).toHaveBeenCalledWith('Kinematic.y_pos', '400mm');
+    });
+    expect(vi.mocked(bridge.setParameter)).toHaveBeenCalledTimes(1);
+  });
+
+  it('the commit waits for the in-flight preview before writing the source', async () => {
+    const inFlight = deferred<undefined>();
+    vi.mocked((bridge as any).previewParameter).mockReturnValue(inFlight.promise);
+    const slider = await renderSlider();
+
+    fireEvent.input(slider, { target: { value: '250' } });
+    await waitFor(() => {
+      expect(vi.mocked((bridge as any).previewParameter)).toHaveBeenCalled();
+    });
+
+    fireEvent.change(slider, { target: { value: '250' } });
+    await flushMacrotasks();
+    expect(vi.mocked(bridge.setParameter)).not.toHaveBeenCalled();
+
+    inFlight.resolve(undefined);
+
+    await waitFor(() => {
+      expect(vi.mocked(bridge.setParameter)).toHaveBeenCalledWith('Kinematic.y_pos', '250mm');
+    });
+  });
+
+  it('a refused commit does raise a toast — the durable write is what the user must hear about', async () => {
+    await withSuppressedRejectionsAndErrorSpy(async () => {
+      vi.mocked(bridge.setParameter).mockRejectedValue(new Error('parameter is not a literal'));
+      const slider = await renderSlider();
+
+      fireEvent.change(slider, { target: { value: '400' } });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('toast').textContent).toMatch(/parameter is not a literal/i);
+      });
+    });
+  });
+});
+
 // ─── externallyChanged wiring in App.tsx ─────────────────────────────────────
 
 describe('App externallyChanged store wiring', () => {
