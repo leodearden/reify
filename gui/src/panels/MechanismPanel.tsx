@@ -185,10 +185,7 @@ const JointRow: Component<JointRowProps> = (props) => {
       // the durable write and reports the same refusal itself.
       lastPreview = Promise.resolve(
         props.onPreviewParameter(param, formatParamValue(val, kind())),
-      ).then(
-        () => undefined,
-        () => undefined,
-      );
+      ).catch(() => undefined);
     });
   }
 
