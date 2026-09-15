@@ -1,20 +1,43 @@
-//! End-to-end: an empty/degenerate OCCT boolean result must surface a
-//! designer-visible Error diagnostic, not flow silently downstream as a
-//! zero-volume solid (task 5318).
+//! End-to-end, through `.ri` source: where an empty OCCT boolean result is
+//! legal, and where it is refused (task 5318, ruling of 2026-09-08 /
+//! esc-5318-7).
 //!
-//! `BRepAlgoAPI_Common` on disjoint operands reports `IsDone() == true` and
-//! returns an **empty `TopoDS_Compound`**. An empty compound is not
-//! `IsNull()`, so the existing null guard in
-//! `reify-kernel-occt/src/lib.rs` (`get_shape`) cannot see it: today the
-//! result is registered as a "Solid", `extrude()` happily consumes it, and
-//! `reify build` writes a header-only STEP file (0 `ADVANCED_FACE`) and
-//! exits 0 with zero diagnostics.
+//! `BRepAlgoAPI_Common` on disjoint operands — and `BRepAlgoAPI_Cut` whose
+//! tool fully consumes its target — report `IsDone() == true` and hand back an
+//! **empty `TopoDS_Compound`**. That is a LEGAL kernel value, not a failure:
+//! `examples/tolerancing/gdt_oracle_inside.ri` DESIGNS on one, where an empty
+//! cut IS the "inside" verdict and `volume()` of it is exactly 0.0. So the
+//! guard belongs at the consumers that mint an artifact and cannot mint one
+//! from nothing — never at the boolean producer. That consumer list, and the
+//! stated reason for every deliberate exclusion, lives ONCE at
+//! `reject_empty_input_shape` in `reify-kernel-occt/cpp/occt_wrapper.cpp` and
+//! is pinned at kernel level by
+//! `harness_occt::empty_shape_consumer_guard_integration`; this file is the
+//! designer-facing half of the same boundary.
 //!
-//! Two RED tests pin the two ways a designer reaches that state
-//! (`intersection` of non-overlapping operands; `difference` whose tool
-//! fully consumes the target). Three FALSE-POSITIVE CONTROLS pin the shapes
-//! the guard must NOT reject — a boolean whose result is a multi-solid
-//! compound, or an unchanged target, still has topology and is valid.
+//! Nothing upstream sees the emptiness: an empty compound is not `IsNull()`,
+//! so `get_shape`'s null check in `reify-kernel-occt/src/lib.rs` cannot see
+//! it, and `brep_kind_of_shape` (same file, :660) classifies it `Compound` —
+//! a well-formed handle that flows downstream like any other.
+//!
+//! The verdict is therefore the CLI path's, not the design's; one `.ri` can be
+//! both silent and fatal:
+//!   `reify check` → `Engine::realize_for_check`  — writes nothing, SILENT
+//!   `reify eval`  → `Engine::realize_for_check`  — writes nothing, SILENT
+//!   `reify build` → `Engine::build(.., Step)`    — WRITES, so it FAILS on an
+//!                                                  empty artifact
+//! One helper below per path; why the two artifact-free ones keep distinct
+//! names is on [`eval_with_occt`].
+//!
+//! Nine tests in four roles. LEGALITY PINS: two realize an empty boolean with
+//! no consumer downstream and must be silent, and two assert the ratified
+//! GD&T INSIDE verdict (`pokeout` exactly 0.0 m³) — one per artifact-free CLI
+//! path, because the protected gate `cli_gdt_integration_gate.rs:163` runs
+//! `reify eval` and nothing here covered it. CONSUMER GUARD: two build-path
+//! failures — an empty profile fed to `extrude`, and an empty compound as a
+//! design's only product body. FALSE-POSITIVE CONTROLS: three booleans that
+//! must keep succeeding, holding "the operands do not touch" apart from "the
+//! result is empty".
 //!
 //! All tests are guarded by `reify_kernel_occt::OCCT_AVAILABLE` and skip if
 //! the OCCT library is not present.
