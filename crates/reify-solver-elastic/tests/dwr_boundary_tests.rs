@@ -33,10 +33,6 @@
 //! (§5.3) reuses exactly those three, so retaining them is the whole reason
 //! this copy exists rather than a call into the original.
 
-// The harness helpers below are consumed by BT1–BT4, which land in later
-// steps of this task. Removed once every helper has a caller.
-#![allow(dead_code)]
-
 use faer::sparse::SparseRowMat;
 
 use reify_solver_elastic::{
@@ -47,7 +43,10 @@ use reify_solver_elastic::{
     element_stiffness, element_stress_p1, solve_cg, solve_dual_cg, tet_volume_p1,
 };
 
-use reify_solver_elastic::DualWeightedIndicator;
+use reify_solver_elastic::{
+    AdaptiveEstimate, AdaptiveProblem, DORFLER_THETA, DualWeightedIndicator, QoiError, QoiEstimate,
+    RefinementBudget, run_adaptive_refinement,
+};
 use reify_ir::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
 
 // ─── ported FEA harness helpers (tests/aposteriori_validation.rs) ──────────
@@ -1019,4 +1018,181 @@ fn bt3_the_constant_strain_patch_yields_zero_contributions_against_a_real_dual()
             signed.abs(),
         );
     }
+}
+
+// ─── BT4 at the SEAM level: an unresolvable QoI ends the loop (§5.5) ───────
+
+/// An [`AdaptiveProblem`] whose `refine` remeshes onto a SMALLER domain,
+/// eventually moving the body out from under a coordinate-addressed QoI.
+///
+/// A compressed but faithful model of the failure §5.5 exists to handle: a
+/// QoI is addressed by COORDINATES (C6) and re-resolved against every mesh
+/// the loop produces, so a remesh can legitimately leave its point outside
+/// the body. Real refinement does not shrink a domain, but it does replace
+/// the mesh wholesale, and nothing guarantees the new one still covers the
+/// query point.
+///
+/// `solve_and_estimate` does a REAL solve, a REAL dual solve and a REAL
+/// dual-weighted indicator, so this also exercises β's pieces composing:
+/// `solve_dual_cg` → `compute_dual_weighted_indicator` →
+/// `marking_weights` → `AdaptiveEstimate`.
+struct ShrinkingDomainProblem {
+    lx: f64,
+    ly: f64,
+    lz: f64,
+    material: IsotropicElastic,
+    qoi: LocalDisplacementQoi,
+    opts: CgSolverOptions,
+    solves: usize,
+    refines: usize,
+}
+
+impl AdaptiveProblem for ShrinkingDomainProblem {
+    /// The QoI error IS the seam error here. γ widens the eval-side problems
+    /// to a `RefineError | QoiError` union; β only needs the seam to admit a
+    /// non-`Infallible` error at all.
+    type Error = QoiError;
+
+    fn solve_and_estimate(&mut self) -> Result<AdaptiveEstimate, Self::Error> {
+        self.solves += 1;
+        let (nodes, conns) = box_p1_mesh(self.lx, self.ly, self.lz, 4, 2, 2);
+        let mesh = P1TetMeshRef {
+            coords: &nodes,
+            tets: &conns,
+        };
+        let tol = 1e-9;
+        let bcs = dirichlet_fix_face(&nodes, 0, 0.0, tol);
+        let end = end_face_nodes(&nodes, self.lx, tol);
+        let raw_f = rhs_from_point_loads(nodes.len(), &distributed_tip_load(&end, 1.0e-3));
+        let (k, f, bcs, primal) = assemble_eliminate_and_solve(
+            &nodes,
+            &conns,
+            &self.material,
+            bcs,
+            &raw_f,
+            self.opts.clone(),
+        );
+
+        // THE EXIT: on a mesh that no longer covers the QoI's point this
+        // returns Err, and `?` carries it out of the loop.
+        let value = self.qoi.evaluate(mesh, &self.material, primal.u())?;
+
+        let dual = solve_dual_cg(
+            &k,
+            &self.qoi,
+            mesh,
+            &self.material,
+            primal.u(),
+            &bcs,
+            self.opts.clone(),
+            SolverMode::Deterministic,
+        )?;
+
+        let solve = DualSolve {
+            nodes,
+            conns,
+            f,
+            bcs,
+            primal,
+            dual,
+        };
+        let (_, dwr) = dwr_and_zz_from_solve(&solve, &self.material);
+
+        Ok(AdaptiveEstimate {
+            // A QoI-RELATIVE error: the dimensionless quantity §5.5 has the
+            // loop compare against `target_accuracy` on the goal-oriented
+            // path, in place of the energy-norm ratio.
+            relative_error: dwr.qoi_error_bound / value.abs(),
+            per_element: dwr.marking_weights(),
+            n_dofs: 3 * solve.nodes.len(),
+            qoi: Some(QoiEstimate {
+                value,
+                error_estimate: dwr.qoi_error_estimate,
+                error_bound: dwr.qoi_error_bound,
+            }),
+        })
+    }
+
+    fn refine(&mut self, _marked: &[usize]) -> Result<(), Self::Error> {
+        self.refines += 1;
+        self.lx *= 0.2;
+        self.ly *= 0.2;
+        self.lz *= 0.2;
+        Ok(())
+    }
+}
+
+/// BT4 / §5.5 — a QoI that resolves on the seed mesh and becomes
+/// unresolvable on a later one ends `run_adaptive_refinement` with the typed
+/// `QoiError`, after the earlier iterations have run.
+///
+/// This is the whole point of making `solve_and_estimate` fallible. Before
+/// it, an estimator in this position had two options, both bad: panic —
+/// taking down a solve the user may have waited minutes for, with no partial
+/// result — or invent a number, which for an ERROR ESTIMATE means reporting
+/// a small value, which the loop reads as convergence. The refinement then
+/// stops early and reports success on a mesh nobody checked.
+///
+/// The assertions pin all three halves of the claim: the seed mesh really
+/// does resolve (so the failure is caused by the remesh, not by a QoI that
+/// never worked); the earlier iteration really ran; and the error that comes
+/// out is the QoI's own typed value, not a status or a panic.
+#[test]
+fn bt4_a_qoi_that_stops_resolving_mid_run_ends_the_loop_with_its_typed_error() {
+    let at = [1.0, 0.5, 0.5];
+    let mut problem = ShrinkingDomainProblem {
+        lx: 2.0,
+        ly: 1.0,
+        lz: 1.0,
+        material: IsotropicElastic {
+            youngs_modulus: 1.0,
+            poisson_ratio: 0.3,
+        },
+        qoi: LocalDisplacementQoi {
+            at,
+            radius: 0.3,
+            direction: [0.0, -1.0, 0.0],
+        },
+        opts: CgSolverOptions::default(),
+        solves: 0,
+        refines: 0,
+    };
+
+    // Non-vacuity: the QoI resolves on the SEED mesh, so the failure below is
+    // caused by the remesh rather than by a QoI that never worked.
+    let seed = problem
+        .solve_and_estimate()
+        .expect("the QoI must resolve on the seed mesh");
+    assert!(
+        seed.qoi.is_some(),
+        "the seed estimate must carry a QoI result — otherwise this exercises \
+         the Z-Z path and says nothing about §5.5",
+    );
+    assert!(
+        seed.per_element.iter().all(|&w| w >= 0.0),
+        "marking weights are magnitudes",
+    );
+    problem.solves = 0;
+
+    // `target_accuracy` is unreachable, so the loop always refines and
+    // reaches the second solve rather than converging first.
+    let budget = RefinementBudget {
+        target_accuracy: 1e-30,
+        max_refinement_iterations: 5,
+        max_dofs: usize::MAX,
+    };
+    let outcome = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA);
+
+    assert_eq!(
+        outcome,
+        Err(QoiError::PointOutsideBody { at }),
+        "the loop must surface the QoI's OWN typed error, not a status and \
+         not a panic",
+    );
+    assert_eq!(
+        (problem.solves, problem.refines),
+        (2, 1),
+        "the first iteration must have completed — solve, mark, refine — \
+         before the second solve failed",
+    );
 }

@@ -63,6 +63,13 @@
 //!     // Task 3000: per-probe target_accuracy contract + lazy-refinement timing contract
 //!     probe_target_accuracy, RefineTrigger, should_run_refinement,
 //!     NEAR_BOUNDARY_TARGET_ACCURACY, FAR_FROM_BOUNDARY_TARGET_ACCURACY,
+//!     // Task 7452 (PRD docs/prds/v0_6/goal-oriented-error-estimation.md leaf
+//!     // β): goal-oriented error estimation — QoI functionals, their dual
+//!     // loads, the dual-solve seam, the dual-weighted indicator, and the
+//!     // QoI channel on the adaptive seam.
+//!     P1TetMeshRef, QuantityOfInterest, QoiKind, QoiError,
+//!     LocalDisplacementQoi, LocalNormalStressQoi, solve_dual_cg,
+//!     DualWeightedIndicator, compute_dual_weighted_indicator, QoiEstimate,
 //! };
 //!
 //! let _: TetP1 = TetP1;
