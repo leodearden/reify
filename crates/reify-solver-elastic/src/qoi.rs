@@ -112,6 +112,29 @@ pub enum QoiError {
         /// non-finite.
         total_volume: f64,
     },
+    /// The contributing set carries usable total volume, but one of its
+    /// members is unusable on its own.
+    ///
+    /// A collapsed tet standing ALONGSIDE healthy ones leaves `Σ_K V_K`
+    /// strictly positive, so the set-level arm above passes it through and
+    /// the ball mean goes on to index it. [`element_stress_p1`]'s own
+    /// degenerate-Jacobian guard is a `debug_assert!`; measured in release
+    /// on a good/collapsed pair, `evaluate` returned `Ok(NaN)` and
+    /// `dual_load` a `g` with 12 of 15 entries non-finite.
+    ///
+    /// Rejecting rather than SKIPPING the element is deliberate. `V_K` is
+    /// the weight the functional is defined by, so dropping one would
+    /// silently report a ball mean over a set the caller never asked for —
+    /// and would mask a mesh that has already compromised the primal solve,
+    /// since `assembly/tet.rs` guards the same primitive.
+    DegenerateElement {
+        /// The query point whose ball resolved to the offending set.
+        at: [f64; 3],
+        /// Index into `P1TetMeshRef::tets` of the offending element.
+        element: usize,
+        /// That element's `V_K`: zero, negative, or non-finite.
+        volume: f64,
+    },
 }
 
 impl fmt::Display for QoiError {
@@ -138,6 +161,17 @@ impl fmt::Display for QoiError {
                 "quantity-of-interest point ({}, {}, {}) resolved to a \
                  contributing set of total volume {total_volume}; the mesh \
                  carries degenerate (zero-volume) tets there",
+                at[0], at[1], at[2],
+            ),
+            QoiError::DegenerateElement {
+                at,
+                element,
+                volume,
+            } => write!(
+                f,
+                "quantity-of-interest point ({}, {}, {}) resolved to a \
+                 contributing set whose element {element} is degenerate \
+                 (volume {volume}); the mesh carries a collapsed tet there",
                 at[0], at[1], at[2],
             ),
         }
@@ -212,9 +246,10 @@ struct ContributingElement {
 
 /// The elements a QoI's ball mean runs over on one particular mesh.
 ///
-/// Constructed only by [`resolve`], which guarantees the three invariants
+/// Constructed only by [`resolve`], which guarantees the four invariants
 /// every consumer relies on: `elements` is non-empty, `total_volume` is
-/// finite and strictly positive, and `direction` is unit length.
+/// finite and strictly positive, EVERY member's `volume` is finite and
+/// strictly positive, and `direction` is unit length.
 struct ContributingSet {
     /// Contributing elements in ascending element index.
     elements: Vec<ContributingElement>,
@@ -250,6 +285,27 @@ struct ContributingSet {
 /// 4. `E = { K : ‖centroid(K) − at‖ ≤ radius }`, in ascending element index.
 /// 5. If that `E` is empty, fall back to the single element CONTAINING
 ///    `at`; only if no element contains it is the QoI unresolvable.
+/// 6. `Σ_K V_K` over the resolved set finite and strictly positive, else
+///    [`QoiError::DegenerateContributingSet`] — this is the division every
+///    ball mean performs.
+/// 7. Every resolved `V_K` finite and strictly positive, else
+///    [`QoiError::DegenerateElement`].
+///
+/// # Why the SET-level volume check precedes the per-element one
+///
+/// They are different signals, and the coarser one dominates. When the ball
+/// resolves to nothing usable at all — every member collapsed — singling out
+/// one member would imply that member is special, while
+/// `DegenerateContributingSet` says what is actually true of the set.
+/// `DegenerateElement` is the LOCALIZING signal for the case the sum cannot
+/// see: a set viable in aggregate that still carries one broken member,
+/// which is exactly the case that used to reach [`element_stress_p1`] and
+/// return `Ok(NaN)` to a release caller.
+///
+/// Both run over the SAME assembled `elements` vector, downstream of both
+/// selection arms, so the centroid rule and the containment fallback are
+/// covered at one chokepoint rather than by two duplicated call-site checks
+/// that could later be half-updated.
 ///
 /// `u` is passed only so its length is validated here too, keeping all three
 /// of the trait's arguments checked at one site; the ball rule itself does
@@ -268,6 +324,8 @@ struct ContributingSet {
 /// `at` lies inside no element.
 /// [`QoiError::DegenerateContributingSet`] when the resolved elements carry
 /// no usable total volume.
+/// [`QoiError::DegenerateElement`] when they do, but one of them is itself
+/// degenerate.
 fn resolve(
     at: [f64; 3],
     radius: f64,
@@ -327,6 +385,16 @@ fn resolve(
 
     if !total_volume.is_finite() || total_volume <= 0.0 {
         return Err(QoiError::DegenerateContributingSet { at, total_volume });
+    }
+    if let Some(bad) = elements
+        .iter()
+        .find(|el| !el.volume.is_finite() || el.volume <= 0.0)
+    {
+        return Err(QoiError::DegenerateElement {
+            at,
+            element: bad.index,
+            volume: bad.volume,
+        });
     }
     Ok(ContributingSet {
         elements,
@@ -1453,9 +1521,36 @@ mod tests {
     /// from a hand-built pathology. Both ball means divide by `Σ_K V_K`, so
     /// without an unconditional check `evaluate` returns `0.0/0.0 = NaN` and
     /// `dual_load` an all-`NaN` `g` that the dual solve consumes as if it
-    /// were a load — the one hole a `debug_assert!` left open in the
-    /// module's "typed error, never a `NaN`" contract (C4), and it was open
-    /// for exactly the callers who cannot see assertions.
+    /// were a load — and it was open for exactly the callers who cannot see
+    /// assertions.
+    ///
+    /// # Exactly what the volume guards close, and what they leave open
+    ///
+    /// This test and
+    /// `a_collapsed_element_beside_a_good_one_yields_a_typed_error` between
+    /// them close the EXACTLY-COLLAPSED case, `V_K == 0.0` — whether the
+    /// ball resolves to only such elements (here, the set-level guard) or
+    /// to one standing beside healthy ones (there, the per-element guard).
+    ///
+    /// They do NOT make the module's "typed error, never a `NaN`" contract
+    /// (C4) airtight, and two cases MEASURED in `--release` on this
+    /// module's own material and displacement fixtures say so concretely,
+    /// so the next reader can re-run them rather than trust the claim:
+    ///
+    /// * **Merely tiny `det J`.** A unit tet squashed to thickness `1e-12`
+    ///   has `V_K = 1.6666666666666667e-13`, strictly positive, and so
+    ///   passes both volume guards. `LocalNormalStressQoi::evaluate`
+    ///   returns `Ok(-28846153846.04615)` on it — against a fixture stress
+    ///   scale of `0.07`. Finite, so not a C4 violation; garbage all the
+    ///   same. `element_stress_p1`'s debug-only `MIN_JACOBIAN_DET` floor
+    ///   does not catch it either: that floor is `1e-30` and this tet's
+    ///   `|det J|` is `1e-12`, twelve orders above it.
+    /// * **Element INVERSION.** [`tet_volume_p1`] returns `|det| / 6`, so
+    ///   an inverted tet reports the same `0.16666666666666666` as its good
+    ///   twin and is indistinguishable BY VOLUME — no volume guard can see
+    ///   it. Measured `Ok(0.14423076923076922)` against the good twin's
+    ///   `Ok(0.07884615384615386)`: finite, plausible-looking, and wrong.
+    ///   That is mesh validity (PRD task #21), not C4.
     #[test]
     fn a_collapsed_element_yields_a_typed_error_rather_than_a_nan_ball_mean() {
         // Four COPLANAR nodes (every z = 0), i.e. a zero-volume "tet".
