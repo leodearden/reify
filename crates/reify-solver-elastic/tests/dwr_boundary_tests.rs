@@ -42,9 +42,12 @@ use faer::sparse::SparseRowMat;
 use reify_solver_elastic::{
     AssemblyElement, AssemblyMode, CgResult, CgSolverOptions, DirichletBc, ElementOrder,
     ElementStiffness, IsotropicElastic, LocalDisplacementQoi, LocalNormalStressQoi, P1TetMeshRef,
-    QuantityOfInterest, SolverMode, apply_dirichlet_row_elimination, assemble_global_stiffness,
-    element_stiffness, solve_cg, solve_dual_cg,
+    QuantityOfInterest, SolverMode, StressElement, ZzIndicator, apply_dirichlet_row_elimination,
+    assemble_global_stiffness, compute_dual_weighted_indicator, compute_zz_indicator,
+    element_stiffness, element_stress_p1, solve_cg, solve_dual_cg, tet_volume_p1,
 };
+
+use reify_solver_elastic::DualWeightedIndicator;
 
 // ─── ported FEA harness helpers (tests/aposteriori_validation.rs) ──────────
 
@@ -469,5 +472,278 @@ fn bt1_reciprocity_holds_for_both_qoi_kinds_across_pencils_and_material_scales()
                 );
             }
         }
+    }
+}
+
+// ─── BT2: self-dual reduction (PRD §6 C3) ─────────────────────────────────
+
+/// BT2 / C3 — with the primal load set to the QoI's OWN dual load (`f = g`,
+/// `F = 1`), the dual solve reproduces the primal EXACTLY and the
+/// dual-weighted indicator reduces to the Z-Z indicator.
+///
+/// This is the strongest available check that the goal-oriented machinery is
+/// a genuine generalisation rather than a parallel implementation that merely
+/// resembles one: in the self-dual case every stage — load assembly, BC
+/// treatment, solve, recovery, contraction — must land on the energy-norm
+/// answer to the BIT.
+///
+/// # Why a purpose-built fixture and not a cantilever pencil
+///
+/// BT1's pencils load the tip face with a DISTRIBUTED resultant, so no scalar
+/// multiple of that `f` can equal a ball-mean QoI's `dual_load` — the two
+/// have different supports. `f = g` therefore has to be built directly, by
+/// taking a QoI's dual load and using it AS the primal load. That is
+/// constructible only because `dual_load` is independent of `u` (pinned in
+/// src/qoi.rs), so `g` can be assembled before any primal solve exists.
+///
+/// # Every claim here is bit-exact, and each has a reason
+///
+/// * The eliminated RHS equals `g` zeroed at the constrained DOFs, BITWISE.
+///   With homogeneous data (`value = 0.0`) the column-into-RHS term of
+///   `apply_dirichlet_row_elimination` contributes exactly `0`, so
+///   elimination degenerates to zeroing. Measured true.
+/// * `z_h` is bit-identical to `u_h`: both `solve_cg` calls receive
+///   bit-identical `(K, rhs)`, and `solve_cg` is pure and deterministic under
+///   `SolverMode::Deterministic` with a cold start. Measured true.
+/// * `√(η_K)` is bit-identical to the Z-Z `η_e`. NEVER compare against
+///   `zz.per_element[i].powi(2)` instead: `per_element` stores `η_e =
+///   √(η_e²)` and squaring an already-rounded root is a lossy round-trip —
+///   measured bit-exact on only 51 of 96 elements that way, against 96 of 96
+///   (worst ulp difference 0) for the `√` form.
+///
+/// # This bit-exactness is a property of THIS configuration only
+///
+/// It holds because `F = 1`, the start is cold, and both solves share one
+/// `(K, opts)`. Any other configuration — a scaled `F`, a warm start, a
+/// re-assembled `K` — agrees only to `10·cg_tolerance` divided by the
+/// relative magnitude of the resulting `Δσ`. Never describe that weaker case
+/// as agreeing "to rounding".
+///
+/// # The sign claim is an energy inequality, not a convergence claim
+///
+/// `η_K ≥ 0` everywhere and `Σ η_K > 0` follow from the self-dual
+/// contraction being a quadratic form in one tensor — the discrete
+/// minimum-potential-energy inequality `fᵀu_h ≤ fᵀu`. Measured: 0 of 96
+/// elements negative, `qoi_error_estimate` = 4.28. It says nothing about
+/// bending lock or convergence rate.
+///
+/// # TDD red→green
+///
+/// **RED** (step-13): the `f = g` fixture builder and the
+/// `dwr_and_zz_from_solve` harness do not exist. **GREEN** (step-14).
+#[test]
+fn bt2_a_self_dual_load_reproduces_the_primal_solve_and_the_zz_indicator_bitwise() {
+    let material = IsotropicElastic {
+        youngs_modulus: 1.0,
+        poisson_ratio: 0.3,
+    };
+    let opts = CgSolverOptions::default();
+    let fx = self_dual_box(&material, opts.clone());
+
+    // (a) Elimination degenerated to zeroing, bitwise.
+    let mut expected_rhs = fx.g.clone();
+    for bc in &fx.bcs {
+        expected_rhs[bc.dof] = 0.0;
+    }
+    assert_eq!(fx.f.len(), expected_rhs.len());
+    for (i, (actual, want)) in fx.f.iter().zip(&expected_rhs).enumerate() {
+        assert_eq!(
+            actual.to_bits(),
+            want.to_bits(),
+            "RHS[{i}]: with homogeneous Dirichlet data, elimination must \
+             reduce to zeroing g at the constrained DOFs; got {actual} vs \
+             {want}",
+        );
+    }
+
+    let (zz, dwr) = dwr_and_zz_from_solve(&fx.solve, &material);
+
+    // (e) Non-vacuity: the primal field is not zero.
+    let sum_abs_u: f64 = fx.solve.primal.u().iter().map(|x| x.abs()).sum();
+    assert!(
+        sum_abs_u > 0.0,
+        "Σ|u_h| must be non-zero, or every bitwise claim below holds \
+         vacuously on a zero field",
+    );
+
+    // (b) The dual solve reproduced the primal, bit for bit.
+    let (u, z) = (fx.solve.primal.u(), fx.solve.dual.u());
+    assert_eq!(u.len(), z.len());
+    for (i, (ui, zi)) in u.iter().zip(z).enumerate() {
+        assert_eq!(
+            ui.to_bits(),
+            zi.to_bits(),
+            "DOF {i}: z_h must be BIT-identical to u_h when f = g; got {zi} \
+             vs {ui}",
+        );
+    }
+
+    // (c) The indicator reduced to Z-Z, bit for bit.
+    assert_eq!(dwr.per_element_signed.len(), zz.per_element.len());
+    for (i, (signed, eta)) in dwr
+        .per_element_signed
+        .iter()
+        .zip(&zz.per_element)
+        .enumerate()
+    {
+        assert_eq!(
+            signed.sqrt().to_bits(),
+            eta.to_bits(),
+            "element {i}: √(η_K) must be bit-identical to the Z-Z η_e; got {} \
+             vs {eta}",
+            signed.sqrt(),
+        );
+    }
+
+    // (d) The energy inequality.
+    assert!(
+        dwr.per_element_signed.iter().all(|&x| x >= 0.0),
+        "a self-dual contraction is a quadratic form in one tensor, so no \
+         η_K may be negative; {} of {} were",
+        dwr.per_element_signed.iter().filter(|x| **x < 0.0).count(),
+        dwr.per_element_signed.len(),
+    );
+    assert!(
+        dwr.qoi_error_estimate > 0.0,
+        "Σ η_K must be strictly positive here; got {}",
+        dwr.qoi_error_estimate,
+    );
+}
+
+// ─── BT3: constant-strain patch exactness with a real dual ────────────────
+
+/// BT3 — on the Zienkiewicz constant-strain patch, every per-element
+/// dual-weighted contribution vanishes against a REAL, non-zero dual.
+///
+/// The patch field `u = (γ·y, 0, 0)` is represented exactly by P1 tets, so
+/// the recovered stress equals the discrete stress and the primal error is
+/// identically zero. A correct estimator must then report zero error in ANY
+/// quantity of interest — and the point of doing it against a real dual is
+/// that a broken estimator returning a ZERO dual field would also report
+/// zero. That silent failure is exactly what this PRD closes, which is why
+/// `Σ|z_h| > 0` is asserted first (measured 4.89).
+///
+/// # Three measured preconditions, each binding
+///
+/// 1. **The fixture uses `tolerance: 1e-12`, not the crate default.** `η_K`
+///    tracks the CG residual, not zero. At the default `1e-8` the measured
+///    maximum `|η_K|` is 8.4e-12 — OVER the 1e-12 bound — while at `1e-12`
+///    it is 1.1e-15, a ≥900× margin. The PRD's bound is achievable; it just
+///    needs a fixture converged tightly enough to expose it.
+/// 2. **The dual direction must be ALIGNED with the patch field.** `d =
+///    [1,0,0]` gives `J = 5.0e-2` exactly (`= γ·0.5`, the analytic ball mean
+///    of `γ·y` over a ball centred at `y = 0.5`). `d = [0,0,1]` makes
+///    `J ≡ 0` identically and reciprocity degenerate — measured relative
+///    error 0.99.
+/// 3. **The dual load must touch no constrained DOF.** This fixture has
+///    NON-homogeneous Dirichlet data, so BT1's derivation
+///    (`J(u_h) = gᵀu_h = g_zeroedᵀu_h`) only licenses the reciprocity check
+///    below if zeroing `g` at the constrained DOFs changes nothing. The test
+///    ASSERTS that no-op bitwise rather than assuming it — measured true for
+///    a ball at the cube centre with `radius ≤ 0.30` on a 4³ mesh, whose
+///    contributing elements have only interior nodes.
+///
+/// The Cauchy–Schwarz check `|η_K| ≤ η_u,K · η_z,K` is scale-free and held on
+/// every element of every measured configuration; it is asserted here as an
+/// independent structural constraint on the bilinear form.
+///
+/// # TDD red→green
+///
+/// **RED** (step-13), **GREEN** (step-14) — as for BT2.
+#[test]
+fn bt3_the_constant_strain_patch_yields_zero_contributions_against_a_real_dual() {
+    let material = IsotropicElastic {
+        youngs_modulus: 1.0,
+        poisson_ratio: 0.3,
+    };
+    // Precondition 1: tighter than the crate default, deliberately.
+    let opts = CgSolverOptions {
+        tolerance: 1e-12,
+        max_iter: 5000,
+    };
+    let gamma = 0.1_f64;
+    // Precondition 2: ALIGNED with the patch field's direction.
+    let qoi = LocalDisplacementQoi {
+        at: [0.5, 0.5, 0.5],
+        radius: 0.30,
+        direction: [1.0, 0.0, 0.0],
+    };
+    let fx = patch_cube(&material, gamma, &qoi, opts.clone());
+
+    // Precondition 3: zeroing g at the constrained DOFs is a BITWISE no-op,
+    // which is what licenses the reciprocity check on a non-homogeneous
+    // fixture.
+    for bc in &fx.solve.bcs {
+        assert_eq!(
+            fx.g[bc.dof].to_bits(),
+            0.0_f64.to_bits(),
+            "g[{}] = {} is non-zero at a CONSTRAINED DOF, so this fixture no \
+             longer satisfies BT1's precondition; shrink the ball until its \
+             contributing elements have only interior nodes",
+            bc.dof,
+            fx.g[bc.dof],
+        );
+    }
+
+    // The dual is real and non-trivial — without this the test passes for a
+    // zero dual, the silent failure the PRD exists to close.
+    let sum_abs_z: f64 = fx.solve.dual.u().iter().map(|x| x.abs()).sum();
+    assert!(
+        sum_abs_z > 0.0,
+        "Σ|z_h| must be non-zero; a zero dual would satisfy every assertion \
+         below for the wrong reason",
+    );
+    assert!(fx.solve.primal.converged && fx.solve.dual.converged);
+
+    // (b) Reciprocity on this fixture, with the analytic J as the anchor.
+    let u = fx.solve.primal.u();
+    let j = qoi
+        .evaluate(
+            P1TetMeshRef {
+                coords: &fx.solve.nodes,
+                tets: &fx.solve.conns,
+            },
+            &material,
+            u,
+        )
+        .expect("the patch QoI must resolve");
+    let analytic = gamma * 0.5;
+    assert!(
+        (j - analytic).abs() <= 1e-9 * analytic.abs(),
+        "J must equal the analytic ball mean γ·0.5 = {analytic}, got {j}",
+    );
+    let f_dot_z: f64 = fx
+        .solve
+        .f
+        .iter()
+        .zip(fx.solve.dual.u())
+        .map(|(fi, zi)| fi * zi)
+        .sum();
+    assert!(
+        (j - f_dot_z).abs() <= 10.0 * opts.tolerance * j.abs(),
+        "reciprocity must hold on the patch fixture too; J = {j}, fᵀz_h = \
+         {f_dot_z}",
+    );
+
+    // (c) Patch exactness: every contribution vanishes.
+    let (zz_u, dwr) = dwr_and_zz_from_solve(&fx.solve, &material);
+    for (i, signed) in dwr.per_element_signed.iter().enumerate() {
+        assert!(
+            signed.abs() <= 1e-12,
+            "element {i}: the primal error is identically zero on a patch \
+             field, so η_K must vanish for any dual; got {signed}",
+        );
+    }
+
+    // Cauchy–Schwarz on the bilinear form, element by element.
+    let zz_z = zz_of_dual(&fx.solve, &material);
+    for (i, signed) in dwr.per_element_signed.iter().enumerate() {
+        let product = zz_u.per_element[i] * zz_z.per_element[i];
+        assert!(
+            signed.abs() <= product + 1e-15,
+            "element {i}: Cauchy–Schwarz |η_K| <= η_u,K · η_z,K must hold; \
+             got {} > {product}",
+            signed.abs(),
+        );
     }
 }
