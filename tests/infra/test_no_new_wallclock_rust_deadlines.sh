@@ -14,8 +14,14 @@
 #   See SCOPE under KNOWN LIMITS for what that does and does not cover.
 #
 # The guard itself is a LOAD-INDEPENDENT static grep -- it is NOT a wall-clock
-# test, and it runs no cargo, no npm and no watcher. It stays instant at the
-# widened scope: ~0.13s over 1331 files, re-measured on the 36-root set.
+# test, it runs no cargo, no npm and no watcher, and it stays instant at the
+# widened scope.
+#
+# NO COUNT IS RECITED IN THIS FILE'S PROSE -- a rule, not an omission. The
+# floors guarding the scan's size are deliberately loose, so a figure written
+# into a comment goes stale in silence while the gate stays green. Section 3
+# PRINTS every live count instead; the one timing measurement sits at the
+# engine's perf note, dated to the change that made it.
 #
 # ---------------------------------------------------------------------------
 # WHY THIS IS A SIBLING OF test_no_new_wallclock_upper_bounds.sh AND NOT AN
@@ -82,7 +88,7 @@
 # counting it and so returns 0 for one escape and for twenty alike. Since #6597
 # that claim covers the whole Rust test tree rather than one directory, and it
 # survived the widening unchanged: scanning ~44x more files admitted no second
-# escape, and the 19 pre-existing sites went to the baseline, NOT to escapes.
+# escape, and the pre-existing sites went to the baseline, NOT to escapes.
 # (An earlier draft of
 # this guard spelled that site with `checked_add` specifically BECAUSE Rule A
 # did not match it. That was a documented bypass masquerading as house style:
@@ -95,10 +101,9 @@
 # type-aware one, and it covers every Rust TEST root but no production code.
 #
 # SCOPE, stated first because it bounds every other claim here. `_LIVE_ROOTS`
-# is the glob expansion of crates/*/tests (32 directories today) plus
-# gui/src-tauri/src/tests, gui/src-tauri/src/debug_server/tests,
-# gui/src-tauri/tests and tree-sitter-reify/tests -- 36 roots, 1331 .rs files,
-# scanned RECURSIVELY. #6438 shipped this guard scoped to the single
+# is the glob expansion of crates/*/tests plus gui/src-tauri/src/tests,
+# gui/src-tauri/src/debug_server/tests, gui/src-tauri/tests and
+# tree-sitter-reify/tests, scanned RECURSIVELY. #6438 shipped this guard scoped to the single
 # non-recursive directory gui/src-tauri/src/tests, where all four flakes
 # happened, and said plainly that the rest of the Rust tree was unguarded;
 # #6597 closed that. The glob is deliberate: a new crate's tests are ratcheted
@@ -128,8 +133,8 @@
 # directory CONTAINS, not what it is called -- and it belongs in a review.
 #
 # THE BASELINE, AND THE DISTINCTION A READER MUST NOT BLUR. Widening the scan
-# could not be a one-line change: 19 violating lines across 6 files already
-# existed and would have redded the gate on day one. They are listed in
+# could not be a one-line change: violating lines already existed across
+# several crates and would have redded the gate on day one. They are listed in
 # tests/infra/wallclock-rust-deadline-baseline.txt. A baseline row and an
 # escape comment are DIFFERENT CLAIMS, and conflating them is the one way this
 # design fails quietly:
@@ -137,16 +142,18 @@
 #     site". There is exactly one, far_future_stamp() in watcher_tests.rs, and
 #     adding a second also takes a diff to _ESC_ALLOWLIST_SIZE.
 #   * a ROW says "PRE-EXISTING DEBT that MUST NOT GROW". Nothing in that file is
-#     blessed. Annotating those 19 sites with escapes instead was considered and
-#     rejected: it would have edited 6 files across 5 crates plus
-#     tree-sitter-reify, and it would have blessed 19 flakes-in-waiting.
+#     blessed. Annotating those sites with escapes instead was considered and
+#     rejected: it would have edited six files across five crates plus
+#     tree-sitter-reify, and it would have blessed every one of them as
+#     legitimate.
 # The ratchet runs in TWO DIRECTIONS, which is what makes it shrink-only. A live
 # record absent from the baseline is `+` and reds; a baseline row matching
 # nothing live is `-` and ALSO reds, so a fixed site must be drained in the same
 # diff. That follows tests/infra/harness-layout-baseline.manifest, which reds on
 # orphan rows -- deliberately not ptodo-baseline.txt's subset-only rule, which
 # has no forcing function to drain it (a limitation #6859 accepts openly, and
-# one this guard need not inherit at 19 hand-auditable rows).
+# one this guard need not inherit at a row count small enough to audit by
+# hand -- the run prints it).
 #
 # PRODUCTION CODE IS EXCLUDED, and this is an argument rather than an
 # oversight. A "root" here is a directory whose CONTENTS are tests -- which is
@@ -176,15 +183,9 @@
 # honest fix is to move such tests to a tests/ root rather than to teach this
 # grep to parse Rust.
 #
-# WHAT MAKES "ONE" TRUE is the other half of the sentence -- that every tests/
-# root IS scanned -- and that half is ENFORCED, not asserted: the completeness
-# check in Section 3 diffs the root list against the tree. It has to be. An
-# earlier draft of this widening left gui/src-tauri/src/debug_server/tests out
-# of the list, which made this paragraph false as written: there were TWO
-# uncovered locations, not one, and nothing here could see the second. With that
-# root added the tree's 36-root ground truth is covered exactly, re-measured,
-# and the inline #[cfg(test)] mod above is once again the sole uncovered
-# category -- and a future omission reds rather than joining it.
+# WHAT MAKES "ONE" TRUE is the completeness check above -- an earlier draft of
+# this widening left a test root out, and with it there were TWO uncovered
+# locations, not one, with nothing here able to see the second.
 #
 # FALSE NEGATIVES, i.e. shapes that get past it by construction:
 #   * A named constant: `assert!(elapsed < TIMEOUT_BUDGET)` carries neither a
@@ -234,7 +235,7 @@
 #     anything there and the direction that guard is deliberately blind to.
 #     Verified: the sibling guard is green on this file.
 #   * THE BASELINE FILE, tests/infra/wallclock-rust-deadline-baseline.txt, holds
-#     19 verbatim copies of forbidden shapes -- and is invisible to BOTH guards
+#     verbatim copies of forbidden shapes -- and is invisible to BOTH guards
 #     by file type: this one scans *.rs (fixture 4a-4 pins that), the sibling
 #     scans *.sh. So it needs no escapes, no assembly convention, and it cannot
 #     fingerprint itself into permanent self-reference. Keep it a .txt.
@@ -439,7 +440,7 @@ _wallclock_files_scanned() {
 # OUTPUT IS SORTED, GLOBALLY and under LC_ALL=C. Both halves matter. The
 # ratchet compares two streams with `comm`, which is only correct if they were
 # sorted the SAME way, so the collation is pinned rather than inherited: the
-# 19 live records sort DIFFERENTLY under en_US.UTF-8 than under C (measured --
+# live records sort DIFFERENTLY under en_US.UTF-8 than under C (measured --
 # the `Ok(None) if ...` row moves), and a baseline generated on one machine
 # would otherwise report phantom +/- records on another.
 #
@@ -561,11 +562,16 @@ _wallclock_fingerprints() {
     # ONE grep for the whole scan, not one [[ =~ ]] per line. The detector
     # this replaced justified its per-line bash loop against `echo | grep` per
     # line -- true, but it never weighed one grep for the ENTIRE scan.
-    # Measured on this tree: the bash loop over ONE ~30-file directory takes
-    # 0.518s, while this whole function over all 36 roots (1331 files, 679k
-    # lines) takes ~0.13s end to end -- about 0.10s of it the grep itself, over
-    # a 0.10-0.44s spread across eight runs on a busy host. The loop at that
-    # scale would cost ~30s in a gate that is supposed to be instant.
+    # THE ONE MEASUREMENT IN THIS FILE, deliberately DATED rather than live:
+    # it justifies a design choice, so it need not track the tree and cannot
+    # go stale into a lie the way a recited count can. Measured when the
+    # engine replaced the loop (#6597): the bash
+    # loop over ONE ~30-file directory took 0.518s, while this whole function
+    # over the entire live root set -- 36 roots, 1331 files, 679k lines at the
+    # time -- took ~0.13s end to end, about 0.10s of it the grep itself, over a
+    # 0.10-0.44s spread across eight runs on a busy host. The loop at that
+    # scale would cost ~30s in a gate that is supposed to be instant. For what
+    # the scan covers TODAY, read the line Section 3 prints.
     # `-a` IS NOT OPTIONAL. Without it GNU grep stops at the first NUL byte in
     # a file, prints "binary file matches" to STDERR and contributes NOTHING to
     # the captured stdout -- so a violating line in such a file would vanish
@@ -720,6 +726,35 @@ _emit_record_stream() {
 }
 
 # ---------------------------------------------------------------------------
+# _wallclock_baseline_rows <baseline-file>
+#
+# Prints the baseline's ROWS -- every line that is neither blank nor a `#`
+# comment, indented or not -- so the committed file can carry the header that
+# explains what a row MEANS. That follows
+# tests/infra/harness-layout-baseline.manifest, not ptodo-baseline.txt, which
+# forbids comments.
+#
+# ONE `grep -v` with two anchored alternatives, borrowed verbatim from
+# harness-layout-lib.sh's _harness_layout_baseline_load, for its exit-status
+# property: a single rc, so grep's error rc 2 ("cannot read the baseline")
+# stays distinguishable from its rc 1 ("the baseline has no rows"). Two piped
+# `grep -v`s would hide that behind PIPESTATUS, and a blanket `|| true` would
+# collapse an unreadable baseline into a clean pass -- the vacuous green
+# fixtures 4e-12 and 4e-13 exist to pin, and which that file's own comment
+# records as a real bug elsewhere.
+#
+# A FUNCTION rather than two lines inside the ratchet because Section 3 counts
+# the rows too, and "what counts as a row" belongs in one place.
+# ---------------------------------------------------------------------------
+_wallclock_baseline_rows() {
+    local _rows _brc=0
+    _rows="$(grep -vE '^[[:space:]]*#|^[[:space:]]*$' -- "$1")" || _brc=$?
+    [ "$_brc" -le 1 ] || return "$_brc"
+    _emit_record_stream "$_rows"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # _wallclock_baseline_check <baseline-file> <root>...
 #
 # THE RATCHET. Compares the live fingerprint multiset under <root>... against
@@ -730,17 +765,8 @@ _emit_record_stream() {
 # offending record on stderr. Propagates the engine's rc >= 2 unchanged: a
 # missing or unreadable root must never be reported as "no new violations".
 #
-# BASELINE ROWS are every line that is neither blank nor a `#` comment
-# (indented or not), so the committed file can carry the header that explains
-# what a row MEANS. That follows tests/infra/harness-layout-baseline.manifest,
-# not ptodo-baseline.txt, which forbids comments. The stripping is ONE `grep -v`
-# with two anchored alternatives, borrowed verbatim from
-# harness-layout-lib.sh's _harness_layout_baseline_load, for its exit-status
-# property: a single rc, so grep's error rc 2 ("cannot read the baseline")
-# stays distinguishable from its rc 1 ("the baseline has no rows"). Two piped
-# `grep -v`s would hide that behind PIPESTATUS, and a blanket `|| true` would
-# collapse an unreadable baseline into a clean pass -- which is the vacuous
-# green that file's own comment records as a real bug.
+# BASELINE ROWS come from _wallclock_baseline_rows above, whose rc contract is
+# what keeps an unreadable baseline from reading as an empty one.
 #
 # COLLATION IS PINNED ON BOTH SIDES AND ON `comm` ITSELF. comm is only correct
 # when its two inputs are sorted the way comm compares them; the engine sorts
@@ -755,8 +781,8 @@ _wallclock_baseline_check() {
     [ "$_lrc" -eq 0 ] || return "$_lrc"
 
     local _rows _brc=0
-    _rows="$(grep -vE '^[[:space:]]*#|^[[:space:]]*$' -- "$_baseline")" || _brc=$?
-    [ "$_brc" -le 1 ] || return "$_brc"
+    _rows="$(_wallclock_baseline_rows "$_baseline")" || _brc=$?
+    [ "$_brc" -eq 0 ] || return "$_brc"
     _rows="$(_emit_record_stream "$_rows" | LC_ALL=C sort)"
 
     # TWO DIRECTIONS over the SAME pair of sorted multisets.
@@ -1413,7 +1439,8 @@ assert "2ac: three escapes across two files count 3, not 1 and not 2" \
 # 2ad: escape COUNTER, RECURSION. An escape buried in a subdirectory must be
 #      counted. The counter globbed `"$dir"/*.rs`, which is non-recursive --
 #      harmless while it only ever saw one flat directory, and a silent hole
-#      the moment Section 3 points it at 36 roots full of subdirectories. An
+#      the moment Section 3 points it at every root in the tree, which are
+#      full of subdirectories. An
 #      uncounted escape is strictly worse than an uncounted violation: the
 #      detector cannot see an escaped line AT ALL, so the escape count is the
 #      only thing that knows the line exists.
@@ -1476,19 +1503,9 @@ assert "2af: a root that does not exist is a hard error, not a zero count" \
 # ===========================================================================
 # Section 3: LIVE GUARD -- the ratchet, over EVERY Rust test root.
 #
-# Scope, since this is what task #6597 changed. #6438 shipped this guard
-# scoped to the single non-recursive directory gui/src-tauri/src/tests -- the
-# file where all four flakes happened, and, as its header said plainly, all it
-# scanned. It now covers every crates/*/tests (32 today, glob-expanded so a new
-# crate is covered the day it lands), all three gui/src-tauri test roots, and
-# tree-sitter-reify/tests, recursively -- 36 roots, 1331 .rs files today.
-#
-# That widening cannot be a one-line change, because 19 violating lines across
-# 6 files already exist and would red the gate on day one. They are BASELINED
-# in tests/infra/wallclock-rust-deadline-baseline.txt -- pre-existing debt that
-# must not grow, which is a different and weaker claim than the escape
-# comment's "legitimate, argued at the site". Read that file's header before
-# touching a row.
+# The roots this covers and why the pre-existing sites are BASELINED rather
+# than escaped are argued once, in the header (SCOPE, THE BASELINE). What the
+# scan came to on THIS run is printed below. Neither is restated here.
 #
 # FOUR ASSERTIONS, and each one covers a way the other three can lie:
 #   (1) THE ROOT LIST IS REAL, AND COMPLETE. Every entry exists; the list names
@@ -1599,7 +1616,8 @@ done
 # path has no leading `/`, so an anchored `(.*/tests)` could not match it and
 # a `/tests$` filter discarded what was left. There is no such directory today
 # (measured), and a derivation that silently cannot see one is not worth
-# keeping. Verified identical to the old expression on this tree: 36 roots.
+# keeping. Verified to derive the same root set as the old expression on this
+# tree, and to catch a synthetic top-level root the old one dropped.
 #
 # Coverage is by PREFIX, not equality: the roots scan recursively, so a nested
 # `a/tests/b/tests` is genuinely reached from `a/tests`. See Section 4f.
@@ -1614,9 +1632,8 @@ assert "live scan: the ground-truth test-root derivation succeeds" \
 # The derivation itself must not be vacuous: a `sed` or `git` that silently
 # stopped producing roots would make the completeness check below trivially
 # true, which is the same empty-set hole Section 4e exists to close one layer
-# down. 36 roots today; the floor is deliberately loose, and it is a LOWER
-# bound because that is the only direction that means anything for a tree that
-# grows.
+# down. The floor is deliberately loose, and it is a LOWER bound because that
+# is the only direction that means anything for a tree that grows.
 _s3_gt_n="$(_emit_record_stream "$_s3_gt" | grep -c . || true)"
 assert "live scan: the ground-truth derivation found a plausible number of test roots" \
     test "$_s3_gt_n" -ge 20
@@ -1651,10 +1668,12 @@ assert "live scan: no NEW hand-rolled deadlines or elapsed upper bounds, and no 
     test "$_s3_rc" -eq 0
 
 # --- (3) the non-vacuity floor ---------------------------------------------
-# 1331 .rs files today. The floor is deliberately loose: it must catch a root
-# list that collapsed, without churning every time a test file is added or
-# deleted. It is a LOWER bound, which is the only direction that means
-# anything here -- an upper bound would red on a growing tree.
+# The floor is deliberately loose: it must catch a root list that collapsed,
+# without churning every time a test file is added or deleted. It is a LOWER
+# bound, which is the only direction that means anything here -- an upper
+# bound would red on a growing tree. The actual count is printed, not written
+# down; a loose floor and an exact number in a comment are what let the two
+# drift apart unnoticed.
 #
 # RC IS CAPTURED, NOT INHERITED. A bad root returns the validator's 2, and an
 # unguarded command substitution under `set -euo pipefail` would abort the
@@ -1672,11 +1691,20 @@ assert "live scan: the floor runs -- every root was scannable (returns 0)" \
 assert "live scan: the floor -- at least 1000 .rs files were actually scanned" \
     test "${_s3_files:-0}" -ge 1000
 
+# WHAT THIS RUN ACTUALLY SCANNED, printed rather than recited -- the four
+# figures the prose above deliberately does not carry. It also makes the
+# ratchet's PROGRESS visible: the baseline is meant to shrink, and a row count
+# in a passing run's log is how anyone sees whether it is. Rows are counted
+# through the ratchet's own loader, so "what counts as a row" is not spelled
+# twice.
+_s3_rows="$(_wallclock_baseline_rows "$_BASELINE_FILE" 2>/dev/null | grep -c . || true)"
+echo "  scanned: ${#_LIVE_ROOTS[@]} roots (${_s3_gt_n} named \`tests\` in tree), ${_s3_files:-0} .rs files, ${_s3_rows} baselined rows"
+
 # --- (4) the escape allowlist ----------------------------------------------
 # The allowlist as a NUMBER rather than as prose. One escape:
 # `far_future_stamp()` in watcher_tests.rs, argued in its own doc comment.
 # Changing this line is the reviewable act; see the header's ALLOWLIST
-# paragraph before you do. Widening the scan did NOT raise it: the 19
+# paragraph before you do. Widening the scan did NOT raise it: the
 # pre-existing sites went into the baseline, not into escapes.
 _ESC_ALLOWLIST_SIZE=1
 
@@ -1801,7 +1829,7 @@ assert "4a-4: a violation in a non-.rs file emits no record" \
 # 4a-5: RECURSION INTO SUBDIRECTORIES -- the single most load-bearing fixture
 #       in this section. The shipped detector globbed `"$dir"/*.rs`, which is
 #       NON-recursive, and the real roots this guard now covers are full of
-#       subdirectories: 5 of the 19 baselined sites live in one
+#       subdirectories: five baselined sites live in one
 #       (harness_cli_surface/, harness_traits/, harness_stress_scenarios/).
 #       A non-recursive engine would report those as clean AND turn their
 #       baseline rows stale -- red for the wrong reason, then green the moment
@@ -1934,7 +1962,7 @@ assert "4b-3: two occurrences equal only after trimming are still counted twice"
 # SILENCE ON SUCCESS IS AN ASSERTION HERE, NOT A STYLE POINT. test_helpers.sh's
 # assert dumps a checker's captured output only on FAIL, so a passing run of
 # this suite is byte-stable -- and a function that chattered on success would
-# put 19 baselined records into every green run's log, training every reader
+# put every baselined record into every green run's log, training every reader
 # to ignore exactly the lines that matter when it eventually reds.
 #
 # The STALE direction (a baseline row matching nothing live) is Section 4d.
@@ -2053,10 +2081,10 @@ assert "4c-4: an empty baseline reports every live record as new (returns 1)" \
 # smaller. It is the harness-layout-baseline.manifest precedent (which reds on
 # orphan rows), deliberately NOT ptodo-baseline.txt's subset-only rule -- that
 # one has no forcing function to drain it, a limitation #6859 accepts openly
-# and this guard need not inherit at 19 hand-auditable rows.
+# and this guard need not inherit at a hand-auditable number of rows.
 #
 # The stale direction also happens to be what stops the SUBSET-ORACLE VACUITY
-# hole today: a scan that silently matched nothing would turn all 19 rows
+# hole today: a scan that silently matched nothing would turn every row
 # stale and red. That cover EVAPORATES once the baseline is drained to zero,
 # which is the goal state -- hence the explicit floor in Section 4e.
 # ===========================================================================
@@ -2093,7 +2121,7 @@ assert "4d-1: the stale row is reported by name, prefixed -" \
 # 4d-2: A DELETED FILE is the same shape as a fixed site. Pinned separately
 #       because a file that no longer exists is the likelier way a row goes
 #       stale (a rename, a test moved between crates -- #7365 moved
-#       cli_lsp_protocol.rs and 4 of the 19 rows with it), and an
+#       cli_lsp_protocol.rs and four rows with it), and an
 #       implementation keyed on per-file comparison rather than on the whole
 #       multiset could pass 4d-1 and miss this.
 # ---------------------------------------------------------------------------
@@ -2209,7 +2237,7 @@ assert "4d-5: both directions are reported -- one + record and one - row" \
 # WHY THIS SECTION IS MANDATORY, not defensive padding. A subset oracle is
 # TRIVIALLY SATISFIED BY THE EMPTY SET: a scan that silently visited no files
 # at all reports "no new violations" and passes. Today the stale direction
-# covers that by accident -- scanning nothing turns all 19 baseline rows stale
+# covers that by accident -- scanning nothing turns every baseline row stale
 # and reds -- but that cover EVAPORATES the moment the baseline is drained to
 # zero, which is precisely the state this ratchet exists to reach. At that
 # point a typo in the root list would leave the guard permanently, silently
@@ -2253,7 +2281,8 @@ assert "4e-2: an empty root is not an error (returns 0)" \
 
 # ---------------------------------------------------------------------------
 # 4e-3: counts RECURSIVELY and ACROSS ROOTS, and counts only .rs. The live
-#       floor is asserted over 36 roots full of subdirectories, so a
+#       floor is asserted over every root in the tree, all of them full of
+#       subdirectories, so a
 #       non-recursive or first-root-only count would report a number far
 #       below the real one and could satisfy a floor it should not.
 # ---------------------------------------------------------------------------
