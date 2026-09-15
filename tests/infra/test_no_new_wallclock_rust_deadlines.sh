@@ -611,16 +611,66 @@ _wallclock_fingerprints() {
 }
 
 # ---------------------------------------------------------------------------
+# _wallclock_remediation_hint
+#
+# THE ONLY ADVICE THIS GUARD GIVES, in one copy, on stderr. Both reporting
+# paths -- the detector below and the ratchet's `+` branch -- print it, and
+# neither restates it.
+#
+# It used to be written out twice, near-verbatim, which is the same drift
+# shape the engine's SPOT note is about: the regexes were deduplicated and the
+# PROSE about them was not. The two copies had already diverged, and in the
+# direction that matters. One said "annotate it on the same line with the
+# escape"; the other said to take the escape AND raise _ESC_ALLOWLIST_SIZE.
+# Only the second is true -- Section 3 compares the live escape count against
+# that number for equality, so an escape taken on the first copy's advice reds
+# the gate a second time, with a message about an allowlist the reader was
+# never told to touch. The surviving text is the stricter one.
+#
+# NO LINE HERE MAY BEGIN WITH THE RECORD PREFIXES `  + ` OR `  - `. A reported
+# record and the prose about it must stay tellable apart, by a reader skimming
+# and by fixtures 4d-3/4d-4/4d-5, which count those prefixes. The numbered
+# fixes open with `  1.` for exactly that reason.
+# ---------------------------------------------------------------------------
+_wallclock_remediation_hint() {
+    # Split across two adjacent single-quoted strings, as everywhere else in
+    # this file: a contiguous copy would annotate this very line for the
+    # sibling guard. Used only to SPELL the escape below.
+    local _esc_re; _esc_re='wallcl''ock:allow'
+
+    echo "An upper bound on elapsed time INVERTS under load: a saturated host that deschedules" >&2
+    echo "the test thread fails code that behaved perfectly. That is the flake class tasks" >&2
+    echo "#5143, #5422, #5709 and #6438 each had to clean up. Apply the three sanctioned" >&2
+    echo "fixes, in this order:" >&2
+    echo "  1. Drive the budget through the WaitClock seam in watcher_tests.rs (clock.now()," >&2
+    echo "     VirtualClock) so the assertion consumes no real time and the claim becomes exact." >&2
+    echo "  2. Delete the upper bound outright and let nextest's slow-timeout / terminate-after" >&2
+    echo "     catch a genuine hang -- that is what the two tombstones in watcher_tests.rs do." >&2
+    echo "  3. Only if the site is genuinely legitimate, annotate it on the same line with" >&2
+    echo "     '// ${_esc_re} -- <reason>' AND raise _ESC_ALLOWLIST_SIZE in this file." >&2
+    echo "     Both halves are required: Section 3 checks that count for EQUALITY, so an" >&2
+    echo "     escape without the bump reds this gate again. Exactly ONE escape exists in" >&2
+    echo "     tree today (far_future_stamp in watcher_tests.rs, argued at the site); yours" >&2
+    echo "     would be the second, so state the argument where the next reader will find it." >&2
+}
+
+# ---------------------------------------------------------------------------
 # _detect_rust_wallclock_deadline <root>...
 #
-# REPORTING WRAPPER over _wallclock_fingerprints. It adds the human half --
-# what to DO about a violation -- and nothing else. Rule A and Rule B are
-# deliberately NOT restated here; they live with the engine above, in one copy.
+# THE RULE ORACLE, as a boolean: rc 1 if any violation was found under
+# <root>..., rc 0 if none. Prints each violating record to stderr followed by
+# _wallclock_remediation_hint, and restates nothing -- neither the rules (they
+# live with the engine above) nor the advice (it lives in the helper above).
+# An engine error propagates as its own rc >= 2 rather than being flattened
+# into "clean".
 #
-# Prints each violating record to stderr, then the three sanctioned fixes in
-# the order they should be tried. Returns 1 if any violation was found, 0 if
-# none. An engine error (a missing or unreadable root) propagates as its own
-# rc >= 2 rather than being flattened into "clean".
+# IT IS NOT ON THE LIVE GATE PATH, and that is worth saying plainly rather
+# than leaving a reader to discover it: Section 3 goes through
+# _wallclock_baseline_check, which needs the RECORDS, not a boolean. What this
+# wrapper is actually for is Sections 1 and 2 -- the ~30 hermetic fixtures that
+# ask whether a planted line matches Rule A or Rule B, a yes/no question that
+# reads far better as an rc than as a string comparison against an expected
+# record -- plus a human pointing it at a directory by hand.
 #
 # This function USED to be the whole guard, carrying its own copy of both
 # regexes and a per-line bash read loop over `"$dir"/*.rs`. Both are gone. The
@@ -631,11 +681,6 @@ _wallclock_fingerprints() {
 # one grep at the widened scope.
 # ---------------------------------------------------------------------------
 _detect_rust_wallclock_deadline() {
-    # Split across two adjacent single-quoted strings, as everywhere else in
-    # this file: a contiguous copy would annotate this very line for the
-    # sibling guard. Used only to SPELL the escape in the hint below.
-    local _esc_re; _esc_re='wallcl''ock:allow'
-
     local _records _rc=0
     _records="$(_wallclock_fingerprints "$@")" || _rc=$?
     [ "$_rc" -eq 0 ] || return "$_rc"
@@ -644,17 +689,7 @@ _detect_rust_wallclock_deadline() {
     printf '%s\n' "$_records" >&2
     echo "" >&2
     echo "Each line above builds a real-clock deadline by hand, or bounds elapsed time from ABOVE." >&2
-    echo "An upper bound on elapsed time INVERTS under load: a saturated host that deschedules the" >&2
-    echo "test thread fails code that behaved perfectly. That is the flake class tasks #5143, #5422," >&2
-    echo "#5709 and #6438 each had to clean up. Try these three fixes, in this order:" >&2
-    echo "  1. Drive the budget through the WaitClock seam in watcher_tests.rs (clock.now(), " >&2
-    echo "     VirtualClock) so the assertion consumes no real time and the claim becomes exact." >&2
-    echo "  2. Delete the upper bound outright and let nextest's slow-timeout / terminate-after" >&2
-    echo "     catch a genuine hang -- that is what the two tombstones in watcher_tests.rs do." >&2
-    echo "  3. Only if the site is genuinely legitimate, annotate it on the same line with" >&2
-    echo "     '// ${_esc_re} -- <reason>'. Exactly ONE escape exists in tree today" >&2
-    echo "     (far_future_stamp in watcher_tests.rs, argued at the site); yours would be" >&2
-    echo "     the second, so state the argument where the next reader will find it." >&2
+    _wallclock_remediation_hint
     return 1
 }
 
@@ -748,18 +783,12 @@ _wallclock_baseline_check() {
     # records by its own report.
     if [ -n "$_new" ]; then
         echo "" >&2
+        # ONLY the part that is specific to being a baseline row lives here;
+        # the why and the three fixes are the shared hint.
         echo "A '+' line is a NEW hand-rolled real-clock deadline, or a NEW upper bound on" >&2
-        echo "elapsed time. An upper bound INVERTS under load: a saturated host that" >&2
-        echo "deschedules the test thread fails code that behaved perfectly." >&2
-        echo "DO NOT simply append a baseline row for it -- a row means 'pre-existing debt" >&2
-        echo "that must not grow', NOT 'blessed'. Apply the three sanctioned fixes in order:" >&2
-        echo "  1. Drive the budget through the WaitClock seam (clock.now(), VirtualClock)" >&2
-        echo "     so the assertion consumes no real time and the claim becomes exact." >&2
-        echo "  2. Delete the upper bound and let nextest's slow-timeout / terminate-after" >&2
-        echo "     catch a genuine hang." >&2
-        echo "  3. Only if the site is genuinely legitimate, take the same-line escape AND" >&2
-        echo "     raise _ESC_ALLOWLIST_SIZE in this file, so the argument lands in review" >&2
-        echo "     rather than in a baseline row." >&2
+        echo "elapsed time. DO NOT simply append a baseline row for it -- a row means" >&2
+        echo "'pre-existing debt that must not grow', NOT 'blessed'." >&2
+        _wallclock_remediation_hint
     fi
     if [ -n "$_stale" ]; then
         echo "" >&2
