@@ -171,6 +171,11 @@ pub(crate) fn phase_traits(
                     &ctx.alias_registry,
                     &ctx.resolution_structure_names,
                     &trait_names,
+                    // Same set `phase_functions` used, read from ctx rather than
+                    // re-derived: by now `ctx.functions` is complete, but the
+                    // declared-name question has one answer per module and must
+                    // not acquire a second construction site (task #5371).
+                    &ctx.declared_fn_names,
                     None, // v1: no prelude template registry for static fn bodies
                     &mut ctx.diagnostics,
                 );

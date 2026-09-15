@@ -587,6 +587,7 @@ pub fn compile_with_prelude_context_checked_with_config(
         &mut compile_ctx,
         prelude_refs,
         &decl_refs.trait_refs,
+        &decl_refs.fn_refs,
     );
 
     // The merged prelude enum set, used BOTH to resolve enum-typed variant

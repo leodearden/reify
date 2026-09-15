@@ -65,6 +65,24 @@ pub(crate) struct CompilationScope<'u> {
     /// `collection_sub_names` / `purpose_param_names` — a dedicated typed set for a
     /// category-specific lookup rather than overloading `names`.
     pub(crate) geometry_realization_names: HashSet<String>,
+    /// Names the enclosing MODULE declares that may appear as a call callee
+    /// (task #5371). Read by exactly one site: the terminal first-arg fallback
+    /// in `expr.rs`, to tell "this name exists nowhere" from "this name is
+    /// declared right here but is not resolvable from this body yet".
+    ///
+    /// Unlike every sibling set above, this is a module-level fact rather than
+    /// an entity-level one, and it binds NO values — an entry here does not put
+    /// the name in `names` and cannot make a forward reference resolve. It only
+    /// withholds a diagnostic. Forward references still do not resolve; that is
+    /// `functions_phase`'s documented contract and #6014's business.
+    ///
+    /// Populated only on the scopes built by `functions.rs::compile_function`,
+    /// which are the ones that compile against a function table that is still
+    /// being built. Entity bodies compile after `ctx.resolution_functions` is
+    /// merged and so never reach the fallback with a declared name; leaving the
+    /// set empty there keeps the field's meaning exact rather than approximately
+    /// true everywhere.
+    pub(crate) declared_callable_names: HashSet<String>,
     /// Trait member index for qualified access validation: trait_name → set of member names.
     /// Populated from trait_registry in compile_entity.
     pub(crate) trait_members: HashMap<String, HashSet<String>>,
@@ -270,6 +288,7 @@ impl<'u> CompilationScope<'u> {
             collection_sub_names: HashSet::new(),
             keyed_sub_keys: HashMap::new(),
             geometry_realization_names: HashSet::new(),
+            declared_callable_names: HashSet::new(),
             trait_members: HashMap::new(),
             type_param_bounds: HashMap::new(),
             trait_member_types: HashMap::new(),

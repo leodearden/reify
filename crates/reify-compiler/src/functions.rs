@@ -47,6 +47,7 @@ pub(crate) fn compile_function(
     alias_registry: &TypeAliasRegistry,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
+    declared_fn_names: &HashSet<String>,
     prelude_template_registry: Option<&HashMap<String, &TopologyTemplate>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
@@ -156,6 +157,11 @@ pub(crate) fn compile_function(
     if let Some(reg) = prelude_template_registry {
         neutral_scope.set_template_registry(reg);
     }
+    // Neutral for VALUE bindings, not for the module's declared vocabulary: a
+    // default like `= helper(1.0)` is compiled against the same partially-grown
+    // `functions` table as the body below, so it reaches the terminal fallback
+    // by the same route and must be answered the same way (task #5371).
+    neutral_scope.declared_callable_names = declared_fn_names.clone();
     let param_defaults: Vec<Option<CompiledExpr>> = fn_def
         .params
         .iter()
@@ -291,6 +297,13 @@ pub(crate) fn compile_function(
     if let Some(reg) = prelude_template_registry {
         scope.set_template_registry(reg);
     }
+    // The module's declared-fn vocabulary. `functions` above is the table this
+    // body RESOLVES against and is deliberately incomplete — `phase_functions`
+    // grows it in source order — so a call to a later sibling lands on the
+    // terminal first-arg fallback in `expr.rs` with a name that is perfectly
+    // real. This set is what lets that fallback withhold its "exists nowhere"
+    // claim without changing which overload (if any) resolves (task #5371).
+    scope.declared_callable_names = declared_fn_names.clone();
     for (name, ty) in &params {
         scope.register(name, ty.clone());
     }

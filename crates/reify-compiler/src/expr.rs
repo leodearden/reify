@@ -3973,13 +3973,34 @@ fn compile_expr_guarded_with_expected_inner(
                         }
 
                         let known = crate::unresolved_function::is_known_builtin(name);
+                        // `is_known_builtin` answers "is this a BUILTIN?" and
+                        // answers it correctly; a user `fn` is not one. Reading
+                        // its `false` as "exists nowhere" is only sound when the
+                        // caller's function table was COMPLETE, and inside a fn
+                        // body it is not: `compile_builder/functions_phase.rs`
+                        // compiles each body against the user-only table it is
+                        // still growing in source order, so a call to a later
+                        // sibling — or either half of a mutually-referential
+                        // pair, which no reordering can fix — arrives here with
+                        // a name the module plainly declares. `scope`'s
+                        // declared-callable set closes that gap; it is a
+                        // DIFFERENT question ("does this module declare it?")
+                        // and so is asked separately rather than by threading
+                        // module state into the pure name predicate.
+                        //
+                        // Withholding the warning does NOT make the call
+                        // resolve: it is still typed from arg0 below, exactly as
+                        // before. Entity bodies never take this branch (they
+                        // compile after `ctx.resolution_functions` is merged),
+                        // so their scopes leave the set empty.
+                        let declared_here = scope.declared_callable_names.contains(name);
                         // Mutually exclusive with the arg-shape warning above
                         // without needing a guard: all three arg-aware families
                         // contribute production slices to `is_known_builtin`'s
                         // union, so `arg_shape_expected.is_some()` implies
                         // `known`. Pinned by
                         // `mis_shaped_known_builtins_are_never_reported_unresolved`.
-                        if !known {
+                        if !known && !declared_here {
                             diagnostics.push(
                                 Diagnostic::warning(format!("unresolved function: {name}"))
                                     .with_code(DiagnosticCode::UnresolvedFunction)

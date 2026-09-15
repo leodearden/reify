@@ -76,6 +76,12 @@ pub(crate) fn phase_functions(
         // Passing `&ctx.functions` as the "prior compiled functions" parameter lets
         // a function resolve a call to an earlier sibling declaration (forward
         // references are not supported at the function layer).
+        //
+        // `ctx.declared_fn_names` is the order-INDEPENDENT companion to that
+        // order-dependent table (task #5371). It changes nothing about which
+        // overload resolves; it only tells the terminal first-arg fallback in
+        // `expr.rs` that a name it could not resolve is nonetheless declared in
+        // this module, so the fallback withholds its "exists nowhere" warning.
         for fn_def in fn_refs {
             if let Some(compiled_fn) = compile_function(
                 fn_def,
@@ -84,6 +90,7 @@ pub(crate) fn phase_functions(
                 &ctx.alias_registry,
                 &ctx.resolution_structure_names,
                 &ctx.resolution_trait_names,
+                &ctx.declared_fn_names,
                 Some(&merged_registry),
                 &mut ctx.diagnostics,
             ) {
