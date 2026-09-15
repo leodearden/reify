@@ -41,8 +41,9 @@ use faer::sparse::SparseRowMat;
 
 use reify_solver_elastic::{
     AssemblyElement, AssemblyMode, CgResult, CgSolverOptions, DirichletBc, ElementOrder,
-    ElementStiffness, IsotropicElastic, SolverMode, apply_dirichlet_row_elimination,
-    assemble_global_stiffness, element_stiffness, solve_cg,
+    ElementStiffness, IsotropicElastic, LocalDisplacementQoi, LocalNormalStressQoi, P1TetMeshRef,
+    QuantityOfInterest, SolverMode, apply_dirichlet_row_elimination, assemble_global_stiffness,
+    element_stiffness, solve_cg, solve_dual_cg,
 };
 
 // ─── ported FEA harness helpers (tests/aposteriori_validation.rs) ──────────
@@ -286,4 +287,183 @@ fn assemble_eliminate_and_solve(
     let result = solve_cg(&k, &f, opts, SolverMode::Deterministic);
 
     (k, f, bcs, result)
+}
+
+// ─── BT1: reciprocity (PRD §6 C2) ─────────────────────────────────────────
+
+/// A coarse cantilever box pencil: `[0,lx] × [0,ly] × [0,lz]`, clamped on
+/// `x = 0`, with a transverse shear resultant distributed over the free end.
+///
+/// Homogeneous Dirichlet data throughout, which is what lets BT1 state
+/// reciprocity against the ELIMINATED right-hand side: with all prescribed
+/// values zero, elimination leaves `f` zeroed at constrained DOFs and
+/// otherwise untouched.
+struct CantileverPencil {
+    nodes: Vec<[f64; 3]>,
+    conns: Vec<[usize; 4]>,
+    k: SparseRowMat<usize, f64>,
+    /// The ELIMINATED right-hand side — the `f` of `J(u_h) == fᵀz_h`.
+    f: Vec<f64>,
+    bcs: Vec<DirichletBc>,
+    primal: CgResult,
+    lx: f64,
+    ly: f64,
+    lz: f64,
+}
+
+fn cantilever_pencil(
+    nx: usize,
+    ny: usize,
+    nz: usize,
+    material: &IsotropicElastic,
+    opts: CgSolverOptions,
+) -> CantileverPencil {
+    let (lx, ly, lz) = (4.0_f64, 1.0, 1.0);
+    let (nodes, conns) = box_p1_mesh(lx, ly, lz, nx, ny, nz);
+    let tol = 1e-9;
+    let bcs = dirichlet_fix_face(&nodes, 0, 0.0, tol);
+    let end = end_face_nodes(&nodes, lx, tol);
+    let raw_f = rhs_from_point_loads(nodes.len(), &distributed_tip_load(&end, 1.0e-3));
+    let (k, f, bcs, primal) =
+        assemble_eliminate_and_solve(&nodes, &conns, material, bcs, &raw_f, opts);
+    CantileverPencil {
+        nodes,
+        conns,
+        k,
+        f,
+        bcs,
+        primal,
+        lx,
+        ly,
+        lz,
+    }
+}
+
+/// BT1 / C2 — RECIPROCITY: `J(u_h) == fᵀz_h` for both shipped QoI kinds.
+///
+/// The identity `J(u_h) = gᵀu_h = zᵀ_h K u_h = fᵀz_h` is the load-bearing
+/// claim of the whole dual formulation: it is what says the adjoint solve
+/// really computes the sensitivity of `J` to the residual, and therefore
+/// that weighting the residual by `z_h` estimates the error in `J` rather
+/// than in some unrelated functional. A dual load assembled with a
+/// transposed index, a wrong volume weight, or the wrong BC treatment still
+/// produces a plausible `z_h` — but not one satisfying this identity.
+///
+/// # The tolerance is derived, not tuned
+///
+/// `10 · cg_tolerance · |J|`. Both sides come from CG solves converged to a
+/// relative residual of `CgSolverOptions::tolerance`, so the identity can
+/// only hold to that accuracy; the factor 10 covers both solves plus the
+/// contraction. It is computed from the SAME `opts` the solves used, so
+/// tightening the fixture's tolerance tightens the assertion automatically
+/// rather than silently leaving slack behind.
+///
+/// # Fixture placement is binding, and was measured
+///
+/// * **LocalDisplacement** — ball at the tip, `direction = [0,−1,0]`, along
+///   the load. Measured relative error 7.3e-12 / 1.3e-12 / 6.5e-15 / 6.8e-13
+///   across the four pencils below, against a 1e-7 bound: margin ≥ 1e4×.
+/// * **LocalNormalStress** — the ball MUST sit OFF the bending neutral
+///   axis. Measured 1.0e-10 / 1.0e-10 / 3.1e-11 / 4.6e-10, margin ≥ 200×,
+///   and identical at `E = 1` and `E = 200e9`. A ball CENTRED on the
+///   neutral axis is degenerate: the `σ_xx` mean cancels across the axis,
+///   `J` collapses to ~1e-10, and the relative identity becomes
+///   meaningless — measured relative error ≈ 1.0 there, i.e. a fixture that
+///   looks like a broken estimator.
+///
+/// That degeneracy is why each case asserts a NON-DEGENERACY floor on `|J|`
+/// before testing reciprocity. A future edit that re-centres a ball then
+/// fails as "degenerate fixture", naming the real problem, instead of as
+/// "reciprocity broken", which would send a reader hunting through the dual
+/// assembler.
+///
+/// # TDD red→green
+///
+/// **RED** (step-11): `solve_dual_cg` does not exist, so this fails to
+/// COMPILE. **GREEN** (step-12).
+#[test]
+fn bt1_reciprocity_holds_for_both_qoi_kinds_across_pencils_and_material_scales() {
+    let opts = CgSolverOptions::default();
+
+    for (nx, ny, nz) in [(4, 1, 1), (6, 2, 2), (8, 2, 2), (10, 3, 3)] {
+        for youngs_modulus in [1.0_f64, 200.0e9] {
+            let material = IsotropicElastic {
+                youngs_modulus,
+                poisson_ratio: 0.3,
+            };
+            let p = cantilever_pencil(nx, ny, nz, &material, opts);
+            let mesh = P1TetMeshRef {
+                coords: &p.nodes,
+                tets: &p.conns,
+            };
+            let u = p.primal.u();
+            assert!(
+                p.primal.converged,
+                "{nx}x{ny}x{nz} @ E={youngs_modulus}: the PRIMAL solve must \
+                 converge before reciprocity means anything",
+            );
+
+            // Tip ball, along the load. Displacement scale for the
+            // non-degeneracy floor: the largest nodal |u| on the mesh.
+            let u_scale = u.iter().fold(0.0_f64, |m, x| m.max(x.abs()));
+            let displacement: Box<dyn QuantityOfInterest> = Box::new(LocalDisplacementQoi {
+                at: [p.lx, p.ly / 2.0, p.lz / 2.0],
+                radius: 0.6 * p.ly,
+                direction: [0.0, -1.0, 0.0],
+            });
+            // OFF the bending neutral axis (y = ly/2) — see the doc above.
+            let normal_stress: Box<dyn QuantityOfInterest> = Box::new(LocalNormalStressQoi {
+                at: [p.lx / 8.0, 0.15 * p.ly, p.lz / 2.0],
+                radius: 0.35,
+                normal: [1.0, 0.0, 0.0],
+            });
+
+            for (qoi, floor, label) in [
+                (&displacement, 1e-3 * u_scale, "LocalDisplacement"),
+                (&normal_stress, 1e-6 * youngs_modulus * u_scale, "LocalNormalStress"),
+            ] {
+                let case = format!("{label} on {nx}x{ny}x{nz} @ E={youngs_modulus}");
+
+                let j = qoi
+                    .evaluate(mesh, &material, u)
+                    .unwrap_or_else(|e| panic!("{case}: J(u_h) must resolve, got {e}"));
+                assert!(
+                    j.abs() > floor,
+                    "{case}: DEGENERATE FIXTURE — |J(u_h)| = {} is at or below \
+                     the fixture's own scale floor {floor}, so the relative \
+                     reciprocity check below would be meaningless. For the \
+                     stress QoI this is what a ball re-centred on the bending \
+                     neutral axis looks like; move it off-axis rather than \
+                     loosening the bound.",
+                    j.abs(),
+                );
+
+                let dual = solve_dual_cg(
+                    &p.k,
+                    qoi.as_ref(),
+                    mesh,
+                    &material,
+                    u,
+                    &p.bcs,
+                    opts,
+                    SolverMode::Deterministic,
+                )
+                .unwrap_or_else(|e| panic!("{case}: the dual solve must resolve, got {e}"));
+                assert!(
+                    dual.converged,
+                    "{case}: the DUAL solve must converge too",
+                );
+
+                let f_dot_z: f64 = p.f.iter().zip(dual.u()).map(|(fi, zi)| fi * zi).sum();
+                let bound = 10.0 * opts.tolerance * j.abs();
+                assert!(
+                    (j - f_dot_z).abs() <= bound,
+                    "{case}: reciprocity J(u_h) == fᵀz_h must hold to \
+                     10·cg_tolerance relative; J = {j}, fᵀz_h = {f_dot_z}, \
+                     |difference| = {} > {bound}",
+                    (j - f_dot_z).abs(),
+                );
+            }
+        }
+    }
 }
