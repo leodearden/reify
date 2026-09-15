@@ -336,12 +336,22 @@ impl LanguageServer for ReifyLanguageServer {
 
         // Eval runs outside the RwLock, using only the eval_state Mutex
         // (`lock_eval_state` also reports poisoned-lock recovery).
-        let diagnostics = {
+        let (diagnostics, log_messages) = {
             let mut eval_state = self.lock_eval_state();
             let result =
                 crate::diagnostics::compute_diagnostics_with_state(&mut eval_state, &text, &uri);
-            result.diagnostics
+            (result.diagnostics, result.log_messages)
         };
+
+        // Forward the pipeline's own log lines. Here, and identically in the
+        // sibling handler: after the `eval_state` guard has dropped and
+        // outside every `state` write-lock scope, per
+        // `NotificationSink::log_message`'s contract. Uniformly, so the
+        // ordering invariant holds at EVERY log site rather than only at the
+        // one task #6162 happened to find.
+        for line in log_messages {
+            self.sink.log_message(line);
+        }
 
         // Brief write lock: capture diagnostics
         {
@@ -419,12 +429,22 @@ impl LanguageServer for ReifyLanguageServer {
 
         // Eval runs outside the RwLock, using only the eval_state Mutex
         // (`lock_eval_state` also reports poisoned-lock recovery).
-        let diagnostics = {
+        let (diagnostics, log_messages) = {
             let mut eval_state = self.lock_eval_state();
             let result =
                 crate::diagnostics::compute_diagnostics_with_state(&mut eval_state, &text, &uri);
-            result.diagnostics
+            (result.diagnostics, result.log_messages)
         };
+
+        // Forward the pipeline's own log lines. Here, and identically in the
+        // sibling handler: after the `eval_state` guard has dropped and
+        // outside every `state` write-lock scope, per
+        // `NotificationSink::log_message`'s contract. Uniformly, so the
+        // ordering invariant holds at EVERY log site rather than only at the
+        // one task #6162 happened to find.
+        for line in log_messages {
+            self.sink.log_message(line);
+        }
 
         // Brief write lock: capture diagnostics
         {

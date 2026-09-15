@@ -72,6 +72,21 @@ pub struct DiagnosticsResult {
     pub diagnostics: Vec<lsp_types::Diagnostic>,
     /// Exported geometry data (if geometry kernel is configured).
     pub geometry_output: Option<Vec<u8>>,
+    /// Server log lines the pipeline produced, for the caller to route.
+    ///
+    /// RETURNED rather than written, so this stage stays a pure function of
+    /// its inputs and knows nothing about the transport: threading a
+    /// `NotificationSink` down here would make the pipeline depend on it and
+    /// force every one of its in-crate test call sites to supply one, and
+    /// stashing lines on [`EvalState`] would be a hidden side-channel
+    /// through mutable shared state with an implicit drain point. Sitting
+    /// beside `diagnostics` puts them where a reader already looks.
+    ///
+    /// Decisively: this leaves ONE module — `server.rs` — owning both the
+    /// channel and the write-lock ordering invariant that governs when it
+    /// may be used, so every log site in the server is forwarded from the
+    /// same place, spelled the same way, for the same reason (task #6329).
+    pub log_messages: Vec<crate::server::LogLine>,
 }
 
 /// Run the stateful parse → compile → eval → check pipeline.
@@ -179,6 +194,9 @@ pub fn compute_diagnostics_with_state(
     uri: &Url,
 ) -> DiagnosticsResult {
     let mut diagnostics = Vec::new();
+    // Server-log lines, returned for the caller to route — see
+    // `DiagnosticsResult::log_messages`.
+    let mut log_messages: Vec<crate::server::LogLine> = Vec::new();
 
     // Derive module name from URI
     let module_name = uri
@@ -201,6 +219,7 @@ pub fn compute_diagnostics_with_state(
         return DiagnosticsResult {
             diagnostics,
             geometry_output: None,
+            log_messages,
         };
     }
 
@@ -239,6 +258,7 @@ pub fn compute_diagnostics_with_state(
         return DiagnosticsResult {
             diagnostics,
             geometry_output: None,
+            log_messages,
         };
     }
 
@@ -284,11 +304,13 @@ pub fn compute_diagnostics_with_state(
         #[cfg(debug_assertions)]
         if state.last_content_hash == Some(compiled.content_hash) && !state.is_engine_initialized()
         {
-            eprintln!(
-                "[reify-lsp] WARNING: content_hash matched but engine was uninitialized \
-                 — last_content_hash was set without a preceding eval(); \
-                 cold-start forced to prevent silent diagnostic loss (engine-init guard)"
-            );
+            log_messages.push(crate::server::LogLine {
+                typ: lsp_types::MessageType::WARNING,
+                message: "[reify-lsp] WARNING: content_hash matched but engine was uninitialized \
+                          — last_content_hash was set without a preceding eval(); \
+                          cold-start forced to prevent silent diagnostic loss (engine-init guard)"
+                    .to_string(),
+            });
         }
         let checker = SimpleConstraintChecker;
         state.engine = reify_eval::Engine::new(Box::new(checker), None);
@@ -299,9 +321,12 @@ pub fn compute_diagnostics_with_state(
     let check_result = match state.engine.check_snapshot(&compiled) {
         Some(result) => result,
         None => {
-            eprintln!(
-                "[reify-lsp] check_snapshot returned None after eval, falling back to full check"
-            );
+            log_messages.push(crate::server::LogLine {
+                typ: lsp_types::MessageType::WARNING,
+                message:
+                    "[reify-lsp] check_snapshot returned None after eval, falling back to full check"
+                        .to_string(),
+            });
             // check() re-runs eval() internally and includes its diagnostics in
             // CheckResult.diagnostics; drop our independently captured copy to
             // avoid double-emission.
@@ -646,6 +671,7 @@ pub fn compute_diagnostics_with_state(
     DiagnosticsResult {
         diagnostics,
         geometry_output: None,
+        log_messages,
     }
 }
 
