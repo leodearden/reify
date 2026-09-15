@@ -667,6 +667,9 @@ pub use shell_solve::{FlatPlateShellSolve, solve_flat_plate_shell};
 // Task 2996: Z-Z error indicator — kernel-layer a-posteriori error estimator.
 // PRD: docs/prds/v0_4/a-posteriori-error-estimation.md, Task decomposition #1.
 pub use error_estimator::{ZzIndicator, compute_zz_indicator};
+// Task 7452/β: goal-oriented error estimation — dual-weighted per-element
+// indicator. PRD: docs/prds/v0_6/goal-oriented-error-estimation.md §5.4, §6 C3/C5.
+pub use error_estimator::{DualWeightedIndicator, compute_dual_weighted_indicator};
 // Task 7452/β: goal-oriented error estimation — quantity-of-interest surface.
 // PRD: docs/prds/v0_6/goal-oriented-error-estimation.md §5.1, §6 C2–C6.
 pub use qoi::{

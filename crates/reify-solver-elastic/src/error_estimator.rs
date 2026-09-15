@@ -264,26 +264,226 @@ fn frobenius_norm(t: &[[f64; 3]; 3]) -> f64 {
     sum_sq.sqrt()
 }
 
-/// Pack a symmetric 3×3 stress tensor and compute `t_voigt · S · t_voigt`.
-///
-/// Canonical bilinear form shared by the per-element indicator (step d) and
-/// the solution strain-energy accumulator (step e). Keeping both consumers on
-/// one code path prevents divergence if the Voigt ordering ever changes.
+/// Pack two symmetric 3×3 stress tensors and compute `a_voigt · S · b_voigt`.
 ///
 /// Voigt order: `[σ_xx, σ_yy, σ_zz, σ_xy, σ_yz, σ_xz]` (engineering shear).
+/// `S` is applied to the SECOND argument and the result dotted with the
+/// first — an asymmetry with no mathematical content (`S` is symmetric) but
+/// a real one for floating-point reproducibility, since it fixes the order
+/// the terms accumulate in.
+///
+/// [`energy_density_voigt`] is the `a == b` case; the dual-weighted
+/// indicator is the general one. Keeping both on this single code path is
+/// what makes the self-dual reduction bit-exact rather than merely close.
 #[inline]
-fn energy_density_voigt(t: &[[f64; 3]; 3], s: &[[f64; 6]; 6]) -> f64 {
-    let v = [t[0][0], t[1][1], t[2][2], t[0][1], t[1][2], t[0][2]];
+fn bilinear_energy_voigt(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3], s: &[[f64; 6]; 6]) -> f64 {
+    let va = [a[0][0], a[1][1], a[2][2], a[0][1], a[1][2], a[0][2]];
+    let vb = [b[0][0], b[1][1], b[2][2], b[0][1], b[1][2], b[0][2]];
     let mut result = 0.0;
     for i in 0..6 {
         let mut sv_i = 0.0;
         for j in 0..6 {
-            sv_i += s[i][j] * v[j];
+            sv_i += s[i][j] * vb[j];
         }
-        result += v[i] * sv_i;
+        result += va[i] * sv_i;
     }
     result
 }
+
+/// Pack a symmetric 3×3 stress tensor and compute `t_voigt · S · t_voigt`.
+///
+/// Canonical quadratic form shared by the per-element indicator (step d) and
+/// the solution strain-energy accumulator (step e). Keeping both consumers on
+/// one code path prevents divergence if the Voigt ordering ever changes.
+///
+/// Delegates to [`bilinear_energy_voigt`] with both slots the same tensor.
+/// That substitution is bit-exact, not merely equivalent: with `a == b` the
+/// two packed vectors are identical and every arithmetic operation happens
+/// in the same order as before, so `compute_zz_indicator`'s landed
+/// closed-form goldens are unaffected.
+#[inline]
+fn energy_density_voigt(t: &[[f64; 3]; 3], s: &[[f64; 6]; 6]) -> f64 {
+    bilinear_energy_voigt(t, t, s)
+}
+/// Output of the dual-weighted (goal-oriented) error indicator.
+///
+/// PRD §5.4. Where [`ZzIndicator`] measures error in the global ENERGY norm,
+/// this measures it in the single scalar quantity the designer asked about —
+/// so its per-element entries are SIGNED, and their sum is an estimate of
+/// `J(u) − J(u_h)` rather than a norm.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DualWeightedIndicator {
+    /// Signed per-element contribution `η_K`, one entry per input element in
+    /// input order.
+    ///
+    /// `η_K = V_K · (σ̄_K − σ_K)ᵀ D⁻¹ (z̄_K − z_K)` — the primal stress error
+    /// contracted against the DUAL stress error in the compliance metric.
+    ///
+    /// # Signed, and that is the point
+    ///
+    /// A negative `η_K` is not an error: it is an element whose local
+    /// contribution pulls the quantity of interest back toward its exact
+    /// value. Cancellation between elements is exactly what makes a
+    /// goal-oriented estimate sharper than an energy-norm one, and taking
+    /// `|·|` here would throw that information away. For MARKING, where only
+    /// magnitude matters, use [`DualWeightedIndicator::marking_weights`].
+    pub per_element_signed: Vec<f64>,
+
+    /// `Σ_K η_K` — the signed estimate of the QoI error `J(u) − J(u_h)`.
+    ///
+    /// Accumulated in element order, so it is reproducible bit-for-bit.
+    pub qoi_error_estimate: f64,
+
+    /// `Σ_K |η_K|` — the cancellation-free bound, `≥ |qoi_error_estimate|`
+    /// (PRD §6 C5).
+    ///
+    /// The two coincide only when every contribution shares one sign. The
+    /// gap between them is the amount of cancellation the estimate relies
+    /// on, and hence a measure of how much to trust it.
+    pub qoi_error_bound: f64,
+}
+
+impl DualWeightedIndicator {
+    /// Per-element `|η_K|`, the weights Dörfler marking consumes (PRD §6 C5).
+    ///
+    /// Marking ranks elements by how much error they carry, which is a
+    /// magnitude question — an element contributing `−5` needs refining just
+    /// as much as one contributing `+5`. Handing out `|η_K|` from here means
+    /// no caller has to re-derive that, and no caller can accidentally mark
+    /// on the signed values (which would rank the most strongly
+    /// error-cancelling elements as the *least* in need of refinement).
+    pub fn marking_weights(&self) -> Vec<f64> {
+        self.per_element_signed.iter().map(|x| x.abs()).collect()
+    }
+}
+
+/// Interpolate a recovered nodal stress field back to an element centroid.
+///
+/// For P1 tets the barycentric coordinates at the centroid are (¼,…,¼), so
+/// this is the arithmetic mean of the element's four nodal tensors.
+///
+/// [`compute_zz_indicator`] keeps its own inline copy of this loop: it is
+/// covered by landed closed-form goldens, and folding it onto this helper is
+/// out of scope here rather than an oversight.
+fn centroid_smoothed_stress(nodal: &[[[f64; 3]; 3]], connectivity: &[usize]) -> [[f64; 3]; 3] {
+    let mut bar = [[0.0_f64; 3]; 3];
+    for &node in connectivity {
+        let ns = &nodal[node];
+        for i in 0..3 {
+            for j in 0..3 {
+                bar[i][j] += ns[i][j];
+            }
+        }
+    }
+    let inv_n = 1.0 / (connectivity.len() as f64);
+    for row in &mut bar {
+        for cell in row.iter_mut() {
+            *cell *= inv_n;
+        }
+    }
+    bar
+}
+
+/// `recovered − discrete`, the recovery-based estimate of a stress error.
+#[inline]
+fn recovery_error(recovered: &[[f64; 3]; 3], discrete: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    let mut diff = [[0.0_f64; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            diff[i][j] = recovered[i][j] - discrete[i][j];
+        }
+    }
+    diff
+}
+
+/// Compute the dual-weighted (goal-oriented) per-element error indicator.
+///
+/// PRD §5.4. `primal` is the stress field of the primal solution `u_h`,
+/// `dual` that of the adjoint solution `z_h` from `K z_h = g`; the two must
+/// describe the SAME elements in the same order.
+///
+/// # Algorithm
+///
+/// [`compute_zz_indicator`]'s steps (a)–(c) run TWICE — recovery and
+/// centroid interpolation on the primal field and on the dual field — and
+/// then step (d) becomes a BILINEAR contraction of the two recovery errors
+/// rather than the energy of one:
+///
+/// `η_K = V_K · bilinear_energy_voigt(σ̄_K − σ_K, z̄_K − z_K, D⁻¹)`
+///
+/// # Sign convention
+///
+/// Both differences are taken `recovered − discrete`, the opposite of
+/// [`compute_zz_indicator`]'s `discrete − recovered`. The form is bilinear,
+/// so the two sign flips cancel — and cancel EXACTLY in IEEE-754, not just
+/// mathematically: negation is exact, `(−a)·(−b) == a·b`, and
+/// round-to-nearest is symmetric about zero, so every accumulated term is
+/// bit-identical. That is what lets the self-dual case reduce to the Z-Z
+/// indicator bit for bit
+/// (`tests::dual_weighted_indicator_with_a_self_dual_field_reduces_to_the_zz_indicator_bitwise`).
+///
+/// # Panics
+///
+/// If `primal` and `dual` have different lengths, or if any element carries
+/// non-P1 (non-4-node) connectivity. Both are caller errors rather than user
+/// data, so they are unconditional `assert!`s per the crate's contract
+/// convention — a truncating zip would otherwise return an indicator over a
+/// subset of the mesh, an under-estimate indistinguishable from convergence.
+pub fn compute_dual_weighted_indicator(
+    primal: &[StressElement<'_>],
+    dual: &[StressElement<'_>],
+    mesh: &VolumeMesh,
+    material: &IsotropicElastic,
+) -> DualWeightedIndicator {
+    assert_eq!(
+        primal.len(),
+        dual.len(),
+        "compute_dual_weighted_indicator requires the primal and dual stress \
+         fields to cover the same number of elements; got {} and {}",
+        primal.len(),
+        dual.len(),
+    );
+
+    let n_nodes = mesh.vertices.len() / 3;
+    let compliance = compliance_matrix(material);
+    let nodal_primal = recover_nodal_stress_p1(n_nodes, primal);
+    let nodal_dual = recover_nodal_stress_p1(n_nodes, dual);
+
+    let mut per_element_signed = Vec::with_capacity(primal.len());
+    let mut qoi_error_estimate = 0.0_f64;
+    let mut qoi_error_bound = 0.0_f64;
+
+    for (el_u, el_z) in primal.iter().zip(dual) {
+        let n = el_u.connectivity.len();
+        assert_eq!(
+            n,
+            4,
+            "compute_dual_weighted_indicator currently supports P1 tets only; \
+             got connectivity of length {n}",
+        );
+
+        let diff_u = recovery_error(
+            &centroid_smoothed_stress(&nodal_primal, el_u.connectivity),
+            &el_u.stress,
+        );
+        let diff_z = recovery_error(
+            &centroid_smoothed_stress(&nodal_dual, el_z.connectivity),
+            &el_z.stress,
+        );
+
+        let eta = el_u.volume * bilinear_energy_voigt(&diff_u, &diff_z, &compliance);
+        per_element_signed.push(eta);
+        qoi_error_estimate += eta;
+        qoi_error_bound += eta.abs();
+    }
+
+    DualWeightedIndicator {
+        per_element_signed,
+        qoi_error_estimate,
+        qoi_error_bound,
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -1197,6 +1397,45 @@ mod tests {
         let zero = [[0.0_f64; 3]; 3];
         let primal = three_tet_fan_elements([diag_xx(100.0), zero, zero]);
         compute_dual_weighted_indicator(&primal, &primal[..2], &mesh, &mat);
+    }
+
+
+    /// `marking_weights` is `|η_K|` per element — the form Dörfler marking
+    /// consumes (C5).
+    ///
+    /// Exists so no caller re-derives it, and so none can accidentally mark
+    /// on the SIGNED values: doing that would rank the most strongly
+    /// error-cancelling elements as the least in need of refinement, which
+    /// is precisely backwards. Checked on the mixed-sign fixture, where
+    /// signed and magnitude forms actually differ.
+    #[test]
+    fn marking_weights_are_the_per_element_magnitudes() {
+        let mat = dimensionless_steel_like();
+        let mesh = three_tet_fan_mesh();
+        let (primal, dual) = mixed_sign_primal_and_dual();
+        let dwr = compute_dual_weighted_indicator(&primal, &dual, &mesh, &mat);
+
+        let weights = dwr.marking_weights();
+        assert!(
+            dwr.per_element_signed.iter().any(|&x| x < 0.0),
+            "fixture premise: some contribution must be negative, or this \
+             cannot tell |η_K| apart from η_K",
+        );
+        assert_eq!(weights.len(), dwr.per_element_signed.len());
+        for (i, (w, signed)) in weights.iter().zip(&dwr.per_element_signed).enumerate() {
+            assert!(*w >= 0.0, "element {i}: a marking weight is a magnitude, got {w}");
+            assert_eq!(
+                w.to_bits(),
+                signed.abs().to_bits(),
+                "element {i}: expected |{signed}|, got {w}",
+            );
+        }
+        let total: f64 = weights.iter().sum();
+        assert_eq!(
+            total.to_bits(),
+            dwr.qoi_error_bound.to_bits(),
+            "the marking weights sum to the cancellation-free bound",
+        );
     }
 
 }
