@@ -1880,8 +1880,13 @@ pub async fn set_fea_case_on_engine(
 /// own way, outside both seams, is the defect that claim exists to catch, and
 /// `gui/src-tauri/src/tests/debug_write_tool_routing_tests.rs` now enforces
 /// it mechanically: it enumerates the `reify_*` dispatch arms rather than a
-/// fixed list, so a SIXTH write tool that skips both seams reds rather than
-/// losing telemetry silently.
+/// fixed list, and cross-checks that set against the names the `ToolDef`
+/// registry advertises (:1019-1024), so a SIXTH write tool that skips both
+/// seams reds rather than losing telemetry silently — and so does one whose
+/// arm the scanner cannot read, which reds as unenumerated instead of
+/// vanishing from the sweep. Adding a write tool therefore means adding BOTH
+/// the registry entry and the dispatch arm, which is what that registry
+/// comment already tells you to do.
 ///
 /// (b) **The `StateDelta` is deliberately DISCARDED.** `compute_delta` is
 /// called for its SIDE EFFECT — advancing `last_state` — only; the full

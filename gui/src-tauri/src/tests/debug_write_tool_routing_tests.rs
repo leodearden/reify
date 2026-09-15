@@ -20,6 +20,16 @@
 //! on a run that does not touch the GUI crate — exactly the run during which
 //! someone might add a bypassing tool elsewhere.
 //!
+//! REDUNDANT ENUMERATION: the write-tool set is read from TWO independent
+//! textual shapes — the `"reify_*" =>` dispatch arms and the `ToolDef`
+//! registry advertising the same names — which must agree. That is what makes
+//! an arm the scanner cannot read fail CLOSED: the tool reds as a set
+//! difference rather than vanishing from the sweep, whatever the reason the
+//! arm was unreadable. The residual is stated rather than papered over — a
+//! drop stays silent if BOTH enumerations miss the SAME tool in a correlated
+//! way, and the registry-side non-vacuity floor is what catches the case where
+//! both go to zero at once.
+//!
 //! POSTURE: ships default-ASSERT. The task called for contract → warn-mode
 //! corpus sweep → enforce; the sweep was performed at plan time (5/5 routed,
 //! clean) and is re-performed mechanically by

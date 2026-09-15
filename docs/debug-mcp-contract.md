@@ -107,7 +107,12 @@ That claim is enforced mechanically, not merely written down here:
 parses the `reify_*` dispatch arms out of `debug_server.rs` — so a sixth write
 tool is picked up automatically and must route or go red — and checks each
 handler for a seam, following at most one delegation hop (which is what
-`reify_open_file` needs). It also asserts the converse, that every fn named
+`reify_open_file` needs). The arm set is cross-checked for equality against
+the names the `ToolDef` registry advertises, a second independent enumeration
+of the same set, so a tool whose arm the scanner cannot read reds as
+unenumerated instead of vanishing from the sweep; adding a write tool means
+adding BOTH the registry entry and the dispatch arm, as §1 already requires.
+It also asserts the converse, that every fn named
 `*_and_refresh_baseline` actually reaches `compute_delta`, so the check rests
 on behaviour rather than on a naming convention. The gate ASSERTS by default;
 `REIFY_INV_GUI_2_BYPASS=1` is the break-glass that downgrades it to a warning.
