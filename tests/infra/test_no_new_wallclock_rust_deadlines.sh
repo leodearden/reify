@@ -111,10 +111,21 @@
 # test fns, a CHILD of debug_server::tests, so recursing gui/src-tauri/src/tests
 # never reaches it -- in the very crate that produced all four flakes. So the
 # claim is derived rather than trusted. Section 3 builds ground truth from the
-# tree (every directory named `tests` that holds a tracked .rs file) and reds on
+# tree (every directory NAMED `tests` that holds a tracked .rs file) and reds on
 # any of them this list does not cover, naming it. A test directory split out
 # tomorrow therefore reds the gate instead of quietly becoming a second blind
 # spot.
+#
+# THE CHECK IS ONLY AS COMPLETE AS THAT NAME, and the promise is worded to
+# match. A Rust test root called something else -- a `benches/` or `examples/`
+# directory, or a Cargo `[[test]] path = "it/main.rs"` target -- is invisible
+# to the check for the same reason it is invisible to the scan, and adding one
+# would create a second blind spot with nothing redding. Measured: no tracked
+# .rs file lives in any benches/ or examples/ directory and no Cargo.toml
+# declares a `[[test]]` or `[[bench]]` target, so this bounds the claim rather
+# than dents it. Whether a benchmark should be scanned at all is a SCOPE
+# question -- see the production-code argument below, which turns on what a
+# directory CONTAINS, not what it is called -- and it belongs in a review.
 #
 # THE BASELINE, AND THE DISTINCTION A READER MUST NOT BLUR. Widening the scan
 # could not be a one-line change: 19 violating lines across 6 files already
@@ -152,13 +163,14 @@
 # definition. Scanning it would force escape comments onto correctness code and
 # would blur what Rule A means.
 #
-# THE REMAINING BLIND SPOT, named exactly as #6438 named its own -- and there
-# is exactly ONE, which is now a checked claim rather than a hopeful one. An
-# inline `#[cfg(test)]` module inside a production src/ file is NOT scanned,
-# even though its contents genuinely are tests. Finding one lexically needs
-# brace nesting -- i.e. the Rust grammar this guard deliberately refuses to grow
-# (see NO LINE JOINER at the engine). ONE instance is known and measured:
-# crates/reify-eval/src/compute_targets/fdm_slice.rs:821
+# THE REMAINING BLIND SPOT, named exactly as #6438 named its own. Exactly ONE
+# KIND of uncovered location exists on this tree -- a measured claim rather
+# than a hopeful one, and bounded, as everything here is, by the naming
+# assumption stated above. An inline `#[cfg(test)]` module inside a production
+# src/ file is NOT scanned, even though its contents genuinely are tests.
+# Finding one lexically needs brace nesting -- i.e. the Rust grammar this guard
+# deliberately refuses to grow (see NO LINE JOINER at the engine). One instance
+# is known and measured: crates/reify-eval/src/compute_targets/fdm_slice.rs:821
 # (`elapsed < Duration::from_secs(10)`), inside the #[cfg(test)] mod that starts
 # at line 480. It is uncovered. A reader should not assume otherwise, and the
 # honest fix is to move such tests to a tests/ root rather than to teach this
@@ -1567,17 +1579,35 @@ done
 # Naming members one at a time can only pin the roots someone thought of; the
 # failure the #6597 review actually found was a root NOBODY thought of
 # (gui/src-tauri/src/debug_server/tests). So ground truth is DERIVED: every
-# directory that holds a tracked .rs file and is named `tests`. `git ls-files`
-# is the right source precisely because it is TRACKED-only -- an untracked
-# scratch directory must not red the gate.
+# directory NAMED `tests` that holds a tracked .rs file. `git ls-files` is the
+# right source precisely because it is TRACKED-only -- an untracked scratch
+# directory must not red the gate.
+#
+# THE DERIVATION ASSUMES A NAME, and that assumption is the exact boundary of
+# what "complete" means here -- so it is stated rather than left for a reader
+# to infer from the sed. A Rust test root called anything else is invisible to
+# BOTH this check and the scan itself: a `benches/` or `examples/` directory,
+# or a Cargo `[[test]] path = "it/main.rs"` target. Measured on this tree when
+# the check was written: zero tracked .rs files in any benches/ or examples/
+# directory, and zero `[[test]]`/`[[bench]]` declarations in any Cargo.toml --
+# so this is a latent boundary, not a live gap. `benches/` is the one worth
+# naming, because an elapsed-time upper bound is a natural thing to write
+# there. Widening to it is a SCOPE decision (is a benchmark a test?), which
+# belongs in a review rather than in a quiet edit to this pipeline.
+#
+# Both halves handle a TOP-LEVEL `tests/`, which the first draft dropped: its
+# path has no leading `/`, so an anchored `(.*/tests)` could not match it and
+# a `/tests$` filter discarded what was left. There is no such directory today
+# (measured), and a derivation that silently cannot see one is not worth
+# keeping. Verified identical to the old expression on this tree: 36 roots.
 #
 # Coverage is by PREFIX, not equality: the roots scan recursively, so a nested
 # `a/tests/b/tests` is genuinely reached from `a/tests`. See Section 4f.
 _s3_gt_rc=0
 _s3_gt="$(git ls-files '*.rs' \
-    | sed -E 's#(.*/tests)/.*#\1#' \
+    | sed -E 's#(^|.*/)tests/.*#\1tests#' \
     | LC_ALL=C sort -u \
-    | grep '/tests$')" || _s3_gt_rc=$?
+    | grep -E '(^|/)tests$')" || _s3_gt_rc=$?
 assert "live scan: the ground-truth test-root derivation succeeds" \
     test "$_s3_gt_rc" -eq 0
 
