@@ -9,7 +9,7 @@
 use std::path::Path;
 
 use reify_compiler::TopologyTemplate;
-use reify_core::{Diagnostic, DiagnosticLabel, ModulePath, Severity};
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, ModulePath, Severity};
 use reify_ir::{CompiledExpr, CompiledExprKind};
 
 #[cfg(feature = "eval-helpers")]
@@ -421,6 +421,28 @@ pub fn error_diags(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
         .collect()
 }
 
+/// Every `Underdetermined`-coded diagnostic in the slice, matched on the
+/// STRUCTURED code rather than by substring on the rendered
+/// `W_UNDERDETERMINED` text — which is the property that makes this worth
+/// having over an ad-hoc `.contains()`, since the rendered wording is free to
+/// change.
+///
+/// Deliberately severity-BLIND, UNLIKE its neighbours [`collect_errors`] and
+/// [`error_diags`]: a diagnostic carrying the code is returned whatever its
+/// severity. `W_UNDERDETERMINED` is a warning today, so adding a severity
+/// filter here to match the neighbours would silently change what the call
+/// sites detect without going red at the ones that merely count. Pinned by
+/// `underdetermined_diags_is_severity_blind`.
+///
+/// Input order is preserved; call sites read the result positionally
+/// (task #6524).
+pub fn underdetermined_diags(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> {
+    diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
+        .collect()
+}
+
 /// Return only the `Severity::Error` diagnostics from a compiled module.
 ///
 /// Convenience wrapper around [`collect_errors`].
@@ -603,6 +625,14 @@ pub fn assert_no_diagnostic(diagnostics: &[Diagnostic], severity: Severity, cont
 /// cause a panic. Use [`assert_no_diagnostics`] instead when all severities
 /// must be absent.
 ///
+/// # Vacuity hazard
+///
+/// An assertion of absence is vacuous wherever the compiler defers checking —
+/// notably a `trait` body with no conforming structure, which emits nothing
+/// however broken it is. The rule and its executable pins live with
+/// `trait_body_without_conformer_is_not_dimension_checked` in reify-compiler's
+/// trait harness.
+///
 /// # Panics
 /// Panics if any `Severity::Error` diagnostic is present. The panic message
 /// includes `context` and the list of error messages.
@@ -637,6 +667,65 @@ pub fn assert_no_diagnostics(diagnostics: &[Diagnostic], context: &str) {
         diagnostics.is_empty(),
         "{context}: expected no diagnostics at all, got: {:?}",
         diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// Assert that some `Severity::Error` diagnostic carries `code`.
+///
+/// `context` is a short label that appears in the panic message to identify
+/// which fixture or phase was being checked.
+///
+/// # Why assert on a code rather than on a count
+///
+/// Prefer this over a bare "at least one error" check, and prefer
+/// [`assert_error_code_absent`] over a bare [`assert_no_error_diagnostics`],
+/// whenever a *specific* diagnostic is the thing under test. A bare non-empty
+/// check is satisfied by *any* error, so an unrelated future diagnostic on an
+/// unrelated line keeps the test green while the guard it was written to
+/// protect rots away silently.
+///
+/// This is not only the stronger pin, it is sometimes the only expressible
+/// one: a fixture that must supply a struct-typed param via a struct-literal
+/// default emits an unavoidable unrelated `unknown variant` error, so no
+/// count-based assertion can be written against it at all.
+///
+/// Severity is filtered FIRST: a Warning carrying `code` does not satisfy this.
+///
+/// # Panics
+/// Panics if no Error-severity diagnostic carries `code`. The panic message
+/// includes `context` and the errors that *were* observed.
+#[track_caller]
+pub fn assert_error_code_present(diagnostics: &[Diagnostic], code: DiagnosticCode, context: &str) {
+    let errors = collect_errors(diagnostics);
+    assert!(
+        errors.iter().any(|d| d.code == Some(code)),
+        "{context}: expected an Error-severity diagnostic with \
+         DiagnosticCode::{code:?}, but none was present; observed errors: {errors:?}"
+    );
+}
+
+/// Assert that no `Severity::Error` diagnostic carries `code`.
+///
+/// The absence-of-*code* counterpart to [`assert_no_error_diagnostics`]'s
+/// absence-of-*errors*. Use this when the fixture legitimately emits unrelated
+/// errors that a blanket "no errors" assertion would trip over, but the
+/// specific diagnostic under test must still be absent. See
+/// [`assert_error_code_present`] for why code-keyed assertions are preferred.
+///
+/// Unrelated error codes — and codeless (`code: None`) errors — do not
+/// falsify this.
+///
+/// # Panics
+/// Panics if any Error-severity diagnostic carries `code`. The panic message
+/// includes `context` and the offending diagnostics.
+#[track_caller]
+pub fn assert_error_code_absent(diagnostics: &[Diagnostic], code: DiagnosticCode, context: &str) {
+    let errors = collect_errors(diagnostics);
+    let matching: Vec<_> = errors.iter().filter(|d| d.code == Some(code)).collect();
+    assert!(
+        matching.is_empty(),
+        "{context}: expected no Error-severity diagnostic with \
+         DiagnosticCode::{code:?}, but found: {matching:?}"
     );
 }
 
@@ -1034,10 +1123,49 @@ pub fn members_of(result: &reify_eval::EvalResult, entity: &str) -> Vec<String> 
     members
 }
 
+/// The SI magnitude of a resolved [`reify_ir::Value::Scalar`].
+///
+/// `what` is a caller-supplied label naming the cell under test; it is the
+/// only fixture-specific context the panic carries, so each call site keeps
+/// the diagnostic wording its own assertion needs. The `dimension` is
+/// deliberately NOT validated — this projects the magnitude and nothing more.
+/// A caller that needs a dimension check must assert it separately.
+///
+/// `#[track_caller]` keeps the panic's reported location at the test line
+/// rather than inside this file; without it the promotion would be a
+/// diagnostic regression against the inline matches it replaces, which
+/// naturally report at the call site (task #6524).
+///
+/// # Panics
+/// Panics if `value` is not a `Value::Scalar`; the message names both `what`
+/// and the value actually observed. An unresolved `auto` surfaces here as
+/// `Value::Undef`.
+#[track_caller]
+pub fn scalar_si(value: &reify_ir::Value, what: &str) -> f64 {
+    match value {
+        reify_ir::Value::Scalar { si_value, .. } => *si_value,
+        other => panic!("{what}: expected a resolved Value::Scalar, got {other:?}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::fixtures::bracket_source;
-    use reify_core::{Diagnostic, Severity};
+    use reify_core::{Diagnostic, DiagnosticCode, Severity};
+
+    /// Run `f` and return the message it panicked with.
+    ///
+    /// `#[should_panic(expected = ...)]` matches exactly ONE substring, which
+    /// otherwise forces a second byte-identical test per expectation. Capturing
+    /// the message instead lets one test assert every substring that makes a
+    /// panic diagnosable. Reuses `reify_core::panic_payload_to_string` rather
+    /// than open-coding the downcast chain.
+    fn panic_message(f: impl FnOnce()) -> String {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+            Ok(()) => panic!("expected a panic, but the call returned normally"),
+            Err(payload) => reify_core::panic_payload_to_string(payload.as_ref()),
+        }
+    }
 
     /// Build a `reify_eval::EvalResult` from the only two fields these unit
     /// tests ever vary. `EvalResult` derives no `Default`, so keeping its
@@ -1251,6 +1379,61 @@ mod tests {
         assert!(
             members.is_empty(),
             "an unknown entity must yield an empty list, not panic; got {members:?}",
+        );
+    }
+
+    // ── scalar_si ─────────────────────────────────────────────────────────
+    //
+    // Task #6524. `scalar_si` projects the SI magnitude out of a
+    // `Value::Scalar` and panics on anything else. The cases below pin its
+    // three properties: the exact magnitude comes back, the panic is
+    // diagnosable, and the dimension is deliberately not inspected.
+
+    /// `scalar_si` returns the `si_value` field verbatim.
+    ///
+    /// `assert_eq!` on the f64 is deliberate: the helper only projects a
+    /// field out and does no arithmetic, so there is no rounding to tolerate
+    /// and an approximate comparison would weaken the pin.
+    #[test]
+    fn scalar_si_returns_si_magnitude_of_scalar() {
+        let value = reify_ir::Value::Scalar {
+            si_value: 0.007,
+            dimension: reify_core::DimensionVector::LENGTH,
+        };
+        assert_eq!(
+            super::scalar_si(&value, "gain"),
+            0.007,
+            "scalar_si must return si_value unchanged",
+        );
+    }
+
+    /// A non-`Scalar` value panics with a message naming BOTH the caller's
+    /// `what` label and the value that was actually there — the two facts
+    /// that make the failure diagnosable without a rerun. Asserting both is
+    /// why `panic_message` is used here instead of
+    /// `#[should_panic(expected = ..)]`.
+    #[test]
+    fn scalar_si_panics_naming_label_and_observed_value() {
+        let message = panic_message(|| {
+            let _ = super::scalar_si(&reify_ir::Value::Undef, "E.__connector_0.gain");
+        });
+        assert!(message.contains("E.__connector_0.gain"), "{message}");
+        assert!(message.contains("Undef"), "{message}");
+    }
+
+    /// The helper projects the magnitude and does NOT validate the dimension:
+    /// a non-LENGTH `Scalar` returns its `si_value` just the same. A caller
+    /// needing a dimension check must assert it separately.
+    #[test]
+    fn scalar_si_ignores_dimension() {
+        let value = reify_ir::Value::Scalar {
+            si_value: 2.5e6,
+            dimension: reify_core::DimensionVector::PRESSURE,
+        };
+        assert_eq!(
+            super::scalar_si(&value, "material.e1"),
+            2.5e6,
+            "dimension must not affect the projected magnitude",
         );
     }
 
@@ -1830,6 +2013,178 @@ mod tests {
     fn test_assert_no_diagnostics_panics_on_any_diagnostic() {
         let diags = vec![Diagnostic::info("informational note")];
         super::assert_no_diagnostics(&diags, "guard compile");
+    }
+
+    // ── assert_error_code_present / assert_error_code_absent ──────────────
+    //
+    // Task 6143. These two are the code-keyed counterpart to the
+    // absence-of-diagnostic helpers above. The cases below pin the property
+    // that motivates them: an *unrelated* error code must not influence
+    // either verdict, which no count-based assertion can express.
+
+    /// `assert_error_code_present` passes when an Error-severity diagnostic
+    /// carries the requested code, even alongside unrelated errors.
+    #[test]
+    fn test_assert_error_code_present_passes_when_code_present() {
+        let diags = vec![
+            Diagnostic::error("unrelated noise").with_code(DiagnosticCode::UnresolvedName),
+            // Message text is parenthesized, not colon-introduced. The
+            // `corpus_no_bare_scalar` corpus guard scans every string literal
+            // in `crates/**/*.rs` for bare `: Scalar` inline-DSL annotations
+            // and cannot distinguish one from a quoted diagnostic message.
+            // Only the CODE is asserted on here, so the wording is free.
+            Diagnostic::error("dimension mismatch in comparison (Scalar[kg] vs Scalar[m])")
+                .with_code(DiagnosticCode::DimensionMismatch),
+        ];
+        super::assert_error_code_present(
+            &diags,
+            DiagnosticCode::DimensionMismatch,
+            "conformed trait body",
+        );
+    }
+
+    /// `assert_error_code_present` panics on an empty slice — the vacuity
+    /// case. Panic message must carry the `context` label.
+    #[test]
+    #[should_panic(expected = "conformed trait body")]
+    fn test_assert_error_code_present_panics_on_empty() {
+        let diags: Vec<Diagnostic> = vec![];
+        super::assert_error_code_present(
+            &diags,
+            DiagnosticCode::DimensionMismatch,
+            "conformed trait body",
+        );
+    }
+
+    /// `assert_error_code_present` filters to `Severity::Error` FIRST: a
+    /// Warning carrying the code does not satisfy it.
+    #[test]
+    #[should_panic(expected = "DimensionMismatch")]
+    fn test_assert_error_code_present_panics_when_only_match_is_a_warning() {
+        let diags = vec![
+            Diagnostic::warning("dimension mismatch").with_code(DiagnosticCode::DimensionMismatch),
+        ];
+        super::assert_error_code_present(&diags, DiagnosticCode::DimensionMismatch, "warn-only");
+    }
+
+    /// `assert_error_code_absent` passes when no Error carries the code —
+    /// INCLUDING when unrelated error codes, and codeless (`code: None`)
+    /// errors, are present. This is the case that makes the helper immune to
+    /// the `unknown variant 'Bearer'` fixture noise measured for task 6143.
+    #[test]
+    fn test_assert_error_code_absent_passes_despite_unrelated_errors() {
+        let diags = vec![
+            Diagnostic::error("unknown variant 'Bearer': no enum in scope declares it"),
+            Diagnostic::error("unresolved name").with_code(DiagnosticCode::UnresolvedName),
+            Diagnostic::warning("cosmetic").with_code(DiagnosticCode::StructureMemberNotFound),
+        ];
+        super::assert_error_code_absent(
+            &diags,
+            DiagnosticCode::StructureMemberNotFound,
+            "existing member",
+        );
+    }
+
+    /// `assert_error_code_absent` panics when a matching Error IS present, and
+    /// the message carries BOTH the `context` label and the offending
+    /// diagnostic, so a failure is diagnosable without a rerun.
+    #[test]
+    fn test_assert_error_code_absent_panic_names_context_and_offender() {
+        let message = panic_message(|| {
+            let diags = vec![
+                Diagnostic::error("structure 'Bearer' has no member 'no_such_field'")
+                    .with_code(DiagnosticCode::StructureMemberNotFound),
+            ];
+            super::assert_error_code_absent(
+                &diags,
+                DiagnosticCode::StructureMemberNotFound,
+                "existing member",
+            );
+        });
+        assert!(message.contains("existing member"), "{message}");
+        assert!(message.contains("no_such_field"), "{message}");
+    }
+
+    /// `assert_error_code_present` panics when only an UNRELATED code fired,
+    /// and names the errors it DID observe alongside the `context` label, so an
+    /// author can see what happened instead of the expected code.
+    #[test]
+    fn test_assert_error_code_present_panic_lists_observed_errors() {
+        let message = panic_message(|| {
+            let diags = vec![
+                Diagnostic::error("unrelated noise").with_code(DiagnosticCode::UnresolvedName),
+            ];
+            super::assert_error_code_present(
+                &diags,
+                DiagnosticCode::DimensionMismatch,
+                "conformed trait body",
+            );
+        });
+        assert!(message.contains("conformed trait body"), "{message}");
+        assert!(message.contains("unrelated noise"), "{message}");
+    }
+
+    // ── underdetermined_diags ─────────────────────────────────────────────
+    //
+    // Task #6524. Unlike its neighbours `collect_errors` / `error_diags`,
+    // this one filters on the structured CODE alone and is severity-blind.
+    // The cases below pin that difference, which every call site depends on.
+
+    /// Only `Underdetermined`-coded diagnostics come back. An unrelated code
+    /// is excluded, and so is a CODELESS (`code: None`) diagnostic — the
+    /// filter is `== Some(..)`.
+    #[test]
+    fn underdetermined_diags_selects_only_underdetermined_code() {
+        let diags = vec![
+            Diagnostic::warning("auto `bore` is not pinned")
+                .with_code(DiagnosticCode::Underdetermined),
+            Diagnostic::error("unresolved name").with_code(DiagnosticCode::UnresolvedName),
+            Diagnostic::warning("codeless noise"),
+        ];
+        let under = super::underdetermined_diags(&diags);
+        assert_eq!(under.len(), 1, "got {under:#?}");
+        assert_eq!(under[0].message, "auto `bore` is not pinned");
+    }
+
+    /// The filter is severity-BLIND: an Error carrying the code is returned
+    /// just as a Warning is.
+    ///
+    /// This helper lands directly beside `collect_errors` / `error_diags`,
+    /// which DO filter `Severity::Error`, so a future editor harmonising the
+    /// neighbours could add one here — silently changing what the call sites
+    /// detect. `W_UNDERDETERMINED` is a warning today, so such a change would
+    /// not even go red at the sites that merely count it.
+    #[test]
+    fn underdetermined_diags_is_severity_blind() {
+        let diags = vec![
+            Diagnostic::error("escalated underdetermined")
+                .with_code(DiagnosticCode::Underdetermined),
+            Diagnostic::warning("plain underdetermined").with_code(DiagnosticCode::Underdetermined),
+        ];
+        let under = super::underdetermined_diags(&diags);
+        assert_eq!(
+            under.len(),
+            2,
+            "both severities must be returned — this filter is code-keyed \
+             only, unlike its collect_errors neighbour; got {under:#?}",
+        );
+    }
+
+    /// Input order is preserved. Call sites read the result positionally, so
+    /// ordering is a relied-upon contract rather than an accident of
+    /// `.filter().collect()`.
+    #[test]
+    fn underdetermined_diags_preserves_input_order() {
+        let diags = vec![
+            Diagnostic::warning("first").with_code(DiagnosticCode::Underdetermined),
+            Diagnostic::warning("second").with_code(DiagnosticCode::Underdetermined),
+            Diagnostic::warning("third").with_code(DiagnosticCode::Underdetermined),
+        ];
+        let messages: Vec<&str> = super::underdetermined_diags(&diags)
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(messages, vec!["first", "second", "third"]);
     }
 
     // ── get_value_cell_in ─────────────────────────────────────────────────

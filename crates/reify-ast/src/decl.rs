@@ -668,19 +668,39 @@ where
     F: FnMut(&'a MemberDecl),
 {
     if let Some(body) = sub.body.as_ref() {
-        // `Infallible` as the break type statically pins "this wrapper visits
-        // everything and never exits early" — the closure always returns
-        // `Continue`, so `walk_members` can never actually produce a `Break`.
-        let _: ControlFlow<Infallible> = walk_members(
-            body,
-            MemberRecursionSet::SPECIALIZATION_SCOPE,
-            0,
-            &mut |m| {
-                visitor(m);
-                ControlFlow::Continue(())
-            },
-        );
+        walk_all(body, MemberRecursionSet::SPECIALIZATION_SCOPE, visitor);
     }
+}
+
+/// Visit every member reachable under `members`, using the widest recursion
+/// set in the `MemberRecursionSet` table (module-private, so not linkable from
+/// here) and bounded by [`MAX_MEMBER_NESTING_DEPTH`].
+///
+/// `visitor` sees each member parent-before-children, and the walk never exits
+/// early. Takes a `&[MemberDecl]` rather than the `&SubDecl` its sibling
+/// [`walk_specialization_scope_members`] takes, because its caller applies it
+/// to whole declaration bodies (structure / occurrence / trait / purpose, plus
+/// each structure nested in a purpose) rather than to one sub's scope.
+pub fn walk_all_member_bodies<'a, F>(members: &'a [MemberDecl], visitor: &mut F)
+where
+    F: FnMut(&'a MemberDecl),
+{
+    walk_all(members, MemberRecursionSet::ALL_MEMBER_BODIES, visitor);
+}
+
+/// Drive [`walk_members`] over `members` under `set`, visiting everything.
+///
+/// The adapter both visit-everything wrappers above share. `Infallible` as the
+/// break type statically pins "never exits early" — the closure always returns
+/// `Continue`, so `walk_members` can never produce a `Break`.
+fn walk_all<'a, F>(members: &'a [MemberDecl], set: MemberRecursionSet, visitor: &mut F)
+where
+    F: FnMut(&'a MemberDecl),
+{
+    let _: ControlFlow<Infallible> = walk_members(members, set, 0, &mut |m| {
+        visitor(m);
+        ControlFlow::Continue(())
+    });
 }
 
 /// Which optional bodies a member-recursion walk descends into.
@@ -694,7 +714,7 @@ where
 ///
 /// This table is the module's canonical anti-drift artifact: every
 /// member-recursion set in this module is one of the consts below, and
-/// [`walk_members`] is the single traversal all three callers share. The exit
+/// [`walk_members`] is the single traversal every caller shares. The exit
 /// rule is NOT a property of the set — it is the `ControlFlow` break type the
 /// caller's visitor chooses — but it is listed here so one table carries the
 /// whole picture.
@@ -704,6 +724,7 @@ where
 /// | `SPECIALIZATION_SCOPE` | [`walk_specialization_scope_members`] | yes | no | no — `B = Infallible` pins it |
 /// | `NAMED_MEMBER_LOOKUP` | [`find_named_member_span_depth`] | no | yes | yes — first match wins |
 /// | `PARAM_DEFAULT_LOOKUP` | [`collect_param_default_candidates`] | no | no | yes — once ambiguous |
+/// | `ALL_MEMBER_BODIES` | [`walk_all_member_bodies`] | yes | yes | no — `B = Infallible` pins it |
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MemberRecursionSet {
     sub_body: bool,
@@ -735,11 +756,27 @@ impl MemberRecursionSet {
         sub_body: false,
         port_body: false,
     };
+    /// Used by [`walk_all_member_bodies`] — today, `priv_redundant_lint.rs`'s
+    /// E_PRIV_REDUNDANT pass, which asks "does any `let`/`constraint` anywhere
+    /// under this declaration carry `priv`?" and so may skip neither optional
+    /// body. Both cells `true`: the widest set in the table above.
+    ///
+    /// **Known exclusion — "all" names the two flags, not the whole AST.**
+    /// [`walk_members`] descends into no caller's
+    /// `SubDecl.keyed_members[].overrides`, and this set does not change that:
+    /// members of a keyed entry (`sub p : Foo { "a" => { priv let x = 1 } }`)
+    /// are unreachable under every const here, so E_PRIV_REDUNDANT does not
+    /// fire inside one. Longstanding, and preserved deliberately — closing it
+    /// widens a lint, which is a behaviour change, not a walker consolidation.
+    const ALL_MEMBER_BODIES: Self = Self {
+        sub_body: true,
+        port_body: true,
+    };
 }
 
 /// The single member-recursion walker behind
-/// [`walk_specialization_scope_members`], `find_named_member_span_depth`, and
-/// `collect_param_default_candidates`.
+/// [`walk_specialization_scope_members`], [`walk_all_member_bodies`],
+/// `find_named_member_span_depth`, and `collect_param_default_candidates`.
 ///
 /// Visits every member of `members`, invoking `visitor` on each one
 /// (parent-before-children), and recurses according to `set` — see
@@ -771,7 +808,7 @@ where
             // into only when `set.sub_body`. Deliberately does NOT descend
             // into `s.keyed_members[].overrides` (a `Vec<MemberDecl>`): no
             // walker ever has, so a specialization scope nested inside a
-            // keyed entry's overrides is unreached by all three callers
+            // keyed entry's overrides is unreached by all four callers
             // today. Preserved as-is — see the task's follow-up note.
             MemberDecl::Sub(s) => {
                 if set.sub_body
@@ -2389,7 +2426,7 @@ mod find_param_default_span_tests {
     }
 }
 
-/// GOLDEN-MASTER (characterization) tests for the three member-recursion
+/// GOLDEN-MASTER (characterization) tests for the four member-recursion
 /// walkers, pinned against the CURRENT (pre-consolidation) hand-rolled
 /// implementations. This module must be green BEFORE `walk_members`/
 /// `MemberRecursionSet` exist — it is the safety net the consolidation is
@@ -2399,15 +2436,15 @@ mod member_recursion_set_tests {
     use super::member_test_fixtures::*;
     use super::{
         MAX_MEMBER_NESTING_DEPTH, MemberDecl, find_named_member_span, find_param_default_span,
-        walk_specialization_scope_members,
+        walk_all_member_bodies, walk_specialization_scope_members,
     };
     use reify_core::SourceSpan;
 
     /// One uniquely-named `param` (each carrying a default span, so
     /// `find_param_default_span` is assertable too) planted in each of the
-    /// five nested member bodies the three walkers disagree on, plus one
-    /// top-level marker. Shared across all three entry points so a single
-    /// fixture pins the full 3-entry-point × 6-marker reachability table.
+    /// five nested member bodies the walkers disagree on, plus one top-level
+    /// marker. Shared across all four entry points so a single fixture pins
+    /// the full 4-entry-point × 6-marker reachability table.
     fn build_reachability_fixture() -> Vec<MemberDecl> {
         vec![
             param("marker_top", (0, 40), Some((10, 14))),
@@ -2577,10 +2614,58 @@ mod member_recursion_set_tests {
         );
     }
 
+    /// The union set is the ONLY one of the four that reaches all six markers.
+    ///
+    /// `marker_sub` AND `marker_port` together is the discriminator: no other
+    /// const reaches both (SPECIALIZATION_SCOPE misses port, NAMED_MEMBER_LOOKUP
+    /// misses sub, PARAM_DEFAULT_LOOKUP misses both). A `walk_all_member_bodies`
+    /// accidentally wired to any of them fails HERE.
+    #[test]
+    fn walk_all_member_bodies_reachability_table() {
+        let fixture = build_reachability_fixture();
+        let mut tags = Vec::new();
+        walk_all_member_bodies(&fixture, &mut |m| tags.push(tag(m)));
+
+        for marker in [
+            "marker_top",
+            "marker_sub",
+            "marker_port",
+            "marker_then",
+            "marker_else",
+            "marker_arm",
+        ] {
+            assert!(
+                tags.contains(&format!("param:{marker}")),
+                "walk_all_member_bodies is the MAXIMAL recursion set and must reach \
+                 {marker}; tags={tags:?}"
+            );
+        }
+
+        // Containers are visited themselves, parent-before-children.
+        let sub_idx = tags
+            .iter()
+            .position(|t| t == "sub:nested_sub")
+            .expect("Sub container itself must be visited");
+        let port_idx = tags
+            .iter()
+            .position(|t| t == "port:nested_port")
+            .expect("Port container itself must be visited");
+        let marker_sub_idx = tags.iter().position(|t| t == "param:marker_sub").unwrap();
+        let marker_port_idx = tags.iter().position(|t| t == "param:marker_port").unwrap();
+        assert!(
+            sub_idx < marker_sub_idx,
+            "parent-before-children: Sub container must precede its nested param; tags={tags:?}"
+        );
+        assert!(
+            port_idx < marker_port_idx,
+            "parent-before-children: Port container must precede its body param; tags={tags:?}"
+        );
+    }
+
     // ── shared cross-cutting contract: depth bound ────────────────────────
 
     #[test]
-    fn depth_bound_applies_identically_to_all_three_entry_points() {
+    fn depth_bound_applies_identically_to_all_four_entry_points() {
         let at_limit =
             build_nested_guarded_members(MAX_MEMBER_NESTING_DEPTH, "deep_param", (10, 14));
         let beyond_limit =
@@ -2632,6 +2717,28 @@ mod member_recursion_set_tests {
             find_param_default_span(&beyond_limit, "deep_param"),
             None,
             "find_param_default_span: a param beyond MAX_MEMBER_NESTING_DEPTH must be cut off"
+        );
+
+        let mut all_bodies_at_limit = Vec::new();
+        walk_all_member_bodies(&at_limit, &mut |m| {
+            if let MemberDecl::Param(p) = m {
+                all_bodies_at_limit.push(p.name.clone());
+            }
+        });
+        assert!(
+            all_bodies_at_limit.contains(&"deep_param".to_string()),
+            "walk_all_member_bodies: a param at exactly MAX_MEMBER_NESTING_DEPTH must be reached"
+        );
+
+        let mut all_bodies_beyond_limit = Vec::new();
+        walk_all_member_bodies(&beyond_limit, &mut |m| {
+            if let MemberDecl::Param(p) = m {
+                all_bodies_beyond_limit.push(p.name.clone());
+            }
+        });
+        assert!(
+            !all_bodies_beyond_limit.contains(&"deep_param".to_string()),
+            "walk_all_member_bodies: a param beyond MAX_MEMBER_NESTING_DEPTH must be cut off"
         );
     }
 
@@ -2714,6 +2821,16 @@ mod member_walker_contract_tests {
             },
             "find_param_default_span recurses neither SubDecl.body nor PortDecl.members"
         );
+        assert_eq!(
+            MemberRecursionSet::ALL_MEMBER_BODIES,
+            MemberRecursionSet {
+                sub_body: true,
+                port_body: true
+            },
+            "walk_all_member_bodies (priv_redundant_lint.rs's E_PRIV_REDUNDANT walk) is the \
+             MAXIMAL set: it recurses BOTH SubDecl.body and PortDecl.members, because a \
+             `let`/`constraint` can carry `priv` in either body"
+        );
         assert_ne!(
             MemberRecursionSet::SPECIALIZATION_SCOPE,
             MemberRecursionSet::NAMED_MEMBER_LOOKUP
@@ -2725,6 +2842,23 @@ mod member_walker_contract_tests {
         assert_ne!(
             MemberRecursionSet::NAMED_MEMBER_LOOKUP,
             MemberRecursionSet::PARAM_DEFAULT_LOOKUP
+        );
+        // The union set is distinct from all three pre-existing consts — a
+        // fold wired to any of them would silently skip a recursion site.
+        assert_ne!(
+            MemberRecursionSet::ALL_MEMBER_BODIES,
+            MemberRecursionSet::SPECIALIZATION_SCOPE,
+            "ALL_MEMBER_BODIES also descends into PortDecl.members"
+        );
+        assert_ne!(
+            MemberRecursionSet::ALL_MEMBER_BODIES,
+            MemberRecursionSet::NAMED_MEMBER_LOOKUP,
+            "ALL_MEMBER_BODIES also descends into SubDecl.body"
+        );
+        assert_ne!(
+            MemberRecursionSet::ALL_MEMBER_BODIES,
+            MemberRecursionSet::PARAM_DEFAULT_LOOKUP,
+            "ALL_MEMBER_BODIES descends into both optional bodies, PARAM_DEFAULT_LOOKUP neither"
         );
     }
 
@@ -2811,7 +2945,7 @@ mod member_walker_contract_tests {
                 DescendKind::Always,
             ),
         ];
-        let recursion_sets: [(&str, MemberRecursionSet); 3] = [
+        let recursion_sets: [(&str, MemberRecursionSet); 4] = [
             (
                 "SPECIALIZATION_SCOPE",
                 MemberRecursionSet::SPECIALIZATION_SCOPE,
@@ -2824,6 +2958,7 @@ mod member_walker_contract_tests {
                 "PARAM_DEFAULT_LOOKUP",
                 MemberRecursionSet::PARAM_DEFAULT_LOOKUP,
             ),
+            ("ALL_MEMBER_BODIES", MemberRecursionSet::ALL_MEMBER_BODIES),
         ];
 
         for (variant_name, build, expected_kind) in nesting_variants {

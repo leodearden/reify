@@ -1,7 +1,7 @@
 //! Regression-lock for Task 5754 (units-length κ): every `GeometryOp` kind family
 //! must expose a `VARIANT_COUNT` associated const that is accessible to crate-external
 //! consumers, mirroring the `ModifyKind::VARIANT_COUNT` precedent locked by
-//! `tests/modify_kind_public_api.rs`.
+//! its sibling module `harness_geometry_kinds/modify_kind_public_api.rs`.
 //!
 //! This test compiles as a separate crate — it is a module of the `harness_geometry_kinds`
 //! integration-test binary (C1 layout contract; see that harness root's header for why it

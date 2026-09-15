@@ -130,7 +130,6 @@ mod redispatch_template_order_regression;
 // outside the C1 consolidatable set.
 #[path = "harness_engine/objective_seed_parking_e2e.rs"]
 mod objective_seed_parking_e2e;
-
 // Task #5392's INV-SF-7 value-faithfulness corpus lands here for the same
 // anti-re-accretion reason as the above. It cannot live beside its syntax-layer
 // sibling in `reify-syntax`: it needs `reify-test-support`'s `eval-helpers`
@@ -138,3 +137,8 @@ mod objective_seed_parking_e2e;
 // be a cycle.
 #[path = "harness_engine/fn_body_separator_value_faithfulness.rs"]
 mod fn_body_separator_value_faithfulness;
+// Task #6038's trait-body eval pins for the polymorphic-zero coercion land here
+// for the same anti-re-accretion reason as #5196's, #5045's, #5360's and
+// #5758's above.
+#[path = "harness_engine/polymorphic_zero_trait_eval.rs"]
+mod polymorphic_zero_trait_eval;

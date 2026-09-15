@@ -11,6 +11,11 @@ use tower_lsp::lsp_types::{self, Url};
 use crate::analysis::module_name_from_uri;
 use crate::convert;
 
+/// The eval/check-pass containment guard shared by all three LSP production
+/// entry points — see [`eval_guard`] for the hazard it contains and why it is
+/// its own module.
+pub(crate) mod eval_guard;
+
 /// Persistent evaluation state maintained across edits.
 ///
 /// Holds the Engine and last compiled module so the server can incrementally
@@ -22,7 +27,19 @@ pub struct EvalState {
 }
 
 impl EvalState {
-    /// Create a new evaluation state with SimpleConstraintChecker and no geometry kernel.
+    /// Create a new evaluation state with SimpleConstraintChecker and no
+    /// geometry kernel.
+    ///
+    /// This is the **EVAL-time** checker fed to `reify_eval::Engine::new` —
+    /// a separate instance from the **COMPILE-time** checker that
+    /// [`compute_diagnostics_with_state`] now injects into
+    /// `compile_with_stdlib_checked` (task #6798, PRD leaf pi). The two are
+    /// deliberately independent values of the same zero-sized
+    /// `SimpleConstraintChecker` type: one feeds constraint-satisfaction
+    /// evaluation after eval, the other feeds `auto:` candidate feasibility
+    /// during compile. Collapsing them into a single shared instance would
+    /// obscure that the compile-time injection is the thing task #6798
+    /// changes.
     pub fn new() -> Self {
         let checker = SimpleConstraintChecker;
         Self {
@@ -65,6 +82,50 @@ pub struct DiagnosticsResult {
 /// changed), then `check_snapshot` for constraint results, and convert to
 /// LSP diagnostics.
 ///
+/// ## Compile-time checker: real `SimpleConstraintChecker`, not a stub (task #6798)
+///
+/// The compile stage below calls
+/// `reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker)`,
+/// matching `reify check`'s compile path (`parse_and_compile` /
+/// `module_dag::compile_entry_with_stdlib_cfg_checked` in
+/// `crates/reify-cli/src/main.rs`) and the GUI
+/// (`compile_single_file_with_stdlib` in `gui/src-tauri/src/engine.rs`)
+/// instead of the compile-time `CompileTimeIndeterminateChecker` stub. So
+/// `auto:` candidate feasibility now sees the same constraint verdicts the
+/// CLI does: the LSP no longer reports `E_AUTO_TYPE_PARAM_AMBIGUOUS` on a
+/// constant constraint that the CLI resolves to
+/// `E_AUTO_TYPE_PARAM_NO_CANDIDATE` (PRD
+/// `docs/prds/v0_6/driver-contract-implementation.md` leaf pi / §5 BT8 / §12
+/// premise correction 3). Cited by symbol rather than file:line, so the
+/// pointers survive refactors.
+///
+/// This is a **compile-time change only**. The eval-time Engine built by
+/// [`EvalState::new`] is untouched: still a bare
+/// `Engine::new(SimpleConstraintChecker, None)`, with no
+/// `register_compute_fns` / `register_compute_trampolines` call, so no
+/// keystroke-time FEA/buckling/form-find solve ever runs — the Leo-ratified
+/// subtraction described in the next section stands unchanged. Locked by one
+/// executable contract, below in `mod tests`:
+/// `fea_bearing_constraint_produces_no_false_violation_or_false_pass`, which
+/// also serves as the BT8-reverse lock for this compile-time change.
+///
+/// The checker swap is PAIRED with an eval-skip guard. Failing `auto:`
+/// candidate feasibility at compile time is exactly what leaves an
+/// unsubstituted `Type::TypeParam` value cell in the graph, which panics eval
+/// in debug builds (root cause owned by task **#6851**; mechanism in
+/// `eval_guard::first_unrepresentable_cell`'s doc — private, so cited by name
+/// rather than as an intra-doc link from this public item). All three LSP
+/// production entry points therefore ask `eval_guard::skip_reason` after
+/// collecting the compile-stage diagnostics, skip the eval/check pass when it
+/// answers `Some`, and report which cell forced the skip — to the server log
+/// at every site, and additionally as an editor-visible Warning at the two
+/// that own a diagnostics list. The user still gets the `E_AUTO_TYPE_PARAM_*`
+/// error this section is about where there is one, and the server stays
+/// alive. The guard tests the graph for an unrepresentable cell,
+/// NOT the diagnostics for an error: a compile error that leaves the graph
+/// representable does not suppress eval, because the LSP evaluates through
+/// non-fatal ones on purpose.
+///
 /// ## Engine posture: deliberately NO compute trampolines
 ///
 /// `EvalState::new` builds a bare `Engine::new(SimpleConstraintChecker,
@@ -103,12 +164,15 @@ pub struct DiagnosticsResult {
 /// trampoline was registered, the other that a constraint was consequently not
 /// evaluated.
 ///
-/// This trampoline-free posture is an executable contract locked by
-/// `fea_bearing_constraint_produces_no_false_violation_or_false_pass`
-/// (below, in `mod tests`) — the LSP-side analog of `cmd_check`'s
-/// `check_fea_violated_constraint_is_not_gated` lock
-/// (`crates/reify-cli/tests/harness_cli/cli_build_fea.rs`); changing this posture
-/// requires updating that test intentionally.
+/// This trampoline-free posture is an executable contract locked by one
+/// test (below, in `mod tests`):
+/// `fea_bearing_constraint_produces_no_false_violation_or_false_pass` — the
+/// LSP-side analog of `cmd_check`'s `check_fea_violated_constraint_is_not_gated`
+/// lock (`crates/reify-cli/tests/harness_cli/cli_build_fea.rs`), and also the
+/// lock that task #6798's compile-time checker injection (see the section
+/// above) does not disturb this posture, via an exhaustive probe over every
+/// target `reify_eval::compute_targets::register_compute_fns` registers —
+/// changing this posture requires updating that test intentionally.
 pub fn compute_diagnostics_with_state(
     state: &mut EvalState,
     source: &str,
@@ -125,7 +189,7 @@ pub fn compute_diagnostics_with_state(
 
     // Parse (prelude-aware so stdlib enum references like `CorrosionClass.C5`
     // disambiguate to `EnumAccess` rather than `MemberAccess`; pairs with
-    // `compile_with_stdlib` below). See task 2525.
+    // `compile_with_stdlib_checked` below). See task 2525.
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
     for err in &parsed.errors {
         diagnostics.push(convert::convert_parse_error(err, source, uri));
@@ -140,10 +204,42 @@ pub fn compute_diagnostics_with_state(
         };
     }
 
-    // Compile
-    let compiled = reify_compiler::compile_with_stdlib(&parsed);
+    // Compile. Real checker (task #6798, PRD leaf pi) — see this function's
+    // "## Compile-time checker" doc section above for the full rationale.
+    let compiled = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
     for diag in &compiled.diagnostics {
         diagnostics.push(convert::convert_diagnostic(diag, source, uri));
+    }
+
+    // Containment (task #6851): a FAILED `auto:` resolution leaves an
+    // unsubstituted `Type::TypeParam` value cell that panics eval in debug
+    // builds — see `eval_guard::first_unrepresentable_cell`'s doc comment for the
+    // mechanism. The compile-stage diagnostics, which are the user-visible
+    // signal task #6798 is about, are already collected in the loop above, so
+    // the editor still reports NoCandidate/Ambiguous; we simply never feed such
+    // a graph to the engine. Same containment idiom and same reasoning as the
+    // parse-error early return ~10 lines above: a graph we know is malformed
+    // produces misleading (here: fatal) secondary results.
+    //
+    // Placement before the state mutations is LOAD-BEARING. `state.version_counter`
+    // and `state.last_content_hash` both stay unadvanced, leaving `EvalState`
+    // exactly as it was, so the next keystroke evaluates `content_unchanged` to
+    // false and takes the cold-start branch. Advancing `last_content_hash` here
+    // would create precisely the stale-cache bug the comment below warns about:
+    // `eval_cached` returns empty diagnostics by construction, so a module that
+    // was never evaluated would silently report none.
+    if let Some(skipped) = eval_guard::skip_reason(&compiled) {
+        // Observability: skipping eval silently costs the whole document its
+        // eval-time diagnostics and constraint results, so say so in the
+        // editor as well as the server log. `skip_reason` has already written
+        // the log line (throttled); the Warning below is what a user sees on
+        // the shapes that carry NO compile diagnostic of their own — see
+        // `SkippedEval::diagnostic`.
+        diagnostics.push(skipped.diagnostic());
+        return DiagnosticsResult {
+            diagnostics,
+            geometry_output: None,
+        };
     }
 
     // Eval: use incremental eval_cached when structure unchanged, else cold-start.
@@ -734,7 +830,7 @@ pub fn compute_diagnostics(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic
     let module_name = module_name_from_uri(uri);
 
     // Parse (prelude-aware so stdlib enum references disambiguate correctly;
-    // pairs with `compile_with_stdlib` below). See task 2525.
+    // pairs with `compile_with_stdlib_checked` below). See task 2525.
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
 
     // Convert parse errors
@@ -742,12 +838,23 @@ pub fn compute_diagnostics(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic
         result.push(convert::convert_parse_error(err, source, uri));
     }
 
-    // Compile
-    let compiled = reify_compiler::compile_with_stdlib(&parsed);
+    // Compile. Real checker (task #6798, PRD leaf pi) — see
+    // `compute_diagnostics_with_state`'s "## Compile-time checker" doc
+    // section for the full rationale.
+    let compiled = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
 
     // Convert compiler diagnostics
     for diag in &compiled.diagnostics {
         result.push(convert::convert_diagnostic(diag, source, uri));
+    }
+
+    // Containment for the unsubstituted-TypeParam panic — see
+    // `compute_diagnostics_with_state`'s equivalent guard for the full
+    // rationale (task #6851). This stateless surface panics identically and is
+    // guarded identically; it has no `EvalState` to leave untouched.
+    if let Some(skipped) = eval_guard::skip_reason(&compiled) {
+        result.push(skipped.diagnostic());
+        return result;
     }
 
     // Check (eval with constraint checker, no geometry kernel)
@@ -763,14 +870,32 @@ pub fn compute_diagnostics(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic
     result
 }
 
+/// Shared `auto:` test fixtures and anti-vacuity guards — see
+/// [`auto_type_param_fixtures`] for why they live outside this module.
+#[cfg(test)]
+pub(crate) mod auto_type_param_fixtures;
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tower_lsp::lsp_types::{DiagnosticSeverity, Url};
 
+    // Shared `auto:` fixtures + anti-vacuity guards, also imported by
+    // `crate::analysis::tests` so the two entry-point test families cannot
+    // drift apart.
+    use super::auto_type_param_fixtures::{
+        AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC, BT8_CONSTANT_CONSTRAINT_SRC,
+        DECLARED_ONLY_GENERIC_TYPEPARAM_SRC, EXPLICIT_GENERIC_INSTANTIATION_TYPEPARAM_SRC,
+        GUARDED_GROUP_AUTO_FAIL_TYPEPARAM_SRC, NON_AUTO_COMPILE_ERROR_WITH_EVAL_DIAG_SRC,
+        UNUSED_TYPEPARAM_AUTO_FAIL_WITH_EVAL_DIAGS_SRC,
+        assert_auto_fail_fixture_is_newly_reachable, assert_bt8_fixture_still_diverges,
+        assert_compile_clean_typeparam_fixtures_carry_no_error,
+        assert_guarded_group_fixture_is_newly_reachable,
+    };
+
     // Additional imports for the eval-diagnostics regression-lock cluster.
     use reify_test_support::MockConstraintSolver;
-    use reify_core::{DimensionVector, Severity, ValueCellId};
+    use reify_core::{DiagnosticCode, DimensionVector, Severity, ValueCellId};
     use reify_ir::Value;
     use std::sync::{
         Arc,
@@ -779,6 +904,27 @@ mod tests {
 
     fn test_uri() -> Url {
         Url::parse("file:///test.ri").unwrap()
+    }
+
+    /// Compile `parsed` exactly the way the LSP's three production compile
+    /// sites do — `reify_compiler::compile_with_stdlib_checked(parsed,
+    /// &SimpleConstraintChecker)` (task #6798, PRD leaf pi) — rather than
+    /// the compile-time `CompileTimeIndeterminateChecker` stub.
+    ///
+    /// Any test below that independently reproduces what
+    /// `compute_diagnostics` / `compute_diagnostics_with_state` compute
+    /// internally (e.g. to precompute a `content_hash` or a `CompiledModule`
+    /// for a follow-up `check`/`check_snapshot` call) MUST route through
+    /// this helper rather than calling `compile_with_stdlib` directly — a
+    /// stub-compiled mirror agrees with production only by coincidence
+    /// today (no fixture below carries an `auto:` clause), and would
+    /// silently drift the moment one does.
+    ///
+    /// Do NOT use this helper in the BT8 anti-vacuity guards
+    /// ([`assert_bt8_fixture_still_diverges`]), which intentionally compile
+    /// both ways to prove the stub and the real checker still diverge.
+    fn compile_like_production(parsed: &reify_ast::ParsedModule) -> reify_compiler::CompiledModule {
+        reify_compiler::compile_with_stdlib_checked(parsed, &SimpleConstraintChecker)
     }
 
     /// Minimal source that references two stdlib symbols (Rigid trait, Material struct).
@@ -842,6 +988,502 @@ mod tests {
             errors.is_empty(),
             "valid source should produce no errors, got: {errors:?}"
         );
+    }
+
+    /// BT8 forward (task #6798, PRD `driver-contract-implementation.md` leaf
+    /// pi): the two production compile sites in this file must agree with
+    /// `reify check`'s real-checker verdict on a CONSTANT `auto:`
+    /// constraint, not the compile-time stub's.
+    ///
+    /// Anti-vacuity guard first, via [`assert_bt8_fixture_still_diverges`]
+    /// (shared with `analysis::tests::analysis_context_uses_real_constraint_checker`
+    /// so the two forward tests' guards cannot drift apart): assert the stub
+    /// and the real checker still genuinely diverge on
+    /// [`BT8_CONSTANT_CONSTRAINT_SRC`] before asserting the LSP matches the
+    /// real one — if a future compiler change collapses
+    /// AMBIGUOUS/NO_CANDIDATE into the same verdict, this guard fails loudly
+    /// instead of the LSP assertions below passing vacuously.
+    #[test]
+    fn lsp_constant_constraint_agrees_with_reify_check_real_checker() {
+        // --- Anti-vacuity guard: the fixture must still genuinely diverge ---
+        assert_bt8_fixture_still_diverges();
+
+        // --- Stateless surface: compute_diagnostics ---
+        let diags = compute_diagnostics(BT8_CONSTANT_CONSTRAINT_SRC, &test_uri());
+        let no_candidate_code = Some(lsp_types::NumberOrString::String(
+            "AutoTypeParamNoCandidate".to_string(),
+        ));
+        let ambiguous_code = Some(lsp_types::NumberOrString::String(
+            "AutoTypeParamAmbiguous".to_string(),
+        ));
+        assert!(
+            diags.iter().any(|d| d.code == no_candidate_code)
+                && !diags.iter().any(|d| d.code == ambiguous_code),
+            "BT8 forward (compute_diagnostics): must agree with `reify \
+             check`'s real-checker AutoTypeParamNoCandidate verdict on a \
+             constant constraint, not the compile-time stub's \
+             AutoTypeParamAmbiguous; got diagnostics: {:#?}",
+            diags
+        );
+
+        // --- Stateful surface: compute_diagnostics_with_state (the live server's path) ---
+        let mut state = EvalState::new();
+        let result =
+            compute_diagnostics_with_state(&mut state, BT8_CONSTANT_CONSTRAINT_SRC, &test_uri());
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == no_candidate_code)
+                && !result.diagnostics.iter().any(|d| d.code == ambiguous_code),
+            "BT8 forward (compute_diagnostics_with_state): must agree with \
+             `reify check`'s real-checker AutoTypeParamNoCandidate verdict \
+             on a constant constraint, not the compile-time stub's \
+             AutoTypeParamAmbiguous; got diagnostics: {:#?}",
+            result.diagnostics
+        );
+    }
+
+    /// The checker swap's OTHER user-visible consequence (task #6798, Gap-C
+    /// honesty warning), uncovered by every other BT8 test in this file:
+    /// injecting the real
+    /// `SimpleConstraintChecker` un-gates
+    /// `W_AUTO_TYPE_PARAM_CONSTRAINT_UNEVALUATED`
+    /// (`crates/reify-compiler/src/auto_type_param.rs`,
+    /// `emit_unevaluated_constraint_warnings`, gated on
+    /// `!constraint_checker.is_compile_time_stub()`), which fires whenever
+    /// an `auto:` candidate's constraint reads a cell whose default is a
+    /// computed (non-literal) expression — the literal-only compile-time
+    /// seeder skips such cells, so the constraint is honestly
+    /// `Indeterminate` rather than silently treated as satisfied. This is
+    /// already the CLI's behaviour (`SimpleConstraintChecker` is not the
+    /// stub there either); the LSP simply never surfaced it before this
+    /// leaf.
+    ///
+    /// Single candidate, deliberately NOT the BT8 AMBIGUOUS/NO_CANDIDATE
+    /// shape: `derived_bound`'s default (`bore * 2.0`) is non-literal, so
+    /// `derived_bound > 0.0` evaluates to `Undef` → `Indeterminate` under
+    /// BOTH checkers alike (the literal-only seeder skips the cell
+    /// regardless of which checker runs) — the sole candidate resolves the
+    /// same way either way, so the new diagnostic under test is additive,
+    /// not a stand-in for AMBIGUOUS/NO_CANDIDATE. `T` stays unused in
+    /// `Bearing`'s body, matching [`BT8_CONSTANT_CONSTRAINT_SRC`]'s
+    /// documented reason for avoiding the `assert_value_cell_types_representable`
+    /// panic hazard.
+    ///
+    /// Anti-vacuity guard: assert the stub does NOT emit
+    /// `AutoTypeParamConstraintUnevaluated` on this fixture (gated off by
+    /// `CompileTimeIndeterminateChecker::is_compile_time_stub() == true`)
+    /// before asserting that the real checker — and both LSP entry points —
+    /// do.
+    #[test]
+    fn lsp_surfaces_auto_type_param_constraint_unevaluated_warning() {
+        const GAP_C_SRC: &str = r#"trait Seal {}
+structure def GasketSeal : Seal { param d : Real = 2.0 }
+structure def Bearing<T: Seal> {
+    param bore : Real = 1.0
+    let derived_bound = bore * 2.0
+    constraint derived_bound > 0.0
+}
+structure def Assembly { sub b = Bearing<auto: Seal>() }
+"#;
+        let unevaluated_code = Some(lsp_types::NumberOrString::String(
+            "AutoTypeParamConstraintUnevaluated".to_string(),
+        ));
+
+        // --- Anti-vacuity guard: stub must NOT emit the honesty warning ---
+        let parsed = reify_compiler::parse_with_stdlib(GAP_C_SRC, ModulePath::single("test"));
+        let stub = reify_compiler::compile_with_stdlib(&parsed);
+        assert!(
+            !stub
+                .diagnostics
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::AutoTypeParamConstraintUnevaluated)),
+            "anti-vacuity guard: the compile-time stub must not emit \
+             AutoTypeParamConstraintUnevaluated (gated on \
+             !is_compile_time_stub(), which the stub fails) — if it now \
+             does, this fixture no longer isolates the real-checker-only \
+             behaviour and this test would pass vacuously; stub \
+             diagnostics: {:#?}",
+            stub.diagnostics
+        );
+        let real = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
+        assert!(
+            real.diagnostics
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::AutoTypeParamConstraintUnevaluated)),
+            "anti-vacuity guard: the real checker must emit \
+             AutoTypeParamConstraintUnevaluated on GAP_C_SRC — if it no \
+             longer does, this fixture has stopped exercising Gap-C and \
+             this test would pass vacuously; real-checker diagnostics: \
+             {:#?}",
+            real.diagnostics
+        );
+
+        // --- Stateless surface: compute_diagnostics ---
+        let diags = compute_diagnostics(GAP_C_SRC, &test_uri());
+        assert!(
+            diags.iter().any(|d| d.code == unevaluated_code),
+            "BT8 amendment (compute_diagnostics): must surface \
+             AutoTypeParamConstraintUnevaluated now that the real checker \
+             is injected, matching `reify check`; got diagnostics: {:#?}",
+            diags
+        );
+
+        // --- Stateful surface: compute_diagnostics_with_state (the live server's path) ---
+        let mut state = EvalState::new();
+        let result = compute_diagnostics_with_state(&mut state, GAP_C_SRC, &test_uri());
+        assert!(
+            result.diagnostics.iter().any(|d| d.code == unevaluated_code),
+            "BT8 amendment (compute_diagnostics_with_state): must surface \
+             AutoTypeParamConstraintUnevaluated now that the real checker \
+             is injected, matching `reify check`; got diagnostics: {:#?}",
+            result.diagnostics
+        );
+    }
+
+    /// The containment guard's NARROWNESS, pinned at the PRODUCTION ENTRY
+    /// POINTS rather than only on the predicate.
+    ///
+    /// The predicate-level test above proves
+    /// `eval_guard::compiled_graph_has_unrepresentable_cell` answers `false` for a
+    /// non-`auto:` compile error. It cannot prove the CALL SITES ask it: a
+    /// future edit widening either site to `reify check`'s blanket
+    /// `compiled.diagnostics.iter().any(|d| d.severity == Severity::Error)`
+    /// gate would leave that test green and silently stop every eval-time
+    /// diagnostic on any document carrying a compile error. This test is the
+    /// wiring-level half — it goes RED on exactly that edit.
+    ///
+    /// Asserts BOTH halves reach the LSP output: the compile-stage
+    /// `UnresolvedName` error (the LSP does not swallow it) and the eval-stage
+    /// circular let-binding (the LSP evaluated THROUGH it, on purpose).
+    #[test]
+    fn non_auto_compile_error_still_yields_eval_diagnostics() {
+        let unresolved_code = Some(lsp_types::NumberOrString::String(
+            "UnresolvedName".to_string(),
+        ));
+        let has_compile_error =
+            |diags: &[lsp_types::Diagnostic]| diags.iter().any(|d| d.code == unresolved_code);
+        // The engine's exact message: "circular let-binding dependency in
+        // template S: [a, b]" — matched the same way
+        // `eval_diagnostics_surfaced_in_stateful_pipeline` matches it.
+        let has_eval_diag = |diags: &[lsp_types::Diagnostic]| {
+            diags.iter().any(|d| {
+                d.severity == Some(DiagnosticSeverity::ERROR)
+                    && d.message.contains("circular let-binding dependency")
+                    && d.message.contains("in template S")
+            })
+        };
+
+        // --- Stateless surface: compute_diagnostics ---
+        let diags = compute_diagnostics(NON_AUTO_COMPILE_ERROR_WITH_EVAL_DIAG_SRC, &test_uri());
+        assert!(
+            has_compile_error(&diags) && has_eval_diag(&diags),
+            "narrowness (compute_diagnostics): an Error-severity compile \
+             diagnostic that is NOT an `auto:` failure must not suppress the \
+             eval pass — the LSP evaluates through non-fatal compile errors on \
+             purpose. Missing the eval diagnostic means a call site has drifted \
+             into `reify check`'s blanket error gate. got: {:#?}",
+            diags
+        );
+
+        // --- Stateful surface: compute_diagnostics_with_state (live server) ---
+        let mut state = EvalState::new();
+        let result = compute_diagnostics_with_state(
+            &mut state,
+            NON_AUTO_COMPILE_ERROR_WITH_EVAL_DIAG_SRC,
+            &test_uri(),
+        );
+        assert!(
+            has_compile_error(&result.diagnostics) && has_eval_diag(&result.diagnostics),
+            "narrowness (compute_diagnostics_with_state): the live server's \
+             keystroke path must keep surfacing eval-time diagnostics on a \
+             document that also carries a non-`auto:` compile error. got: {:#?}",
+            result.diagnostics
+        );
+    }
+
+    /// The guard must not fire on a failed `auto:` resolution that is provably
+    /// SAFE to evaluate — the measured OVER-FIRE of the `AutoTypeParam*`
+    /// diagnostic-code proxy this guard replaced, pinned end-to-end.
+    ///
+    /// [`UNUSED_TYPEPARAM_AUTO_FAIL_WITH_EVAL_DIAGS_SRC`] leaves `T` UNUSED in
+    /// `Bearing`'s body, so the failed resolution creates no `TypeParam`-typed
+    /// value cell and there is nothing for
+    /// `assert_value_cell_types_representable` to panic on. Under the code
+    /// proxy the single `auto:` clause nonetheless blanked the whole
+    /// document's eval pass; all three findings below were lost.
+    ///
+    /// Anti-vacuity: the fixture must still actually FAIL `auto:` resolution
+    /// (asserted via the compile-stage `AutoTypeParamNoCandidate`), otherwise
+    /// "the eval diagnostics survived" would be trivially true and this test
+    /// would stop being about the guard at all.
+    #[test]
+    fn failed_auto_resolution_with_unused_type_param_still_yields_eval_diagnostics() {
+        let no_candidate_code = Some(lsp_types::NumberOrString::String(
+            "AutoTypeParamNoCandidate".to_string(),
+        ));
+        let check = |label: &str, diags: &[lsp_types::Diagnostic]| {
+            assert!(
+                diags.iter().any(|d| d.code == no_candidate_code),
+                "anti-vacuity ({label}): the fixture must still FAIL `auto:` \
+                 resolution, or this test no longer exercises the guard at \
+                 all. got: {diags:#?}"
+            );
+            for needle in [
+                "circular let-binding dependency in template Other",
+                "constraint Other#constraint[0] violated",
+                "constraint Bearing#constraint[0] violated",
+            ] {
+                assert!(
+                    diags.iter().any(|d| d.message.contains(needle)),
+                    "over-fire ({label}): a failed `auto:` resolution with an \
+                     UNUSED type parameter is safe to evaluate, so `{needle}` \
+                     must still reach the editor. Its absence means the \
+                     containment guard has regressed to a diagnostic-code \
+                     proxy and one `auto:` clause is blanking eval for the \
+                     whole document. got: {diags:#?}"
+                );
+            }
+        };
+
+        // --- Stateless surface: compute_diagnostics ---
+        check(
+            "compute_diagnostics",
+            &compute_diagnostics(UNUSED_TYPEPARAM_AUTO_FAIL_WITH_EVAL_DIAGS_SRC, &test_uri()),
+        );
+
+        // --- Stateful surface: compute_diagnostics_with_state (live server) ---
+        let mut state = EvalState::new();
+        let result = compute_diagnostics_with_state(
+            &mut state,
+            UNUSED_TYPEPARAM_AUTO_FAIL_WITH_EVAL_DIAGS_SRC,
+            &test_uri(),
+        );
+        check("compute_diagnostics_with_state", &result.diagnostics);
+    }
+
+    /// Containment regression lock for the two entry points in this file
+    /// (root cause owned by task **#6851**).
+    ///
+    /// A failed `auto:` type-parameter resolution leaves a `param seal : T`
+    /// member carrying `cell_type = Type::TypeParam("T")` into the evaluation
+    /// graph, where `reify-eval`'s `#[cfg(debug_assertions)]`
+    /// `assert_value_cell_types_representable` PANICS
+    /// ("unrepresentable cell_type: value cell `Assembly.b.seal` has
+    /// cell_type TypeParam(\"T\")", `crates/reify-eval/src/engine_eval.rs`).
+    /// The root-cause fix is owned by task **#6851**; this test locks the
+    /// LSP-side containment
+    /// ([`super::eval_guard::compiled_graph_has_unrepresentable_cell`]),
+    /// which skips the eval/check pass so the language server survives and
+    /// still reports the compile-stage error.
+    ///
+    /// **Reaching the assertions AT ALL is half the contract.** Without the
+    /// guard these two calls PANIC before they can return, so "the test ran to
+    /// completion" IS the no-panic assertion. Wrapping either call in
+    /// `#[should_panic]` or `catch_unwind` would invert the contract this test
+    /// exists to state — do not.
+    ///
+    /// **Two fixtures, one body.** The `param seal : T` member is exercised
+    /// both plain and inside a GUARDED group, because the containment
+    /// predicate reaches them through different collections: a guarded member
+    /// lives in `CompiledGuardedGroup::members`, never in
+    /// `TopologyTemplate::value_cells`, and was measured to slip past the
+    /// predicate's stage-1 absence proof and panic here at
+    /// `crates/reify-eval/src/engine_eval.rs:210` —
+    /// "unrepresentable cell_type: value cell `Bearing.seal` has cell_type
+    /// TypeParam(\"T\")". Parameterised over a table rather than copied, so the
+    /// two shapes' contracts cannot drift apart; every assertion below is
+    /// load-bearing for both.
+    #[test]
+    fn auto_resolution_failure_does_not_panic_diagnostics_entry_points() {
+        // Each fixture carries its OWN anti-vacuity guard: both claim "stub
+        // clean, real checker fails resolution", but each names its own
+        // fixture when that stops being true.
+        let fixtures: [(&str, &str, fn()); 2] = [
+            (
+                "plain member",
+                AUTO_FAIL_UNSUBSTITUTED_TYPEPARAM_SRC,
+                assert_auto_fail_fixture_is_newly_reachable,
+            ),
+            (
+                "guarded-group member",
+                GUARDED_GROUP_AUTO_FAIL_TYPEPARAM_SRC,
+                assert_guarded_group_fixture_is_newly_reachable,
+            ),
+        ];
+
+        for (shape, src, assert_fixture_is_newly_reachable) in fixtures {
+            // --- Anti-vacuity guard: stub clean, real checker fails resolution ---
+            assert_fixture_is_newly_reachable();
+
+            let no_candidate_code = Some(lsp_types::NumberOrString::String(
+                "AutoTypeParamNoCandidate".to_string(),
+            ));
+
+            // --- Stateless surface: compute_diagnostics ---
+            // Panics at engine_eval.rs without the containment guard (measured).
+            let diags = compute_diagnostics(src, &test_uri());
+            assert!(
+                diags.iter().any(|d| d.code == no_candidate_code),
+                "containment (compute_diagnostics, {shape}): a failed `auto:` resolution \
+                 must still surface the compile-stage AutoTypeParamNoCandidate \
+                 error — reaching this assertion at all means the eval pass was \
+                 correctly skipped rather than panicking on the unsubstituted \
+                 TypeParam cell (task #6851). A panic here means the containment \
+                 guard has regressed; an empty/miscoded result means the guard \
+                 fires too early and swallows the compile diagnostics. got: {:#?}",
+                diags
+            );
+
+            // --- Stateful surface: compute_diagnostics_with_state (live server) ---
+            //
+            // Snapshot `EvalState` first: the guard's placement BEFORE the state
+            // mutations is load-bearing, and nothing else pins it. If a refactor
+            // moved `state.version_counter += 1` or the `last_content_hash`
+            // assignment above the guard, this test would still be green on
+            // `result.diagnostics` alone while the SECOND request on the same
+            // unchanged document took the `content_unchanged` branch into
+            // `eval_cached` — which returns empty diagnostics by construction —
+            // and silently reported no eval diagnostics for a module that was
+            // never evaluated at all.
+            let mut state = EvalState::new();
+            let hash_before = state.last_content_hash;
+            let version_before = state.version_counter;
+            let initialized_before = state.is_engine_initialized();
+
+            let result = compute_diagnostics_with_state(&mut state, src, &test_uri());
+
+            assert_eq!(
+                state.last_content_hash, hash_before,
+                "containment ({shape}): a guard-suppressed request must leave \
+                 `last_content_hash` UNADVANCED, so the next request on the same \
+                 document takes the cold-start branch rather than `eval_cached` \
+                 (which returns empty diagnostics by construction). Advancing it \
+                 here is the stale-cache bug the guard's placement prevents."
+            );
+            assert_eq!(
+                state.version_counter, version_before,
+                "containment ({shape}): a guard-suppressed request evaluated nothing, so \
+                 it must not burn a version. A bumped counter means the guard drifted \
+                 BELOW `state.version_counter += 1`."
+            );
+            assert_eq!(
+                state.is_engine_initialized(),
+                initialized_before,
+                "containment ({shape}): a guard-suppressed request must leave the engine \
+                 UNINITIALIZED — it never fed it a snapshot. An initialized engine \
+                 here means the guard drifted below the eval call it exists to \
+                 skip, i.e. the panic it contains is reachable again."
+            );
+
+            assert!(
+                result
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.code == no_candidate_code),
+                "containment (compute_diagnostics_with_state, {shape}): the live \
+                 server's keystroke path must still surface the compile-stage \
+                 AutoTypeParamNoCandidate error without feeding the unsubstituted \
+                 TypeParam graph to the engine (task #6851). A panic here means \
+                 the containment guard has regressed. got: {:#?}",
+                result.diagnostics
+            );
+        }
+    }
+
+    /// Containment on the two COMPILE-CLEAN shapes — the ones on which the
+    /// guard has no compile diagnostic to ride on, and must therefore say
+    /// something in the editor itself.
+    ///
+    /// Every other containment test in this file drives a fixture that also
+    /// carries an `AutoTypeParamNoCandidate` Error, so each of their
+    /// assertions reads "the compile-stage error still surfaces". That leaves
+    /// the guard's own "## Blast radius" claim — that it contains two shapes
+    /// with NO compile diagnostic at all — asserted nowhere, and it is the
+    /// claim under which the guard is at its most consequential: on these
+    /// inputs the file is valid `.ri` that the compiler accepted, and the user
+    /// silently loses every eval-time diagnostic, every constraint result and
+    /// (via the same guard in `AnalysisContext::from_parsed`) every
+    /// hover/completion computed value for the whole document.
+    ///
+    /// So this test pins three things per entry point: no panic (reaching the
+    /// assertions IS that half of the contract — do not add `#[should_panic]`
+    /// or `catch_unwind`), no Error-severity diagnostic to explain the loss,
+    /// and consequently the file-level `EvalSkippedUnrepresentableCell`
+    /// Warning naming the offending cell. Drop the Warning and the third
+    /// assertion goes red.
+    #[test]
+    fn compile_clean_unrepresentable_graph_is_contained_and_reported() {
+        // Anti-vacuity: both fixtures must still compile CLEAN under both
+        // checkers, or "the editor is told nothing else" is not the situation
+        // under test.
+        assert_compile_clean_typeparam_fixtures_carry_no_error();
+
+        let skip_code = Some(lsp_types::NumberOrString::String(
+            "EvalSkippedUnrepresentableCell".to_string(),
+        ));
+
+        for (shape, src) in [
+            ("declared-only generic", DECLARED_ONLY_GENERIC_TYPEPARAM_SRC),
+            (
+                "explicit generic instantiation",
+                EXPLICIT_GENERIC_INSTANTIATION_TYPEPARAM_SRC,
+            ),
+        ] {
+            for (entry_point, diags) in [
+                ("compute_diagnostics", compute_diagnostics(src, &test_uri())),
+                (
+                    "compute_diagnostics_with_state",
+                    compute_diagnostics_with_state(&mut EvalState::new(), src, &test_uri())
+                        .diagnostics,
+                ),
+            ] {
+                let errors: Vec<_> = diags
+                    .iter()
+                    .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+                    .collect();
+                assert!(
+                    errors.is_empty(),
+                    "({entry_point}, {shape}): this fixture is valid `.ri` the \
+                     compiler accepts, which is the whole point — an Error here \
+                     means the fixture drifted and the report assertion below \
+                     could pass by riding on someone else's diagnostic. \
+                     errors: {errors:#?}"
+                );
+
+                let reported: Vec<_> = diags.iter().filter(|d| d.code == skip_code).collect();
+                assert_eq!(
+                    reported.len(),
+                    1,
+                    "({entry_point}, {shape}): a guard-suppressed compile-clean \
+                     document must carry exactly ONE editor-visible \
+                     EvalSkippedUnrepresentableCell Warning. Zero means the \
+                     document silently lost its whole eval pass — every \
+                     constraint result and every computed value — with nothing \
+                     but a line on the server's stderr to show for it. \
+                     Reaching this assertion at all also means the eval pass \
+                     was skipped rather than panicking on the unrepresentable \
+                     cell (task #6851). got: {diags:#?}"
+                );
+                let reported = reported[0];
+                assert_eq!(
+                    reported.severity,
+                    Some(DiagnosticSeverity::WARNING),
+                    "({entry_point}, {shape}): the skip report is the LSP \
+                     describing its own reduced service over a file the \
+                     compiler accepted, not a defect in that file — Warning, \
+                     not Error."
+                );
+                assert!(
+                    reported.message.contains("seal"),
+                    "({entry_point}, {shape}): the skip report must NAME the \
+                     offending cell, or it tells the user only that something \
+                     was lost. got: {}",
+                    reported.message
+                );
+            }
+        }
     }
 
     /// Regression guard for task 2525: `compute_diagnostics` must accept sources
@@ -1278,10 +1920,12 @@ structure S {
         let source = "structure S {\n    let a = b + 1\n    let b = a + 1\n}";
 
         // Pre-compile to obtain the content_hash for this exact source.
-        // Must use compile_with_stdlib + ModulePath::single("test") to match
-        // what compute_diagnostics_with_state derives from "file:///test.ri".
+        // Must use compile_like_production + ModulePath::single("test") to
+        // match what compute_diagnostics_with_state derives from
+        // "file:///test.ri" — compile_like_production is what production
+        // actually calls.
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
 
         // Inject a matching hash while leaving the engine uninitialized.
         // (private-field write from child mod — same pattern as the
@@ -1572,7 +2216,7 @@ structure S {
         // (the unfold.rs / engine_eval.rs circular let-binding paths).
         let source = "structure S {\n    let a = b + 1\n    let b = a + 1\n}";
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
 
         let checker = SimpleConstraintChecker;
         let mut engine = reify_eval::Engine::new(Box::new(checker), None);
@@ -1631,7 +2275,7 @@ structure S {
     fn build_param_override_diags(override_value: Value) -> Vec<Diagnostic> {
         let source = "structure S { param width: Length = 100mm }";
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
         let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
         let _ = engine.eval(&compiled);
         engine.set_param_and_invalidate(&ValueCellId::new("S", "width"), override_value);
@@ -1648,7 +2292,7 @@ structure S {
     ) -> (Arc<AtomicUsize>, Vec<Diagnostic>) {
         let source = "structure S {\n    param x: Length = auto\n    constraint x > 1mm\n}";
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
         let counter = solver.counter_handle();
         let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None)
             .with_solver(Box::new(solver));
@@ -1757,7 +2401,7 @@ structure S {
     fn eval_diag_format_sub_component_unknown() {
         let source = "structure S { sub x = Unknown() }";
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
         let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
         let diags = engine.eval(&compiled).diagnostics;
 
@@ -1861,7 +2505,7 @@ structure S {
     fn build_eval_state_with_failed_cell(cell_id: ValueCellId) -> EvalState {
         let source = reify_test_support::bracket_source();
         let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
 
         let checker = SimpleConstraintChecker;
         let mut engine = reify_eval::Engine::new(Box::new(checker), None);
@@ -1924,7 +2568,7 @@ structure S {
         // avoids a hardcoded line number (which would drift if bracket_source changes)
         // and is resilient to stdlib templates adding extra let cells in the future.
         let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
         let volume_span = compiled
             .templates
             .iter()
@@ -1975,7 +2619,7 @@ structure S {
         let base_id = ValueCellId::new("S", "base");
 
         let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
 
         let checker = SimpleConstraintChecker;
         let mut engine = reify_eval::Engine::new(Box::new(checker), None);
@@ -2049,7 +2693,7 @@ structure S {
         let base_id = ValueCellId::new("S", "base");
 
         let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
 
         let checker = SimpleConstraintChecker;
         let mut engine = reify_eval::Engine::new(Box::new(checker), None);
@@ -2295,7 +2939,7 @@ structure S {
             dummy_span(),
             body,
         )]);
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
         let source = source_stub();
         let uri = test_uri();
 
@@ -2452,6 +3096,78 @@ structure S {
         );
     }
 
+    /// Every compute target registered by
+    /// `reify_eval::compute_targets::register_compute_fns` — that function's
+    /// own doc comment calls it "the single place that registers the full
+    /// production set of compute trampolines". Exhaustive, not a sample:
+    /// used below to probe that the LSP's engine ([`EvalState::new`], which
+    /// never calls `register_compute_fns`) carries none of them registered.
+    /// If `register_compute_fns` gains or loses a target, update this list
+    /// to match — a stale list would silently narrow the probe back to a
+    /// sample.
+    ///
+    /// That instruction is HALF-ENFORCED, deliberately so. A rename or a
+    /// removal upstream is caught immediately by
+    /// [`assert_all_production_compute_targets_are_registrable`], the positive
+    /// counter-probe: without it every `compute_dispatch(target).is_none()`
+    /// assertion on a stale name passes trivially and the whole posture lock
+    /// goes vacuous without going red. An ADDITION upstream is NOT caught —
+    /// closing that half needs a public enumerator over `Engine`'s
+    /// `compute_registry.fns` in reify-eval (so the const can be asserted
+    /// set-equal to the registry), which is outside this leaf's
+    /// "Modules: `reify-lsp`" scope.
+    const ALL_PRODUCTION_COMPUTE_TARGETS: &[&str] = &[
+        "solver::elastic_static",
+        "solver::buckling",
+        "solver::form_find",
+        "solver::form_find_free",
+        "solver::tensegrity_load",
+        "solver::membrane_load",
+        "solver::multi_case",
+        "solver::buckling_multi_case",
+        "fdm::as_printed_material_r_fast",
+        "fdm::as_printed_material_r0",
+        "fdm::slice",
+        "modal::free_vibration",
+        "modal::transient_response",
+        "modal::displacement_at",
+        "modal::mechanism_modal",
+        "dynamics::inverse_dynamics",
+        "trajectory::simulate",
+        "trajectory::input_shape",
+    ];
+
+    /// Positive counter-probe for [`ALL_PRODUCTION_COMPUTE_TARGETS`]: every
+    /// name in the const must actually be registered by
+    /// `reify_eval::compute_targets::register_compute_fns`.
+    ///
+    /// The const is a hand-maintained mirror of that function, and the posture
+    /// lock that consumes it only ever asserts `compute_dispatch(t).is_none()`.
+    /// Those assertions pass TRIVIALLY on a name that no longer exists, so an
+    /// upstream rename or removal would hollow the lock out silently — it
+    /// would keep proving that an engine carries no trampoline for eighteen
+    /// strings, none of which name a real compute target any more. Asserting
+    /// the same names ARE dispatchable on a throwaway registered engine makes
+    /// exactly that drift red, at the cost of one extra `Engine`.
+    ///
+    /// Does NOT catch an upstream ADDITION — see the const's own doc for why
+    /// that half is out of this leaf's scope.
+    fn assert_all_production_compute_targets_are_registrable() {
+        let mut registered_probe = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+        reify_eval::compute_targets::register_compute_fns(&mut registered_probe);
+        for target in ALL_PRODUCTION_COMPUTE_TARGETS {
+            assert!(
+                registered_probe.compute_dispatch(target).is_some(),
+                "ALL_PRODUCTION_COMPUTE_TARGETS is STALE: '{target}' is not \
+                 registered by reify_eval::compute_targets::register_compute_fns \
+                 any more. Every `compute_dispatch('{target}').is_none()` \
+                 assertion in the trampoline-free posture lock is therefore \
+                 passing trivially. Re-sync this const with \
+                 `register_compute_fns`."
+            );
+        }
+    }
+
     /// Posture lock (PRD `compute-fea-hardening.md` task C1, INV-FEA-1) for
     /// the trampoline-free posture — see [`compute_diagnostics_with_state`]'s
     /// doc comment for the authoritative posture writeup; this test is its
@@ -2462,12 +3178,37 @@ structure S {
     /// the CLI's `check_fea_violated_constraint_is_not_gated`
     /// (`crates/reify-cli/tests/harness_cli/cli_build_fea.rs`). GREEN before and after:
     /// this locks pre-existing gate behaviour, not new runtime behaviour.
+    ///
+    /// **Also the BT8 REVERSE lock** (task #6798, PRD
+    /// `driver-contract-implementation.md` leaf pi / §5 BT8 / §12 matrix
+    /// ruling 2): the compute-trampoline probe below enumerates
+    /// [`ALL_PRODUCTION_COMPUTE_TARGETS`] — every target
+    /// `register_compute_fns` registers, not a sample — so it doubles as
+    /// the lock that injecting the real `SimpleConstraintChecker` at
+    /// compile time (this leaf's change) does not disturb the
+    /// Leo-ratified trampoline-free posture. Matrix ruling 2 retires the
+    /// CLI-side FEA lock but explicitly KEEPS this LSP-side subtraction.
+    /// `FEA_BEARING_SRC` has no `auto:` type parameter, so the injected
+    /// compile-time checker is never even consulted on it — the checker
+    /// swap is a no-op here by construction (see
+    /// [`compute_diagnostics_with_state`]'s "## Compile-time checker" doc
+    /// section), which is exactly why this stays a posture lock rather
+    /// than a BT8-forward-style divergence test, and why it is GREEN
+    /// before and after task #6798's impl steps: the compile-time checker
+    /// change never touches the eval-time Engine built by
+    /// [`EvalState::new`].
     #[test]
     fn fea_bearing_constraint_produces_no_false_violation_or_false_pass() {
+        // Anti-vacuity for the probe's own vocabulary: the negative
+        // `is_none()` assertions below are only meaningful if every name in
+        // ALL_PRODUCTION_COMPUTE_TARGETS still names a real, registrable
+        // compute target.
+        assert_all_production_compute_targets_are_registrable();
+
         let uri = test_uri();
         let parsed =
             reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
 
         // Guard: the fixture must compile with zero errors, so the
         // Indeterminate result asserted below is attributable to
@@ -2498,14 +3239,14 @@ structure S {
 
         let checker = SimpleConstraintChecker;
         let mut stateless_probe = reify_eval::Engine::new(Box::new(checker), None);
-        assert!(
-            stateless_probe
-                .compute_dispatch("solver::elastic_static")
-                .is_none(),
-            "sanity: Engine::new(SimpleConstraintChecker, None) — the exact \
-             construction compute_diagnostics uses internally — must carry \
-             no pre-registered solver::elastic_static compute trampoline"
-        );
+        for target in ALL_PRODUCTION_COMPUTE_TARGETS {
+            assert!(
+                stateless_probe.compute_dispatch(target).is_none(),
+                "sanity: Engine::new(SimpleConstraintChecker, None) — the \
+                 exact construction compute_diagnostics uses internally — \
+                 must carry no pre-registered '{target}' compute trampoline"
+            );
+        }
         let stateless_check_result = stateless_probe.check(&compiled);
         assert_no_false_violation_or_pass(
             &stateless_diags,
@@ -2523,15 +3264,17 @@ structure S {
         // rather than a hand-rebuilt one.
         let mut state = EvalState::new();
         let stateful_result = compute_diagnostics_with_state(&mut state, FEA_BEARING_SRC, &uri);
-        assert!(
-            state
-                .engine
-                .compute_dispatch("solver::elastic_static")
-                .is_none(),
-            "the actual persistent Engine used by compute_diagnostics_with_state \
-             must carry no registered solver::elastic_static compute trampoline \
-             — this is the trampoline-free posture documented on that function"
-        );
+        for target in ALL_PRODUCTION_COMPUTE_TARGETS {
+            assert!(
+                state.engine.compute_dispatch(target).is_none(),
+                "the actual persistent Engine used by \
+                 compute_diagnostics_with_state must carry no registered \
+                 '{target}' compute trampoline — this is the \
+                 trampoline-free posture documented on that function, and \
+                 (task #6798) the compile-time checker injection must not \
+                 disturb it"
+            );
+        }
         let stateful_check_result = state.engine.check_snapshot(&compiled).expect(
             "state.engine should hold a snapshot for FEA_BEARING_SRC's content \
              hash immediately after compute_diagnostics_with_state evaluated it",
@@ -2647,7 +3390,7 @@ structure S {
         let uri = test_uri();
         let parsed =
             reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
 
         let mut state = EvalState::new();
         let result = compute_diagnostics_with_state(&mut state, FEA_BEARING_SRC, &uri);
@@ -2781,7 +3524,7 @@ structure S {
 }"#;
 
         let parsed = reify_compiler::parse_with_stdlib(SRC, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
 
         // Guard fixture validity like C1's lock: a fixture typo must fail
         // loudly here rather than making the assertions below vacuous.
@@ -2999,7 +3742,7 @@ structure S {
 
         let parsed =
             reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
         let check_result = state.engine.check_snapshot(&compiled).expect(
             "state.engine should hold a snapshot for FEA_BEARING_SRC's content hash \
              immediately after compute_diagnostics_with_state evaluated it",
@@ -3061,7 +3804,7 @@ structure S {
         let uri = test_uri();
         let parsed =
             reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
-        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let compiled = compile_like_production(&parsed);
 
         let mut state = EvalState::new();
         let result = compute_diagnostics_with_state(&mut state, FEA_BEARING_SRC, &uri);

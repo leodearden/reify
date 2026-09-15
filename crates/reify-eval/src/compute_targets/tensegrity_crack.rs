@@ -146,13 +146,20 @@ pub(crate) fn crack_dimensioned_scalar(
 /// diagnostic vocabulary. There is no `expected: DimensionVector` parameter
 /// because "no dimension at all" is not a choice the caller gets to make.
 ///
-/// Forward pointer: task alpha (#5791) relocates `arg_acceptance` into
-/// `reify-ir` and adds a `dimensionless_spec()` whose acceptance set is exactly
-/// the `Real | Int | Scalar{DIMENSIONLESS}` above. Today's `accept_arg` rejects
-/// a bare `Value::Real` outright, so it cannot yet express side 1 of the
-/// contract; once alpha lands that additive redesign, this helper and
-/// [`crack_dimensionless_list`] should become thin adapters over it rather than
-/// a second definition site.
+/// LANDED (task alpha, #5791, PRD
+/// `docs/prds/v0_6/dimension-checked-readers.md` §3 Leg A): `arg_acceptance`
+/// was relocated out of this crate to `crates/reify-ir/src/arg_acceptance.rs`,
+/// and `reify_ir::arg_acceptance::dimensionless_spec()` now exists with an
+/// acceptance set that is exactly the `Real | Int | Scalar{DIMENSIONLESS}`
+/// above — `accept_arg` admits a bare `Value::Real`/`Value::Int` when, and only
+/// when, the spec's dimension is DIMENSIONLESS, so it CAN now express side 1 of
+/// the contract that it could not before.
+///
+/// STILL OWED, and deliberately not alpha's: this helper and
+/// [`crack_dimensionless_list`] should become thin adapters over that shared
+/// spec rather than a second definition site. Alpha's remit was to make the
+/// family reachable and additive while leaving every pre-existing call site
+/// byte-identical, so adopting it here is a consuming leaf's work.
 pub(crate) fn crack_dimensionless_scalar(
     v: &Value,
     what: &str,

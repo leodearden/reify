@@ -256,6 +256,13 @@ structure Parent {
 /// A structure using `aux let`, a plain `sub … at <pose>`, and an `aux sub … at <pose>`
 /// together must compile with ZERO Error-severity diagnostics — this pins the
 /// "diagnostics accept at/aux cleanly" acceptance criterion.
+///
+/// The `_allow_parse_errors` helper is deliberate: the plain one panics inside
+/// `parse_with_stdlib_or_panic`, so a parse failure aborts with a raw
+/// `parse errors: [...]` dump instead of reaching the assertion below.
+/// reify-syntax's `linked_parser_exposes_the_indexer_clause_fields` is the
+/// attributable signal for a stale parser.c (`#6992`); this test only needs to
+/// stay legible when that is red.
 #[test]
 fn valid_at_and_aux_compile_clean() {
     let source = r#"structure Child {
@@ -267,7 +274,7 @@ structure Parent {
     sub plate : Child at transform3(orient_identity(), vec3(10mm, 0mm, 0mm))
     aux sub jig : Child at transform3(orient_identity(), vec3(30mm, 0mm, 0mm))
 }"#;
-    let compiled = reify_test_support::compile_source_with_stdlib(source);
+    let compiled = reify_test_support::compile_source_with_stdlib_allow_parse_errors(source);
 
     let errors: Vec<_> = compiled
         .diagnostics
@@ -276,7 +283,9 @@ structure Parent {
         .collect();
     assert!(
         errors.is_empty(),
-        "valid at/aux usage must produce zero Error diagnostics; got: {:?}",
+        "valid at/aux usage must produce zero Error diagnostics; got: {:?}\n\
+         (if reify-syntax's `linked_parser_exposes_the_indexer_clause_fields` is \
+         also red, a stale tree-sitter parser.c is the cause, not this crate)",
         errors
     );
 }

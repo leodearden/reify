@@ -96,7 +96,14 @@ pub use compute_targets::elastic_static::PROGRESS_STRIDE;
 pub use engine_eval::ASSERT_MSG_PREFIX;
 #[doc(hidden)]
 pub use engine_eval::is_representable_cell_type;
-pub(crate) mod arg_acceptance;
+// Task 5791 (PRD docs/prds/v0_6/dimension-checked-readers.md §3 Leg A):
+// `arg_acceptance` was RELOCATED to `crates/reify-ir/src/arg_acceptance.rs`
+// so `reify-stdlib` — which cannot depend on `reify-eval` — shares the same
+// dimension-acceptance rule. This crate-private re-export keeps every
+// pre-existing `crate::arg_acceptance::…` spelling in this crate compiling
+// unchanged, at exactly the former visibility (a `pub use` would widen
+// reify-eval's public API for no reason).
+pub(crate) use reify_ir::arg_acceptance;
 mod engine_purposes;
 pub(crate) mod structural_query;
 mod engine_tolerance;

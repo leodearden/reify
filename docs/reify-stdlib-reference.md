@@ -362,9 +362,14 @@ unaffected: `transform3_identity` builds `Length` zeros.
 > design-correctness fault rather than a degradation to tolerate, and the sibling
 > angular half of the same builtin family (#6080) reports its equivalent fault at
 > the same severity — so one fault class does not report two ways across one
-> seam. The diagnostic stays code-less; minting
-> `DiagnosticCode::ArgDimensionMismatch` is owned by
-> `docs/prds/v0_6/dimension-checked-readers.md` §6.
+> seam. The diagnostic carries `reify_core::DiagnosticCode::DimensionedArgRejected`
+> — the reused, pre-existing runtime dimension-rejection code, attached by task
+> 5791 under BINDING ruling A7 (Leo, 2026-08-30, esc-5791-3). No
+> `DiagnosticCode::ArgDimensionMismatch` is minted: one rejection *reason* gets
+> one code, and this seam shares that reason with `bbox` and with
+> `reify_eval::geometry_ops`' `arg_acceptance`-backed chokepoints. See
+> `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 1's RECONCILIATION
+> block.
 
 **Scope: this seam only.** The gate above is *not* evidence that the transform
 family is uniformly `Length`-only. `transform3`'s signature above declares

@@ -494,7 +494,8 @@ structure def MinWallCheck : DFMRule {
 ///
 /// The zero-error invariant for std/process is already covered by
 /// `std_process_loads_with_no_errors_and_dfmseverity_enum` (step-1) and the
-/// central `stdlib_loader_tests::all_stdlib_modules_have_no_errors`; it is
+/// central `harness_statement_semantics`'s
+/// `stdlib_loader_tests::all_stdlib_modules_have_no_errors`; it is
 /// intentionally not re-checked here to avoid maintenance-surface duplication.
 #[test]
 fn std_process_module_cardinality_locked() {

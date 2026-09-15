@@ -698,6 +698,115 @@ assert "T13: REIFY_VERIFY_PREBUILD_TIMEOUT=banana (malformed): pre-builds fall b
     occt_plan_grep_or_dump 'timeout --kill-after=60 45m .*cargo build --release -p reify-cli' "$_T13_PLAN" "$_T13_ERR"
 rm -f "$_T13_ERR"
 
+# -- Tests T14–T17 (task 6485): role-scoped OFFLINE release wall ------------------
+# INVARIANT: the offline release wall must strictly EXCEED the heavy per-test
+# ceiling in .config/nextest.toml, so nextest SIGTERMs the offending test BY NAME
+# before the outer `timeout` can fire exit 124 with zero attribution. Tiers and
+# rationale: docs/prds/offline-deep-test-lane.md DA6.
+#
+# SCOPE SPLIT, so neither guard grows the other's job:
+# test_nextest_slow_priority.sh Assertion L guards the numeric RELATIONSHIP
+# (wall > ceiling, every operand derived from a file); these four guard the
+# RENDERING — that the role default reaches the command line at all.
+#
+# Each case invokes verify.sh with NO --profile flag on purpose: the offline role
+# forces PROFILE=release itself (verify.sh ~:702), and that is part of what is
+# under test. Captures reuse the T8/T9 idiom verbatim (capture_print_plan +
+# plan_capture_complete + plan_strip_comments + occt_plan_grep_or_dump), each
+# guarded with `|| true` for the same task 6247 retry-on-truncation reason.
+#
+# NOTE these are the T-series (T1–T17, the --print-plan timeout-knob tests), which
+# is a DIFFERENT series from this file's `Test 14`–`Test 17` flock-wrapper tests.
+echo ""
+echo "--- Tests T14–T17 (task 6485): role-scoped offline release wall (13h) ---"
+
+# T14: DF_VERIFY_ROLE=offline with BOTH timeout knobs unset → the release nextest
+#      pass renders the 13h role default. RED against current code: verify.sh has
+#      no role-scoped release default, so offline renders the 90m base default.
+_T14_ERR="$(mktemp)"
+_T14_RAW=""
+capture_print_plan _T14_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE \
+        -u REIFY_GATE_EXCLUDE_HEAVY DF_VERIFY_ROLE=offline \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --scope all --print-plan 2>"$_T14_ERR" || true
+assert "T14: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T14_RAW"
+_T14_PLAN="$(plan_strip_comments "$_T14_RAW")"
+export _T14_PLAN _T14_RAW
+assert "T14: DF_VERIFY_ROLE=offline (knobs unset): release nextest pass uses the 13h offline wall" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 13h .*cargo nextest run .*--release' "$_T14_PLAN" "$_T14_ERR"
+# Cheap misconfiguration canary: if the role or profile did not take, the wall
+# assertion above would be testing something other than what it claims to.
+# Asserted against the RAW capture — plan_strip_comments drops the `#` header line.
+assert "T14: plan header confirms role=offline (the assertion above really is exercising the offline role)" \
+    occt_plan_grep_or_dump 'role=offline' "$_T14_RAW" "$_T14_ERR"
+assert "T14: plan header confirms profile=release (offline forces release with no --profile flag)" \
+    occt_plan_grep_or_dump 'profile=release' "$_T14_RAW" "$_T14_ERR"
+rm -f "$_T14_ERR"
+
+# T15: GREEN-ON-ARRIVAL companion — an EXPLICIT VALID knob still wins verbatim
+#      under offline (renders 100m, not 13h). Pins that the role default is a
+#      DEFAULT, not an override; a future implementation that force-set 13h
+#      unconditionally under offline would fail here.
+_T15_ERR="$(mktemp)"
+_T15_RAW=""
+capture_print_plan _T15_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_GATE_EXCLUDE_HEAVY \
+        DF_VERIFY_ROLE=offline REIFY_VERIFY_TEST_TIMEOUT_RELEASE=100m \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --scope all --print-plan 2>"$_T15_ERR" || true
+assert "T15: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T15_RAW"
+_T15_PLAN="$(plan_strip_comments "$_T15_RAW")"
+export _T15_PLAN
+assert "T15: DF_VERIFY_ROLE=offline + explicit REIFY_VERIFY_TEST_TIMEOUT_RELEASE=100m: the explicit value wins verbatim (role default is a default, not an override)" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 100m .*cargo nextest run .*--release' "$_T15_PLAN" "$_T15_ERR"
+rm -f "$_T15_ERR"
+
+# T16: a MALFORMED knob under offline must fall back to 13h, NOT to the 90m base
+#      default. This is the assertion that forbids the cheaper-looking "apply the
+#      offline default only when the knob is unset" implementation: that form
+#      leaves a malformed value sitting on 90m, i.e. the offline lane running a 12h
+#      ceiling under a 5400s wall — precisely the unreachable-ceiling /
+#      zero-attribution shape this task removes, arrived at SILENTLY. RED today.
+_T16_ERR="$(mktemp)"
+_T16_RAW=""
+capture_print_plan _T16_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_GATE_EXCLUDE_HEAVY \
+        DF_VERIFY_ROLE=offline REIFY_VERIFY_TEST_TIMEOUT_RELEASE=banana \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --scope all --print-plan 2>"$_T16_ERR" || true
+assert "T16: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T16_RAW"
+_T16_PLAN="$(plan_strip_comments "$_T16_RAW")"
+export _T16_PLAN
+assert "T16: DF_VERIFY_ROLE=offline + malformed REIFY_VERIFY_TEST_TIMEOUT_RELEASE=banana: falls back to the 13h offline default, NOT the 90m base default" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 13h .*cargo nextest run .*--release' "$_T16_PLAN" "$_T16_ERR"
+rm -f "$_T16_ERR"
+
+# T17: GREEN-ON-ARRIVAL companion — role scoping must not LEAK. Under
+#      DF_VERIFY_ROLE=merge the release pass still renders 90m and the debug pass
+#      still renders 60m. T2/Test 17b already cover the unset-role case; merge is
+#      pinned explicitly here because it is the role whose release budget feeds
+#      T10's outer-wall relationship guard, so a leak would silently invalidate T10.
+_T17_ERR="$(mktemp)"
+_T17_RAW=""
+capture_print_plan _T17_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE \
+        -u REIFY_GATE_EXCLUDE_HEAVY DF_VERIFY_ROLE=merge \
+        bash "$REPO_ROOT/scripts/verify.sh" test \
+        --profile both --scope all --print-plan 2>"$_T17_ERR" || true
+assert "T17: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T17_RAW"
+_T17_PLAN="$(plan_strip_comments "$_T17_RAW")"
+export _T17_PLAN
+assert "T17: DF_VERIFY_ROLE=merge: release nextest pass still renders the 90m default (offline scoping does not leak)" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 90m .*cargo nextest run .*--release' "$_T17_PLAN" "$_T17_ERR"
+assert "T17: DF_VERIFY_ROLE=merge: debug nextest pass still renders the 60m default (offline scoping does not leak)" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 60m .*cargo nextest run --workspace' "$_T17_PLAN" "$_T17_ERR"
+rm -f "$_T17_ERR"
+
 # -- Test 18: wrapper does not leak the lock fd into background daemons --------
 # Regression test for the 2026-04-20 merge-queue wedge: sccache (spawned as a
 # detached daemon by cargo via RUSTC_WRAPPER) inherited FD 9 and outlived

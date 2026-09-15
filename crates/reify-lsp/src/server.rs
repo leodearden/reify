@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -126,6 +127,64 @@ impl ReifyLanguageServer {
     }
 }
 
+/// Maximum number of CHARACTERS of a client-controlled string echoed into
+/// a stderr log line. Named for the helper's generality (`truncate_for_log`
+/// is not URI-specific), not for its one caller today. Bounded so a single
+/// log line can never fill even a kernel-shrunk single-page (4096 B) pipe:
+/// 256 chars is at most 1024 bytes of payload plus a ~75-byte prefix/marker
+/// (see task #6162) — the hazard this defends against is a byte budget, so
+/// a future second call site or a larger bound should re-derive the
+/// bytes-per-char worst case rather than assume this figure carries over.
+const LOG_STR_MAX_CHARS: usize = 256;
+
+/// Worst-case byte length of [`truncate_for_log`]'s return value when the
+/// input needs truncating: [`LOG_STR_MAX_CHARS`] UTF-8 characters at up to
+/// 4 bytes each, plus the `"...[truncated, N bytes total]"` marker suffix
+/// (bounded at 48 bytes, generously covering every decimal digit of a
+/// 64-bit `usize`). Marked `pub` — unlike `LOG_STR_MAX_CHARS` — specifically
+/// so an out-of-crate regression guard (`cli_lsp_protocol.rs`'s
+/// bounded-stderr e2e assertions) can derive its bound from this crate's
+/// actual truncation budget instead of hand-transcribing a copy: a future
+/// bump of `LOG_STR_MAX_CHARS` then mechanically raises that bound too,
+/// instead of silently leaving a stale hand-derived number under-covering
+/// the real worst case (task #6162 amendment review).
+pub const LOG_STR_MAX_BYTES: usize = LOG_STR_MAX_CHARS * 4 + 48;
+
+/// Truncate a client-controlled string to at most [`LOG_STR_MAX_CHARS`]
+/// characters before it is echoed into a log line.
+///
+/// Exists because `did_change`'s unknown-URI diagnostic formats the
+/// client-supplied URI directly into an `eprintln!`, and that URI is
+/// unbounded and entirely attacker/bug-controlled: a misbehaving client can
+/// send an arbitrarily large `textDocument/didChange` for a never-opened
+/// URI, and without a bound the resulting single write can be large enough
+/// to fill (and block on) a kernel-shrunk pipe, stalling the writer thread
+/// (task #6162).
+///
+/// Uses `char_indices().nth(N)` rather than a byte-length check plus a
+/// hand-rolled `is_char_boundary` walk: `char_indices().nth(N)` yields the
+/// byte offset of the `(N+1)`-th character, which is a char boundary by
+/// construction, so the resulting slice can never panic on a multi-byte
+/// codepoint straddling the cut point.
+///
+/// Returns `Cow<'_, str>` rather than `String` so the common (non-truncating)
+/// path — the overwhelming majority of calls, since most URIs are far
+/// shorter than [`LOG_STR_MAX_CHARS`] — borrows the input instead of paying
+/// for a heap copy it immediately discards into a `format!`. Both the
+/// production call site (formatted directly into an `eprintln!`) and the
+/// unit test's `assert_eq!`s against `&str`/`String` work unchanged, since
+/// `Cow<str>` implements `Display` and `PartialEq` against both.
+fn truncate_for_log(s: &str) -> Cow<'_, str> {
+    match s.char_indices().nth(LOG_STR_MAX_CHARS) {
+        None => Cow::Borrowed(s),
+        Some((cut, _)) => Cow::Owned(format!(
+            "{}...[truncated, {} bytes total]",
+            &s[..cut],
+            s.len()
+        )),
+    }
+}
+
 #[tower_lsp::async_trait]
 impl LanguageServer for ReifyLanguageServer {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
@@ -219,12 +278,53 @@ impl LanguageServer for ReifyLanguageServer {
             None => return,
         };
 
-        // Brief write lock: update the document
-        {
+        // Brief write lock: update the document. The lock guards ONLY the store
+        // mutation — the unknown-URI log below is emitted AFTER the guard drops,
+        // so a blocking stderr write can never be performed while every other
+        // did_open/did_change/did_close is queued behind this lock (task #6162).
+        //
+        // This lock-scope narrowing has no dedicated regression test: the two
+        // e2e guards in cli_lsp_protocol.rs
+        // (`lsp_full_interactive_loop_through_binary` phase 4b and
+        // `lsp_survives_huge_unknown_uri_didchange_with_undrained_stderr`)
+        // would still pass unchanged if a future refactor moved the eprintln!
+        // below back inside this lock, since the now-truncated line is too
+        // short to ever block in either scenario. A concurrent in-process
+        // test was considered and rejected (task #6162's design decisions):
+        // it would need to redirect the process-wide stderr fd onto a
+        // deliberately-full pipe, risking a hung test binary under a shared
+        // parallel test run.
+        let known = {
             let mut state = self.state.write().await;
-            if !state.documents.update(&uri, text.clone(), version) {
-                eprintln!("[reify-lsp] didChange for unknown URI: {}", uri);
-            }
+            state.documents.update(&uri, text.clone(), version)
+        };
+        if !known {
+            // The URI is client-controlled and unbounded; bound it so one
+            // notification cannot emit a 160 KiB line into a pipe the client
+            // may not be draining (task #6162). This bounds a SINGLE log
+            // line, not the whole class: `eprintln!` is still a synchronous
+            // blocking write on this async fn's task, so a client that sends
+            // many unknown-URI didChanges while never draining stderr can
+            // still eventually fill the pipe and park a tokio worker in
+            // `pipe_write` — degrading the runtime rather than deadlocking
+            // it (the `state` lock is no longer held across the write, so
+            // every other did_open/did_change/did_close stays unblocked).
+            // That containment is itself partial: `eprintln!` also acquires
+            // the process-global `io::Stderr` lock for the duration of the
+            // write, so a worker parked in `pipe_write` holds that lock too
+            // and blocks every OTHER `eprintln!` call site in the process
+            // with it — e.g. diagnostics.rs's `check_snapshot returned None`
+            // and engine-init warnings — for as long as the client leaves
+            // the pipe full, not just this handler's own log line.
+            // Routing this through `window/logMessage`, or rate-limiting
+            // per URI, would close that residual; it is deliberately
+            // deferred as separate follow-up work rather than folded into
+            // this fix and tracked by task #6329 (filed from this task's
+            // amendment review), not by this (closed) task's own id.
+            eprintln!(
+                "[reify-lsp] didChange for unknown URI: {}",
+                truncate_for_log(uri.as_str())
+            );
         }
 
         // Eval runs outside the RwLock, using only the eval_state Mutex.
@@ -2992,6 +3092,76 @@ structure Assembly {
             reparsed.errors.is_empty(),
             "renamed other.ri buffer must re-parse clean (Invariant 5): {:?}\n{buffer}",
             reparsed.errors
+        );
+    }
+
+    // --- task #6162: bound the client-controlled URI in the did_change
+    // unknown-URI log line ---
+
+    #[test]
+    fn truncate_for_log_bounds_long_input_and_never_splits_a_codepoint() {
+        // (a) short input passes through verbatim, unchanged.
+        assert_eq!(truncate_for_log("file:///tmp/a.ri"), "file:///tmp/a.ri");
+        assert_eq!(truncate_for_log(""), "");
+
+        // (b) boundary: an input of EXACTLY LOG_STR_MAX_CHARS chars is
+        // returned verbatim, not truncated. This is the off-by-one that
+        // `char_indices().nth()` gets right and a naive `len() > MAX` guard
+        // gets wrong.
+        let exactly_max: String = "a".repeat(LOG_STR_MAX_CHARS);
+        assert_eq!(truncate_for_log(&exactly_max), exactly_max);
+
+        // (c) one char over the boundary: keeps EXACTLY the first 256 chars
+        // and reports the exact byte length (257) in the marker. Exact
+        // `assert_eq!` against the whole expected string, not `starts_with`
+        // — `starts_with` is satisfied by any output that keeps *at least*
+        // 256 chars, so it would not catch an off-by-one that changed
+        // `nth(LOG_STR_MAX_CHARS)` to keep one char too many.
+        let one_over: String = "a".repeat(LOG_STR_MAX_CHARS + 1);
+        let truncated = truncate_for_log(&one_over);
+        assert_eq!(
+            truncated,
+            format!(
+                "{}...[truncated, 257 bytes total]",
+                "a".repeat(LOG_STR_MAX_CHARS)
+            )
+        );
+
+        // (d) multi-byte safety: 300 repetitions of a 3-byte codepoint
+        // (900 bytes total). A naive `&s[..256]` byte slice would PANIC
+        // here, since byte offset 256 falls mid-codepoint — that is the
+        // regression this case exists to catch. The result must keep
+        // exactly 256 CHARS of prefix (not more, not fewer) and report the
+        // true byte length in the marker.
+        let multi_byte: String = "\u{2318}".repeat(300);
+        assert_eq!(multi_byte.len(), 900);
+        let truncated_multi = truncate_for_log(&multi_byte);
+        assert_eq!(
+            truncated_multi
+                .chars()
+                .take_while(|&c| c == '\u{2318}')
+                .count(),
+            LOG_STR_MAX_CHARS,
+            "must keep exactly {LOG_STR_MAX_CHARS} chars of prefix, got: {truncated_multi}"
+        );
+        assert!(
+            truncated_multi.contains("[truncated, 900 bytes total]"),
+            "expected 900-byte marker, got: {truncated_multi}"
+        );
+
+        // (e) the measured payload shape from the bug report: a huge
+        // client-controlled URI must collapse to a small, bounded line.
+        let huge = format!("file:///tmp/{}.ri", "a".repeat(160 * 1024));
+        let truncated_huge = truncate_for_log(&huge);
+        assert!(
+            truncated_huge.len() < 1024,
+            "truncated huge URI should be well under 1 KiB, got {} bytes",
+            truncated_huge.len()
+        );
+        assert!(
+            truncated_huge.contains(&format!("[truncated, {} bytes total]", huge.len())),
+            "expected marker reporting the true input length {}, got: {truncated_huge}",
+            huge.len()
         );
     }
 }

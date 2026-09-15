@@ -376,7 +376,16 @@ WARN_PCT=90
 # needed. Enforced as a SUBSET in Section 5d, which also reports the prune
 # direction the subset check is blind to: an advisory `PRUNE:` note for a row
 # that stopped WARNing, and a RED for a row whose file is no longer on disk.
-_KLOC_WARN_KNOWN=( "crates/reify-syntax/tests/harness_syntax.rs" )
+# harness_occt.rs measured 19020/20000 = 95% at task #6619 (root 154 + 17707
+# across 55 module files + 1159 external via the bare `mod common;`). Listed
+# for the same reason as harness_syntax above and NOT because it is acceptable:
+# the remedy is still rule (a)'s split, and that split is #7466. On bare
+# main the unit already measured 17737, 263 lines under the warn line, so the
+# crate was crossing on its next test-bearing commit regardless of #6619.
+_KLOC_WARN_KNOWN=(
+    "crates/reify-syntax/tests/harness_syntax.rs"
+    "crates/reify-kernel-occt/tests/harness_occt.rs"
+)
 
 # The checked-in grandfather-baseline ratchet (resolved via the shared lib so
 # the REIFY_HARNESS_LAYOUT_BASELINE override is honored identically by both
@@ -3132,10 +3141,12 @@ assert "10: normalization scan emits NO FAIL line at all" \
     bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s10_norm_out"
 
 # --- must-not-fire: MODDIR BOUNDARY + the live #[cfg] shape. A #[cfg]-gated
-# member (crates/reify-cli/tests/harness_cli.rs:184-186's #[cfg] -> #[path]
-# -> mod ordering) is DECLARED regardless of cfg state, and a bare `mod
-# common;` resolving to a retained tests/ sibling is not a member at all — it
-# resolves OUTSIDE the module dir. ---
+# member (the `rpath_smoke` declaration in
+# crates/reify-cli/tests/harness_cli_surface.rs — its #[cfg] -> #[path] -> mod
+# ordering; cited by NAME, never by line span, which drifts on every edit to
+# that root) is DECLARED regardless of cfg state, and a bare `mod common;`
+# resolving to a retained tests/ sibling is not a member at all — it resolves
+# OUTSIDE the module dir. ---
 _s10_bound_dir="$(mktemp -d)"; _TMPDIRS+=("$_s10_bound_dir")
 mkdir -p "$_s10_bound_dir/harness_synth" "$_s10_bound_dir/common"
 {

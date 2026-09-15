@@ -35,8 +35,17 @@ pub mod marching_cubes_options;
 pub mod mesh_to_voxel_options;
 pub mod register;
 
+// Closed-mesh fixtures shared by the unit tests and the `tests/` integration
+// binaries. Gated exactly like `OpenVdbKernel::open_vdb_grid_for_test`: the
+// `test-fixtures` feature is what reaches `tests/*.rs` (separate compilation
+// units that do NOT inherit `cfg(test)`), and production builds see neither.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod test_fixtures;
+
 pub use marching_cubes_options::MarchingCubesOptions;
-pub use mesh_to_voxel_options::MeshToVoxelOptions;
+pub use mesh_to_voxel_options::{
+    DENSIFY_BUDGET_VOXELS, MIN_FEATURE_VOXELS_ACROSS, MeshToVoxelOptions, VoxelResolutionError,
+};
 
 // Real FFI bridge — only compiled when the build script detects OpenVDB.
 #[cfg(has_openvdb)]

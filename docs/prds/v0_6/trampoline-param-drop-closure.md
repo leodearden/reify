@@ -252,7 +252,9 @@ Three consequences bind on the leaves:
    never complete is the amnesty §3 forbids.
 3. **Every owner must be genuinely completable.** The owners filed under this decision each close on a
    definite event: #7177 when the DWR PRD is authored (dep-gated on #4909, which owns replacing the
-   uniform-refinement fallback that discards its own Dörfler marking); #7178 when the shift-invert PRD
+   uniform-refinement fallback that discards its own Dörfler marking) — *MET 2026-09-11: the PRD is
+   `docs/prds/v0_6/goal-oriented-error-estimation.md`, and C1 ownership passed to its leaf ε **#7457**,
+   the task whose landing moves the param to `honored`, exactly as #7178's passed to #7263*; #7178 when the shift-invert PRD
    is authored; #7179 when `mode`/`auto_dense` are honored and leave the allowlist entirely.
    *(#7178's condition was MET — the PRD was authored 2026-09-03 and landed in `1f0af462b5`. It is now
    `done`, and its C1 ownership passed to leaf ζ #7263 on 2026-09-08 rather than lapsing, which is what
@@ -289,7 +291,7 @@ checkable.
 | `force_tet` / `require_hex_wedge` | **allowlist**, owner live | **#4746** (pending) |
 | `ElasticOptions.mesh_size` | **allowlist**, owner live | **#7074** (pending) |
 | `ElasticOptions.element_order` (elastic path) | **allowlist**, owner live | **#7075** (pending) |
-| `target_quantity_of_interest` | **allowlist**, owner live (DWR) | **#7177** (pending, dep-gated on #4909) |
+| `target_quantity_of_interest` | **allowlist**, owner live (DWR) | **#7457** (goal-oriented-error-estimation leaf ε; repointed from #7177 on 2026-09-11, see below) |
 
 *(Owner repointed 2026-09-08 on Leo's ruling: the `BucklingOptions.sigma` and `ModalOptions.sigma`
 rows previously named **#7178**, which authored the shift-invert-eigensolve PRD and held C1 ownership
@@ -297,6 +299,12 @@ pending its leaves. Ownership moved to leaf ζ **#7263** — the task whose land
 params from the C1 `ignored` set to `honored`, which is what an `ignored` entry's owner must be.
 #7178 is now `done`; #7081 and #6097 were amended to cite #7263, and the two superseded Graphiti
 ownership edges were temporally invalidated as of the transfer rather than rewritten. Via esc-7305-1.)*
+
+*(Owner repointed 2026-09-11, the same shape: the `target_quantity_of_interest` row previously named
+**#7177**, which authored `docs/prds/v0_6/goal-oriented-error-estimation.md` (discharging esc-7177-3) and
+held C1 ownership pending its leaves. Ownership moved to that PRD's leaf ε **#7457**, whose landing moves
+the param from `ignored` to `honored`. #7080 was amended to cite #7457 for this param — it previously
+cited the terminal ruling gate #7076.)*
 
 *(SEQUENCING WARNING for leaf η, the task that lands the `reify-audit --pattern PDROP` gate.
 Check each row's owner status BEFORE emitting its allowlist entry. C4c makes it a gate FAILURE

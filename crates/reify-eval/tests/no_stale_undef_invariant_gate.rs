@@ -2340,3 +2340,120 @@ fn build_surface_trajectory_simulate_has_no_stale_undef() {
         BUILD_SURFACE_HEAVY_TRAJECTORY,
     );
 }
+
+// ── task #6662: instance-scope `@optimized` cells, both resolution arms ──────
+//
+// Clause 5a exempts an `@optimized` `UserFunctionCall` cell from the stale-Undef
+// check, and that exemption is keyed on the cell's `default_expr` shape — which
+// is the SAME expr at template and instance scope, since the child template's
+// cells are compiled once. Task #6662 made instance-scope cells carry the
+// template's dispatched value (the `Reuse` arm) while leaving the arm that
+// cannot prove input equality (`Unreusable`) on the body-inlining path with a
+// warning. This test pins that NEITHER arm makes the gate newly fire.
+
+fn s8_const777_fn(
+    _value_inputs: &[Value],
+    _realization_inputs: &[reify_eval::RealizationReadHandle],
+    _options: &Value,
+    _prior_warm_state: Option<&reify_ir::OpaqueState>,
+    _cancellation: &reify_eval::CancellationHandle,
+) -> reify_eval::ComputeOutcome {
+    reify_eval::ComputeOutcome::Completed {
+        result: Value::Int(777),
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: vec![],
+        structured_detail: vec![],
+    }
+}
+
+fn s8_double_fn(
+    value_inputs: &[Value],
+    _realization_inputs: &[reify_eval::RealizationReadHandle],
+    _options: &Value,
+    _prior_warm_state: Option<&reify_ir::OpaqueState>,
+    _cancellation: &reify_eval::CancellationHandle,
+) -> reify_eval::ComputeOutcome {
+    let out = match value_inputs.first() {
+        Some(Value::Int(n)) => Value::Int(n * 2),
+        _ => Value::Undef,
+    };
+    reify_eval::ComputeOutcome::Completed {
+        result: out,
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: vec![],
+        structured_detail: vec![],
+    }
+}
+
+/// #6662: an instance-scope `@optimized` cell reports zero stale-Undef
+/// violations in BOTH resolution arms.
+///
+/// `OuterS8.a` takes `InnerS8`'s defaults, so its inputs are value-identical to
+/// the template's and the cells take the REUSE arm (they carry the dispatched
+/// 777 / 6). `OuterS8.b` overrides `x`, so `scaled` cannot be proven equal and
+/// takes the UNREUSABLE arm — it keeps the body-inlined sentinel and emits a
+/// warning. Neither may register as causeless staleness: the reuse arm's cells
+/// are not Undef at all, and the unreusable arm's cells are exempt under clause
+/// 5a, whose `@optimized` predicate reads the cell's `default_expr` — the same
+/// expr at both scopes.
+#[test]
+fn instance_scope_optimized_cells_report_no_stale_undef_in_either_arm() {
+    let source = r#"
+        @optimized("test::s8_const777")
+        fn s8_zero_arg() -> Int {
+            42
+        }
+
+        @optimized("test::s8_double")
+        fn s8_dbl(x : Int) -> Int {
+            0
+        }
+
+        structure InnerS8 {
+            param x : Int = 3
+            let reused = s8_zero_arg()
+            let scaled = s8_dbl(x)
+        }
+
+        structure OuterS8 {
+            sub a = InnerS8()
+            sub b = InnerS8(x: 10)
+        }
+    "#;
+
+    let compiled = reify_test_support::compile_source_with_stdlib(source);
+    let errors = reify_test_support::collect_errors(&compiled.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "the #6662 two-arm fixture should compile without errors: {errors:#?}"
+    );
+
+    let mut engine = gate_engine(false);
+    engine.register_compute_fn("test::s8_const777", s8_const777_fn as reify_eval::ComputeFn);
+    engine.register_compute_fn("test::s8_double", s8_double_fn as reify_eval::ComputeFn);
+
+    let eval_result = engine.eval(&compiled);
+
+    // Pin that both arms were actually exercised — otherwise this test could go
+    // green without either code path running.
+    assert_eq!(
+        eval_result.values.get(&ValueCellId::new("OuterS8.a", "scaled")),
+        Some(&Value::Int(6)),
+        "OuterS8.a.scaled must have taken the REUSE arm (2*3 == 6 dispatched)"
+    );
+    assert_eq!(
+        eval_result.values.get(&ValueCellId::new("OuterS8.b", "scaled")),
+        Some(&Value::Int(0)),
+        "OuterS8.b.scaled must have taken the UNREUSABLE arm (x overridden to 10, \
+         so Int(0) is s8_dbl's body-inline sentinel)"
+    );
+
+    let violations = engine.check_no_stale_undef();
+    assert!(
+        violations.is_empty(),
+        "instance-scope @optimized cells must report zero stale-Undef violations \
+         in both the reuse and unreusable arms, got {violations:?}"
+    );
+}
