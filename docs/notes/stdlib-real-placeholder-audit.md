@@ -417,9 +417,9 @@ dimension equality a `Real` param holding that value was a hard lie rather than 
 conformer. And the feared breakage was hypothetical: **zero conformers of either trait
 existed repo-wide** (re-measured at implementation time), so the migration was free. The
 quoted prose is **no longer present in `analysis.ri`** — the trait's doc comment now records
-the ruling, the bare-`0` zero-coercion convention (task-4485/β — do not spell `0Pa`), and a
-posture-3 breadcrumb for any future cross-domain result contract (per-domain sibling traits
-or a quantity-parameterized trait, never a re-weakening to `Real`).
+the shipped dimensions and the bare-`0` zero-coercion convention (task-4485/β — do not spell
+`0Pa`), and points at dimension-checked-readers decision 9, which carries the single copy of
+the ruling rationale, the zero-conformers measurement and the posture-3 upgrade path.
 
 `safety_factor_value` is genuinely dimensionless, so it correctly stayed `Real` and is
 reclassified `genuine-dimensionless` rather than left open. `Analysis.yield_strength`

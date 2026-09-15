@@ -20,29 +20,17 @@ pub type Strain = Dimensionless
 
 // ── Analysis result trait ──────────────────────────────────────────────────
 
-// AnalysisResult describes the outputs of a stress analysis.
-// von_mises_stress, principal_stress_1/2/3, and max_shear_stress are `Stress`
-// (Pa, Pressure alias) — tightened from the dimension-agnostic `Real`
-// placeholder by RULING Q7 posture 2 (task #6165, Leo 2026-08-10): the
-// producing builtins (von_mises, principal_stresses, max_shear) already
-// compile to Scalar<PRESSURE>, so a `Real` param holding that value was a
-// hard lie under strict dimension equality — not a wildcard — and the same
-// stress value typed Scalar<PRESSURE> when read via `von_mises(stress)`
-// directly but `Real` when read via a conforming structure's AnalysisResult
-// member. Zero conformers of this trait exist repo-wide, so the migration
-// was free (re-measured at implementation time). safety_factor_value stays
-// `Real`: it is genuinely dimensionless.
-// Bare `0` coerced to Scalar<Pressure> by task-4485/β (esc-3115-112 resolved);
-// same convention as structural_physical.ri's Plastic/Sealed — do not spell `0Pa`.
-// Not a signature source: registry α seeds the analysis builtins from its own
-// rows, never from a type read off this trait.
-// Posture-3 breadcrumb (ruled as the future upgrade path, not built now): a
-// second analysis domain (thermal, modal, buckling) wanting a shared result
-// contract should NOT re-weaken these fields to Real — use per-domain sibling
-// traits (e.g. ThermalAnalysisResult) or a quantity-parameterized trait; the
-// latter's typed-trait-param machinery may already exist (see
-// harness_traits/trait_typed_param_tests.rs's dimensioned-param conformance
-// coverage) but verify that if/when posture 3 is taken up.
+// AnalysisResult describes the outputs of a stress analysis. Its five
+// stress-bearing params are `Stress` (= Pressure, Pa); safety_factor_value
+// stays `Real` because it is genuinely dimensionless.
+// Leave the bare `0` in the constraints below — a syntactic zero comparison
+// operand coerces to its sibling operand's dimension (task-4485/β), the same
+// convention as structural_physical.ri's Plastic/Sealed. Do not spell `0Pa`.
+// Not a signature source: analysis_signatures.rs seeds von_mises /
+// principal_stresses / max_shear from its own rows, not off this trait.
+// RULING Q7 posture 2 (task #6165) — rationale, the zero-conformers
+// measurement and the posture-3 upgrade path — is recorded as decision 9 of
+// docs/prds/v0_6/dimension-checked-readers.md.
 trait AnalysisResult {
     param von_mises_stress : Stress
     param principal_stress_1 : Stress
