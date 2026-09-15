@@ -11,6 +11,21 @@ use tower_lsp::{Client, LanguageServer};
 use crate::diagnostics::EvalState;
 use crate::document::DocumentStore;
 
+/// One server log line, addressed to the client rather than to a stream.
+///
+/// A struct rather than a `(MessageType, String)` pair or a pre-formatted
+/// string so the severity stays a typed field the transport can map onto
+/// `window/logMessage`'s `type`, and so a reader at a call site sees which
+/// is which without counting tuple positions.
+///
+/// Owned, not borrowed: [`NotificationSink`] is object-safe and its
+/// `ClientSink` implementation moves the line into a spawned task, so there
+/// is no caller frame for a borrow to outlive.
+pub struct LogLine {
+    pub typ: MessageType,
+    pub message: String,
+}
+
 /// Trait for emitting server-initiated notifications to the frontend.
 ///
 /// Replaces direct use of `tower_lsp::Client` for notifications, so the
@@ -18,9 +33,33 @@ use crate::document::DocumentStore;
 /// - `NoOpSink` (tests and backward compatibility)
 /// - `ClientSink` (stdio/TCP mode via tower-lsp)
 /// - `TauriNotificationSink` (in-process Tauri mode)
+///
+/// Covers BOTH server-to-client channels the language server uses:
+/// diagnostics for a document, and server log lines. They share this one
+/// trait because they share exactly the same three-way transport
+/// polymorphism — a second trait would duplicate that axis without adding a
+/// dimension of variability (task #6329).
 pub trait NotificationSink: Send + Sync {
     /// Publish diagnostics for the given document.
     fn publish_diagnostics(&self, uri: Url, diagnostics: Vec<Diagnostic>, version: Option<i32>);
+
+    /// Emit a server log line to the client.
+    ///
+    /// Required, deliberately NOT defaulted to a no-op: a default body would
+    /// let a new sink silently swallow every server log line, which is the
+    /// exact failure this channel exists to remove. Requiring it makes the
+    /// compiler force each implementation — including the one outside this
+    /// crate, `TauriNotificationSink` in `gui/src-tauri/src/main.rs` — to
+    /// decide explicitly.
+    ///
+    /// Callers must invoke this OUTSIDE every `ServerState` write-lock
+    /// scope: the call dispatches into an arbitrary implementation (the
+    /// Tauri one re-enters the GUI event bus), so holding the lock across it
+    /// would queue every other `did_open`/`did_change`/`did_close` behind
+    /// third-party code. Pinned by
+    /// `log_message_is_never_called_while_the_state_write_lock_is_held` in
+    /// `crates/reify-lsp/tests/in_process_bridge.rs`.
+    fn log_message(&self, line: LogLine);
 }
 
 /// A no-op sink that discards all notifications.
@@ -29,12 +68,15 @@ pub struct NoOpSink;
 impl NotificationSink for NoOpSink {
     fn publish_diagnostics(&self, _uri: Url, _diagnostics: Vec<Diagnostic>, _version: Option<i32>) {
     }
+
+    fn log_message(&self, _line: LogLine) {}
 }
 
 /// A sink that wraps the tower-lsp [`Client`] for stdio/TCP mode.
 ///
-/// Since [`NotificationSink`] methods are synchronous but `Client.publish_diagnostics()`
-/// is async, this implementation spawns a fire-and-forget tokio task for each call.
+/// Since [`NotificationSink`] methods are synchronous but the corresponding
+/// `Client` methods (`publish_diagnostics`, `log_message`) are async, this
+/// implementation spawns a fire-and-forget tokio task for each call.
 pub struct ClientSink {
     client: Client,
 }
@@ -51,6 +93,13 @@ impl NotificationSink for ClientSink {
         let client = self.client.clone();
         tokio::spawn(async move {
             client.publish_diagnostics(uri, diagnostics, version).await;
+        });
+    }
+
+    fn log_message(&self, line: LogLine) {
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            client.log_message(line.typ, line.message).await;
         });
     }
 }
@@ -128,13 +177,20 @@ impl ReifyLanguageServer {
 }
 
 /// Maximum number of CHARACTERS of a client-controlled string echoed into
-/// a stderr log line. Named for the helper's generality (`truncate_for_log`
-/// is not URI-specific), not for its one caller today. Bounded so a single
-/// log line can never fill even a kernel-shrunk single-page (4096 B) pipe:
-/// 256 chars is at most 1024 bytes of payload plus a ~75-byte prefix/marker
-/// (see task #6162) — the hazard this defends against is a byte budget, so
-/// a future second call site or a larger bound should re-derive the
-/// bytes-per-char worst case rather than assume this figure carries over.
+/// a server log line. Named for the helper's generality (`truncate_for_log`
+/// is not URI-specific), not for its one caller today.
+///
+/// The bound's ORIGINAL justification was pipe capacity: while the line
+/// went to stderr, a single write had to fit a kernel-shrunk single-page
+/// (4096 B) pipe, and 256 chars is at most 1024 bytes of payload plus a
+/// ~75-byte prefix/marker (task #6162). That justification expired when
+/// task #6329 moved the line onto `window/logMessage`. A second,
+/// independent one did not: the string is entirely client-controlled and
+/// unbounded, so echoing it back in full is gratuitous amplification of a
+/// client's own bug, paid for by every client that DOES drain the channel.
+/// The hazard is still a byte budget, so a future second call site or a
+/// larger bound should re-derive the bytes-per-char worst case rather than
+/// assume this figure carries over.
 const LOG_STR_MAX_CHARS: usize = 256;
 
 /// Worst-case byte length of [`truncate_for_log`]'s return value when the
@@ -142,24 +198,29 @@ const LOG_STR_MAX_CHARS: usize = 256;
 /// 4 bytes each, plus the `"...[truncated, N bytes total]"` marker suffix
 /// (bounded at 48 bytes, generously covering every decimal digit of a
 /// 64-bit `usize`). Marked `pub` — unlike `LOG_STR_MAX_CHARS` — specifically
-/// so an out-of-crate regression guard (`cli_lsp_protocol.rs`'s
-/// bounded-stderr e2e assertions) can derive its bound from this crate's
-/// actual truncation budget instead of hand-transcribing a copy: a future
-/// bump of `LOG_STR_MAX_CHARS` then mechanically raises that bound too,
-/// instead of silently leaving a stale hand-derived number under-covering
-/// the real worst case (task #6162 amendment review).
+/// so an out-of-crate regression guard
+/// (`crates/reify-cli/tests/harness_cli_surface/cli_lsp_protocol.rs`'s
+/// bounded-`window/logMessage` e2e assertions) can derive its bound from
+/// this crate's actual truncation budget instead of hand-transcribing a
+/// copy: a future bump of `LOG_STR_MAX_CHARS` then mechanically raises that
+/// bound too, instead of silently leaving a stale hand-derived number
+/// under-covering the real worst case (task #6162 amendment review; task
+/// #6329 re-pointed that guard from stderr onto the protocol channel, and
+/// moved the file from the since-split `harness_cli/`).
 pub const LOG_STR_MAX_BYTES: usize = LOG_STR_MAX_CHARS * 4 + 48;
 
 /// Truncate a client-controlled string to at most [`LOG_STR_MAX_CHARS`]
 /// characters before it is echoed into a log line.
 ///
 /// Exists because `did_change`'s unknown-URI diagnostic formats the
-/// client-supplied URI directly into an `eprintln!`, and that URI is
+/// client-supplied URI directly into a server log line, and that URI is
 /// unbounded and entirely attacker/bug-controlled: a misbehaving client can
 /// send an arbitrarily large `textDocument/didChange` for a never-opened
-/// URI, and without a bound the resulting single write can be large enough
-/// to fill (and block on) a kernel-shrunk pipe, stalling the writer thread
-/// (task #6162).
+/// URI. While the line went to stderr, that meant a single write large
+/// enough to fill (and block on) a kernel-shrunk pipe, stalling the writer
+/// thread (task #6162); since task #6329 routed it to `window/logMessage`
+/// it means reflecting 160 KiB of a client's own bug back at every client
+/// that does drain the channel. The same bound answers both.
 ///
 /// Uses `char_indices().nth(N)` rather than a byte-length check plus a
 /// hand-rolled `is_char_boundary` walk: `char_indices().nth(N)` yields the
@@ -171,9 +232,10 @@ pub const LOG_STR_MAX_BYTES: usize = LOG_STR_MAX_CHARS * 4 + 48;
 /// path — the overwhelming majority of calls, since most URIs are far
 /// shorter than [`LOG_STR_MAX_CHARS`] — borrows the input instead of paying
 /// for a heap copy it immediately discards into a `format!`. Both the
-/// production call site (formatted directly into an `eprintln!`) and the
-/// unit test's `assert_eq!`s against `&str`/`String` work unchanged, since
-/// `Cow<str>` implements `Display` and `PartialEq` against both.
+/// production call site (formatted into the [`LogLine`] handed to
+/// [`NotificationSink::log_message`]) and the unit test's `assert_eq!`s
+/// against `&str`/`String` work unchanged, since `Cow<str>` implements
+/// `Display` and `PartialEq` against both.
 fn truncate_for_log(s: &str) -> Cow<'_, str> {
     match s.char_indices().nth(LOG_STR_MAX_CHARS) {
         None => Cow::Borrowed(s),
@@ -321,10 +383,13 @@ impl LanguageServer for ReifyLanguageServer {
             // deferred as separate follow-up work rather than folded into
             // this fix and tracked by task #6329 (filed from this task's
             // amendment review), not by this (closed) task's own id.
-            eprintln!(
-                "[reify-lsp] didChange for unknown URI: {}",
-                truncate_for_log(uri.as_str())
-            );
+            self.sink.log_message(LogLine {
+                typ: MessageType::WARNING,
+                message: format!(
+                    "[reify-lsp] didChange for unknown URI: {}",
+                    truncate_for_log(uri.as_str())
+                ),
+            });
         }
 
         // Eval runs outside the RwLock, using only the eval_state Mutex.
@@ -725,22 +790,28 @@ impl LanguageServer for ReifyLanguageServer {
 /// Test support types exported for cross-crate test use.
 ///
 /// Contains [`RecordingSink`], a [`NotificationSink`] implementation that
-/// captures all `publish_diagnostics` calls for assertion in tests.
+/// captures all `publish_diagnostics` and `log_message` calls for assertion
+/// in tests.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
     use std::sync::Mutex;
 
-    use tower_lsp::lsp_types::{Diagnostic, Url};
+    use tower_lsp::lsp_types::{Diagnostic, MessageType, Url};
 
-    use super::NotificationSink;
+    use super::{LogLine, NotificationSink};
 
-    /// A recording sink that captures all `publish_diagnostics` calls.
+    /// A recording sink that captures all `publish_diagnostics` and
+    /// `log_message` calls.
     ///
-    /// Use `take_calls()` to inspect what was recorded.
+    /// Use `take_calls()` / `take_log_calls()` to inspect what was recorded.
+    /// The two channels are recorded separately rather than interleaved in
+    /// one log: no test needs their relative order, and separate accessors
+    /// let each caller assert on its own channel without filtering.
     #[derive(Default)]
     pub struct RecordingSink {
         #[allow(clippy::type_complexity)]
         calls: Mutex<Vec<(Url, Vec<Diagnostic>, Option<i32>)>>,
+        log_calls: Mutex<Vec<(MessageType, String)>>,
     }
 
     impl NotificationSink for RecordingSink {
@@ -752,12 +823,30 @@ pub mod test_support {
         ) {
             self.calls.lock().unwrap().push((uri, diagnostics, version));
         }
+
+        fn log_message(&self, line: LogLine) {
+            self.log_calls
+                .lock()
+                .unwrap()
+                .push((line.typ, line.message));
+        }
     }
 
     impl RecordingSink {
-        /// Return a clone of all recorded calls.
+        /// Return a clone of all recorded `publish_diagnostics` calls.
         pub fn take_calls(&self) -> Vec<(Url, Vec<Diagnostic>, Option<i32>)> {
             self.calls.lock().unwrap().clone()
+        }
+
+        /// Return a clone of all recorded `log_message` calls, as
+        /// `(severity, message)` pairs.
+        ///
+        /// Recorded as a pair rather than as [`LogLine`] so the result is
+        /// `Clone` without [`LogLine`] having to be — the production type
+        /// is moved into a transport by every real sink and has no reason
+        /// to be duplicable.
+        pub fn take_log_calls(&self) -> Vec<(MessageType, String)> {
+            self.log_calls.lock().unwrap().clone()
         }
     }
 }
