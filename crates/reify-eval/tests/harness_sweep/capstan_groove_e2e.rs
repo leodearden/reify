@@ -284,7 +284,12 @@ fn sub_cell_reads(expr: &CompiledExpr) -> Vec<(String, String)> {
 /// five. And it runs kernel-free, where the mouth gate and the prologue are
 /// both behind `OCCT_AVAILABLE` — exactly the failure mode
 /// [`dev_capstan_checked`] exists for.
-const DIN_15061_SEAT_RATIO: f64 = 0.53;
+///
+/// Shared with the sibling [`super::idler_seat_e2e`], which gates the same
+/// standard on the IdlerPulley's seat (#6135) and pins the ratio against THIS
+/// constant for the reason recorded above — so the external standard's number
+/// lives once in the compile unit rather than once per structure gated.
+pub(super) const DIN_15061_SEAT_RATIO: f64 = 0.53;
 
 /// Fractional clearance the DIN ratio buys at the seat mouth, straight out of
 /// it: the mouth is the section's full width `2·r_groove = 2·0.53·d = 1.06·d`,
@@ -874,7 +879,14 @@ fn helix_arc_len(rho: f64, turns: f64, rise: f64) -> f64 {
 /// form's spine runs here. With an equal-radii seat (`groove_r == rope_dia/2`)
 /// it collapses onto `pitch_r` exactly, which is why #5580 could write
 /// `pitch_r` throughout without the distinction mattering.
-fn seat_arc_centre(pitch_r: f64, groove_r: f64, rope_dia: f64) -> f64 {
+///
+/// Shared with the sibling [`super::idler_seat_e2e`] (#6135), because the
+/// offset is CONSTRUCTION-INDEPENDENT: the Capstan sweeps a cutter profile
+/// along a helix and the IdlerPulley revolves a torus tube, but "push the arc
+/// centre outboard by however far the rope sinks into it" is the same one-line
+/// statement either way, and `pitch_r` is simply whichever circle that design
+/// wants the seated rope's centreline to land on.
+pub(super) fn seat_arc_centre(pitch_r: f64, groove_r: f64, rope_dia: f64) -> f64 {
     pitch_r + groove_r - rope_dia / 2.0
 }
 
