@@ -53,7 +53,7 @@ resets that scanner, leaving the scanned line set above byte-identical.
 
 The region below is guarded by
 crates/reify-compiler/tests/harness_doc_chunks/oracle_xref_smoke.rs, matched on the
-`<!-- ORACLE-XREF -->` marker line, never on this heading — retitling is free.
+`ORACLE-XREF` marker line, never on this heading — retitling is free.
 -->
 
 `intersection(a, b)` above is the CSG boolean: it BUILDS the solid two bodies have in common. To
