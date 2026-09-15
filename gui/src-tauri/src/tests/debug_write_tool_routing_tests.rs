@@ -43,6 +43,12 @@ enum BypassKind {
     /// The handler emits state on its own, alongside the shared seam —
     /// the second emission path `debug_server.rs:1888` forbids.
     PrivateEmit,
+    /// The arm's handler does not resolve to a top-level fn in this file — an
+    /// inline arm, or a call shape the scan reads wrongly. Reported distinctly
+    /// because "the checker never found the handler" and "the handler skips
+    /// the seam" warrant different fixes; conflating them would have the
+    /// report state a confident falsehood about the handler.
+    UnresolvedHandler,
 }
 
 /// A single INV-GUI-2 violation, reported structurally so callers assert on
@@ -54,30 +60,107 @@ struct Bypass {
     kind: BypassKind,
 }
 
-/// Parses the `"reify_<tool>" => <handler>(` dispatch arms out of `source`,
-/// returning `(tool, handler)` in source order.
+/// Parses the `"reify_<tool>" => <handler>` dispatch arms out of `code`,
+/// returning `(tool, handler)` in source order — one entry per tool, so an
+/// or-pattern yields N entries against its one shared handler. `code` must
+/// already be comment-stripped.
 ///
 /// The write-tool set is ENUMERATED here rather than hardcoded, so a sixth
 /// `reify_*` tool is picked up automatically and must route or go red — which
 /// is the gap INV-GUI-2 exists to close. There is deliberately no read-only
 /// exemption set: a future read-only `reify_*` tool reds until someone
 /// classifies it consciously.
-fn dispatch_arms(source: &str) -> Vec<(String, String)> {
-    source
-        .lines()
-        .filter_map(|line| {
-            let rest = line.trim().strip_prefix("\"reify_")?;
-            let (tool_suffix, rest) = rest.split_once('"')?;
-            let rest = rest.trim_start().strip_prefix("=>")?;
-            let handler = rest.trim_start();
-            let end = handler.find(|c: char| !(c.is_alphanumeric() || c == '_'))?;
-            if handler[end..].starts_with('(') && end > 0 {
-                Some((format!("reify_{tool_suffix}"), handler[..end].to_string()))
-            } else {
-                None
+///
+/// Once a tool's `"reify_*"` pattern literal has been SEEN it is never
+/// dropped. An arm whose handler cannot be resolved still yields the tool,
+/// paired with whatever the scan did resolve (possibly nothing), which
+/// [`write_tool_bypasses`] reports as [`BypassKind::UnresolvedHandler`].
+/// Dropping was this checker's one false-GREEN direction: a tool missing from
+/// this list is swept by NEITHER half of the gate.
+///
+/// Retained approximation, in the module's fail-closed direction: the handler
+/// is the FIRST `identifier(` call in the arm, so a block arm that calls
+/// something else first — a guard, a `Box::pin` — resolves to the wrong fn and
+/// false-POSITIVES. Red, never silently green.
+fn dispatch_arms(code: &str) -> Vec<(String, String)> {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut arms: Vec<(String, String)> = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let Some((tools, after_arrow)) = arm_pattern(line.trim()) else {
+            continue;
+        };
+        if tools.is_empty() {
+            continue;
+        }
+        let handler = arm_handler(after_arrow, &lines[i + 1..]).unwrap_or_default();
+        arms.extend(tools.into_iter().map(|tool| (tool, handler.clone())));
+    }
+    arms
+}
+
+/// Splits a trimmed match-arm line into its `reify_*` pattern alternatives and
+/// the text after the `=>`.
+///
+/// Alternatives are collected across `|` separators and filtered to the
+/// `reify_` prefix, so `"open_file" | "reify_open_file" =>` still surfaces the
+/// write tool. Returns `None` for any line that is not a string-literal arm
+/// pattern — including the `"key": value` lines inside the registry's `json!`
+/// schemas, which stop at the `:` and never reach a `=>`.
+fn arm_pattern(trimmed: &str) -> Option<(Vec<String>, &str)> {
+    let mut rest = trimmed;
+    let mut tools = Vec::new();
+    loop {
+        let (literal, tail) = rest.strip_prefix('"')?.split_once('"')?;
+        if literal.starts_with("reify_") {
+            tools.push(literal.to_string());
+        }
+        rest = tail.trim_start();
+        match rest.strip_prefix('|') {
+            Some(tail) => rest = tail.trim_start(),
+            None => return rest.strip_prefix("=>").map(|body| (tools, body)),
+        }
+    }
+}
+
+/// Resolves the fn an arm delegates to, searching the `=>` remainder first and
+/// then the following lines — which is what reads the wrapped (`=>` then a
+/// newline) and block (`=> { … }`) shapes as well as the single-line one.
+///
+/// The forward scan is BOUNDED at the next arm's pattern, the `_ =>`
+/// catch-all, or a closing brace, so a block arm containing no call can never
+/// run on and mis-attribute the NEXT arm's handler to this tool.
+fn arm_handler(after_arrow: &str, following: &[&str]) -> Option<String> {
+    if let Some(handler) = first_call_identifier(after_arrow) {
+        return Some(handler.to_string());
+    }
+    for line in following {
+        let trimmed = line.trim();
+        if trimmed.starts_with('"') || trimmed.starts_with("_ =>") || trimmed.starts_with('}') {
+            return None;
+        }
+        if let Some(handler) = first_call_identifier(line) {
+            return Some(handler.to_string());
+        }
+    }
+    None
+}
+
+/// The first `identifier(` call in `text`, if any.
+fn first_call_identifier(text: &str) -> Option<&str> {
+    let mut ident_start: Option<usize> = None;
+    for (i, c) in text.char_indices() {
+        if c.is_alphanumeric() || c == '_' {
+            ident_start.get_or_insert(i);
+        } else {
+            if c == '('
+                && let Some(start) = ident_start
+            {
+                return Some(&text[start..i]);
             }
-        })
-        .collect()
+            ident_start = None;
+        }
+    }
+    None
 }
 
 /// Names every `reify_*` tool the `ToolDef` registry ADVERTISES, in source
@@ -326,14 +409,23 @@ fn write_tool_bypasses(source: &str) -> Vec<Bypass> {
     let mut bypasses: Vec<Bypass> = dispatch_arms(&code)
         .into_iter()
         .flat_map(|(tool, handler)| {
-            let body = fn_body(&code, &handler).unwrap_or("");
-            // The two defects are INDEPENDENT: a handler can route correctly
-            // and still emit privately, and collapsing them would hide one.
-            let kinds = [
-                (!reaches_a_seam(&code, &handler)).then_some(BypassKind::NoBaselineRefresh),
-                emits_privately(body).then_some(BypassKind::PrivateEmit),
-            ];
-            kinds.into_iter().flatten().map(move |kind| Bypass {
+            // RESOLUTION IS NOT NAME-MATCHING: a handler that is not a
+            // top-level fn of this file is reported as unresolved, not
+            // mislabelled as one that skips the seam.
+            let kinds = match fn_body(&code, &handler) {
+                None => vec![BypassKind::UnresolvedHandler],
+                // The two defects are INDEPENDENT: a handler can route
+                // correctly and still emit privately, and collapsing them
+                // would hide one.
+                Some(body) => [
+                    (!reaches_a_seam(&code, &handler)).then_some(BypassKind::NoBaselineRefresh),
+                    emits_privately(body).then_some(BypassKind::PrivateEmit),
+                ]
+                .into_iter()
+                .flatten()
+                .collect(),
+            };
+            kinds.into_iter().map(move |kind| Bypass {
                 tool: tool.clone(),
                 handler: handler.clone(),
                 kind,
