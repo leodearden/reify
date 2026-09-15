@@ -319,6 +319,7 @@ three silent after it, none of them changing any type:
 | structure constructor in a TRAIT STATIC fn body | `unresolved function: Widget` | `traits_phase` passes `None` for the template registry |
 | `fn` param default calling a later sibling | `unresolved function: later` | same table, `compile_function`'s neutral scope |
 | structure constructor in an ASSOC fn body — trait default, or either kind of structure override | `unresolved function: Widget` | `compile_assoc_function` likewise sets no template registry (esc-5371-12) |
+| a function-TYPED value applied by bare name — `fn apply(f: (Length) -> Real, x: Length) = f(x)` | `unresolved function: f` | `f` is a value binding in `names`, not a module-declared name, and no ladder arm claims a local callee |
 
 Five controls bound the fix and were measured green throughout; two of them are
 routes a reading of the code suggests are broken and which measurement shows are
@@ -335,6 +336,15 @@ NOT, recorded so a later reader does not "fix" them:
   clean** — `traits_phase` runs after `functions_phase`, so `ctx.functions` is
   complete by then;
 * a builtin called from a `fn` body is clean.
+
+The sixth route was found by review, not by the sweep, and the sweep CANNOT find
+it: the only function-typed parameters in the corpus are `map_or`
+(`stdlib/option_recovery.ri:86`) and `map_err` (`stdlib/result.ri:94`), whose
+bodies are stubs that never apply their parameter. The sweep is therefore green
+with and without the fix, and must not be cited as evidence for it —
+`function_typed_parameter_applied_by_bare_name_is_not_unresolved` is. The first
+real higher-order body written after #5997's Error flip would otherwise have
+been a hard compile failure.
 
 ### What #5997 must handle before flipping this Warning to an Error
 
@@ -355,6 +365,30 @@ was equally silent before #5371) and is `functions_phase`'s forward-reference
 contract, not a defect this warn-only task introduced; but #5997 should not read
 the silence as "nothing is wrong here". Closing it means giving fn bodies a
 complete table, which is #6014 (registry ω) territory.
+
+**A zero-arg call to a declared-but-unresolvable callee lost its only
+diagnostic, and the silence there is strictly WIDER than before #5371.** Every
+other statement in this note describes a silence that is NARROWER than the
+pre-task open-world silence; this one is the exception, and #5997 should have it
+in hand rather than rediscover it. Pre-#5371:
+
+```
+pub fn a() -> Real { b() }
+pub fn b() -> Real { 1.0 }
+```
+
+earned `cannot infer return type of zero-arg function 'b', defaulting to Real`.
+It now earns nothing at all: the legacy warning is gated on `known`, which is
+FALSE because `b` is not a builtin, and `UnresolvedFunction` is withheld because
+`b` is declared. The cell still defaults to `dimensionless_scalar()`.
+
+Keeping the legacy warning for that case was considered and rejected: it would
+tell the user that a sibling they can see two lines below has an uninferrable
+return type, when the real cause is a compiler-internal table-growth ordering
+they cannot act on. The ruling is pinned by
+`forward_referenced_sibling_emits_neither_warning`, whose zero-arg half asserts
+the total warning count is ZERO — so a #5997 change that reintroduces a signal
+here reds that test deliberately rather than silently.
 
 **The constructor routes are silenced, not fixed, in BOTH trait-fn positions.**
 `Widget(w: 2mm)` still does not lower to a `StructureInstanceCtor` inside a

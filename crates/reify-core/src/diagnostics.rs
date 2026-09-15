@@ -1763,15 +1763,17 @@ pub enum DiagnosticCode {
     /// 2. a name the enclosing module DECLARES — its `fn`s (local + prelude)
     ///    and its structures, whose constructors share call syntax.
     ///
-    /// The second condition is not redundant, and reading it as such was the
-    /// original defect. A user `fn` resolves long before this arm **from an
-    /// entity body**, which compiles against the merged
-    /// `ctx.resolution_functions`; a **fn body** does not, because
-    /// `compile_builder/functions_phase.rs` compiles it against the user-only
-    /// table it is still growing in source order. So a call to a later-declared
-    /// sibling arrives here with a perfectly real name, and reporting it would
-    /// tell the user a function they can see two lines below does not exist —
-    /// unfixable by reordering when the pair is mutually referential.
+    /// The warning is additionally withheld when the callee names a local of
+    /// `Type::Function` — a function-typed value applied by bare name, as in
+    /// `fn apply(f: (Real) -> Real) -> Real = f(1.0)`.
+    ///
+    /// Condition 2 is not redundant, and reading it as such was the original
+    /// defect: a **fn body** compiles against a function table that is still
+    /// being built in source order, so a call to a later-declared sibling
+    /// arrives here with a perfectly real name. The full account lives beside
+    /// the field that carries the vocabulary,
+    /// `reify_compiler::scope::CompilationScope::declared_callable_names`, and
+    /// is deliberately not restated here.
     ///
     /// Before task #5371 such a call compiled with ZERO diagnostics and
     /// silently adopted its first argument's type — `line(point3(1mm,2mm,3mm),
@@ -1840,16 +1842,33 @@ pub enum DiagnosticCode {
     /// unresolved. It also suppresses the legacy bare zero-arg warning, on the
     /// same one-defect-one-line reasoning.
     ///
-    /// The fallback has THREE outcomes, not two, and the third is silence: a
-    /// callee the enclosing module declares but that this body cannot yet
-    /// resolve (a forward-referenced sibling `fn`, or a constructor inside any
-    /// trait fn body — static or assoc) emits neither this code nor
-    /// `UnresolvedFunction` nor the legacy zero-arg warning, and is still typed
-    /// from arg0. That
-    /// silence is narrower than the pre-#5371 open-world silence: it is granted
-    /// only to names the module demonstrably declares. Pinned by
+    /// # The fallback has THREE outcomes, and the third is silence
+    ///
+    /// A callee the enclosing module declares but that this body cannot yet
+    /// resolve (a forward-referenced sibling `fn`, a constructor inside any
+    /// trait fn body — static or assoc, or a function-typed local applied by
+    /// bare name) emits neither this code nor `UnresolvedFunction` nor the
+    /// legacy zero-arg warning, and is still typed from arg0. Pinned by
     /// `forward_referenced_sibling_emits_neither_warning` and
     /// `forward_reference_typing_is_byte_identical`.
+    ///
+    /// That silence is narrower than the pre-#5371 open-world silence in the
+    /// general case — it is granted only to names the module demonstrably
+    /// declares — but it is **strictly WIDER for one case**, and #5997 must not
+    /// discover that by surprise: a ZERO-ARG call to such a name used to earn
+    /// the legacy "cannot infer return type of zero-arg function" warning, and
+    /// now earns nothing. `known` is false (it is not a builtin) so the legacy
+    /// warning is suppressed, and the name is declared so `UnresolvedFunction`
+    /// is suppressed too. The result is a silent `dimensionless_scalar()`
+    /// default for a call the compiler could not resolve.
+    ///
+    /// That is a deliberate ruling, not an oversight — the alternative is to
+    /// tell the user their forward-referenced sibling has an uninferrable
+    /// return type, which is a mechanical consequence of a compiler-internal
+    /// ordering rather than anything they can act on. It is called out here
+    /// because it is the one place #5371 removed a signal outright, and is
+    /// recorded as an explicit precondition on #5997 in
+    /// `docs/notes/unresolved-function-warn-sweep-2026-08-29.md`.
     ///
     /// # Interim, and deliberately non-poisoning
     ///
@@ -5905,30 +5924,6 @@ mod tests {
         assert_eq!(d.severity, crate::Severity::Warning);
     }
 
-    /// `UnresolvedFunction` is a DISTINCT variant, not an alias of the two
-    /// codes it is easiest to confuse it with.
-    ///
-    /// * `UnresolvedName` (`E_UNRESOLVED_NAME`) is an ERROR for an unbound
-    ///   IDENTIFIER in expression context (`expr.rs:670-681`).
-    /// * `FnTypeArgUnresolved` is about an unresolved TYPE ARGUMENT of a call
-    ///   that did resolve.
-    ///
-    /// `UnresolvedFunction` is neither: it is a WARNING about the CALLEE of a
-    /// `FunctionCall` matching no builtin family and no user/stdlib `fn`.
-    /// Collapsing any two of these would silently retarget every consumer that
-    /// matches on the code — which is the whole point of having codes.
-    #[test]
-    fn unresolved_function_is_distinct_from_its_neighbouring_codes() {
-        assert_ne!(
-            DiagnosticCode::UnresolvedFunction,
-            DiagnosticCode::UnresolvedName
-        );
-        assert_ne!(
-            DiagnosticCode::UnresolvedFunction,
-            DiagnosticCode::FnTypeArgUnresolved
-        );
-    }
-
     /// Under `feature = "serde"`, `DiagnosticCode::UnresolvedFunction`
     /// serializes as `"UnresolvedFunction"` (PascalCase, from
     /// `rename_all = "PascalCase"`). The LSP ships this string on the wire, so
@@ -5939,6 +5934,15 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::UnresolvedFunction).unwrap();
         assert_eq!(s, "\"UnresolvedFunction\"");
     }
+
+    // The two codes' DISTINCTNESS is not tested here: `assert_ne!` between two
+    // variants of one enum is true by construction and cannot fail. The claim
+    // that matters — a mis-shaped known builtin yields
+    // `BuiltinArgShapeUnrecognized` and an unknown callee yields
+    // `UnresolvedFunction` — is an end-to-end mapping, pinned in
+    // `reify-compiler/tests/harness_type_checking/unresolved_function_tests.rs`
+    // (`mis_shaped_known_builtins_are_never_reported_unresolved` and
+    // `every_reachable_arg_shape_arm_warns_once_with_its_parameter_list`).
 
     // --- BuiltinArgShapeUnrecognized tests (task 5371 — W_BUILTIN_ARG_SHAPE) ---
     // The sibling of `UnresolvedFunction` at the same terminal fallback: the
@@ -5957,29 +5961,6 @@ mod tests {
         let d = Diagnostic::warning("x").with_code(DiagnosticCode::BuiltinArgShapeUnrecognized);
         assert_eq!(d.code, Some(DiagnosticCode::BuiltinArgShapeUnrecognized));
         assert_eq!(d.severity, crate::Severity::Warning);
-    }
-
-    /// `BuiltinArgShapeUnrecognized` is DISTINCT from the codes it neighbours.
-    ///
-    /// Against `UnresolvedFunction` the split is load-bearing and the two are
-    /// mutually exclusive at the fallback: one says the name is unknown, the
-    /// other says the name is known and the call shape is not. Against
-    /// `FnTypeArgUnresolved` — an unresolved TYPE ARGUMENT — the subject is
-    /// different again.
-    #[test]
-    fn builtin_arg_shape_is_distinct_from_its_neighbouring_codes() {
-        assert_ne!(
-            DiagnosticCode::BuiltinArgShapeUnrecognized,
-            DiagnosticCode::UnresolvedFunction
-        );
-        assert_ne!(
-            DiagnosticCode::BuiltinArgShapeUnrecognized,
-            DiagnosticCode::FnTypeArgUnresolved
-        );
-        assert_ne!(
-            DiagnosticCode::BuiltinArgShapeUnrecognized,
-            DiagnosticCode::UnresolvedName
-        );
     }
 
     /// Under `feature = "serde"` the code serializes PascalCase; the LSP ships
