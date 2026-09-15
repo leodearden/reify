@@ -18,21 +18,23 @@
 //!
 //! # What this file guards
 //!
-//! Per referring chunk (`constraints.md`, `stdlib.md`), five properties —
-//! the first inherited, the next four decided by [`xref_region_violations`]:
+//! Per referring chunk (`constraints.md`, `stdlib.md`), six properties —
+//! the first inherited, the next five decided by [`xref_region_violations`]:
 //!
 //! 1. **Region presence.** The `<!-- ORACLE-XREF -->` region EXISTS.
 //!    [`section_body`](crate::geometry_chunk_smoke::section_body) PANICS on an
 //!    absent marker, so deleting the pointer is RED rather than vacuously
 //!    green. No anti-vacuity code is written here.
-//! 2. **Call-form coverage.** The region names `intersects(` and `distance(` as
+//! 2. **Comment integrity.** No HTML-comment terminator survives stripping, so
+//!    an editor note that closed early cannot leak into the chunk unreported.
+//! 3. **Call-form coverage.** The region names `intersects(` and `distance(` as
 //!    CALL FORMS — an open paren, never a bare word.
-//! 3. **Destination naming.** The region names the backticked retrieval topic
+//! 4. **Destination naming.** The region names the backticked retrieval topic
 //!    it routes to.
-//! 4. **Registry truth.** Every call-shaped name in the region is a live member
+//! 5. **Registry truth.** Every call-shaped name in the region is a live member
 //!    of a compiler name registry, so a rename goes RED at the REFERRER and not
 //!    only at the destination.
-//! 5. **Pointer size.** The region stays under a content-line ceiling. This is
+//! 6. **Pointer size.** The region stays under a content-line ceiling. This is
 //!    the executable form of "a pointer, not a copy" — see
 //!    [`MAXIMUM_XREF_CONTENT_LINES`].
 //!
@@ -160,10 +162,15 @@ const MAXIMUM_XREF_CONTENT_LINES: usize = 12;
 /// violation lines — each naming its own corrective action, so a failure tells
 /// a maintainer what to DO rather than only what is wrong.
 ///
-/// FOUR classes, emitted in the order a fixer should work them (a region that
+/// FIVE classes, emitted in the order a fixer should work them (a region that
 /// names no call form cannot also be judged on size usefully):
 ///
-/// 1. **Call-form coverage.** Every [`REQUIRED_ORACLE_CALL_FORMS`] entry must
+/// 1. **Comment integrity.** No [`HTML_COMMENT_CLOSE`] may survive
+///    [`strip_html_comments`]. FIRST deliberately: every class below reads the
+///    same stripped `prose`, so a note that closed early can fail them as a
+///    size or coverage defect, and a fixer who sees this line first is spared
+///    chasing the symptom.
+/// 2. **Call-form coverage.** Every [`REQUIRED_ORACLE_CALL_FORMS`] entry must
 ///    appear as a CALL, via
 ///    [`call_sites`](crate::geometry_chunk_smoke::call_sites) — the same
 ///    open-paren-and-balanced-parens rule `geometry.md`'s own coverage scan
@@ -171,22 +178,29 @@ const MAXIMUM_XREF_CONTENT_LINES: usize = 12;
 ///    English noun AND the argument name in `extrude(profile, distance)`, so a
 ///    region containing those eight letters has told a constraint author
 ///    nothing about the query.
-/// 2. **Destination naming.** The region must carry [`DESTINATION_TOPIC`]
+/// 3. **Destination naming.** The region must carry [`DESTINATION_TOPIC`]
 ///    BACKTICKED. A pointer that names no destination points nowhere.
-/// 3. **Registry truth.** Every call-shaped name must resolve through
+/// 4. **Registry truth.** Every call-shaped name must resolve through
 ///    [`registry_family`](crate::geometry_chunk_smoke::registry_family), and a
 ///    failure is reported in
 ///    [`phantom_name_panic`](crate::geometry_chunk_smoke::phantom_name_panic)'s
 ///    shared wording so the three chunk modules cannot drift on what a reader is
 ///    told about a phantom name.
-/// 4. **Pointer size.** See [`MAXIMUM_XREF_CONTENT_LINES`].
+/// 5. **Pointer size.** See [`MAXIMUM_XREF_CONTENT_LINES`].
 ///
-/// HTML COMMENTS ARE STRIPPED FIRST, by [`strip_html_comments`]. They are
-/// editor-facing notes the assistant never renders — house convention puts SYNC
-/// blocks inside exactly these marked regions — so counting them against the
-/// pointer ceiling would penalise the note that keeps a placement constraint
-/// legible, and scanning them for call names would hold an editor note to a
+/// HTML COMMENTS ARE STRIPPED FIRST, by [`strip_html_comments`], so an
+/// editor-facing note costs the pointer nothing: house convention puts
+/// placement notes and SYNC blocks inside exactly these marked regions, and
+/// charging them to the ceiling would penalise the note that keeps a placement
+/// constraint legible while scanning them for call names would hold a note to a
 /// registry it makes no claim against.
+///
+/// THAT PROMISE HOLDS ONLY FOR A WHOLE COMMENT, and the stripper is
+/// HTML-FAITHFUL rather than nesting-aware — correctly, since that is what the
+/// reader's renderer does. A note that quotes its own terminator is therefore
+/// not fully a comment: it ends at the quote, and its tail is prose. That
+/// silently charged the ceiling until class 1 existed; it is now REPORTED, which
+/// is the honest form of the promise above.
 ///
 /// PURE and fully parameterized over its input text — it does not read the
 /// chunks — exactly as
@@ -195,6 +209,21 @@ const MAXIMUM_XREF_CONTENT_LINES: usize = 12;
 fn xref_region_violations(region: &str, chunk_path: &str) -> Vec<String> {
     let prose = strip_html_comments(region);
     let mut out = Vec::new();
+
+    if prose.contains(HTML_COMMENT_CLOSE) {
+        out.push(format!(
+            "{chunk_path}'s `{ORACLE_XREF_MARKER}` region still carries a bare \
+             `{HTML_COMMENT_CLOSE}` after its HTML comments were stripped. A terminator that \
+             survives stripping was never opened, so an editor note in this region CLOSED \
+             EARLIER than its author intended: the tail of the note is now rendered text the \
+             reader sees, and it is being charged to the pointer's line budget. HTML comments \
+             do not nest and HTML defines no escape inside one, so backticks do not protect a \
+             quoted terminator — writing a marker out in full is what ends the note. FIX: name \
+             the marker WITHOUT its closing bracket (`ORACLE-XREF`, not the whole comment), or \
+             move that sentence out of the comment. Do NOT reword the pointer; the pointer is \
+             not what is wrong."
+        ));
+    }
 
     for name in REQUIRED_ORACLE_CALL_FORMS.iter().copied() {
         if call_sites(&prose, name).is_empty() {
@@ -247,6 +276,13 @@ fn xref_region_violations(region: &str, chunk_path: &str) -> Vec<String> {
     out
 }
 
+/// The HTML comment grammar, as ONE definition shared by the stripper below and
+/// by [`xref_region_violations`]' comment-integrity class. A stripper and a
+/// debris check that disagreed about what closes a comment would each be
+/// reporting on a document the other never saw.
+const HTML_COMMENT_OPEN: &str = "<!--";
+const HTML_COMMENT_CLOSE: &str = "-->";
+
 /// `markdown` with every `<!-- … -->` comment removed.
 ///
 /// An UNTERMINATED comment consumes the remainder, which is exactly what a
@@ -254,18 +290,15 @@ fn xref_region_violations(region: &str, chunk_path: &str) -> Vec<String> {
 /// by a stray `<!--` reports as missing its call forms, which is the true
 /// description of what the reader can now see.
 fn strip_html_comments(markdown: &str) -> String {
-    const OPEN: &str = "<!--";
-    const CLOSE: &str = "-->";
-
     let mut out = String::with_capacity(markdown.len());
     let mut rest = markdown;
 
-    while let Some(open) = rest.find(OPEN) {
+    while let Some(open) = rest.find(HTML_COMMENT_OPEN) {
         out.push_str(&rest[..open]);
-        let Some(close) = rest[open..].find(CLOSE) else {
+        let Some(close) = rest[open..].find(HTML_COMMENT_CLOSE) else {
             return out;
         };
-        rest = &rest[open + close + CLOSE.len()..];
+        rest = &rest[open + close + HTML_COMMENT_CLOSE.len()..];
     }
     out.push_str(rest);
     out
