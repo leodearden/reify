@@ -2354,7 +2354,63 @@ impl EngineSession {
         cell_id_str: &str,
         value_str: &str,
     ) -> Result<GuiState, String> {
-        self.apply_param_to_source_str(cell_id_str, value_str)
+        let refusal = match self.apply_param_to_source_str(cell_id_str, value_str) {
+            Ok(state) => return Ok(state),
+            Err(e) => e,
+        };
+
+        // The discard is UNCONDITIONAL on the error path, and deliberately so.
+        //
+        // This method cannot know whether a preview is live: `preview_parameter`
+        // is a separate, earlier call whose override lives in `last_check`,
+        // which the write-back above never looks at — so its ledger, which
+        // guarantees a refusal moves none of ITS four surfaces, says nothing
+        // about that one. A refused commit that returns without discarding
+        // therefore leaves the engine holding a value no source carries: the
+        // ephemeral second source of truth INV-GUI-3 exists to forbid, and the
+        // value a later `export` would silently build WITHOUT, which is
+        // esc-7281-4 relocated to the error path.
+        //
+        // Cost is not an argument against doing it always: this is an error
+        // path, so the recompile is off the drag budget the preview/commit
+        // split was built to protect.
+        //
+        // A discard failure is COMBINED into the message rather than swallowed,
+        // for the reason `apply_param_to_source`'s own rollback arm gives: a
+        // session left silently inconsistent is worse than a loud compound
+        // error. The original refusal stays first, and readable.
+        match self.discard_parameter_preview() {
+            Ok(_) => Err(refusal),
+            Err(discard_err) => Err(format!(
+                "{refusal}; the pending preview could not be discarded either: {discard_err}"
+            )),
+        }
+    }
+
+    /// Drop any engine-state override a [`Self::preview_parameter`] call left in
+    /// `last_check`, by recompiling the session's CANONICAL source text.
+    ///
+    /// Routed through [`Self::update_source`] rather than a hand-rolled
+    /// `commit_state`, mirroring [`Self::apply_param_to_source`]'s own
+    /// write-failure rollback and for the same reason: the restored state must
+    /// reach the frontend through the ONE shared choke-point
+    /// (`post_engine_call_telemetry`), so no second emit path is added (PRD D7).
+    fn discard_parameter_preview(&mut self) -> Result<GuiState, String> {
+        let (_, source) = self
+            .resolve_source()
+            .ok_or_else(|| "no module loaded".to_string())?;
+        // Owned: `source` borrows `&self`, and the recompile needs `&mut self`.
+        let source = source.to_owned();
+
+        let path = self
+            .core
+            .file_path()
+            .ok_or_else(|| "session has no on-disk .ri file".to_string())?
+            .to_str()
+            .ok_or_else(|| "path is not valid UTF-8".to_string())?
+            .to_owned();
+
+        self.update_source(&path, &source)
     }
 
     /// Write `value` back into the session's canonical `.ri` file as the
