@@ -1790,20 +1790,6 @@ pub(crate) fn resolve_type_expr_with_aliases(
     )
 }
 
-/// Dimension-kinded variant of [`resolve_type_expr_with_aliases`].
-///
-/// Identical to the 6-arg wrapper but accepts a `dim_param_names` set that
-/// names the dimension-kinded type parameters in scope (params declared with
-/// `Q: Dimension`).  These names are threaded into
-/// [`resolve_parameterized_builtin_type`] so that `Scalar<Q>`, `Vector3<Q>`,
-/// and `Point3<Q>` arms can detect a dimension-param in the slot and return
-/// `Type::ScalarParam(Q)` / `Type::vec3(ScalarParam(Q))` / `Type::point3(ScalarParam(Q))`
-/// instead of routing to `resolve_type_alias_expr_to_dimension`.
-///
-/// Called directly by `compile_function` and `compile_assoc_function` (which
-/// build the dim-param set from `fn_def.type_params`).  All other callers go
-/// through the 6-arg wrapper with an empty dim set.
-#[allow(clippy::too_many_arguments)]
 /// Resolve a type NAME against all four entity namespaces, applying the
 /// local-enum shadowing precedence.
 ///
@@ -1817,12 +1803,36 @@ pub(crate) fn resolve_type_expr_with_aliases(
 /// convention two call sites have to keep in sync. Pinned by
 /// `parametric_alias_body_shadow_parity`.
 ///
+/// That sharing covers APPLIED names (`N<Args>`) as well as bare ones, and
+/// only since task #6477. The two applied arms used to sit in
+/// `resolve_type_expr_with_aliases_kinded`, so the alias-body caller silently
+/// lacked them and `type W<U> = Box2<U>` dropped its argument at every use
+/// site — precisely the silent drop arm 1 exists to prevent, reintroduced by
+/// the arm's PLACEMENT. They live here now, which is what makes the paragraph
+/// above structurally true rather than aspirational. Pinned by the applied
+/// rows of `parametric_alias_entity_body_use_site`.
+///
+/// The two callers differ in exactly one thing: how a type ARGUMENT recurses.
+/// That is `resolve_arg` — the direct spelling recurses through
+/// `resolve_type_expr_with_aliases_kinded` with the use site's parameter
+/// scope; an alias body recurses through `resolve_type_alias_expr_with_subst`
+/// with its `subst`, so the alias's own params stay bound inside its arguments
+/// and nothing ambient leaks in.
+///
 /// Order, and why each step is where it is:
 ///
-/// 1. `resolve_type_with_aliases` — builtins, type params, resolved aliases,
+/// 1. Structure-with-args — `N<Args>` where N is a structure or occurrence def
+///    becomes `Type::Applied`, so the arguments survive into the arity/bound
+///    walk instead of being dropped (task 4603 γ).
+///
+/// 2. Trait-with-args — `N<Args>` where N is a trait is rejected outright with
+///    E_TYPE_ARG_ON_TRAIT (task 5049 α). AFTER step 1, so a name that is both
+///    a structure and a trait resolves as the structure.
+///
+/// 3. `resolve_type_with_aliases` — builtins, type params, resolved aliases,
 ///    structures, traits.
 ///
-/// 2. Shadowing-enum override (task #5429; PRD
+/// 4. Shadowing-enum override (task #5429; PRD
 ///    docs/prds/v0_6/uniform-member-access.md §4 M5 / D8): a MODULE-LOCAL
 ///    `enum N` outranks a same-named PRELUDE `structure def N`, so `enum Fit` +
 ///    `param fit : Fit` lowers to `Type::Enum("Fit")` rather than being
@@ -1830,7 +1840,7 @@ pub(crate) fn resolve_type_expr_with_aliases(
 ///
 ///    Each conjunct earns its place:
 ///
-///    - `type_args.is_empty()` — bare names only, the same gate step 3 uses.
+///    - `type_args.is_empty()` — bare names only, the same gate step 5 uses.
 ///      An applied `N<Args>` must keep flowing past, so the generic-enum
 ///      Applied path (`entity.rs::resolve_enum_type_with_args`, which only
 ///      runs when this resolution yields None) still sees it. Regression
@@ -1846,13 +1856,13 @@ pub(crate) fn resolve_type_expr_with_aliases(
 ///    - set membership — the set is empty outside a `LocalEnumShadowScope`,
 ///      so every caller that installs no scope is unaffected.
 ///
-/// 3. Enum-name fallback (task 2998): an enum used as an inner type arg of a
+/// 5. Enum-name fallback (task 2998): an enum used as an inner type arg of a
 ///    parameterized builtin (e.g. the `QoIDescriptor` in
 ///    `Option<QoIDescriptor>`) reaches here because step 1 resolves builtins /
 ///    aliases / structures / traits but NOT enums. Consult the ambient enum set
 ///    installed by `EnumNameScope` (non-empty ONLY around struct-param
 ///    resolution; empty otherwise — see `RESOLUTION_ENUM_NAMES`). Bare names
-///    only, for the same reason as step 2: an `Enum<Args>` form keeps
+///    only, for the same reason as step 4: an `Enum<Args>` form keeps
 ///    `type_args` non-empty and falls through, and entity.rs then emits "enum
 ///    does not accept type arguments". This is the same enum fallback the
 ///    struct-param (entity.rs) and enum-variant-payload (enums_phase.rs) paths
@@ -1860,8 +1870,17 @@ pub(crate) fn resolve_type_expr_with_aliases(
 ///    position that explicit `structure_names` / `trait_names` threading does
 ///    not reach.
 ///
-/// `None` means the name is unknown in every namespace; each caller has its own
-/// further arms to try and its own diagnostic to emit.
+/// `None` means the name is unknown in every namespace — in APPLIED position
+/// as well as bare, since steps 1-2 decide those here now. The one caller-level
+/// arm still keyed on that `None` for an applied name is the generic-enum
+/// Applied path (`entity.rs::resolve_enum_type_with_args`), which is why steps
+/// 1-2 must stay keyed on `structure_names` / `trait_names` membership and not
+/// on "has arguments": a generic enum is in neither set and must keep flowing
+/// past (regression oracle: `tests::applied_form_is_not_shadowed`). Beyond
+/// that, each caller has its own remaining arms — the deferred non-parametric
+/// alias body, the E_BARE_SCALAR guard — and its own `unresolved type`
+/// diagnostic to emit.
+#[allow(clippy::too_many_arguments)]
 fn resolve_entity_name_with_shadowing(
     name: &str,
     type_args: &[reify_ast::TypeExpr],
@@ -1869,7 +1888,101 @@ fn resolve_entity_name_with_shadowing(
     alias_registry: &TypeAliasRegistry,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+    span: SourceSpan,
+    resolve_arg: &mut dyn FnMut(&reify_ast::TypeExpr, &mut Vec<Diagnostic>) -> Option<Type>,
 ) -> Option<Type> {
+    // Step 1 — structure-with-args arm (task 4603 γ — un-drop fix).
+    //
+    // When `name ∈ structure_names` AND `type_args` is non-empty, the caller is
+    // writing something like `Coupling<Prismatic>`. The simple-name step below
+    // (`resolve_type_with_aliases`) would produce `Type::StructureRef("Coupling")`
+    // and **silently drop** the type args — making `Coupling<Prismatic>` and
+    // `Coupling<Revolute>` identical. This arm intercepts that case first.
+    //
+    // Each arg is resolved recursively through the caller-supplied `resolve_arg`
+    // (the same recursion that `List<T>`, `Map<K,V>`, etc. use for their own
+    // args). An arg that resolves to `None` becomes `Type::Error` (anti-cascade
+    // sentinel — the diagnostic was already pushed).
+    //
+    // Invariant: non-empty `type_args` + `structure_names` hit ⇒ `Type::Applied`;
+    //            empty `type_args` falls through to `resolve_type_with_aliases`
+    //            and becomes `Type::StructureRef` (unchanged).
+    if structure_names.contains(name) && !type_args.is_empty() {
+        let args: Vec<Type> = type_args
+            .iter()
+            .map(|arg_expr| resolve_arg(arg_expr, diagnostics).unwrap_or(Type::Error))
+            .collect();
+        return Some(Type::Applied {
+            name: name.to_string(),
+            args,
+        });
+    }
+
+    // Step 2 — trait-with-args rejection arm (task 5049 α — E_TYPE_ARG_ON_TRAIT).
+    //
+    // When `name ∈ trait_names` AND `type_args` is non-empty, the caller is
+    // writing something like `SpecLike<Foo>`. Unlike the structure-with-args
+    // arm above, trait type-arguments are not yet a supported language
+    // feature: the simple-name step below (`resolve_type_with_aliases`)
+    // would produce bare `Type::TraitObject("SpecLike")` and **silently drop**
+    // the type args, with no diagnostic and no arity/bound check. This arm
+    // intercepts that case first and rejects it outright.
+    //
+    // Placed AFTER the structure arm so a name that is both a structure and a
+    // trait with args still resolves via `Type::Applied` (structure wins over
+    // trait — the same precedence `resolve_type_with_aliases` uses for the
+    // bare-name case, :655-661). This is a real, constructible branch, not
+    // just defensive ordering: nothing in the unified entity namespace stops
+    // a `structure def` and a `trait` from sharing a name (`Declaration::Trait`
+    // is never run through `record_or_report_duplicate` in
+    // `pre_pass::collect_decl_refs`, unlike `Structure`/`Field`/`Occurrence`/
+    // `Constraint`), so `resolution_trait_names` and `resolution_structure_names`
+    // (built independently in `names_phase::build_resolution_names`) can both
+    // contain the same name. Verified by the integration test
+    // `name_shared_by_structure_and_trait_prefers_structure_applied_path` in
+    // crates/reify-compiler/tests/harness_traits/trait_type_arg_rejection_tests.rs. Placed
+    // BEFORE simple-name resolution so the rejection fires regardless of any
+    // same-name shadow later in the fallthrough.
+    //
+    // Returns Some(Type::Error) (poison sentinel) + one TypeArgOnTrait
+    // diagnostic, suppressing the generic UnresolvedType cascade so the user
+    // sees exactly one clean E_TYPE_ARG_ON_TRAIT error (mirrors the
+    // BareScalarType anti-cascade pattern in `resolve_type_expr_with_aliases_kinded`).
+    //
+    // Deferred alternative (NOT implemented here): extending `Type::Applied`
+    // to traits with their own bound/arity checking, i.e. treating a
+    // type-arg-applied trait object as a first-class generic type rather than
+    // flatly rejecting it. Tracked as task #5024 (generic-trait type-args
+    // language design PRD bookmark) — deliberately out of scope until that
+    // PRD is authored.
+    //
+    // Invariant: non-empty `type_args` + `trait_names` hit (and not already a
+    // structure) ⇒ Type::Error + TypeArgOnTrait; empty `type_args` falls
+    // through to `resolve_type_with_aliases` and becomes `Type::TraitObject`
+    // (unchanged).
+    if trait_names.contains(name) && !type_args.is_empty() {
+        let args_as_written = type_args
+            .iter()
+            .map(|arg| arg.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "E_TYPE_ARG_ON_TRAIT: trait '{}' does not accept type arguments (given \
+                 '{}'); trait type-arguments are not yet supported",
+                name, args_as_written
+            ))
+            .with_code(DiagnosticCode::TypeArgOnTrait)
+            .with_label(DiagnosticLabel::new(
+                span,
+                "trait type-arguments are not yet supported",
+            )),
+        );
+        return Some(Type::Error);
+    }
+
+    // Step 3 — builtins, type params, resolved aliases, structures, traits.
     if let Some(ty) = resolve_type_with_aliases(
         name,
         type_param_names,
@@ -1893,6 +2006,19 @@ fn resolve_entity_name_with_shadowing(
     None
 }
 
+/// Dimension-kinded variant of [`resolve_type_expr_with_aliases`].
+///
+/// Identical to the 6-arg wrapper but accepts a `dim_param_names` set that
+/// names the dimension-kinded type parameters in scope (params declared with
+/// `Q: Dimension`).  These names are threaded into
+/// [`resolve_parameterized_builtin_type`] so that `Scalar<Q>`, `Vector3<Q>`,
+/// and `Point3<Q>` arms can detect a dimension-param in the slot and return
+/// `Type::ScalarParam(Q)` / `Type::vec3(ScalarParam(Q))` / `Type::point3(ScalarParam(Q))`
+/// instead of routing to `resolve_type_alias_expr_to_dimension`.
+///
+/// Called directly by `compile_function` and `compile_assoc_function` (which
+/// build the dim-param set from `fn_def.type_params`).  All other callers go
+/// through the 6-arg wrapper with an empty dim set.
 pub(crate) fn resolve_type_expr_with_aliases_kinded(
     type_expr: &reify_ast::TypeExpr,
     type_param_names: &HashSet<String>,
@@ -2006,110 +2132,14 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
         return Some(Type::Error);
     }
 
-    // Structure-with-args arm (task 4603 γ — un-drop fix).
+    // Name resolution across all four namespaces — applied forms included,
+    // then the bare-name steps with the local-enum shadowing precedence.
+    // Shared with the parametric alias-body path so an alias body and the
+    // direct spelling cannot drift (see the helper's doc).
     //
-    // When `name ∈ structure_names` AND `type_args` is non-empty, the caller is
-    // writing something like `Coupling<Prismatic>`. The simple-name fallthrough
-    // below (`resolve_type_with_aliases`) would produce `Type::StructureRef("Coupling")`
-    // and **silently drop** the type args — making `Coupling<Prismatic>` and
-    // `Coupling<Revolute>` identical. This arm intercepts that case first.
-    //
-    // Each arg is resolved recursively via `resolve_type_expr_with_aliases_kinded`
-    // (the same recursion that `List<T>`, `Map<K,V>`, etc. use in
-    // `resolve_parameterized_builtin_type`). An arg that resolves to `None` becomes
-    // `Type::Error` (anti-cascade sentinel — the diagnostic was already pushed).
-    //
-    // Invariant: non-empty `type_args` + `structure_names` hit ⇒ `Type::Applied`;
-    //            empty `type_args` falls through to `resolve_type_with_aliases`
-    //            and becomes `Type::StructureRef` (unchanged).
-    if structure_names.contains(name) && !type_args.is_empty() {
-        let args: Vec<Type> = type_args
-            .iter()
-            .map(|arg_expr| {
-                resolve_type_expr_with_aliases_kinded(
-                    arg_expr,
-                    type_param_names,
-                    dim_param_names,
-                    alias_registry,
-                    diagnostics,
-                    structure_names,
-                    trait_names,
-                )
-                .unwrap_or(Type::Error)
-            })
-            .collect();
-        return Some(Type::Applied {
-            name: name.to_string(),
-            args,
-        });
-    }
-
-    // Trait-with-args rejection arm (task 5049 α — E_TYPE_ARG_ON_TRAIT).
-    //
-    // When `name ∈ trait_names` AND `type_args` is non-empty, the caller is
-    // writing something like `SpecLike<Foo>`. Unlike the structure-with-args
-    // arm above, trait type-arguments are not yet a supported language
-    // feature: the simple-name fallthrough below (`resolve_type_with_aliases`)
-    // would produce bare `Type::TraitObject("SpecLike")` and **silently drop**
-    // the type args, with no diagnostic and no arity/bound check. This arm
-    // intercepts that case first and rejects it outright.
-    //
-    // Placed AFTER the structure arm so a name that is both a structure and a
-    // trait with args still resolves via `Type::Applied` (structure wins over
-    // trait — the same precedence `resolve_type_with_aliases` uses for the
-    // bare-name case, :655-661). This is a real, constructible branch, not
-    // just defensive ordering: nothing in the unified entity namespace stops
-    // a `structure def` and a `trait` from sharing a name (`Declaration::Trait`
-    // is never run through `record_or_report_duplicate` in
-    // `pre_pass::collect_decl_refs`, unlike `Structure`/`Field`/`Occurrence`/
-    // `Constraint`), so `resolution_trait_names` and `resolution_structure_names`
-    // (built independently in `names_phase::build_resolution_names`) can both
-    // contain the same name. Verified by the integration test
-    // `name_shared_by_structure_and_trait_prefers_structure_applied_path` in
-    // crates/reify-compiler/tests/harness_traits/trait_type_arg_rejection_tests.rs. Placed
-    // BEFORE simple-name resolution so the rejection fires regardless of any
-    // same-name shadow later in the fallthrough.
-    //
-    // Returns Some(Type::Error) (poison sentinel) + one TypeArgOnTrait
-    // diagnostic, suppressing the generic UnresolvedType cascade so the user
-    // sees exactly one clean E_TYPE_ARG_ON_TRAIT error (mirrors the
-    // BareScalarType anti-cascade pattern below).
-    //
-    // Deferred alternative (NOT implemented here): extending `Type::Applied`
-    // to traits with their own bound/arity checking, i.e. treating a
-    // type-arg-applied trait object as a first-class generic type rather than
-    // flatly rejecting it. Tracked as task #5024 (generic-trait type-args
-    // language design PRD bookmark) — deliberately out of scope until that
-    // PRD is authored.
-    //
-    // Invariant: non-empty `type_args` + `trait_names` hit (and not already a
-    // structure) ⇒ Type::Error + TypeArgOnTrait; empty `type_args` falls
-    // through to `resolve_type_with_aliases` and becomes `Type::TraitObject`
-    // (unchanged).
-    if trait_names.contains(name) && !type_args.is_empty() {
-        let args_as_written = type_args
-            .iter()
-            .map(|arg| arg.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        diagnostics.push(
-            Diagnostic::error(format!(
-                "E_TYPE_ARG_ON_TRAIT: trait '{}' does not accept type arguments (given \
-                 '{}'); trait type-arguments are not yet supported",
-                name, args_as_written
-            ))
-            .with_code(DiagnosticCode::TypeArgOnTrait)
-            .with_label(DiagnosticLabel::new(
-                type_expr.span,
-                "trait type-arguments are not yet supported",
-            )),
-        );
-        return Some(Type::Error);
-    }
-
-    // Simple name resolution across all four namespaces, with the local-enum
-    // shadowing precedence. Shared with the parametric alias-body path so an
-    // alias body and the direct spelling cannot drift (see the helper's doc).
+    // `resolve_arg` is the only thing the two callers differ in: here, each
+    // type argument recurses through this same kinded resolver, so the use
+    // site's type/dim parameter scope and namespaces apply to it.
     if let Some(ty) = resolve_entity_name_with_shadowing(
         name,
         type_args,
@@ -2117,6 +2147,19 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
         alias_registry,
         structure_names,
         trait_names,
+        diagnostics,
+        type_expr.span,
+        &mut |arg_expr, arg_diagnostics| {
+            resolve_type_expr_with_aliases_kinded(
+                arg_expr,
+                type_param_names,
+                dim_param_names,
+                alias_registry,
+                arg_diagnostics,
+                structure_names,
+                trait_names,
+            )
+        },
     ) {
         return Some(ty);
     }
@@ -3427,6 +3470,15 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
             // of this arm, so the type-param set passed here is EMPTY: a body
             // must never see the use site's parameter scope (pinned by
             // `parametric_alias_body_param_hygiene`).
+            //
+            // `resolve_arg` recurses through THIS resolver, so an applied
+            // entity's type arguments keep arriving with `subst` bound — the
+            // alias's own params stay resolvable inside them, and nothing
+            // ambient leaks in. The argument recursion counts as a level
+            // (`depth + 1`) rather than reusing `depth`: it re-enters this
+            // same resolver, so counting it keeps the guard a true upper bound
+            // on nesting, and MAX_ALIAS_INSTANTIATION_DEPTH (64) is far above
+            // any nesting a real alias body carries.
             let no_type_params = HashSet::new();
             resolve_entity_name_with_shadowing(
                 name,
@@ -3435,6 +3487,18 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                 alias_registry,
                 namespaces.structures,
                 namespaces.traits,
+                diagnostics,
+                type_expr.span,
+                &mut |arg_expr, arg_diagnostics| {
+                    resolve_type_alias_expr_with_subst(
+                        arg_expr,
+                        alias_registry,
+                        subst,
+                        arg_diagnostics,
+                        depth + 1,
+                        namespaces,
+                    )
+                },
             )
         }
         reify_ast::TypeExprKind::IntegerLiteral(n) => {
