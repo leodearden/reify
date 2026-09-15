@@ -181,6 +181,10 @@
 #include <StepBasic_PlaneAngleUnit.hxx>
 #include <StepBasic_SiUnitAndPlaneAngleUnit.hxx>
 #include <StepBasic_ConversionBasedUnitAndPlaneAngleUnit.hxx>
+#include <StepBasic_MeasureWithUnit.hxx>
+#include <StepBasic_MeasureValueMember.hxx>
+#include <StepBasic_Unit.hxx>
+#include <TCollection_HAsciiString.hxx>
 #include <StepBasic_HArray1OfNamedUnit.hxx>
 
 // OCCT local surface properties (curvature via GeomLProp_SLProps)
@@ -7404,6 +7408,20 @@ enum class StepGuardFault {
     /// only one that reaches V3's "which it cannot verify" branch and
     /// `classify_step_angle_unit`'s third downcast.
     UnrecognisedAngular,
+    /// Replace, IN PLACE, the first angular unit the first unit-assigned
+    /// context reaches with a `StepBasic_ConversionBasedUnitAndPlaneAngleUnit`
+    /// whose conversion factor points at the radian it replaced — the exact
+    /// spelling a real DEGREE or GRAD unit takes.
+    ///
+    /// The arm closest to the defect INV-AD-4 exists to prevent: a degrees
+    /// file emitted under reify's radian payload. Without it
+    /// `StepAngleUnitKind::ConversionBased` is the one classification with no
+    /// fault behind it, so the second downcast in `classify_step_angle_unit`
+    /// is unexercised — and mistyping it (say to
+    /// `…ConversionBasedUnitAndSolidAngleUnit`) would silently demote a real
+    /// degree unit to `UnrecognisedAngular` or `NotAngular` with nothing
+    /// reddening.
+    ConversionBased,
     /// Add a bare `StepBasic_PlaneAngleUnit` to the model that NO context
     /// references. The V4 twin of `UnrecognisedAngular`: same unverifiable
     /// unit, reached through the orphan arm instead of the association arm,
@@ -7459,6 +7477,9 @@ StepGuardFault parse_step_guard_fault(const std::string& name) {
     if (name == "unrecognised_angular") {
         return StepGuardFault::UnrecognisedAngular;
     }
+    if (name == "conversion_based") {
+        return StepGuardFault::ConversionBased;
+    }
     if (name == "orphan_unrecognised") {
         return StepGuardFault::OrphanUnrecognised;
     }
@@ -7474,8 +7495,8 @@ StepGuardFault parse_step_guard_fault(const std::string& name) {
     throw ContractViolation(
         "unknown injected fault \"" + name +
         "\"; accepted faults: none, non_radian, prefixed, missing, "
-        "orphan_non_radian, unrecognised_angular, orphan_unrecognised, "
-        "no_context, two_part_context, angle_mode_deg");
+        "orphan_non_radian, unrecognised_angular, conversion_based, "
+        "orphan_unrecognised, no_context, two_part_context, angle_mode_deg");
 }
 
 /// RAII override of the `step.angleunit.mode` Interface_Static, used by the
@@ -7599,6 +7620,54 @@ bool rebuild_units_keeping(
     }
     ctx->SetUnits(rebuilt);
     return true;
+}
+
+/// Substitute, IN PLACE, the first angular unit the first unit-assigned
+/// context reaches with whatever `make_substitute` builds from it.
+///
+/// SHARED BY THE TWO WRONG-FORM FAULTS (`unrecognised_angular` and
+/// `conversion_based`), which differ only in the entity they install.
+/// Replacing in place rather than rebuilding the array is what keeps both of
+/// them tests of the CLASSIFIER: the context still reaches exactly as many
+/// units as before, so V2 (MISSING) stays silent and the classification branch
+/// under test is the only one that can fire.
+///
+/// The substitute is registered with `model->AddEntity` so the diagnostic can
+/// name it by index — `model->Number()` returns 0 for an entity the model does
+/// not carry, and "plane-angle unit #0" is not something a reader can act on.
+///
+/// Returns false when no unit-assigned context reaches an angular unit. The
+/// caller turns that into a `ContractViolation` naming ITS OWN fault, because
+/// a fixture with nothing to corrupt would otherwise make the negative test
+/// pass vacuously, and the message has to say which fault could not be applied.
+bool substitute_first_referenced_angular_unit(
+    const Handle(Interface_InterfaceModel)& model,
+    const std::function<Handle(StepBasic_NamedUnit)(const Handle(StepBasic_NamedUnit)&)>&
+        make_substitute) {
+    const Standard_Integer n = model->NbEntities();
+    for (Standard_Integer i = 1; i <= n; ++i) {
+        Handle(StepRepr_GlobalUnitAssignedContext) ctx =
+            step_unit_assigned_context(model->Value(i));
+        if (ctx.IsNull()) {
+            continue;
+        }
+        Handle(StepBasic_HArray1OfNamedUnit) units = ctx->Units();
+        if (units.IsNull()) {
+            continue;
+        }
+        for (Standard_Integer k = units->Lower(); k <= units->Upper(); ++k) {
+            Handle(StepBasic_NamedUnit) unit = units->Value(k);
+            if (unit.IsNull() || classify_step_angle_unit(unit, nullptr) ==
+                                     StepAngleUnitKind::NotAngular) {
+                continue;
+            }
+            Handle(StepBasic_NamedUnit) substitute = make_substitute(unit);
+            model->AddEntity(substitute);
+            units->SetValue(k, substitute);
+            return true;
+        }
+    }
+    return false;
 }
 
 /// Corrupt exactly ONE thing in `model`, per `fault`.
@@ -7726,46 +7795,59 @@ void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
     }
 
     if (fault == StepGuardFault::UnrecognisedAngular) {
-        // Replace IN PLACE rather than rebuilding the array: the point of this
-        // fault is that the context still reaches exactly as many units as
-        // before, one of which is now a form the classifier cannot read. If it
-        // dropped the reference instead, V2 (MISSING) would fire and the
-        // unverifiable-unit branch this exists to exercise would never run.
-        for (Standard_Integer i = 1; i <= n; ++i) {
-            Handle(StepRepr_GlobalUnitAssignedContext) ctx =
-                step_unit_assigned_context(model->Value(i));
-            if (ctx.IsNull()) {
-                continue;
-            }
-            Handle(StepBasic_HArray1OfNamedUnit) units = ctx->Units();
-            if (units.IsNull()) {
-                continue;
-            }
-            for (Standard_Integer k = units->Lower(); k <= units->Upper(); ++k) {
-                Handle(StepBasic_NamedUnit) unit = units->Value(k);
-                if (unit.IsNull() || classify_step_angle_unit(unit, nullptr) ==
-                                         StepAngleUnitKind::NotAngular) {
-                    continue;
-                }
+        const bool applied = substitute_first_referenced_angular_unit(
+            model, [](const Handle(StepBasic_NamedUnit)& unit) {
                 Handle(StepBasic_PlaneAngleUnit) bare = new StepBasic_PlaneAngleUnit();
                 // Carry the dimensional exponents over so the substitute is a
                 // well-formed NAMED_UNIT: the defect under test is the unit's
                 // FORM (a spelling the classifier cannot inspect), not a
                 // half-built entity.
                 bare->SetDimensions(unit->Dimensions());
-                // Registered as a model entity so the diagnostic can name it
-                // by index; `model->Number()` returns 0 for an entity the
-                // model does not carry, and "plane-angle unit #0" is not
-                // something a reader can act on.
-                model->AddEntity(bare);
-                units->SetValue(k, bare);
-                return;
-            }
+                return Handle(StepBasic_NamedUnit)(bare);
+            });
+        if (!applied) {
+            throw ContractViolation(
+                "cannot inject the \"unrecognised_angular\" fault: no "
+                "unit-assigned context reaches an angular unit to replace, so "
+                "this negative test would pass vacuously");
         }
-        throw ContractViolation(
-            "cannot inject the \"unrecognised_angular\" fault: no unit-assigned "
-            "context reaches an angular unit to replace, so this negative test "
-            "would pass vacuously");
+        return;
+    }
+
+    if (fault == StepGuardFault::ConversionBased) {
+        const bool applied = substitute_first_referenced_angular_unit(
+            model, [](const Handle(StepBasic_NamedUnit)& unit) {
+                // A DEGREE unit, spelled the way STEP spells one: a
+                // CONVERSION_BASED_UNIT whose conversion factor is a
+                // PLANE_ANGLE_MEASURE_WITH_UNIT of pi/180 radians, pointing at
+                // the very radian this substitution displaces. Building it out
+                // of the original rather than out of a fresh SI unit is what
+                // makes it a realistic degree declaration instead of a
+                // free-floating entity.
+                StepBasic_Unit radian;
+                radian.SetValue(unit);
+                Handle(StepBasic_MeasureValueMember) factor_value =
+                    new StepBasic_MeasureValueMember();
+                factor_value->SetName("PLANE_ANGLE_MEASURE");
+                factor_value->SetReal(M_PI / 180.0);
+                Handle(StepBasic_MeasureWithUnit) factor =
+                    new StepBasic_MeasureWithUnit();
+                factor->Init(factor_value, radian);
+
+                Handle(StepBasic_ConversionBasedUnitAndPlaneAngleUnit) conv =
+                    new StepBasic_ConversionBasedUnitAndPlaneAngleUnit();
+                conv->Init(unit->Dimensions(),
+                           new TCollection_HAsciiString("degree"), factor);
+                conv->SetPlaneAngleUnit(new StepBasic_PlaneAngleUnit());
+                return Handle(StepBasic_NamedUnit)(conv);
+            });
+        if (!applied) {
+            throw ContractViolation(
+                "cannot inject the \"conversion_based\" fault: no unit-assigned "
+                "context reaches an angular unit to replace, so this negative "
+                "test would pass vacuously");
+        }
+        return;
     }
 
     if (fault == StepGuardFault::OrphanUnrecognised) {
@@ -7901,6 +7983,7 @@ void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
             case StepGuardFault::Missing:
             case StepGuardFault::OrphanNonRadian:
             case StepGuardFault::UnrecognisedAngular:
+            case StepGuardFault::ConversionBased:
             case StepGuardFault::OrphanUnrecognised:
             case StepGuardFault::NoContext:
             case StepGuardFault::TwoPartContext:

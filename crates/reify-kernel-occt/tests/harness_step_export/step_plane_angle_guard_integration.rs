@@ -507,6 +507,69 @@ fn guard_refuses_a_context_with_no_plane_angle_declaration() {
     );
 }
 
+/// A CONVERSION_BASED plane-angle declaration — the spelling a DEGREE unit
+/// takes — is REFUSED.
+///
+/// THE ARM CLOSEST TO THE REAL DEFECT. Every other wrong-unit case this suite
+/// injects is a corruption no writer would plausibly produce; a degrees file
+/// under a radian payload is the concrete outcome INV-AD-4 exists to prevent,
+/// and `StepBasic_ConversionBasedUnitAndPlaneAngleUnit` is exactly how STEP
+/// spells it. It is also the classification with the most silent failure mode:
+/// mistype the downcast in `classify_step_angle_unit` (to
+/// `…ConversionBasedUnitAndSolidAngleUnit`, say) and a real degree unit demotes
+/// to `UnrecognisedAngular` or, worse, to `NotAngular` — where the containing
+/// context then looks like it declares nothing and V2 blames a MISSING
+/// declaration that is sitting right there in the file.
+///
+/// The fault replaces the unit IN PLACE, so the context still reaches as many
+/// units as before and V2 stays silent — this is a test of the classifier, not
+/// a second test of the missing-declaration arm.
+#[test]
+fn guard_refuses_a_conversion_based_degree_declaration() {
+    let (kernel, union_id) = two_cone_union_kernel();
+
+    // (a) Refused, with the same Reify attribution as every other arm.
+    let msg = refusal_message(&kernel, union_id, "conversion_based");
+
+    // (b) V3 — the unit is REFERENCED, so this is the association arm. And
+    // NOT UNVERIFIABLE: the guard recognised this form and rejected it, which
+    // is a stronger claim than "could not read it" and the one that tells a
+    // reader the file really is declaring degrees.
+    assert_arms(&msg, &["V3"], &["V1", "V2", "V4", "UNVERIFIABLE"]);
+
+    // (c) The refusal names the FORM that makes the unit wrong. A degree unit
+    // carries no SI name and no SI prefix, so neither of the two details the
+    // other V3 tests pin is available here — `CONVERSION_BASED_UNIT` is the
+    // Part-21 keyword a reader greps the emitted file for.
+    assert!(
+        msg.contains("CONVERSION_BASED_UNIT"),
+        "the refusal must name the unit's FORM — CONVERSION_BASED_UNIT is the \
+         Part-21 keyword a degree or grad declaration takes, and it is the one \
+         token that tells a reader what they are looking at; got: {msg}"
+    );
+    assert_names_a_context_index(&msg);
+    entity_index_after(&msg, "reaches plane-angle unit #");
+
+    // (d) The walk COUNTED the substitute as angular but not as a radian. If
+    // the ConversionBased downcast were mistyped, the unit would fall through
+    // to a later branch: to `UnrecognisedAngular` (which would red the
+    // UNVERIFIABLE assertion above) or to `NotAngular`, which would drop it out
+    // of `plane_angle_units` entirely and make these two equal again.
+    let RefusalCounts {
+        plane_angle_units,
+        radian_ok,
+        ..
+    } = parse_counts(&msg);
+    assert!(
+        radian_ok < plane_angle_units,
+        "the conversion-based unit must be COUNTED as a plane-angle unit and \
+         must not count as radian_ok — equal counts mean the classifier \
+         dropped it as non-angular, which is what a mistyped downcast looks \
+         like; got radian_ok={radian_ok} \
+         plane_angle_units={plane_angle_units} in: {msg}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The half-wired `step.angleunit.mode` trap — a SEPARATE arm
 // ---------------------------------------------------------------------------

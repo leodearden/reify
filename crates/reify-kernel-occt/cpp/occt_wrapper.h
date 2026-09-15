@@ -1645,6 +1645,14 @@ std::unique_ptr<OcctShape> apply_test_placement_for_test(
 ///                       dropped — so V2 stays silent and V3 reports a
 ///                       declaration it CANNOT VERIFY, which is a distinct
 ///                       finding from a declaration it verified as wrong.
+///   - `"conversion_based"` — replace, IN PLACE, the first angular unit the
+///                       first context reaches with a
+///                       `StepBasic_ConversionBasedUnitAndPlaneAngleUnit`
+///                       whose conversion factor points at the radian it
+///                       displaced: the spelling a real DEGREE or GRAD unit
+///                       takes, and the arm closest to the defect INV-AD-4
+///                       exists to prevent. Reported by V3 as a unit the guard
+///                       READ and rejected — not as UNVERIFIABLE.
 ///   - `"orphan_unrecognised"` — add a bare `StepBasic_PlaneAngleUnit` that no
 ///                       context references. The V4 twin of the above: same
 ///                       unverifiable unit, reached through the orphan arm,
