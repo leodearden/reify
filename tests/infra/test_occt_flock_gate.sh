@@ -625,10 +625,14 @@ assert "T10: merge outer wall (${_outer_budget}s) >= debug_inner + release_inner
 # that knob is consulted ONLY when DF_VERIFY_ROLE=merge (scripts/verify.sh, the
 # _RELEASE_DELTA_SKIP decision block), and when it is 1 on a delta-clean tree the release
 # nextest pass is replaced by the frozen `echo 'RELEASE-PASS: skipped (delta-clean)'` marker —
-# which would spuriously FAIL T12's "release nextest pass stays default 90m" assertion. It is
-# default-OFF today but is slated for activation in the orchestrator's verify_env by the
-# sibling sweep task (#5280), so pinning the plan shape here is a live concern, not a
-# hypothetical. T1/T2/T8/T9 need no such pin: they do not set the merge role.
+# which would spuriously FAIL T12's "release nextest pass stays default 90m" assertion. The
+# knob is ACTIVE today, not hypothetical: dark-factory-orchestrator.yaml's verify_env sets it
+# to "1" unconditionally (the sibling sweep task #5280 has landed), so pinning the plan shape
+# here is a live concern. THE RULE (#7580, replacing a now-stale enumeration that predated
+# T14-T17): every capture in this file that sets DF_VERIFY_ROLE=merge pins
+# REIFY_RELEASE_DELTA_SKIP — T11, T12, T13, T17 and T17-AMB today. Captures that set no role
+# (T1-T10) or role=offline (T14-T16) need no pin, because verify.sh:2237 consults the knob
+# only under role=merge.
 echo ""
 echo "--- Tests T11–T13 (task 5382): merge-path release pre-build cold-aware timeout ---"
 
