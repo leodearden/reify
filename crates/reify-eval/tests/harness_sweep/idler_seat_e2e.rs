@@ -100,9 +100,12 @@
 //! diagnostics came from, so neither hard-codes a byte offset and edits to this
 //! file's own `IdlerPulley` cannot shift them.
 
-use reify_core::{Diagnostic, DimensionVector, ModulePath, Severity, SourceSpan, ValueCellId};
-use reify_eval::CheckResult;
-use reify_ir::{Value, ValueMap};
+use reify_core::{
+    ConstraintNodeId, Diagnostic, DimensionVector, ModulePath, Severity, SourceSpan, ValueCellId,
+};
+use reify_eval::{CheckResult, ConstraintCheckEntry};
+use reify_ir::{Satisfaction, Value, ValueMap};
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -197,12 +200,11 @@ const PRINTER_ENUM_PATH_UNRESOLVED: &[&str] = &[
 /// panics the shared fixture first — in every test at once — under a message
 /// about evaluation that is false for that failure. The satisfaction gates own
 /// it and can say WHICH relation broke.
-fn load_checked(
+fn compile_design(
     path: &'static str,
     module: &'static str,
-    volume_unresolved: &'static [&'static str],
     enum_path_unresolved: &'static [&'static str],
-) -> CheckResult {
+) -> reify_compiler::CompiledModule {
     let source =
         std::fs::read_to_string(path).unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
 
@@ -220,26 +222,21 @@ fn load_checked(
 
     // WHICH cell a diagnostic is about, structurally. Nothing below reads a
     // message: the prose belongs to another crate, and a rewording of it must
-    // not move a diagnostic between these arms.
+    // not move a diagnostic between the arms here and in [`check_design`].
     //
-    // Two resolutions are needed because the two populations label differently.
-    // A cell's own span, for the `EvalUnresolved` arm, exactly as the capstan
-    // gate resolves it. And the smallest CONTAINING cell, for the compile-stage
-    // `UnresolvedName` arm, whose label sits on an expression inside a cell
-    // rather than on the cell itself. Both are computed against this same
-    // compilation, so neither hard-codes a byte offset and an edit to the
-    // file's own `IdlerPulley` cannot shift them.
+    // The two populations label differently, so each stage resolves the identity
+    // its own way. This one wants the smallest CONTAINING cell, because an
+    // `UnresolvedName` label sits on an expression INSIDE a cell rather than on
+    // the cell itself; [`check_design`] wants the cell's own span, exactly as the
+    // capstan gate resolves it. Both are computed against this same compilation,
+    // so neither hard-codes a byte offset and an edit to the file's own
+    // `IdlerPulley` cannot shift them.
     let spanned_cells: Vec<(SourceSpan, String)> = compiled
         .templates
         .iter()
         .flat_map(|t| t.value_cells.iter())
         .map(|c| (c.span, format!("{}.{}", c.id.entity, c.id.member)))
         .collect();
-    let exact: HashMap<SourceSpan, &String> =
-        spanned_cells.iter().map(|(sp, n)| (*sp, n)).collect();
-    let labelled_cell = |d: &Diagnostic| -> Option<String> {
-        exact.get(&d.labels.first()?.span).map(|n| (*n).clone())
-    };
     let containing_cell = |d: &Diagnostic| -> Option<String> {
         let sp = d.labels.first()?.span;
         spanned_cells
@@ -269,10 +266,40 @@ fn load_checked(
          real compile regression: {compile_unexpected:#?}"
     );
 
-    // ---- Check stage ----
+    compiled
+}
+
+/// Evaluate and constraint-check an already-compiled design with NO kernel,
+/// asserting the check stage raised no Error outside `volume_unresolved`.
+///
+/// Takes the compilation rather than making its own, so a gate that reads
+/// compiled constraint EXPRESSIONS and a gate that reads evaluated CELLS are
+/// looking at the same module — see [`printer_compiled`].
+///
+/// `DiagnosticCode::ConstraintViolated` is routed out for exactly the reason
+/// [`super::capstan_groove_e2e`]'s `Strictness` records: a violated constraint
+/// is a DESIGN failure, not an evaluation one, and left in this filter it panics
+/// the shared fixture first — in every test at once — under a message about
+/// evaluation that is false for that failure. The satisfaction gates own it and
+/// can say WHICH relation broke.
+fn check_design(
+    compiled: &reify_compiler::CompiledModule,
+    path: &'static str,
+    volume_unresolved: &'static [&'static str],
+) -> CheckResult {
+    let exact: HashMap<SourceSpan, String> = compiled
+        .templates
+        .iter()
+        .flat_map(|t| t.value_cells.iter())
+        .map(|c| (c.span, format!("{}.{}", c.id.entity, c.id.member)))
+        .collect();
+    let labelled_cell = |d: &Diagnostic| -> Option<String> {
+        exact.get(&d.labels.first()?.span).cloned()
+    };
+
     let mut engine =
         reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None);
-    let result = engine.check(&compiled);
+    let result = engine.check(compiled);
 
     let (volume_errors, rest): (Vec<_>, Vec<_>) = result
         .diagnostics
@@ -329,14 +356,19 @@ fn load_checked(
 /// parsed and stdlib-compiled once.
 fn printer_checked() -> &'static CheckResult {
     static M: OnceLock<CheckResult> = OnceLock::new();
-    M.get_or_init(|| {
-        load_checked(
-            PRINTER_RI,
-            "printer",
-            PRINTER_VOLUME_UNRESOLVED,
-            PRINTER_ENUM_PATH_UNRESOLVED,
-        )
-    })
+    M.get_or_init(|| check_design(printer_compiled(), PRINTER_RI, PRINTER_VOLUME_UNRESOLVED))
+}
+
+/// The shared COMPILATION of printer.ri — the surface a gate reads constraint
+/// expressions off, as distinct from the evaluated cells [`printer_checked`]
+/// carries.
+///
+/// One `OnceLock` so the constraint expressions a gate inspects and the cell
+/// values it compares them against come from the SAME module. Compiling twice
+/// would make them agree only by assuming the compiler is deterministic.
+fn printer_compiled() -> &'static reify_compiler::CompiledModule {
+    static M: OnceLock<reify_compiler::CompiledModule> = OnceLock::new();
+    M.get_or_init(|| compile_design(PRINTER_RI, "printer", PRINTER_ENUM_PATH_UNRESOLVED))
 }
 
 /// Read a `Value::Scalar` cell of `entity` out of a value map, asserting its
@@ -619,4 +651,300 @@ fn idler_seat_keeps_the_rope_on_the_pitch_circle() {
         (seat_bottom - want_bottom) * 1e3,
         idler_cell("brg_r", DimensionVector::LENGTH) * 1e3,
     );
+}
+
+/// Fractional clearance DIN 15061's ratio buys at THIS seat's rim opening,
+/// derived from the standard's ratio ALONE: `sqrt(4·ratio − 1) − 1` = 5.83 %.
+///
+/// Derived from the standard rather than from the file's own `groove_r` on
+/// purpose: a floor parametrized by the design moves with it and a slip-fit
+/// revert would take the floor down with the mouth, leaving the gate green.
+///
+/// NOT [`super::capstan_groove_e2e`]'s `MIN_MOUTH_CLEARANCE_FRAC`, which is
+/// `2·ratio − 1` = 6 %. That is the Capstan's land-at-arc-centre case, where the
+/// land is cut back ONTO the arc centre so the mouth is the section's full width
+/// `2·groove_r`. Here the rim is pinned at `sheave_r`, one `groove_r −
+/// tendon_dia/2` inboard of the arc centre, so the chord is taken off-centre and
+/// comes out slightly narrower. Reusing the Capstan's spelling would
+/// over-predict this mouth and red a correct design.
+///
+/// Not a `const` only because `f64::sqrt` is not const-evaluable.
+fn min_mouth_clearance_frac() -> f64 {
+    (4.0 * super::capstan_groove_e2e::DIN_15061_SEAT_RATIO - 1.0).sqrt() - 1.0
+}
+
+/// Assert an entity-scoped `constraint_results` set is non-empty and every entry
+/// is `Satisfied`; returns the entries examined.
+///
+/// The two-step shape is [`super::capstan_groove_e2e`]'s `assert_constraints_ok`,
+/// and the first step is the one that silently rots when copied: a satisfaction
+/// filter over an EMPTY set is vacuously green, and an empty
+/// `constraint_results` emits no diagnostic, so nothing else here could see it.
+/// Non-emptiness is therefore asserted BEFORE the filter, never alongside it.
+///
+/// Strict — `Indeterminate` fails too, not just `Violated`. That is decidable
+/// for this entity because every `IdlerPulley` constraint reads pure-scalar cells
+/// and none reaches a `volume()` consumer, so an `Indeterminate` here means an
+/// input cell stopped evaluating rather than that a kernel was needed. It is
+/// also the failure mode a `Violated`-only filter is blindest to: the constraint
+/// is still declared, still reported, and checking nothing — and it reaches the
+/// diagnostics only as a warning, so no Error filter in this module sees it
+/// either.
+///
+/// Deliberately scoped rather than file-wide: 38 of printer.ri's 406 constraints
+/// are not `Satisfied` today (measured, pre-existing — the `volume()` cells'
+/// constraints among them), so a strict file-wide claim would be red on arrival
+/// and is not this task's business.
+fn assert_idler_constraints_ok(entries: &[ConstraintCheckEntry]) -> Vec<&ConstraintCheckEntry> {
+    let scoped: Vec<&ConstraintCheckEntry> =
+        entries.iter().filter(|c| c.id.entity == IDLER_ENTITY).collect();
+    assert!(
+        !scoped.is_empty(),
+        "no `{IDLER_ENTITY}` constraint results at all on the kernel-free surface \
+         of {PRINTER_RI} — the structure declares five, so an empty set means the \
+         check never ran or stopped covering this scope, and the satisfaction \
+         filter below would then pass vacuously. Entities checked: {:?}",
+        entries.iter().map(|c| &c.id.entity).collect::<Vec<_>>()
+    );
+    let bad: Vec<_> = scoped
+        .iter()
+        .filter(|c| c.satisfaction != Satisfaction::Satisfied)
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "{PRINTER_RI} must satisfy every `{IDLER_ENTITY}` constraint at its \
+         defaults — {} of {} did not. `Violated` means the design broke the \
+         relation; `Indeterminate` means an input cell failed to EVALUATE, so the \
+         constraint is present but checking nothing. Results: {bad:#?}",
+        bad.len(),
+        scoped.len()
+    );
+    scoped
+}
+
+// ── The seat must clear the tendon, and the design must say so ───────────────
+
+/// The oversize arc must open a seat the rope actually clears, it must not eat
+/// the rim shoulders, and printer.ri must STATE both as its own constraints so
+/// `reify check` catches a divergence too.
+///
+/// **One chord, three readings.** Because the compensation puts the rope's
+/// centreline exactly ON the rim, the rope's widest section plane IS the rim
+/// plane — so the seat's opening at the rim and the gap beside the rope at its
+/// widest point are literally the same chord, measured once. That coincidence is
+/// a property of step 4's compensation, not of the arc, and it is a further
+/// reason that invariant is worth enforcing beyond the 31 call sites.
+///
+/// Five claims:
+///
+/// (a) **the design declares the opening**, and `mouth_w` equals the closed form
+///     `tendon_dia · sqrt(4·seat_arc_ratio − 1)`. Derivation: the chord of the
+///     seat circle (centre `seat_c`, radius `groove_r`) cut by the rim cylinder
+///     at `sheave_r` is `2·sqrt(groove_r² − (seat_c − sheave_r)²)`; step 4's
+///     `seat_c` makes the offset `seat_c − sheave_r = groove_r − tendon_dia/2`,
+///     and substituting collapses the whole thing to the one-term form above,
+///     whose `sqrt` argument is DIMENSIONLESS. This is the same algebra #5683's
+///     `constraint groove_r > rope_dia / 2` rests on. Both spellings were
+///     measured to agree at 6.349803 mm.
+///
+/// (b) **the opening strictly exceeds the rope**, 6.349803 against 6.000 mm. The
+///     floor comes from [`min_mouth_clearance_frac`] — the STANDARD's ratio
+///     alone — never from the file's own `groove_r`, so a slip-fit revert reds
+///     here. That revert is a live negative control at ZERO margin rather than a
+///     guessed threshold: at `seat_arc_ratio = 0.5` the closed form gives
+///     `tendon_dia · sqrt(1) = tendon_dia` exactly, so the mouth lands precisely
+///     on the rope and both halves of this claim fail at once.
+///
+/// (c) **the same chord read as anti-pinch clearance** — 0.174902 mm per side at
+///     the rope's widest section, which is DIN's mechanical reason for
+///     oversizing: a load-ovalised braid cannot wedge against the seat walls.
+///
+/// (d) **the rim shoulder survives the widened opening** — `sheave_w > mouth_w`,
+///     10.000 against 6.349803 mm, leaving 1.825099 mm per side against the
+///     nominal `flange_width` of 2 mm. The 0.174901 mm narrowing is ACCEPTED:
+///     `sheave_w` is deliberately NOT re-derived from the mouth, which would
+///     widen the part to 10.3498 mm across 31 hand-placed instances plus a
+///     hand-matched `ShuttlePlate` — an unreviewable ripple bought for 0.175 mm
+///     per side, and it would forfeit the change's defining virtue that nothing
+///     outside the seat moves.
+///
+/// (e) **printer.ri states (b) and (d) itself**, pinned by the CELLS each
+///     compiled constraint expression reads rather than by a constraint merely
+///     being present — otherwise swapping either for any other
+///     `IdlerPulley`-scoped constraint leaves this green while the message goes
+///     on describing the clearance rule. The two are PARTITIONED and observed
+///     separately: both read `mouth_w`, so the discriminator is the other datum
+///     (`tendon_dia` for the clearance, `sheave_w` for the shoulder). Note the
+///     capstan gate's `sub_cell_reads` `IndexAccess` technique does NOT apply
+///     here — these are intra-structure reads, which compile to plain
+///     `ValueRef`s that [`reify_ir::CompiledExpr::collect_value_refs`] reports
+///     directly.
+///
+/// Kernel-free throughout, so none of it skips where OCCT is absent.
+#[test]
+fn idler_seat_clears_the_tendon() {
+    let tendon_dia = idler_cell("tendon_dia", DimensionVector::LENGTH);
+    let seat_arc_ratio = idler_real("seat_arc_ratio");
+    let groove_r = idler_cell("groove_r", DimensionVector::LENGTH);
+    let seat_c = idler_cell("seat_c", DimensionVector::LENGTH);
+    let sheave_r = idler_cell("sheave_r", DimensionVector::LENGTH);
+    let sheave_w = idler_cell("sheave_w", DimensionVector::LENGTH);
+    let flange_width = idler_cell("flange_width", DimensionVector::LENGTH);
+    let mouth_w = idler_cell("mouth_w", DimensionVector::LENGTH);
+
+    // ---- (a) The declared opening IS the chord the arc opens at the rim ----
+    // Both spellings, so the collapsed form the design uses is checked against
+    // the general one it was derived from rather than against itself.
+    let offset = seat_c - sheave_r;
+    let chord = 2.0 * (groove_r * groove_r - offset * offset).max(0.0).sqrt();
+    let closed = tendon_dia * (4.0 * seat_arc_ratio - 1.0).sqrt();
+    let err_closed = rel_err(chord, closed);
+    assert!(
+        err_closed <= SCALAR_REL_TOL,
+        "the general chord form 2·sqrt(groove_r² − (seat_c − sheave_r)²) = {:.6} \
+         mm and the collapsed closed form tendon_dia · sqrt(4·seat_arc_ratio − 1) \
+         = {:.6} mm must agree (rel err {err_closed:.3e}) — they are the same \
+         expression once seat_c − sheave_r = groove_r − tendon_dia/2 is \
+         substituted. If they disagree, step 4's compensation is not what this \
+         gate assumes and (b)–(d) below are all measuring the wrong chord.",
+        chord * 1e3,
+        closed * 1e3,
+    );
+    let err_mouth = rel_err(mouth_w, closed);
+    assert!(
+        err_mouth <= SCALAR_REL_TOL,
+        "{IDLER_ENTITY}.mouth_w must be the seat's opening at the rim, \
+         tendon_dia · sqrt(4·seat_arc_ratio − 1) = {:.6} mm, but the design reads \
+         {:.6} mm (rel err {err_mouth:.3e}, tol {SCALAR_REL_TOL:.0e}).",
+        closed * 1e3,
+        mouth_w * 1e3,
+    );
+
+    // ---- (b) The opening strictly clears the rope, by the STANDARD's margin ----
+    let floor = tendon_dia * (1.0 + min_mouth_clearance_frac());
+    assert!(
+        mouth_w > tendon_dia,
+        "the seat's opening must STRICTLY exceed the rope it carries: mouth_w = \
+         {:.6} mm against tendon_dia = {:.6} mm. At or below it the rope cannot \
+         be laid in and a load-ovalised braid wedges — which is exactly what \
+         seat_arc_ratio = 0.5 produces, a mouth landing precisely ON the rope.",
+        mouth_w * 1e3,
+        tendon_dia * 1e3,
+    );
+    assert!(
+        mouth_w >= floor * (1.0 - SCALAR_REL_TOL),
+        "the seat's opening must clear the rope by DIN 15061's margin — at least \
+         tendon_dia · (1 + sqrt(4·{ratio} − 1) − 1) = {:.6} mm — but it is {:.6} \
+         mm, only {:.4} % clear against the required {:.4} %. This floor derives \
+         from the STANDARD's ratio alone, not from the file's groove_r, so a \
+         slip-fit revert cannot take the floor down with the mouth.",
+        floor * 1e3,
+        mouth_w * 1e3,
+        100.0 * (mouth_w - tendon_dia) / tendon_dia,
+        100.0 * min_mouth_clearance_frac(),
+        ratio = super::capstan_groove_e2e::DIN_15061_SEAT_RATIO,
+    );
+
+    // ---- (c) The same chord, read as anti-pinch clearance per side ----
+    let per_side = (mouth_w - tendon_dia) / 2.0;
+    assert!(
+        per_side > 0.0,
+        "the rope must have clearance on BOTH sides at its widest section: \
+         (mouth_w − tendon_dia)/2 = {:.6} mm. This is the SAME chord as (b), \
+         because step 4's compensation puts the rope's centreline on the rim and \
+         so makes the rope's widest section plane the rim plane — one measurement, \
+         two readings. It is DIN's mechanical reason for oversizing at all.",
+        per_side * 1e3,
+    );
+
+    // ---- (d) The oversize arc has not eaten the rim shoulders ----
+    assert!(
+        sheave_w > mouth_w,
+        "the widened opening must leave rim shoulder on both sides: sheave_w = \
+         {:.6} mm must exceed mouth_w = {:.6} mm. Shoulder per side is {:.6} mm \
+         against a nominal flange_width of {:.6} mm — the {:.6} mm narrowing is \
+         accepted, and sheave_w is deliberately NOT re-derived from the mouth \
+         (that would widen the part across 31 hand-placed instances for 0.175 mm \
+         per side). But at or below equality the shoulders are gone and the seat \
+         has broken out of the rim.",
+        sheave_w * 1e3,
+        mouth_w * 1e3,
+        (sheave_w - mouth_w) * 0.5e3,
+        flange_width * 1e3,
+        (flange_width - (sheave_w - mouth_w) / 2.0) * 1e3,
+    );
+
+    // ---- (e) The design states (b) and (d) as its own constraints ----
+    // Pinned by the cells each compiled expression READS. A constraint merely
+    // being present is not the claim: swapping either for any other
+    // `IdlerPulley`-scoped constraint would leave a presence check green.
+    let idler_template = printer_compiled()
+        .templates
+        .iter()
+        .find(|t| t.name == IDLER_ENTITY)
+        .unwrap_or_else(|| {
+            panic!(
+                "{PRINTER_RI} must declare the `{IDLER_ENTITY}` structure; \
+                 templates compiled: {:?}",
+                printer_compiled()
+                    .templates
+                    .iter()
+                    .map(|t| &t.name)
+                    .collect::<Vec<_>>()
+            )
+        });
+    let declared: Vec<(&ConstraintNodeId, BTreeSet<String>)> = idler_template
+        .constraints
+        .iter()
+        .map(|c| {
+            let reads = c
+                .expr
+                .collect_value_refs()
+                .into_iter()
+                .filter(|id| id.entity == IDLER_ENTITY)
+                .map(|id| id.member)
+                .collect();
+            (&c.id, reads)
+        })
+        .collect();
+
+    // Both read `mouth_w`, so the OTHER datum is what tells them apart — which is
+    // what makes each individually observable rather than the pair jointly.
+    let clearance: Vec<_> = declared
+        .iter()
+        .filter(|(_, r)| r.contains("mouth_w") && r.contains("tendon_dia"))
+        .collect();
+    let shoulder: Vec<_> = declared
+        .iter()
+        .filter(|(_, r)| r.contains("mouth_w") && r.contains("sheave_w"))
+        .collect();
+    assert_eq!(
+        clearance.len(),
+        1,
+        "{PRINTER_RI} must state the DIN clearance as its OWN constraint, reading \
+         `mouth_w` against `tendon_dia`, so `reify check` catches a divergence \
+         without this gate — found {} such. That inequality is algebraically \
+         exactly `groove_r > tendon_dia / 2`, so anti-pinch and mouth clearance \
+         are one statement. Every {IDLER_ENTITY} constraint and the cells it \
+         reads: {declared:#?}",
+        clearance.len(),
+    );
+    assert_eq!(
+        shoulder.len(),
+        1,
+        "{PRINTER_RI} must state the rim-shoulder survival as its OWN constraint, \
+         reading `sheave_w` against `mouth_w` — found {} such. Without it the \
+         shoulder is an unstated consequence, and a future `seat_arc_ratio` bump \
+         that really would eat the shoulders passes `reify check`. Every \
+         {IDLER_ENTITY} constraint and the cells it reads: {declared:#?}",
+        shoulder.len(),
+    );
+    assert_ne!(
+        clearance[0].0, shoulder[0].0,
+        "the clearance and shoulder constraints must be two DISTINCT constraints, \
+         not one expression matching both filters: {declared:#?}"
+    );
+
+    // …and all of them hold, strictly, on this surface.
+    assert_idler_constraints_ok(&printer_checked().constraint_results);
 }
