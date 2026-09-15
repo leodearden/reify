@@ -2396,19 +2396,24 @@ impl EngineSession {
     /// reach the frontend through the ONE shared choke-point
     /// (`post_engine_call_telemetry`), so no second emit path is added (PRD D7).
     fn discard_parameter_preview(&mut self) -> Result<GuiState, String> {
-        let (_, source) = self
+        // The path argument comes from `resolve_source`'s own map KEY — the
+        // `"{module}.ri"` form `module_key` produces — and NOT from
+        // `file_path`, because that is the one spelling correct for both
+        // session shapes. `update_source` derives `module_name` from
+        // `self.core.file_path()` whenever it is set and ignores this argument
+        // entirely, so for a `load_file` session the key is simply unused; it
+        // falls back to the argument only on the single-file `load_from_source`
+        // flow, which is exactly the shape that HAS no `file_path` to offer.
+        // Reading `file_path` instead would therefore fail on precisely the
+        // sessions where the argument matters — stranding the preview that a
+        // fileless commit just refused.
+        //
+        // Both are owned: they borrow `&self`, and the recompile needs
+        // `&mut self`.
+        let (path, source) = self
             .resolve_source()
             .ok_or_else(|| "no module loaded".to_string())?;
-        // Owned: `source` borrows `&self`, and the recompile needs `&mut self`.
-        let source = source.to_owned();
-
-        let path = self
-            .core
-            .file_path()
-            .ok_or_else(|| "session has no on-disk .ri file".to_string())?
-            .to_str()
-            .ok_or_else(|| "path is not valid UTF-8".to_string())?
-            .to_owned();
+        let (path, source) = (path.to_owned(), source.to_owned());
 
         self.update_source(&path, &source)
     }
