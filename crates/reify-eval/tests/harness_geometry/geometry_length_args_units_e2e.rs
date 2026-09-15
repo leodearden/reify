@@ -346,13 +346,21 @@ fn polygon_bare_vertex_drops_op_dimensioned_builds() {
 /// |                     | Translate dz (`height × -0.5`)| LENGTH-preserving  |
 /// | `rounded_box`       | Translate dx/dy/dz (binops)   | LENGTH-preserving  |
 /// | `rounded_rect`      | Translate dz                  | LENGTH `Scalar`    |
-/// | `revolve_full`      | Revolve angle (2π)            | ANGLE, ungated     |
+/// | `revolve_full`      | Revolve angle (2π)            | ANGLE, gated (γ)   |
 ///
 /// Task 5742 retyped the literal ones ahead of this gate; the binop ones rely
 /// on `Scalar{LENGTH} × Real` preserving LENGTH at eval (the documented
 /// INVARIANT at `reify-compiler/src/geometry.rs`, which is why the `-0.5`
 /// multiplier must stay a BARE dimensionless `Real` — retyping it would yield
 /// `Scalar{AREA}` and our gate would reject it).
+///
+/// The `revolve_full` row was "ANGLE, ungated" until PRD 3 leaf γ (task 6924)
+/// gated the revolve angle. Now that the synthesized 2π literal meets a gate,
+/// this test is the load-bearing cross-check for it: nothing else here compiles
+/// `revolve_full(...)` from SOURCE, so a retype of that literal in
+/// `reify-compiler/src/geometry.rs` to a bare `Real` would make every
+/// `revolve_full(...)` in the language self-reject, and THIS is the arm that
+/// reds.
 ///
 /// If this test fails, the residual is COMPILER-side and belongs to task 5742,
 /// not here.

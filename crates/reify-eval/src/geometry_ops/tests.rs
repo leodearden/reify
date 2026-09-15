@@ -1594,6 +1594,47 @@
         }
     }
 
+    /// γ GROUP (reviewer amendment) — `arc` is the ONE builtin with two angle
+    /// slots, and both bare must be reported in ONE pass.
+    ///
+    /// The table above exercises each arc angle bare with the OTHER dimensioned,
+    /// so it cannot see a short-circuit: `?`-chained per-slot reads pass it
+    /// while `arc(0mm, 0mm, 0mm, 10mm, 0, 90, 0, 0, 1)` — bare in both, which
+    /// is how an author who forgot the units actually writes it — reports only
+    /// `start_angle` and costs a second edit-build cycle to find `end_angle`.
+    /// This is the LENGTH guarantee `arc`'s own centre/radius group twelve
+    /// lines above already has, held to by [`required_angle_args`].
+    #[test]
+    fn compile_geometry_op_arc_reports_both_bare_angles_in_one_pass() {
+        let (result, diagnostics) =
+            run_compile(&arc_with_angles(literal_f64(0.0), literal_f64(90.0)));
+        assert!(result.is_err(), "both angles bare must drop the op");
+
+        let rejections = angle_rejections(&diagnostics);
+        assert_eq!(
+            rejections.len(),
+            2,
+            "arc must report BOTH bare angles in one pass, not short-circuit on \
+             start_angle; got: {diagnostics:?}"
+        );
+        for slot in ["start_angle", "end_angle"] {
+            let rej = rejections
+                .iter()
+                .find(|d| d.message.contains(&format!("{slot} argument expects Angle")))
+                .unwrap_or_else(|| panic!("no rejection named {slot}; got: {diagnostics:?}"));
+            assert_eq!(
+                rej.severity,
+                reify_core::Severity::Error,
+                "{slot}: C1 inv. 3 requires Error; got: {rej:?}"
+            );
+            assert_eq!(
+                rej.code,
+                Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                "{slot}: must carry the shared code; got: {rej:?}"
+            );
+        }
+    }
+
     /// γ CONTROL (C1 inv. 4) — a DIMENSIONED angle compiles clean at all five
     /// positions, with the bare dimensionless axis-direction components
     /// untouched beside it and the stored `angle_rad` unchanged.
@@ -1700,9 +1741,16 @@
     ///
     /// `reify-compiler`'s geometry lowering injects `Value::angle(TAU)` with
     /// `Type::angle()` for the full-revolution form, which the new gate
-    /// ACCEPTS. A LENGTH or dimensionless literal there would make every
-    /// `revolve_full(...)` in the language self-reject the instant γ lands, so
-    /// this asserts the shape that file produces rather than trusting it.
+    /// ACCEPTS. This asserts only that: the injected shape, hand-built HERE and
+    /// fed through the gate. It does NOT read the compiler, so it stays green
+    /// if that literal is ever retyped to a bare `Real` — which would make every
+    /// `revolve_full(...)` in the language self-reject.
+    ///
+    /// The guard against that retype is the e2e `desugared_builtins_build_clean`
+    /// (`crates/reify-eval/tests/harness_geometry/geometry_length_args_units_e2e.rs`),
+    /// which compiles `revolve_full(...)` from SOURCE and so does read the
+    /// lowering. This test is the cheap unit-level companion to it — do not
+    /// mistake it for the cross-layer one.
     #[test]
     fn compile_geometry_op_revolve_full_tau_angle_survives_the_gate() {
         let (result, diagnostics) = run_compile(&revolve_with_angle(

@@ -604,14 +604,21 @@ pub(crate) fn required_length_value(
 ///
 /// # Why `Result<f64, String>` and not an `AngleArg` three-state enum
 ///
-/// [`LengthArg`] exists to serve the VARIADIC route: a coordinate stream has to
-/// report EVERY failing member in one pass with `Unresolved`-beats-a-later-
-/// `Invalid` precedence, which needs the two failure states kept apart until
-/// the whole set has been classified. ANGLE has no variadic consumer — there is
-/// no angle stream and no angle grid, and every angle-bearing position in the
-/// language is a single named slot. A parallel `AngleArg` whose two failure
-/// states no caller ever inspects separately would be shape borrowed from a
-/// requirement that does not exist here. This is recorded so a later reader
+/// [`LengthArg`] exists to serve the VARIADIC route: a coordinate stream is
+/// classified BEFORE any member is known to be the first failure, so reporting
+/// every failing member with `Unresolved`-beats-a-later-`Invalid` precedence
+/// needs the two failure states kept apart until the whole set is in. ANGLE has
+/// no variadic consumer — there is no angle stream and no angle grid, so every
+/// angle-bearing position is reached by NAME.
+///
+/// A builtin with MORE THAN ONE named angle slot does exist — `arc` carries
+/// `start_angle` and `end_angle` — and is served by [`required_angle_args`],
+/// which gets the same every-member reporting and the same precedence out of
+/// first-error-wins over this `Result`, exactly as [`required_length_args`]
+/// does over [`required_length_arg`]. That is what makes the three-state enum
+/// unnecessary here rather than merely unused: a parallel `AngleArg` whose two
+/// failure states no caller ever inspects separately would be shape borrowed
+/// from a requirement that does not exist. This is recorded so a later reader
 /// does not "restore symmetry" and reintroduce it.
 fn accept_angle_value(
     name: impl std::fmt::Display + Copy,
@@ -624,6 +631,12 @@ fn accept_angle_value(
     match accept_arg(value, &angle_spec()) {
         Acceptance::Accepted(si) if si.is_finite() => Ok(si),
         Acceptance::Accepted(_) => {
+            // CODE-LESS BY CLASS, not by omission: the dimension was ACCEPTED
+            // here and only the numeric value is non-finite, so this is a
+            // VALUE-domain verdict and INV-SF-6 — "a `DiagnosticCode` on every
+            // `ArgSpec`-backed REJECTION" — does not reach it. Byte-identical
+            // to `accept_length_value`'s non-finite arm on purpose: if this
+            // class is ever given a code, both arms move together.
             diagnostics.push(Diagnostic::warning(format!(
                 "argument '{}' for {} evaluated to a non-finite Angle",
                 name, kind_label
@@ -662,6 +675,10 @@ fn accept_angle_value(
 /// The lookup goes through [`eval_named_arg`], so the missing-arg Warning and
 /// its anti-cascade contract are INHERITED rather than re-derived — a missing
 /// angle produces exactly one Warning and no dimension rejection stacked on it.
+///
+/// Reach for [`required_angle_args`] whenever a builtin has MORE THAN ONE gated
+/// angle slot: this singular form is `?`-chained at its call sites, so a
+/// per-slot read reports only the first bare angle.
 fn required_angle_arg(
     name: &str,
     kind_label: impl std::fmt::Display + Copy,
@@ -716,6 +733,60 @@ fn required_angle_value(
         diagnostics,
     )
     .map(reify_ir::Value::angle)
+}
+
+/// The GROUP form of [`required_angle_arg`]: read a whole set of named angle
+/// slots in one call, diagnosing EVERY failing member.
+///
+/// ALL FAILURES AT ONCE (reviewer amendment), for the reason
+/// [`required_length_args`] gives for coordinates and this function inherits:
+/// `arc(0mm, 0mm, 0mm, 10mm, 0, 90, 0, 0, 1)` is written as ONE gesture, so an
+/// author who forgot the units on `start_angle` forgot them on `end_angle` too.
+/// `?`-chaining two [`required_angle_arg`] calls would hand back one slot name
+/// per rebuild — two edit-build cycles for one mistake — and would be
+/// inconsistent with the LENGTH group `arc` already reads its centre and radius
+/// through, twelve lines above its angles.
+///
+/// The member reads are therefore deliberately NOT `?`-chained: each pushes its
+/// own diagnostic, and only then is the FIRST error returned — so the
+/// caller-facing `Err` wording, and the `Unresolved`-beats-a-later-`Invalid`
+/// precedence it encodes, are exactly what the per-slot read produced.
+fn required_angle_args<const N: usize>(
+    names: [&str; N],
+    kind_label: impl std::fmt::Display + Copy,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<[f64; N], String> {
+    let mut out = [0.0_f64; N];
+    let mut first_err: Option<String> = None;
+    for (slot, name) in out.iter_mut().zip(names) {
+        match required_angle_arg(
+            name,
+            kind_label,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        ) {
+            Ok(si) => *slot = si,
+            Err(e) => {
+                // FIRST error wins, as in [`required_length_args`]: it is the
+                // one the per-slot read order reported, and an `Unresolved`
+                // member must not be masked by a later `Invalid` one.
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
+        }
+    }
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(out),
+    }
 }
 
 /// The GROUP form of [`required_length_value`]: read a whole set of
@@ -4027,6 +4098,16 @@ fn pattern_circular(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
+    // The SURFACE name the author typed, bound ONCE (SPOT) and used at every
+    // site in this function that must not render `kind`. `PatternKind::Circular`
+    // Displays as "circular", so `kind` in these messages names a builtin that
+    // does not exist; `PatternKind::Linear` was already given its surface name
+    // (task 5755), and doing the same for Circular/Arbitrary is task #6874.
+    // That repair lives in reify-compiler and moves every OTHER diagnostic
+    // rendering this kind too — a migration of its own, not a clause of ε —
+    // which is why it is a follow-up and this is a local binding. When #6874
+    // lands, this binding and its uses collapse back to `kind`.
+    let surface_name = "circular_pattern";
     if args.iter().any(|(n, _)| n == "axis") {
         let axis_val = eval_named_arg(
             "axis",
@@ -4039,7 +4120,7 @@ fn pattern_circular(
         )
         .ok_or_else(|| format!("missing required argument 'axis' for {}", kind))?;
         let (axis_origin, axis_dir) = decode_axis(&axis_val, kind, diagnostics)
-            .map_err(|e| format!("circular_pattern: {}", e))?;
+            .map_err(|e| format!("{}: {}", surface_name, e))?;
         let count_raw = eval_named_arg_f64(
             "count",
             kind,
@@ -4068,24 +4149,23 @@ fn pattern_circular(
         // the contradiction go away; keeping degrees here could not.
         //
         // Do NOT re-derive #1763's argument from scratch and restore this. The
-        // deleted warning also carried NO DiagnosticCode (`Diagnostic::warning`
-        // sets `code: None`), an INV-SF-6 violation this removes rather than
-        // replicates.
-        // SURFACE NAME, not `kind`. `PatternKind::Circular` Displays as
-        // "circular", so passing `kind` would render "circular: angle argument
-        // expects Angle" at a call the author wrote as `circular_pattern(...)`.
-        // The retired warning hard-coded "circular_pattern", and the compile
-        // layer's slot renders the surface call name too, so `kind` here would
-        // regress the wording AND split it across the two layers.
+        // deleted warning was a DIMENSION verdict on a bare literal that
+        // carried NO DiagnosticCode (`Diagnostic::warning` sets `code: None`),
+        // which is exactly the class INV-SF-6 governs — "a `DiagnosticCode` on
+        // every `ArgSpec`-backed REJECTION" — so this removes a violation
+        // rather than replicating one. That reading is about dimension
+        // REJECTIONS only: `accept_angle_value`'s code-less non-finite Warning
+        // is a value-domain verdict on an ACCEPTED dimension, outside
+        // INV-SF-6's reach, as its `accept_length_value` twin already was.
         //
-        // `PatternKind::Linear` already Displays as "linear_pattern" (task
-        // 5755); Circular/Mirror/Arbitrary never got that treatment. Fixing the
-        // Display impl is the real repair and is filed as follow-up — it lives
-        // in reify-compiler and would move every other diagnostic that renders
-        // this kind, which is a migration of its own, not a clause of ε.
+        // `surface_name`, not `kind`: passing `kind` would render "circular:
+        // angle argument expects Angle" at a call the author wrote as
+        // `circular_pattern(...)`. The retired warning hard-coded that name and
+        // the compile layer's slot renders the surface call name too, so `kind`
+        // here would regress the wording AND split it across the two layers.
         let angle = required_angle_value(
             "angle",
-            "circular_pattern",
+            surface_name,
             args,
             values,
             functions,
@@ -4123,13 +4203,11 @@ fn pattern_circular(
         let count_raw = f64_arg("count")?;
         let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
         // The scalar-axis sibling of the value-axis form above: same gate,
-        // same task-#1763 reversal, whose rationale is recorded there in full
-        // rather than copied here.
-        // Surface name rather than `kind`, for the reason given at the
-        // value-axis form above.
+        // same task-#1763 reversal and same `surface_name`, whose rationale is
+        // recorded there in full rather than copied here.
         let angle = required_angle_value(
             "angle",
-            "circular_pattern",
+            surface_name,
             args,
             values,
             functions,
@@ -4913,19 +4991,14 @@ fn curve_arc(
     )?;
     let center = [cx, cy, cz];
     // Both ANGLES are gated (PRD 3 leaf γ) and read FIRST, which is also their
-    // existing source order — so the diagnostic order is unchanged. The axis
-    // DIRECTION stays bare (C1 inv. 4) behind a scoped closure.
-    let start_angle = required_angle_arg(
-        "start_angle",
-        kind,
-        args,
-        values,
-        functions,
-        meta_map,
-        diagnostics,
-    )?;
-    let end_angle = required_angle_arg(
-        "end_angle",
+    // existing source order — so the diagnostic order is unchanged. They go
+    // through the GROUP reader for the same reason the centre and radius above
+    // do: `arc` is the one builtin with two angle slots, they are written as
+    // one gesture, and a bare `start_angle` is almost always beside a bare
+    // `end_angle`. The axis DIRECTION stays bare (C1 inv. 4) behind a scoped
+    // closure.
+    let [start_angle, end_angle] = required_angle_args(
+        ["start_angle", "end_angle"],
         kind,
         args,
         values,
