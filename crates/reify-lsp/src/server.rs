@@ -169,6 +169,34 @@ impl ReifyLanguageServer {
         &self.state
     }
 
+    /// Lock `eval_state`, recovering from a poisoned mutex and reporting the
+    /// recovery to the client.
+    ///
+    /// A poisoned lock means a prior panic ran inside the evaluator. The
+    /// recovery itself (`e.into_inner()`) is unconditional — dropping every
+    /// subsequent keystroke on the floor would be a strictly worse outcome
+    /// than continuing with state a panic left behind — so the notice is the
+    /// only way a user learns it happened.
+    ///
+    /// `MessageType::ERROR`, not WARNING: this is a server fault, unlike
+    /// `did_change`'s unknown-URI notice, which reports a client protocol
+    /// violation. Pinned by
+    /// `eval_state_poison_recovery_is_reported_on_the_log_channel`.
+    ///
+    /// Shared by `did_open` and `did_change` so the recovery semantics, the
+    /// wording and the severity have exactly one spelling. Both callers
+    /// invoke it outside every [`ServerState`] write-lock scope — see
+    /// [`NotificationSink::log_message`]'s contract.
+    fn lock_eval_state(&self) -> std::sync::MutexGuard<'_, EvalState> {
+        self.eval_state.lock().unwrap_or_else(|e| {
+            self.sink.log_message(LogLine {
+                typ: MessageType::ERROR,
+                message: "eval_state lock poisoned, recovering".to_string(),
+            });
+            e.into_inner()
+        })
+    }
+
     /// Access eval_state (for testing, e.g. poison recovery tests).
     #[cfg(test)]
     pub(crate) fn eval_state(&self) -> &Arc<Mutex<EvalState>> {
@@ -306,13 +334,10 @@ impl LanguageServer for ReifyLanguageServer {
             state.documents.open(uri.clone(), text.clone(), version);
         }
 
-        // Eval runs outside the RwLock, using only the eval_state Mutex.
-        // Recovers from poisoned lock (e.g., prior panic during eval).
+        // Eval runs outside the RwLock, using only the eval_state Mutex
+        // (`lock_eval_state` also reports poisoned-lock recovery).
         let diagnostics = {
-            let mut eval_state = self.eval_state.lock().unwrap_or_else(|e| {
-                eprintln!("eval_state lock poisoned, recovering");
-                e.into_inner()
-            });
+            let mut eval_state = self.lock_eval_state();
             let result =
                 crate::diagnostics::compute_diagnostics_with_state(&mut eval_state, &text, &uri);
             result.diagnostics
@@ -392,13 +417,10 @@ impl LanguageServer for ReifyLanguageServer {
             });
         }
 
-        // Eval runs outside the RwLock, using only the eval_state Mutex.
-        // Recovers from poisoned lock (e.g., prior panic during eval).
+        // Eval runs outside the RwLock, using only the eval_state Mutex
+        // (`lock_eval_state` also reports poisoned-lock recovery).
         let diagnostics = {
-            let mut eval_state = self.eval_state.lock().unwrap_or_else(|e| {
-                eprintln!("eval_state lock poisoned, recovering");
-                e.into_inner()
-            });
+            let mut eval_state = self.lock_eval_state();
             let result =
                 crate::diagnostics::compute_diagnostics_with_state(&mut eval_state, &text, &uri);
             result.diagnostics
