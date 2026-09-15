@@ -294,6 +294,82 @@ is the manifest working as designed in the quiet direction: it holds names
 
 ---
 
+## Residual gap — a precondition on #5997
+
+The warning has three outcomes at the fallback, not two, and the third is
+SILENCE: a callee the enclosing module declares but that this body cannot yet
+resolve. Reported and measured 2026-09-15 on `task/5371`.
+
+Why the third state exists: `compile_builder/functions_phase.rs` compiles each
+`fn` body against the user-only function table it is still GROWING in source
+order, and only merges `ctx.resolution_functions` afterwards. An ENTITY body
+gets the merged table and never sees this; a FN body does. `is_known_builtin`
+answers "is this a builtin?" correctly in both cases — a user `fn` is not one —
+so reading its `false` as "exists nowhere" was only ever sound for the entity
+case. The fallback therefore asks a second, separate question ("does this module
+declare this name?") via `CompilationScope::declared_callable_names`.
+
+Three routes measured emitting a FALSE `unresolved function` before the fix, all
+three silent after it, none of them changing any type:
+
+| route | before | cause |
+|---|---|---|
+| fn body → later-declared sibling `fn` | `unresolved function: b` | source-order table growth |
+| mutually-referential `fn` pair | `unresolved function: odd` | same, and UNFIXABLE by reordering |
+| structure constructor in a TRAIT STATIC fn body | `unresolved function: Widget` | `traits_phase` passes `None` for the template registry |
+| `fn` param default calling a later sibling | `unresolved function: later` | same table, `compile_function`'s neutral scope |
+
+Five controls bound the fix and were measured green throughout; two of them are
+routes a reading of the code suggests are broken and which measurement shows are
+NOT, recorded so a later reader does not "fix" them:
+
+* reversing the first route's declaration order compiles clean — the trigger is
+  source order, so the fix must not require reordering;
+* a genuinely-undeclared callee in a `fn` body **still warns** — the tripwire
+  against a blanket in-fn-body disable;
+* a constructor call from a REGULAR fn body is clean in BOTH declaration orders
+  and still raises `E_CTOR_UNKNOWN_FIELD` for a bad field name, which is what
+  proves it is RESOLVED rather than merely silenced;
+* **a trait static fn calling a forward-declared top-level `fn` is already
+  clean** — `traits_phase` runs after `functions_phase`, so `ctx.functions` is
+  complete by then;
+* a builtin called from a `fn` body is clean.
+
+### What #5997 must handle before flipping this Warning to an Error
+
+**One diagnostic that existed on the warn-mode branch is now gone, and it is not
+replaced.** A call to a declared sibling with the WRONG ARITY inside a `fn` body
+is now COMPLETELY silent:
+
+```
+pub fn a(x: Real) -> Real { later(x, x) }
+pub fn later(x: Real) -> Real { x }
+```
+
+measured `UF=[] ERR=[]`. The same mistake in an ENTITY body is a hard error —
+`no matching overload for later(Real, Real), candidates: later(Real) -> Real` —
+because the entity body resolves against the merged table and so reaches real
+overload resolution instead of the fallback. The asymmetry is pre-existing (this
+was equally silent before #5371) and is `functions_phase`'s forward-reference
+contract, not a defect this warn-only task introduced; but #5997 should not read
+the silence as "nothing is wrong here". Closing it means giving fn bodies a
+complete table, which is #6014 (registry ω) territory.
+
+**The trait-static constructor route is silenced, not fixed.** `Widget(w: 2mm)`
+inside a trait static fn body still does not lower to a `StructureInstanceCtor`,
+because `traits_phase` still passes `None` for `prelude_template_registry`
+("v1"). Passing `Some(&merged_registry)` there would change how those bodies
+TYPE constructor calls, which is outside a warn-only task's remit and was
+deliberately not done. So a bad field name in that position is still not caught,
+where the same call in a regular fn body is.
+
+**What is NOT a gap.** Imported user modules arrive as the `prelude` slice
+(`module_dag.rs` collects each import's `CompiledModule` and hands it to
+`compile_with_prelude_refs`), so their `fn`s are in `declared_fn_names` and are
+covered by the same gate as local ones.
+
+---
+
 ## What did NOT change
 
 Typing. Every call above still infers exactly the type it inferred before
@@ -307,3 +383,12 @@ without changing WHAT they are (its PRD §7.3(6): zero corrections), and #5371
 adds no typing of its own on top — `is_known_builtin` is consulted only to
 decide whether to emit a warning. So the baseline #5997 flips against is still
 type-identical to the pre-task one at every call site.
+
+The claim survives the false-positive repair above for the same reason, and it
+was ASSERTED rather than assumed: that work only ever WITHHOLDS a diagnostic, and
+`forward_reference_typing_is_byte_identical` pins both halves of the fallback's
+answer at a withheld site against sources built so the two candidate answers
+differ — a one-arg call to a `-> Real` sibling is still `Scalar<LENGTH>` (from
+arg0, not from the declared return type), and a zero-arg call to a `-> Length`
+sibling still defaults to `Real`. Forward references remain unresolved; the
+repair removed a diagnostic, not a lookup.

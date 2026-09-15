@@ -3902,13 +3902,27 @@ fn compile_expr_guarded_with_expected_inner(
                         // Task #5371 closes the WORLD here without touching the
                         // TYPING: `is_known_builtin` is the closed-world union
                         // of every classification family plus the two manifests
-                        // in `unresolved_function`, so a name it rejects exists
-                        // nowhere at all — no family, no eval dispatch arm, no
-                        // user/stdlib `fn` (those resolve long before this arm).
+                        // in `unresolved_function`, so a name it rejects is not
+                        // a BUILTIN — no family, no eval dispatch arm.
+                        //
+                        // That is NOT the same as "exists nowhere", and the
+                        // difference is why the push below asks a second
+                        // question. User and stdlib `fn`s do resolve before this
+                        // arm from an ENTITY body, which compiles against the
+                        // merged `ctx.resolution_functions`; a FN body does not,
+                        // because `compile_builder/functions_phase.rs` compiles
+                        // it against the user-only table it is still growing in
+                        // source order. So a call to a later-declared sibling —
+                        // or either half of a mutually-referential pair, which
+                        // no reordering can fix — reaches this arm with a name
+                        // the module plainly declares. `scope`'s declared-
+                        // callable set is how the fallback tells the two apart.
                         // Such a call used to compile with zero diagnostics and
-                        // silently adopt arg0's type; now it warns and STILL
-                        // adopts arg0's type. Warn-mode-first is deliberate: no
-                        // corpus can break on a diagnostic alone.
+                        // silently adopt arg0's type; now an unknown name warns
+                        // and STILL adopts arg0's type, and a declared-but-
+                        // unresolvable one stays silent and unchanged.
+                        // Warn-mode-first is deliberate: no corpus can break on
+                        // a diagnostic alone.
                         //
                         // Durable track: docs/prds/v0_6/builtin-signature-registry.md.
                         // #5997 flips this Warning to Error behind a break-glass

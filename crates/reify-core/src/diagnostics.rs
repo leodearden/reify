@@ -1754,14 +1754,28 @@ pub enum DiagnosticCode {
     /// Origin: `crates/reify-compiler/src/expr.rs` — the **terminal first-arg
     /// fallback** of the `NoUserFunctions` arm of the `FunctionCall` ladder.
     ///
-    /// Emitted as `Severity::Warning` when a call's CALLEE matches nothing the
-    /// compiler knows: no user or stdlib `fn`, and no builtin name in the
-    /// closed-world union computed by `reify_compiler::is_known_builtin`
-    /// (every classification family, plus the `FIRST_ARG_TYPED_NAMES`
-    /// allowlist and the `EVAL_DEFERRED_BUILTIN_NAMES` manifest). Before task
-    /// #5371 such a call compiled with ZERO diagnostics and silently adopted
-    /// its first argument's type — `line(point3(1mm,2mm,3mm), …)` type-checked
-    /// clean as `Scalar<LENGTH>`.
+    /// Emitted as `Severity::Warning` when a call's CALLEE is neither
+    ///
+    /// 1. a builtin name in the closed-world union computed by
+    ///    `reify_compiler::is_known_builtin` (every classification family, plus
+    ///    the `FIRST_ARG_TYPED_NAMES` allowlist and the
+    ///    `EVAL_DEFERRED_BUILTIN_NAMES` manifest), NOR
+    /// 2. a name the enclosing module DECLARES — its `fn`s (local + prelude)
+    ///    and its structures, whose constructors share call syntax.
+    ///
+    /// The second condition is not redundant, and reading it as such was the
+    /// original defect. A user `fn` resolves long before this arm **from an
+    /// entity body**, which compiles against the merged
+    /// `ctx.resolution_functions`; a **fn body** does not, because
+    /// `compile_builder/functions_phase.rs` compiles it against the user-only
+    /// table it is still growing in source order. So a call to a later-declared
+    /// sibling arrives here with a perfectly real name, and reporting it would
+    /// tell the user a function they can see two lines below does not exist —
+    /// unfixable by reordering when the pair is mutually referential.
+    ///
+    /// Before task #5371 such a call compiled with ZERO diagnostics and
+    /// silently adopted its first argument's type — `line(point3(1mm,2mm,3mm),
+    /// …)` type-checked clean as `Scalar<LENGTH>`.
     ///
     /// Canonical message form:
     /// `"unresolved function: <name>"`
@@ -1775,7 +1789,7 @@ pub enum DiagnosticCode {
     /// |---|---|---|
     /// | mnemonic | `E_UNRESOLVED_NAME` | `W_UNRESOLVED_FUNCTION` |
     /// | severity | Error | Warning |
-    /// | what is unresolved | an unbound IDENTIFIER in expression context | the CALLEE of a `FunctionCall` |
+    /// | what is unresolved | an unbound IDENTIFIER in expression context | the CALLEE of a `FunctionCall`, declared nowhere in the module |
     /// | origin | `expr.rs:670-681`, `annotations.rs:321` | the terminal fallback in `expr.rs` |
     ///
     /// It is also distinct from [`DiagnosticCode::FnTypeArgUnresolved`], which
@@ -1825,6 +1839,16 @@ pub enum DiagnosticCode {
     /// closed world, so a call carrying this code is by construction not
     /// unresolved. It also suppresses the legacy bare zero-arg warning, on the
     /// same one-defect-one-line reasoning.
+    ///
+    /// The fallback has THREE outcomes, not two, and the third is silence: a
+    /// callee the enclosing module declares but that this body cannot yet
+    /// resolve (a forward-referenced sibling `fn`, or a constructor inside a
+    /// trait static fn body) emits neither this code nor `UnresolvedFunction`
+    /// nor the legacy zero-arg warning, and is still typed from arg0. That
+    /// silence is narrower than the pre-#5371 open-world silence: it is granted
+    /// only to names the module demonstrably declares. Pinned by
+    /// `forward_referenced_sibling_emits_neither_warning` and
+    /// `forward_reference_typing_is_byte_identical`.
     ///
     /// # Interim, and deliberately non-poisoning
     ///
