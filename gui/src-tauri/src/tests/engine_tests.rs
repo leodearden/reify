@@ -21862,6 +21862,62 @@ fn preview_parameter_leaves_the_ri_file_untouched() {
     );
 }
 
+#[test]
+fn commit_parameter_discards_a_live_preview_when_the_write_back_is_refused() {
+    // The refusal path is where INV-GUI-3 is easiest to break. γ's ledger
+    // guarantees a refused write-back moves NONE of its four surfaces — but the
+    // preview was a separate, earlier call whose override lives in `last_check`,
+    // which γ never sees. Returning the refusal without discarding it would
+    // strand exactly the ephemeral-second-source divergence the invariant
+    // forbids, and leave a later `export` building from a value nothing on disk
+    // carries: esc-7281-4 merely relocated to the error path.
+    let (_dir, path, mut session) = writeback_session();
+
+    let previewed = session
+        .preview_parameter("Part.width", "120mm")
+        .expect("preview_parameter should succeed");
+    let width = previewed
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Part.width")
+        .expect("Part.width should be present in the preview GuiState");
+    assert_eq!(
+        (width.value.as_str(), width.unit.as_str()),
+        ("120", "mm"),
+        "the preview must have taken, or this test is not exercising a discard"
+    );
+
+    // Provoke γ's disk-divergence refusal: another writer lands between the
+    // preview and the commit.
+    let external_text = format!("{}\n// an external editor was here\n", writeback_source());
+    std::fs::write(&path, &external_text).expect("external write should succeed");
+
+    let err = session
+        .commit_parameter("Part.width", "150mm")
+        .expect_err("a diverged file must be REFUSED rather than clobbered");
+    assert!(
+        err.contains("no longer matches the source this session compiled"),
+        "the refusal must stay readable through the discard, got: {err}"
+    );
+
+    // The preview is gone: the engine reports the value its OWN compiled source
+    // carries, not the stranded 120mm.
+    assert_eq!(
+        gui_value_of(&mut session, "Part.width"),
+        ("80".to_string(), "mm".to_string()),
+        "a refused commit must discard a live preview — the engine may not be \
+         left holding a value no source carries"
+    );
+
+    // The discard rolled back the ENGINE and did not touch disk: the other
+    // writer's text survives, which is the whole point of refusing.
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("disk file should be readable"),
+        external_text,
+        "the discard must not clobber the writer the refusal exists to protect"
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // task 5097 δ — EngineSession::holds_rejected_source (the write-back interlock)
 // ─────────────────────────────────────────────────────────────────────────────
