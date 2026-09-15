@@ -156,11 +156,13 @@ pub structure CarriageBlock {
 /// composing site stands it on the axis it should turn about. Axle bolt + bearing
 /// shields are not modelled.
 ///
-/// GROOVE SHAPE: a SEMICIRCULAR seat matching the round tendon profile — a
-/// `torus` (tube radius = groove_width/2 = the tendon radius) subtracted from
-/// the solid rim at the mid-plane, its tube CENTRE on the rim surface, so the
-/// seat is exactly the half-round channel the rope beds into: seat bottom at
-/// sheave_r − groove_width/2, rope centre (pitch circle) at sheave_r ==
+/// GROOVE SHAPE: an OVERSIZE seat arc, per DIN 15061 rope-sheave practice — a
+/// `torus` of tube radius groove_r = 0.53·tendon_dia subtracted from the solid
+/// rim at the mid-plane, its tube CENTRE on the rim surface. The arc is
+/// deliberately WIDER than the rope's own radius (3.180 against 3.000 mm), so
+/// the rope has real clearance at the seat mouth and a load-ovalised braid
+/// cannot wedge against the seat walls — the zero-clearance slip fit #5683
+/// removed from the Capstan. Rope centre (pitch circle) at sheave_r ==
 /// sheave_od/2 == the r_pitch every composing site uses. (Was a rectangular
 /// flat-bottomed groove while `torus` was missing — that gap landed as #4157.)
 ///
@@ -174,14 +176,20 @@ pub structure IdlerPulley {
     param brg_width : Length = 7mm
     // Sheave (grooved wheel pressed on the bearing OD).
     param sheave_od    : Length = 36mm   // rim (outer) diameter == rope pitch circle
-    param groove_width : Length = 6mm    // == tendon diameter (seat width; depth = half)
+    param tendon_dia   : Length = 6mm    // the rope the seat is cut FOR — NOT the seat's width
     param flange_width : Length = 2mm    // rim shoulder either side of the seat
+    /// Seat arc radius as a fraction of tendon diameter. DIN 15061 rope-sheave
+    /// practice is r = 0.53·d: an OVERSIZE seat, so the rope has genuine
+    /// clearance at the mouth and a load-ovalised braid cannot pinch against the
+    /// seat walls. 0.5 would be a zero-clearance slip fit. Same standard and the
+    /// same number as the Capstan's rope seat (#5683).
+    param seat_arc_ratio : Real = 0.53
 
     let brg_r       = brg_od / 2
     let sheave_r    = sheave_od / 2
-    let groove_half = groove_width / 2
-    let sheave_w    = groove_width + flange_width * 2   // full rim width
-    let bore_len    = groove_width + flange_width * 3   // through-bore length (> sheave width)
+    let groove_r    = tendon_dia * seat_arc_ratio       // seat arc radius (the torus tube)
+    let sheave_w    = tendon_dia + flange_width * 2     // full rim width
+    let bore_len    = tendon_dia + flange_width * 3     // through-bore length (> sheave width)
 
     let body = union(
         // 608ZZ bearing — annular sleeve along local +Z, centred.
@@ -189,20 +197,20 @@ pub structure IdlerPulley {
             translate(cylinder(brg_r, brg_width), 0mm, 0mm, 0mm - brg_width / 2),
             translate(cylinder(brg_bore / 2, brg_width * 1.2), 0mm, 0mm, 0mm - brg_width * 0.6)
         ),
-        // Sheave: solid rim with the semicircular seat cut at the mid-plane
+        // Sheave: solid rim with the oversize seat arc cut at the mid-plane
         // (torus tube centred ON the rim surface), bored to the bearing OD
         // (press fit).
         difference(
             difference(
                 translate(cylinder(sheave_r, sheave_w), 0mm, 0mm, 0mm - sheave_w / 2),
-                torus(sheave_r, groove_half)
+                torus(sheave_r, groove_r)
             ),
             translate(cylinder(brg_r, bore_len), 0mm, 0mm, 0mm - bore_len / 2)
         )
     )
 
     constraint sheave_od > brg_od
-    constraint sheave_r - groove_half > brg_r
+    constraint sheave_r - groove_r > brg_r
     constraint brg_od > brg_bore
 }
 
