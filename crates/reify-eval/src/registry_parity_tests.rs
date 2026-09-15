@@ -866,8 +866,28 @@ struct RowObservation {
     verdict: ParityVerdict,
 }
 
-/// Render one [`Failure`] as a reader-facing line, joining it back to the
-/// observation that produced it and to the ledger entry it concerns.
+/// The stated reason of the ledger entry a [`Failure`] concerns.
+///
+/// [`Failure::Stale`] and [`Failure::VerdictChanged`] are constructed by
+/// [`adjudicate`] only on the `Some(entry)` branches, so the lookup cannot
+/// fail. The `expect` states that invariant rather than inventing a placeholder
+/// string for a branch no test could ever reach.
+fn ledgered_why(id: EvalBuiltinId, ledger: &[ExemptionEntry]) -> &'static str {
+    ledger
+        .iter()
+        .find(|entry| entry.id == id)
+        .map(|entry| entry.why)
+        .expect("Stale / VerdictChanged are adjudicated only from a row that carries an entry")
+}
+
+/// Render one [`Failure`] as a reader-facing line, against the observation that
+/// produced it and the ledger entry it concerns.
+///
+/// Takes THE observation rather than the whole list: every `Failure` is
+/// adjudicated from an entry of that list, so a per-call search would be a
+/// lookup that cannot miss, and its miss branch would be unreachable control
+/// flow no test could exercise. The sweep resolves the join once and hands the
+/// result in.
 ///
 /// The observed value is printed in full rather than through a local
 /// variant-name table: the leading token of a Rust enum's `Debug` output IS its
@@ -877,42 +897,31 @@ struct RowObservation {
 /// exactly what the reader needs.
 fn describe_failure(
     failure: &Failure,
-    observations: &[RowObservation],
+    observation: &RowObservation,
     ledger: &[ExemptionEntry],
 ) -> String {
     let id = failure.id();
-    let observation = observations.iter().find(|obs| obs.id == id);
-    let name = observation
-        .map(|obs| obs.name)
-        .unwrap_or("<no observation for this row>");
-    let why = ledger
-        .iter()
-        .find(|entry| entry.id == id)
-        .map(|entry| entry.why)
-        .unwrap_or("<no ledger entry>");
+    let name = observation.name;
 
     match failure {
-        Failure::Unledgered { observed, .. } => {
-            // Rendered as one clause so the reader never sees the lookup's own
-            // `Option` wrapped around the row's value — `Value::Option` is
-            // itself a variant here, and `Some(Option(Some(..)))` reads as a
-            // defect in the row rather than as evidence about it.
-            let evidence = observation
-                .map(|obs| format!("observed {:?}, declared {:?}", obs.observed, obs.declared))
-                .unwrap_or_else(|| "no observation was recorded for it".to_string());
-            format!("  UNLEDGERED {id:?} ({name:?}) — verdict {observed:?}; {evidence}")
-        }
+        Failure::Unledgered { observed, .. } => format!(
+            "  UNLEDGERED {id:?} ({name:?}) — verdict {observed:?}; observed \
+             {:?}, declared {:?}",
+            observation.observed, observation.declared
+        ),
         Failure::Stale { ledgered, .. } => format!(
             "  STALE LEDGER ENTRY {id:?} ({name:?}) — the row now \
              classifies Matches but is still exempted at {ledgered:?}. \
-             Delete the entry; its stated reason was: {why}"
+             Delete the entry; its stated reason was: {}",
+            ledgered_why(id, ledger)
         ),
         Failure::VerdictChanged {
             observed, ledgered, ..
         } => format!(
             "  VERDICT CHANGED {id:?} ({name:?}) — exempted at {ledgered:?} \
              but now {observed:?}. Right row, wrong disposition: fix the \
-             divergence or update the entry, whose stated reason was: {why}"
+             divergence or update the entry, whose stated reason was: {}",
+            ledgered_why(id, ledger)
         ),
     }
 }
@@ -986,7 +995,13 @@ fn every_eval_builtin_row_agrees_with_its_executed_kind() {
 
     let report: Vec<String> = failures
         .iter()
-        .map(|failure| describe_failure(failure, &observations, PARITY_EXEMPTION_LEDGER))
+        .map(|failure| {
+            let observation = observations
+                .iter()
+                .find(|obs| obs.id == failure.id())
+                .expect("every Failure is adjudicated from an observation in this same list");
+            describe_failure(failure, observation, PARITY_EXEMPTION_LEDGER)
+        })
         .collect();
 
     assert!(
