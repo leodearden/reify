@@ -153,9 +153,20 @@ const DESTINATION_TOPIC: &str = "geometry";
 /// not become a copy, and NEVER to go green. Going RED here means an editor
 /// started answering the question in the referring chunk instead of routing to
 /// where it is already answered — the fix is almost always to cut, not to raise.
-/// Set against the live pointers, with room for one clarifying sentence each and
-/// no more: the two regions measure 10 (constraints.md) and 9 (stdlib.md)
-/// content lines.
+///
+/// MEASURED 2026-09-15: constraints.md's region is 10 content lines and
+/// stdlib.md's is 8. The ceiling is set against the LARGER of the two, leaving
+/// it two lines — about one clarifying sentence — and no more.
+///
+/// HOW TO RE-MEASURE, so the next maintainer reads a number rather than
+/// predicting one. Temporarily set this const to 1, run
+/// `env cargo test -p reify-compiler --test harness_doc_chunks points_at_the_oracle`,
+/// and read both sizes straight out of the two panics — each violation states
+/// its own region's measured size. Restore the const and confirm `git diff` on
+/// it is empty. Predicting instead of measuring is what put a stale `9` here
+/// for stdlib.md: it was never true of the shipped tree, which measured 10
+/// until the comment-debris class found the two leaked note lines it was
+/// charging to the pointer.
 const MAXIMUM_XREF_CONTENT_LINES: usize = 12;
 
 /// Everything wrong with a cross-reference region, as human-actionable
