@@ -375,49 +375,60 @@ impl LanguageServer for ReifyLanguageServer {
             None => return,
         };
 
-        // Brief write lock: update the document. The lock guards ONLY the store
-        // mutation — the unknown-URI log below is emitted AFTER the guard drops,
-        // so a blocking stderr write can never be performed while every other
-        // did_open/did_change/did_close is queued behind this lock (task #6162).
+        // Brief write lock: update the document. The lock guards ONLY the
+        // store mutation — every log call below runs AFTER this guard drops
+        // (task #6162), enforced by
+        // `log_message_is_never_called_while_the_state_write_lock_is_held`
+        // in crates/reify-lsp/tests/in_process_bridge.rs.
         //
-        // This lock-scope narrowing has no dedicated regression test: the two
-        // e2e guards in cli_lsp_protocol.rs
-        // (`lsp_full_interactive_loop_through_binary` phase 4b and
-        // `lsp_survives_huge_unknown_uri_didchange_with_undrained_stderr`)
-        // would still pass unchanged if a future refactor moved the eprintln!
-        // below back inside this lock, since the now-truncated line is too
-        // short to ever block in either scenario. A concurrent in-process
-        // test was considered and rejected (task #6162's design decisions):
-        // it would need to redirect the process-wide stderr fd onto a
-        // deliberately-full pipe, risking a hung test binary under a shared
-        // parallel test run.
+        // The hazard is now WORSE than when #6162 narrowed this scope: the
+        // call below is no longer a known-cheap `eprintln!` but a virtual
+        // dispatch into an arbitrary `NotificationSink` implementation —
+        // today `TauriNotificationSink`, which re-enters the GUI event bus.
+        // Holding this lock across it would queue every other
+        // did_open/did_change/did_close behind third-party code.
         let known = {
             let mut state = self.state.write().await;
             state.documents.update(&uri, text.clone(), version)
         };
         if !known {
-            // The URI is client-controlled and unbounded; bound it so one
-            // notification cannot emit a 160 KiB line into a pipe the client
-            // may not be draining (task #6162). This bounds a SINGLE log
-            // line, not the whole class: `eprintln!` is still a synchronous
-            // blocking write on this async fn's task, so a client that sends
-            // many unknown-URI didChanges while never draining stderr can
-            // still eventually fill the pipe and park a tokio worker in
-            // `pipe_write` — degrading the runtime rather than deadlocking
-            // it (the `state` lock is no longer held across the write, so
-            // every other did_open/did_change/did_close stays unblocked).
-            // That containment is itself partial: `eprintln!` also acquires
-            // the process-global `io::Stderr` lock for the duration of the
-            // write, so a worker parked in `pipe_write` holds that lock too
-            // and blocks every OTHER `eprintln!` call site in the process
-            // with it — e.g. diagnostics.rs's `check_snapshot returned None`
-            // and engine-init warnings — for as long as the client leaves
-            // the pipe full, not just this handler's own log line.
-            // Routing this through `window/logMessage`, or rate-limiting
-            // per URI, would close that residual; it is deliberately
-            // deferred as separate follow-up work rather than folded into
-            // this fix and tracked by task #6329 (filed from this task's
-            // amendment review), not by this (closed) task's own id.
+            // The channel is a `window/logMessage` notification on the same
+            // stdout JSON-RPC stream the client must already drain to receive
+            // responses (task #6329). `ClientSink` hands it to a spawned
+            // task, so this call neither blocks this handler nor takes any
+            // process-global lock — the `eprintln!`/`pipe_write`/`io::Stderr`
+            // hazards #6162 contained are gone rather than merely bounded.
+            //
+            // Truncation is RETAINED, on a different justification: the URI
+            // is entirely client-controlled and unbounded, and reflecting
+            // 160 KiB of a client's own bug back at every client that DOES
+            // drain the channel is gratuitous amplification. See
+            // `LOG_STR_MAX_CHARS`.
+            //
+            // WHAT REMAINS: a client that never drains stdout accumulates
+            // queued notifications. That is a pre-existing property of the
+            // one `publishDiagnostics` per didChange already sent on this
+            // path, so the log line adds no NEW hazard class — hence no
+            // per-URI rate limiter, which would buy a budget the diagnostics
+            // path spends anyway at the cost of per-URI mutable state. Pinned
+            // end-to-end by cli_lsp_protocol.rs's
+            // `lsp_repeated_unknown_uri_didchange_logs_over_the_protocol_channel_without_wedging`.
+            // If volume ever does become a concern, the limiter belongs at
+            // the sink — one policy for all log sites — not bolted onto this
+            // call site.
+            //
+            // ONE DELIBERATE RESIDUAL: diagnostics/eval_guard.rs's
+            // `SkippedEval::report_to_log` still writes to stderr. Out of
+            // scope for #6329 because `skip_reason` has three production
+            // entry points and two of them (the stateless
+            // `compute_diagnostics`, and `AnalysisContext::from_parsed`)
+            // have no channel to route to — deciding how a sinkless pure
+            // entry point reports is a separate design question. The hazard
+            // class above is already absent there regardless: that site is
+            // throttled by `LAST_REPORTED_SKIP` to one line per distinct
+            // (content hash, offending cell), so client-controlled unbounded
+            // repetition cannot occur. Tracked by follow-up ticket
+            // tkt_0RTP61GCD8ZNWFYCPH9Q3AZYCR.
             self.sink.log_message(LogLine {
                 typ: MessageType::WARNING,
                 message: format!(
