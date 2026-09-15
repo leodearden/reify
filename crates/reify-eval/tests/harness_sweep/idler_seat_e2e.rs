@@ -459,6 +459,30 @@ fn idler_real(cell: &str) -> f64 {
     entity_real(&printer_checked().values, PRINTER_RI, IDLER_ENTITY, cell)
 }
 
+/// The compiled `IdlerPulley` template out of one design file's module.
+///
+/// The gates that reach past evaluated VALUES into the compiled tree all start
+/// here: the constraint read-sets, the `body` read-set, and the cross-file
+/// content-hash equality. `module` and `file` travel together, as
+/// [`entity_cell`] takes them, because BOTH files declare a structure of this
+/// name and the pair is what tells a failure which one it is about.
+fn idler_template<'m>(
+    module: &'m reify_compiler::CompiledModule,
+    file: &str,
+) -> &'m reify_compiler::TopologyTemplate {
+    module
+        .templates
+        .iter()
+        .find(|t| t.name == IDLER_ENTITY)
+        .unwrap_or_else(|| {
+            panic!(
+                "{file} must declare the `{IDLER_ENTITY}` structure; templates \
+                 compiled: {:?}",
+                module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+            )
+        })
+}
+
 /// Relative error of `actual` against a non-zero `expected`.
 fn rel_err(actual: f64, expected: f64) -> f64 {
     (actual - expected).abs() / expected.abs()
@@ -527,6 +551,33 @@ fn idler_seat_arc_is_din_15061_oversize() {
     );
 }
 
+/// Every `IdlerPulley` cell that printer.ri's `body` expression READS, as
+/// measured off the compiled tree.
+///
+/// This is the inventory [`IDLER_CELLS`] cannot supply. That one asks what the
+/// structure COMPUTES and compares numbers; this one asks what the geometry is
+/// BUILT FROM, which no number can answer — `seat_c` holds its value whether or
+/// not a single `torus` reads it.
+///
+/// Held as an EXACT set, both directions. A member going missing is the defect
+/// this task exists to remove; a member appearing means the body tree grew and
+/// this gate wants a conscious update rather than a widened assertion.
+///
+/// The compiled reads are all intra-structure, so filtering to [`IDLER_ENTITY`]
+/// drops nothing today — measured identical filtered and unfiltered. The filter
+/// stays because a future `body` that reaches into a sub-component should not
+/// silently enlarge this set.
+const IDLER_BODY_READS: &[&str] = &[
+    "bore_len",
+    "brg_bore",
+    "brg_r",
+    "brg_width",
+    "groove_r",
+    "seat_c",
+    "sheave_r",
+    "sheave_w",
+];
+
 // ── The compensation: the SEATED ROPE stays on the pitch circle ──────────────
 
 /// Oversizing the seat arc must not have moved the rope off the sheave's pitch
@@ -535,7 +586,9 @@ fn idler_seat_arc_is_din_15061_oversize() {
 /// This is the task's one real engineering claim. An oversize arc cut on the rim
 /// sinks the rope into it by `groove_r - tendon_dia/2`; the arc centre therefore
 /// has to sit that far OUTBOARD of the rim for the SEATED rope to come back to
-/// `sheave_r`. Three assertions, each one algebraic identity evaluated two ways:
+/// `sheave_r`. Four assertions. The first three are each one algebraic identity
+/// evaluated two ways; the fourth is structural, and pins the geometry tree the
+/// other three are blind to:
 ///
 ///   1. **the design's own arc-centre derivation is this module's** —
 ///      `seat_c` equals [`super::capstan_groove_e2e::seat_arc_centre`]
@@ -556,6 +609,12 @@ fn idler_seat_arc_is_din_15061_oversize() {
 ///      pre-#6135 seat. This is what keeps the bore clearance (15 > brg_r 11)
 ///      and the flange height untouched, so the change is provably invisible
 ///      outside the seat.
+///   4. **the solid is actually BUILT from that arc centre** — the compiled
+///      `body` expression's read-set is exactly [`IDLER_BODY_READS`]. (1)-(3)
+///      compare VALUES, and a cell holds its value whether or not any geometry
+///      reads it; this is the only one of the four that can tell the difference
+///      between a design that computes the right arc centre and one that cuts
+///      the seat with it.
 ///
 /// (2) and (3) are both independent of `seat_arc_ratio`: substituting (1) into
 /// either cancels `groove_r` entirely. That is why the compensation can be
@@ -563,18 +622,18 @@ fn idler_seat_arc_is_din_15061_oversize() {
 /// bump cannot silently break either.
 ///
 /// **Which of these can actually fail, measured rather than assumed.** That
-/// same cancellation means two of the four comparisons are algebraic
-/// CONSEQUENCES of (1) and cannot fail while it holds: the `sheave_od/2` half of
-/// (2), because `sheave_r` is itself `let sheave_r = sheave_od / 2`, and (3)
-/// entire. They are kept for two reasons that are not coverage — they state the
+/// same cancellation means two of (1)-(3)'s four scalar comparisons are
+/// algebraic CONSEQUENCES of (1) and cannot fail while it holds: the
+/// `sheave_od/2` half of (2), because `sheave_r` is itself
+/// `let sheave_r = sheave_od / 2`, and (3) entire. They are kept for two reasons that are not coverage — they state the
 /// identities the structure doc claims, and (3) is the reference the mesh gate
 /// reads the seat bottom against — but this gate does not pretend they are
 /// independent checks. The capstan gate reached the same conclusion about its
 /// own copies of these two and retired them; see
 /// `capstan_seat_arc_is_din_15061_oversize`'s claim (2).
 ///
-/// The two that DO carry coverage were each confirmed to fire, on this branch,
-/// against a real tree state:
+/// The three that DO carry coverage were each confirmed to fire, on this
+/// branch, against a real tree state:
 ///   * (1), against step 2's uncompensated tree (`let seat_c = sheave_r`):
 ///     18.180000 mm required against 18.000000 declared, rel err 9.901e-3 — the
 ///     0.180 mm sink, nine orders above `SCALAR_REL_TOL`.
@@ -583,6 +642,13 @@ fn idler_seat_arc_is_din_15061_oversize() {
 ///     a 2.000000 mm miss. That is the measurement showing this half is genuinely
 ///     independent of (1) — a self-consistent seat on the wrong circle satisfies
 ///     (1), (2)'s first half and (3), and is caught here alone.
+///   * (4), against printer.ri:238 reverted to `torus(sheave_r, groove_r)`: the
+///     read-set loses `seat_c`. That mutation is the exact uncompensated seat
+///     this task removed, in the production file all 31 placements come from,
+///     and it left ALL FIVE of this module's gates green — measured, which is
+///     how the gap was found. (4) is the assertion that reds it; the sibling
+///     half, for a mutation applied to BOTH copies at once, is the template
+///     content-hash equality in `idler_copies_stay_in_lockstep`.
 ///
 /// Kernel-free, so it cannot skip on a machine without OCCT.
 #[test]
@@ -675,6 +741,50 @@ fn idler_seat_keeps_the_rope_on_the_pitch_circle() {
         seat_bottom * 1e3,
         (seat_bottom - want_bottom) * 1e3,
         idler_cell("brg_r", DimensionVector::LENGTH) * 1e3,
+    );
+
+    // ---- (4) …and the SOLID is built from that arc centre, not merely near it ----
+    // (1)-(3) are arithmetic over evaluated cells, and a cell keeps its value
+    // whether or not the geometry reads it. Reverting `torus(seat_c, groove_r)`
+    // to `torus(sheave_r, groove_r)` — the uncompensated seat this task removed —
+    // leaves every one of them green, measured. So pin the body's READ-SET.
+    let body = idler_template(printer_compiled(), PRINTER_RI)
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "body")
+        .unwrap_or_else(|| {
+            panic!(
+                "{IDLER_ENTITY} must declare a `body` cell in {PRINTER_RI} — it is \
+                 the one handle the whole solid hangs off, and without it there is \
+                 no geometry for this gate to pin."
+            )
+        });
+    let body_expr = body.default_expr.as_ref().unwrap_or_else(|| {
+        panic!(
+            "{IDLER_ENTITY}.body must carry a compiled default expression in \
+             {PRINTER_RI}; a `body` declared with no expression builds no solid."
+        )
+    });
+    let reads: BTreeSet<String> = body_expr
+        .collect_value_refs()
+        .into_iter()
+        .filter(|id| id.entity == IDLER_ENTITY)
+        .map(|id| id.member)
+        .collect();
+    let want: BTreeSet<String> = IDLER_BODY_READS.iter().map(|s| s.to_string()).collect();
+    assert_eq!(
+        reads, want,
+        "{IDLER_ENTITY}.body in {PRINTER_RI} must be BUILT FROM exactly \
+         {IDLER_BODY_READS:?}, but it reads {reads:?}.\n\
+         `seat_c` and `groove_r` are the load-bearing two. A MISSING `seat_c` \
+         means the seat arc is being cut at some other radius — almost certainly \
+         `sheave_r`, the uncompensated seat #6135 removed — which sinks the \
+         seated rope 0.180 mm below the pitch circle at all 31 hand-derived \
+         placements while (1)-(3) above stay green, because `seat_c` keeps its \
+         value no matter who reads it. A MISSING `groove_r` means the arc is no \
+         longer sized by the DIN ratio. An ADDED member is not a defect but is \
+         not automatically fine either: the body tree grew, and this gate wants a \
+         deliberate update here rather than a widened assertion."
     );
 }
 
@@ -903,35 +1013,21 @@ fn idler_seat_clears_the_tendon() {
     // Pinned by the cells each compiled expression READS. A constraint merely
     // being present is not the claim: swapping either for any other
     // `IdlerPulley`-scoped constraint would leave a presence check green.
-    let idler_template = printer_compiled()
-        .templates
-        .iter()
-        .find(|t| t.name == IDLER_ENTITY)
-        .unwrap_or_else(|| {
-            panic!(
-                "{PRINTER_RI} must declare the `{IDLER_ENTITY}` structure; \
-                 templates compiled: {:?}",
-                printer_compiled()
-                    .templates
-                    .iter()
-                    .map(|t| &t.name)
-                    .collect::<Vec<_>>()
-            )
-        });
-    let declared: Vec<(&ConstraintNodeId, BTreeSet<String>)> = idler_template
-        .constraints
-        .iter()
-        .map(|c| {
-            let reads = c
-                .expr
-                .collect_value_refs()
-                .into_iter()
-                .filter(|id| id.entity == IDLER_ENTITY)
-                .map(|id| id.member)
-                .collect();
-            (&c.id, reads)
-        })
-        .collect();
+    let declared: Vec<(&ConstraintNodeId, BTreeSet<String>)> =
+        idler_template(printer_compiled(), PRINTER_RI)
+            .constraints
+            .iter()
+            .map(|c| {
+                let reads = c
+                    .expr
+                    .collect_value_refs()
+                    .into_iter()
+                    .filter(|id| id.entity == IDLER_ENTITY)
+                    .map(|id| id.member)
+                    .collect();
+                (&c.id, reads)
+            })
+            .collect();
 
     // Both read `mouth_w`, so the OTHER datum is what tells them apart — which is
     // what makes each individually observable rather than the pair jointly.
@@ -1217,7 +1313,7 @@ const MESH_ABS_TOL: f64 = 5e-6;
 /// not identical — dev_capstan.ri's are abridged) and sensitive to any fork that
 /// changes what the part IS.
 ///
-/// Two claims:
+/// Three claims, the first two localizing and the third exhaustive:
 ///   1. every [`IDLER_CELLS`] entry reads equal across the two value maps. A
 ///      cell present in one copy and missing from the other fails on the READ,
 ///      naming the file — which is the property that keeps the inventory honest
@@ -1225,7 +1321,18 @@ const MESH_ABS_TOL: f64 = 5e-6;
 ///   2. the two constraint sets agree in COUNT and every entry is `Satisfied` in
 ///      BOTH files. The count is what claim (1) cannot see: a copy can reproduce
 ///      every cell exactly and still drop `mouth_w > tendon_dia`, leaving the
-///      numbers free to be edited back to a slip fit with nothing objecting.
+///      numbers free to be edited back to a slip fit with nothing objecting;
+///   3. the two `TopologyTemplate`s have equal `content_hash`. (1) and (2) are
+///      both INVENTORIES — named cells, counted constraints — and the `body`
+///      tree appears in neither, so a fork inside it passes both. Measured:
+///      editing printer.ri's seat back to `torus(sheave_r, groove_r)` moves its
+///      template hash while dev_capstan.ri's holds, and every other assertion in
+///      this module stays green.
+///
+/// (1) and (2) are kept in front of (3) rather than subsumed by it because they
+/// LOCALIZE: they name the cell or the count that moved. The hash can only say
+/// that something did. Keeping all three is the difference between a failure
+/// that points at a line and one that points at a file.
 #[test]
 fn idler_copies_stay_in_lockstep() {
     let printer = &printer_checked().values;
@@ -1281,6 +1388,30 @@ fn idler_copies_stay_in_lockstep() {
          to a zero-clearance slip fit with nothing objecting.",
         a_cons.len(),
         b_ids.len(),
+    );
+
+    // ---- (3) The whole compiled structure, as one fingerprint ----
+    // Everything above compares an INVENTORY: named cells, counted constraints.
+    // The body tree is in neither, so a fork inside it passes both. This sees it.
+    let a_hash = idler_template(printer_compiled(), PRINTER_RI).content_hash;
+    let b_hash = idler_template(dev_capstan_compiled(), DEV_CAPSTAN_RI).content_hash;
+    assert_eq!(
+        a_hash, b_hash,
+        "the two `{IDLER_ENTITY}` copies have FORKED somewhere the assertions \
+         above cannot see: printer.ri hashes to {a_hash:?} and dev_capstan.ri to \
+         {b_hash:?}.\n\
+         This fingerprint covers the whole compiled structure — the `body` tree \
+         included, down to operand order and literal values — and it is \
+         span-independent and doc-independent, so neither the two blocks' \
+         different line numbers nor their deliberately different comments can \
+         move it. What it CANNOT do is say WHERE: it names no cell and no \
+         expression. Start at the cell loop and the constraint count above; if \
+         both are green, as they will be for a body-tree fork, diff the two \
+         `{IDLER_ENTITY}` blocks directly. printer.ri is the original and owns \
+         the contract, so the fix is to bring dev_capstan.ri to it.\n\
+         It is also blind in one direction by construction: an edit applied to \
+         BOTH copies in lockstep keeps the hashes equal. That case is covered by \
+         the body read-set pin in `idler_seat_keeps_the_rope_on_the_pitch_circle`."
     );
 }
 
