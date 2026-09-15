@@ -158,13 +158,31 @@ pub structure CarriageBlock {
 ///
 /// GROOVE SHAPE: an OVERSIZE seat arc, per DIN 15061 rope-sheave practice — a
 /// `torus` of tube radius groove_r = 0.53·tendon_dia subtracted from the solid
-/// rim at the mid-plane, its tube CENTRE on the rim surface. The arc is
-/// deliberately WIDER than the rope's own radius (3.180 against 3.000 mm), so
-/// the rope has real clearance at the seat mouth and a load-ovalised braid
-/// cannot wedge against the seat walls — the zero-clearance slip fit #5683
-/// removed from the Capstan. Rope centre (pitch circle) at sheave_r ==
-/// sheave_od/2 == the r_pitch every composing site uses. (Was a rectangular
+/// rim at the mid-plane. The arc is deliberately WIDER than the rope's own
+/// radius (3.180 against 3.000 mm), so the rope has real clearance at the seat
+/// mouth and a load-ovalised braid cannot wedge against the seat walls — the
+/// zero-clearance slip fit #5683 removed from the Capstan. (Was a rectangular
 /// flat-bottomed groove while `torus` was missing — that gap landed as #4157.)
+///
+/// The tube CENTRE sits at seat_c, OUTBOARD of the rim, not on it. That is the
+/// pitch-circle compensation and it is what makes the whole change safe: it is
+/// the seated ROPE's centreline, not the arc centre, that stays on the pitch
+/// circle. Two exact identities follow, BOTH independent of seat_arc_ratio
+/// (substitute seat_c and groove_r cancels):
+///   seat bottom      = seat_c − groove_r               = sheave_r − tendon_dia/2
+///   seated centreline = seat_c − groove_r + tendon_dia/2 = sheave_r
+/// So the seat bottom stays at 15.000 mm — bit-identical to the pre-#6135
+/// conformal seat, which is what leaves the bore clearance and the flange
+/// height untouched — and the rope still rides at sheave_r == sheave_od/2 ==
+/// the r_pitch every composing site uses. Every one of the 31 hand-derived
+/// placements is therefore provably unaffected; gated by
+/// `idler_seat_e2e::idler_seat_keeps_the_rope_on_the_pitch_circle`.
+///
+/// One thing does NOT transfer from the Capstan's seat (#5683): it also pinned
+/// land_r = seat_c, cutting its land back to the arc centre to open the widest
+/// possible mouth (2·groove_r). That is impossible here — the rim is fixed at
+/// sheave_r by the flange OD and by all 31 call sites — so this seat's opening
+/// is fractionally under that theoretical maximum (6.350 against 6.360 mm).
 ///
 /// Body is ONE inlined union/difference tree so the boolean operands do NOT
 /// auto-surface as stray meshes — only `body` surfaces (scalar `let`s are
@@ -188,6 +206,12 @@ pub structure IdlerPulley {
     let brg_r       = brg_od / 2
     let sheave_r    = sheave_od / 2
     let groove_r    = tendon_dia * seat_arc_ratio       // seat arc radius (the torus tube)
+    // Seat arc CENTRE radius. Under tension the rope is pressed radially inward and
+    // bottoms out in its seat, so its centre sits (groove_r - tendon_dia/2) inboard
+    // of the arc centre — put the arc centre that far OUTBOARD of the rim and the
+    // seated rope's centreline lands exactly back on the pitch circle. With an
+    // equal-radii seat the two coincide, which is why this cell did not exist before.
+    let seat_c      = sheave_r + groove_r - tendon_dia / 2
     let sheave_w    = tendon_dia + flange_width * 2     // full rim width
     let bore_len    = tendon_dia + flange_width * 3     // through-bore length (> sheave width)
 
@@ -198,19 +222,19 @@ pub structure IdlerPulley {
             translate(cylinder(brg_bore / 2, brg_width * 1.2), 0mm, 0mm, 0mm - brg_width * 0.6)
         ),
         // Sheave: solid rim with the oversize seat arc cut at the mid-plane
-        // (torus tube centred ON the rim surface), bored to the bearing OD
-        // (press fit).
+        // (torus tube centred at seat_c, OUTBOARD of the rim), bored to the
+        // bearing OD (press fit).
         difference(
             difference(
                 translate(cylinder(sheave_r, sheave_w), 0mm, 0mm, 0mm - sheave_w / 2),
-                torus(sheave_r, groove_r)
+                torus(seat_c, groove_r)
             ),
             translate(cylinder(brg_r, bore_len), 0mm, 0mm, 0mm - bore_len / 2)
         )
     )
 
     constraint sheave_od > brg_od
-    constraint sheave_r - groove_r > brg_r
+    constraint seat_c - groove_r > brg_r   // bore clearance, off the TRUE seat bottom
     constraint brg_od > brg_bore
 }
 
