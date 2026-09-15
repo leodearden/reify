@@ -143,6 +143,13 @@ pub(crate) fn phase_traits(
     // static fn is actually registered. For modules that declare no traits or no
     // body-carrying static assoc fns, resolution_functions is already correct from
     // phase_functions and the O(prelude) clone+merge is skipped entirely.
+    // The module's declared callable vocabulary, merged ONCE for the phase and
+    // borrowed by every static-fn body scope below (task #5371). Rationale:
+    // `CompilationScope::declared_callable_names`.
+    let declared_callables = crate::functions::declared_callable_names(
+        &ctx.declared_fn_names,
+        &ctx.resolution_structure_names,
+    );
     let mut any_static_fn_registered = false;
     for compiled_trait in &ctx.trait_defs {
         for default in &compiled_trait.defaults {
@@ -171,11 +178,10 @@ pub(crate) fn phase_traits(
                     &ctx.alias_registry,
                     &ctx.resolution_structure_names,
                     &trait_names,
-                    // Same set `phase_functions` used, read from ctx rather than
-                    // re-derived: by now `ctx.functions` is complete, but the
-                    // declared-name question has one answer per module and must
-                    // not acquire a second construction site (task #5371).
-                    &ctx.declared_fn_names,
+                    // Same vocabulary `phase_functions` used, merged once above:
+                    // the declared-name question has one answer per module
+                    // (task #5371).
+                    &declared_callables,
                     None, // v1: no prelude template registry for static fn bodies
                     &mut ctx.diagnostics,
                 );

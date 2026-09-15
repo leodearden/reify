@@ -157,7 +157,7 @@ use crate::units::{
 /// it should read (it already says "verify each before deletion").
 ///
 /// Case-sensitive: Reify function names are snake_case.
-pub const FIRST_ARG_TYPED_NAMES: &[&str] = &[
+pub(crate) const FIRST_ARG_TYPED_NAMES: &[&str] = &[
     "project",
     "mod",
     "to_global",
@@ -254,7 +254,7 @@ pub const FIRST_ARG_TYPED_NAMES: &[&str] = &[
 /// turns a forgotten removal from a silent stale claim into a RED test.
 ///
 /// Case-sensitive: Reify function names are snake_case.
-pub const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[
+pub(crate) const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[
     // --- numeric + trig — owner #6003 (registry τ1) / #6943 -----------------
     // Ratified semantics this task must NOT pre-empt: dimensionless-only
     // rulings for the hyperbolics and log10, a NEW 2-arg `floor(x, quantum)`

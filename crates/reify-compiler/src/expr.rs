@@ -3354,24 +3354,23 @@ fn compile_expr_guarded_with_expected_inner(
                     //                             distinguish from Auto (which is
                     //                             covered by constrained())
                     //
-                    // Membership is decided by `DETERMINACY_PREDICATE_NAMES`
-                    // (task #5371) so `unresolved_function::is_known_builtin`
-                    // can see this vocabulary — it is the one ladder family
-                    // that lives as a bare `match` here rather than as a name
-                    // slice in a `*_signatures.rs` module.
-                    let determinacy_kind = if !DETERMINACY_PREDICATE_NAMES.contains(&name.as_str())
-                    {
-                        None
-                    } else {
-                        match name.as_str() {
-                            "determined" => Some(DeterminacyPredicateKind::Determined),
-                            "undetermined" => Some(DeterminacyPredicateKind::Undetermined),
-                            "constrained" => Some(DeterminacyPredicateKind::Constrained),
-                            "partially_determined" => {
-                                Some(DeterminacyPredicateKind::PartiallyDetermined)
-                            }
-                            _ => None,
+                    // `DETERMINACY_PREDICATE_NAMES` exists so
+                    // `unresolved_function::is_known_builtin` can see this
+                    // vocabulary — it is the one ladder family that lives as a
+                    // bare `match` here rather than as a name slice in a
+                    // `*_signatures.rs` module. It is deliberately NOT consulted
+                    // as a guard: the arms below already encode membership
+                    // exactly, and gating on the slice would make an arm added
+                    // here without a slice entry silently dead rather than
+                    // merely invisible to the closed-world union.
+                    let determinacy_kind = match name.as_str() {
+                        "determined" => Some(DeterminacyPredicateKind::Determined),
+                        "undetermined" => Some(DeterminacyPredicateKind::Undetermined),
+                        "constrained" => Some(DeterminacyPredicateKind::Constrained),
+                        "partially_determined" => {
+                            Some(DeterminacyPredicateKind::PartiallyDetermined)
                         }
+                        _ => None,
                     };
 
                     if let Some(kind) = determinacy_kind {
@@ -3900,45 +3899,35 @@ fn compile_expr_guarded_with_expected_inner(
                         // its first argument (or Real when zero-arg).
                         //
                         // Task #5371 closes the WORLD here without touching the
-                        // TYPING: `is_known_builtin` is the closed-world union
-                        // of every classification family plus the two manifests
-                        // in `unresolved_function`, so a name it rejects is not
-                        // a BUILTIN — no family, no eval dispatch arm.
+                        // TYPING. Three outcomes, and exactly one holds of any
+                        // one call; `DiagnosticCode::UnresolvedFunction` and
+                        // its sibling `BuiltinArgShapeUnrecognized` carry the
+                        // full account of the split and of the silent third
+                        // state:
                         //
-                        // That is NOT the same as "exists nowhere", and the
-                        // difference is why the push below asks a second
-                        // question. User and stdlib `fn`s do resolve before this
-                        // arm from an ENTITY body, which compiles against the
-                        // merged `ctx.resolution_functions`; a FN body does not,
-                        // because `compile_builder/functions_phase.rs` compiles
-                        // it against the user-only table it is still growing in
-                        // source order. So a call to a later-declared sibling —
-                        // or either half of a mutually-referential pair, which
-                        // no reordering can fix — reaches this arm with a name
-                        // the module plainly declares. `scope`'s declared-
-                        // callable set is how the fallback tells the two apart.
-                        // Such a call used to compile with zero diagnostics and
-                        // silently adopt arg0's type; now an unknown name warns
-                        // and STILL adopts arg0's type, and a declared-but-
-                        // unresolvable one stays silent and unchanged.
+                        //   1. the name is in NO family and the module does not
+                        //      declare it        -> W_UNRESOLVED_FUNCTION
+                        //   2. the name IS a builtin whose arg-aware resolver
+                        //      declined the shape -> W_BUILTIN_ARG_SHAPE
+                        //   3. the module declares it but this body cannot yet
+                        //      resolve it         -> silence
+                        //
+                        // Outcome 3 is why the push below asks a second
+                        // question of `scope`; see
+                        // `CompilationScope::declared_callable_names`.
+                        //
                         // Warn-mode-first is deliberate: no corpus can break on
-                        // a diagnostic alone.
+                        // a diagnostic alone, and the typing at every one of the
+                        // three is byte-identical to the pre-#5371 answer.
                         //
                         // Durable track: docs/prds/v0_6/builtin-signature-registry.md.
                         // #5997 flips this Warning to Error behind a break-glass
                         // env knob; #6014 (registry ω) DELETES this whole
-                        // fallback once every builtin holds a real signature row,
-                        // and with it the `FIRST_ARG_TYPED_NAMES` allowlist.
-                        // The membership question is resolved BEFORE the arity
-                        // split below, because the answer decides which of the
-                        // two warnings this fallback can emit. They are
-                        // complements, not a hierarchy — "I do not know this
-                        // name" and "I know this name but cannot infer its
-                        // return type without arguments" cannot both hold of one
-                        // call — so exactly one fires, never both.
-                        // ARG-SHAPE first, for the same complements-not-a-
-                        // hierarchy reason (task item 4). Three ladder arms
-                        // above are ARG-AWARE — `infer_list_helper_return_type`,
+                        // fallback, the `FIRST_ARG_TYPED_NAMES` allowlist and the
+                        // legacy zero-arg warning with it.
+                        //
+                        // ARG-SHAPE is resolved FIRST. Three ladder arms above
+                        // are ARG-AWARE — `infer_list_helper_return_type`,
                         // `affine_map_algebra_result_type`, `field_op_result_type`
                         // — and return `None` when the name is theirs but the
                         // argument SHAPE is not, deliberately, to preserve
@@ -3949,24 +3938,18 @@ fn compile_expr_guarded_with_expected_inner(
                         // and `sample(42, 7)` compiled clean as `Int`. That is
                         // a worse failure than the unknown-name case, because
                         // the user wrote a REAL builtin and got no hint its
-                        // contract was missed.
+                        // contract was missed. Reaching this arm while the name
+                        // is still in one of the three families is, by
+                        // construction, the "known name, declined shape"
+                        // signal — those arms are the only route by which the
+                        // names are claimed — which is what lets a name-only
+                        // lookup diagnose an arg shape, and why
+                        // `arg_shape_expectation` is sound at this site ONLY.
                         //
-                        // Reaching this arm while the name is still in one of
-                        // the three families is, by construction, the "known
-                        // name, declined shape" signal — those arms are the
-                        // only route by which the names are claimed, so a
-                        // well-shaped call could never have got here. That is
-                        // what lets a name-only lookup diagnose an arg shape,
-                        // and why `arg_shape_expectation` is documented as
-                        // sound at this site ONLY.
-                        //
-                        // One code, one message per family's signature; no
-                        // typing change and no `Type::Error` poison (#6002's
-                        // sibling `E_BuiltinArgShape` owns that, and #6014
-                        // supersedes both). Emitting here rather than inside
-                        // the three resolvers keeps them pure `Option`-returning
-                        // functions with no `&mut Vec<Diagnostic>` threaded
-                        // through `units.rs` and `list_helpers.rs`.
+                        // Emitting here rather than inside the three resolvers
+                        // keeps them pure `Option`-returning functions with no
+                        // `&mut Vec<Diagnostic>` threaded through `units.rs` and
+                        // `list_helpers.rs`.
                         let arg_shape_expected =
                             crate::unresolved_function::arg_shape_expectation(name);
                         if let Some(expected) = arg_shape_expected {
@@ -3986,41 +3969,40 @@ fn compile_expr_guarded_with_expected_inner(
                             );
                         }
 
-                        let known = crate::unresolved_function::is_known_builtin(name);
-                        // `is_known_builtin` answers "is this a BUILTIN?" and
+                        // `is_known_builtin` answers "is this a BUILTIN?", and
                         // answers it correctly; a user `fn` is not one. Reading
-                        // its `false` as "exists nowhere" is only sound when the
-                        // caller's function table was COMPLETE, and inside a fn
-                        // body it is not: `compile_builder/functions_phase.rs`
-                        // compiles each body against the user-only table it is
-                        // still growing in source order, so a call to a later
-                        // sibling — or either half of a mutually-referential
-                        // pair, which no reordering can fix — arrives here with
-                        // a name the module plainly declares. `scope`'s
-                        // declared-callable set closes that gap; it is a
-                        // DIFFERENT question ("does this module declare it?")
-                        // and so is asked separately rather than by threading
-                        // module state into the pure name predicate.
-                        //
-                        // Withholding the warning does NOT make the call
-                        // resolve: it is still typed from arg0 below, exactly as
-                        // before. Entity bodies need only the STRUCTURE half of
-                        // the set: they compile after `ctx.resolution_functions`
-                        // is merged, so a declared free fn resolves and never
-                        // arrives here, but a structure CONSTRUCTOR still can —
-                        // neither `phase_traits` nor `compile_assoc_function`
-                        // sets a template registry, so `Widget(w: 2mm)` in a
-                        // trait static or instance fn body is not claimed as a
-                        // `StructureInstanceCtor` and falls through with a name
-                        // the module declares (esc-5371-12).
-                        let declared_here = scope.declared_callable_names.contains(name);
+                        // its `false` as "exists nowhere" is only sound when
+                        // this body's vocabulary was complete, and in a fn body
+                        // it is not. That is a DIFFERENT question — "does this
+                        // module declare it?" — so it is asked separately rather
+                        // than by threading module state into the pure name
+                        // predicate. Rationale:
+                        // `CompilationScope::declared_callable_names`.
+                        let known = crate::unresolved_function::is_known_builtin(name);
+                        let declared_here = scope
+                            .declared_callable_names
+                            .is_some_and(|declared| declared.contains(name));
+                        // A third route to a real callee: a function-TYPED value
+                        // applied by bare name, e.g. `fn apply(f: (Real) -> Real)
+                        // -> Real = f(1.0)`. `f` is an ordinary value binding, so
+                        // it is in `names` and NOT in the module's declared
+                        // vocabulary, and no arm above claims a call whose callee
+                        // is a local of `Type::Function`. Withholding here keeps
+                        // the predicate honest for the higher-order combinators
+                        // the stdlib already declares (`map_or`, `map_err`),
+                        // whose bodies are stubs today and so hide the route from
+                        // the corpus sweep — but not from #5997's Error flip.
+                        let bound_as_a_function = scope
+                            .names
+                            .get(name)
+                            .is_some_and(|(_, ty, _)| matches!(ty, Type::Function { .. }));
                         // Mutually exclusive with the arg-shape warning above
                         // without needing a guard: all three arg-aware families
                         // contribute production slices to `is_known_builtin`'s
                         // union, so `arg_shape_expected.is_some()` implies
                         // `known`. Pinned by
                         // `mis_shaped_known_builtins_are_never_reported_unresolved`.
-                        if !known && !declared_here {
+                        if !known && !declared_here && !bound_as_a_function {
                             diagnostics.push(
                                 Diagnostic::warning(format!("unresolved function: {name}"))
                                     .with_code(DiagnosticCode::UnresolvedFunction)
@@ -4036,28 +4018,27 @@ fn compile_expr_guarded_with_expected_inner(
                             .first()
                             .map(|a| a.result_type.clone())
                             .unwrap_or_else(|| {
-                                // Zero-arg. The legacy warning is TRUE only for a
-                                // name the compiler actually knows (e.g. `world`,
-                                // a real zero-arg builtin still awaiting its
-                                // registry row): there the return type genuinely
-                                // cannot be inferred from arguments, and the
-                                // warning is the only signal the user gets. For an
-                                // UNKNOWN name it is noise stacked on the stronger
-                                // claim already made above.
+                                // Zero-arg. The legacy warning is TRUE only for
+                                // a name the compiler actually knows (e.g.
+                                // `world`, a real zero-arg builtin still
+                                // awaiting its registry row). For an unknown
+                                // name, or for a mis-shaped call to a known one,
+                                // it is noise stacked on the stronger claim
+                                // already made above — one defect, one line.
+                                //
+                                // It is therefore SILENT for a zero-arg callee
+                                // the module declares but this body cannot yet
+                                // resolve, which is strictly wider than the
+                                // pre-#5371 silence; `BuiltinArgShapeUnrecognized`
+                                // records that widening as an explicit
+                                // precondition on #5997, and
+                                // `forward_referenced_sibling_emits_neither_warning`
+                                // pins it in both arities.
                                 //
                                 // INTERIM SHAPE, not a design: #6014 (registry ω)
                                 // deletes this legacy warning outright along with
                                 // the fallback, and its cases become
-                                // E_UnresolvedFunction. The mutual exclusion below
-                                // exists only to keep the warn-mode window from
-                                // double-reporting one defect.
-                                // …and equally noise stacked on the stronger
-                                // arg-shape claim: `single()` is a mis-shaped
-                                // call to a known builtin, and "you called
-                                // `single` with the wrong argument shape" is the
-                                // actionable half — "I could not infer the
-                                // return type" is only its mechanical
-                                // consequence. One defect, one line, either way.
+                                // E_UnresolvedFunction.
                                 if known && arg_shape_expected.is_none() {
                                     diagnostics.push(
                                         Diagnostic::warning(format!(

@@ -49,12 +49,9 @@ pub(crate) fn infer_list_helper_return_type(
     name: &str,
     compiled_args: &[CompiledExpr],
 ) -> Option<Type> {
-    // Membership is decided by the slice, never by the `match` below, so a
-    // name cannot enter the resolver's vocabulary without appearing in
-    // `LIST_HELPER_NAMES` (task #5371).
-    if !is_list_helper(name) {
-        return None;
-    }
+    // `LIST_HELPER_NAMES` is read by `is_known_builtin`, not consulted as a
+    // guard here — see `units::datum_constructor_result_type` for why gating on
+    // the slice inverts the failure mode for an unlisted arm.
     match name {
         "single" => {
             // single(List<T>) -> T  (task 2698).

@@ -674,14 +674,6 @@ pub(crate) const DATUM_CONSTRUCTOR_NAMES: &[&str] = &[
     "offset",
 ];
 
-/// Is `name` in the construction-datum vocabulary? Name-only classification —
-/// a `.contains` over [`DATUM_CONSTRUCTOR_NAMES`]. Arity-blind, so it returns
-/// `true` for `offset` at every arity; use [`datum_constructor_result_type`]
-/// when the arity gate matters.
-pub(crate) fn is_datum_constructor_name(name: &str) -> bool {
-    DATUM_CONSTRUCTOR_NAMES.contains(&name)
-}
-
 /// Arg-aware result type for the construction-datum **constructor**
 /// free-functions recognised by the compiler (geometric-relations η, task
 /// 4387). A sibling resolver to the constructor families above
@@ -786,12 +778,15 @@ pub(crate) fn datum_constructor_result_type(
     name: &str,
     args: &[reify_ir::CompiledExpr],
 ) -> Option<reify_core::Type> {
-    // Membership is decided by the slice, never by the `match` below, so a
-    // name cannot enter the resolver's vocabulary without appearing in
-    // `DATUM_CONSTRUCTOR_NAMES` (task #5371).
-    if !is_datum_constructor_name(name) {
-        return None;
-    }
+    // `DATUM_CONSTRUCTOR_NAMES` is the vocabulary `is_known_builtin` reads; it
+    // is deliberately NOT consulted as a guard here. The arms below already
+    // encode membership exactly, and gating on the slice would make an arm
+    // added here without a slice entry silently DEAD — it would return `None`
+    // before its own arm was reached, ride the terminal fallback, and earn a
+    // spurious `UnresolvedFunction` warning. Unguarded, the same drift merely
+    // leaves the name invisible to the closed-world union, which is the far
+    // safer failure. The slice→resolver direction stays pinned by
+    // `resolver_only_family_slices_match_their_resolvers`.
     match name {
         "midplane" | "plane_through" => Some(reify_core::Type::Plane),
         "axis_through" => Some(reify_core::Type::Axis),
@@ -931,12 +926,9 @@ pub(crate) fn affine_map_algebra_result_type(
     name: &str,
     first_arg_type: Option<&reify_core::Type>,
 ) -> Option<reify_core::Type> {
-    // Membership is decided by the slice, never by the `match` below, so a
-    // name cannot enter the resolver's vocabulary without appearing in
-    // `AFFINE_ALGEBRA_NAMES` (task #5371).
-    if !is_affine_map_algebra_name(name) {
-        return None;
-    }
+    // `AFFINE_ALGEBRA_NAMES` is read by `is_known_builtin`, not consulted as a
+    // guard here — see `datum_constructor_result_type` for why gating on the
+    // slice inverts the failure mode for an unlisted arm.
     match name {
         "affine_compose" => Some(reify_core::Type::AffineMap(3)),
         "affine_inverse" => Some(reify_core::Type::Option(Box::new(

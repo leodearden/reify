@@ -39,30 +39,15 @@ fn push_signature_type_error(
     }
 }
 
-/// The names this module declares that may appear as a call CALLEE.
+/// Merge a module's declared `fn` names and structure names into the ONE
+/// callable vocabulary read by the terminal first-arg fallback.
 ///
-/// ONE set, not two, because the terminal first-arg fallback in `expr.rs` asks
-/// ONE question — "is this callee a name the module declares?" — and neither
-/// half is ever consulted alone. Keeping them apart would buy a second scope
-/// field and a two-condition gate for a single decision, and would invite a
-/// future reader to check one and forget the other.
+/// Rationale, and why the two inputs stay separate upstream:
+/// [`crate::scope::CompilationScope::declared_callable_names`].
 ///
-/// The two INPUTS stay separate on `CompilationCtx`, where fn-ness and
-/// structure-ness genuinely are distinct: `structure_names` resolves a declared
-/// type to `Type::StructureRef`, and only `declared_fn_names` describes
-/// something callable by a bare name. They are merged here, at the one consumer
-/// that treats them alike, rather than upstream where that conflation would be
-/// wrong.
-///
-/// Structure names earn their place because a constructor call IS a call whose
-/// callee is a declared name: neither `traits_phase` (static fn bodies, "v1")
-/// nor [`compile_assoc_function`] (trait-default bodies and structure
-/// overrides) sets a template registry, so `Widget(w: 2mm)` is never claimed as
-/// a `StructureInstanceCtor` in either and rides the fallback. Withholding the
-/// warning is the typing-neutral half of that; making such a call actually
-/// LOWER to a constructor would change how those bodies type, which is outside
-/// a warn-only task's remit.
-fn declared_callable_names(
+/// Called once per PHASE, not once per function: the result is a module
+/// invariant, and every scope built below merely borrows it.
+pub(crate) fn declared_callable_names(
     declared_fn_names: &HashSet<String>,
     structure_names: &HashSet<String>,
 ) -> HashSet<String> {
@@ -81,7 +66,7 @@ pub(crate) fn compile_function(
     alias_registry: &TypeAliasRegistry,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
-    declared_fn_names: &HashSet<String>,
+    declared_callable_names: &HashSet<String>,
     prelude_template_registry: Option<&HashMap<String, &TopologyTemplate>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
@@ -192,11 +177,9 @@ pub(crate) fn compile_function(
         neutral_scope.set_template_registry(reg);
     }
     // Neutral for VALUE bindings, not for the module's declared vocabulary: a
-    // default like `= helper(1.0)` is compiled against the same partially-grown
-    // `functions` table as the body below, so it reaches the terminal fallback
-    // by the same route and must be answered the same way (task #5371).
-    neutral_scope.declared_callable_names =
-        declared_callable_names(declared_fn_names, structure_names);
+    // default like `= helper(1.0)` compiles against the same partially-grown
+    // `functions` table as the body below, so it must be answered the same way.
+    neutral_scope.declared_callable_names = Some(declared_callable_names);
     let param_defaults: Vec<Option<CompiledExpr>> = fn_def
         .params
         .iter()
@@ -332,15 +315,10 @@ pub(crate) fn compile_function(
     if let Some(reg) = prelude_template_registry {
         scope.set_template_registry(reg);
     }
-    // The module's declared callable vocabulary. `functions` above is the table
-    // this body RESOLVES against and is deliberately incomplete —
-    // `phase_functions` grows it in source order — so a call to a later sibling
-    // lands on the terminal first-arg fallback in `expr.rs` with a name that is
-    // perfectly real. This set is what lets that fallback withhold its "exists
-    // nowhere" claim without changing which overload (if any) resolves, or
-    // whether a constructor call lowers to a `StructureInstanceCtor` (task
-    // #5371).
-    scope.declared_callable_names = declared_callable_names(declared_fn_names, structure_names);
+    // The module's declared callable vocabulary — see
+    // `CompilationScope::declared_callable_names` for why this body needs it.
+    // Borrowed, never merged here: `phase_functions` builds it once.
+    scope.declared_callable_names = Some(declared_callable_names);
     for (name, ty) in &params {
         scope.register(name, ty.clone());
     }
@@ -689,29 +667,22 @@ pub(crate) fn compile_assoc_function(
         params.push((p.name.clone(), ty));
     }
 
-    // The module's declared callable vocabulary, for the terminal first-arg
-    // fallback in `expr.rs` (task #5371, esc-5371-12). Only the STRUCTURE half
-    // is populated here; the empty fn half is a decision, not an omission.
-    //
-    // Structures need it for the same reason `phase_traits` does: this function
-    // sets no template registry, so a constructor call in a trait-default body
-    // or in a structure's override — `Widget(w: 2mm)`, the ordinary "build one
-    // of these in an instance method" shape — is never claimed as a
-    // `StructureInstanceCtor` and reaches the fallback carrying a name the
-    // module plainly declares.
-    //
-    // Free fns do NOT need it: conformance runs after `phase_functions`, so the
-    // `functions` table these bodies resolve against is already COMPLETE and a
-    // call to any declared fn resolves instead of falling through. That is the
-    // same reason `compile_function`'s in-progress table DOES need the fn half.
+    // Only the STRUCTURE half of the callable vocabulary here — see
+    // `CompilationScope::declared_callable_names`. The absent fn half is a
+    // decision, not an omission: conformance runs after `phase_functions`, so
+    // the `functions` table these bodies resolve against is already COMPLETE
+    // and a call to any declared fn resolves instead of falling through.
     // Pinned from both sides by `assoc_fn_calling_a_declared_fn_stays_clean`
     // and `genuinely_undeclared_callee_in_an_assoc_fn_body_still_warns`.
-    let declared_callables = declared_callable_names(&HashSet::new(), structure_names);
+    //
+    // Borrowed outright rather than merged with an empty fn set: the merge
+    // would reproduce `structure_names` byte-for-byte at every call.
+    let declared_callables = Some(structure_names);
 
     // Compile default expressions in a neutral scope (definition-time semantics,
     // matching `compile_function`). The `self` receiver never carries a default.
     let mut neutral_scope = CompilationScope::new(&fn_def.name);
-    neutral_scope.declared_callable_names = declared_callables.clone();
+    neutral_scope.declared_callable_names = declared_callables;
     let param_defaults: Vec<Option<CompiledExpr>> = fn_def
         .params
         .iter()
