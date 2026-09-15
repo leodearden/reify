@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 /// runtime. Running two such processes concurrently inside the same test
 /// binary — especially during a full `cargo test -p reify-cli` run with many
 /// parallel test binaries — can starve one process's runtime and cause the
-/// 10-second `wait_for_response` timeout to fire. Holding this lock for the
+/// 10-second `LspInbox::response` timeout to fire. Holding this lock for the
 /// lifetime of each test ensures at most one LSP process is active at a time
 /// from this binary.
 static LSP_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -436,7 +436,7 @@ fn spawn_reader(stdout: std::process::ChildStdout) -> mpsc::Receiver<serde_json:
 /// timeouts in the other LSP tests (esc-1685-81).  When `LSP_TEST_LOCK` is poisoned
 /// and multiple test threads race to recover it, OS scheduling non-determinism
 /// occasionally starves the second LSP child process long enough to hit the
-/// 30-second `wait_for_response` timeout.  The fix is to:
+/// 30-second `LspInbox::response` timeout.  The fix is to:
 ///   1. Hold `LSP_TEST_LOCK` for the whole test so this function is fully
 ///      serialised with the other LSP tests (no concurrent LSP process running).
 ///   2. Test the poison-recovery idiom on `POISON_TEST_LOCK` — a static
@@ -479,90 +479,122 @@ fn acquire_lsp_test_lock_recovers_from_poisoned_mutex() {
         .unwrap_or_else(|e| e.into_inner());
 }
 
-/// Wait until we receive a response with the given id from the message stream.
+/// The stdout message stream plus a replay buffer, so no wait can starve
+/// another of a message it still needs.
 ///
-/// Uses a 30-second timeout to accommodate CPU saturation when many test
-/// binaries run in parallel (e.g., during `cargo test --workspace`).  Under
-/// heavy load the spawned tokio runtime may not be scheduled for several
-/// seconds before it can process the `initialize` request; 30 s gives ample
-/// headroom without making genuinely failing tests unreasonably slow.
-fn wait_for_response(rx: &mpsc::Receiver<serde_json::Value>, id: u64) -> serde_json::Value {
-    let timeout = std::time::Duration::from_secs(30);
-    loop {
-        match rx.recv_timeout(timeout) {
-            Ok(msg) => {
-                if msg.get("id").and_then(|v| v.as_u64()) == Some(id) {
-                    return msg;
+/// WHY THE BUFFER: `reify lsp` emits `window/logMessage` and
+/// `textDocument/publishDiagnostics` for the SAME `didChange` from two
+/// independent `tokio::spawn`ed tasks (see `ClientSink` in
+/// `crates/reify-lsp/src/server.rs`), with no ordering guarantee between
+/// them. A waiter reading straight from the `mpsc::Receiver` and DROPPING
+/// every non-match — which is what `wait_for_response`/`wait_for_notification`
+/// did before task #6329 — therefore swallows, at random, the message the
+/// NEXT wait is about to block on. That surfaces as an intermittent 30s
+/// timeout in whichever wait ran second, reading as "the server stopped
+/// emitting" when the message had in fact arrived and been discarded.
+///
+/// Retaining each skipped message in `seen` and re-scanning it first makes
+/// the order two waits are *written* in irrelevant. This is not premature
+/// generality: it is the precondition for asserting on two concurrently
+/// dispatched notification kinds at all.
+///
+/// `seen` grows only with messages no wait has claimed yet — at most a
+/// handful per session here — so no eviction policy is needed.
+struct LspInbox {
+    rx: mpsc::Receiver<serde_json::Value>,
+    seen: Vec<serde_json::Value>,
+}
+
+impl LspInbox {
+    fn new(rx: mpsc::Receiver<serde_json::Value>) -> Self {
+        Self {
+            rx,
+            seen: Vec::new(),
+        }
+    }
+
+    /// Return (and consume) the first message satisfying `pred`, scanning the
+    /// replay buffer before pulling from the channel and buffering every
+    /// non-match for later waits.
+    ///
+    /// Uses a 30-second timeout to accommodate CPU saturation when many test
+    /// binaries run in parallel (e.g., during `cargo test --workspace`).  Under
+    /// heavy load the spawned tokio runtime may not be scheduled for several
+    /// seconds before it can process the `initialize` request; 30 s gives ample
+    /// headroom without making genuinely failing tests unreasonably slow.
+    ///
+    /// `what` is the caller's own fully-formed noun phrase, interpolated into
+    /// both panic messages below. Those messages are load-bearing diagnostics
+    /// — a timeout here is this file's primary RED signal — so each wrapper
+    /// below supplies the exact phrasing its failure needs rather than letting
+    /// this helper invent a generic one.
+    fn wait_for(
+        &mut self,
+        what: &str,
+        pred: impl Fn(&serde_json::Value) -> bool,
+    ) -> serde_json::Value {
+        if let Some(idx) = self.seen.iter().position(&pred) {
+            return self.seen.remove(idx);
+        }
+        let timeout = std::time::Duration::from_secs(30);
+        loop {
+            match self.rx.recv_timeout(timeout) {
+                Ok(msg) => {
+                    if pred(&msg) {
+                        return msg;
+                    }
+                    // Not ours — retain it for whichever wait is.
+                    self.seen.push(msg);
                 }
-                // Otherwise it's a notification (e.g. publishDiagnostics), skip it
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                panic!("timed out after 30s waiting for response with id={id}")
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                panic!(
-                    "reader thread disconnected (LSP process may have crashed) \
-                     while waiting for response with id={id}"
-                )
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    panic!("timed out after 30s waiting for {what}")
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!(
+                        "reader thread disconnected (LSP process may have crashed) \
+                         while waiting for {what}"
+                    )
+                }
             }
         }
     }
-}
 
-/// Wait for a notification with the given `method` whose `params.uri` and
-/// `params.version` equal `uri`/`version`, skipping any other messages
-/// (responses, or notifications for other documents/versions) received in
-/// between. Returns the matched notification so the caller can assert on
-/// its `params` (e.g. `diagnostics`).
-///
-/// Used as a deterministic barrier in place of a fixed-duration sleep:
-/// observing the notification the server published *for the exact
-/// uri+version just sent* proves it finished handling that message, rather
-/// than hoping a wall-clock delay was long enough under CPU load. (What
-/// reify-lsp does internally between receiving the message and publishing
-/// is deliberately not restated here — that is production control flow, and
-/// the phase-4b assertion in `lsp_full_interactive_loop_through_binary` is
-/// the actual proof.)
-///
-/// `version` is required, not optional, for correctness: the mpsc channel
-/// is a FIFO of every notification the server has already published, so
-/// for a `uri` that was published before, a `method`+`uri`-only match can
-/// return a *stale* already-queued notification and provide no barrier at
-/// all.
-///
-/// Same 30s timeout and CPU-saturation rationale as `wait_for_response`
-/// above.
-fn wait_for_notification(
-    rx: &mpsc::Receiver<serde_json::Value>,
-    method: &str,
-    uri: &str,
-    version: i64,
-) -> serde_json::Value {
-    let timeout = std::time::Duration::from_secs(30);
-    loop {
-        match rx.recv_timeout(timeout) {
-            Ok(msg) => {
-                if msg.get("method").and_then(|v| v.as_str()) == Some(method)
+    /// Wait until we receive a response with the given id from the message
+    /// stream. See [`LspInbox::wait_for`] for the timeout rationale.
+    fn response(&mut self, id: u64) -> serde_json::Value {
+        self.wait_for(&format!("response with id={id}"), |msg| {
+            msg.get("id").and_then(|v| v.as_u64()) == Some(id)
+        })
+    }
+
+    /// Wait for a notification with the given `method` whose `params.uri` and
+    /// `params.version` equal `uri`/`version`. Returns the matched
+    /// notification so the caller can assert on its `params` (e.g.
+    /// `diagnostics`).
+    ///
+    /// Used as a deterministic barrier in place of a fixed-duration sleep:
+    /// observing the notification the server published *for the exact
+    /// uri+version just sent* proves it finished handling that message, rather
+    /// than hoping a wall-clock delay was long enough under CPU load. (What
+    /// reify-lsp does internally between receiving the message and publishing
+    /// is deliberately not restated here — that is production control flow, and
+    /// the phase-4b assertions in `lsp_full_interactive_loop_through_binary`
+    /// are the actual proof.)
+    ///
+    /// `version` is required, not optional, for correctness: the message
+    /// stream is a FIFO of every notification the server has already
+    /// published, so for a `uri` that was published before, a
+    /// `method`+`uri`-only match can return a *stale* already-queued
+    /// notification and provide no barrier at all.
+    fn notification(&mut self, method: &str, uri: &str, version: i64) -> serde_json::Value {
+        self.wait_for(
+            &format!("{method} v{version} notification for uri={uri}"),
+            |msg| {
+                msg.get("method").and_then(|v| v.as_str()) == Some(method)
                     && msg["params"]["uri"].as_str() == Some(uri)
                     && msg["params"]["version"].as_i64() == Some(version)
-                {
-                    return msg;
-                }
-                // Otherwise it's a response, or a notification for a
-                // different document/version; keep waiting.
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                panic!(
-                    "timed out after 30s waiting for {method} v{version} notification for uri={uri}"
-                )
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                panic!(
-                    "reader thread disconnected (LSP process may have crashed) \
-                     while waiting for {method} v{version} notification for uri={uri}"
-                )
-            }
-        }
+            },
+        )
     }
 }
 
@@ -570,7 +602,7 @@ fn wait_for_notification(
 /// `DiagnosticSeverity::ERROR`; see the numeric mapping already asserted by
 /// `crates/reify-lsp/tests/in_process_bridge.rs`) from a
 /// `textDocument/publishDiagnostics` notification returned by
-/// `wait_for_notification`. Returns owned clones (diagnostics are tiny) so
+/// [`LspInbox::notification`]. Returns owned clones (diagnostics are tiny) so
 /// callers don't have to reason about borrows against the notification.
 fn error_diagnostics(notification: &serde_json::Value) -> Vec<serde_json::Value> {
     notification["params"]["diagnostics"]
@@ -588,7 +620,7 @@ fn error_diagnostics(notification: &serde_json::Value) -> Vec<serde_json::Value>
 struct DrainedLspSession {
     child: KillOnDrop,
     stdin: std::process::ChildStdin,
-    rx: mpsc::Receiver<serde_json::Value>,
+    inbox: LspInbox,
     /// The raw `initialize` response, for callers that assert on its shape
     /// (e.g. capabilities) beyond the generic `result.is_some()` check
     /// `spawn_lsp_and_initialize` already performs.
@@ -605,7 +637,7 @@ struct DrainedLspSession {
 struct UndrainedLspSession {
     child: KillOnDrop,
     stdin: std::process::ChildStdin,
-    rx: mpsc::Receiver<serde_json::Value>,
+    inbox: LspInbox,
     /// The caller must keep this alive for as long as backpressure needs to
     /// be sustained — dropping it early gives the child EPIPE instead of
     /// backpressure.
@@ -637,7 +669,7 @@ fn spawn_lsp_and_initialize<T>(
 ) -> (
     KillOnDrop,
     std::process::ChildStdin,
-    mpsc::Receiver<serde_json::Value>,
+    LspInbox,
     serde_json::Value,
     T,
 ) {
@@ -655,7 +687,7 @@ fn spawn_lsp_and_initialize<T>(
     let stdout = child.stdout.take().expect("stdout");
     let stderr_pipe = child.stderr.take().expect("stderr");
 
-    let rx = spawn_reader(stdout);
+    let mut inbox = LspInbox::new(spawn_reader(stdout));
     // Runs before any stdin write below — load-bearing ordering, see
     // `spawn_pipe_reader`'s doc comment.
     let stderr = take_stderr(stderr_pipe);
@@ -671,7 +703,7 @@ fn spawn_lsp_and_initialize<T>(
         }
     });
     send_jsonrpc(&mut stdin, &init_request.to_string());
-    let init_response = wait_for_response(&rx, 1);
+    let init_response = inbox.response(1);
     assert!(
         init_response.get("result").is_some(),
         "initialize should return a result"
@@ -684,7 +716,7 @@ fn spawn_lsp_and_initialize<T>(
     });
     send_jsonrpc(&mut stdin, &initialized.to_string());
 
-    (child, stdin, rx, init_response, stderr)
+    (child, stdin, inbox, init_response, stderr)
 }
 
 /// Spawns `reify lsp` with stderr drained the same way stdout is drained —
@@ -693,12 +725,12 @@ fn spawn_lsp_and_initialize<T>(
 /// this `stderr_reader` shape. See `spawn_lsp_and_initialize`'s doc
 /// comment for the shared spawn + handshake sequence.
 fn spawn_lsp_drained() -> DrainedLspSession {
-    let (child, stdin, rx, init_response, stderr_reader) =
+    let (child, stdin, inbox, init_response, stderr_reader) =
         spawn_lsp_and_initialize(spawn_pipe_reader);
     DrainedLspSession {
         child,
         stdin,
-        rx,
+        inbox,
         init_response,
         stderr_reader,
     }
@@ -711,11 +743,11 @@ fn spawn_lsp_drained() -> DrainedLspSession {
 /// `spawn_lsp_and_initialize`'s doc comment for the shared spawn +
 /// handshake sequence.
 fn spawn_lsp_undrained() -> UndrainedLspSession {
-    let (child, stdin, rx, _init_response, stderr_pipe) = spawn_lsp_and_initialize(|pipe| pipe);
+    let (child, stdin, inbox, _init_response, stderr_pipe) = spawn_lsp_and_initialize(|pipe| pipe);
     UndrainedLspSession {
         child,
         stdin,
-        rx,
+        inbox,
         stderr_pipe,
     }
 }
@@ -725,7 +757,7 @@ fn spawn_lsp_undrained() -> UndrainedLspSession {
 /// `DocumentStore::update` returns `false` and `did_change`'s unknown-URI
 /// `eprintln!` fires (see `crates/reify-lsp/src/server.rs`). Returns the URI
 /// alongside the JSON-RPC body so callers can both send the notification and
-/// match `wait_for_notification`/`wait_for_response` against the same
+/// match `LspInbox::notification`/`LspInbox::response` against the same
 /// string.
 ///
 /// Single definition shared by `lsp_full_interactive_loop_through_binary`'s
@@ -782,12 +814,12 @@ fn huge_unknown_uri_did_change(version: i64) -> (String, serde_json::Value) {
 /// longer make the drain-under-backpressure guard vacuous.
 ///
 /// Every phase (didOpen and each didChange, including 4b) synchronizes with
-/// `wait_for_notification`, blocking on that phase's own `publishDiagnostics`
+/// `LspInbox::notification`, blocking on that phase's own `publishDiagnostics`
 /// notification rather than a fixed sleep: tower-lsp dispatches
 /// requests/notifications with a concurrency level > 1, so a wall-clock
 /// delay is not a reliable proxy for "the server has processed this
 /// specific message" under the CPU-saturation conditions this file already
-/// designs around (see `wait_for_response`'s doc comment). Phases 2-4 also
+/// designs around (see `LspInbox::wait_for`'s doc comment). Phases 2-4 also
 /// assert ERROR diagnostics are absent/present/absent across the
 /// valid → violating → valid sequence, so this test would fail if the LSP
 /// stopped wiring `did_open`/`did_change` to the diagnostics engine, not
@@ -807,7 +839,7 @@ fn lsp_full_interactive_loop_through_binary() {
     // See `spawn_lsp_and_initialize`'s doc comment for the spawn +
     // handshake sequence, including why the reader-thread ordering is
     // load-bearing. Wrapped in KillOnDrop (see its doc comment above) so
-    // every panic site below — wait_for_notification and the stderr
+    // every panic site below — inbox.notification and the stderr
     // assertions — kills and reaps this child instead of leaving it running
     // (e.g. parked in `pipe_write` backpressure) for the test process to
     // clean up on exit.
@@ -820,7 +852,7 @@ fn lsp_full_interactive_loop_through_binary() {
     let DrainedLspSession {
         mut child,
         mut stdin,
-        rx,
+        mut inbox,
         init_response,
         stderr_reader,
     } = spawn_lsp_drained();
@@ -864,8 +896,7 @@ fn lsp_full_interactive_loop_through_binary() {
     // block for this didOpen's own publishDiagnostics (version 1). Valid
     // source should produce no ERROR diagnostics (mirrors
     // diagnostics::stateful_diagnostics_three_phase_lifecycle's phase 1).
-    let diag_open = wait_for_notification(
-        &rx,
+    let diag_open = inbox.notification(
         "textDocument/publishDiagnostics",
         "file:///tmp/test_bracket.ri",
         1,
@@ -900,8 +931,7 @@ fn lsp_full_interactive_loop_through_binary() {
     // reify-lsp's in-process
     // `diagnostics::stateful_violating_source_always_produces_constraint_violation`,
     // and re-deriving that message predicate here would just duplicate it.
-    let diag_violating = wait_for_notification(
-        &rx,
+    let diag_violating = inbox.notification(
         "textDocument/publishDiagnostics",
         "file:///tmp/test_bracket.ri",
         2,
@@ -930,8 +960,7 @@ fn lsp_full_interactive_loop_through_binary() {
     // publishDiagnostics (version 3). Back to valid source, so ERROR
     // diagnostics should clear (mirrors
     // diagnostics::stateful_diagnostics_three_phase_lifecycle's phase 3).
-    let diag_valid_again = wait_for_notification(
-        &rx,
+    let diag_valid_again = inbox.notification(
         "textDocument/publishDiagnostics",
         "file:///tmp/test_bracket.ri",
         3,
@@ -964,7 +993,7 @@ fn lsp_full_interactive_loop_through_binary() {
     // `KillOnDrop` (see above), so even in that scenario the still-blocked
     // `reify lsp` process is killed and reaped as this function's stack
     // unwinds, rather than left for the test process to clean up on exit.
-    wait_for_notification(&rx, "textDocument/publishDiagnostics", &huge_uri, 4);
+    inbox.notification("textDocument/publishDiagnostics", &huge_uri, 4);
 
     // 5) Shutdown + exit
     let shutdown = serde_json::json!({
@@ -974,7 +1003,7 @@ fn lsp_full_interactive_loop_through_binary() {
         "params": null
     });
     send_jsonrpc(&mut stdin, &shutdown.to_string());
-    let _shutdown_response = wait_for_response(&rx, 2);
+    let _shutdown_response = inbox.response(2);
 
     let exit = serde_json::json!({
         "jsonrpc": "2.0",
@@ -986,7 +1015,7 @@ fn lsp_full_interactive_loop_through_binary() {
     drop(stdin);
 
     // 30s deadlock/flakiness backstop for contended CI (mirrors
-    // wait_for_response's CPU-saturation rationale above), not a
+    // LspInbox::wait_for's CPU-saturation rationale above), not a
     // shutdown-speed assertion: a genuine hang still exceeds this bound
     // and fails, so widening it loses no discrimination.
     let (status, stderr) = wait_for_exit(&mut child, 30, stderr_reader);
@@ -1080,7 +1109,7 @@ fn lsp_full_interactive_loop_through_binary() {
 /// `/proc/<pid>/task/<tid>/wchan` reads `pipe_write`. With stderr drained
 /// (the happy path `lsp_full_interactive_loop_through_binary` exercises) it
 /// exits `rc=0` in 0.05s having written 163_895 bytes. The primary RED
-/// tripwire below is `wait_for_notification` for the huge-URI `didChange`:
+/// tripwire below is `LspInbox::notification` for the huge-URI `didChange`:
 /// pre-fix, `did_change` blocks forever inside the unknown-URI `eprintln!`'s
 /// `pipe_write` call and never reaches `publish_diagnostics`, so that call
 /// panics on its own 30s timeout. Expect this test to cost ~30s while RED —
@@ -1099,12 +1128,12 @@ fn lsp_full_interactive_loop_through_binary() {
 ///
 /// Deliberately does NOT assert the child's exit CODE and does NOT wait for
 /// the `shutdown` response: tower-lsp dispatches requests/notifications
-/// with concurrency > 1 (see `wait_for_response`'s doc comment), so the
+/// with concurrency > 1 (see `LspInbox::wait_for`'s doc comment), so the
 /// ordering of `shutdown`'s response relative to `exit` is not guaranteed
 /// under CPU saturation, and asserting on it would add flake without adding
 /// signal. The property the bug violates is "the process never exits at
 /// all", so process exit is the only assertion that needs to carry weight
-/// here — the `wait_for_notification` barrier above already proves the
+/// here — the `LspInbox::notification` barrier above already proves the
 /// handler ran to completion. It does, however, assert the process did not
 /// die from a *signal* (`status.code().is_some()`): unlike a specific exit
 /// code or response ordering, signal death is unambiguous and independent
@@ -1127,7 +1156,7 @@ fn lsp_survives_huge_unknown_uri_didchange_with_undrained_stderr() {
     let UndrainedLspSession {
         mut child,
         mut stdin,
-        rx,
+        mut inbox,
         mut stderr_pipe,
     } = spawn_lsp_undrained();
     // Deliberately NEVER read while the process is alive — see doc comment
@@ -1145,7 +1174,7 @@ fn lsp_survives_huge_unknown_uri_didchange_with_undrained_stderr() {
     // blocks forever in pipe_write inside the unknown-URI eprintln! and
     // never reaches publish_diagnostics, so this panics on its own 30s
     // timeout rather than observing the notification.
-    wait_for_notification(&rx, "textDocument/publishDiagnostics", &huge_uri, 1);
+    inbox.notification("textDocument/publishDiagnostics", &huge_uri, 1);
 
     let shutdown = serde_json::json!({
         "jsonrpc": "2.0",
@@ -1268,7 +1297,7 @@ fn spawn_sh_stub(script: &str) -> (KillOnDrop, PipeReader) {
 /// the stderr pipe* by the time the deadline expires, so the deadline is
 /// doing double duty as a start-up budget for `/bin/sh` — and a 1s budget
 /// contradicts the CPU-saturation rationale the rest of this file is
-/// designed around (see `wait_for_response`'s 30s). Under a 24-way-parallel
+/// designed around (see `LspInbox::wait_for`'s 30s). Under a 24-way-parallel
 /// nextest run, a fork/exec that has not been scheduled far enough to run
 /// `printf` within ~1s would be killed with an empty pipe, and
 /// `should_panic(expected = ...)` would report a *failure* that reads as
