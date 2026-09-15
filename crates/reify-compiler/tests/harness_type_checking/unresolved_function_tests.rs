@@ -772,7 +772,7 @@ fn struct_constructor_in_a_trait_static_fn_body_is_not_unresolved() {
     let module = compile_source_with_stdlib(
         r#"
         structure Widget { let w: Length = 1mm }
-        trait Maker { fn build() -> Real { let x = Widget(w: 2mm) 1.0 } }
+        trait Maker { fn build() -> Real { let x = Widget(w: 2mm); 1.0 } }
     "#,
     );
 
@@ -851,13 +851,13 @@ fn struct_constructor_in_a_regular_fn_body_stays_clean_in_both_orders() {
             "structure first",
             r#"
             structure Widget { let w: Length = 1mm }
-            pub fn make() -> Real { let x = Widget(w: 2mm) 1.0 }
+            pub fn make() -> Real { let x = Widget(w: 2mm); 1.0 }
         "#,
         ),
         (
             "fn first",
             r#"
-            pub fn make() -> Real { let x = Widget(w: 2mm) 1.0 }
+            pub fn make() -> Real { let x = Widget(w: 2mm); 1.0 }
             structure Widget { let w: Length = 1mm }
         "#,
         ),
