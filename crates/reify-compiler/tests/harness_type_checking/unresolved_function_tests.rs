@@ -875,6 +875,23 @@ fn struct_constructor_in_a_regular_fn_body_stays_clean_in_both_orders() {
                 .map(|d| &d.message)
                 .collect::<Vec<_>>()
         );
+
+        // Silence is not enough: prove the constructor is RESOLVED here, not
+        // merely un-warned. A genuinely wrong field name must still be caught,
+        // which only a resolved `StructureInstanceCtor` can do.
+        let wrong_field = compile_source_with_stdlib(&source.replace("w: 2mm", "nope: 2mm"));
+        assert!(
+            wrong_field
+                .diagnostics
+                .iter()
+                .any(|d| d.code == Some(reify_core::DiagnosticCode::CtorUnknownField)),
+            "{order}: a bad field name must still raise E_CTOR_UNKNOWN_FIELD; got {:?}",
+            wrong_field
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 }
 

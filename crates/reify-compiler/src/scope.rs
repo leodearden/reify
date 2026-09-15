@@ -66,9 +66,16 @@ pub(crate) struct CompilationScope<'u> {
     /// category-specific lookup rather than overloading `names`.
     pub(crate) geometry_realization_names: HashSet<String>,
     /// Names the enclosing MODULE declares that may appear as a call callee
-    /// (task #5371). Read by exactly one site: the terminal first-arg fallback
-    /// in `expr.rs`, to tell "this name exists nowhere" from "this name is
-    /// declared right here but is not resolvable from this body yet".
+    /// (task #5371): its `fn` declarations (local + prelude) AND its structure
+    /// names, whose constructors are called with the same syntax. Read by
+    /// exactly one site: the terminal first-arg fallback in `expr.rs`, to tell
+    /// "this name exists nowhere" from "this name is declared right here but is
+    /// not resolvable from this body yet".
+    ///
+    /// Deliberately ONE set rather than a fn set and a structure set, because
+    /// that one site asks one question and never consults either half alone;
+    /// `functions.rs::declared_callable_names` documents the trade and why the
+    /// two INPUTS nevertheless stay separate on `CompilationCtx`.
     ///
     /// Unlike every sibling set above, this is a module-level fact rather than
     /// an entity-level one, and it binds NO values — an entry here does not put

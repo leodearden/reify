@@ -39,6 +39,39 @@ fn push_signature_type_error(
     }
 }
 
+/// The names this module declares that may appear as a call CALLEE.
+///
+/// ONE set, not two, because the terminal first-arg fallback in `expr.rs` asks
+/// ONE question — "is this callee a name the module declares?" — and neither
+/// half is ever consulted alone. Keeping them apart would buy a second scope
+/// field and a two-condition gate for a single decision, and would invite a
+/// future reader to check one and forget the other.
+///
+/// The two INPUTS stay separate on `CompilationCtx`, where fn-ness and
+/// structure-ness genuinely are distinct: `structure_names` resolves a declared
+/// type to `Type::StructureRef`, and only `declared_fn_names` describes
+/// something callable by a bare name. They are merged here, at the one consumer
+/// that treats them alike, rather than upstream where that conflation would be
+/// wrong.
+///
+/// Structure names earn their place because a constructor call IS a call whose
+/// callee is a declared name: `traits_phase` compiles static fn bodies with no
+/// template registry ("v1"), so `Widget(w: 2mm)` is never claimed as a
+/// `StructureInstanceCtor` there and rides the fallback. Withholding the
+/// warning is the typing-neutral half of that; making such a call actually
+/// LOWER to a constructor would change how trait static fn bodies type, which
+/// is outside a warn-only task's remit.
+fn declared_callable_names(
+    declared_fn_names: &HashSet<String>,
+    structure_names: &HashSet<String>,
+) -> HashSet<String> {
+    declared_fn_names
+        .iter()
+        .chain(structure_names.iter())
+        .cloned()
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_function(
     fn_def: &reify_ast::FnDef,
@@ -161,7 +194,8 @@ pub(crate) fn compile_function(
     // default like `= helper(1.0)` is compiled against the same partially-grown
     // `functions` table as the body below, so it reaches the terminal fallback
     // by the same route and must be answered the same way (task #5371).
-    neutral_scope.declared_callable_names = declared_fn_names.clone();
+    neutral_scope.declared_callable_names =
+        declared_callable_names(declared_fn_names, structure_names);
     let param_defaults: Vec<Option<CompiledExpr>> = fn_def
         .params
         .iter()
@@ -297,13 +331,15 @@ pub(crate) fn compile_function(
     if let Some(reg) = prelude_template_registry {
         scope.set_template_registry(reg);
     }
-    // The module's declared-fn vocabulary. `functions` above is the table this
-    // body RESOLVES against and is deliberately incomplete — `phase_functions`
-    // grows it in source order — so a call to a later sibling lands on the
-    // terminal first-arg fallback in `expr.rs` with a name that is perfectly
-    // real. This set is what lets that fallback withhold its "exists nowhere"
-    // claim without changing which overload (if any) resolves (task #5371).
-    scope.declared_callable_names = declared_fn_names.clone();
+    // The module's declared callable vocabulary. `functions` above is the table
+    // this body RESOLVES against and is deliberately incomplete —
+    // `phase_functions` grows it in source order — so a call to a later sibling
+    // lands on the terminal first-arg fallback in `expr.rs` with a name that is
+    // perfectly real. This set is what lets that fallback withhold its "exists
+    // nowhere" claim without changing which overload (if any) resolves, or
+    // whether a constructor call lowers to a `StructureInstanceCtor` (task
+    // #5371).
+    scope.declared_callable_names = declared_callable_names(declared_fn_names, structure_names);
     for (name, ty) in &params {
         scope.register(name, ty.clone());
     }
