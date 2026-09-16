@@ -124,6 +124,62 @@ HDR
     exit 0
 fi
 
+# ---------------------------------------------------------------------------
+# _ratchet_check_subset <scan-records-file>
+#
+# THE RATCHET. Reads the baseline through cited_test_path_baseline_path (so
+# REIFY_CITED_TEST_PATH_BASELINE is honored) and asserts
+#
+#     live ⊆ baseline
+#
+# via `comm -23`, the SUBSET DIRECTION ONLY.
+#
+# The converse (`comm -13`, baseline ⊆ live) is DELIBERATELY ABSENT, the same
+# ruling tests/infra/test_reify_audit_ptodo.sh records for ptodo. Asserting it
+# would turn every citation fix into a red build: repoint a citation, and its
+# now-dead baseline row becomes a violation until someone edits the manifest
+# in lockstep. The known cost is accepted in exchange — a grandfathered row
+# may sit in the baseline forever, with no forcing function to drain it. The
+# baseline is a SHRINKING grandfather list, and shrinking it must always be
+# free.
+#
+# On a non-empty difference: print the offenders on STDOUT with the suggested
+# target each one resolves to, joined from the scan records the caller already
+# produced (no second scan), and return 1. On success: byte-for-byte silent,
+# so an all-green suite stays quiet.
+# ---------------------------------------------------------------------------
+_ratchet_check_subset() {
+    local scan="$1"
+    local baseline live_fp base_fp new
+
+    baseline="$(cited_test_path_baseline_path)"
+    live_fp="$(mktemp)"; base_fp="$(mktemp)"
+    _TMPFILES+=("$live_fp" "$base_fp")
+
+    cited_test_path_fingerprint < "$scan" | LC_ALL=C sort -u > "$live_fp"
+    cited_test_path_baseline_rows "$baseline" | LC_ALL=C sort -u > "$base_fp"
+
+    new="$(LC_ALL=C comm -23 "$live_fp" "$base_fp")"
+    [ -n "$new" ] || return 0
+
+    printf 'RATCHET REGRESSION — %s live citation(s) NOT in the committed baseline:\n' \
+        "$(printf '%s\n' "$new" | grep -c .)"
+    # Join each offending fingerprint back to its scan record so the target is
+    # printed alongside it. The scan is keyed "<file>\t<cited>\t<verdict>\t<targets>"
+    # and a fingerprint is "<file> :: <cited>", so the record is recoverable
+    # without re-resolving anything.
+    printf '%s\n' "$new" | while IFS= read -r fp; do
+        [ -n "$fp" ] || continue
+        local rec verdict target
+        rec="$(awk -F'\t' -v k="$fp" '$1 " :: " $2 == k { print; exit }' "$scan")"
+        verdict="$(printf '%s' "$rec" | cut -f3)"
+        target="$(printf '%s' "$rec" | cut -f4)"
+        printf '  + %s\n' "$fp"
+        printf '      -> %s: %s\n' "${verdict:-unresolved}" "${target:-<no candidate>}"
+    done
+    return 1
+}
+
 echo "=== cited test-path resolution gate (task 7095) ==="
 
 # Single EXIT trap over an array of fixtures: individual `trap ... EXIT` calls
