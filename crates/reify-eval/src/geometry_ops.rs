@@ -449,6 +449,44 @@ fn unresolved_arg_message(
     )
 }
 
+/// The SINGLE owner of the GROUP-READ policy, shared by every gated dimension:
+/// read a whole named set, diagnose EVERY failing member, hand back the FIRST
+/// error.
+///
+/// Both properties are load-bearing and neither is recoverable from a call
+/// site. ALL FAILURES AT ONCE — the member reads are deliberately NOT
+/// `?`-chained, because a gated set is written as ONE gesture (`translate(g, 5,
+/// 0, 0)`, `arc`'s `start_angle`/`end_angle`), so a bare set is usually bare in
+/// EVERY member and short-circuiting would hand the author one arg name per
+/// rebuild. FIRST-ERROR-WINS — the returned `Err` is the one the per-slot read
+/// order reported, so an `Unresolved` member is never masked by a later
+/// `Invalid` one.
+///
+/// `read` is the ONLY thing that varies between [`required_length_args`] and
+/// [`required_angle_args`], so the precedence rule above is stated once here
+/// rather than once per dimension.
+fn required_args_with<const N: usize>(
+    names: [&str; N],
+    mut read: impl FnMut(&str) -> Result<f64, String>,
+) -> Result<[f64; N], String> {
+    let mut out = [0.0_f64; N];
+    let mut first_err: Option<String> = None;
+    for (slot, name) in out.iter_mut().zip(names) {
+        match read(name) {
+            Ok(si) => *slot = si,
+            Err(e) => {
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
+        }
+    }
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(out),
+    }
+}
+
 /// The SINGLE owner of the caller-facing `Err` wording for a LENGTH-semantic
 /// argument (decision D9) — previously copy-pasted at six call sites, now
 /// minted here and here only, for BOTH arities of the named-arg route
@@ -593,6 +631,20 @@ pub(crate) fn required_length_value(
     .map(|[v]| v)
 }
 
+/// The SINGLE owner of the caller-facing `Err` wording for an ANGLE-semantic
+/// argument — the counterpart of [`length_arg_to_result`]'s `Invalid` row, and
+/// minted here for the same reason: it is read by BOTH routes into the gate
+/// ([`accept_angle_value`]'s dimension rejection and [`required_angle_arg`]'s
+/// missing-arg arm), so a reword that reached only one would fork the two
+/// halves of one contract. The `Unresolved` row delegates to
+/// [`unresolved_arg_message`], which every gated dimension shares.
+fn invalid_angle_message(
+    name: impl std::fmt::Display,
+    kind_label: impl std::fmt::Display,
+) -> String {
+    format!("missing or non-Angle argument '{}' for {}", name, kind_label)
+}
+
 /// The VALUE-LEVEL core of the ANGLE gate: classify an already-evaluated
 /// `Value` as a finite ANGLE, and push the rejection diagnostic when it is not.
 ///
@@ -659,10 +711,7 @@ fn accept_angle_value(
                 Diagnostic::error(rej.message(&kind_label.to_string(), &name.to_string()))
                     .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
             );
-            Err(format!(
-                "missing or non-Angle argument '{}' for {}",
-                name, kind_label
-            ))
+            Err(invalid_angle_message(name, kind_label))
         }
     }
 }
@@ -699,10 +748,7 @@ fn required_angle_arg(
     ) else {
         // `eval_named_arg` has already named the culprit; adding a dimension
         // rejection here would be the cascade that contract forbids.
-        return Err(format!(
-            "missing or non-Angle argument '{}' for {}",
-            name, kind_label
-        ));
+        return Err(invalid_angle_message(name, kind_label));
     };
     accept_angle_value(name, kind_label, &value, diagnostics)
 }
@@ -736,21 +782,16 @@ fn required_angle_value(
 }
 
 /// The GROUP form of [`required_angle_arg`]: read a whole set of named angle
-/// slots in one call, diagnosing EVERY failing member.
+/// slots in one call, under [`required_args_with`]'s every-member /
+/// first-error-wins policy.
 ///
-/// ALL FAILURES AT ONCE (reviewer amendment), for the reason
-/// [`required_length_args`] gives for coordinates and this function inherits:
+/// Why `arc` needs it (reviewer amendment):
 /// `arc(0mm, 0mm, 0mm, 10mm, 0, 90, 0, 0, 1)` is written as ONE gesture, so an
 /// author who forgot the units on `start_angle` forgot them on `end_angle` too.
 /// `?`-chaining two [`required_angle_arg`] calls would hand back one slot name
 /// per rebuild — two edit-build cycles for one mistake — and would be
 /// inconsistent with the LENGTH group `arc` already reads its centre and radius
 /// through, twelve lines above its angles.
-///
-/// The member reads are therefore deliberately NOT `?`-chained: each pushes its
-/// own diagnostic, and only then is the FIRST error returned — so the
-/// caller-facing `Err` wording, and the `Unresolved`-beats-a-later-`Invalid`
-/// precedence it encodes, are exactly what the per-slot read produced.
 fn required_angle_args<const N: usize>(
     names: [&str; N],
     kind_label: impl std::fmt::Display + Copy,
@@ -760,10 +801,8 @@ fn required_angle_args<const N: usize>(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<[f64; N], String> {
-    let mut out = [0.0_f64; N];
-    let mut first_err: Option<String> = None;
-    for (slot, name) in out.iter_mut().zip(names) {
-        match required_angle_arg(
+    required_args_with(names, |name| {
+        required_angle_arg(
             name,
             kind_label,
             args,
@@ -771,22 +810,8 @@ fn required_angle_args<const N: usize>(
             functions,
             meta_map,
             diagnostics,
-        ) {
-            Ok(si) => *slot = si,
-            Err(e) => {
-                // FIRST error wins, as in [`required_length_args`]: it is the
-                // one the per-slot read order reported, and an `Unresolved`
-                // member must not be masked by a later `Invalid` one.
-                if first_err.is_none() {
-                    first_err = Some(e);
-                }
-            }
-        }
-    }
-    match first_err {
-        Some(e) => Err(e),
-        None => Ok(out),
-    }
+        )
+    })
 }
 
 /// The GROUP form of [`required_length_value`]: read a whole set of
@@ -846,19 +871,16 @@ fn required_length_values<const N: usize>(
 /// Which positions are routed here is enumerated ONCE, in the `arg_acceptance`
 /// module doc.
 ///
-/// ALL FAILURES AT ONCE (reviewer amendment, task 5623): the member reads are
-/// deliberately NOT `?`-chained. A coordinate group is written as one gesture —
-/// `translate(g, 5, 0, 0)`, `line_segment(0, 0, 0, 10, 0, 0)` — so a bare group
-/// is usually bare in EVERY member, and short-circuiting would hand the author
-/// one arg name per rebuild: three edit-build cycles to fix one line, six for
-/// `line_segment`. Every member is therefore evaluated (each pushing its own
-/// diagnostic via [`required_length_arg`] — a `Severity::Error` carrying
+/// ALL FAILURES AT ONCE (reviewer amendment, task 5623) comes from
+/// [`required_args_with`], which owns that policy for every gated dimension:
+/// each member is read through [`required_length_arg`], pushing its own
+/// diagnostic — a `Severity::Error` carrying
 /// `DiagnosticCode::DimensionedArgRejected` for a dimension rejection, per
-/// [`eval_named_arg_length`]'s table) and only then is the FIRST
-/// error returned — so the caller-facing `Err` wording, and the
-/// `Unresolved`-beats-a-later-`Invalid` precedence it encodes, are unchanged.
-/// Grouping the WHOLE gated set of a builtin into one call (rather than several
-/// chained calls) is what makes that guarantee reach every position.
+/// [`eval_named_arg_length`]'s table — and only then is the FIRST error
+/// returned. Grouping the WHOLE gated set of a builtin into one call (rather
+/// than several chained calls) is what makes that guarantee reach every
+/// position: three edit-build cycles to fix `translate(g, 5, 0, 0)` collapse to
+/// one, six for `line_segment`.
 ///
 /// BORROW ORDERING (the reason this is a free function and not a closure):
 /// each call takes `&mut diagnostics`, so the whole group must be read BEFORE
@@ -875,10 +897,8 @@ fn required_length_args<const N: usize>(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<[f64; N], String> {
-    let mut out = [0.0_f64; N];
-    let mut first_err: Option<String> = None;
-    for (slot, name) in out.iter_mut().zip(names) {
-        match required_length_arg(
+    required_args_with(names, |name| {
+        required_length_arg(
             name,
             kind_label,
             args,
@@ -886,22 +906,8 @@ fn required_length_args<const N: usize>(
             functions,
             meta_map,
             diagnostics,
-        ) {
-            Ok(si) => *slot = si,
-            Err(e) => {
-                // FIRST error wins: it is the one the pre-existing read order
-                // reported, and an `Unresolved` member must not be masked by a
-                // later `Invalid` one.
-                if first_err.is_none() {
-                    first_err = Some(e);
-                }
-            }
-        }
-    }
-    match first_err {
-        Some(e) => Err(e),
-        None => Ok(out),
-    }
+        )
+    })
 }
 
 /// [`required_length_args`] specialised to the `ox`/`oy`/`oz` ORIGIN triple —
@@ -4134,29 +4140,12 @@ fn pattern_circular(
             format!("missing or non-finite argument 'count' for {}", kind)
         })?;
         let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
-        // TASK #1763 REVERSED HERE (PRD §3.10). #1763 (done, 2026-04) ruled that
-        // `circular_pattern` should accept a BARE angle as DEGREES per CAD
-        // convention. Its mechanism — a shared bare-angle resolver that computed
-        // `deg * PI / 180` and pushed a deprecation warning — is deleted by this
-        // leaf, and this is the slot it served.
-        //
-        // This PRD reverses it, and the reason is not that #1763 was wrong on
-        // its own terms — it is that #1763 was decided PER-BUILTIN, without the
-        // whole-surface view. The result was three contradictory readings of one
-        // literal shape in one binary: `45` meant 45° here, 45 RADIANS at
-        // rotate/revolve/arc, and an outright rejection at the selector `tol`.
-        // Converging on "a bare number is not an angle anywhere" is what makes
-        // the contradiction go away; keeping degrees here could not.
-        //
-        // Do NOT re-derive #1763's argument from scratch and restore this. The
-        // deleted warning was a DIMENSION verdict on a bare literal that
-        // carried NO DiagnosticCode (`Diagnostic::warning` sets `code: None`),
-        // which is exactly the class INV-SF-6 governs — "a `DiagnosticCode` on
-        // every `ArgSpec`-backed REJECTION" — so this removes a violation
-        // rather than replicating one. That reading is about dimension
-        // REJECTIONS only: `accept_angle_value`'s code-less non-finite Warning
-        // is a value-domain verdict on an ACCEPTED dimension, outside
-        // INV-SF-6's reach, as its `accept_length_value` twin already was.
+        // TASK #1763 REVERSED HERE: a bare `circular_pattern` angle no longer
+        // means DEGREES, and the shared resolver that converted it (with a
+        // code-less deprecation Warning) is gone. #1763 was decided
+        // per-builtin; the case for settling it across the whole surface
+        // instead is docs/prds/v0_6/angle-units-surface-convergence.md §3.10.
+        // Do not re-derive #1763 from this one call site and restore it.
         //
         // `surface_name`, not `kind`: passing `kind` would render "circular:
         // angle argument expects Angle" at a call the author wrote as
