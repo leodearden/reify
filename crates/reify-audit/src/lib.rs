@@ -1365,6 +1365,19 @@ impl GitOps for MockGitOps {
 /// metadata so the detector stays pure-logic (it never reads source files —
 /// symmetric with how [`GitOps::diff_added_lines`] pre-extracts strings).
 /// Per `f-infra-design.md` §3 and §5 P1.
+///
+/// KNOWN LIMITATION — the three suppression fields carry no "unknown".
+/// `false` / `None` means EITHER "the declaration was read and carries no
+/// opt-out" OR "the declaration could not be located and nothing was read".
+/// A consumer that treats them as an opt-out having been DECLINED will,
+/// on the second reading, report a symbol its author did suppress. Today
+/// `line == 0` is the only in-band signal, and it covers just one of the
+/// two ways a declaration goes unlocatable (the wire reported no line);
+/// the other — a line past the declaring file's current end, i.e. a stale
+/// index — is known only to the enrichment pass, which reports it to the
+/// operator on stderr and does not record it per symbol. Distinguishing
+/// the states at the type is tracked as a follow-up rather than fixed
+/// here, since it reaches beyond this seam into `p1_producer_orphan`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChangedSymbol {
     /// The symbol's name, used as the key for [`JCodemunchOps::find_references`].
@@ -1376,7 +1389,9 @@ pub struct ChangedSymbol {
     /// mirroring [`SymbolReference::line`]: a `get_changed_symbols` payload
     /// that omits the `line` column still yields the symbol, located at
     /// `0`, rather than dropping it. Suppression enrichment treats `0` as
-    /// unlocatable and leaves the flags below at their neutral defaults.
+    /// unlocatable and leaves the flags below at their neutral defaults —
+    /// which is why a consumer reading those flags must check this field
+    /// first; see the KNOWN LIMITATION on the struct.
     pub line: usize,
     /// `true` when the declaration carries `#[allow(dead_code)]` — an
     /// intentional-orphan opt-out (suppresses the finding). Per
