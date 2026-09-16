@@ -131,6 +131,64 @@ occt_plan_grep_or_dump 'plan' 'some plan text' "$_errf" > "$_dumpf2" 2>&1 || tru
 assert "occt_plan_grep_or_dump: match => no stderr dump (sentinel absent)" \
     bash -c "! grep -q SENTINEL_DIAG_XYZ '$_dumpf2'"
 
-rm -f "$_errf" "$_dumpf" "$_dumpf2"
+# (e) FORK-FREE MATCHING. A `printf | grep -qE` match is not a pure predicate on
+#     the plan string: grep -q exits on its FIRST match and closes the pipe, so
+#     once the plan exceeds the 64 KiB pipe buffer the printf still writing on
+#     the other end takes SIGPIPE — and under `set -o pipefail` the pipeline
+#     yields 141 for a pattern that is PRESENT. The race needs the match to land
+#     EARLY relative to the writer's remaining bytes, which is why this fixture
+#     puts the needle on LINE 1 of an oversize haystack; a needle at the END
+#     forces grep to read everything and the writer always finishes first.
+#
+#     THIS CASE MUST RUN IN THIS SHELL, NOT UNDER `bash -c`. SHELLOPTS is not
+#     exported, so a `bash -c` child does not inherit this file's
+#     `set -o pipefail` and the pipeline's 141 would be masked by grep's own 0 —
+#     making the assertion vacuous. assert() runs "$@" directly in this shell
+#     (test_helpers.sh, the no-subshell tmpfile idiom), so pipefail is live here.
+_OVERSIZE_NEEDLE='timeout --kill-after=60 45m cargo build --release -p reify-cli'
+_OVERSIZE_PLAN="$_OVERSIZE_NEEDLE"
+_filler='cargo nextest run --workspace --profile debug --filler-pad-to-exceed-the-64KiB-pipe-buffer'
+for _i in $(seq 1 3000); do
+    _OVERSIZE_PLAN+="
+$_filler $_i"
+done
+assert "occt_plan_grep_or_dump: oversize plan, match on line 1 => returns 0 (no SIGPIPE/pipefail race)" \
+    occt_plan_grep_or_dump "$_OVERSIZE_NEEDLE" "$_OVERSIZE_PLAN" /dev/null
+
+# (f) DIAGNOSTIC: the on-no-match dump must be SELF-ATTRIBUTING — it must name
+#     the PATTERN that failed and carry the PLAN that was searched, not only the
+#     child stderr. Motivation is measured: verify.sh --print-plan writes EMPTY
+#     stderr on a healthy run (25/25), so a failing plan assertion archives the
+#     literal "(child stderr was empty)" and nothing whatsoever about the plan —
+#     which is why such failures arrive unattributable and recur.
+_dumpf3="$(mktemp)"
+occt_plan_grep_or_dump 'ABSENT_PATTERN_QQQ' 'plan line one
+plan line two SENTINEL_PLAN_TEXT_QQQ' /dev/null > "$_dumpf3" 2>&1 || true
+
+assert "occt_plan_grep_or_dump: no-match dump names the PATTERN that failed" \
+    grep -q 'ABSENT_PATTERN_QQQ' "$_dumpf3"
+
+assert "occt_plan_grep_or_dump: no-match dump carries the PLAN that was searched" \
+    grep -q 'SENTINEL_PLAN_TEXT_QQQ' "$_dumpf3"
+
+# (f2) BOUNDED: the plan dump must not swamp the archived verify log with a
+#      whole oversize plan, and must say so rather than truncate silently.
+_dumpf4="$(mktemp)"
+occt_plan_grep_or_dump 'ABSENT_PATTERN_QQQ' "$_OVERSIZE_PLAN" /dev/null > "$_dumpf4" 2>&1 || true
+assert "occt_plan_grep_or_dump: an oversize plan dump is bounded (fewer lines than the plan)" \
+    test "$(wc -l < "$_dumpf4")" -lt 3000
+assert "occt_plan_grep_or_dump: a bounded dump says it is truncated" \
+    grep -qi 'truncat' "$_dumpf4"
+
+# (g) RE-PIN (d) against the (f) enrichment: on a MATCH the helper emits NOTHING
+#     AT ALL. (d) only proves the errfile sentinel is absent; the pattern and the
+#     plan are now dumped too, and neither may leak into the passing path or
+#     every green run grows a diff.
+_dumpf5="$(mktemp)"
+occt_plan_grep_or_dump 'plan' 'some plan text' "$_errf" > "$_dumpf5" 2>&1 || true
+assert "occt_plan_grep_or_dump: match => emits nothing at all (dump enrichment stays off the passing path)" \
+    test ! -s "$_dumpf5"
+
+rm -f "$_errf" "$_dumpf" "$_dumpf2" "$_dumpf3" "$_dumpf4" "$_dumpf5"
 
 test_summary
