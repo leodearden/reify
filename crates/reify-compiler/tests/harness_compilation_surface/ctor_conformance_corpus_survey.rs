@@ -74,6 +74,13 @@ use std::process::Command;
 // (`crates/reify-test-support/src/git_env.rs`.)
 use reify_test_support::git_env::{REPO_REDIRECT_VARS, removed_vars, sanitize};
 use reify_test_support::is_ctor_conformance_code;
+// The reusable inline-fixture walker (task #7543): `is_inline_fixture_host`
+// decides what the second corpus half contains, and the collector/admission
+// filter decide what an embedded snippet IS. It lives in reify-test-support
+// rather than here because this harness unit is already at 80% of the
+// `CAP_LINES` in `tests/infra/test_harness_kloc_cap.sh`, and because a Rust
+// mini-lexer is a second-consumer shape, not a survey concern.
+use reify_test_support::rust_fixture_scan;
 
 /// Absolute path to the workspace root, resolved at compile time from this
 /// crate's manifest directory (two levels up).
@@ -269,6 +276,190 @@ fn scan_tracked_ri_corpus() -> Vec<String> {
          {WORKSPACE_ROOT} — a silently-empty corpus would render a falsely-clean survey"
     );
     paths
+}
+
+/// A BROKEN-ENUMERATION floor for the Rust-host half, deliberately far below
+/// the live count (1,307 measured 2026-09-16: 1,305 carrying a `tests`
+/// directory component under `crates/`, plus
+/// `crates/reify-eval/src/{engine_build,geometry_ops}/tests.rs`).
+///
+/// Same reasoning as the `.ri` floor below: it catches a wrong root, a wrong
+/// pathspec or a silent git failure, and must NOT red the merge gate when a
+/// test-consolidation task legitimately deletes a few hundred host files. The
+/// artifact header carries the live count.
+const RUST_HOST_CORPUS_FLOOR: usize = 300;
+
+/// Every tracked `*.rs` that can host an inline Reify fixture — the second
+/// corpus half (task #7543).
+fn tracked_rust_test_hosts() -> &'static [String] {
+    static HOSTS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    HOSTS.get_or_init(scan_tracked_rust_test_hosts)
+}
+
+/// The uncached enumeration behind [`tracked_rust_test_hosts`].
+fn scan_tracked_rust_test_hosts() -> Vec<String> {
+    Vec::new()
+}
+
+/// The single git-index primitive both halves are enumerated through.
+fn scan_tracked_corpus(_pathspec: &str) -> Vec<String> {
+    Vec::new()
+}
+
+/// `Some(hosts)` when git can be spawned, `None` when it cannot — the
+/// [`tracked_ri_corpus_if_git_available`] idiom for the second half.
+fn tracked_rust_test_hosts_if_git_available() -> Option<&'static [String]> {
+    git_is_available().then(tracked_rust_test_hosts)
+}
+
+#[test]
+fn tracked_rust_test_hosts_clears_the_broken_enumeration_floor() {
+    let Some(hosts) = tracked_rust_test_hosts_if_git_available() else {
+        println!("skipped: no `git` on PATH — see `git_is_available`");
+        return;
+    };
+    assert!(
+        hosts.len() >= RUST_HOST_CORPUS_FLOOR,
+        "tracked Rust host corpus must have >= {RUST_HOST_CORPUS_FLOOR} entries — a floor \
+         that catches a BROKEN enumeration (wrong root, wrong pathspec, silent git failure), \
+         not a legitimate shrink; the artifact header carries the live count. Got {}",
+        hosts.len()
+    );
+}
+
+#[test]
+fn tracked_rust_test_hosts_entries_all_end_in_dot_rs() {
+    let Some(hosts) = tracked_rust_test_hosts_if_git_available() else {
+        println!("skipped: no `git` on PATH — see `git_is_available`");
+        return;
+    };
+    let bad: Vec<&String> = hosts.iter().filter(|p| !p.ends_with(".rs")).collect();
+    assert!(
+        bad.is_empty(),
+        "every host entry must end in '.rs', got {} that do not: {:?}",
+        bad.len(),
+        &bad[..bad.len().min(5)]
+    );
+}
+
+#[test]
+fn tracked_rust_test_hosts_all_satisfy_the_shared_host_predicate() {
+    // The enumeration and the walker must agree on what an in-scope host IS,
+    // and `is_inline_fixture_host` is the one place that decides — so this
+    // asserts the filter was actually applied, not merely declared.
+    let Some(hosts) = tracked_rust_test_hosts_if_git_available() else {
+        println!("skipped: no `git` on PATH — see `git_is_available`");
+        return;
+    };
+    let bad: Vec<&String> = hosts
+        .iter()
+        .filter(|p| !rust_fixture_scan::is_inline_fixture_host(std::path::Path::new(p)))
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "every host entry must satisfy `rust_fixture_scan::is_inline_fixture_host`, \
+         got {} that do not: {:?}",
+        bad.len(),
+        &bad[..bad.len().min(5)]
+    );
+}
+
+#[test]
+fn tracked_rust_test_hosts_is_sorted_and_deduplicated() {
+    let Some(hosts) = tracked_rust_test_hosts_if_git_available() else {
+        println!("skipped: no `git` on PATH — see `git_is_available`");
+        return;
+    };
+    let mut expected = hosts.to_vec();
+    expected.sort();
+    expected.dedup();
+    assert_eq!(
+        hosts,
+        expected.as_slice(),
+        "tracked_rust_test_hosts must return a sorted, deduplicated list"
+    );
+}
+
+#[test]
+fn tracked_rust_test_hosts_paths_are_repo_relative_forward_slash() {
+    let Some(hosts) = tracked_rust_test_hosts_if_git_available() else {
+        println!("skipped: no `git` on PATH — see `git_is_available`");
+        return;
+    };
+    for p in hosts {
+        assert!(
+            !p.starts_with('/') && !p.starts_with("./") && !p.contains('\\'),
+            "host entries must be repo-relative forward-slash paths, got {p:?}"
+        );
+    }
+}
+
+#[test]
+fn tracked_rust_test_hosts_reach_both_the_named_site_host_and_src_tests_rs() {
+    let Some(hosts) = tracked_rust_test_hosts_if_git_available() else {
+        println!("skipped: no `git` on PATH — see `git_is_available`");
+        return;
+    };
+    const NAMED_SITE_HOST: &str =
+        "crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs";
+    assert!(
+        hosts.iter().any(|p| p == NAMED_SITE_HOST),
+        "the host of the two sites #7543's VERIFY criterion names must be enumerated"
+    );
+    // The `crates/*/src/**/tests.rs` shape is the half a `tests`-directory walk
+    // misses entirely, so a collapse back to that walk must red here.
+    assert!(
+        hosts.iter().any(|p| {
+            p.starts_with("crates/") && p.contains("/src/") && p.ends_with("/tests.rs")
+        }),
+        "the `crates/*/src/**/tests.rs` shape must be enumerated; \
+         first 5 entries: {:?}",
+        &hosts[..hosts.len().min(5)]
+    );
+}
+
+#[test]
+fn tracked_rust_test_hosts_is_disjoint_from_the_ri_corpus() {
+    if !git_is_available() {
+        println!("skipped: no `git` on PATH — see `git_is_available`");
+        return;
+    }
+    let ri: std::collections::BTreeSet<&String> = tracked_ri_corpus().iter().collect();
+    let overlap: Vec<&String> = tracked_rust_test_hosts()
+        .iter()
+        .filter(|p| ri.contains(*p))
+        .collect();
+    assert!(
+        overlap.is_empty(),
+        "the two corpus halves must be disjoint — a member surveyed twice would \
+         be double-counted in the artifact; got {overlap:?}"
+    );
+}
+
+#[test]
+fn both_corpus_halves_come_from_the_same_git_primitive() {
+    if !git_is_available() {
+        println!("skipped: no `git` on PATH — see `git_is_available`");
+        return;
+    }
+    // Exercising the generalized seam with each pathspec is what makes the
+    // parity gate's shared floor STRUCTURAL: neither half can acquire its own
+    // enumeration strategy without this failing.
+    assert_eq!(
+        scan_tracked_corpus("*.ri"),
+        tracked_ri_corpus(),
+        "the `.ri` half must be `scan_tracked_corpus(\"*.ri\")` verbatim"
+    );
+    let hosts_via_seam: Vec<String> = scan_tracked_corpus("*.rs")
+        .into_iter()
+        .filter(|p| rust_fixture_scan::is_inline_fixture_host(std::path::Path::new(p)))
+        .collect();
+    assert_eq!(
+        hosts_via_seam,
+        tracked_rust_test_hosts(),
+        "the host half must be `scan_tracked_corpus(\"*.rs\")` filtered through \
+         the shared host predicate, and nothing else"
+    );
 }
 
 #[test]
