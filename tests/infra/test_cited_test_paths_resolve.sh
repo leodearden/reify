@@ -1139,6 +1139,169 @@ assert "J: an unrecognised argument is rejected with a usage line, not run as th
     _unknown_argument_is_rejected
 
 # ===========================================================================
+# Section K: ACCEPTANCE — the scenario this whole gate exists for.
+#
+# Replays the root cause literally: a test unit is committed together with
+# prose citing it, then a real `git mv` relocates the unit into a
+# harness_<subsystem>/ directory and the move is committed ALONE, leaving
+# every citation untouched. That is exactly what the CMP-*/C-eval-* harness
+# consolidation series did, and what commit 276d32f025 then had to clean up
+# by hand across 123 files.
+#
+# The acceptance criterion for "a future harness-consolidation git mv gets
+# caught automatically" is: the gate, run against that repository, goes red
+# and names EVERY orphaned citation with the correct new target.
+# ===========================================================================
+echo ""
+echo "--- Section K: acceptance — a real `git mv` orphans citations and is caught ---"
+
+FIX_ACCEPT="$(_mktmpd)/repo"
+_fixture_init "$FIX_ACCEPT"
+# Commit 1: the unit, plus three citations of it in three different media —
+# a README, a .ri design file, and a Rust doc comment.
+_fixture_write "$FIX_ACCEPT" crates/mycrate/tests/examples_smoke.rs '// the unit'
+_fixture_write "$FIX_ACCEPT" docs/testing.md \
+    'Coverage lives in crates/mycrate/tests/examples_smoke.rs today.'
+_fixture_write "$FIX_ACCEPT" examples/part.ri \
+    '// exercised by crates/mycrate/tests/examples_smoke.rs'
+_fixture_write "$FIX_ACCEPT" crates/mycrate/src/lib.rs \
+    '//! See crates/mycrate/tests/examples_smoke.rs for the smoke coverage.'
+_fixture_commit "$FIX_ACCEPT"
+
+# Commit 2: a REAL `git mv` into the harness directory, committed ALONE. No
+# citation is touched — precisely the omission the consolidation made.
+mkdir -p "$FIX_ACCEPT/crates/mycrate/tests/harness_compilation_surface"
+_gitf -C "$FIX_ACCEPT" mv crates/mycrate/tests/examples_smoke.rs \
+    crates/mycrate/tests/harness_compilation_surface/examples_smoke.rs
+_gitf -C "$FIX_ACCEPT" commit -qm 'consolidate examples_smoke into harness_compilation_surface'
+
+_acceptance_catches_all_three_citations() {
+    local empty out rc=0 f
+    empty="$(_write_baseline)"
+    out="$(_ratchet_rc "$FIX_ACCEPT" "$empty")" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "the gate stayed GREEN after a real git mv orphaned three citations:"
+        printf '%s\n' "$out"
+        return 1
+    fi
+    for f in docs/testing.md examples/part.ri crates/mycrate/src/lib.rs; do
+        printf '%s\n' "$out" \
+            | grep -qF "$f :: crates/mycrate/tests/examples_smoke.rs" || {
+            echo "orphaned citation in $f was NOT reported:"; printf '%s\n' "$out"; return 1
+        }
+    done
+    # And each is repointed at the real new home, not merely flagged.
+    if [ "$(printf '%s\n' "$out" \
+            | grep -cF 'crates/mycrate/tests/harness_compilation_surface/examples_smoke.rs')" -lt 3 ]; then
+        echo "not every offender carried the harness_compilation_surface/ target:"
+        printf '%s\n' "$out"; return 1
+    fi
+    return 0
+}
+
+assert "K: a real git mv orphaning three citations is caught, each with the harness_compilation_surface/ target" \
+    _acceptance_catches_all_three_citations
+
+# The move must be a genuine rename in git's eyes, not a delete+add that
+# happens to look similar — otherwise the fixture is not replaying the root
+# cause at all.
+_acceptance_move_was_a_real_rename() {
+    local st
+    st="$(_gitf -C "$FIX_ACCEPT" show --name-status --find-renames HEAD | grep -E '^R[0-9]*' || true)"
+    [ -n "$st" ] && return 0
+    echo "HEAD is not a rename commit; the fixture does not replay the root cause:"
+    _gitf -C "$FIX_ACCEPT" show --name-status HEAD
+    return 1
+}
+
+assert "K: the fixture's HEAD is a genuine git rename, not a delete+add" \
+    _acceptance_move_was_a_real_rename
+
+# ===========================================================================
+# Section L: the REMEDIATION CONTRACT — stream separation.
+#
+# Mirrors what tests/infra/test_harness_baseline_registration_gate.sh Sections
+# P/P2 guard for scripts/check-harness-baseline-registration.sh (task #5381):
+# the FINDINGS are the machine-readable product and belong on stdout, while
+# the human-facing remediation hint belongs on stderr — so a reader piping
+# stdout into a file still SEES the hint, and a script consuming stdout is not
+# forced to parse prose out of its data.
+#
+# The hint must name BOTH available fixes, because they are genuinely
+# different decisions: repoint the citation (the move was incidental), or
+# regenerate the baseline (the move is intentional and the citation is being
+# deliberately grandfathered). A hint naming only one silently steers every
+# author toward it.
+# ===========================================================================
+echo ""
+echo "--- Section L: remediation hint on STDERR, findings on STDOUT ---"
+
+# Capture the two streams INDEPENDENTLY — the only way to prove they are
+# genuinely separate rather than interleaved into one.
+_HINT_OUT="$(mktemp)"; _TMPFILES+=("$_HINT_OUT")
+_HINT_ERR="$(mktemp)"; _TMPFILES+=("$_HINT_ERR")
+_HINT_RC=0
+_HINT_SCAN="$(_scan_file "$FIX_ACCEPT")"
+_HINT_BASELINE="$(_write_baseline)"
+( export REIFY_CITED_TEST_PATH_BASELINE="$_HINT_BASELINE"
+  _ratchet_check_subset "$_HINT_SCAN" ) > "$_HINT_OUT" 2> "$_HINT_ERR" || _HINT_RC=$?
+
+assert "L: the checker still exits non-zero on a violation (the hint must not perturb the exit code)" \
+    test "$_HINT_RC" -ne 0
+
+assert "L: STDOUT carries the findings" \
+    grep -qF 'docs/testing.md :: crates/mycrate/tests/examples_smoke.rs' "$_HINT_OUT"
+
+assert "L: STDERR carries a remediation hint" \
+    grep -qiE 'hint|remedy|fix' "$_HINT_ERR"
+
+# BOTH fixes named, on stderr.
+assert "L: the hint names fix 1 — repoint the citation to the suggested target" \
+    grep -qiE 'repoint|update the citation' "$_HINT_ERR"
+assert "L: the hint names fix 2 — regenerate the baseline to grandfather the citation deliberately" \
+    grep -qF -- '--emit-baseline' "$_HINT_ERR"
+
+# The streams are genuinely separate: the hint must NOT also appear on stdout,
+# and the findings must NOT also appear on stderr. Either leak would defeat
+# the separation even though both texts were technically emitted.
+_streams_do_not_leak() {
+    if grep -qF -- '--emit-baseline' "$_HINT_OUT"; then
+        echo "the remediation hint leaked onto STDOUT:"; cat "$_HINT_OUT"; return 1
+    fi
+    if grep -qF 'docs/testing.md :: ' "$_HINT_ERR"; then
+        echo "the findings leaked onto STDERR:"; cat "$_HINT_ERR"; return 1
+    fi
+    return 0
+}
+
+assert "L: the two streams do not leak into each other" \
+    _streams_do_not_leak
+
+# On a GREEN run neither stream may carry anything: an all-green suite stays
+# quiet, and a hint emitted on success would train readers to ignore it.
+_no_hint_on_a_clean_run() {
+    local out err rc=0 covered
+    out="$(mktemp)"; err="$(mktemp)"; _TMPFILES+=("$out" "$err")
+    covered="$(_write_baseline \
+        'docs/testing.md :: crates/mycrate/tests/examples_smoke.rs' \
+        'examples/part.ri :: crates/mycrate/tests/examples_smoke.rs' \
+        'crates/mycrate/src/lib.rs :: crates/mycrate/tests/examples_smoke.rs')"
+    ( export REIFY_CITED_TEST_PATH_BASELINE="$covered"
+      _ratchet_check_subset "$_HINT_SCAN" ) > "$out" 2> "$err" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "expected a green run against a fully-covering baseline, got rc$rc:"; cat "$out" "$err"; return 1
+    fi
+    if [ -s "$out" ] || [ -s "$err" ]; then
+        echo "a green run emitted output; it must be byte-for-byte silent:"
+        echo "--- stdout ---"; cat "$out"; echo "--- stderr ---"; cat "$err"; return 1
+    fi
+    return 0
+}
+
+assert "L: a green run emits no hint and no findings on either stream" \
+    _no_hint_on_a_clean_run
+
+# ===========================================================================
 # The gate itself, last: the scenarios above having passed, run the real
 # whole-tree check. This is the SAME function --gate-only dispatches to — the
 # full suite does not carry a second copy of the main body.
