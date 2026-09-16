@@ -59,6 +59,67 @@ source "$SCRIPT_DIR/test_helpers.sh"
 # test_harness_baseline_registration_gate.sh idiom).
 LIB="$SCRIPT_DIR/cited-test-path-lib.sh"
 
+# ---------------------------------------------------------------------------
+# GENERATOR ENTRY POINTS. Argument-less invocation — the only form run_all.sh
+# uses — runs the GATE; these two are opt-in side doors.
+#
+#   --emit-baseline   print the baseline file (header + rows) on stdout;
+#   --list            print the human-readable scan records on stdout.
+#
+# Both are THIN WRAPPERS over the lib. Neither contains a second scan or a
+# second fingerprint implementation: derivation lives ONLY in
+# cited-test-path-lib.sh, the same invariant
+# tests/infra/test_reify_audit_ptodo.sh states for ptodo. That is what makes
+# the committed baseline and the check that reads it structurally incapable
+# of drifting.
+# ---------------------------------------------------------------------------
+if [ "${1:-}" = "--emit-baseline" ] || [ "${1:-}" = "--list" ]; then
+    # shellcheck source=tests/infra/cited-test-path-lib.sh
+    source "$LIB"
+    if [ "${1:-}" = "--list" ]; then
+        cited_test_path_scan "$REPO_ROOT"
+        exit 0
+    fi
+    cat <<'HDR'
+# tests/infra/cited-test-path-baseline.manifest
+#
+# GRANDFATHER BASELINE for the cited-test-path resolution contract —
+# task #7095. Read by tests/infra/test_cited_test_paths_resolve.sh; every row
+# is derived by tests/infra/cited-test-path-lib.sh, never by hand.
+#
+# WHAT A ROW MEANS: "<containing-file> cites <cited-path>, which no longer
+# resolves, and is grandfathered." The cited path's basename DOES resolve
+# elsewhere under the same crate's tests tree, so the citation is repointable
+# — a row here is a deferred fix, not a permanent exemption.
+#
+# FINGERPRINT GRAMMAR: `<containing-file> :: <cited-path>` — two ` :: `
+# separated fields. Line numbers and the suggested target are deliberately
+# ERASED, so moving a citation within its file, or a later change to where
+# its basename resolves, does not spuriously red the ratchet.
+#
+# REGENERATE WITH:
+#     bash tests/infra/test_cited_test_paths_resolve.sh --emit-baseline \
+#         > tests/infra/cited-test-path-baseline.manifest
+#
+# THE RATCHET IS ONE-DIRECTIONAL. The gate asserts live ⊆ baseline and
+# nothing more. Rows may be removed freely as citations are repointed, and
+# removing a row NEVER reds the gate — this file is a SHRINKING grandfather
+# list, not a lockstep mirror of the tree. The converse assertion is
+# deliberately absent: it would turn every citation fix into a red build,
+# punishing exactly the cleanup this gate exists to encourage (the same
+# ruling tests/infra/test_reify_audit_ptodo.sh records for ptodo).
+#
+# ADDING a row is therefore the deliberate act: do it only when a citation is
+# being knowingly grandfathered, by regenerating with the command above.
+#
+# Comment lines (^\s*#) and blank lines are ignored (same stripping style as
+# run-all-classification-lib.sh).
+#
+HDR
+    cited_test_path_scan "$REPO_ROOT" | cited_test_path_fingerprint | LC_ALL=C sort -u
+    exit 0
+fi
+
 echo "=== cited test-path resolution gate (task 7095) ==="
 
 # Single EXIT trap over an array of fixtures: individual `trap ... EXIT` calls
