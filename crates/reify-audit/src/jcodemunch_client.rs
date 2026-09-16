@@ -899,20 +899,21 @@ fn references_from_rows(rows: &[Value]) -> Vec<SymbolReference> {
 
 /// Read source lines for suppression-flag enrichment.
 ///
-/// Returns `(lines, None)` on success and `(vec![], Some(diagnostic))` on
-/// read failure, where the diagnostic includes the path and the I/O error so
-/// callers can `eprintln!` it once per path without swallowing read errors.
-fn read_source_lines_for_enrichment(path: &Path) -> (Vec<String>, Option<String>) {
-    match std::fs::read_to_string(path) {
-        Ok(s) => (s.lines().map(str::to_owned).collect(), None),
-        Err(e) => (
-            Vec::new(),
-            Some(format!(
+/// `Ok` carries the file's lines however few, INCLUDING none — an empty
+/// file read fine, and its symbols are unlocatable for that reason rather
+/// than for want of a reading. `Err` carries a diagnostic naming the path
+/// and the I/O error, for the caller to `eprintln!` once per path. Keeping
+/// the two apart here is what spares every caller from re-deriving them
+/// from an empty vec, which cannot tell them apart.
+fn read_source_lines_for_enrichment(path: &Path) -> Result<Vec<String>, String> {
+    std::fs::read_to_string(path)
+        .map(|s| s.lines().map(str::to_owned).collect())
+        .map_err(|e| {
+            format!(
                 "reify-audit: jcodemunch suppression enrichment: failed to read {}: {e}",
                 path.display()
-            )),
-        ),
-    }
+            )
+        })
 }
 
 // -----------------------------------------------------------------------
@@ -1106,37 +1107,22 @@ fn collect_stale_decl_lines(
 fn enrich_suppression_flags(symbols: &mut [ChangedSymbol], project_root: &Path) -> Option<String> {
     // Cache by path: many symbols share the same file (e.g. decl.rs has
     // 1110+ rows), so reading each file once avoids O(symbols) disk reads.
-    //
-    // `Option<Vec<String>>`, not `Vec<String>`: a bare vector conflates the
-    // two states a `vec![]` can mean, and they have OPPOSITE operator
-    // consequences. `None` = the read failed, which
-    // `read_source_lines_for_enrichment` has already reported once for this
-    // path — reporting it again below would double-count it. `Some(vec![])`
-    // = the file read fine and is EMPTY, which nothing has reported, and in
-    // which no declaration line can ever be located — so every one of its
-    // symbols belongs in the stale-index summary. A truncated file is the
-    // single likeliest shape for a genuinely stale index, so it is exactly
-    // the input that must not degrade silently.
-    let mut file_cache: HashMap<PathBuf, Option<Vec<String>>> = HashMap::new();
+    // The `Err` arm keeps its message only until it is printed; what the
+    // cache carries forward is that this path was already reported, so the
+    // stale-index pass below does not report it a second time.
+    let mut file_cache: HashMap<PathBuf, Result<Vec<String>, ()>> = HashMap::new();
     for sym in symbols.iter_mut() {
         let path = project_root.join(&sym.file);
         let cached = match file_cache.entry(path) {
             Entry::Occupied(e) => e.into_mut(),
             Entry::Vacant(v) => {
-                let (lines, diagnostic) = read_source_lines_for_enrichment(v.key());
-                let entry = match diagnostic {
-                    Some(msg) => {
-                        eprintln!("{msg}");
-                        None
-                    }
-                    None => Some(lines),
-                };
+                let entry = read_source_lines_for_enrichment(v.key()).map_err(|msg| {
+                    eprintln!("{msg}");
+                });
                 v.insert(entry)
             }
         };
-        if let Some(lines) = cached.as_deref()
-            && !lines.is_empty()
-        {
+        if let Ok(lines) = cached {
             let (has_allow_dead_code, has_cfg_test, g_allow_marker) =
                 extract_suppression(lines, sym.line);
             sym.has_allow_dead_code = has_allow_dead_code;
@@ -1151,12 +1137,12 @@ fn enrich_suppression_flags(symbols: &mut [ChangedSymbol], project_root: &Path) 
     // and hand the result to `stale_decl_line_diagnostic`" — deleting
     // either line fails to compile on an unresolved `out_of_range`.
     let out_of_range = collect_stale_decl_lines(symbols, |file| {
-        // `Some(0)` for a readable-but-empty file (every line is out of
-        // range in a 0-line file, so its symbols get summarised), `None`
-        // only for a read failure (already reported once, per path, above).
+        // `Some(0)` for a readable-but-empty file (nothing is locatable in
+        // a 0-line file, so its symbols get summarised), `None` only for a
+        // read failure, already reported once per path above.
         file_cache
             .get(&project_root.join(file))
-            .and_then(|cached| cached.as_ref().map(Vec::len))
+            .and_then(|cached| cached.as_ref().ok().map(Vec::len))
     });
     stale_decl_line_diagnostic(&out_of_range)
 }
@@ -3011,13 +2997,8 @@ mod tests {
     fn read_source_lines_for_enrichment_nonexistent_path() {
         use std::path::Path;
         let path = Path::new("/nonexistent/path/that/does/not/exist.rs");
-        let (lines, diagnostic) = read_source_lines_for_enrichment(path);
-        assert!(lines.is_empty(), "nonexistent path must return empty lines");
-        assert!(
-            diagnostic.is_some(),
-            "nonexistent path must return a diagnostic message"
-        );
-        let msg = diagnostic.unwrap();
+        let msg = read_source_lines_for_enrichment(path)
+            .expect_err("a nonexistent path must read as an ERROR, not as an empty file");
         assert!(
             msg.contains("/nonexistent/path/that/does/not/exist.rs"),
             "diagnostic must contain the path; got: {msg}"
@@ -3033,15 +3014,26 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().expect("create tempfile");
         std::fs::write(tmp.path(), "line one\nline two\nline three\n")
             .expect("write tempfile");
-        let (lines, diagnostic) = read_source_lines_for_enrichment(tmp.path());
         assert_eq!(
-            lines,
-            vec!["line one", "line two", "line three"],
-            "readable file must return its lines"
+            read_source_lines_for_enrichment(tmp.path()),
+            Ok(vec![
+                "line one".to_string(),
+                "line two".to_string(),
+                "line three".to_string()
+            ]),
+            "a readable file must return its lines"
         );
-        assert!(
-            diagnostic.is_none(),
-            "readable file must return no diagnostic; got: {diagnostic:?}"
+
+        // An EMPTY file read fine: `Ok(vec![])`, never the `Err` a
+        // failed read produces. The two used to share one `vec![]`, and
+        // they have opposite consequences downstream — an unreadable file
+        // is already reported, an empty one still owes the operator a
+        // stale-index line for every symbol it cannot locate.
+        std::fs::write(tmp.path(), "").expect("truncate tempfile");
+        assert_eq!(
+            read_source_lines_for_enrichment(tmp.path()),
+            Ok(Vec::new()),
+            "an empty file is a successful read of no lines"
         );
     }
 
@@ -3294,11 +3286,11 @@ mod tests {
     /// refactor that made the index stale — leaves every one of its symbols
     /// unlocatable, and must be summarised rather than silently skipped.
     ///
-    /// This is the state a `HashMap<PathBuf, Vec<String>>` cache conflates
-    /// with "could not be read": the read succeeded, so
-    /// `read_source_lines_for_enrichment` emits no diagnostic of its own,
-    /// and a `!lines.is_empty()` filter in the line-count closure then
-    /// excludes it from the summary too — zero operator output on the input
+    /// Its sibling — a file that could not be READ at all — must stay OUT
+    /// of that summary: it already has its own per-path diagnostic, and
+    /// counting it here too double-reports it. Keeping the two apart is
+    /// what [`read_source_lines_for_enrichment`]'s `Result` is for; a
+    /// single empty `Vec` for both leaves zero operator output on the input
     /// shape most likely to BE a stale index.
     #[test]
     fn enrich_suppression_flags_reports_a_readable_but_empty_declaring_file() {
