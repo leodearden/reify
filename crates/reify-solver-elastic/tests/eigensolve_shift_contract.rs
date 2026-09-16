@@ -211,6 +211,15 @@ fn fixture_e() -> (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>) {
     (k, b)
 }
 
+/// Closed-form `λ_k = 2(1 − cos(kπ/81))` of the 80-DOF Laplacian, k = 1..=80.
+///
+/// 1-INDEXED, matching the formula and the way the modes are named throughout
+/// this file (λ₁ is the first mode, not λ₀).
+fn fixture_c_lambda(k: usize) -> f64 {
+    assert!((1..=80).contains(&k), "fixture C has modes k = 1..=80, not {k}");
+    2.0 * (1.0 - f64::cos(k as f64 * std::f64::consts::PI / 81.0))
+}
+
 /// Closed-form smallest 5 eigenvalues of the 80-DOF Laplacian:
 /// `λ_k = 2(1 − cos(kπ/81))` for k=1..=5.
 fn fixture_c_expected_5() -> [f64; 5] {
@@ -1099,5 +1108,120 @@ fn sigma_zero_factors_k_itself_not_k_minus_zero_b() {
     assert!(
         !via_entry_point.shift_skipped_modes,
         "C1: at σ=0 nothing can be skipped — the interval strictly between 0 and 0 is empty",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// BT3 on the Lanczos path — C2 selection, C3 order, C4 back-shift at σ≠0
+// ---------------------------------------------------------------------------
+
+/// σ for the Lanczos σ≠0 arms: midway between λ₉ and λ₁₀ of fixture C.
+///
+/// Placed ABOVE several modes on purpose. A σ below λ₁ would leave the nearest
+/// set equal to the bottom of the spectrum, so a path that ignored σ entirely
+/// would still return the right eigenvalues and C2 would go untested.
+///
+/// `K − σB` is indefinite here (nine eigenvalues lie below σ), which is exactly
+/// the case that forces the Cholesky-then-LU fallback rather than exercising
+/// only the Cholesky arm.
+fn sigma_between_lambda_9_and_10() -> f64 {
+    0.5 * (fixture_c_lambda(9) + fixture_c_lambda(10))
+}
+
+/// **BT3, Lanczos.** At a σ above several modes the shift-invert path selects
+/// the |λ − σ|-nearest set (C2), presents it ascending by |λ| (C3), returns it
+/// in the ORIGINAL λ space (C4), and reports the σ it actually used.
+///
+/// C2 and C3 are asserted separately and must not be conflated: the nearest set
+/// here is {λ₉, λ₁₀}, and presentation order is by |λ| — which for this pencil
+/// coincides with ascending λ, so the order assertion is about the RULE, not
+/// about this fixture's arithmetic.
+///
+/// The "different from the σ=0 answer" assertion is what makes the selection
+/// claim non-vacuous: without it a path that quietly ignored σ would still
+/// satisfy every closed-form comparison, because it would return λ₁ and λ₂ and
+/// those are genuinely eigenvalues of this pencil.
+///
+/// Nothing is asserted here about `shift_skipped_modes` — step-6 owns C5, and
+/// pinning it now would make that step's RED vacuous.
+#[test]
+fn lanczos_selects_the_nearest_set_and_back_shifts_at_nonzero_sigma() {
+    let (k, b) = fixture_c();
+    let sigma = sigma_between_lambda_9_and_10();
+    let opts = EigenSolverOptions {
+        n_modes: 2,
+        tol: 1e-10,
+        max_iters: 1000,
+        sigma,
+    };
+
+    let got = solve_eigen_shift_invert(&k, &b, opts.clone());
+
+    // Enforce the Lanczos path claim (PRD §5.5 trap) rather than asserting it
+    // in prose: n_converged is 0 on the dense fallback.
+    assert!(
+        got.n_converged > 0,
+        "BT3 Lanczos must exercise Lanczos (n_converged > 0); got 0, which means routing \
+         fell through to the dense fallback and this test says nothing about the \
+         shift-invert implementation",
+    );
+
+    // C5's own field is the honest report of which σ was solved at.
+    assert_eq!(
+        got.shift, sigma,
+        "BT3 Lanczos: the result must report the σ it actually used ({sigma}), not {}",
+        got.shift,
+    );
+
+    // C2 — the nearest set, against the closed form.
+    assert_matches_closed_form(
+        &got.eigenvalues,
+        &[fixture_c_lambda(9), fixture_c_lambda(10)],
+        1e-8,
+        "BT3 Lanczos C2 at σ between λ₉ and λ₁₀",
+    );
+
+    // C2, non-vacuously — the answer really moved off the bottom of the spectrum.
+    let at_zero = solve_eigen_shift_invert(
+        &k,
+        &b,
+        EigenSolverOptions {
+            sigma: 0.0,
+            ..opts.clone()
+        },
+    );
+    assert_matches_closed_form(
+        &at_zero.eigenvalues,
+        &[fixture_c_lambda(1), fixture_c_lambda(2)],
+        1e-8,
+        "BT3 Lanczos control: σ=0 must still return the bottom of the spectrum",
+    );
+    for (i, (&shifted, &unshifted)) in got
+        .eigenvalues
+        .iter()
+        .zip(at_zero.eigenvalues.iter())
+        .enumerate()
+    {
+        assert!(
+            (shifted - unshifted).abs() > 1e-3,
+            "BT3 Lanczos: eigenvalue[{i}] is {shifted} at σ={sigma} and {unshifted} at σ=0 — \
+             the shifted solve returned the SAME set as the unshifted one, so σ was ignored",
+        );
+    }
+
+    // C3 — presentation order, asserted separately from selection.
+    assert_order_ascending_by_abs_lambda(&got.eigenvalues, "BT3 Lanczos C3 at σ≠0");
+
+    // C4 — back-shifted into the original λ space, with the eigenvector columns
+    // pinned to the same permutation as the eigenvalues. A result still in μ
+    // space, or back-shifted with the wrong sign, fails here even though the
+    // closed-form check above could be passed by a coincidence.
+    assert_eigen_residuals(
+        &k,
+        &b,
+        &got.eigenvalues,
+        &got.eigenvectors,
+        1e-8,
+        "BT3 Lanczos C4 at σ≠0",
     );
 }
