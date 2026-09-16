@@ -74,6 +74,13 @@
 # A ref is never skipped for want of an answer: when the store could not be
 # read at all, EVERY ref is measured and reported scope=UNKNOWN instead (R4).
 #
+# One last counter is not a count but a flag, and it is the only case where a
+# fleet report has no rows to degrade:
+#   repo_unusable       1 when --repo is not a git work tree. There is then no
+#                       ref list to enumerate, so `branches=0` means the row
+#                       set is UNDEFINED, not empty. Zero on every healthy run,
+#                       so an all-zero summary still reads as a clean pool.
+#
 # `--format json` emits one document: a `branches` array of objects carrying
 # the same keys, and a sibling `summary` object with the same counters.
 #
@@ -101,11 +108,17 @@
 #       with a stderr warning — never an abort, never a changed exit code.
 #       Degradation is decided BEFORE measurement, so a degraded row carries
 #       "-" in every column and can never be read as a benign verdict.
-#       Fleet mode's "emit no row at all" is NOT a degradation channel and is
-#       never reached by one: a ref is dropped only on the store's POSITIVE
-#       evidence about it (terminal, absent, non-numeric — each with its own
-#       counter), and a store that answered nothing yields a full report of
-#       UNKNOWN rows rather than a short one that reads as an all-clean pool.
+#       Fleet mode's "emit no row at all" is NOT a degradation channel for any
+#       ref it can see: a ref is dropped only on the store's POSITIVE evidence
+#       about it (terminal, absent, non-numeric — each with its own counter),
+#       and a store that answered nothing yields a full report of UNKNOWN rows
+#       rather than a short one that reads as an all-clean pool.
+#       The ONE degradation that cannot take that shape is a non-git --repo:
+#       with no work tree there is no ref list, so there is no row to degrade
+#       and inventing one would be inventing data. That case is therefore
+#       reported as the whole-report `repo_unusable=1` token rather than as a
+#       row — still on stdout, still never an exit code, so R3 is untouched and
+#       `branches=0` is never mistakable for a measured empty pool.
 #   R5  `behind` is CONTEXT, never a trigger. Measured over the 351 live task
 #       branches: median 2201 commits behind main (p25 878, p75 3781, p90
 #       5324), and 345 of 351 are >= 50 behind. A staleness-triggered verdict
@@ -416,12 +429,26 @@ unset _id _st _files _path
 _is_live() { [ -n "${_STATUS["$1"]+set}" ]; }
 
 # ── repo preflight ────────────────────────────────────────────────────────────
-# A non-git --repo or an unresolvable --main-ref is NOT fatal (R3/R4): every
-# branch degrades to UNKNOWN and the report is still produced. Resolved once
-# here rather than per branch.
+# Neither a non-git --repo nor an unresolvable --main-ref is fatal (R3/R4), but
+# they degrade DIFFERENTLY, and conflating them is what let the non-git case
+# report a benign-looking empty fleet:
+#
+#   unresolvable --main-ref  the refs still enumerate, so every branch gets its
+#                            own UNKNOWN row. Nothing further is needed.
+#   non-git --repo           there is no ref list to enumerate, so fleet mode
+#                            has no row to degrade — an honest report cannot
+#                            invent one. `branches=0` would then be
+#                            indistinguishable from a pool with no task
+#                            branches at all, so the summary carries
+#                            repo_unusable=1 instead: the ONE stdout token that
+#                            says the row set is undefined rather than empty.
+#
+# Resolved once here rather than per branch.
 _MAIN_SHA=""
+_REPO_UNUSABLE=0
 if ! _git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    warn "Not inside a git work tree: $REPO_DIR — every branch will report scope=UNKNOWN."
+    _REPO_UNUSABLE=1
+    warn "Not inside a git work tree: $REPO_DIR — no branch can be measured here."
 else
     _MAIN_SHA="$(_git rev-parse --verify "$MAIN_REF" 2>/dev/null || true)"
     [ -n "$_MAIN_SHA" ] || \
@@ -847,5 +874,5 @@ if [ "$N_SKIPPED_NO_TASK" -gt 0 ]; then
     fi
 fi
 
-_render_report "branches=$N_BRANCHES suspect=$N_SUSPECT peer_files=$N_PEER_FILES out_of_scope=$N_OUT_OF_SCOPE undeclared=$N_UNDECLARED clean=$N_CLEAN unknown=$N_UNKNOWN skipped_terminal=$N_SKIPPED_TERMINAL skipped_nonnumeric=$N_SKIPPED_NONNUMERIC skipped_no_task=$N_SKIPPED_NO_TASK"
+_render_report "branches=$N_BRANCHES suspect=$N_SUSPECT peer_files=$N_PEER_FILES out_of_scope=$N_OUT_OF_SCOPE undeclared=$N_UNDECLARED clean=$N_CLEAN unknown=$N_UNKNOWN skipped_terminal=$N_SKIPPED_TERMINAL skipped_nonnumeric=$N_SKIPPED_NONNUMERIC skipped_no_task=$N_SKIPPED_NO_TASK repo_unusable=$_REPO_UNUSABLE"
 exit 0

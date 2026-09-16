@@ -846,7 +846,7 @@ _mk_repo
 F_EMPTY_DB="$DB"
 run_helper --audit --db "$F_EMPTY_DB" --repo "$REPO"
 for _k in branches suspect peer_files out_of_scope undeclared clean unknown \
-          skipped_terminal skipped_nonnumeric skipped_no_task; do
+          skipped_terminal skipped_nonnumeric skipped_no_task repo_unusable; do
     _assert_summary "F5: $_k=0 is emitted, not omitted, on an empty pool" "$_k" 0
 done
 
@@ -879,7 +879,7 @@ d=json.load(sys.stdin)
 s=d[\"summary\"]
 assert s[\"branches\"]==7 and s[\"suspect\"]==1 and s[\"clean\"]==2, s
 assert s[\"skipped_terminal\"]==1 and s[\"skipped_nonnumeric\"]==1, s
-assert s[\"skipped_no_task\"]==0, s
+assert s[\"skipped_no_task\"]==0 and s[\"repo_unusable\"]==0, s
 "' _ "$OUT"
 
 # (f) the two formats agree
@@ -898,7 +898,7 @@ s=d[\"summary\"]
 print(\"SWEEP: \" + \" \".join(f\"{k}={s[k]}\" for k in
       [\"branches\",\"suspect\",\"peer_files\",\"out_of_scope\",\"undeclared\",
        \"clean\",\"unknown\",\"skipped_terminal\",\"skipped_nonnumeric\",
-       \"skipped_no_task\"]))
+       \"skipped_no_task\",\"repo_unusable\"]))
 ")"; [ "$rendered" = "$2" ]' _ "$F7_JSON" "$F7_TABLE"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1258,5 +1258,88 @@ assert "A4: skip counters never inflate the audited-branch count" \
              for k in skipped_terminal skipped_nonnumeric skipped_no_task; do
                  [ "$(v "$1" "$k")" -eq 0 ] || exit 1
              done' _ "$OUT"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block 10 (step-25) — a non-git --repo: the one degradation with no row to put
+# it in
+#
+# Block 9 closed the store-side fail-open by giving every ref a degraded row.
+# That remedy is unavailable here: with no work tree there is no ref list, so
+# fleet mode has nothing to degrade and inventing a row would be inventing
+# data. `branches=0` would then be byte-identical to a pool with no task
+# branches at all — the same "short report reads as a clean one" confusion, one
+# level further out. The whole-report `repo_unusable` token is what keeps the
+# two apart, and these assertions pin that it is NOT merely documentation.
+#
+# The two preflight failures are asserted APART, because they degrade
+# differently and a fix aimed at the wrong one is wasted work: an unresolvable
+# --main-ref still enumerates refs and so still yields one UNKNOWN row each.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 10: non-git --repo vs unresolvable --main-ref ---"
+
+_mk_tasks_db
+_mk_repo
+G_DB="$DB"
+G_REPO="$REPO"
+G_MAIN="$(git -C "$REPO" rev-parse main)"
+
+_add_task 700 pending '{"files":["own700.rs"]}'
+_branch_at "task/700" "$G_MAIN"
+_commit_files "task/700" "feat(700): own" own700.rs
+
+# ── the positive control: a healthy pool never sets the flag ──────────────────
+run_helper --audit --db "$G_DB" --repo "$G_REPO"
+assert "G0: the healthy baseline exits 0"       test "$RC" -eq 0
+_assert_summary "G0: it measures the branch"    branches 1
+_assert_summary "G0: and repo_unusable is 0"    repo_unusable 0
+
+# A genuinely EMPTY pool is the case repo_unusable has to stay distinguishable
+# from: same all-zero counters, but the zeros are a measurement.
+_mk_repo
+run_helper --audit --db "$G_DB" --repo "$REPO"
+_assert_summary "G1: an empty pool reports branches=0"        branches 0
+_assert_summary "G1: ...and does NOT claim to be unusable"    repo_unusable 0
+G1_EMPTY_OUT="$OUT"
+
+# ── (a) non-git --repo: no rows, but the report says so on STDOUT ─────────────
+G_NOTGIT="$(mktemp -d "${TMPDIR:-/tmp}/task-branch-sweep-notgit-XXXXXX")"
+_TMPDIRS+=("$G_NOTGIT")
+
+run_helper --audit --db "$G_DB" --repo "$G_NOTGIT"
+assert "G2: exits 0 (R3)"                     test "$RC" -eq 0
+assert "G2: warns on stderr"                  test -n "$ERR_OUT"
+_assert_summary "G2: no row can be enumerated" branches 0
+_assert_summary "G2: and stdout SAYS the row set is undefined" repo_unusable 1
+assert "G2: the degradation is on stdout, not only stderr" \
+    bash -c 'printf "%s\n" "$1" | grep -q "repo_unusable=1"' _ "$OUT"
+# The whole point: an empty pool and an unusable repo must not render alike.
+assert "G2: an unusable repo is NOT byte-identical to an empty pool" \
+    bash -c '[ "$1" != "$2" ]' _ "$OUT" "$G1_EMPTY_OUT"
+
+run_helper --audit --db "$G_DB" --repo "$G_NOTGIT" --format json
+assert "G2/json: the token is a sibling counter, not a row" \
+    bash -c 'printf "%s" "$1" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert d[\"branches\"]==[], d
+assert d[\"summary\"][\"repo_unusable\"]==1, d[\"summary\"]
+assert d[\"summary\"][\"branches\"]==0, d[\"summary\"]
+"' _ "$OUT"
+
+# ── (b) unresolvable --main-ref: refs DO enumerate, so rows carry it ──────────
+run_helper --audit --db "$G_DB" --repo "$G_REPO" --main-ref refs/heads/definitely-no-such-ref
+assert "G3: exits 0 (R3)"                            test "$RC" -eq 0
+_assert_summary "G3: the branch still yields a row"  branches 1
+_assert_summary "G3: counted as unknown"             unknown 1
+_assert_field  "G3: the row carries the degradation" 700 scope UNKNOWN
+_assert_summary "G3: the repo ITSELF was usable"     repo_unusable 0
+
+# ── (c) --task mode is unaffected: it still owes exactly one degraded row ─────
+run_helper --task 700 --db "$G_DB" --repo "$G_NOTGIT"
+assert "G4: --task on a non-git repo exits 0"  test "$RC" -eq 0
+_assert_field "G4: ...and still owes its row"  700 scope UNKNOWN
+assert "G4: ...with no summary invented for a fleet of one" \
+    bash -c '! printf "%s\n" "$1" | grep -q "^SWEEP:"' _ "$OUT"
 
 test_summary

@@ -174,6 +174,20 @@ one ref, so it is not reported as one: when the store could not be consulted at 
 deliberate — a short report and an all-clean report are the same bytes to a caller reading stdout,
 so a timer wired with a typo'd `--db` must not be able to report a quiet fleet forever.
 
+**The one exception, and why it needs its own token.** A `--repo` that is not a git work tree
+cannot be handled that way: with no work tree there is no ref list, so there is no row to degrade
+and inventing one would be inventing data. `branches=0` would then be indistinguishable from a
+pool that genuinely holds no task branches. So that case sets a twelfth counter:
+
+* `repo_unusable` — `1` when `--repo` is not a git work tree, `0` on every healthy run. It is a
+  flag, not a count. Read `branches=0` **with** `repo_unusable=1` as *the row set is undefined*,
+  never as *the pool is empty*.
+
+An unresolvable `--main-ref` is a **different** failure and does not set it: the refs still
+enumerate, so every branch gets its own `scope=UNKNOWN` row in the ordinary way. The two are worth
+keeping straight — a fix aimed at the main-ref half would be aimed at something that already
+works.
+
 `--task` degrades on the store side for the same reason, and owes a row either way: a typo'd
 `--db`, a wrong `--tag`, a store it cannot read, or an id whose task has gone terminal all produce
 `scope=UNKNOWN` with `-` in every measured column and a warning on stderr. Read `UNKNOWN` as
@@ -258,8 +272,11 @@ mutation-injection check proving the assertion can fail:
   set, an unresolvable ref, a failed diff or a failed SQL engine degrades the affected row (or the
   whole report) to `UNKNOWN` with a warning on stderr, never an abort. The verdict is decided
   *before* measurement, so a degraded row carries `-` in every column and can never be read as a
-  benign one. Fleet mode's "emit no row at all" is **not** a degradation channel: a ref is dropped
-  only on the store's positive evidence about it, each such reason carrying its own counter.
+  benign one. Fleet mode's "emit no row at all" is **not** a degradation channel for any ref it can
+  see: a ref is dropped only on the store's positive evidence about it, each such reason carrying
+  its own counter. The single degradation with no row to live in — a non-git `--repo` — is reported
+  as the whole-report `repo_unusable=1` token instead, still on stdout and still never an exit
+  code.
 * **R5** — `behind` is context, never a trigger.
 
 ## Cross-references
