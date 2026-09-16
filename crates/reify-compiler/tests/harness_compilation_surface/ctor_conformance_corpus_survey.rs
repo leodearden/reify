@@ -3044,8 +3044,125 @@ fn survey_corpus_orders_sites_deterministically() {
 
 /// Sweep the Reify snippets embedded in `host_rel_paths` (resolved against
 /// `root`) and collect every ctor-conformance site.
-fn survey_inline_corpus(_root: &std::path::Path, _host_rel_paths: &[String]) -> SurveyRun {
-    SurveyRun::default()
+///
+/// Runs the SAME pipeline [`survey_corpus`] runs — `collect_structure_defs_into`
+/// → `parse_with_stdlib` → `compile_with_stdlib` → [`is_ctor_conformance_code`]
+/// → [`survey_site_from_diagnostic`] → the second-pass [`d9_owner`]
+/// classification → the `(file, line, field, code, message)` total order — so
+/// the two corpus halves cannot disagree about what a ctor-conformance site IS.
+/// Exactly two things differ: what a MEMBER is, and how a diagnostic's line is
+/// mapped.
+///
+/// # A member is a snippet, not a host file
+///
+/// The coverage denominator counts SNIPPETS, plus one entry for a host that
+/// could not be read at all. Counting hosts instead would report a host
+/// carrying ten snippets, one of which failed to parse, as fully surveyed.
+/// A raw string that is not Reify at all (JSON, a Rust-source fixture) is not a
+/// member and is not counted: there is nothing to survey and nothing to
+/// disclose. A Reify-SHAPED `format!` template IS a member — it is Reify a
+/// reader would expect the census to cover — and is recorded under its own
+/// `format-template` reason rather than left to land as a noise `parse-error`.
+///
+/// # Position
+///
+/// A row's `file`/`line` is the HOST `.rs` position a human opens; the
+/// snippet-relative coordinate is kept alongside in
+/// [`SurveySite::snippet_line`]. [`survey_site_from_diagnostic`] is handed the
+/// SNIPPET text, so the line it computes is snippet-relative and is mapped up
+/// with `host_line + snippet_line - 1` —
+/// [`rust_fixture_scan::InlineSnippet::host_line`] is the host line of the
+/// snippet's line 1, which makes that mapping uniform.
+///
+/// # Not `reify_test_support::compile_source_with_stdlib`
+///
+/// That helper PANICS on parse errors. Recording them is the whole point of the
+/// coverage accounting here — inline fixtures include deliberately-unparseable
+/// negative cases, and a panic would take the sweep down with them.
+///
+/// A snippet carrying no `module` declaration compiles under
+/// `ModulePath::single(<host stem>)` and emits `W_MODULE_DECL_MISSING`, a
+/// non-ctor code the shared [`is_ctor_conformance_code`] filter already drops.
+fn survey_inline_corpus(root: &std::path::Path, host_rel_paths: &[String]) -> SurveyRun {
+    use reify_compiler::{compile_with_stdlib, parse_with_stdlib};
+    use reify_core::{ModulePath, Severity};
+
+    let fea = fea_owned_defs();
+    let mut structure_defs = stdlib_structure_defs().clone();
+    let mut run = SurveyRun::default();
+
+    for rel in host_rel_paths {
+        let path = root.join(rel);
+        let Ok(host_source) = std::fs::read_to_string(&path) else {
+            run.total += 1;
+            run.not_surveyed
+                .push((rel.clone(), "read-error".to_owned()));
+            continue;
+        };
+        let stem = path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+
+        let scan = rust_fixture_scan::inline_ri_snippets(&host_source);
+        run.total += scan.snippets.len() + scan.format_templates.len();
+        for template in &scan.format_templates {
+            run.not_surveyed.push((
+                format!("{rel}:{}", template.host_line),
+                "format-template".to_owned(),
+            ));
+        }
+
+        for snippet in &scan.snippets {
+            let member = format!("{rel}:{}", snippet.host_line);
+            // Harvested BEFORE the parse gate, for the same reason the `.ri`
+            // half does it: a snippet that fails to parse can still declare a
+            // def another member constructs.
+            collect_structure_defs_into(&snippet.text, &mut structure_defs);
+
+            let parsed = parse_with_stdlib(&snippet.text, ModulePath::single(&stem));
+            if !parsed.errors.is_empty() {
+                run.not_surveyed.push((member, "parse-error".to_owned()));
+                continue;
+            }
+
+            let compiled = compile_with_stdlib(&parsed);
+            run.surveyed += 1;
+            if compiled
+                .diagnostics
+                .iter()
+                .any(|d| d.severity == Severity::Error)
+            {
+                run.partial.push((member, "compile-error".to_owned()));
+            }
+            for d in compiled
+                .diagnostics
+                .iter()
+                .filter(|d| is_ctor_conformance_code(d.code))
+            {
+                let Some(mut site) = survey_site_from_diagnostic(rel, &snippet.text, d) else {
+                    continue;
+                };
+                let snippet_line = site.line;
+                site.snippet_line = Some(snippet_line);
+                site.line = snippet.host_line + snippet_line - 1;
+                run.sites.push(site);
+            }
+        }
+    }
+
+    for site in &mut run.sites {
+        site.owner = d9_owner(site.def.as_deref(), fea, &structure_defs);
+    }
+
+    run.sites.sort_by(|a, b| {
+        (&a.file, a.line, &a.field, &a.code, &a.message)
+            .cmp(&(&b.file, b.line, &b.field, &b.code, &b.message))
+    });
+    run.not_surveyed.sort();
+    run.partial.sort();
+    run
 }
 
 /// One synthetic Rust host carrying, in order: an admitted Reify snippet that
