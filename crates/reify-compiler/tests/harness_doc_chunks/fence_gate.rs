@@ -103,21 +103,18 @@
 //! extensions (:786), so nothing will flag that `#6890` cite when the task
 //! closes — the follow-up deletes the annotation along with the defect.
 //!
-//! The third gap is `reify-fragment` itself, and it is WIDER than the tag's
-//! wording admits. The tag says "real reify syntax, member-level or otherwise
-//! context-dependent", which asserts that SOME enclosing context would make the
-//! body parse. Nothing checks that, and checking it would need the invisible
-//! wrapper the bare `reify` tag was written to reject — so the tag is load-
-//! bearing on author judgement alone. Two fences reached the corpus where no
-//! context exists because the FORM is not v1 syntax: `units.md`'s dimension
-//! aliases (no `^` operator in a dimension expression) and `traits.md`'s
-//! composition line (a `trait` declaration always carries a body). Both are
-//! now `reify-schematic` with the real constraint spelled out beside them.
-//! That triage was done fence-by-fence against the parser and is NOT a
-//! property the gate maintains. The remaining `reify-fragment` fences were
-//! measured but not individually adjudicated, and a follow-up filed from #5479
-//! owns that sweep; until it lands, read `reify-fragment` as "the author
-//! asserts this is real syntax", never as "the gate agrees".
+//! The third gap is `reify-fragment`, and it is WIDER than the tag's wording
+//! admits. "Member-level or otherwise context-dependent" asserts that SOME
+//! enclosing context would make the body parse — unverifiable here for the
+//! reason given in the vocabulary above, so load-bearing on author judgement
+//! alone. Two fences reached the corpus where NO context exists because the
+//! FORM is not v1 syntax: `units.md`'s dimension aliases (no `^` operator in a
+//! dimension expression) and `traits.md`'s composition line (a `trait`
+//! declaration always carries a body). Both are now `reify-schematic` with the
+//! real constraint spelled out beside them. That triage was fence-by-fence
+//! against the parser and is NOT a property the gate maintains; a follow-up
+//! filed from #5479 owns the rest. Until it lands, read `reify-fragment` as
+//! "the author asserts this is real syntax", never as "the gate agrees".
 //!
 //! There is one more gap, and it runs the OTHER way — a fence can be compiled,
 //! be green, and still name something that does not exist. An UNRESOLVED CALL
@@ -367,12 +364,10 @@ fn parse_fences(content: &str) -> Result<Vec<Fence>, String> {
 /// Every fence in `content` that carries no language tag, one message each, in
 /// document order.
 ///
-/// Deliberately does NOT validate the tag against an allow-list. Task rule 3
-/// makes the vocabulary open: the gate only ever asks "is the tag exactly
-/// `reify`" (that is `reify_fence_violations`' job), so any explicit tag
-/// exempts here. The point is not to police notation — it is to force the doc
-/// author to make a CLAIM about the fence, which then shows up as a
-/// one-line diff a reviewer can challenge.
+/// Deliberately does NOT validate the tag against an allow-list — any explicit
+/// tag exempts, per the OPEN vocabulary argued in the module header. The point
+/// is not to police notation but to force the doc author to make a CLAIM about
+/// the fence, which then shows up as a one-line diff a reviewer can challenge.
 ///
 /// Takes ALREADY-PARSED fences: every caller reaches this through
 /// `check_parse_outcome`, which owns the single copy of the parse-failure
@@ -1194,12 +1189,8 @@ fn the_bare_closing_delimiter_of_a_tagged_fence_is_not_a_violation() {
     );
 }
 
-/// ANY explicit tag exempts — the vocabulary is deliberately OPEN.
-///
-/// The check never validates the tag against an allow-list. A closed list would
-/// force this task to predict every notation a future chunk might need; instead
-/// the tag itself is the sanction, because retagging a fence away from `reify`
-/// is a one-line diff a reviewer sees.
+/// ANY explicit tag exempts — the OPEN vocabulary of the module header, pinned
+/// executably, including on a tag no one here anticipated.
 #[test]
 fn every_explicit_tag_exempts_including_ones_this_task_never_anticipated() {
     for tag in [
@@ -2213,20 +2204,16 @@ fn every_chunk_is_reachable_through_the_mcp_tool() {
 /// Every floor in `REIFY_FENCE_FLOORS` must EQUAL its file's live count, not
 /// merely sit at or under it.
 ///
-/// `assert_corpus_is_not_vacuous` asserts `live >= floor`, and its completeness
-/// loop asserts that a file carrying `reify` fences HAS an entry. Neither looks
-/// at the entry's VALUE, so an entry may be arbitrarily SLACK — and slack is not
-/// a safety margin. Every fence above a floor is protected by nothing: a later
-/// task can retag it, the per-file floor still passes, and the corpus-wide
-/// backstop goes slack by exactly the same amount because it is the SUM of this
-/// table. That is precisely the hollowing the table exists to prevent,
-/// reappearing one level up.
+/// `assert_corpus_is_not_vacuous` only ever asserts `live >= floor` and that an
+/// entry EXISTS; neither looks at its VALUE, so nothing there stops an entry
+/// going slack. Why slack is not a safety margin is argued on
+/// `REIFY_FENCE_FLOORS` and restated in this test's own failure message.
 ///
-/// The EXACT-count rule is imported, not invented: the sibling suite's
-/// `reify_tagged_fences_in_geometry_chunk_compile` sets its own floor "to the
-/// EXACT live count per the re-measurement protocol ... a floor under live is
-/// the measured incident that protocol exists to prevent, not a safety margin"
-/// (on `reify_tagged_fences_in_geometry_chunk_compile`'s own floor).
+/// The EXACT-count rule is imported, not invented:
+/// `reify_tagged_fences_in_geometry_chunk_compile` already sets its own floor
+/// "to the EXACT live count per the re-measurement protocol ... a floor under
+/// live is the measured incident that protocol exists to prevent, not a safety
+/// margin".
 #[test]
 fn reify_fence_floors_are_exact_not_slack() {
     let corpus = corpus();
@@ -2310,14 +2297,13 @@ fn corpus_counts_are_exact_not_slack() {
 
 /// The sibling suite's OWN scanner, with this pin's arguments bound once.
 ///
-/// A call, not a copy. What this replaced was documented as reproduced VERBATIM
-/// so the two could be seen to drift apart — but it never was verbatim: the real
-/// `reify_tagged_fences` has been tag-parameterized since task 5759 — its
-/// predicate is ```` line.trim_end() == format!("```{tag}") ````
-/// — and it carries an unterminated-fence
-/// assert the copy lacked, so the drift-detection rationale did not hold.
-/// Calling it makes this pin exercise the ACTUAL coupling and turns a rename or
-/// signature change over there into a compile error here rather than silent rot.
+/// A call, not a copy. What this replaced claimed to reproduce
+/// `reify_tagged_fences` verbatim so the two could be seen to drift apart, but
+/// never did: the real one has been tag-parameterized since task 5759 and
+/// carries an unterminated-fence assert the copy lacked, so the
+/// drift-detection rationale did not hold. Calling it makes this pin exercise
+/// the ACTUAL coupling and turns a rename or signature change over there into
+/// a compile error here rather than silent rot.
 fn sibling_reify_fence_count(markdown: &str) -> usize {
     reify_tagged_fences(markdown, "reify", &chunk_label("geometry")).len()
 }
@@ -2372,17 +2358,11 @@ fn meets_sibling_geometry_reify_floor(markdown: &str) -> bool {
 
 /// `geometry.md` must keep ALL FOUR of its bare ```` ```reify ```` fences,
 /// because a sibling suite in this same compile unit selects them by that exact
-/// string and compiles what it finds.
+/// string and compiles what it finds — the coupling the module header sets out.
 ///
-/// `geometry_chunk_smoke::reify_tagged_fences` matches
-/// ```` line.trim_end() == format!("```{tag}") ```` — BYTE-EXACT on the
-/// whole info string, so `reify-fragment` / `reify-schematic` can never
-/// false-match — and `reify_tagged_fences_in_geometry_chunk_compile` compiles
-/// each hit VERBATIM behind its own `fences.len() >= 4` floor, which is that
-/// file's EXACT live count.
-///
-/// So a retag over there fails LOUDLY. This pin is NOT a backstop against a
-/// silent loss; read it as adding three things the sibling's floor cannot:
+/// A retag over there therefore fails LOUDLY already. This pin is NOT a
+/// backstop against a silent loss; read it as adding three things the sibling's
+/// floor cannot:
 ///
 /// - ATTRIBUTION IN THE RETAG'S OWN DIFF. The sibling reports a count from a
 ///   file whose subject is geometry queries; this test names the retag as the
