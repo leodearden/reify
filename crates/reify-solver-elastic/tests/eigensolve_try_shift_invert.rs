@@ -6,19 +6,19 @@
 //! contract clauses, which are otherwise exercised only indirectly, from
 //! `reify-eval`'s `modal_ops` in another crate:
 //!
-//!   1. **`None` means EXACTLY "`K` is not SPD".** A stiffness matrix carrying a
+//!   1. **`Err(KNotSpd)` means EXACTLY "`K` is not SPD".** A stiffness matrix carrying a
 //!      free (zero-stiffness) DOF — the shape an under-constrained modal model
-//!      assembles — returns `None` instead of panicking in `sp_cholesky`.
+//!      assembles — returns `Err(KNotSpd)` instead of panicking in `sp_cholesky`.
 //!      "EXACTLY" is enforced by matching faer's error rather than `.ok()?`-ing
-//!      it: only `LltError::Numeric` (non-positive pivot) becomes `None`, while
+//!      it: only `LltError::Numeric` (non-positive pivot) becomes `Err(KNotSpd)`, while
 //!      `LltError::Generic` (`OutOfMemory` / `IndexOverflow`) still panics, so a
 //!      resource failure on a large mesh cannot be reported to the user as
 //!      `W_ModalRigidBodyMode: K_free is singular`. The `Generic` arm is NOT
 //!      pinned by a test here: faer offers no hook to inject an allocation or
 //!      index-overflow failure, and provoking a real OOM in a merge-gate test is
 //!      not a trade worth making. The arm is a one-line `panic!` immediately
-//!      beside the `None` it is distinguished from.
-//!   2. **`Some` is bit-identical to `solve_eigen_shift_invert`.** On SPD `K` the
+//!      beside the `Err(KNotSpd)` it is distinguished from.
+//!   2. **`Ok` is bit-identical to `solve_eigen_shift_invert`.** On SPD `K` the
 //!      two entry points stay numerically interchangeable, so the healthy path
 //!      returns the same numbers and callers can swap one for the other freely.
 //!
@@ -40,7 +40,8 @@
 
 use faer::sparse::{SparseRowMat, Triplet};
 use reify_solver_elastic::eigensolve::{
-    EigenSolverOptions, solve_eigen_shift_invert, try_solve_eigen_shift_invert,
+    EigenSolverOptions, ShiftInvertFailure, solve_eigen_shift_invert,
+    try_solve_eigen_shift_invert,
 };
 
 const N: usize = 80;
@@ -117,14 +118,14 @@ fn expected_5() -> [f64; 5] {
 }
 
 // ---------------------------------------------------------------------------
-// Clause 1: a non-SPD K returns None instead of panicking.
+// Clause 1: a non-SPD K returns Err(KNotSpd) instead of panicking.
 // ---------------------------------------------------------------------------
 
-/// A singular `K` (one zero-stiffness DOF) must return `None`, not panic.
+/// A singular `K` (one zero-stiffness DOF) must return `Err(KNotSpd)`, not panic.
 ///
 /// This is the `LltError::Numeric` (non-positive pivot) arm — the ONLY one that
-/// maps to `None`; see this file's module doc for why the `Generic` arm is
-/// unpinned.
+/// maps to `Err(KNotSpd)`; see this file's module doc for why the `Generic` arm
+/// is unpinned.
 ///
 /// `solve_eigen_shift_invert` on this same pair panics — that is its documented
 /// contract ("K is not SPD → panic with descriptive message"), and it is what
@@ -136,15 +137,17 @@ fn try_shift_invert_returns_none_on_singular_k() {
     let k = singular_laplacian(N / 2);
     let b = identity();
 
+    let got = try_solve_eigen_shift_invert(&k, &b, opts());
     assert!(
-        try_solve_eigen_shift_invert(&k, &b, opts()).is_none(),
-        "a K with a zero-stiffness DOF is not SPD; try_ must report that as None",
+        matches!(got, Err(ShiftInvertFailure::KNotSpd)),
+        "a K with a zero-stiffness DOF is not SPD; try_ must report that as \
+         Err(KNotSpd), not as any other arm of the failure channel",
     );
 }
 
-/// The panicking sibling really does panic on the same input — so `None` above
-/// is a genuine behavioural difference, not a fixture that both entry points
-/// happen to tolerate.
+/// The panicking sibling really does panic on the same input — so `Err(KNotSpd)`
+/// above is a genuine behavioural difference, not a fixture that both entry
+/// points happen to tolerate.
 #[test]
 #[should_panic(expected = "K must be SPD")]
 fn shift_invert_still_panics_on_the_same_singular_k() {
@@ -157,7 +160,7 @@ fn shift_invert_still_panics_on_the_same_singular_k() {
 // Clause 2: on SPD K the healthy path is unchanged.
 // ---------------------------------------------------------------------------
 
-/// On an SPD `K` the `try_` variant returns `Some` whose spectrum is identical,
+/// On an SPD `K` the `try_` variant returns `Ok` whose spectrum is identical,
 /// element-for-element, to `solve_eigen_shift_invert`'s — and both match the
 /// closed form.
 ///
@@ -179,7 +182,7 @@ fn try_shift_invert_matches_the_panicking_entry_point_on_spd_k() {
     let b = identity();
 
     let tried = try_solve_eigen_shift_invert(&k, &b, opts())
-        .expect("the Dirichlet Laplacian is SPD; try_ must return Some");
+        .expect("the Dirichlet Laplacian is SPD; try_ must return Ok");
     let direct = solve_eigen_shift_invert(&k, &b, opts());
 
     assert_eq!(

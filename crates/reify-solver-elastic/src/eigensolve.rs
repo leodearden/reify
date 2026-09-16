@@ -542,6 +542,28 @@ fn any_eigenvalue_skipped_between_zero_and_shift(
     })
 }
 
+/// A DOMAIN failure of the shift-invert path — a fact about the (K, B, σ) the
+/// caller handed in, never about the machine it ran on.
+///
+/// Both arms are things an author can act on by changing the model or the
+/// shift, which is precisely why they are typed values rather than panics.  A
+/// resource failure (`FaerError::OutOfMemory` / `IndexOverflow`) is NOT in this
+/// enum and never will be: it is not a fact about the model, so it keeps the
+/// panicking contract and cannot arrive disguised as one of these.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ShiftInvertFailure {
+    /// `K` is not symmetric positive definite — its Cholesky hit a non-positive
+    /// pivot.  The model is under-constrained (a DOF no element and no
+    /// Dirichlet BC restrains), or the assembled `K` is otherwise singular.
+    KNotSpd,
+    /// `K − σB` is singular, or numerically indistinguishable from singular, at
+    /// this shift: σ sits on (or within the pencil's own resolution floor of)
+    /// an eigenvalue, so shift-invert has no operator to apply.  The remedy is
+    /// to MOVE σ — which is why σ is carried here rather than left for the
+    /// caller to re-derive from its own options (contract clause C6).
+    ShiftAtEigenvalue { sigma: f64 },
+}
+
 /// **C5 — Provenance, conservative form.** The answer a path that did not
 /// compute a spectrum it can count must give.
 ///
@@ -987,27 +1009,46 @@ pub fn solve_eigen_shift_invert(
     b: &SparseRowMat<usize, f64>,
     opts: EigenSolverOptions,
 ) -> EigenSolverResult {
-    try_solve_eigen_shift_invert(k, b, opts)
-        .expect("eigensolve: K must be SPD; sp_cholesky failed — check that BCs have been applied")
+    match try_solve_eigen_shift_invert(k, b, opts) {
+        Ok(result) => result,
+        Err(ShiftInvertFailure::KNotSpd) => panic!(
+            "eigensolve: K must be SPD; sp_cholesky failed — check that BCs have been applied"
+        ),
+        // #7259 step-11 replaces this with the real singular-shift message.
+        // Unreachable until then: nothing in this file yet produces the arm.
+        Err(ShiftInvertFailure::ShiftAtEigenvalue { sigma }) => panic!(
+            "eigensolve: internal error — ShiftAtEigenvalue {{ sigma = {sigma} }} \
+             raised before its diagnostic message exists"
+        ),
+    }
 }
 
-/// Non-panicking sibling of [`solve_eigen_shift_invert`]: returns `None` when
-/// the up-front sparse Cholesky of `K` fails.
+/// Non-panicking sibling of [`solve_eigen_shift_invert`]: reports a DOMAIN
+/// failure of the shift-invert path as a typed [`ShiftInvertFailure`] rather
+/// than panicking.
 ///
-/// `None` means EXACTLY ONE thing — `K` is not SPD (`sp_cholesky` returned
-/// `LltError::Numeric`, i.e. a non-positive pivot). Every other precondition is
-/// still a hard contract and still panics: the option/shape preconditions via
-/// [`check_eigen_options_and_shapes`] (bad `n_modes`, shape mismatch, …), and a
-/// `LltError::Generic` factorization failure (`FaerError::OutOfMemory` /
-/// `IndexOverflow`) via an explicit panic at the match. `None` is therefore never
-/// ambiguous between "singular K", "caller bug" and "out of memory", which is
-/// what makes it safe for a caller to treat `None` as the domain fact "this
-/// model is under-constrained" rather than as a generic failure. That
-/// enforcement matters most on the large-mesh path: mapping an allocation
-/// failure to `None` would surface it as
+/// `Err` means EXACTLY ONE CLASS OF THING — a fact about the (K, B, σ) handed
+/// in, enumerated by [`ShiftInvertFailure`] and distinguishable arm by arm.
+/// `Err(KNotSpd)` in particular means EXACTLY that `K` is not SPD
+/// (`sp_cholesky` returned `LltError::Numeric`, i.e. a non-positive pivot).
+/// Every other precondition is still a hard contract and still panics: the
+/// option/shape preconditions via [`check_eigen_options_and_shapes`] (bad
+/// `n_modes`, shape mismatch, …), and a `LltError::Generic` factorization
+/// failure (`FaerError::OutOfMemory` / `IndexOverflow`) via an explicit panic at
+/// the match. `Err(KNotSpd)` is therefore never ambiguous between "singular K",
+/// "caller bug" and "out of memory", which is what makes it safe for a caller to
+/// treat it as the domain fact "this model is under-constrained" rather than as
+/// a generic failure. That enforcement matters most on the large-mesh path:
+/// mapping an allocation failure into this channel would surface it as
 /// `W_ModalRigidBodyMode: K_free is singular (the model is under-constrained)`.
 ///
-/// The factorization is performed exactly ONCE: on `Some` the very same `llt`
+/// Typing the channel rather than returning a bare `None` is what lets the two
+/// domain failures stay DISTINGUISHABLE: a σ that lands on an eigenvalue is a
+/// fault in where the caller put the shift, and collapsing it into the non-SPD
+/// answer would send an author to check boundary conditions for a problem that
+/// is entirely about σ.
+///
+/// The factorization is performed exactly ONCE: on `Ok` the very same factor
 /// feeds [`SparseStiffnessOp`], so the healthy path pays no extra cost relative
 /// to calling [`solve_eigen_shift_invert`] directly. (This is why the shape
 /// here is `try_` + delegate rather than "probe with a throwaway `sp_cholesky`,
@@ -1020,22 +1061,22 @@ pub fn solve_eigen_shift_invert(
 /// - The sparse Cholesky fails with `LltError::Generic` (`OutOfMemory` /
 ///   `IndexOverflow`) — a resource/index failure, not a property of the model.
 ///
-/// A non-SPD `K` does NOT panic here; it is the `None` return.
+/// A non-SPD `K` does NOT panic here; it is the `Err(KNotSpd)` return.
 pub fn try_solve_eigen_shift_invert(
     k: &SparseRowMat<usize, f64>,
     b: &SparseRowMat<usize, f64>,
     opts: EigenSolverOptions,
-) -> Option<EigenSolverResult> {
+) -> Result<EigenSolverResult, ShiftInvertFailure> {
     check_eigen_options_and_shapes(k, b, &opts);
     let n = k.nrows();
 
     // Factor K via sparse Cholesky. A NUMERIC failure here means K is not SPD —
     // the one condition this entry point reports rather than panics on.
     //
-    // The error is MATCHED rather than `.ok()?`'d so that `None` really does
-    // mean only that. faer's sparse `LltError` also carries a `Generic` arm
-    // (`FaerError::OutOfMemory` / `IndexOverflow`), and mapping those to `None`
-    // would let a resource failure factorizing a large `K_free` surface to the
+    // The error is MATCHED rather than `.ok()?`'d so that `Err(KNotSpd)` really
+    // does mean only that. faer's sparse `LltError` also carries a `Generic` arm
+    // (`FaerError::OutOfMemory` / `IndexOverflow`), and mapping those into the
+    // failure channel would let a resource failure factorizing a large `K_free` surface to the
     // user as `W_ModalRigidBodyMode: K_free is singular (the model is
     // under-constrained)` — a confidently wrong diagnosis of an allocation
     // problem, on the exact large-mesh path `DENSE_FALLBACK_MAX_DIM` exists to
@@ -1043,8 +1084,8 @@ pub fn try_solve_eigen_shift_invert(
     // keeps the panicking contract.
     let llt = match k.sp_cholesky(Side::Lower) {
         Ok(llt) => llt,
-        // K is not SPD (a non-positive pivot) — the documented `None`.
-        Err(SparseLltError::Numeric(_)) => return None,
+        // K is not SPD (a non-positive pivot) — the documented `Err(KNotSpd)`.
+        Err(SparseLltError::Numeric(_)) => return Err(ShiftInvertFailure::KNotSpd),
         Err(e @ SparseLltError::Generic(_)) => panic!(
             "eigensolve: sparse Cholesky of K failed for a non-numeric reason \
              ({e:?}) — this is a resource/index failure (allocation or index \
@@ -1076,7 +1117,7 @@ pub fn try_solve_eigen_shift_invert(
         // Problem too small for Lanczos; delegate to the direct dense solver.
         // The dense result already satisfies the EigenSolverResult contract
         // (converged=true, iterations=0, eigenvalues sorted ascending |λ|).
-        return Some(solve_eigen_dense(k, b, opts));
+        return Ok(solve_eigen_dense(k, b, opts));
     }
 
     // Delegate to the generic Lanczos core via zero-cost adapter pair.
@@ -1088,5 +1129,5 @@ pub fn try_solve_eigen_shift_invert(
         n,
     };
     let m_op = SparseMetricOp { m: b.as_ref() };
-    Some(lanczos_shift_invert(&k_op, &m_op, opts))
+    Ok(lanczos_shift_invert(&k_op, &m_op, opts))
 }

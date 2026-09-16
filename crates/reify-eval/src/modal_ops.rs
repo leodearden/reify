@@ -27,7 +27,7 @@ use reify_solver_elastic::{
     AssemblyElement, AssemblyMode, DirichletBc, EigenSolverOptions, EigenSolverResult,
     ElementOrder, ElementStiffness, IsotropicElastic, JointStiffness, add_joint_stiffness,
     assemble_global_stiffness, consistent_element_mass_tet_p1, consistent_element_mass_tet_p2,
-    element_stiffness, solve_eigen_dense, try_solve_eigen_shift_invert,
+    ShiftInvertFailure, element_stiffness, solve_eigen_dense, try_solve_eigen_shift_invert,
 };
 // Not re-exported from the crate root: the shift-contract C5 rule belongs beside
 // the other shift helpers, and this is the module path to it.
@@ -822,7 +822,7 @@ struct GeneralizedEigenOutcome {
 /// # Singular `K_free` is measured, not predicted
 ///
 /// Above the small regime this calls [`try_solve_eigen_shift_invert`], whose
-/// `None` means EXACTLY "`K` is not SPD" — the non-positive-pivot arm of faer's
+/// `Err(KNotSpd)` means EXACTLY "`K` is not SPD" — the non-positive-pivot arm of faer's
 /// Cholesky error, with a resource failure (out of memory / index overflow)
 /// panicking there rather than arriving here disguised as an under-constrained
 /// model. That is a direct measurement, so the
@@ -832,7 +832,7 @@ struct GeneralizedEigenOutcome {
 /// well-posed model therefore pays nothing: same call, same factorization, same
 /// numbers.
 ///
-/// On `None` the model is genuinely under-constrained and the response is size-
+/// On `Err(KNotSpd)` the model is genuinely under-constrained and the response is size-
 /// dependent: at or below [`DENSE_FALLBACK_MAX_DIM`] the dense generalized solver
 /// tolerates the singular `K_free` and the rigid modes come back as `ω ≈ 0`,
 /// which [`eigensolve_modal`]'s `RIGID_BODY_OMEGA_TOL` loop turns into
@@ -867,17 +867,36 @@ fn solve_generalized_eigen(
         };
     }
 
-    // Well-posed models: shift-invert Lanczos, exactly as before. `None` is the
-    // one non-contract outcome — K is not SPD. A resource failure inside the
-    // factorization panics there instead of returning `None`, so the
-    // under-constrained branch below is never reached by an allocation problem.
-    if !force_dense
-        && let Some(result) = try_solve_eigen_shift_invert(k_free, m_free, opts.clone())
-    {
-        return GeneralizedEigenOutcome {
-            result,
-            singular_k_over_ceiling: false,
-        };
+    // Well-posed models: shift-invert Lanczos, exactly as before. The failure
+    // channel is TYPED, and each arm is routed on its own meaning rather than
+    // collapsed. A resource failure inside the factorization panics there
+    // instead of arriving here, so the under-constrained branch below is never
+    // reached by an allocation problem.
+    if !force_dense {
+        match try_solve_eigen_shift_invert(k_free, m_free, opts.clone()) {
+            Ok(result) => {
+                return GeneralizedEigenOutcome {
+                    result,
+                    singular_k_over_ceiling: false,
+                };
+            }
+            // K is not SPD: fall through to the under-constrained branch below,
+            // exactly as the former `None` did.
+            Err(ShiftInvertFailure::KNotSpd) => {}
+            // TODO(#7261): surface E_ShiftAtEigenvalue once δ wires the modal
+            // shift. Unreachable today — `extract_eigen_knobs` never sets a
+            // non-zero σ, and `K − 0·B` is just K. It must NOT be folded into
+            // the under-constrained branch: a σ landing on an eigenvalue is a
+            // fault in where the shift was placed, and reporting it as a
+            // rigid-body mode would send an author to check boundary conditions
+            // for a problem that is entirely about σ.
+            Err(ShiftInvertFailure::ShiftAtEigenvalue { sigma }) => {
+                unreachable!(
+                    "modal_ops: solve_generalized_eigen was handed sigma = {sigma}, but \
+                     extract_eigen_knobs only ever produces 0.0 until #7261"
+                );
+            }
+        }
     }
 
     // Under-constrained: degrade gracefully if that is affordable, degenerately
