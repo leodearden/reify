@@ -1599,3 +1599,74 @@ fn rotate_orientation_overload_yields_no_arg_type_mismatch() {
         compiled.diagnostics
     );
 }
+
+/// SIGNAL — a bare `revolve` angle is rejected, naming `angle`.
+///
+/// The origin triple is written dimensioned so the count isolates the angle:
+/// exactly one error means the ANGLE slot fired and nothing else did.
+#[test]
+fn revolve_bare_angle_is_rejected_naming_the_angle() {
+    let compiled = compile_struct_body(
+        "    let profile = rectangle(10mm, 10mm)\n\
+         \x20   let r = revolve(profile, 0mm, 0mm, 0mm, 0, 0, 1, 90)\n",
+    );
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 ArgTypeMismatch — the origin is dimensioned and the \
+         axis DIRECTION must stay silent.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert_eq!(
+        errors[0].message,
+        format!("revolve: angle argument expects Angle, got Int; {ANGLE_HINT}")
+    );
+}
+
+/// SIGNAL — a bare `rotate_around` angle is rejected, naming `angle`.
+///
+/// Same shape on the TRANSFORM row; the pivot is dimensioned so the count
+/// isolates the angle.
+#[test]
+fn rotate_around_bare_angle_is_rejected_naming_the_angle() {
+    let compiled =
+        compile_struct_body("    let r = rotate_around(b, 0mm, 0mm, 0mm, 0, 0, 1, 90)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 ArgTypeMismatch — the pivot is dimensioned and the \
+         axis DIRECTION must stay silent.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert_eq!(
+        errors[0].message,
+        format!("rotate_around: angle argument expects Angle, got Int; {ANGLE_HINT}")
+    );
+}
+
+/// BOUNDARY (PRD row B2b) — `revolve_full` must gain NO angle slot.
+///
+/// The two-way test of the PRD-1/PRD-3 seam. `revolve_full`'s call arity is 7
+/// and its 2π is SYNTHESIZED at lowering, so there is no user-written position
+/// to gate. This fails loudly if the split is written as an arity-agnostic
+/// shared `"revolve" | "revolve_full"` arm that happens to be saved by
+/// `compiled_args.get(7)` returning None — because then any `revolve_full` call
+/// reaching index 7 by some other route would fire, and because the arm would
+/// be stating a layout it does not have.
+#[test]
+fn revolve_full_yields_no_arg_type_mismatch() {
+    let compiled = compile_struct_body(
+        "    let profile = rectangle(10mm, 10mm)\n\
+         \x20   let r = revolve_full(profile, 0mm, 0mm, 0mm, 0, 1, 0)\n",
+    );
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        errors.is_empty(),
+        "`revolve_full(profile, 0mm, 0mm, 0mm, 0, 1, 0)` is correct code — its \
+         angle is injected by the compiler, not written by the author.\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}

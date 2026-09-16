@@ -2124,45 +2124,86 @@ mod tests {
         }
     }
 
-    /// revolve / revolve_full → the axis ORIGIN triple only.
+    /// revolve → the axis ORIGIN triple AND the angle.
     ///
     /// The second STRADDLE case, after `half_space`. `revolve(profile, ox, oy,
-    /// oz, ax, ay, az, angle)` carries a gated ORIGIN, an un-gated dimensionless
-    /// axis DIRECTION and an ANGLE in one argument list:
+    /// oz, ax, ay, az, angle)` carries three kinds of argument in one list:
     /// * `ox`/`oy`/`oz` are a point in space — bare components silently read as
-    ///   SI metres, so they are slotted;
-    /// * `ax`/`ay`/`az` are a unit vector, legitimately bare;
-    /// * `angle` belongs to `docs/prds/v0_6/angle-units-surface-convergence.md`
-    ///   by binding seam decree. Gating it HERE would be a scope violation, not
-    ///   an improvement, and would make the two layers disagree in the
-    ///   direction PRD 3 has to close together.
+    ///   SI metres, so they are LENGTH slots (task 5750);
+    /// * `ax`/`ay`/`az` are a dimensionless unit vector, legitimately bare;
+    /// * `angle` is an ANGLE slot since PRD 3 leaf ζ (task 5782).
     ///
-    /// `revolve_full` is the same layout minus the angle (the compiler injects
-    /// a literal 2π), so the origin sits at the same indices and both are
-    /// arity-agnostic single forms.
+    /// The exclusion loop therefore narrows to the DIRECTION alone. That
+    /// narrowing is the assertion: index 7 moving from the excluded set to the
+    /// expected set is what the leaf did, and a reader comparing the two sees
+    /// exactly one position change hands.
+    ///
+    /// Single-form, so arity-agnostic; `revolve_full` is deliberately NOT swept
+    /// alongside it any more — see the control below for why the two can no
+    /// longer share a loop.
     #[test]
-    fn revolve_slots_the_origin_but_never_the_axis_or_the_angle() {
-        for name in ["revolve", "revolve_full"] {
-            assert_slots_at_every_arity(
-                name,
-                &[
-                    length_slot(1, "ox"),
-                    length_slot(2, "oy"),
-                    length_slot(3, "oz"),
-                ],
-            );
+    fn revolve_slots_the_origin_and_the_angle_but_never_the_axis() {
+        assert_slots_at_every_arity(
+            "revolve",
+            &[
+                length_slot(1, "ox"),
+                length_slot(2, "oy"),
+                length_slot(3, "oz"),
+                angle_slot(7, "angle"),
+            ],
+        );
 
-            // The exclusions stated positively: axis at 4/5/6, angle at 7
-            // (present only on `revolve`).
-            let slotted: Vec<usize> = builtin_arg_slots(name, 8)
+        // The exclusion stated positively: the axis DIRECTION at 4/5/6.
+        let slotted: Vec<usize> = builtin_arg_slots("revolve", 8)
+            .iter()
+            .map(|slot| slot.index)
+            .collect();
+        for excluded in [4usize, 5, 6] {
+            assert!(
+                !slotted.contains(&excluded),
+                "revolve arg{excluded} is an axis DIRECTION component — a \
+                 dimensionless unit vector, legitimately bare in correct `.ri`; \
+                 got slots at {slotted:?}"
+            );
+        }
+    }
+
+    /// CONTROL — `revolve_full` gets the origin and NOTHING at index 7.
+    ///
+    /// This is why `revolve` and `revolve_full` can no longer share one sweep,
+    /// and the reason is positive rather than an omission: `revolve_full`'s CALL
+    /// arity is 7, and the `angle` that appears at index 7 of its LOWERED
+    /// op-args is a compiler-SYNTHESIZED `Value::angle(TAU)` typed
+    /// `Type::angle()` (`geometry.rs`, the type PRD D10 ratified). No author
+    /// ever writes it, so there is no user-written position for an index-keyed
+    /// table to gate — gating one would demand an argument the call form does
+    /// not have.
+    ///
+    /// Asserted at EVERY arity, not just 7. A shared arm that leaned on
+    /// `compiled_args.get(7)` returning None at the 7-arg call would pass a
+    /// canonical-arity probe and fail here, which is the point: the bounds
+    /// check is an accident of the short call, not a statement about the arm.
+    #[test]
+    fn revolve_full_slots_the_origin_only_because_its_2pi_is_synthesized() {
+        assert_slots_at_every_arity(
+            "revolve_full",
+            &[
+                length_slot(1, "ox"),
+                length_slot(2, "oy"),
+                length_slot(3, "oz"),
+            ],
+        );
+
+        for arity in 0usize..=MAX_PROBED_ARITY {
+            let slotted: Vec<usize> = builtin_arg_slots("revolve_full", arity)
                 .iter()
                 .map(|slot| slot.index)
                 .collect();
             for excluded in [4usize, 5, 6, 7] {
                 assert!(
                     !slotted.contains(&excluded),
-                    "{name} arg{excluded} is an axis DIRECTION component or the \
-                     ANGLE, neither of which this leaf may gate; got slots at \
+                    "revolve_full arg{excluded} at arity {arity} is an axis \
+                     DIRECTION component or the SYNTHESIZED 2π; got slots at \
                      {slotted:?}"
                 );
             }
@@ -2258,21 +2299,21 @@ mod tests {
         }
     }
 
-    /// rotate_around(target, px, py, pz, ax, ay, az, angle) → the PIVOT only.
+    /// rotate_around(target, px, py, pz, ax, ay, az, angle) → PIVOT and ANGLE.
     ///
     /// The third STRADDLE case, and structurally identical to `revolve`'s: a
     /// gated point in space, an un-gated dimensionless axis DIRECTION, and an
-    /// ANGLE that belongs to
-    /// `docs/prds/v0_6/angle-units-surface-convergence.md` by binding seam
-    /// decree. All three exclusions are asserted positively.
+    /// ANGLE — slotted since PRD 3 leaf ζ (task 5782). The exclusions are
+    /// asserted positively and narrow to the handle and the direction.
     #[test]
-    fn rotate_around_slots_the_pivot_but_never_the_axis_or_the_angle() {
+    fn rotate_around_slots_the_pivot_and_the_angle_but_never_the_axis() {
         assert_slots_at_every_arity(
             "rotate_around",
             &[
                 length_slot(1, "px"),
                 length_slot(2, "py"),
                 length_slot(3, "pz"),
+                angle_slot(7, "angle"),
             ],
         );
 
@@ -2280,12 +2321,12 @@ mod tests {
             .iter()
             .map(|slot| slot.index)
             .collect();
-        for excluded in [0usize, 4, 5, 6, 7] {
+        for excluded in [0usize, 4, 5, 6] {
             assert!(
                 !slotted.contains(&excluded),
-                "rotate_around arg{excluded} is the geometry handle, an axis \
-                 DIRECTION component, or the ANGLE — none of which this leaf may \
-                 gate; got slots at {slotted:?}"
+                "rotate_around arg{excluded} is the geometry handle or an axis \
+                 DIRECTION component — a dimensionless unit vector, legitimately \
+                 bare in correct `.ri`; got slots at {slotted:?}"
             );
         }
     }
