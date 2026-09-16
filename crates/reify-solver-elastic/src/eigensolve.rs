@@ -1190,13 +1190,38 @@ pub fn solve_eigen_shift_invert(
 /// then call the panicking entry point", which would factor K twice on every
 /// well-posed solve.)
 ///
+/// # Singular shifts (C6), detected in TWO parts because either alone is unsound
+///
+/// At σ≠0 this function forms `K − σB` and factors it, so it owns C6 — the
+/// generic core cannot, having only an opaque factorization.  Detection is
+/// PRD §5.3's two parts:
+///
+/// - **Part A** — `sp_lu` returns `LuError::SymbolicSingular`, i.e. STRUCTURAL
+///   rank deficiency: no pivot exists anywhere in the pattern.
+/// - **Part B** — the post-factorization guard,
+///   [`shift_is_numerically_singular`], keyed on the λ-space resolution floor
+///   [`pencil_lambda_resolution_floor`] derives from the pencil's own scale.
+///
+/// Part B is MANDATORY, not belt-and-braces. Part A cannot fire whenever
+/// `K − σB` keeps a full diagonal, which is the ordinary case: the symbolic
+/// structure stays full-rank however close σ gets to an eigenvalue, partial
+/// pivoting proceeds on a tiny-but-nonzero pivot, and the solve returns a
+/// plausible spectrum with one entry pinned to σ and the rest quietly wrong.
+/// The guard runs on the whole σ≠0 branch, including the arm where the shifted
+/// Cholesky succeeded, so a σ numerically on a mode is caught whichever
+/// factorization won.
+///
+/// **A singular shift is never silently repaired.** No perturbation of σ, no
+/// re-solve at a nudged shift — see [`shift_is_numerically_singular`].
+///
 /// # Panics
 ///
 /// - See [`check_eigen_options_and_shapes`].
-/// - The sparse Cholesky fails with `LltError::Generic` (`OutOfMemory` /
-///   `IndexOverflow`) — a resource/index failure, not a property of the model.
+/// - Either factorization fails with a `Generic` error (`OutOfMemory` /
+///   `IndexOverflow`), as does the `K − σB` assembly — resource/index failures,
+///   not properties of the model or the shift.
 ///
-/// A non-SPD `K` does NOT panic here; it is the `Err(KNotSpd)` return.
+/// Neither a non-SPD `K` nor a singular shift panics here; both are `Err`.
 pub fn try_solve_eigen_shift_invert(
     k: &SparseRowMat<usize, f64>,
     b: &SparseRowMat<usize, f64>,
@@ -1276,6 +1301,7 @@ pub fn try_solve_eigen_shift_invert(
     }
 
     let shifted = shifted_pencil(k, b, opts.sigma);
+    let sigma = opts.sigma;
 
     // PRD §5.1 dispatch: Cholesky FIRST, LU only on a numeric failure.
     //
@@ -1283,19 +1309,17 @@ pub fn try_solve_eigen_shift_invert(
     // collapsed into an unconditional LU: by Sylvester's law of inertia its
     // SUCCESS proves `K − σB` is positive definite, which is exactly the
     // statement that no eigenvalue of the pencil lies between zero and σ.  That
-    // one bit is the C5 discriminator step-7 reads off this dispatch.
-    let sigma = opts.sigma;
-    match shifted.sp_cholesky(Side::Lower) {
+    // one bit is the C5 discriminator `with_provenance` reads off this dispatch.
+    //
+    // PRD §5.3 PART A lives here: the one singular-shift case faer reports
+    // directly.
+    let (result, cholesky_succeeded) = match shifted.sp_cholesky(Side::Lower) {
         Ok(llt) => {
             let k_op = SparseStiffnessOp {
                 factor: SparseFactorRef::Cholesky(&llt),
                 n,
             };
-            Ok(with_provenance(
-                lanczos_shift_invert(&k_op, &m_op, opts),
-                sigma,
-                true,
-            ))
+            (lanczos_shift_invert(&k_op, &m_op, opts), true)
         }
         // `K − σB` is indefinite — the expected case for a σ above some mode,
         // not an error. LU handles it.
@@ -1305,18 +1329,17 @@ pub fn try_solve_eigen_shift_invert(
                     factor: SparseFactorRef::Lu(&lu),
                     n,
                 };
-                Ok(with_provenance(
-                    lanczos_shift_invert(&k_op, &m_op, opts),
-                    sigma,
-                    false,
-                ))
+                (lanczos_shift_invert(&k_op, &m_op, opts), false)
             }
-            // Structural rank deficiency: no pivot exists at all, so σ sits on
-            // an eigenvalue and shift-invert has no operator to apply. This is
-            // PRD §5.3 part A; step-9 adds part B, the numerical guard that
-            // catches the cases partial pivoting lets through as `Ok`.
+            // STRUCTURAL rank deficiency — no pivot exists anywhere in the
+            // pattern, so `K − σB` is singular and shift-invert has no operator
+            // to apply.  faer reports the elimination step at which the pivot
+            // search failed (`index`); it is deliberately NOT carried in the
+            // typed value, because C6's remedy is "move σ" and an internal
+            // elimination index names nothing the caller can act on.  It is
+            // recorded here rather than dropped silently.
             Err(SparseLuError::SymbolicSingular { .. }) => {
-                Err(ShiftInvertFailure::ShiftAtEigenvalue { sigma: opts.sigma })
+                return Err(ShiftInvertFailure::ShiftAtEigenvalue { sigma });
             }
             Err(e @ SparseLuError::Generic(_)) => panic!(
                 "eigensolve: sparse LU of K − σB failed for a non-numeric reason \
@@ -1330,7 +1353,98 @@ pub fn try_solve_eigen_shift_invert(
              overflow), NOT a property of the pencil; do not report it as a \
              singular shift"
         ),
+    };
+
+    // PRD §5.3 PART B, on the WHOLE σ≠0 branch — including the arm where the
+    // Cholesky succeeded, so a σ numerically on a mode is caught whichever
+    // factorization won.
+    if shift_is_numerically_singular(
+        &result.eigenvalues,
+        sigma,
+        pencil_lambda_resolution_floor(&shifted, b),
+    ) {
+        return Err(ShiftInvertFailure::ShiftAtEigenvalue { sigma });
     }
+
+    Ok(with_provenance(result, sigma, cholesky_succeeded))
+}
+
+/// The pencil's own λ-space resolution floor: the distance below which two
+/// eigenvalues of `(K, B)` are not distinguishable in f64 by THIS
+/// factorization.
+///
+/// # Derivation — check it, do not trust it
+///
+/// Sparse LU with partial pivoting is BACKWARD stable: the computed
+/// factorization is the exact one of some `A + δA` with
+/// `‖δA‖ ≲ n · ε · ‖A‖`, where `A = K − σB` and ε is `f64::EPSILON`.  A
+/// perturbation δA of the pencil `(A, B)` moves an eigenvalue by at most
+/// `|δλ| ≲ ‖δA‖ / ‖B‖`.  Composing the two:
+///
+/// ```text
+/// λ_floor = n · ε · ‖K − σB‖_∞ / ‖B‖_∞
+/// ```
+///
+/// Every quantity comes from the matrices in hand plus machine epsilon.  No
+/// constant is imported from another solver, and none is tuned to a fixture.
+///
+/// # Why a residual test does NOT work here
+///
+/// The obvious alternative — back-substitute and measure `‖Ax − r‖` — is
+/// useless for this question precisely BECAUSE LU is backward stable: the
+/// computed `x` satisfies `(A + δA)x = r` with small δA even when `A` is
+/// numerically singular, so the residual stays tiny either way.  The signal has
+/// to be read in λ space, after the back-shift, where a numerically singular
+/// `A` shows up as a recovered λ collapsing onto σ.
+fn pencil_lambda_resolution_floor(
+    shifted: &SparseColMat<usize, f64>,
+    b: &SparseRowMat<usize, f64>,
+) -> f64 {
+    let shifted_ref = shifted.as_ref();
+    let shifted_sym = shifted_ref.symbolic();
+    let mut row_sums = vec![0.0_f64; shifted.nrows()];
+    for j in 0..shifted.ncols() {
+        let rows = shifted_sym.row_idx_of_col_raw(j);
+        let vals = shifted_ref.val_of_col(j);
+        for (&i, &v) in rows.iter().zip(vals.iter()) {
+            row_sums[i] += v.abs();
+        }
+    }
+    let norm_inf_shifted = row_sums.into_iter().fold(0.0_f64, f64::max);
+
+    let b_ref = b.as_ref();
+    let norm_inf_b = (0..b.nrows())
+        .map(|i| b_ref.val_of_row(i).iter().map(|v| v.abs()).sum::<f64>())
+        .fold(0.0_f64, f64::max);
+
+    shifted.nrows() as f64 * f64::EPSILON * norm_inf_shifted / norm_inf_b
+}
+
+/// Whether a σ≠0 solve's own output says `K − σB` was numerically singular.
+///
+/// Two ways it can say so, and BOTH are needed:
+///
+/// 1. **λ-space collapse.** A recovered λ within `lambda_floor` of σ is
+///    indistinguishable from σ at this factorization's resolution, which is the
+///    statement that `K − σB` is numerically singular.  This is the case
+///    partial-pivot LU lets through as `Ok`: the pivot is tiny but non-zero, so
+///    nothing upstream complains and the solve returns a plausible spectrum with
+///    one entry pinned to σ and the rest quietly wrong.
+/// 2. **An empty or non-finite spectrum.** At σ≠0 an empty result is a FAILURE,
+///    not a silent answer: every μ was filtered out, so no λ was recovered at
+///    all and there is nothing to report but the shift.
+///
+/// **No automatic perturbation, ever.** Nudging σ and re-solving is exactly the
+/// silent-substitution class this contract exists to close: it would answer a
+/// question the caller did not ask and label the result as though it had.  If it
+/// is ever wanted it arrives as an explicit opt-in knob, never as a default.
+fn shift_is_numerically_singular(eigenvalues: &[f64], sigma: f64, lambda_floor: f64) -> bool {
+    if eigenvalues.is_empty() || eigenvalues.iter().any(|lam| !lam.is_finite()) {
+        return true;
+    }
+    eigenvalues
+        .iter()
+        .any(|&lam| (lam - sigma).abs() <= lambda_floor)
 }
 
 /// Whether the Krylov window would reach the problem dimension, so the caller
