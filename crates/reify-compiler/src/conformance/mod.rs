@@ -400,7 +400,8 @@ pub(crate) fn check_fn_arg_conformance(
     walk_param_against_arg(param_type, compiled_arg, &mut ctx);
 }
 
-/// The authoritative list of value cells subject to param-default conformance.
+/// The value cells subject to param-default conformance: `value_cells` ∪ the
+/// members of every port body.
 ///
 /// `TopologyTemplate.value_cells` is NOT the whole surface: port-body params are
 /// compiled separately (`entity.rs` port arm) under the composite member name
@@ -417,10 +418,14 @@ pub(crate) fn check_fn_arg_conformance(
 /// Chaining here rather than adding a second call site keeps ONE loop body, so
 /// the two lists cannot drift apart again.
 ///
-/// KNOWN GAP (task 7174 follow-up): `CompiledGuardedGroup.members` /
-/// `.else_members` is the same hole one container over and is NOT chained here
-/// yet — closing it is a one-line addition to this chain, still no second call
-/// site.
+/// `CompiledGuardedGroup.members` / `.else_members` is deliberately OUT of this
+/// chain. A guarded param already carries its own separately-owned decision
+/// about default checking — `guards.rs` omits the sibling `check_param_default_type`
+/// at that site on purpose, pinned by
+/// `guarded_param_dimension_mismatched_default_does_not_check_param_default_type`
+/// — so extending conformance there is a change with its own acceptance
+/// criteria, not a ride-along on this one. Mechanically it would be one more
+/// `.chain(…)` here; structurally it still needs no second call site.
 fn param_default_cells(template: &TopologyTemplate) -> impl Iterator<Item = &ValueCellDecl> {
     template
         .value_cells

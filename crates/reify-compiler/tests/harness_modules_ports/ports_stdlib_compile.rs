@@ -2713,11 +2713,8 @@ fn piped_fluid_port_trait_surface() {
 fn piped_fluid_port_concrete_conformer_diamond_merge_compiles() {
     // flow_rate uses `1gal / 1s` (gal is the Volume unit declared in units.ri;
     // no m³ SI unit is currently generated — see units.ri §Volume comment).
-    // Enum-typed params (fluid_type, connection_type) omit the type annotation.
-    // Untyped port-param enum defaults are accepted because the
-    // declared-vs-initializer check is gated to explicitly-typed params
-    // (param.type_expr.is_some()); see task 4318 step-7. Enum types defined in
-    // stdlib/ports_fluid.ri: FluidType{Liquid,Gas,TwoPhase},
+    // Enum types defined in stdlib/ports_fluid.ri:
+    // FluidType{Liquid,Gas,TwoPhase},
     // PipeConnectionType{Threaded,Flanged,Compression,PushFit,Welded}.
     let source = r#"
 import std.ports.fluid
@@ -2727,7 +2724,7 @@ structure def PipeConformer {
         param pressure : Pressure = 101325Pa
         param flow_rate : VolumetricFlowRate = 1gal / 1s
         param medium : String = "water"
-        param fluid_type = FluidType.Liquid
+        param fluid_type : FluidType = FluidType.Liquid
         param frame : Frame3 = Frame3(
             origin: vec3(0mm, 0mm, 0mm),
             x_axis: vec3(1, 0, 0),
@@ -2735,7 +2732,7 @@ structure def PipeConformer {
             z_axis: vec3(0, 0, 1),
         )
         param inner_diameter : Length = 25mm
-        param connection_type = PipeConnectionType.Threaded
+        param connection_type : PipeConnectionType = PipeConnectionType.Threaded
     }
 }
 "#;
@@ -2892,12 +2889,8 @@ fn hydraulic_port_trait_surface() {
 /// RED: HydraulicPort absent → compile error on unknown trait.
 #[test]
 fn hydraulic_port_concrete_conformer_multidomain_compiles() {
-    // Enum-typed params (fluid_type, fitting_type) omit the type annotation.
-    // Untyped port-param enum defaults are accepted because the
-    // declared-vs-initializer check is gated to explicitly-typed params
-    // (param.type_expr.is_some()); see task 4318 step-7. Enum types defined in
-    // stdlib/ports_fluid.ri: FluidType{Liquid,Gas,TwoPhase},
-    // FittingStandard{NPT,BSP,JIC,ORFS}.
+    // Enum types defined in stdlib/ports_fluid.ri:
+    // FluidType{Liquid,Gas,TwoPhase}, FittingStandard{NPT,BSP,JIC,ORFS}.
     let source = r#"
 import std.ports.fluid
 
@@ -2906,14 +2899,14 @@ structure def HydroConformer {
         param pressure : Pressure = 101325Pa
         param flow_rate : VolumetricFlowRate = 1gal / 1s
         param medium : String = "hydraulic_oil"
-        param fluid_type = FluidType.Liquid
+        param fluid_type : FluidType = FluidType.Liquid
         param frame : Frame3 = Frame3(
             origin: vec3(0mm, 0mm, 0mm),
             x_axis: vec3(1, 0, 0),
             y_axis: vec3(0, 1, 0),
             z_axis: vec3(0, 0, 1),
         )
-        param fitting_type = FittingStandard.NPT
+        param fitting_type : FittingStandard = FittingStandard.NPT
     }
 }
 "#;
