@@ -89,8 +89,8 @@ use faer::Side;
 use faer::Mat;
 use faer::sparse::{SparseRowMat, Triplet};
 use reify_solver_elastic::eigensolve::{
-    EigenSolverOptions, EigenSolverResult, SparseFactorRef, SparseMetricOp, SparseStiffnessOp,
-    lanczos_shift_invert, solve_eigen_dense, solve_eigen_shift_invert,
+    EigenSolverOptions, EigenSolverResult, ShiftInvertFailure, SparseFactorRef, SparseMetricOp,
+    SparseStiffnessOp, lanczos_shift_invert, solve_eigen_dense, solve_eigen_shift_invert,
     try_solve_eigen_shift_invert,
 };
 
@@ -1380,5 +1380,117 @@ fn dense_and_lanczos_agree_at_nonzero_sigma() {
             1e-8,
             &format!("BT2 dense vs Lanczos at {label} (σ = {sigma})"),
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BT5 — C6 singular shift on the Lanczos path
+// ---------------------------------------------------------------------------
+
+/// **BT5, Lanczos.** A σ sitting exactly ON an eigenvalue is a TYPED failure
+/// carrying σ — not a panic, not `Err(KNotSpd)`, and above all not a
+/// finite-looking spectrum.
+///
+/// α's BT5 covers only the dense path and says so: its fixture A is 5×5 and
+/// routes to the dense fallback, where no `K − σB` is ever formed and σ on an
+/// eigenvalue is simply a selection key. The Lanczos arm needs an n>64 fixture,
+/// so this uses fixture C, whose closed-form spectrum supplies an eigenvalue to
+/// sit exactly on.
+///
+/// # Both directions, because either alone is passed by a broken guard
+///
+/// (a) alone is passed by a guard that fires at every σ≠0; (b) alone by one that
+/// never fires. Together they pin a guard that discriminates.
+///
+/// # Why part (b) of the PRD §5.3 detection is not optional
+///
+/// faer's `LuError::SymbolicSingular` reports STRUCTURAL rank deficiency only —
+/// no pivot exists anywhere in the pattern. It cannot fire on this fixture:
+/// `K − σB` keeps a full diagonal for every finite σ, so the symbolic structure
+/// is full-rank however close σ gets to an eigenvalue. Partial-pivot LU on a
+/// numerically tiny pivot returns `Ok`, and part A alone would let σ-on-an-
+/// eigenvalue through as plausible numbers. Hence the post-factorization guard.
+///
+/// # No threshold constant is pinned here
+///
+/// The assertions are behavioural — typed failure / no typed failure — and the
+/// threshold is DERIVED in the implementation from the pencil's own scale. It
+/// is not restated here, because a test that hardcoded it would have to be
+/// re-baselined every time the derivation was corrected, which is exactly the
+/// pressure that turns a guard into a rubber stamp. Achievability was checked
+/// and clears by ~11 orders in both directions: this pencil's λ-space resolution
+/// floor is n·ε·‖K−σB‖_∞/‖B‖_∞ ≈ 80 · 2.22e-16 · 3.99 ≈ 7.1e-14, the
+/// σ-on-eigenvalue case collapses to |λ−σ| ~ 1e-16, and the healthy case sits at
+/// |λ−σ| ≈ 1.4e-2.
+#[test]
+fn lanczos_reports_a_singular_shift_as_a_typed_failure() {
+    let (k, b) = fixture_c();
+    let base = EigenSolverOptions {
+        n_modes: 2,
+        tol: 1e-10,
+        max_iters: 1000,
+        sigma: 0.0,
+    };
+
+    // (a) σ exactly on λ₃, computed in f64 so it really is the same value the
+    // pencil has.
+    let sigma_on_eigenvalue = fixture_c_lambda(3);
+    let got = try_solve_eigen_shift_invert(
+        &k,
+        &b,
+        EigenSolverOptions {
+            sigma: sigma_on_eigenvalue,
+            ..base.clone()
+        },
+    );
+    match got {
+        Err(ShiftInvertFailure::ShiftAtEigenvalue { sigma }) => {
+            // Carrying σ is what makes this a TYPED failure rather than a bare
+            // error: a caller can name the offending shift without re-deriving
+            // it from its own options.
+            assert_eq!(
+                sigma, sigma_on_eigenvalue,
+                "BT5(a) Lanczos: the failure must carry the σ that was passed \
+                 ({sigma_on_eigenvalue}), not {sigma}",
+            );
+        }
+        Err(ShiftInvertFailure::KNotSpd) => panic!(
+            "BT5(a) Lanczos: σ = {sigma_on_eigenvalue} sits on λ₃ of an SPD K — this is a \
+             singular SHIFT, and reporting it as a non-SPD K would send an author to check \
+             boundary conditions for a problem that is entirely about where σ was put",
+        ),
+        Ok(result) => panic!(
+            "BT5(a) Lanczos: σ = {sigma_on_eigenvalue} sits exactly on λ₃, so K − σB is \
+             singular and there is no shift-invert operator to apply; got a finite-looking \
+             spectrum {:?} instead of a typed failure. A plausible answer to an unanswerable \
+             question is the silent-substitution class C6 exists to close.",
+            result.eigenvalues,
+        ),
+    }
+
+    // (b) the healthy σ from BT3 on the SAME fixture still succeeds, so the
+    // guard cannot be one that fires unconditionally at every σ≠0.
+    let healthy = sigma_between_lambda_9_and_10();
+    let ok = try_solve_eigen_shift_invert(
+        &k,
+        &b,
+        EigenSolverOptions {
+            sigma: healthy,
+            ..base
+        },
+    );
+    match ok {
+        Ok(result) => {
+            assert!(
+                result.n_converged > 0,
+                "BT5(b) Lanczos must exercise Lanczos (n_converged > 0); got 0",
+            );
+        }
+        Err(e) => panic!(
+            "BT5(b) Lanczos: σ = {healthy} is nowhere near an eigenvalue of this pencil \
+             (the nearest is ~1.4e-2 away, eleven orders above the resolution floor), so \
+             it must solve; got {e:?} — the guard fires unconditionally and has made every \
+             shifted solve unreachable",
+        ),
     }
 }
