@@ -885,6 +885,23 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
             length_arg(3, "dz"),
         ] },
 
+        // rotate(target, ax, ay, az, angle)      — 5-arg axis-angle
+        // rotate(target, orientation)            — 2-arg, task 4166's overload
+        //   arg0:    the geometry handle (unchecked — ε=4358's territory).
+        //   args1-3: `ax`/`ay`/`az`, a dimensionless unit-vector DIRECTION.
+        //            Legitimately bare in correct `.ri`, so UNSLOTTED per C1
+        //            invariant 4 and the ORIGIN-vs-DIRECTION rule.
+        //   arg4:    `angle` → ANGLE ("Angle"). PRD 3 leaf ζ, boundary row B4.
+        //
+        // The guard is LOAD-BEARING, not decorative. At arity 2 index 4 does not
+        // exist and index 1 holds an `Orientation` VALUE, so an arity-agnostic
+        // arm would be rescued only by `compiled_args.get(4)` returning None —
+        // the accident the HAZARD block below warns cannot be relied on. Pinned
+        // from both directions by `rotate_angle_slot_is_arity_5_only` and, at
+        // the message layer, by
+        // `rotate_orientation_overload_yields_no_arg_type_mismatch`.
+        "rotate" if arg_count == 5 => const { &[angle_arg(4, "angle")] },
+
         // rotate_around(target, px, py, pz, ax, ay, az, angle)
         //   The third STRADDLE case, structurally identical to `revolve`'s:
         //   args1-3: the PIVOT `px`/`py`/`pz` → LENGTH ("Length") — a point in
@@ -1532,6 +1549,19 @@ mod tests {
     ///   neither is a topology selector, and neither may be moved into the
     ///   selector slice.
     ///
+    /// - The PRD 3 leaf ζ ANGLE producers — `rotate`, `arc` and `draft`. The
+    ///   same story once more, and worth spelling out because this leaf's own
+    ///   brief does not mention this list at all: all three are CSG/curve
+    ///   producers registered in `GEOMETRY_FUNCTION_NAMES`
+    ///   (`crates/reify-compiler/src/units.rs`), none is a topology selector,
+    ///   and none may be moved into `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` to
+    ///   satisfy the subset assertion — `topology_selector_result_type`
+    ///   (`units.rs`) has no entry for any of them, so slice membership would
+    ///   turn every `rotate(…)` / `arc(…)` / `draft(…)` call into a panic on
+    ///   the `expect(…)` at `expr.rs:3253`. The other three names this leaf
+    ///   slots — `revolve`, `rotate_around`, `circular_pattern` — were already
+    ///   here for their task-5750/5662 LENGTH slots and are unchanged by it.
+    ///
     /// - The task-5662 PATTERN ORIGIN producers — `mirror` and
     ///   `circular_pattern`. Same story a third time: both are CSG producers
     ///   registered in `GEOMETRY_FUNCTION_NAMES`, neither is a topology
@@ -1588,6 +1618,8 @@ mod tests {
         // Task 5662 — pattern origin triples.
         "mirror",
         "circular_pattern",
+        // PRD 3 leaf ζ (task 5782) — ANGLE producers.
+        "rotate",
     ];
 
     // ── builtin_arg_slots table contract (step-1) ────────────────────────────
@@ -4030,6 +4062,15 @@ mod tests {
         ("linear_pattern_2d", AcceptedArities::Exactly(&[11])),
         ("rotate_around", AcceptedArities::Exactly(&[8])),
         ("translate", AcceptedArities::Exactly(&[4])),
+        // PRD 3 leaf ζ (task 5782). `rotate` is multi-arity because it is
+        // genuinely OVERLOADED — task 4166's 2-arg Orientation form alongside
+        // the 5-arg axis-angle one — and is safe under the coupling rule the
+        // way the pattern rows below are: its arm carries a load-bearing
+        // `if arg_count ==` guard, so the two arities expose DIFFERENT slot
+        // sets and no MULTI_ARITY_AGNOSTIC_SAFE exemption is needed or
+        // permitted. `geometry_transform.rs`' fallback reads
+        // `"rotate() expects 2 or 5 arguments, got {n}"`.
+        ("rotate", AcceptedArities::Exactly(&[2, 5])),
         // Pattern ORIGIN triples (task 5662) — the only rows here that are
         // multi-arity because the name is genuinely OVERLOADED: the scalar form
         // and the value form. Both are safe under the coupling rule because
