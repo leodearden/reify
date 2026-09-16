@@ -3866,9 +3866,21 @@ enum Disposition {
     NotApplicable,
     /// A Warning that no table names: it is actionable, and nobody has claimed it.
     Unattributed,
-    /// A row from the INLINE half of the corpus.
+    /// A row from the INLINE half of the corpus: a Reify snippet embedded in a
+    /// Rust test fixture.
     ///
-    /// Stub — the arm and its label land in the GREEN half of this pair.
+    /// A CENSUS state, not a triage state. Task #5306 owns the conformance sites
+    /// inside the inline fixtures; task #7543, which enumerated them, is
+    /// chartered not to fix them. They are listed so the class cannot recur
+    /// unnoticed on the next severity change — that is the whole value of
+    /// counting them — and so `#5306` inherits a list rather than a search.
+    ///
+    /// Resolved FIRST, ahead of the severity and field early returns and ahead
+    /// of both waiver tables, so the entire inline half answers to ONE rule.
+    /// Any later placement lets an inline row be read as `Unattributed` (which
+    /// panics [`assert_no_unwaived_ctor_conformance_warnings`] over sites #7543
+    /// must not touch) or as `Deferred` (which would let an inline row satisfy a
+    /// `.ri` waiver entry and keep a landed task's waiver looking live forever).
     InlineCensus,
 }
 
@@ -3892,7 +3904,11 @@ impl Disposition {
                     .to_owned()
             }
             Disposition::Unattributed => "unattributed — actionable".to_owned(),
-            Disposition::InlineCensus => String::new(),
+            Disposition::InlineCensus => {
+                "census — inline Rust fixture, sites owned by #5306: enumerated here, \
+                 fixed there"
+                    .to_owned()
+            }
         }
     }
 }
@@ -3934,6 +3950,13 @@ impl Disposition {
 /// line that moves with it. Until it does, every waiver entry reads as STALE and
 /// the assertion goes RED naming them — loudly re-scoped, never vacuously green.
 fn disposition_of(site: &SurveySite) -> Disposition {
+    // FIRST, ahead of the severity and field returns and of both tables: the
+    // inline half is a census in its entirety, so it answers to one rule. See
+    // `Disposition::InlineCensus` for what each later placement would break.
+    if site.snippet_line.is_some() {
+        return Disposition::InlineCensus;
+    }
+
     if site.severity != WARNING_SEVERITY {
         return Disposition::NotApplicable;
     }
@@ -4629,8 +4652,8 @@ fn render_survey(run: &SurveyRun, stamp: &SurveyStamp) -> String {
         The **`disposition` column is γ's RULING**, projected from the site's measured\n\
         severity and the two per-site waiver tables (`CTOR_CONFORMANCE_CORPUS_RESIDUAL`\n\
         in the generator, `CTOR_CONFORMANCE_MIGRATION_DEBT` in the sibling\n\
-        `examples_smoke.rs`) rather than typed here. It has three states, and they call\n\
-        for three DIFFERENT actions:\n\
+        `examples_smoke.rs`) rather than typed here. It has four states, and they call\n\
+        for four DIFFERENT actions:\n\
         \n\
         - **`deferred`** names the LIVE task that owns retiring the site, and the reason\n\
         migrating it here would destroy something — most of these are committed RED\n\
@@ -4643,7 +4666,14 @@ fn render_survey(run: &SurveyRun, stamp: &SurveyStamp) -> String {
         owner because it needs none, and reading it as unclaimed work would send you to\n\
         delete another PRD’s signal.\n\
         - **`unattributed`** is a warning claimed by nobody: that is the actionable\n\
-        state, and after γ the corpus holds none.\n\
+        state, and after γ the tracked `.ri` corpus holds none.\n\
+        - **`census`** is every row from the **inline** half — a Reify snippet embedded\n\
+        in a Rust test fixture. Those sites are owned by **#5306**, which is chartered to\n\
+        fix them; the task that enumerated them was chartered not to. They are listed so\n\
+        the class is countable and cannot recur unnoticed on the next severity change,\n\
+        and so #5306 inherits a list instead of a search. **Do not read a census row as\n\
+        unclaimed work, and do not read it as waived either** — no waiver table names it,\n\
+        because the tables key on `.ri` files.\n\
         \n\
         The **`hint` column is ADVISORY**, derived purely from the (expected, found)\n\
         type pair. It is **not** a D9 ruling. PRD §4 D9 defines the split between class\n\
