@@ -530,27 +530,52 @@ fn scalar_or_real(dim: DimensionVector) -> Type {
     }
 }
 
+/// The quantity a literal's elements AGREE on, or `Type::dimensionless_scalar()`
+/// when they do not (including the empty case).
+///
+/// The comparison key is [`arg_dimension`] rather than `Type` equality because
+/// that is the exact property the consumer decides on: `arg_quantity_slot_dimension`
+/// (`conformance/mod.rs`) reads a quantity slot as a `DimensionVector` or as
+/// nothing. Comparing `Type`s instead would split `Int` from `Real` — both
+/// dimensionless, both routinely mixed in one literal — and degrade a literal
+/// the rule has no quarrel with.
+///
+/// The degrade target is `Type::dimensionless_scalar()` because it is the one
+/// value for which that arg-side predicate returns `None`: a heterogeneous
+/// aggregate then names no dimension, and the task-5766/6159 quantity rule
+/// falls silent BY CONSTRUCTION rather than through a special case in the
+/// conformance walker. Elements that agree keep their precise quantity
+/// verbatim, so the narrowing costs no precision where the inference was sound.
+fn homogeneous_quantity<'a>(elems: impl IntoIterator<Item = &'a Type>) -> Type {
+    let mut elems = elems.into_iter();
+    let Some(first) = elems.next() else {
+        return Type::dimensionless_scalar();
+    };
+    let dim = arg_dimension(first);
+    if elems.all(|e| arg_dimension(e) == dim) {
+        first.clone()
+    } else {
+        Type::dimensionless_scalar()
+    }
+}
+
 /// Recover `(n, element_quantity)` from a single list argument (`vec` / `diag`).
 ///
-/// - `ListLiteral(elems)` → `(elems.len(), elems[0].result_type)` — exact.
+/// - `ListLiteral(elems)` → `(elems.len(), <the quantity the elements agree on>)`.
 /// - otherwise → `(0, <innermost List element>)` — the DEGRADE path (D7):
 ///   length unknown, quantity recovered from the arg's `Type::List` where
 ///   possible, defaulting to `Type::dimensionless_scalar()`.
 ///
-/// Element `[0]` decides the WHOLE literal's quantity — the same weakness as
-/// [`matrix_shape`] one rank down, here feeding `vec` / `diag`.
-///
-/// First-element quantity inference; load-bearing for a REJECTION diagnostic
-/// since tasks 5766/6159. Rule, residual and fix: the "Point / Vector
-/// quantity-slot convention" section of `crates/reify-core/src/ty.rs`, owned by
-/// task 5889.
+/// Every element is inspected, not just `[0]`: elements that agree on a
+/// dimension keep that precise quantity, and elements that disagree degrade to
+/// `Type::dimensionless_scalar()` via [`homogeneous_quantity`], which is where
+/// the reasoning lives. `n` is the element count either way.
 fn list_shape(arg: &CompiledExpr) -> (usize, Type) {
     if let CompiledExprKind::ListLiteral(elems) = &arg.kind {
-        let quantity = elems
-            .first()
-            .map(|e| e.result_type.clone())
-            .unwrap_or(Type::dimensionless_scalar());
-        (elems.len(), quantity)
+        (
+            elems.len(),
+            homogeneous_quantity(elems.iter().map(|e| &e.result_type)),
+        )
     } else {
         (0, innermost_list_element(&arg.result_type))
     }
