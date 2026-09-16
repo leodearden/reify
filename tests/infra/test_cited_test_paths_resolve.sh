@@ -759,4 +759,137 @@ _fixture_commit "$FIX_INTER_CLEAN"
 assert "H: a repo with no stale citations is green and byte-for-byte silent" \
     _ratchet_clean_repo_is_green_and_silent
 
+# ===========================================================================
+# Section I: the VACUITY FLOOR.
+#
+# WHY IT EXISTS. `comm -23` can only ever report "no NEW fingerprints", and
+# the empty set is a subset of everything. A regex typo, a `git grep` that
+# silently matches nothing, a wrong repo root, or an exclusion pathspec
+# widened until it swallows the tree would all leave the ratchet
+# PERMANENTLY AND INVISIBLY GREEN — the gate would report success precisely
+# when it had stopped looking. This is the exact failure mode task #6241
+# added _ratchet_check_scan_evidence to tests/infra/test_reify_audit_ptodo.sh
+# to close.
+#
+# The floor observes the CORPUS (how much the scan looked at), never the
+# FINDINGS (how much it disliked), and never the baseline. That independence
+# is what makes it a real second signal rather than a restatement of the
+# ratchet: a burn-down commit that legitimately drives the finding count to
+# zero must not trip it, while a scan that collapses to near-zero must.
+# ===========================================================================
+echo ""
+echo "--- Section I: the baseline-independent vacuity floor ---"
+
+_floor_rc() {
+    local out rc=0
+    out="$(_floor_check_corpus "$1" "$2" 2>&1)" || rc=$?
+    printf '%s' "$out"
+    return "$rc"
+}
+
+# (1) DEGENERATE: an empty tracked-test index. Nothing could ever resolve, so
+# every citation would be dropped by the zero-basename-hit rule and the
+# ratchet would go quiet.
+_floor_rejects_empty_index() {
+    local out rc=0
+    out="$(_floor_rc 0 1860)" || rc=$?
+    if [ "$rc" -eq 0 ]; then echo "expected non-zero for an empty index, got rc0"; return 1; fi
+    printf '%s\n' "$out" | grep -qi 'index' && return 0
+    echo "diagnostic does not name the index floor:"; printf '%s\n' "$out"; return 1
+}
+
+# (2) DEGENERATE: a zero-citation corpus. The scan found nothing to resolve,
+# so there is nothing for the resolver to filter and the ratchet is vacuous.
+_floor_rejects_zero_citations() {
+    local out rc=0
+    out="$(_floor_rc 1304 0)" || rc=$?
+    if [ "$rc" -eq 0 ]; then echo "expected non-zero for a zero-citation corpus, got rc0"; return 1; fi
+    printf '%s\n' "$out" | grep -qi 'citation' && return 0
+    echo "diagnostic does not name the citation floor:"; printf '%s\n' "$out"; return 1
+}
+
+assert "I: an empty tracked-test index breaches the floor and is named" \
+    _floor_rejects_empty_index
+assert "I: a zero-citation corpus breaches the floor and is named" \
+    _floor_rejects_zero_citations
+
+# (3) The floor passes — and is silent — against the REAL repository's own
+# observed corpus. Measured on this tree while writing the gate: 1304 index
+# units and 1860 citation occurrences.
+_floor_accepts_real_tree() {
+    local idx_n cit_n out rc=0
+    idx_n="$(cited_test_path_index "$REPO_ROOT" | grep -c . || true)"
+    cit_n="$(cited_test_path_citations "$REPO_ROOT" | grep -c . || true)"
+    out="$(_floor_rc "$idx_n" "$cit_n")" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "floor breached against the real tree (index=$idx_n citations=$cit_n):"
+        printf '%s\n' "$out"; return 1
+    fi
+    [ -z "$out" ] && return 0
+    echo "expected silence on the passing path, got:"; printf '%s\n' "$out"; return 1
+}
+
+assert "I: the real repository's observed corpus clears both floors, silently" \
+    _floor_accepts_real_tree
+
+# (4) The bounds themselves. Asserted against the LIVE corpus rather than
+# against the constants, so this stays a statement about the tree and not a
+# tautology restating the two literals.
+#
+# MEASURED BASIS (this tree, while writing the gate):
+#   index units            1304   (549 flat + 755 nested under crates/*/tests/)
+#   citation occurrences   1860   (790 distinct cited paths)
+# Both floors sit at roughly a quarter to a sixth of the measured value, so
+# ordinary churn — even deleting a whole crate's tests — cannot trip them,
+# while a scan that collapses toward zero does. They are lower bounds on the
+# instrument working, NOT targets for the tree.
+_floor_bounds_are_conservative_against_live() {
+    local idx_n cit_n
+    # Read defensively: the constants are defined alongside the checker, and
+    # under `set -u` a bare reference to a not-yet-defined one would abort the
+    # whole file instead of failing this one assert.
+    local min_idx="${FLOOR_MIN_INDEX_UNITS:-}" min_cit="${FLOOR_MIN_CITATIONS:-}"
+    if [ -z "$min_idx" ] || [ -z "$min_cit" ]; then
+        echo "FLOOR_MIN_INDEX_UNITS / FLOOR_MIN_CITATIONS are not defined"; return 1
+    fi
+    idx_n="$(cited_test_path_index "$REPO_ROOT" | grep -c . || true)"
+    cit_n="$(cited_test_path_citations "$REPO_ROOT" | grep -c . || true)"
+    if [ "$idx_n" -lt "$min_idx" ]; then
+        echo "live index ($idx_n) is below the floor ($min_idx)"; return 1
+    fi
+    if [ "$cit_n" -lt "$min_cit" ]; then
+        echo "live citations ($cit_n) is below the floor ($min_cit)"; return 1
+    fi
+    # Headroom: a floor that sat just under the live value would flake on
+    # ordinary churn. Require the live corpus to be at least double each floor.
+    if [ "$idx_n" -lt $(( min_idx * 2 )) ]; then
+        echo "index floor ($min_idx) has less than 2x headroom under live ($idx_n)"; return 1
+    fi
+    if [ "$cit_n" -lt $(( min_cit * 2 )) ]; then
+        echo "citation floor ($min_cit) has less than 2x headroom under live ($cit_n)"; return 1
+    fi
+    return 0
+}
+
+assert "I: both floors sit at least 2x below the live corpus (conservative, not tuned to it)" \
+    _floor_bounds_are_conservative_against_live
+
+# (5) The floor NEVER reads the baseline. Its independence from baseline
+# content is the whole reason it is a second signal; a floor that consulted
+# the baseline would go green exactly when the baseline was lost.
+_floor_ignores_the_baseline() {
+    local with_real with_missing rc1=0 rc2=0
+    with_real="$(_floor_rc 1304 1860)" || rc1=$?
+    with_missing="$(REIFY_CITED_TEST_PATH_BASELINE=/nonexistent/baseline.manifest \
+        _floor_rc 1304 1860)" || rc2=$?
+    if [ "$rc1" -eq "$rc2" ] && [ "$with_real" = "$with_missing" ]; then return 0; fi
+    echo "the floor's verdict changed when the baseline was pointed at a missing file:"
+    echo "  with real baseline:    rc$rc1 '$with_real'"
+    echo "  with missing baseline: rc$rc2 '$with_missing'"
+    return 1
+}
+
+assert "I: the floor's verdict is unchanged by a missing baseline (baseline-independent)" \
+    _floor_ignores_the_baseline
+
 test_summary
