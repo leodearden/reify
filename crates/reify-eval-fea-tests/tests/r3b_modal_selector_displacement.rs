@@ -13,7 +13,10 @@
 //! Verdict-shaped acceptance (no tuned float tolerance on a response magnitude —
 //! the fixture's projections are exact small integers; equality is discrete by
 //! construction):
-//!   (a) the outcome is a non-Undef, non-empty `List<Length>` with all entries finite;
+//!   (a) the outcome is a non-Undef, non-empty `List` with all entries finite —
+//!       list shape and magnitudes only, since the series is read through a
+//!       dimension-blind fold; the entries' LENGTH dimension is pinned by the
+//!       two guards named on `read_series_list`;
 //!   (b) the Selector-driven series equals the projection at the selector-resolved
 //!       representative node B and NOT the global antinode A (the flip);
 //!   (c) a `String` location still yields the node-A antinode series (3823 preserved).
@@ -234,8 +237,22 @@ fn run_displacement_at(history: &Value, location: Value, direction: Value) -> Ve
 /// Read the trampoline's series `Value::List` into `Vec<f64>`, accepting
 /// `Real`/`Int`/`Scalar` entries of any dimension; panics if the value is not
 /// a List (so assertion (a)'s non-Undef contract is enforced at the read
-/// site). The LENGTH-dimension pin on each entry lives in
-/// `reify-eval/src/modal_ops.rs`'s `displacement_series_outcome`, not here.
+/// site).
+///
+/// The fold is dimension-BLIND on purpose, so no assertion in this suite would
+/// notice the series being retyped away from LENGTH. Two guards elsewhere pin
+/// the two halves, which are checked nowhere against each other:
+///   - RUNTIME — `displacement_at_series_entries_are_length_dimensioned`
+///     (in-module in `reify-eval/src/modal_ops.rs`) drives the trampoline and
+///     asserts every entry is a `Value::Scalar` of `DimensionVector::LENGTH`;
+///   - DECLARED — `displacement_at_overloads_return_list_of_length`
+///     (`reify-compiler/tests/harness_mechanics/modal_mechanism_compile.rs`)
+///     asserts both stdlib overloads declare `-> List<Length>`.
+///
+/// Those are tests. `displacement_series_outcome` — which wraps the series in
+/// LENGTH-dimensioned scalars — is the IMPLEMENTATION both of them pin, so it
+/// is no use as a citation here: retype it and the supposed pin moves with the
+/// behaviour it was meant to catch.
 fn read_series_list(v: &Value) -> Vec<f64> {
     match v {
         Value::List(items) => items
@@ -267,7 +284,8 @@ fn series_approx_eq(a: &[f64], b: &[f64]) -> bool {
 
 /// (a)+(b): a `Selector` `location` resolves to the +Z face's representative node
 /// B=2 (peak within {1,2}), NOT the global antinode A=0. The series is a non-empty,
-/// all-finite `List<Length>` equal to node B's projection and distinct from node A's.
+/// all-finite `List` equal to node B's projection and distinct from node A's —
+/// magnitudes only, per the dimension note on `read_series_list`.
 ///
 /// Was RED before step-07 wired Selector dispatch: the Selector fell through
 /// `value_inputs[1]`'s `_ => ""` arm → antinode A → the series equalled node A
