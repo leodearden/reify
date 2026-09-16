@@ -19,15 +19,25 @@
 //!
 //! # Measured basis
 //!
-//! Over the tree at `b6ecde51ae`, [`is_inline_fixture_host`] admits **1,307**
-//! tracked files — 1,305 carrying a `tests` directory component under
-//! `crates/`, plus 2 `crates/*/src/**/tests.rs`
-//! (`reify-eval/src/{engine_build,geometry_ops}/tests.rs`). Across them
-//! [`raw_string_literals`] collects **3,502** literals, of which
-//! [`looks_like_reify_source`] admits **3,127**, [`is_format_template`] holds
-//! back **70**, and **305** are dropped as not Reify at all (JSON payloads,
-//! Rust-source fixtures, expected-diagnostic prose). **464** hosts carry at
-//! least one admitted snippet.
+//! Over the tree at `cb868ea32e`, [`is_inline_fixture_host`] admits **1,870**
+//! of the 1,932 tracked `.rs` — every one under `crates/`, none of which
+//! carries a `target` component — leaving 62 excluded, all under the two
+//! out-of-scope roots named on the predicate. Across the admitted hosts
+//! [`raw_string_literals`] collects **3,734** literals, of which
+//! [`looks_like_reify_source`] admits **3,306**, [`is_format_template`] holds
+//! back **72**, and **356** are dropped as not Reify at all (JSON payloads,
+//! Rust-source fixtures, expected-diagnostic prose — re-checked at this
+//! commit, not carried over). **496** hosts carry at least one admitted
+//! snippet.
+//!
+//! Widening the host predicate from the file-NAME scope it started with added
+//! 563 hosts carrying 231 literals, of which 179 were admitted, 1 held back as
+//! a template and 51 dropped. The drop share therefore moved 8.7% → 9.5%,
+//! which is the proportionate movement a corpus change makes; the newly
+//! admitted snippets are `#[cfg(test)]`-module fixtures that read as ordinary
+//! Reify declarations. Whether any of them fail to COMPILE is not restated
+//! here: the survey artifact's own inline-coverage section counts them, per
+//! member, with a machine-derived reason.
 //!
 //! Those are MEASUREMENTS at a named commit, not invariants — recorded so a
 //! future reader can tell a filter regression (the admitted share collapses)
@@ -359,21 +369,33 @@ fn has_named_placeholder(text: &str) -> bool {
     false
 }
 
-/// Whether a repo-relative path is a Rust file that can host inline fixtures.
+/// Whether a repo-relative path is a Rust source file that can host inline
+/// fixtures: every tracked `.rs` under `crates/`, build output excluded.
 ///
-/// Deliberately NOT [`crate::ignore_hygiene::walk_test_rs_files`], which is the
-/// workspace's other test-file enumerator. That one matches only a `tests`
-/// DIRECTORY component, so it misses both `crates/*/src/**/tests.rs` hosts —
-/// among them `crates/reify-eval/src/engine_build/tests.rs`, the only tracked
-/// file in the workspace carrying `r##"` literals — and its
-/// `has_tests_component` predicate is private, so the gap cannot be closed by
-/// composing with it. It is also a
-/// filesystem walk, where the survey needs a git-index enumeration: an
+/// PATH SHAPE ONLY, and that is the design. What makes a raw string a fixture
+/// is its CONTENT — [`looks_like_reify_source`]'s job — so a file hosting no
+/// Reify simply contributes zero snippets, at the cost of one lexer pass. A
+/// file-NAME scope was the alternative, and it measurably under-reaches: a
+/// `tests`-directory-or-exactly-`tests.rs` clause admitted 1,307 of the 1,932
+/// tracked `.rs`, missing 10 of the 12 `crates/*/src/**/*tests.rs` hosts and
+/// every `#[cfg(test)] mod tests` inside a production `src/*.rs` — 409 of the
+/// 561 tracked `crates/*/src/**/*.rs` carry one. Keeping the admission in one
+/// content filter is what keeps the scope SPOT instead of a hand-maintained
+/// list of file-name shapes.
+///
+/// Deliberately NOT [`crate::ignore_hygiene::walk_test_rs_files`], the
+/// workspace's other test-file enumerator: its `has_tests_component` predicate
+/// is private, so the shapes above cannot be reached by composing with it, and
+/// it is a filesystem walk where the survey needs a git-index enumeration — an
 /// untracked `.rs` is reproducible from no commit, and the artifact is stamped
 /// against one.
 ///
-/// The `crates/` anchor is the scope statement: `gui/src-tauri` is a separate
-/// cargo project and is not part of this corpus.
+/// Two roots are excluded by DECISION rather than oversight: `gui/src-tauri/**`
+/// (the Tauri sidecar) and `tree-sitter-reify/**` (the grammar crate) are
+/// separate cargo and grammar projects — 62 tracked `.rs` between them, 43 and
+/// 19. The survey artifact discloses both by name in its residual-scope
+/// limitation, so the boundary is readable rather than inferred from this
+/// predicate's source.
 pub fn is_inline_fixture_host(rel: &Path) -> bool {
     let mut names: Vec<&str> = Vec::new();
     for component in rel.components() {
@@ -390,8 +412,5 @@ pub fn is_inline_fixture_host(rel: &Path) -> bool {
     let Some((file, dirs)) = names.split_last() else {
         return false;
     };
-    if !file.ends_with(".rs") || dirs.first() != Some(&"crates") || dirs.contains(&"target") {
-        return false;
-    }
-    dirs.contains(&"tests") || *file == "tests.rs"
+    file.ends_with(".rs") && dirs.first() == Some(&"crates") && !dirs.contains(&"target")
 }
