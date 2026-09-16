@@ -908,10 +908,11 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         //            space.
         //   args4-6: the axis DIRECTION `ax`/`ay`/`az` — a dimensionless unit
         //            vector, legitimately bare in correct `.ri`. UNSLOTTED.
-        //   arg7:    `angle` — owned by
-        //            `docs/prds/v0_6/angle-units-surface-convergence.md` by
-        //            binding seam decree; gating it here would be a scope
-        //            violation.
+        //   arg7:    `angle` → ANGLE ("Angle"). Gated since PRD 3 leaf ζ
+        //            (task 5782), which EXECUTED the seam decree this comment
+        //            used to defer to — the angle belonged to
+        //            `docs/prds/v0_6/angle-units-surface-convergence.md`, and
+        //            that PRD has now spent it here.
         //   `scale` is deliberately absent from this block entirely: its
         //   `factor` (and the `factors` vec3 of its non-uniform form) is a
         //   dimensionless RATIO, so a LENGTH slot would reject correct code.
@@ -920,6 +921,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
             length_arg(1, "px"),
             length_arg(2, "py"),
             length_arg(3, "pz"),
+            angle_arg(7, "angle"),
         ] },
 
         // ── Modify producers (task 5750) ─────────────────────────────────────
@@ -1010,24 +1012,43 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         "extrude" | "extrude_symmetric" => const { &[length_arg(1, "distance")] },
         "pipe" => const { &[length_arg(1, "radius")] },
 
-        // revolve(profile, ox, oy, oz, ax, ay, az, angle)
-        // revolve_full(profile, ox, oy, oz, ax, ay, az)
+        // revolve(profile, ox, oy, oz, ax, ay, az, angle)      — 8 call args
+        // revolve_full(profile, ox, oy, oz, ax, ay, az)         — 7 call args
         //   The second STRADDLE case, after `half_space` — three kinds of
-        //   argument in one list, and only one of them gated:
+        //   argument in one list:
         //   args1-3: the axis ORIGIN `ox`/`oy`/`oz` → LENGTH ("Length"). A
         //            point in space; a bare component is read as SI metres.
         //   args4-6: the axis DIRECTION `ax`/`ay`/`az` — a dimensionless unit
         //            vector, legitimately bare in correct `.ri`. UNSLOTTED, for
         //            the same reason `half_space`'s normal is.
-        //   arg7:    `angle` (present only on `revolve`; `revolve_full` injects
-        //            a literal 2π at lowering) — owned by
-        //            `docs/prds/v0_6/angle-units-surface-convergence.md` by
-        //            binding seam decree. Gating it here would be a scope
-        //            violation AND would make the two layers disagree in the
-        //            direction that PRD has to close together.
+        //   arg7:    `angle` → ANGLE ("Angle") on `revolve` since PRD 3 leaf ζ
+        //            (task 5782). ABSENT from `revolve_full`, which takes 7 call
+        //            arguments and whose `angle`@7 op-arg is a
+        //            compiler-SYNTHESIZED `Value::angle(TAU)` typed
+        //            `Type::angle()` (`geometry.rs`, the type PRD D10 ratified).
+        //            No author writes it, so there is no user-written position
+        //            for this index-keyed table to gate.
+        //
+        // TWO ARMS, not one shared arm plus a bounds check. Letting the pair
+        // share `angle_arg(7, …)` and relying on `compiled_args.get(7)`
+        // returning None at `revolve_full`'s 7-arg call would be correct only by
+        // ACCIDENT: the HAZARD block above spends forty lines establishing that
+        // a bounds check cannot distinguish "index absent" from "index holds a
+        // different parameter", so an arm whose correctness turns on that
+        // distinction must STATE its layout rather than lean on it. Splitting
+        // also makes the two layouts readable side by side, which is what a
+        // reader checking `revolve_full` against its lowering actually needs.
+        //
         //   Both are single-form, so both stay arity-agnostic. Pinned by
-        //   `revolve_slots_the_origin_but_never_the_axis_or_the_angle`.
-        "revolve" | "revolve_full" => const { &[
+        //   `revolve_slots_the_origin_and_the_angle_but_never_the_axis` and by
+        //   `revolve_full_slots_the_origin_only_because_its_2pi_is_synthesized`.
+        "revolve" => const { &[
+            length_arg(1, "ox"),
+            length_arg(2, "oy"),
+            length_arg(3, "oz"),
+            angle_arg(7, "angle"),
+        ] },
+        "revolve_full" => const { &[
             length_arg(1, "ox"),
             length_arg(2, "oy"),
             length_arg(3, "oz"),
@@ -1542,12 +1563,14 @@ mod tests {
     ///   the primitives above: all fifteen are registered in
     ///   `GEOMETRY_FUNCTION_NAMES`, none is a topology selector, and none may
     ///   be moved into `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` to satisfy the subset
-    ///   assertion.
+    ///   assertion. `revolve` additionally holds an ANGLE slot from leaf ζ, so
+    ///   its listing is no longer task 5750's alone.
     ///
     /// - The task-5750 TRANSFORM producers — `translate` and `rotate_around`.
     ///   Same story again: both are registered in `GEOMETRY_FUNCTION_NAMES`,
     ///   neither is a topology selector, and neither may be moved into the
-    ///   selector slice.
+    ///   selector slice. `rotate_around` additionally holds an ANGLE slot from
+    ///   leaf ζ, so its listing is no longer task 5750's alone.
     ///
     /// - The PRD 3 leaf ζ ANGLE producers — `rotate`, `arc` and `draft`. The
     ///   same story once more, and worth spelling out because this leaf's own
