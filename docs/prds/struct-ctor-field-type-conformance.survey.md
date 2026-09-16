@@ -1,13 +1,13 @@
 # Struct-ctor field-type conformance — corpus survey
 
-**Base commit:** `c528d054457a34a60c288cc4520bab0deb65b625`
+**Base commit:** `43a442d85743fa9b566543803507ce883d25704c`
 **Tool:** `crates/reify-compiler/tests/harness_compilation_surface/ctor_conformance_corpus_survey.rs`
 **Design:** `docs/prds/struct-ctor-field-type-conformance.md` (task β, §8)
-**Sites:** 16 in the tracked `.ri` corpus; 272 in inline Rust fixtures
-**Corpus:** 701 members of the `tracked .ri corpus` (enumeration parity floor 100); 3198 snippets extracted from the `inline Rust fixture hosts` (enumeration parity floor 300 hosts)
+**Sites:** 16 in the tracked `.ri` corpus; 274 in inline Rust fixtures
+**Corpus:** 701 members of the `tracked .ri corpus` (enumeration parity floor 100); 3378 snippets extracted from the `inline Rust fixture hosts` (enumeration parity floor 300 hosts)
 **`.ri` coverage:** 696 surveyed, 5 not surveyed, 78 partial
 
-**Drifted corpus members since the anchor:** 2 tracked corpus members — `.ri` files, `.rs` hosts,
+**Drifted corpus members since the anchor:** 4 tracked corpus members — `.ri` files, `.rs` hosts,
 or both — differ between the anchor and the commit surveyed, so for those files
 the anchor names OLDER bytes than the rows below describe. The list is filtered
 to the two corpora, so it names exactly the files whose bytes a row could
@@ -18,6 +18,8 @@ commit, which is why a dirty tree is refused outright instead — see
 `stamp_decision`.)
 
 - `crates/reify-compiler/tests/harness_compilation_surface/ctor_conformance_corpus_survey.rs`
+- `crates/reify-test-support/src/lib.rs`
+- `crates/reify-test-support/src/rust_fixture_scan.rs`
 - `crates/reify-test-support/tests/rust_fixture_scan.rs`
 
 This is a point-in-time **snapshot**, not a freshness-gated golden file. γ will
@@ -386,7 +388,7 @@ cannot recur unnoticed on the next severity change.
 | `crates/reify-eval/tests/region_resolution_boundary.rs:702` | 4 | needs_face | ctor call-site anchor | — | — | — | `SelectorKindMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | no matching overload for needs_face(BodySelector), candidates: needs_face(FaceSelector) -> Int |
 | `crates/reify-eval/tests/type_hygiene_integration_gate.rs:312` | 3 | moment_of_inertia | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | moment_of_inertia: density argument expects Density, got Real; pass a dimensioned Density literal such as `7850kg/m^3` |
 
-### unattributed def — needs manual triage — 81 site(s)
+### unattributed def — needs manual triage — 83 site(s)
 
 | site | snippet line | def | def source | field | expected | found | code | severity | hint (advisory) | disposition (γ ruling) | message |
 |---|---|---|---|---|---|---|---|---|---|---|---|
@@ -471,10 +473,12 @@ cannot recur unnoticed on the next severity change.
 | `crates/reify-eval/tests/purpose_activation.rs:2774` | 2 | — | unrecovered: identifier not followed by `(` | z | Scalar[m] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'z' has type 'Real' but param 'z' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
 | `crates/reify-eval/tests/purpose_activation.rs:2825` | 2 | — | unrecovered: identifier not followed by `(` | z | Scalar[m] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'z' has type 'Real' but param 'z' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
 | `crates/reify-syntax/tests/harness_syntax/option_tests.rs:157` | 2 | — | unrecovered: identifier not followed by `(` | x | Real | Option<Real> | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'x' has type 'Option<Real>' but param 'x' requires type 'Real' |
+| `crates/reify-test-support/src/helpers.rs:1611` | 1 | — | unrecovered: identifier not followed by `(` | x | Scalar[m] | Int | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'x' has type 'Int' but param 'x' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-test-support/src/helpers.rs:1612` | 2 | — | unrecovered: identifier not followed by `(` | y | Scalar[m] | Int | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'y' has type 'Int' but param 'y' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
 
 ### Inline coverage
 
-Of 3198 inline member(s) — one per extracted snippet, plus one per host that could not be read at all — **3115 were swept** and **83 were not**. A further **682** were swept only PARTIALLY. A member is keyed `<host>:<line>`, the host line the snippet's own line 1 sits on.
+Of 3378 inline member(s) — one per extracted snippet, plus one per host that could not be read at all — **3292 were swept** and **86 were not**. A further **722** were swept only PARTIALLY. A member is keyed `<host>:<line>`, the host line the snippet's own line 1 sits on.
 
 #### Not swept (contributed no sites)
 
@@ -489,7 +493,7 @@ Of 3198 inline member(s) — one per extracted snippet, plus one per host that c
 | `crates/reify-compiler/tests/ambient_default_material_integration_gate.rs:55` | `format-template` |
 | `crates/reify-compiler/tests/ambient_default_material_integration_gate.rs:92` | `format-template` |
 | `crates/reify-compiler/tests/guard_compilation.rs:722` | `parse-error` |
-| `crates/reify-compiler/tests/harness_compilation_surface/ctor_conformance_corpus_survey.rs:3198` | `format-template` |
+| `crates/reify-compiler/tests/harness_compilation_surface/ctor_conformance_corpus_survey.rs:3211` | `format-template` |
 | `crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs:537` | `format-template` |
 | `crates/reify-compiler/tests/harness_constructor_typing/math_signatures.rs:662` | `format-template` |
 | `crates/reify-compiler/tests/harness_constructor_typing/math_signatures.rs:696` | `format-template` |
@@ -540,6 +544,7 @@ Of 3198 inline member(s) — one per extracted snippet, plus one per host that c
 | `crates/reify-compiler/tests/harness_type_checking/polymorphic_zero_tests.rs:375` | `format-template` |
 | `crates/reify-compiler/tests/silent_defaults_tests.rs:680` | `parse-error` |
 | `crates/reify-eval-fea-tests/tests/r3b_modal_selector_displacement.rs:480` | `format-template` |
+| `crates/reify-eval/src/relate_solve.rs:1352` | `format-template` |
 | `crates/reify-eval/tests/circular_pattern_angle.rs:23` | `format-template` |
 | `crates/reify-eval/tests/cost_subtree_aggregate_eval.rs:135` | `format-template` |
 | `crates/reify-eval/tests/cost_subtree_aggregate_eval.rs:86` | `format-template` |
@@ -554,6 +559,8 @@ Of 3198 inline member(s) — one per extracted snippet, plus one per host that c
 | `crates/reify-eval/tests/harness_modal/modal_material_damping_e2e.rs:524` | `format-template` |
 | `crates/reify-eval/tests/joint_drive_expansion_boundary.rs:206` | `format-template` |
 | `crates/reify-eval/tests/relate_solve_e2e.rs:300` | `format-template` |
+| `crates/reify-syntax/src/ts_parser.rs:6206` | `parse-error` |
+| `crates/reify-syntax/src/ts_parser.rs:7931` | `parse-error` |
 | `crates/reify-syntax/tests/harness_syntax/boundary1_producer.rs:373` | `parse-error` |
 | `crates/reify-syntax/tests/harness_syntax/boundary1_producer.rs:466` | `parse-error` |
 | `crates/reify-syntax/tests/harness_syntax/boundary1_producer.rs:47` | `parse-error` |
@@ -561,7 +568,7 @@ Of 3198 inline member(s) — one per extracted snippet, plus one per host that c
 | `crates/reify-syntax/tests/harness_syntax/interpolated_string_tests.rs:277` | `parse-error` |
 | `crates/reify-syntax/tests/harness_syntax/interpolated_string_tests.rs:58` | `format-template` |
 | `crates/reify-test-support/tests/rust_fixture_scan.rs:46` | `parse-error` |
-| `crates/reify-test-support/tests/rust_fixture_scan.rs:465` | `format-template` |
+| `crates/reify-test-support/tests/rust_fixture_scan.rs:490` | `format-template` |
 | `crates/reify-test-support/tests/rust_fixture_scan.rs:95` | `parse-error` |
 
 #### Partially swept (sites collected, but the snippet also failed to compile)
@@ -569,6 +576,30 @@ Of 3198 inline member(s) — one per extracted snippet, plus one per host that c
 | file | reason |
 |---|---|
 | `crates/reify-cli/tests/harness_cli/cli_check.rs:795` | `compile-error` |
+| `crates/reify-compiler/src/compile_builder/priv_redundant_lint.rs:172` | `compile-error` |
+| `crates/reify-compiler/src/compile_builder/priv_redundant_lint.rs:198` | `compile-error` |
+| `crates/reify-compiler/src/compile_builder/priv_redundant_lint.rs:232` | `compile-error` |
+| `crates/reify-compiler/src/compile_builder/priv_redundant_lint.rs:274` | `compile-error` |
+| `crates/reify-compiler/src/compile_builder/priv_redundant_lint.rs:393` | `compile-error` |
+| `crates/reify-compiler/src/entity.rs:7323` | `compile-error` |
+| `crates/reify-compiler/src/expr.rs:10002` | `compile-error` |
+| `crates/reify-compiler/src/expr.rs:10034` | `compile-error` |
+| `crates/reify-compiler/src/expr.rs:7686` | `compile-error` |
+| `crates/reify-compiler/src/expr.rs:9474` | `compile-error` |
+| `crates/reify-compiler/src/expr.rs:9721` | `compile-error` |
+| `crates/reify-compiler/src/expr.rs:9754` | `compile-error` |
+| `crates/reify-compiler/src/expr.rs:9786` | `compile-error` |
+| `crates/reify-compiler/src/expr.rs:9828` | `compile-error` |
+| `crates/reify-compiler/src/expr.rs:9879` | `compile-error` |
+| `crates/reify-compiler/src/expr.rs:9911` | `compile-error` |
+| `crates/reify-compiler/src/expr.rs:9942` | `compile-error` |
+| `crates/reify-compiler/src/expr.rs:9972` | `compile-error` |
+| `crates/reify-compiler/src/geometry.rs:3457` | `compile-error` |
+| `crates/reify-compiler/src/geometry.rs:3488` | `compile-error` |
+| `crates/reify-compiler/src/geometry.rs:3520` | `compile-error` |
+| `crates/reify-compiler/src/geometry.rs:3552` | `compile-error` |
+| `crates/reify-compiler/src/geometry.rs:3587` | `compile-error` |
+| `crates/reify-compiler/src/geometry.rs:3715` | `compile-error` |
 | `crates/reify-compiler/tests/ambient_default_injection_tests.rs:188` | `compile-error` |
 | `crates/reify-compiler/tests/ambient_default_injection_tests.rs:370` | `compile-error` |
 | `crates/reify-compiler/tests/boundary2_producer.rs:1003` | `compile-error` |
@@ -1215,6 +1246,17 @@ Of 3198 inline member(s) — one per extracted snippet, plus one per host that c
 | `crates/reify-eval/tests/sub_placement_surfacing.rs:745` | `compile-error` |
 | `crates/reify-eval/tests/sub_placement_surfacing.rs:807` | `compile-error` |
 | `crates/reify-eval/tests/type_hygiene_integration_gate.rs:310` | `compile-error` |
+| `crates/reify-lsp/src/analysis.rs:2351` | `compile-error` |
+| `crates/reify-lsp/src/analysis.rs:2404` | `compile-error` |
+| `crates/reify-lsp/src/analysis.rs:2882` | `compile-error` |
+| `crates/reify-lsp/src/analysis.rs:2937` | `compile-error` |
+| `crates/reify-lsp/src/diagnostics.rs:1558` | `compile-error` |
+| `crates/reify-lsp/src/diagnostics/auto_type_param_fixtures.rs:300` | `compile-error` |
+| `crates/reify-lsp/src/diagnostics/auto_type_param_fixtures.rs:328` | `compile-error` |
+| `crates/reify-lsp/src/diagnostics/auto_type_param_fixtures.rs:77` | `compile-error` |
+| `crates/reify-lsp/src/diagnostics/eval_guard.rs:612` | `compile-error` |
+| `crates/reify-syntax/src/ts_parser.rs:6914` | `compile-error` |
+| `crates/reify-syntax/src/ts_parser.rs:7155` | `compile-error` |
 | `crates/reify-syntax/tests/harness_syntax/ad_hoc_selector_tests.rs:114` | `compile-error` |
 | `crates/reify-syntax/tests/harness_syntax/ad_hoc_selector_tests.rs:58` | `compile-error` |
 | `crates/reify-syntax/tests/harness_syntax/annotation_tests.rs:579` | `compile-error` |
@@ -1250,6 +1292,11 @@ Of 3198 inline member(s) — one per extracted snippet, plus one per host that c
 | `crates/reify-syntax/tests/harness_syntax/option_tests.rs:156` | `compile-error` |
 | `crates/reify-syntax/tests/harness_syntax/purpose_tests.rs:224` | `compile-error` |
 | `crates/reify-syntax/tests/harness_syntax_lowering/enum_named_field_lowering_tests.rs:157` | `compile-error` |
+| `crates/reify-test-support/src/helpers.rs:1532` | `compile-error` |
+| `crates/reify-test-support/src/helpers.rs:1627` | `compile-error` |
+| `crates/reify-test-support/src/helpers.rs:1649` | `compile-error` |
+| `crates/reify-test-support/src/helpers.rs:1828` | `compile-error` |
+| `crates/reify-test-support/src/helpers.rs:1838` | `compile-error` |
 
 ## Coverage and limitations
 
@@ -1351,13 +1398,15 @@ Of 701 tracked `.ri` members, **696 were surveyed** and **5 were not**. A furthe
 ### Named limitations
 
 1. **Inline Reify snippets are reached as RAW-STRING LITERALS, and only as those.**
-The *Inline Rust fixtures* section above sweeps every tracked `.rs` test host
-for raw-string literals (`r"…"`, `r#"…"#`) whose text reads as Reify
-declaration grammar, and compiles each through the same pipeline as a tracked
-`.ri`. That reached **3198 inline member(s)**, of which **71** were
-`format!` template(s) — listed above under their own coverage reason rather
-than dropped, because a template's `{…}` holes are not Reify syntax and a
-parse failure on one would say nothing about conformance.
+The *Inline Rust fixtures* section above sweeps every tracked `.rs` under
+`crates/` — test file or production source alike, since a `#[cfg(test)] mod
+tests` hosts fixtures like any other — for raw-string literals (`r"…"`,
+`r#"…"#`) whose text reads as Reify declaration grammar, and compiles each
+through the same pipeline as a tracked `.ri`. That reached **3378 inline
+member(s)**, of which **72** were `format!` template(s) — listed
+above under their own coverage reason rather than dropped, because a
+template's `{…}` holes are not Reify syntax and a parse failure on one would
+say nothing about conformance.
 What a raw-string walker does **not** reach, each named by the construct to
 grep for: Reify text carried in an ORDINARY `"…"` string literal (including
 the backslash-continued multi-line form); text assembled by `concat!`; and text
@@ -1368,6 +1417,13 @@ of those shapes is absent from the section above rather than reported clean.
 `include_str!` and `read_to_string` goldens, by contrast, need no machinery at
 all: their target `.ri` files are tracked, so the FIRST half already
 enumerated them.
+Unreached HOST files are the other half of this residual, and they are a SCOPE
+decision rather than a walker limitation: `gui/src-tauri/**/*.rs` (the Tauri
+sidecar) and `tree-sitter-reify/**/*.rs` (the grammar crate) are separate cargo
+and grammar projects, so the host predicate anchors at `crates/` and never
+opens them. Enumerate them with
+`git ls-files -- 'gui/src-tauri/**/*.rs' 'tree-sitter-reify/**/*.rs'`; a
+conformance site inside one is absent from the section above, not clean.
 2. **`compile_with_stdlib` is the SINGLE-FILE path.** `reify check` instead uses
 `module_dag::compile_entry_with_stdlib_cfg_checked`, which follows `#cfg`-gated
 user imports and runs `SimpleConstraintChecker`. Multi-module corpus members
