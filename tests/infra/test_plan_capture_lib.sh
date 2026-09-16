@@ -126,6 +126,30 @@ assert "plan_capture_complete: empty string returns non-zero" \
 assert "plan_capture_complete: docs-only (no commands) dump still returns 0" \
     plan_capture_complete "$_EMPTY_PLAN_DUMP"
 
+# THE MARKER PAIR IS NOT ENOUGH ON ITS OWN. Both markers sit in the plan HEADER:
+# in a real merge-role plan they land on lines 1 and 11 of 39, and every line the
+# T-series asserts on — the release pre-builds, the nextest passes — comes after
+# them. A capture truncated anywhere past the commands marker therefore carries
+# both markers and is certified complete, so capture_print_plan returns without
+# retrying and the missing line surfaces as a spurious assertion FAIL instead.
+# Cases (e)/(f) pin the boundary that closes that class without closing the
+# legitimate docs-only case: at least one line must follow the commands marker.
+_MARKER_ONLY_DUMP="# verify.sh plan — action=all profile=debug scope=staged include_infra=1 nextest=cargo-nextest role=task
+# narrowing — NARROW_ACTIVE=0 affected=ALL
+# --- commands (executed in order; '&&' semantics — stop on first failure) ---"
+
+# (e) Both markers present but NOTHING after the commands marker returns non-zero.
+assert "plan_capture_complete: markers present with nothing after the commands marker returns non-zero" \
+    refute plan_capture_complete "$_MARKER_ONLY_DUMP"
+
+# (f) Regression pin for (e)'s fix, stated adjacent to it: the docs-only dump is
+# NOT the truncation in (e) — verify.sh:3663 unconditionally emits either real
+# command lines or the comment "# (no commands — nothing to verify for this
+# action/scope)" after the marker, so a COMMENT line after the marker is a
+# complete plan. A fix that demanded a non-comment command line would red this.
+assert "plan_capture_complete: a comment-only line after the commands marker still returns 0" \
+    plan_capture_complete "$_EMPTY_PLAN_DUMP"
+
 # ---------------------------------------------------------------------------
 # Section 3: plan_narrow_active — extract NARROW_ACTIVE value
 # ---------------------------------------------------------------------------
@@ -242,6 +266,68 @@ assert "capture_print_plan (c): returns 0 on first complete dump" \
 _cnt_c=$(cat "$_COUNTER_FILE")
 assert "capture_print_plan (c): no superfluous retries (counter == 1)" \
     test "$_cnt_c" = "1"
+
+# THE KILLED-MID-WRITE CLASS. Structural markers certify what the child WROTE;
+# they say nothing about whether it finished. A producer SIGKILLed after the
+# header has emitted both markers, so a marker-only oracle accepts its partial
+# output as a whole plan. The child's exit status is the sound oracle for this:
+# command substitution reads to EOF, so a producer that exited 0 necessarily
+# wrote its whole plan, and truncation requires the producer to die — which is
+# exactly what a non-zero rc reports.
+#
+# Fixture: emits a MARKER-COMPLETE dump every time, then exits 137 (SIGKILL).
+_fake_emit_complete_but_killed() {
+    local cnt
+    cnt=$(cat "$_COUNTER_FILE" 2>/dev/null || echo 0)
+    cnt=$((cnt + 1))
+    printf '%s' "$cnt" > "$_COUNTER_FILE"
+    printf '%s\n' "# verify.sh plan — action=all profile=debug scope=staged include_infra=1 nextest=cargo-nextest role=task"
+    printf '%s\n' "# narrowing — NARROW_ACTIVE=0 affected=ALL"
+    printf '%s\n' "# --- commands (executed in order; '&&' semantics — stop on first failure) ---"
+    printf '%s\n' "cargo clippy --workspace"
+    return 137
+}
+
+# (d) A marker-complete dump from a child that DIED is an incomplete capture:
+#     retry, then return non-zero on exhaustion.
+printf '0' > "$_COUNTER_FILE"
+_OUT_D=""
+assert "capture_print_plan (d): marker-complete dump from a non-zero-exit child returns non-zero" \
+    refute capture_print_plan _OUT_D 3 _fake_emit_complete_but_killed
+
+_cnt_d=$(cat "$_COUNTER_FILE")
+assert "capture_print_plan (d): a dead child is RETRIED to max_attempts (counter == 3)" \
+    test "$_cnt_d" = "3"
+
+assert "capture_print_plan (d): OUT is still assigned on exhaustion (caller's assertion stays the failure surface)" \
+    test -n "$_OUT_D"
+
+# Fixture: complete dump AND an explicit clean exit — the healthy producer.
+_fake_emit_complete_and_exits_zero() {
+    local cnt
+    cnt=$(cat "$_COUNTER_FILE" 2>/dev/null || echo 0)
+    cnt=$((cnt + 1))
+    printf '%s' "$cnt" > "$_COUNTER_FILE"
+    printf '%s\n' "# verify.sh plan — action=all profile=debug scope=staged include_infra=1 nextest=cargo-nextest role=task"
+    printf '%s\n' "# narrowing — NARROW_ACTIVE=0 affected=ALL"
+    printf '%s\n' "# --- commands (executed in order; '&&' semantics — stop on first failure) ---"
+    printf '%s\n' "cargo clippy --workspace"
+    return 0
+}
+
+# (e) Companion to (d): the rc check must not degrade into "always retry" — a
+#     complete dump from a child that exited 0 is accepted on the FIRST attempt.
+printf '0' > "$_COUNTER_FILE"
+_OUT_E=""
+assert "capture_print_plan (e): complete dump from a zero-exit child returns 0" \
+    capture_print_plan _OUT_E 3 _fake_emit_complete_and_exits_zero
+
+_cnt_e=$(cat "$_COUNTER_FILE")
+assert "capture_print_plan (e): accepted on the first attempt (counter == 1)" \
+    test "$_cnt_e" = "1"
+
+assert "capture_print_plan (e): OUT holds the complete dump" \
+    plan_capture_complete "$_OUT_E"
 
 # ---------------------------------------------------------------------------
 # Section 5: plan_count_noncomment_lines — fork-free non-comment line counter
