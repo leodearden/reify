@@ -1685,6 +1685,55 @@ fn curl<Q: Dimension>(field: Field<Point3<Length>, Vector3<Q>>) -> Field<Point3<
 fn laplacian<N: Nat, Q: Dimension>(field: Field<Point<N,Length>, Scalar<Q>>) -> Field<Point<N,Length>, Scalar<Q/Length^2>>
 ```
 
+**`ElasticResult` derivative channels.** Distinct from the operators above:
+these are *result channels* populated by `solve_elastic_static`, not operators
+you apply. They are documented here so the operator `curl` and the result
+channel `curl` sit adjacent and cannot be confused.
+
+```
+ElasticResult.curl     : Field<Point3<Length>, Vector3<Real>>    // ∇×u
+ElasticResult.rotation : Field<Point3<Length>, Vector3<Angle>>   // ∇×u / 2
+```
+
+(`stdlib/solver_elastic.ri` spells curl's quantity `Dimensionless`; `Real` is
+the dimension-position synonym for it, so the two declarations are the same
+type.)
+
+`curl` is **dimensionless by decision, not by default** (ruling task #6164).
+∇×u is Length/Length, so the derivative algebra stays quotient-pure, and
+`result.curl` is type-identical to `curl(result.displacement)` — the operator
+row above. An angle is an arc measure, and ANGLE is introduced only at named
+primitives that assert one (`asin`, `orient_log`), never by differentiation.
+
+`rotation` is that named primitive here: the infinitesimal rotation vector
+ω = ∇×u / 2, and the designated crossing where the radian enters explicitly.
+The two channels are exactly related by `curl = 2 * rotation`, componentwise
+and bit-exactly. `rotation` is valid as an angle only in the small-deformation
+regime (‖∇u‖ ≪ 1); the exact finite-rotation extraction is the polar
+decomposition F = RU of the deformation gradient, which is future work — hence
+a new channel rather than a retype of `curl`.
+
+Both are populated on the tet/solid path and are `undef` on the shell path
+(honest absence, as for `divergence` / `gradient`).
+
+Having `rotation` carry a real ANGLE unlocks three things that
+`Vector3<Real>` cannot express:
+
+- `rotational_stiffness * rotation` reduces to a **torque** — N·m/rad² × rad
+  = N·m/rad — instead of collapsing to a dimensionless product;
+- `deg` / `rad` literals become usable in assertions and constraints against
+  the channel — worked example: `examples/differential_field_ops.ri` carries
+  `constraint rot_probe > 0.001deg` / `constraint rot_probe < 0.5deg`, gated
+  in CI by `differential_field_ops_e2e`. One limitation: the comparison is
+  against an ANGLE **scalar** (there, `magnitude` of a sampled
+  `Vector3<Angle>`), because no in-language Vector3 component access exists
+  yet — a per-component `deg` comparison is still out of reach;
+- a future `d/dt` of `rotation` yields **angular velocity** (rad/s) rather
+  than a bare frequency (1/s).
+
+See `docs/prds/v0_6/differential-field-operators.md` for the decision table
+and the full channel specification.
+
 ---
 
 ## 12. `std.determinacy`
