@@ -917,8 +917,12 @@ fn solve_generalized_eigen(
                 // No spectrum was computed at all here, so `false` cannot be
                 // ESTABLISHED and C5 forbids assuming it.  The rule itself lives
                 // in the solver crate (SPOT) — writing it out here too is how
-                // this copy and the Lanczos one drift apart when #7259 refines
-                // the discriminator.
+                // this copy and the solver's own drift apart.
+                //
+                // This is the CONSERVATIVE form, and correctly so: the sparse
+                // shift-invert path establishes a real answer from which
+                // factorization of `K − σB` succeeded, but this branch factored
+                // nothing and computed nothing, so it has no such evidence.
                 shift_skipped_modes: conservative_shift_provenance(opts.sigma),
             },
             singular_k_over_ceiling: true,

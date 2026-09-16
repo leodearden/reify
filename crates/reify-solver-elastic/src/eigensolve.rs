@@ -12,13 +12,16 @@
 //!
 //! - [`solve_eigen_dense`] — dense QZ path via `faer::linalg::gevd::gevd_real`;
 //!   honors `opts.sigma` as a selection key over the full computed spectrum
-//! - [`solve_eigen_shift_invert`] — shift-invert Lanczos via sparse Cholesky +
-//!   `faer::matrix_free::eigen::partial_self_adjoint_eigen`; falls back to
-//!   dense when the Krylov window would exceed the problem dimension.
-//! - [`try_solve_eigen_shift_invert`] — the same solve, returning `None`
-//!   instead of panicking when `K` is not SPD, and ONLY then: a non-numeric
-//!   Cholesky failure (out of memory / index overflow) still panics (task 6663;
-//!   for callers that can legitimately be handed an under-constrained system).
+//! - [`solve_eigen_shift_invert`] — shift-invert Lanczos: at σ=0 a sparse
+//!   Cholesky of `K`, at σ≠0 a `K − σB` assembly factored Cholesky-then-LU,
+//!   driving `faer::matrix_free::eigen::partial_self_adjoint_eigen`; falls back
+//!   to dense when the Krylov window would exceed the problem dimension.
+//! - [`try_solve_eigen_shift_invert`] — the same solve, reporting the two DOMAIN
+//!   failures as a typed [`ShiftInvertFailure`] instead of panicking: `K` not
+//!   SPD (task 6663, for callers that can legitimately be handed an
+//!   under-constrained system) and a σ landing on an eigenvalue (C6). A
+//!   resource failure (out of memory / index overflow) still panics and so can
+//!   never arrive disguised as either.
 //! - [`lanczos_shift_invert`] — generic Lanczos core operating over arbitrary
 //!   [`StiffnessOp`] / [`MetricOp`] operator pairs; no dense fallback (caller
 //!   is responsible for small-problem dispatch).
@@ -85,28 +88,65 @@
 //!
 //! | Clause | Dense path ([`solve_eigen_dense`]) | Lanczos path |
 //! |---|---|---|
-//! | C1 | implemented | implemented |
-//! | C2 | implemented | #7259 — solves at σ=0 until then, and reports `shift: 0.0` |
+//! | C1 | implemented | implemented, and STRUCTURAL — σ=0 factors `K` itself |
+//! | C2 | implemented | implemented (same helper) |
 //! | C3 | implemented (shared helper) | implemented (same helper) |
-//! | C4 | n/a — no shift is ever applied to invert | #7259 |
-//! | C5 | implemented, EXACT | established `false` at its own σ=0; #7259 |
-//! | C6 | vacuous — no `K − σB` is ever formed | #7259 |
+//! | C4 | n/a — no shift is ever applied to invert | implemented (`λ = σ + 1/μ`) |
+//! | C5 | implemented, EXACT | implemented, conservative BOOLEAN (Sylvester) |
+//! | C6 | vacuous — no `K − σB` is ever formed | implemented, two-part (PRD §5.3) |
 //!
-//! Staging α before β means [`solve_eigen_shift_invert`] honors σ for n ≤ 64
-//! (dense fallback) and not for larger problems (Lanczos). That divergence is
-//! deliberate but it is **not silent**: [`EigenSolverResult::shift`] reports the
-//! σ a solve actually used, never the σ it was asked for, so
-//! `result.shift == opts.sigma` is a definite caller-side test for whether the
-//! shift was honored. Echoing the request over an unshifted answer would be
-//! correct-looking provenance describing a solve that never happened — the
-//! silent-substitution class this contract exists to close.
+//! Both paths now honor σ, so [`solve_eigen_shift_invert`] applies the requested
+//! shift at every problem size. [`EigenSolverResult::shift`] still reports the σ
+//! a solve actually USED rather than the one it was asked for — that is a
+//! standing property of the field, not scaffolding for a gap that has closed.
 //!
 //! The dense path honors σ as a SORT-KEY CHANGE AND NOTHING ELSE: `gevd_real`
 //! computes the entire spectrum, so no factorization is formed, `K − σB` never
-//! exists, and no new failure mode is introduced. That is why it lands first
-//! and the Lanczos implementation is held to it. The acceptance criterion for
-//! #7259 is `tests/eigensolve_shift_contract.rs` — its σ≠0 arms instantiate the
-//! harness functions already there, rather than inventing their own.
+//! exists, and no new failure mode is introduced. That is why it landed first
+//! and the Lanczos implementation is held to it: the acceptance criterion is
+//! `tests/eigensolve_shift_contract.rs`, whose σ≠0 arms instantiate the same
+//! harness functions both paths are measured by.
+//!
+//! The two paths differ in exactly two places, both forced and both documented
+//! where they live: C5 is EXACT on dense and a conservative boolean on Lanczos
+//! (see [`shift_provenance_from_factorization`]), and C6 is vacuous on dense
+//! because no `K − σB` is formed there at all.
+//!
+//! # Convergence quality versus σ — MEASURED, not predicted
+//!
+//! faer's `partial_self_adjoint_eigen` orthogonalizes in the EUCLIDEAN inner
+//! product, while `(K − σB)⁻¹B` is self-adjoint in the `(K − σB)` form — which
+//! stops being an inner product at all once that matrix is indefinite, i.e.
+//! exactly when σ rises above some mode.  Whether that costs accuracy is an
+//! empirical question, so it was measured rather than argued.
+//!
+//! Measured 2026-09-16 on fixture C (`K` = tridiag(−1,2,−1) 80×80, `B` = I,
+//! closed form `λ_k = 2(1 − cos(kπ/81))`), n_modes=2, tol=1e-10, debug:
+//!
+//! | σ | n_converged | converged | max \|λ − λ_k\| | max residual |
+//! |---|---|---|---|---|
+//! | λ₁/2 = 7.52e-4 | 2 | true | 5.29e-17 | 2.39e-13 |
+//! | mid(λ₉, λ₁₀) = 0.1346 | 2 | true | 2.08e-16 | 4.26e-15 |
+//! | mid(λ₃₉, λ₄₀) = 1.9225 | 2 | true | 2.22e-16 | 2.88e-16 |
+//! | mid(λ₅₉, λ₆₀) = 3.3438 | 2 | true | 4.44e-16 | 2.31e-16 |
+//! | mid(λ₇₄, λ₇₅) = 3.9364 | 2 | true | 0.00 | 1.54e-16 |
+//!
+//! (residual = `‖Kφ − λBφ‖ / ‖Kφ‖`.)  **No degradation as σ grows**, including
+//! at the σ where `K − σB` has 74 negative eigenvalues.  So no
+//! `converged: false` response is called for, and certainly no Krylov rewrite —
+//! a B-orthogonal or `(K − σB)`-orthogonal Lanczos is out of scope per PRD §8.
+//!
+//! **What this measurement does NOT cover**, stated so the table is not read as
+//! more than it is: `B` = I makes `(K − σB)⁻¹B = (K − σI)⁻¹`, which IS
+//! Euclidean-self-adjoint however indefinite it becomes.  Fixture C therefore
+//! cannot exercise the hazard in its general form.  A companion probe with
+//! `B` = diag(1 + i/80) (SPD, non-identity) was also measured and behaves quite
+//! differently — the residual is 3.58e-1 there — but that is a PRE-EXISTING
+//! property of this path, not a σ effect: it is WORST at σ=0, it improves
+//! monotonically to 9.3e-3 as σ grows, and the same 3.58e-1 is measured at the
+//! pre-PRD base commit.  Recorded as esc-7259-1 and filed as a follow-up task;
+//! it is out of scope here because the affected path is σ=0, which this module
+//! is required to leave byte-for-byte unchanged.
 //!
 //! # Design decisions
 //!
@@ -236,10 +276,14 @@ pub struct EigenSolverResult {
     /// never assumed.  Like [`n_converged`](Self::n_converged) the basis differs
     /// per path: [`solve_eigen_dense`] computes the whole spectrum via QZ and so
     /// answers EXACTLY — it compares source indices between the full spectrum
-    /// and the selected set — while the **shift-invert path** has only the
-    /// Cholesky/LU discriminator, which is a conservative boolean (an exact
-    /// count would need an inertia-revealing LDL^T that faer's sparse LU does
-    /// not expose).  At σ=0 every path reports `false`, and that `false` is
+    /// and the selected set — while the **shift-invert path** reads its answer
+    /// off which factorization succeeded, by Sylvester's law of inertia, giving
+    /// a conservative boolean (an exact count would need an inertia-revealing
+    /// LDL^T that faer's sparse LU does not expose).  The two predicates are
+    /// therefore not the same predicate — absence-based versus position-based —
+    /// and the shift-invert path OVER-reports in one configuration, which is the
+    /// direction C5 permits; see [`shift_provenance_from_factorization`] for the
+    /// full statement.  At σ=0 every path reports `false`, and that `false` is
     /// established rather than assumed: the open interval strictly between 0
     /// and 0 is empty, so no eigenvalue can lie in it.
     ///
@@ -273,11 +317,10 @@ pub struct EigenSolverResult {
     ///
     /// "Actually used" is load-bearing: this is NOT an echo of
     /// [`EigenSolverOptions::sigma`], and a path that did not honor the
-    /// requested σ reports the one it did solve at.  The Lanczos path reports
-    /// `0.0` for any request until #7259 makes it honor σ, so
-    /// `result.shift == opts.sigma` is a definite caller-side test for whether
-    /// the shift was applied — and the reason a caller never has to infer it
-    /// from the problem dimension.
+    /// requested σ would report the one it did solve at.  Both paths honor σ
+    /// today, so the two now agree on every successful solve — but the field
+    /// keeps its meaning rather than becoming a copy, because a caller must
+    /// never have to infer from the problem dimension which σ was applied.
     pub shift: f64,
 }
 
@@ -937,8 +980,8 @@ impl<K: StiffnessOp, M: MetricOp> LinOp<f64> for CompositeShiftInvertOp<'_, K, M
 ///
 /// # Parameters
 ///
-/// - `k_op`: pre-factored stiffness inverse (e.g. sparse Cholesky via
-///   [`SparseStiffnessOp`])
+/// - `k_op`: a pre-factored inverse of whatever matrix the caller means to
+///   invert (e.g. sparse Cholesky or LU via [`SparseStiffnessOp`])
 /// - `m_op`: mass / metric matvec (e.g. CSR via [`SparseMetricOp`])
 /// - `opts`: solver options (n_modes, tol, max_iters)
 ///
@@ -1089,12 +1132,15 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
         converged,
         shift: shift_used,
         // Shared with `reify-eval`'s degenerate early return (SPOT): a path that
-        // cannot count what it skipped may not assume `false`.  Here `false` IS
-        // established — the solve ran at σ=0 and the open interval strictly
-        // between 0 and 0 is empty — and it stays correct for the ε (#7262)
-        // consumer, which keys a refusal on this flag: the bottom of the
-        // spectrum genuinely does contain the first mode.  #7259 passes
-        // `opts.sigma` here once the operator honors it.
+        // cannot count what it skipped may not assume `false`.  This core is
+        // handed an OPAQUE factorization, so it has no evidence to establish
+        // `false` at σ≠0 and C5 forbids it assuming one.
+        //
+        // `try_solve_eigen_shift_invert` BUILT the factorization and therefore
+        // does have the evidence; it overrides this with
+        // `shift_provenance_from_factorization` via `with_provenance`.  A caller
+        // driving this core directly keeps the conservative answer, which is the
+        // correct one for what it knows.
         shift_skipped_modes: conservative_shift_provenance(shift_used),
     }
 }
