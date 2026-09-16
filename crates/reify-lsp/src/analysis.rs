@@ -518,41 +518,28 @@ pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<
 /// declaration's own statement span — or `None` for the kinds that declare
 /// no name of their own.
 ///
-/// SCOPE — this is the uniform source of declaration names for SAME-FILE
-/// go-to-definition (task 6388), and that is its only consumer today
-/// (`goto_def::decl_name_token`). It is deliberately NOT claimed as the
-/// crate-wide source: the other declaration scans are still per-kind
-/// allowlists — `goto_def::decl_name_span_in` at 6 kinds (7 with
-/// `include_aliases`), `references::classify_top_level_decl` at 5, and
-/// [`compute_document_symbols_from_parsed`] at 6 (5 before #6341 added the
-/// type-alias symbol). Each of them silently dropped Purpose/Constraint/Unit/
-/// Joint — and, until #6341, TypeAlias — as the parser grew those variants.
-///
-/// The match here is deliberately **exhaustive with no `_` wildcard arm**, and
-/// that is the load-bearing part of the design: a new `Declaration` variant
-/// becomes a COMPILE ERROR here, forcing an explicit named-vs-unnamed decision
-/// instead of a silent omission.
+/// The match is deliberately **exhaustive with no `_` wildcard arm**, and that
+/// is the load-bearing part of the design: a new `Declaration` variant becomes
+/// a COMPILE ERROR here, forcing an explicit named-vs-unnamed decision instead
+/// of a silent omission. Every other declaration scan in this crate is a
+/// per-kind allowlist ending in `_`, and each of them silently dropped kinds as
+/// the parser grew them.
 ///
 /// The returned span is the whole declaration statement, NOT the name token —
 /// narrow it with [`name_token_span`] when a jump target is wanted.
 ///
-/// WHY THE OTHER SCANS ARE NOT MIGRATED — two different reasons, and only the
-/// first is principled:
+/// SCOPE — same-file go-to-definition (task 6388); `goto_def::resolve_decl_name`
+/// is its one production consumer. The other scans are NOT migrated onto it,
+/// for two different reasons:
 /// - `goto_def::find_declaration_name_span` and
-///   `references::classify_top_level_decl` MUST stay narrower. Both feed
-///   rename/references, whose use-site collectors walk expression identifiers
-///   only, so widening them to a type-position-only kind yields a rename that
-///   moves the declaration token and misses every use site (task 6388 CRITICAL
-///   CONSTRAINT; see the guard test
-///   `rename_and_references_unaffected_by_same_file_goto_def_declaration_names`
-///   in references.rs).
-/// - [`compute_document_symbols_from_parsed`] carries NO such hazard — the
-///   outline is display-only. Its allowlist is simply UN-MIGRATED: taking its
-///   `(name, span)` pair from here would need a `SymbolKind` decision per
-///   newly-admitted kind and would CHANGE the outline (new symbols for
-///   Field/Purpose/Constraint/Unit/Joint), which is outside task 6388's
-///   same-file goto-def remit. Filed as a follow-up instead of done here, so
-///   the silent-omission failure mode still exists for the outline view.
+///   `references::classify_top_level_decl` MUST stay narrower — they feed
+///   rename/references, and widening them corrupts a rename. The argument and
+///   the measurement behind it live on the guard test
+///   `references::tests::rename_and_references_unaffected_by_same_file_goto_def_declaration_names`.
+/// - [`compute_document_symbols_from_parsed`] carries no such hazard; its
+///   allowlist is simply UN-MIGRATED, because adopting this pair would need a
+///   `SymbolKind` decision per newly-admitted kind and would change the
+///   outline. Tracked as #6533.
 pub(crate) fn decl_name_and_span(decl: &Declaration) -> Option<(&str, SourceSpan)> {
     let named = match decl {
         Declaration::Structure(s) => (s.name.as_str(), s.span),
@@ -918,19 +905,12 @@ fn name_selection_range(source: &str, span: SourceSpan, name: &str) -> Range {
 /// the `s` of `structure s`. The UTF-8 char-boundary snap mirrors
 /// `convert::offset_to_position`.
 ///
-/// The crate's single name-token locator — no second implementation of this
-/// search exists: `references.rs` uses it for the declaration name-token span,
-/// the `include_declaration` token and the prepare/compute-rename declaration
-/// path; `goto_def::decl_name_token` uses it for top-level declarations, and is
-/// the ONE goto-def consumer — both the same-file and the cross-file scan
-/// narrow through it (task 6388) — mapping the empty-span fallback below to
-/// `None` because a zero-width jump target is useless; and
-/// `name_selection_range` uses it for the LSP `selection_range`, degrading that
-/// same fallback to the declaration start.
-///
-/// That enumeration is maintained as EXHAUSTIVE on purpose — a new consumer
-/// that quietly omits itself here is how the list stops being usable as a
-/// blast-radius answer for changing this function's fallback.
+/// The crate's single name-token locator; no second implementation of this
+/// search exists. Consumers disagree only on how they treat the empty-span
+/// fallback, which is what makes that fallback the risky thing to change:
+/// `goto_def::decl_name_token` maps it to `None` (a zero-width jump target is
+/// useless), `name_selection_range` degrades it to the declaration start, and
+/// `references.rs` propagates it into the rename/references span set.
 pub fn name_token_span(source: &str, member_span: SourceSpan, name: &str) -> SourceSpan {
     let mut start = (member_span.start as usize).min(source.len());
     // Snap forward to a valid UTF-8 boundary if we landed mid-character.

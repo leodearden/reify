@@ -131,6 +131,14 @@ pub fn compute_goto_definition_with_parsed(
 ///
 /// When two declarations share a name (already a semantic error) the FIRST in
 /// source order wins.
+///
+/// SCOPE. Top-level declarations only — a `structure def` nested inside a
+/// `purpose` body lives in `PurposeDef.structures`, so it is not resolved
+/// (pinned by `goto_def_purpose_nested_structure_is_not_top_level`). And
+/// same-file only: cross-file goto-def runs the narrower [`decl_name_span_in`]
+/// instead, leaving Purpose/Constraint/Unit/Joint SAME-FILE-navigable until the
+/// use-site collectors learn to walk type expressions (#6539, rolled up in
+/// #6972).
 fn resolve_decl_name(
     parsed: &reify_ast::ParsedModule,
     source: &str,
@@ -171,34 +179,17 @@ fn resolve_decl_name(
 /// cannot be located inside the declaration's span.
 ///
 /// The crate's one narrow-and-refuse rule for a declaration name, shared by BOTH
-/// goto-def scans: the same-file [`resolve_decl_name`], which sources
-/// `(name, decl_span)` from [`crate::analysis::decl_name_and_span`]'s
-/// wildcard-free exhaustive match, and the cross-file [`decl_name_span_in`],
-/// which sources it from its own `include_aliases`-gated allowlist. Sharing the
-/// NARROWING is deliberate and is NOT the oracle merge
-/// [`find_declaration_name_span`]'s doc forbids — reasoning at the
-/// [`decl_name_span_in`] call site.
+/// goto-def scans — the same-file [`resolve_decl_name`] and the cross-file
+/// [`decl_name_span_in`], which select a declaration by different kind lists but
+/// narrow its token the same way.
 ///
 /// Narrowing uses [`crate::analysis::name_token_span`] — whole-word, bounded to
-/// the declaration's own span, UTF-8-boundary-snapping. Its documented
-/// ZERO-WIDTH fallback (the name is absent within the span, e.g. a recovered AST
-/// node) becomes `None`: a zero-width `Location` is never a useful jump target,
-/// and an empty span is an exact discriminator because a declaration name is
-/// never the empty string. What refusing costs each consumer is enumerated on
+/// the declaration's own span, UTF-8-boundary-snapping. Its ZERO-WIDTH fallback
+/// (the name is absent within the span, e.g. a recovered AST node) becomes
+/// `None`: a zero-width `Location` is never a useful jump target, and an empty
+/// span is an exact discriminator because a declaration name is never the empty
+/// string. What refusing costs each consumer is enumerated on
 /// [`decl_name_span_in`].
-///
-/// Two non-goals of the SAME-FILE scan that feeds this, following from keeping
-/// [`crate::analysis::decl_name_and_span`] separate from the narrower scan
-/// [`find_declaration_name_span`] shares with rename/references:
-/// - a `structure def` nested inside a `purpose` body lives in
-///   `PurposeDef.structures`, is not a top-level declaration, and is not
-///   resolved (see `goto_def_purpose_nested_structure_is_not_top_level`);
-/// - CROSS-file goto-def does not use that scan: it resolves via
-///   [`find_declaration_in_source`] over [`decl_name_span_in`], which admits
-///   TypeAlias — #6341 gave the cross-file path `include_aliases = true` — so an
-///   alias IS cross-file navigable; it is Purpose/Constraint/Unit/Joint that
-///   this task leaves SAME-FILE-only. Widening the cross-file side means
-///   covering their type-position use sites first, which is #6972's remit.
 fn decl_name_token(source: &str, name: &str, decl_span: SourceSpan) -> Option<SourceSpan> {
     let token = name_token_span(source, decl_span, name);
     (!token.is_empty()).then_some(token)
@@ -355,40 +346,21 @@ fn find_declaration_in_source(source: &str, name: &str, uri: &Url) -> Option<Loc
 ///
 /// # This helper feeds REFERENCES, not just cross-file goto-def
 ///
-/// It serves CROSS-FILE go-to-definition *and* is consumed by three points in
-/// `references.rs`: the `references::collect_structure_name_spans` home token,
-/// `references::resolve_cross_file_home` step 2 → `CrossFileHome::Structure`,
-/// and the cross-file rename producer.
+/// It serves CROSS-FILE go-to-definition *and* three points in `references.rs`:
+/// the `collect_structure_name_spans` home token, `resolve_cross_file_home`
+/// step 2, and the cross-file rename producer.
 ///
 /// Its kind list is therefore DELIBERATELY NARROWER than
-/// [`crate::analysis::decl_name_and_span`], which task 6388 introduced as the
-/// uniform, wildcard-free source of declaration names for the SAME-FILE path.
-/// The two are separate on purpose, and this one must not be "unified" onto the
-/// other.
+/// [`crate::analysis::decl_name_and_span`], the wildcard-free SAME-FILE source,
+/// and must not be "unified" onto it: **adding a kind here changes what the
+/// REFERENCE SET reports**, and for a type-position-only kind it reports the
+/// declaration token ALONE, with every use site absent — the incomplete input a
+/// later rename would trust.
 ///
-/// **Adding a kind here changes what the REFERENCE SET reports.** The use-site
-/// collectors `collect_uses` / `collect_idents_in_expr` walk `ExprKind::Ident`
-/// in EXPRESSIONS only — never type expressions — and
-/// `collect_structure_name_spans` adds only `sub _ = Name` construction sites.
-/// So a type-position-only kind (TypeAlias / Unit / Constraint / Joint /
-/// Purpose) admitted here makes `compute_references_cross_file` report the
-/// DECLARATION token ALONE, with every type-position use absent. Measured, not
-/// assumed: flipping this call's `include_aliases` to `true` turns that set on
-/// `type Pressure = Force` / `param p : Pressure` from `None` into exactly one
-/// location, the declaration token.
-///
-/// RENAME is gated SEPARATELY — by `references::classify_top_level_decl`'s own
-/// allowlist, consulted through `references::is_renameable_cross_file`, which
-/// never consults this helper. Admitting a kind here therefore does not by
-/// itself grant rename; it makes the reference set the incomplete input a later
-/// rename would trust, and Invariant 5 would not catch the result because the
-/// edited buffer still re-parses clean.
-///
-/// Both halves are guarded by `references::tests::
-/// rename_and_references_unaffected_by_same_file_goto_def_declaration_names`:
-/// its per-kind refusals pin `classify_top_level_decl`, and its coupling
-/// assertion reds when the reference set becomes non-empty for a kind whose
-/// type-position uses it does not cover.
+/// The full argument, the measurement behind it, and the separate allowlist
+/// that gates rename itself (`references::classify_top_level_decl`) live on the
+/// guard test `references::tests::
+/// rename_and_references_unaffected_by_same_file_goto_def_declaration_names`.
 pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<SourceSpan> {
     // Prelude-aware parse for AST-shape consistency across reify-lsp;
     // see task 2525.
@@ -470,17 +442,10 @@ fn decl_name_span_in(
         };
         if decl_name == name {
             // Point to the name within the declaration, not the entire span.
-            //
-            // Calling the same-file path's helper is NOT the oracle merge
-            // that this function's doc and `find_declaration_name_span`'s
-            // forbid. That split is over which declaration KINDS a SCAN admits
-            // — `analysis::decl_name_and_span`'s wildcard-free 11 versus the
-            // `include_aliases`-gated 7 matched above — never over how an
-            // ALREADY-SELECTED declaration's name token is narrowed. Both
-            // scans already shared `analysis::name_token_span` for that, so
-            // this only removes the second copy of the narrow-and-refuse
-            // wrapper around it; the kind lists stay exactly as far apart as
-            // they were.
+            // Sharing the narrowing with the same-file path is not the oracle
+            // merge this function's doc forbids — that split is over which
+            // KINDS the match above admits, not over how an already-selected
+            // declaration's name token is narrowed.
             return decl_name_token(source, decl_name, span);
         }
     }
