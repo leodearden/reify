@@ -85,10 +85,13 @@
 //! and a duplicate 80-DOF Lanczos solve, so the release figure above is a valid
 //! upper bound without a re-measure: the change only removes work.)
 
+use faer::Side;
 use faer::Mat;
 use faer::sparse::{SparseRowMat, Triplet};
 use reify_solver_elastic::eigensolve::{
-    EigenSolverOptions, EigenSolverResult, solve_eigen_dense, solve_eigen_shift_invert,
+    EigenSolverOptions, EigenSolverResult, SparseFactorRef, SparseMetricOp, SparseStiffnessOp,
+    lanczos_shift_invert, solve_eigen_dense, solve_eigen_shift_invert,
+    try_solve_eigen_shift_invert,
 };
 
 // ---------------------------------------------------------------------------
@@ -978,4 +981,123 @@ fn equidistant_shift_selects_deterministically() {
              the same eigenvalue — the column permutation is not deterministic",
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// C1 structural tripwire — σ=0 factors K ITSELF, never K − 0·B
+// ---------------------------------------------------------------------------
+
+/// **C1, structurally.** At σ=0 the sparse path must factor the row-major `K`
+/// verbatim — NOT a `K − 0·B` assembly that happens to be numerically equal.
+///
+/// # Why this cannot be a tolerance test
+///
+/// `K − 0·B` is not a no-op at the sparsity level. An assembly over the UNION of
+/// the two patterns stores an entry wherever EITHER operand has one, so every
+/// off-pattern entry of B arrives as an EXPLICIT ZERO. Explicit zeros change the
+/// symbolic factorization — different fill-in, a different elimination tree,
+/// therefore a different summation order and different rounding. The result is
+/// *close*, which is exactly the problem: it would drift the four pinned σ=0
+/// golden suites (the `euler_column_pin_pin` BC families at their 0.09–0.11
+/// bounds, `buckling_smoke`, `buckling_persistent_cache_round_trip`, and the
+/// modal goldens) by an amount no tolerance here would catch.
+///
+/// So the assertion is BIT-IDENTITY against a reference route the test builds
+/// itself out of `k.sp_cholesky(Side::Lower)` on the row-major K. No baseline
+/// constants are hardcoded anywhere — the reference is constructed, not recorded
+/// — and the claim is the narrow one the `SparseStiffnessOp` adapter already
+/// makes in the source: the same faer calls, with the same arguments, in the
+/// same order, produce the same bits. It is NOT a claim that iterative
+/// convergence is byte-reproducible in general.
+///
+/// # This test is GREEN the day it lands, deliberately
+///
+/// It is written BEFORE the σ≠0 work rather than after, because its job is to go
+/// RED the moment that work erodes the σ=0 branch. If it ever fails, the σ=0
+/// guard in `try_solve_eigen_shift_invert` is wrong — **fix the guard, never
+/// re-baseline this test.**
+///
+/// Fixture E, not C, for the reason spelled out on `fixture_e`: C's B = I is a
+/// pattern subset of K, so on C the union assembly and K itself are the same
+/// matrix and this test would pass vacuously.
+#[test]
+fn sigma_zero_factors_k_itself_not_k_minus_zero_b() {
+    let (k, b) = fixture_e();
+    let n = k.nrows();
+    let opts = EigenSolverOptions {
+        n_modes: 4,
+        tol: 1e-10,
+        max_iters: 1000,
+        sigma: 0.0,
+    };
+
+    let via_entry_point = try_solve_eigen_shift_invert(&k, &b, opts.clone())
+        .expect("fixture E's K is the SPD tridiagonal Laplacian; σ=0 must succeed");
+
+    // Enforce the Lanczos path claim (PRD §5.5 trap), exactly as BT1 does.
+    assert!(
+        via_entry_point.n_converged > 0,
+        "fixture E must exercise Lanczos (n_converged > 0); got 0, which means routing \
+         fell through to the dense fallback and this tripwire no longer guards the \
+         sparse σ=0 branch at all",
+    );
+
+    // The reference route, built here rather than recorded: factor the ROW-MAJOR
+    // K directly and drive the generic core with it.
+    let llt = k
+        .sp_cholesky(Side::Lower)
+        .expect("fixture E's K is SPD, so its Cholesky must succeed");
+    let k_op = SparseStiffnessOp {
+        factor: SparseFactorRef::Cholesky(&llt),
+        n,
+    };
+    let m_op = SparseMetricOp { m: b.as_ref() };
+    let reference = lanczos_shift_invert(&k_op, &m_op, opts);
+
+    assert_eq!(
+        via_entry_point.eigenvalues, reference.eigenvalues,
+        "C1 violated STRUCTURALLY: at σ=0 the entry point returned {:?} but factoring \
+         the row-major K itself returns {:?}. Equal-to-a-tolerance is not enough here — \
+         a difference in these bits means σ=0 is being routed through a K−0·B assembly \
+         whose explicit zeros changed the Cholesky fill-in, which silently moves every \
+         pinned σ=0 golden. Fix the σ=0 guard; do NOT re-baseline.",
+        via_entry_point.eigenvalues, reference.eigenvalues,
+    );
+
+    // The eigenVECTORS too: an eigenvalue-only check passes on a result whose
+    // columns were permuted or re-converged differently.
+    assert_eq!(
+        via_entry_point.eigenvectors.nrows(),
+        reference.eigenvectors.nrows(),
+        "C1: eigenvector row counts differ between the entry point and the reference",
+    );
+    assert_eq!(
+        via_entry_point.eigenvectors.ncols(),
+        reference.eigenvectors.ncols(),
+        "C1: eigenvector column counts differ between the entry point and the reference",
+    );
+    for col in 0..reference.eigenvectors.ncols() {
+        for row in 0..reference.eigenvectors.nrows() {
+            let got = via_entry_point.eigenvectors[(row, col)];
+            let want = reference.eigenvectors[(row, col)];
+            assert_eq!(
+                got.to_bits(),
+                want.to_bits(),
+                "C1 violated STRUCTURALLY: eigenvector[{row}][{col}] is {got:.17e} from the \
+                 entry point but {want:.17e} from factoring the row-major K itself — σ=0 \
+                 is not on today's exact path. Fix the σ=0 guard; do NOT re-baseline.",
+            );
+        }
+    }
+
+    // Provenance is part of the identity: σ=0 reports the σ it used and an
+    // ESTABLISHED `false` (the open interval strictly between 0 and 0 is empty).
+    assert_eq!(
+        via_entry_point.shift, 0.0,
+        "C1: a σ=0 solve must report shift == 0.0",
+    );
+    assert!(
+        !via_entry_point.shift_skipped_modes,
+        "C1: at σ=0 nothing can be skipped — the interval strictly between 0 and 0 is empty",
+    );
 }
