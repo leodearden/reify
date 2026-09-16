@@ -615,9 +615,9 @@ const IDLER_BODY_READS: &[&str] = &[
 /// This is the task's one real engineering claim. An oversize arc cut on the rim
 /// sinks the rope into it by `groove_r - tendon_dia/2`; the arc centre therefore
 /// has to sit that far OUTBOARD of the rim for the SEATED rope to come back to
-/// `sheave_r`. Four assertions. The first three are each one algebraic identity
-/// evaluated two ways; the fourth is structural, and pins the geometry tree the
-/// other three are blind to:
+/// `sheave_r`. Three assertions, and EVERY ONE of them was measured to fire —
+/// the first two are each one algebraic identity evaluated two ways, the third
+/// is structural and pins the geometry tree the other two are blind to:
 ///
 ///   1. **the design's own arc-centre derivation is this module's** —
 ///      `seat_c` equals [`super::capstan_groove_e2e::seat_arc_centre`]
@@ -625,66 +625,54 @@ const IDLER_BODY_READS: &[&str] = &[
 ///      reading a fourth design cell back and comparing design-to-design would
 ///      move in lockstep with any edit and assert nothing. Shared with the
 ///      Capstan gate because the offset is construction-independent — that
-///      function's doc carries the derivation.
+///      function's doc carries the derivation. Measured against step 2's
+///      uncompensated tree (`let seat_c = sheave_r`): 18.180000 mm required
+///      against 18.000000 declared, rel err 9.901e-3 — the 0.180 mm sink, nine
+///      orders above `SCALAR_REL_TOL`.
 ///   2. **the seated rope's centreline is still the pitch circle** —
-///      `seat_c - groove_r + tendon_dia/2` equals `sheave_od/2` AND equals
-///      [`DRIVE_ENTITY`]'s `r_pitch`. The load-bearing one. The second equality
-///      is the CROSS-STRUCTURE single source: printer.ri hand-derives 31 idler
-///      positions from 18 mm, and nothing checked it before #6135. Note it is
-///      the ROPE's centreline that lands there, not the arc centre — the arc
-///      centre is deliberately outboard at 18.180 mm.
-///   3. **the seat bottom has not moved at all** — `seat_c - groove_r` equals
-///      `sheave_r - tendon_dia/2`, i.e. 15.000 mm, bit-identical to the
-///      pre-#6135 seat. This is what keeps the bore clearance (15 > brg_r 11)
-///      and the flange height untouched, so the change is provably invisible
-///      outside the seat.
-///   4. **the solid is actually BUILT from that arc centre** — the compiled
-///      `body` expression's read-set is exactly [`IDLER_BODY_READS`]. (1)-(3)
-///      compare VALUES, and a cell holds its value whether or not any geometry
-///      reads it; this is the only one of the four that can tell the difference
-///      between a design that computes the right arc centre and one that cuts
-///      the seat with it.
+///      `seat_c - groove_r + tendon_dia/2` equals [`DRIVE_ENTITY`]'s `r_pitch`.
+///      The load-bearing one, and the CROSS-STRUCTURE single source: printer.ri
+///      hand-derives 31 idler positions from 18 mm, and nothing checked it
+///      before #6135. Note it is the ROPE's centreline that lands there, not the
+///      arc centre — the arc centre is deliberately outboard at 18.180 mm.
+///      Measured against a tree with (1) PASSING and `sheave_od` moved to 40 mm:
+///      20.000000 mm against `DriveTendons.r_pitch` = 18.000000, a 2.000000 mm
+///      miss. That is what shows it is genuinely independent of (1) — a
+///      self-consistent seat on the WRONG circle satisfies (1) and is caught
+///      here alone.
+///   3. **the solid is actually BUILT from that arc centre** — the compiled
+///      `body` expression's read-set is exactly [`IDLER_BODY_READS`]. (1) and
+///      (2) compare VALUES, and a cell holds its value whether or not any
+///      geometry reads it; this is the only one of the three that can tell the
+///      difference between a design that computes the right arc centre and one
+///      that cuts the seat with it. Measured against printer.ri's
+///      `torus(seat_c, groove_r)` reverted to `torus(sheave_r, groove_r)`: the
+///      read-set loses `seat_c`. That mutation is the exact uncompensated seat
+///      this task removed, in the production file all 31 placements come from,
+///      and it left ALL FIVE of this module's gates green — measured, which is
+///      how the gap was found. (3) is the assertion that reds it; the sibling
+///      half, for a mutation applied to BOTH copies at once, is the template
+///      content-hash equality in `idler_copies_stay_in_lockstep`.
 ///
-/// (2) and (3) are both independent of `seat_arc_ratio`: substituting (1) into
-/// either cancels `groove_r` entirely. That is why the compensation can be
-/// asserted as an exact identity rather than as a band — and why a future ratio
-/// bump cannot silently break either.
-///
-/// **Which of these can actually fail, measured rather than assumed.** That
-/// same cancellation means two of (1)-(3)'s four scalar comparisons are
-/// algebraic CONSEQUENCES of (1) and cannot fail while it holds: the
-/// `sheave_od/2` half of (2), because `sheave_r` is itself
-/// `let sheave_r = sheave_od / 2`, and (3) entire. They are kept for two reasons that are not coverage — they state the
-/// identities the structure doc claims, and (3) is the reference the mesh gate
-/// reads the seat bottom against — but this gate does not pretend they are
-/// independent checks. The capstan gate reached the same conclusion about its
-/// own copies of these two and retired them; see
-/// `capstan_seat_arc_is_din_15061_oversize`'s claim (2).
-///
-/// The three that DO carry coverage were each confirmed to fire, on this
-/// branch, against a real tree state:
-///   * (1), against step 2's uncompensated tree (`let seat_c = sheave_r`):
-///     18.180000 mm required against 18.000000 declared, rel err 9.901e-3 — the
-///     0.180 mm sink, nine orders above `SCALAR_REL_TOL`.
-///   * (2)'s `r_pitch` half, against a tree with (1) PASSING and `sheave_od`
-///     moved to 40 mm: 20.000000 mm against `DriveTendons.r_pitch` = 18.000000,
-///     a 2.000000 mm miss. That is the measurement showing this half is genuinely
-///     independent of (1) — a self-consistent seat on the wrong circle satisfies
-///     (1), (2)'s first half and (3), and is caught here alone.
-///   * (4), against printer.ri's `torus(seat_c, groove_r)` reverted to
-///     `torus(sheave_r, groove_r)`: the
-///     read-set loses `seat_c`. That mutation is the exact uncompensated seat
-///     this task removed, in the production file all 31 placements come from,
-///     and it left ALL FIVE of this module's gates green — measured, which is
-///     how the gap was found. (4) is the assertion that reds it; the sibling
-///     half, for a mutation applied to BOTH copies at once, is the template
-///     content-hash equality in `idler_copies_stay_in_lockstep`.
+/// **What this gate deliberately does NOT assert, and why.** The two identities
+/// printer.ri's `IdlerPulley` doc states — seat bottom `= sheave_r -
+/// tendon_dia/2` and seated centreline `= sheave_r == sheave_od/2` — are
+/// algebraic CONSEQUENCES of (1): substitute `seat_c` and `groove_r` cancels
+/// entirely. Asserted here they would be unfailable while (1) holds, which is
+/// the same conclusion the capstan gate reached about its own copies before
+/// retiring them (see `capstan_seat_arc_is_din_15061_oversize`'s claim (2)).
+/// The identities are stated once, in printer.ri's structure doc where a
+/// designer reads them; the seat bottom is additionally read back off the
+/// FABRICATED solid by `idler_sheave_mesh_has_the_declared_seat`, which
+/// recomputes its own reference and is the one place the claim is not a
+/// tautology. That same cancellation is also why the compensation is asserted
+/// as an exact identity rather than a band, and why a future `seat_arc_ratio`
+/// bump cannot silently break it.
 ///
 /// Kernel-free, so it cannot skip on a machine without OCCT.
 #[test]
 fn idler_seat_keeps_the_rope_on_the_pitch_circle() {
     let sheave_r = idler_cell("sheave_r", DimensionVector::LENGTH);
-    let sheave_od = idler_cell("sheave_od", DimensionVector::LENGTH);
     let groove_r = idler_cell("groove_r", DimensionVector::LENGTH);
     let tendon_dia = idler_cell("tendon_dia", DimensionVector::LENGTH);
     let seat_c = idler_cell("seat_c", DimensionVector::LENGTH);
@@ -711,23 +699,11 @@ fn idler_seat_keeps_the_rope_on_the_pitch_circle() {
     // ---- (2) The SEATED rope's centreline is still the pitch circle ----
     // Bottomed out in its seat, the rope's underside rests at `seat_c - groove_r`
     // and its centreline sits one rope radius above that.
+    //
+    // Compared against `DriveTendons.r_pitch` and NOT against this structure's
+    // own `sheave_od/2`: that spelling is `sheave_r` by construction, so with (1)
+    // green it cannot fail. The cross-structure number can — see the gate doc.
     let seated_centreline = seat_c - groove_r + tendon_dia / 2.0;
-    let err_od = rel_err(seated_centreline, sheave_od / 2.0);
-    assert!(
-        err_od <= SCALAR_REL_TOL,
-        "the SEATED rope's centreline must lie on the rim, sheave_od/2 = {:.6} \
-         mm, but it sits at {:.6} mm (rel err {err_od:.3e}, tol \
-         {SCALAR_REL_TOL:.0e}) — off by {:.6} mm. printer.ri declares sheave_od \
-         as \"rim (outer) diameter == rope pitch circle\", so this equality is \
-         what makes that comment true. It is the ROPE's centreline that belongs \
-         here, NOT the seat arc's centre (seat_c = {:.6} mm, deliberately \
-         outboard).",
-        sheave_od * 0.5e3,
-        seated_centreline * 1e3,
-        (seated_centreline - sheave_od / 2.0) * 1e3,
-        seat_c * 1e3,
-    );
-
     let r_pitch = entity_cell(
         &printer_checked().values,
         PRINTER_RI,
@@ -755,30 +731,11 @@ fn idler_seat_keeps_the_rope_on_the_pitch_circle() {
         (seated_centreline - r_pitch) * 1e3,
     );
 
-    // ---- (3) The seat bottom is bit-identical to the pre-#6135 seat ----
-    let seat_bottom = seat_c - groove_r;
-    let want_bottom = sheave_r - tendon_dia / 2.0;
-    let err_bottom = rel_err(seat_bottom, want_bottom);
-    assert!(
-        err_bottom <= SCALAR_REL_TOL,
-        "the seat BOTTOM must be sheave_r - tendon_dia/2 = {:.6} mm — where the \
-         pre-#6135 conformal seat put it — but it sits at {:.6} mm (rel err \
-         {err_bottom:.3e}, tol {SCALAR_REL_TOL:.0e}), off by {:.6} mm. This \
-         reference does not mention groove_r at all, so it holds for any seat arc \
-         radius. It is what keeps the oversize arc invisible outside the seat: \
-         the bore clearance below it (brg_r = {:.6} mm) and the flange height \
-         above it are both untouched only while this holds.",
-        want_bottom * 1e3,
-        seat_bottom * 1e3,
-        (seat_bottom - want_bottom) * 1e3,
-        idler_cell("brg_r", DimensionVector::LENGTH) * 1e3,
-    );
-
-    // ---- (4) …and the SOLID is built from that arc centre, not merely near it ----
-    // (1)-(3) are arithmetic over evaluated cells, and a cell keeps its value
+    // ---- (3) …and the SOLID is built from that arc centre, not merely near it ----
+    // (1) and (2) are arithmetic over evaluated cells, and a cell keeps its value
     // whether or not the geometry reads it. Reverting `torus(seat_c, groove_r)`
     // to `torus(sheave_r, groove_r)` — the uncompensated seat this task removed —
-    // leaves every one of them green, measured. So pin the body's READ-SET.
+    // leaves both of them green, measured. So pin the body's READ-SET.
     let body = idler_template(printer_compiled(), PRINTER_RI)
         .value_cells
         .iter()
@@ -1572,17 +1529,28 @@ fn idler_sheave_mesh_has_the_declared_seat() {
     // Rim vertices exist only outside the seat's mouth, so twice the smallest
     // |axial| among them IS the opening — and the seat's own break-through edge
     // lies exactly on the rim radius, at exactly mouth_w/2.
+    // `reduce`, not `fold(f64::MAX, f64::min)`: the fold's empty-iterator
+    // sentinel is itself FINITE, so an `is_finite` guard behind it can never
+    // fire and an empty filter would instead surface as an `inf mm` opening in
+    // the next assertion's message. The unfiltered `r_outer`/`seed_rmax` folds
+    // above need no such care — `verts` is asserted non-empty and `r_outer` is
+    // the max of `r_of` over it, so each has a maximiser by construction; this
+    // is the one reduction whose input set is a FILTER and could be empty.
     let half_mouth = verts
         .iter()
         .filter(|q| (r_of(q) - r_outer).abs() <= MESH_ABS_TOL)
         .map(|q| (q.0 - x0).abs())
-        .fold(f64::MAX, f64::min);
-    assert!(
-        half_mouth.is_finite(),
-        "no mesh vertices sit on the rim radius {:.6} mm — the opening cannot be \
-         read",
-        r_outer * 1e3,
-    );
+        .reduce(f64::min)
+        .unwrap_or_else(|| {
+            panic!(
+                "no mesh vertex sits within {:.4} µm of the rim radius {:.6} mm, \
+                 so the seat's opening cannot be read off the rim at all — the \
+                 rim shell is missing from the tessellation, or the circle fit \
+                 that located the idler's axis put it somewhere the solid is not",
+                MESH_ABS_TOL * 1e6,
+                r_outer * 1e3,
+            )
+        });
     assert!(
         (2.0 * half_mouth - mouth_w).abs() <= MESH_ABS_TOL,
         "the seat's OPENING at the rim must be mouth_w = {:.6} mm, but the \
