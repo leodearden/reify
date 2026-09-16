@@ -3459,12 +3459,56 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
 /// `(repo_relative_host, minimum_admitted_snippets)` for the inline hosts whose
 /// extraction is pinned on the merge gate.
 ///
-/// Stub — [`INLINE_FIXTURE_PINNED_HOSTS`] is populated in the GREEN half of this
-/// pair, together with the rationale for which failure modes it closes.
-const INLINE_FIXTURE_PINNED_HOSTS: &[(&str, usize)] = &[];
+/// # The failure mode the corpus-parity gate CANNOT see
+///
+/// [`corpus_parity`] watches the ENUMERATIONS: it reds when a walker returns an
+/// empty or under-floor set of paths. It knows nothing about what comes out of
+/// those paths. A regression in [`rust_fixture_scan::raw_string_literals`] or in
+/// [`rust_fixture_scan::looks_like_reify_source`] leaves the host enumeration
+/// fully intact — every path present, every floor cleared, parity green — while
+/// admitting zero snippets from every one of them. The artifact would then
+/// regenerate with an empty inline section and read as an honest census of
+/// nothing. This pin is the only thing standing in front of that, which is why
+/// its floor counts ADMITTED SNIPPETS rather than paths.
+///
+/// # Both enumeration shapes, on purpose
+///
+/// [`NAMED_SITE_HOST`] is a `tests` DIRECTORY host and carries the sites this
+/// task's VERIFY criterion names. `engine_build/tests.rs` is a
+/// `crates/<c>/src/**/tests.rs` host — the shape
+/// `reify_test_support::ignore_hygiene::walk_test_rs_files` structurally cannot
+/// reach, and the only tracked file in the workspace carrying `r##"` literals.
+/// A narrowing that dropped either shape would leave the other still passing.
+///
+/// # The floors are BROKEN-EXTRACTION floors
+///
+/// Measured live at 38 and 21 admitted snippets respectively. The floors sit far
+/// below that for the same reason [`CorpusHalf::floor`] does: a legitimate
+/// fixture edit that deletes a few snippets must not red the merge gate. These
+/// numbers detect a BREAK, not drift.
+///
+/// # Why this pin is independent of task #5306
+///
+/// It asserts only that snippets are still EXTRACTED, reach the compile phase,
+/// and report resolving host lines. It names no param, no def and no site count.
+/// Task #5306 is chartered to FIX the conformance sites inside these very hosts,
+/// so any assertion about which sites are found would red this gate the moment
+/// that lands — which is why a future reader must not "helpfully" tighten this
+/// into a residual pin. The mechanism is pinned synthetically by
+/// [`survey_inline_corpus_finds_the_snippet_site_at_its_host_position`]; the
+/// live census belongs in the artifact, which is regenerated on demand, not on
+/// the gate.
+const INLINE_FIXTURE_PINNED_HOSTS: &[(&str, usize)] = &[
+    (NAMED_SITE_HOST, 20),
+    ("crates/reify-eval/src/engine_build/tests.rs", 10),
+];
 
-/// The host of the sites VERIFY names, and the shape the enumerator's OTHER
-/// half reaches. Both must be in [`INLINE_FIXTURE_PINNED_HOSTS`].
+/// The Rust test host carrying the inline sites task #7543's VERIFY criterion
+/// names.
+///
+/// A named constant rather than a literal in two places: the pin above lists it
+/// and [`inline_fixture_pinned_hosts_name_both_enumeration_shapes`] requires it,
+/// and a pin that drifted from its own requirement would still pass.
 const NAMED_SITE_HOST: &str =
     "crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs";
 
