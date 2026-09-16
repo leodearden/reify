@@ -1280,7 +1280,7 @@ fn geometry_sibling_realization_cycle_produces_error_diagnostics() {
     // whether a's result handle was recorded; in practice both fail.
     let source = r#"structure S {
     let a = translate(b, 1mm, 0mm, 0mm)
-    let b = rotate(a, 0, 0, 1, 90)
+    let b = rotate(a, 0, 0, 1, 90deg)
 }"#;
 
     let kernel = MockGeometryKernel::new();
