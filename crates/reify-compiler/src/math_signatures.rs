@@ -176,8 +176,12 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
         // `n` is fixed from the NAME; the quantity slot is the one the variadic
         // scalar components AGREE on, via `homogeneous_quantity` — the same rule
         // `list_shape` / `matrix_shape` apply, reached inline here because this
-        // arm routes through neither. Accept/reject at this arm therefore does
-        // not depend on component ORDER.
+        // arm routes through neither. The ACCEPT/REJECT decision at this arm
+        // therefore does not depend on component ORDER: that decision reads a
+        // DIMENSION, and components that disagree name none whichever way round
+        // they are written. The retained `Type` is still component `[0]`'s, so
+        // `vec3(1, 2.0, 3.0)` keeps `Int` where `vec3(2.0, 1, 3.0)` keeps
+        // `Real` — immaterial to the rule, since both name no dimension.
         //
         // The point twins also make the VALUE constructor agree with the
         // same-named TYPE constructor: `Type::point3(q)` is an established
@@ -532,6 +536,13 @@ fn scalar_or_real(dim: DimensionVector) -> Type {
 /// falls silent BY CONSTRUCTION rather than through a special case in the
 /// conformance walker. Elements that agree keep their precise quantity
 /// verbatim, so the narrowing costs no precision where the inference was sound.
+///
+/// "Verbatim" means element `[0]`'s `Type`, so the retained `Type` still
+/// follows the ORDER when agreeing elements differ in `Type` without differing
+/// in dimension (`Int` beside `Real`). The DIMENSION it names does not follow
+/// the order, and the dimension is all the consumer reads — which is why the
+/// rule's accept/reject outcome is order-independent even where the inferred
+/// `Type` is not.
 fn homogeneous_quantity<'a>(elems: impl IntoIterator<Item = &'a Type>) -> Type {
     let mut elems = elems.into_iter();
     let Some(first) = elems.next() else {
@@ -581,9 +592,12 @@ fn list_shape(arg: &CompiledExpr) -> (usize, Type) {
 /// screw-theory spatial Jacobian is uniform WITHIN a row block and differs
 /// ACROSS blocks.
 ///
-/// A row that is not itself a `ListLiteral` makes the literal un-inspectable, so
-/// the quantity degrades as well — the conservative direction D7 already takes
-/// at this function.
+/// Two shapes leave the literal un-inspectable and degrade the quantity as
+/// well — the conservative direction D7 already takes at this function: a row
+/// that is not itself a `ListLiteral`, and an EMPTY row 0. The empty row 0 pins
+/// `n = 0`, which discards every later row, so inferring a quantity from those
+/// rows would reject `matrix([[], [1m, 2m]])` at a `Matrix<M, N, Dimensionless>`
+/// param on the strength of cells the `n` projection threw away.
 ///
 /// `n` is unchanged: still row 0's column count, so an M×N matrix still projects
 /// to `n = N` (design decision D5).
@@ -591,14 +605,22 @@ fn matrix_shape(arg: &CompiledExpr) -> (usize, Type) {
     if let CompiledExprKind::ListLiteral(rows) = &arg.kind
         && let Some(CompiledExprKind::ListLiteral(cells)) = rows.first().map(|r| &r.kind)
     {
-        let mut all_cells: Vec<&Type> = Vec::new();
-        for row in rows {
-            let CompiledExprKind::ListLiteral(row_cells) = &row.kind else {
-                return (cells.len(), Type::dimensionless_scalar());
-            };
-            all_cells.extend(row_cells.iter().map(|c| &c.result_type));
+        let ncols = cells.len();
+        let every_row_inspectable = rows
+            .iter()
+            .all(|r| matches!(&r.kind, CompiledExprKind::ListLiteral(_)));
+        if ncols == 0 || !every_row_inspectable {
+            return (ncols, Type::dimensionless_scalar());
         }
-        return (cells.len(), homogeneous_quantity(all_cells));
+        let all_cells = rows
+            .iter()
+            .filter_map(|r| match &r.kind {
+                CompiledExprKind::ListLiteral(row_cells) => Some(row_cells),
+                _ => None,
+            })
+            .flatten()
+            .map(|c| &c.result_type);
+        return (ncols, homogeneous_quantity(all_cells));
     }
     (0, innermost_list_element(&arg.result_type))
 }
@@ -980,6 +1002,20 @@ mod tests {
         CompiledExpr::list_literal(elems, Type::List(Box::new(elem_ty)))
     }
 
+    /// A depth-2 `matrix` `ListLiteral` laid out row-major — the module's single
+    /// matrix-literal builder. Each row's own `result_type` is immaterial for
+    /// the same reason [`list_lit`]'s is, so it stays dimensionless throughout;
+    /// only the CELL expressions carry the types under test. A row that is
+    /// deliberately NOT a well-formed cell list (the un-inspectable-row case)
+    /// cannot be expressed here and is built inline at its one call site.
+    fn matrix_lit(rows: Vec<Vec<CompiledExpr>>) -> CompiledExpr {
+        let rows = rows
+            .into_iter()
+            .map(|cells| list_lit(cells, Type::dimensionless_scalar()))
+            .collect();
+        list_lit(rows, Type::List(Box::new(Type::dimensionless_scalar())))
+    }
+
     /// (a) `vec` over a 3-element dimensionless `ListLiteral` →
     /// `Vector{n:3, quantity:Real}`.
     #[test]
@@ -1108,6 +1144,38 @@ mod tests {
             "Int and Real are both DIMENSIONLESS, so they agree and element [0]'s \
              Type::Int must survive — the heterogeneity check compares dimensions, \
              not Types"
+        );
+    }
+
+    /// FENCE, MIRRORED — the same dimensionless pair in the other ORDER, which
+    /// keeps element `[0]`'s `Type` too and so yields `Real` rather than `Int`.
+    ///
+    /// Together with the Int-first test above, this pins the whole of the order
+    /// dependence that survives the change: the retained `Type` follows the
+    /// order, while the DIMENSION the pair names (none, either way) does not.
+    /// Only that dimension reaches `arg_quantity_slot_dimension`, which is why
+    /// the task-5766/6159 accept/reject outcome is order-independent even
+    /// though the inferred `Type` is not. Leaving this direction unpinned would
+    /// let a `Type`-equality rewrite of `homogeneous_quantity` pass on the
+    /// Int-first test alone.
+    #[test]
+    fn vec_result_type_real_and_int_elements_agree_and_keep_real_quantity() {
+        let arg = list_lit(
+            vec![
+                real_elem(2.0),
+                CompiledExpr::literal(Value::Int(1), Type::Int),
+            ],
+            Type::dimensionless_scalar(),
+        );
+        assert_eq!(
+            math_fn_result_type("vec", &[arg]),
+            Type::Vector {
+                n: 2,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "vec([2.0, 1]) must keep element [0]'s Real, mirroring vec([1, 2.0]) \
+             keeping Int — the retained Type follows the order, the inferred \
+             dimension does not"
         );
     }
 
@@ -1313,18 +1381,10 @@ mod tests {
     /// (c) `matrix` over a depth-2 2×2 `ListLiteral` → `Tensor{rank:2, n:2, quantity:Real}`.
     #[test]
     fn matrix_result_type_2x2_is_tensor_rank2_n2_real() {
-        let row0 = list_lit(
+        let arg = matrix_lit(vec![
             vec![real_elem(1.0), real_elem(2.0)],
-            Type::dimensionless_scalar(),
-        );
-        let row1 = list_lit(
             vec![real_elem(3.0), real_elem(4.0)],
-            Type::dimensionless_scalar(),
-        );
-        let arg = list_lit(
-            vec![row0, row1],
-            Type::List(Box::new(Type::dimensionless_scalar())),
-        );
+        ]);
         assert_eq!(
             math_fn_result_type("matrix", &[arg]),
             Type::Tensor {
@@ -1336,17 +1396,6 @@ mod tests {
     }
 
     // ── Heterogeneous matrix literals degrade the quantity slot (task 5889) ──
-
-    /// A 2×2 `matrix` `ListLiteral` of `elems` laid out row-major, for the
-    /// heterogeneity tests below (the pre-existing tests build their rows
-    /// inline, which reads fine at one or two call sites but not at four).
-    fn matrix_lit(rows: Vec<Vec<CompiledExpr>>) -> CompiledExpr {
-        let rows = rows
-            .into_iter()
-            .map(|cells| list_lit(cells, Type::dimensionless_scalar()))
-            .collect();
-        list_lit(rows, Type::List(Box::new(Type::dimensionless_scalar())))
-    }
 
     /// Heterogeneity WITHIN row 0 degrades the quantity, while `n` stays row
     /// 0's COLUMN count (D5 is untouched by this narrowing).
@@ -1436,6 +1485,27 @@ mod tests {
             },
             "a row that cannot be inspected leaves the literal unknown, so the quantity \
              degrades rather than being inferred from the rows that happen to be visible"
+        );
+    }
+
+    /// An EMPTY row 0 pins `n = 0`, which discards every later row — so the
+    /// quantity must not be read out of those rows either. Without the guard,
+    /// `matrix([[], [1m, 2m]])` types as `Tensor{n:0, quantity:Scalar<Length>}`
+    /// and is REJECTED at a `Matrix<M, N, Dimensionless>` param on the strength
+    /// of cells the `n` projection threw away — the false-reject direction this
+    /// whole change exists to remove, reintroduced at the degenerate shape.
+    #[test]
+    fn matrix_result_type_empty_first_row_degrades_quantity_to_dimensionless() {
+        let arg = matrix_lit(vec![vec![], vec![length_elem(1.0), length_elem(2.0)]]);
+        assert_eq!(
+            math_fn_result_type("matrix", &[arg]),
+            Type::Tensor {
+                rank: 2,
+                n: 0,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "an empty row 0 leaves the shape unrecoverable, so neither n nor the \
+             quantity may be taken from the rows that follow it"
         );
     }
 
@@ -1630,18 +1700,10 @@ mod tests {
     #[test]
     fn matrix_result_type_non_square_projects_to_column_count() {
         // 2 rows, 3 columns.
-        let row0 = list_lit(
+        let arg = matrix_lit(vec![
             vec![real_elem(1.0), real_elem(2.0), real_elem(3.0)],
-            Type::dimensionless_scalar(),
-        );
-        let row1 = list_lit(
             vec![real_elem(4.0), real_elem(5.0), real_elem(6.0)],
-            Type::dimensionless_scalar(),
-        );
-        let arg = list_lit(
-            vec![row0, row1],
-            Type::List(Box::new(Type::dimensionless_scalar())),
-        );
+        ]);
         assert_eq!(
             math_fn_result_type("matrix", &[arg]),
             Type::Tensor {

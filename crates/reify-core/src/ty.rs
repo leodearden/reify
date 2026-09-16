@@ -282,9 +282,10 @@
 //! `vec3_dimensioned_first_component_at_dimensionless_vector_param_stays_clean`
 //! (the inline arm) — the last paired with
 //! `vec3_dimensioned_off_first_component_at_dimensionless_vector_param_stays_clean`,
-//! since the two together are what pin that the outcome no longer depends on
-//! component ORDER.  Each has a still-rejecting HOMOGENEOUS twin at the same
-//! param, which is what keeps it non-vacuous.
+//! since the two together are what pin that the rule's accept/reject outcome no
+//! longer depends on component ORDER (the inferred `Type` is still element
+//! `[0]`'s, which this rule never reads).  Each has a still-rejecting
+//! HOMOGENEOUS twin at the same param, which is what keeps it non-vacuous.
 //!
 //! **The unknown-ness fence is preserved.**  `is_numeric_placeholder_leaf`
 //! (`conformance/mod.rs`) still admits a scalar-family arg at the `Point` and
