@@ -173,3 +173,31 @@ fn a_fully_coded_file_must_drop_its_row_rather_than_write_zero() {
     let dropped_row = wave_tree(0, n, None);
     assert_eq!(dropped_row, Vec::new(), "dropping the row for a fully coded file must be clean");
 }
+
+#[test]
+fn accepted_delta_a_same_file_code_and_new_uncoded_site_cancel() {
+    // ACCEPTED with the 2026-08-28 ruling: the per-file COUNT model — versus
+    // the retired line-erased fingerprint-row design — cannot see a same-file
+    // swap. Coding one previously code-less site and adding one brand-new
+    // code-less site in the same file leaves the count unchanged, so the
+    // gate stays clean.
+    let n = 5usize;
+    let findings = wave_tree(n, 1, Some(n as u32));
+    assert_eq!(findings, Vec::new(), "a same-file code+add pair must cancel and stay clean");
+}
+
+#[test]
+fn accepted_delta_b_coding_without_shrinking_the_row_is_exit_neutral() {
+    // ACCEPTED: coding K sites without shrinking the row in the same diff is
+    // exit-neutral. The point is the PAIR: the gate stays green (highs()
+    // empty) while a Medium advisory IS emitted — the same-diff shrink is a
+    // protocol discipline PDIAG *advises* but does not *enforce*, which is
+    // exactly why item 1 must write it into the wave protocol as a rule
+    // rather than leaving it to the ratchet.
+    let n = 5usize;
+    let k = 2usize;
+    let findings = wave_tree(n - k, k, Some(n as u32));
+    assert!(highs(&findings).is_empty(), "the gate must stay green, got {findings:?}");
+    assert_eq!(findings.len(), 1, "expected exactly one Medium advisory, got {findings:?}");
+    assert_eq!(findings[0].severity, Severity::Medium);
+}
