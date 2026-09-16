@@ -126,3 +126,34 @@ fn a_new_uncoded_site_added_during_a_wave_reds_against_the_shrunk_row() {
         high[0].summary
     );
 }
+
+#[test]
+fn a_fully_coded_file_must_drop_its_row_rather_than_write_zero() {
+    // The trap most likely to bite ρ's first wave: when a wave codes EVERY
+    // site in a file, the row must be DELETED, not set to zero.
+    // `parse_baseline` rejects a count of 0, so a literal "<path> 0" row is a
+    // single High malformed-baseline finding INSTEAD OF the ratchet's
+    // verdicts — a red gate, not a clean one.
+    let n = 3usize;
+    let zero_row = wave_tree_raw(0, n, &format!("{WAVE_SECTION} 0\n"));
+    let high = highs(&zero_row);
+    assert_eq!(high.len(), 1, "expected exactly one High, got {zero_row:?}");
+    assert!(
+        high[0].summary.contains("pdiag-baseline-unreadable"),
+        "expected the malformed-baseline finding, not a ratchet verdict, got {:?}",
+        high[0].summary
+    );
+
+    // The correct fork: DELETE the row instead. Confirmed here rather than
+    // assumed: the degenerate-census guard keys on the swept-FILE total, not
+    // the code-less total, so a fully-coded-but-still-swept file must not
+    // trip it.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut fx = Fixture::new(tmp.path());
+    fx.write(WAVE_SECTION, &coded_src(n));
+    let (swept, _) = fx.summary();
+    assert_eq!(swept, 1, "the fully-coded file must still count as swept");
+
+    let dropped_row = wave_tree(0, n, None);
+    assert_eq!(dropped_row, Vec::new(), "dropping the row for a fully coded file must be clean");
+}
