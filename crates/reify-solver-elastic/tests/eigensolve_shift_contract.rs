@@ -68,22 +68,25 @@
 //! `analytical_validation` and `modal_benchmarks` from this package, and no
 //! exclusion is added for this one — these are small analytic pencils, and
 //! excluding them would remove the contract harness from the merge gate that β
-//! (#7259) is held to.
+//! (#7259) is held to. β adds its σ≠0 arms HERE rather than in a new binary,
+//! for that reason: a separate binary would need its own filter and override
+//! entries, and would put the two halves of one contract on different gates.
 //!
-//! It needs no `.config/nextest.toml` override, and that was MEASURED rather
-//! than assumed (task #7258). Under the repo nextest config the slowest single
-//! test is **1.146 s debug** (whole binary: 1.162 s over 10 tests), against the
+//! It needs no `.config/nextest.toml` override, and that is MEASURED rather
+//! than assumed — re-measured by β after adding five tests, rather than
+//! presumed to survive on α's margin. Under the repo nextest config the slowest
+//! single test is **2.449 s debug** (`dense_and_lanczos_agree_at_nonzero_sigma`,
+//! four 80-DOF solves), whole binary **2.461 s over 15 tests**, against the
 //! `[profile.default]` per-test ceiling of
 //! `slow-timeout = { period = "120s", terminate-after = 10 }` = 1200 s. No
 //! `[[profile.default.overrides]]` block matches `binary(eigensolve_shift_contract)`,
-//! so that default ceiling is what applies, leaving a ~1000x margin on the debug
-//! figure — the one taken under ordinary lane contention, and ample against the
-//! worst contention multiplier this repo has recorded.
+//! so that default ceiling is what applies, leaving a **~490x margin** on the
+//! debug figure — taken under ordinary lane contention, and ample against the
+//! worst contention multiplier this repo has recorded. No override is added.
 //!
-//! (The pre-amendment measurement was 3.000 s release / 9.836 s debug for the
-//! slowest test. Folding BT2's σ=0 arm into BT1 removed a duplicate 80-DOF QZ
-//! and a duplicate 80-DOF Lanczos solve, so the release figure above is a valid
-//! upper bound without a re-measure: the change only removes work.)
+//! (α's figure for comparison, same conditions: 1.495 s slowest / 1.513 s over
+//! 10 tests. β's five new arms roughly double the wall clock and leave the
+//! order of magnitude of the margin unchanged.)
 
 use faer::Side;
 use faer::Mat;

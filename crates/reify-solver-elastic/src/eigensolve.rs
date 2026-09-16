@@ -1016,7 +1016,7 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
     );
     assert!(
         opts.sigma.is_finite(),
-        "EigenSolverOptions.sigma = {} must be a finite value",
+        "EigenSolverOptions.sigma = {} must be finite",
         opts.sigma,
     );
     assert_eq!(
