@@ -2705,6 +2705,50 @@ fn vec3_dimensioned_off_first_component_at_dimensionless_vector_param_stays_clea
     );
 }
 
+const SRC_VEC_HETEROGENEOUS_LIST_AT_DIMENSIONLESS: &str = r#"module test.vec_heterogeneous_at_dimensionless
+structure def Frame { param dir : Vector3<Dimensionless> }
+structure def Root {
+    let f = Frame(dir: vec([1m, 0, 0]))
+}
+"#;
+
+/// The `vec([…])` route into the `Vector` arm — `list_shape`
+/// (`crates/reify-compiler/src/math_signatures.rs`) rather than the inline
+/// `vec3` arm — fed a literal whose elements DISAGREE on dimension.
+///
+/// The whole literal therefore names no dimension, `arg_quantity_slot_dimension`
+/// returns `None`, and the task-5766/6159 quantity rule declines: SILENT by
+/// construction, not by a case in the conformance walker.
+///
+/// Non-vacuity rests on a `Type` identity rather than on a cloned sibling:
+/// [`vec3_dimensioned_at_dimensionless_vector_param_warns_arg_type_mismatch`]
+/// feeds this very `Vector3<Dimensionless>` param a `Vector{n:3,
+/// quantity:Scalar[m]}` arg and REJECTS it — and a homogeneous
+/// `vec([1m, 0m, 0m])` would compile to that same `Type`. So the param spelling
+/// demonstrably resolves and rejects, and silence HERE can come only from the
+/// element disagreement degrading the inferred quantity.
+///
+/// `diag([…])` shares `list_shape` and is pinned at the unit level instead
+/// (`diag_result_type_heterogeneous_elements_degrade_quantity_to_dimensionless`),
+/// since it has no distinct `.ri`-level conformance cell.
+#[test]
+fn vec_builtin_heterogeneous_list_at_dimensionless_vector_param_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_VEC_HETEROGENEOUS_LIST_AT_DIMENSIONLESS);
+    // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "vec([1m, 0, 0]) at a Vector3<Dimensionless> param must stay SILENT — the \
+         elements disagree on dimension, so `list_shape` infers a dimensionless \
+         quantity and the rule has nothing to compare. Got: {diags:#?}"
+    );
+}
+
 const SRC_VEC2_AT_VECTOR3_PARAM: &str = r#"module test.vec2_at_vector3_param
 structure def Joint { param axis : Vector3<Length> }
 structure def Root {

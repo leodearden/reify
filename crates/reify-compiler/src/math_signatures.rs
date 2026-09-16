@@ -941,6 +941,21 @@ mod tests {
         )
     }
 
+    /// A `Scalar<Mass>` element expression — a SECOND concrete dimension, so a
+    /// literal can disagree with [`length_elem`] on dimension without either
+    /// side being dimensionless.
+    fn mass_elem(v: f64) -> CompiledExpr {
+        CompiledExpr::literal(
+            Value::Scalar {
+                si_value: v,
+                dimension: DimensionVector::MASS,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::MASS,
+            },
+        )
+    }
+
     /// A `ListLiteral` of `elems` whose own `result_type` is `List(elem_ty)`.
     /// `math_fn_result_type` reads N + quantity from the ELEMENT structure, not
     /// from this outer result_type, so its exact value is immaterial — set
@@ -979,6 +994,104 @@ mod tests {
                 n: 2,
                 quantity: Box::new(len_ty)
             }
+        );
+    }
+
+    // ── Heterogeneous literals degrade the quantity slot (task 5889) ─────────
+    //
+    // The homogeneous-keeps-precision half of this rule is already pinned by
+    // `vec_result_type_length_preserves_quantity` directly above; it is cited
+    // rather than cloned (house rule G7, no lockstep duplication).
+
+    /// A `vec` literal mixing a dimensioned element with dimensionless ones
+    /// infers NO dimension: the quantity degrades to `Type::dimensionless_scalar()`
+    /// while `n` still counts every element.
+    ///
+    /// Asserting the whole `Type` pins both halves at once — a degrade that also
+    /// lost the element count would fail here rather than pass quietly.
+    #[test]
+    fn vec_result_type_heterogeneous_elements_degrade_quantity_to_dimensionless() {
+        let arg = list_lit(
+            vec![length_elem(1.0), real_elem(0.0), real_elem(0.0)],
+            Type::dimensionless_scalar(),
+        );
+        assert_eq!(
+            math_fn_result_type("vec", &[arg]),
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "vec([1m, 0, 0]) must infer no dimension — its elements disagree — while \
+             keeping n = 3"
+        );
+    }
+
+    /// Two DIFFERENT concrete dimensions degrade too, not just dimensioned
+    /// mixed with bare: the rule is "the elements agree", not "no element is
+    /// dimensionless".
+    #[test]
+    fn vec_result_type_cross_dimension_elements_degrade_quantity_to_dimensionless() {
+        let arg = list_lit(
+            vec![length_elem(1.0), mass_elem(2.0)],
+            Type::dimensionless_scalar(),
+        );
+        assert_eq!(
+            math_fn_result_type("vec", &[arg]),
+            Type::Vector {
+                n: 2,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "vec([1m, 2kg]) must infer no dimension — Length and Mass disagree"
+        );
+    }
+
+    /// `diag` is `list_shape`'s SECOND consumer, so the degrade is pinned at
+    /// both call sites and not just at `vec`.
+    #[test]
+    fn diag_result_type_heterogeneous_elements_degrade_quantity_to_dimensionless() {
+        let arg = list_lit(
+            vec![length_elem(1.0), real_elem(0.0), real_elem(0.0)],
+            Type::dimensionless_scalar(),
+        );
+        assert_eq!(
+            math_fn_result_type("diag", &[arg]),
+            Type::Tensor {
+                rank: 2,
+                n: 3,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "diag([1m, 0, 0]) must degrade its quantity exactly as `vec` does — both \
+             route through `list_shape`"
+        );
+    }
+
+    /// FENCE — `Int` and `Real` elements AGREE (both dimensionless), so nothing
+    /// degrades and element `[0]`'s `Type::Int` survives verbatim.
+    ///
+    /// This is the test that discriminates a DIMENSION-comparing predicate from
+    /// a `Type`-equality one: the two element `Type`s differ, yet their
+    /// dimensions do not. It protects the premise
+    /// `int_quantity_vector_param_accepts_dimensioned_vector_arg`
+    /// (`conformance/mod.rs`) rests on — that `Type::Int` quantity slots are
+    /// reachable on the ARG side via this inference at all.
+    #[test]
+    fn vec_result_type_int_and_real_elements_agree_and_keep_int_quantity() {
+        let arg = list_lit(
+            vec![
+                CompiledExpr::literal(Value::Int(1), Type::Int),
+                real_elem(2.0),
+            ],
+            Type::dimensionless_scalar(),
+        );
+        assert_eq!(
+            math_fn_result_type("vec", &[arg]),
+            Type::Vector {
+                n: 2,
+                quantity: Box::new(Type::Int)
+            },
+            "Int and Real are both DIMENSIONLESS, so they agree and element [0]'s \
+             Type::Int must survive — the heterogeneity check compares dimensions, \
+             not Types"
         );
     }
 
