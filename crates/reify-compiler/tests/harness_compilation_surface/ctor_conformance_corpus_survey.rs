@@ -4548,6 +4548,169 @@ fn opt_cell(value: Option<&String>) -> String {
 /// disclosure looks like.
 const DRIFT_DISCLOSURE_KEY: &str = "**Drifted `.ri` since the anchor:**";
 
+/// One cell of a site table, derived from the site.
+type SiteCell = fn(&SurveySite) -> String;
+
+/// The site-table columns BOTH halves render, in order.
+///
+/// One list, so the two halves cannot acquire independently-drifting layouts —
+/// which is the whole reason the renderer is shared rather than copied. The
+/// header row and the body rows are both generated from it, so they also cannot
+/// disagree about column order or count.
+const SHARED_SITE_COLUMNS: &[(&str, SiteCell)] = &[
+    ("site", |s| format!("`{}:{}`", cell(&s.file), s.line)),
+    ("def", |s| opt_cell(s.def.as_ref())),
+    ("def source", |s| cell(s.def_origin.label())),
+    ("field", |s| opt_cell(s.field.as_ref())),
+    ("expected", |s| opt_cell(s.expected.as_ref())),
+    ("found", |s| opt_cell(s.found.as_ref())),
+    ("code", |s| format!("`{}`", cell(&s.code))),
+    ("severity", |s| cell(&s.severity)),
+    ("hint (advisory)", |s| {
+        cell(&remedy_hint(s.expected.as_deref(), s.found.as_deref()))
+    }),
+    (DISPOSITION_COLUMN, |s| cell(&disposition_of(s).label())),
+    ("message", |s| cell(&s.message)),
+];
+
+/// [`SHARED_SITE_COLUMNS`] for `half`.
+///
+/// The inline half inserts EXACTLY ONE extra column, immediately after `site`:
+/// its rows' `site` cell is the HOST `.rs` position, and a reader needs the
+/// snippet-relative coordinate as well to find the declaration inside the
+/// literal. Everything else is shared verbatim.
+fn site_columns(half: CorpusHalf) -> Vec<(&'static str, SiteCell)> {
+    let mut columns = SHARED_SITE_COLUMNS.to_vec();
+    if half == CorpusHalf::InlineRustHost {
+        columns.insert(1, (SNIPPET_LINE_COLUMN, |s| {
+            s.snippet_line
+                .map_or_else(|| "—".to_owned(), |n| n.to_string())
+        }));
+    }
+    columns
+}
+
+/// `run`'s sites bucketed by [`Owner`], in [`Owner::render_order`], each bucket
+/// in the artifact's `(file, line, field)` order.
+///
+/// Derived from the enum for BOTH halves rather than listed per half: a future
+/// `Owner` variant then appears in both or in neither, which is the same
+/// silent-drop failure `Owner::render_order` itself exists to prevent.
+fn sites_by_owner(sites: &[SurveySite]) -> Vec<(Owner, Vec<&SurveySite>)> {
+    Owner::render_order()
+        .into_iter()
+        .map(|owner| {
+            let mut group: Vec<&SurveySite> = sites.iter().filter(|s| s.owner == owner).collect();
+            group.sort_by(|a, b| (&a.file, a.line, &a.field).cmp(&(&b.file, b.line, &b.field)));
+            (owner, group)
+        })
+        .collect()
+}
+
+/// Append `half`'s site table for `group`.
+fn push_site_table(md: &mut String, half: CorpusHalf, group: &[&SurveySite]) {
+    use std::fmt::Write as _;
+
+    let columns = site_columns(half);
+    for (name, _) in &columns {
+        let _ = write!(md, "| {name} ");
+    }
+    md.push_str("|\n|");
+    for _ in &columns {
+        md.push_str("---|");
+    }
+    md.push('\n');
+    for site in group {
+        for (_, render) in &columns {
+            let _ = write!(md, "| {} ", render(site));
+        }
+        md.push_str("|\n");
+    }
+}
+
+/// Append a `| file | reason |` coverage table, or `empty_note` when there is
+/// nothing to disclose.
+///
+/// Shared by both halves and by both of each half's buckets: a bounded sweep
+/// that does not state what it skipped reads as full coverage, and one renderer
+/// means neither half can quietly stop saying so.
+fn push_coverage_table(md: &mut String, rows: &[(String, String)], empty_note: &str) {
+    use std::fmt::Write as _;
+
+    if rows.is_empty() {
+        md.push_str(empty_note);
+        return;
+    }
+    md.push_str("| file | reason |\n|---|---|\n");
+    for (file, reason) in rows {
+        let _ = writeln!(md, "| `{}` | `{}` |", cell(file), cell(reason));
+    }
+    md.push('\n');
+}
+
+/// The heading of the inline half's coverage subsection.
+const INLINE_COVERAGE_HEADING: &str = "### Inline coverage";
+
+/// Append the whole `## Inline Rust fixtures` section.
+///
+/// A section of its own, not extra rows in `## Sites`, because the two halves
+/// answer different questions: a `.ri` row is a file a reader opens and may have
+/// to fix, while an inline row is a census entry owned by #5306
+/// ([`Disposition::InlineCensus`]). Merging them would make the artifact's
+/// site count unsizeable and its owner groups mean two different things at once.
+fn push_inline_section(md: &mut String, inline: &SurveyRun) {
+    use std::fmt::Write as _;
+
+    let _ = writeln!(md, "{INLINE_SECTION_HEADING}\n");
+    md.push_str(
+        "Reify snippets embedded in Rust test sources as raw-string literals, swept by\n\
+         the SAME pipeline as the tracked `.ri` corpus above. A row's `site` cell is the\n\
+         HOST `.rs` position to open; the `snippet line` cell locates the declaration\n\
+         inside the literal.\n\n\
+         Every row here carries the `census` disposition: these sites are owned by\n\
+         **#5306**, and are enumerated rather than fixed so the class is countable and\n\
+         cannot recur unnoticed on the next severity change.\n\n",
+    );
+
+    if inline.sites.is_empty() {
+        md.push_str(
+            "**No ctor-conformance sites were found in the inline Rust fixtures.** This is\n\
+             an explicit zero, not a truncated run — see the coverage subsection below for\n\
+             what was and was not swept.\n\n",
+        );
+    }
+    for (owner, group) in sites_by_owner(&inline.sites) {
+        let _ = writeln!(md, "### {} — {} site(s)\n", owner.title(), group.len());
+        if group.is_empty() {
+            md.push_str("_(none)_\n\n");
+            continue;
+        }
+        push_site_table(md, CorpusHalf::InlineRustHost, &group);
+        md.push('\n');
+    }
+
+    let _ = writeln!(md, "{INLINE_COVERAGE_HEADING}\n");
+    let _ = writeln!(
+        md,
+        "Of {} inline member(s) — one per extracted snippet, plus one per host that \
+         could not be read at all — **{} were swept** and **{} were not**. A further \
+         **{}** were swept only PARTIALLY. A member is keyed `<host>:<line>`, the host \
+         line the snippet's own line 1 sits on.\n",
+        inline.total,
+        inline.surveyed,
+        inline.not_surveyed.len(),
+        inline.partial.len()
+    );
+    md.push_str("#### Not swept (contributed no sites)\n\n");
+    push_coverage_table(
+        md,
+        &inline.not_surveyed,
+        "_(none — every extracted snippet reached the compile phase)_\n\n",
+    );
+    md.push_str("#### Partially swept (sites collected, but the snippet also failed to compile)\n\n");
+    push_coverage_table(md, &inline.partial, "_(none)_\n\n");
+}
+
 /// Render the survey artifact.
 ///
 /// Follows the house convention for a generated markdown artifact set by
@@ -4565,7 +4728,7 @@ const DRIFT_DISCLOSURE_KEY: &str = "**Drifted `.ri` since the anchor:**";
 /// That stamp is the merge base, never the branch tip ([`survey_stamp`]). When
 /// tracked `.ri` have drifted from it, they are NAMED in the header rather than
 /// refused, so the snapshot stays honest by disclosure ([`SurveyStamp`]).
-fn render_survey(run: &SurveyRun, _inline: &SurveyRun, stamp: &SurveyStamp) -> String {
+fn render_survey(run: &SurveyRun, inline: &SurveyRun, stamp: &SurveyStamp) -> String {
     use std::fmt::Write as _;
 
     let mut md = String::new();
@@ -4579,11 +4742,27 @@ fn render_survey(run: &SurveyRun, _inline: &SurveyRun, stamp: &SurveyStamp) -> S
         "**Tool:** `crates/reify-compiler/tests/harness_compilation_surface/ctor_conformance_corpus_survey.rs`"
     );
     md.push_str("**Design:** `docs/prds/struct-ctor-field-type-conformance.md` (task β, §8)\n");
-    let _ = writeln!(md, "**Sites:** {site_count}");
+    // Stated as two numbers, never their sum: the halves carry different
+    // dispositions and different owners, and one total erases both.
     let _ = writeln!(
         md,
-        "**Corpus:** {} tracked `.ri`; {} surveyed, {} not surveyed, {} partial",
+        "**Sites:** {site_count} in the tracked `.ri` corpus; {} in inline Rust fixtures",
+        inline.sites.len()
+    );
+    let _ = writeln!(
+        md,
+        "**Corpus:** {} members of the `{}` (enumeration parity floor {}); {} snippets \
+         extracted from the `{}` (enumeration parity floor {} hosts)",
         run.total,
+        CorpusHalf::TrackedRi.label(),
+        CorpusHalf::TrackedRi.floor(),
+        inline.total,
+        CorpusHalf::InlineRustHost.label(),
+        CorpusHalf::InlineRustHost.floor(),
+    );
+    let _ = writeln!(
+        md,
+        "**`.ri` coverage:** {} surveyed, {} not surveyed, {} partial",
         run.surveyed,
         run.not_surveyed.len(),
         run.partial.len()
@@ -4748,30 +4927,11 @@ fn render_survey(run: &SurveyRun, _inline: &SurveyRun, stamp: &SurveyStamp) -> S
             md.push_str("_(none)_\n\n");
             continue;
         }
-        md.push_str(
-            "| site | def | def source | field | expected | found | code | severity | hint (advisory) | disposition (γ ruling) | message |\n\
-             |---|---|---|---|---|---|---|---|---|---|---|\n",
-        );
-        for s in group {
-            let _ = writeln!(
-                md,
-                "| `{}:{}` | {} | {} | {} | {} | {} | `{}` | {} | {} | {} | {} |",
-                cell(&s.file),
-                s.line,
-                opt_cell(s.def.as_ref()),
-                cell(s.def_origin.label()),
-                opt_cell(s.field.as_ref()),
-                opt_cell(s.expected.as_ref()),
-                opt_cell(s.found.as_ref()),
-                cell(&s.code),
-                cell(&s.severity),
-                cell(&remedy_hint(s.expected.as_deref(), s.found.as_deref())),
-                cell(&disposition_of(s).label()),
-                cell(&s.message),
-            );
-        }
+        push_site_table(&mut md, CorpusHalf::TrackedRi, &group);
         md.push('\n');
     }
+
+    push_inline_section(&mut md, inline);
 
     // ── coverage + limitations ──────────────────────────────────────────────
     md.push_str("## Coverage and limitations\n\n");
@@ -4788,28 +4948,16 @@ fn render_survey(run: &SurveyRun, _inline: &SurveyRun, stamp: &SurveyStamp) -> S
     );
 
     md.push_str("### Not surveyed (contributed no sites)\n\n");
-    if run.not_surveyed.is_empty() {
-        md.push_str("_(none — every tracked member reached the compile phase)_\n\n");
-    } else {
-        md.push_str("| file | reason |\n|---|---|\n");
-        for (file, reason) in &run.not_surveyed {
-            let _ = writeln!(md, "| `{}` | `{}` |", cell(file), cell(reason));
-        }
-        md.push('\n');
-    }
+    push_coverage_table(
+        &mut md,
+        &run.not_surveyed,
+        "_(none — every tracked member reached the compile phase)_\n\n",
+    );
 
     md.push_str(
         "### Partially surveyed (sites collected, but the file also failed to compile)\n\n",
     );
-    if run.partial.is_empty() {
-        md.push_str("_(none)_\n\n");
-    } else {
-        md.push_str("| file | reason |\n|---|---|\n");
-        for (file, reason) in &run.partial {
-            let _ = writeln!(md, "| `{}` | `{}` |", cell(file), cell(reason));
-        }
-        md.push('\n');
-    }
+    push_coverage_table(&mut md, &run.partial, "_(none)_\n\n");
 
     md.push_str(
         "### Named limitations\n\
@@ -5814,19 +5962,22 @@ fn render_survey_states_an_inline_site_count_that_equals_the_rendered_rows() {
         &inline_run,
         &SurveyStamp::at("sha"),
     );
+    // Scoped to the GROUP tables: the coverage subsection below them renders
+    // `| `member` | `reason` |` rows of its own, which are members and not
+    // sites, and counting those would make the assertion meaningless.
     let inline = section_of(&md, INLINE_SECTION_HEADING);
+    let groups = inline
+        .split_once(INLINE_COVERAGE_HEADING)
+        .map_or(inline.as_str(), |(before, _)| before);
 
-    let rendered = inline
-        .lines()
-        .filter(|l| l.starts_with("| `"))
-        .count();
+    let rendered = groups.lines().filter(|l| l.starts_with("| `")).count();
     assert_eq!(
         rendered,
         inline_run.sites.len(),
         "the inline section rendered {rendered} row(s) for {} site(s):\n{inline}",
         inline_run.sites.len()
     );
-    let claimed: usize = inline
+    let claimed: usize = groups
         .lines()
         .filter_map(|l| l.strip_prefix("### "))
         .filter_map(|l| l.rsplit_once(" — "))
@@ -5965,7 +6116,6 @@ fn render_survey_keeps_the_ri_half_byte_identical_when_an_inline_half_is_added()
             synth_site("a.ri", 1, "Widget", "label", Owner::NonFea),
             synth_site("b.ri", 2, "Beam", "material", Owner::FeaDeferredToV06),
         ],
-        ..SurveyRun::default()
     };
     let without = render_survey(&ri, &SurveyRun::default(), &SurveyStamp::at("sha"));
     let with = render_survey(&ri, &synth_inline_run(), &SurveyStamp::at("sha"));
