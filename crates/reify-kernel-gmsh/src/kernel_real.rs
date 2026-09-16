@@ -645,6 +645,31 @@ impl GeometryKernel for GmshKernel {
     /// `Err`, which the engine realization edge (task 4092 step-18,
     /// `reify-eval`'s `engine_build.rs`) degrades to the plain
     /// [`Self::mesh_surface_to_volume`] path (boundary `None`).
+    ///
+    /// # Why `deterministic: true`
+    ///
+    /// Load-bearing, not decorative — same register as
+    /// `reify-eval`'s `RealizedAdaptiveProblem::new`
+    /// (`compute_targets/elastic_static.rs:3753`), and this closes the
+    /// seed/refine asymmetry that note describes. This override's output
+    /// becomes the morph arm's SOURCE mesh (stashed by `reify-eval` at
+    /// `engine_build.rs:9604-9618`, which only THIS branch can feed since the
+    /// stash needs the task-4092 `BoundaryAssociation`), and
+    /// `reify-mesh-morph` judges the MORPHED mesh against ABSOLUTE quality
+    /// floors — so a source that varies run-to-run makes the morph-or-remesh
+    /// verdict depend on thread scheduling rather than on the geometry.
+    /// `deterministic: true` pins `General.NumThreads = 1`
+    /// (`mesh_boundary.rs:623`) and makes the output bit-reproducible.
+    ///
+    /// MEASURED (task 7411), not predicted: under `MeshingOptions::default()`
+    /// this producer returned 12 distinct meshes in 12 runs (tets 1163..1239);
+    /// pinned, it is bit-identical across 12 runs spanning 2 processes.
+    /// `NumThreads = 1` alone suffices — no `Mesh.RandomSeed` is needed or set.
+    /// The pin is also ~22x wall / ~76x CPU FASTER at realization mesh scale,
+    /// because a 32-thread HXT pool is pure overhead on ~1200 tets. Guarded by
+    /// `tests/mesh_surface_to_volume_attributed.rs`'s
+    /// `attributed_producer_output_is_reproducible_across_repeated_calls`,
+    /// which is deterministically red without it.
     #[cfg(feature = "mesh-morph")]
     fn mesh_surface_to_volume_attributed(
         &self,
@@ -661,7 +686,7 @@ impl GeometryKernel for GmshKernel {
         };
         let report = crate::mesh_surface_to_volume_with_attribution(
             surface,
-            &crate::MeshingOptions::default(),
+            &crate::MeshingOptions { deterministic: true, ..Default::default() },
             element_order,
             None,
             None,
