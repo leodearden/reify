@@ -512,6 +512,126 @@ mod tests {
         );
     }
 
+    /// `reduce_constraint_rank` over a BUILDER-produced closed chain, pinned
+    /// row by row — the red/green oracle for #7312.
+    ///
+    /// Every other rank case in this module feeds a hand-built `a_full`, and
+    /// the live e2e (`closed_chain_idyn_e2e.rs::closed_4bar_live_constraint_rank`)
+    /// hand-builds its chain pair. Neither exercises what `body()` actually
+    /// emits, and the `S_close` projection's original justification — that the
+    /// Newton solve adjusts the closing joint's own free coordinate — stopped
+    /// describing the builder when task 7186 moved the closing joint onto
+    /// `chain_a` alone (it is never in `free_b`). Whether the projection is
+    /// still the right policy is #7312's to re-derive; this pins what it does
+    /// today, on the chain shape the builder produces, so any drift reds here.
+    ///
+    /// Fixture — two prismatic joints on ORTHOGONAL axes, both parented to
+    /// world, closed by a third body that re-parents `j_b` onto `j_a`:
+    ///
+    ///     path_a = [world, j_b]     T_a = translate(0, 0, q_b)
+    ///     path_b = [world, j_a]     T_b = translate(q_a, 0, 0)
+    ///     residual = log(inv(T_a) · T_b) = [0,0,0,  q_a, 0, −q_b]
+    ///
+    /// so the raw 6×2 Jacobian carries exactly two nonzero rows — v_x = [1, 0]
+    /// and v_z = [0, −1] — and `S_close` (j_b, prismatic +z) absorbs the v_z
+    /// row, leaving `m_eff = 1`. Orthogonal axes are deliberate: a same-axis
+    /// pair collapses to `m_eff = 0`, which cannot distinguish "absorbed" from
+    /// "no constraint at all".
+    #[test]
+    fn reduce_constraint_rank_on_builder_produced_closed_chain() {
+        use crate::eval_builtin;
+        use crate::joints::motion_subspace_columns;
+        use crate::loop_closure::{extract_loop_closure_chains, loop_residual_jacobian_by_joint};
+        use reify_ir::Value;
+
+        let unit = |x: f64, y: f64, z: f64| {
+            Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])
+        };
+        let len_range = |up: f64| Value::Range {
+            lower: Some(Box::new(Value::length(0.0))),
+            upper: Some(Box::new(Value::length(up))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+
+        let j_a = eval_builtin("prismatic", &[unit(1.0, 0.0, 0.0), len_range(1.0)]);
+        let j_b = eval_builtin("prismatic", &[unit(0.0, 0.0, 1.0), len_range(2.0)]);
+
+        let mech = eval_builtin("mechanism", &[]);
+        let mech = eval_builtin("body", &[mech, Value::String("solidA".to_string()), j_a.clone()]);
+        let mech = eval_builtin("body", &[mech, Value::String("solidB".to_string()), j_b.clone()]);
+        // Closing edge: re-parents j_b from world → j_a (4-arg, identity pose).
+        let mech = eval_builtin(
+            "body",
+            &[
+                mech,
+                Value::String("solidC".to_string()),
+                j_b.clone(),
+                j_a.clone(),
+            ],
+        );
+
+        let record = match &mech {
+            Value::Map(m) => match m.get(&Value::String("loop_closures".to_string())) {
+                Some(Value::List(l)) if l.len() == 1 => l[0].clone(),
+                other => panic!("expected exactly one loop_closure record, got {other:?}"),
+            },
+            other => panic!("body() must yield a Mechanism Map, got {other:?}"),
+        };
+
+        let bindings = vec![
+            eval_builtin("bind", &[j_a.clone(), Value::length(0.3)]),
+            eval_builtin("bind", &[j_b.clone(), Value::length(0.5)]),
+        ];
+        let (chain_a, vals_a, chain_b, vals_b, free_b) =
+            extract_loop_closure_chains(&record, &bindings)
+                .expect("builder-produced record must yield chains");
+        assert_eq!(chain_a.len(), 1, "chain_a = [j_b] (terminates at the closing joint)");
+        assert_eq!(chain_b.len(), 1, "chain_b = [j_a] (terminates at the closing edge's parent)");
+        assert!(free_b.is_empty(), "both joints are directly bound, so nothing is free");
+
+        // Raw 6×n Jacobian over the spanning-tree joints, assembled exactly as
+        // `closed_chain_inverse_dynamics` assembles it.
+        let n = 2usize;
+        let ordered_joints = [j_a.clone(), j_b.clone()];
+        let raw_cols =
+            loop_residual_jacobian_by_joint(&chain_a, &vals_a, &chain_b, &vals_b, &ordered_joints, 1e-7)
+                .expect("FD Jacobian must resolve for a builder-produced chain pair");
+        assert_eq!(raw_cols.len(), n, "one column per spanning-tree DOF");
+        assert_near("∂residual/∂q_a", &raw_cols[0], &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0], 1e-6);
+        assert_near("∂residual/∂q_b", &raw_cols[1], &[0.0, 0.0, 0.0, 0.0, 0.0, -1.0], 1e-6);
+
+        let mut a_raw = vec![0.0f64; 6 * n];
+        for (col_idx, col) in raw_cols.iter().enumerate() {
+            for row_idx in 0..6 {
+                a_raw[row_idx * n + col_idx] = col[row_idx];
+            }
+        }
+
+        let closing_sub: Vec<[f64; 6]> = motion_subspace_columns(&j_b)
+            .expect("prismatic joint must have a motion subspace")
+            .iter()
+            .map(|sv| sv.as_array())
+            .collect();
+        assert_eq!(
+            closing_sub,
+            vec![[0.0, 0.0, 0.0, 0.0, 0.0, 1.0]],
+            "the closing joint is the +z prismatic, so S_close is the v_z direction"
+        );
+
+        let (a_red, m_eff) = reduce_constraint_rank(&a_raw, 6, n, &closing_sub, 1e-10);
+
+        // The v_z row is NONZERO before projection and absent after: this is
+        // the projection removing a row, not a row that was never there.
+        assert_near("raw v_z row", &a_raw[5 * n..6 * n], &[0.0, -1.0], 1e-6);
+        assert_eq!(
+            m_eff, 1,
+            "S_close absorbs the v_z row, leaving the v_x row alone (#7312 re-derives \
+             whether that is still right; if it changes, update this oracle deliberately)"
+        );
+        assert_near("reduced row", &a_red, &[1.0, 0.0], 1e-6);
+    }
+
     /// Helper: assert two f64 slices are element-wise within `tol`.
     fn assert_near(label: &str, got: &[f64], want: &[f64], tol: f64) {
         assert_eq!(got.len(), want.len(), "{label}: length mismatch");
