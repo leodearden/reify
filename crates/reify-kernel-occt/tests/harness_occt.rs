@@ -64,6 +64,8 @@ mod curve_constructors_integration;
 mod curve_curvature_integration;
 #[path = "harness_occt/dispatcher_integration.rs"]
 mod dispatcher_integration;
+#[path = "harness_occt/empty_shape_consumer_guard_integration.rs"]
+mod empty_shape_consumer_guard_integration;
 #[path = "harness_occt/extrude_infinite_integration.rs"]
 mod extrude_infinite_integration;
 #[path = "harness_occt/extrude_integration.rs"]

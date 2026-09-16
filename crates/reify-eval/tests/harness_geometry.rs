@@ -14,6 +14,8 @@
 //! on tree drift (see `scripts/verify.sh` retry_failed_only).
 #[path = "harness_geometry/dimensionless_sub_pose_diagnostic_e2e.rs"]
 mod dimensionless_sub_pose_diagnostic_e2e;
+#[path = "harness_geometry/empty_boolean_result_diagnostic_e2e.rs"]
+mod empty_boolean_result_diagnostic_e2e;
 #[path = "harness_geometry/geometry_conditional_e2e.rs"]
 mod geometry_conditional_e2e;
 #[path = "harness_geometry/geometry_dispatch_registry_guard.rs"]
