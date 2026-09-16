@@ -1225,3 +1225,160 @@ fn lanczos_selects_the_nearest_set_and_back_shifts_at_nonzero_sigma() {
         "BT3 Lanczos C4 at σ≠0",
     );
 }
+
+// ---------------------------------------------------------------------------
+// BT4 — C5 provenance on the Lanczos path
+// ---------------------------------------------------------------------------
+
+/// σ below λ₁ of fixture C: half the first eigenvalue.
+///
+/// `K − σB` is still positive definite here, so the shifted Cholesky succeeds
+/// and its success ESTABLISHES `shift_skipped_modes == false` by Sylvester's law
+/// of inertia — the evidence C5 requires, rather than an assumption.
+fn sigma_below_lambda_1() -> f64 {
+    0.5 * fixture_c_lambda(1)
+}
+
+/// **BT4, Lanczos.** The C5 discriminator must answer `false` where `false` is
+/// established and `true` where modes really were passed.
+///
+/// BOTH arms are load-bearing and neither is redundant: the first alone is
+/// passed by a predicate that always returns `false`, the second alone by one
+/// that always returns `true`. Only together do they pin a discriminator that
+/// actually discriminates — and today's `conservative_shift_provenance` (which
+/// is `sigma != 0.0`) is exactly the always-`true` predicate the second arm
+/// cannot catch.
+#[test]
+fn lanczos_provenance_distinguishes_below_and_above_lambda_one() {
+    let (k, b) = fixture_c();
+    let base = EigenSolverOptions {
+        n_modes: 2,
+        tol: 1e-10,
+        max_iters: 1000,
+        sigma: 0.0,
+    };
+
+    let unshifted = solve_eigen_shift_invert(&k, &b, base.clone());
+
+    // (a) σ below λ₁ — nothing can have been skipped, and the shifted Cholesky
+    // proves it.
+    let below = solve_eigen_shift_invert(
+        &k,
+        &b,
+        EigenSolverOptions {
+            sigma: sigma_below_lambda_1(),
+            ..base.clone()
+        },
+    );
+    assert!(
+        below.n_converged > 0,
+        "BT4(a) Lanczos must exercise Lanczos (n_converged > 0); got 0",
+    );
+    assert!(
+        !below.shift_skipped_modes,
+        "BT4(a) Lanczos: C5 violated — σ = {} lies below λ₁ = {}, so K − σB is positive \
+         definite, its Cholesky succeeds, and by Sylvester's law of inertia no eigenvalue \
+         lies between 0 and σ. `false` is ESTABLISHED here, not assumed; got true",
+        sigma_below_lambda_1(),
+        fixture_c_lambda(1),
+    );
+    assert!(
+        (below.eigenvalues[0] - unshifted.eigenvalues[0]).abs() < 1e-9,
+        "BT4(a) Lanczos: modes[0] at σ={} is {:.15} but the σ=0 first mode is {:.15} — a \
+         shift below λ₁ must leave the first mode intact",
+        sigma_below_lambda_1(),
+        below.eigenvalues[0],
+        unshifted.eigenvalues[0],
+    );
+
+    // (b) σ above several modes — eight eigenvalues lie strictly between 0 and σ
+    // and none of them comes back, so the honest answer is `true`.
+    let above = solve_eigen_shift_invert(
+        &k,
+        &b,
+        EigenSolverOptions {
+            sigma: sigma_between_lambda_9_and_10(),
+            ..base
+        },
+    );
+    assert!(
+        above.n_converged > 0,
+        "BT4(b) Lanczos must exercise Lanczos (n_converged > 0); got 0",
+    );
+    assert!(
+        above.shift_skipped_modes,
+        "BT4(b) Lanczos: C5 violated — σ = {} lies above λ₁…λ₈ and the returned set is \
+         {:?}, so modes WERE passed; got false",
+        sigma_between_lambda_9_and_10(),
+        above.eigenvalues,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// BT2 — cross-implementation agreement at σ≠0 (the acceptance criterion)
+// ---------------------------------------------------------------------------
+
+/// **BT2.** Dense and Lanczos, same pencil, same σ≠0, same answer.
+///
+/// This is the acceptance criterion for the Lanczos shift implementation, and it
+/// is an INSTANTIATION of [`assert_implementations_agree`] — the body α wrote
+/// for exactly this — not a new harness.
+///
+/// # Why these two σ and not others: the C5 predicates are not the same predicate
+///
+/// The two paths decide `shift_skipped_modes` by different means, and
+/// [`assert_implementations_agree`] compares the answers:
+///
+/// - **Dense is ABSENCE-based.** It has the whole spectrum, so it asks "does
+///   some eigenvalue lie between 0 and σ *and not come back*?"
+/// - **Lanczos is POSITION-based.** It has no spectrum, only which
+///   factorization succeeded, so by Sylvester it asks "does some eigenvalue lie
+///   between 0 and σ?" — with no absence clause available to it.
+///
+/// Cholesky SUCCESS implies nothing lies in the interval, which implies the
+/// absence-based answer is also `false`, so the two always coincide below λ₁.
+/// Cholesky FAILURE only implies something lies in the interval; that something
+/// may still have been RETURNED, and in that configuration dense says `false`
+/// while Lanczos says `true`. Lanczos OVER-reports, which is the conservative
+/// direction C5 permits ("`false` only when established") — a fixture-design
+/// constraint on this test, **not a defect in either side, and not something to
+/// be "fixed" by weakening one of them.** `provenance_counts_absence_not_position`
+/// is the dense-path test that pins that very configuration.
+///
+/// So the above-λ₁ σ here is chosen well above the bottom of the spectrum with a
+/// small `n_modes` — σ between λ₉ and λ₁₀, n_modes=2 — so the selected window
+/// genuinely does not reach back down past σ and the two predicates agree.
+#[test]
+fn dense_and_lanczos_agree_at_nonzero_sigma() {
+    let (k, b) = fixture_c();
+    let base = EigenSolverOptions {
+        n_modes: 2,
+        tol: 1e-10,
+        max_iters: 1000,
+        sigma: 0.0,
+    };
+
+    for (sigma, label) in [
+        (sigma_below_lambda_1(), "σ below λ₁"),
+        (sigma_between_lambda_9_and_10(), "σ between λ₉ and λ₁₀"),
+    ] {
+        let opts = EigenSolverOptions {
+            sigma,
+            ..base.clone()
+        };
+        let dense = solve_eigen_dense(&k, &b, opts.clone());
+        let lanczos = solve_eigen_shift_invert(&k, &b, opts);
+
+        assert!(
+            lanczos.n_converged > 0,
+            "BT2 at {label}: must exercise Lanczos (n_converged > 0); got 0, so this is a \
+             dense-vs-dense comparison and proves nothing",
+        );
+        assert_implementations_agree(
+            &dense,
+            &lanczos,
+            1e-8,
+            &format!("BT2 dense vs Lanczos at {label} (σ = {sigma})"),
+        );
+    }
+}
