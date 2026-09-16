@@ -54,12 +54,12 @@
 //! Two sibling modules in this same compile unit already scrape these chunks,
 //! and they disagreed about what ```` ```reify ```` means:
 //!
-//! - `reify_tagged_fences` (`geometry_chunk_smoke.rs:1042`) matches
-//!   ```` line.trim_end() == format!("```{tag}") ```` (:1052) — BYTE-EXACT on
+//! - `geometry_chunk_smoke::reify_tagged_fences` matches
+//!   ```` line.trim_end() == format!("```{tag}") ```` — BYTE-EXACT on
 //!   the whole info string, so `reify-fragment`/`reify-schematic` can never
 //!   false-match it — and `reify_tagged_fences_in_geometry_chunk_compile`
-//!   compiles each hit VERBATIM (:1159) behind its own anti-vacuity floor of
-//!   `>= 4` (:1104), the EXACT live count of geometry.md's four bare
+//!   compiles each hit VERBATIM behind its own anti-vacuity floor of
+//!   `>= 4`, the EXACT live count of geometry.md's four bare
 //!   ```` ```reify ```` fences. Retagging one therefore fails that suite
 //!   LOUDLY, not silently.
 //!   `geometry_chunk_retains_bare_reify_fences_for_the_sibling_smoke_suite`
@@ -1540,8 +1540,8 @@ fn a_reify_fence_with_a_parse_error_is_a_named_violation_not_a_panic() {
 }
 
 /// The violation echoes the fence body, so a failure is fixable without
-/// re-opening the chunk — the same courtesy `assert_module_compiles`
-/// (`geometry_chunk_smoke.rs:122`) already extends.
+/// re-opening the chunk — the same courtesy
+/// `geometry_chunk_smoke::assert_module_compiles` already extends.
 #[test]
 fn the_violation_echoes_the_offending_fence_body() {
     let md = "```reify\n\
@@ -1860,7 +1860,7 @@ fn a_missing_topics_literal_is_itself_a_violation() {
 //
 // Each test accumulates EVERY failure and panics once at the end (the
 // `examples_smoke.rs` shape), so a single run surfaces the whole backlog
-// instead of stopping at the first offender — which for a 66-fence corpus is
+// instead of stopping at the first offender — which for a corpus this size is
 // the difference between one fix cycle and sixty-six.
 // ---------------------------------------------------------------------------
 
@@ -1972,6 +1972,24 @@ const REIFY_FENCE_FLOORS: &[(&str, usize)] = &[
 /// dimension-crossing sample). Not a per-file table like the `reify` one: the
 /// tag is rare enough that a corpus total still attributes a loss unambiguously,
 /// and a per-file entry would freeze WHICH chunk gets to teach by counterexample.
+/// The EXACT number of `.md` files in the chunks dir, and the EXACT number of
+/// fences across them.
+///
+/// Both are live counts, held to the same standard as `REIFY_FENCE_FLOORS` and
+/// for the same reason: slack is not a safety margin. At `>= 16` against 17
+/// files a whole chunk could be deleted with nothing going red and no constant
+/// to lower; at `>= 60` against 76 fences, sixteen could vanish. That is the
+/// hollowing the per-file table exists to close, reappearing one level up.
+///
+/// They are compared with `>=` HERE because this function's job is to fail FAST
+/// and specifically — a vacuous scan must not be reported as four unrelated
+/// check failures. The EXACTNESS obligation is a separate, separately-named
+/// test, `corpus_counts_are_exact_not_slack`, so a diff that legitimately adds
+/// a chunk or a fence gets a message telling it to re-measure rather than a
+/// vacuity warning describing a bug that did not happen.
+const CHUNK_FILE_COUNT: usize = 17;
+const TOTAL_FENCE_COUNT: usize = 76;
+
 const REIFY_INVALID_FENCE_FLOOR: usize = 1;
 
 /// ANTI-VACUITY. Asserted BEFORE every corpus check.
@@ -1980,7 +1998,7 @@ const REIFY_INVALID_FENCE_FLOOR: usize = 1;
 /// silence: a parser regression that discovers nothing would leave every loop
 /// below iterating zero times and every check GREEN, protecting nothing. This
 /// is the same defence `reify_tagged_fences_in_geometry_chunk_compile` already
-/// carries for its own scrape (`geometry_chunk_smoke.rs:1104`), applied
+/// carries for its own scrape, applied
 /// to all three axes the checks depend on — files discovered, fences parsed,
 /// and bare ```` ```reify ```` fences actually reached.
 fn assert_corpus_is_not_vacuous(corpus: &[ChunkDoc]) {
@@ -2007,19 +2025,21 @@ fn assert_corpus_is_not_vacuous(corpus: &[ChunkDoc]) {
     };
 
     assert!(
-        corpus.len() >= 16,
+        corpus.len() >= CHUNK_FILE_COUNT,
         "the chunk-dir scan found only {} `.md` file(s) in {CHUNKS_DIR} — \
-         expected at least 16. The scan is vacuous (dir moved, or the glob \
-         broke) and the checks below protect NOTHING.{context}",
+         expected {CHUNK_FILE_COUNT}. Either the scan is vacuous (dir moved, or \
+         the glob broke) and the checks below protect NOTHING, or a chunk was \
+         deleted and CHUNK_FILE_COUNT must come down in the same diff.{context}",
         corpus.len()
     );
 
     let total_fences: usize = corpus.iter().map(|doc| doc.parsed().len()).sum();
     assert!(
-        total_fences >= 60,
+        total_fences >= TOTAL_FENCE_COUNT,
         "the fence scan found only {total_fences} fence(s) across {} chunk \
-         file(s) — expected at least 60. The parser has regressed and every \
-         check below is passing trivially.{context}",
+         file(s) — expected {TOTAL_FENCE_COUNT}. Either the parser has regressed \
+         and every check below is passing trivially, or fences were legitimately \
+         removed and TOTAL_FENCE_COUNT must come down in the same diff.{context}",
         corpus.len()
     );
 
@@ -2206,7 +2226,7 @@ fn every_chunk_is_reachable_through_the_mcp_tool() {
 /// `reify_tagged_fences_in_geometry_chunk_compile` sets its own floor "to the
 /// EXACT live count per the re-measurement protocol ... a floor under live is
 /// the measured incident that protocol exists to prevent, not a safety margin"
-/// (`geometry_chunk_smoke.rs:1100`).
+/// (on `reify_tagged_fences_in_geometry_chunk_compile`'s own floor).
 #[test]
 fn reify_fence_floors_are_exact_not_slack() {
     let corpus = corpus();
@@ -2239,6 +2259,43 @@ fn reify_fence_floors_are_exact_not_slack() {
     }
 }
 
+/// `CHUNK_FILE_COUNT` and `TOTAL_FENCE_COUNT` must EQUAL the live corpus.
+///
+/// The corpus-level twin of `reify_fence_floors_are_exact_not_slack`, and it
+/// exists because that test's own argument — slack is not a safety margin —
+/// applies just as well one level up. `assert_corpus_is_not_vacuous` compares
+/// with `>=` so a vacuous scan fails fast; without this test that `>=` would be
+/// the only comparison, and the gap between floor and live would be exactly the
+/// number of chunks or fences that could disappear unremarked.
+///
+/// Growing the corpus is expected and makes this go red on purpose: raise the
+/// constant in the diff that adds the file or fence. What must not happen
+/// silently is the other direction.
+#[test]
+fn corpus_counts_are_exact_not_slack() {
+    let corpus = corpus();
+    assert_corpus_is_not_vacuous(&corpus);
+
+    assert_eq!(
+        corpus.len(),
+        CHUNK_FILE_COUNT,
+        "{CHUNKS_DIR} holds {} `.md` file(s) while CHUNK_FILE_COUNT records \
+         {CHUNK_FILE_COUNT}. Re-measure and record the live count in the SAME \
+         diff that adds or removes a chunk — otherwise the difference is the \
+         number of chunks that can later vanish with every test still green.",
+        corpus.len()
+    );
+
+    let total_fences: usize = corpus.iter().map(|doc| doc.parsed().len()).sum();
+    assert_eq!(
+        total_fences, TOTAL_FENCE_COUNT,
+        "the corpus holds {total_fences} fence(s) while TOTAL_FENCE_COUNT \
+         records {TOTAL_FENCE_COUNT}. Re-measure and record the live count in \
+         the SAME diff that adds or removes a fence; the difference is the \
+         number of fences that can later vanish unremarked."
+    );
+}
+
 // ---------------------------------------------------------------------------
 // CROSS-HARNESS PIN
 //
@@ -2257,7 +2314,7 @@ fn reify_fence_floors_are_exact_not_slack() {
 /// so the two could be seen to drift apart — but it never was verbatim: the real
 /// `reify_tagged_fences` has been tag-parameterized since task 5759 — its
 /// predicate is ```` line.trim_end() == format!("```{tag}") ````
-/// (`geometry_chunk_smoke.rs:1052`) — and it carries an unterminated-fence
+/// — and it carries an unterminated-fence
 /// assert the copy lacked, so the drift-detection rationale did not hold.
 /// Calling it makes this pin exercise the ACTUAL coupling and turns a rename or
 /// signature change over there into a compile error here rather than silent rot.
@@ -2265,15 +2322,42 @@ fn sibling_reify_fence_count(markdown: &str) -> usize {
     reify_tagged_fences(markdown, "reify", &chunk_label("geometry")).len()
 }
 
+/// The stem whose bare-```` ```reify ```` fences the sibling suite compiles.
+const SIBLING_GEOMETRY_STEM: &str = "geometry";
+
 /// The sibling suite's own anti-vacuity floor on `geometry.md`'s bare
-/// ```` ```reify ```` fences, mirrored here so a retag sweep has to lower TWO
-/// deliberate literals rather than walk under one.
+/// ```` ```reify ```` fences, so a retag sweep has to lower TWO deliberate
+/// literals rather than walk under one.
 ///
-/// FOUR, because that is what `reify_tagged_fences_in_geometry_chunk_compile`
-/// asserts for itself (`fences.len() >= 4`, geometry_chunk_smoke.rs:1104) and
-/// it is the file's EXACT live count. A mirror set under the original is not a
-/// mirror: everything above it is pinned by neither.
-const SIBLING_GEOMETRY_REIFY_FENCE_FLOOR: usize = 4;
+/// READ OUT of `REIFY_FENCE_FLOORS` rather than restated. Both this pin and
+/// that table describe the same quantity — how many bare ```` ```reify ````
+/// fences `geometry.md` carries — and a second literal spelling it could drift
+/// from the first while every test stayed green, leaving the pin to fail for a
+/// reason its own message misdescribes. One literal, in the table that already
+/// owns per-file counts and that `reify_fence_floors_are_exact_not_slack`
+/// already holds to the EXACT live value.
+///
+/// The sibling's own inline `fences.len() >= 4` remains a genuinely
+/// independent literal over in `reify_tagged_fences_in_geometry_chunk_compile`,
+/// which is what makes this a mirror of something rather than a restatement of
+/// itself. Nothing here can enforce equality with it — it is a local in another
+/// module — so the pin's failure message names it explicitly as the second
+/// place to look.
+fn sibling_geometry_reify_fence_floor() -> usize {
+    REIFY_FENCE_FLOORS
+        .iter()
+        .find(|(stem, _)| *stem == SIBLING_GEOMETRY_STEM)
+        .map(|(_, floor)| *floor)
+        .unwrap_or_else(|| {
+            panic!(
+                "REIFY_FENCE_FLOORS has no `{SIBLING_GEOMETRY_STEM}` entry, but a \
+                 sibling suite compiles that file's bare ```reify fences and this \
+                 pin mirrors its floor. Removing the entry does not retire the \
+                 coupling — it hides it. Restore the entry at the file's exact \
+                 live count, or retire the sibling's subject and this pin together."
+            )
+        })
+}
 
 /// Does `markdown` still carry enough bare ```` ```reify ```` fences to keep the
 /// sibling suite's compile subjects?
@@ -2283,20 +2367,19 @@ const SIBLING_GEOMETRY_REIFY_FENCE_FLOOR: usize = 4;
 /// the comparison could drift away from the assertion it claims to exercise,
 /// which is the same class of defect this whole pin exists to catch.
 fn meets_sibling_geometry_reify_floor(markdown: &str) -> bool {
-    sibling_reify_fence_count(markdown) >= SIBLING_GEOMETRY_REIFY_FENCE_FLOOR
+    sibling_reify_fence_count(markdown) >= sibling_geometry_reify_fence_floor()
 }
 
 /// `geometry.md` must keep ALL FOUR of its bare ```` ```reify ```` fences,
 /// because a sibling suite in this same compile unit selects them by that exact
 /// string and compiles what it finds.
 ///
-/// `reify_tagged_fences` (geometry_chunk_smoke.rs:1042) matches
-/// ```` line.trim_end() == format!("```{tag}") ```` (:1052) — BYTE-EXACT on the
+/// `geometry_chunk_smoke::reify_tagged_fences` matches
+/// ```` line.trim_end() == format!("```{tag}") ```` — BYTE-EXACT on the
 /// whole info string, so `reify-fragment` / `reify-schematic` can never
-/// false-match —
-/// and `reify_tagged_fences_in_geometry_chunk_compile` compiles each hit
-/// VERBATIM (:1159) behind its own `fences.len() >= 4` floor (:1104), which is
-/// that file's EXACT live count.
+/// false-match — and `reify_tagged_fences_in_geometry_chunk_compile` compiles
+/// each hit VERBATIM behind its own `fences.len() >= 4` floor, which is that
+/// file's EXACT live count.
 ///
 /// So a retag over there fails LOUDLY. This pin is NOT a backstop against a
 /// silent loss; read it as adding three things the sibling's floor cannot:
@@ -2304,9 +2387,11 @@ fn meets_sibling_geometry_reify_floor(markdown: &str) -> bool {
 /// - ATTRIBUTION IN THE RETAG'S OWN DIFF. The sibling reports a count from a
 ///   file whose subject is geometry queries; this test names the retag as the
 ///   cause, in the module whose subject is fence tags.
-/// - A SECOND DELIBERATE LITERAL. `SIBLING_GEOMETRY_REIFY_FENCE_FLOOR` has to be
-///   lowered alongside the sibling's own, so retiring a compile subject is a
-///   decision taken twice rather than a number walked down once.
+/// - A SECOND DELIBERATE LITERAL. `geometry`'s `REIFY_FENCE_FLOORS` entry has
+///   to be lowered alongside the sibling's own inline floor, so retiring a
+///   compile subject is a decision taken twice rather than a number walked down
+///   once. See `sibling_geometry_reify_fence_floor` for why this side reads
+///   that entry instead of spelling a third copy of the same count.
 /// - THE AGREEMENT CHECK, which nothing else performs: the sibling's real
 ///   scanner and this module's parser must find the SAME fences. Either side
 ///   alone can be green while the two harnesses have already drifted apart on
@@ -2318,16 +2403,17 @@ fn geometry_chunk_retains_bare_reify_fences_for_the_sibling_smoke_suite() {
 
     assert!(
         meets_sibling_geometry_reify_floor(&content),
-        "{label} carries only {} fence(s) tagged EXACTLY `reify`, expected \
-         {SIBLING_GEOMETRY_REIFY_FENCE_FLOOR} — the floor \
+        "{label} carries only {} fence(s) tagged EXACTLY `reify`, expected {} — \
+         the floor \
          `reify_tagged_fences_in_geometry_chunk_compile` asserts for itself over this same \
-         file (geometry_chunk_smoke.rs:1104). That suite compiles each of these fences \
+         file. That suite compiles each of these fences \
          VERBATIM, so the retag that produced this failure is failing it too: expect two \
          red tests, and do not read this one as the whole consequence. If a fence genuinely \
          stopped compiling standalone, fix the fence — or retire the sibling's subject \
          deliberately and lower BOTH floors in the same diff. Do NOT quietly retag it to \
          `reify-fragment`.",
-        sibling_reify_fence_count(&content)
+        sibling_reify_fence_count(&content),
+        sibling_geometry_reify_fence_floor()
     );
 
     let parsed_bare_reify = parse_fences(&content)
@@ -2392,11 +2478,11 @@ fn geometry_chunk_retains_bare_reify_fences_for_the_sibling_smoke_suite() {
     assert!(
         !meets_sibling_geometry_reify_floor(&partly_retagged),
         "retagging two of {label}'s {live} bare ```reify fences to `reify-fragment` still \
-         satisfies SIBLING_GEOMETRY_REIFY_FENCE_FLOOR ({SIBLING_GEOMETRY_REIFY_FENCE_FLOOR}). \
+         satisfies the mirrored floor ({}). \
          A floor under the live count pins nothing above itself: those two fences could be \
          retagged in any future sweep and this pin — the one test whose whole purpose is \
          naming that retag as the cause — would stay green. Raise the floor to the sibling \
-         suite's own live count."
+         suite's own live count.",
+        sibling_geometry_reify_fence_floor()
     );
 }
-
