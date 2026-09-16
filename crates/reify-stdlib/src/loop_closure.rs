@@ -190,31 +190,26 @@ fn twist_map_to_array(twist_map: &Value) -> Option<[f64; 6]> {
 ///
 /// KCC-γ (PRD §5.2) widened this from `Option<f64>` to `Option<JointValue>`
 /// so multi-DOF kinds (planar, spherical, cylindrical) participate in the
-/// chain machinery and the loop-closure Newton solver.  The explicit
-/// per-arm dispatch is retained so a future kind addition cannot silently
-/// drift; the JOINT_KINDS-iteration partition test in this module's
-/// `tests` block loud-fails any unhandled kind.
+/// chain machinery and the loop-closure Newton solver.  The kind is read
+/// through [`joint_kind`] and dispatched on the typed [`JointKind`], so an
+/// added kind is a compile error here rather than a silent `None`.
 pub fn joint_range_midpoint(joint: &Value) -> Option<JointValue> {
     let map = match joint {
         Value::Map(m) => m,
         _ => return None,
     };
-    let kind = match map.get(&Value::String("kind".to_string())) {
-        Some(Value::String(s)) => s.as_str(),
-        _ => return None,
-    };
-    match kind {
-        "prismatic" | "revolute" => {
+    match joint_kind(joint)? {
+        JointKind::Prismatic | JointKind::Revolute => {
             let mid = range_midpoint(map, "range")?;
             Some(JointValue::Scalar(mid))
         }
-        "coupling" => {
+        JointKind::Coupling => {
             let parent = map.get(&Value::String("parent".to_string()))?;
             joint_range_midpoint(parent)
         }
         // 0-DOF — empty free-variable space; no midpoint to seed.
-        "fixed" => None,
-        "planar" => {
+        JointKind::Fixed => None,
+        JointKind::Planar => {
             let mid_x = range_midpoint(map, "range_x")?;
             let mid_y = range_midpoint(map, "range_y")?;
             let mid_theta = range_midpoint(map, "range_theta")?;
@@ -222,13 +217,12 @@ pub fn joint_range_midpoint(joint: &Value) -> Option<JointValue> {
         }
         // Axis-isotropic: identity quaternion is the canonical seed regardless
         // of `range_angle` (which bounds the rotation magnitude downstream).
-        "spherical" => Some(JointValue::Sphere([1.0, 0.0, 0.0, 0.0])),
-        "cylindrical" => {
+        JointKind::Spherical => Some(JointValue::Sphere([1.0, 0.0, 0.0, 0.0])),
+        JointKind::Cylindrical => {
             let mid_d = range_midpoint(map, "translation_range")?;
             let mid_theta = range_midpoint(map, "rotation_range")?;
             Some(JointValue::Cyl([mid_d, mid_theta]))
         }
-        _ => None,
     }
 }
 
@@ -630,9 +624,14 @@ pub fn extract_loop_closure_chains(
 
 /// Read a joint Map's declared `kind` as the typed [`JointKind`].
 ///
-/// SPOT for every kind-string comparison in this module: `loop_closure_value`
-/// owns the seven canonical strings and their widths, so a rename or an added
-/// kind is found in one place rather than in scattered `== "fixed"` literals.
+/// SPOT for this module's kind DISCRIMINATION — [`is_zero_dof_joint`] and
+/// [`joint_range_midpoint`] both dispatch through it, so the fixed/coupling
+/// split lives in one place rather than in scattered `== "fixed"` literals, and
+/// an added kind is a compile error in `joint_range_midpoint`'s typed match.
+///
+/// It is NOT the SPOT for the per-kind VALUE encodings ([`value_for_joint`],
+/// [`jointvalue_from_bound_value`]): those match the kind string jointly with a
+/// [`JointValue`] payload, so a kind rename touches them too.
 ///
 /// Returns `None` for a non-Map, a missing or non-String `kind` field, or a
 /// string [`JointKind::from_str`] does not recognise. All three collapse to the

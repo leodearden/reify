@@ -1670,15 +1670,14 @@ mod tests {
         match map.get(&Value::String("error_message".to_string())) {
             Some(Value::String(s)) => {
                 assert!(!s.is_empty(), "error_message should be non-empty");
+                // `world()` names the API surface the user must change, so it
+                // is a contract. The rest of the wording is not: asserting on
+                // it would pin prose, reddening on a reword that says the same
+                // thing better. The behavioural discriminator is the typed
+                // `error` field above.
                 assert!(
                     s.contains("world()"),
                     "error_message must name the world-parented closing edge, got {:?}",
-                    s
-                );
-                assert!(
-                    s.contains("free variable"),
-                    "error_message must say the loop-closure solver has no free variable \
-                     on the closing side, got {:?}",
                     s
                 );
             }

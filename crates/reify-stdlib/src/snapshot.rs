@@ -26,7 +26,7 @@ use crate::eval_builtin;
 use crate::joints::{is_driving_joint, is_joint_value, make_nondriving_joint_error};
 use crate::loop_closure::{extract_loop_closure_chains, joint_range_midpoint};
 use crate::loop_closure_solver::{
-    NewtonConfig, NewtonOutcome, StartStrategy, closing_side_repeats_closing_joint,
+    NewtonConfig, NewtonOutcome, StartStrategy, closing_side_contains_closing_joint,
     solve_loop_closure, solve_loop_closure_with_diagnostics,
 };
 use crate::mechanism::is_world;
@@ -771,7 +771,7 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
 /// RECORD rather than inferred from a `joint_parents` disagreement; the walk-site
 /// comment records the cycle-body shape that makes the inference unsound.
 ///
-/// **Branch discriminator.** [`closing_side_repeats_closing_joint`] — the SPOT
+/// **Branch discriminator.** [`closing_side_contains_closing_joint`] — the SPOT
 /// this shares with `mechanism_loop_closure_chains`, so a record classified
 /// `Cycle` there is never given the rigid-tie frame here. A record qualifies iff
 /// `path_b` does NOT contain `closing_joint` anywhere. Three shapes are
@@ -782,11 +782,15 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
 /// - The ANCESTOR case: a parent-conflict edge whose `at` lies on `parent`'s
 ///   ancestor walk, so `path_b` passes THROUGH the closing joint mid-walk
 ///   (`body(m,A,j1,world); body(m,B,j2,j1); body(m,C,j1,j2)` → `path_b =
-///   [world, j1, j2]`, `closing_joint = j1`). `mechanism_loop_closure_chains`
-///   calls that pair `Cycle` and never solves it, so there is no enforced
-///   closure frame for a rigid tie to ride on — the body keeps `T(at)`. Testing
-///   `path_b.last()` instead admitted this shape here while the solver rejected
-///   it, and the two modules placed the body differently. Pinned by
+///   [world, j1, j2]`, `closing_joint = j1`). One joint would carry two
+///   independent values — `chain_a` resolves it while `chain_b` iterates it as
+///   a free variable — so whatever frame a solve lands on is meaningless, and
+///   the body is deliberately left on the pre-7186 `T(at)` composition rather
+///   than tied to it. (This module does NOT filter such a record out of the
+///   solve: the arm above feeds every `loop_closures` entry to
+///   `extract_loop_closure_chains` + `solve_loop_closure`. The
+///   `WellFormed`/`Cycle` split is advisory here; only
+///   `reify-constraints` consumes it as a filter.) Pinned by
 ///   `snapshot_ancestor_parent_conflict_body_keeps_its_own_frame`.
 /// - `parent == at` with an identity pose (a self-parented edge whose `at`
 ///   already has a different tree parent). Harmless: `T(parent) == T(at)`
@@ -807,7 +811,7 @@ fn parent_conflict_closing_body_ids(loop_closures: &[Value]) -> BTreeSet<Value> 
         ) else {
             continue;
         };
-        if !closing_side_repeats_closing_joint(path_b, closing_joint) {
+        if !closing_side_contains_closing_joint(path_b, closing_joint) {
             ids.insert(body_id.clone());
         }
     }
@@ -861,35 +865,38 @@ fn walk_fk(
         // describes. Offsetting from `T(at)` instead applies `pose` a SECOND
         // time — it is already inside the residual that placed `at`.
         //
-        // The condition is two-part: the body's `id` appears in
-        // `closing_body_ids` AND `joint_parents` records a tree parent for its
-        // `at` that DISAGREES with the body's own `parent`. On a closing edge
-        // the body record keeps user intent while the spanning tree keeps the
-        // first-recorded edge (see `make_body_record`'s doc note in
-        // mechanism.rs — keep the two cross-referencing).
-        //
-        // The RECORD test is load-bearing; the disagreement is a redundant
-        // cross-check. The disagreement alone is not sufficient: a cycle body
+        // Membership in `closing_body_ids` is the whole test. Inferring it from
+        // a `joint_parents` disagreement instead would be unsound: a cycle body
         // acquires one RETROACTIVELY when a later open `body()` call registers
         // a tree parent for its `at`, and composing it off that parent would
         // silently move a body whose closure is a non-solver-feedable `Cycle`.
         // Pinned by
         // `snapshot_cycle_body_keeps_its_own_frame_after_later_tree_registration`.
         //
+        // The disagreement is an INVARIANT of membership, not a second
+        // condition: `append_body` reaches its parent-conflict arm only when
+        // the spanning tree already holds a different parent for `at` (the body
+        // record keeps user intent, the tree keeps the first-recorded edge —
+        // see `make_body_record`'s doc note in mechanism.rs), and nothing
+        // rewrites `joint_parents[at]` afterwards. Asserted rather than
+        // branched on: silently falling back to `T(at)` would apply `pose`
+        // twice relative to the residual that placed it — the silent-geometry
+        // class this rule exists to remove.
+        //
         // EVERY other body keeps the plain `T(at)` composition: open-chain
         // bodies carry no closure record, and every body whose record
         // `mechanism_loop_closure_chains` calls `Cycle` — the cycle /
         // self-loop branch AND the ancestor case — is excluded by
         // `parent_conflict_closing_body_ids`, because both read the same
-        // `closing_side_repeats_closing_joint` predicate.
+        // `closing_side_contains_closing_joint` predicate.
         let closing_parent = if closing_body_ids.contains(&id) {
-            match joint_parents.get(&at) {
-                Some(tree_parent) => match body_map.get(&Value::String("parent".to_string())) {
-                    Some(p) if p != tree_parent => Some(p.clone()),
-                    _ => None,
-                },
-                None => None,
-            }
+            let p = body_map.get(&Value::String("parent".to_string()));
+            debug_assert!(
+                p.is_none_or(|p| joint_parents.get(&at).is_some_and(|tree| tree != p)),
+                "closing body {id:?} is in closing_body_ids, so its `at` must carry a \
+                 spanning-tree parent disagreeing with the body's own `parent`"
+            );
+            p.cloned()
         } else {
             None
         };
@@ -913,44 +920,27 @@ fn walk_fk(
             // cleanly — see `non_world_parented_closing_edge_still_records`.
             //
             // Root it at the identity (it has no ancestors to walk) and then
-            // compose ITS OWN transform. Both halves matter, and the second is
-            // what makes this agree with the residual: `append_body` composes
-            // `path_b = [world] ++ walk_to_world(joint_parents, parent)`, and
-            // `walk_to_world` yields just `[parent]` for an unregistered
-            // parent, so chain_b == [parent]; `chain_transform`
-            // (loop_closure.rs) then seeds its accumulator at the identity and
-            // composes `transform_at(parent, ..)` for every chain entry. Its
-            // terminal frame is therefore `T(parent)`, NEVER `I`.
+            // compose ITS OWN transform. The second half is what makes this
+            // agree with the residual: `walk_to_world` yields just `[parent]`
+            // for an unregistered parent, so `chain_b == [parent]` and
+            // `chain_transform` (loop_closure.rs) seeds at the identity and
+            // composes `transform_at(parent, ..)`. Its terminal frame is
+            // `T(parent)`, NEVER `I`; a bare identity here would place the
+            // closing body a whole `T(parent)` away from the frame the
+            // residual enforced. Pinned by
+            // `snapshot_closing_edge_on_unregistered_parent_rides_that_parent_frame`.
             //
-            // Returning a bare identity here — as the first cut of this arm
-            // did — silently drops `T(parent)`, so FK and the residual
-            // disagree by exactly that transform. Measured on the fixture in
-            // `snapshot_closing_edge_on_unregistered_parent_rides_that_parent_frame`:
-            // the closure correctly solved j3 = 1.1 m and body B landed at
-            // (1.1, 0, 0), but the closing body rode at (0, 0, 0) — a 1.1 m
-            // geometry error returned as a normal Snapshot Map with no
-            // diagnostic, and a regression against pre-7186, where the walk
-            // began at `at` and reached 1.1 m. Snapshot world transforms feed
-            // distance/interference queries, so that is wrong geometry.
+            // Not `joint_world_transform`: its leading `joint_parents.get(..)?`
+            // would return None and collapse the WHOLE mechanism's snapshot to
+            // `Value::Undef`. Teaching that function to treat a missing entry
+            // as an implicit world root would unify the two, but it also
+            // changes the `None` arm below, where cycle / self-loop bodies rely
+            // on the `?` to reject.
             //
-            // Calling `joint_world_transform` instead would hit its leading
-            // `joint_parents.get(joint)?` and return None, turning the WHOLE
-            // mechanism's snapshot into `Value::Undef` — the silent
-            // whole-mechanism failure class the world-parent guard exists to
-            // eliminate. Teaching THAT function to treat a missing entry as an
-            // implicit world root would unify the two (a SPOT win), but it
-            // also changes the `None` arm below, where cycle / self-loop
-            // bodies currently rely on the `?` to reject; that is a wider
-            // behaviour change than this fix, and is deliberately not taken
-            // here.
-            Some(p) if !joint_parents.contains_key(p) => {
-                let motion_value = value_for(p, bindings)?;
-                let t_local = eval_builtin("transform_at", &[p.clone(), motion_value]);
-                if t_local.is_undef() {
-                    return None;
-                }
-                t_local
-            }
+            // Deliberately uncached: this leaf is computed once per body, and
+            // inserting a world-rooted entry under `p` would teach
+            // `joint_world_transform` to resolve a joint it rejects by design.
+            Some(p) if !joint_parents.contains_key(p) => joint_local_transform(p, bindings)?,
             // `body.parent` is a real joint with its own spanning-tree entry,
             // so this is a normal cached walk — no new recursion hazard, and
             // the shared `cache` stays valid because it is keyed on joints,
@@ -1325,20 +1315,8 @@ fn joint_world_transform(
         return None;
     }
 
-    // Compose: T_joint_world = T_parent_world ∘ T_joint_local
-    // where T_joint_local = transform_at(joint, value_for(joint)).
-    //
-    // PRD §7.2 no-bypass invariant (route 2): the per-joint transform MUST route
-    // through `transform_at` and MUST NOT be reconstructed from the joint Map fields
-    // directly. `transform_at` applies the "origin" pre-compose uniformly, so any pivot
-    // offset is baked in here automatically. Verified behaviourally by
-    // `joint_world_transform_offset_equals_transform_at_route2` and
-    // `snapshot_analytic_two_link_offset_chain_world_transform`.
-    let motion_value = value_for(joint, bindings)?;
-    let t_local = eval_builtin("transform_at", &[joint.clone(), motion_value]);
-    if t_local.is_undef() {
-        return None;
-    }
+    // Compose: T_joint_world = T_parent_world ∘ T_joint_local.
+    let t_local = joint_local_transform(joint, bindings)?;
     let t_world = eval_builtin("transform_compose", &[parent_world, t_local]);
     if t_world.is_undef() {
         return None;
@@ -1346,6 +1324,31 @@ fn joint_world_transform(
 
     cache.insert(joint.clone(), t_world.clone());
     Some(t_world)
+}
+
+/// A single joint's LOCAL transform: `transform_at(joint, value_for(joint))`.
+///
+/// SPOT for the leaf every base-frame walk in this module ends on — the
+/// ancestor-ward recursion in [`joint_world_transform`] and the
+/// unregistered-closing-parent arm of [`walk_fk`], which has no ancestors to
+/// walk and IS this leaf.
+///
+/// PRD §7.2 no-bypass invariant (route 2): the per-joint transform MUST route
+/// through `transform_at` and MUST NOT be reconstructed from the joint Map's
+/// fields directly. `transform_at` applies the `origin` pre-compose uniformly,
+/// so any pivot offset is baked in automatically. Verified behaviourally by
+/// `joint_world_transform_offset_equals_transform_at_route2` and
+/// `snapshot_analytic_two_link_offset_chain_world_transform`.
+///
+/// Returns `None` when the joint has no resolvable motion value, or when
+/// `transform_at` rejects the joint/value pair.
+fn joint_local_transform(joint: &Value, bindings: &[Value]) -> Option<Value> {
+    let motion_value = value_for(joint, bindings)?;
+    let t_local = eval_builtin("transform_at", &[joint.clone(), motion_value]);
+    if t_local.is_undef() {
+        return None;
+    }
+    Some(t_local)
 }
 
 /// Look up the motion value for `joint` in a bindings list.
@@ -3353,7 +3356,7 @@ mod tests {
     /// `mechanism_loop_closure_chains` calls that pair `Cycle` and never solves
     /// it, so there is no enforced closure frame for a rigid tie to ride on and
     /// body C must stay on `T(j1)`. Both modules now read
-    /// [`closing_side_repeats_closing_joint`]; a tail-only test
+    /// [`closing_side_contains_closing_joint`]; a tail-only test
     /// (`path_b.last() != closing_joint`) admitted this record here while the
     /// solver rejected it, and body C was composed from `T(j2)` — measured
     /// tx = 1.5 m against the 0.5 m the joint it is attached to actually reaches.
