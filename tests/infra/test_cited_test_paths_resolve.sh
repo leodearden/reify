@@ -339,4 +339,125 @@ _fingerprint_is_line_number_stable() {
 assert "F: moving a citation within its file does not change its fingerprint" \
     _fingerprint_is_line_number_stable
 
+# ===========================================================================
+# Section G: the committed baseline's contract.
+#
+# The baseline is the grandfather list the ratchet reads. It is STRUCTURED
+# DATA, so it gets a grammar check rather than being trusted as prose nobody
+# validates; and it is self-describing, so a reader who opens only the
+# manifest can act on it without hunting for this file.
+# ===========================================================================
+echo ""
+echo "--- Section G: the committed baseline's contract ---"
+
+_baseline_default_is_committed_manifest() {
+    local got want
+    want="$SCRIPT_DIR/cited-test-path-baseline.manifest"
+    got="$(env -u REIFY_CITED_TEST_PATH_BASELINE bash -c \
+        'set -euo pipefail; source "$1"; cited_test_path_baseline_path' _ "$LIB")" || return 1
+    [ "$got" = "$want" ] && return 0
+    echo "default baseline path mismatch:"; echo "  want: $want"; echo "  got:  $got"; return 1
+}
+
+# Both directions of the testability seam are asserted, not just the default:
+# every ratchet scenario below depends on the override actually taking effect,
+# so an override that silently fell back to the committed manifest would make
+# those scenarios assert against the real tree's baseline without saying so.
+_baseline_override_is_honored() {
+    local got want='/tmp/some-fixture-baseline.manifest'
+    got="$(REIFY_CITED_TEST_PATH_BASELINE="$want" bash -c \
+        'set -euo pipefail; source "$1"; cited_test_path_baseline_path' _ "$LIB")" || return 1
+    [ "$got" = "$want" ] && return 0
+    echo "REIFY_CITED_TEST_PATH_BASELINE was not honored:"; echo "  want: $want"; echo "  got:  $got"; return 1
+}
+
+assert "G: cited_test_path_baseline_path defaults to the committed manifest" \
+    _baseline_default_is_committed_manifest
+assert "G: REIFY_CITED_TEST_PATH_BASELINE overrides the baseline path" \
+    _baseline_override_is_honored
+
+BASELINE="$SCRIPT_DIR/cited-test-path-baseline.manifest"
+
+assert "G: the committed baseline exists" \
+    test -f "$BASELINE"
+
+_baseline_is_non_empty() {
+    local n
+    n="$(env -u REIFY_CITED_TEST_PATH_BASELINE bash -c \
+        'set -euo pipefail; source "$1"; cited_test_path_baseline_rows | grep -c .' _ "$LIB")" || true
+    [ -n "$n" ] && [ "$n" -gt 0 ] 2>/dev/null && return 0
+    echo "committed baseline has no data rows (got: '${n:-<none>}')"; return 1
+}
+
+assert "G: the committed baseline has at least one data row" \
+    _baseline_is_non_empty
+
+# GRAMMAR: "<containing-file> :: <cited-path>" — two ` :: `-separated
+# non-empty fields, the second matching the citation regex. A baseline that
+# is not machine-checkable is a meaningful string, not structured data.
+_baseline_rows_well_formed() {
+    local rows bad
+    rows="$(env -u REIFY_CITED_TEST_PATH_BASELINE bash -c \
+        'set -euo pipefail; source "$1"; cited_test_path_baseline_rows' _ "$LIB")" || return 1
+    bad="$(printf '%s\n' "$rows" \
+        | grep -Ev "^[^ ].* :: crates/[a-z0-9-]+/tests/[A-Za-z0-9_./-]+\.rs$" || true)"
+    if [ -n "$bad" ]; then
+        echo "malformed baseline row(s) — expected '<containing-file> :: <cited-path>':"
+        printf '%s\n' "$bad" | sed 's/^/  ! /'
+        return 1
+    fi
+    return 0
+}
+
+assert "G: every baseline data row matches the '<file> :: <cited-path>' grammar" \
+    _baseline_rows_well_formed
+
+# SORTED AND DEDUPED: the ratchet's `comm -23` requires sorted input and would
+# silently misbehave on an unsorted or duplicated baseline, reporting phantom
+# regressions or missing real ones.
+_baseline_sorted_and_deduped() {
+    local rows sorted dups
+    rows="$(env -u REIFY_CITED_TEST_PATH_BASELINE bash -c \
+        'set -euo pipefail; source "$1"; cited_test_path_baseline_rows' _ "$LIB")" || return 1
+    sorted="$(printf '%s\n' "$rows" | LC_ALL=C sort)"
+    if [ "$rows" != "$sorted" ]; then
+        echo "baseline data rows are not in LC_ALL=C sorted order; first divergence:"
+        diff <(printf '%s\n' "$rows") <(printf '%s\n' "$sorted") | head -6
+        return 1
+    fi
+    dups="$(printf '%s\n' "$rows" | LC_ALL=C sort | uniq -d)"
+    if [ -n "$dups" ]; then
+        echo "duplicate baseline row(s):"; printf '%s\n' "$dups" | sed 's/^/  = /'; return 1
+    fi
+    return 0
+}
+
+assert "G: the baseline is sorted (LC_ALL=C) and free of duplicate rows" \
+    _baseline_sorted_and_deduped
+
+# SELF-DESCRIBING HEADER, in the style of run-all-classification.manifest,
+# harness-layout-baseline.manifest and scripts/verify-pipeline-paths.txt. The
+# regeneration command is asserted LITERALLY: a reader who opens only this
+# manifest must be able to act on it.
+_baseline_header_is_self_describing() {
+    local header missing=""
+    header="$(grep -E '^[[:space:]]*#' "$BASELINE" || true)"
+    [ -n "$header" ] || { echo "baseline carries no comment header at all"; return 1; }
+    printf '%s\n' "$header" | grep -qF 'tests/infra/test_cited_test_paths_resolve.sh --emit-baseline' \
+        || missing="$missing\n  - the literal regeneration command"
+    printf '%s\n' "$header" | grep -qiE 'one-directional|shrink' \
+        || missing="$missing\n  - the one-directional / shrink-friendly ratchet semantics"
+    printf '%s\n' "$header" | grep -qF ' :: ' \
+        || missing="$missing\n  - the fingerprint grammar"
+    if [ -n "$missing" ]; then
+        echo "baseline header does not describe itself; missing:"
+        printf "%b\n" "$missing"
+        return 1
+    fi
+    return 0
+}
+
+assert "G: the baseline header names its purpose, the literal regeneration command, the grammar and the one-directional semantics" \
+    _baseline_header_is_self_describing
+
 test_summary
