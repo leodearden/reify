@@ -2705,6 +2705,48 @@ fn vec3_dimensioned_off_first_component_at_dimensionless_vector_param_stays_clea
     );
 }
 
+const SRC_VEC3_DIMENSIONED_FIRST_COMPONENT_AT_DIMENSIONLESS: &str = r#"module test.vec3_dimensioned_first_at_dimensionless
+structure def Frame { param dir : Vector3<Dimensionless> }
+structure def Root {
+    let f = Frame(dir: vec3(1m, 0, 0))
+}
+"#;
+
+/// ORDER-INDEPENDENCE at the busiest production route this arm serves: a
+/// `vec3(…)` spelling a direction at a `Vector3<Dimensionless>` param.
+///
+/// The exact INVERSE of
+/// [`vec3_dimensioned_off_first_component_at_dimensionless_vector_param_stays_clean`]
+/// directly above — same `Frame`, same param, same three components, the
+/// dimensioned one back at index `[0]`. Before task 5889 these two disagreed:
+/// `vec3(1m, 0, 0)` was REJECTED and `vec3(0, 1m, 0)` was SILENT, on nothing but
+/// component ORDER. Both are silent now, and the pair is what pins that.
+///
+/// Silence here is not a loss of the rule: the components disagree, so the call
+/// names no dimension and there is nothing to compare. Its one-token-different
+/// twin
+/// [`vec3_dimensioned_at_dimensionless_vector_param_warns_arg_type_mismatch`]
+/// feeds the same param a HOMOGENEOUS `vec3(1m, 0m, 0m)` and still rejects,
+/// which is both this fixture's non-vacuity proof and the demonstration that
+/// only the heterogeneous case moved.
+#[test]
+fn vec3_dimensioned_first_component_at_dimensionless_vector_param_stays_clean() {
+    let module = compile_source_with_stdlib(SRC_VEC3_DIMENSIONED_FIRST_COMPONENT_AT_DIMENSIONLESS);
+    // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "vec3(1m, 0, 0) at a Vector3<Dimensionless> param must stay SILENT — its \
+         components disagree on dimension, so the call names none. Accept/reject at \
+         this arm no longer depends on component ORDER. Got: {diags:#?}"
+    );
+}
+
 const SRC_VEC_HETEROGENEOUS_LIST_AT_DIMENSIONLESS: &str = r#"module test.vec_heterogeneous_at_dimensionless
 structure def Frame { param dir : Vector3<Dimensionless> }
 structure def Root {

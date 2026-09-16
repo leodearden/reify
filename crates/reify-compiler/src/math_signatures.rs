@@ -1164,6 +1164,62 @@ mod tests {
         );
     }
 
+    // ── Heterogeneous components degrade the quantity slot (task 5889) ───────
+    //
+    // The homogeneous-keeps-precision half is already pinned by
+    // `vec2_result_type_length_is_vector_n2_length` above and by
+    // `point3_result_type_length_is_point_n3_length` /
+    // `point3_result_type_dimensionless_is_point_n3_real` below; they are cited
+    // rather than cloned (house rule G7).
+
+    /// `vec3` whose components DISAGREE on dimension infers no dimension. `n`
+    /// still comes from the NAME suffix, never from the arguments — asserting
+    /// the whole `Type` pins both at once.
+    #[test]
+    fn vec3_result_type_heterogeneous_components_degrade_quantity_to_dimensionless() {
+        let args = vec![length_elem(1.0), real_elem(0.0), real_elem(0.0)];
+        assert_eq!(
+            math_fn_result_type("vec3", &args),
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "vec3(1m, 0, 0) must infer no dimension — its components disagree — while \
+             n stays 3, fixed from the name"
+        );
+    }
+
+    /// The `point` twin, which shares this one collapsed arm: the degrade must
+    /// not be `Vector`-only.
+    #[test]
+    fn point3_result_type_heterogeneous_components_degrade_quantity_to_dimensionless() {
+        let args = vec![length_elem(1.0), real_elem(0.0), real_elem(0.0)];
+        assert_eq!(
+            math_fn_result_type("point3", &args),
+            Type::Point {
+                n: 3,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "point3(1m, 0, 0) must degrade exactly as its vec3 twin does — one arm \
+             serves both"
+        );
+    }
+
+    /// Two DIFFERENT concrete dimensions degrade too, and `vec2` is covered:
+    /// the rule is "the components agree", not "no component is dimensionless".
+    #[test]
+    fn vec2_result_type_cross_dimension_components_degrade_quantity_to_dimensionless() {
+        let args = vec![length_elem(1.0), mass_elem(2.0)];
+        assert_eq!(
+            math_fn_result_type("vec2", &args),
+            Type::Vector {
+                n: 2,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "vec2(1m, 2kg) must infer no dimension — Length and Mass disagree"
+        );
+    }
+
     // ── point3/point2 result-type tests (task 5344, esc-5344-4 grant) ─────────
 
     /// `point3` over 3 `Scalar<Length>` args → `Point{n:3, quantity:Scalar<Length>}`,
