@@ -6315,9 +6315,13 @@ fn render_survey_retires_the_disproved_limitation_and_names_the_real_residual() 
         );
     }
 
-    // The residual is stated as CLASSES, each named by the Rust construct a
-    // reader would grep for, and each named INSIDE the limitation rather than
-    // anywhere in the document.
+    // The residual is stated as CLASSES, each named by the Rust construct — or,
+    // for a host the walker never opens, the PATH — a reader would grep for, and
+    // each named INSIDE the limitation rather than anywhere in the document.
+    // Unreached LITERAL SHAPES alone are not the whole residual: #5306 inherits
+    // this list rather than a search, so a host root outside the walker's scope
+    // has to be as greppable as an unreached construct, else a site the walker
+    // never opened is indistinguishable from one it found clean.
     let limitation = inline_limitation(&md);
     for residual in [
         "raw-string literal",
@@ -6326,6 +6330,9 @@ fn render_survey_retires_the_disproved_limitation_and_names_the_real_residual() 
         "include_str!",
         "read_to_string",
         "push_str",
+        "crates/",
+        "gui/src-tauri",
+        "tree-sitter-reify",
     ] {
         assert!(
             limitation.contains(residual),
