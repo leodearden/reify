@@ -117,6 +117,25 @@ It also asserts the converse, that every fn named
 on behaviour rather than on a naming convention. The gate ASSERTS by default;
 `REIFY_INV_GUI_2_BYPASS=1` is the break-glass that downgrades it to a warning.
 
+Two properties of that scan are worth knowing before editing `debug_server.rs`
+around the write tools. First, every behavioural check reads a view of the
+source with comments AND string-literal contents blanked, so naming a seam in
+a doc comment, a tracing message or a `json!` field does not satisfy it — only
+a call does. Second, the private-emit check follows the same one delegation
+hop the seam check does, so an emit added to a helper a handler delegates to
+(`open_path_into_engine`, say) is swept as if it were in the handler. A hop
+further than that is beyond any depth-capped scan, which is why the "do not
+add one" below is written as a rule rather than left to the gate.
+
+**Coverage boundary — the AI/MCP entry point only.** INV-GUI-2 spans every
+engine-mutation entry point, but this is the only one with a structural guard.
+The GUI/debug/FS-watcher half is covered behaviourally instead, by the
+`<name>_emits_fea_diagnostics` cluster in
+`gui/src-tauri/src/tests/engine_tests.rs` — per-entry-point assertions rather
+than a sweep, so a NEW entry point there that skips the choke-point is caught
+by neither. Closing that asymmetry belongs to `gui-state-sync`, which owns the
+seam; `docs/invariants.md` records the resulting split registry status.
+
 Both seams refresh the delta baseline via `crate::diff::compute_delta` (§6.2
 invariant (a)) and deliberately DISCARD the returned `StateDelta` — the full
 `GuiState` reaches the frontend through the caller's synchronous
