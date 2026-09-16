@@ -45,6 +45,12 @@ plan_match() {
     done <<< "$dump"
     return 1
 }
+# Exported because occt_flock_gate_lib.sh's occt_plan_grep_or_dump — itself
+# exported so the bounds-file negative unit tests run the REAL helper in a
+# `bash -c` child — calls this one. A child that inherited the caller but not
+# the callee would fail with command-not-found, which a `! ...` negation reads
+# as a correct non-zero return, making every such rejection vacuous.
+export -f plan_match
 
 # plan_capture_complete <dump>
 #
