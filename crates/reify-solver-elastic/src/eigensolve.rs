@@ -162,7 +162,7 @@ use faer::matrix_free::eigen::{
     PartialEigenParams, partial_self_adjoint_eigen, partial_self_adjoint_eigen_scratch,
 };
 use faer::sparse::linalg::LltError as SparseLltError;
-use faer::sparse::{SparseRowMat, SparseRowMatRef};
+use faer::sparse::{SparseColMat, SparseRowMat, SparseRowMatRef};
 use faer::sparse::linalg::solvers::{Llt, Lu};
 use faer::reborrow::ReborrowMut;
 
@@ -540,6 +540,73 @@ fn any_eigenvalue_skipped_between_zero_and_shift(
         let between = (0.0 < lam && lam < sigma) || (sigma < lam && lam < 0.0);
         between && !selected.iter().any(|&(_, sel_col)| sel_col == src_col)
     })
+}
+
+// ---------------------------------------------------------------------------
+// The shifted pencil K − σB
+// ---------------------------------------------------------------------------
+
+/// Assemble `K − σB` over the UNION of the two sparsity patterns.
+///
+/// Returned COLUMN-major, deliberately.  `faer::sparse::ops::binary_op` is
+/// CSC-only, and `sp_cholesky` / `sp_lu` both exist on the column-major type
+/// (faer-0.24 `sparse/solvers.rs`), so factoring this result directly also skips
+/// the `to_col_major()` copy the row-major forms make internally.
+///
+/// # The result carries EXPLICIT ZEROS, and that is why σ=0 is special-cased
+///
+/// `binary_op` walks the STRUCTURAL union: it stores an entry wherever EITHER
+/// operand has one, and applies `f` with `None` for the absent side.  So every
+/// entry of B that is off K's pattern is stored here even when the arithmetic
+/// cancels it to zero.
+///
+/// At σ=0 that matters.  `K − 0·B` is numerically equal to K entry by entry, but
+/// it is NOT the same sparse matrix: the off-pattern entries of B arrive as
+/// explicit zeros, which change the symbolic factorization — different fill-in,
+/// a different elimination tree, therefore a different summation order and
+/// different rounding.  The answer would be *close*, which is exactly the
+/// hazard: it would drift every pinned σ=0 golden by an amount no tolerance
+/// catches.  `try_solve_eigen_shift_invert` therefore routes σ=0 to
+/// `k.sp_cholesky(Side::Lower)` on the row-major K verbatim and never calls this
+/// function, and `sigma_zero_factors_k_itself_not_k_minus_zero_b` in
+/// `tests/eigensolve_shift_contract.rs` is the executable form of that rule.
+///
+/// # Panics
+///
+/// If either `to_col_major()` or `binary_op` returns `FaerError`
+/// (`OutOfMemory` / `IndexOverflow`).  That mirrors the `SparseLltError::Generic`
+/// discipline elsewhere in this module: an allocation or index-overflow failure
+/// is not a domain fact about the model, so it must never arrive disguised as
+/// one — a resource failure reported as a singular shift would send an author
+/// to move σ for a problem that is entirely about memory.
+fn shifted_pencil(
+    k: &SparseRowMat<usize, f64>,
+    b: &SparseRowMat<usize, f64>,
+    sigma: f64,
+) -> SparseColMat<usize, f64> {
+    let k_csc = k
+        .to_col_major()
+        .unwrap_or_else(|e| panic!("{}", assembly_resource_failure("K", e)));
+    let b_csc = b
+        .to_col_major()
+        .unwrap_or_else(|e| panic!("{}", assembly_resource_failure("B", e)));
+
+    faer::sparse::ops::binary_op(k_csc.as_ref(), b_csc.as_ref(), |k_ij, b_ij| {
+        k_ij.copied().unwrap_or(0.0) - sigma * b_ij.copied().unwrap_or(0.0)
+    })
+    .unwrap_or_else(|e| panic!("{}", assembly_resource_failure("K − σB", e)))
+}
+
+/// The panic message for a `FaerError` raised while assembling `K − σB`.
+///
+/// One template rather than three literals, so the three raise sites cannot
+/// drift apart in wording (SPOT).
+fn assembly_resource_failure(what: &str, e: faer::sparse::FaerError) -> String {
+    format!(
+        "eigensolve: assembling the shifted pencil failed while building {what} ({e:?}) \
+         — this is a resource/index failure (allocation or index overflow), NOT a \
+         property of the pencil; do not report it as a singular shift"
+    )
 }
 
 /// A DOMAIN failure of the shift-invert path — a fact about the (K, B, σ) the
