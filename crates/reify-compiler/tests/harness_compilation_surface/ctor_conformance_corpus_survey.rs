@@ -249,6 +249,15 @@ fn scan_tracked_ri_corpus() -> Vec<String> {
     scan_tracked_corpus("*.ri")
 }
 
+/// A BROKEN-ENUMERATION floor for the `.ri` half, deliberately far below the
+/// live count (701 measured 2026-09-16) rather than just under it.
+///
+/// A constant rather than a literal at the assertion site because
+/// [`CorpusHalf::floor`] reads it too: the gate-resident probe and the
+/// corpus-parity gate must red at the SAME threshold, or one of them is
+/// describing a corpus the other would accept.
+const RI_CORPUS_FLOOR: usize = 100;
+
 /// A BROKEN-ENUMERATION floor for the Rust-host half, deliberately far below
 /// the live count (1,307 measured 2026-09-16: 1,305 carrying a `tests`
 /// directory component under `crates/`, plus
@@ -497,11 +506,11 @@ fn tracked_ri_corpus_clears_the_broken_enumeration_floor() {
         println!("skipped: no `git` on PATH — see `git_is_available`");
         return;
     };
-    // A BROKEN-ENUMERATION floor, deliberately far below the live count (677
-    // measured 2026-09-01) rather than just under it. The corpus is expected to
-    // churn in BOTH directions: a fixture-consolidation task that legitimately
-    // deletes a few dozen `.ri` has nothing to do with this survey and must not
-    // red the merge gate with a message that reads like a defect.
+    // Why the floor is where it is: see `RI_CORPUS_FLOOR`. The corpus is
+    // expected to churn in BOTH directions, and a fixture-consolidation task
+    // that legitimately deletes a few dozen `.ri` has nothing to do with this
+    // survey and must not red the merge gate with a message that reads like a
+    // defect.
     //
     // The NAME is scoped to exactly that floor and no further. An earlier name
     // ("…is_non_empty_and_covers_the_whole_tracked_tree") also claimed the
@@ -513,9 +522,9 @@ fn tracked_ri_corpus_clears_the_broken_enumeration_floor() {
     // belongs in the artifact this module generates, which states it as a
     // measured header field.
     assert!(
-        corpus.len() >= 100,
-        "tracked .ri corpus must have >= 100 entries — a floor that catches a BROKEN \
-         enumeration (wrong root, wrong pathspec, silent git failure), not a legitimate \
+        corpus.len() >= RI_CORPUS_FLOOR,
+        "tracked .ri corpus must have >= {RI_CORPUS_FLOOR} entries — a floor that catches a \
+         BROKEN enumeration (wrong root, wrong pathspec, silent git failure), not a legitimate \
          shrink; the artifact header carries the live count. Got {}",
         corpus.len()
     );
@@ -624,6 +633,204 @@ fn tracked_ri_corpus_paths_are_repo_relative_forward_slash() {
             "corpus entries must be repo-relative forward-slash paths, got {p:?}"
         );
     }
+}
+
+// ─── corpus parity: neither half may narrow without the gate seeing it ───────
+
+/// The two enumerated corpus halves the survey sweeps.
+///
+/// `EnumIter` is load-bearing exactly as it is on [`Owner`]: [`corpus_parity`]
+/// iterates the DECLARATION rather than a local literal, so a future third
+/// half cannot be added to the survey and left silently unwired in the gate.
+/// `strum` is already a `[dev-dependencies]` entry of this crate, so this costs
+/// no new dependency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, strum::EnumIter)]
+enum CorpusHalf {
+    /// Tracked `.ri` files, whose whole content is Reify source.
+    TrackedRi,
+    /// Tracked `.rs` files that may CARRY Reify inside a raw-string literal.
+    InlineRustHost,
+}
+
+impl CorpusHalf {
+    /// This half's BROKEN-ENUMERATION floor.
+    fn floor(self) -> usize {
+        match self {
+            CorpusHalf::TrackedRi => RI_CORPUS_FLOOR,
+            CorpusHalf::InlineRustHost => RUST_HOST_CORPUS_FLOOR,
+        }
+    }
+
+    /// The file extension every member of this half must carry.
+    fn extension(self) -> &'static str {
+        match self {
+            CorpusHalf::TrackedRi => ".ri",
+            CorpusHalf::InlineRustHost => ".rs",
+        }
+    }
+
+    /// How this half is named in a parity failure and in the artifact header.
+    fn label(self) -> &'static str {
+        match self {
+            CorpusHalf::TrackedRi => "tracked .ri corpus",
+            CorpusHalf::InlineRustHost => "inline Rust fixture hosts",
+        }
+    }
+}
+
+/// Whether both corpus halves are enumerated well enough to sweep.
+fn corpus_parity(_halves: &[(CorpusHalf, &[String])]) -> Result<(), String> {
+    Ok(())
+}
+
+/// A well-formed input for every declared [`CorpusHalf`], derived from the enum
+/// rather than written out — so a future third half is covered here with no
+/// edit, the same reason [`Owner::render_order`] is derived.
+#[cfg(test)]
+fn synthetic_halves() -> Vec<(CorpusHalf, Vec<String>)> {
+    use strum::IntoEnumIterator;
+    CorpusHalf::iter()
+        .map(|half| {
+            let members = (0..half.floor() + 5)
+                .map(|i| format!("synthetic/{half:?}/f{i}{}", half.extension()))
+                .collect();
+            (half, members)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+fn as_parity_input(halves: &[(CorpusHalf, Vec<String>)]) -> Vec<(CorpusHalf, &[String])> {
+    halves.iter().map(|(h, m)| (*h, m.as_slice())).collect()
+}
+
+#[test]
+fn corpus_parity_accepts_two_well_formed_halves() {
+    let halves = synthetic_halves();
+    assert_eq!(
+        corpus_parity(&as_parity_input(&halves)),
+        Ok(()),
+        "adequately-sized, correctly-extensioned, disjoint halves must pass"
+    );
+}
+
+#[test]
+fn corpus_parity_reds_when_any_half_is_stubbed_to_the_empty_set() {
+    use strum::IntoEnumIterator;
+    // VERIFY criterion (b) verbatim — and it must hold for EITHER half stubbed,
+    // not just the new one, which is why this iterates the enum.
+    for stubbed in CorpusHalf::iter() {
+        let mut halves = synthetic_halves();
+        for (half, members) in halves.iter_mut() {
+            if *half == stubbed {
+                members.clear();
+            }
+        }
+        let err = corpus_parity(&as_parity_input(&halves))
+            .expect_err(&format!("an empty {stubbed:?} half must red the gate"));
+        assert!(
+            err.contains(stubbed.label()),
+            "the failure must NAME the half that collapsed; {stubbed:?} gave {err:?}"
+        );
+    }
+}
+
+#[test]
+fn corpus_parity_reds_on_a_half_below_its_floor() {
+    use strum::IntoEnumIterator;
+    for narrowed in CorpusHalf::iter() {
+        let mut halves = synthetic_halves();
+        for (half, members) in halves.iter_mut() {
+            if *half == narrowed {
+                members.truncate(narrowed.floor() - 1);
+            }
+        }
+        let err = corpus_parity(&as_parity_input(&halves)).expect_err(&format!(
+            "a below-floor {narrowed:?} half must red the gate"
+        ));
+        assert!(
+            err.contains(narrowed.label()),
+            "a non-empty but narrowed half must be named too; {narrowed:?} gave {err:?}"
+        );
+    }
+}
+
+#[test]
+fn corpus_parity_reds_when_a_member_carries_the_other_halfs_extension() {
+    use strum::IntoEnumIterator;
+    // The shape of a walker that widened into the wrong pathspec.
+    for wrong in CorpusHalf::iter() {
+        let foreign = CorpusHalf::iter()
+            .find(|h| h.extension() != wrong.extension())
+            .expect("at least two halves with distinct extensions");
+        let mut halves = synthetic_halves();
+        for (half, members) in halves.iter_mut() {
+            if *half == wrong {
+                members[0] = format!("synthetic/intruder{}", foreign.extension());
+            }
+        }
+        let err = corpus_parity(&as_parity_input(&halves))
+            .expect_err(&format!("a foreign-extension member in {wrong:?} must red"));
+        assert!(
+            err.contains(wrong.label()) && err.contains(wrong.extension()),
+            "the failure must name the half and the extension it broke; got {err:?}"
+        );
+    }
+}
+
+#[test]
+fn corpus_parity_reds_when_the_halves_overlap() {
+    let mut halves = synthetic_halves();
+    let shared = halves[0].1[0].clone();
+    halves[1].1.push(shared.clone());
+    let err = corpus_parity(&as_parity_input(&halves))
+        .expect_err("a member enumerated into both halves must red the gate");
+    // The intruder necessarily also breaks the second half's extension rule;
+    // `corpus_parity` accumulates every violation, so both are reported and
+    // this assertion can still name the overlap specifically.
+    assert!(
+        err.contains(&shared),
+        "the failure must name the doubly-enumerated member; got {err:?}"
+    );
+}
+
+#[test]
+fn corpus_parity_reds_when_a_declared_half_is_absent_from_the_input() {
+    use strum::IntoEnumIterator;
+    // Derived from `CorpusHalf::iter()`, never a local literal — the same
+    // failure mode `Owner::render_order` guards against, for the same reason: a
+    // future third half added to the enum and forgotten at the wiring site
+    // would otherwise be swept, rendered and never parity-checked.
+    for omitted in CorpusHalf::iter() {
+        let halves = synthetic_halves();
+        let input: Vec<(CorpusHalf, &[String])> = halves
+            .iter()
+            .filter(|(half, _)| *half != omitted)
+            .map(|(half, members)| (*half, members.as_slice()))
+            .collect();
+        let err = corpus_parity(&input)
+            .expect_err(&format!("an unwired {omitted:?} half must red the gate"));
+        assert!(
+            err.contains(omitted.label()),
+            "the failure must name the half nobody wired; got {err:?}"
+        );
+    }
+}
+
+#[test]
+fn corpus_parity_holds_over_the_two_live_enumerations() {
+    if !git_is_available() {
+        println!("skipped: no `git` on PATH — see `git_is_available`");
+        return;
+    }
+    assert_eq!(
+        corpus_parity(&[
+            (CorpusHalf::TrackedRi, tracked_ri_corpus()),
+            (CorpusHalf::InlineRustHost, tracked_rust_test_hosts()),
+        ]),
+        Ok(()),
+        "the live wiring must satisfy the gate it is checked by"
+    );
 }
 
 // ─── step 3/4: source-position helpers ───────────────────────────────────────
