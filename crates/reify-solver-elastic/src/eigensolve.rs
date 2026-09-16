@@ -694,7 +694,7 @@ pub enum ShiftInvertFailure {
     /// non-finite spectrum, so this arm can be reached when a σ≠0 solve simply
     /// converged nothing.  The conflation is real, pinned by
     /// `empty_spectrum_at_a_healthy_shift_is_reported_as_a_singular_shift`, and
-    /// deliberately not split here — splitting it is δ (#7261)'s.
+    /// deliberately not split here — the split is tracked as #7617.
     ShiftAtEigenvalue { sigma: f64 },
 }
 
@@ -1559,8 +1559,9 @@ fn pencil_lambda_resolution_floor(
 /// That is a deliberate v1 limit, not an oversight: an empty spectrum at σ≠0
 /// leaves nothing to discriminate on, and inventing a second failure arm without
 /// a way to tell them apart would only move the guess.  The behaviour is PINNED
-/// by `empty_and_non_finite_spectra_are_conflated_with_a_singular_shift`, so δ
-/// (#7261) inherits a measured baseline rather than an assumption.
+/// by `empty_and_non_finite_spectra_are_conflated_with_a_singular_shift`, so
+/// #7617 — which owns the split — inherits a measured baseline, not an
+/// assumption.
 ///
 /// How far arm 2 actually REACHES was measured, not assumed, and the answer is
 /// "not observed end to end". Starving the 80-DOF fixture-C solve at a healthy

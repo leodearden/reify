@@ -526,7 +526,7 @@ pub(crate) fn eigensolve_modal(
         // guards against elsewhere. The message does NOT restate the honesty
         // limit `ShiftInvertFailure::ShiftAtEigenvalue` records — this Error can
         // also mean "converged nothing", not ruled out on this path and not
-        // observed on it either.
+        // observed on it either. Splitting the two causes is #7617's.
         ModalSolveFault::ShiftAtEigenvalue(sigma) => {
             diagnostics.push(
                 Diagnostic::error(format!(
