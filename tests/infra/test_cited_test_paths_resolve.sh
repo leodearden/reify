@@ -1178,7 +1178,7 @@ assert "J: an unrecognised argument is rejected with a usage line, not run as th
 # and names EVERY orphaned citation with the correct new target.
 # ===========================================================================
 echo ""
-echo "--- Section K: acceptance — a real `git mv` orphans citations and is caught ---"
+echo "--- Section K: acceptance — a real git mv orphans citations and is caught ---"
 
 FIX_ACCEPT="$(_mktmpd)/repo"
 _fixture_init "$FIX_ACCEPT"
