@@ -14,6 +14,13 @@ pub mod kernel_assertions;
 pub mod lsp_fixtures;
 pub mod mocks;
 pub mod orphan_audit;
+// Deliberately NOT glob re-exported below, for the same reason `git_env` is
+// not: `is_inline_fixture_host`, `raw_string_literals` and
+// `looks_like_reify_source` are generic enough names that hoisting them into a
+// crate root which many test files glob-import would turn a future same-named
+// item in any other glob-exported module into an E0659 ambiguity at every such
+// use site. Consumers spell the module path.
+pub mod rust_fixture_scan;
 pub mod specialization_fixtures;
 pub mod temp_dirs;
 pub mod tolerance_fixtures;
