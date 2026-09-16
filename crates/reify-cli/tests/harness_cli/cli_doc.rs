@@ -22,10 +22,6 @@ use std::process::{Command, ExitStatus, Stdio};
 /// no other failure.  Named once so a change to the contract is one edit.
 const USAGE_BANNER: &str = "Usage: reify doc";
 
-/// `--out` for the `--stdlib` guard tests: each of those guards rejects before
-/// anything is created, so the path is never touched and needs no tempdir.
-const UNTOUCHED_OUT_DIR: &str = "/reify-doc-stdlib-guard-never-written";
-
 /// Run `reify doc <args...>` and return `(status, stdout, stderr)`.
 ///
 /// Thin wrapper around `Command::new(env!("CARGO_BIN_EXE_reify"))` that
@@ -516,6 +512,33 @@ fn doc_o_flag_writes_html_without_extra_trailing_newline() {
     );
 }
 
+/// The I/O third of the three-way exit-1 contract: a failed write exits 1
+/// just as a usage error does, so the banner must stay OFF stderr or the
+/// discriminator carries no information.  Compile, parse and missing-file
+/// failures are pinned above; this is the write half, which no other test
+/// reaches.  `-o` writes the body directly and creates no parent directories,
+/// so a path under a missing subdirectory fails at the write itself.
+#[test]
+fn doc_o_write_failure_exits_one_without_banner() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let out_path = dir.path().join("nonexistent-subdir").join("doc.html");
+    let out_str = out_path.to_str().expect("tmp path is utf-8");
+    let path = common::fixture_path("bracket.ri");
+
+    let (status, stdout, stderr) = run_doc(&["-o", out_str, &path]);
+
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "an unwritable -o path must exit 1.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("Error writing"),
+        "stderr should contain 'Error writing' for a failed -o write, got: {stderr}"
+    );
+    assert_not_usage_error(&stderr);
+}
+
 #[test]
 fn doc_format_without_value_exits_one() {
     // Pins the `--format` requires-a-value branch in cmd_doc's arg loop.
@@ -667,20 +690,48 @@ fn stdlib_out_dir(suffix: &str) -> reify_test_support::TempDir {
     reify_test_support::prefixed_tempdir(&format!("reify-test-stdlib-doc-{suffix}-"))
 }
 
-/// `reify doc --stdlib --out <dir>` must exit 0, write `<dir>/index.html`
-/// whose contents include ElasticMaterial, Bounded, and Manifold, and write
-/// at least one other `*.html` file under `<dir>` (a per-symbol page).
-#[test]
-fn doc_stdlib_produces_html_pages() {
-    let guard = stdlib_out_dir("produces");
+/// `--out` for the `--stdlib` guard tests: a path *inside* an auto-cleaned
+/// tempdir that every one of those guards rejects before creating.
+///
+/// That nothing is created is the property under test, so the path must not be
+/// a literal at the filesystem root: a regressed guard would then behave by
+/// ambient privilege — `Error writing /...: Permission denied` masking the
+/// missing guard line as an ordinary user, a stray directory left at `/` as
+/// root.  Under a tempdir a regressed guard just renders into storage that is
+/// cleaned up either way, leaving the exit-code assertion as the only failure.
+///
+/// Bind the returned guard as the FIRST binding in the test body, per
+/// [`stdlib_out_dir`].
+fn untouched_out_dir(suffix: &str) -> (reify_test_support::TempDir, String) {
+    let guard = stdlib_out_dir(suffix);
+    let path = guard
+        .path()
+        .join("never-written")
+        .to_string_lossy()
+        .into_owned();
+    (guard, path)
+}
+
+/// The whole `--stdlib` success contract: exit 0, a `<dir>/index.html` whose
+/// contents include ElasticMaterial, Bounded, and Manifold, and at least one
+/// other `*.html` file under `<dir>` (a per-symbol page).
+///
+/// `extra_args` follow `--out <dir>`; every invocation that reaches the stdlib
+/// renderer owes the same contract, so each is checked against this one copy.
+#[track_caller]
+fn assert_stdlib_render_succeeds(suffix: &str, extra_args: &[&str]) {
+    let guard = stdlib_out_dir(suffix);
     let out_dir = guard.path().to_path_buf();
     let dir_str = out_dir.to_string_lossy().into_owned();
-    let (status, stdout, stderr) = run_doc(&["--stdlib", "--out", &dir_str]);
+    let mut args = vec!["--stdlib", "--out", dir_str.as_str()];
+    args.extend_from_slice(extra_args);
+    let (status, stdout, stderr) = run_doc(&args);
 
     assert_eq!(
         status.code(),
         Some(0),
-        "reify doc --stdlib --out <dir> must exit 0.\nstdout: {stdout}\nstderr: {stderr}"
+        "reify doc --stdlib --out <dir> {extra_args:?} must exit 0.\n\
+         stdout: {stdout}\nstderr: {stderr}"
     );
 
     // index.html must exist and contain the known symbol names.
@@ -720,6 +771,23 @@ fn doc_stdlib_produces_html_pages() {
     );
 }
 
+/// The default (`--format` absent) arm of the `--stdlib` renderer.
+#[test]
+fn doc_stdlib_produces_html_pages() {
+    assert_stdlib_render_succeeds("produces", &[]);
+}
+
+/// Explicit `--format html` is the one value the exclusion-form `--stdlib`
+/// format guard has to keep OPEN, and the default arm above cannot cover it
+/// because it passes no `--format` at all.  Without this case a typo in the
+/// allow-list (`Some("htm")`, or dropping `Some("html")`) would turn a valid
+/// invocation into a usage error with the whole suite still green — the
+/// regression direction the exclusion rewrite introduced.
+#[test]
+fn doc_stdlib_explicit_html_format_produces_html_pages() {
+    assert_stdlib_render_succeeds("explicit-html", &["--format", "html"]);
+}
+
 /// Recursive walk helper: collect all .html files under `dir`.
 fn walkdir_html(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut results = Vec::new();
@@ -749,8 +817,8 @@ fn doc_stdlib_without_out_exits_one() {
 /// --stdlib is HTML-only.
 #[test]
 fn doc_stdlib_rejects_json_format() {
-    let (status, _stdout, stderr) =
-        run_doc(&["--stdlib", "--out", UNTOUCHED_OUT_DIR, "--format", "json"]);
+    let (_guard, out_dir) = untouched_out_dir("rejects-json");
+    let (status, _stdout, stderr) = run_doc(&["--stdlib", "--out", &out_dir, "--format", "json"]);
 
     assert_usage_error(
         status,
@@ -763,8 +831,9 @@ fn doc_stdlib_rejects_json_format() {
 /// the standard library, so an input positional is a usage error.
 #[test]
 fn doc_stdlib_with_input_positional_exits_one() {
+    let (_guard, out_dir) = untouched_out_dir("with-input");
     let path = common::fixture_path("bracket.ri");
-    let (status, _stdout, stderr) = run_doc(&["--stdlib", "--out", UNTOUCHED_OUT_DIR, &path]);
+    let (status, _stdout, stderr) = run_doc(&["--stdlib", "--out", &out_dir, &path]);
 
     assert_usage_error(
         status,
@@ -777,7 +846,8 @@ fn doc_stdlib_with_input_positional_exits_one() {
 /// writes one page per symbol, so --split is a usage error.
 #[test]
 fn doc_stdlib_rejects_split() {
-    let (status, _stdout, stderr) = run_doc(&["--stdlib", "--out", UNTOUCHED_OUT_DIR, "--split"]);
+    let (_guard, out_dir) = untouched_out_dir("rejects-split");
+    let (status, _stdout, stderr) = run_doc(&["--stdlib", "--out", &out_dir, "--split"]);
 
     assert_usage_error(status, &stderr, "Error: --split is not valid with --stdlib");
 }
@@ -786,7 +856,8 @@ fn doc_stdlib_rejects_split() {
 /// json-only knob and --stdlib is HTML-only.
 #[test]
 fn doc_stdlib_rejects_compact() {
-    let (status, _stdout, stderr) = run_doc(&["--stdlib", "--out", UNTOUCHED_OUT_DIR, "--compact"]);
+    let (_guard, out_dir) = untouched_out_dir("rejects-compact");
+    let (status, _stdout, stderr) = run_doc(&["--stdlib", "--out", &out_dir, "--compact"]);
 
     assert_usage_error(
         status,
@@ -801,8 +872,8 @@ fn doc_stdlib_rejects_compact() {
 /// not fall through into a silent HTML render exiting 0.
 #[test]
 fn doc_stdlib_rejects_unknown_format() {
-    let (status, _stdout, stderr) =
-        run_doc(&["--stdlib", "--out", UNTOUCHED_OUT_DIR, "--format", "xml"]);
+    let (_guard, out_dir) = untouched_out_dir("rejects-xml");
+    let (status, _stdout, stderr) = run_doc(&["--stdlib", "--out", &out_dir, "--format", "xml"]);
 
     assert_usage_error(
         status,
