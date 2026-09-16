@@ -1047,9 +1047,7 @@ impl CpSatSolver {
                 // total, reflexive kind. Load-bearing, not decoration: a NaN
                 // compares false BOTH ways, so one would send every later model
                 // to the `_` arm and degrade `best` from "the minimum seen" to
-                // "the last score seen". The full list of what a NaN breaks
-                // here, and the pin, live in
-                // `a_non_finite_objective_fold_falls_back_instead_of_corrupting_the_heap`.
+                // "the last score seen".
                 best = Some(match best {
                     Some((seen, ties)) if score == seen => (seen, ties + 1),
                     Some((seen, ties)) if seen < score => (seen, ties),
@@ -1204,10 +1202,10 @@ impl CpSatSolver {
 /// at `eval_objective_set`'s fail-closed accumulator guard (task #6377); do not
 /// restate it here. What this file DOES own is the reach of that guarantee: it
 /// rests on [`CpSatSolver::solve_ranked_with_budget`] being `score`'s sole
-/// construction site, so a second scoring path would re-open every failure
-/// `a_non_finite_objective_fold_falls_back_instead_of_corrupting_the_heap`
-/// enumerates — including that function's reachable `debug_assert_eq!` panic —
-/// without touching either sort.
+/// construction site. A second scoring path would re-open all three failures a
+/// NaN `score` causes here — wrong heap eviction, a running tally degraded to
+/// "the last score seen", and that function's own `debug_assert_eq!` tripping,
+/// a reachable debug-build panic — without touching either sort.
 struct ScoredModel {
     score: f64,
     index: usize,
@@ -3953,6 +3951,79 @@ mod solve_ranked_override_tests {
             matches!(optimality, OptimalityStatus::FeasibilityOnly),
             "I4: nothing was ordered, so no scored optimality verdict may be \
              claimed; got {optimality:?}",
+        );
+    }
+
+    /// (g″) ONE MODEL'S FOLD OVERFLOWS, THE REST RANK — THE DROP PATH, NOT THE
+    /// FALLBACK.
+    ///
+    /// (g) and (g′) both abstain on EVERY model, so between them they exercise
+    /// only `lift_feasibility`. This is the partial case, and it is the one the
+    /// `else` arm above and `first_unscored` were actually written for: with a
+    /// single finite, positive weight, whether `weight · v` overflows depends on
+    /// `v`, which varies per enumerated model.
+    ///
+    /// `WEIGHT_GAP` is picked so exactly the largest raw score overflows:
+    /// `f64::MAX / 10.5` times the three raw scores of `a || b` gives
+    /// `11 · W → +inf` (dropped), `10 · W` and `1 · W` finite (ranked). The
+    /// dropped model is `a=T, b=T`, which is enumeration index 0 — so what
+    /// survives is a ranking with a HOLE at the front of the index sequence,
+    /// and the `debug_assert_eq!` closing `solve_ranked_with_budget` (live here,
+    /// since unit tests run with `debug_assertions`) still has to find the
+    /// running tally and the heap head agreeing across it.
+    ///
+    /// The expected scores are computed from `W` here rather than read back from
+    /// the solver: `acc` starts at `0.0` and `0.0 + W·v` is exact in IEEE-754, so
+    /// a test that merely checked the returned scores were sorted would pass on
+    /// a solver that scored every model wrong but monotonically.
+    #[test]
+    fn one_model_whose_fold_overflows_is_dropped_while_its_siblings_still_rank() {
+        // `11.0 · W` overflows, `10.0 · W` does not — the whole fixture.
+        const W: f64 = f64::MAX / 10.5;
+
+        let mut p = a_or_b_scored(ObjectiveSense::Minimize);
+        p.objective
+            .as_mut()
+            .expect("`a_or_b_scored` builds a problem WITH an objective")
+            .terms[0]
+            .weight = W;
+
+        assert!(
+            (W * 11.0).is_infinite() && (W * 10.0).is_finite(),
+            "fixture precondition: W must overflow on the largest raw score \
+             ({}) and not on the next one ({}). Without this the test silently \
+             degrades into another all-abstain fallback case",
+            W * 11.0,
+            W * 10.0,
+        );
+
+        let (candidates, optimality) = ranked(CpSatSolver.solve_ranked(&p));
+
+        assert_eq!(
+            candidates.iter().map(shape).collect::<Vec<_>>(),
+            vec![
+                ((true, false), Some(W * 1.0), true),
+                ((false, true), Some(W * 10.0), false),
+            ],
+            "the two scorable models must come back ranked best-first, with \
+             `a=T, b=T` (raw 11, the one that overflows) dropped and nothing \
+             else disturbed. A THREE-entry list means the overflow escaped into \
+             the heap; an EMPTY-score or one-entry list means the whole-ranking \
+             fallback fired for what is only a partial abstention",
+        );
+        assert!(
+            candidates
+                .iter()
+                .all(|c| c.objective_score.is_some_and(f64::is_finite)),
+            "every retained score must be Some(finite) — the guard's whole \
+             claim at this site",
+        );
+        assert!(
+            matches!(optimality, OptimalityStatus::ProvenOptimal),
+            "the enumeration itself was COMPLETE — a model was dropped for \
+             being unorderable, not left unvisited — and the two scores differ, \
+             so the winner is a proven, untied optimum among the models that \
+             could be ordered; got {optimality:?}",
         );
     }
 
