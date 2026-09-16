@@ -2802,7 +2802,13 @@ where_guard     ::= 'where' expr                         (* per-declaration guar
 param_decl      ::= 'param' IDENT ':' type_expr ('=' expr)? where_guard?
 port_decl       ::= 'port' IDENT ':' dir? type_expr ('{' member* '}')? where_guard?
 sub_decl        ::= 'aux'? 'sub' IDENT ':' type_expr where_guard? ('{' member* '}')? ('at' expr)?
-                  | 'aux'? 'sub' IDENT '=' sub_derivation derived_body      (* v0.6 derived sub *)
+                  | 'aux'? 'sub' IDENT '=' sub_derivation derived_body ('at' expr)?   (* v0.6 derived sub *)
+
+(* The derived alternative's 'at' tail is deliberate: an explicit 'at' on a
+   derived sub PARSES, and is rejected at COMPILE time as
+   E_DERIVED_SUB_EXPLICIT_AT (§4.7) -- the same division of labour 'at' on a
+   collection-form sub already uses.  Dropping it from this production would
+   invite a "fix" to the grammar that pre-empts the diagnostic. *)
 
 sub_derivation  ::= 'mirror' 'of' IDENT 'across' expr
                   | 'image'  'of' IDENT 'under'  expr
