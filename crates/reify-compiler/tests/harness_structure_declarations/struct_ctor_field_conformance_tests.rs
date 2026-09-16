@@ -2678,7 +2678,7 @@ structure def Root {
 /// Task 5889 owns that inference (its scope covers this inline arm alongside
 /// `list_shape` / `matrix_shape`). When it lands, this fixture and the
 /// `matrix` sibling
-/// [`matrix_builtin_dimensioned_cell_at_dimensionless_matrix_param_warns_arg_type_mismatch`]
+/// [`matrix_builtin_dimensioned_at_dimensionless_matrix_param_warns_arg_type_mismatch`]
 /// must be re-read as a PAIR in that same commit, because they move in opposite
 /// directions and which way depends on the fix chosen: degrading a
 /// heterogeneous literal to `Type::dimensionless_scalar()` flips the `matrix`
@@ -2830,7 +2830,7 @@ structure def Root {
 /// third arm's twin of
 /// `vec3_dimensioned_at_dimensionless_vector_param_warns_arg_type_mismatch`
 /// (`Vector`) and
-/// `matrix_builtin_dimensioned_cell_at_dimensionless_matrix_param_warns_arg_type_mismatch`
+/// `matrix_builtin_dimensioned_at_dimensionless_matrix_param_warns_arg_type_mismatch`
 /// (`Matrix`/`Tensor`).
 ///
 /// `crates/reify-core/src/ty.rs` asserts a MEASURED end-to-end result for exactly
@@ -3286,10 +3286,10 @@ fn matrix_builtin_cross_dimension_at_inertia_param_warns_arg_type_mismatch() {
 //   (b) `tensor_param_given_vector_stays_clean` — a `Tensor<1,3,Length>` param
 //       fed `vec3(0m, 0m, 1m)`: dimensions AGREE, so silent.
 
-const SRC_MATRIX_DIMENSIONED_CELL_AT_DIMENSIONLESS: &str = r#"module test.matrix_dimensioned_at_dimensionless
+const SRC_MATRIX_DIMENSIONED_AT_DIMENSIONLESS: &str = r#"module test.matrix_dimensioned_at_dimensionless
 structure def Jacobian { param jac : Matrix<3, 3, Dimensionless> }
 structure def Root {
-    let a = Jacobian(jac: matrix([[1m, 0, 0], [0, 0, 0], [0, 0, 0]]))
+    let a = Jacobian(jac: matrix([[1m, 0m, 0m], [0m, 0m, 0m], [0m, 0m, 0m]]))
 }
 "#;
 
@@ -3297,10 +3297,10 @@ structure def Root {
 /// arm — and the end-to-end pin for `matrix(…)` → `matrix_shape` → the rule.
 ///
 /// `crates/reify-core/src/ty.rs` asserts a consequence specific to this arm: a
-/// heterogeneous `matrix(…)` at a `Matrix<M, N, Dimensionless>` param can now be
-/// rejected on cell `[0][0]` alone, where before only a DIMENSIONED param slot
-/// could trip it. Nothing pinned that CHAIN. Its two neighbours each cover a
-/// different half and neither covers this one:
+/// dimensioned `matrix(…)` at a `Matrix<M, N, Dimensionless>` param is rejected,
+/// where before only a DIMENSIONED param slot could trip it. Nothing pinned that
+/// CHAIN. Its two neighbours each cover a different half and neither covers this
+/// one:
 ///
 ///   * `dimensionless_quantity_matrix_param_rejects_dimensioned_tensor_arg`
 ///     (`conformance/mod.rs`) builds a `Type::tensor(2, 3, Length)` directly, so
@@ -3314,20 +3314,22 @@ structure def Root {
 /// Without this fixture a regression in either `matrix_shape` or this arm's
 /// routing would leave the ty.rs claim documented and every test green.
 ///
-/// The literal is deliberately HETEROGENEOUS — cell `[0][0]` is `1m` and every
-/// other cell is dimensionless — so the rejection rests on the first-cell
-/// inference ALONE, which is exactly the instance ty.rs names. That inference
-/// weakness is owned by task 5889: if it lands the preferred fix (detect
-/// heterogeneous cells, degrade the inferred quantity to
-/// `Type::dimensionless_scalar()`), this fixture flips to CLEAN and must be
-/// retargeted at a HOMOGENEOUS dimensioned literal in the same commit.
+/// The literal is deliberately HOMOGENEOUS — every cell is `m` — so the
+/// rejection rests on the all-cell inference actually AGREEING on `Length`.
+/// Before task 5889 this fixture carried `matrix([[1m, 0, 0], …])` and rested on
+/// cell `[0][0]` alone; that inference now inspects every cell of every row, so
+/// a HETEROGENEOUS literal at this same param is SILENT by construction — its
+/// counterpart is
+/// [`matrix_builtin_block_heterogeneous_at_rotational_stiffness_param_stays_clean`]
+/// below. Keeping this leg dimensioned-and-uniform is what still pins the
+/// `matrix(…)` → `matrix_shape` → rule chain end to end.
 #[test]
-fn matrix_builtin_dimensioned_cell_at_dimensionless_matrix_param_warns_arg_type_mismatch() {
+fn matrix_builtin_dimensioned_at_dimensionless_matrix_param_warns_arg_type_mismatch() {
     // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
     // Load-bearing twice over here: a `Matrix<3, 3, Dimensionless>` that failed
-    // to resolve, or a heterogeneous `matrix(…)` literal that failed to compile,
-    // would emit zero ctor-conformance diagnostics and read as a RULE failure.
-    let module = compile_source_with_stdlib(SRC_MATRIX_DIMENSIONED_CELL_AT_DIMENSIONLESS);
+    // to resolve, or a `matrix(…)` literal that failed to compile, would emit
+    // zero ctor-conformance diagnostics and read as a RULE failure.
+    let module = compile_source_with_stdlib(SRC_MATRIX_DIMENSIONED_AT_DIMENSIONLESS);
     assert!(
         errors_only(&module).is_empty(),
         "fixture must compile cleanly, got: {:?}",
@@ -3340,7 +3342,7 @@ fn matrix_builtin_dimensioned_cell_at_dimensionless_matrix_param_warns_arg_type_
         "jac",
         "Real",
         "Scalar[m]",
-        "Matrix<3,3,Dimensionless> ← Tensor2x3<Length> (from cell [0][0] alone)",
+        "Matrix<3,3,Dimensionless> ← Tensor2x3<Length>",
     );
 }
 
@@ -3375,7 +3377,7 @@ structure def Root {
 /// Non-vacuity beyond the compile guard:
 /// [`matrix_builtin_cross_dimension_at_inertia_param_warns_arg_type_mismatch`]
 /// and
-/// [`matrix_builtin_dimensioned_cell_at_dimensionless_matrix_param_warns_arg_type_mismatch`]
+/// [`matrix_builtin_dimensioned_at_dimensionless_matrix_param_warns_arg_type_mismatch`]
 /// both reach this same arm through `matrix(…)` and REJECT, so silence here is
 /// a property of the literal's heterogeneity and not of the arm being
 /// unreachable.

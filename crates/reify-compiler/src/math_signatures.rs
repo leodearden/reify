@@ -584,25 +584,35 @@ fn list_shape(arg: &CompiledExpr) -> (usize, Type) {
 /// Recover `(ncols, cell_quantity)` from a depth-2 list argument (`matrix`).
 ///
 /// - outer `ListLiteral` whose first row is itself a `ListLiteral(cells)` →
-///   `(cells.len(), cells[0].result_type)` — exact column count (an M×N matrix
-///   projects to `n = N`, per design decision D5).
+///   `(cells.len(), <the quantity every cell of every row agrees on>)`.
 /// - otherwise → `(0, <innermost List element>)` — DEGRADE (D7).
 ///
-/// Cell `[0][0]` decides the WHOLE matrix's quantity, so the inference is sound
-/// only for dimension-HOMOGENEOUS literals.
+/// ALL cells of ALL rows are inspected. Cells that agree on a dimension keep
+/// that precise quantity; cells that disagree degrade to
+/// `Type::dimensionless_scalar()` via [`homogeneous_quantity`], which is where
+/// the reasoning lives. Scanning row 0 alone would miss the heterogeneity a
+/// block-structured matrix actually has — a stiffness/compliance matrix or a
+/// screw-theory spatial Jacobian is uniform WITHIN a row block and differs
+/// ACROSS blocks.
 ///
-/// First-cell quantity inference; load-bearing for a REJECTION diagnostic since
-/// tasks 5766/6159. Rule, residual and fix: the "Point / Vector quantity-slot
-/// convention" section of `crates/reify-core/src/ty.rs`, owned by task 5889.
+/// A row that is not itself a `ListLiteral` makes the literal un-inspectable, so
+/// the quantity degrades as well — the conservative direction D7 already takes
+/// at this function.
+///
+/// `n` is unchanged: still row 0's column count, so an M×N matrix still projects
+/// to `n = N` (design decision D5).
 fn matrix_shape(arg: &CompiledExpr) -> (usize, Type) {
     if let CompiledExprKind::ListLiteral(rows) = &arg.kind
         && let Some(CompiledExprKind::ListLiteral(cells)) = rows.first().map(|r| &r.kind)
     {
-        let quantity = cells
-            .first()
-            .map(|c| c.result_type.clone())
-            .unwrap_or(Type::dimensionless_scalar());
-        return (cells.len(), quantity);
+        let mut all_cells: Vec<&Type> = Vec::new();
+        for row in rows {
+            let CompiledExprKind::ListLiteral(row_cells) = &row.kind else {
+                return (cells.len(), Type::dimensionless_scalar());
+            };
+            all_cells.extend(row_cells.iter().map(|c| &c.result_type));
+        }
+        return (cells.len(), homogeneous_quantity(all_cells));
     }
     (0, innermost_list_element(&arg.result_type))
 }
