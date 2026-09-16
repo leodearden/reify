@@ -98,23 +98,23 @@ case "${1:-}" in
 esac
 
 
-# Single EXIT trap over an array of fixtures: individual `trap ... EXIT` calls
-# replace one another, so one handler over an array removes every fixture
-# regardless of which section adds the last.
-_TMPDIRS=()
-_TMPFILES=()
-_cleanup() {
-    [ "${#_TMPDIRS[@]}" -gt 0 ] && rm -rf "${_TMPDIRS[@]}"
-    [ "${#_TMPFILES[@]}" -gt 0 ] && rm -f "${_TMPFILES[@]}"
-    return 0
-}
-trap _cleanup EXIT
+# ONE run-private temp directory, removed by a single EXIT trap.
+#
+# Every fixture, baseline and scan file this run creates lives UNDER it, so
+# nothing needs to be registered anywhere to be cleaned up. The previous shape
+# — helpers appending their own path to a caller-scoped array — silently
+# leaked every one of them: those helpers are called through command
+# substitution (`f="$(_scan_file ...)"`), which runs in a SUBSHELL, so each
+# append mutated a copy that died with the subshell and the trap always saw an
+# empty array. Measured: 32 leaked files and directories per suite run.
+# Allocating under a single parent removes the failure mode by construction
+# rather than asking every future helper to remember the idiom — the same
+# subshell hazard test_helpers.sh documents for assert() (esc-4959-57).
+_RUN_TMP="$(mktemp -d "${TMPDIR:-/tmp}/reify-cited-run.XXXXXX")"
+trap 'rm -rf "$_RUN_TMP"' EXIT
 
 _mktmpd() {
-    local d
-    d="$(mktemp -d "${TMPDIR:-/tmp}/reify-cited-path.XXXXXX")"
-    _TMPDIRS+=("$d")
-    printf '%s\n' "$d"
+    mktemp -d "$_RUN_TMP/fixture.XXXXXX"
 }
 
 # Fully isolated from user/system git config so no ambient hooksPath, signing
@@ -157,7 +157,7 @@ _scan() {
 _expect_scan() {
     local root="$1"; shift
     local exp act rc=0
-    exp="$(mktemp)"; act="$(mktemp)"
+    exp="$(mktemp "$_RUN_TMP/exp.XXXXXX")"; act="$(mktemp "$_RUN_TMP/act.XXXXXX")"
     if [ "$#" -gt 0 ]; then printf '%s\n' "$@" | sort > "$exp"; fi
     _scan "$root" 2>/dev/null | sort > "$act" || rc=$?
     if ! diff -u "$exp" "$act"; then
@@ -176,8 +176,7 @@ _rec() { printf '%s\t%s\t%s\t%s' "$1" "$2" "$3" "$4"; }
 # even by the "empty baseline" fixtures.
 _write_baseline() {
     local f
-    f="$(mktemp "${TMPDIR:-/tmp}/reify-cited-baseline.XXXXXX")"
-    _TMPFILES+=("$f")
+    f="$(mktemp "$_RUN_TMP/baseline.XXXXXX")"
     printf '# fixture baseline\n' > "$f"
     [ "$#" -gt 0 ] && printf '%s\n' "$@" >> "$f"
     printf '%s\n' "$f"
@@ -190,8 +189,7 @@ _write_baseline() {
 # scanning the tree twice.
 _scan_file() {
     local f
-    f="$(mktemp "${TMPDIR:-/tmp}/reify-cited-scan.XXXXXX")"
-    _TMPFILES+=("$f")
+    f="$(mktemp "$_RUN_TMP/scan.XXXXXX")"
     cited_test_path_scan "$1" > "$f"
     printf '%s\n' "$f"
 }
@@ -225,8 +223,8 @@ _ratchet_check_subset() {
     local baseline live_fp base_fp new
 
     baseline="$(cited_test_path_baseline_path)"
-    live_fp="$(mktemp)"; base_fp="$(mktemp)"
-    _TMPFILES+=("$live_fp" "$base_fp")
+    live_fp="$(mktemp "$_RUN_TMP/live.XXXXXX")"
+    base_fp="$(mktemp "$_RUN_TMP/base.XXXXXX")"
 
     cited_test_path_fingerprint < "$scan" | LC_ALL=C sort -u > "$live_fp"
     cited_test_path_baseline_rows "$baseline" | LC_ALL=C sort -u > "$base_fp"
@@ -249,6 +247,33 @@ _ratchet_check_subset() {
         printf '  + %s\n' "$fp"
         printf '      -> %s: %s\n' "${verdict:-unresolved}" "${target:-<no candidate>}"
     done
+
+    # REMEDIATION HINT -> STDERR, findings -> stdout.
+    #
+    # The findings above are the machine-readable product; this is prose for a
+    # human. Keeping them on separate streams means a reader piping stdout to
+    # a file still SEES the hint, and a consumer parsing stdout is never
+    # handed prose mixed into its data (the stream separation task #5381
+    # established for check-harness-baseline-registration.sh).
+    #
+    # BOTH fixes are named because they are genuinely different decisions,
+    # and naming only one would silently steer every author toward it.
+    printf '\n' >&2
+    printf '[hint] remedy: each citation above names a test path that no longer\n' >&2
+    printf '       resolves. Pick ONE of:\n' >&2
+    printf '\n' >&2
+    printf '  1. REPOINT the citation to the suggested target shown after each\n' >&2
+    printf '     "->" above. This is the right fix when the test simply moved and\n' >&2
+    printf '     the prose was left behind.\n' >&2
+    printf '\n' >&2
+    printf '  2. GRANDFATHER it deliberately, by regenerating the baseline:\n' >&2
+    printf '         bash tests/infra/test_cited_test_paths_resolve.sh --emit-baseline \\\n' >&2
+    printf '             > tests/infra/cited-test-path-baseline.manifest\n' >&2
+    printf '     Do this only when the citation is knowingly being deferred; the\n' >&2
+    printf '     ratchet is one-directional, so a row added here stays until\n' >&2
+    printf '     someone removes it.\n' >&2
+    printf '\n' >&2
+    printf '       See tests/infra/README.md, "Cited test-path resolution".\n' >&2
     return 1
 }
 
@@ -1238,8 +1263,8 @@ echo "--- Section L: remediation hint on STDERR, findings on STDOUT ---"
 
 # Capture the two streams INDEPENDENTLY — the only way to prove they are
 # genuinely separate rather than interleaved into one.
-_HINT_OUT="$(mktemp)"; _TMPFILES+=("$_HINT_OUT")
-_HINT_ERR="$(mktemp)"; _TMPFILES+=("$_HINT_ERR")
+_HINT_OUT="$(mktemp "$_RUN_TMP/hint-out.XXXXXX")"
+_HINT_ERR="$(mktemp "$_RUN_TMP/hint-err.XXXXXX")"
 _HINT_RC=0
 _HINT_SCAN="$(_scan_file "$FIX_ACCEPT")"
 _HINT_BASELINE="$(_write_baseline)"
@@ -1281,7 +1306,8 @@ assert "L: the two streams do not leak into each other" \
 # quiet, and a hint emitted on success would train readers to ignore it.
 _no_hint_on_a_clean_run() {
     local out err rc=0 covered
-    out="$(mktemp)"; err="$(mktemp)"; _TMPFILES+=("$out" "$err")
+    out="$(mktemp "$_RUN_TMP/clean-out.XXXXXX")"
+    err="$(mktemp "$_RUN_TMP/clean-err.XXXXXX")"
     covered="$(_write_baseline \
         'docs/testing.md :: crates/mycrate/tests/examples_smoke.rs' \
         'examples/part.ri :: crates/mycrate/tests/examples_smoke.rs' \
