@@ -202,6 +202,8 @@
 //! is the apples-to-apples counterpart. Neither arm says anything about
 //! the parallel path either PRD figure also quotes.
 
+#[path = "calibration/boundary.rs"]
+mod boundary;
 #[path = "calibration/fixtures.rs"]
 mod fixtures;
 
@@ -322,7 +324,7 @@ fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
     use std::collections::{HashMap, HashSet};
 
     let (mesh, _surface_indices) = fixtures::bracket(ARM_LENGTH, THICKNESS, FILLET_BASE, 4);
-    let surface = fixtures::boundary_surface(&mesh);
+    let surface = boundary::boundary_surface(&mesh);
 
     // (1) The full mesh contract. Naming the Err variant means a contract
     // violation reports which obligation failed rather than "assert failed".
@@ -768,7 +770,7 @@ struct GmshMeasurement {
 ///   as 0 tets rather than as an error. In a binary that sweeps a whole
 ///   ladder through one process, one poisoned rung would silently zero every
 ///   rung after it, so every surface handed to this function comes from
-///   [`fixtures::boundary_surface`], whose closedness is pinned by an
+///   [`boundary::boundary_surface`], whose closedness is pinned by an
 ///   always-on test.
 #[cfg(has_gmsh)]
 fn gmsh_tetrahedralise(surface: &reify_ir::Mesh, mesh_size: f64) -> GmshMeasurement {
@@ -812,7 +814,7 @@ fn gmsh_tetrahedralise(surface: &reify_ir::Mesh, mesh_size: f64) -> GmshMeasurem
 /// of tets rather than for a calibration rung. The 10K and 100K rungs belong
 /// to the `#[ignore]`d driver.
 ///
-/// The surface handed to gmsh is [`fixtures::boundary_surface`]'s output,
+/// The surface handed to gmsh is [`boundary::boundary_surface`]'s output,
 /// which the sibling test above pins as closed and consistently wound — that
 /// ordering matters, because an open surface would not merely fail here, it
 /// would poison the rest of the binary (see [`gmsh_tetrahedralise`]).
@@ -822,7 +824,7 @@ fn gmsh_tetrahedralise_produces_tets_at_a_requested_mesh_size() {
     use reify_ir::ElementOrderTag;
 
     let (mesh, _surface_indices) = fixtures::bracket(ARM_LENGTH, THICKNESS, FILLET_BASE, 4);
-    let surface = fixtures::boundary_surface(&mesh);
+    let surface = boundary::boundary_surface(&mesh);
 
     let measurement = gmsh_tetrahedralise(&surface, 0.06);
 
@@ -1105,7 +1107,7 @@ fn gmsh_from_scratch_vs_morph_wall_clock_at_10k_and_100k() {
     let mut surfaces = Vec::new();
     for n in [N_10K, N_100K] {
         let (mesh, _surface_indices) = fixtures::bracket(ARM_LENGTH, THICKNESS, FILLET_BASE, n);
-        let surface = fixtures::boundary_surface(&mesh);
+        let surface = boundary::boundary_surface(&mesh);
         eprintln!(
             "[task-6638] surface n={n:<3} volume_tets={:<7} surface_tris={:<7} surface_verts={}",
             mesh.tet_indices().map_or(0, |t| t.len() / 4),
