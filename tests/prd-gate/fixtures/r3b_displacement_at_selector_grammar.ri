@@ -1,12 +1,16 @@
 // Fixture: R3b substrate-boundary probe. Two live, executable guards keep it
 // honest today, rather than this comment:
 //   - parse-shape corpus member (0 ERROR nodes): `EXPECTED_CLEAN` in
-//     gui/src/__tests__/reifyGrammarCorpus.test.ts:5155, and
+//     gui/src/__tests__/reifyGrammarCorpus.test.ts, and
 //     scripts/verify.sh's `_GUI_COUPLED_RI_FIXTURES` / `_RUST_COUPLED_RI_FIXTURES`;
-//   - ctor-conformance pinned-clean: `CTOR_CONFORMANCE_PINNED_CLEAN` in
+//   - ctor-conformance pinned-clean: `CTOR_CONFORMANCE_PINNED_CLEAN`, asserted by
+//     `pinned_clean_files_emit_no_ctor_conformance_diagnostic` in
 //     crates/reify-compiler/tests/harness_compilation_surface/
-//     ctor_conformance_corpus_survey.rs:2611, asserting zero ctor-conformance
-//     diagnostics on this file.
+//     ctor_conformance_corpus_survey.rs — zero ctor-conformance diagnostics on
+//     this file.
+// Both guards are cited by SYMBOL, not file:line: nothing recompiles this fixture
+// when those files are edited, so a pinned line number would drift silently,
+// while the names stay grep-resolvable.
 // Together they exercise `displacement_at`'s `location : FaceSelector`
 // overload end-to-end: `reify check` on this fixture exits 0.
 //

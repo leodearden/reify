@@ -541,13 +541,22 @@ fn displacement_at_overload_errors(module: &reify_compiler::CompiledModule) -> V
         .collect()
 }
 
-/// A `Selector` `location` (a let-bound `faces_by_normal`) must resolve the
+/// A `FaceSelector` `location` (a let-bound `faces_by_normal`) must resolve the
 /// `displacement_at` overload — no "no matching overload" diagnostic.
 ///
-/// Was RED before step-11 added the `location: Selector` overload sharing the
-/// one trampoline: only the `location: String` overload existed, so the
-/// Selector call site yielded a no-matching-overload error. Now guards against
+/// Was RED before step-11 added the `location : FaceSelector` overload sharing
+/// the one trampoline: only the `location : String` overload existed, so the
+/// selector call site yielded a no-matching-overload error. Now guards against
 /// that regression.
+///
+/// `FaceSelector` is the param spelling on purpose, NOT the kind-agnostic
+/// `Selector` / `AnySelector`: `resolve_function_overload` (type_compat.rs)
+/// matches params by EXACT equality, so an `AnySelector` param would reject the
+/// `FaceSelector` argument this test passes and reinstate the very
+/// no-matching-overload failure guarded here — `stdlib/modal_analysis_fns.ri`
+/// carries the same warning above the declaration. The kind-agnostic shape
+/// belongs one layer down, at runtime, where the shared trampoline branches on
+/// `value_inputs[1]`'s `Value::Selector`.
 #[test]
 fn displacement_at_accepts_selector_location_overload() {
     let module = compile_displacement_at_probe("tip_face");
@@ -598,18 +607,31 @@ fn rayleigh_ctor_arg_diagnostics(module: &reify_compiler::CompiledModule) -> Vec
 ///
 /// MEASURED GAP this closes. `examples_smoke::
 /// no_example_emits_ctor_field_conformance_diagnostics` walks `examples/` only,
-/// so task #6093's three migrated sites under `examples/` are guarded and these
-/// two are not: reverting either back to `(alpha: 0.0, beta: 0.0003)` left the
-/// whole `r3b_modal_selector_displacement` suite green. Nor would the revert
-/// break the build — `CTOR_FIELD_CONFORMANCE_SEVERITY` is `Warning` pre-δ — so
-/// the regression would sit silent until the Warning→Error flip.
+/// so task #6093's three migrated sites under `examples/` were guarded and
+/// these two were not: reverting either back to `(alpha: 0.0, beta: 0.0003)`
+/// left the whole `r3b_modal_selector_displacement` suite green. Nor would the
+/// revert break the build — `CTOR_FIELD_CONFORMANCE_SEVERITY` is `Warning`
+/// pre-δ — so the regression would sit silent until the Warning→Error flip.
 ///
 /// The two sites:
-///   - the inline probe source built by [`compile_displacement_at_probe`];
+///   - the inline probe source built by [`compile_displacement_at_probe`],
+///     which no test outside this file reaches;
 ///   - `tests/prd-gate/fixtures/r3b_displacement_at_selector_grammar.ri`, whose
-///     only other consumers (`gui/src/__tests__/reifyGrammarCorpus.test.ts` and
-///     `verify.sh`'s `_GUI_COUPLED_RI_FIXTURES`) judge PARSE shape, not
-///     conformance.
+///     other consumers judge two axes: PARSE shape (`EXPECTED_CLEAN` in
+///     `gui/src/__tests__/reifyGrammarCorpus.test.ts`, plus `verify.sh`'s
+///     `_GUI_COUPLED_RI_FIXTURES`), and — since task #5305, after the
+///     measurement above — ctor CONFORMANCE by diagnostic-CODE identity
+///     (`CTOR_CONFORMANCE_PINNED_CLEAN`, asserted gate-resident by
+///     `pinned_clean_files_emit_no_ctor_conformance_diagnostic` in
+///     `ctor_conformance_corpus_survey.rs`).
+///
+/// That code-keyed pin and this prose-keyed one overlap on the fixture
+/// DELIBERATELY — the survey's own doc says so and leaves this one alone —
+/// because they go red on disjoint drifts. The pin filters on
+/// `is_ctor_conformance_code`, so a re-emission carrying a re-classified code,
+/// or none, slips past it and is caught here; this helper keys on the message
+/// wording, so an `emit_arg_type_mismatch` reword slips past it and is caught
+/// there. The inline probe site has no such second guard.
 ///
 /// The fixture now typechecks cleanly — `reify check` on it exits 0 — since
 /// the R3b `location: FaceSelector` overload landed (it no longer raises "no
