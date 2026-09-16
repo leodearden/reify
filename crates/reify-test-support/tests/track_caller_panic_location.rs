@@ -101,3 +101,28 @@ fn require_default_expr_panic_reports_caller_not_helpers_rs() {
         site.message,
     );
 }
+
+#[cfg(feature = "eval-helpers")]
+#[test]
+fn cell_value_panic_reports_caller_not_helpers_rs() {
+    let result = reify_test_support::eval_source("structure S { let x = 1.0 }");
+
+    // `line!()` sits on the SAME physical line as the guarded call — see
+    // `require_default_expr_panic_reports_caller_not_helpers_rs` above.
+    let site = panic_site(|| { reify_test_support::cell_value(&result, "Nope", "missing"); }); let expected_line = line!();
+
+    assert_eq!(
+        (site.file.as_str(), site.line),
+        (file!(), expected_line),
+        "cell_value's panic must attribute to the CALLER (this file), not to \
+         helpers.rs; reported {}:{}, expected {}:{expected_line}",
+        site.file,
+        site.line,
+        file!(),
+    );
+    assert!(
+        site.message.contains("not found in eval result"),
+        "panic message changed; got: {}",
+        site.message,
+    );
+}
