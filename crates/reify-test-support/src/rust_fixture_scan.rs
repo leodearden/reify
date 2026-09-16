@@ -35,9 +35,12 @@
 //! a template and 51 dropped. The drop share therefore moved 8.7% → 9.5%,
 //! which is the proportionate movement a corpus change makes; the newly
 //! admitted snippets are `#[cfg(test)]`-module fixtures that read as ordinary
-//! Reify declarations. Whether any of them fail to COMPILE is not restated
-//! here: the survey artifact's own inline-coverage section counts them, per
-//! member, with a machine-derived reason.
+//! Reify declarations. Their COMPILE outcome was measured too, since a filter
+//! admitting Rust text would surface as parse-error noise: of the 180 newly
+//! reached members 177 swept, 1 was held back as a template, and 2 recorded a
+//! `parse-error` — both deliberately-invalid Reify fixtures in
+//! `reify-syntax/src/ts_parser.rs`, not Rust. The survey artifact's own
+//! inline-coverage section recounts that per member on every regeneration.
 //!
 //! Those are MEASUREMENTS at a named commit, not invariants — recorded so a
 //! future reader can tell a filter regression (the admitted share collapses)

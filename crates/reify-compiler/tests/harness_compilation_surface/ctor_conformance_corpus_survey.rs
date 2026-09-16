@@ -8,9 +8,9 @@
 //! is produced by the code in this module, with zero hand-derived entries.
 //!
 //! Task #7543 added the corpus's SECOND half: the Reify snippets embedded as
-//! raw-string literals in tracked `.rs` test hosts, which `git ls-files -- '*.ri'`
-//! cannot reach. Both halves come from one git-index primitive
-//! ([`scan_tracked_corpus`]) and are swept by one pipeline, so they cannot
+//! raw-string literals in tracked `.rs` under `crates/`, which
+//! `git ls-files -- '*.ri'` cannot reach. Both halves come from one git-index
+//! primitive ([`scan_tracked_corpus`]) and are swept by one pipeline, so they cannot
 //! disagree about what a ctor-conformance site is; [`corpus_parity`] is what
 //! makes a narrowed walker fail loudly instead of writing a falsely-thin
 //! artifact.
@@ -33,8 +33,9 @@
 //! Compiling the ~261 `examples/` files is documented as "the single most
 //! expensive thing this binary does" (`examples_smoke.rs`); the ~700 tracked
 //! `.ri` are ~2.5× that. The sweep now has a SECOND half on top of it (task
-//! #7543): the Reify snippets embedded as raw-string literals in the ~1,300
-//! tracked `.rs` test hosts, which yield ~3,200 admitted snippets to compile —
+//! #7543): the Reify snippets embedded as raw-string literals in the ~1,870
+//! tracked `.rs` under `crates/`, which yield ~3,300 admitted snippets to
+//! compile —
 //! measured by the generator itself, which prints both halves' counts on every
 //! run. Paying any of that on every merge gate would directly fight the
 //! merge-gate-compile-cost PRD. So both walks live behind ONE `#[ignore]`d
@@ -281,14 +282,22 @@ fn scan_tracked_ri_corpus() -> Vec<String> {
 const RI_CORPUS_FLOOR: usize = 100;
 
 /// A BROKEN-ENUMERATION floor for the Rust-host half, deliberately far below
-/// the live count (1,307 measured 2026-09-16: 1,305 carrying a `tests`
-/// directory component under `crates/`, plus
-/// `crates/reify-eval/src/{engine_build,geometry_ops}/tests.rs`).
+/// the live count (1,870 of 1,932 tracked `.rs`, measured 2026-09-16 — every
+/// one under `crates/`, the 62 exclusions being the two out-of-scope roots).
 ///
 /// Same reasoning as the `.ri` floor below: it catches a wrong root, a wrong
 /// pathspec or a silent git failure, and must NOT red the merge gate when a
 /// test-consolidation task legitimately deletes a few hundred host files. The
 /// artifact header carries the live count.
+///
+/// What this floor structurally CANNOT catch is a NARROWED host predicate: the
+/// file-NAME scope this half started with admitted 1,307 of the same 1,932
+/// tracked files and cleared 300 exactly as comfortably as the correct scope
+/// does. A narrowing is caught instead by
+/// [`rust_fixture_scan::is_inline_fixture_host`]'s own path-shape contract and
+/// by the per-[`HostShape`] live members required of
+/// [`tracked_rust_hosts_reach_the_named_site_host_and_every_shape`] and
+/// [`INLINE_FIXTURE_PINNED_HOSTS`].
 const RUST_HOST_CORPUS_FLOOR: usize = 300;
 
 /// Every tracked `*.rs` that can host an inline Reify fixture, as repo-relative
@@ -297,23 +306,27 @@ const RUST_HOST_CORPUS_FLOOR: usize = 300;
 ///
 /// The `.ri` half enumerates FILES whose whole content is Reify; this half
 /// enumerates files that may CARRY Reify inside a raw-string literal, which
-/// `git ls-files -- '*.ri'` cannot reach. Both come from the same primitive,
-/// and both are cached behind the same `OnceLock` for the same reason
-/// [`tracked_ri_corpus`] is.
-fn tracked_rust_test_hosts() -> &'static [String] {
+/// `git ls-files -- '*.ri'` cannot reach. That is every tracked `.rs` under
+/// `crates/`, not a test-file subset: a production `src/*.rs` with a
+/// `#[cfg(test)] mod tests` carries fixtures like any other, and deciding
+/// scope by file NAME is what once hid 563 of these hosts. Both halves come
+/// from the same primitive, and both are cached behind the same `OnceLock` for
+/// the same reason [`tracked_ri_corpus`] is.
+fn tracked_rust_hosts() -> &'static [String] {
     static HOSTS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    HOSTS.get_or_init(scan_tracked_rust_test_hosts)
+    HOSTS.get_or_init(scan_tracked_rust_hosts)
 }
 
-/// The uncached enumeration behind [`tracked_rust_test_hosts`].
+/// The uncached enumeration behind [`tracked_rust_hosts`].
 ///
-/// The same git-index primitive as the `.ri` half, narrowed by the SHARED
+/// The same git-index primitive as the `.ri` half, filtered by the SHARED
 /// [`rust_fixture_scan::is_inline_fixture_host`] predicate — the one place that
 /// decides what an in-scope host is, so the enumeration and the walker cannot
-/// disagree. The primitive's non-empty assertion covers a broken `*.rs`
-/// enumeration; a post-FILTER collapse (every host rejected) is the
+/// disagree. The filter is a path-shape test only; whether a host actually
+/// carries Reify is decided per literal, at extraction. The primitive's
+/// non-empty assertion covers a broken `*.rs` enumeration; a post-FILTER collapse (every host rejected) is the
 /// corpus-parity gate's business, which runs before any sweep.
-fn scan_tracked_rust_test_hosts() -> Vec<String> {
+fn scan_tracked_rust_hosts() -> Vec<String> {
     scan_tracked_corpus("*.rs")
         .into_iter()
         .filter(|p| rust_fixture_scan::is_inline_fixture_host(std::path::Path::new(p)))
@@ -368,13 +381,13 @@ fn scan_tracked_corpus(pathspec: &str) -> Vec<String> {
 
 /// `Some(hosts)` when git can be spawned, `None` when it cannot — the
 /// [`tracked_ri_corpus_if_git_available`] idiom for the second half.
-fn tracked_rust_test_hosts_if_git_available() -> Option<&'static [String]> {
-    git_is_available().then(tracked_rust_test_hosts)
+fn tracked_rust_hosts_if_git_available() -> Option<&'static [String]> {
+    git_is_available().then(tracked_rust_hosts)
 }
 
 #[test]
-fn tracked_rust_test_hosts_clears_the_broken_enumeration_floor() {
-    let Some(hosts) = tracked_rust_test_hosts_if_git_available() else {
+fn tracked_rust_hosts_clears_the_broken_enumeration_floor() {
+    let Some(hosts) = tracked_rust_hosts_if_git_available() else {
         println!("skipped: no `git` on PATH — see `git_is_available`");
         return;
     };
@@ -388,8 +401,8 @@ fn tracked_rust_test_hosts_clears_the_broken_enumeration_floor() {
 }
 
 #[test]
-fn tracked_rust_test_hosts_entries_all_end_in_dot_rs() {
-    let Some(hosts) = tracked_rust_test_hosts_if_git_available() else {
+fn tracked_rust_hosts_entries_all_end_in_dot_rs() {
+    let Some(hosts) = tracked_rust_hosts_if_git_available() else {
         println!("skipped: no `git` on PATH — see `git_is_available`");
         return;
     };
@@ -403,11 +416,11 @@ fn tracked_rust_test_hosts_entries_all_end_in_dot_rs() {
 }
 
 #[test]
-fn tracked_rust_test_hosts_all_satisfy_the_shared_host_predicate() {
+fn tracked_rust_hosts_all_satisfy_the_shared_host_predicate() {
     // The enumeration and the walker must agree on what an in-scope host IS,
     // and `is_inline_fixture_host` is the one place that decides — so this
     // asserts the filter was actually applied, not merely declared.
-    let Some(hosts) = tracked_rust_test_hosts_if_git_available() else {
+    let Some(hosts) = tracked_rust_hosts_if_git_available() else {
         println!("skipped: no `git` on PATH — see `git_is_available`");
         return;
     };
@@ -425,8 +438,8 @@ fn tracked_rust_test_hosts_all_satisfy_the_shared_host_predicate() {
 }
 
 #[test]
-fn tracked_rust_test_hosts_is_sorted_and_deduplicated() {
-    let Some(hosts) = tracked_rust_test_hosts_if_git_available() else {
+fn tracked_rust_hosts_is_sorted_and_deduplicated() {
+    let Some(hosts) = tracked_rust_hosts_if_git_available() else {
         println!("skipped: no `git` on PATH — see `git_is_available`");
         return;
     };
@@ -436,13 +449,13 @@ fn tracked_rust_test_hosts_is_sorted_and_deduplicated() {
     assert_eq!(
         hosts,
         expected.as_slice(),
-        "tracked_rust_test_hosts must return a sorted, deduplicated list"
+        "tracked_rust_hosts must return a sorted, deduplicated list"
     );
 }
 
 #[test]
-fn tracked_rust_test_hosts_paths_are_repo_relative_forward_slash() {
-    let Some(hosts) = tracked_rust_test_hosts_if_git_available() else {
+fn tracked_rust_hosts_paths_are_repo_relative_forward_slash() {
+    let Some(hosts) = tracked_rust_hosts_if_git_available() else {
         println!("skipped: no `git` on PATH — see `git_is_available`");
         return;
     };
@@ -455,8 +468,8 @@ fn tracked_rust_test_hosts_paths_are_repo_relative_forward_slash() {
 }
 
 #[test]
-fn tracked_rust_test_hosts_reach_the_named_site_host_and_every_shape() {
-    let Some(hosts) = tracked_rust_test_hosts_if_git_available() else {
+fn tracked_rust_hosts_reach_the_named_site_host_and_every_shape() {
+    let Some(hosts) = tracked_rust_hosts_if_git_available() else {
         println!("skipped: no `git` on PATH — see `git_is_available`");
         return;
     };
@@ -478,13 +491,13 @@ fn tracked_rust_test_hosts_reach_the_named_site_host_and_every_shape() {
 }
 
 #[test]
-fn tracked_rust_test_hosts_is_disjoint_from_the_ri_corpus() {
+fn tracked_rust_hosts_is_disjoint_from_the_ri_corpus() {
     if !git_is_available() {
         println!("skipped: no `git` on PATH — see `git_is_available`");
         return;
     }
     let ri: std::collections::BTreeSet<&String> = tracked_ri_corpus().iter().collect();
-    let overlap: Vec<&String> = tracked_rust_test_hosts()
+    let overlap: Vec<&String> = tracked_rust_hosts()
         .iter()
         .filter(|p| ri.contains(*p))
         .collect();
@@ -515,7 +528,7 @@ fn both_corpus_halves_come_from_the_same_git_primitive() {
         .collect();
     assert_eq!(
         hosts_via_seam,
-        tracked_rust_test_hosts(),
+        tracked_rust_hosts(),
         "the host half must be `scan_tracked_corpus(\"*.rs\")` filtered through \
          the shared host predicate, and nothing else"
     );
@@ -717,9 +730,10 @@ impl CorpusHalf {
 ///
 /// The floors are BROKEN-ENUMERATION floors (see [`RI_CORPUS_FLOOR`] and
 /// [`RUST_HOST_CORPUS_FLOOR`]), set far below the live counts — 701 `.ri` and
-/// 1,307 hosts measured 2026-09-16 — and not tracking numbers. A legitimate
+/// 1,870 hosts measured 2026-09-16 — and not tracking numbers. A legitimate
 /// fixture or test cull must not be a merge-gate red; only an enumeration that
-/// broke can get near them.
+/// broke can get near them. A floor cannot see a NARROWED host predicate at
+/// all — see [`RUST_HOST_CORPUS_FLOOR`] for what does.
 fn corpus_parity(halves: &[(CorpusHalf, &[String])]) -> Result<(), String> {
     use strum::IntoEnumIterator;
     let mut violations: Vec<String> = Vec::new();
@@ -926,7 +940,7 @@ fn corpus_parity_holds_over_the_two_live_enumerations() {
     assert_eq!(
         corpus_parity(&[
             (CorpusHalf::TrackedRi, tracked_ri_corpus()),
-            (CorpusHalf::InlineRustHost, tracked_rust_test_hosts()),
+            (CorpusHalf::InlineRustHost, tracked_rust_hosts()),
         ]),
         Ok(()),
         "the live wiring must satisfy the gate it is checked by"
@@ -3550,8 +3564,8 @@ const NAMED_SITE_HOST: &str =
 /// walk_test_rs_files`, and only the first two survived the host predicate's
 /// original `tests`-directory-or-`tests.rs` clause — which is why a
 /// re-narrowing shows up HERE and nowhere else: the corpus-parity floor is
-/// cleared just as comfortably by a predicate admitting 1,307 of 1,932 tracked
-/// `.rs` as by one admitting all 1,870 under `crates/`.
+/// cleared just as comfortably by a predicate admitting 1,307 of the 1,932
+/// tracked `.rs` as by the one admitting all 1,870 under `crates/`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum HostShape {
     TestsDirectory,
@@ -6378,8 +6392,8 @@ fn the_drift_disclosure_is_not_scoped_to_ri_alone() {
 /// `#[ignore]`d because it compiles the entire tracked corpus — ~2.5× the
 /// `examples/` walk that `examples_smoke.rs` already documents as "the single
 /// most expensive thing this binary does" — and then, on top of that, every
-/// Reify snippet embedded in a tracked `.rs` test host, which is several times
-/// as many compiles again. Running it on every merge gate would directly fight
+/// Reify snippet embedded in a tracked `.rs` under `crates/`, which is several
+/// times as many compiles again. Running it on every merge gate would directly fight
 /// `docs/prds/merge-gate-compile-cost.md`.
 ///
 /// The ignore reason is deliberately OPERATIONAL, not blocker-prose: per
@@ -6393,11 +6407,11 @@ fn the_drift_disclosure_is_not_scoped_to_ri_alone() {
 /// pure helpers above, each unit-tested on every gate run, plus one cheap
 /// three-file end-to-end sweep.
 #[test]
-#[ignore = "corpus survey generator over BOTH halves — every tracked .ri (~700 files) plus the Reify snippets embedded in every tracked .rs test host (~1,300 files, ~3,200 admitted snippets), so several times the cost of the .ri walk alone; run explicitly with --ignored — see docs/prds/struct-ctor-field-type-conformance.survey.md"]
+#[ignore = "corpus survey generator over BOTH halves — every tracked .ri (~700 files) plus the Reify snippets embedded in every tracked .rs under crates/ (~1,870 files, ~3,300 admitted snippets), so several times the cost of the .ri walk alone; run explicitly with --ignored — see docs/prds/struct-ctor-field-type-conformance.survey.md"]
 fn generate_ctor_conformance_corpus_survey() {
     let root = std::path::Path::new(WORKSPACE_ROOT);
     let corpus = tracked_ri_corpus();
-    let hosts = tracked_rust_test_hosts();
+    let hosts = tracked_rust_hosts();
 
     // BEFORE either sweep, deliberately: a walker that silently narrowed would
     // otherwise spend the whole (expensive) run producing a falsely-thin
