@@ -1224,10 +1224,20 @@ fn accept_variadic_length_args(
 /// a bare one is usually bare in EVERY component; short-circuiting would hand
 /// the author one coordinate name per rebuild.
 ///
-/// A wrong SHAPE is deliberately NOT a units rejection: it returns the
-/// caller-supplied `shape_err()` VERBATIM and pushes no diagnostic. This helper
-/// replaces [`point3_components`]' ACCEPTANCE policy, not its shape check, so
-/// every pre-δ wrong-variant / wrong-arity message survives byte-identical.
+/// A wrong SHAPE is deliberately NOT a units rejection: it hands the caller's
+/// `shape_err` the diagnostic sink and returns its `String` VERBATIM, minting
+/// nothing of its own. This helper replaces [`point3_components`]' ACCEPTANCE
+/// policy, not its shape check, so every pre-δ wrong-variant / wrong-arity
+/// message survives byte-identical.
+///
+/// `shape_err` takes the sink so that ONE closure owns BOTH halves of a shape
+/// rejection — the `Diagnostic` a caller wants the user to see AND the `Err`
+/// text — and cannot be forwarded in a form that keeps only half. δ's own three
+/// callers push nothing (their outer layer owns the Warning) and so ignore the
+/// argument; ζ's [`accept_transform_to_arrays`] pushes, and before this
+/// parameter existed it had to wrap its two-part closure as
+/// `|| f(&mut Vec::new())` — which dropped the Warning on the floor the moment
+/// this arm became reachable.
 ///
 /// `names` is `[N; 3]` with `N: Display + Copy` rather than `[&str; 3]` so a
 /// caller whose names are COMPUTED can hand over lazy renderers instead of
@@ -1260,14 +1270,15 @@ fn accept_length_point3<N: std::fmt::Display + Copy>(
     value: &reify_ir::Value,
     names: [N; 3],
     kind_label: impl std::fmt::Display + Copy,
-    shape_err: impl FnOnce() -> String,
+    shape_err: impl FnOnce(&mut Vec<Diagnostic>) -> String,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<[f64; 3], String> {
     // SHAPE check, mirroring `point3_components` exactly — same variants, same
-    // arity. A mismatch keeps the caller's pre-δ wording and emits nothing.
+    // arity. A mismatch keeps the caller's pre-δ wording and mints nothing here:
+    // whatever the caller's `shape_err` pushes is the whole of it.
     let comps = match value {
         reify_ir::Value::Point(c) | reify_ir::Value::Vector(c) if c.len() == 3 => c,
-        _ => return Err(shape_err()),
+        _ => return Err(shape_err(diagnostics)),
     };
 
     let mut out = [0.0_f64; 3];
@@ -2089,7 +2100,7 @@ pub(crate) fn decode_plane(
         origin_val,
         ["ox", "oy", "oz"],
         kind_label,
-        || "Plane origin is not a valid 3-component numeric Point/Vector".to_string(),
+        |_| "Plane origin is not a valid 3-component numeric Point/Vector".to_string(),
         diagnostics,
     )?;
     // The plane NORMAL is a dimensionless unit vector — stays bare f64, exactly
@@ -2168,7 +2179,7 @@ pub(crate) fn decode_axis(
         origin_val,
         ["ox", "oy", "oz"],
         kind_label,
-        || "Axis origin is not a valid 3-component numeric Point/Vector".to_string(),
+        |_| "Axis origin is not a valid 3-component numeric Point/Vector".to_string(),
         diagnostics,
     )?;
     // The axis DIRECTION is a dimensionless unit vector — stays bare f64, exactly
@@ -2464,7 +2475,7 @@ pub(crate) fn compile_geometry_op(
                                     GridCoordName::z(ri, ci),
                                 ],
                                 kind,
-                                || {
+                                |_| {
                                     format!(
                                         "nurbs_surface: control_points[{}][{}] must be \
                                          a Point3<Length>, got {:?}",
@@ -3889,25 +3900,27 @@ fn transform_apply(
         meta_map,
         diagnostics,
     ) {
-        Some(v) => match decompose_transform_to_arrays(&v) {
-            Some((rotation, translation)) => {
-                Ok(reify_ir::GeometryOp::ApplyTransform {
-                    target: target_id,
-                    rotation,
-                    translation,
-                })
-            }
-            None => {
+        // The LOUD route into the ζ/R8 gate: a wrong-DIMENSION translation gets
+        // the C1 units diagnostic naming `translation.x|y|z`, while a wrong
+        // SHAPE keeps its pre-ζ Warning and `Err` byte-identical via the closure
+        // below (which both pushes and returns).
+        Some(v) => accept_transform_to_arrays(
+            &v,
+            "apply_transform",
+            &|diagnostics: &mut Vec<Diagnostic>| {
                 diagnostics.push(Diagnostic::warning(
                     "apply_transform dropped: 'transform' arg is not a valid Transform<3>"
                         .to_string(),
                 ));
-                Err(
-                    "apply_transform: 'transform' arg is not a valid Transform<3>"
-                        .into(),
-                )
-            }
-        },
+                "apply_transform: 'transform' arg is not a valid Transform<3>".to_string()
+            },
+            diagnostics,
+        )
+        .map(|(rotation, translation)| reify_ir::GeometryOp::ApplyTransform {
+            target: target_id,
+            rotation,
+            translation,
+        }),
         None => {
             Err("apply_transform: 'transform' arg is missing".into())
         }
@@ -4387,20 +4400,26 @@ fn pattern_arbitrary(
         }
         let mut transforms = Vec::with_capacity(elements.len());
         for element in elements {
-            match decompose_transform_to_arrays(element) {
-                Some(decoded) => transforms.push(decoded),
-                None => {
+            // The second LOUD route into the ζ/R8 gate (task 5747). The
+            // early-return-on-first-bad-element behaviour is UNCHANGED: a partial
+            // pattern is worse than a dropped op, and the all-failures-at-once
+            // discipline applies WITHIN one transform's triple — which
+            // `accept_length_point3` already provides — not ACROSS list elements,
+            // where widening it would turn one bad transform into a storm.
+            transforms.push(accept_transform_to_arrays(
+                element,
+                "arbitrary_pattern",
+                &|diagnostics: &mut Vec<Diagnostic>| {
                     diagnostics.push(Diagnostic::warning(
                         "arbitrary_pattern dropped: 'transform_list' element is not a valid \
                          Transform<3>"
                             .to_string(),
                     ));
-                    return Err(
-                        "arbitrary_pattern: 'transform_list' element is not a valid Transform<3>"
-                            .into(),
-                    );
-                }
-            }
+                    "arbitrary_pattern: 'transform_list' element is not a valid Transform<3>"
+                        .to_string()
+                },
+                diagnostics,
+            )?);
         }
         return Ok(reify_ir::GeometryOp::ArbitraryPattern {
             target: target_id,
@@ -4408,6 +4427,11 @@ fn pattern_arbitrary(
         });
     }
 
+    // The SCALAR-TRIPLE form below is deliberately untouched by ζ/5747: its
+    // `t{i}_dx/dy/dz` offsets are already LENGTH-gated by task 5744's
+    // `required_length_args` group read (see the comment inside the loop), so it
+    // reaches the SAME Contract C chokepoint by the NAMED-ARG route while the
+    // list form above reaches it by the decoded-value route.
     let mut transforms = Vec::new();
     let mut idx = 0;
     loop {
@@ -12171,54 +12195,100 @@ pub(crate) fn realization_is_aux(realization: &reify_compiler::RealizationDecl) 
 
 /// Decompose a `Value::Transform` into raw quaternion + SI-metre translation
 /// arrays for building a kernel-agnostic `reify_ir::GeometryOp::ApplyTransform`
-/// (T5 step-8/10).
+/// (T5 step-8/10), with the translation triple LENGTH-gated through the
+/// Contract C chokepoint (task 5747, units-length ζ / R8).
 ///
 /// Accepts `Transform { rotation: Orientation { w, x, y, z }, translation:
 /// Vector([s0, s1, s2]) }` where each translation component is a finite LENGTH
-/// or dimensionless `Scalar`; returns `Some(([w,x,y,z], [tx,ty,tz]))` with the
-/// translation read straight off `Scalar.si_value` (SI metres). Returns `None`
-/// for any other shape — non-`Transform`, non-`Orientation` rotation, a
-/// translation that is not a 3-component `Vector`, or a component that is not a
-/// LENGTH/dimensionless finite `Scalar`. Each component is checked independently,
-/// so a mixed-dimension translation (e.g. one ANGLE among LENGTHs) is rejected.
+/// `Scalar`; returns `Ok(([w,x,y,z], [tx,ty,tz]))` with the translation read
+/// straight off `Scalar.si_value` (SI metres).
+///
+/// TWO KINDS OF FAILURE, deliberately kept apart — the distinction is the whole
+/// point of this function existing beside [`decompose_transform_to_arrays`]:
+///
+/// - a wrong SHAPE (non-`Transform`, non-`Orientation` rotation, a translation
+///   that is not a 3-component `Vector`) calls `on_shape_mismatch` and returns
+///   ITS `String` as the `Err`. The closure both PUSHES the caller's pre-ζ
+///   `Diagnostic` and RETURNS its pre-ζ `Err` text, which is what keeps every
+///   caller's shape wording byte-identical across ζ. It is forwarded WHOLE to
+///   [`accept_length_point3`]'s own `shape_err`, so the two halves travel
+///   together down every path and neither can be dropped;
+/// - a wrong DIMENSION is a UNITS rejection, handed WHOLE to
+///   [`accept_length_point3`] under the names `translation.x|y|z`. That helper
+///   already owns the C1 wording, the `Severity::Error` +
+///   `DiagnosticCode::DimensionedArgRejected` promotion (task 5743), D10's
+///   `unresolved (Undef)` message and the FIRST-error-wins / all-failures-at-once
+///   precedence across the triple, so none of it is re-derived here.
+///
+/// R8's user-visible change is the SECOND branch's MESSAGE, not an exit code:
+/// pre-ζ a bare or wrong-dimension translation was already dropped, but under
+/// the generic `'transform' arg is not a valid Transform<3>`, which names
+/// neither the offending coordinate nor the fix. The one genuine accept→reject
+/// flip is a `Scalar{DIMENSIONLESS}` component, which pre-ζ reached the kernel
+/// as that many SI METRES.
+///
+/// `accept_length_point3` admits `Value::Point | Value::Vector`; a `Transform`
+/// translation is always a `Vector`, so the explicit `Value::Vector` check stays
+/// HERE rather than silently widening the shape this decoder accepts.
 ///
 /// `reify_stdlib`'s own `decompose_transform` is private, so this local
 /// pattern-match keeps the change inside reify-eval while feeding the IR op's
 /// raw float arrays (the IR is kernel-agnostic by design).
-pub(crate) fn decompose_transform_to_arrays(v: &reify_ir::Value) -> Option<([f64; 4], [f64; 3])> {
+fn accept_transform_to_arrays(
+    v: &reify_ir::Value,
+    kind_label: impl std::fmt::Display + Copy,
+    on_shape_mismatch: &dyn Fn(&mut Vec<Diagnostic>) -> String,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<([f64; 4], [f64; 3]), String> {
     let reify_ir::Value::Transform {
         rotation,
         translation,
     } = v
     else {
-        return None;
+        return Err(on_shape_mismatch(diagnostics));
     };
     let reify_ir::Value::Orientation { w, x, y, z } = rotation.as_ref() else {
-        return None;
+        return Err(on_shape_mismatch(diagnostics));
     };
-    let reify_ir::Value::Vector(components) = translation.as_ref() else {
-        return None;
-    };
-    if components.len() != 3 {
-        return None;
+    if !matches!(translation.as_ref(), reify_ir::Value::Vector(c) if c.len() == 3) {
+        return Err(on_shape_mismatch(diagnostics));
     }
-    let mut t = [0.0_f64; 3];
-    for (i, c) in components.iter().enumerate() {
-        let reify_ir::Value::Scalar {
-            si_value,
-            dimension,
-        } = c
-        else {
-            return None;
-        };
-        let dim_ok = *dimension == reify_core::DimensionVector::LENGTH
-            || *dimension == reify_core::DimensionVector::DIMENSIONLESS;
-        if !dim_ok || !si_value.is_finite() {
-            return None;
-        }
-        t[i] = *si_value;
-    }
-    Some(([*w, *x, *y, *z], t))
+    // The translation SHAPE is already known good, so `accept_length_point3`'s
+    // own `shape_err` arm is unreachable from here (the guard above admits a
+    // strict SUBSET of what the helper does). It is wired to the SAME closure
+    // anyway, forwarded WHOLE, so a future widening of either shape check keeps
+    // both halves of the rejection — the pushed `Diagnostic` and the `Err` text.
+    let t = accept_length_point3(
+        translation.as_ref(),
+        ["translation.x", "translation.y", "translation.z"],
+        kind_label,
+        on_shape_mismatch,
+        diagnostics,
+    )?;
+    Ok(([*w, *x, *y, *z], t))
+}
+
+/// QUIET `Option` wrapper over [`accept_transform_to_arrays`] — the same gate,
+/// with every diagnostic swallowed and every failure collapsed back to `None`.
+///
+/// It survives ζ because its two remaining callers are POSE READERS that must
+/// stay silent: `interferes` / `min_clearance`'s per-body `world_transform`
+/// (~:5746) and `walk_templates`' `composed_world` (~:11704). Both already treat
+/// `None` as "identity / not decomposable → use the raw handle, no kernel op",
+/// and both read transforms that are LENGTH BY CONSTRUCTION —
+/// `identity_pose_transform` and `compose_pose_chain`'s seed both mint
+/// `reify_ir::Value::length(0.0)`, `frame_to_pose_transform` already hard-requires
+/// LENGTH components, and `reify_stdlib::compose_transforms` requires
+/// `t1_dim == t2_dim` so composition preserves the dimension. A rejection there
+/// is therefore unreachable in production, and emitting one would DOUBLE-REPORT
+/// a failure the pose producer has already diagnosed.
+///
+/// Routing them through the gate rather than leaving a second un-gated decoder
+/// is what makes this ONE gate instead of two — the silence is a caller policy,
+/// not a hole.
+pub(crate) fn decompose_transform_to_arrays(v: &reify_ir::Value) -> Option<([f64; 4], [f64; 3])> {
+    let mut sink = Vec::new();
+    accept_transform_to_arrays(v, "transform", &|_| String::new(), &mut sink).ok()
 }
 
 /// Decode a `Value::Orientation` quaternion into an `(axis, angle_rad)` pair
