@@ -174,6 +174,16 @@ fn a_fully_coded_file_must_drop_its_row_rather_than_write_zero() {
     assert_eq!(dropped_row, Vec::new(), "dropping the row for a fully coded file must be clean");
 }
 
+// Both gaps pinned by the pair below were ACCEPTED with the 2026-08-28
+// ruling: the per-file COUNT model trades away the line-level precision the
+// retired fingerprint-row design would have kept, in exchange for the
+// simplicity that made #5405 tractable at all. If a wave ever demonstrates
+// that either gap matters in practice, the improvement is filed against
+// #5405's own PRD (`docs/prds/v0_6/eradicate-silent-undef.md`) — NEVER as a
+// second ratchet over this population (this file's module doc states why).
+// That routing is the durable half of κ's item 2: it is what stops the next
+// agent who trips delta (a) from rebuilding the design this task retired.
+
 #[test]
 fn accepted_delta_a_same_file_code_and_new_uncoded_site_cancel() {
     // ACCEPTED with the 2026-08-28 ruling: the per-file COUNT model — versus
