@@ -1105,18 +1105,17 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
 
 /// Solve `K φ = λ B φ` via shift-invert Lanczos.
 ///
-/// **Shift contract status:** inherits [`lanczos_shift_invert`]'s — `opts.sigma`
-/// is not yet honored on the Lanczos branch (#7259).  The dense fallback below
-/// DOES honor it, so **which σ this entry point actually applies depends on the
-/// problem dimension** until #7259 lands: n ≤ 64 routes dense and honors σ, a
-/// larger problem routes Lanczos and solves at σ=0.  That divergence is not
-/// silent — the returned [`EigenSolverResult::shift`] reports the σ actually
-/// used, so a caller that needs the shift honored tests
-/// `result.shift == opts.sigma` and gets a definite answer either way.
+/// **Shift contract status:** `opts.sigma` is honored on BOTH branches.  At σ=0
+/// the sparse branch factors `K` itself (C1 — see
+/// [`try_solve_eigen_shift_invert`]); at σ≠0 it assembles `K − σB`, factors it
+/// Cholesky-then-LU, and back-shifts `λ = σ + 1/μ`.  The dense fallback honors σ
+/// as a selection key over the full computed spectrum.
 ///
-/// Factors K via sparse Cholesky, builds [`SparseStiffnessOp`] +
-/// [`SparseMetricOp`] adapters, and delegates to [`lanczos_shift_invert`] for
-/// the Krylov computation.
+/// Delegates to [`try_solve_eigen_shift_invert`], which owns the dispatch, the
+/// C5 provenance and the C6 singular-shift guard.  **This entry point is a
+/// convenience over that one and nothing more** — it decides neither the
+/// dispatch nor the guard, and must not become a second place where either is
+/// decided.  All it adds is turning the two typed domain failures into panics.
 ///
 /// Falls back to [`solve_eigen_dense`] when the Krylov window would exceed
 /// the problem dimension (n ≤ `2·FAER_MIN_DIM = 64`, or n_modes too large
@@ -1128,17 +1127,25 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
 ///
 /// # Panics
 ///
-/// - K is not SPD (numeric Cholesky failure → panic with descriptive message,
-///   matching Task-2544 panic-on-contract convention)
-/// - The sparse Cholesky fails for a NON-numeric reason (`LltError::Generic`:
-///   `OutOfMemory` / `IndexOverflow`). That panic is raised inside
-///   [`try_solve_eigen_shift_invert`] and names the resource failure, so it is
-///   never mistaken for the "K must be SPD" message below.
-/// - See also [`check_eigen_options_and_shapes`]
+/// Three causes, kept DISTINCT because their remedies are distinct — a message
+/// that conflated any two would send an author to fix the wrong thing:
 ///
-/// A caller that can legitimately be handed a singular `K` — an
-/// under-constrained modal model, say — should use
-/// [`try_solve_eigen_shift_invert`] instead of catching this panic.
+/// - **`K` is not SPD** (numeric Cholesky failure). Message contains
+///   `"K must be SPD"`; the remedy is to apply boundary conditions. Matches the
+///   Task-2544 panic-on-contract convention.
+/// - **`K − σB` is singular at this σ** — σ sits on, or within the pencil's own
+///   resolution floor of, an eigenvalue. Names the offending σ and says to move
+///   it. This message deliberately shares NO wording with the one above.
+/// - **A `Generic` resource failure** from the `K − σB` assembly or from either
+///   factorization (`OutOfMemory` / `IndexOverflow`). Raised inside
+///   [`try_solve_eigen_shift_invert`] and names the resource failure, so it is
+///   never mistaken for either domain fault.
+/// - See also [`check_eigen_options_and_shapes`] for the option/shape guards.
+///
+/// A caller that can legitimately be handed either DOMAIN failure — a singular
+/// `K` from an under-constrained modal model, or a σ it cannot place safely in
+/// advance — should use [`try_solve_eigen_shift_invert`] instead of catching
+/// these panics: it reports both as typed values that can be told apart.
 pub fn solve_eigen_shift_invert(
     k: &SparseRowMat<usize, f64>,
     b: &SparseRowMat<usize, f64>,
@@ -1149,11 +1156,14 @@ pub fn solve_eigen_shift_invert(
         Err(ShiftInvertFailure::KNotSpd) => panic!(
             "eigensolve: K must be SPD; sp_cholesky failed — check that BCs have been applied"
         ),
-        // #7259 step-11 replaces this with the real singular-shift message.
-        // Unreachable until then: nothing in this file yet produces the arm.
+        // Shares NO wording with the message above, deliberately: this is a
+        // fault in where σ was placed, and reporting it in the vocabulary of a
+        // non-SPD K would send an author to check boundary conditions for a
+        // problem that is entirely about the shift.
         Err(ShiftInvertFailure::ShiftAtEigenvalue { sigma }) => panic!(
-            "eigensolve: internal error — ShiftAtEigenvalue {{ sigma = {sigma} }} \
-             raised before its diagnostic message exists"
+            "eigensolve: the shift sigma = {sigma} lands on an eigenvalue of the pencil, \
+             so K - sigma*B is singular and shift-invert has no operator to apply; move \
+             the shift off that eigenvalue"
         ),
     }
 }
