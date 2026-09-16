@@ -4,9 +4,12 @@
 //! emit of its own.
 //!
 //! The claim this mechanizes is stated in prose in two places and is NOT
-//! restated here — see `gui/src-tauri/src/debug_server.rs:1867-1908`, point
-//! (a) on `write_on_engine_and_refresh_baseline`, and the "Two seams, ONE
-//! stated exception" section of `docs/debug-mcp-contract.md`. Note the shape
+//! restated here — see point (a) on `write_on_engine_and_refresh_baseline` in
+//! `gui/src-tauri/src/debug_server.rs`, and the "Two seams, ONE stated
+//! exception" section of `docs/debug-mcp-contract.md`. Citations throughout
+//! this module are SYMBOL names, never line numbers: this gate exists to
+//! resist drift, and a line number goes stale the first time anyone edits a
+//! doc comment above it. Note the shape
 //! of the claim: "one of the two shared seams", NOT "all five route through
 //! `write_on_engine_and_refresh_baseline`" — `reify_open_file` reaches the
 //! same refresh through `open_source_into_engine_and_refresh_baseline`, for
@@ -175,8 +178,8 @@ fn first_call_identifier(text: &str) -> Option<&str> {
 }
 
 /// Names every `reify_*` tool the `ToolDef` registry ADVERTISES, in source
-/// order (`debug_server.rs:1026/1056/1084/1101/1115`). `code` must already be
-/// comment-stripped.
+/// order — the `name:` field of each entry `tool_defs` returns. `code` must
+/// already be comment-stripped.
 ///
 /// This is the gate's SECOND, independent enumeration of the same tool set,
 /// read from a struct-literal field rather than from a match pattern. The
@@ -202,8 +205,8 @@ fn registry_tool_names(code: &str) -> Vec<String> {
 /// the arm was unreadable, including reasons nobody has anticipated.
 ///
 /// It also catches a shape no arm parser could reach at all: a
-/// registry-advertised tool dispatched by a non-literal path, falling into the
-/// `_ =>` frontend-delegation catch-all at `debug_server.rs:1329`.
+/// registry-advertised tool dispatched by a non-literal path, falling into
+/// `dispatch_tool`'s `_ =>` frontend-delegation catch-all.
 fn unenumerated_tools(source: &str) -> Vec<String> {
     let code = strip_comments(source);
     let dispatched: Vec<String> = dispatch_arms(&code)
@@ -681,10 +684,11 @@ async fn handle_reify_export(state: &DebugServerState, params: Value) -> Result<
 ///
 /// - `reify_set_parameter` names its seam directly in the handler body — the
 ///   shape four of the five write tools take.
-/// - `reify_open_file` reaches the SAME refresh ONE HOP away, through
-///   `open_path_into_engine` (debug_server.rs:1701 → :1525 → :1640). This is
-///   the one stated exception δ documented for θ, and the only shape that
-///   forces the checker to trace a delegation.
+/// - `reify_open_file` reaches the SAME refresh ONE HOP away
+///   (`handle_reify_open_file` → `open_path_into_engine` →
+///   `open_source_into_engine_and_refresh_baseline`). This is the one stated
+///   exception δ documented for θ, and the only shape that forces the checker
+///   to trace a delegation.
 const COMPLIANT_SOURCE: &str = r#"
 async fn dispatch_tool(
     state: &DebugServerState,
@@ -738,8 +742,9 @@ async fn handle_reify_set_parameter(
 "#;
 
 /// A handler that DOES route through a seam but then emits a second time on
-/// its own — the private emission path `debug_server.rs:1888` forbids in as
-/// many words: "Do NOT add a second emit path here or in any caller".
+/// its own — the private emission path point (b) on
+/// `write_on_engine_and_refresh_baseline` forbids in as many words: "Do NOT
+/// add a second emit path here or in any caller".
 const PRIVATE_EMIT_SOURCE: &str = r#"
 async fn dispatch_tool(
     state: &DebugServerState,
@@ -865,8 +870,8 @@ pub async fn reify_export_on_engine_and_refresh_baseline(
 /// A fixture whose `ToolDef` registry advertises BOTH `reify_alpha` and
 /// `reify_beta` while `dispatch_tool` carries a literal arm for `reify_alpha`
 /// only — `reify_beta` falls through to the `_ =>` frontend-delegation
-/// catch-all, the shape the live `dispatch_tool` has at
-/// `debug_server.rs:1329`, so it is dispatched but never seen by the arm scan.
+/// catch-all the live `dispatch_tool` also has, so it is dispatched but never
+/// seen by the arm scan.
 ///
 /// No widening of the arm parser can reach this shape: there is no arm to
 /// read. Only a second, independent enumeration of the tool set catches it.
@@ -1079,10 +1084,10 @@ fn every_debug_write_tool_routes_through_the_delta_choke_point() {
     // NON-VACUITY FLOOR — checked before the real assertion so a moved file
     // or a parser that silently stopped matching reds instead of passing
     // vacuously (same shape as `every_test_module_file_is_declared`'s floor).
-    // It also fail-closes the split debug_server.rs weighed under "WHY THE
-    // CLUSTER LIVES IN THIS FILE" (:1987-2006): if
-    // the write-tool cluster moves to its own module the registry vanishes
-    // here, this fires, and someone must re-point the checker.
+    // It also fail-closes the split debug_server.rs weighed under its "WHY
+    // THE CLUSTER LIVES IN THIS FILE" note: if the write-tool cluster moves to
+    // its own module the registry vanishes here, this fires, and someone must
+    // re-point the checker.
     //
     // Anchored on the REGISTRY rather than on the arms, which is what makes
     // the headroom sound: if the arm parser breaks the arms go empty while the
@@ -1134,10 +1139,11 @@ fn no_write_tool_handler_emits_privately() {
         }],
     );
 
-    // The real file is clean, and is only clean because step-4 strips
-    // comments: its ONLY textual `emit_delta` occurrences are the doc
-    // comments at :1612 and :1888, so a checker reading raw text would
-    // false-positive right here.
+    // The real file is clean, and is only clean because prose is blanked
+    // first: its ONLY textual `emit_delta` occurrences are the shared
+    // INV-GUI-2 rationale banner above the two seams and point (b) on
+    // `write_on_engine_and_refresh_baseline`, both comments, so a checker
+    // reading raw text would false-positive right here.
     let private_emits: Vec<Bypass> = write_tool_bypasses(&debug_server_source())
         .into_iter()
         .filter(|b| b.kind == BypassKind::PrivateEmit)
@@ -1225,6 +1231,51 @@ fn the_break_glass_knob_downgrades_a_real_bypass_to_a_warn() {
         sweep_outcome(COMPLIANT_SOURCE, Some("1")),
         SweepOutcome::Clean
     );
+}
+
+/// The symbols and prose anchors this module's doc comments cite must still
+/// exist in the file they cite them from.
+///
+/// Line numbers were replaced by symbol anchors because names survive edits —
+/// but only while they are still names, so this pins them rather than leaving
+/// a drift-resistance gate resting on unchecked pointers. It doubles as a
+/// non-vacuity check on [`fn_body`]: every anchor below is resolved with the
+/// same primitive the gate itself runs on.
+#[test]
+fn every_anchor_this_module_cites_still_exists() {
+    let source = debug_server_source();
+    let code = strip_comments(&source);
+
+    let missing: Vec<&str> = [
+        "tool_defs",
+        "dispatch_tool",
+        "handle_reify_open_file",
+        "open_path_into_engine",
+        "open_source_into_engine_and_refresh_baseline",
+        "write_on_engine_and_refresh_baseline",
+    ]
+    .into_iter()
+    .filter(|name| fn_body(&code, name).is_none())
+    .collect();
+    assert_eq!(
+        missing,
+        Vec::<&str>::new(),
+        "this module's prose cites top-level fn(s) `debug_server.rs` no longer defines — \
+         re-point the prose at whatever replaced them (or `fn_body` has stopped resolving)"
+    );
+
+    // Prose anchors, cited from the comment text rather than the code. Each
+    // fragment must sit on ONE source line: the notes are line-wrapped, so a
+    // longer quote spans a `///` and never matches.
+    for note in [
+        "WHY THE CLUSTER LIVES IN THIS FILE",
+        "a second emit path here or in any caller",
+    ] {
+        assert!(
+            source.contains(note),
+            "this module cites the `debug_server.rs` note {note:?}, which is no longer there"
+        );
+    }
 }
 
 /// The soundness net for the arm scan: a tool the scan CANNOT SEE must red as
