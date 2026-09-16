@@ -971,13 +971,16 @@ fn nested_primitive_keeps_one_diagnostic_per_axis() {
 /// SIGNAL — a bare `revolve` axis ORIGIN is rejected, naming `ox`/`oy`/`oz`.
 ///
 /// The straddle row: the origin is a point in space (gated), while the axis
-/// DIRECTION `0, 0, 1` and the `90` angle in this same call are legitimately
-/// bare and must stay silent. Three errors, not six or seven.
+/// DIRECTION `0, 0, 1` in this same call is legitimately bare and must stay
+/// silent. The `90deg` angle is written DIMENSIONED so this row isolates the
+/// origin triple — the angle has its own gated slot and its own test, and
+/// leaving it bare here would silently turn `errors.len() == 3` into 4 while
+/// the assertion message still claimed three. Three errors, not six or seven.
 #[test]
 fn revolve_bare_origin_is_rejected_naming_the_origin_components() {
     let compiled = compile_struct_body(
         "    let profile = rectangle(10mm, 10mm)\n\
-         \x20   let r = revolve(profile, 0, 0, 0, 0, 0, 1, 90)\n",
+         \x20   let r = revolve(profile, 0, 0, 0, 0, 0, 1, 90deg)\n",
     );
     let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
         .iter()
@@ -990,8 +993,8 @@ fn revolve_bare_origin_is_rejected_naming_the_origin_components() {
             "revolve: oy argument expects Length, got Int; pass a dimensioned length such as `5mm`",
             "revolve: oz argument expects Length, got Int; pass a dimensioned length such as `5mm`",
         ],
-        "only the axis ORIGIN is gated — the direction and the angle must stay \
-         silent.\nAll diagnostics: {:#?}",
+        "only the axis ORIGIN is gated here — the axis direction must stay silent \
+         and the angle is already dimensioned.\nAll diagnostics: {:#?}",
         compiled.diagnostics
     );
 }
@@ -999,10 +1002,12 @@ fn revolve_bare_origin_is_rejected_naming_the_origin_components() {
 /// SIGNAL — a bare `rotate_around` PIVOT is rejected, naming `px`/`py`/`pz`.
 ///
 /// Same straddle shape as `revolve`'s, on the TRANSFORM row: the pivot is
-/// gated, the axis direction and the angle are not.
+/// gated and the axis direction is not. The angle is written dimensioned for
+/// the same reason — it carries its own slot, and this row's `errors.len()`
+/// must stay a statement about the pivot alone.
 #[test]
 fn rotate_around_bare_pivot_is_rejected_naming_the_pivot_components() {
-    let compiled = compile_struct_body("    let r = rotate_around(b, 0, 0, 0, 0, 0, 1, 90)\n");
+    let compiled = compile_struct_body("    let r = rotate_around(b, 0, 0, 0, 0, 0, 1, 90deg)\n");
     let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
         .iter()
         .map(|d| d.message.as_str())
@@ -1014,8 +1019,8 @@ fn rotate_around_bare_pivot_is_rejected_naming_the_pivot_components() {
             "rotate_around: py argument expects Length, got Int; pass a dimensioned length such as `5mm`",
             "rotate_around: pz argument expects Length, got Int; pass a dimensioned length such as `5mm`",
         ],
-        "only the PIVOT is gated — the axis direction and the angle must stay \
-         silent.\nAll diagnostics: {:#?}",
+        "only the PIVOT is gated here — the axis direction must stay silent and \
+         the angle is already dimensioned.\nAll diagnostics: {:#?}",
         compiled.diagnostics
     );
 }
