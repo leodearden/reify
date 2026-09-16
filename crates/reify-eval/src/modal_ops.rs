@@ -4177,7 +4177,7 @@ fn field_or(val: &Value, name: &str, fallback: Value) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use faer::sparse::SparseRowMat;
+    use faer::sparse::{SparseRowMat, Triplet};
     use reify_core::{Diagnostic, DimensionVector, Severity};
     use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
     use reify_solver_elastic::assembly::test_support::promote_tets_to_p2;
@@ -4199,7 +4199,7 @@ mod tests {
         extract_loss_factor, extract_reference_direction, mode_shape_value, nearest_node,
         placeholder_part, plan_modal_damping, read_real_list, read_scalar_si,
         resolve_location_node, run_modal_analysis, run_transient_response,
-        simply_supported_pin_pin_bcs, solve_mechanism_modal_trampoline,
+        simply_supported_pin_pin_bcs, solve_generalized_eigen, solve_mechanism_modal_trampoline,
         solve_modal_analysis_trampoline, solve_modal_core, solve_transient_response_trampoline,
     };
     use crate::{CancellationHandle, ComputeOutcome};
@@ -5500,6 +5500,140 @@ mod tests {
         let bcs: Vec<DirichletBc> = Vec::new();
 
         assert_over_ceiling_degenerate(&mesh, &bcs, "route 2: force_dense (no supports)");
+    }
+
+    // -----------------------------------------------------------------------
+    // β (#7259): a σ that lands on an eigenvalue of the modal pencil
+    // -----------------------------------------------------------------------
+
+    /// `K = tridiag(−1, 2, −1)` (n×n, SPD) with `M = I` — the 1-D Laplacian
+    /// pencil, whose spectrum `λ_k = 2(1 − cos(kπ/(n+1)))` is closed-form. That
+    /// is what lets a σ be placed EXACTLY on an eigenvalue in f64, rather than
+    /// near one to within whatever tolerance a prior solve happened to achieve.
+    ///
+    /// The same pencil the solver crate's BT5 drives
+    /// (`eigensolve_shift_contract.rs` fixture C), restated here rather than
+    /// exported across the crate boundary: it is six lines of triplets, and a
+    /// cross-crate test-support seam would be a wider commitment than the thing
+    /// it carries.
+    fn laplacian_pencil(n: usize) -> (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>) {
+        let mut k_trips = Vec::with_capacity(3 * n - 2);
+        for i in 0..n {
+            k_trips.push(Triplet::new(i, i, 2.0));
+            if i > 0 {
+                k_trips.push(Triplet::new(i, i - 1, -1.0));
+            }
+            if i + 1 < n {
+                k_trips.push(Triplet::new(i, i + 1, -1.0));
+            }
+        }
+        let m_trips: Vec<Triplet<usize, usize, f64>> =
+            (0..n).map(|i| Triplet::new(i, i, 1.0)).collect();
+        (
+            SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap(),
+            SparseRowMat::try_new_from_triplets(n, n, &m_trips).unwrap(),
+        )
+    }
+
+    /// Closed-form `λ_k = 2(1 − cos(kπ/(n+1)))` of [`laplacian_pencil`],
+    /// 1-INDEXED (λ₁ is the first mode, not λ₀), matching the formula.
+    fn laplacian_lambda(n: usize, k: usize) -> f64 {
+        assert!(
+            (1..=n).contains(&k),
+            "an n = {n} pencil has modes k = 1..={n}, not {k}",
+        );
+        2.0 * (1.0 - f64::cos(k as f64 * std::f64::consts::PI / (n as f64 + 1.0)))
+    }
+
+    /// β (#7259): a σ landing ON an eigenvalue of the pencil comes back from
+    /// [`solve_generalized_eigen`] as a RETURNED, typed outcome — not a panic,
+    /// and not folded into `singular_k_over_ceiling`.
+    ///
+    /// # The arm is reachable from ordinary `.ri` input
+    ///
+    /// Each link re-checked against this tree rather than assumed:
+    ///
+    /// - `ModalOptions` declares `param sigma : Real = 0.0` as a deliberately
+    ///   UNCONSTRAINED, user-settable parameter
+    ///   (`crates/reify-compiler/stdlib/modal_analysis.ri`, whose sibling note
+    ///   records the "explicitly NOT constrained" discipline);
+    /// - [`extract_eigen_knobs`] returns any FINITE user value verbatim — pinned
+    ///   by `extract_eigen_knobs_reads_fields_and_falls_back`, which asserts
+    ///   `(7, 1e-7, 50, 2.5)` for a `sigma: 2.5` input;
+    /// - that value is written straight into the `EigenSolverOptions` literal
+    ///   [`run_modal_analysis`] builds, and reaches [`solve_generalized_eigen`]
+    ///   with NO clamping anywhere on the path.
+    ///
+    /// Before this diff the Lanczos path IGNORED σ, so the plumbed value was
+    /// inert and the arm really was unreachable — which is what the "unreachable
+    /// today" comment this diff deletes recorded, correctly, at the time. β makes
+    /// σ live on that path, and a live σ turns a dead field into a reachable
+    /// failure.
+    ///
+    /// The value SHAPE matters too: a `.ri` integer literal (`sigma: 2`) arrives
+    /// as `Value::Int` and falls back to 0.0 — the trap
+    /// `buckling_option_unsupported.rs` already pins for the sibling knob — so
+    /// the reachable surface is a Real literal such as `sigma: 2.5`, which is the
+    /// shape the knobs test uses and the shape a user actually writes.
+    #[test]
+    fn shift_landing_on_an_eigenvalue_is_returned_not_panicked() {
+        const N: usize = 80;
+        let (k, m) = laplacian_pencil(N);
+        let opts = EigenSolverOptions {
+            n_modes: 2,
+            tol: 1e-10,
+            max_iters: 1000,
+            // Exactly λ₃, computed in f64, so `K − σM` is genuinely singular
+            // rather than merely ill-conditioned.
+            sigma: laplacian_lambda(N, 3),
+        };
+        // K is SPD, so `KNotSpd` cannot fire and confound the result; and
+        // n = 80 > max(64, 2·n_modes) = 64, so the small-model dense arm — which
+        // forms no `K − σM` at all, and on which C6 is satisfied vacuously — is
+        // genuinely bypassed.
+        assert!(
+            N > 64.max(2 * opts.n_modes),
+            "the fixture must bypass the small-model dense arm, or it tests \
+             nothing about the shifted factorization",
+        );
+
+        let outcome = solve_generalized_eigen(&k, &m, opts.clone(), false);
+
+        assert_eq!(
+            outcome.shift_at_eigenvalue,
+            Some(opts.sigma),
+            "a σ on an eigenvalue must be carried OUT OF BAND and name the \
+             offending σ, so the caller can say WHICH shift was refused",
+        );
+        // Load-bearing, not decoration: δ (#7261) forbids a shifted-solve outcome
+        // being reported as `W_ModalRigidBodyMode: K_free is singular (the model
+        // is under-constrained)`, which is precisely what folding this into
+        // `singular_k_over_ceiling` would produce — for a model whose supports
+        // are perfectly fine and whose only fault is where σ was put.
+        assert!(
+            !outcome.singular_k_over_ceiling,
+            "a singular SHIFT is not an under-constrained MODEL; the two carriers \
+             must stay orthogonal",
+        );
+
+        // The degenerate result itself: this branch computed nothing, and says so
+        // rather than handing back a plausible-looking spectrum.
+        assert!(
+            outcome.result.eigenvalues.is_empty(),
+            "a refused shift must yield NO eigenpairs; got {:?}",
+            outcome.result.eigenvalues,
+        );
+        assert_eq!(outcome.result.n_converged, 0);
+        assert!(!outcome.result.converged);
+        assert_eq!(
+            outcome.result.shift, opts.sigma,
+            "the degenerate result must still report the σ that was attempted",
+        );
+        assert!(
+            outcome.result.shift_skipped_modes,
+            "no spectrum was computed here, so C5 forbids ESTABLISHING `false` — \
+             the conservative answer is the only one this branch has evidence for",
+        );
     }
 
     /// Build a minimal `ElasticMaterial`-shaped `Value::StructureInstance` with
