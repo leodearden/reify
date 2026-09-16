@@ -659,3 +659,80 @@ fn engine_state_json_failed_edits_keep_content_consistent_and_reset_diagnostics(
         "meshes must be non-empty after successful fix"
     );
 }
+
+// ── Task 5466: the MCP dispatch entry point ──────────────────────────────────
+//
+// `main.rs::mcp_tool_call` is the last engine-bearing Tauri command not on a
+// large stack. It cannot be exercised headlessly — it takes `tauri::AppHandle`
+// and `tauri::State`, and `main.rs` is a `required-features = ["gui"]` `[[bin]]`
+// — so the lib-side entry point it delegates to is what carries the guards,
+// following the convention task 5772 used for its fourteen wrappers.
+
+/// The sorted set of `cell_id`s in a `reify_get_parameters` result.
+///
+/// Panics rather than returning an error: a malformed result here means the
+/// dispatch under test is broken, which is a test failure and not a case any
+/// caller should handle.
+fn sorted_cell_ids(result: &serde_json::Value) -> Vec<String> {
+    let entries = result.as_array().unwrap_or_else(|| {
+        panic!("a reify_get_parameters result must be a JSON array; got: {result}")
+    });
+    let mut ids: Vec<String> = entries
+        .iter()
+        .map(|entry| {
+            entry["cell_id"]
+                .as_str()
+                .unwrap_or_else(|| {
+                    panic!("every parameter entry must carry a string cell_id; got: {entry}")
+                })
+                .to_owned()
+        })
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// Dispatching through `mcp_tool_call_on_large_stack` reports the same
+/// parameters as dispatching directly: relocating the call must not change what
+/// it computes.
+///
+/// Compared as the order-insensitive sorted `cell_id` SET rather than with a
+/// whole-JSON `assert_eq!`. The two results necessarily come from two
+/// independently constructed `EngineSession`s, so a full comparison would
+/// additionally be asserting run-to-run determinism of every formatted float in
+/// `ParameterInfo.value` and of the collection's order — neither is the property
+/// under test, and either could go flaky for a reason with nothing to do with
+/// `large_stack`, pointing the failure at the wrong subsystem. Same reasoning
+/// already written on `commands_tests::assert_same_salient_state`.
+#[test]
+fn mcp_tool_call_on_large_stack_is_result_preserving() {
+    let wrapped = crate::mcp_context::mcp_tool_call_on_large_stack(
+        TauriToolContext::builder(make_engine()).build(),
+        "reify_get_parameters".to_string(),
+        serde_json::json!({}),
+    )
+    .expect("dispatch through the large-stack entry point should succeed");
+    let wrapped_ids = sorted_cell_ids(&wrapped);
+
+    // Non-vacuity: without this, the comparison below would also pass for two
+    // EMPTY sets — which is precisely what a dispatch that silently returned
+    // nothing would produce.
+    assert!(
+        wrapped_ids.iter().any(|id| id == "Bracket.width"),
+        "the wrapped dispatch must report the bracket fixture's parameters; got: {wrapped_ids:?}"
+    );
+
+    let direct = mcp_tool_call_impl(
+        "reify_get_parameters",
+        serde_json::json!({}),
+        &make_tauri_context(),
+    )
+    .expect("direct dispatch should succeed");
+
+    assert_eq!(
+        wrapped_ids,
+        sorted_cell_ids(&direct),
+        "relocating the dispatch onto a large stack must not change the set of \
+         parameters it reports"
+    );
+}
