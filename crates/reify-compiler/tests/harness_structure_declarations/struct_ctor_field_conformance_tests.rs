@@ -1036,6 +1036,166 @@ fn port_member_structureref_param_default_given_string_warns() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Task 7174 parity fence: a port-body param default must diagnose IDENTICALLY
+// to the same param written at structure top level.
+//
+// Before the fix the port form emitted strictly FEWER diagnostics than its
+// top-level twin in every case below (the walk never saw `CompiledPort.members`),
+// so each row here is a genuine RED-before / GREEN-after observation and not a
+// restatement of the single-arm probes above. Comparing over the FULL
+// `module.diagnostics` — not just the ctor-conformance subset — is what also
+// makes the fence prove the fix does not DOUBLE-report: `check_param_default_type`
+// (the Error-severity declared-vs-initializer check in `entity.rs`) and
+// `check_param_default_conformance` stay complementary at the port site exactly
+// as they already are at the top level.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One parity row: the same param-default mismatch written both ways, plus the
+/// `(severity, code)` sequence BOTH forms must produce, in emission order.
+struct PortParityCase {
+    label: &'static str,
+    /// `structure def Root { param … }`.
+    top_level_src: &'static str,
+    /// `structure def Root { port mount : P { param … } }`.
+    port_src: &'static str,
+    expected: &'static [(Severity, DiagnosticCode)],
+}
+
+/// Compile both halves of `case` and assert they diagnose identically.
+///
+/// Three assertions, in the order that makes a failure self-diagnosing:
+/// 1. the TOP-LEVEL form matches `case.expected` — the non-vacuity pin, so a
+///    future change that silences BOTH sites fails here rather than sliding
+///    through a both-empty parity comparison;
+/// 2. the PORT form matches the same sequence — the parity claim itself;
+/// 3. each message pair is byte-identical once the port form's `mount.` member
+///    prefix is normalized away.
+///
+/// (3) is deliberately exact rather than a `contains` check: the composite
+/// `<port>.<param>` name is the ONLY licensed difference between the two
+/// surfaces, so anything else — a different hint clause, a different rendered
+/// type — is drift. Every fixture in this block names its port `mount`, which
+/// is what makes the one-line normalization sufficient.
+fn assert_port_parity_with_top_level(case: &PortParityCase) {
+    let PortParityCase {
+        label,
+        top_level_src,
+        port_src,
+        expected,
+    } = case;
+    let top = compile_source_with_stdlib(top_level_src);
+    let port = compile_source_with_stdlib(port_src);
+
+    let expected: Vec<(Severity, Option<DiagnosticCode>)> =
+        expected.iter().map(|(s, c)| (*s, Some(*c))).collect();
+    let shape = |m: &CompiledModule| -> Vec<(Severity, Option<DiagnosticCode>)> {
+        m.diagnostics.iter().map(|d| (d.severity, d.code)).collect()
+    };
+
+    assert_eq!(
+        shape(&top),
+        expected,
+        "{label}: top-level form must produce the measured diagnostic sequence \
+         (non-vacuity pin), got: {:#?}",
+        top.diagnostics
+    );
+    assert_eq!(
+        shape(&port),
+        expected,
+        "{label}: port-body form must produce the SAME diagnostic sequence as its \
+         top-level twin, got: {:#?}",
+        port.diagnostics
+    );
+    for (i, (t, p)) in top.diagnostics.iter().zip(&port.diagnostics).enumerate() {
+        assert_eq!(
+            p.message.replace("'mount.", "'"),
+            t.message,
+            "{label}: diagnostic {i} must read identically at both sites modulo the \
+             'mount.' member prefix; port: {:?}, top level: {:?}",
+            p.message,
+            t.message
+        );
+    }
+}
+
+const PORT_PARITY_CASES: &[PortParityCase] = &[
+    PortParityCase {
+        label: "Length ← 5kg (wrong dimension)",
+        top_level_src: "module test.parity_dim\n\
+                        structure def Root {\n    param w : Length = 5kg\n}\n",
+        port_src: "module test.parity_dim\ntrait P {}\n\
+                   structure def Root {\n    port mount : P {\n        param w : Length = 5kg\n    }\n}\n",
+        // Two COMPLEMENTARY emitters, not a double-report: the Error is
+        // `check_param_default_type`'s declared-vs-initializer dimension rule,
+        // the Warning is the ctor-conformance walk this task widened.
+        expected: &[
+            (Severity::Error, DiagnosticCode::ParamDefaultTypeMismatch),
+            (Severity::Warning, DiagnosticCode::ArgTypeMismatch),
+        ],
+    },
+    PortParityCase {
+        label: "Length ← 5 (bare Int at a dimensioned param)",
+        top_level_src: "module test.parity_bare\n\
+                        structure def Root {\n    param w : Length = 5\n}\n",
+        port_src: "module test.parity_bare\ntrait P {}\n\
+                   structure def Root {\n    port mount : P {\n        param w : Length = 5\n    }\n}\n",
+        expected: &[(Severity::Warning, DiagnosticCode::ArgTypeMismatch)],
+    },
+    PortParityCase {
+        label: "String ← 42 (general concrete leaf)",
+        top_level_src: "module test.parity_str\n\
+                        structure def Root {\n    param label : String = 42\n}\n",
+        port_src: "module test.parity_str\ntrait P {}\n\
+                   structure def Root {\n    port mount : P {\n        param label : String = 42\n    }\n}\n",
+        expected: &[(Severity::Warning, DiagnosticCode::ArgTypeMismatch)],
+    },
+];
+
+/// The fence: every mismatch shape in [`PORT_PARITY_CASES`] diagnoses the same
+/// way inside a `port { }` block as it does at structure top level.
+///
+/// Driven off one table so the rows cannot drift apart — adding a fourth shape
+/// is a table row, not a fourth copy of the assertions.
+#[test]
+fn port_param_default_diagnostics_match_top_level() {
+    for case in PORT_PARITY_CASES {
+        assert_port_parity_with_top_level(case);
+    }
+}
+
+/// An UNANNOTATED port-body param takes the `Type::dimensionless_scalar()`
+/// language fallback, so an enum default at it warns `Enum(…)` vs `Real` — the
+/// same fallback, and the same warning, as the unannotated top-level form.
+///
+/// This is the behaviour that forces `examples/stdlib/ports_breadth.ri`'s two
+/// enum port params to carry annotations. Pinning it here stops a future "just
+/// silence unannotated port params" patch from quietly re-diverging the two
+/// sites: whether the defaults-to-`Real` fallback should warn at all is a
+/// pre-existing, site-INDEPENDENT language question, and this probe forces any
+/// answer to move both sites together.
+#[test]
+fn port_unannotated_param_default_takes_real_fallback_like_top_level() {
+    let case = PortParityCase {
+        label: "unannotated param ← Color.Red (dimensionless-scalar fallback)",
+        top_level_src: "module test.parity_unann\nenum Color { Red, Green }\n\
+                        structure def Root {\n    param c = Color.Red\n}\n",
+        port_src: "module test.parity_unann\nenum Color { Red, Green }\ntrait P {}\n\
+                   structure def Root {\n    port mount : P {\n        param c = Color.Red\n    }\n}\n",
+        expected: &[(Severity::Warning, DiagnosticCode::ArgTypeMismatch)],
+    };
+    assert_port_parity_with_top_level(&case);
+
+    // Pin the rendered fallback type too: parity alone would survive the
+    // fallback changing from `Real` to something else at BOTH sites.
+    let port = compile_source_with_stdlib(case.port_src);
+    assert_eq!(
+        port.diagnostics[0].message,
+        "argument 'mount.c' has type 'Enum(Color)' but param 'mount.c' requires type 'Real'",
+        "unannotated port param must report the dimensionless-scalar fallback as 'Real'"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Step-11 probes: per-family false-positive fences + α-value-floor guards.
 //
 // The general concrete-leaf arm shipped with a NEGATIVE skip list (`!matches!(
