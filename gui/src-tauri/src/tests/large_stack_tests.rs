@@ -20,6 +20,11 @@
 //! `large_stack::run_on_worker`, whose symbol is absent at RED — so that RED is
 //! likewise a clean compile error.
 //!
+//! That section has since grown a task-5466 test
+//! ([`the_mcp_dispatch_shares_the_one_engine_lane`]) which needs no such
+//! argument: it pins lane IDENTITY by `ThreadId` and never recurses, inheriting
+//! the stack property from the thread it names rather than re-proving it.
+//!
 //! One CORRECTION to the argument above, found while driving 5772's step-3 RED:
 //! "invoked through a large-stack helper" does NOT by itself imply "runs on a
 //! large stack". Every helper documents an INLINE-degradation arm that hands the
@@ -809,9 +814,12 @@ fn the_two_lanes_are_separate_threads_each_amortised() {
 /// submitter like any other job panic. A guard placed on the submitting side, or
 /// one raised outside the job body, would kill the shared lane for everybody.
 ///
-/// Not reachable from the fourteen migrated call sites; the guard exists because
-/// the lane is SHARED and grows new callers (`main.rs::mcp_tool_call`, task 5466,
-/// is already named as a future one).
+/// Not reachable from the fifteen migrated call sites; the guard exists because
+/// the lane is SHARED and grows new callers. `main.rs::mcp_tool_call` (task
+/// 5466) is now a LIVE one, and does not reach the guard either: it is invoked
+/// from Tauri's blocking command thread, which is never a lane thread, and the
+/// MCP tools it dispatches reach the engine via `ctx.engine.lock()` rather than
+/// by submitting to a lane.
 ///
 /// UNLIKE the deep-recursion tests, this one cannot honour the module's "no
 /// violent RED" doctrine: the failure it guards against is a wedge of a
