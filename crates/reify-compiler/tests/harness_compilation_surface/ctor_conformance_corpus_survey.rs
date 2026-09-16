@@ -3866,6 +3866,10 @@ enum Disposition {
     NotApplicable,
     /// A Warning that no table names: it is actionable, and nobody has claimed it.
     Unattributed,
+    /// A row from the INLINE half of the corpus.
+    ///
+    /// Stub — the arm and its label land in the GREEN half of this pair.
+    InlineCensus,
 }
 
 impl Disposition {
@@ -3888,6 +3892,7 @@ impl Disposition {
                     .to_owned()
             }
             Disposition::Unattributed => "unattributed — actionable".to_owned(),
+            Disposition::InlineCensus => String::new(),
         }
     }
 }
@@ -4075,6 +4080,191 @@ fn assert_no_unwaived_ctor_conformance_warnings(run: &SurveyRun) {
             stale.join("\n")
         },
     );
+}
+
+// ─── the inline half is a CENSUS, not a gate ─────────────────────────────────
+
+/// One inline row, as [`survey_inline_corpus`] builds them: a HOST `.rs` file
+/// and host line, plus the snippet-relative coordinate that MAKES it inline.
+#[cfg(test)]
+fn synth_inline_site(file: &str, field: Option<&str>, severity: &str) -> SurveySite {
+    SurveySite {
+        file: file.to_owned(),
+        line: 1450,
+        def: None,
+        def_origin: DefOrigin::SpanNotIdentifier,
+        field: field.map(str::to_owned),
+        expected: Some("Scalar[m]".to_owned()),
+        found: Some("Real".to_owned()),
+        code: "ArgTypeMismatch".to_owned(),
+        severity: severity.to_owned(),
+        // The `check_param_default_conformance` wording measured live at the two
+        // sites VERIFY names, with the param this row actually carries.
+        message: format!(
+            "argument '{p}' has type 'Real' but param '{p}' requires type 'Scalar[m]'",
+            p = field.unwrap_or("z"),
+        ),
+        owner: Owner::Unknown,
+        snippet_line: Some(2),
+    }
+}
+
+/// Every inline row resolves to [`Disposition::InlineCensus`] — whatever its
+/// severity, and whatever its param extraction recovered.
+///
+/// This is the single most dangerous interaction in task #7543.
+/// [`assert_no_unwaived_ctor_conformance_warnings`] panics on any site resolving
+/// to [`Disposition::Unattributed`], and the inline half surfaces dozens of
+/// Warning-severity sites that task #5306 owns and that #7543 is chartered NOT
+/// to fix. Routing them through the resolver — rather than adding a second
+/// severity-or-origin filter at the assertion — is what keeps the artifact's
+/// `disposition` column and that assertion unable to disagree, exactly as the
+/// assertion's own doc requires.
+///
+/// The `field: None` case is the one that pins the arm's PLACEMENT: the existing
+/// `let Some(param) = … else { return Unattributed }` early return would
+/// otherwise claim an inline row whose param extraction missed. The Error-severity
+/// case pins it further up still, ahead of the severity early return, so the
+/// whole inline half resolves by ONE rule rather than by two that could drift.
+#[test]
+fn every_inline_row_resolves_to_the_census_disposition() {
+    for (field, severity, what) in [
+        (Some("z"), WARNING_SEVERITY, "a Warning with its param recovered"),
+        (None, WARNING_SEVERITY, "a Warning whose param extraction missed"),
+        (Some("z"), "Error", "an Error-severity inline row"),
+    ] {
+        let site = synth_inline_site(NAMED_SITE_HOST, field, severity);
+        assert_eq!(
+            disposition_of(&site),
+            Disposition::InlineCensus,
+            "{what} must resolve to the census disposition; anything else either \
+             panics the generator or claims an owner that #7543 does not have"
+        );
+    }
+}
+
+/// The same site WITHOUT its snippet coordinate is still `Unattributed`.
+///
+/// Without this the census arm could be passing vacuously — resolving every site
+/// it is handed, inline or not, and silently disarming γ's whole signal.
+#[test]
+fn the_census_disposition_is_keyed_on_the_snippet_coordinate_alone() {
+    let mut site = synth_inline_site("examples/definitely_not_waived_anywhere.ri", Some("z"), WARNING_SEVERITY);
+    site.snippet_line = None;
+    assert_eq!(
+        disposition_of(&site),
+        Disposition::Unattributed,
+        "a tracked `.ri` row that no table names must still be actionable — the \
+         census arm must key on `snippet_line`, nothing else"
+    );
+}
+
+/// An inline row cannot MASK a genuinely stale waiver.
+///
+/// [`assert_no_unwaived_ctor_conformance_warnings`] reads its waived set as
+/// exactly the [`Disposition::Deferred`] rows. An inline row carrying a real
+/// waiver entry's `(file, param)` must therefore NOT resolve to `Deferred` —
+/// which is what fixes the census arm's position ahead of the two table lookups
+/// as well as ahead of the early returns. Placed after them, an inline row would
+/// keep a landed task's entry looking live forever.
+#[test]
+fn an_inline_row_never_satisfies_a_waiver_entry() {
+    let (residual_file, residual_param, ..) = CTOR_CONFORMANCE_CORPUS_RESIDUAL[0];
+    let (debt_key, debt_param, _) = super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT[0];
+
+    for (file, param) in [
+        (residual_file.to_owned(), residual_param),
+        (format!("{EXAMPLES_PREFIX}{debt_key}"), debt_param),
+    ] {
+        let site = synth_inline_site(&file, Some(param), WARNING_SEVERITY);
+        assert_eq!(
+            disposition_of(&site),
+            Disposition::InlineCensus,
+            "an inline row at {file} :: param '{param}' must not be read as waived; \
+             the waiver tables key on `.ri` files, and letting an inline row satisfy \
+             one would keep a landed task's entry looking live forever"
+        );
+    }
+}
+
+/// One synthetic `.ri` site per waiver-table entry, so the STALE direction of
+/// [`assert_no_unwaived_ctor_conformance_warnings`] is satisfied and the
+/// UNEXPLAINED direction is the only thing a test below can trip.
+#[cfg(test)]
+fn waiver_satisfying_ri_sites() -> Vec<SurveySite> {
+    let residual = CTOR_CONFORMANCE_CORPUS_RESIDUAL
+        .iter()
+        .map(|(file, param, ..)| synth_site(file, 1, "Waived", param, Owner::Unknown));
+    let debt = super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT
+        .iter()
+        .map(|(key, param, _)| {
+            synth_site(
+                &format!("{EXAMPLES_PREFIX}{key}"),
+                1,
+                "Waived",
+                param,
+                Owner::Unknown,
+            )
+        });
+    residual.chain(debt).collect()
+}
+
+/// Adding the inline half to a run that already satisfies every waiver leaves
+/// [`assert_no_unwaived_ctor_conformance_warnings`] passing.
+///
+/// The baseline half of this test is load-bearing: it proves the run WOULD pass
+/// without the inline rows, so a failure after adding them is attributable to
+/// them and to nothing else.
+#[test]
+fn the_unwaived_assertion_survives_the_inline_half() {
+    let baseline = SurveyRun {
+        total: 1,
+        surveyed: 1,
+        sites: waiver_satisfying_ri_sites(),
+        ..SurveyRun::default()
+    };
+    assert_no_unwaived_ctor_conformance_warnings(&baseline);
+
+    let mut with_inline = baseline;
+    with_inline.sites.extend([
+        synth_inline_site(NAMED_SITE_HOST, Some("material"), WARNING_SEVERITY),
+        synth_inline_site(NAMED_SITE_HOST, Some("youngs_modulus"), WARNING_SEVERITY),
+        synth_inline_site(NAMED_SITE_HOST, None, WARNING_SEVERITY),
+    ]);
+    assert_no_unwaived_ctor_conformance_warnings(&with_inline);
+}
+
+/// [`Disposition::InlineCensus`] renders its own non-empty cell.
+///
+/// An empty or duplicated cell would make the artifact's disposition column
+/// silently ambiguous about which half a row came from — the column exists to
+/// tell a reader whether a row is work.
+#[test]
+fn the_census_disposition_renders_a_distinct_cell() {
+    let census = Disposition::InlineCensus.label();
+    assert!(
+        !census.trim().is_empty(),
+        "the census disposition must render a real cell, not a blank"
+    );
+    assert!(
+        census.contains("#5306"),
+        "the census cell must name the task that owns these sites, so a reader of \
+         one row knows where the work lives; got {census:?}"
+    );
+    for other in [
+        Disposition::Unattributed,
+        Disposition::NotApplicable,
+        Disposition::Deferred {
+            owning_task: "#5306",
+            why: "any",
+        },
+    ] {
+        assert_ne!(
+            census,
+            other.label(),
+            "the census cell must be distinguishable from {other:?}"
+        );
+    }
 }
 
 /// True when `cite` is the repo's canonical `#NNNN` task-cite form.
