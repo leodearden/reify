@@ -193,28 +193,36 @@ const TWIST_LINEAR_DIM: DimensionVector = DimensionVector::LENGTH;
 
 /// The dimension admitted on the ANGULAR half of a twist.
 ///
-/// NOT ruled by #6126 — **#6080 owns the angular half**, including whether this value
-/// stays DIMENSIONLESS or widens (to ANGLE, or to a set). This const exists purely so
-/// that the value has ONE spelling instead of two, because two co-dependent sites read
-/// it and they are 1000 lines apart:
+/// RULING #6080: a twist's `angular` half is `Vector3<Angle>` — and ONLY `Angle`. A
+/// rotation vector is `axis * angle`, a dimensionless unit axis scaled by an angle, so
+/// its magnitude IS an angle in radians; that is what makes d/dt of one an
+/// ANGULAR_VELOCITY rather than a FREQUENCY, and what makes `transform_log`'s angular
+/// half agree with the `orient_log` it is the SE(3) lift of.
+///
+/// DIMENSIONLESS was the previously-admitted spelling and is now rejected like any
+/// other wrong dimension. It is NOT tolerated for back-compat: DIMENSIONLESS is a
+/// SPECIFIC dimension (the zero exponent vector), not a wildcard, so admitting it as a
+/// tolerant alias would re-open the hole PRD #5747 decision D11 closed for this very
+/// family — the same grounds on which #6126 narrowed the linear half. The breaking
+/// change is carried by a diagnostic rather than by silence; see [`diagnose`].
+///
+/// The const exists so that the value has ONE spelling instead of two, because two
+/// co-dependent sites read it and they are 1000 lines apart:
 ///
 /// 1. the `transform_exp` EVAL gate, which rejects a non-admitted angular half; and
-/// 2. [`diagnose`]'s `transform_exp` arm, which DEFERS (stays silent) exactly when that
-///    eval gate is the one that owns the failure, so a twist wrong in both halves is
-///    not mis-attributed to `linear`.
+/// 2. [`diagnose`]'s `transform_exp` arm, which now EXPLAINS exactly the rejection that
+///    eval gate performs (it used to defer to it in silence, when #6080 had not yet
+///    ruled), so a twist wrong in both halves is not mis-attributed to `linear`.
 ///
-/// The deferral is only correct while it agrees with the gate. Re-spelling the literal
-/// at both sites made that agreement unenforced, and the failure is SILENT in the
-/// dangerous direction: widen the eval gate alone and the classifier keeps requiring
-/// DIMENSIONLESS, so it stops emitting the #6126 linear Error for every twist whose
-/// angular half is newly-valid — a diagnostic regression no test that hardcodes
-/// DIMENSIONLESS can see. `diagnose_transform_exp_deferral_tracks_evals_angular_gate`
-/// is the behavioural pin: it builds its angular half FROM this const, so it follows
-/// the gate wherever #6080 moves it and goes red if only one site moves.
-///
-/// #6080 therefore changes this ONE line (plus, if the gate becomes a set rather than a
-/// single dimension, both readers together — which the pin will force it to notice).
-const TWIST_ANGULAR_DIM: DimensionVector = DimensionVector::DIMENSIONLESS;
+/// That agreement is only correct while both sites move together. Re-spelling the
+/// literal at both sites made it unenforced, and the failure is SILENT in the dangerous
+/// direction: move the eval gate alone and the classifier keeps testing for the old
+/// dimension, so it mis-classifies every twist whose angular half is newly-valid — a
+/// diagnostic regression no test that hardcodes a dimension can see.
+/// `diagnose_transform_exp_deferral_tracks_evals_angular_gate` is the behavioural pin:
+/// it builds its angular half FROM this const, so it follows the gate wherever the gate
+/// moves and goes red if only one site moves.
+const TWIST_ANGULAR_DIM: DimensionVector = DimensionVector::ANGLE;
 
 /// Decompose one half of a twist — `Map { angular: Vector3<…>, linear: Vector3<…> }` —
 /// into its three finite components and their single shared dimension.
@@ -678,21 +686,25 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             if args.len() != 1 {
                 return Some(Value::Undef);
             }
-            let map = match &args[0] {
-                Value::Map(m) => m,
-                _ => return Some(Value::Undef),
-            };
-            let angular_val = match map.get(&Value::String("angular".to_string())) {
-                Some(v) => v,
-                None => return Some(Value::Undef),
-            };
-            // Extract angular: must be Vector3<DIMENSIONLESS>.
+            // Extract angular: must be Vector3<Angle>.
             //
-            // The gate is spelled via `TWIST_ANGULAR_DIM` — NOT because #6126 rules the
-            // angular half (it does not; #6080 does), but because `diagnose`'s
-            // transform_exp arm defers to THIS gate and must not drift from it. See
+            // Twist angular convention (RULING #6080): a rotation vector is
+            // `axis * angle`, so `angular` carries ANGLE. Every other dimension —
+            // DIMENSIONLESS included — returns Undef here AND is explained by
+            // `diagnose`, which names the offending dimension rather than leaving a
+            // bare OpContractViolation note. `transform_log` emits ANGLE on the same
+            // half, so both ends of the log↔exp seam agree on what they admit.
+            //
+            // The gate is spelled via `TWIST_ANGULAR_DIM` because `diagnose`'s
+            // transform_exp arm reads the SAME const and must not drift from it; see
             // that const's doc for the co-dependence.
-            let (ang_comps, ang_dim) = match decompose_vec3(angular_val) {
+            //
+            // The shape (Map + field key) is read through `decompose_twist_component`,
+            // the SAME helper the linear half and `diagnose` use — the restructure the
+            // helper's doc reserved for #6080. Every shape failure it folds into `None`
+            // (non-Map arg, missing key, not a 3-Vector, mixed or non-finite
+            // components) was already Undef here.
+            let (ang_comps, ang_dim) = match decompose_twist_component(&args[0], "angular") {
                 Some(v) => v,
                 None => return Some(Value::Undef),
             };
@@ -865,9 +877,17 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 return Some(Value::Undef);
             }
             let mut m = BTreeMap::new();
+            // The angular half is the rotation vector theta * n_hat, whose magnitude is
+            // an angle in radians, so it carries `TWIST_ANGULAR_DIM` (RULING #6080) —
+            // built through the SAME helper the linear half uses, so both halves of the
+            // emitted twist are constructed the same way.
             m.insert(
                 Value::String("angular".to_string()),
-                Value::Vector(vec![Value::Real(wx), Value::Real(wy), Value::Real(wz)]),
+                Value::Vector(vec![
+                    make_dimensioned_component(TWIST_ANGULAR_DIM, wx),
+                    make_dimensioned_component(TWIST_ANGULAR_DIM, wy),
+                    make_dimensioned_component(TWIST_ANGULAR_DIM, wz),
+                ]),
             );
             m.insert(
                 Value::String("linear".to_string()),
@@ -1587,6 +1607,13 @@ fn eval_frame_at(args: &[Value]) -> Value {
 // Quaternion helpers used by frame_to_frame — re-imported from orientation module.
 use crate::orientation::{normalize_quaternion, quat_conj, quat_mul, quat_rotate};
 
+// The `E_RotationVectorDimension` message is built by ONE shared constructor (#6080) so
+// this module's `transform_exp` angular arm and `orientation::diagnose`'s `orient_exp`
+// arm cannot drift apart in token, severity or recommended fix. Their only cross-module
+// pin would otherwise be the CLI tests' bare `contains("E_RotationVectorDimension")`,
+// which stays green through exactly that drift.
+use crate::orientation::rotation_vector_dimension_error;
+
 /// Human-readable name for a dimension, for use in diagnostic messages.
 ///
 /// `DimensionVector::canonical_name()` yields `"Length"` / `"Angle"` / `"Mass"` from
@@ -1737,18 +1764,30 @@ fn classify_affine_map_args(args: &[Value]) -> Result<([[f64; 3]; 3], [f64; 3]),
 ///   - *zero factor* → degenerate (det=0, non-invertible) map.
 /// - **`transform_log`** (exactly 1 arg) — a `Transform` whose translation is not
 ///   `Vector3<Length>` (RULING #6126).
-/// - **`transform_exp`** (exactly 1 arg) — a twist whose `linear` half is not
-///   `Vector3<Length>` (RULING #6126), AND whose `angular` half passed eval's own
-///   gate. A twist wrong in both halves is rejected by eval's angular gate before the
-///   linear one is reached, so this arm stays silent there and leaves the explaining
-///   to #6080, which owns that gate.
+/// - **`transform_exp`** (exactly 1 arg) — BOTH halves of the twist, checked in eval's
+///   own order:
+///   - an `angular` half that is not `Vector3<Angle>` (RULING #6080) — a rotation
+///     vector is `axis * angle`. `DIMENSIONLESS` used to be the accepted spelling and
+///     is now rejected like any other wrong dimension, so this diagnostic is the
+///     migration mechanism for that breaking change. Its message is built by
+///     [`crate::orientation::rotation_vector_dimension_error`], SHARED with that
+///     module's `orient_exp` arm, so one fault class reports one way across the whole
+///     builtin family.
+///   - otherwise, a `linear` half that is not `Vector3<Length>` (RULING #6126).
+///
+///   Angular is checked FIRST because eval gates it first: a twist wrong in both
+///   halves is rejected by the angular gate before the linear one is reached, so
+///   blaming `linear` would mis-attribute the failure. This arm used to uphold that by
+///   staying silent (it did not own the angular gate); it now upholds it by ORDER.
 /// - **`affine_translate`** (exactly 3 args) and **`affine_map`** (exactly 2 args) —
 ///   a TRANSLATION that is not `Vector3<Length>` (task 5747, units-length ζ / R12).
 ///   `affine_map`'s LINEAR half is checked FIRST and bails, so a dimensioned-linear
 ///   call — which fails the pre-existing D11 dimensionless check, not ζ's — is never
 ///   mislabelled as a translation rejection. That order is fixed in
 ///   [`classify_affine_map_args`], the one acceptance predicate this arm and the
-///   eval arm share, rather than restated in each.
+///   eval arm share, rather than restated in each. The same ordering claim as
+///   `transform_exp`'s above, upheld the same way: by the gate's own order, not by
+///   a convention restated at each reader.
 /// - **`bbox`** (exactly 2 args) — a corner that is not `Point3<Length>`
 ///   (task 6081: a BoundingBox is spatial by construction), including one whose
 ///   components carry MIXED dimensions. Every SHAPE failure stays silent — a
@@ -1756,10 +1795,10 @@ fn classify_affine_map_args(args: &[Value]) -> Result<([[f64; 3]; 3], [f64; 3]),
 ///   component — like the arity convention above: a type failure is not a
 ///   dimension failure.
 ///
-/// Invariant: the two RULING #6126 dimension arms consult [`TWIST_LINEAR_DIM`] —
-/// the SAME const the eval gates use — and read the twist shape through
-/// [`decompose_twist_component`] — the SAME helper the eval arm uses — so the
-/// classifier cannot drift away from what eval actually rejects, in either the
+/// Invariant: the twist dimension arms consult [`TWIST_LINEAR_DIM`] and
+/// [`TWIST_ANGULAR_DIM`] — the SAME consts the eval gates use — and read BOTH twist
+/// halves through [`decompose_twist_component`] — the SAME helper the eval arm uses —
+/// so the classifier cannot drift away from what eval actually rejects, in either the
 /// dimension or the shape dimension of that drift. The `bbox` arm holds the same
 /// property the same way: it decodes both corners through
 /// [`classify_bbox_corner`] — the SAME helper its own eval gate reads, which is
@@ -1785,25 +1824,29 @@ fn classify_affine_map_args(args: &[Value]) -> Result<([[f64; 3]; 3], [f64; 3]),
 /// - The `affine_scale` arms are `Warning`, mirroring the existing degenerate-scale
 ///   rejection in `reify_eval::geometry_ops` (TransformKind::Scale): the offending
 ///   factor is discarded and evaluation proceeds.
-/// - EVERY dimension arm is `Severity::Error` — `transform_log` and `transform_exp`
-///   (RULING #6126), `bbox` (task 6081), and `affine_translate` / `affine_map`
-///   (task 5747, units-length ζ, PRD
-///   `docs/prds/v0_6/units-length-gate-completion.md` decision D11). ONE reason
-///   serves all five rather than one argued per family: a wrong dimension
+/// - EVERY dimension arm is `Severity::Error` — `transform_log` and BOTH halves of
+///   `transform_exp` (RULING #6126 for `linear`, RULING #6080 for `angular`), `bbox`
+///   (task 6081), and `affine_translate` / `affine_map` (task 5747, units-length ζ,
+///   PRD `docs/prds/v0_6/units-length-gate-completion.md` decision D11). ONE reason
+///   serves all six rather than one argued per family: a wrong dimension
 ///   is a design-correctness fault and an outright CONSTRUCTION failure — no twist,
 ///   no BoundingBox, no AffineMap is produced at all — not a drop-and-continue.
 ///   Per Leo's severity amendment (2026-08-19, via esc-6080-6), `reify eval` must
 ///   EXIT 1 rather than print and continue; `cmd_eval` gates its exit code on
 ///   `diagnostics.iter().any(|d| d.severity == Severity::Error)`, so the severity IS
-///   the exit code here. #6080 plans the same Error/exit-1 for the sibling angular
-///   half, so one fault class does not report two ways across one builtin family.
+///   the exit code here. The angular half (#6080) landed at that same severity, so
+///   one fault class does NOT report two ways across one builtin family — and ζ's
+///   two arms joined it there rather than opening a third way.
 ///
 /// `DiagnosticCode` is NOT uniform across the arms, but every DIMENSION arm
-/// agrees. All FIVE — `transform_log`, `transform_exp`, `bbox` and ζ's
-/// `affine_translate` / `affine_map` — carry the
+/// agrees. All SIX — `transform_log`, BOTH halves of `transform_exp`, `bbox` and
+/// ζ's `affine_translate` / `affine_map` — carry the
 /// PRE-EXISTING [`reify_core::DiagnosticCode::DimensionedArgRejected`], which
 /// `reify_eval::geometry_ops` already attaches to exactly this fault class (a
-/// `Severity::Error` runtime dimension rejection of a positional argument).
+/// `Severity::Error` runtime dimension rejection of a positional argument). The
+/// `angular` half reaches it through `orientation::rotation_vector_dimension_error`,
+/// the shared constructor it splits with `orientation::diagnose`'s `orient_exp`
+/// arm, so the code cannot drift between those two either.
 ///
 /// The convergence an earlier revision of this comment DEFERRED — waiting on a
 /// `DiagnosticCode::ArgDimensionMismatch` that
@@ -1909,28 +1952,36 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
             if args.len() != 1 {
                 return None;
             }
-            // Speak only when the LINEAR gate is the one eval actually reached. Eval
-            // checks `angular` BEFORE `linear`, so a twist wrong in both halves is
-            // rejected by the angular gate and never reaches the linear one. Blaming
-            // `linear` there is a mis-attribution with a nasty second act: the user
-            // makes `linear` a Length, still gets Undef, and now gets NO diagnostic at
-            // all — this arm having gone silent. So decline whenever the angular gate
-            // owns the failure.
+            // Check the halves in EVAL'S OWN ORDER — angular, then linear — so the arm
+            // blames the half eval actually rejected. Eval gates `angular` BEFORE
+            // `linear`, so a twist wrong in both halves never reaches the linear gate,
+            // and blaming `linear` there would be a mis-attribution.
             //
-            // This keeps the arm independent of #6080 (which owns the angular gate and
-            // will add its own arm to explain it) in the only way that is actually
-            // independent: by declining to speak for it, rather than by speaking over
-            // it. `TWIST_ANGULAR_DIM` below is eval's angular gate, not this ruling's —
-            // #6126 governs the linear half only. It is read from the const rather than
-            // re-spelled so widening the gate cannot silently mute this arm; see that
-            // const's doc, and the `..._deferral_tracks_evals_angular_gate` pin.
+            // #6126 upheld that invariant by SILENCE, because it did not own the
+            // angular gate and had nothing true to say about it — and documented the
+            // resulting hazard: the user acts on a `linear` message, makes `linear` a
+            // Length, is STILL Undef, and now gets NO diagnostic at all. #6080 owns the
+            // angular gate, so that hazard is now CLOSED rather than merely avoided:
+            // the arm names the angular half both times. This is exactly the
+            // substitution #6126's comment anticipated ("#6080 … will add its own arm
+            // to explain it").
+            //
+            // `TWIST_ANGULAR_DIM` is read from the const rather than re-spelled, so the
+            // gate and this arm cannot drift; see that const's doc and the
+            // `..._deferral_tracks_evals_angular_gate` pin.
             //
             // Shape failures on the angular half — a non-Map argument, a missing
             // `angular` key, a non-3-Vector — fold into `None` here for the same
-            // no-mis-attribution reason they do on the linear half.
+            // no-mis-attribution reason they do on the linear half. It is the SAME
+            // helper the eval arm now reads the angular shape through, so this arm
+            // cannot go quiet while eval keeps rejecting.
             let (_, ang_dim) = decompose_twist_component(&args[0], "angular")?;
             if ang_dim != TWIST_ANGULAR_DIM {
-                return None;
+                return Some(rotation_vector_dimension_error(
+                    "transform_exp",
+                    Some("angular"),
+                    ang_dim,
+                ));
             }
             // As on the transform_log arm, `decompose_twist_component` returning None
             // covers every non-dimension cause (non-Map arg, missing `linear` key — a
@@ -4633,7 +4684,7 @@ mod tests {
         }
     }
 
-    /// transform_log(identity) == Map { angular=[0,0,0] DIMENSIONLESS, linear=[0,0,0] LENGTH }.
+    /// transform_log(identity) == Map { angular=[0,0,0] ANGLE, linear=[0,0,0] LENGTH }.
     #[test]
     fn transform_log_identity_is_zero_twist() {
         let id = eval_builtin("transform3_identity", &[]);
@@ -4646,10 +4697,7 @@ mod tests {
         for (i, v) in lin.iter().enumerate() {
             assert!(v.abs() < 1e-12, "linear[{i}] = {v}, expected 0");
         }
-        assert_eq!(
-            map_vec3_dim(&result, "angular"),
-            DimensionVector::DIMENSIONLESS
-        );
+        assert_eq!(map_vec3_dim(&result, "angular"), DimensionVector::ANGLE);
         assert_eq!(map_vec3_dim(&result, "linear"), DimensionVector::LENGTH);
     }
 
@@ -4679,10 +4727,7 @@ mod tests {
             "linear[2] = {}, expected 3",
             lin[2]
         );
-        assert_eq!(
-            map_vec3_dim(&result, "angular"),
-            DimensionVector::DIMENSIONLESS
-        );
+        assert_eq!(map_vec3_dim(&result, "angular"), DimensionVector::ANGLE);
         assert_eq!(map_vec3_dim(&result, "linear"), DimensionVector::LENGTH);
     }
 
@@ -5096,9 +5141,9 @@ mod tests {
     /// `Value::Real` (not `Scalar{DIMENSIONLESS}`), matching how `.ri` bare numbers
     /// actually reach eval.
     ///
-    /// The angular dimension is a parameter because the classifier now DEFERS to eval's
-    /// angular gate (see `diagnose`'s transform_exp arm), which is only testable with a
-    /// non-DIMENSIONLESS angular half.
+    /// The angular dimension is a parameter because both eval and the classifier gate on
+    /// it (see `diagnose`'s transform_exp arm), which is only testable by building a
+    /// NON-default angular half.
     fn make_twist_with_dims(
         angular: [f64; 3],
         angular_dim: DimensionVector,
@@ -5127,10 +5172,10 @@ mod tests {
         Value::Map(m)
     }
 
-    /// Helper: build a twist Map with a DIMENSIONLESS angular half (the only one eval
-    /// admits) and a given linear dimension.
+    /// Helper: build a twist Map with an ANGLE angular half (the only one eval admits,
+    /// RULING #6080) and a given linear dimension.
     fn make_twist(angular: [f64; 3], linear: [f64; 3], linear_dim: DimensionVector) -> Value {
-        make_twist_with_dims(angular, DimensionVector::DIMENSIONLESS, linear, linear_dim)
+        make_twist_with_dims(angular, DimensionVector::ANGLE, linear, linear_dim)
     }
 
     /// transform_exp(zero twist) == identity transform.
@@ -5295,23 +5340,27 @@ mod tests {
     }
 
     /// transform_exp with Map missing "linear" key → Undef.
+    ///
+    /// The angular half must be a VALID ANGLE vector (#6080), or this test would
+    /// return Undef at the angular gate and stop covering the missing-key path it
+    /// is named for.
     #[test]
     fn transform_exp_missing_linear_returns_undef() {
         let mut m = std::collections::BTreeMap::new();
         m.insert(
             Value::String("angular".to_string()),
-            Value::Vector(vec![Value::Real(0.0); 3]),
+            Value::Vector(vec![Value::angle(0.0); 3]),
         );
         assert!(eval_builtin("transform_exp", &[Value::Map(m)]).is_undef());
     }
 
-    /// transform_exp with non-DIMENSIONLESS angular dimension → Undef.
+    /// transform_exp with a non-ANGLE angular dimension → Undef (#6080).
     #[test]
     fn transform_exp_angular_wrong_dimension_returns_undef() {
         let mut m = std::collections::BTreeMap::new();
         m.insert(
             Value::String("angular".to_string()),
-            Value::Vector(vec![Value::length(0.0); 3]), // LENGTH instead of DIMENSIONLESS
+            Value::Vector(vec![Value::length(0.0); 3]), // LENGTH instead of ANGLE
         );
         m.insert(
             Value::String("linear".to_string()),
@@ -5321,12 +5370,16 @@ mod tests {
     }
 
     /// transform_exp with non-LENGTH linear dimension → Undef.
+    ///
+    /// The angular half must be a VALID ANGLE vector (#6080), or this test would
+    /// return Undef at the angular gate and stop covering the linear one (#6126's)
+    /// it is named for.
     #[test]
     fn transform_exp_linear_wrong_dimension_returns_undef() {
         let mut m = std::collections::BTreeMap::new();
         m.insert(
             Value::String("angular".to_string()),
-            Value::Vector(vec![Value::Real(0.0); 3]),
+            Value::Vector(vec![Value::angle(0.0); 3]),
         );
         m.insert(
             Value::String("linear".to_string()),
@@ -5357,6 +5410,152 @@ mod tests {
             "RULING #6126: a twist's `linear` must be Vector3<Length>; \
              DIMENSIONLESS is no longer admitted"
         );
+    }
+
+    // ── Twist.angular DIMENSION tests (#6080) ────────────────────────────────
+    //
+    // A twist's angular half is a rotation vector — axis * angle — so it carries
+    // ANGLE, exactly like `orient_log`'s output. Both ends of the transform_log /
+    // transform_exp pair are pinned here, because the pair is an identity and only
+    // moves correctly if the emitter and the gate agree.
+    //
+    // SCOPE: the `linear` half is NOT touched by any of these. Its `Vector3<Length>`
+    // gate is RULING #6126's, and `transform_log_then_exp_round_trip_angular_is_angle`
+    // asserts positively that this task leaves it alone.
+
+    /// The transform_log tests above read `angular` through `map_vec3_components`
+    /// (i.e. `as_f64()`), which is dimension-blind, and `map_vec3_dim`, which reads
+    /// only component 0; this asserts every component's dimension directly.
+    #[test]
+    fn transform_log_emits_angle_dimensioned_angular() {
+        let t = make_transform(make_rot90z(), 1.0, 2.0, 3.0);
+        let result = eval_builtin("transform_log", &[t]);
+        let map = match &result {
+            Value::Map(m) => m,
+            other => panic!("expected Map, got {other:?}"),
+        };
+        let ang = match map.get(&Value::String("angular".to_string())) {
+            Some(Value::Vector(items)) if items.len() == 3 => items,
+            other => panic!("expected Vector3 angular, got {other:?}"),
+        };
+        assert_scalar_approx!(ang[0].clone(), 0.0, DimensionVector::ANGLE);
+        assert_scalar_approx!(ang[1].clone(), 0.0, DimensionVector::ANGLE);
+        assert_scalar_approx!(
+            ang[2].clone(),
+            std::f64::consts::FRAC_PI_2,
+            DimensionVector::ANGLE
+        );
+    }
+
+    /// The zero / near-identity rotation path is a SEPARATE return path in
+    /// `transform_log`, so it would otherwise stay dimensionless unnoticed.
+    #[test]
+    fn transform_log_identity_emits_angle_dimensioned_zero_angular() {
+        let id = eval_builtin("transform3_identity", &[]);
+        let result = eval_builtin("transform_log", &[id]);
+        let map = match &result {
+            Value::Map(m) => m,
+            other => panic!("expected Map, got {other:?}"),
+        };
+        let ang = match map.get(&Value::String("angular".to_string())) {
+            Some(Value::Vector(items)) if items.len() == 3 => items,
+            other => panic!("expected Vector3 angular, got {other:?}"),
+        };
+        for comp in ang.iter() {
+            assert_scalar_approx!(comp.clone(), 0.0, DimensionVector::ANGLE);
+        }
+    }
+
+    /// The widening: an ANGLE angular half is accepted.
+    #[test]
+    fn transform_exp_accepts_angle_angular() {
+        let twist = make_twist_with_dims(
+            [0.0, 0.0, std::f64::consts::FRAC_PI_2],
+            DimensionVector::ANGLE,
+            [1.0, 2.0, 3.0],
+            DimensionVector::LENGTH,
+        );
+        let result = eval_builtin("transform_exp", &[twist]);
+        match result {
+            Value::Transform { rotation, .. } => {
+                let s = std::f64::consts::FRAC_1_SQRT_2;
+                assert_orientation_approx!(*rotation, s, 0.0, 0.0, s, sign_insensitive = 1e-12);
+            }
+            other => panic!("expected Transform, got {other:?}"),
+        }
+    }
+
+    /// The narrowing: a DIMENSIONLESS angular half is rejected. DIMENSIONLESS is a
+    /// SPECIFIC dimension (the zero exponent vector), not a wildcard, so admitting it
+    /// would re-open the hole PRD #5747 decision D11 closed for this family.
+    #[test]
+    fn transform_exp_rejects_dimensionless_angular() {
+        let twist = make_twist_with_dims(
+            [0.0, 0.0, std::f64::consts::FRAC_PI_2],
+            DimensionVector::DIMENSIONLESS,
+            [1.0, 2.0, 3.0],
+            DimensionVector::LENGTH,
+        );
+        assert!(
+            eval_builtin("transform_exp", &[twist]).is_undef(),
+            "#6080: a twist's `angular` must be Vector3<Angle>; DIMENSIONLESS is a \
+             specific dimension, not a wildcard"
+        );
+    }
+
+    /// Regression pin: widening to ANGLE must not have made the gate merely permissive.
+    ///
+    /// Distinct from `transform_exp_angular_wrong_dimension_returns_undef` above, which
+    /// uses a ZERO-magnitude LENGTH vector: this one is non-zero, so the rejection
+    /// cannot be confused with the `theta < EPS` identity-rotation path.
+    #[test]
+    fn transform_exp_rejects_length_angular() {
+        let twist = make_twist_with_dims(
+            [0.0, 0.0, 0.001],
+            DimensionVector::LENGTH,
+            [1.0, 2.0, 3.0],
+            DimensionVector::LENGTH,
+        );
+        assert!(eval_builtin("transform_exp", &[twist]).is_undef());
+    }
+
+    /// Coupled-change guard: `transform_exp(transform_log(T)) ≈ T` survives only if the
+    /// emission and the gate agree on ANGLE. Also asserts the intermediate twist's
+    /// angular half is ANGLE — and, positively, that its linear half is still LENGTH,
+    /// i.e. that #6126's half is untouched by this task.
+    #[test]
+    fn transform_log_then_exp_round_trip_angular_is_angle() {
+        let q = Value::Orientation {
+            w: 0.5,
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        };
+        let t = make_transform(q, 1.5, -2.5, 3.0);
+        let twist = eval_builtin("transform_log", std::slice::from_ref(&t));
+        assert_eq!(map_vec3_dim(&twist, "angular"), DimensionVector::ANGLE);
+        assert_eq!(map_vec3_dim(&twist, "linear"), DimensionVector::LENGTH);
+        let back = eval_builtin("transform_exp", &[twist]);
+        match back {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                assert_orientation_approx!(*rotation, 0.5, 0.5, 0.5, 0.5, sign_insensitive = 1e-10);
+                match *translation {
+                    Value::Vector(items) if items.len() == 3 => {
+                        let tx = items[0].as_f64().unwrap();
+                        let ty = items[1].as_f64().unwrap();
+                        let tz = items[2].as_f64().unwrap();
+                        assert!((tx - 1.5).abs() < 1e-10, "tx = {tx}, expected 1.5");
+                        assert!((ty - (-2.5)).abs() < 1e-10, "ty = {ty}, expected -2.5");
+                        assert!((tz - 3.0).abs() < 1e-10, "tz = {tz}, expected 3");
+                    }
+                    other => panic!("expected Vector3, got {other:?}"),
+                }
+            }
+            other => panic!("expected Transform, got {other:?}"),
+        }
     }
 
     /// transform_exp with LENGTH linear dimension → accepted, translation stays LENGTH.
@@ -6903,16 +7102,17 @@ mod tests {
         );
     }
 
-    /// A twist wrong in BOTH halves must stay silent here, not blame `linear`.
+    /// A twist wrong in BOTH halves must blame `angular`, never `linear`.
     ///
-    /// Eval gates `angular` before `linear`, so this twist is rejected by the angular
-    /// gate and the linear gate is never reached. Emitting the linear message anyway
-    /// would send the user to fix a half that is not what stopped them — and the fixed
-    /// twist (see the sibling test below) then produces NO diagnostic at all, because
-    /// this arm goes silent once `linear` is a Length. #6080 owns the angular gate and
-    /// will add the arm that explains this input.
+    /// The no-mis-attribution invariant is unchanged and still worth asserting; only
+    /// the way it is upheld changed. Eval gates `angular` before `linear`, so this
+    /// twist is rejected by the angular gate and the linear gate is never reached.
+    /// #6126 upheld that by SILENCE, because it did not own the angular gate; #6080
+    /// does, so the arm now upholds it by ORDER — it names the half eval actually
+    /// rejected. Blaming `linear` would still send the user to fix a half that is not
+    /// what stopped them.
     #[test]
-    fn diagnose_transform_exp_bad_angular_and_bad_linear_returns_none() {
+    fn diagnose_transform_exp_bad_angular_and_bad_linear_blames_angular() {
         let twist = make_twist_with_dims(
             [1.0, 0.0, 0.0],
             DimensionVector::LENGTH,
@@ -6923,19 +7123,30 @@ mod tests {
             eval_builtin("transform_exp", std::slice::from_ref(&twist)).is_undef(),
             "premise: eval rejects this twist (at the ANGULAR gate, before linear)"
         );
+        let diag = super::diagnose("transform_exp", &[twist]).expect(
+            "eval rejected this twist at the ANGULAR gate, and #6080 owns that gate, so \
+             the arm must explain it",
+        );
+        assert_eq!(diag.severity, reify_core::Severity::Error);
         assert!(
-            super::diagnose("transform_exp", &[twist]).is_none(),
-            "a non-DIMENSIONLESS angular half is rejected by eval BEFORE the linear \
-             gate is reached, so blaming `linear` would mis-attribute the failure"
+            diag.message.contains("angular"),
+            "the message must blame the half eval actually rejected; got: {}",
+            diag.message
+        );
+        assert!(
+            !diag.message.contains("linear"),
+            "the linear gate was never reached, so naming it would mis-attribute the \
+             failure; got: {}",
+            diag.message
         );
     }
 
-    /// The second act of the mis-attribution, pinned: the user acts on a `linear`
-    /// message, makes `linear` a Length, and the twist is STILL Undef — on the angular
-    /// gate that was the real cause all along. This arm must be silent here too (it has
-    /// nothing true left to say), which is exactly why it must not have spoken above.
+    /// The second act of the old mis-attribution, now closed rather than merely
+    /// avoided: under #6126 the user acted on a `linear` message, made `linear` a
+    /// Length, was STILL Undef on the angular gate — and got NO diagnostic at all,
+    /// because the arm went silent. It now speaks about the angular half both times.
     #[test]
-    fn diagnose_transform_exp_bad_angular_with_length_linear_returns_none() {
+    fn diagnose_transform_exp_bad_angular_with_length_linear_blames_angular() {
         let twist = make_twist_with_dims(
             [1.0, 0.0, 0.0],
             DimensionVector::LENGTH,
@@ -6944,12 +7155,20 @@ mod tests {
         );
         assert!(
             eval_builtin("transform_exp", std::slice::from_ref(&twist)).is_undef(),
-            "premise: a non-DIMENSIONLESS angular half is Undef even with a Length linear"
+            "premise: a non-ANGLE angular half is Undef even with a Length linear"
+        );
+        let diag = super::diagnose("transform_exp", &[twist])
+            .expect("the angular half is the only thing wrong, so the arm must say so");
+        assert!(
+            diag.message.contains("angular"),
+            "the message must name the angular half; got: {}",
+            diag.message
         );
         assert!(
-            super::diagnose("transform_exp", &[twist]).is_none(),
-            "the linear half is valid, so this arm has nothing to say; #6080's angular \
-             arm owns explaining it"
+            !diag.message.contains("linear"),
+            "the linear half is VALID here, so naming it would be actively wrong; \
+             got: {}",
+            diag.message
         );
     }
 
@@ -6986,12 +7205,180 @@ mod tests {
         );
     }
 
+    // ── diagnose: transform_exp ANGULAR arm (#6080) ──────────────────────────
+    //
+    // `Twist.angular` is a rotation vector, so it carries ANGLE. Narrowing that gate is
+    // a breaking change to a published stdlib signature, so the wrong-dimension path
+    // must surface a `Severity::Error` naming `angular` and the offending dimension
+    // instead of a silent `Undef`. The message is built by the SAME constructor
+    // `orientation::diagnose`'s `orient_exp` arm uses, so one fault class reports one
+    // way across the whole builtin family.
+    //
+    // SCOPE: these assert the ANGULAR half only. The `linear` arm above is #6126's and
+    // is unchanged; `diagnose_transform_exp_angle_angular_with_mass_linear_blames_linear`
+    // is the guard that this arm did not swallow it.
+
+    /// Build a twist `Value::Map` from raw `angular` and `linear` values.
+    ///
+    /// Distinct from `make_twist_with_dims`, which builds well-shaped 3-vectors from
+    /// f64 arrays: the shape-error tests below need to hand in a 2-component vector or
+    /// a non-Vector, which that helper cannot express.
+    fn twist_map(angular: Value, linear: Value) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(Value::String("angular".to_string()), angular);
+        m.insert(Value::String("linear".to_string()), linear);
+        Value::Map(m)
+    }
+
+    /// The newly-rejected spelling: a bare (DIMENSIONLESS) angular half.
+    #[test]
+    fn diagnose_transform_exp_dimensionless_angular_errors() {
+        let tw = twist_map(
+            Value::Vector(vec![
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(std::f64::consts::FRAC_PI_2),
+            ]),
+            Value::Vector(vec![Value::length(0.0); 3]),
+        );
+        let diag = super::diagnose("transform_exp", &[tw])
+            .expect("a dimensionless angular half must produce a diagnostic");
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Error,
+            "a wrong dimension is a design-correctness fault, so `reify eval` must EXIT \
+             1 — and the sibling `linear` half of the same builtin reports this fault \
+             class at the same severity (Leo's amendment, 2026-08-19, via esc-6080-6)"
+        );
+        assert!(
+            diag.message.contains("angular"),
+            "message must name the offending Twist field; got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message
+                .contains(&DimensionVector::DIMENSIONLESS.to_string()),
+            "message must render the offending dimension ({}); got: {}",
+            DimensionVector::DIMENSIONLESS,
+            diag.message
+        );
+    }
+
+    /// A LENGTH angular half was never accepted, but used to fail silently. A second
+    /// distinct dimension also proves the label is DERIVED rather than hardcoded.
+    #[test]
+    fn diagnose_transform_exp_length_angular_errors() {
+        let tw = twist_map(
+            Value::Vector(vec![Value::length(0.001); 3]),
+            Value::Vector(vec![Value::length(0.0); 3]),
+        );
+        let diag = super::diagnose("transform_exp", &[tw])
+            .expect("a LENGTH angular half must produce a diagnostic");
+        assert_eq!(diag.severity, reify_core::Severity::Error);
+        assert!(
+            diag.message.contains(&DimensionVector::LENGTH.to_string()),
+            "message must render the offending dimension ({}); got: {}",
+            DimensionVector::LENGTH,
+            diag.message
+        );
+    }
+
+    /// A valid ANGLE angular half is not diagnosed by this arm, even when asked
+    /// directly.
+    #[test]
+    fn diagnose_transform_exp_angle_angular_returns_none() {
+        let tw = twist_map(
+            Value::Vector(vec![
+                Value::angle(0.0),
+                Value::angle(0.0),
+                Value::angle(std::f64::consts::FRAC_PI_2),
+            ]),
+            Value::Vector(vec![Value::length(0.0); 3]),
+        );
+        assert!(
+            super::diagnose("transform_exp", &[tw]).is_none(),
+            "a valid ANGLE angular half must not produce a diagnostic"
+        );
+    }
+
+    /// Scope guard: a VALID angular half with a wrong `linear` must still yield #6126's
+    /// LINEAR message. The angular arm runs first, so it is the arm that could swallow
+    /// the linear one; this pins that it does not.
+    #[test]
+    fn diagnose_transform_exp_angle_angular_with_mass_linear_blames_linear() {
+        let twist = make_twist_with_dims(
+            [0.0, 0.0, 0.0],
+            DimensionVector::ANGLE,
+            [1.0, 2.0, 3.0],
+            DimensionVector::MASS,
+        );
+        let diag = super::diagnose("transform_exp", &[twist])
+            .expect("the linear gate owns this failure, so the arm must still speak");
+        assert!(
+            diag.message.contains("linear"),
+            "#6126's linear message must survive the angular arm being added ahead of \
+             it; got: {}",
+            diag.message
+        );
+    }
+
+    /// Shape errors stay silent, so a SHAPE failure is never mis-attributed as a
+    /// dimension failure — the restraint the whole `diagnose` family documents.
+    #[test]
+    fn diagnose_transform_exp_shape_errors_return_none() {
+        assert!(
+            super::diagnose("transform_exp", &[]).is_none(),
+            "wrong arity must stay silent"
+        );
+        assert!(
+            super::diagnose("transform_exp", &[Value::Real(1.0)]).is_none(),
+            "a non-Map argument must stay silent"
+        );
+        let mut only_linear = std::collections::BTreeMap::new();
+        only_linear.insert(
+            Value::String("linear".to_string()),
+            Value::Vector(vec![Value::length(0.0); 3]),
+        );
+        assert!(
+            super::diagnose("transform_exp", &[Value::Map(only_linear)]).is_none(),
+            "a missing `angular` key must stay silent"
+        );
+        let tw = twist_map(
+            Value::Vector(vec![Value::Real(0.0), Value::Real(0.0)]),
+            Value::Vector(vec![Value::length(0.0); 3]),
+        );
+        assert!(
+            super::diagnose("transform_exp", &[tw]).is_none(),
+            "a non-3d angular half must stay silent"
+        );
+    }
+
+    /// The name families stay disjoint: this arm declines the emitting sibling
+    /// `transform_log` and the orientation family's `orient_exp`.
+    #[test]
+    fn diagnose_non_transform_exp_name_returns_none() {
+        let tw = twist_map(
+            Value::Vector(vec![Value::Real(0.0); 3]),
+            Value::Vector(vec![Value::length(0.0); 3]),
+        );
+        assert!(
+            super::diagnose("transform_log", std::slice::from_ref(&tw)).is_none(),
+            "transform_log is an emitter, not a rotation-vector gate"
+        );
+        assert!(
+            super::diagnose("orient_exp", &[Value::Vector(vec![Value::Real(0.0); 3])]).is_none(),
+            "orient_exp belongs to orientation::diagnose, not geometry::diagnose"
+        );
+    }
+
+    /// The angular half must be a VALID ANGLE vector (#6080), or this test would take
+    /// the angular arm and stop covering the missing-key SHAPE path it is named for.
     #[test]
     fn diagnose_transform_exp_missing_linear_key_returns_none() {
         let mut m = std::collections::BTreeMap::new();
         m.insert(
             Value::String("angular".to_string()),
-            Value::Vector(vec![Value::Real(0.0); 3]),
+            Value::Vector(vec![Value::angle(0.0); 3]),
         );
         assert!(
             super::diagnose("transform_exp", &[Value::Map(m)]).is_none(),

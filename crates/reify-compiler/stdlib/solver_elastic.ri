@@ -544,6 +544,36 @@ structure def ElasticResult {
     //   Note for future runtime-type-checking implementors: Value::Undef must
     //   remain accepted for this Field-typed param on shell results.
     param curl : Field<Point3<Length>, Vector3<Dimensionless>>
+    // `rotation` — the infinitesimal rotation vector ω = ∇×u / 2 (stride-3),
+    //   the axial vector of the antisymmetric part of ∇u. Exactly half of
+    //   `curl` above, componentwise.
+    //
+    //   THIS IS THE DESIGNATED CROSSING (ruling task #6164). `rotation` is
+    //   where the radian enters the elastic-result algebra explicitly, and it
+    //   is the ONLY channel here that does. The mechanism is the same one used
+    //   by `asin` and `orient_log`: the derivative algebra itself stays
+    //   quotient-pure — ∇×u is Length/Length and therefore genuinely
+    //   dimensionless — and ANGLE is introduced only by a named primitive that
+    //   ASSERTS an arc measure. That is precisely why `curl` above keeps
+    //   `Vector3<Dimensionless>` and must NOT be retyped: `result.curl` is
+    //   type-identical to `curl(result.displacement)`, and retyping it would
+    //   put a radian into the operator algebra rather than at a crossing.
+    //
+    //   VALIDITY: ω is an angle only in the small-deformation regime
+    //   (‖∇u‖ ≪ 1), where sin θ ≈ θ makes the axial vector of the
+    //   antisymmetric part a genuine rotation angle about that axis. For
+    //   finite rotations the correct extraction is the polar decomposition
+    //   F = RU of the deformation gradient, taking the rotation from R —
+    //   future work, and the reason to add a NEW channel rather than retype
+    //   `curl`.
+    //
+    //   Tet/solid population: derived from the `curl` Sampled Field at wrap
+    //   time (×½), so it shares bit-identical Regular3D grid metadata with
+    //   displacement/stress/divergence/gradient/curl and costs no extra BVH
+    //   pass. Shell population: Value::Undef (PRD §7, honest-absence),
+    //   matching the divergence/gradient/curl convention above — including
+    //   `curl`'s note that Value::Undef must stay accepted here.
+    param rotation : Field<Point3<Length>, Vector3<Angle>>
     param frame : Field<Point3<Length>, Matrix<3, 3, Real>>
     param shell_channels : ShellStress
     param max_von_mises : Pressure

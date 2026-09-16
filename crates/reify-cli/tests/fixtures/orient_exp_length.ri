@@ -1,0 +1,14 @@
+// orient_exp_length.ri — CLI fixture for the #6080 wrong-dimension diagnostic.
+//
+// A LENGTH rotation vector was never accepted by `orient_exp`, but before
+// #6080 it failed silently (`note: … is undef`, exit 0). It must now produce an
+// `E_RotationVectorDimension` error naming `m` on stderr and exit non-zero.
+//
+// Lives in tests/fixtures/ (NOT examples/) to keep examples_smoke.rs green,
+// since this file intentionally triggers a runtime Error diagnostic.
+
+module orient_exp_length
+
+structure def OrientExpLength {
+    let q = orient_exp(vec3(1mm, 0mm, 0mm))
+}

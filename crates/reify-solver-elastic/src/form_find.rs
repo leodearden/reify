@@ -271,7 +271,8 @@ const MAX_SURFACE_ITERS: usize = 5000;
 /// [`FormFindSolve`] whose `surface_stresses` echoes the prescribed σ.
 ///
 /// # Errors
-/// - [`FormFindError::DimensionMismatch`] — `members`/`kinds`/`q` disagree.
+/// - [`FormFindError::DimensionMismatch`] — `members`/`kinds`/`q` disagree, or
+///   a `surfaces` triangle corner indexes past `nodes`.
 /// - [`FormFindError::SurfaceCountMismatch`] — `surfaces`/`surface_stresses`
 ///   disagree.
 /// - [`FormFindError::SignViolation`] — a member violates its q-sign contract.
@@ -314,6 +315,12 @@ pub fn form_find_anchored_surfaces(
         if s <= 0.0 {
             return Err(FormFindError::NonTensionSurfaceStress);
         }
+    }
+    // Surface node-index contract: a triangle corner past `nodes` would panic
+    // on the `nodes[i]` index in `assemble_d`. PRD §8.1 promises a clean
+    // diagnostic, never a panic.
+    if !surface_indices_in_range(surfaces, n) {
+        return Err(FormFindError::DimensionMismatch);
     }
 
     // Partition node indices into anchored A and free F (both ascending).
@@ -396,6 +403,17 @@ pub fn form_find_anchored_surfaces(
         surface_stresses: surface_stresses.to_vec(),
         converged,
     })
+}
+
+/// True when every surface triangle corner indexes a real node (`< n`).
+///
+/// [`assemble_d`], [`assemble_d_aniso`] and `form_find_free`'s
+/// `assemble_surface_matrix` all index `nodes[i]` directly, so an out-of-range
+/// corner would panic. The three surface-aware entries call this up front and
+/// map `false` to their own `DimensionMismatch`, mirroring the member-index
+/// guard in `form_find_free::validate_explicit`.
+pub(crate) fn surface_indices_in_range(surfaces: &[(usize, usize, usize)], n: usize) -> bool {
+    surfaces.iter().all(|&(i, j, k)| i < n && j < n && k < n)
 }
 
 /// Scatter the line-member rank-1 FDM updates into `d`: for each member `(j, k)`
@@ -744,7 +762,8 @@ fn assemble_d_aniso(
 /// per triangle on the solved geometry by [`recover_principal_stress`].
 ///
 /// # Errors
-/// - [`AnisoFormFindError::DimensionMismatch`] — `members`/`kinds`/`q` disagree.
+/// - [`AnisoFormFindError::DimensionMismatch`] — `members`/`kinds`/`q` disagree,
+///   or a `surfaces` triangle corner indexes past `nodes`.
 /// - [`AnisoFormFindError::SurfaceCountMismatch`] — `surfaces`/`surface_prestress` disagree.
 /// - [`AnisoFormFindError::SignViolation`] — a member violates its `q`-sign contract.
 /// - [`AnisoFormFindError::NonTensionSurfaceStress`] — `σ_w ≤ 0` or `σ_f ≤ 0`.
@@ -782,6 +801,12 @@ pub fn form_find_anchored_surfaces_aniso(
         if spec.sigma_warp <= 0.0 || spec.sigma_weft <= 0.0 {
             return Err(AnisoFormFindError::NonTensionSurfaceStress);
         }
+    }
+    // Surface node-index contract: mirrors form_find_anchored_surfaces — an
+    // out-of-range corner would panic on the `nodes[i]` index in
+    // `assemble_d_aniso`.
+    if !surface_indices_in_range(surfaces, n) {
+        return Err(AnisoFormFindError::DimensionMismatch);
     }
 
     let mut is_anchor = vec![false; n];
@@ -1664,6 +1689,30 @@ mod tests {
         );
     }
 
+    // (c2) A surface triangle corner that indexes past `nodes` is infeasible
+    // input — `assemble_d` would panic on its `nodes[i]` index. PRD 8.1
+    // promises a clean diagnostic, never a panic.
+    #[test]
+    fn surfaces_out_of_range_index_is_dimension_mismatch() {
+        let (nodes, _surfaces, anchors) = tent_membrane();
+        // Boundary index: 5 is the FIRST invalid index for the 5-node tent, so
+        // this pins the `≥ n` comparison that a `> n` typo would let pass.
+        // The predicate ANDs three comparisons, so each sibling test puts the
+        // bad index in a different corner — FIRST here, second in the aniso
+        // test, third in `form_find_free`'s — pinning all three between them.
+        let surfaces = vec![(5usize, 1usize, 2usize)];
+        let sigmas = vec![1.0];
+        let members: Vec<(usize, usize)> = vec![];
+        let kinds: Vec<MemberKind> = vec![];
+        let q: Vec<f64> = vec![];
+
+        assert_eq!(
+            form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
+                .unwrap_err(),
+            FormFindError::DimensionMismatch,
+        );
+    }
+
     // (d) The pure-line path (empty surfaces) through the surface-aware entry
     // must return exactly the landed form_find_anchored result, with an empty
     // surface_stresses echo — the additive-extension invariant.
@@ -2248,6 +2297,31 @@ mod tests {
             )
             .unwrap_err(),
             AnisoFormFindError::SurfaceCountMismatch,
+        );
+    }
+
+    // (a2) A surface triangle corner that indexes past `nodes` is infeasible
+    // input — `assemble_d_aniso` would panic on its `nodes[i]` index. Mirrors
+    // the isotropic entry's guard.
+    #[test]
+    fn aniso_solve_out_of_range_surface_index_is_dimension_mismatch() {
+        let (nodes, _surfaces, prestress, anchors) = tent_aniso_fixture();
+        // Boundary index: 5 is the FIRST invalid index for the 5-node tent, so
+        // this pins the `≥ n` comparison that a `> n` typo would let pass.
+        // The predicate ANDs three comparisons, so each sibling test puts the
+        // bad index in a different corner — SECOND here, first in the isotropic
+        // test, third in `form_find_free`'s — pinning all three between them.
+        let surfaces = vec![(0usize, 5usize, 2usize)];
+        let pres = vec![prestress[0].clone()];
+        let members: Vec<(usize, usize)> = vec![];
+        let kinds: Vec<MemberKind> = vec![];
+        let q: Vec<f64> = vec![];
+        assert_eq!(
+            form_find_anchored_surfaces_aniso(
+                &nodes, &members, &kinds, &q, &surfaces, &pres, &anchors
+            )
+            .unwrap_err(),
+            AnisoFormFindError::DimensionMismatch,
         );
     }
 

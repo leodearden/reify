@@ -4,7 +4,7 @@ Constraints are first-class entities in Reify: named, parameterized, composed, i
 
 ## Inline Constraints
 
-```
+```reify-fragment
 constraint thickness > 1mm
 constraint head_diameter > shank_diameter
 constraint forall f in faces: f.flatness < 0.01mm
@@ -15,7 +15,7 @@ Anonymous predicates that must hold. Default connective between predicate lines 
 
 ## Constraint Definitions
 
-```
+```reify-fragment
 constraint def MinWallThickness {
     param wall : Length
     param process : ManufacturingProcess
@@ -36,7 +36,7 @@ Bare expressions in a constraint body are assertions (predicate lines).
 
 ## Optimization
 
-```
+```reify-fragment
 minimize subject.mass
 maximize subject.stiffness
 ```
@@ -49,14 +49,14 @@ DISCARDS the guard silently — the objective then runs unopposed and drives you
 `auto` params to their bounds while the build reports success. Express the
 predicate as a separate `constraint` member instead:
 
-```
+```reify-fragment
 constraint peak_stress < material.yield_stress
 minimize mass
 ```
 
 ## Quantifiers
 
-```
+```reify-schematic
 forall x in collection: predicate(x)    // Universal; predicate is a metavariable — pdoccover:allow — grammar metavariable
 exists x in collection: predicate(x)    // Existential; predicate is a metavariable — pdoccover:allow — grammar metavariable
 ```

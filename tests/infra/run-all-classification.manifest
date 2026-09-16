@@ -40,7 +40,13 @@
 # Keystone for H2 (reads intra-run-serial), H3/H9 (read host-exclusive), and
 # H5-H7 (reclassify entries as they rescue/split host-exclusive files).
 
-# --- intra-run-serial (4) ----------------------------------------------------
+# --- intra-run-serial (6) ----------------------------------------------------
+# test_reify_audit_pdiag.sh (task #5405) drives `reify_audit_guard ...
+# rebuild-budget-safe`, which forks `cargo build --release -p reify-audit` on a
+# stale binary and so mutates the lane-shared CoW target/ — the identical reason
+# the test_reify_audit_ptodo.sh row directly below carries this bucket. From
+# `pool` it would race other pool members over that shared build state.
+test_reify_audit_pdiag.sh intra-run-serial
 test_reify_audit_ptodo.sh intra-run-serial
 test_tree_sitter_pipeline.sh intra-run-serial
 # test_verify_nextest_absent_suites.sh nests test_verify_semaphore_e2e.sh (the
@@ -70,7 +76,7 @@ test_cpu_load_governance_deflake.sh host-exclusive
 test_seed_lane_lock_release_soak.sh host-exclusive
 test_warm_lane_pool.sh host-exclusive
 
-# --- pool (155, the hermetic majority incl. this drift-guard itself) -------
+# --- pool (167, the hermetic majority incl. this drift-guard itself) -------
 test_affected_crates_lib.sh pool
 test_agent_cache_redirect.sh pool
 test_agent_cargo_shim.sh pool
@@ -78,12 +84,12 @@ test_amendment_rounds_default_restored.sh pool
 test_audit_orphan_producers.sh pool
 test_cargo_incremental_lane_decision.sh pool
 test_check_event_inventory.sh pool
+test_cited_test_paths_resolve.sh pool
 test_compute_trampoline_registration_wired.sh pool
 test_copy_list_preflight.sh pool
 test_cpu_admit.sh pool
 test_cpu_governance_config.sh pool
 test_cpu_governed_exec.sh pool
-test_deterministic_gate_closure_staleness_sweep.sh pool
 test_engine_hash_closure.sh pool
 test_ensure_gui_sidecar_placeholder.sh pool
 test_ensure_warm_base.sh pool
@@ -159,6 +165,17 @@ test_reconciliation_db_gitignored.sh pool
 test_reference_transaction_gate.sh pool
 test_refresh_warm_base.sh pool
 test_reify_audit_freshness.sh pool
+# test_reify_audit_pdiag_vacuity.sh NESTS test_reify_audit_pdiag.sh, which is
+# intra-run-serial above — but it does not inherit that bucket, for the same
+# reason the four test_reify_audit_ptodo_*.sh meta-test rows below do not
+# inherit their own nested gate's. The serial bucket exists ONLY because
+# reify_audit_guard may fork `cargo build` into the lane-shared CoW target/;
+# every invocation here supplies REIFY_AUDIT_BIN (a private copy under its own
+# mktemp -d) and arms REIFY_AUDIT_NO_COLD_BUILD=1, so that path is unreachable
+# and the run touches no lane-shared state. Contrast the
+# test_verify_nextest_absent_suites.sh row above, which DOES inherit: its
+# nested script's mutations have no such neutralising seam.
+test_reify_audit_pdiag_vacuity.sh pool
 test_reify_audit_predone_wrapper.sh pool
 test_reify_audit_ptodo_budget_skip.sh pool
 test_reify_audit_ptodo_orphan_hardgate.sh pool

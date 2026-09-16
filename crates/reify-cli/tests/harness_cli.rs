@@ -69,6 +69,8 @@ mod cli_check_parametric_vec3;
 mod cli_check_result_prelude;
 #[path = "harness_cli/cli_check_variant_construction.rs"]
 mod cli_check_variant_construction;
+#[path = "harness_cli/cli_curated_unit_labels_eval.rs"]
+mod cli_curated_unit_labels_eval;
 #[path = "harness_cli/cli_datum_projection_check.rs"]
 mod cli_datum_projection_check;
 #[path = "harness_cli/cli_determinacy_gate.rs"]
@@ -131,6 +133,8 @@ mod cli_materials_starter_library_golden;
 mod cli_module_visibility_example;
 #[path = "harness_cli/cli_objective_inheritance_golden.rs"]
 mod cli_objective_inheritance_golden;
+#[path = "harness_cli/cli_orientation_rotvec_dimension.rs"]
+mod cli_orientation_rotvec_dimension;
 #[path = "harness_cli/cli_purpose.rs"]
 mod cli_purpose;
 #[path = "harness_cli/cli_purpose_stdlib.rs"]

@@ -32,7 +32,9 @@ use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeI
 
 use reify_eval::compute_targets::result_topology::{CarriedTopology, from_realized_mesh};
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
-use reify_test_support::{compile_source_with_stdlib, errors_only};
+use reify_test_support::{
+    CTOR_DIAGNOSTIC_ARG_PREFIX, compile_source_with_stdlib, ctor_diagnostic_names_arg, errors_only,
+};
 
 // ── Fixture constants ─────────────────────────────────────────────────────────
 
@@ -552,11 +554,6 @@ fn displacement_at_accepts_selector_location_overload() {
 // ── amendment: guard the two migrated RayleighDamping ctor sites this crate
 //    reaches, which `examples_smoke`'s corpus walk does not ───────────────────
 
-/// The prefix every ctor-conformance diagnostic puts before the offending param
-/// label (`reify-compiler/src/conformance/mod.rs`; full shape `argument 'X' has
-/// type 'A' but param 'X' requires type 'B'`).
-const CTOR_DIAGNOSTIC_ARG_PREFIX: &str = "argument '";
-
 /// The `RayleighDamping` params task #6093 retyped to `Frequency` / `Time`.
 const RAYLEIGH_PARAMS: [&str; 2] = ["alpha", "beta"];
 
@@ -568,14 +565,12 @@ const RAYLEIGH_PARAMS: [&str; 2] = ["alpha", "beta"];
 /// so an unquoted match would also catch any prelude message that merely
 /// contains the word.
 ///
-/// Code-AGNOSTIC on purpose, rather than through a FOURTH copy of the
-/// `is_ctor_conformance_code` set (`harness_compilation_surface/
-/// examples_smoke.rs`, `struct_ctor_field_conformance_tests.rs` and
-/// `modal_options_validation_tests.rs` hold the other three; the hoist into
-/// `reify-test-support` is filed as #6323). The quoted label is the
-/// discriminator that survives BOTH the planned `Warning`→`Error` flip of
+/// Code-AGNOSTIC on purpose: it deliberately does NOT filter on
+/// `is_ctor_conformance_code`. The quoted label is the discriminator that
+/// survives BOTH the planned `Warning`→`Error` flip of
 /// `CTOR_FIELD_CONFORMANCE_SEVERITY` and any re-classification of the emitted
-/// `DiagnosticCode` — including a re-emission that carries no code at all.
+/// `DiagnosticCode` — including a re-emission that carries no code at all,
+/// which a code-set filter would miss entirely.
 fn rayleigh_ctor_arg_diagnostics(module: &reify_compiler::CompiledModule) -> Vec<String> {
     module
         .diagnostics
@@ -583,7 +578,7 @@ fn rayleigh_ctor_arg_diagnostics(module: &reify_compiler::CompiledModule) -> Vec
         .filter(|d| {
             RAYLEIGH_PARAMS
                 .iter()
-                .any(|p| d.message.contains(&format!("{CTOR_DIAGNOSTIC_ARG_PREFIX}{p}'")))
+                .any(|p| ctor_diagnostic_names_arg(&d.message, p))
         })
         .map(|d| format!("{:?}: {}", d.severity, d.message))
         .collect()
@@ -653,7 +648,7 @@ structure R3bUnmigratedRayleighCtorControl {
         assert!(
             control_hits
                 .iter()
-                .any(|m| m.contains(&format!("{CTOR_DIAGNOSTIC_ARG_PREFIX}{param}'"))),
+                .any(|m| ctor_diagnostic_names_arg(m, param)),
             "POSITIVE CONTROL: one ctor-arg diagnostic must name `{param}`; \
              got: {:#?}",
             control_hits

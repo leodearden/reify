@@ -119,6 +119,7 @@ mod tests {
             Pattern::P5LivePathStranded,
             Pattern::PTodo,
             Pattern::PDsSentinel,
+            Pattern::PDiag,
             Pattern::PDocCover,
         ] {
             match p {
@@ -133,6 +134,7 @@ mod tests {
                 Pattern::P5LivePathStranded => {}
                 Pattern::PTodo => {}
                 Pattern::PDsSentinel => {}
+                Pattern::PDiag => {}
                 Pattern::PDocCover => {}
             }
         }
