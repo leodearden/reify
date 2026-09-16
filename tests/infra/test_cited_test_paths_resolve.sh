@@ -20,8 +20,7 @@
 #   - the shared lib tests/infra/cited-test-path-lib.sh: the tracked-test
 #     index, the citation scan, the resolver and the fingerprint reduction
 #     (this file, step-1);
-#   - the committed baseline's existence, grammar, sortedness and self-
-#     describing header (step-3);
+#   - the committed baseline's existence, grammar and sortedness (step-3);
 #   - the one-directional (subset) ratchet checker (step-5);
 #   - the baseline-independent vacuity floor (step-7);
 #   - whole-tree wiring against the real repository (step-9);
@@ -113,6 +112,12 @@ esac
 _RUN_TMP="$(mktemp -d "${TMPDIR:-/tmp}/reify-cited-run.XXXXXX")"
 trap 'rm -rf "$_RUN_TMP"' EXIT
 
+# BOOLEAN CHECKS OVER A CAPTURED BLOB use `grep -q ... <<<"$blob"`, never
+# `printf ... | grep -q`. In this suite's own top-level shell `set -o pipefail`
+# turns grep -q's early exit into a SIGPIPE 141 from the builtin printf and
+# reports a genuine MATCH as a MISS (~0.14% per call, measured repo-wide). A
+# pipeline inside a `bash -c` child is immune — SHELLOPTS is not exported —
+# which is why the Sections A-F child shells are left alone.
 _mktmpd() {
     mktemp -d "$_RUN_TMP/fixture.XXXXXX"
 }
@@ -586,10 +591,10 @@ _index_excludes_untracked() {
     : > "$FIX_BASIC/crates/mycrate/tests/untracked_scratch.rs"
     out="$(_index_of "$FIX_BASIC")" || { echo "index failed"; rm -f "$FIX_BASIC/crates/mycrate/tests/untracked_scratch.rs"; return 1; }
     rm -f "$FIX_BASIC/crates/mycrate/tests/untracked_scratch.rs"
-    if printf '%s\n' "$out" | grep -q untracked_scratch; then
+    if grep -q untracked_scratch <<<"$out"; then
         echo "index wrongly included an untracked file:"; printf '%s\n' "$out"; return 1
     fi
-    printf '%s\n' "$out" | grep -qF "$(printf 'mycrate/moved_test.rs\tcrates/mycrate/tests/harness_sub/moved_test.rs')"
+    grep -qF "$(printf 'mycrate/moved_test.rs\tcrates/mycrate/tests/harness_sub/moved_test.rs')" <<<"$out"
 }
 
 assert "F: the index keys tracked tests by <crate>/<basename> and excludes untracked files" \
@@ -602,7 +607,7 @@ _citations_include_every_occurrence() {
     # the citation scan is a raw corpus, the RESOLVER is what filters.
     local f
     for f in docs/note.md docs/ok.md docs/gone.md docs/synthetic.md; do
-        printf '%s\n' "$out" | grep -qF "$f" || { echo "citation corpus missing $f:"; printf '%s\n' "$out"; return 1; }
+        grep -qF "$f" <<<"$out" || { echo "citation corpus missing $f:"; printf '%s\n' "$out"; return 1; }
     done
     return 0
 }
@@ -818,10 +823,10 @@ _ratchet_regression_is_red_and_names_offender() {
     if [ "$rc" -eq 0 ]; then
         echo "expected non-zero for an uncovered live fingerprint, got rc0:"; printf '%s\n' "$out"; return 1
     fi
-    printf '%s\n' "$out" | grep -qF "$FP_B" || {
+    grep -qF "$FP_B" <<<"$out" || {
         echo "checker did not NAME the offending fingerprint ($FP_B):"; printf '%s\n' "$out"; return 1
     }
-    printf '%s\n' "$out" | grep -qF "$FP_A" && {
+    grep -qF "$FP_A" <<<"$out" && {
         echo "checker wrongly named a COVERED fingerprint ($FP_A):"; printf '%s\n' "$out"; return 1
     }
     return 0
@@ -838,7 +843,7 @@ _ratchet_failure_carries_suggested_target() {
     b="$(_write_baseline "$FP_A")"
     out="$(_ratchet_rc "$FIX_RATCHET" "$b")" || rc=$?
     [ "$rc" -ne 0 ] || { echo "expected a failure to inspect"; return 1; }
-    printf '%s\n' "$out" | grep -qF 'crates/mycrate/tests/harness_sub/beta.rs' && return 0
+    grep -qF 'crates/mycrate/tests/harness_sub/beta.rs' <<<"$out" && return 0
     echo "failure output does not carry the suggested target for the offender:"
     printf '%s\n' "$out"; return 1
 }
@@ -917,7 +922,7 @@ _floor_rejects_empty_index() {
     local out rc=0
     out="$(_floor_rc 0 1860)" || rc=$?
     if [ "$rc" -eq 0 ]; then echo "expected non-zero for an empty index, got rc0"; return 1; fi
-    printf '%s\n' "$out" | grep -qi 'index' && return 0
+    grep -qi 'index' <<<"$out" && return 0
     echo "diagnostic does not name the index floor:"; printf '%s\n' "$out"; return 1
 }
 
@@ -927,7 +932,7 @@ _floor_rejects_zero_citations() {
     local out rc=0
     out="$(_floor_rc 1304 0)" || rc=$?
     if [ "$rc" -eq 0 ]; then echo "expected non-zero for a zero-citation corpus, got rc0"; return 1; fi
-    printf '%s\n' "$out" | grep -qi 'citation' && return 0
+    grep -qi 'citation' <<<"$out" && return 0
     echo "diagnostic does not name the citation floor:"; printf '%s\n' "$out"; return 1
 }
 
@@ -1041,58 +1046,136 @@ _real_gate_is_green() {
 assert "J: the gate against the real tree + committed baseline exits 0" \
     _real_gate_is_green
 
-# (2) WHOLE-TREE LIVENESS CONTROL, in two halves.
+# (2) LIVENESS CONTROL, in two halves: (2a) the WIRED GATE reaches the real
+# repository, (2b) the RESOLVER still repoints real test paths.
 #
-# The same gate, same real tree, pointed at an EMPTY baseline must go red and
-# must be seeing the whole tree. Without this, a gate that scanned an empty
-# directory would pass (1) just as happily.
-#
-# It is TWO assertions because assert() deliberately caps its captured-output
-# dump at `tail -50`. The wired gate's offender listing therefore reaches this
-# file already truncated to ~25 entries, so counting from it would measure
-# that cap rather than the tree. The red-ness is taken from the wired child
-# process; the COUNT is taken from the same checker called directly, where
-# nothing truncates it.
+# NEITHER half may be stated as "the real tree still holds at least N stale
+# citations". That quantity is precisely what this gate exists to drive to
+# zero — the committed baseline is a shrinking grandfather list, and the
+# ratchet's one-directional ruling is that repointing a citation must NEVER be
+# punished — so a magnitude floor over it reds the merge gate partway through
+# the very cleanup it is encouraging, and burn-down here is bulk work (commit
+# 276d32f025 repointed 123 files at once). Both halves are therefore stated
+# scale-free, and stay valid after the baseline has been drained to nothing.
 
-# (2a) the wired gate itself goes red on the real tree.
-_real_gate_is_red_against_empty_baseline() {
-    local empty out rc=0
+# (2a) THE WIRED GATE REACHES THE REAL TREE.
+#
+# Run the way the merge gate runs it — child process, real root — against an
+# EMPTY baseline, and required to AGREE with a scan done in THIS process: the
+# same corpus sizes, and red exactly while a stale citation remains.
+#
+# The CORPUS COMPARISON is the load-bearing half, and it replaces an earlier
+# form that grepped an offender line out of the child's output. Two measured
+# problems with that form, independent of each other:
+#
+#   - the child's offender listing arrives here ALREADY TRUNCATED. assert()
+#     dumps only `tail -50` of a failing checker's capture, so a red
+#     --gate-only run reaches this process as 4.6 kB / ~57 lines rather than
+#     the ~616 findings lines it really produced. The grep was sampling that
+#     cap, and would stop finding a `+` line entirely if the remediation hint
+#     ever grew past 50 lines.
+#   - it was a `printf '%s\n' "$out" | grep -q` pipeline in this suite's OWN
+#     top-level shell: the ~0.14%-per-call SIGPIPE false-miss under
+#     `set -o pipefail` (grep -q exits on first match, the builtin printf
+#     takes SIGPIPE, pipefail surfaces its 141 even though grep matched).
+#     It flaked once during this task's mutation testing. Every such pipeline
+#     in the checkers below is now a herestring, the documented fix.
+#
+# The two counts the child prints UNCONDITIONALLY on its first line are exact,
+# never truncated, and a strictly stronger statement of "the same tree" than
+# any single offender line.
+#
+# Red-ness is stated as AGREEMENT, not as an unconditional "must be red", so
+# the assertion stays valid once the baseline has been drained — and it is
+# stronger than the unconditional form either way: a gate reporting offenders
+# the live scan never found fails here too.
+_real_gate_agrees_with_the_live_scan() {
+    local empty out rc=0 live idx_n cit_n
     empty="$(_write_baseline)"
+    live="$(cited_test_path_fingerprint < "$(_scan_file "$REPO_ROOT")" | grep -c . || true)"
+    idx_n="$(cited_test_path_index "$REPO_ROOT" | grep -c . || true)"
+    cit_n="$(cited_test_path_citations "$REPO_ROOT" | grep -c . || true)"
     out="$(REIFY_CITED_TEST_PATH_BASELINE="$empty" bash "$GATE_SELF" --gate-only 2>&1)" || rc=$?
-    if [ "$rc" -eq 0 ]; then
-        echo "the gate stayed GREEN against the real tree with an EMPTY baseline —"
-        echo "the scan is not reaching the tree it claims to be checking:"
-        printf '%s\n' "$out"
+
+    if ! grep -qF "index units: $idx_n   citation occurrences: $cit_n" <<<"$out"; then
+        echo "the wired gate did not report the corpus this process measured:"
+        echo "  expected -> index units: $idx_n   citation occurrences: $cit_n"
+        head -5 <<<"$out"
         return 1
     fi
-    printf '%s\n' "$out" | grep -qE '\+ [^ ]+ :: crates/' && return 0
-    echo "the gate went red but listed no offender:"; printf '%s\n' "$out"; return 1
+    if [ "$live" -eq 0 ]; then
+        [ "$rc" -eq 0 ] && return 0
+        echo "the live scan found NO stale citation, yet the wired gate went red (rc$rc):"
+        cat <<<"$out"
+        return 1
+    fi
+    [ "$rc" -ne 0 ] && return 0
+    echo "the live scan found $live stale citation(s), yet the wired gate stayed GREEN"
+    echo "against an EMPTY baseline — it is not reaching the tree it claims to check:"
+    cat <<<"$out"
+    return 1
 }
 
-assert "J: the wired gate against an EMPTY baseline goes red and lists offenders" \
-    _real_gate_is_red_against_empty_baseline
+assert "J: the wired gate scans the same corpus as this process and agrees with its verdict" \
+    _real_gate_agrees_with_the_live_scan
 
-# (2b) at SCALE: a conservative lower bound on the offender count, not an
-# exact number — the baseline is a shrinking list, so repointing citations
-# over time must reduce this without flaking the assertion (measured 308).
-_real_tree_reports_offenders_at_scale() {
-    local empty out rc=0 n
-    empty="$(_write_baseline)"
-    out="$(_ratchet_rc "$REPO_ROOT" "$empty")" || rc=$?
-    if [ "$rc" -eq 0 ]; then
-        echo "the ratchet was GREEN against the real tree with an EMPTY baseline"; return 1
-    fi
-    n="$(printf '%s\n' "$out" | grep -cE '^  \+ [^ ]+ :: crates/' || true)"
-    if [ "$n" -lt 100 ]; then
-        echo "expected >= 100 live citations against an empty baseline, got $n:"
-        printf '%s\n' "$out" | head -20
+# (2b) THE RESOLVER STILL REPOINTS REAL TEST PATHS.
+#
+# This is the only check on the resolver's own liveness, and it has to be one:
+# the vacuity floor observes index units and citation occurrences, neither of
+# which moves when the resolver's awk join breaks, and a silently-empty live
+# set is trivially a subset of any baseline — so a dead resolver reads as a
+# clean tree.
+#
+# Built from REAL tracked units rather than from the tree's current stale
+# citations. Take nested units straight out of the LIVE index, stage them in a
+# throwaway repo beside citations of their PRE-MOVE flat paths, and require
+# every one to come back repointed at its real path. Same resolver over the
+# same real paths, with nothing in it that shrinks as citations are fixed.
+_RESOLVER_LIVENESS_UNITS=5
+
+_resolver_repoints_real_tracked_units() {
+    local fx u crate flat out
+    local -a units
+    # Nested units only — `crates/<c>/tests/<dir>/<unit>.rs`, five path
+    # components — so the pre-move FLAT citation is a genuine stale shape; one
+    # per resolution key ($1), so the fixture cannot manufacture an ambiguous
+    # hit out of two units that happen to share a crate and a basename.
+    mapfile -t units < <(cited_test_path_index "$REPO_ROOT" \
+        | awk -F'\t' 'split($2, p, "/") == 5 && !seen[$1]++ { print $2 }' \
+        | head -"$_RESOLVER_LIVENESS_UNITS")
+    if [ "${#units[@]}" -lt "$_RESOLVER_LIVENESS_UNITS" ]; then
+        echo "the live index yielded ${#units[@]} nested test unit(s), need $_RESOLVER_LIVENESS_UNITS"
         return 1
     fi
+
+    fx="$(_mktmpd)"
+    _fixture_init "$fx"
+    mkdir -p "$fx/docs"
+    : > "$fx/docs/pre-move.md"
+    for u in "${units[@]}"; do
+        _fixture_write "$fx" "$u" '// real tracked unit; only its PATH matters here'
+        crate="$(printf '%s' "$u" | cut -d/ -f2)"
+        printf 'see crates/%s/tests/%s\n' "$crate" "$(basename "$u")" >> "$fx/docs/pre-move.md"
+    done
+    _fixture_commit "$fx"
+
+    out="$(_scan "$fx")"
+    for u in "${units[@]}"; do
+        crate="$(printf '%s' "$u" | cut -d/ -f2)"
+        flat="crates/$crate/tests/$(basename "$u")"
+        awk -F'\t' -v c="$flat" -v t="$u" \
+            '$1 == "docs/pre-move.md" && $2 == c && $3 == "stale" && $4 == t { hit = 1 }
+             END { exit hit ? 0 : 1 }' <<<"$out" && continue
+        echo "the resolver did not repoint $flat -> $u:"
+        cat <<<"$out"
+        return 1
+    done
     return 0
 }
 
-assert "J: the real tree yields >= 100 live citations against an empty baseline" \
-    _real_tree_reports_offenders_at_scale
+assert "J: the resolver repoints real tracked test units cited at their pre-move paths" \
+    _resolver_repoints_real_tracked_units
 
 # (3) THE RATCHET AND THE FLOOR ARE REPORTED SEPARATELY.
 #
@@ -1128,11 +1211,11 @@ _unknown_argument_is_rejected() {
     out="$(bash "$GATE_SELF" --no-such-flag 2>&1)" || rc=$?
     if [ "$rc" -eq 0 ]; then
         echo "an unrecognised argument was ACCEPTED (rc0); it must be rejected:"
-        printf '%s\n' "$out" | head -5
+        head -5 <<<"$out"
         return 1
     fi
-    printf '%s\n' "$out" | grep -qi 'usage' && return 0
-    echo "rejection carried no usage line:"; printf '%s\n' "$out" | head -5; return 1
+    grep -qi 'usage' <<<"$out" && return 0
+    echo "rejection carried no usage line:"; head -5 <<<"$out"; return 1
 }
 
 assert "J: an unrecognised argument is rejected with a usage line, not run as the suite" \
@@ -1185,8 +1268,7 @@ _acceptance_catches_all_three_citations() {
         return 1
     fi
     for f in docs/testing.md examples/part.ri crates/mycrate/src/lib.rs; do
-        printf '%s\n' "$out" \
-            | grep -qF "$f :: crates/mycrate/tests/examples_smoke.rs" || {
+        grep -qF "$f :: crates/mycrate/tests/examples_smoke.rs" <<<"$out" || {
             echo "orphaned citation in $f was NOT reported:"; printf '%s\n' "$out"; return 1
         }
     done
@@ -1252,12 +1334,34 @@ assert "L: the checker still exits non-zero on a violation (the hint must not pe
 assert "L: STDOUT carries the findings" \
     grep -qF 'docs/testing.md :: crates/mycrate/tests/examples_smoke.rs' "$_HINT_OUT"
 
-assert "L: STDERR carries a remediation hint" \
-    grep -qiE 'hint|remedy|fix' "$_HINT_ERR"
+# BOTH fixes named, on stderr — each anchored on something EXECUTABLE rather
+# than on the sentence's wording, so rephrasing the hint cannot red the gate.
+#
+# Fix 2 anchors on `--emit-baseline`, a real flag of this file's dispatch.
+#
+# Fix 1 has no flag to name: it is a hand edit, and what makes it actionable
+# is the suggested target the FINDINGS print after a "->" marker. So its
+# anchor is that cross-reference — stdout really does emit a "-> " line
+# carrying the resolved target, and stderr really does send the reader to it.
+# A findings-format change that orphaned the hint's instruction fails here; a
+# reworded sentence does not. Deliberately NOT "stderr repeats the target":
+# the targets are findings, and duplicating them onto stderr would undo the
+# stream separation this whole section exists to pin.
+_hint_points_at_the_printed_target() {
+    grep -qF -- '-> stale: crates/mycrate/tests/harness_compilation_surface/examples_smoke.rs' \
+        "$_HINT_OUT" || {
+        echo 'stdout printed no "-> <verdict>: <target>" line for the offender:'
+        cat "$_HINT_OUT"; return 1
+    }
+    grep -qF -- '"->"' "$_HINT_ERR" || {
+        echo 'stderr fix 1 does not reference the "->" marker stdout uses for the target:'
+        cat "$_HINT_ERR"; return 1
+    }
+    return 0
+}
 
-# BOTH fixes named, on stderr.
-assert "L: the hint names fix 1 — repoint the citation to the suggested target" \
-    grep -qiE 'repoint|update the citation' "$_HINT_ERR"
+assert "L: the hint names fix 1 — the suggested target stdout prints after its \"->\" marker" \
+    _hint_points_at_the_printed_target
 assert "L: the hint names fix 2 — regenerate the baseline to grandfather the citation deliberately" \
     grep -qF -- '--emit-baseline' "$_HINT_ERR"
 
