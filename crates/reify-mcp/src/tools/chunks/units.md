@@ -245,15 +245,15 @@ This is not a style preference — the crossing is what makes the binding compil
 structure def MissingCrossing {
     param s     : Length = 5mm
     param r     : Length = 2mm
-    param theta : Angle  = 30deg
+    param known : Angle  = 2.5rad    // an angle that DID cross properly
 
-    // error: let binding 'bad_enter' declared `Scalar[rad]` but its
+    // error: let binding 'theta' declared `Scalar[rad]` but its
     //        initializer evaluates to `Real`
-    let bad_enter : Angle  = s / r
+    let theta : Angle  = s / r
 
-    // error: let binding 'bad_leave' declared `Scalar[m]` but its
+    // error: let binding 'arc' declared `Scalar[m]` but its
     //        initializer evaluates to `Scalar[m·rad]`
-    let bad_leave : Length = r * theta
+    let arc   : Length = r * known
 }
 ```
 
@@ -264,7 +264,7 @@ something it never demonstrates.
 
 The verbatim compiler wording for these is transcribed once, in the compile-gated exemplar `examples/best_practices/angle_crossings.ri` — treat that file as the canonical copy and this one as a paraphrase of the error *shape*.
 
-Drop the annotation and the error becomes silence instead: `let arc = r * theta` evaluates clean to `0.005 m·rad`, which is not a Length and will not compose with one.
+Drop the annotation and the error becomes silence instead: `let arc = r * known` evaluates clean to `0.005 m·rad`, which is not a Length and will not compose with one.
 
 Honest scope: this bites at annotated bindings over expressions, not universally. A bare *literal* still widens silently (`param theta : Angle = 2.5` evaluates to `2.5`, dimension erased; `sin(2.5)` is accepted). See "Enforcement honesty (D7)" in `docs/legibility/design-invariants.md`.
 

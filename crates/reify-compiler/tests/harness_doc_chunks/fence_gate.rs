@@ -2466,3 +2466,4 @@ fn geometry_chunk_retains_bare_reify_fences_for_the_sibling_smoke_suite() {
         sibling_geometry_reify_fence_floor()
     );
 }
+
