@@ -14,9 +14,13 @@
 //! them (`build_constraints`/`build_values` are private to the `gui` crate);
 //! it therefore guards compiler lowering, not the GUI functions themselves —
 //! a change shared by both sides of a mirror would not red here. See task
-//! #7450 (esc-5098-6) for that incident's narrative, for why the GUI-side
-//! gate which first caught it isn't read here (not on `main`), and for the
-//! four `PIN_*` ids' provenance.
+//! #7450 (esc-5098-6) for that incident's narrative and for the four `PIN_*`
+//! ids' provenance. `gui/test/visual/railLengtheningGate.mjs` is the GUI-side
+//! gate that first caught esc-5098-6, and it IS on `main` — but a Rust test
+//! cannot import a `.mjs` module, so instead of a prose citation,
+//! `scoped_ids_match_the_gui_gates_pin_constants` below reads its source text
+//! and asserts its four `PIN_*_CELL` literals equal this file's `PIN_*`
+//! consts, closing the drift a citation alone could not.
 //!
 //! # COMPILE ONLY
 //!
@@ -67,30 +71,85 @@ const PIN_CASES: &[PinCase] = &[
     },
 ];
 
-/// Splits a `Printer.<sub_name>.<member>` scoped id into `(sub_name, member)`.
-fn split_scoped(id: &str) -> (&str, &str) {
-    let mut parts = id.splitn(3, '.');
-    let _printer_name = parts.next().unwrap_or_default();
-    let sub_name = parts.next().unwrap_or_default();
-    let member = parts.next().unwrap_or_default();
-    (sub_name, member)
+/// Splits a `Printer.<sub_name>.<member>` scoped id into `(sub_name,
+/// member)`. Returns `None` unless `id` has exactly three non-empty
+/// dot-separated segments, rather than degrading a malformed or
+/// already-values-namespace (two-segment) id into nonsense empty parts.
+fn split_scoped(id: &str) -> Option<(&str, &str)> {
+    let parts: Vec<&str> = id.split('.').collect();
+    if parts.len() != 3 || parts.iter().any(|p| p.is_empty()) {
+        return None;
+    }
+    Some((parts[1], parts[2]))
 }
 
 /// Best-effort `values`-namespace spelling of a scoped id, for failure
 /// messages only (never an assertion) — see module doc for the two
 /// namespaces.
 fn values_namespace_spelling_hint(printer: &TopologyTemplate, scoped_id: &str) -> String {
-    let (sub_name, member) = split_scoped(scoped_id);
-    let type_name = sub_structure_name(printer, sub_name).unwrap_or(sub_name);
-    format!("{type_name}.{member}")
+    match split_scoped(scoped_id) {
+        Some((sub_name, member)) => {
+            let type_name = sub_structure_name(printer, sub_name).unwrap_or(sub_name);
+            format!("{type_name}.{member}")
+        }
+        None => format!(
+            "{scoped_id} is not a 3-segment <Structure>.<sub>.<member> instance path — \
+             it may already be a values-namespace id"
+        ),
+    }
+}
+
+/// Path to the GUI-side gate that first caught esc-5098-6 (see module doc).
+const RAIL_LENGTHENING_GATE_MJS: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../../gui/test/visual/railLengtheningGate.mjs");
+
+/// The string literal assigned to `export const {name} = "...";` in `source`
+/// — a minimal parse of exactly the shape `railLengtheningGate.mjs` uses for
+/// its `PIN_*_CELL` constants, not a general JS parser.
+fn extract_js_string_const(source: &str, name: &str) -> Option<String> {
+    let needle = format!("const {name} = \"");
+    let start = source.find(needle.as_str())? + needle.len();
+    let end = source[start..].find('"')?;
+    Some(source[start..start + end].to_string())
+}
+
+/// This Rust test cannot import a `.mjs` module, so instead it reads
+/// `railLengtheningGate.mjs`'s source text and asserts its four
+/// `PIN_*_CELL` literals equal this file's `PIN_*` consts — the executable
+/// link that keeps the two from silently diverging (see module doc).
+#[test]
+fn scoped_ids_match_the_gui_gates_pin_constants() {
+    let source = std::fs::read_to_string(RAIL_LENGTHENING_GATE_MJS)
+        .unwrap_or_else(|e| panic!("cannot read {RAIL_LENGTHENING_GATE_MJS}: {e}"));
+
+    for (rust_name, rust_value, js_name) in [
+        ("PIN_RAIL_SPAN", PIN_RAIL_SPAN, "PIN_RAIL_SPAN_CELL"),
+        ("PIN_Y_RAIL_LEN", PIN_Y_RAIL_LEN, "PIN_Y_RAIL_LEN_CELL"),
+        ("PIN_TRAVEL_AVAIL", PIN_TRAVEL_AVAIL, "PIN_TRAVEL_AVAIL_CELL"),
+        ("PIN_YH_MIN_TODAY", PIN_YH_MIN_TODAY, "PIN_YH_MIN_TODAY_CELL"),
+    ] {
+        let js_value = extract_js_string_const(&source, js_name).unwrap_or_else(|| {
+            panic!(
+                "{RAIL_LENGTHENING_GATE_MJS} has no `export const {js_name} = \"...\";` \
+                 — has the GUI gate's constant been renamed?"
+            )
+        });
+        assert_eq!(
+            rust_value, js_value,
+            "{rust_name} (this file) and {js_name} ({RAIL_LENGTHENING_GATE_MJS}) have diverged"
+        );
+    }
 }
 
 // ── Derivation machinery (S2) ────────────────────────────────────────────────
 
 /// The real `prj/printer_v01/printer.ri`, resolved from this crate's manifest
-/// dir. Mirrors `harness_constructor_typing/orientation_constructor_typing_tests.rs`'s
-/// `PRINTER_RI` constant, copied verbatim so the two gates cannot disagree
-/// about which file they gate.
+/// dir. Hand-copied from `harness_constructor_typing/orientation_constructor_typing_tests.rs`'s
+/// `PRINTER_RI` constant rather than shared — neither file has a common home
+/// for it yet (`reify-test-support`, which both dev-depend on, would be the
+/// natural one; see task #7450's follow-up). Being two copies, these CAN
+/// disagree about which file they gate until hoisted; keep both in sync by
+/// hand in the meantime.
 const PRINTER_RI: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../prj/printer_v01/printer.ri");
 
 /// Compiles `PRINTER_RI` with the stdlib prelude once per test binary
@@ -286,8 +345,30 @@ fn values_namespace_is_distinct_from_and_corresponds_to_the_constraint_namespace
     let printer = printer_template(module);
 
     for case in PIN_CASES {
+        // Hoisted out of the per-id loop below (it doesn't depend on
+        // `constraint_spelling`) and asserted non-vacuous HERE: without this,
+        // the containment check in (b) would pass vacuously — silently
+        // checking nothing — for a pin deleted from printer.ri.
+        let pin_constraints = pin_constraints_by_members(printer, case.member_shape);
+        assert_eq!(
+            pin_constraints.len(),
+            2,
+            "{}: expected 2 constraints matching member shape {:?} (the `<`/`>` halves of a \
+             two-sided pin), found {} ({})",
+            case.pin_name,
+            case.member_shape,
+            pin_constraints.len(),
+            diagnostics_summary(module),
+        );
+
         for &constraint_spelling in case.required_scoped_ids {
-            let (sub_name, member) = split_scoped(constraint_spelling);
+            let (sub_name, member) = split_scoped(constraint_spelling).unwrap_or_else(|| {
+                panic!(
+                    "{}: required_scoped_ids entry {constraint_spelling:?} is not a 3-segment \
+                     <Structure>.<sub>.<member> instance path",
+                    case.pin_name,
+                )
+            });
 
             // (a) the sub resolves to its declared structure — the entity half
             // of a constraint ref is the SUB NAME, not the TYPE NAME, which is
@@ -305,10 +386,10 @@ fn values_namespace_is_distinct_from_and_corresponds_to_the_constraint_namespace
                 )
             });
 
-            // (b) constraint namespace: constraint_spelling must appear in
-            // the parameter_ids of the pin this cell belongs to (located by
-            // member shape, S2).
-            for c in &pin_constraints_by_members(printer, case.member_shape) {
+            // (b) constraint namespace: constraint_spelling must appear in the
+            // parameter_ids of every constraint of this pin (non-vacuity of
+            // `pin_constraints` is asserted once per case, above).
+            for c in &pin_constraints {
                 let ids = constraint_parameter_ids(c);
                 assert!(
                     ids.iter().any(|id| id.as_str() == constraint_spelling),
@@ -337,10 +418,18 @@ fn values_namespace_is_distinct_from_and_corresponds_to_the_constraint_namespace
                  '<TemplateName>.<member>'",
             );
 
-            // (d) the regression assertion: no values-namespace spelling may
-            // appear in the parameter_ids of ANY constraint of Printer. This is
-            // exactly the state the old (pre-#7450) selector strings assumed,
-            // and it is false. (This also entails the two spellings differ:
+            // (d) the regression assertion: no CROSS-SUB cell's values-namespace
+            // spelling may appear in the parameter_ids of ANY constraint of
+            // Printer. This is exactly the state the old (pre-#7450) selector
+            // strings assumed, and it is false. Deliberately scoped to
+            // cross-sub cells — type_name != "Printer" is guaranteed here
+            // because every PIN_CASES member is declared on a SUB, never on
+            // Printer itself — because a same-template self-ref legitimately
+            // renders identically in both namespaces (build_values's
+            // `<TemplateName>.<member>` and a self-ref's own instance path
+            // coincide when TemplateName is "Printer"); a broader claim
+            // covering self-refs would be false for a correct compiler. (This
+            // also entails the two spellings differ for every pinned cell:
             // constraint_spelling is already proven present in (b) above, so
             // were it equal to values_spelling this assertion would fail.)
             for c in &printer.constraints {
@@ -349,14 +438,48 @@ fn values_namespace_is_distinct_from_and_corresponds_to_the_constraint_namespace
                     !ids.iter().any(|id| id.as_str() == values_spelling),
                     "constraint {} parameter_ids CONTAINS the values-namespace spelling \
                      '{values_spelling}' (constraint-namespace spelling would be \
-                     '{constraint_spelling}') — a Printer constraint must only ever carry \
-                     constraint-namespace (instance-path) ids. parameter_ids: {:?}",
+                     '{constraint_spelling}') — no cross-sub cell may appear in a Printer \
+                     constraint under its declaring TYPE's name. parameter_ids: {:?}",
                     c.id,
                     ids,
                 );
             }
         }
     }
+}
+
+/// The exemption (d) above carves out, made a checked fact rather than only
+/// an unexercised claim in a comment: `o1_pin_slack` is a value cell declared
+/// directly on `Printer` (a same-template self-ref, shared slack term of both
+/// pins), so its values-namespace spelling legitimately COINCIDES with the
+/// spelling a constraint carries for the same cell — both render as
+/// `Printer.o1_pin_slack`, since `build_values`'s `<TemplateName>.<member>`
+/// and a self-ref's own instance path agree when TemplateName is "Printer".
+#[test]
+fn self_ref_spellings_legitimately_coincide() {
+    let module = compiled_printer();
+    let printer = printer_template(module);
+
+    let values_spelling =
+        values_namespace_id(module, "Printer", "o1_pin_slack").unwrap_or_else(|| {
+            panic!(
+                "values_namespace_id(module, \"Printer\", \"o1_pin_slack\") returned None ({})",
+                diagnostics_summary(module),
+            )
+        });
+    assert_eq!(values_spelling, "Printer.o1_pin_slack");
+
+    let carries_it = printer
+        .constraints
+        .iter()
+        .any(|c| constraint_parameter_ids(c).iter().any(|id| id.as_str() == values_spelling));
+    assert!(
+        carries_it,
+        "expected some Printer constraint's parameter_ids to contain '{values_spelling}' \
+         (the shared o1_pin_slack self-ref), proving the coincidence against a real \
+         constraint rather than only against values_namespace_id ({})",
+        diagnostics_summary(module),
+    );
 }
 
 /// `sub_name`'s declared structure in `template` (e.g. `a_frame` → `AFrame`)
