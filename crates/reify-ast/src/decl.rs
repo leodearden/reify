@@ -2338,6 +2338,7 @@ mod member_test_fixtures {
             index_binder: None,
             index_domain: None,
             relate_relations: Vec::new(),
+            derivation: None,
             span: SourceSpan::new(0, 1),
             content_hash: ContentHash(0),
         }
