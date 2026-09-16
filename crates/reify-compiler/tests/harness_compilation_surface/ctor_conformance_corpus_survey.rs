@@ -3110,7 +3110,7 @@ fn survey_inline_corpus(root: &std::path::Path, host_rel_paths: &[String]) -> Su
         for template in &scan.format_templates {
             run.not_surveyed.push((
                 format!("{rel}:{}", template.host_line),
-                "format-template".to_owned(),
+                INLINE_TEMPLATE_REASON.to_owned(),
             ));
         }
 
@@ -4546,7 +4546,10 @@ fn opt_cell(value: Option<&String>) -> String {
 /// One spelling, so the renderer and the tests asserting on its presence — and
 /// on its ABSENCE, which is the stronger claim — cannot disagree about what a
 /// disclosure looks like.
-const DRIFT_DISCLOSURE_KEY: &str = "**Drifted `.ri` since the anchor:**";
+///
+/// Names no extension: a drifted member can now be either half's — a tracked
+/// `.ri`, or a `.rs` host whose bytes an inline row describes.
+const DRIFT_DISCLOSURE_KEY: &str = "**Drifted corpus members since the anchor:**";
 
 /// One cell of a site table, derived from the site.
 type SiteCell = fn(&SurveySite) -> String;
@@ -4650,6 +4653,55 @@ fn push_coverage_table(md: &mut String, rows: &[(String, String)], empty_note: &
 
 /// The heading of the inline half's coverage subsection.
 const INLINE_COVERAGE_HEADING: &str = "### Inline coverage";
+
+/// The coverage reason a `format!` template is recorded under.
+///
+/// One spelling, because [`push_inline_limitation`] COUNTS the rows carrying it
+/// to state how many snippets the walker reached: a drifted spelling there would
+/// silently turn a real figure into zero.
+const INLINE_TEMPLATE_REASON: &str = "format-template";
+
+/// Append named limitation 1 — what the inline walker reaches, and what it does
+/// not.
+///
+/// Every quantity comes from `inline`, never from prose: a hand-typed count is
+/// right on the day it is written and silently wrong afterwards, and this
+/// artifact's own provenance section promises zero hand-derived counts. The
+/// UNREACHED classes are therefore named by the Rust construct to grep for and
+/// deliberately carry no frozen number — the reader counts them at the stamped
+/// commit, against a corpus this generator does not enumerate.
+fn push_inline_limitation(md: &mut String, inline: &SurveyRun) {
+    use std::fmt::Write as _;
+
+    let templates = inline
+        .not_surveyed
+        .iter()
+        .filter(|(_, reason)| reason == INLINE_TEMPLATE_REASON)
+        .count();
+
+    let _ = write!(
+        md,
+        "1. {INLINE_LIMITATION_KEY}, and only as those.** The *Inline Rust fixtures*\n\
+           section above sweeps every tracked `.rs` test host for raw-string literals\n\
+           (`r\"…\"`, `r#\"…\"#`) whose text reads as Reify declaration grammar, and\n\
+           compiles each through the same pipeline as a tracked `.ri`. That reached\n\
+           **{total} inline member(s)**, of which **{templates}** were `format!`\n\
+           template(s) — listed above under their own coverage reason rather than\n\
+           dropped, because a template's `{{…}}` holes are not Reify syntax and a parse\n\
+           failure on one would say nothing about conformance.\n\
+           What a raw-string walker does **not** reach, each named by the construct to\n\
+           grep for: Reify text carried in an ORDINARY `\"…\"` string literal (including\n\
+           the backslash-continued multi-line form); text assembled by `concat!`; and text\n\
+           built at run time by a `String` helper (`push_str`, `join`). Those are\n\
+           unreached BY CONSTRUCTION, not by oversight — recovering them needs\n\
+           const-evaluation or execution where this needs only a lexer — so a site in one\n\
+           of those shapes is absent from the section above rather than reported clean.\n\
+           `include_str!` and `read_to_string` goldens, by contrast, need no machinery at\n\
+           all: their target `.ri` files are tracked, so the FIRST half already\n\
+           enumerated them.\n",
+        total = inline.total,
+    );
+}
 
 /// Append the whole `## Inline Rust fixtures` section.
 ///
@@ -4775,9 +4827,12 @@ fn render_survey(run: &SurveyRun, inline: &SurveyRun, stamp: &SurveyStamp) -> St
         let _ = write!(
             md,
             "\n\
-            {DRIFT_DISCLOSURE_KEY} {n} tracked `.ri` differ between the anchor and the\n\
-            commit surveyed, so for those files the anchor names OLDER bytes than the rows\n\
-            below describe. They are disclosed rather than refused because they are\n\
+            {DRIFT_DISCLOSURE_KEY} {n} tracked corpus members — `.ri` files, `.rs` hosts,\n\
+            or both — differ between the anchor and the commit surveyed, so for those files\n\
+            the anchor names OLDER bytes than the rows below describe. The list is filtered\n\
+            to the two corpora, so it names exactly the files whose bytes a row could\n\
+            describe and no unrelated churn. They are disclosed rather than refused because\n\
+            they are\n\
             COMMITTED: each is reachable from the surveyed commit, so a reader can read back\n\
             exactly what was swept. (Uncommitted bytes are reachable from no commit, which\n\
             is why a dirty tree is refused outright instead — see `stamp_decision`.)\n\
@@ -4959,20 +5014,10 @@ fn render_survey(run: &SurveyRun, inline: &SurveyRun, stamp: &SurveyStamp) -> St
     );
     push_coverage_table(&mut md, &run.partial, "_(none)_\n\n");
 
+    md.push_str("### Named limitations\n\n");
+    push_inline_limitation(&mut md, inline);
     md.push_str(
-        "### Named limitations\n\
-        \n\
-        1. **Inline Rust-string `.ri` fixtures are not file-enumerable.** The task's\n\
-           second half — the Rust test suite's inline fixtures and goldens — lives inside\n\
-           `const SOURCE: &str = r#\"…\"#` literals, which `git ls-files` cannot reach and\n\
-           which could only be swept by changing the compiler (out of scope for this\n\
-           read-only survey). Their coverage is **transitive, and stated as such rather\n\
-           than claimed**: the `--scope all --profile both` merge gate is green at the\n\
-           base commit above, and the landed α/ε gates\n\
-           (`no_example_emits_ctor_field_conformance_diagnostics`, the\n\
-           `struct_ctor_field_conformance_tests` suite) already assert on the\n\
-           ctor-conformance codes.\n\
-        2. **`compile_with_stdlib` is the SINGLE-FILE path.** `reify check` instead uses\n\
+        "2. **`compile_with_stdlib` is the SINGLE-FILE path.** `reify check` instead uses\n\
            `module_dag::compile_entry_with_stdlib_cfg_checked`, which follows `#cfg`-gated\n\
            user imports and runs `SimpleConstraintChecker`. Multi-module corpus members\n\
            (the `examples/module_visibility/consumer.ri` class) therefore cannot resolve\n\
@@ -5808,15 +5853,20 @@ fn git_read(args: &[&str]) -> String {
 /// `#[ignore]`d generator — depends on a `main` ref existing. The gate-resident
 /// guard `committed_survey_stamps_a_commit_that_is_an_ancestor_of_head`
 /// deliberately does not, so a checkout without `main` cannot red the gate.
-fn survey_stamp() -> SurveyStamp {
+fn survey_stamp(ri: &[String], hosts: &[String]) -> SurveyStamp {
     let anchor = git_read(&["merge-base", "main", "HEAD"]);
     // `--untracked-files=no` is deliberate: `git ls-files` never surfaces an
     // untracked file, so an untracked scratch file cannot change one row of the
     // survey and must not trigger a spurious refusal. A staged addition still
     // appears as `A ` and is still caught.
     let dirty = git_read(&["status", "--porcelain", "--untracked-files=no"]);
-    let ri_drift = git_read(&["diff", "--name-only", &anchor, "HEAD", "--", "*.ri"]);
-    stamp_decision(&anchor, &dirty, &ri_drift)
+    // Both extensions, because a row can now describe the bytes of either half.
+    // The read is therefore far wider than the disclosure: every unrelated `.rs`
+    // churn in the repo lands in it, which is why the result is narrowed to the
+    // two corpora before it reaches the header.
+    let drift = git_read(&["diff", "--name-only", &anchor, "HEAD", "--", "*.ri", "*.rs"]);
+    let drifted = drift_within_corpus(&drift, &surveyed_corpus_union(ri, hosts));
+    stamp_decision(&anchor, &dirty, &drifted)
         .unwrap_or_else(|e| panic!("ctor_conformance_corpus_survey: {e}"))
 }
 
@@ -6281,7 +6331,11 @@ fn the_drift_disclosure_is_not_scoped_to_ri_alone() {
 fn generate_ctor_conformance_corpus_survey() {
     let corpus = tracked_ri_corpus();
     let run = survey_corpus(std::path::Path::new(WORKSPACE_ROOT), corpus);
-    let rendered = render_survey(&run, &SurveyRun::default(), &survey_stamp());
+    let rendered = render_survey(
+        &run,
+        &SurveyRun::default(),
+        &survey_stamp(corpus, tracked_rust_test_hosts()),
+    );
     let out = survey_output_path();
     std::fs::write(&out, &rendered)
         .unwrap_or_else(|e| panic!("cannot write survey to {}: {e}", out.display()));
@@ -6405,14 +6459,18 @@ impl SurveyStamp {
 }
 
 /// The lines of `drift` — raw `git diff --name-only` output — that name a
-/// member of `corpus`.
+/// member of `corpus`, in git's own order and spelling.
 ///
-/// Stub — filled in by the GREEN half of this pair.
-fn drift_within_corpus(
-    _drift: &str,
-    _corpus: &std::collections::BTreeSet<&str>,
-) -> Vec<String> {
-    Vec::new()
+/// The SINGLE parser of that output: [`stamp_decision`] takes the result of this
+/// already split and already filtered, so nothing else has to know that git
+/// writes a trailing newline even when it has nothing to report.
+fn drift_within_corpus(drift: &str, corpus: &std::collections::BTreeSet<&str>) -> Vec<String> {
+    drift
+        .lines()
+        .map(str::trim)
+        .filter(|path| corpus.contains(path))
+        .map(str::to_owned)
+        .collect()
 }
 
 /// The union of both corpus halves, as the membership set
@@ -6454,6 +6512,11 @@ fn drift_within_corpus_keeps_both_halves_and_drops_everything_else() {
         drift_within_corpus("", &corpus).is_empty(),
         "git writes a trailing newline even with nothing to report"
     );
+    assert!(
+        drift_within_corpus("  \n\n", &corpus).is_empty(),
+        "a whitespace-only read is an EMPTY read; this is the ONE place that \
+         parses git's `--name-only` output, so nothing downstream re-derives it"
+    );
 }
 
 /// Decide whether the git state just read may be stamped into the artifact
@@ -6464,15 +6527,17 @@ fn drift_within_corpus_keeps_both_halves_and_drops_everything_else() {
 /// behind the `#[ignore]`d generator. Same split this module uses throughout.
 ///
 /// * `anchor` — `git merge-base main HEAD`, the commit the header will name.
-/// * `dirty` — `git status --porcelain --untracked-files=no`.
-/// * `ri_drift` — `git diff --name-only <anchor> HEAD -- '*.ri'`.
+/// * `dirty` — `git status --porcelain --untracked-files=no`, raw.
+/// * `drifted` — the corpus members that differ between the anchor and `HEAD`,
+///   already parsed out of `git diff --name-only` and already narrowed to the
+///   two corpora by [`drift_within_corpus`].
 ///
-/// The first two can REFUSE; `ri_drift` never does — it is disclosed. See
+/// The first two can REFUSE; `drifted` never does — it is disclosed. See
 /// [`SurveyStamp`] for the reachability argument that splits them.
 ///
-/// Whitespace-only input is an EMPTY read: git writes a trailing newline even
+/// Whitespace-only `dirty` is an EMPTY read: git writes a trailing newline even
 /// when it has nothing to report.
-fn stamp_decision(anchor: &str, dirty: &str, ri_drift: &str) -> Result<SurveyStamp, String> {
+fn stamp_decision(anchor: &str, dirty: &str, drifted: &[String]) -> Result<SurveyStamp, String> {
     let anchor = anchor.trim();
     if anchor.len() != FULL_SHA_LEN || !anchor.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')) {
         return Err(format!(
@@ -6494,23 +6559,24 @@ fn stamp_decision(anchor: &str, dirty: &str, ri_drift: &str) -> Result<SurveySta
 
     Ok(SurveyStamp {
         anchor: anchor.to_owned(),
-        drifted: ri_drift
-            .lines()
-            .map(str::trim)
-            .filter(|path| !path.is_empty())
-            .map(str::to_owned)
-            .collect(),
+        drifted: drifted.to_vec(),
     })
+}
+
+/// A drift list as [`drift_within_corpus`] hands one to [`stamp_decision`].
+#[cfg(test)]
+fn drifted_paths(paths: &[&str]) -> Vec<String> {
+    paths.iter().map(|p| (*p).to_owned()).collect()
 }
 
 #[test]
 fn stamp_decision_accepts_a_resolved_anchor_over_a_clean_tree() {
     // The one shape that may be stamped: a fully-resolved anchor, nothing
-    // uncommitted, and no tracked `.ri` differing between the anchor and the
+    // uncommitted, and no corpus member differing between the anchor and the
     // commit actually swept.
     let anchor = "a46387d1f58fb469ed226cc0f2bfbaafa7cf63be";
     assert_eq!(
-        stamp_decision(anchor, "", ""),
+        stamp_decision(anchor, "", &[]),
         Ok(SurveyStamp::at(anchor)),
         "a resolved anchor over a clean, undrifted tree is exactly what the \
          header is allowed to claim"
@@ -6518,7 +6584,7 @@ fn stamp_decision_accepts_a_resolved_anchor_over_a_clean_tree() {
     // git writes a trailing newline even when it has nothing to report, and a
     // whitespace-only read is an EMPTY read — not a refusal.
     assert_eq!(
-        stamp_decision(anchor, "\n", "  \n"),
+        stamp_decision(anchor, "\n", &[]),
         Ok(SurveyStamp::at(anchor)),
         "whitespace-only git output means clean; it must not be read as dirty"
     );
@@ -6536,7 +6602,7 @@ fn stamp_decision_refuses_a_dirty_tree_and_names_what_is_dirty() {
     // itself is deliberately NOT pinned here: asserting on its wording would
     // test the message rather than the behaviour.
     let anchor = "a46387d1f58fb469ed226cc0f2bfbaafa7cf63be";
-    let err = stamp_decision(anchor, " M crates/reify-compiler/src/lib.rs\n", "")
+    let err = stamp_decision(anchor, " M crates/reify-compiler/src/lib.rs\n", &[])
         .expect_err("a dirty tree must refuse to stamp");
     assert!(
         err.contains("crates/reify-compiler/src/lib.rs"),
@@ -6546,7 +6612,7 @@ fn stamp_decision_refuses_a_dirty_tree_and_names_what_is_dirty() {
     // A STAGED addition is still dirty — `--untracked-files=no` suppresses the
     // `??` rows only, never the `A `/` M` ones.
     assert!(
-        stamp_decision(anchor, "A  docs/prds/new.md\n", "").is_err(),
+        stamp_decision(anchor, "A  docs/prds/new.md\n", &[]).is_err(),
         "a staged-but-uncommitted addition must refuse too"
     );
 }
@@ -6561,7 +6627,7 @@ fn stamp_decision_discloses_a_drifted_tracked_ri_rather_than_refusing() {
     // this artifact names as its expected invalidator, whose whole diff is
     // `.ri` migrations.
     let anchor = "a46387d1f58fb469ed226cc0f2bfbaafa7cf63be";
-    let stamp = stamp_decision(anchor, "", "examples/one.ri\nexamples/two.ri\n")
+    let stamp = stamp_decision(anchor, "", &drifted_paths(&["examples/one.ri", "examples/two.ri"]))
         .expect("a committed .ri drift is disclosed, never refused");
     assert_eq!(
         stamp.anchor, anchor,
@@ -6585,14 +6651,14 @@ fn stamp_decision_still_refuses_an_unreachable_state_even_alongside_drift() {
     // commit and an unresolved anchor names no commit at all; in both cases no
     // wording in the header could let a reader reconstruct what was surveyed.
     let anchor = "a46387d1f58fb469ed226cc0f2bfbaafa7cf63be";
-    let err = stamp_decision(anchor, " M docs/prds/x.md\n", "examples/one.ri\n")
+    let err = stamp_decision(anchor, " M docs/prds/x.md\n", &drifted_paths(&["examples/one.ri"]))
         .expect_err("a dirty tree refuses whether or not a tracked .ri drifted");
     assert!(
         err.contains("docs/prds/x.md"),
         "the refusal must still name what is dirty; got: {err}"
     );
     assert!(
-        stamp_decision("HEAD", "", "examples/one.ri\n").is_err(),
+        stamp_decision("HEAD", "", &drifted_paths(&["examples/one.ri"])).is_err(),
         "an anchor that is not a resolved object name refuses whether or not a \
          tracked .ri drifted"
     );
@@ -6623,14 +6689,14 @@ fn stamp_decision_rejects_an_anchor_that_is_not_a_full_lowercase_sha() {
     ];
     for (anchor, why) in bad_anchors {
         assert!(
-            stamp_decision(anchor, "", "").is_err(),
+            stamp_decision(anchor, "", &[]).is_err(),
             "{anchor:?} must be rejected rather than stamped: {why}"
         );
     }
     // Sanity: the guard rejects for the RIGHT reason — the same inputs with a
     // well-formed anchor are accepted.
     assert!(
-        stamp_decision(&"a".repeat(FULL_SHA_LEN), "", "").is_ok(),
+        stamp_decision(&"a".repeat(FULL_SHA_LEN), "", &[]).is_ok(),
         "40 lowercase hex characters is the accepted shape"
     );
 }
@@ -6760,3 +6826,4 @@ fn committed_survey_stamps_a_commit_that_is_an_ancestor_of_head() {
          lands. Re-run the survey generator to re-stamp the merge base."
     );
 }
+
