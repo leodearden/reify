@@ -83,3 +83,38 @@ fn a_wave_that_codes_sites_and_shrinks_its_row_in_the_same_diff_stays_clean() {
          no High, and no Medium pdiag-baseline-stale advisory either"
     );
 }
+
+#[test]
+fn a_row_shrunk_further_than_its_sites_were_coded_is_a_high() {
+    // The shrink is not a rubber stamp: the wave rewrites the row to N-K but
+    // only codes K-1 sites, so live (N-K+1) exceeds the row it just wrote.
+    // Without this direction, mandating a same-diff shrink would be
+    // mandating a way to launder sites past the gate.
+    let n = 5usize;
+    let k = 2usize;
+    let findings = wave_tree(n - (k - 1), k - 1, Some((n - k) as u32));
+    let high = highs(&findings);
+    assert_eq!(high.len(), 1, "expected exactly one High, got {findings:?}");
+    assert!(
+        high[0].summary.contains(WAVE_SECTION),
+        "{WAVE_SECTION} missing from {:?}",
+        high[0].summary
+    );
+}
+
+#[test]
+fn a_new_uncoded_site_added_during_a_wave_reds_against_the_shrunk_row() {
+    // The second half of κ's user-observable signal: start from step-1's
+    // clean AFTER state (coded K / code-less N-K, row N-K), then add ONE
+    // further code-less site during the same wave.
+    let n = 5usize;
+    let k = 2usize;
+    let findings = wave_tree(n - k + 1, k, Some((n - k) as u32));
+    let high = highs(&findings);
+    assert_eq!(high.len(), 1, "expected exactly one High, got {findings:?}");
+    assert!(
+        high[0].summary.contains(WAVE_SECTION),
+        "{WAVE_SECTION} missing from {:?}",
+        high[0].summary
+    );
+}
