@@ -1,20 +1,24 @@
 # Struct-ctor field-type conformance — corpus survey
 
-**Base commit:** `b42c7dd2074099b67a52a8e4d297e82c726aab3f`
+**Base commit:** `c528d054457a34a60c288cc4520bab0deb65b625`
 **Tool:** `crates/reify-compiler/tests/harness_compilation_surface/ctor_conformance_corpus_survey.rs`
 **Design:** `docs/prds/struct-ctor-field-type-conformance.md` (task β, §8)
-**Sites:** 16
-**Corpus:** 689 tracked `.ri`; 684 surveyed, 5 not surveyed, 73 partial
+**Sites:** 16 in the tracked `.ri` corpus; 272 in inline Rust fixtures
+**Corpus:** 701 members of the `tracked .ri corpus` (enumeration parity floor 100); 3198 snippets extracted from the `inline Rust fixture hosts` (enumeration parity floor 300 hosts)
+**`.ri` coverage:** 696 surveyed, 5 not surveyed, 78 partial
 
-**Drifted `.ri` since the anchor:** 2 tracked `.ri` differ between the anchor and the
-commit surveyed, so for those files the anchor names OLDER bytes than the rows
-below describe. They are disclosed rather than refused because they are
-COMMITTED: each is reachable from the surveyed commit, so a reader can read back
-exactly what was swept. (Uncommitted bytes are reachable from no commit, which
-is why a dirty tree is refused outright instead — see `stamp_decision`.)
+**Drifted corpus members since the anchor:** 2 tracked corpus members — `.ri` files, `.rs` hosts,
+or both — differ between the anchor and the commit surveyed, so for those files
+the anchor names OLDER bytes than the rows below describe. The list is filtered
+to the two corpora, so it names exactly the files whose bytes a row could
+describe and no unrelated churn. They are disclosed rather than refused because
+they are COMMITTED: each is reachable from the surveyed commit, so a reader can
+read back exactly what was swept. (Uncommitted bytes are reachable from no
+commit, which is why a dirty tree is refused outright instead — see
+`stamp_decision`.)
 
-- `tests/prd-gate/fixtures/r3b_displacement_at_selector_grammar.ri`
-- `tree-sitter-reify/test/fixtures/mv-2-priv-param.ri`
+- `crates/reify-compiler/tests/harness_compilation_surface/ctor_conformance_corpus_survey.rs`
+- `crates/reify-test-support/tests/rust_fixture_scan.rs`
 
 This is a point-in-time **snapshot**, not a freshness-gated golden file. γ will
 legitimately invalidate it — that is the point. Its job is to enumerate and size,
@@ -56,8 +60,8 @@ prose here has to guess a cause on a reader's behalf.
 The **`disposition` column is γ's RULING**, projected from the site's measured
 severity and the two per-site waiver tables (`CTOR_CONFORMANCE_CORPUS_RESIDUAL`
 in the generator, `CTOR_CONFORMANCE_MIGRATION_DEBT` in the sibling
-`examples_smoke.rs`) rather than typed here. It has three states, and they call
-for three DIFFERENT actions:
+`examples_smoke.rs`) rather than typed here. It has four states, and they call
+for four DIFFERENT actions:
 
 - **`deferred`** names the LIVE task that owns retiring the site, and the reason
 migrating it here would destroy something — most of these are committed RED
@@ -70,7 +74,14 @@ behaviour under test. **Not actionable, and not residual either** — it carries
 owner because it needs none, and reading it as unclaimed work would send you to
 delete another PRD’s signal.
 - **`unattributed`** is a warning claimed by nobody: that is the actionable
-state, and after γ the corpus holds none.
+state, and after γ the tracked `.ri` corpus holds none.
+- **`census`** is every row from the **inline** half — a Reify snippet embedded
+in a Rust test fixture. Those sites are owned by **#5306**, which is chartered to
+fix them; the task that enumerated them was chartered not to. They are listed so
+the class is countable and cannot recur unnoticed on the next severity change,
+and so #5306 inherits a list instead of a search. **Do not read a census row as
+unclaimed work, and do not read it as waived either** — no waiver table names it,
+because the tables key on `.ri` files.
 
 The **`hint` column is ADVISORY**, derived purely from the (expected, found)
 type pair. It is **not** a D9 ruling. PRD §4 D9 defines the split between class
@@ -158,9 +169,1091 @@ with a real cost. **Triage manually before touching.**
 | `tests/prd-gate/fixtures/curvature_rad_literal.ri:12` | — | unrecovered: identifier not followed by `(` | kc | Scalar[m^-1] | Scalar[rad·m^-1] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | deferred — owned by #6179: angle-completion leaf α, boundary row B1: CURVATURE is m^-1 pre-α, so the rad·m^-1 initializer mismatches; the fixture's own header calls that check-time flip α's signal | argument 'kc' has type 'Scalar[rad·m^-1]' but param 'kc' requires type 'Scalar[m^-1]'; pass a dimensioned AbsorptionCoeff literal |
 | `tests/prd-gate/fixtures/raw_lambda_material_field_rejected.ri:21` | — | unrecovered: identifier not followed by `(` | material | — | — | `TypeNotConformingToTrait` | Error | no mechanical hint — γ per-case judgment | n/a — Error severity, outside the ctor-conformance warning signal: nothing to retire | type 'Field<<error>, AnisotropicMaterial>' does not conform to trait 'ConstitutiveLaw' required by param 'material' |
 
+## Inline Rust fixtures
+
+Reify snippets embedded in Rust test sources as raw-string literals, swept by
+the SAME pipeline as the tracked `.ri` corpus above. A row's `site` cell is the
+HOST `.rs` position to open; the `snippet line` cell locates the declaration
+inside the literal.
+
+Every row here carries the `census` disposition: these sites are owned by
+**#5306**, and are enumerated rather than fixed so the class is countable and
+cannot recur unnoticed on the next severity change.
+
+### FEA — deferred to v0.6 (DO NOT FIX HERE) — 9 site(s)
+
+| site | snippet line | def | def source | field | expected | found | code | severity | hint (advisory) | disposition (γ ruling) | message |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:475` | 5 | PressureLoad | ctor call-site anchor | face | FaceSelector | Frame3 | `ArgTypeMismatch` | Warning | selector field given a coordinate pose — a pose locates a datum, it does not name a region target | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'face' has type 'Frame3' but param 'face' requires selector type 'FaceSelector'; a coordinate pose is not a region target; select a face/edge/vertex instead |
+| `crates/reify-compiler/tests/multi_load_case_stdlib_tests.rs:309` | 2 | LoadCase | ctor call-site anchor | loads | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'Int' does not conform to trait 'Load' required by param 'loads' |
+| `crates/reify-compiler/tests/multi_load_case_stdlib_tests.rs:309` | 2 | LoadCase | ctor call-site anchor | loads | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'Int' does not conform to trait 'Load' required by param 'loads' |
+| `crates/reify-compiler/tests/multi_load_case_stdlib_tests.rs:309` | 2 | LoadCase | ctor call-site anchor | loads | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'Int' does not conform to trait 'Load' required by param 'loads' |
+| `crates/reify-compiler/tests/multi_load_case_stdlib_tests.rs:344` | 2 | LoadCase | ctor call-site anchor | supports | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'Int' does not conform to trait 'Support' required by param 'supports' |
+| `crates/reify-compiler/tests/multi_load_case_stdlib_tests.rs:344` | 2 | LoadCase | ctor call-site anchor | supports | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'Int' does not conform to trait 'Support' required by param 'supports' |
+| `crates/reify-compiler/tests/multi_load_case_stdlib_tests.rs:344` | 2 | LoadCase | ctor call-site anchor | supports | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'Int' does not conform to trait 'Support' required by param 'supports' |
+| `crates/reify-compiler/tests/multi_load_case_stdlib_tests.rs:380` | 2 | LoadCase | ctor call-site anchor | loads | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'FixedSupport' does not conform to trait 'Load' required by param 'loads' |
+| `crates/reify-eval/tests/structure_instance_e2e.rs:311` | 6 | PointLoad | ctor call-site anchor | mat | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'PointLoad' does not conform to trait 'ElasticMaterial' required by param 'mat' |
+
+### non-FEA structure def — γ per-case judgment — 120 site(s)
+
+| site | snippet line | def | def source | field | expected | found | code | severity | hint (advisory) | disposition (γ ruling) | message |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `crates/reify-compiler/tests/harness_mechanics/modal_mechanism_compile.rs:266` | 6 | RayleighDamping | ctor call-site anchor | alpha | Scalar[s^-1] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'alpha' has type 'Real' but param 'alpha' requires type 'Scalar[s^-1]'; pass a dimensioned Frequency literal |
+| `crates/reify-compiler/tests/harness_mechanics/modal_mechanism_compile.rs:266` | 6 | RayleighDamping | ctor call-site anchor | beta | Scalar[s] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'beta' has type 'Real' but param 'beta' requires type 'Scalar[s]'; pass a dimensioned Time literal such as `1s` |
+| `crates/reify-compiler/tests/harness_mechanics/modal_options_validation_tests.rs:556` | 2 | RayleighDamping | ctor call-site anchor | alpha | Scalar[s^-1] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'alpha' has type 'Real' but param 'alpha' requires type 'Scalar[s^-1]'; pass a dimensioned Frequency literal |
+| `crates/reify-compiler/tests/harness_mechanics/modal_options_validation_tests.rs:556` | 2 | RayleighDamping | ctor call-site anchor | beta | Scalar[s] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'beta' has type 'Real' but param 'beta' requires type 'Scalar[s]'; pass a dimensioned Time literal such as `1s` |
+| `crates/reify-compiler/tests/harness_mechanics/modal_options_validation_tests.rs:632` | 2 | RayleighDamping | ctor call-site anchor | alpha | Scalar[s^-1] | Scalar[s] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'alpha' has type 'Scalar[s]' but param 'alpha' requires type 'Scalar[s^-1]'; pass a dimensioned Frequency literal |
+| `crates/reify-compiler/tests/harness_mechanics/modal_options_validation_tests.rs:632` | 2 | RayleighDamping | ctor call-site anchor | beta | Scalar[s] | Scalar[s^-1] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'beta' has type 'Scalar[s^-1]' but param 'beta' requires type 'Scalar[s]'; pass a dimensioned Time literal such as `1s` |
+| `crates/reify-compiler/tests/harness_mechanics/modal_options_validation_tests.rs:2328` | 12 | ForcingTimeHistory | ctor call-site anchor | part | Part | String | `TypeNotConformingToStructureRef` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'part' has type 'String' but param 'part' requires structure type 'Part' |
+| `crates/reify-compiler/tests/harness_mechanics/modal_options_validation_tests.rs:2521` | 2 | StepForce | ctor call-site anchor | at | Selector | Real | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'at' has type 'Real' but param 'at' requires selector type 'Selector' |
+| `crates/reify-compiler/tests/harness_mechanics/modal_options_validation_tests.rs:2562` | 2 | StepForce | ctor call-site anchor | at | Selector | String | `ArgTypeMismatch` | Warning | selector field given a string — typed ctor such as face(b, "x_max") or vertex(b, "tip") is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'at' has type 'String' but param 'at' requires selector type 'Selector' |
+| `crates/reify-compiler/tests/harness_mechanics/modal_options_validation_tests.rs:2603` | 2 | StepForce | ctor call-site anchor | at | Selector | Int | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'at' has type 'Int' but param 'at' requires selector type 'Selector' |
+| `crates/reify-compiler/tests/harness_mechanics/modal_options_validation_tests.rs:2645` | 3 | StepForce | ctor call-site anchor | at | Selector | Real | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'at' has type 'Real' but param 'at' requires selector type 'Selector' |
+| `crates/reify-compiler/tests/harness_physical_modeling/m9_error_cases.rs:172` | 4 | Plain | ctor call-site anchor | m | Material | Plain | `TypeNotConformingToStructureRef` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'm' has type 'Plain' but param 'm' requires structure type 'Material' |
+| `crates/reify-compiler/tests/harness_physical_modeling/vec3_type_tests.rs:360` | 5 | AxisHolder | ctor call-site anchor | axis | Vector3<Scalar[m]> | Real | `TypeNotConformingToVector` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'axis' has type 'Real' but param 'axis' requires vector type 'Vector3<Scalar[m]>' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:98` | 4 | Widget | ctor call-site anchor | label | String | Int | `ArgTypeMismatch` | Warning | string field given a non-string literal | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'label' has type 'Int' but param 'label' requires type 'String' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:312` | 5 | Holder | ctor call-site anchor | mat | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'NotAMaterial' does not conform to trait 'MaterialSpec' required by param 'mat' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:362` | 5 | Holder | ctor call-site anchor | loc | FaceSelector | EdgeSelector | `SelectorKindMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'loc' has selector kind 'EdgeSelector' but param 'loc' requires selector kind 'FaceSelector' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:410` | 4 | Holder | ctor call-site anchor | loc | FaceSelector | String | `ArgTypeMismatch` | Warning | selector field given a string — typed ctor such as face(b, "x_max") or vertex(b, "tip") is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'loc' has type 'String' but param 'loc' requires selector type 'FaceSelector' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:513` | 5 | Holder | ctor call-site anchor | loc | FaceSelector | Frame3 | `ArgTypeMismatch` | Warning | selector field given a coordinate pose — a pose locates a datum, it does not name a region target | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'loc' has type 'Frame3' but param 'loc' requires selector type 'FaceSelector'; a coordinate pose is not a region target; select a face/edge/vertex instead |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:548` | 5 | Holder | ctor call-site anchor | loc | FaceSelector | Transform3 | `ArgTypeMismatch` | Warning | selector field given a coordinate pose — a pose locates a datum, it does not name a region target | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'loc' has type 'Transform3' but param 'loc' requires selector type 'FaceSelector'; a coordinate pose is not a region target; select a face/edge/vertex instead |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:698` | 4 | Widget | ctor call-site anchor | label | String | Int | `ArgTypeMismatch` | Warning | string field given a non-string literal | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'label' has type 'Int' but param 'label' requires type 'String' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:715` | 4 | Widget | ctor call-site anchor | label | String | Int | `ArgTypeMismatch` | Warning | string field given a non-string literal | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'label' has type 'Int' but param 'label' requires type 'String' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:715` | 4 | Widget | ctor call-site anchor | label | String | Int | `ArgTypeMismatch` | Warning | string field given a non-string literal | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'label' has type 'Int' but param 'label' requires type 'String' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:725` | 4 | Widget | ctor call-site anchor | label | String | Int | `ArgTypeMismatch` | Warning | string field given a non-string literal | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'label' has type 'Int' but param 'label' requires type 'String' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:725` | 4 | Widget | ctor call-site anchor | label | String | Int | `ArgTypeMismatch` | Warning | string field given a non-string literal | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'label' has type 'Int' but param 'label' requires type 'String' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:734` | 6 | Widget | ctor call-site anchor | label | String | Int | `ArgTypeMismatch` | Warning | string field given a non-string literal | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'label' has type 'Int' but param 'label' requires type 'String' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:743` | 5 | Widget | ctor call-site anchor | label | String | Int | `ArgTypeMismatch` | Warning | string field given a non-string literal | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'label' has type 'Int' but param 'label' requires type 'String' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:751` | 4 | Widget | ctor call-site anchor | label | String | Int | `ArgTypeMismatch` | Warning | string field given a non-string literal | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'label' has type 'Int' but param 'label' requires type 'String' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:751` | 4 | Widget | ctor call-site anchor | label | String | Int | `ArgTypeMismatch` | Warning | string field given a non-string literal | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'label' has type 'Int' but param 'label' requires type 'String' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:751` | 4 | Widget | ctor call-site anchor | label | String | Int | `ArgTypeMismatch` | Warning | string field given a non-string literal | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'label' has type 'Int' but param 'label' requires type 'String' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:751` | 4 | Widget | ctor call-site anchor | label | String | Int | `ArgTypeMismatch` | Warning | string field given a non-string literal | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'label' has type 'Int' but param 'label' requires type 'String' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:751` | 4 | Widget | ctor call-site anchor | label | String | Int | `ArgTypeMismatch` | Warning | string field given a non-string literal | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'label' has type 'Int' but param 'label' requires type 'String' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:751` | 4 | Widget | ctor call-site anchor | label | String | Int | `ArgTypeMismatch` | Warning | string field given a non-string literal | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'label' has type 'Int' but param 'label' requires type 'String' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:757` | 3 | Widget | ctor call-site anchor | label | String | Int | `ArgTypeMismatch` | Warning | string field given a non-string literal | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'label' has type 'Int' but param 'label' requires type 'String' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:830` | 3 | Widget | ctor call-site anchor | label | String | Int | `ArgTypeMismatch` | Warning | string field given a non-string literal | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'label' has type 'Int' but param 'label' requires type 'String' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:1208` | 4 | Anchor | ctor call-site anchor | origin | Point3<Scalar[m]> | String | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'origin' has type 'String' but param 'origin' requires type 'Point3<Scalar[m]>' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:1250` | 4 | Anchor | ctor call-site anchor | origin | Point3<Scalar[m]> | String | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'origin' has type 'String' but param 'origin' requires type 'Point3<Scalar[m]>' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:1304` | 4 | Body | ctor call-site anchor | inertia | Matrix3x3<Scalar[m^2·kg]> | String | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'inertia' has type 'String' but param 'inertia' requires type 'Matrix3x3<Scalar[m^2·kg]>' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:1321` | 4 | Body | ctor call-site anchor | inertia | Matrix3x3<Scalar[m^2·kg]> | List<String> | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'inertia' has type 'List<String>' but param 'inertia' requires type 'Matrix3x3<Scalar[m^2·kg]>' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:1350` | 4 | Body | ctor call-site anchor | inertias | Matrix3x3<Scalar[m^2·kg]> | String | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'inertias' has type 'String' but param 'inertias' requires type 'Matrix3x3<Scalar[m^2·kg]>' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:1372` | 4 | Body | ctor call-site anchor | stress | Tensor2x3<Scalar[kg·m^-1·s^-2]> | String | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'stress' has type 'String' but param 'stress' requires type 'Tensor2x3<Scalar[kg·m^-1·s^-2]>' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:1466` | 4 | Holder | ctor call-site anchor | mode_shape | Field<Point3<Scalar[m]>, Vector3<Scalar[m]>> | String | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'mode_shape' has type 'String' but param 'mode_shape' requires type 'Field<Point3<Scalar[m]>, Vector3<Scalar[m]>>' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:1487` | 4 | Holder | ctor call-site anchor | modes | Field<Point3<Scalar[m]>, Vector3<Scalar[m]>> | String | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'modes' has type 'String' but param 'modes' requires type 'Field<Point3<Scalar[m]>, Vector3<Scalar[m]>>' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:1770` | 3 | W | ctor call-site anchor | label | String | Int | `ArgTypeMismatch` | Warning | string field given a non-string literal | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'label' has type 'Int' but param 'label' requires type 'String' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:1775` | 3 | W | ctor call-site anchor | flag | Bool | String | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'flag' has type 'String' but param 'flag' requires type 'Bool' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:1780` | 3 | W | ctor call-site anchor | n | Int | String | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'n' has type 'String' but param 'n' requires type 'Int' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:1785` | 3 | W | ctor call-site anchor | mag | Real | String | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'mag' has type 'String' but param 'mag' requires type 'Real' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:1862` | 3 | W | ctor call-site anchor | p | Scalar[kg·m^-1·s^-2] | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'p' has type 'Scalar[m]' but param 'p' requires type 'Scalar[kg·m^-1·s^-2]'; pass a dimensioned Pressure literal such as `1kg/m/s^2` |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:1867` | 3 | W | ctor call-site anchor | p | Scalar[m·s^-1] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'p' has type 'Real' but param 'p' requires type 'Scalar[m·s^-1]'; pass a dimensioned Velocity literal such as `1m/s` |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:1872` | 3 | W | ctor call-site anchor | p | Scalar[m·s^-1] | Int | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'p' has type 'Int' but param 'p' requires type 'Scalar[m·s^-1]'; pass a dimensioned Velocity literal such as `1m/s` |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:1877` | 3 | W | ctor call-site anchor | d | Scalar[kg·m^-3] | String | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'd' has type 'String' but param 'd' requires type 'Scalar[kg·m^-3]'; pass a dimensioned Density literal such as `1kg/m^3` |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:1882` | 3 | W | ctor call-site anchor | d | Scalar[kg·m^-3] | Bool | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'd' has type 'Bool' but param 'd' requires type 'Scalar[kg·m^-3]'; pass a dimensioned Density literal such as `1kg/m^3` |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:1944` | 7 | Steel | ctor call-site anchor | density | Scalar[kg·m^-3] | String | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'density' has type 'String' but param 'density' requires type 'Scalar[kg·m^-3]'; pass a dimensioned Density literal such as `1kg/m^3` |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:1944` | 7 | Steel | ctor call-site anchor | youngs_modulus | Scalar[kg·m^-1·s^-2] | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'youngs_modulus' has type 'Scalar[m]' but param 'youngs_modulus' requires type 'Scalar[kg·m^-1·s^-2]'; pass a dimensioned Pressure literal such as `1kg/m/s^2` |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:2378` | 3 | W | ctor call-site anchor | label | String | Scalar<Q> | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'label' has type 'Scalar<Q>' but param 'label' requires type 'String' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:2383` | 3 | W | ctor call-site anchor | flag | Bool | Scalar<Q> | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'flag' has type 'Scalar<Q>' but param 'flag' requires type 'Bool' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:2388` | 3 | W | ctor call-site anchor | len | Scalar[m] | Scalar[kg] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'len' has type 'Scalar[kg]' but param 'len' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:2393` | 3 | W | ctor call-site anchor | len | Scalar[m] | Int | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'len' has type 'Int' but param 'len' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:2511` | 4 | Joint | ctor call-site anchor | axis | Scalar[m] | Scalar[kg] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'axis' has quantity 'Scalar[kg]' but param 'axis' requires quantity 'Scalar[m]' (the compared shape 'Vector3<Scalar[kg]>' is otherwise accepted at 'Vector3<Scalar[m]>'; only the quantity slot disagrees) |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:2606` | 4 | Frame | ctor call-site anchor | dir | Real | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'dir' has quantity 'Scalar[m]' but param 'dir' requires quantity 'Real' (the compared shape 'Vector3<Scalar[m]>' is otherwise accepted at 'Vector3<Real>'; only the quantity slot disagrees) |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:2711` | 4 | Joint | ctor call-site anchor | axis | Vector3<Scalar[m]> | Vector2<Scalar[m]> | `TypeNotConformingToVector` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'axis' has type 'Vector2<Scalar[m]>' but param 'axis' requires vector type 'Vector3<Scalar[m]>' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:2774` | 4 | Origin | ctor call-site anchor | origin | Real | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'origin' has quantity 'Scalar[m]' but param 'origin' requires quantity 'Real' (the compared shape 'Point3<Scalar[m]>' is otherwise accepted at 'Point3<Real>'; only the quantity slot disagrees) |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:2781` | 4 | Origin | ctor call-site anchor | origin | Real | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'origin' has quantity 'Scalar[m]' but param 'origin' requires quantity 'Real' (the compared shape 'Point3<Scalar[m]>' is otherwise accepted at 'Point3<Real>'; only the quantity slot disagrees) |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:2861` | 4 | Bead | ctor call-site anchor | centerline | Real | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'centerline' has quantity 'Scalar[m]' but param 'centerline' requires quantity 'Real' (the compared shape 'Point3<Scalar[m]>' is otherwise accepted at 'Point3<Real>'; only the quantity slot disagrees) |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:2925` | 4 | Anchor | ctor call-site anchor | origin | Scalar[m] | Scalar[kg] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'origin' has quantity 'Scalar[kg]' but param 'origin' requires quantity 'Scalar[m]' (the compared shape 'Point3<Scalar[kg]>' is otherwise accepted at 'Point3<Scalar[m]>'; only the quantity slot disagrees) |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:2984` | 5 | Anchor | ctor call-site anchor | origin | Scalar[m] | Scalar[kg] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'origin' has quantity 'Scalar[kg]' but param 'origin' requires quantity 'Scalar[m]' (the compared shape 'Point3<Scalar[kg]>' is otherwise accepted at 'Point3<Scalar[m]>'; only the quantity slot disagrees) |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:3094` | 4 | Anchor | ctor call-site anchor | origin | Point3<Scalar[m]> | Point2<Scalar[m]> | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'origin' has type 'Point2<Scalar[m]>' but param 'origin' requires type 'Point3<Scalar[m]>' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:3162` | 4 | Joint | ctor call-site anchor | axis | Vector3<Scalar[m]> | String | `TypeNotConformingToVector` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'axis' has type 'String' but param 'axis' requires vector type 'Vector3<Scalar[m]>' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:3201` | 4 | Body | ctor call-site anchor | inertia | Scalar[m^2·kg] | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'inertia' has quantity 'Scalar[m]' but param 'inertia' requires quantity 'Scalar[m^2·kg]' (the compared shape 'Tensor2x3<Scalar[m]>' is otherwise accepted at 'Matrix3x3<Scalar[m^2·kg]>'; only the quantity slot disagrees) |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:3248` | 4 | Jacobian | ctor call-site anchor | jac | Real | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'jac' has quantity 'Scalar[m]' but param 'jac' requires quantity 'Real' (the compared shape 'Tensor2x3<Scalar[m]>' is otherwise accepted at 'Matrix3x3<Real>'; only the quantity slot disagrees) |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:3360` | 4 | Widget11 | diagnostic prose | labl | — | — | `CtorUnknownField` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_UNKNOWN_FIELD: unknown named argument 'labl' in call to 'Widget11'; 'Widget11' has no parameter with that name |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:3450` | 4 | Widget11 | diagnostic prose | labl | — | — | `CtorUnknownField` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_UNKNOWN_FIELD: unknown named argument 'labl' in call to 'Widget11'; 'Widget11' has no parameter with that name |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:3450` | 4 | Widget11 | diagnostic prose | lable2 | — | — | `CtorUnknownField` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_UNKNOWN_FIELD: unknown named argument 'lable2' in call to 'Widget11'; 'Widget11' has no parameter with that name |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:3615` | 4 | Widget12 | diagnostic prose | — | — | — | `CtorArity` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_ARITY: Widget12() expects at most 1 argument, got 2 |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:3708` | 4 | Widget12 | diagnostic prose | — | — | — | `CtorArity` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_ARITY: Widget12() expects at most 1 argument, got 3 |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:3744` | 4 | W0 | diagnostic prose | — | — | — | `CtorArity` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_ARITY: W0() expects at most 0 arguments, got 1 |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:3773` | 4 | Widget12 | diagnostic prose | — | — | — | `CtorArity` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_ARITY: Widget12() expects at most 1 argument, got 2 |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:3889` | 3 | Widget11 | diagnostic prose | labl | — | — | `CtorUnknownField` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_UNKNOWN_FIELD: unknown named argument 'labl' in call to 'Widget11'; 'Widget11' has no parameter with that name |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:3913` | 5 | Widget11 | diagnostic prose | labl | — | — | `CtorUnknownField` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_UNKNOWN_FIELD: unknown named argument 'labl' in call to 'Widget11'; 'Widget11' has no parameter with that name |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:3942` | 3 | Widget12 | diagnostic prose | — | — | — | `CtorArity` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_ARITY: Widget12() expects at most 1 argument, got 2 |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:3962` | 4 | Widget13 | diagnostic prose | — | — | — | `CtorArity` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_ARITY: Widget13() expects at most 1 argument, got 3 |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:3962` | 4 | Widget13 | ctor call-site anchor | label | String | Int | `ArgTypeMismatch` | Warning | string field given a non-string literal | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'label' has type 'Int' but param 'label' requires type 'String' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:3962` | 4 | Widget13 | diagnostic prose | labl | — | — | `CtorUnknownField` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_UNKNOWN_FIELD: unknown named argument 'labl' in call to 'Widget13'; 'Widget13' has no parameter with that name |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:4036` | 4 | Widget14 | diagnostic prose | labl | — | — | `CtorUnknownField` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_UNKNOWN_FIELD: unknown named argument 'labl' in call to 'Widget14'; 'Widget14' has no parameter with that name |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:4078` | 4 | Widget15 | diagnostic prose | — | — | — | `CtorArity` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_ARITY: Widget15() expects at most 1 argument, got 3 |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:4078` | 4 | Widget15 | diagnostic prose | labl | — | — | `CtorUnknownField` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_UNKNOWN_FIELD: unknown named argument 'labl' in call to 'Widget15'; 'Widget15' has no parameter with that name |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:4126` | 4 | Widget11 | diagnostic prose | labl | — | — | `CtorUnknownField` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_UNKNOWN_FIELD: unknown named argument 'labl' in call to 'Widget11'; 'Widget11' has no parameter with that name |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:4294` | 7 | WidgetAutoTypo | diagnostic prose | zz | — | — | `CtorUnknownField` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_UNKNOWN_FIELD: unknown named argument 'zz' in call to 'WidgetAutoTypo'; 'WidgetAutoTypo' has no parameter with that name |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:4434` | 7 | WidgetAutoSurplus | diagnostic prose | — | — | — | `CtorArity` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_ARITY: WidgetAutoSurplus() expects at most 2 arguments, got 3 |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:4548` | 6 | WLet | diagnostic prose | — | — | — | `CtorArity` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_ARITY: WLet() expects at most 0 arguments, got 1 |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:4583` | 7 | WLetParam | diagnostic prose | — | — | — | `CtorArity` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_ARITY: WLetParam() expects at most 1 argument, got 3 |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:4618` | 8 | WMixed | diagnostic prose | — | — | — | `CtorArity` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_ARITY: WMixed() expects at most 2 arguments, got 3 |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:4680` | 6 | WPrivAuto | diagnostic prose | — | — | — | `CtorArity` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_ARITY: WPrivAuto() expects at most 0 arguments, got 1 |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:4761` | 7 | WLetMember | diagnostic prose | k | — | — | `CtorUnknownField` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_UNKNOWN_FIELD: unknown named argument 'k' in call to 'WLetMember'; 'WLetMember' has no parameter with that name |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:4771` | 7 | WAuxLet | diagnostic prose | k | — | — | `CtorUnknownField` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_UNKNOWN_FIELD: unknown named argument 'k' in call to 'WAuxLet'; 'WAuxLet' has no parameter with that name |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:4781` | 7 | WPubLet | diagnostic prose | k | — | — | `CtorUnknownField` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_UNKNOWN_FIELD: unknown named argument 'k' in call to 'WPubLet'; 'WPubLet' has no parameter with that name |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:4791` | 7 | WGeomLet | diagnostic prose | g | — | — | `CtorUnknownField` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_UNKNOWN_FIELD: unknown named argument 'g' in call to 'WGeomLet'; 'WGeomLet' has no parameter with that name |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:4802` | 8 | WSubMember | diagnostic prose | inner | — | — | `CtorUnknownField` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_UNKNOWN_FIELD: unknown named argument 'inner' in call to 'WSubMember'; 'WSubMember' has no parameter with that name |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:4865` | 4 | WRepeat | diagnostic prose | labl | — | — | `CtorUnknownField` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_UNKNOWN_FIELD: unknown named argument 'labl' in call to 'WRepeat'; 'WRepeat' has no parameter with that name |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:4865` | 4 | WRepeat | diagnostic prose | labl | — | — | `CtorUnknownField` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_UNKNOWN_FIELD: unknown named argument 'labl' in call to 'WRepeat'; 'WRepeat' has no parameter with that name |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:5139` | 2 | RayleighDamping | diagnostic prose | bta | — | — | `CtorUnknownField` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_UNKNOWN_FIELD: unknown named argument 'bta' in call to 'RayleighDamping'; 'RayleighDamping' has no parameter with that name |
+| `crates/reify-compiler/tests/harness_traits/trait_typed_param_tests.rs:314` | 4 | NotAMaterial | ctor call-site anchor | m | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'NotAMaterial' does not conform to trait 'MaterialSpec' required by param 'm' |
+| `crates/reify-eval-fea-tests/tests/dynamics_compute_node.rs:41` | 2 | Frame3 | ctor call-site anchor | x_axis | Real | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'x_axis' has quantity 'Scalar[m]' but param 'x_axis' requires quantity 'Real' (the compared shape 'Vector3<Scalar[m]>' is otherwise accepted at 'Vector3<Real>'; only the quantity slot disagrees) |
+| `crates/reify-eval-fea-tests/tests/dynamics_compute_node.rs:41` | 2 | Frame3 | ctor call-site anchor | y_axis | Real | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'y_axis' has quantity 'Scalar[m]' but param 'y_axis' requires quantity 'Real' (the compared shape 'Vector3<Scalar[m]>' is otherwise accepted at 'Vector3<Real>'; only the quantity slot disagrees) |
+| `crates/reify-eval-fea-tests/tests/dynamics_compute_node.rs:41` | 2 | Frame3 | ctor call-site anchor | z_axis | Real | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'z_axis' has quantity 'Scalar[m]' but param 'z_axis' requires quantity 'Real' (the compared shape 'Vector3<Scalar[m]>' is otherwise accepted at 'Vector3<Real>'; only the quantity slot disagrees) |
+| `crates/reify-eval-fea-tests/tests/r3b_modal_selector_displacement.rs:628` | 2 | RayleighDamping | ctor call-site anchor | alpha | Scalar[s^-1] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'alpha' has type 'Real' but param 'alpha' requires type 'Scalar[s^-1]'; pass a dimensioned Frequency literal |
+| `crates/reify-eval-fea-tests/tests/r3b_modal_selector_displacement.rs:628` | 2 | RayleighDamping | ctor call-site anchor | beta | Scalar[s] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'beta' has type 'Real' but param 'beta' requires type 'Scalar[s]'; pass a dimensioned Time literal such as `1s` |
+| `crates/reify-eval/tests/harness_dynamics/trajectory_gcode_dialect_eval.rs:195` | 7 | NotADialect | ctor call-site anchor | d | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'NotADialect' does not conform to trait 'GcodeDialect' required by param 'd' |
+| `crates/reify-eval/tests/harness_engine/diagnostics_cache_replay_migration.rs:274` | 4 | Frame3 | ctor call-site anchor | x_axis | Real | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'x_axis' has quantity 'Scalar[m]' but param 'x_axis' requires quantity 'Real' (the compared shape 'Vector3<Scalar[m]>' is otherwise accepted at 'Vector3<Real>'; only the quantity slot disagrees) |
+| `crates/reify-eval/tests/harness_engine/diagnostics_cache_replay_migration.rs:274` | 4 | Frame3 | ctor call-site anchor | y_axis | Real | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'y_axis' has quantity 'Scalar[m]' but param 'y_axis' requires quantity 'Real' (the compared shape 'Vector3<Scalar[m]>' is otherwise accepted at 'Vector3<Real>'; only the quantity slot disagrees) |
+| `crates/reify-eval/tests/harness_engine/diagnostics_cache_replay_migration.rs:274` | 4 | Frame3 | ctor call-site anchor | z_axis | Real | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'z_axis' has quantity 'Scalar[m]' but param 'z_axis' requires quantity 'Real' (the compared shape 'Vector3<Scalar[m]>' is otherwise accepted at 'Vector3<Real>'; only the quantity slot disagrees) |
+| `crates/reify-eval/tests/harness_mechanism/mechanism_modal_damping_e2e.rs:72` | 16 | RayleighDamping | ctor call-site anchor | alpha | Scalar[s^-1] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'alpha' has type 'Real' but param 'alpha' requires type 'Scalar[s^-1]'; pass a dimensioned Frequency literal |
+| `crates/reify-eval/tests/harness_mechanism/mechanism_modal_damping_e2e.rs:72` | 16 | RayleighDamping | ctor call-site anchor | beta | Scalar[s] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'beta' has type 'Real' but param 'beta' requires type 'Scalar[s]'; pass a dimensioned Time literal such as `1s` |
+| `crates/reify-eval/tests/pinned_support.rs:199` | 8 | NotASupport | ctor call-site anchor | sup | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'NotASupport' does not conform to trait 'Support' required by param 'sup' |
+| `crates/reify-eval/tests/pressure_load.rs:197` | 8 | NotALoad | ctor call-site anchor | load | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'NotALoad' does not conform to trait 'Load' required by param 'load' |
+| `crates/reify-eval/tests/structure_instance_e2e.rs:575` | 6 | Frame3 | ctor call-site anchor | x_axis | Real | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'x_axis' has quantity 'Scalar[m]' but param 'x_axis' requires quantity 'Real' (the compared shape 'Vector3<Scalar[m]>' is otherwise accepted at 'Vector3<Real>'; only the quantity slot disagrees) |
+| `crates/reify-eval/tests/structure_instance_e2e.rs:575` | 6 | Frame3 | ctor call-site anchor | y_axis | Real | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'y_axis' has quantity 'Scalar[m]' but param 'y_axis' requires quantity 'Real' (the compared shape 'Vector3<Scalar[m]>' is otherwise accepted at 'Vector3<Real>'; only the quantity slot disagrees) |
+| `crates/reify-eval/tests/structure_instance_e2e.rs:575` | 6 | Frame3 | ctor call-site anchor | z_axis | Real | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'z_axis' has quantity 'Scalar[m]' but param 'z_axis' requires quantity 'Real' (the compared shape 'Vector3<Scalar[m]>' is otherwise accepted at 'Vector3<Real>'; only the quantity slot disagrees) |
+| `crates/reify-eval/tests/structure_instance_e2e.rs:729` | 6 | Frame3 | ctor call-site anchor | x_axis | Real | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'x_axis' has quantity 'Scalar[m]' but param 'x_axis' requires quantity 'Real' (the compared shape 'Vector3<Scalar[m]>' is otherwise accepted at 'Vector3<Real>'; only the quantity slot disagrees) |
+| `crates/reify-eval/tests/structure_instance_e2e.rs:729` | 6 | Frame3 | ctor call-site anchor | y_axis | Real | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'y_axis' has quantity 'Scalar[m]' but param 'y_axis' requires quantity 'Real' (the compared shape 'Vector3<Scalar[m]>' is otherwise accepted at 'Vector3<Real>'; only the quantity slot disagrees) |
+| `crates/reify-eval/tests/structure_instance_e2e.rs:729` | 6 | Frame3 | ctor call-site anchor | z_axis | Real | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'z_axis' has quantity 'Scalar[m]' but param 'z_axis' requires quantity 'Real' (the compared shape 'Vector3<Scalar[m]>' is otherwise accepted at 'Vector3<Real>'; only the quantity slot disagrees) |
+
+### name recovered, but it is not a known structure def — needs manual triage — 62 site(s)
+
+| site | snippet line | def | def source | field | expected | found | code | severity | hint (advisory) | disposition (γ ruling) | message |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `crates/reify-cli/tests/harness_cli/cli_check.rs:805` | 11 | mirror | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | mirror: ox argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-cli/tests/harness_cli/cli_check.rs:805` | 11 | mirror | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | mirror: oy argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-cli/tests/harness_cli/cli_check.rs:805` | 11 | mirror | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | mirror: oz argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_query_inline_arg_tests.rs:351` | 3 | box | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | box: depth argument expects Length, got Real; pass a dimensioned length such as `5mm` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_query_inline_arg_tests.rs:351` | 3 | box | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | box: height argument expects Length, got Real; pass a dimensioned length such as `5mm` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_query_inline_arg_tests.rs:351` | 3 | box | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | box: width argument expects Length, got Real; pass a dimensioned length such as `5mm` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_query_inline_arg_tests.rs:380` | 4 | box | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | box: depth argument expects Length, got Real; pass a dimensioned length such as `5mm` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_query_inline_arg_tests.rs:380` | 4 | box | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | box: height argument expects Length, got Real; pass a dimensioned length such as `5mm` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_query_inline_arg_tests.rs:380` | 4 | box | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | box: width argument expects Length, got Real; pass a dimensioned length such as `5mm` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_traits_inference_tests.rs:879` | 5 | intersection | ctor call-site anchor | g | — | — | `TypeNotConformingToTrait` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | geometry argument 'g' does not conform to trait 'Connected' |
+| `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:1767` | 2 | translate | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | translate: dx argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:1767` | 2 | translate | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | translate: dy argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:1767` | 2 | translate | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | translate: dz argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:1858` | 2 | extrude | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | extrude: distance argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-compiler/tests/harness_langcore/type_hygiene_integration_gate.rs:208` | 3 | moment_of_inertia | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | moment_of_inertia: density argument expects Density, got Real; pass a dimensioned Density literal such as `7850kg/m^3` |
+| `crates/reify-compiler/tests/harness_statement_semantics/generate_combinator_tests.rs:135` | 2 | generate | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | generate: n argument expects Int, got Scalar[m] |
+| `crates/reify-compiler/tests/harness_statement_semantics/generate_combinator_tests.rs:157` | 2 | generate | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | generate: n argument expects Int, got Real |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:725` | 4 | box | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | box: width argument expects Length, got Widget; pass a dimensioned length such as `5mm` |
+| `crates/reify-compiler/tests/harness_traits/trait_typed_param_tests.rs:425` | 6 | Rigid | ctor call-site anchor | m | Material | Rigid | `TypeNotConformingToStructureRef` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'm' has type 'Rigid' but param 'm' requires structure type 'Material' |
+| `crates/reify-compiler/tests/harness_traits/trait_typed_param_tests.rs:538` | 4 | some | ctor call-site anchor | m | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'NotAMaterial' does not conform to trait 'MaterialSpec' required by param 'm' |
+| `crates/reify-compiler/tests/harness_traits/trait_typed_param_tests.rs:1593` | 8 | some | ctor call-site anchor | ms | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'NotAMaterial' does not conform to trait 'MaterialSpec' required by param 'ms' |
+| `crates/reify-compiler/tests/param_binding_selector_coercion_tests.rs:143` | 5 | needs_face | ctor call-site anchor | — | — | — | `SelectorKindMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | no matching overload for needs_face(EdgeSelector), candidates: needs_face(FaceSelector) -> Int |
+| `crates/reify-compiler/tests/selector_composition_tests.rs:26` | 3 | union | ctor call-site anchor | — | — | — | `SelectorKindMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | selector composition kind mismatch: cannot compose FaceSelector and EdgeSelector |
+| `crates/reify-compiler/tests/selector_composition_tests.rs:34` | 3 | intersect | ctor call-site anchor | — | — | — | `SelectorKindMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | selector composition kind mismatch: cannot compose FaceSelector and EdgeSelector |
+| `crates/reify-compiler/tests/selector_composition_tests.rs:42` | 3 | difference | ctor call-site anchor | — | — | — | `SelectorKindMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | selector composition kind mismatch: cannot compose FaceSelector and EdgeSelector |
+| `crates/reify-compiler/tests/selector_composition_tests.rs:479` | 5 | difference | ctor call-site anchor | — | — | — | `SelectorKindMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | selector `difference` requires exactly 2 operands, got 3 |
+| `crates/reify-compiler/tests/selector_composition_tests.rs:785` | 3 | union | ctor call-site anchor | — | — | — | `SelectorKindMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | selector composition kind mismatch: cannot compose VertexSelector and FaceSelector |
+| `crates/reify-eval/tests/harness_cache/unified_dag_geometry_executors.rs:916` | 6 | fillet | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | fillet: radius argument expects Length, got Real; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/harness_geometry/geometry_length_args_units_e2e.rs:139` | 2 | translate | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | translate: dx argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/harness_geometry/geometry_length_args_units_e2e.rs:139` | 2 | translate | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | translate: dy argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/harness_geometry/geometry_length_args_units_e2e.rs:139` | 2 | translate | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | translate: dz argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/harness_geometry/geometry_length_args_units_e2e.rs:157` | 2 | rotate_around | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | rotate_around: px argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/harness_geometry/geometry_length_args_units_e2e.rs:157` | 2 | rotate_around | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | rotate_around: py argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/harness_geometry/geometry_length_args_units_e2e.rs:157` | 2 | rotate_around | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | rotate_around: pz argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/harness_geometry/geometry_length_args_units_e2e.rs:172` | 2 | revolve | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | revolve: ox argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/harness_geometry/geometry_length_args_units_e2e.rs:172` | 2 | revolve | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | revolve: oy argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/harness_geometry/geometry_length_args_units_e2e.rs:172` | 2 | revolve | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | revolve: oz argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/harness_geometry/modify_sweep_length_units_e2e.rs:227` | 2 | fillet | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | fillet: radius argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/harness_geometry/modify_sweep_length_units_e2e.rs:317` | 2 | fillet | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | fillet: radius argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/harness_geometry/modify_sweep_length_units_e2e.rs:401` | 2 | chamfer | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | chamfer: distance argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/harness_geometry/modify_sweep_length_units_e2e.rs:483` | 3 | chamfer_asymmetric | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | chamfer_asymmetric: d1 argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/harness_geometry/modify_sweep_length_units_e2e.rs:483` | 3 | chamfer_asymmetric | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | chamfer_asymmetric: d2 argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/harness_geometry/modify_sweep_length_units_e2e.rs:611` | 2 | extrude | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | extrude: distance argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/harness_geometry/primitive_profile_length_units_e2e.rs:215` | 2 | box | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | box: depth argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/harness_geometry/primitive_profile_length_units_e2e.rs:215` | 2 | box | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | box: height argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/harness_geometry/primitive_profile_length_units_e2e.rs:215` | 2 | box | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | box: width argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/harness_geometry/primitive_profile_length_units_e2e.rs:294` | 2 | box | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | box: depth argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/harness_geometry/primitive_profile_length_units_e2e.rs:294` | 2 | box | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | box: height argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/harness_geometry/primitive_profile_length_units_e2e.rs:294` | 2 | box | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | box: width argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/harness_geometry/primitive_profile_length_units_e2e.rs:314` | 2 | circle | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | circle: radius argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/mirror_circular_value_forms_e2e.rs:557` | 3 | circular_pattern | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | circular_pattern: ox argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/mirror_circular_value_forms_e2e.rs:557` | 3 | circular_pattern | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | circular_pattern: oy argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/mirror_circular_value_forms_e2e.rs:557` | 3 | circular_pattern | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | circular_pattern: oz argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/mirror_circular_value_forms_e2e.rs:834` | 3 | mirror | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | mirror: ox argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/mirror_circular_value_forms_e2e.rs:834` | 3 | mirror | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | mirror: oy argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/mirror_circular_value_forms_e2e.rs:834` | 3 | mirror | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | mirror: oz argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/pattern_spacing_units_e2e.rs:94` | 2 | linear_pattern_2d | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | linear_pattern_2d: spacing1 argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/pattern_spacing_units_e2e.rs:94` | 2 | linear_pattern_2d | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | linear_pattern_2d: spacing2 argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/pattern_spacing_units_e2e.rs:177` | 2 | linear_pattern | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | linear_pattern: spacing argument expects Length, got Int; pass a dimensioned length such as `5mm` |
+| `crates/reify-eval/tests/region_resolution_boundary.rs:688` | 4 | needs_face | ctor call-site anchor | — | — | — | `SelectorKindMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | no matching overload for needs_face(EdgeSelector), candidates: needs_face(FaceSelector) -> Int |
+| `crates/reify-eval/tests/region_resolution_boundary.rs:702` | 4 | needs_face | ctor call-site anchor | — | — | — | `SelectorKindMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | no matching overload for needs_face(BodySelector), candidates: needs_face(FaceSelector) -> Int |
+| `crates/reify-eval/tests/type_hygiene_integration_gate.rs:312` | 3 | moment_of_inertia | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | moment_of_inertia: density argument expects Density, got Real; pass a dimensioned Density literal such as `7850kg/m^3` |
+
+### unattributed def — needs manual triage — 81 site(s)
+
+| site | snippet line | def | def source | field | expected | found | code | severity | hint (advisory) | disposition (γ ruling) | message |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs:1453` | 2 | — | unrecovered: identifier not followed by `(` | material | Scalar[m] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'material' has type 'Real' but param 'material' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs:1454` | 3 | — | unrecovered: identifier not followed by `(` | youngs_modulus | Scalar[m] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'youngs_modulus' has type 'Real' but param 'youngs_modulus' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs:1516` | 2 | — | unrecovered: identifier not followed by `(` | material | Scalar[m] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'material' has type 'Real' but param 'material' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs:1517` | 3 | — | unrecovered: identifier not followed by `(` | youngs_modulus | Scalar[m] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'youngs_modulus' has type 'Real' but param 'youngs_modulus' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs:1567` | 2 | — | unrecovered: identifier not followed by `(` | z | Scalar[m] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'z' has type 'Real' but param 'z' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_traits_inference_tests.rs:916` | 6 | — | unrecovered: identifier not followed by `(` | g | — | — | `TypeNotConformingToTrait` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | geometry argument 'g' does not conform to trait 'Connected' |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_traits_inference_tests.rs:996` | 7 | — | unrecovered: identifier not followed by `(` | g | — | — | `TypeNotConformingToTrait` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | geometry argument 'g' does not conform to trait 'Connected' |
+| `crates/reify-compiler/tests/harness_geometry_solver/solver_elastic_static_stdlib_compile.rs:238` | 2 | — | unrecovered: identifier not followed by `(` | loads | — | — | `TypeNotConformingToTrait` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'Steel_AISI_1045' does not conform to trait 'Load' required by param 'loads' |
+| `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:2109` | 4 | — | unrecovered: identifier not followed by `(` | axis | Scalar[m] | Int | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'axis' has type 'Int' but param 'axis' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:2274` | 4 | — | unrecovered: identifier not followed by `(` | axis | Scalar[m] | Int | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'axis' has type 'Int' but param 'axis' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:2335` | 6 | — | unrecovered: identifier not followed by `(` | axis | Scalar[m] | Int | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'axis' has type 'Int' but param 'axis' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:2443` | 5 | — | unrecovered: identifier not followed by `(` | axis | Scalar[m] | Int | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'axis' has type 'Int' but param 'axis' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:2555` | 4 | — | unrecovered: identifier not followed by `(` | cond | Scalar[m] | Int | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'cond' has type 'Int' but param 'cond' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:2624` | 2 | — | unrecovered: identifier not followed by `(` | cond | Scalar[m] | Int | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'cond' has type 'Int' but param 'cond' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/harness_langcore/type_alias_compile_tests.rs:957` | 4 | — | unrecovered: identifier not followed by `(` | w | Scalar[m·kg·s^-2] | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'w' has type 'Scalar[m]' but param 'w' requires type 'Scalar[m·kg·s^-2]'; pass a dimensioned Force literal such as `1m*kg/s^2` |
+| `crates/reify-compiler/tests/harness_mechanics/fea_supertrait_conformance_tests.rs:171` | 2 | — | unrecovered: identifier not followed by `(` | material | — | — | `TypeNotConformingToTrait` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'Real' does not conform to trait 'ConstitutiveLaw' required by param 'material' |
+| `crates/reify-compiler/tests/harness_mechanics/fea_supertrait_conformance_tests.rs:229` | 2 | — | unrecovered: identifier not followed by `(` | material | — | — | `TypeNotConformingToTrait` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'ElasticOptions' does not conform to trait 'ConstitutiveLaw' required by param 'material' |
+| `crates/reify-compiler/tests/harness_mechanics/modal_options_validation_tests.rs:2368` | 2 | — | unrecovered: identifier not followed by `(` | part | Part | String | `TypeNotConformingToStructureRef` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'part' has type 'String' but param 'part' requires structure type 'Part' |
+| `crates/reify-compiler/tests/harness_modules_ports/prelude_context_tests.rs:217` | 2 | — | unrecovered: identifier not followed by `(` | x | Scalar[m] | Int | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'x' has type 'Int' but param 'x' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/harness_physical_modeling/m9_error_cases.rs:207` | 6 | — | unrecovered: identifier not followed by `(` | m | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'Electrical' does not conform to trait 'Mechanical' required by param 'm' |
+| `crates/reify-compiler/tests/harness_physical_modeling/m9_error_cases.rs:244` | 5 | — | unrecovered: identifier not followed by `(` | m | Material | Scalar[m] | `TypeNotConformingToStructureRef` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'm' has type 'Scalar[m]' but param 'm' requires structure type 'Material' |
+| `crates/reify-compiler/tests/harness_physical_modeling/solid_param_tests.rs:637` | 2 | — | unrecovered: identifier not followed by `(` | — | — | — | `TypeNotConformingToStructureRef` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | param 'g' has type 'Geometry' but its default expression has non-geometry type 'Int' |
+| `crates/reify-compiler/tests/harness_structure_declarations/collection_sub_tests.rs:426` | 3 | — | unrecovered: identifier not followed by `(` | grade | Scalar[m] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'grade' has type 'Real' but param 'grade' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/harness_structure_declarations/collection_sub_tests.rs:510` | 1 | — | unrecovered: identifier not followed by `(` | grade | Scalar[m] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'grade' has type 'Real' but param 'grade' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:138` | 4 | — | unrecovered: label span starts at a non-identifier | label | String | Int | `ArgTypeMismatch` | Warning | string field given a non-string literal | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'label' has type 'Int' but param 'label' requires type 'String' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:217` | 4 | — | unrecovered: label span starts at a non-identifier | face | FaceSelector | Int | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'face' has type 'Int' but param 'face' requires selector type 'FaceSelector' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:600` | 2 | — | unrecovered: identifier not followed by `(` | label | String | Int | `ArgTypeMismatch` | Warning | string field given a non-string literal | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'label' has type 'Int' but param 'label' requires type 'String' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:705` | 4 | — | unrecovered: label span starts at a non-identifier | label | String | Int | `ArgTypeMismatch` | Warning | string field given a non-string literal | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'label' has type 'Int' but param 'label' requires type 'String' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:1559` | 7 | — | unrecovered: identifier not followed by `(` | r | Result<Scalar[m], String> | String | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'r' has type 'String' but param 'r' requires type 'Result<Scalar[m], String>' |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:1595` | 11 | — | unrecovered: identifier not followed by `(` | c | Enum(Hue) | Enum(Outline) | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'c' has type 'Enum(Outline)' but param 'c' requires type 'Enum(Hue)' |
+| `crates/reify-compiler/tests/harness_traits/fn_arg_trait_conformance_tests.rs:225` | 15 | — | unrecovered: identifier not followed by `(` | joint | — | — | `TypeNotConformingToTrait` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'FixedThing' does not conform to trait 'DrivingJoint' required by param 'joint' |
+| `crates/reify-compiler/tests/harness_traits/fn_arg_trait_conformance_tests.rs:375` | 6 | — | unrecovered: identifier not followed by `(` | joint | — | — | `TypeNotConformingToTrait` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'Real' does not conform to trait 'DrivingJoint' required by param 'joint' |
+| `crates/reify-compiler/tests/harness_traits/fn_arg_trait_conformance_tests.rs:421` | 7 | — | unrecovered: identifier not followed by `(` | joint | — | — | `TypeNotConformingToTrait` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'Real' does not conform to trait 'DrivingJoint' required by param 'joint' |
+| `crates/reify-compiler/tests/harness_traits/fn_param_struct_ctor_default_tests.rs:466` | 6 | — | unrecovered: identifier not followed by `(` | material | — | — | `TypeNotConformingToTrait` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'NotAMaterial' does not conform to trait 'ElasticMaterial' required by param 'material' |
+| `crates/reify-compiler/tests/harness_traits/trait_assoc_type_conformance_tests.rs:31` | 5 | — | unrecovered: identifier not followed by `(` | w | Scalar[m] | Int | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'w' has type 'Int' but param 'w' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/harness_traits/trait_assoc_type_conformance_tests.rs:76` | 6 | — | unrecovered: identifier not followed by `(` | w | Scalar[m] | Int | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'w' has type 'Int' but param 'w' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/harness_traits/trait_assoc_type_conformance_tests.rs:110` | 8 | — | unrecovered: identifier not followed by `(` | w | Scalar[m] | Int | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'w' has type 'Int' but param 'w' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/harness_traits/trait_assoc_type_conformance_tests.rs:166` | 6 | — | unrecovered: identifier not followed by `(` | w | Scalar[m] | Int | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'w' has type 'Int' but param 'w' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/harness_traits/trait_assoc_type_conformance_tests.rs:224` | 6 | — | unrecovered: identifier not followed by `(` | w | Scalar[m] | Int | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'w' has type 'Int' but param 'w' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/harness_traits/trait_typed_param_tests.rs:466` | 3 | — | unrecovered: label span starts at a non-identifier | m | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'Real' does not conform to trait 'MaterialSpec' required by param 'm' |
+| `crates/reify-compiler/tests/harness_traits/trait_typed_param_tests.rs:625` | 8 | — | unrecovered: label span starts at a non-identifier | ms | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'NotAMaterial' does not conform to trait 'MaterialSpec' required by param 'ms' |
+| `crates/reify-compiler/tests/harness_traits/trait_typed_param_tests.rs:712` | 8 | — | unrecovered: identifier not followed by `(` | ms | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'NotAMaterial' does not conform to trait 'MaterialSpec' required by param 'ms' |
+| `crates/reify-compiler/tests/harness_traits/trait_typed_param_tests.rs:774` | 8 | — | unrecovered: identifier not followed by `(` | ms | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'NotAMaterial' does not conform to trait 'MaterialSpec' required by param 'ms' |
+| `crates/reify-compiler/tests/harness_traits/trait_typed_param_tests.rs:1101` | 8 | — | unrecovered: label span starts at a non-identifier | ms | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'NotAMaterial' does not conform to trait 'MaterialSpec' required by param 'ms' |
+| `crates/reify-compiler/tests/harness_traits/trait_typed_param_tests.rs:1181` | 6 | — | unrecovered: identifier not followed by `(` | ms | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'Inert' does not conform to trait 'Carrier' required by param 'ms' |
+| `crates/reify-compiler/tests/harness_traits/trait_typed_param_tests.rs:1311` | 7 | — | unrecovered: label span starts at a non-identifier | m | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'List<Steel>' does not conform to trait 'MaterialSpec' required by param 'm' |
+| `crates/reify-compiler/tests/harness_traits/trait_typed_param_tests.rs:1356` | 7 | — | unrecovered: identifier not followed by `(` | ms | List<MaterialSpec> | Map<String, Steel> | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'Map<String, Steel>' does not match wrapper shape required by param 'ms' (expected 'List<MaterialSpec>') |
+| `crates/reify-compiler/tests/harness_traits/trait_typed_param_tests.rs:1401` | 5 | — | unrecovered: identifier not followed by `(` | m | Material | List<Material> | `TypeNotConformingToStructureRef` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'm' has type 'List<Material>' but param 'm' requires structure type 'Material' |
+| `crates/reify-compiler/tests/harness_traits/trait_typed_param_tests.rs:1452` | 5 | — | unrecovered: identifier not followed by `(` | ms | Set<M> | List<M> | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'List<M>' does not match wrapper shape required by param 'ms' (expected 'Set<M>') |
+| `crates/reify-compiler/tests/harness_traits/trait_typed_param_tests.rs:1497` | 5 | — | unrecovered: identifier not followed by `(` | ms | Map<String, M> | List<M> | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'List<M>' does not match wrapper shape required by param 'ms' (expected 'Map<String, M>') |
+| `crates/reify-compiler/tests/harness_traits/trait_typed_param_tests.rs:1550` | 8 | — | unrecovered: identifier not followed by `(` | ms | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'NotAMaterial' does not conform to trait 'MaterialSpec' required by param 'ms' |
+| `crates/reify-compiler/tests/harness_type_checking/polymorphic_zero_tests.rs:750` | 3 | — | unrecovered: identifier not followed by `(` | phase_bare | Scalar[rad] | Int | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'phase_bare' has type 'Int' but param 'phase_bare' requires type 'Scalar[rad]'; pass a dimensioned Angle literal such as `1rad` |
+| `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:30` | 4 | — | unrecovered: identifier not followed by `(` | drum_d | Real | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'drum_d' has type 'Scalar[m]' but param 'drum_d' requires type 'Real' |
+| `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:175` | 2 | — | unrecovered: identifier not followed by `(` | zero_int | Scalar[m] | Int | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'zero_int' has type 'Int' but param 'zero_int' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:176` | 3 | — | unrecovered: identifier not followed by `(` | one_int | Scalar[m] | Int | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'one_int' has type 'Int' but param 'one_int' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:177` | 4 | — | unrecovered: identifier not followed by `(` | half_real | Scalar[m] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'half_real' has type 'Real' but param 'half_real' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:178` | 5 | — | unrecovered: identifier not followed by `(` | large_real | Scalar[m] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'large_real' has type 'Real' but param 'large_real' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:206` | 2 | — | unrecovered: identifier not followed by `(` | neg_real | Scalar[m] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'neg_real' has type 'Real' but param 'neg_real' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:207` | 3 | — | unrecovered: identifier not followed by `(` | neg_int | Scalar[m] | Int | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'neg_int' has type 'Int' but param 'neg_int' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:233` | 2 | — | unrecovered: identifier not followed by `(` | bad_mass | Scalar[m] | Scalar[kg] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'bad_mass' has type 'Scalar[kg]' but param 'bad_mass' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:301` | 3 | — | unrecovered: identifier not followed by `(` | c | Real | Enum(Color) | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'c' has type 'Enum(Color)' but param 'c' requires type 'Real' |
+| `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:325` | 2 | — | unrecovered: identifier not followed by `(` | x | Real | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'x' has type 'Scalar[m]' but param 'x' requires type 'Real' |
+| `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:369` | 4 | — | unrecovered: identifier not followed by `(` | bad_dim | Scalar[m] | Scalar[m^-1] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'bad_dim' has type 'Scalar[m^-1]' but param 'bad_dim' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:409` | 3 | — | unrecovered: identifier not followed by `(` | x | Scalar[m] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'x' has type 'Real' but param 'x' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:441` | 2 | — | unrecovered: identifier not followed by `(` | x | Int | Scalar[kg] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'x' has type 'Scalar[kg]' but param 'x' requires type 'Int' |
+| `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:469` | 2 | — | unrecovered: identifier not followed by `(` | x | Int | Real | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'x' has type 'Real' but param 'x' requires type 'Int' |
+| `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:509` | 4 | — | unrecovered: identifier not followed by `(` | bad_dim | Real | Scalar[m^-1] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'bad_dim' has type 'Scalar[m^-1]' but param 'bad_dim' requires type 'Real' |
+| `crates/reify-eval/tests/collection_sub_eval.rs:437` | 1 | — | unrecovered: identifier not followed by `(` | grade | Scalar[m] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'grade' has type 'Real' but param 'grade' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-eval/tests/determinacy_predicates.rs:509` | 2 | — | unrecovered: identifier not followed by `(` | a | Scalar[m] | Int | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'a' has type 'Int' but param 'a' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-eval/tests/gravity_load.rs:453` | 8 | — | unrecovered: label span starts at a non-identifier | loads | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'NotALoad' does not conform to trait 'Load' required by param 'loads' |
+| `crates/reify-eval/tests/harness_engine/nested_sub_derived_let_e2e.rs:576` | 7 | — | unrecovered: identifier not followed by `(` | v | Scalar[m] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'v' has type 'Real' but param 'v' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-eval/tests/harness_engine/nested_sub_derived_let_e2e.rs:708` | 9 | — | unrecovered: identifier not followed by `(` | w | Scalar[m] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'w' has type 'Real' but param 'w' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-eval/tests/harness_engine/nested_sub_derived_let_e2e.rs:790` | 7 | — | unrecovered: identifier not followed by `(` | v | Scalar[m] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'v' has type 'Real' but param 'v' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-eval/tests/harness_stress_scenarios/stress_error_messages.rs:126` | 2 | — | unrecovered: identifier not followed by `(` | x | Scalar[m] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'x' has type 'Real' but param 'x' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-eval/tests/harness_stress_scenarios/stress_sweep_degenerate.rs:417` | 2 | — | unrecovered: identifier not followed by `(` | x | Scalar[m] | Int | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'x' has type 'Int' but param 'x' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-eval/tests/harness_stress_scenarios/stress_sweep_degenerate.rs:418` | 3 | — | unrecovered: identifier not followed by `(` | y | Scalar[m] | Int | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'y' has type 'Int' but param 'y' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-eval/tests/purpose_activation.rs:2673` | 2 | — | unrecovered: identifier not followed by `(` | material | Scalar[m] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'material' has type 'Real' but param 'material' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-eval/tests/purpose_activation.rs:2674` | 3 | — | unrecovered: identifier not followed by `(` | youngs_modulus | Scalar[m] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'youngs_modulus' has type 'Real' but param 'youngs_modulus' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-eval/tests/purpose_activation.rs:2774` | 2 | — | unrecovered: identifier not followed by `(` | z | Scalar[m] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'z' has type 'Real' but param 'z' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-eval/tests/purpose_activation.rs:2825` | 2 | — | unrecovered: identifier not followed by `(` | z | Scalar[m] | Real | `ArgTypeMismatch` | Warning | dimensioned scalar field given a bare number — a dimensioned literal (e.g. 1m/s) is the usual replacement | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'z' has type 'Real' but param 'z' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m` |
+| `crates/reify-syntax/tests/harness_syntax/option_tests.rs:157` | 2 | — | unrecovered: identifier not followed by `(` | x | Real | Option<Real> | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'x' has type 'Option<Real>' but param 'x' requires type 'Real' |
+
+### Inline coverage
+
+Of 3198 inline member(s) — one per extracted snippet, plus one per host that could not be read at all — **3115 were swept** and **83 were not**. A further **682** were swept only PARTIALLY. A member is keyed `<host>:<line>`, the host line the snippet's own line 1 sits on.
+
+#### Not swept (contributed no sites)
+
+| file | reason |
+|---|---|
+| `crates/reify-compiler/tests/ambient_default_injection_tests.rs:138` | `format-template` |
+| `crates/reify-compiler/tests/ambient_default_injection_tests.rs:216` | `format-template` |
+| `crates/reify-compiler/tests/ambient_default_injection_tests.rs:280` | `format-template` |
+| `crates/reify-compiler/tests/ambient_default_injection_tests.rs:341` | `format-template` |
+| `crates/reify-compiler/tests/ambient_default_injection_tests.rs:411` | `format-template` |
+| `crates/reify-compiler/tests/ambient_default_material_integration_gate.rs:165` | `format-template` |
+| `crates/reify-compiler/tests/ambient_default_material_integration_gate.rs:55` | `format-template` |
+| `crates/reify-compiler/tests/ambient_default_material_integration_gate.rs:92` | `format-template` |
+| `crates/reify-compiler/tests/guard_compilation.rs:722` | `parse-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/ctor_conformance_corpus_survey.rs:3198` | `format-template` |
+| `crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs:537` | `format-template` |
+| `crates/reify-compiler/tests/harness_constructor_typing/math_signatures.rs:662` | `format-template` |
+| `crates/reify-compiler/tests/harness_constructor_typing/math_signatures.rs:696` | `format-template` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_traits_tests.rs:124` | `format-template` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_traits_tests.rs:208` | `format-template` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_traits_user_asserted_tests.rs:272` | `format-template` |
+| `crates/reify-compiler/tests/harness_geometry_solver/solver_hint_tests.rs:300` | `format-template` |
+| `crates/reify-compiler/tests/harness_langcore/priv_member_visibility_tests.rs:1023` | `format-template` |
+| `crates/reify-compiler/tests/harness_langcore/priv_member_visibility_tests.rs:1085` | `format-template` |
+| `crates/reify-compiler/tests/harness_langcore/priv_member_visibility_tests.rs:825` | `format-template` |
+| `crates/reify-compiler/tests/harness_langcore/uniform_member_path_tests.rs:141` | `format-template` |
+| `crates/reify-compiler/tests/harness_mechanics/ground_sugar_tests.rs:76` | `format-template` |
+| `crates/reify-compiler/tests/harness_mechanics/trajectory_stdlib_compile.rs:1419` | `format-template` |
+| `crates/reify-compiler/tests/harness_mechanics/trajectory_stdlib_compile.rs:2029` | `format-template` |
+| `crates/reify-compiler/tests/harness_modules_ports/connect_compile_tests.rs:1638` | `parse-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/sub_placement_lowering_tests.rs:474` | `parse-error` |
+| `crates/reify-compiler/tests/harness_patterns/enum_unknown_type_param_tests.rs:190` | `format-template` |
+| `crates/reify-compiler/tests/harness_patterns/generic_enum_pattern_binder_tests.rs:190` | `format-template` |
+| `crates/reify-compiler/tests/harness_patterns/generic_enum_pattern_binder_tests.rs:220` | `format-template` |
+| `crates/reify-compiler/tests/harness_patterns/generic_enum_pattern_binder_tests.rs:309` | `format-template` |
+| `crates/reify-compiler/tests/harness_patterns/generic_enum_pattern_binder_tests.rs:350` | `format-template` |
+| `crates/reify-compiler/tests/harness_physical_modeling/process_stdlib_compile.rs:799` | `format-template` |
+| `crates/reify-compiler/tests/harness_statement_semantics/forall_statement_lower_tests.rs:142` | `format-template` |
+| `crates/reify-compiler/tests/harness_statement_semantics/string_interp_lowering_tests.rs:136` | `format-template` |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:5028` | `format-template` |
+| `crates/reify-compiler/tests/harness_traits/fn_arg_trait_conformance_tests.rs:100` | `format-template` |
+| `crates/reify-compiler/tests/harness_traits/fn_arg_trait_conformance_tests.rs:136` | `format-template` |
+| `crates/reify-compiler/tests/harness_traits/fn_arg_trait_conformance_tests.rs:171` | `format-template` |
+| `crates/reify-compiler/tests/harness_traits/fn_arg_trait_conformance_tests.rs:512` | `format-template` |
+| `crates/reify-compiler/tests/harness_traits/fn_arg_trait_conformance_tests.rs:56` | `format-template` |
+| `crates/reify-compiler/tests/harness_traits/fn_arg_trait_conformance_tests.rs:577` | `format-template` |
+| `crates/reify-compiler/tests/harness_traits/fn_arg_trait_conformance_tests.rs:614` | `format-template` |
+| `crates/reify-compiler/tests/harness_traits/fn_arg_trait_conformance_tests.rs:646` | `format-template` |
+| `crates/reify-compiler/tests/harness_traits/fn_arg_trait_conformance_tests.rs:674` | `format-template` |
+| `crates/reify-compiler/tests/harness_traits/fn_arg_trait_conformance_tests.rs:735` | `format-template` |
+| `crates/reify-compiler/tests/harness_traits/fn_arg_trait_conformance_tests.rs:780` | `format-template` |
+| `crates/reify-compiler/tests/harness_traits/trait_arg_conformance_bench.rs:44` | `format-template` |
+| `crates/reify-compiler/tests/harness_type_checking/add_sub_operand_guard_tests.rs:407` | `format-template` |
+| `crates/reify-compiler/tests/harness_type_checking/add_sub_operand_guard_tests.rs:63` | `format-template` |
+| `crates/reify-compiler/tests/harness_type_checking/and_or_operand_guard_tests.rs:39` | `format-template` |
+| `crates/reify-compiler/tests/harness_type_checking/and_or_operand_guard_tests.rs:57` | `format-template` |
+| `crates/reify-compiler/tests/harness_type_checking/expr_error_sentinel_tests.rs:592` | `format-template` |
+| `crates/reify-compiler/tests/harness_type_checking/mul_div_operand_guard_tests.rs:256` | `parse-error` |
+| `crates/reify-compiler/tests/harness_type_checking/mul_div_operand_guard_tests.rs:39` | `format-template` |
+| `crates/reify-compiler/tests/harness_type_checking/mul_div_operand_guard_tests.rs:57` | `format-template` |
+| `crates/reify-compiler/tests/harness_type_checking/polymorphic_zero_tests.rs:312` | `format-template` |
+| `crates/reify-compiler/tests/harness_type_checking/polymorphic_zero_tests.rs:354` | `format-template` |
+| `crates/reify-compiler/tests/harness_type_checking/polymorphic_zero_tests.rs:375` | `format-template` |
+| `crates/reify-compiler/tests/silent_defaults_tests.rs:680` | `parse-error` |
+| `crates/reify-eval-fea-tests/tests/r3b_modal_selector_displacement.rs:480` | `format-template` |
+| `crates/reify-eval/tests/circular_pattern_angle.rs:23` | `format-template` |
+| `crates/reify-eval/tests/cost_subtree_aggregate_eval.rs:135` | `format-template` |
+| `crates/reify-eval/tests/cost_subtree_aggregate_eval.rs:86` | `format-template` |
+| `crates/reify-eval/tests/dfm_fits_build_volume_e2e.rs:119` | `format-template` |
+| `crates/reify-eval/tests/edit_source.rs:185` | `format-template` |
+| `crates/reify-eval/tests/edit_source.rs:442` | `format-template` |
+| `crates/reify-eval/tests/harness_auto_resolution/auto_sub_override_resolution.rs:61` | `format-template` |
+| `crates/reify-eval/tests/harness_engine/joint_drive_cluster_formation.rs:86` | `format-template` |
+| `crates/reify-eval/tests/harness_fea_solver_e2e/edit_path_optimized_dispatch.rs:141` | `parse-error` |
+| `crates/reify-eval/tests/harness_geometry/rounded_corner_runtime_constraint.rs:32` | `format-template` |
+| `crates/reify-eval/tests/harness_geometry/rounded_corner_runtime_constraint.rs:384` | `format-template` |
+| `crates/reify-eval/tests/harness_modal/modal_material_damping_e2e.rs:524` | `format-template` |
+| `crates/reify-eval/tests/joint_drive_expansion_boundary.rs:206` | `format-template` |
+| `crates/reify-eval/tests/relate_solve_e2e.rs:300` | `format-template` |
+| `crates/reify-syntax/tests/harness_syntax/boundary1_producer.rs:373` | `parse-error` |
+| `crates/reify-syntax/tests/harness_syntax/boundary1_producer.rs:466` | `parse-error` |
+| `crates/reify-syntax/tests/harness_syntax/boundary1_producer.rs:47` | `parse-error` |
+| `crates/reify-syntax/tests/harness_syntax/interpolated_string_tests.rs:204` | `format-template` |
+| `crates/reify-syntax/tests/harness_syntax/interpolated_string_tests.rs:277` | `parse-error` |
+| `crates/reify-syntax/tests/harness_syntax/interpolated_string_tests.rs:58` | `format-template` |
+| `crates/reify-test-support/tests/rust_fixture_scan.rs:46` | `parse-error` |
+| `crates/reify-test-support/tests/rust_fixture_scan.rs:465` | `format-template` |
+| `crates/reify-test-support/tests/rust_fixture_scan.rs:95` | `parse-error` |
+
+#### Partially swept (sites collected, but the snippet also failed to compile)
+
+| file | reason |
+|---|---|
+| `crates/reify-cli/tests/harness_cli/cli_check.rs:795` | `compile-error` |
+| `crates/reify-compiler/tests/ambient_default_injection_tests.rs:188` | `compile-error` |
+| `crates/reify-compiler/tests/ambient_default_injection_tests.rs:370` | `compile-error` |
+| `crates/reify-compiler/tests/boundary2_producer.rs:1003` | `compile-error` |
+| `crates/reify-compiler/tests/boundary2_producer.rs:1668` | `compile-error` |
+| `crates/reify-compiler/tests/deep_dot_chain_tests.rs:116` | `compile-error` |
+| `crates/reify-compiler/tests/deep_dot_chain_tests.rs:141` | `compile-error` |
+| `crates/reify-compiler/tests/deep_dot_chain_tests.rs:188` | `compile-error` |
+| `crates/reify-compiler/tests/deep_dot_chain_tests.rs:241` | `compile-error` |
+| `crates/reify-compiler/tests/deep_dot_chain_tests.rs:277` | `compile-error` |
+| `crates/reify-compiler/tests/deep_dot_chain_tests.rs:348` | `compile-error` |
+| `crates/reify-compiler/tests/deep_dot_chain_tests.rs:359` | `compile-error` |
+| `crates/reify-compiler/tests/deep_dot_chain_tests.rs:36` | `compile-error` |
+| `crates/reify-compiler/tests/deep_dot_chain_tests.rs:370` | `compile-error` |
+| `crates/reify-compiler/tests/deep_dot_chain_tests.rs:381` | `compile-error` |
+| `crates/reify-compiler/tests/deep_dot_chain_tests.rs:393` | `compile-error` |
+| `crates/reify-compiler/tests/deep_dot_chain_tests.rs:404` | `compile-error` |
+| `crates/reify-compiler/tests/deep_dot_chain_tests.rs:415` | `compile-error` |
+| `crates/reify-compiler/tests/deep_dot_chain_tests.rs:432` | `compile-error` |
+| `crates/reify-compiler/tests/deep_dot_chain_tests.rs:445` | `compile-error` |
+| `crates/reify-compiler/tests/deep_dot_chain_tests.rs:460` | `compile-error` |
+| `crates/reify-compiler/tests/deep_dot_chain_tests.rs:483` | `compile-error` |
+| `crates/reify-compiler/tests/deep_dot_chain_tests.rs:86` | `compile-error` |
+| `crates/reify-compiler/tests/determinacy_compile_tests.rs:112` | `compile-error` |
+| `crates/reify-compiler/tests/determinacy_compile_tests.rs:148` | `compile-error` |
+| `crates/reify-compiler/tests/determinacy_compile_tests.rs:78` | `compile-error` |
+| `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:1017` | `compile-error` |
+| `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:1149` | `compile-error` |
+| `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:1185` | `compile-error` |
+| `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:1518` | `compile-error` |
+| `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:1556` | `compile-error` |
+| `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:1593` | `compile-error` |
+| `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:1634` | `compile-error` |
+| `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:1676` | `compile-error` |
+| `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:1722` | `compile-error` |
+| `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:188` | `compile-error` |
+| `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:225` | `compile-error` |
+| `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:264` | `compile-error` |
+| `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:305` | `compile-error` |
+| `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:345` | `compile-error` |
+| `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:388` | `compile-error` |
+| `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:439` | `compile-error` |
+| `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:489` | `compile-error` |
+| `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:542` | `compile-error` |
+| `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:581` | `compile-error` |
+| `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:624` | `compile-error` |
+| `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:668` | `compile-error` |
+| `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:706` | `compile-error` |
+| `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:744` | `compile-error` |
+| `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:784` | `compile-error` |
+| `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:824` | `compile-error` |
+| `crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs:865` | `compile-error` |
+| `crates/reify-compiler/tests/guard_compilation.rs:497` | `compile-error` |
+| `crates/reify-compiler/tests/guard_compilation.rs:532` | `compile-error` |
+| `crates/reify-compiler/tests/guard_compilation.rs:568` | `compile-error` |
+| `crates/reify-compiler/tests/harness_auto_binding/auto_binding_sites_remaining_tests.rs:476` | `compile-error` |
+| `crates/reify-compiler/tests/harness_auto_binding/auto_binding_sites_remaining_tests.rs:516` | `compile-error` |
+| `crates/reify-compiler/tests/harness_auto_binding/auto_type_arg_lowering_tests.rs:111` | `compile-error` |
+| `crates/reify-compiler/tests/harness_auto_binding/auto_type_arg_lowering_tests.rs:377` | `compile-error` |
+| `crates/reify-compiler/tests/harness_auto_binding/auto_type_arg_lowering_tests.rs:73` | `compile-error` |
+| `crates/reify-compiler/tests/harness_auto_binding/auto_type_param_member_access_tests.rs:267` | `compile-error` |
+| `crates/reify-compiler/tests/harness_auto_binding/auto_type_param_member_access_tests.rs:359` | `compile-error` |
+| `crates/reify-compiler/tests/harness_auto_binding/auto_type_param_monomorphize_tests.rs:1332` | `compile-error` |
+| `crates/reify-compiler/tests/harness_auto_binding/auto_type_param_monomorphize_tests.rs:1422` | `compile-error` |
+| `crates/reify-compiler/tests/harness_auto_binding/auto_type_param_monomorphize_tests.rs:1451` | `compile-error` |
+| `crates/reify-compiler/tests/harness_auto_binding/auto_type_param_monomorphize_tests.rs:684` | `compile-error` |
+| `crates/reify-compiler/tests/harness_auto_binding/auto_type_param_monomorphize_tests.rs:768` | `compile-error` |
+| `crates/reify-compiler/tests/harness_auto_binding/auto_type_param_monomorphize_tests.rs:836` | `compile-error` |
+| `crates/reify-compiler/tests/harness_auto_binding/auto_type_param_monomorphize_tests.rs:934` | `compile-error` |
+| `crates/reify-compiler/tests/harness_auto_binding/auto_type_params_max_depth_config.rs:30` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/compile_api_tests.rs:1003` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/compile_api_tests.rs:1206` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/compile_api_tests.rs:1275` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/compile_api_tests.rs:1295` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/compile_api_tests.rs:1344` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/compile_api_tests.rs:1431` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/compile_api_tests.rs:1572` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/compile_api_tests.rs:1612` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/compile_api_tests.rs:1647` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/compile_api_tests.rs:1670` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/compile_api_tests.rs:1693` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/compile_api_tests.rs:1716` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/compile_api_tests.rs:1739` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/compile_api_tests.rs:286` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/compile_api_tests.rs:479` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/compile_api_tests.rs:499` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/compile_api_tests.rs:969` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/meta_compile_tests.rs:103` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/meta_compile_tests.rs:129` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/meta_compile_tests.rs:162` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/meta_compile_tests.rs:217` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/meta_compile_tests.rs:397` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/meta_compile_tests.rs:433` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/meta_compile_tests.rs:75` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/pragma_compile_tests.rs:2905` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs:105` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs:1515` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs:2179` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs:2231` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs:2271` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs:2315` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs:2358` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs:2401` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs:242` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs:359` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs:404` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs:440` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs:486` | `compile-error` |
+| `crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs:857` | `compile-error` |
+| `crates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs:1981` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:105` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:120` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:136` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:151` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:166` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:179` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:192` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:207` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:220` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:239` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:252` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:265` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:278` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:294` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:309` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:322` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:337` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:350` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:363` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:376` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:391` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:404` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:417` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:432` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:445` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:458` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:60` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:75` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_arg_count_span_tests.rs:90` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_centered_primitives_tests.rs:146` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_centered_primitives_tests.rs:438` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_query_inline_arg_tests.rs:349` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_query_inline_arg_tests.rs:377` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_traits_inference_tests.rs:1735` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_traits_inference_tests.rs:1770` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_traits_inference_tests.rs:875` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_traits_inference_tests.rs:911` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/geometry_traits_inference_tests.rs:990` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/solver_elastic_static_stdlib_compile.rs:237` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/solver_hint_payload_tests.rs:123` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/structural_physical_tests.rs:1556` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/structural_physical_tests.rs:790` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/structural_query_compile_tests.rs:140` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/structural_query_filter_compile_tests.rs:147` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/structural_query_filter_compile_tests.rs:194` | `compile-error` |
+| `crates/reify-compiler/tests/harness_geometry_solver/structural_query_filter_compile_tests.rs:96` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/let_annotation_type_mismatch_tests.rs:203` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/let_annotation_type_mismatch_tests.rs:236` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/let_annotation_type_mismatch_tests.rs:261` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/let_annotation_type_mismatch_tests.rs:288` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/let_annotation_type_mismatch_tests.rs:29` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/let_annotation_type_mismatch_tests.rs:318` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/let_annotation_type_mismatch_tests.rs:419` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/let_annotation_type_mismatch_tests.rs:84` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:1637` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:1707` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:1729` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:1766` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:1857` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:2106` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:2191` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:2552` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:2623` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:384` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/let_scope_tests.rs:445` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/let_type_disambiguation_tests.rs:145` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/let_type_disambiguation_tests.rs:239` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/let_type_disambiguation_tests.rs:286` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/let_type_disambiguation_tests.rs:687` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/let_type_disambiguation_tests.rs:750` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/let_type_disambiguation_tests.rs:913` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/parametric_alias_def_site_validation_tests.rs:113` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/parametric_field_resolution_tests.rs:251` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/parametric_field_resolution_tests.rs:278` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/parametric_vector_point_resolution_tests.rs:297` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/prelude_sub_member_typing_tests.rs:287` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/prelude_sub_member_typing_tests.rs:479` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/priv_member_visibility_tests.rs:1168` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/priv_member_visibility_tests.rs:1217` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/priv_member_visibility_tests.rs:1304` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/priv_member_visibility_tests.rs:1343` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/priv_member_visibility_tests.rs:1380` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/priv_member_visibility_tests.rs:1416` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/priv_member_visibility_tests.rs:195` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/priv_member_visibility_tests.rs:262` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/priv_member_visibility_tests.rs:328` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/priv_member_visibility_tests.rs:398` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/priv_member_visibility_tests.rs:454` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/priv_member_visibility_tests.rs:922` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/priv_member_visibility_tests.rs:982` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/priv_redundant_tests.rs:48` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/priv_redundant_tests.rs:90` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/type_error_propagation_tests.rs:114` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/type_error_propagation_tests.rs:146` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/type_error_propagation_tests.rs:177` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/type_error_propagation_tests.rs:255` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/type_error_propagation_tests.rs:301` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/type_hygiene_integration_gate.rs:106` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/type_hygiene_integration_gate.rs:139` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/type_hygiene_integration_gate.rs:206` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/type_hygiene_integration_gate.rs:252` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/type_hygiene_integration_gate.rs:58` | `compile-error` |
+| `crates/reify-compiler/tests/harness_langcore/uniform_member_path_tests.rs:112` | `compile-error` |
+| `crates/reify-compiler/tests/harness_mechanics/coupling_motionvalue_integration_gate.rs:198` | `compile-error` |
+| `crates/reify-compiler/tests/harness_mechanics/dynamics_stdlib_compile.rs:696` | `compile-error` |
+| `crates/reify-compiler/tests/harness_mechanics/dynamics_stdlib_compile.rs:733` | `compile-error` |
+| `crates/reify-compiler/tests/harness_mechanics/dynamics_stdlib_compile.rs:765` | `compile-error` |
+| `crates/reify-compiler/tests/harness_mechanics/dynamics_stdlib_compile.rs:774` | `compile-error` |
+| `crates/reify-compiler/tests/harness_mechanics/dynamics_stdlib_compile.rs:783` | `compile-error` |
+| `crates/reify-compiler/tests/harness_mechanics/fea_supertrait_conformance_tests.rs:170` | `compile-error` |
+| `crates/reify-compiler/tests/harness_mechanics/fea_supertrait_conformance_tests.rs:228` | `compile-error` |
+| `crates/reify-compiler/tests/harness_mechanics/mechanism_nondriving_joint_compile.rs:145` | `compile-error` |
+| `crates/reify-compiler/tests/harness_mechanics/mechanism_nondriving_joint_compile.rs:211` | `compile-error` |
+| `crates/reify-compiler/tests/harness_mechanics/mechanism_nondriving_joint_compile.rs:274` | `compile-error` |
+| `crates/reify-compiler/tests/harness_mechanics/mechanism_nondriving_joint_compile.rs:311` | `compile-error` |
+| `crates/reify-compiler/tests/harness_mechanics/mechanism_nondriving_joint_compile.rs:342` | `compile-error` |
+| `crates/reify-compiler/tests/harness_mechanics/mechanism_nondriving_joint_compile.rs:374` | `compile-error` |
+| `crates/reify-compiler/tests/harness_mechanics/mechanism_nondriving_joint_compile.rs:45` | `compile-error` |
+| `crates/reify-compiler/tests/harness_mechanics/mechanism_nondriving_joint_compile.rs:79` | `compile-error` |
+| `crates/reify-compiler/tests/harness_mechanics/modal_options_validation_tests.rs:507` | `compile-error` |
+| `crates/reify-compiler/tests/harness_mechanics/trajectory_stdlib_compile.rs:3356` | `compile-error` |
+| `crates/reify-compiler/tests/harness_mechanics/trajectory_stdlib_compile.rs:3386` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/connect_compile_tests.rs:157` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/connect_compile_tests.rs:195` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/connect_compile_tests.rs:1989` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/connect_compile_tests.rs:2020` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/connect_compile_tests.rs:2051` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/connect_compile_tests.rs:2107` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/connect_compile_tests.rs:2253` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/connect_compile_tests.rs:264` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/connect_compile_tests.rs:292` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/connect_compile_tests.rs:319` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/connect_compile_tests.rs:345` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/connect_compile_tests.rs:370` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/connect_compile_tests.rs:399` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/connect_compile_tests.rs:550` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/connect_compile_tests.rs:743` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/connect_compile_tests.rs:769` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/connect_compile_tests.rs:818` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/entity_overload_tests.rs:116` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/entity_overload_tests.rs:17` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/entity_overload_tests.rs:181` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/entity_overload_tests.rs:228` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/entity_overload_tests.rs:274` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/entity_overload_tests.rs:67` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/port_compile_tests.rs:383` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/ports_stdlib_compile.rs:2590` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/ports_stdlib_compile.rs:791` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/qualified_access_compile_tests.rs:131` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/qualified_access_compile_tests.rs:171` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/qualified_access_compile_tests.rs:252` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/sub_placement_lowering_tests.rs:207` | `compile-error` |
+| `crates/reify-compiler/tests/harness_modules_ports/task_1570_tests.rs:246` | `compile-error` |
+| `crates/reify-compiler/tests/harness_patterns/enum_unknown_type_param_tests.rs:283` | `compile-error` |
+| `crates/reify-compiler/tests/harness_patterns/enum_unknown_type_param_tests.rs:57` | `compile-error` |
+| `crates/reify-compiler/tests/harness_patterns/generic_enum_pattern_binder_tests.rs:276` | `compile-error` |
+| `crates/reify-compiler/tests/harness_patterns/generic_enum_pattern_binder_tests.rs:386` | `compile-error` |
+| `crates/reify-compiler/tests/harness_patterns/match_block_decl_lowering_tests.rs:219` | `compile-error` |
+| `crates/reify-compiler/tests/harness_patterns/match_block_decl_lowering_tests.rs:268` | `compile-error` |
+| `crates/reify-compiler/tests/harness_patterns/match_compile_tests.rs:59` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/half_space_compile_tests.rs:92` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/m9_error_cases.rs:1019` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/m9_error_cases.rs:1130` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/m9_error_cases.rs:1166` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/m9_error_cases.rs:1208` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/m9_error_cases.rs:1247` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/m9_error_cases.rs:128` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/m9_error_cases.rs:275` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/m9_error_cases.rs:305` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/m9_error_cases.rs:348` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/m9_error_cases.rs:398` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/m9_error_cases.rs:446` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/m9_error_cases.rs:495` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/m9_error_cases.rs:532` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/m9_error_cases.rs:573` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/m9_error_cases.rs:617` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/m9_error_cases.rs:653` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/m9_error_cases.rs:66` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/m9_error_cases.rs:688` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/m9_error_cases.rs:726` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/m9_error_cases.rs:762` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/m9_error_cases.rs:799` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/m9_error_cases.rs:835` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/m9_error_cases.rs:97` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/physical_constants_tests.rs:653` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/process_stdlib_compile.rs:380` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/process_stdlib_compile.rs:682` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/process_stdlib_compile.rs:830` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/rounded_primitives_tests.rs:1101` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/rounded_primitives_tests.rs:491` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/rounded_primitives_tests.rs:501` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/rounded_primitives_tests.rs:538` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/rounded_primitives_tests.rs:560` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/rounded_primitives_tests.rs:588` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/rounded_primitives_tests.rs:893` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/rounded_primitives_tests.rs:903` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/rounded_primitives_tests.rs:918` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/rounded_primitives_tests.rs:933` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/rounded_primitives_tests.rs:989` | `compile-error` |
+| `crates/reify-compiler/tests/harness_physical_modeling/solid_param_tests.rs:983` | `compile-error` |
+| `crates/reify-compiler/tests/harness_relate/relate_threading_tests.rs:171` | `compile-error` |
+| `crates/reify-compiler/tests/harness_result_annotation/cross_sub_geometry_diagnostic_tests.rs:240` | `compile-error` |
+| `crates/reify-compiler/tests/harness_result_annotation/cross_sub_geometry_diagnostic_tests.rs:300` | `compile-error` |
+| `crates/reify-compiler/tests/harness_result_annotation/cross_sub_geometry_diagnostic_tests.rs:368` | `compile-error` |
+| `crates/reify-compiler/tests/harness_result_annotation/ds_sentinel_l0_poison_tests.rs:117` | `compile-error` |
+| `crates/reify-compiler/tests/harness_result_annotation/ds_sentinel_l0_poison_tests.rs:67` | `compile-error` |
+| `crates/reify-compiler/tests/harness_result_annotation/ds_sentinel_l5_boundary_tests.rs:139` | `compile-error` |
+| `crates/reify-compiler/tests/harness_result_annotation/ds_sentinel_l5_boundary_tests.rs:295` | `compile-error` |
+| `crates/reify-compiler/tests/harness_result_annotation/ds_sentinel_l5_boundary_tests.rs:345` | `compile-error` |
+| `crates/reify-compiler/tests/harness_result_annotation/ds_sentinel_l5_boundary_tests.rs:472` | `compile-error` |
+| `crates/reify-compiler/tests/harness_result_annotation/expected_type_pushdown_integration.rs:326` | `compile-error` |
+| `crates/reify-compiler/tests/harness_result_annotation/expected_type_pushdown_integration.rs:351` | `compile-error` |
+| `crates/reify-compiler/tests/harness_result_annotation/expected_type_pushdown_let_tests.rs:142` | `compile-error` |
+| `crates/reify-compiler/tests/harness_result_annotation/expected_type_pushdown_let_tests.rs:171` | `compile-error` |
+| `crates/reify-compiler/tests/harness_result_annotation/objective_conflict.rs:67` | `compile-error` |
+| `crates/reify-compiler/tests/harness_result_annotation/objective_dimension_coherence.rs:61` | `compile-error` |
+| `crates/reify-compiler/tests/harness_result_annotation/result_combinator_overload_tests.rs:97` | `compile-error` |
+| `crates/reify-compiler/tests/harness_result_annotation/result_combinator_resolution_tests.rs:347` | `compile-error` |
+| `crates/reify-compiler/tests/harness_result_annotation/result_fallback_resolution_tests.rs:115` | `compile-error` |
+| `crates/reify-compiler/tests/harness_result_annotation/result_match_binder_tests.rs:111` | `compile-error` |
+| `crates/reify-compiler/tests/harness_result_annotation/result_match_binder_tests.rs:199` | `compile-error` |
+| `crates/reify-compiler/tests/harness_result_annotation/result_match_binder_tests.rs:236` | `compile-error` |
+| `crates/reify-compiler/tests/harness_result_annotation/result_match_binder_tests.rs:77` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/ad_hoc_selector_compile_tests.rs:11` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/ad_hoc_selector_compile_tests.rs:118` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/ad_hoc_selector_compile_tests.rs:200` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/ad_hoc_selector_compile_tests.rs:260` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/ad_hoc_selector_compile_tests.rs:293` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/analysis_stress_fn_compile.rs:339` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/analysis_stress_fn_compile.rs:362` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/constraint_def_compile_tests.rs:1283` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/constraint_def_compile_tests.rs:1384` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/constraint_def_compile_tests.rs:1449` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/constraint_def_compile_tests.rs:363` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/constraint_def_compile_tests.rs:404` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/constraint_def_compile_tests.rs:446` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/constraint_def_compile_tests.rs:642` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/constraint_inst_tests.rs:239` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/constraint_inst_tests.rs:266` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/constraint_inst_tests.rs:297` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/display_annotation_tests.rs:161` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/display_annotation_tests.rs:91` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/forall_statement_lower_tests.rs:1963` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/forall_statement_stub_tests.rs:36` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/generate_combinator_tests.rs:134` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/generate_combinator_tests.rs:156` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/index_access_selector_coercion_tests.rs:113` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/keyed_sub_resolution_tests.rs:206` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/keyed_sub_resolution_tests.rs:250` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/keyed_sub_resolution_tests.rs:272` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/keyed_sub_resolution_tests.rs:329` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/keyed_sub_resolution_tests.rs:368` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/keyed_sub_resolution_tests.rs:417` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/keyed_sub_resolution_tests.rs:447` | `compile-error` |
+| `crates/reify-compiler/tests/harness_statement_semantics/keyed_sub_resolution_tests.rs:485` | `compile-error` |
+| `crates/reify-compiler/tests/harness_structure_declarations/collection_sub_tests.rs:750` | `compile-error` |
+| `crates/reify-compiler/tests/harness_structure_declarations/field_compile_tests.rs:438` | `compile-error` |
+| `crates/reify-compiler/tests/harness_structure_declarations/option_compile_tests.rs:220` | `compile-error` |
+| `crates/reify-compiler/tests/harness_structure_declarations/option_compile_tests.rs:246` | `compile-error` |
+| `crates/reify-compiler/tests/harness_structure_declarations/option_recovery_resolution_tests.rs:217` | `compile-error` |
+| `crates/reify-compiler/tests/harness_structure_declarations/option_recovery_resolution_tests.rs:380` | `compile-error` |
+| `crates/reify-compiler/tests/harness_structure_declarations/option_recovery_resolution_tests.rs:420` | `compile-error` |
+| `crates/reify-compiler/tests/harness_structure_declarations/option_recovery_resolution_tests.rs:466` | `compile-error` |
+| `crates/reify-compiler/tests/harness_structure_declarations/recursive_detection_tests.rs:461` | `compile-error` |
+| `crates/reify-compiler/tests/harness_structure_declarations/recursive_detection_tests.rs:509` | `compile-error` |
+| `crates/reify-compiler/tests/harness_structure_declarations/recursive_structure_tests.rs:218` | `compile-error` |
+| `crates/reify-compiler/tests/harness_structure_declarations/shadowing_warning_tests.rs:1465` | `compile-error` |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:2026` | `compile-error` |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:3515` | `compile-error` |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:4123` | `compile-error` |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:4908` | `compile-error` |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:712` | `compile-error` |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:722` | `compile-error` |
+| `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:748` | `compile-error` |
+| `crates/reify-compiler/tests/harness_structure_declarations/structure_in_purpose_ambient_tests.rs:112` | `compile-error` |
+| `crates/reify-compiler/tests/harness_structure_declarations/structure_in_purpose_ambient_tests.rs:155` | `compile-error` |
+| `crates/reify-compiler/tests/harness_structure_declarations/structure_in_purpose_ambient_tests.rs:211` | `compile-error` |
+| `crates/reify-compiler/tests/harness_structure_declarations/structure_in_purpose_ambient_tests.rs:31` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/assoc_type_projection_reduction_tests.rs:187` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/assoc_type_projection_reduction_tests.rs:277` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/assoc_type_projection_reduction_tests.rs:338` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/assoc_type_projection_reduction_tests.rs:503` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/assoc_type_projection_reduction_tests.rs:544` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/assoc_type_projection_reduction_tests.rs:597` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/fn_arg_trait_conformance_tests.rs:211` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/fn_arg_trait_conformance_tests.rs:370` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/fn_arg_trait_conformance_tests.rs:415` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/fn_generic_body_permissive_tests.rs:121` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/fn_generic_trait_bound_tests.rs:149` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/fn_generic_trait_bound_tests.rs:203` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/fn_generic_trait_bound_tests.rs:23` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/fn_generic_trait_bound_tests.rs:238` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/fn_generic_trait_bound_tests.rs:308` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/fn_overload_tests.rs:14` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/fn_overload_tests.rs:206` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/fn_param_default_consumption_tests.rs:293` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/fn_param_default_consumption_tests.rs:99` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/fn_param_struct_ctor_default_tests.rs:461` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_assoc_fn_conformance_tests.rs:25` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_assoc_fn_instance_tests.rs:112` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_assoc_fn_instance_tests.rs:398` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_assoc_fn_instance_tests.rs:486` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_assoc_fn_overload_tests.rs:199` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_assoc_fn_overload_tests.rs:238` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_assoc_fn_overload_tests.rs:395` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_assoc_fn_overload_tests.rs:630` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_assoc_fn_static_tests.rs:171` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_assoc_fn_static_tests.rs:234` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_assoc_fn_static_tests.rs:273` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_assoc_fn_static_tests.rs:80` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_assoc_fn_structure_override_tests.rs:131` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_assoc_type_conformance_tests.rs:219` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_assoc_type_conformance_tests.rs:27` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_assoc_type_qualified_resolution_tests.rs:223` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_assoc_type_qualified_resolution_tests.rs:254` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_assoc_type_qualified_resolution_tests.rs:295` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_assoc_type_qualified_resolution_tests.rs:455` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_assoc_type_qualified_resolution_tests.rs:93` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_assoc_type_resolution_tests.rs:111` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_assoc_type_resolution_tests.rs:200` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_body_deferred_check_tests.rs:127` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_body_deferred_check_tests.rs:155` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_body_deferred_check_tests.rs:206` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_body_deferred_check_tests.rs:235` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_body_deferred_check_tests.rs:53` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_bounds_tests.rs:120` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_bounds_tests.rs:149` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_bounds_tests.rs:217` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_bounds_tests.rs:276` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_bounds_tests.rs:372` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_bounds_tests.rs:511` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_bounds_tests.rs:542` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_bounds_tests.rs:628` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_conformance_tests.rs:1078` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_conformance_tests.rs:1132` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_conformance_tests.rs:1183` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_conformance_tests.rs:132` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_conformance_tests.rs:164` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_conformance_tests.rs:313` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_conformance_tests.rs:456` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_conformance_tests.rs:638` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_conformance_tests.rs:922` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_conformance_type_error_tests.rs:108` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_conformance_type_error_tests.rs:136` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_conformance_type_error_tests.rs:198` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_conformance_type_error_tests.rs:221` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_conformance_type_error_tests.rs:254` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_default_collision_tests.rs:186` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_default_collision_tests.rs:248` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_default_collision_tests.rs:392` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_default_collision_tests.rs:456` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_default_collision_tests.rs:52` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_default_collision_tests.rs:83` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_merge_tests.rs:110` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_merge_tests.rs:1484` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_merge_tests.rs:214` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_merge_tests.rs:254` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_merge_tests.rs:296` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_merge_tests.rs:334` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_merge_tests.rs:69` | `compile-error` |
+| `crates/reify-compiler/tests/harness_traits/trait_typed_param_tests.rs:237` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/boolean_arg_cross_sub_diagnostic_tests.rs:159` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/boolean_arg_cross_sub_diagnostic_tests.rs:187` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/boolean_arg_cross_sub_diagnostic_tests.rs:223` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/boolean_arg_cross_sub_diagnostic_tests.rs:260` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/boolean_arg_cross_sub_diagnostic_tests.rs:300` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/comparison_operand_guard_tests.rs:122` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/comparison_operand_guard_tests.rs:154` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/comparison_operand_guard_tests.rs:171` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/comparison_operand_guard_tests.rs:188` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/comparison_operand_guard_tests.rs:206` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/comparison_operand_guard_tests.rs:231` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/comparison_operand_guard_tests.rs:434` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/comparison_operand_guard_tests.rs:472` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/comparison_operand_guard_tests.rs:548` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/comparison_operand_guard_tests.rs:576` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/comparison_operand_guard_tests.rs:603` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/comparison_operand_guard_tests.rs:775` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/comparison_operand_guard_tests.rs:791` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/comparison_operand_guard_tests.rs:807` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/comparison_operand_guard_tests.rs:848` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/comparison_operand_guard_tests.rs:875` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/comparison_operand_guard_tests.rs:90` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/comparison_operand_guard_tests.rs:915` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/comparison_operand_guard_tests.rs:941` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/comparison_operand_guard_tests.rs:991` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/expr_error_sentinel_tests.rs:113` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/expr_error_sentinel_tests.rs:148` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/expr_error_sentinel_tests.rs:180` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/expr_error_sentinel_tests.rs:209` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/expr_error_sentinel_tests.rs:233` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/expr_error_sentinel_tests.rs:272` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/expr_error_sentinel_tests.rs:298` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/expr_error_sentinel_tests.rs:324` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/expr_error_sentinel_tests.rs:346` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/expr_error_sentinel_tests.rs:378` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/expr_error_sentinel_tests.rs:413` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/expr_error_sentinel_tests.rs:448` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/expr_error_sentinel_tests.rs:486` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/expr_error_sentinel_tests.rs:540` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/expr_error_sentinel_tests.rs:62` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/expr_error_sentinel_tests.rs:89` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/implies_type_check_tests.rs:22` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/mul_div_operand_guard_tests.rs:213` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/mul_div_static_runtime_parity.rs:386` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/polymorphic_zero_tests.rs:435` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/polymorphic_zero_tests.rs:500` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/polymorphic_zero_tests.rs:567` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/polymorphic_zero_tests.rs:653` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/polymorphic_zero_tests.rs:710` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/real_dimensionless_unification_tests.rs:113` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/self_keyword_tests.rs:1140` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/self_keyword_tests.rs:1187` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/self_keyword_tests.rs:1231` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/self_keyword_tests.rs:1262` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/self_keyword_tests.rs:1304` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/self_keyword_tests.rs:1334` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/self_keyword_tests.rs:1501` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/self_keyword_tests.rs:525` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/wrong_receiver_member_tests.rs:121` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/wrong_receiver_member_tests.rs:266` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/wrong_receiver_member_tests.rs:49` | `compile-error` |
+| `crates/reify-compiler/tests/harness_type_checking/wrong_receiver_member_tests.rs:85` | `compile-error` |
+| `crates/reify-compiler/tests/harness_units_materials/cost_robustness_tradeoff_lowering.rs:118` | `compile-error` |
+| `crates/reify-compiler/tests/harness_units_materials/cost_robustness_tradeoff_lowering.rs:156` | `compile-error` |
+| `crates/reify-compiler/tests/harness_units_materials/cost_robustness_tradeoff_lowering.rs:182` | `compile-error` |
+| `crates/reify-compiler/tests/harness_units_materials/cost_robustness_tradeoff_lowering.rs:210` | `compile-error` |
+| `crates/reify-compiler/tests/harness_units_materials/cost_robustness_tradeoff_lowering.rs:215` | `compile-error` |
+| `crates/reify-compiler/tests/harness_units_materials/cost_robustness_tradeoff_lowering.rs:222` | `compile-error` |
+| `crates/reify-compiler/tests/harness_units_materials/cost_robustness_tradeoff_lowering.rs:229` | `compile-error` |
+| `crates/reify-compiler/tests/harness_units_materials/cost_robustness_tradeoff_lowering.rs:54` | `compile-error` |
+| `crates/reify-compiler/tests/harness_units_materials/materials_fea_tests.rs:1054` | `compile-error` |
+| `crates/reify-compiler/tests/harness_units_materials/materials_param_surface_tests.rs:367` | `compile-error` |
+| `crates/reify-compiler/tests/harness_units_materials/materials_param_surface_tests.rs:468` | `compile-error` |
+| `crates/reify-compiler/tests/harness_units_materials/money_force_diagnostic_tests.rs:113` | `compile-error` |
+| `crates/reify-compiler/tests/harness_units_materials/money_force_diagnostic_tests.rs:143` | `compile-error` |
+| `crates/reify-compiler/tests/harness_units_materials/money_force_diagnostic_tests.rs:176` | `compile-error` |
+| `crates/reify-compiler/tests/harness_units_materials/money_force_diagnostic_tests.rs:60` | `compile-error` |
+| `crates/reify-compiler/tests/param_binding_selector_coercion_tests.rs:110` | `compile-error` |
+| `crates/reify-compiler/tests/param_binding_selector_coercion_tests.rs:139` | `compile-error` |
+| `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:112` | `compile-error` |
+| `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:232` | `compile-error` |
+| `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:27` | `compile-error` |
+| `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:366` | `compile-error` |
+| `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:407` | `compile-error` |
+| `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:440` | `compile-error` |
+| `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:468` | `compile-error` |
+| `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:506` | `compile-error` |
+| `crates/reify-compiler/tests/param_default_type_mismatch_tests.rs:543` | `compile-error` |
+| `crates/reify-compiler/tests/selector_composition_tests.rs:24` | `compile-error` |
+| `crates/reify-compiler/tests/selector_composition_tests.rs:32` | `compile-error` |
+| `crates/reify-compiler/tests/selector_composition_tests.rs:40` | `compile-error` |
+| `crates/reify-compiler/tests/selector_composition_tests.rs:475` | `compile-error` |
+| `crates/reify-compiler/tests/selector_composition_tests.rs:783` | `compile-error` |
+| `crates/reify-compiler/tests/silent_defaults_tests.rs:16` | `compile-error` |
+| `crates/reify-compiler/tests/silent_defaults_tests.rs:186` | `compile-error` |
+| `crates/reify-compiler/tests/silent_defaults_tests.rs:211` | `compile-error` |
+| `crates/reify-compiler/tests/silent_defaults_tests.rs:364` | `compile-error` |
+| `crates/reify-compiler/tests/silent_defaults_tests.rs:715` | `compile-error` |
+| `crates/reify-compiler/tests/silent_defaults_tests.rs:747` | `compile-error` |
+| `crates/reify-compiler/tests/silent_defaults_tests.rs:777` | `compile-error` |
+| `crates/reify-compiler/tests/termination_check_tests.rs:107` | `compile-error` |
+| `crates/reify-compiler/tests/termination_check_tests.rs:173` | `compile-error` |
+| `crates/reify-compiler/tests/termination_check_tests.rs:212` | `compile-error` |
+| `crates/reify-compiler/tests/termination_check_tests.rs:278` | `compile-error` |
+| `crates/reify-compiler/tests/termination_check_tests.rs:315` | `compile-error` |
+| `crates/reify-compiler/tests/termination_check_tests.rs:375` | `compile-error` |
+| `crates/reify-compiler/tests/termination_check_tests.rs:430` | `compile-error` |
+| `crates/reify-compiler/tests/termination_check_tests.rs:519` | `compile-error` |
+| `crates/reify-compiler/tests/termination_check_tests.rs:580` | `compile-error` |
+| `crates/reify-compiler/tests/termination_check_tests.rs:622` | `compile-error` |
+| `crates/reify-compiler/tests/termination_check_tests.rs:711` | `compile-error` |
+| `crates/reify-compiler/tests/termination_check_tests.rs:760` | `compile-error` |
+| `crates/reify-compiler/tests/termination_check_tests.rs:839` | `compile-error` |
+| `crates/reify-compiler/tests/termination_check_tests.rs:864` | `compile-error` |
+| `crates/reify-compiler/tests/unresolved_diagnostic_code_audit_tests.rs:127` | `compile-error` |
+| `crates/reify-compiler/tests/unresolved_diagnostic_code_audit_tests.rs:158` | `compile-error` |
+| `crates/reify-compiler/tests/unresolved_diagnostic_code_audit_tests.rs:191` | `compile-error` |
+| `crates/reify-compiler/tests/unresolved_diagnostic_code_audit_tests.rs:222` | `compile-error` |
+| `crates/reify-compiler/tests/unresolved_diagnostic_code_audit_tests.rs:255` | `compile-error` |
+| `crates/reify-compiler/tests/unresolved_diagnostic_code_audit_tests.rs:289` | `compile-error` |
+| `crates/reify-compiler/tests/unresolved_diagnostic_code_audit_tests.rs:325` | `compile-error` |
+| `crates/reify-compiler/tests/unresolved_diagnostic_code_audit_tests.rs:93` | `compile-error` |
+| `crates/reify-eval/tests/chained_comparison_eval.rs:305` | `compile-error` |
+| `crates/reify-eval/tests/chamfer_e2e.rs:19` | `compile-error` |
+| `crates/reify-eval/tests/compose_example_smoke.rs:134` | `compile-error` |
+| `crates/reify-eval/tests/compute_dispatch_registry.rs:2131` | `compile-error` |
+| `crates/reify-eval/tests/connect_eval.rs:138` | `compile-error` |
+| `crates/reify-eval/tests/connect_eval.rs:732` | `compile-error` |
+| `crates/reify-eval/tests/connect_eval.rs:943` | `compile-error` |
+| `crates/reify-eval/tests/curve_constructors_e2e.rs:45` | `compile-error` |
+| `crates/reify-eval/tests/curve_constructors_e2e.rs:548` | `compile-error` |
+| `crates/reify-eval/tests/curve_constructors_e2e.rs:566` | `compile-error` |
+| `crates/reify-eval/tests/curve_constructors_e2e.rs:584` | `compile-error` |
+| `crates/reify-eval/tests/curve_constructors_e2e.rs:602` | `compile-error` |
+| `crates/reify-eval/tests/e2e_meta.rs:337` | `compile-error` |
+| `crates/reify-eval/tests/e2e_meta.rs:365` | `compile-error` |
+| `crates/reify-eval/tests/extrude_e2e.rs:19` | `compile-error` |
+| `crates/reify-eval/tests/extrude_e2e.rs:55` | `compile-error` |
+| `crates/reify-eval/tests/extrude_infinite_e2e.rs:100` | `compile-error` |
+| `crates/reify-eval/tests/extrude_infinite_e2e.rs:68` | `compile-error` |
+| `crates/reify-eval/tests/fillet_e2e.rs:19` | `compile-error` |
+| `crates/reify-eval/tests/harness_cache/unified_dag_geometry_executors.rs:911` | `compile-error` |
+| `crates/reify-eval/tests/harness_geometry/geometry_length_args_units_e2e.rs:138` | `compile-error` |
+| `crates/reify-eval/tests/harness_geometry/geometry_length_args_units_e2e.rs:156` | `compile-error` |
+| `crates/reify-eval/tests/harness_geometry/geometry_length_args_units_e2e.rs:171` | `compile-error` |
+| `crates/reify-eval/tests/harness_geometry/modify_sweep_length_units_e2e.rs:226` | `compile-error` |
+| `crates/reify-eval/tests/harness_geometry/modify_sweep_length_units_e2e.rs:316` | `compile-error` |
+| `crates/reify-eval/tests/harness_geometry/modify_sweep_length_units_e2e.rs:400` | `compile-error` |
+| `crates/reify-eval/tests/harness_geometry/modify_sweep_length_units_e2e.rs:481` | `compile-error` |
+| `crates/reify-eval/tests/harness_geometry/modify_sweep_length_units_e2e.rs:610` | `compile-error` |
+| `crates/reify-eval/tests/harness_geometry/primitive_profile_length_units_e2e.rs:214` | `compile-error` |
+| `crates/reify-eval/tests/harness_geometry/primitive_profile_length_units_e2e.rs:293` | `compile-error` |
+| `crates/reify-eval/tests/harness_geometry/primitive_profile_length_units_e2e.rs:313` | `compile-error` |
+| `crates/reify-eval/tests/harness_mechanism/mechanism_nondriving_joint_diag_e2e.rs:29` | `compile-error` |
+| `crates/reify-eval/tests/harness_mechanism/mechanism_nondriving_joint_diag_e2e.rs:52` | `compile-error` |
+| `crates/reify-eval/tests/harness_mechanism/mechanism_nondriving_joint_diag_e2e.rs:68` | `compile-error` |
+| `crates/reify-eval/tests/harness_stress_scenarios/stress_error_messages.rs:125` | `compile-error` |
+| `crates/reify-eval/tests/harness_stress_scenarios/stress_error_messages.rs:155` | `compile-error` |
+| `crates/reify-eval/tests/harness_stress_scenarios/stress_error_messages.rs:87` | `compile-error` |
+| `crates/reify-eval/tests/harness_stress_scenarios/stress_sweep_degenerate.rs:370` | `compile-error` |
+| `crates/reify-eval/tests/keyed_identity_reelaboration.rs:117` | `compile-error` |
+| `crates/reify-eval/tests/keyed_sub_eval.rs:78` | `compile-error` |
+| `crates/reify-eval/tests/m5_integration.rs:792` | `compile-error` |
+| `crates/reify-eval/tests/match_block_decls_e2e.rs:152` | `compile-error` |
+| `crates/reify-eval/tests/mirror_circular_value_forms_e2e.rs:555` | `compile-error` |
+| `crates/reify-eval/tests/mirror_circular_value_forms_e2e.rs:832` | `compile-error` |
+| `crates/reify-eval/tests/money_acceptance_sweep_eval.rs:120` | `compile-error` |
+| `crates/reify-eval/tests/nurbs_surface_e2e.rs:67` | `compile-error` |
+| `crates/reify-eval/tests/pattern_spacing_units_e2e.rs:176` | `compile-error` |
+| `crates/reify-eval/tests/pattern_spacing_units_e2e.rs:93` | `compile-error` |
+| `crates/reify-eval/tests/region_resolution_boundary.rs:685` | `compile-error` |
+| `crates/reify-eval/tests/region_resolution_boundary.rs:699` | `compile-error` |
+| `crates/reify-eval/tests/structure_in_purpose_ambient_eval.rs:47` | `compile-error` |
+| `crates/reify-eval/tests/sub_placement_surfacing.rs:745` | `compile-error` |
+| `crates/reify-eval/tests/sub_placement_surfacing.rs:807` | `compile-error` |
+| `crates/reify-eval/tests/type_hygiene_integration_gate.rs:310` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/ad_hoc_selector_tests.rs:114` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/ad_hoc_selector_tests.rs:58` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/annotation_tests.rs:579` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/annotation_tests.rs:630` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/annotation_tests.rs:673` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/annotation_tests.rs:712` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/forall_statement_tests.rs:171` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/forall_statement_tests.rs:222` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/forall_statement_tests.rs:30` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/forall_statement_tests.rs:343` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/forall_statement_tests.rs:394` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/forall_statement_tests.rs:446` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/forall_statement_tests.rs:99` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/guard_tests.rs:101` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/guard_tests.rs:126` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/guard_tests.rs:158` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/guard_tests.rs:197` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/guard_tests.rs:23` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/guard_tests.rs:239` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/guard_tests.rs:273` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/guard_tests.rs:46` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/guard_tests.rs:75` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/keyed_sub_member_block_parser_tests.rs:125` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/keyed_sub_member_block_parser_tests.rs:300` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/keyed_sub_member_block_parser_tests.rs:343` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/keyed_sub_member_block_parser_tests.rs:37` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/keyed_sub_member_block_parser_tests.rs:374` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/keyed_sub_member_block_parser_tests.rs:63` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/keyed_sub_member_block_parser_tests.rs:95` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/match_tests.rs:118` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/match_tests.rs:163` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/match_tests.rs:76` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/option_tests.rs:156` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax/purpose_tests.rs:224` | `compile-error` |
+| `crates/reify-syntax/tests/harness_syntax_lowering/enum_named_field_lowering_tests.rs:157` | `compile-error` |
+
 ## Coverage and limitations
 
-Of 689 tracked `.ri` members, **684 were surveyed** and **5 were not**. A further **73** were surveyed only PARTIALLY. Both are listed below rather than dropped: a bounded sweep that does not state what it skipped reads as full coverage and would under-size γ.
+Of 701 tracked `.ri` members, **696 were surveyed** and **5 were not**. A further **78** were surveyed only PARTIALLY. Both are listed below rather than dropped: a bounded sweep that does not state what it skipped reads as full coverage and would under-size γ.
 
 ### Not surveyed (contributed no sites)
 
@@ -177,6 +1270,8 @@ Of 689 tracked `.ri` members, **684 were surveyed** and **5 were not**. A furthe
 | file | reason |
 |---|---|
 | `crates/reify-cli/tests/fixtures/bracket_compile_error.ri` | `compile-error` |
+| `crates/reify-cli/tests/fixtures/connect_direction_bare_mismatch.ri` | `compile-error` |
+| `crates/reify-cli/tests/fixtures/connect_direction_dotted_mismatch.ri` | `compile-error` |
 | `crates/reify-cli/tests/fixtures/keyed_missing_key.ri` | `compile-error` |
 | `crates/reify-cli/tests/fixtures/objective_conflict.ri` | `compile-error` |
 | `crates/reify-cli/tests/fixtures/result_prelude_pinned_mismatch.ri` | `compile-error` |
@@ -217,7 +1312,10 @@ Of 689 tracked `.ri` members, **684 were surveyed** and **5 were not**. A furthe
 | `tests/prd-gate/fixtures/compose_middle_type_mismatch_rejected.ri` | `compile-error` |
 | `tests/prd-gate/fixtures/compose_one_arg_rejected.ri` | `compile-error` |
 | `tests/prd-gate/fixtures/curvature_rad_literal.ri` | `compile-error` |
+| `tests/prd-gate/fixtures/dce_runtime_payload.ri` | `compile-error` |
 | `tests/prd-gate/fixtures/dcr_fn_force_param_already_rejects.ri` | `compile-error` |
+| `tests/prd-gate/fixtures/dwr_cantilever_qoi.ri` | `compile-error` |
+| `tests/prd-gate/fixtures/dwr_qoi_without_adaptive.ri` | `compile-error` |
 | `tests/prd-gate/fixtures/expected_type_pushdown_arg.ri` | `compile-error` |
 | `tests/prd-gate/fixtures/expected_type_pushdown_let.ri` | `compile-error` |
 | `tests/prd-gate/fixtures/forall_range_domain_rejected.ri` | `compile-error` |
@@ -252,16 +1350,24 @@ Of 689 tracked `.ri` members, **684 were surveyed** and **5 were not**. A furthe
 
 ### Named limitations
 
-1. **Inline Rust-string `.ri` fixtures are not file-enumerable.** The task's
-second half — the Rust test suite's inline fixtures and goldens — lives inside
-`const SOURCE: &str = r#"…"#` literals, which `git ls-files` cannot reach and
-which could only be swept by changing the compiler (out of scope for this
-read-only survey). Their coverage is **transitive, and stated as such rather
-than claimed**: the `--scope all --profile both` merge gate is green at the
-base commit above, and the landed α/ε gates
-(`no_example_emits_ctor_field_conformance_diagnostics`, the
-`struct_ctor_field_conformance_tests` suite) already assert on the
-ctor-conformance codes.
+1. **Inline Reify snippets are reached as RAW-STRING LITERALS, and only as those.**
+The *Inline Rust fixtures* section above sweeps every tracked `.rs` test host
+for raw-string literals (`r"…"`, `r#"…"#`) whose text reads as Reify
+declaration grammar, and compiles each through the same pipeline as a tracked
+`.ri`. That reached **3198 inline member(s)**, of which **71** were
+`format!` template(s) — listed above under their own coverage reason rather
+than dropped, because a template's `{…}` holes are not Reify syntax and a
+parse failure on one would say nothing about conformance.
+What a raw-string walker does **not** reach, each named by the construct to
+grep for: Reify text carried in an ORDINARY `"…"` string literal (including
+the backslash-continued multi-line form); text assembled by `concat!`; and text
+built at run time by a `String` helper (`push_str`, `join`). Those are
+unreached BY CONSTRUCTION, not by oversight — recovering them needs
+const-evaluation or execution where this needs only a lexer — so a site in one
+of those shapes is absent from the section above rather than reported clean.
+`include_str!` and `read_to_string` goldens, by contrast, need no machinery at
+all: their target `.ri` files are tracked, so the FIRST half already
+enumerated them.
 2. **`compile_with_stdlib` is the SINGLE-FILE path.** `reify check` instead uses
 `module_dag::compile_entry_with_stdlib_cfg_checked`, which follows `#cfg`-gated
 user imports and runs `SimpleConstraintChecker`. Multi-module corpus members
