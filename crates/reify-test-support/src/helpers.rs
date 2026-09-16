@@ -916,10 +916,11 @@ fn require_default_expr<'a>(
     cell: &'a reify_compiler::ValueCellDecl,
     template_name: &str,
 ) -> &'a CompiledExpr {
-    cell.default_expr.as_ref().unwrap_or_else(|| {
+    let Some(expr) = cell.default_expr.as_ref() else {
         let cell_name = &cell.id.member;
         panic!("value cell '{cell_name}' in '{template_name}' has no default expr")
-    })
+    };
+    expr
 }
 
 /// Retrieve the compiled `default_expr` of any value cell by name from a template you already hold.
