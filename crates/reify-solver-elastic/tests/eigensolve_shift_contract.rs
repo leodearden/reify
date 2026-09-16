@@ -44,6 +44,15 @@
 //!   B = I), spectrum = K's diagonal. n=5, so **dense path only**. A and C are
 //!   both positive-definite, and a positive-definite pencil cannot reach the
 //!   negative half of the contract at all; D exists for exactly that half.
+//! - **Fixture E** — 80-DOF 1D Laplacian again (K = tridiag(-1,2,-1)) but with
+//!   B = I **plus** symmetric corner entries at (0,79)/(79,0), so B's sparsity
+//!   pattern is NOT a subset of K's. n=80, so **Lanczos**, enforced the same way
+//!   (`n_converged > 0`). The pattern difference is the whole fixture: on C
+//!   (B = I ⊆ K) the union of the two patterns equals K's own, so a `K − 0·B`
+//!   assembly is indistinguishable from K and a σ=0 identity test passes
+//!   vacuously. On E the union is strictly larger and the extra entries induce
+//!   real Cholesky fill, so a σ=0 solve wrongly routed through the shifted
+//!   assembly is observable.
 //!
 //! Fixtures A and C and the 1e-12 / 1e-8 tolerances are ported from the landed
 //! `crates/reify-solver-elastic/tests/eigensolve_synthetic.rs`, where they are
@@ -152,6 +161,51 @@ fn fixture_d() -> (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>) {
 /// Fixture D's spectrum, in the diagonal's own order (NOT a contract order).
 fn fixture_d_spectrum() -> [f64; 5] {
     [-2.0, -0.5, 1.0, 3.0, 4.0]
+}
+
+/// Fixture E: K = tridiag(-1,2,-1) (80×80), B = I **plus corner entries** at
+/// (0,79) and (79,0). n=80 > 64 so Lanczos runs.
+///
+/// The PATTERN-UNION fixture, and the corner entries are the entire point.
+/// Fixture C's B = I is a sparsity-pattern SUBSET of K, so the union of the two
+/// patterns equals K's own and a `K − 0·B` assembly would be indistinguishable
+/// from K itself — a σ=0 identity test on fixture C therefore passes VACUOUSLY,
+/// whether or not σ=0 is really special-cased.
+///
+/// Here the union is strictly larger than K's pattern: (0,79) and (79,0) are
+/// present in B and absent from K. A `K − 0·B` routed through the shifted
+/// assembly would store them as EXPLICIT ZEROS, which changes the Cholesky
+/// fill-in (the corners connect the two ends of the tridiagonal band, inducing
+/// real fill) and therefore the rounding. So a σ=0 solve that wrongly went
+/// through the shifted path is observable here as a bit-level difference, which
+/// is what makes `sigma_zero_factors_k_itself_not_k_minus_zero_b` a genuine
+/// tripwire rather than a tautology.
+///
+/// K is unchanged from fixture C and so still SPD, which is what keeps the σ=0
+/// Cholesky succeeding. B stays symmetric, and with the corner entries at 1.0
+/// it is I + (e₀e₇₉ᵀ + e₇₉e₀ᵀ), whose eigenvalues are {2, 0, 1, …, 1} — still
+/// positive semi-definite, so no closed form is claimed for the pencil and none
+/// is needed: this fixture's only job is the pattern difference.
+fn fixture_e() -> (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>) {
+    let n = 80usize;
+    let mut k_trips = Vec::with_capacity(3 * n - 2);
+    for i in 0..n {
+        k_trips.push(Triplet::new(i, i, 2.0));
+        if i > 0 {
+            k_trips.push(Triplet::new(i, i - 1, -1.0));
+        }
+        if i + 1 < n {
+            k_trips.push(Triplet::new(i, i + 1, -1.0));
+        }
+    }
+    let mut b_trips: Vec<Triplet<usize, usize, f64>> =
+        (0..n).map(|i| Triplet::new(i, i, 1.0)).collect();
+    // The two off-pattern entries: present in B, absent from K.
+    b_trips.push(Triplet::new(0, n - 1, 1.0));
+    b_trips.push(Triplet::new(n - 1, 0, 1.0));
+    let k = SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap();
+    let b = SparseRowMat::try_new_from_triplets(n, n, &b_trips).unwrap();
+    (k, b)
 }
 
 /// Closed-form smallest 5 eigenvalues of the 80-DOF Laplacian:
