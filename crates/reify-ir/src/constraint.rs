@@ -84,8 +84,10 @@ pub struct ObjectiveTerm {
     ///
     /// That bound is NOT runtime-validated (task #6377): no construction site
     /// checks positivity or even finiteness, so a NaN/±Inf weight can reach
-    /// every fold site listed at [`objective_terms_coherent`], each of which
-    /// answers for itself what it does with one.
+    /// every fold site listed at [`objective_terms_coherent`]. Of those, only
+    /// `reify-constraints/src/solver.rs::eval_objective_set` is known to fail
+    /// closed on one; what the others do is theirs to state, not this field's
+    /// to vouch for.
     pub weight: f64,
     /// default 0; higher = solved first in `Lexicographic` (PRD §6.1, invariant I4).
     pub priority: u32,
