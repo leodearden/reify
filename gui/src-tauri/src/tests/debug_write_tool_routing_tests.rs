@@ -50,8 +50,9 @@ enum BypassKind {
     /// The handler never reaches a `*_and_refresh_baseline` seam, so the
     /// delta baseline silently goes stale after its write.
     NoBaselineRefresh,
-    /// The handler emits state on its own, alongside the shared seam —
-    /// the second emission path `debug_server.rs:1888` forbids.
+    /// The handler — or a helper it delegates to, one hop away — emits state
+    /// on its own alongside the shared seam: the second emission path point
+    /// (b) on `write_on_engine_and_refresh_baseline` forbids.
     PrivateEmit,
     /// The arm's handler does not resolve to a top-level fn in this file — an
     /// inline arm, or a call shape the scan reads wrongly. Reported distinctly
@@ -279,29 +280,45 @@ fn names_a_seam(body: &str, own_name: &str) -> bool {
     identifiers(body).any(|id| id.ends_with("_and_refresh_baseline") && id != own_name)
 }
 
-/// True when the top-level fn `name` reaches a `*_and_refresh_baseline` seam
-/// either directly or through exactly ONE delegation hop.
+/// True when top-level fn `name`'s own body satisfies `holds`, or a resolvable
+/// top-level callee's body does exactly ONE delegation hop away.
 ///
-/// The depth cap is deliberate, not a shortcut: one hop is exactly what
-/// `reify_open_file` needs (`handle_reify_open_file` → `open_path_into_engine`
-/// → `open_source_into_engine_and_refresh_baseline`), and an uncapped walk
-/// would be a call-graph analyzer — far more machinery than the claim
-/// warrants. The cap's failure direction is the safe one: a chain deeper than
-/// one hop false-POSITIVES, so a human looks, and it can never false-GREEN.
-fn reaches_a_seam(code: &str, name: &str) -> bool {
+/// One hop is exactly what `reify_open_file` needs — `handle_reify_open_file`
+/// delegates its entire body to `open_path_into_engine`, which is where both
+/// the seam call and the frontend push actually live — and an uncapped walk
+/// would be a call-graph analyzer, far more machinery than the claim warrants.
+///
+/// The cap's failure direction DIFFERS per predicate, and both are stated
+/// rather than papered over. For the seam check it is fail-CLOSED: a seam
+/// reached deeper than one hop false-POSITIVES, so a human looks. For the
+/// private-emit check it is fail-OPEN — an emit further than one hop from the
+/// handler is missed — so applying the walk there REDUCES that gap rather than
+/// closing it. It is the hop that matters today; a deeper emit is out of reach
+/// of any depth-capped scan, and `write_on_engine_and_refresh_baseline`'s
+/// point (b) prose ("Do NOT add a second emit path here or in any caller") is
+/// what covers it.
+fn within_one_hop(code: &str, name: &str, holds: impl Fn(&str, &str) -> bool) -> bool {
     let Some(body) = fn_body(code, name) else {
         return false;
     };
-    names_a_seam(body, name)
+    holds(body, name)
         || identifiers(body)
             .filter(|callee| *callee != name)
-            .any(|callee| fn_body(code, callee).is_some_and(|hop| names_a_seam(hop, callee)))
+            .any(|callee| fn_body(code, callee).is_some_and(|hop| holds(hop, callee)))
 }
 
-/// True when `body` emits state on its own rather than leaving emission to
-/// the shared seam — an `emit_delta` identifier, or any `.emit(` call.
-fn emits_privately(body: &str) -> bool {
-    identifiers(body).any(|id| id == "emit_delta") || body.contains(".emit(")
+/// True when the top-level fn `name` reaches a `*_and_refresh_baseline` seam.
+fn reaches_a_seam(code: &str, name: &str) -> bool {
+    within_one_hop(code, name, names_a_seam)
+}
+
+/// True when the top-level fn `name` emits state itself rather than leaving
+/// emission to the shared seam — an `emit_delta` identifier, or any `.emit(`
+/// call — in its own body or in one it delegates to.
+fn emits_privately(code: &str, name: &str) -> bool {
+    within_one_hop(code, name, |body, _| {
+        identifiers(body).any(|id| id == "emit_delta") || body.contains(".emit(")
+    })
 }
 
 /// Every maximal `[A-Za-z0-9_]+` run in `text`.
@@ -465,10 +482,10 @@ fn write_tool_bypasses(source: &str) -> Vec<Bypass> {
                 // The two defects are INDEPENDENT: a handler can route
                 // correctly and still emit privately, and collapsing them
                 // would hide one.
-                Some(body) => [
+                Some(_) => [
                     (!reaches_a_seam(&prose_free, &handler))
                         .then_some(BypassKind::NoBaselineRefresh),
-                    emits_privately(body).then_some(BypassKind::PrivateEmit),
+                    emits_privately(&prose_free, &handler).then_some(BypassKind::PrivateEmit),
                 ]
                 .into_iter()
                 .flatten()
@@ -707,6 +724,51 @@ async fn handle_reify_update_source(
     emit_delta(&state.app, &delta);
     state.app.emit("state-delta", &delta).ok();
     Ok(reify_update_source_envelope(&gs))
+}
+"#;
+
+/// A handler that is itself spotless and delegates everything to a helper
+/// that emits privately — the REAL `handle_reify_open_file` shape, which does
+/// nothing but call `open_path_into_engine`.
+///
+/// So while `reaches_a_seam` followed that hop and `emits_privately` did not,
+/// the one tool the whole delegation machinery exists for had its entire
+/// emission behaviour outside the sweep: an `app.emit(…)` added to
+/// `open_path_into_engine` left the gate green.
+const DELEGATED_PRIVATE_EMIT_SOURCE: &str = r#"
+async fn dispatch_tool(
+    state: &DebugServerState,
+    name: &str,
+    params: Value,
+) -> Result<Value, String> {
+    match name {
+        "reify_open_file" => handle_reify_open_file(state, params).await,
+        _ => state.debug_bridge.query_frontend(name, params).await,
+    }
+}
+
+async fn handle_reify_open_file(
+    state: &DebugServerState,
+    params: Value,
+) -> Result<Value, String> {
+    let raw_path = open_file_path_param(&params)?;
+    let (frontend, content) = open_path_into_engine(state, &raw_path).await?;
+    frontend_ok(frontend, "open_file")?;
+    Ok(reify_open_file_envelope(&content))
+}
+
+async fn open_path_into_engine(
+    state: &DebugServerState,
+    raw_path: &str,
+) -> Result<(Value, String), String> {
+    let path = canonicalize_open_path(raw_path)?;
+    let gui_state =
+        open_source_into_engine_and_refresh_baseline(&state.engine, &state.last_state, &path)
+            .await?;
+    let delta = crate::diff::compute_delta(&state.last_state, &gui_state);
+    state.app.emit("state-delta", &delta).ok();
+    let frontend = push_gui_state(&state.debug_bridge, &gui_state, None).await?;
+    Ok((frontend, gui_state.source.clone()))
 }
 "#;
 
@@ -1058,6 +1120,21 @@ fn no_write_tool_handler_emits_privately() {
         .filter(|b| b.kind == BypassKind::PrivateEmit)
         .collect();
     assert_eq!(private_emits, vec![]);
+}
+
+/// The private-emit sweep follows the SAME one delegation hop the seam sweep
+/// does. Without that, the asymmetry silently exempted `reify_open_file`,
+/// whose handler delegates its whole body away.
+#[test]
+fn a_private_emit_in_the_delegated_helper_is_flagged() {
+    assert_eq!(
+        write_tool_bypasses(DELEGATED_PRIVATE_EMIT_SOURCE),
+        vec![Bypass {
+            tool: "reify_open_file".to_string(),
+            handler: "handle_reify_open_file".to_string(),
+            kind: BypassKind::PrivateEmit,
+        }],
+    );
 }
 
 #[test]
