@@ -435,6 +435,35 @@ fn moment_of_inertia_via_material_density_gives_no_arg_type_mismatch() {
 /// tautology — it would pass for whatever the implementation happened to say.
 const LENGTH_HINT: &str = "pass a dimensioned length such as `5mm`";
 
+/// The exact C1 hint clause both layers append to an ANGLE rejection.
+///
+/// Hard-coded for the same reason [`LENGTH_HINT`] is, and NOT read from
+/// `reify_core::units::ANGLE_MIGRATION_HINT`: a message assertion built from
+/// the const the implementation reads passes for whatever the implementation
+/// happens to say. The SPOT claim — that this hard-coded pin IS the string the
+/// eval layer ships — is asserted separately and explicitly by
+/// `the_angle_hint_pinned_here_is_the_one_const_both_layers_read`, so a const
+/// edit reds exactly one place and does so deliberately.
+const ANGLE_HINT: &str = "pass a dimensioned angle such as `45deg` or `1.5rad`";
+
+/// COUPLING — the drift pin above is the same `&'static str` both layers read.
+///
+/// This is what makes hard-coding [`ANGLE_HINT`] a pin rather than a second
+/// copy. PRD 3 leaf ζ lands twelve ANGLE slots on ONE hint-carrying template
+/// (decision D11); if `ANGLE_MIGRATION_HINT` is ever reworded, every message
+/// assertion below would silently follow the implementation, and only this
+/// assertion says so.
+#[test]
+fn the_angle_hint_pinned_here_is_the_one_const_both_layers_read() {
+    assert_eq!(
+        ANGLE_HINT,
+        reify_core::units::ANGLE_MIGRATION_HINT,
+        "the compile-layer ANGLE slots and the eval-layer angle gate must render \
+         one wording; if the const moved, update this pin deliberately rather \
+         than deriving the assertions from it"
+    );
+}
+
 /// (b) SIGNAL — the BARE-INT arm carries the hint too.
 ///
 /// Not a duplicate of `linear_pattern_wrong_dimension_spacing_gives_one_arg_type_mismatch`:
@@ -502,17 +531,23 @@ fn length_slot_rejection_uses_the_compile_layer_code_not_the_eval_layer_one() {
     );
 }
 
-/// (d) NEGATIVE CONTROL — an ANGLE slot's message carries NO hint.
+/// (d) SIGNAL — an ANGLE slot's message carries the hint, on ONE template.
 ///
-/// This is the one slot kind where the compile layer does NOT mirror eval, and
-/// the asymmetry is scheduled rather than accidental. `angle_spec()` gained
-/// `ANGLE_MIGRATION_HINT` with PRD 3 leaf β, which owns the eval half only;
-/// PRD 3 leaf ζ (task 5782) brings these compile slots onto the hint-carrying
-/// template. Until ζ lands this test is what holds the line: it must keep
-/// FAILING for anyone who adds a hint to the ANGLE slot early, so the two
-/// halves move in one deliberate step instead of drifting apart a second time.
+/// INVERTED by PRD 3 leaf ζ (task 5782), deliberately. This previously asserted
+/// the OPPOSITE — that an ANGLE slot renders the un-hinted form — and its job
+/// was to keep FAILING for anyone who added the hint early, so the compile and
+/// eval halves would move in one deliberate step rather than drifting apart a
+/// second time. ζ IS that step: it lands twelve ANGLE slots (the four selector
+/// `tol` arguments plus eight producer positions) on one hint-carrying
+/// construction site, so the gap this pin held open is closed and the pin's job
+/// flips from holding it open to holding the reconciliation CLOSED. Anyone
+/// reverting an ANGLE slot to `migration_hint: None` now reds here.
+///
+/// `faces_by_normal`'s `tol` is the fixture because it is the OLDEST ANGLE slot
+/// — task 4493's, predating the PRD entirely. If the reconciliation reached
+/// only the new producer slots, this is where that would show.
 #[test]
-fn angle_slot_rejection_carries_no_migration_hint() {
+fn angle_slot_rejection_carries_the_migration_hint() {
     let compiled = compile_struct_body(
         "    let dir = vec3(0.0, 0.0, 1.0)\n    let sel = faces_by_normal(b, dir, 5)\n",
     );
@@ -525,15 +560,47 @@ fn angle_slot_rejection_carries_no_migration_hint() {
         compiled.diagnostics
     );
     assert_eq!(
-        errors[0].message, "faces_by_normal: tol argument expects Angle, got Int",
-        "an ANGLE slot must render the un-hinted template — eval's angle path \
-         carries a hint since PRD 3 leaf β, but bringing these slots onto that \
-         template is leaf ζ's (task 5782), not this layer's to anticipate"
+        errors[0].message,
+        format!("faces_by_normal: tol argument expects Angle, got Int; {ANGLE_HINT}"),
+        "an ANGLE slot must render the full C1 template, hint included — the \
+         compile and eval layers read one const and must say one thing"
     );
+}
+
+/// (d2) LAYER ATTRIBUTION for ANGLE — the twin of the LENGTH pin above.
+///
+/// The LENGTH pin's doc forecloses reading "give it β's `DiagnosticCode`"
+/// literally, but it forecloses it for ONE dimension. This leaf's own task text
+/// carries the same ambiguous phrasing about ANGLE, and without a copy keyed on
+/// an ANGLE slot a future leaf could borrow `DimensionedArgRejected` here while
+/// the LENGTH pin stayed green — leaving "which layer rejected this?"
+/// unanswerable from the code alone for exactly the dimension this PRD owns.
+///
+/// GREEN on arrival: a regression pin, not a RED.
+#[test]
+fn angle_slot_rejection_uses_the_compile_layer_code_not_the_eval_layer_one() {
+    let compiled = compile_struct_body(
+        "    let dir = vec3(0.0, 0.0, 1.0)\n    let sel = faces_by_normal(b, dir, 5)\n",
+    );
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(errors.len(), 1, "diagnostics: {:#?}", compiled.diagnostics);
+    assert_eq!(
+        errors[0].code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "the compile layer must keep its own code for ANGLE too"
+    );
+
+    let eval_layer_coded: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DimensionedArgRejected))
+        .collect();
     assert!(
-        !errors[0].message.contains("pass a dimensioned"),
-        "no migration hint may leak onto an ANGLE slot: {}",
-        errors[0].message
+        eval_layer_coded.is_empty(),
+        "DimensionedArgRejected is the EVAL layer's code. Sharing it at an ANGLE \
+         slot would make the two layers indistinguishable from the code alone \
+         (PRD decision D2) — the one thing the hint reconciliation must NOT \
+         also collapse. Got: {eval_layer_coded:#?}"
     );
 }
 
