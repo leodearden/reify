@@ -805,83 +805,85 @@ fn layer_violations_from_wire(decoded: &Value) -> Vec<LayerViolation> {
         .collect()
 }
 
-/// Adapter: MUNCH-decoded value → `Vec<SymbolReference>`.
+/// References decoded from a `find_references` response, paired with the
+/// table they were read from.
 ///
-/// Treats a present `__rows__` ARRAY as AUTHORITATIVE — including when it
-/// is EMPTY — and only falls back to scanning the other tables for the
-/// first whose rows carry a `file` field when `__rows__` is absent
-/// entirely. Returns an empty vec when neither is found. `file` is the only
-/// column P1 consumes, so it is the fallback scan's selector; `line` is
-/// read when present and defaults to `0` otherwise.
+/// The table's identity travels OUT with the rows because the caller
+/// diagnoses dropped rows against it (see [`dropped_rows_diagnostic`]), and
+/// only [`find_references_from_wire`] knows which table it selected — the
+/// response names it `__rows__` today, but the fallback scan may read any
+/// other. Deciding that twice is how the count comes to be taken over a
+/// table the decoder never read, and an all-dropped fallback table then
+/// reports zero references in silence.
+struct DecodedReferences<'a> {
+    /// Key in the decoded response the rows came from.
+    table: &'a str,
+    /// One entry per row the decoder could read; see
+    /// [`references_from_rows`] for what it refuses.
+    refs: Vec<SymbolReference>,
+}
+
+impl<'a> DecodedReferences<'a> {
+    fn read(table: &'a str, rows: &[Value]) -> Self {
+        Self {
+            table,
+            refs: references_from_rows(rows),
+        }
+    }
+}
+
+/// Select the table a `find_references` response carries its rows in and
+/// decode them; `None` when no table qualifies.
 ///
-/// The empty-`__rows__` case is precisely the case P1 cares about — a
-/// genuine producer-orphan has ZERO references — so it must NOT fall
-/// through to the scan. A future multi-table response pairing an empty
-/// `__rows__` with any other table whose rows happen to carry a `file`
-/// column (a summary or diagnostic table, say) would otherwise hand those
-/// unrelated rows back as the symbol's references, and
-/// `p1_producer_orphan`'s `has_non_test_caller` check would silently
-/// suppress a real orphan finding — the same hazard the `__rows__`-first
-/// preference below exists to close, left open on the empty-array edge.
-/// See `find_references_from_wire_empty_rows_table_beats_a_decoy_table`.
+/// A present `__rows__` ARRAY is AUTHORITATIVE, empty included. Only when
+/// it is absent entirely does the scan fall back to the first other table
+/// whose rows carry a `file` column — `file` being the only column P1
+/// consumes.
 ///
-/// The `__rows__`-first preference matters because `decoded` is a
-/// `serde_json::Map` — a `BTreeMap` (this crate does not enable
-/// `serde_json`'s `preserve_order` feature) — so a plain "iterate and
-/// return the first table with a `file` column" scan visits tables in
-/// ALPHABETICAL key order, not wire order. Without the preference, a future
-/// multi-table response whose alphabetically-first table happens to carry a
-/// `file` column would be silently selected over `__rows__`, returning the
-/// wrong reference set. See
-/// `find_references_from_wire_prefers_rows_table_when_another_table_sorts_first`.
+/// Both halves of that rule close the same hazard from opposite sides.
+/// `decoded` is a `serde_json::Map`, i.e. a `BTreeMap` (this crate does not
+/// enable `serde_json`'s `preserve_order`), so the fallback scan visits
+/// tables ALPHABETICALLY rather than in wire order, and `"Aux"` sorts
+/// before `"__rows__"`. Without the `__rows__` preference a decoy table
+/// wins over the real one; without empty-is-authoritative, ZERO references
+/// — the producer-orphan answer P1 exists to detect — falls through to that
+/// same decoy. Either way `p1_producer_orphan`'s `has_non_test_caller`
+/// reads the wrong reference set and says nothing.
 ///
-/// The real jcodemunch-mcp 1.108.54 `find_references` wire shape (measured
-/// 2026-08-22, re-confirmed live against `local/reify-4ae45bbd`) names the
-/// table `__rows__` and is `file|specifier|match_type` — NO `line` column
-/// at all — so `line == 0` means "the wire did not report one", not
-/// "line 1". Every fixture under `tests/fixtures/jcodemunch/` predates
-/// this: no captured `find_references` fixture exists (end-to-end
-/// validation is L-SMOKE's job), so this doc is the record of the
-/// live-measured shape.
-fn find_references_from_wire(decoded: &Value) -> Vec<SymbolReference> {
-    let obj = match decoded.as_object() {
-        Some(o) => o,
-        None => return Vec::new(),
-    };
+/// The live jcodemunch-mcp 1.108.54 shape (measured 2026-08-22,
+/// re-confirmed against `local/reify-4ae45bbd`) is `__rows__` with
+/// `file|specifier|match_type` — no `line` column at all, so `line == 0`
+/// means "not reported", not "line 1". No captured `find_references`
+/// fixture exists under `tests/fixtures/jcodemunch/`, so this doc is the
+/// record of that shape.
+fn find_references_from_wire(decoded: &Value) -> Option<DecodedReferences<'_>> {
+    let obj = decoded.as_object()?;
 
     if let Some(rows) = obj.get("__rows__").and_then(Value::as_array) {
-        return references_from_rows(rows);
+        return Some(DecodedReferences::read("__rows__", rows));
     }
 
-    for (table_name, table_val) in obj {
-        if table_name == "__rows__" {
-            // Handled above: an ARRAY `__rows__` already returned, and a
-            // non-array one carries no rows to scan either way.
-            continue;
-        }
-        if let Some(rows) = table_val.as_array()
-            && rows.iter().any(|r| r.get("file").is_some())
-        {
-            return references_from_rows(rows);
-        }
-    }
-    Vec::new()
+    obj.iter()
+        .filter(|(table, _)| *table != "__rows__")
+        .find_map(|(table, val)| {
+            let rows = val.as_array()?;
+            rows.iter()
+                .any(|r| r.get("file").is_some())
+                .then(|| DecodedReferences::read(table, rows))
+        })
 }
 
 /// Decode a MUNCH row array into `Vec<SymbolReference>`, dropping any row
-/// without a `file`. Shared by both the `__rows__`-preferred and the
-/// fallback-scan paths in [`find_references_from_wire`].
+/// whose `file` is absent or not a string. `line` is optional and defaults
+/// to the `0` "not reported" sentinel.
 ///
-/// Makes NO precondition on `file` being present: only ONE of its two
-/// callers establishes that. The fallback scan selects a table on
-/// `rows.iter().any(|r| r.get("file").is_some())`, but the `__rows__` path
-/// treats that table as authoritative and passes it straight through. So a
-/// release that renames `file` — the drift 1.108.54 already shipped for
-/// `line` — reaches here unchecked and every row drops, which is why the
-/// caller pairs this with [`dropped_rows_diagnostic`]: silently returning
-/// empty would be read as "this symbol has zero references" and turn every
-/// well-referenced symbol into a P1 producer-orphan finding. See
-/// `find_references_from_wire_is_loud_when_rows_carry_no_file_column`.
+/// Makes NO precondition on `file`: [`find_references_from_wire`]'s
+/// fallback scan selects a table on it, but its `__rows__` path passes the
+/// table through unchecked, so a release that renames `file` — the drift
+/// 1.108.54 already shipped for `line` — drops every row here. That is why
+/// the caller pairs this with [`dropped_rows_diagnostic`]: an empty vec
+/// reads as "this symbol has zero references" and turns every
+/// well-referenced symbol into a P1 producer-orphan finding.
 fn references_from_rows(rows: &[Value]) -> Vec<SymbolReference> {
     rows.iter()
         .filter_map(|row| {
@@ -1663,17 +1665,27 @@ impl JCodemunchOps for RealJCodemunchOps {
                 return Vec::new();
             }
         };
-        let refs = find_references_from_wire(&decoded);
-        // Counted BEFORE `filter_refs_to_file`: scoping to the declaring
-        // file is a deliberate narrowing, not a decode failure. What must
-        // be loud is `__rows__` rows the decoder could not read at all —
-        // an empty result there is indistinguishable from the genuine
-        // zero-reference answer P1 reads as a producer orphan.
-        if let Some(msg) =
-            dropped_rows_diagnostic("find_references", &decoded, "__rows__", refs.len())
-        {
-            eprintln!("{msg}");
-        }
+        // Diagnosed against the table the decoder ACTUALLY read, which is
+        // why it travels back with the rows: `__rows__` today, any other
+        // table on the fallback scan. Counted BEFORE `filter_refs_to_file`,
+        // since scoping to the declaring file is a deliberate narrowing,
+        // not a decode failure. What must be loud is rows the decoder could
+        // not read at all — an empty result there is indistinguishable
+        // from the genuine zero-reference answer P1 reads as a producer
+        // orphan.
+        let refs = match find_references_from_wire(&decoded) {
+            Some(DecodedReferences { table, refs }) => {
+                if let Some(msg) =
+                    dropped_rows_diagnostic("find_references", &decoded, table, refs.len())
+                {
+                    eprintln!("{msg}");
+                }
+                refs
+            }
+            // No table carried references at all, so there were no rows to
+            // drop and nothing to report.
+            None => Vec::new(),
+        };
         filter_refs_to_file(refs, &symbol.file)
     }
 
@@ -2516,7 +2528,13 @@ mod tests {
             "r,@1bar.rs,20\n",
         );
         let v = munch_decode(munch).expect("decode inline refs munch");
-        let refs = find_references_from_wire(&v);
+        let selected =
+            find_references_from_wire(&v).expect("the fallback scan must select `refs`");
+        assert_eq!(
+            selected.table, "refs",
+            "the selected table travels out so the caller can diagnose against it"
+        );
+        let refs = selected.refs;
         assert_eq!(refs.len(), 2);
         assert_eq!(refs[0].file, "src/foo.rs");
         assert_eq!(refs[0].line, 10);
@@ -2550,7 +2568,10 @@ mod tests {
             "content": [{"type": "text", "text": munch}]
         });
         let decoded = decode_tool_result(&result).expect("decode_tool_result should succeed");
-        let refs = find_references_from_wire(&decoded);
+        let selected =
+            find_references_from_wire(&decoded).expect("the real wire names its table `__rows__`");
+        assert_eq!(selected.table, "__rows__");
+        let refs = selected.refs;
 
         assert_eq!(refs.len(), 2);
         assert_eq!(refs[0].file, "crates/reify-audit/src/jcodemunch_client.rs");
@@ -2571,9 +2592,8 @@ mod tests {
             "t,foo.rs,10\n",
         );
         let v = munch_decode(munch).expect("decode should succeed");
-        let refs = find_references_from_wire(&v);
         assert!(
-            refs.is_empty(),
+            find_references_from_wire(&v).is_none(),
             "a table with no `file` column must not be matched"
         );
     }
@@ -2607,13 +2627,16 @@ mod tests {
                 { "path": "crates/reify-audit/tests/p1.rs", "match_type": "named" },
             ]
         });
-        let refs = find_references_from_wire(&decoded);
+        let selected = find_references_from_wire(&decoded)
+            .expect("a present `__rows__` is authoritative however unreadable its rows");
+        assert_eq!(selected.table, "__rows__");
+        let refs = selected.refs;
         assert!(
             refs.is_empty(),
             "a reference with no `file` cannot be scoped by filter_refs_to_file; \
              got {refs:?}"
         );
-        let msg = dropped_rows_diagnostic("find_references", &decoded, "__rows__", refs.len())
+        let msg = dropped_rows_diagnostic("find_references", &decoded, selected.table, refs.len())
             .expect(
                 "a renamed `file` column must not read as a genuine zero-reference \
                  answer — that is a producer-orphan false positive for every symbol",
@@ -2656,13 +2679,13 @@ mod tests {
                 { "file": "right/actual.rs", "specifier": "crate", "match_type": "named" },
             ],
         });
-        let refs = find_references_from_wire(&decoded);
+        let selected = find_references_from_wire(&decoded).expect("a table must be selected");
         assert_eq!(
-            refs.len(),
-            1,
-            "must select __rows__, not an alphabetically-earlier decoy table; got {refs:?}"
+            selected.table, "__rows__",
+            "must select __rows__, not the alphabetically-earlier decoy `Aux`"
         );
-        assert_eq!(refs[0].file, "right/actual.rs");
+        assert_eq!(selected.refs.len(), 1, "got {:?}", selected.refs);
+        assert_eq!(selected.refs[0].file, "right/actual.rs");
     }
 
     /// The empty-array edge of the same preference. A PRESENT but EMPTY
@@ -2683,11 +2706,59 @@ mod tests {
             ],
             "__rows__": [],
         });
-        let refs = find_references_from_wire(&decoded);
+        let selected = find_references_from_wire(&decoded)
+            .expect("an empty `__rows__` is still the selected table");
+        assert_eq!(selected.table, "__rows__");
         assert!(
-            refs.is_empty(),
+            selected.refs.is_empty(),
             "an empty __rows__ means zero references and must not fall \
-             through to a decoy table; got {refs:?}"
+             through to a decoy table; got {:?}",
+            selected.refs
+        );
+    }
+
+    /// The SPOT half of the drop diagnostic. `find_references_from_wire`
+    /// may read a table other than `__rows__` — its fallback scan selects
+    /// the first whose rows carry a `file` column — so the caller must
+    /// count drops against the table the decoder ACTUALLY read. Against a
+    /// hardcoded `__rows__` the count is taken over a table that is not
+    /// there, `dropped_rows_diagnostic` returns `None`, and the shrunken
+    /// result is silent: the producer-orphan false positive the diagnostic
+    /// exists to prevent.
+    #[test]
+    fn find_references_from_wire_reports_drops_against_the_fallback_table() {
+        let decoded = json!({
+            "refs": [
+                { "file": "src/good.rs" },
+                { "file": 17 },
+            ],
+        });
+        let selected =
+            find_references_from_wire(&decoded).expect("the fallback scan must select `refs`");
+        assert_eq!(selected.table, "refs");
+        assert_eq!(
+            selected.refs.len(),
+            1,
+            "a non-string `file` is unreadable and drops; got {:?}",
+            selected.refs
+        );
+
+        assert!(
+            dropped_rows_diagnostic("find_references", &decoded, "__rows__", selected.refs.len())
+                .is_none(),
+            "premise: a hardcoded `__rows__` names no table here, so the drop \
+             would go unreported"
+        );
+        let msg = dropped_rows_diagnostic(
+            "find_references",
+            &decoded,
+            selected.table,
+            selected.refs.len(),
+        )
+        .expect("diagnosing against the selected table must surface the drop");
+        assert!(
+            mentions_count(&msg, 1) && msg.contains("refs"),
+            "diagnostic must name the dropped count and the table read; got: {msg}"
         );
     }
 
