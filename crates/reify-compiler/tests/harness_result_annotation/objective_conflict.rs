@@ -263,9 +263,14 @@ fn assert_one_inert_error_naming(compiled: &reify_compiler::CompiledModule, cell
         "message must carry the PRD-prose mnemonic, got: {:?}",
         diag.message
     );
+    // Backticked, not bare. `post_passes.rs` renders each proven cell as
+    // `` `member` `` and joins those into the message's cell list, so the
+    // backticks pin this to that list rather than to the static remedy prose —
+    // a bare `contains("k")` matched the `k` in "make" and so held for any cell
+    // list at all, including the wrong one or none.
     assert!(
-        diag.message.contains(cell),
-        "message must name the never-auto cell `{cell}`, got: {:?}",
+        diag.message.contains(&format!("`{cell}`")),
+        "message must name the never-auto cell `{cell}` in its backticked cell list, got: {:?}",
         diag.message
     );
 
@@ -1186,17 +1191,23 @@ structure C {
 /// A template with a genuinely inert objective and NO `sub_components` must
 /// still be reported. This is what stops the inheritance bail from being
 /// implemented as "exempt anything that could conceivably have a child".
+///
+/// This is also the one fixture carrying a deliberately distinctive param name:
+/// `bore_q` appears nowhere in the diagnostic's static prose, so
+/// `assert_one_inert_error_naming` cannot be satisfied here by accident. The
+/// other positive fixtures keep `k` because two of them are byte-mirrors of the
+/// PRD's B6 probes under `docs/prds/v0_6/fixtures/`.
 #[test]
 fn inert_objective_on_a_template_with_no_subs_still_errors() {
     let src = r#"module inert_no_subs
 
 structure InertNoSubs {
-    param k : Real = 3.0
-    minimize k * k
+    param bore_q : Real = 3.0
+    minimize bore_q * bore_q
 }
 "#;
 
-    assert_one_inert_error_naming(&compile_source_with_stdlib(src), "k");
+    assert_one_inert_error_naming(&compile_source_with_stdlib(src), "bore_q");
 }
 
 /// NEGATIVE GUARD 2 — the load-bearing one. A template that DOES have a sub,
