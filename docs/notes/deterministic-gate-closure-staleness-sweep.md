@@ -22,11 +22,15 @@ it could not adjudicate to `unknown` rather than aborting. It shipped with three
 
 ## Why it was retired
 
-- **The invoker and the consumer are both gone.** Its only invoker was dark-factory's
-  `reify-closure-staleness-sweep.timer`, disabled by hand on 2026-09-09. DF 5247 deletes that
-  timer along with its service, installer and wrapper, and deletes
-  `scripts/consume_redispatch_requests.py` — the only reader of the emitted request files. After
-  5247 the surviving class would emit files nobody reads, from a script nothing runs.
+- **The invoker and the consumer were both already gone.** Its only invoker was dark-factory's
+  `reify-closure-staleness-sweep.timer`, disabled by hand on 2026-09-09. DF 5247 (landed
+  2026-09-13) then deleted that timer along with its service, installer and wrapper, and deleted
+  `scripts/consume_redispatch_requests.py` — the only reader of the emitted request files. So by
+  the time this sweep was deleted its surviving class had nothing running it and nothing reading
+  its output. **No need to re-check dark-factory for a timer; verified 2026-09-16:** no
+  closure-staleness or redispatch unit is installed in either systemd scope or present in
+  `/etc/systemd/system/`, none is tracked in dark-factory's tree, and `data/redispatch-requests/`
+  holds nothing but its `consumed/` archive.
 - **The surviving class carried no measured coverage.** `merge_verify_red` fired **0 times** across
   the 15 retained nightly runs (2026-08-25 .. 2026-09-09). Retiring it costs nothing that was
   observed to be worth anything.
@@ -37,7 +41,7 @@ it could not adjudicate to `unknown` rather than aborting. It shipped with three
   nights the sweep ran — a primitive can override a wired invocation's deliberate refusals without
   either side noticing.
 
-## The measured record — `gate_closure` cancelled seven real tasks
+## The measured record — what the two retired classes actually did
 
 Preserved from the #7349 retirement, because it is the evidence and it exists nowhere else.
 
@@ -66,6 +70,18 @@ The third class, **`unmet_dependency`, was retired for OWNERSHIP, not correctnes
 was right, but dark-factory's `Scheduler._phase_redispatch_stranded_blocked` already owned the same
 recovery at tick cadence, *with* two deliberate refusals (a `task_kind == 'deterministic'`
 carve-out, and an escalation-pinned veto) that reify's class lacked and therefore overrode.
+
+**The override, worked once — task 5318.** This is the single concrete instance of the
+policy-override failure argued above, and its archive is untracked and wipeable at any time, so it
+is preserved here or nowhere. `redispatch-5318-unmet_dependency.json` is stamped **2026-09-08
+03:32:41Z** (file mtime, that night's run), verdict `STALE`, evidence `all 1 dependency(ies)
+terminal: 5214=done`. Task 5318 was deliberately **parked** at that moment: `esc-5318-6` (L1,
+steward) and `esc-5318-7` (L2, auto-watcher), filed 2026-09-07 06:01:15Z and 06:06:24Z, were both
+still open, and a human ruling dismissed them at **2026-09-08 12:49:53Z** — **9h17m after** reify's
+class had already declared the task re-dispatchable. The dependency premise genuinely had resolved;
+that was never the point. DF's escalation-pinned veto existed precisely to keep a parked task
+parked, and reify's class, lacking it, overrode it ~9h early. (The archive held **15**
+`unmet_dependency` requests in all, against the seven `gate_closure` ones above.)
 
 ## Surviving owners
 
