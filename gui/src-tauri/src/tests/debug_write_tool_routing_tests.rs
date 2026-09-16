@@ -520,11 +520,54 @@ fn debug_server_source() -> String {
     })
 }
 
-/// Break-glass: `REIFY_INV_GUI_2_BYPASS=1` downgrades the corpus assertion to
-/// a warn (prints offenders, does not fail), mirroring `REIFY_MAIN_GATE_BYPASS`.
-/// See the file header for the ENFORCE/BYPASS symmetry rationale.
-fn routing_check_bypassed() -> bool {
-    std::env::var("REIFY_INV_GUI_2_BYPASS").is_ok_and(|v| v == "1")
+/// The break-glass env knob, named ONCE so no branch and no message can drift
+/// onto a different spelling of it.
+const BYPASS_ENV: &str = "REIFY_INV_GUI_2_BYPASS";
+
+/// What the corpus sweep decided, as a VALUE rather than as control flow.
+///
+/// Expressed as branches, the downgrade path would ship entirely unexercised:
+/// it only runs when the real file is dirty, which is never on a green tree,
+/// so an inverted condition or a typo'd env name would first be discovered by
+/// whoever needs the hatch mid-incident. As a value,
+/// [`the_break_glass_knob_downgrades_a_real_bypass_to_a_warn`] drives every
+/// arm against a fixture on every run.
+#[derive(Debug, PartialEq, Eq)]
+enum SweepOutcome {
+    Clean,
+    Warn(String),
+    Fail(String),
+}
+
+/// The sweep's verdict on `source`, pure over the [`BYPASS_ENV`] VALUE so the
+/// decision is testable without mutating process env — which would race every
+/// other test sharing this binary.
+///
+/// Only the exact value `1` arms the downgrade, mirroring
+/// `REIFY_MAIN_GATE_BYPASS`; a knob set to anything else still fails.
+fn sweep_outcome(source: &str, bypass_env: Option<&str>) -> SweepOutcome {
+    let bypasses = write_tool_bypasses(source);
+    if bypasses.is_empty() {
+        return SweepOutcome::Clean;
+    }
+    let report = std::iter::once(format!(
+        "{} `reify_*` write tool(s) do not reach the delta baseline through one of the two \
+         shared `*_and_refresh_baseline` seams:",
+        bypasses.len()
+    ))
+    .chain(bypasses.iter().map(|b| {
+        format!(
+            "  {} -> {} ({:?}) in gui/src-tauri/src/debug_server.rs",
+            b.tool, b.handler, b.kind
+        )
+    }))
+    .collect::<Vec<_>>()
+    .join("\n");
+    if bypass_env == Some("1") {
+        SweepOutcome::Warn(report)
+    } else {
+        SweepOutcome::Fail(report)
+    }
 }
 
 /// A synthetic `debug_server.rs` excerpt whose `reify_set_parameter` handler
@@ -1070,34 +1113,14 @@ fn every_debug_write_tool_routes_through_the_delta_choke_point() {
          the `_ =>` frontend-delegation catch-all"
     );
 
-    let bypasses = write_tool_bypasses(&source);
-    if bypasses.is_empty() {
-        return;
+    match sweep_outcome(&source, std::env::var(BYPASS_ENV).ok().as_deref()) {
+        SweepOutcome::Clean => {}
+        SweepOutcome::Warn(report) => eprintln!("[{BYPASS_ENV}] DOWNGRADED to warn:\n{report}"),
+        SweepOutcome::Fail(report) => panic!(
+            "INV-GUI-2: {report}\n\n(set {BYPASS_ENV}=1 to downgrade this to a warning as a \
+             break-glass escape hatch)"
+        ),
     }
-
-    let report = bypasses
-        .iter()
-        .map(|b| {
-            format!(
-                "  {} -> {} ({:?}) in gui/src-tauri/src/debug_server.rs",
-                b.tool, b.handler, b.kind
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    if routing_check_bypassed() {
-        eprintln!("[REIFY_INV_GUI_2_BYPASS] DOWNGRADED to warn:\n{report}");
-        return;
-    }
-
-    panic!(
-        "INV-GUI-2: {} `reify_*` write tool(s) do not reach the delta baseline through one of \
-         the two shared `*_and_refresh_baseline` seams:\n{report}\n\n\
-         (set REIFY_INV_GUI_2_BYPASS=1 to downgrade this to a warning as a break-glass \
-         escape hatch)",
-        bypasses.len()
-    );
 }
 
 #[test]
@@ -1166,6 +1189,41 @@ fn every_refresh_baseline_seam_actually_refreshes() {
         Vec::<String>::new(),
         "a fn named `*_and_refresh_baseline` never reaches `crate::diff::compute_delta`, \
          so INV-GUI-2's routing check would be resting on that name rather than on behaviour"
+    );
+}
+
+/// The break-glass hatch, actually exercised. Its branch only ever runs on a
+/// RED tree, so without a fixture driving it the knob ships untested.
+#[test]
+fn the_break_glass_knob_downgrades_a_real_bypass_to_a_warn() {
+    let SweepOutcome::Fail(report) = sweep_outcome(BYPASSING_SOURCE, None) else {
+        panic!("an unset {BYPASS_ENV} must leave the sweep asserting");
+    };
+    assert!(report.contains("reify_set_parameter"), "{report}");
+
+    // Armed: the same report, downgraded verdict.
+    assert_eq!(
+        sweep_outcome(BYPASSING_SOURCE, Some("1")),
+        SweepOutcome::Warn(report),
+    );
+
+    // Anything but the exact value leaves the gate asserting, so a knob
+    // someone half-set cannot silently disarm it.
+    for set_to in ["0", "true", ""] {
+        assert!(
+            matches!(
+                sweep_outcome(BYPASSING_SOURCE, Some(set_to)),
+                SweepOutcome::Fail(_)
+            ),
+            "{BYPASS_ENV}={set_to:?} must not disarm the gate"
+        );
+    }
+
+    // A clean corpus is Clean either way — the knob downgrades a failure, it
+    // never suppresses the sweep itself.
+    assert_eq!(
+        sweep_outcome(COMPLIANT_SOURCE, Some("1")),
+        SweepOutcome::Clean
     );
 }
 
