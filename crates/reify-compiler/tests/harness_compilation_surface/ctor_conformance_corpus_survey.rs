@@ -3454,6 +3454,167 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
     );
 }
 
+// ─── the inline half's gate-resident coverage pin ────────────────────────────
+
+/// `(repo_relative_host, minimum_admitted_snippets)` for the inline hosts whose
+/// extraction is pinned on the merge gate.
+///
+/// Stub — [`INLINE_FIXTURE_PINNED_HOSTS`] is populated in the GREEN half of this
+/// pair, together with the rationale for which failure modes it closes.
+const INLINE_FIXTURE_PINNED_HOSTS: &[(&str, usize)] = &[];
+
+/// The host of the sites VERIFY names, and the shape the enumerator's OTHER
+/// half reaches. Both must be in [`INLINE_FIXTURE_PINNED_HOSTS`].
+const NAMED_SITE_HOST: &str =
+    "crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs";
+
+/// Whether `rel` is a `crates/<c>/src/**/tests.rs` host — the enumeration shape
+/// `reify_test_support::ignore_hygiene::walk_test_rs_files` cannot see, and so
+/// the one the pin must keep a live member of.
+fn is_src_tests_rs(rel: &str) -> bool {
+    let path = std::path::Path::new(rel);
+    rel.starts_with("crates/")
+        && path.file_name().is_some_and(|f| f == "tests.rs")
+        && path.components().any(|c| c.as_os_str() == "src")
+}
+
+/// [`INLINE_FIXTURE_PINNED_HOSTS`] names both enumeration shapes, and every
+/// entry is a real file the shared host predicate admits.
+///
+/// Asserted SEPARATELY from the extraction pin below so an emptied or
+/// narrowed pin list fails HERE, loudly, instead of making every per-host
+/// assertion iterate zero times and pass vacuously.
+#[test]
+fn inline_fixture_pinned_hosts_name_both_enumeration_shapes() {
+    let hosts: Vec<&str> = INLINE_FIXTURE_PINNED_HOSTS.iter().map(|(h, _)| *h).collect();
+
+    assert!(
+        hosts.contains(&NAMED_SITE_HOST),
+        "the pin must name {NAMED_SITE_HOST} — the host of the sites this task's \
+         VERIFY criterion names; pinned: {hosts:?}"
+    );
+    assert!(
+        hosts.iter().any(|h| is_src_tests_rs(h)),
+        "the pin must name at least one `crates/<c>/src/**/tests.rs` host: that shape \
+         is invisible to the workspace's other test-file walker, so leaving it \
+         unpinned is exactly how it would regress unnoticed; pinned: {hosts:?}"
+    );
+
+    for (host, floor) in INLINE_FIXTURE_PINNED_HOSTS {
+        assert!(
+            rust_fixture_scan::is_inline_fixture_host(std::path::Path::new(host)),
+            "pinned host {host} must satisfy the same `is_inline_fixture_host` \
+             predicate the corpus enumeration filters through, else the pin covers a \
+             file the census never sweeps"
+        );
+        assert!(
+            std::path::Path::new(WORKSPACE_ROOT).join(host).is_file(),
+            "pinned host {host} does not exist under {WORKSPACE_ROOT}"
+        );
+        assert!(
+            *floor > 0,
+            "pinned host {host} carries a zero floor, which no extraction can fail"
+        );
+    }
+}
+
+/// Every [`INLINE_FIXTURE_PINNED_HOSTS`] entry still yields its floor of
+/// admitted snippets, reaches the compile phase, and reports only host lines
+/// that resolve.
+///
+/// Priced like [`pinned_clean_files_emit_no_ctor_conformance_diagnostic`]: a
+/// handful of real files, not a corpus walk, so it costs one stdlib prelude
+/// compile and stays gate-resident without reversing the landed
+/// `docs/prds/merge-gate-compile-cost.md` decision.
+///
+/// Deliberately does NOT pin the param names at the two sites VERIFY names.
+/// Task #5306 (δ) is chartered to FIX those sites; a residual pin would red this
+/// gate the moment δ lands. The MECHANISM is pinned synthetically by
+/// [`survey_inline_corpus_finds_the_snippet_site_at_its_host_position`]; the
+/// live census is the artifact, not a gate.
+#[test]
+fn inline_fixture_pinned_hosts_still_yield_their_snippets() {
+    let mut failures: Vec<String> = Vec::new();
+
+    for (host, floor) in INLINE_FIXTURE_PINNED_HOSTS {
+        let host_path = std::path::Path::new(WORKSPACE_ROOT).join(host);
+        let host_source = std::fs::read_to_string(&host_path)
+            .unwrap_or_else(|e| panic!("pinned host {host} is unreadable: {e}"));
+        let host_lines = host_source.lines().count() as u32;
+
+        let admitted = rust_fixture_scan::inline_ri_snippets(&host_source).snippets.len();
+        if admitted < *floor {
+            failures.push(format!(
+                "  {host}: {admitted} admitted snippet(s), floor is {floor} — the host is \
+                 still enumerated, so the corpus-parity gate is green and blind to this; \
+                 an admission-filter or raw-string-lexer regression looks exactly like it"
+            ));
+        }
+
+        let run = survey_inline_corpus(
+            std::path::Path::new(WORKSPACE_ROOT),
+            &[(*host).to_owned()],
+        );
+
+        for (member, reason) in &run.not_surveyed {
+            if reason == "read-error" {
+                failures.push(format!(
+                    "  {member}: read-error — every extracted snippet must reach the \
+                     compile phase, else this pin passes vacuously"
+                ));
+            }
+        }
+        assert_eq!(
+            run.total,
+            run.surveyed + run.not_surveyed.len(),
+            "the coverage denominator must account for every member of {host} exactly once"
+        );
+
+        // Every reported host line is a `file:line` a human will open, so a line
+        // past the end of the host is a dangling pointer — the same
+        // postcondition `line_of_span` enforces for `.ri` rows.
+        let mut reported: Vec<(String, u32)> = run
+            .sites
+            .iter()
+            .map(|s| (format!("site {}", s.file), s.line))
+            .collect();
+        reported.extend(
+            run.not_surveyed
+                .iter()
+                .chain(run.partial.iter())
+                .filter_map(|(member, reason)| {
+                    let (_, line) = member.rsplit_once(':')?;
+                    Some((format!("{reason} {member}"), line.parse().ok()?))
+                }),
+        );
+        for (what, line) in reported {
+            if line < 1 || line > host_lines {
+                failures.push(format!(
+                    "  {what}: host line {line} does not resolve — {host} has \
+                     {host_lines} line(s)"
+                ));
+            }
+        }
+
+        for site in &run.sites {
+            if site.snippet_line.is_none() {
+                failures.push(format!(
+                    "  site {}:{}: an inline row must carry its snippet-relative \
+                     coordinate",
+                    site.file, site.line
+                ));
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} inline-extraction regression(s):\n{}",
+        failures.len(),
+        failures.join("\n"),
+    );
+}
+
 // ─── γ (task #5305): the sites γ deferred, with their owners ─────────────────
 
 /// Per-SITE, owner-attributed deferrals for the ctor-conformance warnings that
