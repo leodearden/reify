@@ -639,14 +639,31 @@ fn mcp_tool_call(
     emit_status(&app, "evaluating");
     let _idle = IdleGuard(app.clone());
 
-    let result = reify_gui::mcp_context::mcp_tool_call_impl(&name, params, &ctx);
+    // Task 5466: the last engine-bearing Tauri command onto the PERSISTENT
+    // large-stack worker. One relocated call covers this command's whole engine
+    // surface: an MCP tool never touches the engine directly — every touch is a
+    // `ReifyToolContext` method on the context, and those include `open_file`,
+    // `update_source` and `set_parameter`, which drive full recursive compiles.
+    // The builder chain, `emit_status`, the `IdleGuard`, `compute_delta` and
+    // `emit_delta` all STAY on the command thread, exactly as the fourteen
+    // task-5772 wrappers split them.
+    let result = reify_gui::mcp_context::mcp_tool_call_on_large_stack(ctx, name, params);
 
     // Sync state and emit delta events (conservative: runs even after read-only tools,
     // since build_gui_state is cheap for unchanged state and compute_delta produces
-    // an empty delta when nothing changed)
-    if let Ok(mut session) = state.engine.lock()
-        && let Ok(gui_state) = session.build_gui_state()
-    {
+    // an empty delta when nothing changed).
+    //
+    // `get_initial_state_impl` IS this lock-then-`build_gui_state`, so this is a
+    // reuse rather than a second bespoke lock site — and `build_gui_state` walks
+    // the evaluated model, making it recursion-bearing and lane-worthy in its
+    // own right. ONE deliberate behavioural delta: a POISONED engine mutex now
+    // still emits the delta, because `with_engine_lock` recovers from poisoning
+    // where the previous `if let Ok(..) = state.engine.lock()` silently skipped
+    // it. That also makes this command consistent with every other one.
+    let engine = Arc::clone(&state.engine);
+    if let Ok(gui_state) = reify_gui::large_stack::run_on_worker(move || {
+        reify_gui::commands::get_initial_state_impl(&engine)
+    }) {
         let delta = compute_delta(&state.last_state, &gui_state);
         emit_delta(&app, &delta);
     }

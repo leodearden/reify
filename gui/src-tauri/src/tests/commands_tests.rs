@@ -2019,8 +2019,9 @@ fn reload_for_watch_impl_runs_correctly_through_large_stack() {
 
 // ── Task 5772: run_on_worker composition guards ──────────────────────────────
 //
-// These stand in for the 14 un-headless-testable `main.rs` command wrappers that
-// step-8 routes through the persistent worker, exactly as the task-5357 guards
+// These stand in for the 15 un-headless-testable `main.rs` command wrappers that
+// run through the persistent worker — the 14 step-8 routed, plus `mcp_tool_call`
+// (task 5466) — exactly as the task-5357 guards
 // above stand in for its three. Those wrappers take `tauri::State` / `AppHandle`
 // and cannot be constructed headlessly, so what is testable — and what actually
 // matters — is the COMPOSITION they perform:
@@ -2032,7 +2033,8 @@ fn reload_for_watch_impl_runs_correctly_through_large_stack() {
 // `sync_observed_demand`, `sync_demand`, `export`, `get_source_location`,
 // `get_entity_tree`, `get_entity_identity_map`, `get_mechanism_descriptors`,
 // `get_def_preview`, `get_containing_definition`,
-// `get_entity_at_source_location`, `get_active_fea_case`, `set_active_fea_case`.
+// `get_entity_at_source_location`, `get_active_fea_case`, `set_active_fea_case`,
+// `mcp_tool_call`.
 
 /// Compile-time proof that `T` satisfies the bound the whole migration rests on.
 ///
@@ -2066,6 +2068,13 @@ fn migrated_command_payloads_are_send_and_static() {
     assert_send_static::<Option<DefInfo>>(); // get_containing_definition
     assert_send_static::<Option<String>>(); // get_entity_at_source_location, get_active_fea_case
     assert_send_static::<()>(); // export, sync_demand, sync_observed_demand, set_active_fea_case
+    assert_send_static::<serde_json::Value>(); // mcp_tool_call's payload
+    // Task 5466: moved into the job whole, unlike the fourteen sites above,
+    // which move only the engine `Arc`. A persistent lane takes `'static`
+    // closures, so a future non-`Send` field on the context — an `Rc` emitter,
+    // a borrowed selection — must fail HERE rather than at the `main.rs` call
+    // site, which only builds under `--features gui`.
+    assert_send_static::<crate::mcp_context::TauriToolContext>();
 
     // The handle every migrated closure captures. Already proven in practice by
     // `debug_server::run_on_engine`, which clones it into a `'static`
