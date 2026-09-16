@@ -2654,37 +2654,27 @@ structure def Root {
 }
 "#;
 
-/// THE ACCEPTED RESIDUAL of the param-side ruling, pinned as an accepted state
-/// rather than left unnoticed: move the dimensioned component OFF index `[0]`
-/// and the very same rejection goes SILENT.
+/// SILENT BY CONSTRUCTION (task 5889): the components disagree on dimension, so
+/// `math_fn_result_type`'s collapsed `"vec3" | "vec2" | "point3" | "point2"` arm
+/// (`crates/reify-compiler/src/math_signatures.rs`) infers
+/// `Type::dimensionless_scalar()` for the whole vector, `arg_quantity_slot_dimension`
+/// reads no dimension off it, and the rule declines. There is nothing here for
+/// the rule to compare — not a case it was taught to skip.
 ///
 /// The one-token-different twin of
 /// [`vec3_dimensioned_at_dimensionless_vector_param_warns_arg_type_mismatch`]
 /// directly above — same `Frame`, same `Vector3<Dimensionless>` param, same
-/// three components, only the ORDER differs. That twin is therefore this
-/// fixture's non-vacuity proof and no separate one is needed: the param
-/// spelling demonstrably resolves and rejects, so silence HERE can come only
-/// from `math_fn_result_type`'s collapsed `"vec3" | "vec2" | "point3" |
-/// "point2"` arm (`crates/reify-compiler/src/math_signatures.rs`) taking the
-/// whole vector's quantity from component `[0]` alone.
+/// three components, only the ORDER differs. That twin's literal is
+/// HOMOGENEOUS (`vec3(1m, 0m, 0m)`) and still rejects, which is this fixture's
+/// non-vacuity proof: the param spelling demonstrably resolves and rejects, so
+/// silence HERE is a property of the disagreement alone.
 ///
-/// Worth pinning because the param-side tightening made this false negative
-/// USER-VISIBLE where it had been cosmetic: before the tightening no
-/// `Dimensionless` param could reject at all, so component order changed
-/// nothing. The two directions are now recorded together, which is what stops a
-/// one-sided change to task 5889's inference from moving one and not the other
-/// without a test noticing.
-///
-/// Task 5889 owns that inference (its scope covers this inline arm alongside
-/// `list_shape` / `matrix_shape`). When it lands, this fixture and the
-/// `matrix` sibling
-/// [`matrix_builtin_dimensioned_at_dimensionless_matrix_param_warns_arg_type_mismatch`]
-/// must be re-read as a PAIR in that same commit, because they move in opposite
-/// directions and which way depends on the fix chosen: degrading a
-/// heterogeneous literal to `Type::dimensionless_scalar()` flips the `matrix`
-/// sibling to CLEAN and leaves this one clean, whereas comparing EVERY
-/// component flips this one to a Warning and leaves the sibling warning.
-/// Neither is allowed to move silently.
+/// Worth keeping as a PAIR because the silence used to be order-dependent: the
+/// dimensioned component at index `[0]` rejected and anywhere else did not.
+/// [`vec3_dimensioned_first_component_at_dimensionless_vector_param_stays_clean`]
+/// is that same cell with the `1m` back at `[0]`, and the two are now silent
+/// together. A change that reintroduced position-sensitivity would move one and
+/// not the other.
 #[test]
 fn vec3_dimensioned_off_first_component_at_dimensionless_vector_param_stays_clean() {
     let module = compile_source_with_stdlib(SRC_VEC3_DIMENSIONED_OFF_FIRST_AT_DIMENSIONLESS);
@@ -2696,12 +2686,11 @@ fn vec3_dimensioned_off_first_component_at_dimensionless_vector_param_stays_clea
     let diags = ctor_conformance_diags(&module);
     assert!(
         diags.is_empty(),
-        "vec3(0, 1m, 0) at a Vector3<Dimensionless> param stays SILENT today. This is a \
-         KNOWN false negative owned by task 5889, NOT a design choice: the arg's quantity \
-         slot is taken from component [0] alone, so moving the `1m` to component [0] \
-         rejects (the twin directly above). If this now fires, 5889 (or an equivalent \
-         change) has landed — retarget BOTH this fixture and the matrix sibling together. \
-         Got: {diags:#?}"
+        "vec3(0, 1m, 0) at a Vector3<Dimensionless> param must stay SILENT — its \
+         components disagree on dimension, so the call names none and the rule has \
+         nothing to compare. Its homogeneous twin vec3(1m, 0m, 0m) directly above still \
+         rejects, and vec3(1m, 0, 0) is silent alongside this one: the outcome does not \
+         depend on component ORDER. Got: {diags:#?}"
     );
 }
 
@@ -2883,9 +2872,10 @@ structure def Root {
 /// (`conformance/mod.rs`), which constructs the `Type::Point` itself and so
 /// BYPASSES the whole inference chain. That chain is what makes the claim true:
 /// `math_fn_result_type`'s collapsed `"vec3" | "vec2" | "point3" | "point2"` arm
-/// returns a real `Type::Point { n, quantity }`, the quantity taken from the
-/// FIRST argument. The same reasoning the `Matrix` fixture states about
-/// `matrix_shape` applies here, one arm over.
+/// returns a real `Type::Point { n, quantity }`, the quantity being the one its
+/// components AGREE on — here `Length`, since all three are `m`. The same
+/// reasoning the `Matrix` fixture states about `matrix_shape` applies here, one
+/// arm over.
 ///
 /// It also demonstrates that a dimensioned `Type::Point` arg IS reachable from
 /// `.ri` source — see the *Point / Vector quantity-slot convention* section of
@@ -2909,7 +2899,7 @@ fn point3_dimensioned_at_dimensionless_point_param_warns_arg_type_mismatch() {
         "origin",
         "Real",
         "Scalar[m]",
-        "Point3<Dimensionless> ← Point3<Length> (from component [0] alone)",
+        "Point3<Dimensionless> ← Point3<Length> (all three components agree on Length)",
     );
 }
 
@@ -3425,8 +3415,7 @@ structure def Root {
 /// unreachable.
 #[test]
 fn matrix_builtin_block_heterogeneous_at_rotational_stiffness_param_stays_clean() {
-    let module =
-        compile_source_with_stdlib(SRC_MATRIX_BLOCK_HETEROGENEOUS_AT_ROTATIONAL_STIFFNESS);
+    let module = compile_source_with_stdlib(SRC_MATRIX_BLOCK_HETEROGENEOUS_AT_ROTATIONAL_STIFFNESS);
     // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
     // Load-bearing twice over: an unresolvable `Matrix<2, 2, RotationalStiffness>`,
     // or an `N*m/rad^2` literal that failed to parse, would emit zero

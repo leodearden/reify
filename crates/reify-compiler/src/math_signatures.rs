@@ -173,21 +173,11 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
         //   vec2(x,y)     → Vector{n:2, quantity}
         //   point3(x,y,z) → Point {n:3, quantity}
         //   point2(x,y)   → Point {n:2, quantity}
-        // `n` is fixed from the NAME; only the quantity slot comes from the
-        // first variadic scalar component.
-        //
-        // Component [0] decides the WHOLE vector's/point's quantity — the same
-        // first-element inference `list_shape` / `matrix_shape` carry, but
-        // reached INLINE here rather than through either, so a fix to those two
-        // would not cover this arm. Concretely: `vec3(1m, 0, 0)` at a
-        // `Vec3<Dimensionless>` param is REJECTED while `vec3(0, 1m, 0)` at the
-        // same param stays SILENT.
-        //
-        // First-element quantity inference; load-bearing for a REJECTION
-        // diagnostic since tasks 5766/6159. Rule, residual and fix: the "Point /
-        // Vector quantity-slot convention" section of
-        // `crates/reify-core/src/ty.rs`, owned by task 5889 — whose scope covers
-        // this inline arm alongside the two shape helpers.
+        // `n` is fixed from the NAME; the quantity slot is the one the variadic
+        // scalar components AGREE on, via `homogeneous_quantity` — the same rule
+        // `list_shape` / `matrix_shape` apply, reached inline here because this
+        // arm routes through neither. Accept/reject at this arm therefore does
+        // not depend on component ORDER.
         //
         // The point twins also make the VALUE constructor agree with the
         // same-named TYPE constructor: `Type::point3(q)` is an established
@@ -197,11 +187,7 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
         // in `units.rs`).
         "vec3" | "vec2" | "point3" | "point2" => {
             let n = if name.ends_with('3') { 3 } else { 2 };
-            let quantity = Box::new(
-                first
-                    .map(|a| a.result_type.clone())
-                    .unwrap_or_else(Type::dimensionless_scalar),
-            );
+            let quantity = Box::new(homogeneous_quantity(args.iter().map(|a| &a.result_type)));
             if name.starts_with("point") {
                 Type::Point { n, quantity }
             } else {
