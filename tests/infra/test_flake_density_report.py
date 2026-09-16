@@ -41,6 +41,9 @@ def _load_tool():
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot load {TOOL_PATH}")
     module = importlib.util.module_from_spec(spec)
+    # Register before exec: @dataclass resolves a field's type through
+    # sys.modules[cls.__module__], which is None for an unregistered module.
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -117,6 +120,9 @@ class TestRanking(LedgerFixture):
         self.assertEqual([m.test for m in truncated.members],
                          ["test_a.sh", "test_b.sh"])
         self.assertEqual(truncated.truncated_to, 2)
+        # A truncated report must still say how much it is hiding.
+        self.assertEqual(truncated.members_total, 4)
+        self.assertIn("of 4", fdr.format_text(truncated))
 
     def test_share_of_recorded_flakes(self):
         ledger = self.write_ledger([_row("test_a.sh")] * 3 + [_row("test_b.sh")])
