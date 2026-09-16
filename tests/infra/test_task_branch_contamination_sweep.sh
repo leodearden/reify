@@ -25,6 +25,8 @@
 #   step-15 — --audit fleet mode, the SWEEP: summary, and --format json
 #   step-17 — the read-only and non-gating invariants (R1-R4), each with a
 #             mutation-injection check proving the assertion can fail
+#   step-22 — --task mode's degradation matrix: the fail-open R4 gap that
+#             --audit's own non-terminal filter kept out of step-17's reach
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -1015,5 +1017,121 @@ I_REPOCOPY_BEFORE="$(_repo_fingerprint "$I_REPO_COPY")"
 printf 'stray\n' > "$I_REPO_COPY/stray-file.txt"
 assert "P3: _repo_fingerprint DETECTS a new worktree file (I3 can fail)" \
     bash -c '[ "$1" != "$2" ]' _ "$I_REPOCOPY_BEFORE" "$(_repo_fingerprint "$I_REPO_COPY")"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block 8 (step-22) — --task mode must fail SAFE, not fail OPEN
+#
+# R4 says an unreadable store degrades the affected row to UNKNOWN. Block 2's
+# T4 only ever exercised --audit, and there the fleet loop's own _STATUS
+# membership filter drops the branch before any measurement happens — so the
+# gap T4 could not see lives entirely in --task, the per-merge advisory consult
+# seam, where the row IS measured and a missing store silently RESHAPES the
+# verdict (an undeclared-looking, uncitable branch) instead of degrading it.
+#
+# ONE fixture, five ways. The good-store BASELINE is asserted FIRST and is
+# load-bearing: without it every UNKNOWN assertion below would pass just as
+# happily against a fixture that was benign anyway — the vacuity that step-20
+# found the hard way.
+#
+# These carry the D (degradation) prefix rather than continuing block 2's T
+# series, whose T6 is already the engine-interchangeability check.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 8: --task mode degradation matrix ---"
+
+_mk_tasks_db
+_mk_repo
+D_DB="$DB"
+D_REPO="$REPO"
+D_TASK=900
+D_MAIN="$(git -C "$REPO" rev-parse main)"
+
+_add_task 900 pending '{"files":["own900.rs"]}'
+_add_task 901 pending '{"files":["peer901.rs"]}'
+
+# The branch is contaminated on BOTH axes the report measures, so a degraded
+# run cannot look clean by accident on either one: a foreign file that a live
+# peer declares, and a commit citing that same live peer.
+_branch_at "task/900" "$D_MAIN"
+_commit_files "task/900" "feat(900): its own declared file" own900.rs
+_commit_files "task/900" "chore: carries work for #901"     peer901.rs
+
+# ── the positive control ──────────────────────────────────────────────────────
+run_helper --task "$D_TASK" --db "$D_DB" --repo "$D_REPO"
+assert "D0: the good-store baseline exits 0" test "$RC" -eq 0
+_assert_field "D0: baseline reports the store's status"    900 status       pending
+_assert_field "D0: baseline counts the peer commit"        900 peer_commits 1
+_assert_field "D0: baseline names the peer"                900 peers        901
+_assert_field "D0: baseline counts the peer file"          900 peer_files   1
+_assert_field "D0: baseline verdict is PEER-FILES"         900 scope        PEER-FILES
+_assert_field "D0: baseline signature is SUSPECT"          900 signature    SUSPECT
+
+# ── _assert_degraded <label> <extra args...> ──────────────────────────────────
+# The whole degraded contract for --task over the fixture above, in BOTH
+# formats. Both, because the consult seam may ask for either and a degradation
+# visible in only one of them is still a fail-open for whoever asked for the
+# other.
+_assert_degraded() {
+    local label="$1"; shift
+    run_helper --task "$D_TASK" --repo "$D_REPO" "$@"
+    assert "D[$label]: exits 0 (R3)"                      test "$RC" -eq 0
+    assert "D[$label]: warns on stderr (R4)"              test -n "$ERR_OUT"
+    _assert_field "D[$label]: status degrades"            "$D_TASK" status       unknown
+    _assert_field "D[$label]: scope is UNKNOWN"           "$D_TASK" scope        UNKNOWN
+    _assert_field "D[$label]: signature is not a verdict" "$D_TASK" signature    "-"
+    _assert_field "D[$label]: peers unmeasured"           "$D_TASK" peers        "-"
+    _assert_field "D[$label]: foreign unmeasured"         "$D_TASK" foreign      "-"
+    _assert_field "D[$label]: peer_files unmeasured"      "$D_TASK" peer_files   "-"
+    _assert_field "D[$label]: peer_commits unmeasured"    "$D_TASK" peer_commits "-"
+    # A degraded row keeps ONE shape: no partially-measured count survives to
+    # be read as authoritative.
+    assert "D[$label]: no half-measured column survives" \
+        bash -c 'row="$1"
+for k in merge_base behind commits changed; do
+    v="$(printf "%s\n" "$row" | tr " " "\n" | sed -n "s/^$k=//p")"
+    [ "$v" = "-" ] || { printf "%s=%s\n" "$k" "$v"; exit 1; }
+done' _ "$(_row "$D_TASK")"
+
+    run_helper --task "$D_TASK" --repo "$D_REPO" --format json "$@"
+    assert "D[$label/json]: exits 0 (R3)" test "$RC" -eq 0
+    assert "D[$label/json]: carries the identical degraded row" \
+        bash -c 'printf "%s" "$1" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+b = d[\"branches\"]
+assert len(b) == 1, b
+b = b[0]
+assert b[\"task\"] == int(sys.argv[1]), b
+assert b[\"status\"] == \"unknown\", b
+assert b[\"scope\"] == \"UNKNOWN\", b
+for k in (\"merge_base\", \"behind\", \"commits\", \"peer_commits\", \"changed\",
+          \"foreign\", \"peer_files\", \"peers\", \"signature\"):
+    assert b[k] == \"-\", (k, b)
+" "$2"' _ "$OUT" "$D_TASK"
+}
+
+D_SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/task-branch-sweep-degrade-XXXXXX")"
+_TMPDIRS+=("$D_SCRATCH")
+
+# (a) a --db path that does not exist — the typo'd consult.
+_assert_degraded "missing db" --db "$D_SCRATCH/absent.db"
+
+# (b) the store is present but unreadable — a permission change under a live
+# seam, which changes nothing the caller can see in its own invocation.
+cp "$D_DB" "$D_SCRATCH/unreadable.db"
+chmod 000 "$D_SCRATCH/unreadable.db"
+_assert_degraded "unreadable db" --db "$D_SCRATCH/unreadable.db"
+chmod 644 "$D_SCRATCH/unreadable.db"
+
+# (c) the store reads fine and the tag is simply wrong. _DB_READABLE is 1
+# here, so this case is reachable ONLY through the id-absent half of the gate.
+_assert_degraded "wrong tag" --db "$D_DB" --tag nosuchtag
+
+# (d) the id's task is terminal. Same repo, same branch, same commits, same
+# foreign file — ONLY the store row differs, so a verdict change here can come
+# from nothing but the status lookup.
+cp "$D_DB" "$D_SCRATCH/done.db"
+_sq "$D_SCRATCH/done.db" "UPDATE tasks SET status='done' WHERE id=900;"
+_assert_degraded "terminal task" --db "$D_SCRATCH/done.db"
 
 test_summary
