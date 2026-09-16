@@ -138,7 +138,11 @@
 //!
 //! Deliberately NOT gated, and not a residual: unit-vector DIRECTIONS
 //! (`ax`/`ay`/`az`, `nx`/`ny`/`nz`, and `extrude_infinite`'s `dx`/`dy`/`dz`),
-//! instance COUNTS, and dimensionless scale FACTORS.
+//! instance COUNTS, and dimensionless scale FACTORS. `half_space` is the one
+//! builtin whose args STRADDLE that line: its `px`/`py`/`pz` POINT is gated
+//! (above) while its `nx`/`ny`/`nz` outward NORMAL stays bare, mirroring the
+//! `ax`/`ay`/`az` vs `ox`/`oy`/`oz` split already drawn for the circular
+//! pattern.
 //!
 //! ANGLES are gated too, but they are NOT rows of the table above. They have
 //! their own spec here — [`angle_spec`] — owned by
@@ -148,10 +152,6 @@
 //! minting a per-dimension sibling, so an angle position is still tracked in
 //! ITS residual list and never in this one; which list a newly-added argument
 //! belongs to is decided by its dimension, not by its file.
-//! `half_space` is the one builtin whose
-//! args STRADDLE the boundary: its `px`/`py`/`pz` POINT is gated (above) while
-//! its `nx`/`ny`/`nz` outward NORMAL stays bare, mirroring the `ax`/`ay`/`az`
-//! vs `ox`/`oy`/`oz` split already drawn for the circular pattern.
 //!
 //! Also deliberately NOT gated, and the reason `nurbs` gates a SPAN rather than
 //! every position — its dimensionless neighbours sit on BOTH sides of the poles

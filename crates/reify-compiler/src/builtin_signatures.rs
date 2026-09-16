@@ -74,8 +74,8 @@
 //!   decree — `revolve`'s and `rotate_around`'s `angle`, `draft`'s `angle`.
 //!   The pre-existing ANGLE `tol` slots are that PRD's inheritance, not a
 //!   precedent to extend; adding a new one here would be a scope violation.
-//!   It is also why those slots carry no migration hint: the eval layer has
-//!   none to mirror, and PRD 3 owns closing both halves together.
+//!   It is also why those slots still carry no migration hint: eval gained one
+//!   at leaf β, and PRD 3 closes the compile half at leaf ζ (task 5782).
 //! - **Polymorphic and coercing slots stay out.** Math args (no fixed
 //!   dimension), the `dir` Vec3 slot (accepts list literals like `[0,0,1]`
 //!   that coerce), and Range slots (`edges_by_length` / `faces_by_area`).
@@ -415,20 +415,13 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
             expected: ExpectedArg::Scalar {
                 dimension: DimensionVector::ANGLE,
                 type_name: "Angle",
-                // No migration hint, deliberately — and since PRD 3 leaf β the
-                // two layers are KNOWINGLY out of step, which is a schedule
-                // rather than an oversight. The eval layer DOES now carry
-                // `ANGLE_MIGRATION_HINT`, minted by
-                // `reify-eval::arg_acceptance::angle_spec()`. Reconciling the
-                // compile-slot messages onto that hint-carrying template is
-                // PRD 3 leaf ζ (task 5782), consuming PRD-1 task η; β owns the
-                // eval half alone and deliberately did not reach across.
-                // Adding a hint HERE, ahead of ζ, is what would be wrong: it
-                // would red `angle_slot_rejection_carries_no_migration_hint`,
-                // which pins this slot's un-hinted wording on purpose.
-                // Prose rather than a TODO on purpose: the surrounding style is
-                // prose, and a `TODO(#5782)` here would add a new fingerprint
-                // to the ptodo baseline for no gain.
+                // No migration hint, deliberately: eval HAS carried
+                // `ANGLE_MIGRATION_HINT` since PRD 3 leaf β, and bringing these
+                // slots onto that template is leaf ζ (task 5782), not this
+                // layer's to anticipate — adding one early reds
+                // `angle_slot_rejection_carries_no_migration_hint`, which pins
+                // the un-hinted wording on purpose. (Prose, not a
+                // `TODO(#5782)`: a new ptodo fingerprint for no gain.)
                 migration_hint: None,
             },
         }],
