@@ -1,25 +1,43 @@
 //! Characterisation harness: gmsh from-scratch tetrahedralisation wall-clock
 //! vs. elasticity-morph wall-clock, at the 10K and 100K element scales.
 //!
-//! ## Background
+//! ## Purpose
 //!
 //! Task #2953 ("end-to-end slider-responsiveness benchmark", PRD
 //! `docs/prds/v0_3/mesh-morphing.md:139`) asserts a >=10x wall-clock
-//! reduction for morph-vs-always-remesh at the 100K scale. That threshold
-//! has no measurement basis in this repo: nothing in `reify-mesh-morph`
-//! reads a clock, and the only number the PRD offers is the design-time
-//! estimate at `docs/prds/v0_3/mesh-morphing.md:11` — "at 100K elements,
-//! that's ~3s serial / ~0.3s parallel per tick of mesh time" — which
-//! carries no host, no fixture, and no provenance.
+//! reduction for morph-vs-always-remesh at the 100K scale, and the PRD's own
+//! design-time estimate at `docs/prds/v0_3/mesh-morphing.md:11` puts a tick
+//! of 100K mesh time at "~3s serial / ~0.3s parallel". Neither figure had a
+//! measurement basis in this repo: nothing in `reify-mesh-morph` read a
+//! clock. This binary supplies one, measuring both arms on the same bracket
+//! geometry at the same two scales on one host and printing the achieved
+//! counts alongside the achieved times, so a threshold can be derived from a
+//! measurement rather than from an estimate.
 //!
-//! This binary supplies that basis: it measures both arms on the same
-//! bracket geometry at the same two scales on one host and prints the
-//! achieved counts alongside the achieved times, so a threshold can be
-//! derived from a measurement rather than from an estimate.
+//! It is a harness, not a gate. Nothing here asserts a performance property,
+//! and nothing here should become a CI-blocking bound without repetition and
+//! the statistics it deliberately does not collect.
 //!
-//! It is a harness, not a gate. Nothing here asserts a performance
-//! property, and nothing here should ever become a CI-blocking bound
-//! without repetition and statistics it deliberately does not collect.
+//! ## What it measured
+//!
+//! **`docs/notes/morph-vs-remesh-scale-characterisation.md`** — the
+//! authoritative record: both profiles' tables, the #2953 analysis, the
+//! scaling breakdown and the standing caveats. The numbers live there rather
+//! than here so that a measurement log cannot drift against the code it is
+//! embedded in.
+//!
+//! Headline, so a reader need not follow the pointer to learn the outcome: at
+//! the best-matched pairing in the table (+0.3% count mismatch) the morph took
+//! 123.98 s and the from-scratch remesh 1.98 s, i.e. the morph is **~63x
+//! SLOWER** at 100K. #2953's premise is inverted, not merely unmet. At 10K the
+//! two arms are roughly par, with which one wins depending on the build
+//! profile.
+//!
+//! ## How to run
+//!
+//! ```text
+//! cargo test -p reify-mesh-morph --test morph_scale_characterisation -- --ignored --nocapture --test-threads=1
+//! ```
 //!
 //! ## Tests in this file
 //!
@@ -29,7 +47,8 @@
 //! - [`bracket_fixture_reaches_the_10k_and_100k_tet_calibration_scales`] —
 //!   pure fixture generation; pins the two scale bands.
 //! - [`bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced`] —
-//!   the tet -> boundary-surface extractor that feeds the gmsh arm.
+//!   the tet -> boundary-surface extractor that feeds the gmsh arm, swept
+//!   over every resolution the driver uses.
 //! - [`morph_once_times_a_connectivity_preserving_fillet_perturbation`] —
 //!   the timed morph helper, at n=4.
 //! - [`gmsh_tetrahedralise_produces_tets_at_a_requested_mesh_size`] — the
@@ -45,152 +64,6 @@
 //! Ignored (the driver): [`gmsh_from_scratch_vs_morph_wall_clock_at_10k_and_100k`]
 //! composes those helpers, prints every measurement, and asserts nothing.
 //!
-//! ## How to run
-//!
-//! ```text
-//! cargo test -p reify-mesh-morph --test morph_scale_characterisation -- --ignored --nocapture --test-threads=1
-//! ```
-//!
-//! ## Measured
-//!
-//! Recorded 2026-08-26 at commit 8690244f66 on an AMD Ryzen 9 3950X
-//! (16 cores / 32 threads), gmsh 4.15.2 from `/opt/reify-deps`, **release
-//! profile**, `--test-threads=1`. Verbatim harness output:
-//!
-//! ```text
-//! surface n=8   volume_tets=9936    surface_tris=1884    surface_verts=944
-//! surface n=18  volume_tets=108756  surface_tris=9284    surface_verts=4644
-//! gmsh ladder input: the n=18 surface (9284 tris) for every rung
-//! gmsh  mesh_size=0.060 tets=2786     nodes=2590     wall=759.511558ms  Ok
-//! gmsh  mesh_size=0.045 tets=5009     nodes=3732     wall=1.246024003s  Ok
-//! gmsh  mesh_size=0.035 tets=9079     nodes=5481     wall=685.374063ms  Ok
-//! gmsh  mesh_size=0.028 tets=15633    nodes=7922     wall=895.190798ms  Ok
-//! gmsh  mesh_size=0.022 tets=30922    nodes=13201    wall=1.187368702s  Ok
-//! gmsh  mesh_size=0.017 tets=63121    nodes=22297    wall=1.484223142s  Ok
-//! gmsh  mesh_size=0.014 tets=109078   nodes=34748    wall=1.979128648s  Ok
-//! morph n=8   tets=9936     nodes=2169   dof=6507   wall=536.853352ms   Ok
-//! morph n=18  tets=108756   nodes=20539  dof=61617  wall=123.981639207s Ok
-//! PAIR  n=8   morph_tets=9936    gmsh_tets=9079    mismatch=-8.6%
-//!             morph_wall=536.853352ms  gmsh_wall=685.374063ms  gmsh/morph=1.28x
-//! PAIR  n=18  morph_tets=108756  gmsh_tets=109078  mismatch=+0.3%
-//!             morph_wall=123.981639207s gmsh_wall=1.979128648s gmsh/morph=0.02x
-//! ```
-//!
-//! ### What this says about #2953
-//!
-//! #2953 asserts a **>=10x wall-clock reduction** for morph-vs-always-remesh
-//! at the 100K scale. On this host that is not merely unmet, it is inverted:
-//! at the best-matched pairing in the whole table (+0.3% count mismatch, the
-//! two arms within 322 tets of each other) the morph took **123.98 s** and the
-//! from-scratch remesh **1.98 s** — the morph is **~63x SLOWER**. Against
-//! a >=10x-faster target that is roughly three orders of magnitude in the
-//! wrong direction.
-//!
-//! The 100K morph returned **`Ok`**, not `SolverNotConverged`. This is not a
-//! solver giving up: it is 124 s of converged solving. That distinction
-//! matters, because "it timed out" invites a tuning fix while "it converged,
-//! slowly" does not.
-//!
-//! At 10K the morph does win, but modestly: 536.9 ms vs 685.4 ms, i.e. 1.28x.
-//! That margin is smaller than the -8.6% count mismatch on the same pairing,
-//! so this table supports "roughly par at 10K", not a quantified advantage.
-//!
-//! For completeness against the other figure this harness was built to test:
-//! `docs/prds/v0_3/mesh-morphing.md:11` estimates "~3s serial per tick" at
-//! 100K. Measured: 123.98 s, ~41x the estimate.
-//!
-//! ### Scaling, which is where the inversion comes from
-//!
-//! Over 9.9K -> 108.8K elements (10.9x) the morph goes 0.537 s -> 123.98 s,
-//! a 231x increase — roughly `O(N^2.2)`. Over 9.1K -> 109.1K (12.0x) gmsh goes
-//! 0.685 s -> 1.98 s, a 2.9x increase. The morph arm is the deliberately
-//! serial, unpreconditioned Jacobi-CG path, and this is what that costs at
-//! 61,617 DOF. The two curves cross just above the 10K scale, which is why a
-//! measurement taken only at 10K would have supported the PRD's premise and a
-//! measurement at 100K destroys it.
-//!
-//! ### Reading the ladder honestly
-//!
-//! The three coarsest gmsh rungs are NOT monotone in wall-clock (0.060 ->
-//! 759 ms, 0.045 -> 1.246 s, 0.035 -> 685 ms). Below ~15K tets the rung time
-//! is dominated by a fixed per-call setup cost of roughly 0.7 s, not by the
-//! meshing work, so rung-to-rung differences down there are noise. Only the
-//! three finest rungs are in a regime where the ladder is informative.
-//!
-//! ### Standing caveats
-//!
-//! These are single-run numbers from one host, with a residual count mismatch
-//! on each pairing. **They bound the ratio's order of magnitude; they do not
-//! pin a threshold.** Nothing here should be promoted to a CI-blocking bound
-//! without repetition and the statistics this harness deliberately does not
-//! collect. The 100K result is large enough (63x, on a +0.3% pairing) that
-//! run-to-run variance cannot plausibly account for its SIGN — but the
-//! specific multiplier should be re-measured before anyone quotes it.
-//!
-//! ### Both profiles were run, and the headline is profile-invariant
-//!
-//! The table above is `--release`. The same harness under the default dev
-//! profile, same host, same commit:
-//!
-//! ```text
-//! gmsh  mesh_size=0.060 tets=2786     wall=2.096886588s  Ok
-//! gmsh  mesh_size=0.045 tets=5009     wall=1.240103105s  Ok
-//! gmsh  mesh_size=0.035 tets=9079     wall=851.066645ms  Ok
-//! gmsh  mesh_size=0.028 tets=15633    wall=899.449821ms  Ok
-//! gmsh  mesh_size=0.022 tets=30922    wall=1.457362516s  Ok
-//! gmsh  mesh_size=0.017 tets=63121    wall=2.387901194s  Ok
-//! gmsh  mesh_size=0.014 tets=109078   wall=4.642405879s  Ok
-//! morph n=8   tets=9936    dof=6507   wall=1.213329894s   Ok
-//! morph n=18  tets=108756  dof=61617  wall=123.129397408s Ok
-//! PAIR  n=8   mismatch=-8.6%  gmsh/morph=0.70x
-//! PAIR  n=18  mismatch=+0.3%  gmsh/morph=0.04x
-//! ```
-//!
-//! The 100K morph leg is **123.13 s under dev vs 123.98 s under release** —
-//! 0.7% apart. That is not a coincidence and it is worth stating explicitly,
-//! because the obvious objection to any Rust-side timing ("you measured a
-//! debug build") does not apply to the number this whole harness turns on.
-//! Workspace `Cargo.toml:195-201` (task 4055) sets
-//! `[profile.dev.package."*"] opt-level = 3` and
-//! `[profile.dev.package.reify-solver-elastic] opt-level = 2` precisely
-//! because faer is ~500-1000x slower unoptimised, so the morph's hot path —
-//! faer's CG and `reify-solver-elastic`'s assembly — is compiled at
-//! optimised codegen under BOTH profiles.
-//!
-//! So the inversion does not rest on a profile choice: the morph is ~63x
-//! slower than the remesh under release and ~27x slower under dev, and it is
-//! slower by a wide margin either way. Release is quoted as the headline
-//! because it is the profile under which the morph arm looks BEST.
-//!
-//! Where the two profiles DO diverge is exactly where this file already warns
-//! the reader not to look: the coarse rungs and the n=8 morph, whose times are
-//! dominated by fixed setup and unoptimised marshalling (gmsh's 0.060 rung
-//! moves 0.76 s -> 2.10 s while its 0.045 rung does not move at all). The dev
-//! run is therefore also independent corroboration that the coarse end of the
-//! ladder is noise rather than signal.
-//!
-//! ### Re-measured after the review amendments
-//!
-//! Re-run at commit f9a56bb3ad (dev profile, same host) after the amendment
-//! pass that moved `boundary_surface`'s orientation step from every distinct
-//! tet face to the emitted survivors only.
-//!
-//! Every STRUCTURAL number reproduced EXACTLY: both surface extractions
-//! (n=8 gives 1884 tris / 944 verts, n=18 gives 9284 / 4644), all seven gmsh
-//! achieved tet counts (2786, 5009, 9079, 15633, 30922, 63121, 109078), and
-//! both morph legs (9936 tets / 6507 dof, 108756 / 61617). That is the check
-//! that matters for the refactor: an identical achieved gmsh ladder off the
-//! same extracted surface is end-to-end evidence the extractor's output did
-//! not change, which is what lets the tables above stand unedited.
-//!
-//! The wall-clocks did move. The 100K morph leg re-measured 105.60 s against
-//! the 123.13 s recorded in the dev block above, and gmsh's finest rung
-//! 2.39 s against 4.64 s — same sign, same order of magnitude (gmsh/morph
-//! 0.02x here vs 0.04x there), on a host quiesced for neither run. Treat
-//! that ~15-50% spread as concrete support for this file's own standing
-//! caveat rather than as a correction to it: quote the SIGN and the order of
-//! magnitude, re-measure the MULTIPLIER.
-//!
 //! ## What these numbers do and do not characterise
 //!
 //! The morph arm is forced serial: `src/elasticity.rs` hardcodes
@@ -201,6 +74,11 @@
 //! forced single-threaded (`MeshingOptions::deterministic = true`), which
 //! is the apples-to-apples counterpart. Neither arm says anything about
 //! the parallel path either PRD figure also quotes.
+//!
+//! Each pairing also carries a residual count mismatch: the two ladders are
+//! swept independently (morph by resolution `n`, gmsh by `mesh_size`) and
+//! never land on the same tet count, so a ratio is only as meaningful as its
+//! mismatch is small. The driver prints that mismatch next to every ratio.
 
 #[path = "calibration/boundary.rs"]
 mod boundary;
@@ -313,8 +191,9 @@ fn bracket_fixture_reaches_the_10k_and_100k_tet_calibration_scales() {
 /// the vertices it actually references — at every resolution the harness
 /// itself uses, not merely at the cheap one.
 ///
-/// The primary assertion target is `Mesh::validate`
-/// (`crates/reify-ir/src/geometry.rs`, `impl Mesh :: validate`): it is
+/// The primary assertion target is `Mesh::validate` (in
+/// `crates/reify-ir/src/geometry.rs`; cited by symbol rather than by line,
+/// which goes stale silently in a 4000-line file): it is
 /// precisely the producer-obligation set gmsh's preflight demands — finite,
 /// index-valid, non-degenerate, closed, and consistently wound on the
 /// position-welded quotient.
@@ -508,8 +387,8 @@ fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
 /// pass/fail.
 ///
 /// `result` is carried unconverted on purpose. At the 100K scale the serial
-/// Jacobi-CG (`max_iter` 1000, tol 1e-8, ~54K DOF) may legitimately return
-/// [`ElasticityFailure::SolverNotConverged`], and the time taken to reach
+/// Jacobi-CG (`max_iter` 1000, tol 1e-8, 61,617 DOF at n=18) may legitimately
+/// return [`ElasticityFailure::SolverNotConverged`], and the time taken to reach
 /// `max_iter` is itself characterisation data — arguably the headline
 /// finding, since a non-converging serial CG makes the morph arm *slower*
 /// than a remesh rather than faster. Unwrapping here would destroy the run
@@ -956,10 +835,9 @@ fn gmsh_tetrahedralise_produces_tets_at_a_requested_mesh_size() {
 /// drifts from the gmsh crate's.
 #[cfg(not(has_gmsh))]
 #[test]
-// `GMSH_AVAILABLE` is `pub const GMSH_AVAILABLE: bool = cfg!(has_gmsh)`
-// (`crates/reify-kernel-gmsh/src/lib.rs:139`), so this assertion is
-// constant-valued BY CONSTRUCTION and clippy's `assertions_on_constants`
-// fires on it — turning `scripts/verify.sh`'s `cargo clippy --all-targets --
+// `GMSH_AVAILABLE` is `pub const GMSH_AVAILABLE: bool = cfg!(has_gmsh)` (in
+// `crates/reify-kernel-gmsh/src/lib.rs`), so this assertion is constant-valued
+// BY CONSTRUCTION and clippy's `assertions_on_constants` fires on it — turning `scripts/verify.sh`'s `cargo clippy --all-targets --
 // -D warnings` pass into a hard failure on precisely the stub-build host
 // this test exists to serve. The constant-ness IS the point: the value under
 // test is another crate's view of its own build, which is not knowable when
