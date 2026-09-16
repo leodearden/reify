@@ -79,6 +79,35 @@ source "$LIB"
 # the committed baseline and the check that reads it structurally incapable
 # of drifting.
 # ---------------------------------------------------------------------------
+# STRICT DISPATCH. An unrecognised argument is REJECTED rather than falling
+# through to the full suite: Section J re-invokes this very file, so a
+# fall-through on a misspelt flag would recurse instead of failing.
+GATE_SELF="$SCRIPT_DIR/test_cited_test_paths_resolve.sh"
+
+case "${1:-}" in
+    ''|--gate-only|--emit-baseline|--list) ;;
+    *)
+        echo "usage: $(basename "$GATE_SELF") [--gate-only|--emit-baseline|--list]" >&2
+        echo "  (no argument)     run the full suite: scenarios + the gate" >&2
+        echo "  --gate-only       run ONLY the whole-tree gate the merge gate consumes" >&2
+        echo "  --emit-baseline   regenerate tests/infra/cited-test-path-baseline.manifest" >&2
+        echo "  --list            print the live scan records, human-readable" >&2
+        echo "ERROR: unrecognised argument '$1'" >&2
+        exit 2
+        ;;
+esac
+
+# --gate-only DISPATCHES HERE, before any scenario runs, and always exits.
+#
+# It must never fall through to the scenario sections: Section J re-invokes
+# this file with exactly this flag, so a fall-through would re-enter Section J
+# and recurse without bound. The `exit` below is the structural guarantee that
+# it cannot — not a convention, a control-flow fact.
+if [ "${1:-}" = "--gate-only" ]; then
+    _run_whole_tree_gate
+    exit $?
+fi
+
 if [ "${1:-}" = "--emit-baseline" ] || [ "${1:-}" = "--list" ]; then
     if [ "${1:-}" = "--list" ]; then
         cited_test_path_scan "$REPO_ROOT"
@@ -952,5 +981,105 @@ _floor_ignores_the_baseline() {
 
 assert "I: the floor's verdict is unchanged by a missing baseline (baseline-independent)" \
     _floor_ignores_the_baseline
+
+# ===========================================================================
+# Section J: WHOLE-TREE WIRING.
+#
+# Sections A-I prove the helpers work. None of them proves the GATE fires
+# against the real repository — a gate wired to the wrong root, or one whose
+# main body never calls its own checkers, would pass every one of them. This
+# section runs the real thing end to end, in a child process, exactly as the
+# merge gate does.
+# ===========================================================================
+echo ""
+echo "--- Section J: the gate fires against the real repository ---"
+
+# (1) THE MERGE-GATE SIGNAL: the real tree against the real committed
+# baseline exits 0.
+_real_gate_is_green() {
+    local out rc=0
+    out="$(bash "$GATE_SELF" --gate-only 2>&1)" || rc=$?
+    [ "$rc" -eq 0 ] && return 0
+    echo "the gate is RED against the real tree with the committed baseline (rc$rc):"
+    printf '%s\n' "$out"
+    return 1
+}
+
+assert "J: the gate against the real tree + committed baseline exits 0" \
+    _real_gate_is_green
+
+# (2) WHOLE-TREE LIVENESS CONTROL. The same gate, same real tree, pointed at
+# an EMPTY baseline, must go red and report the live citations. This is what
+# proves the real scan reaches the real tree: without it, a gate that scanned
+# an empty directory would pass (1) just as happily.
+#
+# A conservative LOWER BOUND on the offender count, not an exact number: the
+# baseline is a shrinking list, so repointing citations over time must reduce
+# this count without flaking the assertion. Measured 308 when written.
+_real_gate_is_red_against_empty_baseline() {
+    local empty out rc=0 n
+    empty="$(_write_baseline)"
+    out="$(REIFY_CITED_TEST_PATH_BASELINE="$empty" bash "$GATE_SELF" --gate-only 2>&1)" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "the gate stayed GREEN against the real tree with an EMPTY baseline —"
+        echo "the scan is not reaching the tree it claims to be checking:"
+        printf '%s\n' "$out"
+        return 1
+    fi
+    n="$(printf '%s\n' "$out" | grep -c '^  + ' || true)"
+    if [ "$n" -lt 100 ]; then
+        echo "expected >= 100 offenders against an empty baseline, got $n:"
+        printf '%s\n' "$out" | head -20
+        return 1
+    fi
+    return 0
+}
+
+assert "J: the same gate against an EMPTY baseline goes red and reports >= 100 live citations" \
+    _real_gate_is_red_against_empty_baseline
+
+# (3) THE RATCHET AND THE FLOOR ARE REPORTED SEPARATELY.
+#
+# Collapsing them into one assert would destroy the floor's whole purpose:
+# a combined line cannot distinguish "the ratchet is satisfied" from "the
+# scan never ran", which is the confusion the floor exists to resolve. Same
+# reason test_helpers.sh pairs assert_no_shared_trash_litter with
+# assert_shared_trash_litter_detector_live rather than merging them.
+_gate_reports_two_independent_signals() {
+    local out n_ratchet n_floor
+    out="$(bash "$GATE_SELF" --gate-only 2>&1)" || {
+        echo "gate failed; cannot inspect its reported signals:"; printf '%s\n' "$out"; return 1
+    }
+    n_ratchet="$(printf '%s\n' "$out" | grep -ci 'PASS:.*ratchet' || true)"
+    n_floor="$(printf '%s\n' "$out" | grep -ci 'PASS:.*floor' || true)"
+    if [ "$n_ratchet" -lt 1 ] || [ "$n_floor" -lt 1 ]; then
+        echo "expected one PASS line for the ratchet and one for the floor"
+        echo "  ratchet lines: $n_ratchet   floor lines: $n_floor"
+        printf '%s\n' "$out"
+        return 1
+    fi
+    return 0
+}
+
+assert "J: the gate reports the ratchet and the floor as two independent signals" \
+    _gate_reports_two_independent_signals
+
+# (4) The strict dispatch itself: an unrecognised flag is rejected, never run
+# as the full suite. Section J re-invokes this file, so a fall-through would
+# recurse rather than fail.
+_unknown_argument_is_rejected() {
+    local out rc=0
+    out="$(bash "$GATE_SELF" --no-such-flag 2>&1)" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "an unrecognised argument was ACCEPTED (rc0); it must be rejected:"
+        printf '%s\n' "$out" | head -5
+        return 1
+    fi
+    printf '%s\n' "$out" | grep -qi 'usage' && return 0
+    echo "rejection carried no usage line:"; printf '%s\n' "$out" | head -5; return 1
+}
+
+assert "J: an unrecognised argument is rejected with a usage line, not run as the suite" \
+    _unknown_argument_is_rejected
 
 test_summary
