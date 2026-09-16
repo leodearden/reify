@@ -394,6 +394,11 @@ fn attributed_producer_output_is_reproducible_across_repeated_calls() {
     }
 
     let first = &reps[0];
+    assert!(
+        !first.boundary.is_empty(),
+        "premise: the producer must attribute SOME nodes on this fixture, else the \
+         boundary comparisons below are vacuous"
+    );
     for (rep, this) in reps.iter().enumerate().skip(1) {
         // tet_indices first: the coarser, more legible signal.
         assert_eq!(
