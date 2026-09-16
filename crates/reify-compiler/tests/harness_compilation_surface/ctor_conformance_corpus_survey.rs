@@ -481,9 +481,9 @@ fn tracked_rust_hosts_reach_the_named_site_host_and_every_shape() {
     // enumeration_shapes`: that one pins the pin list, this one pins what the
     // git-index enumeration actually returns, so a re-narrowed host predicate
     // reds here even if the pin list is left alone.
-    for shape in HostShape::ALL {
+    for shape in <HostShape as strum::IntoEnumIterator>::iter() {
         assert!(
-            hosts.iter().any(|p| host_shape(p) == *shape),
+            hosts.iter().any(|p| host_shape(p) == shape),
             "the {shape:?} host shape must be enumerated; {} hosts enumerated",
             hosts.len()
         );
@@ -3566,21 +3566,16 @@ const NAMED_SITE_HOST: &str =
 /// re-narrowing shows up HERE and nowhere else: the corpus-parity floor is
 /// cleared just as comfortably by a predicate admitting 1,307 of the 1,932
 /// tracked `.rs` as by the one admitting all 1,870 under `crates/`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+///
+/// `EnumIter` is load-bearing for the same reason it is on [`CorpusHalf`]: both
+/// shape gates iterate the DECLARATION, so a fifth shape cannot be added here
+/// and left unpinned by a hand-maintained list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, strum::EnumIter)]
 enum HostShape {
     TestsDirectory,
     SrcTestsRs,
     SrcStarTestsRs,
     ProductionSrc,
-}
-
-impl HostShape {
-    const ALL: &'static [HostShape] = &[
-        HostShape::TestsDirectory,
-        HostShape::SrcTestsRs,
-        HostShape::SrcStarTestsRs,
-        HostShape::ProductionSrc,
-    ];
 }
 
 fn host_shape(rel: &str) -> HostShape {
@@ -3612,9 +3607,9 @@ fn inline_fixture_pinned_hosts_name_all_four_enumeration_shapes() {
         "the pin must name {NAMED_SITE_HOST} — the host of the sites this task's \
          VERIFY criterion names; pinned: {hosts:?}"
     );
-    for shape in HostShape::ALL {
+    for shape in <HostShape as strum::IntoEnumIterator>::iter() {
         assert!(
-            hosts.iter().any(|h| host_shape(h) == *shape),
+            hosts.iter().any(|h| host_shape(h) == shape),
             "the pin must name a live {shape:?} host. This is the assertion the \
              corpus-parity gate structurally cannot make: a predicate re-narrowed \
              to one shape still clears every floor, so only a per-shape live member \
