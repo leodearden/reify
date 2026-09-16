@@ -64,7 +64,15 @@
 # Fleet mode adds a trailing `SWEEP:` line whose first six counters PARTITION
 # the row count:
 #   branches = suspect + peer_files + out_of_scope + undeclared + clean + unknown
-# plus the cross-cutting skip counters skipped_terminal / skipped_nonnumeric.
+# plus three skip counters for the refs that yielded no row at all, each naming
+# the REASON the store gave rather than a guess at it:
+#   skipped_terminal    the store shows the backing task done or cancelled
+#   skipped_no_task     the store was read and does not carry that id under
+#                       --tag at all (a four-digit count here is the signature
+#                       of a mistyped --tag, not of a finished pool)
+#   skipped_nonnumeric  the ref's suffix is not a task id
+# A ref is never skipped for want of an answer: when the store could not be
+# read at all, EVERY ref is measured and reported scope=UNKNOWN instead (R4).
 #
 # `--format json` emits one document: a `branches` array of objects carrying
 # the same keys, and a sibling `summary` object with the same counters.
@@ -92,9 +100,12 @@
 #       SQL engine degrades the affected row (or the whole report) to UNKNOWN
 #       with a stderr warning — never an abort, never a changed exit code.
 #       Degradation is decided BEFORE measurement, so a degraded row carries
-#       "-" in every column and can never be read as a benign verdict. This
-#       matters most in --task mode, which reports on a branch the caller
-#       named and so cannot fall back on fleet mode's "emit no row at all".
+#       "-" in every column and can never be read as a benign verdict.
+#       Fleet mode's "emit no row at all" is NOT a degradation channel and is
+#       never reached by one: a ref is dropped only on the store's POSITIVE
+#       evidence about it (terminal, absent, non-numeric — each with its own
+#       counter), and a store that answered nothing yields a full report of
+#       UNKNOWN rows rather than a short one that reads as an all-clean pool.
 #   R5  `behind` is CONTEXT, never a trigger. Measured over the 351 live task
 #       branches: median 2201 commits behind main (p25 878, p75 3781, p90
 #       5324), and 345 of 351 are >= 50 behind. A staleness-triggered verdict
@@ -266,7 +277,7 @@ _PYTHON_BIN=""
 if command -v python3 >/dev/null 2>&1; then _PYTHON_BIN="python3"; fi
 
 if [ -z "$_SQLITE_BIN" ] && [ -z "$_PYTHON_BIN" ]; then
-    warn "Neither sqlite3 nor python3 is on PATH — the task store cannot be read at all; reporting zero branches."
+    warn "Neither sqlite3 nor python3 is on PATH — the task store cannot be read at all; every branch will report scope=UNKNOWN."
 fi
 
 # A json report is rendered by a python3 pass rather than a hand-rolled
@@ -297,20 +308,30 @@ fi
 #   * every clause is tag-scoped: `tasks` is PRIMARY KEY (tag, id), so an
 #     unqualified lookup silently conflates tags the moment a second exists.
 #
-# Terminal statuses are excluded HERE rather than filtered later, because
-# "non-terminal" is exactly what both derived maps mean: a peer that has
-# already landed or been cancelled does not own a file or a commit any more.
+# EVERY task in the tag is enumerated, not just the non-terminal ones, because
+# the fleet loop has three outcomes to tell apart and only the store can: an id
+# it shows as live (audit the branch), an id it shows as done/cancelled
+# (skipped_terminal), and an id it does not know AT ALL (skipped_no_task — the
+# signature of a mistyped --tag, which a non-terminal-only enumeration would
+# launder into a benign-looking all-terminal sweep).
+#
+# The two derived maps below stay non-terminal-only, because "non-terminal" is
+# exactly what they mean: a peer that has already landed or been cancelled does
+# not own a file or a commit any more. So the group_concat — the only expensive
+# clause — is still computed for live rows ONLY, and a terminal row costs one
+# id and one status.
 _TAG_SQL="${TAG//\'/\'\'}"
 _MD_SQL="CASE WHEN json_valid(t.metadata) THEN t.metadata ELSE '{}' END"
 _ENUM_SQL="SELECT
     t.id,
     coalesce(t.status,''),
-    coalesce((SELECT group_concat(
+    CASE WHEN t.status IN ('done','cancelled') THEN ''
+         ELSE coalesce((SELECT group_concat(
                 replace(replace(replace(value,char(10),' '),char(31),' '),char(9),' '),
                 char(9))
-                FROM json_each($_MD_SQL,'\$.files')),'')
+                FROM json_each($_MD_SQL,'\$.files')),'') END
   FROM tasks t
- WHERE t.tag='$_TAG_SQL' AND t.status NOT IN ('done','cancelled')
+ WHERE t.tag='$_TAG_SQL'
  ORDER BY t.id;"
 
 # _DB_READABLE distinguishes "the query ran and returned nothing" from "the
@@ -320,7 +341,7 @@ _ENUM_SQL="SELECT
 _TASK_ROWS=""
 _DB_READABLE=0
 if [ ! -s "$DB" ]; then
-    warn "Task store is missing or empty: $DB — reporting zero branches."
+    warn "Task store is missing or empty: $DB — every branch will report scope=UNKNOWN."
 else
     if [ -n "$_SQLITE_BIN" ]; then
         if _TASK_ROWS="$("$_SQLITE_BIN" -readonly -separator "$_FS" "$DB" "$_ENUM_SQL" 2>/dev/null)"; then
@@ -352,24 +373,32 @@ PY
         fi
     fi
     if [ "$_DB_READABLE" = 0 ]; then
-        warn "Task store could not be read: $DB — reporting zero branches."
+        warn "Task store could not be read: $DB — every branch will report scope=UNKNOWN."
     fi
 fi
 
 # ── the two derived maps ──────────────────────────────────────────────────────
 # Bash associative arrays, both keyed by a value that cannot collide:
 #   _STATUS[id]        -> the task's non-terminal status
+#   _TERMINAL[id]      -> set for an id the store shows as done/cancelled
 #   _DECLARED[id]      -> its declared paths, TAB-separated (empty = undeclared)
 #   _PEER_OWNER[path]  -> space-separated non-terminal ids declaring <path>
 # _PEER_OWNER is derived from non-terminal rows ONLY, because "owned by a task
 # whose status is still non-terminal" is precisely what the peer_files flag
-# means — a done/cancelled declarer is not a peer.
+# means — a done/cancelled declarer is not a peer. _TERMINAL is the store's
+# POSITIVE evidence of termination, and it is what keeps "the store says this
+# branch's task is finished" distinct from "the store has never heard of this
+# id": absence from _STATUS alone cannot tell those apart.
 declare -A _STATUS=()
+declare -A _TERMINAL=()
 declare -A _DECLARED=()
 declare -A _PEER_OWNER=()
 
 while IFS="$_FS" read -r _id _st _files; do
     [ -n "${_id:-}" ] || continue
+    case "$_st" in
+        done|cancelled) _TERMINAL["$_id"]=1; continue ;;
+    esac
     _STATUS["$_id"]="$_st"
     _DECLARED["$_id"]="${_files:-}"
     [ -n "${_files:-}" ] || continue
@@ -379,6 +408,12 @@ while IFS="$_FS" read -r _id _st _files; do
     done <<< "${_files//$_LS/$'\n'}"
 done <<< "$_TASK_ROWS"
 unset _id _st _files _path
+
+# _is_live <id> — is <id> in the store's non-terminal set? MEMBERSHIP, not
+# truthiness: a task row whose status column is empty is still a live task, and
+# all three sites that ask this question (the fleet loop's triage, the
+# per-branch gate, the peer-citation filter) must answer it identically.
+_is_live() { [ -n "${_STATUS["$1"]+set}" ]; }
 
 # ── repo preflight ────────────────────────────────────────────────────────────
 # A non-git --repo or an unresolvable --main-ref is NOT fatal (R3/R4): every
@@ -398,6 +433,7 @@ _BRANCH_PREFIX_RE="$(task_citation_regex_escape "$BRANCH_PREFIX")"
 # ── per-branch measurement ────────────────────────────────────────────────────
 # Row fields, in the order the header documents. Set by _measure_branch and
 # consumed by the emitters; declared here so the field list has ONE definition.
+_DB_WARNED=0
 R_TASK=""; R_STATUS=""; R_MERGE_BASE=""; R_BEHIND=""; R_COMMITS=""
 R_PEER_COMMITS=""; R_CHANGED=""; R_FOREIGN=""; R_PEER_FILES=""; R_PEERS=""
 R_SCOPE=""; R_SIGNATURE=""
@@ -453,13 +489,19 @@ _measure_branch() {
     #
     # Sited at this ONE funnel rather than on the --task branch, so "a failure
     # leaves the row exactly as _row_unknown shaped it" stays a property of the
-    # single entry point both modes call. Fleet mode is unaffected either way:
-    # its loop already filters on _STATUS before calling.
+    # single entry point both modes call — fleet mode reaches it too, for every
+    # ref it cannot resolve to a status, which is the whole pool when the store
+    # never loaded. The warning is therefore emitted ONCE per run rather than
+    # once per branch: the condition is a property of the invocation, not of
+    # the branch, and 1095 copies of it would bury the rest of stderr.
     if [ "$_DB_READABLE" = 0 ]; then
-        warn "Task store was not read ($DB) — reporting scope=UNKNOWN for task $id."
+        if [ "$_DB_WARNED" -eq 0 ]; then
+            _DB_WARNED=1
+            warn "Task store was not read ($DB) — reporting scope=UNKNOWN for every branch."
+        fi
         return 0
     fi
-    if [ -z "${_STATUS["$id"]:-}" ]; then
+    if ! _is_live "$id"; then
         warn "Task $id is not in the non-terminal set for tag '$TAG' — reporting scope=UNKNOWN."
         return 0
     fi
@@ -543,7 +585,7 @@ _census_commits() {
             [ -n "$peer_id" ] || continue
             [ "$peer_id" != "$id" ] || continue
             # (a) only a task that is still non-terminal is a peer.
-            [ -n "${_STATUS["$peer_id"]:-}" ] || continue
+            _is_live "$peer_id" || continue
             found=1
             commit_peers="$commit_peers$peer_id"$'\n'
         done < <(task_citation_peer_ids "$msg" "$_BRANCH_PREFIX_RE")
@@ -720,13 +762,15 @@ if [ "$TASK_MODE" -eq 1 ]; then
 fi
 
 # ── fleet mode ────────────────────────────────────────────────────────────────
-# Candidates are the INTERSECTION of the non-terminal ids from the store read
-# and the refs that actually exist, so a terminal-backed branch costs no git
-# work at all beyond the one for-each-ref, and a task with no branch costs
-# none. Rows are emitted in ascending task id.
+# Measured candidates are the INTERSECTION of the non-terminal ids from the
+# store read and the refs that actually exist, so a terminal-backed branch
+# costs no git work at all beyond the one for-each-ref, and a task with no
+# branch costs none. Every ref outside that intersection is still ACCOUNTED
+# for — by a named skip counter, or by an UNKNOWN row when the store itself is
+# what could not be consulted. Rows are emitted in ascending task id.
 N_BRANCHES=0; N_SUSPECT=0; N_PEER_FILES=0; N_OUT_OF_SCOPE=0
 N_UNDECLARED=0; N_CLEAN=0; N_UNKNOWN=0
-N_SKIPPED_TERMINAL=0; N_SKIPPED_NONNUMERIC=0
+N_SKIPPED_TERMINAL=0; N_SKIPPED_NONNUMERIC=0; N_SKIPPED_NO_TASK=0
 
 # _tally — classify the current row into exactly one counter.
 #
@@ -762,8 +806,26 @@ while IFS= read -r _ref; do
             N_SKIPPED_NONNUMERIC=$((N_SKIPPED_NONNUMERIC + 1))
             continue ;;
     esac
-    if [ -z "${_STATUS["$_id"]:-}" ]; then
-        N_SKIPPED_TERMINAL=$((N_SKIPPED_TERMINAL + 1))
+    # A ref leaves the report WITHOUT a row only when the store both answered
+    # and accounted for it — hence the `$_DB_READABLE` conjunct, which is the
+    # whole fix: an unconsulted ref used to fall into skipped_terminal, a
+    # counter whose documented meaning is "the backing task is done or
+    # cancelled", so a typo'd --db reported an all-clean fleet forever with the
+    # SUSPECT branch invisible on stdout, the caller's only result channel
+    # (R3). Now a store that answered nothing yields a measured-nothing
+    # UNKNOWN row per ref instead, via the same funnel every other degradation
+    # takes (R4).
+    #
+    # The two skip reasons are counted apart because they need opposite
+    # responses: skipped_terminal is a retired branch, skipped_no_task is the
+    # store not carrying that id under this --tag at all — which at four digits
+    # means the tag is wrong, not that the pool is finished.
+    if ! _is_live "$_id" && [ "$_DB_READABLE" = 1 ]; then
+        if [ -n "${_TERMINAL["$_id"]:-}" ]; then
+            N_SKIPPED_TERMINAL=$((N_SKIPPED_TERMINAL + 1))
+        else
+            N_SKIPPED_NO_TASK=$((N_SKIPPED_NO_TASK + 1))
+        fi
         continue
     fi
     _measure_branch "$_id"
@@ -773,5 +835,17 @@ done < <(_git for-each-ref --format='%(refname:short)' \
              "refs/heads/${BRANCH_PREFIX}*" 2>/dev/null | sort -t/ -k2 -n)
 unset _ref _id
 
-_render_report "branches=$N_BRANCHES suspect=$N_SUSPECT peer_files=$N_PEER_FILES out_of_scope=$N_OUT_OF_SCOPE undeclared=$N_UNDECLARED clean=$N_CLEAN unknown=$N_UNKNOWN skipped_terminal=$N_SKIPPED_TERMINAL skipped_nonnumeric=$N_SKIPPED_NONNUMERIC"
+# The two aggregate stderr diagnostics, emitted once and only when they apply.
+# A pool of refs whose tag holds NO live task at all is never a legitimate
+# steady state, so it is called out in its own right rather than left to be
+# inferred from a counter.
+if [ "$N_SKIPPED_NO_TASK" -gt 0 ]; then
+    if [ "${#_STATUS[@]}" -eq 0 ]; then
+        warn "Tag '$TAG' has no non-terminal tasks at all, yet $N_SKIPPED_NO_TASK ${BRANCH_PREFIX}* refs exist — is --tag correct? Nothing was audited."
+    else
+        warn "$N_SKIPPED_NO_TASK ${BRANCH_PREFIX}* refs name an id absent from tag '$TAG' — counted as skipped_no_task, not audited."
+    fi
+fi
+
+_render_report "branches=$N_BRANCHES suspect=$N_SUSPECT peer_files=$N_PEER_FILES out_of_scope=$N_OUT_OF_SCOPE undeclared=$N_UNDECLARED clean=$N_CLEAN unknown=$N_UNKNOWN skipped_terminal=$N_SKIPPED_TERMINAL skipped_nonnumeric=$N_SKIPPED_NONNUMERIC skipped_no_task=$N_SKIPPED_NO_TASK"
 exit 0

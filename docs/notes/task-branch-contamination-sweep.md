@@ -151,9 +151,14 @@ branches = suspect + peer_files + out_of_scope + undeclared + clean + unknown
 ```
 
 A `SUSPECT` row is counted under `suspect` and nowhere else, which is what keeps the partition
-exclusive. Two further counters cross-cut it:
+exclusive. Three further counters cross-cut it, one per REASON a ref yielded no row — each of them
+something the store positively said, never a guess standing in for an answer it never gave:
 
-* `skipped_terminal` — a `task/*` ref whose backing task is `done` or `cancelled`.
+* `skipped_terminal` — the store shows the backing task `done` or `cancelled`.
+* `skipped_no_task` — the store was read and does not carry that id under `--tag` **at all**. A
+  four-digit count here is the signature of a mistyped `--tag`, not of a retired pool; it is also
+  called out on stderr, and a tag with *no* live tasks at all gets its own louder warning, since
+  that is never a legitimate steady state.
 * `skipped_nonnumeric` — a ref whose suffix is not a number (`task/1741-recovered`,
   `task/208-merge`, `task/2962-20260530T173412Z`). **48 of the live pool's 1095 `task/*` refs** are
   in this class; they are skipped with a note on stderr, never silently dropped and never an error.
@@ -162,12 +167,18 @@ A task with no branch ref produces no row at all in fleet mode. In `--task` mode
 row — a degraded `UNKNOWN` one — because the caller asked about that branch by name and is owed an
 answer.
 
-That asymmetry is why `--task` also degrades on the *store* side. Fleet mode never measures a
-branch whose id is missing from the non-terminal set — it has no row to emit. `--task` owes a row
-either way, so a typo'd `--db`, a wrong `--tag`, a store it cannot read, or an id whose task has
-gone terminal all produce `scope=UNKNOWN` with `-` in every measured column and a warning on
-stderr. Read `UNKNOWN` as *"this consult answered nothing"*, never as *"this branch is fine"* —
-the point of the degraded shape is that the two can never be confused on stdout.
+**A skip is never a degradation channel.** The store failing to answer is not a property of any
+one ref, so it is not reported as one: when the store could not be consulted at all (missing,
+0-byte, unreadable, no SQL engine), fleet mode measures nothing but still emits a row for **every**
+`task/*` ref, each `scope=UNKNOWN` with `-` in every column, plus one warning on stderr. That is
+deliberate — a short report and an all-clean report are the same bytes to a caller reading stdout,
+so a timer wired with a typo'd `--db` must not be able to report a quiet fleet forever.
+
+`--task` degrades on the store side for the same reason, and owes a row either way: a typo'd
+`--db`, a wrong `--tag`, a store it cannot read, or an id whose task has gone terminal all produce
+`scope=UNKNOWN` with `-` in every measured column and a warning on stderr. Read `UNKNOWN` as
+*"this consult answered nothing"*, never as *"this branch is fine"* — the point of the degraded
+shape is that the two can never be confused on stdout.
 
 ## How to read a report
 
@@ -247,7 +258,8 @@ mutation-injection check proving the assertion can fail:
   set, an unresolvable ref, a failed diff or a failed SQL engine degrades the affected row (or the
   whole report) to `UNKNOWN` with a warning on stderr, never an abort. The verdict is decided
   *before* measurement, so a degraded row carries `-` in every column and can never be read as a
-  benign one.
+  benign one. Fleet mode's "emit no row at all" is **not** a degradation channel: a ref is dropped
+  only on the store's positive evidence about it, each such reason carrying its own counter.
 * **R5** — `behind` is context, never a trigger.
 
 ## Cross-references

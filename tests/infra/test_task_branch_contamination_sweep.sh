@@ -350,28 +350,42 @@ run_helper --audit --db "$T5_DB" --repo "$REPO" --tag other
 assert "T5: --tag other sees the row that exists only under 'other'" test -n "$(_row 9202)"
 assert "T5: --tag other also sees the id present under both tags" test -n "$(_row 9201)"
 
-# (d) degraded stores: zero branches, summary still emitted, exit 0
+# (d) degraded stores: every ref reported UNKNOWN, summary still emitted, exit 0
+#
+# A store that never answered says NOTHING about the pool, so the report must
+# not shrink to silence — a short report and an all-clean one are the same
+# bytes to a caller reading stdout. Block 9 asserts the counters and the row
+# shape; here the point is only that the rows are PRESENT and that not one of
+# them carries a verdict. _assert_no_degraded_rows is the shared shape.
 T4_MISSING="$(mktemp -d "${TMPDIR:-/tmp}/task-branch-sweep-nodb-XXXXXX")"
 _TMPDIRS+=("$T4_MISSING")
 
+# _assert_unconsulted_rows <label> — every emitted row is the degraded shape.
+_assert_unconsulted_rows() {
+    assert "T4[$1]: still emits a summary" _has_summary
+    assert "T4[$1]: emits a row for every task/* ref, not silence" \
+        bash -c '[ "$(printf "%s\n" "$1" | grep -c "^task=")" -eq 2 ]' _ "$OUT"
+    assert "T4[$1]: and every one of them is UNKNOWN, never a verdict" \
+        bash -c 'rows="$(printf "%s\n" "$1" | grep "^task=")"
+                 [ "$(printf "%s\n" "$rows" | grep -c "scope=UNKNOWN signature=-$")" \
+                   -eq "$(printf "%s\n" "$rows" | wc -l)" ]' _ "$OUT"
+}
+
 run_helper --audit --db "$T4_MISSING/absent.db" --repo "$REPO"
 assert "T4[missing db]: exits 0"              test "$RC" -eq 0
-assert "T4[missing db]: still emits a summary" _has_summary
-assert "T4[missing db]: emits no branch rows"  bash -c '! printf "%s\n" "$1" | grep -q "^task="' _ "$OUT"
 assert "T4[missing db]: warns on stderr"       test -n "$ERR_OUT"
+_assert_unconsulted_rows "missing db"
 
 : > "$T4_MISSING/empty.db"
 run_helper --audit --db "$T4_MISSING/empty.db" --repo "$REPO"
 assert "T4[0-byte db]: exits 0"               test "$RC" -eq 0
-assert "T4[0-byte db]: still emits a summary"  _has_summary
-assert "T4[0-byte db]: emits no branch rows"   bash -c '! printf "%s\n" "$1" | grep -q "^task="' _ "$OUT"
+_assert_unconsulted_rows "0-byte db"
 
 cp "$T5_DB" "$T4_MISSING/unreadable.db"
 chmod 000 "$T4_MISSING/unreadable.db"
 run_helper --audit --db "$T4_MISSING/unreadable.db" --repo "$REPO"
 assert "T4[unreadable db]: exits 0"              test "$RC" -eq 0
-assert "T4[unreadable db]: still emits a summary" _has_summary
-assert "T4[unreadable db]: emits no branch rows"  bash -c '! printf "%s\n" "$1" | grep -q "^task="' _ "$OUT"
+_assert_unconsulted_rows "unreadable db"
 chmod 644 "$T4_MISSING/unreadable.db"
 
 # (f) the two SQL engines are interchangeable, not one a stub.
@@ -832,7 +846,7 @@ _mk_repo
 F_EMPTY_DB="$DB"
 run_helper --audit --db "$F_EMPTY_DB" --repo "$REPO"
 for _k in branches suspect peer_files out_of_scope undeclared clean unknown \
-          skipped_terminal skipped_nonnumeric; do
+          skipped_terminal skipped_nonnumeric skipped_no_task; do
     _assert_summary "F5: $_k=0 is emitted, not omitted, on an empty pool" "$_k" 0
 done
 
@@ -865,6 +879,7 @@ d=json.load(sys.stdin)
 s=d[\"summary\"]
 assert s[\"branches\"]==7 and s[\"suspect\"]==1 and s[\"clean\"]==2, s
 assert s[\"skipped_terminal\"]==1 and s[\"skipped_nonnumeric\"]==1, s
+assert s[\"skipped_no_task\"]==0, s
 "' _ "$OUT"
 
 # (f) the two formats agree
@@ -882,7 +897,8 @@ for b in d[\"branches\"]:
 s=d[\"summary\"]
 print(\"SWEEP: \" + \" \".join(f\"{k}={s[k]}\" for k in
       [\"branches\",\"suspect\",\"peer_files\",\"out_of_scope\",\"undeclared\",
-       \"clean\",\"unknown\",\"skipped_terminal\",\"skipped_nonnumeric\"]))
+       \"clean\",\"unknown\",\"skipped_terminal\",\"skipped_nonnumeric\",
+       \"skipped_no_task\"]))
 ")"; [ "$rendered" = "$2" ]' _ "$F7_JSON" "$F7_TABLE"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1133,5 +1149,114 @@ _assert_degraded "wrong tag" --db "$D_DB" --tag nosuchtag
 cp "$D_DB" "$D_SCRATCH/done.db"
 _sq "$D_SCRATCH/done.db" "UPDATE tasks SET status='done' WHERE id=900;"
 _assert_degraded "terminal task" --db "$D_SCRATCH/done.db"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block 9 (step-24) — --audit fleet mode must fail SAFE too
+#
+# Block 8 closed the fail-open in --task. The SAME fail-open survived in the
+# fleet path, one level up: there the store miss was never a DEGRADATION at
+# all, it was a SKIP — every ref fell into the skipped_terminal counter, whose
+# documented meaning is "the backing task is done or cancelled". A typo'd --db
+# or --tag therefore reported `suspect=0` over a pool it had never consulted,
+# with the SUSPECT branch absent from stdout, the caller's only result channel.
+#
+# The fixture is the smallest one that can expose it: ONE live task whose
+# branch is genuinely SUSPECT. Every case below asserts against a run that,
+# with a good store, finds it — so none of them can pass vacuously.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 9: fleet mode degradation matrix ---"
+
+_mk_tasks_db
+_mk_repo
+A_DB="$DB"
+A_REPO="$REPO"
+A_MAIN="$(git -C "$REPO" rev-parse main)"
+
+_add_task 800 in-progress '{"files":["own800.rs"]}'
+_add_task 801 pending     '{"files":["peer801.rs"]}'
+
+_branch_at "task/800" "$A_MAIN"
+_commit_files "task/800" "feat(800): its own declared file" own800.rs
+_commit_files "task/800" "chore: carries work for #801"     peer801.rs
+
+# ── the positive control ──────────────────────────────────────────────────────
+run_helper --audit --db "$A_DB" --repo "$A_REPO"
+assert "A0: the good-store baseline exits 0" test "$RC" -eq 0
+_assert_summary "A0: baseline audits the one live branch" branches 1
+_assert_summary "A0: baseline SEES the contamination"     suspect  1
+_assert_summary "A0: baseline skips nothing as terminal"  skipped_terminal 0
+_assert_summary "A0: baseline skips nothing as unknown-id" skipped_no_task 0
+
+A_SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/task-branch-sweep-fleet-XXXXXX")"
+_TMPDIRS+=("$A_SCRATCH")
+
+# ── (a) a store that could not be consulted at all ────────────────────────────
+# The ref must NOT be laundered into skipped_terminal: nothing was learned
+# about it, so it is reported — on stdout — as measured-nothing.
+_assert_fleet_unconsulted() {
+    local label="$1"; shift
+    run_helper --audit --repo "$A_REPO" "$@"
+    assert "A[$label]: exits 0 (R3)"        test "$RC" -eq 0
+    assert "A[$label]: warns on stderr (R4)" test -n "$ERR_OUT"
+    assert "A[$label]: the branch is NOT counted as terminal-backed" \
+        bash -c '[ "$(printf "%s\n" "$1" | grep "^SWEEP:" | tr " " "\n" | sed -n "s/^skipped_terminal=//p")" = 0 ]' \
+        _ "$OUT"
+    _assert_summary "A[$label]: the ref still yields a row" branches 1
+    _assert_summary "A[$label]: counted as unknown, not clean" unknown 1
+    _assert_summary "A[$label]: no benign verdict is invented" clean 0
+    _assert_field "A[$label]: the row is the degraded shape" 800 scope     UNKNOWN
+    _assert_field "A[$label]: signature is not a verdict"    800 signature "-"
+    _assert_field "A[$label]: foreign unmeasured"            800 foreign   "-"
+}
+
+_assert_fleet_unconsulted "missing db" --db "$A_SCRATCH/absent.db"
+
+cp "$A_DB" "$A_SCRATCH/unreadable.db"
+chmod 000 "$A_SCRATCH/unreadable.db"
+_assert_fleet_unconsulted "unreadable db" --db "$A_SCRATCH/unreadable.db"
+chmod 644 "$A_SCRATCH/unreadable.db"
+
+assert "A1: the unconsulted-store warning is emitted ONCE, not once per ref" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -c "Task store was not read")" -le 1 ]' \
+    _ "$ERR_OUT"
+
+# ── (b) the store WAS read; the tag is wrong ──────────────────────────────────
+# Here the refs genuinely are absent from the tag, so no row can be measured —
+# but "absent from the store" is not "finished", and reporting it as the latter
+# is what made a typo'd --tag look like a retired pool forever.
+run_helper --audit --db "$A_DB" --repo "$A_REPO" --tag bogus
+assert "A2: a wrong --tag exits 0 (R3)" test "$RC" -eq 0
+_assert_summary "A2: nothing is claimed to have been audited" branches 0
+_assert_summary "A2: the ref is NOT called terminal-backed"   skipped_terminal 0
+_assert_summary "A2: it is counted as an id the store lacks"  skipped_no_task 1
+assert "A2: and it is diagnosed on stderr, naming the tag" \
+    bash -c 'printf "%s\n" "$1" | grep -q "bogus"' _ "$ERR_OUT"
+
+# ── (c) the discriminator: a REAL terminal task still reads as terminal ───────
+# Same repo, same ref, same commits — only the store row differs. Without this
+# the new counter could be "everything is skipped_no_task now", which would be
+# a different lie in the same place.
+cp "$A_DB" "$A_SCRATCH/done.db"
+_sq "$A_SCRATCH/done.db" "UPDATE tasks SET status='done' WHERE id=800;"
+run_helper --audit --db "$A_SCRATCH/done.db" --repo "$A_REPO"
+_assert_no_row "A3: a done-backed branch still yields no row" 800
+_assert_summary "A3: ...counted as terminal, on the store's own evidence" skipped_terminal 1
+_assert_summary "A3: ...and NOT as an id the store lacks"                 skipped_no_task 0
+assert "A3: cancelled is terminal on the same evidence" \
+    bash -c 'cp "$1" "$2/cancelled.db"
+             LD_LIBRARY_PATH="" sqlite3 "$2/cancelled.db" "UPDATE tasks SET status='"'"'cancelled'"'"' WHERE id=800;"
+             out="$(bash "$3" --audit --db "$2/cancelled.db" --repo "$4" 2>/dev/null)"
+             printf "%s\n" "$out" | grep -q "skipped_terminal=1"' \
+    _ "$A_DB" "$A_SCRATCH" "$SCRIPT" "$A_REPO"
+
+# ── (d) the skip counters stay disjoint from the row partition ────────────────
+run_helper --audit --db "$A_DB" --repo "$A_REPO"
+assert "A4: skip counters never inflate the audited-branch count" \
+    bash -c 'v() { printf "%s\n" "$1" | grep "^SWEEP:" | tr " " "\n" | sed -n "s/^$2=//p"; }
+             [ "$(v "$1" branches)" -eq 1 ] || exit 1
+             for k in skipped_terminal skipped_nonnumeric skipped_no_task; do
+                 [ "$(v "$1" "$k")" -eq 0 ] || exit 1
+             done' _ "$OUT"
 
 test_summary
