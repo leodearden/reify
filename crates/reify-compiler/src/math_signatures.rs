@@ -953,32 +953,27 @@ mod tests {
         CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar())
     }
 
-    /// A `Scalar<Length>` element expression.
-    fn length_elem(v: f64) -> CompiledExpr {
+    /// A `Scalar<dimension>` element expression at an arbitrary dimension.
+    fn scalar_elem(v: f64, dimension: DimensionVector) -> CompiledExpr {
         CompiledExpr::literal(
             Value::Scalar {
                 si_value: v,
-                dimension: DimensionVector::LENGTH,
+                dimension,
             },
-            Type::Scalar {
-                dimension: DimensionVector::LENGTH,
-            },
+            Type::Scalar { dimension },
         )
+    }
+
+    /// A `Scalar<Length>` element expression.
+    fn length_elem(v: f64) -> CompiledExpr {
+        scalar_elem(v, DimensionVector::LENGTH)
     }
 
     /// A `Scalar<Mass>` element expression — a SECOND concrete dimension, so a
     /// literal can disagree with [`length_elem`] on dimension without either
     /// side being dimensionless.
     fn mass_elem(v: f64) -> CompiledExpr {
-        CompiledExpr::literal(
-            Value::Scalar {
-                si_value: v,
-                dimension: DimensionVector::MASS,
-            },
-            Type::Scalar {
-                dimension: DimensionVector::MASS,
-            },
-        )
+        scalar_elem(v, DimensionVector::MASS)
     }
 
     /// A `ListLiteral` of `elems` whose own `result_type` is `List(elem_ty)`.
@@ -1285,6 +1280,133 @@ mod tests {
                 n: 2,
                 quantity: Box::new(Type::dimensionless_scalar())
             }
+        );
+    }
+
+    // ── Heterogeneous matrix literals degrade the quantity slot (task 5889) ──
+
+    /// A 2×2 `matrix` `ListLiteral` of `elems` laid out row-major, for the
+    /// heterogeneity tests below (the pre-existing tests build their rows
+    /// inline, which reads fine at one or two call sites but not at four).
+    fn matrix_lit(rows: Vec<Vec<CompiledExpr>>) -> CompiledExpr {
+        let rows = rows
+            .into_iter()
+            .map(|cells| list_lit(cells, Type::dimensionless_scalar()))
+            .collect();
+        list_lit(rows, Type::List(Box::new(Type::dimensionless_scalar())))
+    }
+
+    /// Heterogeneity WITHIN row 0 degrades the quantity, while `n` stays row
+    /// 0's COLUMN count (D5 is untouched by this narrowing).
+    #[test]
+    fn matrix_result_type_heterogeneous_first_row_degrades_quantity_to_dimensionless() {
+        let arg = matrix_lit(vec![
+            vec![length_elem(1.0), real_elem(0.0), real_elem(0.0)],
+            vec![real_elem(0.0), real_elem(0.0), real_elem(0.0)],
+            vec![real_elem(0.0), real_elem(0.0), real_elem(0.0)],
+        ]);
+        assert_eq!(
+            math_fn_result_type("matrix", &[arg]),
+            Type::Tensor {
+                rank: 2,
+                n: 3,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "a matrix whose cells disagree must infer no dimension, while n stays the \
+             row-0 column count (3)"
+        );
+    }
+
+    /// THE LOAD-BEARING CASE: every row is internally homogeneous and the rows
+    /// disagree with EACH OTHER. This is the only test here that a row-0-only
+    /// heterogeneity check would still fail, so it is what forces `matrix_shape`
+    /// to inspect rows `[1..]` at all.
+    ///
+    /// It models the shape the false-reject was reported on: a stiffness /
+    /// compliance matrix (or a screw-theory spatial Jacobian) is block
+    /// structured, its translational rows carrying `N/m` and its rotational rows
+    /// `N·m/rad²` — uniform within a block, different across blocks. Cell
+    /// `[0][0]` is representative of nothing.
+    #[test]
+    fn matrix_result_type_heterogeneous_across_rows_degrades_quantity_to_dimensionless() {
+        let arg = matrix_lit(vec![
+            vec![
+                scalar_elem(1.0, DimensionVector::STIFFNESS),
+                scalar_elem(2.0, DimensionVector::STIFFNESS),
+            ],
+            vec![
+                scalar_elem(1.0, DimensionVector::ROTATIONAL_STIFFNESS),
+                scalar_elem(2.0, DimensionVector::ROTATIONAL_STIFFNESS),
+            ],
+        ]);
+        assert_eq!(
+            math_fn_result_type("matrix", &[arg]),
+            Type::Tensor {
+                rank: 2,
+                n: 2,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "rows that are each internally homogeneous but disagree ACROSS rows must \
+             still degrade — row 0 alone is not evidence about the matrix"
+        );
+    }
+
+    /// A later row that is not itself a `ListLiteral` is not inspectable, so the
+    /// literal is not fully known and the quantity degrades — the conservative
+    /// direction D7 already established at this function. `n` is still row 0's
+    /// column count.
+    #[test]
+    fn matrix_result_type_uninspectable_later_row_degrades_quantity_to_dimensionless() {
+        let row0 = list_lit(
+            vec![length_elem(1.0), length_elem(0.0)],
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        let row1 = CompiledExpr::value_ref(
+            ValueCellId::new("S", "r"),
+            Type::List(Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            })),
+        );
+        let arg = list_lit(
+            vec![row0, row1],
+            Type::List(Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            })),
+        );
+        assert_eq!(
+            math_fn_result_type("matrix", &[arg]),
+            Type::Tensor {
+                rank: 2,
+                n: 2,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "a row that cannot be inspected leaves the literal unknown, so the quantity \
+             degrades rather than being inferred from the rows that happen to be visible"
+        );
+    }
+
+    /// FENCE — a fully homogeneous dimensioned matrix KEEPS its precise
+    /// quantity. The change narrows when the inference applies; it is not a
+    /// blanket degrade of every dimensioned `matrix(…)`.
+    #[test]
+    fn matrix_result_type_homogeneous_dimensioned_keeps_quantity() {
+        let len_ty = Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        };
+        let arg = matrix_lit(vec![
+            vec![length_elem(1.0), length_elem(0.0)],
+            vec![length_elem(0.0), length_elem(1.0)],
+        ]);
+        assert_eq!(
+            math_fn_result_type("matrix", &[arg]),
+            Type::Tensor {
+                rank: 2,
+                n: 2,
+                quantity: Box::new(len_ty)
+            },
+            "every cell is Length, so the cells AGREE and the precise quantity survives"
         );
     }
 

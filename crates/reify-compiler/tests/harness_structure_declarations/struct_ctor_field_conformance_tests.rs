@@ -3344,6 +3344,64 @@ fn matrix_builtin_dimensioned_cell_at_dimensionless_matrix_param_warns_arg_type_
     );
 }
 
+const SRC_MATRIX_BLOCK_HETEROGENEOUS_AT_ROTATIONAL_STIFFNESS: &str = r#"module test.matrix_block_heterogeneous
+structure def Compliance { param k : Matrix<2, 2, RotationalStiffness> }
+structure def Root {
+    let c = Compliance(k: matrix([[1N/m, 0N/m], [0N*m/rad^2, 1N*m/rad^2]]))
+}
+"#;
+
+/// THE FALSE-REJECT the rule used to produce (task 5889): a correctly-declared
+/// BLOCK-STRUCTURED engineering matrix, warned on cell `[0][0]` alone.
+///
+/// A stiffness/compliance matrix — equivalently a screw-theory spatial Jacobian
+/// — mixes translational and rotational blocks: uniform `N/m` within one row
+/// block, `N·m/rad²` within the next. Cell `[0][0]` is representative of
+/// nothing, so a param declared at either block's dimension used to be rejected
+/// for the other block's. The 2×2 form here exercises the identical arm as the
+/// 6×6 the report named — this arm applies NO arity check — at one ninth the
+/// size.
+///
+/// After the fix `matrix_shape` inspects every cell of every row, finds no
+/// agreement, and infers `Type::dimensionless_scalar()`. `arg_quantity_slot_dimension`
+/// then returns `None` and the rule declines.
+///
+/// What this does NOT claim: the dual FALSE-ACCEPT — a genuinely wrong
+/// heterogeneous matrix — is not detected either. It is converted from
+/// accidental silence (cell `[0][0]` happening to agree) into principled
+/// silence: a heterogeneous aggregate names no dimension, so there is nothing
+/// to compare. Per-cell dimension checking is a separate, larger ruling.
+///
+/// Non-vacuity beyond the compile guard:
+/// [`matrix_builtin_cross_dimension_at_inertia_param_warns_arg_type_mismatch`]
+/// and
+/// [`matrix_builtin_dimensioned_cell_at_dimensionless_matrix_param_warns_arg_type_mismatch`]
+/// both reach this same arm through `matrix(…)` and REJECT, so silence here is
+/// a property of the literal's heterogeneity and not of the arm being
+/// unreachable.
+#[test]
+fn matrix_builtin_block_heterogeneous_at_rotational_stiffness_param_stays_clean() {
+    let module =
+        compile_source_with_stdlib(SRC_MATRIX_BLOCK_HETEROGENEOUS_AT_ROTATIONAL_STIFFNESS);
+    // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
+    // Load-bearing twice over: an unresolvable `Matrix<2, 2, RotationalStiffness>`,
+    // or an `N*m/rad^2` literal that failed to parse, would emit zero
+    // ctor-conformance diagnostics and read as a RULE success.
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a block-structured stiffness matrix at a Matrix<2,2,RotationalStiffness> param \
+         must stay SILENT — its cells disagree across row blocks, so the inferred \
+         quantity names no dimension. Rejecting it on cell [0][0]'s `N/m` is the \
+         false-reject task 5889 closes. Got: {diags:#?}"
+    );
+}
+
 const SRC_TENSOR_MATCHING_DIMENSION: &str = r#"module test.tensor_matching_dimension
 structure def Surface {
     param moi : Tensor<2, 3, MomentOfInertia>
