@@ -736,3 +736,49 @@ fn mcp_tool_call_on_large_stack_is_result_preserving() {
          parameters it reports"
     );
 }
+
+/// The dispatch runs on the shared engine lane's thread, not on the caller's.
+///
+/// The thread is observed through the PRODUCTION event-emitter seam rather than
+/// a test double: `TauriToolContext::focus_entity` does nothing but fire the
+/// emitter — no engine touch — so the name it records is the thread the DISPATCH
+/// ITSELF ran on. That is what stops this being a tautology about where a
+/// deliberately-planted probe was placed.
+///
+/// `sync_channel`, not `channel`: `with_event_emitter` requires
+/// `Fn(..) + Send + Sync + 'static`, and `mpsc::Sender` is `!Sync` while
+/// `SyncSender` is `Sync`. Capacity 1 never blocks — the emitter fires exactly
+/// once — and `mcp_tool_call_on_large_stack` blocks until the job completes, so
+/// the send has landed by the time `try_recv` runs.
+#[test]
+fn mcp_tool_call_on_large_stack_dispatches_on_the_shared_worker() {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Option<String>>(1);
+
+    let ctx = TauriToolContext::builder(make_engine())
+        .with_event_emitter(move |_name, _payload| {
+            let _ = tx.send(std::thread::current().name().map(str::to_owned));
+        })
+        .build();
+
+    let result = crate::mcp_context::mcp_tool_call_on_large_stack(
+        ctx,
+        "reify_focus_entity".to_string(),
+        serde_json::json!({"entity_path": "Bracket"}),
+    )
+    .expect("reify_focus_entity should dispatch successfully");
+    assert_eq!(
+        result["success"], true,
+        "the focus_entity tool must report success, or the emitter never fired \
+         and the thread observation below is vacuous"
+    );
+
+    let observed = rx
+        .try_recv()
+        .expect("the event emitter must have fired before the dispatch returned");
+    assert_eq!(
+        observed.as_deref(),
+        Some(crate::large_stack::WORKER_THREAD_NAME),
+        "the MCP dispatch must run on the persistent engine lane, not on the \
+         caller's ~2 MiB stack"
+    );
+}

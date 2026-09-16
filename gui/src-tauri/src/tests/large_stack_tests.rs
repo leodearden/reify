@@ -880,6 +880,66 @@ fn a_job_on_one_lane_may_submit_to_the_other_lane() {
     );
 }
 
+/// (r5) ONE lane serves BOTH the fourteen projection commands and the MCP
+/// dispatch — task 5466's headline invariant, that the MCP path JOINS the
+/// existing mechanism rather than adding a second one.
+///
+/// `ThreadId` equality, not thread NAME, is what pins that. A name is a label:
+/// a second lane built with the same `&'static str` would satisfy a name check
+/// while being a different thread with its own queue and its own 256 MiB
+/// mapping — exactly the "two divergent large-stack approaches" outcome this
+/// task exists to avoid. `ThreadId`s are never reused within a process, so
+/// equality here proves the two submissions landed on the SAME consumer.
+///
+/// The MCP side's thread is observed through the PRODUCTION event-emitter seam
+/// (`TauriToolContext::focus_entity` fires the emitter and touches no engine),
+/// so the id recorded is the thread the dispatch itself ran on.
+///
+/// Non-vacuity: both ids are also asserted DIFFERENT from the caller's. A
+/// degraded lane runs its job inline and reports the caller's id, which would
+/// make the equality above trivially true.
+#[test]
+fn the_mcp_dispatch_shares_the_one_engine_lane() {
+    use crate::large_stack::run_on_worker;
+    use crate::mcp_context::{TauriToolContext, mcp_tool_call_on_large_stack};
+
+    let caller_id = std::thread::current().id();
+
+    let (tx, rx) = std::sync::mpsc::sync_channel::<std::thread::ThreadId>(1);
+    let ctx = TauriToolContext::builder(crate::tests::make_test_engine())
+        .with_event_emitter(move |_name, _payload| {
+            let _ = tx.send(std::thread::current().id());
+        })
+        .build();
+
+    mcp_tool_call_on_large_stack(
+        ctx,
+        "reify_focus_entity".to_string(),
+        serde_json::json!({"entity_path": "Bracket"}),
+    )
+    .expect("reify_focus_entity should dispatch successfully");
+
+    let mcp_id = rx
+        .try_recv()
+        .expect("the event emitter must have fired before the dispatch returned");
+    let command_id = run_on_worker(|| std::thread::current().id());
+
+    assert_ne!(
+        mcp_id, caller_id,
+        "the MCP dispatch must not have degraded to an inline call on the caller"
+    );
+    assert_ne!(
+        command_id, caller_id,
+        "the engine lane must not have degraded to an inline call on the caller"
+    );
+    assert_eq!(
+        mcp_id, command_id,
+        "the MCP dispatch must share the ONE engine lane with the projection \
+         commands — a second large-stack mechanism is the outcome this routing \
+         exists to prevent"
+    );
+}
+
 /// (s) LARGE STACK — the LSP lane survives ~16 MiB of recursion, 8x the 2 MiB
 /// default a tokio worker gives it today. An impl that built the lane without
 /// [`crate::large_stack::COMPILE_STACK_SIZE`] fails here.
