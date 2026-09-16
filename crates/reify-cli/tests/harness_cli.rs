@@ -133,6 +133,8 @@ mod cli_materials_starter_library_golden;
 mod cli_module_visibility_example;
 #[path = "harness_cli/cli_objective_inheritance_golden.rs"]
 mod cli_objective_inheritance_golden;
+#[path = "harness_cli/cli_orientation_rotvec_dimension.rs"]
+mod cli_orientation_rotvec_dimension;
 #[path = "harness_cli/cli_purpose.rs"]
 mod cli_purpose;
 #[path = "harness_cli/cli_purpose_stdlib.rs"]
