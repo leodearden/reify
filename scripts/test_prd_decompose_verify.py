@@ -1744,6 +1744,14 @@ class TestMjsDroppedLeafLabels(unittest.TestCase, _HeadSliceHelperMixin):
     text / neither-fallback), and the null-safety fix for leafLabelFor — a
     leaf element that is itself null/undefined, or a leaves array shorter than
     leaf_verdicts, must label via the index fallback rather than throwing.
+
+    And (task #7369 review round 2): the pipeline()-contract defense. Every
+    case above trusts that leaf_verdicts is exactly leaves.length long — the
+    contract the real pipeline() runtime is documented to uphold, but which
+    this repo cannot pin. If leaf_verdicts ever comes back SHORTER than
+    leaves (a hypothetical compacting runtime), the leaves past its end have
+    no hole to find; droppedLeafLabels must name that gap explicitly rather
+    than silently under-counting.
     """
 
     def _helper_name(self) -> str:
@@ -1781,6 +1789,15 @@ const OBJECT_LEAVES = [{ signal: "sig-a" }, { text: "txt-b" }, {}];
         [null, "a"], [null, {blocks: false}]),
     short_leaves_array: droppedLeafLabels(
         ["a"], [null, null]),
+    // contract violation: leaf_verdicts came back SHORTER than leaves (a
+    // hypothetical compacting pipeline()) — the missing tail must be named,
+    // not silently invisible.
+    contract_violation_shrunk_array: droppedLeafLabels(
+        LEAVES, [{blocks: false}, {blocks: false}, {blocks: false}]),
+    // shrinkage combined with a real hole inside the surviving prefix — both
+    // must be reported.
+    contract_violation_with_real_drop: droppedLeafLabels(
+        LEAVES, [null, {blocks: false}, {blocks: false}]),
 }"""
 
     @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs helper contract test")
@@ -1823,6 +1840,22 @@ const OBJECT_LEAVES = [{ signal: "sig-a" }, { text: "txt-b" }, {}];
         self.assertEqual(
             cases["short_leaves_array"],
             ["<dropped-leaf:0:a>", "<dropped-leaf:1:leaf-1>"],
+        )
+
+        # Contract violation (task #7369 review round 2): leaf_verdicts came
+        # back shorter than leaves — 5 leaves, only 3 verdict slots, none of
+        # them null. The 2 missing leaves must still surface as a named,
+        # counted hole instead of vanishing.
+        self.assertEqual(
+            cases["contract_violation_shrunk_array"],
+            ["<dropped-leaf:contract-violation:2>"],
+            "a leaf_verdicts array shorter than leaves must name the gap, not vanish it",
+        )
+        # Shrinkage stacks with a real hole in the surviving prefix: both the
+        # named null at index 0 and the contract-violation gap must appear.
+        self.assertEqual(
+            cases["contract_violation_with_real_drop"],
+            ["<dropped-leaf:0:leaf0>", "<dropped-leaf:contract-violation:2>"],
         )
 
 
@@ -2547,6 +2580,7 @@ console.log(MARK + JSON.stringify(schemas));
 _MJS_RESULT_MARK = "SCENARIO_RESULT:"
 _MJS_PHASES_MARK = "SCENARIO_PHASES:"
 _MJS_LOGS_MARK = "SCENARIO_LOGS:"
+_MJS_PIPELINE_ERRORS_MARK = "SCENARIO_PIPELINE_ERRORS:"
 
 
 def _mjs_scenario_source(leaves_js: str, responses_js: str) -> str:
@@ -2570,6 +2604,7 @@ const MJS_PATH = "{mjs_abs}";
 const RESULT_MARK = "{_MJS_RESULT_MARK}";
 const PHASES_MARK = "{_MJS_PHASES_MARK}";
 const LOGS_MARK = "{_MJS_LOGS_MARK}";
+const PIPELINE_ERRORS_MARK = "{_MJS_PIPELINE_ERRORS_MARK}";
 
 // ── mock: agent(prompt, opts) — parameterized, and records each phase ────────
 globalThis.__PHASES = [];
@@ -2593,6 +2628,14 @@ globalThis.agent = async (prompt, opts = {{}}) => {{
 // instead of discarding it — otherwise a genuine .mjs stage defect (a
 // TypeError from a renamed field, a bad JSON.stringify arg) is invisible in
 // these scenario tests, indistinguishable from an intentionally-thrown mock.
+//
+// This is a HARNESS self-check, not SUT behavior — the real .mjs never calls
+// this catch block, only this mock does — so it is recorded into its own
+// __PIPELINE_ERRORS channel rather than __LOG_LINES (task #7369 review round
+// 2). __LOG_LINES stays a faithful, harness-untouched record of exactly what
+// the .mjs itself passed to log(), so a future assertion over it (an exact
+// line count, an "the .mjs logged nothing on this path" check) can't be
+// tripped up by text this harness injected.
 globalThis.pipeline = async (items, ...stages) => {{
     const results = [];
     for (const item of items) {{
@@ -2602,7 +2645,7 @@ globalThis.pipeline = async (items, ...stages) => {{
                 val = await stage(val, item, results.length);
             }}
         }} catch (e) {{
-            globalThis.__LOG_LINES.push(`pipeline[${{results.length}}] failed: ` + e.message);
+            globalThis.__PIPELINE_ERRORS.push(`pipeline[${{results.length}}] failed: ` + e.message);
             val = null;
         }}
         results.push(val);
@@ -2613,6 +2656,7 @@ globalThis.pipeline = async (items, ...stages) => {{
 globalThis.parallel = async (thunks) => Promise.all(thunks.map(t => t()));
 globalThis.__LOG_LINES = [];
 globalThis.log = (..._a) => {{ globalThis.__LOG_LINES.push(_a.map(String).join(" ")); }};
+globalThis.__PIPELINE_ERRORS = [];
 globalThis.phase = (..._a) => {{}};
 globalThis.args = {leaves_js};
 globalThis.budget = {{ total: null, spent: () => 0, remaining: () => Infinity }};
@@ -2626,6 +2670,7 @@ const result = await new AsyncFunction(src)();
 console.log(RESULT_MARK + JSON.stringify(result));
 console.log(PHASES_MARK + JSON.stringify(globalThis.__PHASES));
 console.log(LOGS_MARK + JSON.stringify(globalThis.__LOG_LINES));
+console.log(PIPELINE_ERRORS_MARK + JSON.stringify(globalThis.__PIPELINE_ERRORS));
 """
 
 
@@ -2702,6 +2747,24 @@ class _MjsScenarioMixin:
                      if ln.startswith(_MJS_LOGS_MARK)]
         self.assertTrue(log_lines, f"no logs marker; stdout: {out!r}")
         return json.loads(log_lines[-1][len(_MJS_LOGS_MARK):])
+
+    def _run_scenario_pipeline_errors(self, leaves_js: str, responses_js: str):
+        """Return the harness mock pipeline()'s own caught-error records.
+
+        This is a HARNESS self-check channel, not SUT output (task #7369
+        review round 2): it reads __PIPELINE_ERRORS, which only the scenario
+        mock's catch block writes to, never the .mjs itself — kept separate
+        from _run_scenario_logs's __LOG_LINES so that channel stays a faithful
+        record of exactly what prd-decompose-verify.mjs passed to log().
+        Cached the same way as _run_scenario_logs (see its docstring).
+        """
+        rc, out, err = _run_node_module(_mjs_scenario_source(leaves_js, responses_js))
+        self.assertEqual(
+            rc, 0, f"node exited {rc}; stderr: {err!r}; stdout: {out!r}")
+        error_lines = [ln for ln in out.splitlines()
+                       if ln.startswith(_MJS_PIPELINE_ERRORS_MARK)]
+        self.assertTrue(error_lines, f"no pipeline-errors marker; stdout: {out!r}")
+        return json.loads(error_lines[-1][len(_MJS_PIPELINE_ERRORS_MARK):])
 
 
 # ---------------------------------------------------------------------------
@@ -3088,6 +3151,22 @@ class TestMjsBatchDisposition(unittest.TestCase, _MjsScenarioMixin):
         self.assertEqual(verdict["blocking"], ["<dropped-leaf:1:doomed leaf (theta)>"])
 
     @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_pipeline_dropped_leaf_does_not_shrink_leaves_total(self):
+        """`leaves_total` must count the SUBMITTED batch, not just the leaves
+        that survived to `filtered` (task #7369 review): before this fix,
+        leaves_total was filtered.length, so this exact 2-leaf/1-dropped
+        scenario reported leaves_total: 1 — reading as full coverage — while
+        `blocking` simultaneously named a leaf that was never adjudicated.
+        Only "ok leaf (eta)" (leaves[0]) actually ran a probe, so
+        leaves_probed must stay 1 even though leaves_total is now 2.
+        """
+        verdict, _ = self._run_scenario(self._E_LEAVES, self._E_RESPONSES)
+        self.assertEqual(verdict.get("leaves_total"), 2,
+                         "leaves_total must count the whole submitted batch, dropped or not")
+        self.assertEqual(verdict.get("leaves_probed"), 1,
+                         "the dropped leaf never ran a probe and must not count as probed")
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
     def test_pipeline_dropped_leaf_logs_the_caught_error(self):
         """The mock pipeline()'s catch must record the throw, not swallow it
         (task #7369 review): a genuine .mjs stage defect and an intentionally
@@ -3095,12 +3174,18 @@ class TestMjsBatchDisposition(unittest.TestCase, _MjsScenarioMixin):
         no trace of why. Assert the throw path actually fired, the way the
         real runtime's own `pipeline[<index>] failed: <message>` record would
         let a reader confirm it, instead of only inferring it from the verdict.
+
+        This is a harness self-check: it verifies the scenario mock's own
+        catch block, not any behavior of prd-decompose-verify.mjs, so it
+        reads the dedicated __PIPELINE_ERRORS channel (task #7369 review round
+        2) rather than __LOG_LINES — the latter is reserved for the .mjs's own
+        log() output and must never carry harness-injected text.
         """
-        logs = self._run_scenario_logs(self._E_LEAVES, self._E_RESPONSES)
-        combined = "\n".join(logs)
+        errors = self._run_scenario_pipeline_errors(self._E_LEAVES, self._E_RESPONSES)
+        combined = "\n".join(errors)
         self.assertIn(
             "pipeline[1] failed: enumerator exploded", combined,
-            f"expected the caught enumerator error at index 1 in the log; got {logs!r}",
+            f"expected the caught enumerator error at index 1; got {errors!r}",
         )
 
     # ── (F) zero leaves — the empty-batch early return owes the same contract ─
@@ -3122,6 +3207,19 @@ class TestMjsBatchDisposition(unittest.TestCase, _MjsScenarioMixin):
         self.assertEqual(verdict.get("leaves_total"), 0)
         self.assertEqual(verdict.get("leaves_probed"), 0)
         self.assertEqual(phases, [], "zero leaves must never invoke any agent stage")
+
+        # _assert_consumer_contract only pins a hand-picked subset of keys —
+        # exactly the kind of subset check that let the zero-leaf path drift
+        # from the aggregation tail's key set in the first place (task #7369
+        # review round 2). Pin the FULL key set instead, against a populated
+        # scenario that goes through the normal tail: this single assertion
+        # subsumes any per-key list and cannot itself drift, because both
+        # paths now build through the shared batchVerdict() constructor.
+        populated, _ = self._run_scenario(self._B_LEAVES, self.VERIFIED_RESPONSES)
+        self.assertEqual(
+            set(verdict), set(populated),
+            "zero-leaf return must expose the same keys as the aggregation tail",
+        )
 
 
 # ---------------------------------------------------------------------------
