@@ -2233,6 +2233,58 @@ mod tests {
         }
     }
 
+    /// arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az) → BOTH
+    /// angles, and neither its centre nor its radius.
+    ///
+    /// The table's first CURVE producer. Single-form at exactly 9 args
+    /// (`geometry_curve.rs`' `check_arg_count_exact`), so arity-agnostic per the
+    /// "guard only genuinely overloaded names" rule — a gratuitous
+    /// `arg_count == 9` guard here would silently hollow out short and long
+    /// calls for no gain.
+    ///
+    /// Every exclusion stated positively, because two of them are excluded for
+    /// DIFFERENT reasons and collapsing them would lose the distinction:
+    /// * `cx`/`cy`/`cz`@0-2 and `radius`@3 ARE Length-semantic, and their
+    ///   absence is a SCOPE boundary rather than a judgement that they are
+    ///   dimensionless. Curve producers were outside the four Contract C
+    ///   families of `docs/prds/v0_6/units-length-gate-completion.md` leaf η, so
+    ///   their compile slots remain PRD 1's territory. Inventing them here would
+    ///   be the mirror image of the scope violation this leaf is closing.
+    /// * `ax`/`ay`/`az`@6-8 are a dimensionless unit-vector DIRECTION and are
+    ///   legitimately bare in correct `.ri`, per C1 invariant 4.
+    #[test]
+    fn arc_slots_both_angles_but_neither_its_centre_nor_its_radius() {
+        assert_slots_at_every_arity(
+            "arc",
+            &[
+                angle_slot(4, "start_angle"),
+                angle_slot(5, "end_angle"),
+            ],
+        );
+
+        let slotted: Vec<usize> = builtin_arg_slots("arc", 9)
+            .iter()
+            .map(|slot| slot.index)
+            .collect();
+        for excluded in [0usize, 1, 2, 3] {
+            assert!(
+                !slotted.contains(&excluded),
+                "arc arg{excluded} (centre or radius) IS Length-semantic, but \
+                 curve producers sit outside task 5750's four Contract C \
+                 families — its compile slot is PRD 1's to add, not this leaf's \
+                 to invent; got slots at {slotted:?}"
+            );
+        }
+        for excluded in [6usize, 7, 8] {
+            assert!(
+                !slotted.contains(&excluded),
+                "arc arg{excluded} is an axis DIRECTION component — a \
+                 dimensionless unit vector, legitimately bare per C1 invariant \
+                 4; got slots at {slotted:?}"
+            );
+        }
+    }
+
     /// `draft` stays wholly slot-free — its only scalar is an ANGLE.
     ///
     /// A control for the seam: `draft` sits in the same `compile_modify_op`

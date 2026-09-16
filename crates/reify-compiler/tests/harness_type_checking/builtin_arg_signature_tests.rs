@@ -1670,3 +1670,32 @@ fn revolve_full_yields_no_arg_type_mismatch() {
         compiled.diagnostics
     );
 }
+
+/// SIGNAL — a bare `arc` reports BOTH angles in one pass, not just the first.
+///
+/// Asserted as a pair on the same reasoning `chamfer_asymmetric` records for
+/// its `d1`/`d2` setbacks, and that task 6924 applied at the eval layer when it
+/// made `arc` report both bare angles together: stopping at the first would
+/// degrade the fix to two edit-build cycles for one authoring mistake.
+///
+/// The centre and radius are dimensioned here so the count is a statement about
+/// the ANGLE slots alone — they are Length-semantic but deliberately unslotted,
+/// which the unit test states positively.
+#[test]
+fn arc_bare_angles_are_both_rejected_in_one_pass() {
+    let compiled = compile_struct_body("    let c = arc(0mm, 0mm, 0mm, 5mm, 0, 90, 0, 0, 1)\n");
+    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        messages,
+        vec![
+            format!("arc: start_angle argument expects Angle, got Int; {ANGLE_HINT}"),
+            format!("arc: end_angle argument expects Angle, got Int; {ANGLE_HINT}"),
+        ],
+        "both angles must be reported together, and the axis DIRECTION must stay \
+         silent.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
