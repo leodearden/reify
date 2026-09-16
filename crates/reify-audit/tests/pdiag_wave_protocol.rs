@@ -46,20 +46,36 @@ const WAVE_SECTION: &str = "crates/reify-compiler/src/wave_section.rs";
 
 /// Build a tempdir tree with exactly ONE swept file at [`WAVE_SECTION`],
 /// composed of `coded` coded sites followed by `codeless` code-less ones,
-/// plant `row` as that file's baseline allowance (`None` omits the row —
-/// an empty baseline, the "no row" idiom `pdiag.rs`'s own tests already use),
-/// and run the detector end to end.
+/// plant `raw_baseline` verbatim as the manifest content, and run the
+/// detector end to end.
 ///
-/// The ONE tree-builder every test in this file shares, so a wave's
-/// before/after pair reads as a two-line change of counts rather than
-/// duplicated fixture setup.
-fn wave_tree(codeless: usize, coded: usize, row: Option<u32>) -> Vec<Finding> {
+/// The shared builder behind [`wave_tree`] AND the raw-row escape a
+/// deliberately malformed row (e.g. a literal `0`, which `parse_baseline`
+/// rejects) needs: taking the bytes directly here is what keeps that escape
+/// from duplicating the fixture setup.
+fn wave_tree_raw(codeless: usize, coded: usize, raw_baseline: &str) -> Vec<Finding> {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut fx = Fixture::new(tmp.path());
     fx.write(WAVE_SECTION, &format!("{}{}", coded_src(coded), codeless_src(codeless)));
-    let baseline = row.map_or_else(String::new, |n| format!("{WAVE_SECTION} {n}\n"));
-    fx.baseline(&baseline);
+    fx.baseline(raw_baseline);
     fx.run()
+}
+
+/// [`wave_tree_raw`], for the common case of a well-formed baseline row:
+/// `row` plants that file's baseline allowance (`None` omits the row — an
+/// empty baseline, the "no row" idiom `pdiag.rs`'s own tests already use).
+///
+/// The ONE tree-builder every ordinary test in this file shares, so a wave's
+/// before/after pair reads as a two-line change of counts rather than
+/// duplicated fixture setup. `row` is always a real ratchet count (>= 1):
+/// `parse_baseline` itself rejects `0`, so a test that needs exactly that
+/// malformed row goes through [`wave_tree_raw`] instead of here.
+fn wave_tree(codeless: usize, coded: usize, row: Option<u32>) -> Vec<Finding> {
+    let baseline = row.map_or_else(String::new, |n| {
+        debug_assert!(n >= 1, "a real baseline row is never 0 — use wave_tree_raw for that");
+        format!("{WAVE_SECTION} {n}\n")
+    });
+    wave_tree_raw(codeless, coded, &baseline)
 }
 
 /// The gate-facing subset of a wave's findings. High is the ONLY severity
