@@ -1131,3 +1131,167 @@ pub fn try_solve_eigen_shift_invert(
     let m_op = SparseMetricOp { m: b.as_ref() };
     Ok(lanczos_shift_invert(&k_op, &m_op, opts))
 }
+
+// ---------------------------------------------------------------------------
+// Unit tests for the private K − σB assembly
+//
+// In-crate because `shifted_pencil` is private: this is the same shape
+// `sparse_util.rs` already uses for `find_in_row`.  Nothing reaches in from
+// outside the module — the PUBLIC contract these support is pinned from
+// `tests/eigensolve_shift_contract.rs` instead.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod shifted_pencil_tests {
+    use super::*;
+    use faer::sparse::Triplet;
+
+    /// A 4×4 pencil whose two sparsity patterns differ in BOTH directions.
+    ///
+    /// - `(0,1)` and `(1,0)` are in K only,
+    /// - `(2,3)` and `(3,2)` are in B only,
+    /// - the four diagonal entries are in both.
+    ///
+    /// All three cases have to be present at once: a merge that silently drops
+    /// the operand-only entries still gets the shared ones right, and one that
+    /// keeps only the left operand's pattern still gets K's own entries right.
+    fn pencil_with_patterns_differing_in_both_directions()
+    -> (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>) {
+        let k = SparseRowMat::try_new_from_triplets(
+            4,
+            4,
+            &[
+                Triplet::new(0, 0, 4.0),
+                Triplet::new(0, 1, 1.0),
+                Triplet::new(1, 0, 1.0),
+                Triplet::new(1, 1, 5.0),
+                Triplet::new(2, 2, 6.0),
+                Triplet::new(3, 3, 7.0),
+            ],
+        )
+        .unwrap();
+        let b = SparseRowMat::try_new_from_triplets(
+            4,
+            4,
+            &[
+                Triplet::new(0, 0, 1.0),
+                Triplet::new(1, 1, 1.0),
+                Triplet::new(2, 2, 1.0),
+                Triplet::new(2, 3, 2.0),
+                Triplet::new(3, 2, 2.0),
+                Triplet::new(3, 3, 1.0),
+            ],
+        )
+        .unwrap();
+        (k, b)
+    }
+
+    /// σ chosen to be neither 0 nor 1, so neither a dropped coefficient
+    /// (`K − B`) nor an ignored one (`K`) can pass any assertion below.
+    const SIGMA: f64 = 0.25;
+
+    /// Collect the result's STORED entries as `(row, col, value)`, in column
+    /// order.  Stored-ness is the point: an entry the arithmetic cancels is
+    /// still stored (as an explicit zero) if the union covers it.
+    fn stored_entries(m: &SparseColMat<usize, f64>) -> Vec<(usize, usize, f64)> {
+        let m_ref = m.as_ref();
+        let sym = m_ref.symbolic();
+        let mut out = Vec::new();
+        for j in 0..m.ncols() {
+            let rows = sym.row_idx_of_col_raw(j);
+            let vals = m_ref.val_of_col(j);
+            for (&i, &v) in rows.iter().zip(vals.iter()) {
+                out.push((i, j, v));
+            }
+        }
+        out
+    }
+
+    /// (a) Every stored entry is exactly `k[i][j] − σ·b[i][j]`, with an absent
+    /// operand entry read as zero.
+    #[test]
+    fn every_entry_is_k_minus_sigma_b() {
+        let (k, b) = pencil_with_patterns_differing_in_both_directions();
+        let shifted = shifted_pencil(&k, &b, SIGMA);
+
+        let k_dense = k.to_dense();
+        let b_dense = b.to_dense();
+        for (i, j, got) in stored_entries(&shifted) {
+            let want = k_dense[(i, j)] - SIGMA * b_dense[(i, j)];
+            assert_eq!(
+                got, want,
+                "shifted_pencil[{i}][{j}] = {got}, expected k − σ·b = {} − {SIGMA}·{} = {want}",
+                k_dense[(i, j)],
+                b_dense[(i, j)],
+            );
+        }
+    }
+
+    /// (b) The sparsity pattern is exactly the UNION of K's and B's — an entry
+    /// present only in B is stored (as `−σ·b`), and one present only in K is
+    /// stored unchanged.
+    #[test]
+    fn pattern_is_exactly_the_union_of_both_operands() {
+        let (k, b) = pencil_with_patterns_differing_in_both_directions();
+        let shifted = shifted_pencil(&k, &b, SIGMA);
+
+        let mut got: Vec<(usize, usize)> = stored_entries(&shifted)
+            .into_iter()
+            .map(|(i, j, _)| (i, j))
+            .collect();
+        got.sort_unstable();
+
+        // The union, written out rather than recomputed from the operands, so a
+        // merge bug cannot be masked by the same bug in the expectation.
+        let mut want = vec![
+            (0, 0),
+            (0, 1),
+            (1, 0),
+            (1, 1),
+            (2, 2),
+            (2, 3),
+            (3, 2),
+            (3, 3),
+        ];
+        want.sort_unstable();
+        assert_eq!(
+            got, want,
+            "shifted_pencil must store the UNION of the two patterns",
+        );
+
+        // Spot the two directions explicitly, with values, so a pattern that is
+        // right while the arithmetic is not still reds here.
+        let entries = stored_entries(&shifted);
+        let at = |i: usize, j: usize| {
+            entries
+                .iter()
+                .find(|&&(r, c, _)| r == i && c == j)
+                .unwrap_or_else(|| panic!("entry ({i},{j}) is missing from the union"))
+                .2
+        };
+        assert_eq!(
+            at(0, 1),
+            1.0,
+            "an entry present only in K must survive unchanged (b[0][1] is absent, so σ·b = 0)",
+        );
+        assert_eq!(
+            at(2, 3),
+            -SIGMA * 2.0,
+            "an entry present only in B must be STORED as −σ·b, not dropped",
+        );
+        assert_eq!(
+            at(1, 1),
+            5.0 - SIGMA,
+            "an entry present in both must combine as k − σ·b",
+        );
+    }
+
+    /// (c) The result is square, with the operands' dimensions.
+    #[test]
+    fn result_is_square_with_the_operand_dimensions() {
+        let (k, b) = pencil_with_patterns_differing_in_both_directions();
+        let shifted = shifted_pencil(&k, &b, SIGMA);
+        assert_eq!(shifted.nrows(), 4, "row count must match the operands'");
+        assert_eq!(shifted.ncols(), 4, "column count must match the operands'");
+    }
+}
