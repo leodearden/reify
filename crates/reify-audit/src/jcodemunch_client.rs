@@ -520,11 +520,16 @@ fn row_u64(row: &Value, key: &str) -> Option<u64> {
 }
 
 /// `Some(f as u64)` when `f` is a non-negative whole number representable as
-/// a `u64`, `None` otherwise. Split out of [`row_u64`] because the same test
-/// applies to a JSON number and to a float-shaped string, and the two must
-/// not drift.
+/// a `u64`, `None` otherwise. Shared by [`row_u64`]'s JSON-number and
+/// string-parse paths so the same test governs both spellings.
+///
+/// The upper bound is STRICT: `u64::MAX as f64` rounds UP to 2^64, which is
+/// NOT a `u64`, so a `<=` bound would admit it and `f as u64` would saturate
+/// back to `u64::MAX` — inventing exactly the plausible-looking line number
+/// [`row_u64`]'s bounded widening refuses to invent. Nothing representable
+/// is lost: the largest `f64` below 2^64 is 2^64 - 2048, well inside `u64`.
 fn u64_from_integral_f64(f: f64) -> Option<u64> {
-    (f.is_finite() && f.fract() == 0.0 && f >= 0.0 && f <= u64::MAX as f64).then_some(f as u64)
+    (f.is_finite() && f.fract() == 0.0 && f >= 0.0 && f < u64::MAX as f64).then_some(f as u64)
 }
 
 /// Read an `f64` field from a MUNCH row, tolerating both a JSON number and a
@@ -542,7 +547,7 @@ fn u64_from_integral_f64(f: f64) -> Option<u64> {
 /// deliberately left alone.
 fn row_f64(row: &Value, key: &str) -> Option<f64> {
     let v = row.get(key)?;
-    v.as_f64().or_else(|| v.as_str()?.parse().ok())
+    v.as_f64().or_else(|| v.as_str()?.trim().parse().ok())
 }
 
 /// Parse signals from a Python-list string like `"['a', 'b', 'c']"`.
@@ -611,6 +616,7 @@ fn parse_signals_list(s: &str) -> Vec<String> {
 /// make a RENAMED column legible without a second round-trip to the server.
 /// Summarises to ONE line for the same reason [`stale_decl_line_diagnostic`]
 /// does: a per-row print would be a stderr storm.
+#[must_use = "a dropped wire row must be surfaced, not discarded"]
 fn dropped_rows_diagnostic(
     tool: &str,
     decoded: &Value,
@@ -2087,6 +2093,24 @@ mod tests {
             None,
             "a non-integral JSON number is not a usable 1-based line number"
         );
+        // The boundary the `<=`-shaped guard admitted: `u64::MAX as f64`
+        // rounds UP to 2^64, so `f as u64` saturated back to `u64::MAX` and
+        // an unreadable value became a plausible-looking line number.
+        for too_big in [json!(18446744073709551616.0_f64), json!("18446744073709551616")] {
+            assert_eq!(
+                row_u64(&json!({ "line": too_big }), "line"),
+                None,
+                "2^64 is out of `u64` range and must not saturate to u64::MAX; \
+                 got a value from {too_big}"
+            );
+        }
+        // The largest value that IS representable still reads exactly, so
+        // the strict bound narrows nothing real.
+        assert_eq!(
+            row_u64(&json!({ "line": u64::MAX }), "line"),
+            Some(u64::MAX),
+            "u64::MAX itself is a readable JSON number"
+        );
     }
 
     /// The other half of the same tolerance contract: `line` is OPTIONAL.
@@ -2227,6 +2251,29 @@ mod tests {
             "confidence should round-trip out of the string form; got {}",
             symbols[0].confidence
         );
+    }
+
+    /// `row_u64` and `row_f64` are documented counterparts, so the same
+    /// string spelling must read alike through both. Rust's
+    /// `f64::from_str` rejects surrounding whitespace outright, so an
+    /// untrimmed float reader turns a padded `confidence` into ABSENT and
+    /// drops the whole PDEAD/PUNTESTED row, while a padded `line` decodes
+    /// fine — an asymmetry that costs a record rather than a field.
+    #[test]
+    fn the_numeric_readers_treat_a_whitespace_padded_string_alike() {
+        let padded = json!({ "line": " 99 ", "confidence": " 0.93 " });
+        assert_eq!(row_u64(&padded, "line"), Some(99));
+        let confidence = row_f64(&padded, "confidence").expect(
+            "a padded confidence must not read as absent — `confidence` is \
+             mandatory, so absent drops the whole row",
+        );
+        assert!((confidence - 0.93).abs() < 1e-9, "got {confidence}");
+
+        // Padding is the ONLY thing forgiven: a genuinely non-numeric
+        // value still reads as absent through both.
+        let junk = json!({ "line": "9 9", "confidence": "0.9 3" });
+        assert_eq!(row_u64(&junk, "line"), None);
+        assert_eq!(row_f64(&junk, "confidence"), None);
     }
 
     // ------------------------------------------------------------------
