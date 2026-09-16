@@ -606,33 +606,33 @@ fn auto_override_possible(
 /// added by review round 1, and each names the route by which the unprimed list
 /// alone reported legal code:
 ///
-/// 0. the template is **module-private**. An exported template's rescuing
-///    `auto` override may live in a module that imports this one — possibly one
-///    nobody has written yet — and `all_templates` is this module alone;
-/// 0′. the template is not an imported one, nor a monomorph clone of one. A
-///    clone carries the DEFINING module's objective while being judged against
-///    the IMPORTING module's templates.
-///    Both of these are checked first, because they are the obligations
-///    `all_templates` cannot speak to at all — see below;
-/// 1. the template declares an objective at all;
-/// 2. every node of every objective term is data-transparent
-///    ([`is_data_transparent`]);
-/// 3. the objective names at least one value cell — `minimize 1mm` asserts
-///    nothing about autos and is not this rule's business;
-/// 4. every named cell resolves to a declaration of *this* template;
-/// 5. the transitive closure of those cells through their `default_expr`s
-///    reaches no `auto` — a `let` may not launder one;
-/// 5′. no cell in that closure is an `auto` the guarded-`let` lowering erased
-///    ([`is_auto_shaped_guarded_let`]). Obligation 5 asks what the cell *is*;
-///    this one asks what the author *wrote*, and the two diverge for exactly
-///    one shape;
-/// 6. no other template in the module installs an `auto` override onto an
-///    instance of this one that lands in that closure
-///    ([`auto_override_possible`]);
-/// 7. the objective cannot be INHERITED by a descendant that has autos of its
-///    own ([`objective_inheritance_possible`]). Obligations 1–6 all ask what
-///    happens in *this* scope; F-inherit means an objective can govern one
-///    level down without touching anything here at all.
+/// - **0.** the template is **module-private**. An exported template's rescuing
+///   `auto` override may live in a module that imports this one — possibly one
+///   nobody has written yet — and `all_templates` is this module alone;
+/// - **0′.** the template is not an imported one, nor a monomorph clone of one.
+///   A clone carries the DEFINING module's objective while being judged against
+///   the IMPORTING module's templates.
+///   Both of these are checked first, because they are the obligations
+///   `all_templates` cannot speak to at all — see below;
+/// - **1.** the template declares an objective at all;
+/// - **2.** every node of every objective term is data-transparent
+///   ([`is_data_transparent`]);
+/// - **3.** the objective names at least one value cell — `minimize 1mm` asserts
+///   nothing about autos and is not this rule's business;
+/// - **4.** every named cell resolves to a declaration of *this* template;
+/// - **5.** the transitive closure of those cells through their `default_expr`s
+///   reaches no `auto` — a `let` may not launder one;
+/// - **5′.** no cell in that closure is an `auto` the guarded-`let` lowering
+///   erased ([`is_auto_shaped_guarded_let`]). Obligation 5 asks what the cell
+///   *is*; this one asks what the author *wrote*, and the two diverge for
+///   exactly one shape;
+/// - **6.** no other template in the module installs an `auto` override onto an
+///   instance of this one that lands in that closure
+///   ([`auto_override_possible`]);
+/// - **7.** the objective cannot be INHERITED by a descendant that has autos of
+///   its own ([`objective_inheritance_possible`]). Obligations 1–6 all ask what
+///   happens in *this* scope; F-inherit means an objective can govern one
+///   level down without touching anything here at all.
 ///
 /// What survives all nine is therefore a narrower claim than the rule was first
 /// written to make. It is not "this objective governs nothing" — obligations 0,
