@@ -747,6 +747,7 @@ pub(crate) fn rotation_vector_dimension_error(
          component as a dimensioned literal: `vec3(0rad, 0rad, 1.5708rad)` / \
          `vec3(0deg, 0deg, 90deg)`"
     ))
+    .with_code(reify_core::DiagnosticCode::DimensionedArgRejected)
 }
 
 /// Pure classifier (post-`Value::Undef` hook) for orientation-builtin calls,
