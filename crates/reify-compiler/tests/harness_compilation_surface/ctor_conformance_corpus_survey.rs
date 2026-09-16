@@ -4622,7 +4622,7 @@ fn opt_cell(value: Option<&String>) -> String {
 /// The header key that introduces the drift disclosure.
 ///
 /// One spelling, so the renderer and the tests asserting on its presence — and
-/// on its ABSENCE, which is the stronger claim — cannot disagree about what a
+/// on its absence from an undrifted run — cannot disagree about what a
 /// disclosure looks like.
 ///
 /// Names no extension: a drifted member can now be either half's — a tracked
@@ -6280,17 +6280,6 @@ fn render_survey_keeps_the_ri_half_byte_identical_when_an_inline_half_is_added()
 
 // ─── retiring the now-false named limitation 1 ───────────────────────────────
 
-/// The two claims the inline walker DISPROVES, which the artifact must stop
-/// making.
-///
-/// Verbatim from the limitation this task retires. Leaving either in place would
-/// have the artifact deny the section printed above it — the one failure mode a
-/// generated document must never have.
-const RETIRED_LIMITATION_CLAIMS: &[&str] = &[
-    "are not file-enumerable",
-    "could only be swept by changing the compiler",
-];
-
 /// The body of named limitation 1, from its key to the start of limitation 2.
 ///
 /// Scoped rather than whole-document, because several of the strings this
@@ -6310,8 +6299,15 @@ fn inline_limitation(md: &str) -> String {
     body[..end].to_owned()
 }
 
-/// The artifact no longer claims inline fixtures are unreachable, and names the
-/// walker's REAL residual instead.
+/// The artifact names the walker's REAL residual, by identifier.
+///
+/// The positive claim only. An earlier draft also asserted the ABSENCE of the
+/// two prose claims this task disproved, and that pin was wrong in both
+/// directions: rewording "are not file-enumerable" to "are not enumerable as
+/// files" left it green with the disproved claim still in the artifact, while
+/// any innocuous rewrite of unrelated prose that happened to contain the phrase
+/// would red the merge gate. What the artifact must SAY is testable by
+/// identifier, which survives a full reword; what it must not say is not.
 #[test]
 fn render_survey_retires_the_disproved_limitation_and_names_the_real_residual() {
     let md = render_survey(
@@ -6319,14 +6315,6 @@ fn render_survey_retires_the_disproved_limitation_and_names_the_real_residual() 
         &synth_inline_run(),
         &SurveyStamp::at("sha"),
     );
-
-    for claim in RETIRED_LIMITATION_CLAIMS {
-        assert!(
-            !md.contains(claim),
-            "the artifact still claims {claim:?}, which this task's own inline section \
-             disproves — a generated document must not deny what it prints"
-        );
-    }
 
     // The residual is stated as CLASSES, each named by the Rust construct — or,
     // for a host the walker never opens, the PATH — a reader would grep for, and
@@ -6382,15 +6370,9 @@ fn the_inline_limitation_states_figures_the_run_recomputed() {
     );
 }
 
-/// The drift disclosure covers BOTH halves.
+/// A drifted member of EITHER half is named in the rendered disclosure.
 #[test]
 fn the_drift_disclosure_is_not_scoped_to_ri_alone() {
-    assert!(
-        !DRIFT_DISCLOSURE_KEY.contains(".ri"),
-        "the disclosure key still names `.ri` alone, but a row can now describe the \
-         bytes of a `.rs` host too: {DRIFT_DISCLOSURE_KEY:?}"
-    );
-
     let drifted = SurveyStamp {
         anchor: "cafe1234".to_owned(),
         drifted: vec![
