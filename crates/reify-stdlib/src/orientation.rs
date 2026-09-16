@@ -3678,4 +3678,67 @@ mod tests {
             "both arms must state the same token, dimension clause and fix advice"
         );
     }
+
+    /// BOTH carriers of `rotation_vector_dimension_error` carry
+    /// [`reify_core::DiagnosticCode::DimensionedArgRejected`], which makes the
+    /// converged set FOUR arms sharing one code rather than three plus an
+    /// outlier: `transform_log`, `transform_exp`'s `linear` half and `bbox`
+    /// already carry it (task 5791 / task 6081), and the rotation-vector arms
+    /// here are the fourth member.
+    ///
+    /// Grounds: BINDING ruling A7 (Leo, 2026-08-30, esc-5791-3) — one rejection
+    /// REASON gets one code, and a `Severity::Error` runtime dimension
+    /// rejection of a positional argument is exactly the reason
+    /// `DimensionedArgRejected` already names. No
+    /// `DiagnosticCode::ArgDimensionMismatch` is minted; see
+    /// `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 1's
+    /// RECONCILIATION block.
+    ///
+    /// Modelled on `geometry::tests::ruling_6126_dimension_arms_carry_dimensioned_arg_rejected`,
+    /// and asserted on BOTH carriers rather than one, because the code is
+    /// attached in the shared constructor: a regression there would silently
+    /// drop it from two arms at once.
+    #[test]
+    fn ruling_a7_rotation_vector_arms_carry_dimensioned_arg_rejected() {
+        let bare = Value::Vector(vec![
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(std::f64::consts::FRAC_PI_2),
+        ]);
+        let mut twist = std::collections::BTreeMap::new();
+        twist.insert(Value::String("angular".to_string()), bare.clone());
+        twist.insert(
+            Value::String("linear".to_string()),
+            Value::Vector(vec![Value::length(0.0); 3]),
+        );
+
+        let here = super::diagnose("orient_exp", &[bare])
+            .expect("a dimensionless rotation vector must produce a diagnostic");
+        assert_eq!(
+            here.severity,
+            reify_core::Severity::Error,
+            "the orient_exp dimension arm stays Error (exit 1), per Leo's \
+             severity amendment 2026-08-19 via esc-6080-6"
+        );
+        assert_eq!(
+            here.code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+            "the orient_exp dimension arm must carry the canonical runtime \
+             dimension-rejection code (ruling A7)"
+        );
+
+        let there = crate::geometry::diagnose("transform_exp", &[Value::Map(twist)])
+            .expect("a dimensionless angular half must produce a diagnostic");
+        assert_eq!(
+            there.severity,
+            reify_core::Severity::Error,
+            "the transform_exp angular arm stays Error"
+        );
+        assert_eq!(
+            there.code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+            "the transform_exp ANGULAR arm must carry the same code as its \
+             already-converged linear sibling"
+        );
+    }
 }
