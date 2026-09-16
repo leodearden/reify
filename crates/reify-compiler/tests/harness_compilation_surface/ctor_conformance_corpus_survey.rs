@@ -678,9 +678,88 @@ impl CorpusHalf {
     }
 }
 
-/// Whether both corpus halves are enumerated well enough to sweep.
-fn corpus_parity(_halves: &[(CorpusHalf, &[String])]) -> Result<(), String> {
-    Ok(())
+/// Whether every declared corpus half is enumerated well enough to sweep.
+///
+/// A PURE function over the two enumerations, taken as data: that is what lets
+/// the gate be exercised with a half stubbed to the empty set without stubbing
+/// anything global, and it is what the generator calls BEFORE any sweep so a
+/// narrowed walker fails loudly instead of writing a falsely-thin artifact.
+///
+/// Checks, in order: every declared [`CorpusHalf`] present in the input; each
+/// half at or above its floor; every member carrying its half's extension; and
+/// the halves pairwise disjoint. EVERY violation is accumulated into one
+/// message rather than returning the first — the same
+/// both-directions-reported-together convention
+/// [`assert_no_unwaived_ctor_conformance_warnings`] uses, and for the same
+/// reason: a caller who fixes the first complaint and re-runs should not
+/// discover the second one turn later.
+///
+/// The floors are BROKEN-ENUMERATION floors (see [`RI_CORPUS_FLOOR`] and
+/// [`RUST_HOST_CORPUS_FLOOR`]), set far below the live counts — 701 `.ri` and
+/// 1,307 hosts measured 2026-09-16 — and not tracking numbers. A legitimate
+/// fixture or test cull must not be a merge-gate red; only an enumeration that
+/// broke can get near them.
+fn corpus_parity(halves: &[(CorpusHalf, &[String])]) -> Result<(), String> {
+    use strum::IntoEnumIterator;
+    let mut violations: Vec<String> = Vec::new();
+
+    for declared in CorpusHalf::iter() {
+        if !halves.iter().any(|(half, _)| *half == declared) {
+            violations.push(format!(
+                "{} is declared but absent from the parity input — it would be swept \
+                 and rendered without ever being checked",
+                declared.label()
+            ));
+        }
+    }
+
+    for (half, members) in halves {
+        if members.len() < half.floor() {
+            violations.push(format!(
+                "{} holds {} member(s), below its broken-enumeration floor of {}",
+                half.label(),
+                members.len(),
+                half.floor()
+            ));
+        }
+        let foreign: Vec<&String> = members
+            .iter()
+            .filter(|p| !p.ends_with(half.extension()))
+            .collect();
+        if !foreign.is_empty() {
+            violations.push(format!(
+                "{} holds {} member(s) not ending in '{}' — a walker that widened into \
+                 the wrong pathspec: {:?}",
+                half.label(),
+                foreign.len(),
+                half.extension(),
+                &foreign[..foreign.len().min(5)]
+            ));
+        }
+    }
+
+    for (i, (a, a_members)) in halves.iter().enumerate() {
+        for (b, b_members) in halves.iter().skip(i + 1) {
+            let seen: std::collections::BTreeSet<&String> = a_members.iter().collect();
+            let shared: Vec<&String> = b_members.iter().filter(|p| seen.contains(*p)).collect();
+            if !shared.is_empty() {
+                violations.push(format!(
+                    "{} and {} both enumerate {} member(s), which would be surveyed and \
+                     counted twice: {:?}",
+                    a.label(),
+                    b.label(),
+                    shared.len(),
+                    &shared[..shared.len().min(5)]
+                ));
+            }
+        }
+    }
+
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(violations.join("; "))
+    }
 }
 
 /// A well-formed input for every declared [`CorpusHalf`], derived from the enum
