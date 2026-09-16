@@ -398,6 +398,9 @@ pub(crate) fn eigensolve_modal(
     let GeneralizedEigenOutcome {
         result: eig,
         singular_k_over_ceiling,
+        // Bound by name rather than swallowed by `..`, so a carrier added to the
+        // outcome cannot reach this consumer unnoticed.
+        shift_at_eigenvalue: _,
     } = solve_generalized_eigen(&k_free, &m_free, eigen_opts.clone(), under_constrained);
 
     // ---- Convert λ→f and scatter φ_free → φ_full --------------------------
@@ -805,6 +808,21 @@ struct GeneralizedEigenOutcome {
     /// to raise the `E_ModalNoModesComputed` Error that keeps a no-modes result
     /// from passing an `errors.is_empty()` gate.
     singular_k_over_ceiling: bool,
+    /// `Some(σ)` iff the shifted solve REFUSED the requested shift: `K − σM` is
+    /// singular at that σ, so shift-invert has no operator to apply and `result`
+    /// carries no eigenpairs.
+    ///
+    /// DISTINCT from `singular_k_over_ceiling`, and the two must never be
+    /// merged. That one says "`K_free` is singular, the model is
+    /// under-constrained, add supports"; this one says "`K − σM` is singular AT
+    /// THE REQUESTED SHIFT, move σ" — on a model whose supports are perfectly
+    /// fine. Collapsing them produces exactly the confidently-wrong diagnosis
+    /// δ (#7261) forbids by name: an author sent to check boundary conditions
+    /// for a problem that is entirely about where σ was put. It is the same
+    /// discrimination discipline [`try_solve_eigen_shift_invert`]'s typed
+    /// failure channel already keeps one level down, carried up rather than
+    /// flattened on arrival.
+    shift_at_eigenvalue: Option<f64>,
 }
 
 /// Solve the generalized symmetric eigenproblem `K_free φ = λ M_free φ`,
@@ -864,6 +882,7 @@ fn solve_generalized_eigen(
         return GeneralizedEigenOutcome {
             result: solve_eigen_dense(k_free, m_free, opts),
             singular_k_over_ceiling: false,
+            shift_at_eigenvalue: None,
         };
     }
 
@@ -878,23 +897,54 @@ fn solve_generalized_eigen(
                 return GeneralizedEigenOutcome {
                     result,
                     singular_k_over_ceiling: false,
+                    shift_at_eigenvalue: None,
                 };
             }
             // K is not SPD: fall through to the under-constrained branch below,
             // exactly as the former `None` did.
             Err(ShiftInvertFailure::KNotSpd) => {}
-            // TODO(#7261): surface E_ShiftAtEigenvalue once δ wires the modal
-            // shift. Unreachable today — `extract_eigen_knobs` never sets a
-            // non-zero σ, and `K − 0·B` is just K. It must NOT be folded into
-            // the under-constrained branch: a σ landing on an eigenvalue is a
-            // fault in where the shift was placed, and reporting it as a
-            // rigid-body mode would send an author to check boundary conditions
-            // for a problem that is entirely about σ.
+            // A σ landing on an eigenvalue of the pencil. REACHABLE from
+            // ordinary `.ri` input: `ModalOptions` declares `param sigma : Real
+            // = 0.0` as a deliberately unconstrained, user-settable parameter,
+            // `extract_eigen_knobs` returns any finite value verbatim, and it is
+            // written straight into the `EigenSolverOptions` literal and arrives
+            // here with no clamping anywhere on the path. It was inert only
+            // while the Lanczos path IGNORED σ; β (#7259) made σ live there, so
+            // this arm is live too. The trace is walked link by link at
+            // `shift_landing_on_an_eigenvalue_is_returned_not_panicked`.
+            //
+            // It must NOT fall through to the under-constrained branch below: a
+            // σ landing on an eigenvalue is a fault in where the shift was
+            // placed, and reporting it as a rigid-body mode would send an author
+            // to check boundary conditions for a problem that is entirely about
+            // σ. Nor is it silently repaired — no re-solve at a nudged σ, and no
+            // silent substitution of σ = 0; automatic perturbation is precisely
+            // the class this PRD exists to close (`shift_is_numerically_
+            // singular`'s rustdoc carries the rule).
+            //
+            // TODO(#7261): δ owns the FULL surfacing — the λ-space surface
+            // conversion, `ShiftSkippedModes`, and the `.ri` fixture pair. What
+            // lands here is the refusal itself (the `shift_at_eigenvalue` arm in
+            // `eigensolve_modal`'s diagnostics block), so δ verifies and extends
+            // rather than building from scratch.
             Err(ShiftInvertFailure::ShiftAtEigenvalue { sigma }) => {
-                unreachable!(
-                    "modal_ops: solve_generalized_eigen was handed sigma = {sigma}, but \
-                     extract_eigen_knobs only ever produces 0.0 until #7261"
-                );
+                return GeneralizedEigenOutcome {
+                    result: EigenSolverResult {
+                        eigenvalues: Vec::new(),
+                        eigenvectors: faer::Mat::<f64>::zeros(n, 0),
+                        n_converged: 0,
+                        converged: false,
+                        shift: sigma,
+                        // Nothing was factored and no spectrum was computed, so
+                        // C5 forbids ESTABLISHING `false` here — the same
+                        // argument the over-ceiling degenerate site below makes,
+                        // for the same reason.
+                        shift_skipped_modes: conservative_shift_provenance(sigma),
+                    },
+                    // The model's supports are not in question; σ's placement is.
+                    singular_k_over_ceiling: false,
+                    shift_at_eigenvalue: Some(sigma),
+                };
             }
         }
     }
@@ -905,6 +955,7 @@ fn solve_generalized_eigen(
         GeneralizedEigenOutcome {
             result: solve_eigen_dense(k_free, m_free, opts),
             singular_k_over_ceiling: false,
+            shift_at_eigenvalue: None,
         }
     } else {
         GeneralizedEigenOutcome {
@@ -926,6 +977,9 @@ fn solve_generalized_eigen(
                 shift_skipped_modes: conservative_shift_provenance(opts.sigma),
             },
             singular_k_over_ceiling: true,
+            // Orthogonal carriers: this site's cause is a singular K, not a
+            // shift, so the shift carrier stays empty however σ was set.
+            shift_at_eigenvalue: None,
         }
     }
 }
