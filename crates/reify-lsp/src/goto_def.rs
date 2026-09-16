@@ -107,6 +107,14 @@ pub fn compute_goto_definition_with_parsed(
     // cross-file path returns via `find_declaration_name_span`; closing that
     // asymmetry is why task 6388 exists. Member resolution above keeps returning
     // the full member statement span, unchanged.
+    //
+    // KNOWN IMPRECISION, measured and pinned rather than left latent: the match
+    // is purely lexical — no reference-position check, no binding-scope check —
+    // so a word shadowed by a function or lambda parameter, or sitting inside a
+    // comment or a string literal, resolves to the declaration anyway, where it
+    // used to resolve to nothing. Pinned row by row in
+    // `goto_def_phase_c_matches_lexically_ignoring_scope_and_comments`; owned
+    // by #7607.
     resolve_decl_name(parsed, source, uri, word, None)
 }
 
@@ -1148,6 +1156,108 @@ mod tests {
             .is_some(),
             "the unit DECLARATION name must still resolve to itself"
         );
+    }
+
+    #[test]
+    fn goto_def_phase_c_matches_lexically_ignoring_scope_and_comments() {
+        // KNOWN-LIMITATION PIN, sibling to
+        // `goto_def_unit_suffixed_literal_does_not_resolve_to_its_unit_declaration`
+        // and `goto_def_purpose_nested_structure_is_not_top_level`.
+        //
+        // Phase C is a purely LEXICAL whole-file name match: it fires on any
+        // word equal to a top-level declaration's name, checking neither that
+        // the word sits in a reference position nor that a nearer binding
+        // shadows the name. Each row below therefore JUMPS where the pre-6388
+        // code returned None. Read-only path, so nothing is corrupted — the
+        // cost is precision, and a wrong jump target is worse than no jump.
+        //
+        // PINNED RATHER THAN FIXED, and the pin is the point: without it the
+        // suite asserts nothing about what Phase C should NOT match, so this
+        // imprecision is silent. A correct fix needs a binding-scope model and,
+        // for the last two rows, a lexical-context oracle that this task's
+        // declaration-name remit does not build; and every PARTIAL fix (say, a
+        // `Declaration::Function`-only parameter check) reintroduces the
+        // wildcard per-kind allowlist that `analysis::decl_name_and_span`
+        // exists to remove. Owner: #7607 — FLIP these assertions there rather
+        // than deleting them; each row already names the target it should get.
+        //
+        // `(source, word, use_index, decl_index, what)`, indexing
+        // `occurrences(source, word)`.
+        let cases: &[(&str, &str, usize, usize, &str)] = &[
+            (
+                "fn f(area: Length) -> Length { area }\nfn area(x: Length) -> Length { x }",
+                "area",
+                1,
+                2,
+                "a function parameter used in its own body. The nearest binding \
+                 is `f`'s parameter at occurrence 0; function parameters are \
+                 not entity members, so `find_named_member_span` never saw them",
+            ),
+            (
+                "fn zed(x: Length) -> Length { x }\n\
+                 field def temp : Point3 -> Real { source = analytical { |zed| zed } }",
+                "zed",
+                2,
+                0,
+                "a lambda parameter used in its own body; the binding is the \
+                 `|zed|` parameter at occurrence 1",
+            ),
+            (
+                "structure Bracket {\n    param x : Length = 5mm\n}\n// mentions Bracket here",
+                "Bracket",
+                1,
+                0,
+                "an identifier inside a line COMMENT, which is not a reference \
+                 position at all",
+            ),
+            (
+                "structure Foo {\n    param x : Length = 5mm\n}\n\
+                 structure S {\n    param label : String = \"Foo\"\n}",
+                "Foo",
+                1,
+                0,
+                "an identifier inside a STRING LITERAL, likewise not a \
+                 reference position",
+            ),
+        ];
+
+        for (source, word, use_index, decl_index, what) in cases {
+            let parsed = parse_clean(source);
+            let offsets = occurrences(source, word);
+            let use_offset = offsets[*use_index];
+            let decl_offset = offsets[*decl_index];
+
+            // Fixture guard: the cursor must really scan to `word`, or the row
+            // would pin an unrelated resolution. (The unit-suffix pin exists
+            // because exactly that can fail — `5meter` scans as one word.)
+            assert_eq!(
+                find_word_at_offset(source, use_offset).map(|(_, w)| w),
+                Some(*word),
+                "row {what:?}: the use site must scan to {word:?}: {source}"
+            );
+
+            let loc = compute_goto_definition_with_parsed(
+                &parsed,
+                source,
+                &test_uri(),
+                crate::convert::offset_to_position(source, use_offset as u32),
+            )
+            .unwrap_or_else(|| {
+                panic!(
+                    "row {what:?} no longer resolves at all. If #7607 taught \
+                     Phase C about binding scope, update this row to assert the \
+                     new target instead of removing it: {source}"
+                )
+            });
+
+            assert_eq!(
+                range_to_byte_range(source, loc.range),
+                (decl_offset, decl_offset + word.len()),
+                "row {what:?}: Phase C jumps to the TOP-LEVEL declaration's \
+                 name token — today's documented imprecision, owned by #7607: \
+                 {source}"
+            );
+        }
     }
 
     #[test]
