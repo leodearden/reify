@@ -781,7 +781,10 @@ export interface EntityTreeNode {
   display_name?: string | null;
   /** Whether this entity has at least one realization (tessellatable geometry). */
   has_mesh: boolean;
-  /** Heuristic: member is named `"geometry"` AND parent template has `"Physical"` in `trait_bounds`. */
+  /** Member is named `"geometry"` AND the parent template's trait bounds
+   *  equal-or-transitively-refine `Physical` — resolved against the merged
+   *  module + prelude trait defs, so `: Rigid` matches via `Rigid : Physical`
+   *  while a lookalike name such as `PhysicalMock` does not. */
   trait_geometry: boolean;
   /**
    * Freshness state of the backing node (arch §7.1 lines 716-728).
