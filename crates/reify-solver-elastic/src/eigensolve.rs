@@ -641,14 +641,64 @@ pub enum ShiftInvertFailure {
 /// 0 is empty, so no eigenvalue can lie in it.
 ///
 /// Exposed (and `pub`) rather than inlined because two crates need the identical
-/// rule — the Lanczos path here and `reify-eval`'s degenerate
-/// `singular_k_over_ceiling` early return, which returns no spectrum at all.
-/// Writing it twice across a crate boundary is how the two drift when #7259
-/// refines the Lanczos discriminator to a real one; this is the single place
-/// that changes.
+/// rule for the identical reason — they have NO SPECTRUM AT ALL to reason about.
+/// Its two callers are [`lanczos_shift_invert`], which is handed an opaque
+/// pre-built factorization and cannot inspect it, and `reify-eval`'s degenerate
+/// `singular_k_over_ceiling` early return, which computes nothing. Writing the
+/// rule twice across a crate boundary is how the two drift.
+///
+/// It is NOT the answer the sparse shift-invert path gives. That path DOES have
+/// evidence — which of Cholesky / LU factored `K − σB` — and
+/// [`try_solve_eigen_shift_invert`] uses it to establish `false` where this
+/// helper could only assume `true`. The refinement is not expressible as a
+/// function of σ alone, which is why it lives at the dispatch rather than
+/// replacing this helper.
 #[inline]
 pub fn conservative_shift_provenance(sigma: f64) -> bool {
     sigma != 0.0
+}
+
+/// **C5 — Provenance, from the Sylvester evidence the §5.1 dispatch produced.**
+///
+/// Cholesky of a symmetric matrix succeeds iff that matrix is positive definite.
+/// `K − σB` is positive definite iff the pencil has no eigenvalue between zero
+/// and σ — so which factorization won IS the answer, computed for free by a
+/// dispatch that had to run anyway.
+///
+/// For buckling's indefinite `B = −K_g` this correctly means no mode has been
+/// passed in EITHER direction, because definiteness is a two-sided statement;
+/// no second rule for negative σ is needed.
+///
+/// # Precision limit, fixed by the PRD and not negotiable here
+///
+/// This is a BOOLEAN and can never be a count. An exact count of the modes
+/// below σ needs the INERTIA of `K − σB`, which requires an inertia-revealing
+/// `LDL^T`; faer's sparse LU does not expose one. The dense path counts exactly.
+/// So a consumer formatting a diagnostic must use ONE message template with an
+/// OPTIONAL count, never two templates that drift apart.
+///
+/// # This predicate is POSITION-based; the dense one is ABSENCE-based
+///
+/// [`any_eigenvalue_skipped_between_zero_and_shift`] asks whether an eigenvalue
+/// in the interval is ABSENT from the returned set. This one can only ask
+/// whether an eigenvalue is IN the interval at all — it has no spectrum to check
+/// absence against.
+///
+/// Cholesky SUCCESS implies nothing is in the interval, hence nothing in it is
+/// absent, so `false` here is always sound and always established. Cholesky
+/// FAILURE implies only that something is in the interval; it may still have
+/// been RETURNED, and in that configuration the dense path answers `false` while
+/// this one answers `true`. **Lanczos over-reports, and over-reporting is the
+/// direction C5 permits** — `false` only when established. It is not a defect
+/// and must not be "fixed" by weakening either side.
+///
+/// `cholesky_succeeded` is about the matrix the dispatch actually factored —
+/// `K − σB`, which at σ=0 is `K` itself.
+#[inline]
+fn shift_provenance_from_factorization(sigma: f64, cholesky_succeeded: bool) -> bool {
+    // σ=0: established `false` with no evidence needed — the open interval
+    // strictly between 0 and 0 is empty.
+    sigma != 0.0 && !cholesky_succeeded
 }
 
 // ---------------------------------------------------------------------------
@@ -1205,7 +1255,11 @@ pub fn try_solve_eigen_shift_invert(
             factor: SparseFactorRef::Cholesky(&llt),
             n,
         };
-        return Ok(lanczos_shift_invert(&k_op, &m_op, opts));
+        return Ok(with_provenance(
+            lanczos_shift_invert(&k_op, &m_op, opts),
+            0.0,
+            true,
+        ));
     }
 
     // ---- σ≠0: the shifted pencil. ------------------------------------------
@@ -1230,13 +1284,18 @@ pub fn try_solve_eigen_shift_invert(
     // SUCCESS proves `K − σB` is positive definite, which is exactly the
     // statement that no eigenvalue of the pencil lies between zero and σ.  That
     // one bit is the C5 discriminator step-7 reads off this dispatch.
+    let sigma = opts.sigma;
     match shifted.sp_cholesky(Side::Lower) {
         Ok(llt) => {
             let k_op = SparseStiffnessOp {
                 factor: SparseFactorRef::Cholesky(&llt),
                 n,
             };
-            Ok(lanczos_shift_invert(&k_op, &m_op, opts))
+            Ok(with_provenance(
+                lanczos_shift_invert(&k_op, &m_op, opts),
+                sigma,
+                true,
+            ))
         }
         // `K − σB` is indefinite — the expected case for a σ above some mode,
         // not an error. LU handles it.
@@ -1246,7 +1305,11 @@ pub fn try_solve_eigen_shift_invert(
                     factor: SparseFactorRef::Lu(&lu),
                     n,
                 };
-                Ok(lanczos_shift_invert(&k_op, &m_op, opts))
+                Ok(with_provenance(
+                    lanczos_shift_invert(&k_op, &m_op, opts),
+                    sigma,
+                    false,
+                ))
             }
             // Structural rank deficiency: no pivot exists at all, so σ sits on
             // an eigenvalue and shift-invert has no operator to apply. This is
@@ -1289,6 +1352,31 @@ fn routes_to_dense_fallback(n: usize, n_modes: usize) -> bool {
     let max_dim = (2 * n_modes).max(32).min(n);
     let effective_max_dim = max_dim.max(2 * FAER_MIN_DIM).max(2 * n_modes).min(n);
     effective_max_dim >= n
+}
+
+/// Replace the generic core's conservative C5 answer with the one this module's
+/// dispatch can ESTABLISH from which factorization succeeded.
+///
+/// Rebuilt immutably rather than mutated after the fact: the core's result is a
+/// value, and a caller reading the intermediate would see a field this module
+/// already knows to be wrong.
+///
+/// [`lanczos_shift_invert`] keeps [`conservative_shift_provenance`] and must:
+/// it is handed an opaque pre-built factorization and has no evidence to
+/// establish `false`, so C5 forbids it assuming one.  Only here, where the
+/// factorization was BUILT, does the evidence exist.
+fn with_provenance(
+    result: EigenSolverResult,
+    sigma: f64,
+    cholesky_succeeded: bool,
+) -> EigenSolverResult {
+    EigenSolverResult {
+        shift_skipped_modes: shift_provenance_from_factorization(
+            sigma,
+            cholesky_succeeded,
+        ),
+        ..result
+    }
 }
 
 // ---------------------------------------------------------------------------
