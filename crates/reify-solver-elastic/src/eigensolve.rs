@@ -162,6 +162,7 @@ use faer::matrix_free::eigen::{
     PartialEigenParams, partial_self_adjoint_eigen, partial_self_adjoint_eigen_scratch,
 };
 use faer::sparse::linalg::LltError as SparseLltError;
+use faer::sparse::linalg::LuError as SparseLuError;
 use faer::sparse::{SparseColMat, SparseRowMat, SparseRowMatRef};
 use faer::sparse::linalg::solvers::{Llt, Lu};
 use faer::reborrow::ReborrowMut;
@@ -854,20 +855,29 @@ impl<K: StiffnessOp, M: MetricOp> LinOp<f64> for CompositeShiftInvertOp<'_, K, M
     }
 }
 
-/// Shift-invert Lanczos eigensolver over arbitrary SPD operator pairs.
+/// Shift-invert Lanczos eigensolver over arbitrary self-adjoint operator pairs.
 ///
-/// Solves `K φ = λ M φ` using shift-invert Lanczos.  Finds the smallest |λ| by
-/// maximizing |μ| = 1/|λ| in the Krylov subspace of `K⁻¹ · M`.
+/// Solves `K φ = λ M φ` using shift-invert Lanczos.  Finds the λ nearest σ by
+/// maximizing |μ| = 1/|λ − σ| in the Krylov subspace of `(K − σM)⁻¹ · M`.
 ///
-/// **Shift contract status:** this path does not yet honor `opts.sigma` — the
-/// `K − σB` assembly, the Cholesky-then-LU dispatch and the C4 back-shift are
-/// task #7259.  It satisfies C1 and C3 today, and reports C5 conservatively (it
-/// cannot ESTABLISH that nothing was skipped, and C5 forbids assuming it).
-/// Until then it solves the UNSHIFTED pencil whatever `opts.sigma` says, and
-/// **says so**: it reports `shift: 0.0` — the σ it actually used — rather than
-/// echoing the request, so `result.shift == opts.sigma` is the caller's test for
-/// whether the shift was honored.  See the module-level "Shift contract (C1–C6)"
-/// section.
+/// # `opts.sigma` is a DESCRIPTION of `k_op`, not an instruction to it
+///
+/// This function never forms `K − σB`; it is handed an already-built
+/// factorization and applies it.  `opts.sigma` tells it which σ that
+/// factorization embeds, so that it can back-shift (C4, `λ = σ + 1/μ`) and
+/// select (C2, nearest `|λ − σ|`) correctly.
+///
+/// **The core cannot verify the claim.** A `k_op` factoring `K − 0.3·B` passed
+/// with `opts.sigma = 0.7` produces a plausible, wrong spectrum, and nothing
+/// here can detect it — the operator is opaque by design, which is what lets
+/// matrix-free and lumped-diagonal callers use this path at all.  Keeping the
+/// two consistent is the caller's obligation.
+///
+/// C6 (a singular or numerically-degenerate `K − σB` is a typed failure
+/// carrying σ) therefore belongs to whoever BUILT the factorization, not here:
+/// only that code has the matrices needed to size a resolution floor and decide
+/// the question.  [`try_solve_eigen_shift_invert`] is where it lives for the
+/// sparse path.
 ///
 /// This is the generic core — it operates over any [`StiffnessOp`] /
 /// [`MetricOp`] pair without knowledge of the underlying representation
@@ -911,6 +921,11 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
         opts.max_iters >= 1,
         "EigenSolverOptions.max_iters = 0 is invalid; must be >= 1",
     );
+    assert!(
+        opts.sigma.is_finite(),
+        "EigenSolverOptions.sigma = {} must be a finite value",
+        opts.sigma,
+    );
     assert_eq!(
         k_op.n(),
         m_op.n(),
@@ -922,19 +937,10 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
     let n = k_op.n();
 
     // The σ this solve ACTUALLY uses, which is what `EigenSolverResult::shift`
-    // is documented to report.  #7259 lands the `K − σB` assembly and the
-    // Cholesky-then-LU dispatch; until then this path solves the UNSHIFTED
-    // pencil whatever `opts.sigma` says, so it reports 0.0 rather than echoing
-    // the request.  Echoing σ=0.6 over a bottom-of-the-spectrum answer would be
-    // a correct-looking provenance field describing a solve that never happened
-    // — the silent-substitution class this contract exists to close — and would
-    // also make ε (#7262) refuse a result whose first mode is in fact present.
-    // A caller that needs σ honored detects the gap with
-    // `result.shift == opts.sigma`; #7259 replaces this with `opts.sigma`, and
-    // when it does it must also add the `opts.sigma.is_finite()` guard this
-    // function's option-contract asserts above deliberately omit — σ is inert
-    // here precisely because it is never read.
-    let shift_used = 0.0_f64;
+    // is documented to report.  It is `opts.sigma` because `k_op` is a
+    // factorization of `K − σB` for THAT σ — see this function's rustdoc on why
+    // the core cannot verify that and why C6 belongs to whoever built it.
+    let shift_used = opts.sigma;
 
     let op = CompositeShiftInvertOp { k_op, m_op, n };
 
@@ -982,25 +988,37 @@ pub fn lanczos_shift_invert<K: StiffnessOp, M: MetricOp>(
 
     let n_conv = info.n_converged_eigen;
 
-    // Convert μ → λ = 1/μ for the converged modes only.
+    // C4 — back-shift μ → λ = σ + 1/μ for the converged modes only.  (At σ=0
+    // this is the pre-PRD `λ = 1/μ`, bit-exactly: `0.0 + x == x` for every
+    // finite x.)
+    //
+    // The two filters are UNCHANGED and both are about spurious pencil modes,
+    // not about a singular shift: μ≈0 means λ→∞, an eigenvector of B's null
+    // space rather than of the pencil.  A σ sitting ON an eigenvalue is the
+    // opposite limit — |μ|→∞ — and is caught by the §5.3 guard in
+    // `try_solve_eigen_shift_invert`, which has the matrices needed to size it.
     let mut pairs: Vec<(f64, usize)> = (0..n_conv)
         .filter_map(|i| {
             let mu = eigvals_mu[i];
             if mu.abs() < f64::MIN_POSITIVE {
                 return None;
             }
-            let lambda = 1.0 / mu;
+            let lambda = shift_used + 1.0 / mu;
             if lambda.is_finite() { Some((lambda, i)) } else { None }
         })
         .collect();
 
-    // C3 via the shared helper (SPOT).  SELECTION is deliberately NOT re-run
-    // here: this path's converged set is the output of the UNSHIFTED operator,
-    // so re-selecting it by |λ − σ| would be wrong until #7259 makes the
-    // operator itself honor σ.
-    order_by_abs_lambda(&mut pairs);
-
-    let n_take = pairs.len().min(opts.n_modes);
+    // C2 then C3, in that order, via the shared helpers (SPOT).  SELECTION
+    // must run BEFORE presentation: truncating an |λ|-ordered list to n_modes
+    // would select by |λ| instead of |λ − σ| and silently violate C2 whenever
+    // faer converges more pairs than were asked for.
+    //
+    // At σ=0 this is structurally a no-op: |λ − 0.0| == |λ| bit-exactly, so
+    // `select_nearest_to_shift` produces the same order the old
+    // `order_by_abs_lambda` did, and a STABLE re-sort of an already-ascending
+    // prefix cannot move anything.  C1 is preserved.
+    let n_take = select_nearest_to_shift(&mut pairs, shift_used, opts.n_modes);
+    order_by_abs_lambda(&mut pairs[..n_take]);
     // Track what the caller actually receives: converged iff we hand back
     // all n_modes eigenvalues.
     let converged = n_take == opts.n_modes;
@@ -1136,67 +1154,141 @@ pub fn try_solve_eigen_shift_invert(
 ) -> Result<EigenSolverResult, ShiftInvertFailure> {
     check_eigen_options_and_shapes(k, b, &opts);
     let n = k.nrows();
+    let m_op = SparseMetricOp { m: b.as_ref() };
 
-    // Factor K via sparse Cholesky. A NUMERIC failure here means K is not SPD —
-    // the one condition this entry point reports rather than panics on.
+    // ---- σ=0: TODAY'S EXACT PATH, and deliberately not one line more. -------
     //
-    // The error is MATCHED rather than `.ok()?`'d so that `Err(KNotSpd)` really
-    // does mean only that. faer's sparse `LltError` also carries a `Generic` arm
-    // (`FaerError::OutOfMemory` / `IndexOverflow`), and mapping those into the
-    // failure channel would let a resource failure factorizing a large `K_free` surface to the
-    // user as `W_ModalRigidBodyMode: K_free is singular (the model is
-    // under-constrained)` — a confidently wrong diagnosis of an allocation
-    // problem, on the exact large-mesh path `DENSE_FALLBACK_MAX_DIM` exists to
-    // serve. A `Generic` failure is not a domain fact about the model, so it
-    // keeps the panicking contract.
-    let llt = match k.sp_cholesky(Side::Lower) {
-        Ok(llt) => llt,
-        // K is not SPD (a non-positive pivot) — the documented `Err(KNotSpd)`.
-        Err(SparseLltError::Numeric(_)) => return Err(ShiftInvertFailure::KNotSpd),
-        Err(e @ SparseLltError::Generic(_)) => panic!(
-            "eigensolve: sparse Cholesky of K failed for a non-numeric reason \
-             ({e:?}) — this is a resource/index failure (allocation or index \
-             overflow), NOT an under-constrained model; do not report it as a \
-             rigid-body mode"
-        ),
-    };
+    // `K − 0·B` is numerically equal to K but is NOT the same sparse matrix: an
+    // assembly over the union of the two patterns stores B's off-pattern entries
+    // as explicit zeros, which changes the Cholesky fill-in and therefore the
+    // rounding.  Routing σ=0 through the shifted branch would move every pinned
+    // σ=0 golden by an amount no tolerance catches.  `shifted_pencil`'s rustdoc
+    // carries the full argument; `sigma_zero_factors_k_itself_not_k_minus_zero_b`
+    // is the executable form.
+    if opts.sigma == 0.0 {
+        // Factor K via sparse Cholesky. A NUMERIC failure here means K is not SPD
+        // — the one condition this entry point reports rather than panics on.
+        //
+        // The error is MATCHED rather than `.ok()?`'d so that `Err(KNotSpd)` really
+        // does mean only that. faer's sparse `LltError` also carries a `Generic` arm
+        // (`FaerError::OutOfMemory` / `IndexOverflow`), and mapping those into the
+        // failure channel would let a resource failure factorizing a large `K_free`
+        // surface to the user as `W_ModalRigidBodyMode: K_free is singular (the model
+        // is under-constrained)` — a confidently wrong diagnosis of an allocation
+        // problem, on the exact large-mesh path `DENSE_FALLBACK_MAX_DIM` exists to
+        // serve. A `Generic` failure is not a domain fact about the model, so it
+        // keeps the panicking contract.
+        let llt = match k.sp_cholesky(Side::Lower) {
+            Ok(llt) => llt,
+            // K is not SPD (a non-positive pivot) — the documented `Err(KNotSpd)`.
+            Err(SparseLltError::Numeric(_)) => return Err(ShiftInvertFailure::KNotSpd),
+            Err(e @ SparseLltError::Generic(_)) => panic!(
+                "eigensolve: sparse Cholesky of K failed for a non-numeric reason \
+                 ({e:?}) — this is a resource/index failure (allocation or index \
+                 overflow), NOT an under-constrained model; do not report it as a \
+                 rigid-body mode"
+            ),
+        };
 
-    // Dense-fallback dispatch (sparse-matrix-specific; not in the generic).
-    // faer's partial_self_adjoint_eigen_imp requires max_dim < n strictly.
-    // The public wrapper silently clamps: max_dim = min(max(params.max_dim,
-    //   max(2*MIN_DIM, 2*n_eigval)), n) with MIN_DIM = 32 (a faer constant).
-    // For n ≤ 64 (or 2*n_modes ≥ n) max_dim reaches n, causing a panic in the
-    // inner thick-restart loop.  Mirror faer's computation here and fall back
-    // to the dense path when the Krylov window would hit the problem size.
-    // FAER_MIN_DIM mirrors the private MIN_DIM constant from faer-0.24
-    // (src/operator/eigen/mod.rs).  If the faer workspace dependency is bumped,
-    // re-check this value.  The `shift_invert_no_panic_at_min_dim_boundaries`
-    // integration test sweeps every n in 2..=128 to catch silent divergence
-    // from faer's actual floor without requiring a recompile.
-    const FAER_MIN_DIM: usize = 32; // faer-0.24
-    let max_dim = (2 * opts.n_modes).max(32).min(n);
-    let effective_max_dim = max_dim
-        .max(2 * FAER_MIN_DIM)
-        .max(2 * opts.n_modes)
-        .min(n);
+        if routes_to_dense_fallback(n, opts.n_modes) {
+            // Problem too small for Lanczos; delegate to the direct dense solver.
+            // The dense result already satisfies the EigenSolverResult contract
+            // (converged=true, iterations=0, eigenvalues sorted ascending |λ|).
+            return Ok(solve_eigen_dense(k, b, opts));
+        }
 
-    if effective_max_dim >= n {
-        // Problem too small for Lanczos; delegate to the direct dense solver.
-        // The dense result already satisfies the EigenSolverResult contract
-        // (converged=true, iterations=0, eigenvalues sorted ascending |λ|).
+        // Delegate to the generic Lanczos core via zero-cost adapter pair.
+        // The chained matvec+backsolve through the adapters is byte-equivalent to
+        // the former ShiftInvertOp composition (same faer calls in same order),
+        // so buckling goldens pass bit-for-bit.
+        let k_op = SparseStiffnessOp {
+            factor: SparseFactorRef::Cholesky(&llt),
+            n,
+        };
+        return Ok(lanczos_shift_invert(&k_op, &m_op, opts));
+    }
+
+    // ---- σ≠0: the shifted pencil. ------------------------------------------
+    //
+    // The dense check comes FIRST here, unlike the σ=0 branch above.  The dense
+    // path honors σ as a sort-key change and forms no `K − σB` at all, so a
+    // small problem must not acquire a factorization failure mode it does not
+    // need — and there is no point assembling a pencil that is about to be
+    // discarded.  (At σ=0 the order is the other way round because that IS the
+    // pre-PRD order, and C1 is a claim about the code path, not just the
+    // numbers.)
+    if routes_to_dense_fallback(n, opts.n_modes) {
         return Ok(solve_eigen_dense(k, b, opts));
     }
 
-    // Delegate to the generic Lanczos core via zero-cost adapter pair.
-    // The chained matvec+backsolve through the adapters is byte-equivalent to
-    // the former ShiftInvertOp composition (same faer calls in same order),
-    // so buckling goldens pass bit-for-bit.
-    let k_op = SparseStiffnessOp {
-        factor: SparseFactorRef::Cholesky(&llt),
-        n,
-    };
-    let m_op = SparseMetricOp { m: b.as_ref() };
-    Ok(lanczos_shift_invert(&k_op, &m_op, opts))
+    let shifted = shifted_pencil(k, b, opts.sigma);
+
+    // PRD §5.1 dispatch: Cholesky FIRST, LU only on a numeric failure.
+    //
+    // The Cholesky attempt is not merely an optimization and must NOT be
+    // collapsed into an unconditional LU: by Sylvester's law of inertia its
+    // SUCCESS proves `K − σB` is positive definite, which is exactly the
+    // statement that no eigenvalue of the pencil lies between zero and σ.  That
+    // one bit is the C5 discriminator step-7 reads off this dispatch.
+    match shifted.sp_cholesky(Side::Lower) {
+        Ok(llt) => {
+            let k_op = SparseStiffnessOp {
+                factor: SparseFactorRef::Cholesky(&llt),
+                n,
+            };
+            Ok(lanczos_shift_invert(&k_op, &m_op, opts))
+        }
+        // `K − σB` is indefinite — the expected case for a σ above some mode,
+        // not an error. LU handles it.
+        Err(SparseLltError::Numeric(_)) => match shifted.sp_lu() {
+            Ok(lu) => {
+                let k_op = SparseStiffnessOp {
+                    factor: SparseFactorRef::Lu(&lu),
+                    n,
+                };
+                Ok(lanczos_shift_invert(&k_op, &m_op, opts))
+            }
+            // Structural rank deficiency: no pivot exists at all, so σ sits on
+            // an eigenvalue and shift-invert has no operator to apply. This is
+            // PRD §5.3 part A; step-9 adds part B, the numerical guard that
+            // catches the cases partial pivoting lets through as `Ok`.
+            Err(SparseLuError::SymbolicSingular { .. }) => {
+                Err(ShiftInvertFailure::ShiftAtEigenvalue { sigma: opts.sigma })
+            }
+            Err(e @ SparseLuError::Generic(_)) => panic!(
+                "eigensolve: sparse LU of K − σB failed for a non-numeric reason \
+                 ({e:?}) — this is a resource/index failure (allocation or index \
+                 overflow), NOT a singular shift; do not report it as one"
+            ),
+        },
+        Err(e @ SparseLltError::Generic(_)) => panic!(
+            "eigensolve: sparse Cholesky of K − σB failed for a non-numeric reason \
+             ({e:?}) — this is a resource/index failure (allocation or index \
+             overflow), NOT a property of the pencil; do not report it as a \
+             singular shift"
+        ),
+    }
+}
+
+/// Whether the Krylov window would reach the problem dimension, so the caller
+/// must route to the dense solver instead.
+///
+/// faer's `partial_self_adjoint_eigen_imp` requires `max_dim < n` strictly, and
+/// the public wrapper silently clamps `max_dim = min(max(params.max_dim,
+/// max(2·MIN_DIM, 2·n_eigval)), n)` with `MIN_DIM = 32` (a faer constant).  For
+/// n ≤ 64 (or 2·n_modes ≥ n) `max_dim` reaches n, causing a panic in the inner
+/// thick-restart loop.  This mirrors faer's computation.
+///
+/// `FAER_MIN_DIM` mirrors the private `MIN_DIM` constant from faer-0.24
+/// (`src/operator/eigen/mod.rs`).  If the faer workspace dependency is bumped,
+/// re-check this value.  The `shift_invert_no_panic_at_min_dim_boundaries`
+/// integration test sweeps every n in 2..=128 to catch silent divergence from
+/// faer's actual floor without requiring a recompile.
+fn routes_to_dense_fallback(n: usize, n_modes: usize) -> bool {
+    const FAER_MIN_DIM: usize = 32; // faer-0.24
+    let max_dim = (2 * n_modes).max(32).min(n);
+    let effective_max_dim = max_dim.max(2 * FAER_MIN_DIM).max(2 * n_modes).min(n);
+    effective_max_dim >= n
 }
 
 // ---------------------------------------------------------------------------
