@@ -4745,9 +4745,13 @@ const INLINE_TEMPLATE_REASON: &str = "format-template";
 /// Every quantity comes from `inline`, never from prose: a hand-typed count is
 /// right on the day it is written and silently wrong afterwards, and this
 /// artifact's own provenance section promises zero hand-derived counts. The
-/// UNREACHED classes are therefore named by the Rust construct to grep for and
-/// deliberately carry no frozen number — the reader counts them at the stamped
-/// commit, against a corpus this generator does not enumerate.
+/// UNREACHED classes are therefore named by the Rust construct — or, for a host
+/// the walker never opens, the PATH — to grep for, and deliberately carry no
+/// frozen number: the reader counts them at the stamped commit, against a
+/// corpus this generator does not enumerate. Both dimensions have to be
+/// disclosed, because a missed LITERAL shape and an unopened HOST are equally
+/// invisible to a reader of the rows above, and #5306 inherits this list rather
+/// than a search.
 fn push_inline_limitation(md: &mut String, inline: &SurveyRun) {
     use std::fmt::Write as _;
 
@@ -4760,9 +4764,11 @@ fn push_inline_limitation(md: &mut String, inline: &SurveyRun) {
     let _ = write!(
         md,
         "1. {INLINE_LIMITATION_KEY}, and only as those.**\n\
-           The *Inline Rust fixtures* section above sweeps every tracked `.rs` test host\n\
-           for raw-string literals (`r\"…\"`, `r#\"…\"#`) whose text reads as Reify\n\
-           declaration grammar, and compiles each through the same pipeline as a tracked\n\
+           The *Inline Rust fixtures* section above sweeps every tracked `.rs` under\n\
+           `crates/` — test file or production source alike, since a `#[cfg(test)] mod\n\
+           tests` hosts fixtures like any other — for raw-string literals (`r\"…\"`,\n\
+           `r#\"…\"#`) whose text reads as Reify declaration grammar, and compiles each\n\
+           through the same pipeline as a tracked\n\
            `.ri`. That reached **{total} inline member(s)**, of which **{templates}** were\n\
            `format!` template(s) — listed above under their own coverage reason rather\n\
            than dropped, because a template's `{{…}}` holes are not Reify syntax and a\n\
@@ -4776,7 +4782,14 @@ fn push_inline_limitation(md: &mut String, inline: &SurveyRun) {
            of those shapes is absent from the section above rather than reported clean.\n\
            `include_str!` and `read_to_string` goldens, by contrast, need no machinery at\n\
            all: their target `.ri` files are tracked, so the FIRST half already\n\
-           enumerated them.\n",
+           enumerated them.\n\
+           Unreached HOST files are the other half of this residual, and they are a SCOPE\n\
+           decision rather than a walker limitation: `gui/src-tauri/**/*.rs` (the Tauri\n\
+           sidecar) and `tree-sitter-reify/**/*.rs` (the grammar crate) are separate cargo\n\
+           and grammar projects, so the host predicate anchors at `crates/` and never\n\
+           opens them. Enumerate them with\n\
+           `git ls-files -- 'gui/src-tauri/**/*.rs' 'tree-sitter-reify/**/*.rs'`; a\n\
+           conformance site inside one is absent from the section above, not clean.\n",
         total = inline.total,
     );
 }
