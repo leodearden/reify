@@ -15,14 +15,9 @@ use reify_eval::SweptKind;
 use reify_ir::{ExportFormat, Value};
 use reify_test_support::*;
 
-/// Build a `CompiledExpr` literal from an ANGLE-dimensioned scalar (SI radians).
-///
-/// The angle-bearing args of `rotate` / `rotate_around` / `revolve` / `arc`
-/// require a dimensioned Angle since PRD 3 leaf γ — a bare literal in those
-/// positions is now rejected at eval, exactly as a bare length already was.
-fn angle_literal(radians: f64) -> reify_ir::CompiledExpr {
-    reify_ir::CompiledExpr::literal(reify_ir::Value::angle(radians), reify_core::Type::angle())
-}
+#[path = "../common/angle_expr.rs"]
+mod angle_expr;
+use angle_expr::angle_literal;
 
 /// (a) Extrude-only realization populates the table with a single
 /// `SweptKind::Extrude` keyed by the realization's final handle.
@@ -320,9 +315,10 @@ fn engine_swept_kind_table_records_revolve_realization() {
     };
 
     // Op 1: Revolve(Step(0), axis=+Z, angle=π/2). The axis ORIGIN is
-    // length-typed (task 5623's units gate rejects a bare Real there); the axis
-    // direction and the angle stay Type::dimensionless_scalar(). Reverting
-    // ox/oy/oz to real_literal here re-trips the gate, not a golden.
+    // length-typed (task 5623's units gate rejects a bare Real there) and the
+    // angle is a dimensioned Angle (PRD 3 leaf γ); only the axis DIRECTION
+    // stays Type::dimensionless_scalar(). Reverting ox/oy/oz or the angle to
+    // real_literal here re-trips a gate, not a golden.
     let revolve_op = CompiledGeometryOp::Sweep {
         kind: SweepKind::Revolve,
         profiles: vec![GeomRef::Step(0)],

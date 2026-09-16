@@ -12,14 +12,9 @@ use reify_ir::{
 };
 use reify_test_support::*;
 
-/// Build a `CompiledExpr` literal from an ANGLE-dimensioned scalar (SI radians).
-///
-/// The angle-bearing args of `rotate` / `rotate_around` / `revolve` / `arc`
-/// require a dimensioned Angle since PRD 3 leaf γ — a bare literal in those
-/// positions is now rejected at eval, exactly as a bare length already was.
-fn angle_literal(radians: f64) -> reify_ir::CompiledExpr {
-    reify_ir::CompiledExpr::literal(reify_ir::Value::angle(radians), reify_core::Type::angle())
-}
+#[path = "../common/angle_expr.rs"]
+mod angle_expr;
+use angle_expr::angle_literal;
 
 // ---------------------------------------------------------------------------
 // Shared helper: build a CompiledModule with fixed params and optional ops

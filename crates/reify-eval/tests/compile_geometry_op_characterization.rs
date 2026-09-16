@@ -91,14 +91,10 @@ fn lit_len(v: f64) -> CompiledExpr {
     CompiledExpr::literal(Value::length(v), reify_core::Type::length())
 }
 
-/// Build a `CompiledExpr` literal from an ANGLE-dimensioned scalar (SI radians).
-///
-/// The angle-bearing args of `rotate` / `rotate_around` / `revolve` / `arc`
-/// require a dimensioned Angle since PRD 3 leaf γ — a bare literal in those
-/// positions is now rejected at eval, exactly as a bare length already was.
-fn lit_angle(radians: f64) -> reify_ir::CompiledExpr {
-    reify_ir::CompiledExpr::literal(reify_ir::Value::angle(radians), reify_core::Type::angle())
-}
+#[path = "common/angle_expr.rs"]
+mod angle_expr;
+// Aliased to this file's `lit_*` literal-constructor convention.
+use angle_expr::angle_literal as lit_angle;
 
 /// Build a `CompiledExpr` literal wrapping a `Value::Transform` (quaternion
 /// `[w,x,y,z]` rotation + SI-metre `[tx,ty,tz]` translation).
