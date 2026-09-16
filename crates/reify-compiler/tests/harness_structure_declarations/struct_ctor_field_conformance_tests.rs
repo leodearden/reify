@@ -2802,8 +2802,9 @@ structure def Root {
 ///
 /// **What this holds that the direct-`Type` probe cannot.** That probe builds
 /// its `Type::Vector { n: 2, .. }` by hand, so it would stay green if the
-/// name-suffix `n` inference stopped producing one from source (task 5889 owns
-/// that inference). This fixture is the only thing that would notice.
+/// name-suffix `n` inference stopped producing one from source. This fixture is
+/// the only thing that would notice. (Task 5889 narrowed that arm's QUANTITY
+/// slot and deliberately left `n` alone.)
 ///
 /// The code is `TypeNotConformingToVector`, not `ArgTypeMismatch`: at this arm
 /// FAMILY and ARITY keep the bespoke code and only a QUANTITY conflict routes to
@@ -3013,8 +3014,8 @@ structure def Root {
 /// twins the `Vector` arm's probe one arm over. The two seams reach the same
 /// arm by DIFFERENT routes and both are worth holding: the in-module probe
 /// constructs the `Type::Point` directly, so it pins the walker's rule without
-/// depending on `math_fn_result_type`'s first-argument quantity inference (task
-/// 5889's to change); this fixture drives that whole inference chain from `.ri`
+/// depending on `math_fn_result_type`'s agreeing-components quantity inference;
+/// this fixture drives that whole inference chain from `.ri`
 /// source, so it is the one that would notice if the chain stopped producing a
 /// dimensioned `Type::Point` at all.
 ///
