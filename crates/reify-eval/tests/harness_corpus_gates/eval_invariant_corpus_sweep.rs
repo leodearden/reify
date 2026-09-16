@@ -639,17 +639,51 @@ struct FileOutcome {
 }
 
 impl FileOutcome {
-    /// This file's findings for `id`. `None` means this file was NOT checked for
-    /// `id` — either it is out of that invariant's scope, or the sweep does not
-    /// carry the invariant at all, which
-    /// `one_corpus_evaluation_feeds_both_invariant_checkers` asserts never happens.
-    /// `Some(&[])` is the materially different "checked, and clean".
+    /// This file's findings for `id`. `None` means `id`'s scope does not cover
+    /// this file — the ONE fact callers may skip past. `Some(&[])` is the
+    /// materially different "checked, and clean".
+    ///
+    /// An `id` that is ABSENT from `per_invariant` is NOT folded into that
+    /// `None`. [`check_file`] populates an entry for every gate in [`GATES`], so
+    /// an absent id means the sweep lost an invariant — and `run_corpus_shard`
+    /// `continue`s silently past `None`, which would turn that loss into a green
+    /// shard. It panics naming the invariant instead, so the distinction
+    /// [`InvariantOutcome::OutOfScope`] exists to draw is enforced where it is
+    /// READ and not only where it is constructed.
     fn findings(&self, id: InvariantId) -> Option<&[Finding]> {
         match self.per_invariant.iter().find(|(i, _)| *i == id) {
             Some((_, InvariantOutcome::Checked(f))) => Some(f.as_slice()),
-            _ => None,
+            Some((_, InvariantOutcome::OutOfScope)) => None,
+            None => panic!(
+                "{id:?} was not evaluated for {} — every gate in GATES must appear \
+                 in every FileOutcome, in scope or not",
+                self.rel
+            ),
         }
     }
+}
+
+/// The two ways a file can fail to have findings for an invariant are NOT the
+/// same fact, and only one of them is benign.
+///
+/// `run_corpus_shard` skips `None` without comment, which is right for a file
+/// outside an invariant's scope and catastrophic for an invariant that vanished
+/// from [`GATES`]: every shard would skip it exactly as it skips an out-of-scope
+/// file, and the sweep would stay green with half its coverage gone. Pinned here
+/// so the panic cannot be softened back into a `_ => None`.
+#[test]
+#[should_panic(expected = "was not evaluated for")]
+fn a_vanished_invariant_is_loud_rather_than_an_out_of_scope_skip() {
+    let outcome = FileOutcome {
+        rel: "crates/reify-eval/tests/fixtures/synthetic.ri".to_string(),
+        per_invariant: vec![(InvariantId::StaleUndef, InvariantOutcome::OutOfScope)],
+    };
+    assert_eq!(
+        outcome.findings(InvariantId::StaleUndef),
+        None,
+        "a file outside an invariant's scope is a quiet None — the benign case"
+    );
+    outcome.findings(InvariantId::SnapshotCacheDivergence);
 }
 
 /// Which corpus files an invariant covers.
