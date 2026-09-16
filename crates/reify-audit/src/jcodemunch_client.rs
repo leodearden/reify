@@ -475,35 +475,23 @@ fn decode_tool_result(result: &Value) -> Result<Value, LoadError> {
 // Wire → struct adapters
 // -----------------------------------------------------------------------
 
-/// Read a `u64` field from a MUNCH row, tolerating both a JSON number (the
-/// normal typed-column shape) and a JSON string.
+/// Read a `u64` field from a MUNCH row. Accepts a JSON number, an integral
+/// non-negative float, and the string spelling of either; `None` when the
+/// field is absent or is not a whole non-negative number.
 ///
-/// A 3-segment, type-less `__tables` spec (see [`parse_one_table_spec`]'s
-/// widened grammar) decodes EVERY column as `ColType::Str`, so a numeric
-/// column like `line` can arrive as a JSON string under that shape. Reading
-/// it with a bare `.as_u64()` would then silently drop the whole row in a
-/// `filter_map` adapter (`changed_symbols_from_wire`, `dead_symbols_from_wire`)
-/// — turning a version-drift grammar change into a silently-empty result,
-/// exactly the failure mode this module exists to avoid.
+/// The tolerance keeps a grammar drift costing a FIELD rather than a whole
+/// record. A type-less `__tables` spec (see [`parse_one_table_spec`])
+/// decodes every column as `ColType::Str`, and `coerce_value` gives a
+/// `float`-typed column an f64-backed number that `serde_json`'s `as_u64()`
+/// rejects however integral — so a strict read evaluates `None` inside a
+/// `filter_map` adapter and the corpus silently empties.
 ///
-/// An INTEGRAL, non-negative FLOAT counts as a number here, in both its
-/// JSON-number and its string spelling. `serde_json`'s `as_u64()` returns
-/// `None` for any f64-backed number however integral its value, and
-/// `coerce_value` produces exactly that for a `float`-typed column — so a
-/// wire that types `line` as `float` (or writes `99.0` under a type-less
-/// spec) would otherwise read as ABSENT. That is worse than a dropped row
-/// here: every caller collapses `None` to `.unwrap_or(0)`, and `0` is the
-/// documented "the wire never emitted a `line` column" sentinel that
-/// [`stale_decl_line_diagnostic`] partitions its remedy on — so a present,
-/// correct column would have been diagnosed as a grammar drift. See
-/// `changed_symbols_from_wire_reads_an_integral_float_line_column`.
-///
-/// The widening stays BOUNDED — a negative, fractional, or non-numeric
-/// value is still `None` rather than being rounded or saturated into a
-/// plausible-looking line number, since inventing a location is the one
-/// failure this module's neutral-answer discipline refuses. Returns `None`
-/// when the field is absent, or is present but not a non-negative whole
-/// number in any of those spellings.
+/// The widening stays BOUNDED (see [`u64_from_integral_f64`]): nothing is
+/// rounded or saturated into a plausible-looking line number. Callers
+/// collapse `None` to the `0` "not reported" sentinel that
+/// [`stale_decl_line_diagnostic`] reports as a grammar drift, so misreading
+/// a PRESENT column as absent misdirects the operator as well as losing the
+/// value.
 fn row_u64(row: &Value, key: &str) -> Option<u64> {
     let v = row.get(key)?;
     if let Some(n) = v.as_u64() {
@@ -532,19 +520,15 @@ fn u64_from_integral_f64(f: f64) -> Option<u64> {
     (f.is_finite() && f.fract() == 0.0 && f >= 0.0 && f < u64::MAX as f64).then_some(f as u64)
 }
 
-/// Read an `f64` field from a MUNCH row, tolerating both a JSON number and a
-/// JSON string — the float counterpart of [`row_u64`], for exactly the reason
-/// documented there. `confidence` is typed `float` in both captured fixtures,
-/// so under a type-less spec it arrives as a `Value::String` and a bare
-/// `.as_f64()` would silently drop every `dead_symbols_from_wire` /
-/// `untested_symbols_from_wire` row.
+/// Read an `f64` field from a MUNCH row — the float counterpart of
+/// [`row_u64`], tolerating the same spellings for the same reason.
+/// `confidence` is typed `float` in both captured fixtures, so a type-less
+/// spec delivers it as a `Value::String`.
 ///
-/// Together the two helpers cover every numeric column the MUNCH adapters
-/// treat as MANDATORY. The one remaining bare `as_u64()` —
-/// `layer_violations_from_wire`'s `rule_index` — is OPTIONAL
-/// (`.unwrap_or_default()`), so a string-encoded value there degrades the
-/// synthesized `rule[..]` label rather than dropping the violation; it is
-/// deliberately left alone.
+/// The pair covers every numeric column the adapters treat as MANDATORY.
+/// `layer_violations_from_wire`'s `rule_index` keeps a bare `as_u64()`
+/// deliberately: it is OPTIONAL, so a string there degrades the synthesized
+/// `rule[..]` label instead of dropping the violation.
 fn row_f64(row: &Value, key: &str) -> Option<f64> {
     let v = row.get(key)?;
     v.as_f64().or_else(|| v.as_str()?.trim().parse().ok())
@@ -585,37 +569,26 @@ fn parse_signals_list(s: &str) -> Vec<String> {
 // dropped_rows_diagnostic helper
 // -----------------------------------------------------------------------
 
-/// Compare a decoded table's row count against the number of records an
-/// adapter actually produced, and summarise any SHORTFALL into ONE
-/// diagnostic line — the adapters' counterpart to
-/// [`stale_decl_line_diagnostic`], and the same "collect, summarise, return
-/// it for the caller to `eprintln!`" idiom as
-/// [`read_source_lines_for_enrichment`].
+/// Compare a decoded table's row count against the records an adapter
+/// actually produced and summarise any SHORTFALL into ONE line, for the
+/// caller to `eprintln!`.
 ///
-/// Every wire adapter here is a `filter_map`, so a MANDATORY column that a
-/// future jcodemunch release renames or drops does not fail loudly — it
-/// evaluates `None` per row and the whole corpus quietly becomes an empty
-/// `Vec`. That is worse than an error: `get_dead_code_v2` losing
-/// `confidence`, or `find_references`' `__rows__` losing `file`, produces a
-/// result byte-for-byte identical to "this repo is clean" / "this symbol has
-/// zero references", and P1/PDEAD/PUNTESTED report accordingly. The drift is
-/// not hypothetical — 1.108.54 already dropped `find_references`' `line`
-/// column, which is what this task was filed for. The rows are still
-/// correctly dropped (a record missing what identifies it is not usable);
-/// what this adds is that the drop is never silent.
+/// Every wire adapter here is a `filter_map`, so a MANDATORY column a future
+/// release renames or drops does not fail loudly — it evaluates `None` per
+/// row and the corpus quietly becomes an empty `Vec`, which is worse than an
+/// error: `get_dead_code_v2` without `confidence`, or `find_references`
+/// without `file`, reads byte-for-byte as "this repo is clean" / "this
+/// symbol has zero references", and P1/PDEAD/PUNTESTED report accordingly.
+/// Dropping such rows stays correct; dropping them SILENTLY does not.
 ///
-/// Returns `None` — deliberately, these are NOT drops — when:
-/// - `table` is absent from `decoded`, or is not an array. The adapter
-///   returns an empty vec by design and there were never any rows.
-/// - the table is EMPTY. A genuine empty answer (the P1 producer-orphan
-///   case) must not be reported as drift; see
-///   `find_references_from_wire_empty_rows_table_beats_a_decoy_table`.
-/// - `kept >= rows.len()`, the happy path.
+/// `None` — deliberately, these are NOT drops — when `table` is absent from
+/// `decoded` or is not an array (there were never any rows), when the table
+/// is EMPTY (a genuine zero answer, which the P1 producer-orphan case
+/// depends on being left alone), or when `kept >= rows.len()`.
 ///
-/// Names the first row's actual column names, because the whole point is to
-/// make a RENAMED column legible without a second round-trip to the server.
-/// Summarises to ONE line for the same reason [`stale_decl_line_diagnostic`]
-/// does: a per-row print would be a stderr storm.
+/// Names the first row's actual column names, so a RENAME is legible
+/// without a second round-trip to the server; summarises to ONE line,
+/// because a per-row print is a stderr storm.
 #[must_use = "a dropped wire row must be surfaced, not discarded"]
 fn dropped_rows_diagnostic(
     tool: &str,
@@ -647,18 +620,15 @@ fn dropped_rows_diagnostic(
 /// Reads the `dead_symbols` table; maps `id/name/kind/file/line/confidence`
 /// by column name; parses `signals` via [`parse_signals_list`].
 ///
-/// `line` is OPTIONAL and defaults to the `0` "not reported" sentinel, for
-/// the same reason as [`changed_symbols_from_wire`] and
-/// [`references_from_rows`]: a jcodemunch release that stops emitting a
-/// column must make this adapter UNDER-REPORT a field, never silently empty
-/// the whole result set. That is not hypothetical — `find_references`
-/// already dropped its `line` column in 1.108.54, which is what this task
-/// was filed for. Under a mandatory read, the same drift on
-/// `get_dead_code_v2` would drop every PDEAD row inside the `filter_map` and
-/// the audit would report a clean corpus. `id`/`name`/`kind`/`file` stay
-/// mandatory (they are what make a symbol identifiable at all) and
-/// `confidence` stays mandatory (it is the value `min_confidence` filters
-/// on, so a default would silently change which rows survive).
+/// `line` is OPTIONAL and defaults to the `0` "not reported" sentinel, as in
+/// [`changed_symbols_from_wire`] and [`references_from_rows`]: a release
+/// that stops emitting a column must cost this adapter a FIELD, never the
+/// whole result set — a mandatory read would drop every PDEAD row inside the
+/// `filter_map` and the audit would report a clean corpus.
+/// `id`/`name`/`kind`/`file` stay mandatory (they are what make a symbol
+/// identifiable at all), and so does `confidence` (it is what
+/// `min_confidence` filters on, so a default would silently change which
+/// rows survive).
 fn dead_symbols_from_wire(decoded: &Value) -> Vec<DeadSymbol> {
     let rows = match decoded
         .get("dead_symbols")
@@ -729,13 +699,11 @@ fn untested_symbols_from_wire(decoded: &Value) -> Vec<UntestedSymbol> {
 /// [`RealJCodemunchOps::get_changed_symbols`].
 ///
 /// `name` and `file` are MANDATORY — a row without them names no locatable
-/// symbol, so it is dropped. `line` is NOT: an absent or unparseable `line`
-/// decodes to the `0` "not reported" sentinel rather than dropping the
-/// whole symbol, mirroring [`references_from_rows`]. A version-drift
-/// grammar change that stops emitting `line` then under-reports the
-/// declaration LOCATION instead of silently shrinking the P1 sweep's input
-/// set — and the sentinel is already carried end-to-end:
-/// [`decl_line_out_of_range`] treats `0` as unlocatable,
+/// symbol, so it is dropped. `line` is NOT: absent or unparseable, it
+/// decodes to the `0` "not reported" sentinel instead of costing the whole
+/// symbol, so a drifted grammar under-reports the declaration LOCATION
+/// rather than shrinking the P1 sweep's input set. The sentinel is carried
+/// end-to-end: [`decl_line_out_of_range`] treats `0` as unlocatable,
 /// [`extract_suppression`] returns its neutral triple for it, and
 /// [`stale_decl_line_diagnostic`] surfaces it on stderr.
 fn changed_symbols_from_wire(decoded: &Value) -> Vec<ChangedSymbol> {
@@ -964,11 +932,10 @@ fn stale_cause(wire_line: usize) -> StaleCause {
 /// preserving input order within each bucket.
 ///
 /// Separated from the rendering in [`stale_decl_line_diagnostic`] so the
-/// classification can be asserted as VALUES rather than through prose
-/// substrings of the rendered message: pinning "which cause got which
-/// remedy" to wording means a behaviour-neutral reword reds the suite,
-/// while a real mis-bucketing that keeps both phrases present goes
-/// undetected. See `partition_stale_decl_lines_buckets_by_cause`.
+/// classification is asserted as VALUES rather than through substrings of
+/// the rendered message: pinned to wording, a behaviour-neutral reword reds
+/// the suite while a real mis-bucketing that keeps both phrases present goes
+/// undetected.
 fn partition_stale_decl_lines(
     entries: &[StaleDeclLine],
 ) -> (Vec<&StaleDeclLine>, Vec<&StaleDeclLine>) {
@@ -992,19 +959,15 @@ fn partition_stale_decl_lines(
 /// the file on disk. Returns `None` on the happy-path empty slice.
 ///
 /// Partitions those entries by [`StaleCause`] and gives each cause its OWN
-/// remedy, because they are structurally different failures wearing one
-/// predicate. See `stale_decl_line_diagnostic_splits_its_remedy_by_cause`,
-/// and `partition_stale_decl_lines_buckets_by_cause` for the bucketing
-/// itself — which is asserted STRUCTURALLY, so this function's prose can be
-/// reworded without reddening the suite and a genuine mis-bucketing cannot
-/// hide behind wording that happens to keep both phrases present.
+/// remedy, since they are structurally different failures wearing one
+/// predicate. The bucketing is asserted as VALUES, by
+/// [`partition_stale_decl_lines`], so the prose below can be reworded
+/// freely and a genuine mis-bucketing still reds.
 ///
-/// Deliberately summarises to ONE line naming only each bucket's affected
-/// count and first entry, regardless of how many symbols are affected: a
-/// per-symbol print would reproduce the per-symbol stderr storm this task
-/// exists to remove. `RealJCodemunchOps::get_changed_symbols` calls this
-/// once per invocation (the P1 sweep calls `get_changed_symbols` once per
-/// done task), so a stale index is loud without flooding stderr.
+/// ONE line however many symbols are affected, naming only each bucket's
+/// count and first entry: a per-symbol print would be the stderr storm this
+/// module exists to remove. `RealJCodemunchOps::get_changed_symbols` calls
+/// this once per invocation.
 fn stale_decl_line_diagnostic(out_of_range: &[StaleDeclLine]) -> Option<String> {
     if out_of_range.is_empty() {
         return None;
@@ -1062,13 +1025,6 @@ fn stale_decl_line_diagnostic(out_of_range: &[StaleDeclLine]) -> Option<String> 
 /// empty is a known count of `0`, not an unknown one — it must return
 /// `Some(0)`, which makes every one of its symbols out-of-range (nothing
 /// is locatable in a 0-line file) and so reportable.
-///
-/// Factored out of `RealJCodemunchOps::get_changed_symbols`'s enrichment
-/// loop as an independently-tested step: before this helper existed, the
-/// out-of-range collection was a single `if` buried inside a loop that also
-/// drives `extract_suppression`, so deleting just that `if` would have left
-/// every other test in this file green. See
-/// `collect_stale_decl_lines_only_reports_symbols_out_of_range`.
 fn collect_stale_decl_lines(
     symbols: &[ChangedSymbol],
     line_count_for: impl Fn(&str) -> Option<usize>,
@@ -1088,16 +1044,10 @@ fn collect_stale_decl_lines(
 /// diagnostic, let the caller `eprintln!` it" idiom as
 /// [`read_source_lines_for_enrichment`] and [`stale_decl_line_diagnostic`].
 ///
-/// Returning it is what makes the stale-index reporting observable from a
-/// test at all. While this was an `if let Some(msg) = …` buried in
-/// `RealJCodemunchOps::get_changed_symbols`'s enrichment block, no test
-/// could tell whether it fired — an in-process test cannot read its own
-/// process's stderr — so deleting the report would have left the whole
-/// suite green while silently reinstating exactly the invisible
-/// degradation step-8 exists to remove. See
-/// `get_changed_symbols_does_not_panic_when_the_wire_line_is_past_eof`,
-/// which asserts the returned diagnostic over the exact symbols the
-/// production route decoded.
+/// Returning it is what makes the stale-index report observable from a test
+/// at all: an in-process test cannot read its own process's stderr, so a
+/// report printed from inside here could be deleted with the whole suite
+/// still green.
 ///
 /// Per-path READ failures are still printed here rather than returned:
 /// there is one per unreadable path (not one per invocation), and the
@@ -1177,28 +1127,22 @@ fn decl_line_out_of_range(decl_line_1based: usize, line_count: usize) -> bool {
 /// - `has_cfg_test` — an attribute contains `cfg(test)`
 /// - `g_allow_marker` — first `// G-allow: <reason>` with non-blank reason
 ///
-/// `decl_line_1based` originates as [`ChangedSymbol::line`](crate::ChangedSymbol::line),
-/// an integer taken verbatim off the jcodemunch wire by
-/// [`changed_symbols_from_wire`] — it is UNTRUSTED and must never index
-/// `lines` unchecked. This function is TOTAL over its inputs: a
-/// `decl_line_1based` of `0` or beyond `lines.len()` returns the neutral
-/// `(false, false, None)` rather than panicking. Observed 2026-08-22:
-/// `index out of bounds: the len is 13165 but the index is 18319` at this
-/// function's scan, against a 13165-line `crates/reify-eval/src/engine_build.rs`
-/// — a stale jcodemunch index reported a line past the file's current EOF.
+/// `decl_line_1based` arrives verbatim off the jcodemunch wire as
+/// [`ChangedSymbol::line`](crate::ChangedSymbol::line) and is UNTRUSTED: it
+/// must never index `lines` unchecked. This function is TOTAL — `0` or a
+/// line beyond `lines.len()` returns the neutral `(false, false, None)`
+/// rather than panicking. (Observed 2026-08-22, before that guard:
+/// `index out of bounds: the len is 13165 but the index is 18319`, a stale
+/// index pointing past a 13165-line `crates/reify-eval/src/engine_build.rs`.)
 ///
 /// Deliberately does NOT clamp to `lines.len()` and scan from there: that
-/// would read an arbitrary unrelated block of the file and could fabricate
-/// an `#[allow(dead_code)]` / `// G-allow:` suppression the symbol never
-/// carried. The neutral triple is the only answer that cannot invent one.
-/// Callers should not let it be silent — see `stale_decl_line_diagnostic`,
-/// which `RealJCodemunchOps::get_changed_symbols` uses to surface a stale
-/// index on stderr.
+/// reads an arbitrary unrelated block and could fabricate an
+/// `#[allow(dead_code)]` / `// G-allow:` the symbol never carried. The
+/// neutral triple is the only answer that cannot invent one — and
+/// [`stale_decl_line_diagnostic`] is what keeps it from being silent.
 ///
-/// Takes `lines: &[String]` (not `&[&str]`) so callers can pass the cached
-/// `Vec<String>` file contents directly instead of re-materialising a
-/// `Vec<&str>` adapter on every call — see `RealJCodemunchOps::get_changed_symbols`'s
-/// enrichment loop, which calls this once per symbol.
+/// Takes `&[String]`, not `&[&str]`, so the caller's cached file contents
+/// pass straight through without re-materialising an adapter per symbol.
 fn extract_suppression(
     lines: &[String],
     decl_line_1based: usize,
@@ -1284,12 +1228,6 @@ fn extract_g_allow(line: &str) -> Option<String> {
 /// doc, which is what states the MUST — or having P1 treat cross-file refs
 /// as their own signal) is tracked as a follow-up (#6504) rather than
 /// fixed here.
-///
-/// Cited by SYMBOL, never by line range: the three `lib.rs:1206-1213`
-/// citations this replaced had already drifted onto
-/// `FakeGitOps::set_diff_added_lines_in_commit`, and one of them was
-/// inside a live assertion message — so a failing run pointed the reader
-/// at an unrelated test-support setter.
 fn filter_refs_to_file(refs: Vec<SymbolReference>, file: &str) -> Vec<SymbolReference> {
     refs.into_iter().filter(|r| r.file == file).collect()
 }
@@ -1610,27 +1548,17 @@ impl JCodemunchOps for RealJCodemunchOps {
             }
         };
         let mut symbols = changed_symbols_from_wire(&decoded);
-        // A row the adapter dropped is a MANDATORY column (`name`/`file`)
-        // the wire no longer carries. Reported once per call, never once
-        // per row — see `dropped_rows_diagnostic`.
+        // A dropped row means a MANDATORY column (`name`/`file`) the wire
+        // no longer carries. Reported once per call, never once per row.
         if let Some(msg) =
             dropped_rows_diagnostic("get_changed_symbols", &decoded, "added_symbols", symbols.len())
         {
             eprintln!("{msg}");
         }
-        // Enrichment (reading each declaring file, extracting suppression
-        // flags) lives in `enrich_suppression_flags` so its stale-index
-        // report is a RETURN VALUE a test can assert on rather than a bare
-        // `eprintln!` no in-process test can observe. What keeps this call
-        // from decaying back into a silent drop of that report is the
-        // seam's `#[must_use]` under the verify pipeline's
-        // `cargo clippy --all-targets -- -D warnings` gate — not a test:
-        // no unit test can read this process's own stderr. The CALL itself
-        // is pinned separately, by
-        // `get_changed_symbols_enriches_suppression_flags_from_the_declaring_file`
-        // — `#[must_use]` cannot fire on a call site someone deleted, and
-        // the past-EOF test asserts only the neutral triple, which is also
-        // the un-enriched default.
+        // Two separate guards hold this wiring in place, because neither
+        // covers the other: `#[must_use]` reds the `-D warnings` gate if the
+        // returned report is discarded, and a test pins the CALL, which
+        // `#[must_use]` cannot do once someone deletes it outright.
         if let Some(msg) = enrich_suppression_flags(&mut symbols, &self.project_root) {
             eprintln!("{msg}");
         }
@@ -1993,9 +1921,8 @@ mod tests {
     /// A 3-segment (type-less) `__tables` spec — the grammar
     /// `parse_one_table_spec` widened to accept — decodes EVERY column as
     /// `ColType::Str`, so `line` arrives as a JSON string rather than a
-    /// number. Before `row_u64`, `row.get("line")?.as_u64()?` bailed on a
-    /// `Value::String` and silently dropped the row inside `filter_map`;
-    /// this pins that a string-encoded `line` still decodes.
+    /// number. A strict `as_u64()` read would drop the row inside
+    /// `filter_map`; this pins that a string-encoded `line` still decodes.
     #[test]
     fn changed_symbols_from_wire_tolerates_a_string_encoded_line_under_a_typeless_spec() {
         let munch = concat!(
@@ -2022,15 +1949,11 @@ mod tests {
     ///
     /// `coerce_value` routes `ColType::Float` through
     /// `serde_json::Number::from_f64`, and `serde_json`'s `as_u64()`
-    /// returns `None` for an f64-backed number no matter how integral its
-    /// value is. Before this widening, `row_u64` fell through to
-    /// `as_str()` (also `None` for a number) and returned `None`; the call
-    /// site's `.unwrap_or(0)` then produced the SAME `0` that means "the
-    /// wire never emitted a `line` column", and
-    /// `stale_decl_line_diagnostic` told the operator to expect a grammar
-    /// drift that had not happened. That defeats exactly the remedy split
-    /// `stale_decl_line_diagnostic_splits_its_remedy_by_cause` exists to
-    /// guarantee.
+    /// returns `None` for an f64-backed number however integral. Read
+    /// strictly, the call site's `.unwrap_or(0)` then yields the SAME `0`
+    /// that means "the wire emitted no `line` column" — and the operator is
+    /// told to expect a grammar drift that never happened, defeating the
+    /// remedy split `stale_decl_line_diagnostic` exists to make.
     #[test]
     fn changed_symbols_from_wire_reads_an_integral_float_line_column() {
         // Explicitly `float`-typed: a JSON number `serde_json` stores as f64.
@@ -2593,9 +2516,8 @@ mod tests {
     /// future release that renames the `file` column — exactly the drift
     /// 1.108.54 already shipped for `line` — yields a `Vec` that is
     /// byte-for-byte indistinguishable from the genuine "this symbol has
-    /// zero references" answer that
-    /// `find_references_from_wire_empty_rows_table_beats_a_decoy_table`
-    /// deliberately preserves. `p1_producer_orphan::check`'s
+    /// zero references" answer the empty-`__rows__` case deliberately
+    /// preserves. `p1_producer_orphan::check`'s
     /// `has_non_test_caller` would then evaluate false for EVERY symbol
     /// and P1 would emit a producer-orphan finding for every
     /// well-referenced public symbol in a done task — a false-POSITIVE
@@ -3209,14 +3131,11 @@ mod tests {
     /// per symbol's worth of volume.
     ///
     /// Membership and counts are pinned structurally by
-    /// `partition_stale_decl_lines_buckets_by_cause`; what is left here is
-    /// the WIRING — that each bucket's clause carries its own bucket's
-    /// remedy — with ONE loose prose anchor per bucket. In a single-bucket
-    /// message that one positive assertion already catches a swap (the
-    /// other bucket's anchor would be the one present), so no negated
-    /// substring check is needed; the previous `!msg.contains("0 > ")` in
-    /// particular passed for essentially every possible rewrite of the
-    /// function.
+    /// [`partition_stale_decl_lines`]; what is left here is the WIRING —
+    /// that each bucket's clause carries its OWN bucket's remedy — with one
+    /// loose prose anchor per bucket. In a single-bucket message that
+    /// positive assertion already catches a swap, since the other bucket's
+    /// anchor would be the one present.
     #[test]
     fn stale_decl_line_diagnostic_splits_its_remedy_by_cause() {
         // `wire_line == 0` — the no-line sentinel — on its own.
@@ -4114,14 +4033,9 @@ mod tests {
         /// Pins today's `RealJCodemunchOps::find_references` scoping
         /// contract ([`JCodemunchOps::find_references`](crate::JCodemunchOps::find_references):
         /// production impls MUST scope to `symbol.file`) through the
-        /// production route, over the real-wire
-        /// 3-segment payload from
-        /// `munch_decode_accepts_a_three_segment_table_spec_as_all_str`.
+        /// production route, over the live 3-segment `__rows__` payload.
         /// Only the first row's file matches `symbol.file`, so exactly one
-        /// reference must survive `filter_refs_to_file`. This half already
-        /// passes once steps 2 and 4 have landed — it is here to pin
-        /// defects 1 and 3 through the production route, not to add a new
-        /// RED case of its own.
+        /// reference must survive `filter_refs_to_file`.
         #[test]
         fn find_references_decodes_the_real_wire_through_real_ops() {
             const MUNCH_REAL_WIRE: &str = concat!(
