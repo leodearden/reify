@@ -731,6 +731,7 @@ impl CorpusScope {
 /// differences are DATA here rather than two hand-copied code branches: one
 /// implementation reads these fields, so the policies cannot drift apart the way
 /// the two sweeps' engine constructors did (task 5578).
+#[derive(Debug, PartialEq, Eq)]
 struct InvariantGate {
     id: InvariantId,
     /// How this invariant names itself in sweep output, so a red says which
@@ -1281,57 +1282,136 @@ struct GateTally {
 }
 
 impl GateTally {
-    /// This invariant's failure report for the shard, or `None` if it is clean.
-    fn failure(&self, gate: &InvariantGate) -> Option<String> {
-        let mut parts: Vec<String> = Vec::new();
+    /// Why this invariant fails the shard — EMPTY when it is clean.
+    ///
+    /// Structured sections rather than a joined `String`: which policies fired
+    /// is a decision the sweep and its tests both read, and recovering it by
+    /// substring-matching the operator-facing prose would make a cosmetic
+    /// reword indistinguishable from a dispatch defect. Text is produced only
+    /// by [`FailureSection::render`], at the shard's edge.
+    fn failure_sections(&self, gate: &InvariantGate) -> Vec<FailureSection> {
+        let mut sections = Vec::new();
 
         if !self.offenders.is_empty() {
-            let report = self
-                .offenders
-                .iter()
-                .map(|(f, findings)| {
-                    let detail = findings
-                        .iter()
-                        .map(|x| format!("    {:?}: {}", x.cell, x.detail))
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    format!("  {f}:\n{detail}")
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            parts.push(format!(
-                "{}: expected zero non-exempt findings across its corpus scope; \
-                 offending file(s):\n{report}",
-                gate.label
-            ));
+            sections.push(FailureSection::Offenders(self.offenders.clone()));
         }
 
         if gate.stale_residual_is_fatal && !self.stale_residuals.is_empty() {
-            let report = self
-                .stale_residuals
-                .iter()
-                .map(|f| format!("  {f}"))
-                .collect::<Vec<_>>()
-                .join("\n");
-            parts.push(format!(
-                "{}: stale residual exemption(s) that no longer produce findings — \
-                 delete them from this invariant's residual list so a resolved \
-                 residual stops masking the now-recovered coverage:\n{report}",
-                gate.label
-            ));
+            sections.push(FailureSection::StaleResiduals(self.stale_residuals.clone()));
         }
 
-        (!parts.is_empty()).then(|| parts.join("\n\n"))
+        sections
     }
+}
+
+/// One reason an invariant failed a shard — the sweep's own vocabulary for it,
+/// not the sentence an operator reads.
+///
+/// The two variants come from the two policies that can fire, and a section is
+/// present exactly when its policy did: `StaleResiduals` only ever appears for a
+/// gate declaring `stale_residual_is_fatal`. That is what
+/// `report_routing_honours_each_gates_own_policy` asserts on — the variant set,
+/// so the prose below is free to be reworded for clarity without touching a test
+/// about dispatch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum FailureSection {
+    /// Files with real, unexempted findings, carried with those findings.
+    Offenders(Vec<(String, Vec<Finding>)>),
+    /// Declared residuals that produced ZERO findings, under a gate whose
+    /// `stale_residual_is_fatal` is set.
+    StaleResiduals(Vec<String>),
+}
+
+impl FailureSection {
+    /// This section as the text an operator reads. PRESENTATION ONLY — nothing
+    /// in this file parses it back, and no test matches on its wording.
+    ///
+    /// `gate` is a parameter rather than a field because a section is a fact
+    /// about a tally; which invariant OWNS it is the routing's business, and
+    /// storing the label twice would be two things to keep true.
+    fn render(&self, gate: &InvariantGate) -> String {
+        match self {
+            FailureSection::Offenders(offenders) => {
+                let report = offenders
+                    .iter()
+                    .map(|(f, findings)| {
+                        let detail = findings
+                            .iter()
+                            .map(|x| format!("    {:?}: {}", x.cell, x.detail))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        format!("  {f}:\n{detail}")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!(
+                    "{}: expected zero non-exempt findings across its corpus scope; \
+                     offending file(s):\n{report}",
+                    gate.label
+                )
+            }
+            FailureSection::StaleResiduals(files) => {
+                let report =
+                    files.iter().map(|f| format!("  {f}")).collect::<Vec<_>>().join("\n");
+                format!(
+                    "{}: stale residual exemption(s) that no longer produce findings — \
+                     delete them from this invariant's residual list so a resolved \
+                     residual stops masking the now-recovered coverage:\n{report}",
+                    gate.label
+                )
+            }
+        }
+    }
+}
+
+/// The tally accumulated for `id`, looked up BY KEY.
+///
+/// Every gate↔tally pairing in this file goes through this rather than a
+/// positional `gates.iter().zip(tallies)`: `zip` stops at the shorter side, so
+/// two slices that ever disagreed in length would silently DROP the trailing
+/// gate — a failing invariant producing no failure text and a green shard. That
+/// is the same silent-coverage-loss class the unification exists to foreclose,
+/// and it was the one pairing in this unit that was positional rather than keyed.
+/// A missing tally panics naming the invariant.
+fn tally_of(tallies: &[(InvariantId, GateTally)], id: InvariantId) -> &GateTally {
+    tallies
+        .iter()
+        .find(|(tallied, _)| *tallied == id)
+        .map(|(_, tally)| tally)
+        .unwrap_or_else(|| panic!("no tally was accumulated for {id:?}"))
+}
+
+/// [`tally_of`] for the accumulation loop, which needs to write into it.
+fn tally_of_mut(tallies: &mut [(InvariantId, GateTally)], id: InvariantId) -> &mut GateTally {
+    tallies
+        .iter_mut()
+        .find(|(tallied, _)| *tallied == id)
+        .map(|(_, tally)| tally)
+        .unwrap_or_else(|| panic!("no tally was accumulated for {id:?}"))
 }
 
 /// One gate's failure report, and where the shard routed it.
 #[derive(Debug, PartialEq, Eq)]
-struct RoutedReport {
+struct RoutedReport<'g> {
+    /// The gate whose policy produced this report. Carried so a caller can act
+    /// on the SUBSET that actually failed — see [`bypass_hint`] — without
+    /// re-deriving the pairing positionally.
+    gate: &'g InvariantGate,
     /// The declared bypass key that downgraded this report to a warn, or `None`
     /// if it FAILS the shard.
     downgraded_by: Option<&'static str>,
-    text: String,
+    sections: Vec<FailureSection>,
+}
+
+impl RoutedReport<'_> {
+    /// The report as operator-facing text, rendered once at the shard's edge.
+    fn render(&self) -> String {
+        self.sections
+            .iter()
+            .map(|s| s.render(self.gate))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
 }
 
 /// Route every non-clean gate's report according to ITS OWN declared policy.
@@ -1346,19 +1426,27 @@ struct RoutedReport {
 /// routing is a pure function of declared data and that test can exercise the
 /// downgrade branch without mutating an environment it shares with the
 /// concurrently-running shard tests.
-fn route_reports(
-    gates: &[InvariantGate],
-    tallies: &[GateTally],
+fn route_reports<'g>(
+    gates: &'g [InvariantGate],
+    tallies: &[(InvariantId, GateTally)],
     bypassed: impl Fn(&InvariantGate) -> bool,
-) -> Vec<RoutedReport> {
+) -> Vec<RoutedReport<'g>> {
+    assert_eq!(
+        gates.len(),
+        tallies.len(),
+        "every gate must have exactly one tally and vice versa — an extra tally \
+         belongs to an invariant nothing reports"
+    );
     gates
         .iter()
-        .zip(tallies)
-        .filter_map(|(gate, tally)| {
-            let text = tally.failure(gate)?;
+        .filter_map(|gate| {
+            let sections = tally_of(tallies, gate.id).failure_sections(gate);
+            if sections.is_empty() {
+                return None;
+            }
             let downgraded_by =
                 bypassed(gate).then(|| gate.bypass_env.expect("a bypassed gate declares a key"));
-            Some(RoutedReport { downgraded_by, text })
+            Some(RoutedReport { gate, downgraded_by, sections })
         })
         .collect()
 }
@@ -1366,12 +1454,18 @@ fn route_reports(
 /// The break-glass hint appended to a shard failure, naming the gates that
 /// actually DECLARE a bypass key — and only those.
 ///
+/// Fed the gates that actually FAILED, never all of [`GATES`]: a knob that
+/// cannot downgrade the red in front of the operator is worse than no hint,
+/// because the "only:" qualifier is easy to skim past while unwedging a merge
+/// queue. When INV-EVAL-5 alone reds there is no hint at all, which is the
+/// truthful answer — it ships with no bypass.
+///
 /// Derived rather than spelled out: everything around it is generic over
 /// [`GATES`], so a literal knob name here would go on naming a removed knob, or
 /// name the wrong invariant the moment a third gate arrived with its own.
-fn bypass_hint(gates: &[InvariantGate]) -> String {
+fn bypass_hint<'g>(gates: impl IntoIterator<Item = &'g InvariantGate>) -> String {
     let declared: Vec<String> = gates
-        .iter()
+        .into_iter()
         .filter_map(|g| g.bypass_env.map(|key| format!("{} only: set {key}=1", g.label)))
         .collect();
     if declared.is_empty() {
@@ -1398,11 +1492,16 @@ fn bypass_hint(gates: &[InvariantGate]) -> String {
 ///
 /// Synthetic gates and tallies throughout: these are pure functions of data, so
 /// the test needs no corpus evaluation and, critically, no env mutation.
+///
+/// Asserted on [`FailureSection`] VARIANTS, never on the report's prose. A
+/// dispatch test that recovered "which policy fired" by substring-matching the
+/// operator-facing sentence would red on a cosmetic reword and pass a real
+/// dispatch bug that happened to keep the phrase.
 #[test]
 fn report_routing_honours_each_gates_own_policy() {
     const RESIDUAL: &[(&str, &str)] = &[("examples/residual.ri", "a declared residual")];
-    let gate = |label, stale_residual_is_fatal, bypass_env| InvariantGate {
-        id: InvariantId::StaleUndef,
+    let gate = |id, label, stale_residual_is_fatal, bypass_env| InvariantGate {
+        id,
         label,
         scope: CorpusScope::Union,
         residuals: RESIDUAL,
@@ -1419,47 +1518,69 @@ fn report_routing_honours_each_gates_own_policy() {
         )],
         ..GateTally::default()
     };
+    let with_stale = || {
+        let mut tally = offender();
+        tally.stale_residuals.push("examples/residual.ri".to_string());
+        tally
+    };
 
     // (c) A clean tally is not a failure at all.
-    let lenient = gate("LENIENT", false, None);
-    let strict = gate("STRICT", true, Some("SOME_BYPASS_KEY"));
-    assert_eq!(GateTally::default().failure(&lenient), None);
-    assert_eq!(GateTally::default().failure(&strict), None);
+    let lenient = gate(InvariantId::StaleUndef, "LENIENT", false, None);
+    let strict = gate(
+        InvariantId::SnapshotCacheDivergence,
+        "STRICT",
+        true,
+        Some("SOME_BYPASS_KEY"),
+    );
+    assert!(GateTally::default().failure_sections(&lenient).is_empty());
+    assert!(GateTally::default().failure_sections(&strict).is_empty());
 
     // (a) Offenders with `stale_residual_is_fatal` OFF: the offender section
     //     only, even with a stale residual sitting in the very same tally.
-    let mut with_stale = offender();
-    with_stale.stale_residuals.push("examples/residual.ri".to_string());
-    let lenient_report = with_stale.failure(&lenient).expect("offenders are a failure");
-    assert!(lenient_report.contains("examples/offender.ri"));
+    let lenient_sections = with_stale().failure_sections(&lenient);
     assert!(
-        !lenient_report.contains("stale residual exemption"),
+        matches!(lenient_sections.as_slice(), [FailureSection::Offenders(_)]),
         "a gate with stale_residual_is_fatal OFF must not pick up the second \
-         section from a sibling's policy:\n{lenient_report}"
+         section from a sibling's policy: {lenient_sections:#?}"
     );
 
     // (b) The SAME tally under `stale_residual_is_fatal` ON gains that section,
     //     so the flag is read off the gate being reported and no other.
-    let strict_report = with_stale.failure(&strict).expect("offenders are a failure");
-    assert!(strict_report.contains("examples/offender.ri"));
+    let strict_sections = with_stale().failure_sections(&strict);
     assert!(
-        strict_report.contains("stale residual exemption"),
-        "stale_residual_is_fatal must add the stale-residual section:\n{strict_report}"
+        matches!(
+            strict_sections.as_slice(),
+            [FailureSection::Offenders(_), FailureSection::StaleResiduals(_)]
+        ),
+        "stale_residual_is_fatal must add the stale-residual section: {strict_sections:#?}"
+    );
+
+    // Rendering carries the section's structured values through — the reporting
+    // gate's own label and the offending file. Its wording is presentation, and
+    // nothing above reads it.
+    let rendered = FailureSection::Offenders(offender().offenders).render(&strict);
+    assert!(
+        rendered.contains("STRICT") && rendered.contains("examples/offender.ri"),
+        "{rendered}"
     );
 
     // (d) With only ONE gate bypassed, the other's report still FAILS the shard.
     let gates = [lenient, strict];
-    let tallies = [offender(), with_stale];
+    let tallies = [
+        (InvariantId::StaleUndef, offender()),
+        (InvariantId::SnapshotCacheDivergence, with_stale()),
+    ];
     let routed = route_reports(&gates, &tallies, |g| g.bypass_env.is_some());
     assert_eq!(routed.len(), 2, "both gates had something to report");
     assert_eq!(
-        routed[0].downgraded_by, None,
+        (routed[0].gate.label, routed[0].downgraded_by),
+        ("LENIENT", None),
         "LENIENT declares no bypass key, so its report must reach the failures \
          even while its sibling is bypassed"
     );
     assert_eq!(
-        routed[1].downgraded_by,
-        Some("SOME_BYPASS_KEY"),
+        (routed[1].gate.label, routed[1].downgraded_by),
+        ("STRICT", Some("SOME_BYPASS_KEY")),
         "a gate is downgraded by its OWN declared key"
     );
     assert!(
@@ -1467,6 +1588,20 @@ fn report_routing_honours_each_gates_own_policy() {
             .iter()
             .all(|r| r.downgraded_by.is_none()),
         "with nothing bypassed every report fails — the downgrade is the exception"
+    );
+
+    // (e) A gate is paired with its tally by `InvariantId`, not by position:
+    //     shuffling the tallies must change nothing. The positional `zip` this
+    //     replaced would hand STRICT's tally to LENIENT here — and, for slices of
+    //     unequal length, would DROP the trailing gate's report entirely.
+    let shuffled = [
+        (InvariantId::SnapshotCacheDivergence, with_stale()),
+        (InvariantId::StaleUndef, offender()),
+    ];
+    assert_eq!(
+        route_reports(&gates, &shuffled, |g| g.bypass_env.is_some()),
+        routed,
+        "the gate↔tally pairing must be keyed, not positional"
     );
 
     // The hint offers only the knobs that exist.
@@ -1477,6 +1612,20 @@ fn report_routing_honours_each_gates_own_policy() {
         "a gate with no bypass key must not be offered one: {hint}"
     );
     assert_eq!(bypass_hint(&gates[..1]), "", "no declared key, no hint");
+
+    // (f) …and only the knobs that could downgrade THIS red. STRICT is already
+    //     bypassed above, so the one gate still failing is LENIENT, which
+    //     declares none: the operator gets no hint rather than a knob that
+    //     cannot possibly clear what they are looking at. Same composition
+    //     `run_corpus_shard` performs.
+    let failing: Vec<&InvariantGate> =
+        routed.iter().filter(|r| r.downgraded_by.is_none()).map(|r| r.gate).collect();
+    assert_eq!(failing.iter().map(|g| g.label).collect::<Vec<_>>(), vec!["LENIENT"]);
+    assert_eq!(
+        bypass_hint(failing.iter().copied()),
+        "",
+        "a failing gate that declares no bypass key must be offered no knob at all"
+    );
 }
 
 /// Sweep the corpus slice owned by `shard_index`, asserting EVERY invariant in
@@ -1491,7 +1640,8 @@ fn run_corpus_shard(shard_index: usize) {
     let file_count = files.len();
 
     let mut compile_skips: Vec<String> = Vec::new();
-    let mut tallies: Vec<GateTally> = GATES.iter().map(|_| GateTally::default()).collect();
+    let mut tallies: Vec<(InvariantId, GateTally)> =
+        GATES.iter().map(|g| (g.id, GateTally::default())).collect();
     let mut selector_consumer_findings: Option<usize> = None;
 
     for file in &files {
@@ -1500,10 +1650,11 @@ fn run_corpus_shard(shard_index: usize) {
             continue;
         };
 
-        for (gate, tally) in GATES.iter().zip(tallies.iter_mut()) {
+        for gate in GATES {
             let Some(findings) = outcome.findings(gate.id) else {
                 continue; // Out of this invariant's scope — deliberately unchecked.
             };
+            let tally = tally_of_mut(&mut tallies, gate.id);
 
             if gate.id == InvariantId::StaleUndef && file.rel == SELECTOR_CONSUMER_REL {
                 selector_consumer_findings = Some(findings.len());
@@ -1538,7 +1689,8 @@ fn run_corpus_shard(shard_index: usize) {
     for s in &compile_skips {
         eprintln!("  SKIP (compile error): {s}");
     }
-    for (gate, tally) in GATES.iter().zip(tallies.iter()) {
+    for gate in GATES {
+        let tally = tally_of(&tallies, gate.id);
         eprintln!(
             "  {}: {} residual skip(s), {} stale residual(s)",
             gate.label,
@@ -1554,20 +1706,25 @@ fn run_corpus_shard(shard_index: usize) {
     // INV-EVAL-4's knob to INV-EVAL-5, which never shipped one, would silently
     // widen it. See `report_routing_honours_each_gates_own_policy`.
     let mut failures: Vec<String> = Vec::new();
+    let mut failing_gates: Vec<&InvariantGate> = Vec::new();
     for report in route_reports(GATES, &tallies, InvariantGate::bypassed) {
         match report.downgraded_by {
             Some(key) => {
-                eprintln!("[{key}] shard {shard_index}: DOWNGRADED to warn:\n{}", report.text)
+                eprintln!("[{key}] shard {shard_index}: DOWNGRADED to warn:\n{}", report.render())
             }
-            None => failures.push(report.text),
+            None => {
+                failures.push(report.render());
+                failing_gates.push(report.gate);
+            }
         }
     }
 
+    // The hint offers only the knobs that could downgrade THIS red.
     assert!(
         failures.is_empty(),
         "{}{}",
         failures.join("\n\n"),
-        bypass_hint(GATES)
+        bypass_hint(failing_gates.iter().copied())
     );
 
     // The #4946 R3f-bridge premise, asserted by whichever shard owns that path —
