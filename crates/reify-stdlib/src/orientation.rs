@@ -767,10 +767,15 @@ pub(crate) fn rotation_vector_dimension_error(
 /// of leaving a bare `undef` behind.
 ///
 /// Severity is `Error` (so `reify eval` exits 1), per #6126's 2026-08-19
-/// amendment via esc-6080-6. The `E_` token is carried in the message text
-/// rather than as a `DiagnosticCode` variant — the same restraint
-/// `tolerancing::diagnose` documents, since a new variant would pull
-/// `reify-core` and its exhaustive code-enumeration tests into scope.
+/// amendment via esc-6080-6, and the diagnostic carries
+/// [`reify_core::DiagnosticCode::DimensionedArgRejected`] — the shipped code
+/// for a `Severity::Error` runtime dimension rejection of a positional
+/// argument, REUSED rather than joined by a new variant. BINDING ruling A7
+/// (Leo, 2026-08-30, esc-5791-3) settles that one rejection REASON gets one
+/// code, so this arm joins `geometry::diagnose`'s three converged DIMENSION
+/// arms rather than standing outside them. The `E_RotationVectorDimension`
+/// token still rides in the message text: it names the specific fault within
+/// that reason, which is finer-grained than the code.
 ///
 /// The message itself is built by `rotation_vector_dimension_error`, shared
 /// with `geometry::diagnose`'s `transform_exp` arm so the token, the severity

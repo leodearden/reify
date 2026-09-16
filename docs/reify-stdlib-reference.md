@@ -384,9 +384,15 @@ unaffected: their rotation vector is an `Angle` zero.
 > The rejection is a `Severity::Error`, so `reify eval` exits 1 — the same
 > severity the `linear` half reports at, so one fault class does not report two
 > ways across one builtin family. The diagnostic carries an
-> `E_RotationVectorDimension` token in its message text and stays code-less;
-> minting `DiagnosticCode::ArgDimensionMismatch` is owned by
-> `docs/prds/v0_6/dimension-checked-readers.md` §6.
+> `E_RotationVectorDimension` token in its message text and
+> `reify_core::DiagnosticCode::DimensionedArgRejected` as its code — the
+> reused, pre-existing runtime dimension-rejection code, the same one the
+> `linear` half carries. No `DiagnosticCode::ArgDimensionMismatch` is minted:
+> under BINDING ruling A7 (Leo, 2026-08-30, esc-5791-3) one rejection *reason*
+> gets one code, and this seam shares that reason with `bbox` and with
+> `reify_eval::geometry_ops`' `arg_acceptance`-backed chokepoints. See
+> `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 1's RECONCILIATION
+> block.
 
 **Migration.** `Dimensionless` rotation vectors used to be the accepted
 spelling, so this is a breaking change. Dimension **every** component of the

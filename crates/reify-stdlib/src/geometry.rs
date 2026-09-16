@@ -1704,13 +1704,14 @@ fn dimension_label(dim: DimensionVector) -> String {
 ///   produced at all — rather than a drop-and-continue like `affine_scale`,
 ///   where the offending factor is discarded and evaluation proceeds.
 ///
-/// `DiagnosticCode` is NOT uniform across the arms, but the DIMENSION arms now
-/// agree. `transform_log`, `transform_exp`'s LINEAR half and `bbox` carry the
+/// `DiagnosticCode` is NOT uniform across the arms, but all FOUR DIMENSION arms
+/// agree. `transform_log`, BOTH halves of `transform_exp` and `bbox` carry the
 /// PRE-EXISTING [`reify_core::DiagnosticCode::DimensionedArgRejected`], which
 /// `reify_eval::geometry_ops` already attaches to exactly this fault class (a
-/// `Severity::Error` runtime dimension rejection of a positional argument).
-/// `transform_exp`'s ANGULAR half (#6080) is a FOURTH arm reporting that same
-/// reason and is still code-less at this commit; ruling A7 reaches it unchanged.
+/// `Severity::Error` runtime dimension rejection of a positional argument). The
+/// `angular` half reaches it through `orientation::rotation_vector_dimension_error`,
+/// the shared constructor it splits with `orientation::diagnose`'s `orient_exp`
+/// arm, so the code cannot drift between those two either.
 ///
 /// The convergence an earlier revision of this comment DEFERRED — waiting on a
 /// `DiagnosticCode::ArgDimensionMismatch` that
