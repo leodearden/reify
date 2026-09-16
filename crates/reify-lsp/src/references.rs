@@ -297,6 +297,16 @@ fn sub_direct_exprs(s: &SubDecl) -> impl Iterator<Item = &Expr> {
         index_binder: _,
         index_domain,
         relate_relations,
+        // The DERIVED arm's clause — `sub b = mirror of a across P { … }`
+        // (task #6615). Deliberately `_`-bound, not folded into the chain
+        // below: its expression-bearing parts (the `SubDerivationKind`
+        // transform operand, each `SubParamOverride` value) and its
+        // `members` are reached only once derived subs elaborate, which is
+        // A-beta (#6616)'s semantics to define — the same deferral, for the
+        // same reason, that `SubDerivation::members`' doc comment records
+        // against every member walker in reify-ast. A-beta must wire both
+        // together rather than inherit either silently.
+        derivation: _,
         span: _,
         content_hash: _,
     } = s;
