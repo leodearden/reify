@@ -33,9 +33,10 @@
 //! Compiling the ~261 `examples/` files is documented as "the single most
 //! expensive thing this binary does" (`examples_smoke.rs`); the ~700 tracked
 //! `.ri` are ~2.5× that. The sweep now has a SECOND half on top of it (task
-//! #7543): the Reify snippets embedded as raw-string literals in the ~1,350
-//! tracked `.rs` test hosts, ~3,200 of which are admitted and compiled. Paying
-//! any of that on every merge gate would directly fight the
+//! #7543): the Reify snippets embedded as raw-string literals in the ~1,300
+//! tracked `.rs` test hosts, which yield ~3,200 admitted snippets to compile —
+//! measured by the generator itself, which prints both halves' counts on every
+//! run. Paying any of that on every merge gate would directly fight the
 //! merge-gate-compile-cost PRD. So both walks live behind ONE `#[ignore]`d
 //! generator, run on demand — while everything they *decide* (corpus
 //! enumeration for both halves and the parity gate between them, raw-string
@@ -58,7 +59,7 @@
 //! the markdown renderer, the stamp guard — has no remaining product, yet stays
 //! compiled and run on every merge gate. That is a real standing cost in a
 //! compile unit whose own header cites `docs/prds/merge-gate-compile-cost.md`:
-//! it takes this unit to 17,729 lines against the 20,000 `CAP_LINES` in
+//! it takes this unit to 17,730 lines against the 20,000 `CAP_LINES` in
 //! `tests/infra/test_harness_kloc_cap.sh` (raw `wc -l` summed over the root and
 //! its `#[path]` members, which is how rule (a) there measures — re-measured on
 //! this branch, not carried over), i.e. under the advisory `WARN_PCT=90` tier at
@@ -6350,7 +6351,7 @@ fn the_drift_disclosure_is_not_scoped_to_ri_alone() {
 /// pure helpers above, each unit-tested on every gate run, plus one cheap
 /// three-file end-to-end sweep.
 #[test]
-#[ignore = "corpus survey generator over BOTH halves — every tracked .ri (~700 files) plus the Reify snippets embedded in every tracked .rs test host (~1,350 files, ~3,200 admitted snippets), so several times the cost of the .ri walk alone; run explicitly with --ignored — see docs/prds/struct-ctor-field-type-conformance.survey.md"]
+#[ignore = "corpus survey generator over BOTH halves — every tracked .ri (~700 files) plus the Reify snippets embedded in every tracked .rs test host (~1,300 files, ~3,200 admitted snippets), so several times the cost of the .ri walk alone; run explicitly with --ignored — see docs/prds/struct-ctor-field-type-conformance.survey.md"]
 fn generate_ctor_conformance_corpus_survey() {
     let root = std::path::Path::new(WORKSPACE_ROOT);
     let corpus = tracked_ri_corpus();
