@@ -657,11 +657,16 @@ fn zone_profile_structural_lowers_to_four_ops() {
     }
 }
 
-/// OCCT realize-smoke for zone_profile.
+/// OCCT realize-smoke for zone_profile: pins that the compile-to-kernel
+/// pipeline is wired end to end, not that the annular shell is correct.
 ///
-/// zone_profile(box(10mm,10mm,10mm), 1mm) builds an annular shell around the box surface.
-/// Asserts: Volume > 0 AND Volume < box volume = (10mm)³ = 1e-6 m³.
-/// No closed-form volume formula; the realize-smoke validates buildability.
+/// zone_profile(box(10mm,10mm,10mm), 1mm) is INTENDED to build an annular shell
+/// around the box surface; it does not yet, so its volume is exactly 0.0 and
+/// becomes > 0 only once #7287 lands — that is #7287's acceptance criterion,
+/// not this smoke's. Asserts what holds either way: every op succeeds, and
+/// 0 ≤ volume ≤ box volume = (10mm)³ = 1e-6 m³. WHY the result is empty, and
+/// why an empty result is legal rather than a failure, is recorded at the
+/// realization step below.
 ///
 /// Parallel OcctKernel replay: Box + Thicken(+0.5mm) + Thicken(-0.5mm) + Difference.
 /// OCCT-gated; skips cleanly when OCCT is unavailable.

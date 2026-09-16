@@ -207,23 +207,29 @@ fn assert_empty_input_rejected<T>(result: Result<T, GeometryError>, role_word: &
     }
 }
 
-/// Assert `result` is an `Err` whose message mentions at least one of `words`.
+/// Assert `result` is an `Err` whose message names `shape_type` — the
+/// `topabs_name` token (cpp/occt_wrapper.cpp) that identifies WHICH rejection
+/// fired.
 ///
 /// Used by the CHARACTERIZATION PINS below, which record behaviour that already
-/// exists rather than behaviour this task adds. Matching is deliberately weak:
-/// the point is that the op refuses an empty profile at all, not that it
-/// refuses it with any particular wording.
-fn assert_rejected_mentioning_any<T: std::fmt::Debug>(
+/// exists rather than behaviour this task adds. The token is the whole point:
+/// a softer match — any-of over words like "profile" — is satisfied by an
+/// unrelated failure at the same call (a spine/guide `TopoDS::Wire` type
+/// mismatch, a future arity check), so the pin would stay green through exactly
+/// the regression it exists to catch. Everything AROUND the token is left
+/// unmatched, so re-phrasing the diagnostic stays cheap.
+fn assert_rejected_naming_shape_type<T: std::fmt::Debug>(
     result: Result<T, GeometryError>,
-    words: &[&str],
+    shape_type: &str,
     what: &str,
 ) {
     match result {
         Err(e) => {
             let msg = e.to_string();
             assert!(
-                words.iter().any(|w| msg.contains(w)),
-                "{what}: expected a rejection mentioning one of {words:?}, got: {msg}"
+                msg.contains(shape_type),
+                "{what}: expected a rejection naming the offending shape type \
+                 '{shape_type}', got: {msg}"
             );
         }
         Ok(handle) => panic!("{what}: expected a rejection, got Ok({handle:?})"),
@@ -377,7 +383,7 @@ fn sweep_guided_of_an_empty_profile_is_already_rejected() {
         path,
         guide,
     });
-    assert_rejected_mentioning_any(result, &["Compound", "profile"], "guided sweep");
+    assert_rejected_naming_shape_type(result, "Compound", "guided sweep");
 }
 
 #[test]
@@ -391,7 +397,7 @@ fn loft_guided_of_an_empty_profile_is_already_rejected() {
         profiles: vec![empty, real],
         guides: vec![guide],
     });
-    assert_rejected_mentioning_any(result, &["Compound", "profile"], "guided loft");
+    assert_rejected_naming_shape_type(result, "Compound", "guided loft");
 }
 
 // --- OVER-FIRE CONTROLS ---

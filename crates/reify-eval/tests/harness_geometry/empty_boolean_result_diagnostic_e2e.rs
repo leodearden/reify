@@ -26,33 +26,48 @@
 //!   `reify eval`  → `Engine::realize_for_check`  — writes nothing, SILENT
 //!   `reify build` → `Engine::build(.., Step)`    — WRITES, so it FAILS on an
 //!                                                  empty artifact
-//! One helper below per path; why the two artifact-free ones keep distinct
-//! names is on [`eval_with_occt`].
+//! Only the two ENGINE entry points are reachable from this crate, so the two
+//! helpers below are per-ENTRY-POINT, not per-command — a third helper for
+//! `reify eval` could only delegate, and would assert nothing `cmd_eval` can
+//! falsify. WHICH entry point `reify eval` selects is a `cmd_eval` fact, and it
+//! is pinned where that choice lives: the CLI-layer gate
+//! `cli_gdt_integration_gate.rs:163 b5_oracle_inside_oracles_agree` shells out
+//! to `reify eval` over `examples/tolerancing/gdt_oracle_inside.ri` and
+//! requires exit 0 with no `Error:` line.
 //!
-//! Nine tests in four roles. LEGALITY PINS: two realize an empty boolean with
-//! no consumer downstream and must be silent, and two assert the ratified
-//! GD&T INSIDE verdict (`pokeout` exactly 0.0 m³) — one per artifact-free CLI
-//! path, because the protected gate `cli_gdt_integration_gate.rs:163` runs
-//! `reify eval` and nothing here covered it. CONSUMER GUARD: two build-path
-//! failures — an empty profile fed to `extrude`, and an empty compound as a
-//! design's only product body. FALSE-POSITIVE CONTROLS: three booleans that
-//! must keep succeeding, holding "the operands do not touch" apart from "the
-//! result is empty".
+//! Eight tests in four roles. LEGALITY PINS: two realize an empty boolean with
+//! no consumer downstream and must be silent. GD&T ORACLE: one asserts the
+//! ratified INSIDE verdict (`pokeout` exactly 0.0 m³) through the artifact-free
+//! entry point, so the semantic the gate depends on is held locally too.
+//! CONSUMER GUARD: two build-path failures — an empty profile fed to `extrude`,
+//! and an empty compound as a design's only product body. FALSE-POSITIVE
+//! CONTROLS: three booleans that must keep succeeding, holding "the operands do
+//! not touch" apart from "the result is empty".
 //!
 //! All tests are guarded by `reify_kernel_occt::OCCT_AVAILABLE` and skip if
 //! the OCCT library is not present.
 
+use reify_compiler::CompiledModule;
 use reify_core::{DimensionVector, Severity, ValueCellId};
 use reify_ir::{ExportFormat, Value};
 use reify_test_support::parse_and_compile_with_stdlib;
 
-/// Compile `source` and build it through the real OCCT kernel, returning the
-/// full `BuildResult` so a caller can assert on diagnostics AND on
-/// `geometry_output`. Returns `None` when OCCT is unavailable.
+/// Compile `source`, stand up the real OCCT kernel behind a fresh `Engine`, and
+/// hand both to `terminal`. Returns `None` when OCCT is unavailable.
 ///
-/// Deliberately does NOT assert that the build is clean: the RED tests below
-/// exist precisely to assert that it is not.
-fn build_with_occt(source: &str) -> Option<reify_eval::BuildResult> {
+/// The ONE construction both named entry points below share. Taking the
+/// terminal call as a parameter makes "identical construction; only the
+/// terminal differs" a structural fact rather than a claim a reader has to
+/// re-verify line by line — and that identity is what the file's whole
+/// argument rests on. A later change to engine construction (a cache dir, a
+/// tolerance, a second kernel) is therefore made once.
+///
+/// Deliberately does NOT assert that the result is clean: the consumer-guard
+/// tests below exist precisely to assert that it is not.
+fn on_occt(
+    source: &str,
+    terminal: impl FnOnce(&mut reify_eval::Engine, &CompiledModule) -> reify_eval::BuildResult,
+) -> Option<reify_eval::BuildResult> {
     if !reify_kernel_occt::OCCT_AVAILABLE {
         eprintln!("skipping: OCCT not available");
         return None;
@@ -65,77 +80,45 @@ fn build_with_occt(source: &str) -> Option<reify_eval::BuildResult> {
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
 
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
-    Some(engine.build(&compiled, ExportFormat::Step))
+    Some(terminal(&mut engine, &compiled))
 }
 
-/// Compile `source` and REALIZE it on the real OCCT kernel WITHOUT the Phase-B
-/// product export — `Engine::realize_for_check` (engine_build.rs:4087).
-///
-/// Identical construction to [`build_with_occt`]; only the terminal call
-/// differs, and that difference is the whole point. `realize_for_check`
+/// The ARTIFACT-WRITING path: `Engine::build` realizes every body AND walks
+/// Phase-B to serialize the product bodies into `geometry_output`. This is what
+/// `reify build` does, so it is the path on which an empty shape is fatal —
+/// there is no artifact to mint from nothing.
+fn build_with_occt(source: &str) -> Option<reify_eval::BuildResult> {
+    on_occt(source, |engine, compiled| {
+        engine.build(compiled, ExportFormat::Step)
+    })
+}
+
+/// The ARTIFACT-FREE path: `Engine::realize_for_check` (engine_build.rs:4087)
 /// realizes every body on the real kernel and runs the geometry-query value
 /// cells (`volume`, `centroid`, …) exactly as `build` does, but SKIPS the
 /// Phase-B export walk — so it observes what the KERNEL says about a design
 /// without also observing whether that design can be written to a STEP file.
 ///
-/// This is not a convenience: it is the path `reify check` actually takes for
-/// a geometry-bearing module (`cmd_check` selects `realize_for_check` at
-/// `reify-cli/src/main.rs`:1118). `reify check` ONLY — assert the `reify eval`
-/// path through [`eval_with_occt`] below even though the two currently reach
-/// the same entry point, because they are separately changeable CLI commands
-/// and conflating them is what let the protected gate
-/// `cli_gdt_integration_gate.rs:163` go red unobserved.
-/// A design whose boolean legitimately collapses to nothing —
-/// `examples/tolerancing/gdt_oracle_inside.ri` — must stay silent HERE.
+/// Both artifact-free CLI commands select it: `cmd_check`
+/// (`reify-cli/src/main.rs`:1118) and, since task 5318 step-10, `cmd_eval`.
+/// `cmd_eval` reached `build()` before that, for the post-processes that
+/// resolve the geometry-query value cells; it discarded `geometry_output` under
+/// its own comment "reify eval is a value inspector only" but still REPORTED
+/// that walk's export-only diagnostics and exited non-zero on them.
+/// `realize_for_check` runs the same post-processes and skips only the export
+/// walk, so the value cells are unaffected and the two commands CONVERGED
+/// rather than coinciding by accident. A design whose boolean legitimately
+/// collapses to nothing — `examples/tolerancing/gdt_oracle_inside.ri` — must
+/// stay silent here.
 ///
 /// Do NOT substitute `Engine::eval`: it mints only placeholder
 /// `GeometryHandle { kernel_handle: None, .. }` (engine_eval.rs:6691-6697) and
 /// never reaches OCCT at all, so an eval-based assertion about kernel
 /// behaviour would be vacuous.
 fn realize_with_occt(source: &str) -> Option<reify_eval::BuildResult> {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return None;
-    }
-
-    let compiled = parse_and_compile_with_stdlib(source);
-
-    let checker = reify_constraints::SimpleConstraintChecker;
-    let mut planner = reify_geometry::SingleKernelHolder::new();
-    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
-    Some(engine.realize_for_check(&compiled))
-}
-
-/// Compile `source` and drive it through the engine entry point `reify eval`
-/// uses — `cmd_eval`'s `module_has_geometry` branch
-/// (`reify-cli/src/main.rs`:2130-2146).
-///
-/// MIRROR, and deliberately so: `cmd_eval` is a CLI function this crate cannot
-/// call, so the terminal call reached below must be kept identical to the
-/// terminal call there. Whoever changes one changes both; this doc comment and
-/// the line reference above are the link.
-///
-/// `reify eval` is the THIRD path, and its distinctness is exactly what this
-/// file previously got wrong — it had helpers for two paths and pins for two
-/// verdicts, and the third path was the one the protected gate runs:
-///   `reify check` → `Engine::realize_for_check`  — writes nothing, must be SILENT
-///   `reify eval`  → `Engine::realize_for_check`  — writes nothing, must be SILENT
-///   `reify build` → `Engine::build(.., Step)`    — WRITES an artifact, must FAIL on an empty one
-///
-/// `cmd_eval` reached `build()` until task 5318 step-10, for the
-/// post-processes that resolve the geometry-query value cells; it discarded
-/// `geometry_output` under its own comment "reify eval is a value inspector
-/// only" but still REPORTED that walk's export-only diagnostics, and exits
-/// non-zero on any of them. `realize_for_check` runs the same post-processes
-/// and skips only the export walk, so the value cells are unaffected. The two
-/// artifact-free paths therefore CONVERGED on one entry point rather than
-/// coinciding by accident — hence the delegation below instead of a re-spelt
-/// construction. The names stay distinct because the two CLI commands are
-/// independently changeable: if either ever diverges, this is where it shows.
-fn eval_with_occt(source: &str) -> Option<reify_eval::BuildResult> {
-    realize_with_occt(source)
+    on_occt(source, |engine, compiled| {
+        engine.realize_for_check(compiled)
+    })
 }
 
 /// Collect the Error-severity diagnostic messages from a build.
@@ -237,6 +220,8 @@ fn difference_fully_consuming_target_alone_is_legal_and_silent() {
     );
 }
 
+// --- GD&T ORACLE: an empty cut IS the INSIDE verdict ---
+
 /// Local pin of the ratified GD&T semantic, mirroring
 /// `examples/tolerancing/gdt_oracle_inside.ri` (:20-23) without depending on
 /// that file or on the CLI gate that runs it
@@ -247,8 +232,9 @@ fn difference_fully_consuming_target_alone_is_legal_and_silent() {
 /// EXACTLY 0.0 m³ — the boolean oracle's INSIDE verdict, which the gate
 /// compares against `pokeout < 1e-9 m³`.
 ///
-/// Shared by the two artifact-free CLI paths' pins below, which must agree on
-/// it: one `.ri`, one expected verdict, asserted through two entry points.
+/// The gate is the eval-path authority for this verdict (it shells out to a
+/// real `reify eval`); this constant is the same semantic held locally, where a
+/// failure names the engine call that broke it instead of an exit code.
 const GDT_INSIDE_ORACLE_PIN: &str = r#"structure GdtOracleInsidePin {
     let nominal = box(10mm, 10mm, 10mm)
     let actual = translate(nominal, 0.05mm, 0mm, 0mm)
@@ -263,8 +249,9 @@ const GDT_INSIDE_ORACLE_PIN: &str = r#"structure GdtOracleInsidePin {
 /// `assert_eq!` against 0.0 is exact and matches how
 /// `harness_occt::boolean_result_normalization_integration:951-953` asserts the
 /// same quantity — BRepGProp over zero faces sums to exactly 0.0. Resolving the
-/// cell at all is half the assertion: a path that went silent by skipping the
-/// post-processes would leave `pokeout` absent, and that must fail here too.
+/// cell at all is half the assertion: an entry point that went silent by
+/// skipping the post-processes would leave `pokeout` absent, and that must fail
+/// here too.
 fn assert_gdt_inside_oracle_verdict(result: &reify_eval::BuildResult, what: &str) {
     assert_silent(result, what);
 
@@ -290,7 +277,8 @@ fn assert_gdt_inside_oracle_verdict(result: &reify_eval::BuildResult, what: &str
     }
 }
 
-/// `reify check`'s path over the ratified GD&T "inside" design.
+/// The artifact-free path over the ratified GD&T "inside" design — what both
+/// `reify check` and `reify eval` select.
 ///
 /// This is the reason the empty-result guard lives at the CONSUMERS and not at
 /// the boolean producer: a producer-side guard turns this design's answer into
@@ -300,24 +288,7 @@ fn gdt_inside_oracle_pokeout_is_exactly_zero_and_silent() {
     let Some(result) = realize_with_occt(GDT_INSIDE_ORACLE_PIN) else {
         return;
     };
-    assert_gdt_inside_oracle_verdict(&result, "gdt inside oracle, check path");
-}
-
-/// `reify eval`'s path over the SAME design, and the sibling the file was
-/// missing: [`realize_with_occt`] above is `reify check` ONLY, so nothing here
-/// covered the path the protected gate actually runs
-/// (`cli_gdt_integration_gate.rs:163 b5_oracle_inside_oracles_agree` shells out
-/// to `reify eval`, not `reify check`). The gate went red while every local pin
-/// stayed green, which is the definition of a vacuous mirror.
-///
-/// Same verdict as the check-path pin, for the same reason: `reify eval`
-/// writes no artifact, so an artifact-writing error has nothing to report on.
-#[test]
-fn gdt_inside_oracle_is_silent_on_the_eval_path() {
-    let Some(result) = eval_with_occt(GDT_INSIDE_ORACLE_PIN) else {
-        return;
-    };
-    assert_gdt_inside_oracle_verdict(&result, "gdt inside oracle, eval path");
+    assert_gdt_inside_oracle_verdict(&result, "gdt inside oracle, artifact-free path");
 }
 
 // --- CONSUMER GUARD: a consumer that cannot accept an empty shape ---
