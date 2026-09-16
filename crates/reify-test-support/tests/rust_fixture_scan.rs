@@ -261,3 +261,281 @@ fn a_char_literal_and_a_lifetime_do_not_desync_the_scan() {
         "a multi-byte char earlier in the file must not shift the reported line"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Admission predicates: which collected literals are embedded Reify source
+// ---------------------------------------------------------------------------
+
+use reify_test_support::rust_fixture_scan::{
+    inline_ri_snippets, is_format_template, is_inline_fixture_host, looks_like_reify_source,
+};
+use std::path::Path;
+
+/// `purpose_compile_tests.rs:1451` verbatim — the first of the two sites task
+/// #7543's VERIFY criterion names.
+const CONFIRMED_WHERE_ARM: &str = "structure Frame {
+    param material : Length = 1.0
+    param youngs_modulus : Length = 200.0
+}
+
+purpose p(subject : Structure) {
+    where subject.material > 0.0 {
+        constraint subject.youngs_modulus > 0.0
+    }
+}
+";
+
+/// `purpose_compile_tests.rs:1563` verbatim — the second named site.
+const CONFIRMED_ELSE_ARM: &str = "structure Frame {
+    param z : Length = 5.0
+}
+
+purpose p(subject : Structure) {
+    where 0.0 > 1.0 {
+    } else {
+        constraint subject.z > 0.0
+    }
+}
+";
+
+/// `math_construction_signatures_tests.rs:21` verbatim — a `const`-bound
+/// snippet, so the accept filter is pinned against both binding shapes.
+const CONFIRMED_CONSTRUCT: &str = "structure def Constructed {
+    let v = vec([1.0, 2.0, 3.0, 4.0])
+    let m = matrix([[1.0, 2.0], [3.0, 4.0]])
+    let d = diag([3.0, 5.0, 7.0])
+    let i = identity(4)
+}
+";
+
+#[test]
+fn looks_like_reify_source_accepts_the_real_confirmed_snippets() {
+    for (name, snippet) in [
+        ("where-arm", CONFIRMED_WHERE_ARM),
+        ("else-arm", CONFIRMED_ELSE_ARM),
+        ("construct", CONFIRMED_CONSTRUCT),
+    ] {
+        assert!(
+            looks_like_reify_source(snippet),
+            "{name}: a real inline fixture must be admitted as Reify source"
+        );
+    }
+}
+
+#[test]
+fn looks_like_reify_source_accepts_a_single_line_declaration() {
+    assert!(
+        looks_like_reify_source("trait T { #fast param x : Real }"),
+        "a whole declaration on one line is still a line-anchored declaration"
+    );
+}
+
+#[test]
+fn looks_like_reify_source_reads_visibility_attribute_and_indent_prefixes() {
+    for form in [
+        "pub structure def Actuator {\n}\n",
+        "priv structure def Hidden {\n}\n",
+        "@test structure def Rig {\n}\n",
+        "    param x : Real = 1.0\n",
+        "#precision(0.001m)\n",
+        "module a.b\n",
+        "import stdlib.fea\n",
+        "occurrence def Bolt {\n}\n",
+        "constraint def InRange {\n}\n",
+        "enum Shape {\n}\n",
+        "purpose p(subject : Structure) {\n}\n",
+    ] {
+        assert!(
+            looks_like_reify_source(form),
+            "declaration form {form:?} must be admitted"
+        );
+    }
+}
+
+/// The shape of the eight `r###"` literals in
+/// `crates/reify-builtins/tests/common/seed_name_scan.rs` — Rust source carried
+/// as a fixture. A bare `contains("let ")` heuristic admits it, and admitting it
+/// would poison the census with rows that describe no Reify site at all.
+const RUST_SOURCE_FIXTURE: &str = "fn wrap_tensor_field(name: &str) -> u8 {
+    let x = 1;
+    match name {
+        \"von_mises\" => x,
+        _ => 0,
+    }
+}
+";
+
+#[test]
+fn looks_like_reify_source_rejects_non_reify_blobs() {
+    for (name, blob) in [
+        ("rust source fixture", RUST_SOURCE_FIXTURE),
+        // `lsp_fixtures.rs:5`, `MINIMAL_INIT_PARAMS_JSON`.
+        ("json payload", "{\"capabilities\":{}}"),
+        (
+            "expected-diagnostic prose",
+            "warning: argument 'z' has type 'Real' but param 'z' requires type 'Scalar[m]'\n  \
+             --> test.ri:3:5\n",
+        ),
+    ] {
+        assert!(
+            !looks_like_reify_source(blob),
+            "{name}: must be rejected — only LINE-ANCHORED Reify declaration \
+             grammar admits, never a bare substring match"
+        );
+    }
+}
+
+// --- (B) format! templates ---
+
+/// `ambient_default_injection_tests.rs:136-144` verbatim — Reify-shaped, but a
+/// `format!` template: the `{{`/`}}` braces and the `{STEEL_CTOR}` placeholder
+/// are not Reify syntax, so compiling it would record a noise `parse-error`.
+const AMBIENT_TEMPLATE: &str = "default Material = {STEEL_CTOR}
+
+structure def Bracket : Physical {{
+    param geometry : Solid = box(10mm, 20mm, 30mm)
+}}
+";
+
+#[test]
+fn is_format_template_flags_doubled_braces_and_bare_placeholders() {
+    assert!(
+        is_format_template(AMBIENT_TEMPLATE),
+        "the live ambient-default template must be flagged"
+    );
+    assert!(
+        is_format_template("structure def B {{\n}}\n"),
+        "doubled braces"
+    );
+    assert!(
+        is_format_template("default Material = {STEEL_CTOR}\n"),
+        "a bare `{{ident}}` placeholder"
+    );
+}
+
+#[test]
+fn is_format_template_leaves_ordinary_reify_braces_alone() {
+    for snippet in [CONFIRMED_WHERE_ARM, CONFIRMED_ELSE_ARM, CONFIRMED_CONSTRUCT] {
+        assert!(
+            !is_format_template(snippet),
+            "single braces and `{{}}` empty bodies are ordinary Reify syntax"
+        );
+    }
+    assert!(
+        !is_format_template("structure def Empty {}\n"),
+        "an empty body is `{{}}`, not a placeholder"
+    );
+}
+
+// --- (C) which .rs files can host an inline fixture ---
+
+#[test]
+fn is_inline_fixture_host_admits_tests_dirs_and_src_tests_rs() {
+    for rel in [
+        "crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs",
+        "crates/reify-test-support/tests/rust_fixture_scan.rs",
+        "crates/reify-eval/src/engine_build/tests.rs",
+    ] {
+        assert!(
+            is_inline_fixture_host(Path::new(rel)),
+            "{rel} must be an in-scope host"
+        );
+    }
+}
+
+#[test]
+fn is_inline_fixture_host_rejects_production_non_rust_and_build_output() {
+    for rel in [
+        "crates/reify-compiler/src/lib.rs",
+        "crates/reify-compiler/tests/fixtures/variant_construct_valid.ri",
+        "crates/reify-compiler/target/debug/build/x/out/tests/generated.rs",
+        // The scope anchor is `crates/`: the Tauri sidecar is a separate cargo
+        // project and is deliberately not part of this corpus half.
+        "gui/src-tauri/src/tests/engine_tests.rs",
+    ] {
+        assert!(
+            !is_inline_fixture_host(Path::new(rel)),
+            "{rel} must not be an in-scope host"
+        );
+    }
+}
+
+// --- (D) the composition ---
+
+const COMPOSED_HOST: &str = r###"fn f() {
+    let reify = r#"
+structure def Constructed {
+    let v = vec([1.0, 2.0])
+}
+"#;
+    let json = r#"{"capabilities":{}}"#;
+    let rust_fixture = r#"
+fn production(name: &str) -> u8 {
+    let x = 1;
+    match name {
+        "von_mises" => x,
+        _ => 0,
+    }
+}
+"#;
+    let templated = format!(r#"
+default Material = {STEEL_CTOR}
+
+structure def Bracket : Physical {{
+    param geometry : Solid = box(10mm)
+}}
+"#);
+    let _ = (reify, json, rust_fixture, templated);
+}
+"###;
+
+#[test]
+fn inline_ri_snippets_admits_reify_drops_blobs_and_discloses_templates() {
+    let scan = inline_ri_snippets(COMPOSED_HOST);
+
+    assert_eq!(
+        scan.snippets.len(),
+        1,
+        "only the Reify-shaped, non-templated literal is admitted; got {:#?}",
+        scan.snippets
+    );
+    assert!(
+        scan.snippets[0]
+            .text
+            .starts_with("structure def Constructed {"),
+        "got {:?}",
+        scan.snippets[0].text
+    );
+    assert_eq!(
+        scan.snippets[0].host_line,
+        line_containing(COMPOSED_HOST, "structure def Constructed {"),
+        "the collector's host_line survives the admission filter unchanged"
+    );
+
+    assert_eq!(
+        scan.format_templates.len(),
+        1,
+        "a Reify-shaped `format!` template is REPORTED, not silently dropped, \
+         so the caller can disclose it as a coverage reason; got {:#?}",
+        scan.format_templates
+    );
+    assert_eq!(
+        scan.format_templates[0].host_line,
+        line_containing(COMPOSED_HOST, "default Material = {STEEL_CTOR}"),
+    );
+
+    // The JSON payload and the Rust-source fixture are not Reify at all: they
+    // are neither admitted nor disclosed, because there is nothing to survey.
+    let disclosed: Vec<&str> = scan
+        .snippets
+        .iter()
+        .chain(scan.format_templates.iter())
+        .map(|s| s.text.as_str())
+        .collect();
+    for absent in ["capabilities", "von_mises"] {
+        assert!(
+            !disclosed.iter().any(|t| t.contains(absent)),
+            "{absent:?} is not Reify source and must not reach either list"
+        );
+    }
+}

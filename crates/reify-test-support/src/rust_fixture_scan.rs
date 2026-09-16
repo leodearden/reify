@@ -219,13 +219,27 @@ fn char_literal_end(raw: &[u8], at: usize) -> Option<usize> {
     (close < n && raw[close] == b'\'').then_some(close + 1)
 }
 
+/// What [`inline_ri_snippets`] found in one host file.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InlineScan {
+    /// Literals admitted as compilable Reify source.
+    pub snippets: Vec<InlineSnippet>,
+    /// Reify-SHAPED literals held back because they are `format!` templates.
+    pub format_templates: Vec<InlineSnippet>,
+}
+
 /// Every raw-string literal in `rust_source` admitted as embedded Reify source.
-pub fn inline_ri_snippets(_rust_source: &str) -> Vec<InlineSnippet> {
-    Vec::new()
+pub fn inline_ri_snippets(_rust_source: &str) -> InlineScan {
+    InlineScan::default()
 }
 
 /// Whether `text` reads as Reify source rather than some other embedded blob.
 pub fn looks_like_reify_source(_text: &str) -> bool {
+    false
+}
+
+/// Whether `text` is a `format!` template rather than compilable Reify source.
+pub fn is_format_template(_text: &str) -> bool {
     false
 }
 
