@@ -17,6 +17,22 @@
 //! shape is shared rather than reinvented. It is test-private to
 //! reify-builtins, so it is a citation and a model, not a call.
 //!
+//! # Measured basis
+//!
+//! Over the tree at `b6ecde51ae`, [`is_inline_fixture_host`] admits **1,307**
+//! tracked files — 1,305 carrying a `tests` directory component under
+//! `crates/`, plus 2 `crates/*/src/**/tests.rs`
+//! (`reify-eval/src/{engine_build,geometry_ops}/tests.rs`). Across them
+//! [`raw_string_literals`] collects **3,502** literals, of which
+//! [`looks_like_reify_source`] admits **3,127**, [`is_format_template`] holds
+//! back **70**, and **305** are dropped as not Reify at all (JSON payloads,
+//! Rust-source fixtures, expected-diagnostic prose). **464** hosts carry at
+//! least one admitted snippet.
+//!
+//! Those are MEASUREMENTS at a named commit, not invariants — recorded so a
+//! future reader can tell a filter regression (the admitted share collapses)
+//! from an ordinary corpus change (every figure drifts together).
+//!
 //! # Not a Rust lexer
 //!
 //! [`raw_string_literals`] models exactly the constructs that can HIDE a `r#"`
@@ -229,21 +245,153 @@ pub struct InlineScan {
 }
 
 /// Every raw-string literal in `rust_source` admitted as embedded Reify source.
-pub fn inline_ri_snippets(_rust_source: &str) -> InlineScan {
-    InlineScan::default()
+///
+/// Composes the collector with both admission predicates. A literal that is not
+/// Reify at all is dropped outright — there is nothing to survey and nothing to
+/// disclose — while a Reify-SHAPED `format!` template is held back in
+/// [`InlineScan::format_templates`] so the caller reports it under its own
+/// coverage reason instead of letting it land as a noise `parse-error` row.
+pub fn inline_ri_snippets(rust_source: &str) -> InlineScan {
+    let mut scan = InlineScan::default();
+    for lit in raw_string_literals(rust_source) {
+        if !looks_like_reify_source(&lit.text) {
+            continue;
+        }
+        let snippet = InlineSnippet {
+            host_line: lit.host_line,
+            text: lit.text,
+        };
+        if is_format_template(&snippet.text) {
+            scan.format_templates.push(snippet);
+        } else {
+            scan.snippets.push(snippet);
+        }
+    }
+    scan
 }
 
+/// Reify DECLARATION openers, matched at the start of a line.
+///
+/// `structure ` covers both `structure def X` and the inline `structure X {`;
+/// `trait `, `occurrence ` and `constraint ` likewise cover their `def` and
+/// inline forms. `param` is handled separately because it needs its `:` to be
+/// distinguishable from ordinary prose.
+const REIFY_DECLARATION_OPENERS: &[&str] = &[
+    "module ",
+    "import ",
+    "structure ",
+    "occurrence ",
+    "constraint ",
+    "trait ",
+    "enum ",
+    "purpose ",
+    "#precision",
+];
+
 /// Whether `text` reads as Reify source rather than some other embedded blob.
-pub fn looks_like_reify_source(_text: &str) -> bool {
-    false
+///
+/// LINE-ANCHORED declaration grammar, never a bare substring test: a raw string
+/// is admitted only when some line OPENS a Reify declaration. A substring
+/// heuristic such as `contains("let ")` admits the eight Rust-source fixtures in
+/// `crates/reify-builtins/tests/common/seed_name_scan.rs`, whose `let` and
+/// `match` lines are Rust; compiling those would poison the census with rows
+/// describing no Reify site at all.
+pub fn looks_like_reify_source(text: &str) -> bool {
+    text.lines().any(opens_a_reify_declaration)
+}
+
+fn opens_a_reify_declaration(line: &str) -> bool {
+    let mut rest = line.trim_start();
+    // `pub` / `priv` visibility and `@attr` annotations may precede the keyword
+    // in either order. Each strip consumes at least two bytes, so this
+    // terminates.
+    while let Some(next) = ["pub ", "priv "]
+        .iter()
+        .find_map(|p| rest.strip_prefix(p))
+        .or_else(|| strip_attribute(rest))
+    {
+        rest = next.trim_start();
+    }
+    if let Some(after) = rest.strip_prefix("param ") {
+        return after.contains(':');
+    }
+    REIFY_DECLARATION_OPENERS
+        .iter()
+        .any(|opener| rest.starts_with(opener))
+}
+
+/// `rest` past a leading `@attr` annotation, or `None` when there is none.
+fn strip_attribute(rest: &str) -> Option<&str> {
+    let after_at = rest.strip_prefix('@')?;
+    let end = after_at
+        .char_indices()
+        .find(|(_, c)| !(c.is_alphanumeric() || *c == '_'))
+        .map_or(after_at.len(), |(i, _)| i);
+    (end > 0).then(|| &after_at[end..])
 }
 
 /// Whether `text` is a `format!` template rather than compilable Reify source.
-pub fn is_format_template(_text: &str) -> bool {
+///
+/// Two tells, both taken from the live shape at
+/// `crates/reify-compiler/tests/ambient_default_injection_tests.rs:136-144`:
+/// doubled `{{`/`}}` braces (how a template escapes a literal brace, which
+/// Reify never writes), and a bare `{ident}` substitution. An EMPTY `{}` body
+/// is ordinary Reify, so a placeholder must name something.
+pub fn is_format_template(text: &str) -> bool {
+    text.contains("{{") || text.contains("}}") || has_named_placeholder(text)
+}
+
+fn has_named_placeholder(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    for open in 0..bytes.len() {
+        if bytes[open] != b'{' {
+            continue;
+        }
+        let is_name_byte = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+        let mut close = open + 1;
+        while close < bytes.len() && is_name_byte(bytes[close]) {
+            close += 1;
+        }
+        if close > open + 1 && close < bytes.len() && bytes[close] == b'}' {
+            return true;
+        }
+    }
     false
 }
 
 /// Whether a repo-relative path is a Rust file that can host inline fixtures.
-pub fn is_inline_fixture_host(_rel: &Path) -> bool {
-    false
+///
+/// Deliberately NOT [`crate::ignore_hygiene::walk_test_rs_files`], which is the
+/// workspace's other test-file enumerator. That one matches only a `tests`
+/// DIRECTORY component, so it misses both `crates/*/src/**/tests.rs` hosts —
+/// among them `crates/reify-eval/src/engine_build/tests.rs`, the only tracked
+/// file in the workspace carrying `r##"` literals — and its
+/// `has_tests_component` predicate is private, so the gap cannot be closed by
+/// composing with it. It is also a
+/// filesystem walk, where the survey needs a git-index enumeration: an
+/// untracked `.rs` is reproducible from no commit, and the artifact is stamped
+/// against one.
+///
+/// The `crates/` anchor is the scope statement: `gui/src-tauri` is a separate
+/// cargo project and is not part of this corpus.
+pub fn is_inline_fixture_host(rel: &Path) -> bool {
+    let mut names: Vec<&str> = Vec::new();
+    for component in rel.components() {
+        match component {
+            std::path::Component::Normal(name) => match name.to_str() {
+                Some(name) => names.push(name),
+                None => return false,
+            },
+            // A root, prefix, `.` or `..` component means this is not the
+            // repo-relative path the predicate is defined over.
+            _ => return false,
+        }
+    }
+    let Some((file, dirs)) = names.split_last() else {
+        return false;
+    };
+    if !file.ends_with(".rs") || dirs.first() != Some(&"crates") || dirs.contains(&"target") {
+        return false;
+    }
+    dirs.contains(&"tests") || *file == "tests.rs"
 }
