@@ -4771,7 +4771,7 @@ fn render_survey(run: &SurveyRun, inline: &SurveyRun, stamp: &SurveyStamp) -> St
     // Rendered ONLY when something drifted: an undrifted run must carry no
     // disclosure at all, so the artifact grows no permanent "0 files drifted"
     // row and two undrifted runs stay byte-comparable.
-    if !stamp.drifted_ri.is_empty() {
+    if !stamp.drifted.is_empty() {
         let _ = write!(
             md,
             "\n\
@@ -4782,9 +4782,9 @@ fn render_survey(run: &SurveyRun, inline: &SurveyRun, stamp: &SurveyStamp) -> St
             exactly what was swept. (Uncommitted bytes are reachable from no commit, which\n\
             is why a dirty tree is refused outright instead — see `stamp_decision`.)\n\
             \n",
-            n = stamp.drifted_ri.len(),
+            n = stamp.drifted.len(),
         );
-        for path in &stamp.drifted_ri {
+        for path in &stamp.drifted {
             let _ = writeln!(md, "- `{}`", cell(path));
         }
     }
@@ -5409,7 +5409,7 @@ fn render_survey_names_every_drifted_ri_without_disturbing_the_anchor() {
     let run = one_site_run();
     let drifted = SurveyStamp {
         anchor: "cafe1234".to_owned(),
-        drifted_ri: vec![
+        drifted: vec![
             "tests/prd-gate/fixtures/one.ri".to_owned(), // pg-drift:allow — synthetic drift path; no such fixture exists and nothing compiled reads one.ri
             "tree-sitter-reify/test/fixtures/two.ri".to_owned(),
         ],
@@ -5420,7 +5420,7 @@ fn render_survey_names_every_drifted_ri_without_disturbing_the_anchor() {
         md.contains(DRIFT_DISCLOSURE_KEY),
         "a drifted stamp must disclose; got:\n{md}"
     );
-    for path in &drifted.drifted_ri {
+    for path in &drifted.drifted {
         assert!(
             md.contains(path.as_str()),
             "the disclosure must name {path} — a path it drops is a path no \
@@ -5428,7 +5428,7 @@ fn render_survey_names_every_drifted_ri_without_disturbing_the_anchor() {
         );
     }
     assert!(
-        md.contains(&format!("{} tracked", drifted.drifted_ri.len())),
+        md.contains(&format!("{} tracked", drifted.drifted.len())),
         "the stated count must be COMPUTED from the disclosed list, never \
          typed; got:\n{md}"
     );
@@ -5462,7 +5462,7 @@ fn render_survey_omits_the_disclosure_entirely_when_nothing_drifted() {
         &SurveyRun::default(),
         &SurveyStamp {
             anchor: "cafe1234".to_owned(),
-            drifted_ri: vec!["tests/prd-gate/fixtures/one.ri".to_owned()], // pg-drift:allow — same synthetic path as above
+            drifted: vec!["tests/prd-gate/fixtures/one.ri".to_owned()], // pg-drift:allow — same synthetic path as above
         },
     );
     let at = with
@@ -5544,6 +5544,15 @@ const INLINE_SECTION_HEADING: &str = "## Inline Rust fixtures";
 
 /// The header label of the inline table's snippet-relative coordinate column.
 const SNIPPET_LINE_COLUMN: &str = "snippet line";
+
+/// The bold lead of named limitation 1, which states what the inline walker
+/// reaches and — the part that matters — what it does not.
+///
+/// One spelling, read by the renderer and by every test that locates the
+/// limitation. Locating it by key rather than by ordinal means inserting a
+/// limitation above it cannot silently re-point the assertions at neighbouring
+/// prose.
+const INLINE_LIMITATION_KEY: &str = "**Inline Reify snippets are reached as RAW-STRING LITERALS";
 
 /// The disposition cell of the site row anchored at `row_anchor`.
 #[cfg(test)]
@@ -6128,6 +6137,128 @@ fn render_survey_keeps_the_ri_half_byte_identical_when_an_inline_half_is_added()
     );
 }
 
+// ─── retiring the now-false named limitation 1 ───────────────────────────────
+
+/// The two claims the inline walker DISPROVES, which the artifact must stop
+/// making.
+///
+/// Verbatim from the limitation this task retires. Leaving either in place would
+/// have the artifact deny the section printed above it — the one failure mode a
+/// generated document must never have.
+const RETIRED_LIMITATION_CLAIMS: &[&str] = &[
+    "are not file-enumerable",
+    "could only be swept by changing the compiler",
+];
+
+/// The body of named limitation 1, from its key to the start of limitation 2.
+///
+/// Scoped rather than whole-document, because several of the strings this
+/// limitation must name — `format!` above all — also occur elsewhere in the
+/// artifact (the inline coverage table's `format-template` reason). A
+/// whole-document `contains` would be satisfied by those and would assert
+/// nothing about the limitation.
+#[cfg(test)]
+fn inline_limitation(md: &str) -> String {
+    let start = md.find(INLINE_LIMITATION_KEY).unwrap_or_else(|| {
+        panic!("named limitation 1 must open with {INLINE_LIMITATION_KEY:?}:\n{md}")
+    });
+    let body = &md[start..];
+    let end = body
+        .find("\n2. ")
+        .unwrap_or_else(|| panic!("limitation 1 must be followed by limitation 2:\n{body}"));
+    body[..end].to_owned()
+}
+
+/// The artifact no longer claims inline fixtures are unreachable, and names the
+/// walker's REAL residual instead.
+#[test]
+fn render_survey_retires_the_disproved_limitation_and_names_the_real_residual() {
+    let md = render_survey(
+        &SurveyRun::default(),
+        &synth_inline_run(),
+        &SurveyStamp::at("sha"),
+    );
+
+    for claim in RETIRED_LIMITATION_CLAIMS {
+        assert!(
+            !md.contains(claim),
+            "the artifact still claims {claim:?}, which this task's own inline section \
+             disproves — a generated document must not deny what it prints"
+        );
+    }
+
+    // The residual is stated as CLASSES, each named by the Rust construct a
+    // reader would grep for, and each named INSIDE the limitation rather than
+    // anywhere in the document.
+    let limitation = inline_limitation(&md);
+    for residual in [
+        "raw-string literal",
+        "concat!",
+        "format!",
+        "include_str!",
+        "read_to_string",
+        "push_str",
+    ] {
+        assert!(
+            limitation.contains(residual),
+            "the replacement limitation must name the `{residual}` class: a reader \
+             has to be able to tell a snippet the walker MISSED from one it found \
+             clean. Got:\n{limitation}"
+        );
+    }
+}
+
+/// The limitation's quantities come from the RUN, not from frozen prose.
+///
+/// A hand-typed count is a number nothing recomputes: it is right on the day it
+/// is written and silently wrong forever after. Two runs differing only in their
+/// inline half must therefore state different figures — and the difference has
+/// to be in the LIMITATION, which is the paragraph a reader consults to size
+/// what was missed.
+#[test]
+fn the_inline_limitation_states_figures_the_run_recomputed() {
+    let stamp = SurveyStamp::at("sha");
+    let small = render_survey(&SurveyRun::default(), &SurveyRun::default(), &stamp);
+    let large = render_survey(&SurveyRun::default(), &synth_inline_run(), &stamp);
+
+    assert_ne!(
+        inline_limitation(&small),
+        inline_limitation(&large),
+        "the limitation's stated quantities must be recomputed per run; if they are \
+         identical across runs with different inline halves, they were typed"
+    );
+    assert_ne!(
+        section_of(&small, INLINE_SECTION_HEADING),
+        section_of(&large, INLINE_SECTION_HEADING),
+        "so must the inline section's"
+    );
+}
+
+/// The drift disclosure covers BOTH halves.
+#[test]
+fn the_drift_disclosure_is_not_scoped_to_ri_alone() {
+    assert!(
+        !DRIFT_DISCLOSURE_KEY.contains(".ri"),
+        "the disclosure key still names `.ri` alone, but a row can now describe the \
+         bytes of a `.rs` host too: {DRIFT_DISCLOSURE_KEY:?}"
+    );
+
+    let drifted = SurveyStamp {
+        anchor: "cafe1234".to_owned(),
+        drifted: vec![
+            "examples/a.ri".to_owned(),
+            "crates/c/tests/h.rs".to_owned(),
+        ],
+    };
+    let md = render_survey(&SurveyRun::default(), &SurveyRun::default(), &drifted);
+    for path in &drifted.drifted {
+        assert!(
+            md.contains(path.as_str()),
+            "a drifted {path} must be named in the disclosure:\n{md}"
+        );
+    }
+}
+
 /// **The survey generator.** Sweeps every tracked `.ri` and writes the artifact.
 ///
 /// `#[ignore]`d because it compiles the entire tracked corpus — ~2.5× the
@@ -6260,7 +6391,7 @@ struct SurveyStamp {
     /// Empty is the ordinary case and renders NOTHING, so an undrifted artifact
     /// carries no disclosure at all — no permanent "0 files drifted" row, and
     /// runs generated on `main` stay byte-comparable with each other.
-    drifted_ri: Vec<String>,
+    drifted: Vec<String>,
 }
 
 impl SurveyStamp {
@@ -6268,9 +6399,61 @@ impl SurveyStamp {
     fn at(anchor: &str) -> Self {
         Self {
             anchor: anchor.to_owned(),
-            drifted_ri: Vec::new(),
+            drifted: Vec::new(),
         }
     }
+}
+
+/// The lines of `drift` — raw `git diff --name-only` output — that name a
+/// member of `corpus`.
+///
+/// Stub — filled in by the GREEN half of this pair.
+fn drift_within_corpus(
+    _drift: &str,
+    _corpus: &std::collections::BTreeSet<&str>,
+) -> Vec<String> {
+    Vec::new()
+}
+
+/// The union of both corpus halves, as the membership set
+/// [`drift_within_corpus`] filters against.
+fn surveyed_corpus_union<'a>(
+    ri: &'a [String],
+    hosts: &'a [String],
+) -> std::collections::BTreeSet<&'a str> {
+    ri.iter().chain(hosts).map(String::as_str).collect()
+}
+
+/// The drift disclosure names exactly the files whose bytes a ROW describes.
+///
+/// Widening the git read from `'*.ri'` to `'*.ri' '*.rs'` makes it see every
+/// unrelated `.rs` churn in the repo — thousands of files no row mentions — so
+/// the filter is what keeps the header a disclosure rather than a changelog.
+#[test]
+fn drift_within_corpus_keeps_both_halves_and_drops_everything_else() {
+    let ri = vec!["examples/a.ri".to_owned(), "stdlib/b.ri".to_owned()];
+    let hosts = vec!["crates/c/tests/h.rs".to_owned()];
+    let corpus = surveyed_corpus_union(&ri, &hosts);
+
+    let drift = "examples/a.ri\n\
+                 crates/c/tests/h.rs\n\
+                 crates/c/src/lib.rs\n\
+                 docs/prds/unrelated.md\n\
+                 \n";
+    assert_eq!(
+        drift_within_corpus(drift, &corpus),
+        vec![
+            "examples/a.ri".to_owned(),
+            "crates/c/tests/h.rs".to_owned(),
+        ],
+        "the disclosure must name BOTH halves' members and NOTHING else — a `.rs` \
+         outside the host corpus is churn no row describes, and listing it would \
+         flood the header"
+    );
+    assert!(
+        drift_within_corpus("", &corpus).is_empty(),
+        "git writes a trailing newline even with nothing to report"
+    );
 }
 
 /// Decide whether the git state just read may be stamped into the artifact
@@ -6311,7 +6494,7 @@ fn stamp_decision(anchor: &str, dirty: &str, ri_drift: &str) -> Result<SurveySta
 
     Ok(SurveyStamp {
         anchor: anchor.to_owned(),
-        drifted_ri: ri_drift
+        drifted: ri_drift
             .lines()
             .map(str::trim)
             .filter(|path| !path.is_empty())
@@ -6386,7 +6569,7 @@ fn stamp_decision_discloses_a_drifted_tracked_ri_rather_than_refusing() {
          anchor, because a branch tip is rewritable and this one is not"
     );
     assert_eq!(
-        stamp.drifted_ri,
+        stamp.drifted,
         vec!["examples/one.ri".to_owned(), "examples/two.ri".to_owned()],
         "every drifted path git reported must survive into the disclosure, in \
          git's own order and spelling — the disclosure is machine-generated, so \
