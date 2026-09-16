@@ -350,11 +350,59 @@ pub fn mcp_tool_call_impl(
         .map_err(|e| e.to_string())
 }
 
-/// `main.rs::mcp_tool_call`'s dispatch entry point (task 5466).
+/// Dispatch an MCP tool call on the persistent ENGINE lane — the entry point
+/// `main.rs::mcp_tool_call` delegates to (task 5466).
+///
+/// # What relocating this ONE call covers
+///
+/// `TauriToolContext`'s WHOLE engine surface. An MCP tool never touches the
+/// engine directly: every touch is a [`ReifyToolContext`] method on the context,
+/// and those include `open_file`, `update_source` and `set_parameter`, which
+/// drive FULL recursive compiles. So there is no second site to migrate — the
+/// dispatch is the only place any of them can run.
+///
+/// # Why the engine lane, and not a per-call tier
+///
+/// An MCP tool call is a shared-lane client, not a once-per-file-open compile,
+/// so it takes the AMORTISED 256 MiB mapping rather than paying a fresh `mmap` +
+/// guard-page `mprotect` + `munmap` per call. Joining the existing lane is also
+/// what keeps "one worker design" true instead of adding a second mechanism
+/// alongside it.
+///
+/// # Why here rather than in `commands.rs`
+///
+/// This path needs an OWNED `TauriToolContext` — engine `Arc` + emitter +
+/// selection — not the `&Mutex<EngineSession>` the fourteen migrated sites pass.
+/// And `mcp_context.rs` is ungated, so this helper is headlessly testable, where
+/// `main.rs` (a `required-features = ["gui"]` `[[bin]]`) is not.
+///
+/// # Why by value
+///
+/// A persistent lane takes `'static` closures, so the context must be MOVED into
+/// the job. `TauriToolContext: Send + 'static` auto-derives from its three
+/// fields — `Arc<Mutex<EngineSession>>`, `Option<Box<dyn Fn(&str, Value) + Send
+/// + Sync>>` and `Arc<RwLock<SelectionInfo>>` — so no caller gains a new bound
+/// from this.
+///
+/// # The one behavioural delta callers must know
+///
+/// The event emitter now fires from the LANE thread rather than the caller's.
+/// Sound because `tauri::AppHandle` is `Send + Sync` and `emit` is callable from
+/// any thread.
+///
+/// # Preconditions inherited from [`crate::large_stack::run_on_worker`]
+///
+/// Must not be called from a job already running on `ENGINE_LANE` — the lane has
+/// a single consumer, so `assert_not_reentrant` panics LOUDLY rather than
+/// wedging it (see `run_on_worker`'s reentrancy section) — and must not be
+/// called while holding the engine mutex, or the job would block acquiring it
+/// while the caller blocks on the reply. Both hold at the only call site:
+/// Tauri's blocking command thread, which is never a lane thread and holds no
+/// engine lock.
 pub fn mcp_tool_call_on_large_stack(
     ctx: TauriToolContext,
     name: String,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    mcp_tool_call_impl(&name, params, &ctx)
+    crate::large_stack::run_on_worker(move || mcp_tool_call_impl(&name, params, &ctx))
 }
