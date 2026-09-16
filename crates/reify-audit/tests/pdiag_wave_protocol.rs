@@ -34,8 +34,8 @@
 //! User-observable signal:
 //!   `cargo test -p reify-audit --test pdiag_wave_protocol`
 
-use reify_audit::Finding;
 use reify_audit::pdiag::test_support::{Fixture, codeless_src, coded_src};
+use reify_audit::{Finding, Severity};
 
 /// The one fixed swept path every test in this file shares. `crates/<name>/src/`
 /// is required by `pdiag::is_swept_path`; `reify-compiler` is an arbitrary
@@ -60,6 +60,14 @@ fn wave_tree(codeless: usize, coded: usize, row: Option<u32>) -> Vec<Finding> {
     let baseline = row.map_or_else(String::new, |n| format!("{WAVE_SECTION} {n}\n"));
     fx.baseline(&baseline);
     fx.run()
+}
+
+/// The gate-facing subset of a wave's findings. High is the ONLY severity
+/// that moves `reify-audit`'s exit code, so "does this wave red the merge
+/// gate?" is exactly "is `highs()` non-empty?" — do not widen this to all
+/// severities, or the two Medium advisories silently become failures.
+fn highs(findings: &[Finding]) -> Vec<&Finding> {
+    findings.iter().filter(|f| f.severity == Severity::High).collect()
 }
 
 #[test]
