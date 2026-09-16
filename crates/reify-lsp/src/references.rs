@@ -1918,19 +1918,13 @@ pub fn compute_rename_cross_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analysis::test_fixtures::{NAMED_DECL_SNIPPETS, occurrences, parse_one_clean};
     use crate::convert::{offset_to_position, span_to_range};
     use reify_core::ModulePath;
 
     /// Build the name-token span `[start, start + text.len())`.
     fn span_of(start: usize, text: &str) -> SourceSpan {
         SourceSpan::new(start as u32, (start + text.len()) as u32)
-    }
-
-    /// Byte offsets of every whole-word-ish occurrence of `needle` in `source`,
-    /// ascending. `width`/`volume`/etc. never appear as substrings of other
-    /// identifiers in the bracket fixture, so plain match_indices is exact here.
-    fn occurrences(source: &str, needle: &str) -> Vec<usize> {
-        source.match_indices(needle).map(|(i, _)| i).collect()
     }
 
     /// Whether `span` lies fully within the byte range `[lo, hi)`.
@@ -4449,7 +4443,7 @@ structure Assembly {
         // third verbatim copy here would reintroduce the lockstep-edit burden it
         // was meant to remove.
         const TYPE_POSITION_ONLY: [&str; 5] = ["Pressure", "meter", "Foo", "ball", "lightweight"];
-        let kinds: Vec<&(&str, &str)> = crate::analysis::NAMED_DECL_SNIPPETS
+        let kinds: Vec<&(&str, &str)> = NAMED_DECL_SNIPPETS
             .iter()
             .filter(|(_, name)| TYPE_POSITION_ONLY.contains(name))
             .collect();
@@ -4463,20 +4457,11 @@ structure Assembly {
 
         let uri = Url::parse("file:///proj/guard.ri").unwrap();
         for (source, name) in kinds {
-            let parsed = reify_syntax::parse(source, ModulePath::single("guard"));
-            // Cleanliness FIRST: every assertion in this loop is NEGATIVE, so a
-            // snippet broken by grammar drift would yield zero declarations and
-            // pass vacuously — the guard would stop guarding in silence.
-            assert!(
-                parsed.errors.is_empty(),
-                "snippet must parse clean, got {:?} for: {source}",
-                parsed.errors
-            );
-            assert_eq!(
-                parsed.declarations.len(),
-                1,
-                "expected exactly one declaration for: {source}"
-            );
+            // `parse_one_clean` asserts cleanliness FIRST: every assertion in
+            // this loop is NEGATIVE, so a snippet broken by grammar drift would
+            // yield zero declarations and pass vacuously — the guard would stop
+            // guarding in silence.
+            let parsed = parse_one_clean(source, "guard");
 
             let decl = occurrences(source, name)[0];
             let pos = offset_to_position(source, decl as u32);

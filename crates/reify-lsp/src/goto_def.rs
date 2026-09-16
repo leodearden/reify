@@ -926,17 +926,9 @@ mod tests {
 
     // --- task 6388: uniform same-file declaration-name resolution ---
 
-    /// The snippet table is SHARED with `analysis::tests`, not mirrored:
-    /// `crate::analysis::NAMED_DECL_SNIPPETS` is a `#[cfg(test)] pub(crate)`
-    /// const sitting next to the `decl_name_and_span` oracle it enumerates.
-    /// Two verbatim copies used to live here and there, and had to be edited in
-    /// lockstep on every grammar change (9d56ba5485 touched both).
-    use crate::analysis::NAMED_DECL_SNIPPETS;
-
-    /// Byte offsets of every occurrence of `needle` in `source`, ascending.
-    fn occurrences(source: &str, needle: &str) -> Vec<usize> {
-        source.match_indices(needle).map(|(i, _)| i).collect()
-    }
+    /// The snippet table and `occurrences` are SHARED, not mirrored — see
+    /// `crate::analysis::test_fixtures`.
+    use crate::analysis::test_fixtures::{NAMED_DECL_SNIPPETS, occurrences};
 
     /// Convert an LSP range back to the `[start, end)` byte range it covers.
     fn range_to_byte_range(source: &str, range: Range) -> (usize, usize) {

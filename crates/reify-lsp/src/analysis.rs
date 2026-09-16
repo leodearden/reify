@@ -11,6 +11,13 @@ use tower_lsp::lsp_types::{DocumentSymbol, Range, SymbolKind, Url};
 
 use crate::convert::{is_ident_byte, offset_to_position, span_to_range};
 
+/// Fixtures and helpers shared by several modules' `tests`, in their own file
+/// so no production module carries test data. Declared here, next to the
+/// `decl_name_and_span` oracle whose per-kind table is the largest of them.
+#[cfg(test)]
+#[path = "test_fixtures.rs"]
+pub(crate) mod test_fixtures;
+
 /// Extract a module name from a file URI.
 ///
 /// e.g., `file:///path/to/test.ri` → `"test"`.
@@ -546,7 +553,7 @@ pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<
 ///   Field/Purpose/Constraint/Unit/Joint), which is outside task 6388's
 ///   same-file goto-def remit. Filed as a follow-up instead of done here, so
 ///   the silent-omission failure mode still exists for the outline view.
-pub fn decl_name_and_span(decl: &Declaration) -> Option<(&str, SourceSpan)> {
+pub(crate) fn decl_name_and_span(decl: &Declaration) -> Option<(&str, SourceSpan)> {
     let named = match decl {
         Declaration::Structure(s) => (s.name.as_str(), s.span),
         Declaration::Occurrence(o) => (o.name.as_str(), o.span),
@@ -569,57 +576,6 @@ pub fn decl_name_and_span(decl: &Declaration) -> Option<(&str, SourceSpan)> {
     };
     Some(named)
 }
-
-/// One verified-parseable snippet per NAMED `Declaration` variant, paired with
-/// the name that variant declares — the shared fixture behind
-/// [`decl_name_and_span`]'s wildcard-free match.
-///
-/// SINGLE SOURCE OF TRUTH for both consumers: `analysis::tests`
-/// (`decl_name_and_span_returns_name_and_span_for_every_named_kind`) and
-/// `goto_def::tests`
-/// (`goto_def_cursor_on_declaration_name_resolves_for_every_kind`). The two used
-/// to hold verbatim copies that had to be edited in lockstep on every grammar
-/// change — 9d56ba5485 already had to touch both — so the table lives at module
-/// scope here, next to the oracle it enumerates, rather than inside either
-/// private `tests` module. (`reify-test-support` would be the crate-wide home,
-/// but it is outside task 6388's file scope.)
-///
-/// Every snippet is lifted (verbatim or near-verbatim) from an existing passing
-/// source — `crates/reify-syntax/tests/harness_syntax/*` or
-/// `tree-sitter-reify/test/corpus/*` — rather than invented, so a RED assertion
-/// can never be doomed by a surface-syntax guess. The `field def` codomain is
-/// the one deliberate divergence from verbatim: the lifted original reads
-/// `-> Scalar`, which `corpus_has_zero_bare_scalar` forbids outside its excluded
-/// `crates/reify-syntax/tests` dir, so the snippet follows the post-migration
-/// corpus shape instead (`examples/fields/restrict.ri:27` is
-/// `field def base_field : Point3 -> Real { … }`). Do NOT restore `-> Scalar`
-/// here — it re-reds that guard.
-#[cfg(test)]
-pub(crate) const NAMED_DECL_SNIPPETS: &[(&str, &str)] = &[
-    ("structure S { param x : Length = 5mm }", "S"),
-    (
-        "occurrence def Welding { param method : Length }",
-        "Welding",
-    ),
-    ("enum Dir { In, Out }", "Dir"),
-    ("fn id_length(x: Length) -> Length { x }", "id_length"),
-    ("trait Rigid { param mass : Mass }", "Rigid"),
-    (
-        "field def temp : Point3 -> Real { source = analytical { |p| p } }",
-        "temp",
-    ),
-    (
-        "purpose lightweight(subject : Structure) { minimize subject.mass }",
-        "lightweight",
-    ),
-    ("constraint def Foo { x > 0 }", "Foo"),
-    ("unit meter : Length", "meter"),
-    ("type Pressure = Force", "Pressure"),
-    (
-        "joint ball(c: Point, d: Point) with orientation: Orientation = coincident(c, d)",
-        "ball",
-    ),
-];
 
 /// Recursively count Param, Let, and Constraint members, including those
 /// nested inside `GuardedGroup.members` and `GuardedGroup.else_members`.
@@ -1014,6 +970,7 @@ pub fn name_token_span(source: &str, member_span: SourceSpan, name: &str) -> Sou
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::test_fixtures::{NAMED_DECL_SNIPPETS, parse_one_clean};
     use reify_core::{DiagnosticCode, DimensionVector, Severity};
     use tower_lsp::lsp_types::Url;
 
@@ -2630,19 +2587,7 @@ mod tests {
     #[test]
     fn decl_name_and_span_returns_name_and_span_for_every_named_kind() {
         for (source, expected_name) in NAMED_DECL_SNIPPETS {
-            let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-            // Assert parse cleanliness FIRST: a grammar drift must fail loudly
-            // here rather than silently yielding zero declarations below.
-            assert!(
-                parsed.errors.is_empty(),
-                "snippet must parse clean, got {:?} for source: {source}",
-                parsed.errors
-            );
-            assert_eq!(
-                parsed.declarations.len(),
-                1,
-                "expected exactly one declaration for source: {source}"
-            );
+            let parsed = parse_one_clean(source, "test");
 
             let got = decl_name_and_span(&parsed.declarations[0]);
             let (name, span) = got.unwrap_or_else(|| {
@@ -2666,14 +2611,17 @@ mod tests {
     /// variants — a SECOND wildcard-free match, existing only so that adding a
     /// variant is a compile error here too.
     ///
-    /// [`decl_name_and_span`]'s exhaustive match already forces a new variant to
-    /// get an explicit named-vs-unnamed decision. It does NOT force the FIXTURE
-    /// that exercises it: a new variant plus its arm compiles and passes with no
-    /// [`NAMED_DECL_SNIPPETS`] row, leaving both per-kind tests silently
-    /// under-covering the new kind — the exact silent-omission failure mode the
-    /// design claims to eliminate. Paired with
-    /// `named_decl_snippets_cover_every_named_kind` below, this extends the
-    /// forcing function from the oracle to its fixture.
+    /// [`decl_name_and_span`]'s exhaustive match forces a new variant to get an
+    /// explicit named-vs-unnamed decision; it does not force the FIXTURE that
+    /// exercises it. Pairing it with this index lets
+    /// `named_decl_snippets_cover_every_named_kind` detect a DUPLICATE or a GAP
+    /// in [`NAMED_DECL_SNIPPETS`]'s coverage, and lets that test assert the two
+    /// matches AGREE on which kinds are named.
+    ///
+    /// What the pair still cannot see: a variant given both a named arm and the
+    /// next free index but no snippet row leaves the indices dense, so the
+    /// coverage assertion stays green. Closing that needs an enumeration of the
+    /// variants themselves, which Rust does not offer without a derive.
     fn kind_index(decl: &Declaration) -> Option<u8> {
         match decl {
             Declaration::Structure(_) => Some(0),
@@ -2693,27 +2641,26 @@ mod tests {
         }
     }
 
-    /// The number of NAMED `Declaration` variants: the `Some` arms of
-    /// [`kind_index`], which are the named arms of [`decl_name_and_span`].
-    const NAMED_KIND_COUNT: u8 = 11;
-
     #[test]
     fn named_decl_snippets_cover_every_named_kind() {
         let mut seen: Vec<u8> = Vec::new();
         for (source, expected_name) in NAMED_DECL_SNIPPETS {
-            let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-            assert!(
-                parsed.errors.is_empty(),
-                "snippet must parse clean, got {:?} for source: {source}",
-                parsed.errors
-            );
+            let parsed = parse_one_clean(source, "test");
+            let decl = &parsed.declarations[0];
+
+            // The two wildcard-free matches must agree on which kinds are
+            // named. Both force an arm for a new variant, but nothing forces
+            // those arms to say the same thing: a kind admitted as named by
+            // `decl_name_and_span` and mapped to None here would silently need
+            // no snippet row.
             assert_eq!(
-                parsed.declarations.len(),
-                1,
-                "expected exactly one declaration for source: {source}"
+                kind_index(decl).is_some(),
+                decl_name_and_span(decl).is_some(),
+                "`kind_index` and `decl_name_and_span` disagree on whether this \
+                 kind is named: {source}"
             );
 
-            let index = kind_index(&parsed.declarations[0]).unwrap_or_else(|| {
+            let index = kind_index(decl).unwrap_or_else(|| {
                 panic!(
                     "row {expected_name:?} parsed to an UNNAMED declaration kind, \
                      so it covers none of the named kinds: {source}"
@@ -2727,13 +2674,19 @@ mod tests {
             seen.push(index);
         }
 
+        assert_eq!(
+            seen.len(),
+            NAMED_DECL_SNIPPETS.len(),
+            "every row must contribute a kind index"
+        );
         seen.sort_unstable();
         assert_eq!(
             seen,
-            (0..NAMED_KIND_COUNT).collect::<Vec<u8>>(),
+            (0..seen.len() as u8).collect::<Vec<u8>>(),
             "NAMED_DECL_SNIPPETS must hold exactly one snippet per NAMED \
-             Declaration variant. A variant newly admitted to `decl_name_and_span` \
-             and `kind_index` needs a row here too, or \
+             Declaration variant, with no gap in `kind_index`'s numbering. A \
+             variant newly admitted to `decl_name_and_span` and `kind_index` \
+             needs a row here too, or \
              `decl_name_and_span_returns_name_and_span_for_every_named_kind` and \
              `goto_def::tests::goto_def_cursor_on_declaration_name_resolves_for_every_kind` \
              silently under-cover it."
@@ -2750,17 +2703,7 @@ mod tests {
             "default Material = steel",
         ];
         for source in unnamed {
-            let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-            assert!(
-                parsed.errors.is_empty(),
-                "snippet must parse clean, got {:?} for source: {source}",
-                parsed.errors
-            );
-            assert_eq!(
-                parsed.declarations.len(),
-                1,
-                "expected exactly one declaration for source: {source}"
-            );
+            let parsed = parse_one_clean(source, "test");
             assert!(
                 decl_name_and_span(&parsed.declarations[0]).is_none(),
                 "unnamed declaration kind must yield None for source: {source}"
