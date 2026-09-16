@@ -7,6 +7,14 @@
 //! "mechanized, not a hand audit": every row and every count in that artifact
 //! is produced by the code in this module, with zero hand-derived entries.
 //!
+//! Task #7543 added the corpus's SECOND half: the Reify snippets embedded as
+//! raw-string literals in tracked `.rs` test hosts, which `git ls-files -- '*.ri'`
+//! cannot reach. Both halves come from one git-index primitive
+//! ([`scan_tracked_corpus`]) and are swept by one pipeline, so they cannot
+//! disagree about what a ctor-conformance site is; [`corpus_parity`] is what
+//! makes a narrowed walker fail loudly instead of writing a falsely-thin
+//! artifact.
+//!
 //! # Why this lives HERE and not in a new `tests/*.rs` binary
 //!
 //! `tests/infra/test_harness_kloc_cap.sh` rule (b) flags any NEW standalone
@@ -23,37 +31,50 @@
 //! # Why the expensive walk is `#[ignore]`d and the decisions are not
 //!
 //! Compiling the ~261 `examples/` files is documented as "the single most
-//! expensive thing this binary does" (`examples_smoke.rs`); the ~660 tracked
-//! files are ~2.5× that, and paying it on every merge gate would directly fight the
-//! merge-gate-compile-cost PRD. So the full corpus walk is ONE `#[ignore]`d
-//! generator, run on demand — while everything it *decides* (corpus
-//! enumeration, span→line, ctor-name recovery, field/expected/found
-//! extraction, D9 classification, markdown rendering) is factored into pure
-//! helpers that ARE gate-resident and unit-tested here against synthetic
-//! inputs, plus one cheap end-to-end sweep over a 3-file synthetic corpus.
+//! expensive thing this binary does" (`examples_smoke.rs`); the ~700 tracked
+//! `.ri` are ~2.5× that. The sweep now has a SECOND half on top of it (task
+//! #7543): the Reify snippets embedded as raw-string literals in the ~1,350
+//! tracked `.rs` test hosts, ~3,200 of which are admitted and compiled. Paying
+//! any of that on every merge gate would directly fight the
+//! merge-gate-compile-cost PRD. So both walks live behind ONE `#[ignore]`d
+//! generator, run on demand — while everything they *decide* (corpus
+//! enumeration for both halves and the parity gate between them, raw-string
+//! extraction and snippet admission, span→line and snippet→host line mapping,
+//! ctor-name recovery, field/expected/found extraction, D9 classification,
+//! disposition resolution, markdown rendering) is factored into pure helpers
+//! that ARE gate-resident and unit-tested here against synthetic inputs, plus
+//! two cheap end-to-end sweeps — a 3-file synthetic `.ri` corpus and a
+//! synthetic Rust host — and a handful of pinned live files per half.
 //! The pipeline is therefore regression-guarded on every gate run at near-zero
-//! cost, without the walk itself ever running there.
+//! cost, without either walk ever running there.
 //!
 //! # Retiring this module
 //!
 //! This is a CENSUS, not a permanent gate, and it has a defined end of life.
-//! Its product is one 280-line document with 18 rows, consumed by task #5305
-//! (γ, corpus fix-forward). Once γ has landed, the machinery here — corpus
-//! enumeration, span→line, D9 classification, the markdown renderer, the stamp
-//! guard — has no remaining product, yet stays compiled and run on every merge
-//! gate. That is a real standing cost in a compile unit whose own header cites
-//! `docs/prds/merge-gate-compile-cost.md`: it takes this unit to 14,629 lines
-//! against the 20,000 `CAP_LINES` in `tests/infra/test_harness_kloc_cap.sh`
-//! (raw `wc -l` summed over the root and its `#[path]` members, which is how
-//! rule (a) there measures — re-measured on this branch, not carried over).
+//! Its product is one document in two halves — the tracked-`.ri` sites consumed
+//! by task #5305 (γ, corpus fix-forward), and the inline-fixture sites consumed
+//! by task #5306. Once BOTH have landed, the machinery here — corpus
+//! enumeration for both halves, the parity gate, span→line, D9 classification,
+//! the markdown renderer, the stamp guard — has no remaining product, yet stays
+//! compiled and run on every merge gate. That is a real standing cost in a
+//! compile unit whose own header cites `docs/prds/merge-gate-compile-cost.md`:
+//! it takes this unit to 17,729 lines against the 20,000 `CAP_LINES` in
+//! `tests/infra/test_harness_kloc_cap.sh` (raw `wc -l` summed over the root and
+//! its `#[path]` members, which is how rule (a) there measures — re-measured on
+//! this branch, not carried over), i.e. under the advisory `WARN_PCT=90` tier at
+//! 18,000 but with well under a third of the headroom left.
 //!
-//! Retirement is therefore a THREE-FILE deletion, and all three must go
-//! together:
+//! Retirement is a FOUR-FILE change now, and all four must go together:
 //!
 //! 1. this file;
 //! 2. its `#[path] mod ctor_conformance_corpus_survey;` declaration in
 //!    `crates/reify-compiler/tests/harness_compilation_surface.rs`;
-//! 3. the artifact `docs/prds/struct-ctor-field-type-conformance.survey.md`.
+//! 3. the artifact `docs/prds/struct-ctor-field-type-conformance.survey.md`;
+//! 4. `crates/reify-test-support/src/rust_fixture_scan.rs` plus its `pub mod`
+//!    line — but ONLY if nothing else has picked it up by then. It is a
+//!    library-crate module with no dependency on this survey, written to be
+//!    reusable, so check `cargo tree`/callers before deleting rather than
+//!    assuming this was its only consumer.
 //!
 //! The ctor-conformance admission set this survey filters through no longer
 //! lives here: it is `reify_test_support::ctor_conformance`, read by every
@@ -6309,12 +6330,14 @@ fn the_drift_disclosure_is_not_scoped_to_ri_alone() {
     }
 }
 
-/// **The survey generator.** Sweeps every tracked `.ri` and writes the artifact.
+/// **The survey generator.** Sweeps BOTH corpus halves and writes the artifact.
 ///
 /// `#[ignore]`d because it compiles the entire tracked corpus — ~2.5× the
 /// `examples/` walk that `examples_smoke.rs` already documents as "the single
-/// most expensive thing this binary does". Running it on every merge gate would
-/// directly fight `docs/prds/merge-gate-compile-cost.md`.
+/// most expensive thing this binary does" — and then, on top of that, every
+/// Reify snippet embedded in a tracked `.rs` test host, which is several times
+/// as many compiles again. Running it on every merge gate would directly fight
+/// `docs/prds/merge-gate-compile-cost.md`.
 ///
 /// The ignore reason is deliberately OPERATIONAL, not blocker-prose: per
 /// `docs/prds/reify-audit-ptodo-detector.md` §8 (row 8, the
@@ -6327,32 +6350,54 @@ fn the_drift_disclosure_is_not_scoped_to_ri_alone() {
 /// pure helpers above, each unit-tested on every gate run, plus one cheap
 /// three-file end-to-end sweep.
 #[test]
-#[ignore = "corpus survey generator over every tracked .ri (~660 files and growing); run explicitly with --ignored — see docs/prds/struct-ctor-field-type-conformance.survey.md"]
+#[ignore = "corpus survey generator over BOTH halves — every tracked .ri (~700 files) plus the Reify snippets embedded in every tracked .rs test host (~1,350 files, ~3,200 admitted snippets), so several times the cost of the .ri walk alone; run explicitly with --ignored — see docs/prds/struct-ctor-field-type-conformance.survey.md"]
 fn generate_ctor_conformance_corpus_survey() {
+    let root = std::path::Path::new(WORKSPACE_ROOT);
     let corpus = tracked_ri_corpus();
-    let run = survey_corpus(std::path::Path::new(WORKSPACE_ROOT), corpus);
-    let rendered = render_survey(
-        &run,
-        &SurveyRun::default(),
-        &survey_stamp(corpus, tracked_rust_test_hosts()),
-    );
+    let hosts = tracked_rust_test_hosts();
+
+    // BEFORE either sweep, deliberately: a walker that silently narrowed would
+    // otherwise spend the whole (expensive) run producing a falsely-thin
+    // artifact, and a thin artifact reads exactly like a clean one.
+    corpus_parity(&[
+        (CorpusHalf::TrackedRi, corpus),
+        (CorpusHalf::InlineRustHost, hosts),
+    ])
+    .unwrap_or_else(|e| panic!("ctor_conformance_corpus_survey: {e}"));
+
+    let run = survey_corpus(root, corpus);
+    let inline = survey_inline_corpus(root, hosts);
+    let rendered = render_survey(&run, &inline, &survey_stamp(corpus, hosts));
     let out = survey_output_path();
     std::fs::write(&out, &rendered)
         .unwrap_or_else(|e| panic!("cannot write survey to {}: {e}", out.display()));
     println!(
         "ctor-conformance survey: {} sites across {} tracked .ri ({} surveyed, \
-         {} not surveyed, {} partial) -> {}",
+         {} not surveyed, {} partial); {} sites across {} inline member(s) from \
+         {} .rs host(s) ({} swept, {} not swept, {} partial) -> {}",
         run.sites.len(),
         run.total,
         run.surveyed,
         run.not_surveyed.len(),
         run.partial.len(),
+        inline.sites.len(),
+        inline.total,
+        hosts.len(),
+        inline.surveyed,
+        inline.not_surveyed.len(),
+        inline.partial.len(),
         out.display()
     );
 
     // Asserted AFTER the write, deliberately: a failing run still leaves a
     // regenerated artifact on disk, so the operator can read the disposition
     // column to see which sites the panic is talking about.
+    //
+    // The `.ri` run ONLY, and correct by construction rather than by a filter
+    // here: an inline row resolves to [`Disposition::InlineCensus`], never
+    // `Unattributed`, so passing the inline run would assert nothing — while a
+    // severity or scope test written here would be a second, silently divergent
+    // copy of `disposition_of`'s scope statement.
     assert_no_unwaived_ctor_conformance_warnings(&run);
 }
 
