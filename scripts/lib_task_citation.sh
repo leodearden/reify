@@ -29,6 +29,19 @@
 # `pipefail` side effect on a sourcing script, no stdout beyond the documented
 # result. That is what makes this file safe to `source` from anywhere.
 #
+# The converse of that contract is the reason for the feeding idiom below: this
+# file does not set `pipefail`, but every consumer does, so a pipeline's status
+# here is the caller's shell option applied to OUR process list. NEVER make a
+# `grep -q` the READER of a pipe. `grep -q` exits at its first match, and a
+# writer still writing when it goes away dies of SIGPIPE — which `pipefail`
+# then promotes into the pipeline's status, turning a MATCH into a non-match.
+# The arbiter therefore feeds grep by REDIRECTION (`<<<`), so grep's own
+# match/no-match is the verdict and no second process can overrule it. The
+# harvest's pipeline is exempt for a checkable reason, not a size guess: every
+# stage there (`grep -oE`, `sed`, `sort`) consumes to EOF, so no reader ever
+# departs early and there is no SIGPIPE window to lose a citation through.
+# Block G of tests/infra/test_lib_task_citation.sh pins this.
+#
 # Exports exactly three functions:
 #   task_citation_regex_escape  <string>                       -> escaped (stdout)
 #   task_citation_message_cites <message> <id> <escaped_prefix> -> exit 0/1
@@ -63,10 +76,10 @@ task_citation_regex_escape() {
 # equality, in both directions, over a corpus of branch prefixes.
 task_citation_message_cites() {
     local msg="$1" id="$2" prefix_re="$3"
-    if printf '%s\n' "$msg" | grep -qE "^Merge ${prefix_re}${id} into "; then
+    if grep -qE "^Merge ${prefix_re}${id} into " <<<"$msg"; then
         return 0
     fi
-    if printf '%s\n' "$msg" | grep -qE "(^|[^0-9])#${id}([^0-9]|\$)"; then
+    if grep -qE "(^|[^0-9])#${id}([^0-9]|\$)" <<<"$msg"; then
         return 0
     fi
     return 1

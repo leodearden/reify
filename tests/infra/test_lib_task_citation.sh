@@ -401,4 +401,72 @@ for _pfx in "${F_PREFIXES[@]}"; do
 done
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Block G — the verdict is grep's, never the PIPELINE's
+#
+# task_citation_message_cites used to ask `printf '%s\n' "$msg" | grep -qE …`.
+# `grep -q` exits at its FIRST match, so on a message longer than the pipe
+# buffer the writer is still writing when the reader goes away: printf takes
+# SIGPIPE (141), and `set -o pipefail` — which EVERY consumer sets, this suite
+# and warm-lane-degenerate-ref-check.sh and task-branch-contamination-sweep.sh
+# alike — promotes the writer's death into the pipeline's status. The `if` then
+# reads a MATCH as a non-match and the id reports as NOT cited: a fail-open on
+# exactly the citation the sweep exists to count.
+#
+# Measured on bash 5.2.21 before the fix: deterministic above ~64KB (200/200
+# false negatives) and PROBABILISTIC in the 32-64KB band (1/30 at 32KB, 4/30 at
+# 56KB, 17/30 at 60KB) — the same input answered both ways from run to run,
+# which is what makes this a flake source rather than merely a size limit. The
+# body below is sized well past the buffer so these assertions are
+# deterministic: a test for a race must not itself be one.
+#
+# WHY NOT ASSERT BLOCK F's AGREEMENT INVARIANT HERE — it cannot see this. The
+# harvest adjudicates every candidate through the SAME arbiter, so when the
+# arbiter goes blind both sides go blind together and the sets stay equal while
+# both are empty. Agreement is a relative property and this is an absolute
+# failure; only a concrete expected set catches it. That is the same vacuity
+# trap P1-P3 and step-22's baseline-first ordering exist to defeat, met here in
+# a new place, which is why G1-G3 assert absolute results and G4/G5 are the
+# controls proving a merely always-true predicate would not satisfy them.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block G: an oversized message still reports its citations ---"
+
+# ~256KB of digit-free, '#'-free filler, doubled in-shell so the corpus costs no
+# forks and no temp files. Digit-free matters: a stray digit run would enter the
+# harvest's candidate set and make the expected sets below a moving target.
+G_FILLER='filler filler filler filler filler filler filler filler filler'
+for _ in $(seq 1 12); do G_FILLER="$G_FILLER"$'\n'"$G_FILLER"; done
+
+G_MERGE="Merge task/200 into main
+
+$G_FILLER"
+G_HASH="chore: unrelated subject
+
+Follows up on #4880.
+$G_FILLER"
+# Both forms plus a long tail: the exact shape whose verdict went both ways.
+G_BOTH="Merge task/200 into main
+
+Carries #4880 and #99.
+$G_FILLER"
+
+assert "G1: the merge-subject form survives a body past the pipe buffer" \
+    task_citation_message_cites "$G_MERGE" 200 "$PFX"
+assert "G2: the '#' form survives a body past the pipe buffer" \
+    task_citation_message_cites "$G_HASH" 4880 "$PFX"
+assert "G3: the harvest returns every id of an oversized message" \
+    stdout_is '99
+200
+4880' task_citation_peer_ids "$G_BOTH" "$PFX"
+
+# G4/G5 — the controls. G1-G3 must not be satisfiable by a predicate that has
+# merely become always-true, so the SAME oversized messages must still reject
+# an absent id and still honour the digit boundary at size.
+assert "G4: an oversized message does NOT cite an id it never names" \
+    not task_citation_message_cites "$G_MERGE" 4242 "$PFX"
+assert "G5: the digit boundary still holds at size ('task/200' is not 'task/20')" \
+    not task_citation_message_cites "$G_MERGE" 20 "$PFX"
+
+
 test_summary
