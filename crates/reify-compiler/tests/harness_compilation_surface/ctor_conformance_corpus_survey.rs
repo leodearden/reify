@@ -455,27 +455,26 @@ fn tracked_rust_test_hosts_paths_are_repo_relative_forward_slash() {
 }
 
 #[test]
-fn tracked_rust_test_hosts_reach_both_the_named_site_host_and_src_tests_rs() {
+fn tracked_rust_test_hosts_reach_the_named_site_host_and_every_shape() {
     let Some(hosts) = tracked_rust_test_hosts_if_git_available() else {
         println!("skipped: no `git` on PATH — see `git_is_available`");
         return;
     };
-    const NAMED_SITE_HOST: &str =
-        "crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs";
     assert!(
         hosts.iter().any(|p| p == NAMED_SITE_HOST),
         "the host of the two sites #7543's VERIFY criterion names must be enumerated"
     );
-    // The `crates/*/src/**/tests.rs` shape is the half a `tests`-directory walk
-    // misses entirely, so a collapse back to that walk must red here.
-    assert!(
-        hosts.iter().any(|p| {
-            p.starts_with("crates/") && p.contains("/src/") && p.ends_with("/tests.rs")
-        }),
-        "the `crates/*/src/**/tests.rs` shape must be enumerated; \
-         first 5 entries: {:?}",
-        &hosts[..hosts.len().min(5)]
-    );
+    // The LIVE counterpart to `inline_fixture_pinned_hosts_name_all_four_
+    // enumeration_shapes`: that one pins the pin list, this one pins what the
+    // git-index enumeration actually returns, so a re-narrowed host predicate
+    // reds here even if the pin list is left alone.
+    for shape in HostShape::ALL {
+        assert!(
+            hosts.iter().any(|p| host_shape(p) == *shape),
+            "the {shape:?} host shape must be enumerated; {} hosts enumerated",
+            hosts.len()
+        );
+    }
 }
 
 #[test]
@@ -3493,21 +3492,24 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
 /// nothing. This pin is the only thing standing in front of that, which is why
 /// its floor counts ADMITTED SNIPPETS rather than paths.
 ///
-/// # Both enumeration shapes, on purpose
+/// # One live member of every [`HostShape`], on purpose
 ///
 /// [`NAMED_SITE_HOST`] is a `tests` DIRECTORY host and carries the sites this
-/// task's VERIFY criterion names. `engine_build/tests.rs` is a
-/// `crates/<c>/src/**/tests.rs` host — the shape
+/// task's VERIFY criterion names; `engine_build/tests.rs` is
+/// `src/**/tests.rs`, the shape
 /// `reify_test_support::ignore_hygiene::walk_test_rs_files` structurally cannot
-/// reach, and the only tracked file in the workspace carrying `r##"` literals.
-/// A narrowing that dropped either shape would leave the other still passing.
+/// reach; `compute_representation_bounds_tests.rs` is `src/**/*_tests.rs`, 10
+/// of whose 12 members a `tests.rs`-exact clause missed; and `analysis.rs` is a
+/// production `src/*.rs` whose `#[cfg(test)]` module carries Reify fixtures.
+/// A narrowing that dropped any one shape would leave the others still passing,
+/// which is exactly how the first three were lost without a red gate.
 ///
 /// # The floors are BROKEN-EXTRACTION floors
 ///
-/// Measured live at 38 and 21 admitted snippets respectively. The floors sit far
-/// below that for the same reason [`CorpusHalf::floor`] does: a legitimate
-/// fixture edit that deletes a few snippets must not red the merge gate. These
-/// numbers detect a BREAK, not drift.
+/// Measured live at 38, 21, 7 and 17 admitted snippets respectively. The floors
+/// sit far below that for the same reason [`CorpusHalf::floor`] does: a
+/// legitimate fixture edit that deletes a few snippets must not red the merge
+/// gate. These numbers detect a BREAK, not drift.
 ///
 /// # Why this pin is independent of task #5306
 ///
@@ -3523,35 +3525,72 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
 const INLINE_FIXTURE_PINNED_HOSTS: &[(&str, usize)] = &[
     (NAMED_SITE_HOST, 20),
     ("crates/reify-eval/src/engine_build/tests.rs", 10),
+    (
+        "crates/reify-eval/src/tolerance_combine/compute_representation_bounds_tests.rs",
+        3,
+    ),
+    ("crates/reify-lsp/src/analysis.rs", 8),
 ];
 
 /// The Rust test host carrying the inline sites task #7543's VERIFY criterion
 /// names.
 ///
 /// A named constant rather than a literal in two places: the pin above lists it
-/// and [`inline_fixture_pinned_hosts_name_both_enumeration_shapes`] requires it,
+/// and [`inline_fixture_pinned_hosts_name_all_four_enumeration_shapes`] requires
+/// it,
 /// and a pin that drifted from its own requirement would still pass.
 const NAMED_SITE_HOST: &str =
     "crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs";
 
-/// Whether `rel` is a `crates/<c>/src/**/tests.rs` host — the enumeration shape
-/// `reify_test_support::ignore_hygiene::walk_test_rs_files` cannot see, and so
-/// the one the pin must keep a live member of.
-fn is_src_tests_rs(rel: &str) -> bool {
-    let path = std::path::Path::new(rel);
-    rel.starts_with("crates/")
-        && path.file_name().is_some_and(|f| f == "tests.rs")
-        && path.components().any(|c| c.as_os_str() == "src")
+/// The four PATH SHAPES an in-scope host can take, as a total classification.
+///
+/// Total and mutually exclusive, so "the pin names a live member of each" is a
+/// statement about the whole scope rather than about a hand-picked subset.
+/// Only the first is reachable by `reify_test_support::ignore_hygiene::
+/// walk_test_rs_files`, and only the first two survived the host predicate's
+/// original `tests`-directory-or-`tests.rs` clause — which is why a
+/// re-narrowing shows up HERE and nowhere else: the corpus-parity floor is
+/// cleared just as comfortably by a predicate admitting 1,307 of 1,932 tracked
+/// `.rs` as by one admitting all 1,870 under `crates/`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum HostShape {
+    TestsDirectory,
+    SrcTestsRs,
+    SrcStarTestsRs,
+    ProductionSrc,
 }
 
-/// [`INLINE_FIXTURE_PINNED_HOSTS`] names both enumeration shapes, and every
-/// entry is a real file the shared host predicate admits.
+impl HostShape {
+    const ALL: &'static [HostShape] = &[
+        HostShape::TestsDirectory,
+        HostShape::SrcTestsRs,
+        HostShape::SrcStarTestsRs,
+        HostShape::ProductionSrc,
+    ];
+}
+
+fn host_shape(rel: &str) -> HostShape {
+    let path = std::path::Path::new(rel);
+    let file = path.file_name().and_then(|f| f.to_str()).unwrap_or_default();
+    if path.components().any(|c| c.as_os_str() == "tests") {
+        HostShape::TestsDirectory
+    } else if file == "tests.rs" {
+        HostShape::SrcTestsRs
+    } else if file.ends_with("_tests.rs") {
+        HostShape::SrcStarTestsRs
+    } else {
+        HostShape::ProductionSrc
+    }
+}
+
+/// [`INLINE_FIXTURE_PINNED_HOSTS`] names a live member of every [`HostShape`],
+/// and every entry is a real file the shared host predicate admits.
 ///
 /// Asserted SEPARATELY from the extraction pin below so an emptied or
 /// narrowed pin list fails HERE, loudly, instead of making every per-host
 /// assertion iterate zero times and pass vacuously.
 #[test]
-fn inline_fixture_pinned_hosts_name_both_enumeration_shapes() {
+fn inline_fixture_pinned_hosts_name_all_four_enumeration_shapes() {
     let hosts: Vec<&str> = INLINE_FIXTURE_PINNED_HOSTS.iter().map(|(h, _)| *h).collect();
 
     assert!(
@@ -3559,12 +3598,15 @@ fn inline_fixture_pinned_hosts_name_both_enumeration_shapes() {
         "the pin must name {NAMED_SITE_HOST} — the host of the sites this task's \
          VERIFY criterion names; pinned: {hosts:?}"
     );
-    assert!(
-        hosts.iter().any(|h| is_src_tests_rs(h)),
-        "the pin must name at least one `crates/<c>/src/**/tests.rs` host: that shape \
-         is invisible to the workspace's other test-file walker, so leaving it \
-         unpinned is exactly how it would regress unnoticed; pinned: {hosts:?}"
-    );
+    for shape in HostShape::ALL {
+        assert!(
+            hosts.iter().any(|h| host_shape(h) == *shape),
+            "the pin must name a live {shape:?} host. This is the assertion the \
+             corpus-parity gate structurally cannot make: a predicate re-narrowed \
+             to one shape still clears every floor, so only a per-shape live member \
+             sees it; pinned: {hosts:?}"
+        );
+    }
 
     for (host, floor) in INLINE_FIXTURE_PINNED_HOSTS {
         assert!(

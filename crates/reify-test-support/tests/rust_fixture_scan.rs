@@ -430,11 +430,21 @@ fn is_format_template_leaves_ordinary_reify_braces_alone() {
 // --- (C) which .rs files can host an inline fixture ---
 
 #[test]
-fn is_inline_fixture_host_admits_tests_dirs_and_src_tests_rs() {
+fn is_inline_fixture_host_admits_every_rust_source_shape_under_crates() {
     for rel in [
+        // A `tests` directory component.
         "crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs",
         "crates/reify-test-support/tests/rust_fixture_scan.rs",
+        // `src/**/tests.rs` — 2 of the 12 tracked `crates/*/src/**/*tests.rs`.
         "crates/reify-eval/src/engine_build/tests.rs",
+        // `src/**/*_tests.rs` — the other 10, which a `tests.rs`-EXACT file-name
+        // clause excluded wholesale.
+        "crates/reify-eval/src/tolerance_combine/compute_representation_bounds_tests.rs",
+        // `#[cfg(test)] mod tests` inside a production `src/*.rs` — the largest
+        // excluded shape: 409 of the 561 tracked `crates/*/src/**/*.rs` carry a
+        // `#[cfg(test)]` module, and their fixtures are Reify source like any
+        // other.
+        "crates/reify-lsp/src/analysis.rs",
     ] {
         assert!(
             is_inline_fixture_host(Path::new(rel)),
@@ -444,14 +454,29 @@ fn is_inline_fixture_host_admits_tests_dirs_and_src_tests_rs() {
 }
 
 #[test]
-fn is_inline_fixture_host_rejects_production_non_rust_and_build_output() {
+fn is_inline_fixture_host_decides_on_path_shape_alone() {
+    assert!(
+        is_inline_fixture_host(Path::new("crates/reify-nonexistent/src/no_such_file.rs")),
+        "the predicate must be a pure path-shape test with no I/O: a path that is \
+         absent from disk is still admitted on shape, because CONTENT admission is \
+         `looks_like_reify_source`'s job. A non-fixture source simply contributes \
+         zero snippets; excluding it by file NAME is what missed 10 of the 12 \
+         `src/**/*_tests.rs` hosts"
+    );
+}
+
+#[test]
+fn is_inline_fixture_host_rejects_non_rust_build_output_and_the_excluded_roots() {
     for rel in [
-        "crates/reify-compiler/src/lib.rs",
         "crates/reify-compiler/tests/fixtures/variant_construct_valid.ri",
         "crates/reify-compiler/target/debug/build/x/out/tests/generated.rs",
-        // The scope anchor is `crates/`: the Tauri sidecar is a separate cargo
-        // project and is deliberately not part of this corpus half.
-        "gui/src-tauri/src/tests/engine_tests.rs",
+        // The scope anchor is `crates/`. The Tauri sidecar and the grammar
+        // crate are separate cargo/grammar projects, excluded by a DISCLOSED
+        // decision (named limitation 1 in the survey artifact) rather than by
+        // silent construction — note the second would otherwise be admitted by
+        // its own `tests` directory component.
+        "gui/src-tauri/src/commands.rs",
+        "tree-sitter-reify/tests/aux_at_grammar_tests.rs",
     ] {
         assert!(
             !is_inline_fixture_host(Path::new(rel)),
