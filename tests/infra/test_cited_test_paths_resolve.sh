@@ -51,13 +51,19 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 }
 source "$SCRIPT_DIR/test_helpers.sh"
 
-# The shared lib under test. Deliberately NOT sourced at the top level: this
-# file is RED (lib absent) before the impl step, and a top-level `source` of a
-# missing file would abort under `set -e` before any assert runs. Every lib
-# interaction below therefore happens inside a `bash -c 'source ...'` child
-# shell, so a missing lib fails just THAT assert (the
-# test_harness_baseline_registration_gate.sh idiom).
+# The shared lib under test.
+#
+# Sections A-F exercise it through `bash -c 'source ...'` CHILD SHELLS rather
+# than the top-level source below. That is deliberate and survives the lib
+# landing: those sections pin the lib's own INTERFACE, so each must fail on
+# its own when a function is missing or renamed, rather than aborting the
+# whole file under `set -e` (the test_harness_baseline_registration_gate.sh
+# idiom). The top-level source exists for the gate's OWN checkers, which are
+# ordinary functions in this file and call the lib directly.
 LIB="$SCRIPT_DIR/cited-test-path-lib.sh"
+[ -f "$LIB" ] || { echo "ERROR: cited-test-path-lib.sh not found at $LIB" >&2; exit 1; }
+# shellcheck source=tests/infra/cited-test-path-lib.sh
+source "$LIB"
 
 # ---------------------------------------------------------------------------
 # GENERATOR ENTRY POINTS. Argument-less invocation — the only form run_all.sh
@@ -74,8 +80,6 @@ LIB="$SCRIPT_DIR/cited-test-path-lib.sh"
 # of drifting.
 # ---------------------------------------------------------------------------
 if [ "${1:-}" = "--emit-baseline" ] || [ "${1:-}" = "--list" ]; then
-    # shellcheck source=tests/infra/cited-test-path-lib.sh
-    source "$LIB"
     if [ "${1:-}" = "--list" ]; then
         cited_test_path_scan "$REPO_ROOT"
         exit 0
@@ -126,7 +130,13 @@ echo "=== cited test-path resolution gate (task 7095) ==="
 # replace one another, so one handler over an array removes every fixture
 # regardless of which section adds the last.
 _TMPDIRS=()
-trap '[ "${#_TMPDIRS[@]}" -gt 0 ] && rm -rf "${_TMPDIRS[@]}"' EXIT
+_TMPFILES=()
+_cleanup() {
+    [ "${#_TMPDIRS[@]}" -gt 0 ] && rm -rf "${_TMPDIRS[@]}"
+    [ "${#_TMPFILES[@]}" -gt 0 ] && rm -f "${_TMPFILES[@]}"
+    return 0
+}
+trap _cleanup EXIT
 
 _mktmpd() {
     local d
@@ -520,5 +530,177 @@ _baseline_header_is_self_describing() {
 
 assert "G: the baseline header names its purpose, the literal regeneration command, the grammar and the one-directional semantics" \
     _baseline_header_is_self_describing
+
+# ===========================================================================
+# Section H: the one-directional ratchet checker.
+#
+# Driven entirely against FIXTURE baselines via REIFY_CITED_TEST_PATH_BASELINE
+# and fixture repos, so no scenario here depends on the committed baseline's
+# contents — which change every time a citation is repointed.
+#
+# ORACLE DIRECTION: subset-of, BY RULING. The gate asserts live ⊆ baseline and
+# nothing more. The accepted limitation is that a grandfathered row may sit in
+# the baseline forever with no forcing function to drain it. Adding the
+# converse (baseline ⊆ live) does not fix that and costs the property this
+# gate most needs: that repointing a citation is never punished.
+# ===========================================================================
+echo ""
+echo "--- Section H: the one-directional (subset) ratchet ---"
+
+# A fixture repo carrying exactly two stale citations, so a baseline can
+# cover both, one, or neither.
+FIX_RATCHET="$(_mktmpd)/repo"
+_fixture_init "$FIX_RATCHET"
+_fixture_write "$FIX_RATCHET" crates/mycrate/tests/harness_sub/alpha.rs '// moved'
+_fixture_write "$FIX_RATCHET" crates/mycrate/tests/harness_sub/beta.rs '// moved'
+_fixture_write "$FIX_RATCHET" docs/a.md 'see crates/mycrate/tests/alpha.rs'
+_fixture_write "$FIX_RATCHET" docs/b.md 'see crates/mycrate/tests/beta.rs'
+_fixture_commit "$FIX_RATCHET"
+
+FP_A='docs/a.md :: crates/mycrate/tests/alpha.rs'
+FP_B='docs/b.md :: crates/mycrate/tests/beta.rs'
+
+# _write_baseline <row...> -> prints the fixture baseline path. A leading
+# comment line is always written, so the comment-stripping path is exercised
+# even by the "empty baseline" fixtures.
+_write_baseline() {
+    local f
+    f="$(mktemp "${TMPDIR:-/tmp}/reify-cited-baseline.XXXXXX")"
+    _TMPFILES+=("$f")
+    printf '# fixture baseline\n' > "$f"
+    [ "$#" -gt 0 ] && printf '%s\n' "$@" >> "$f"
+    printf '%s\n' "$f"
+}
+
+# _scan_file <repo-root> -> path to a file of that root's scan records.
+#
+# The checker consumes a SCAN FILE rather than a repo root, so the gate's main
+# body can feed ONE scan to both the ratchet and the vacuity floor without
+# scanning the tree twice.
+_scan_file() {
+    local f
+    f="$(mktemp "${TMPDIR:-/tmp}/reify-cited-scan.XXXXXX")"
+    _TMPFILES+=("$f")
+    cited_test_path_scan "$1" > "$f"
+    printf '%s\n' "$f"
+}
+
+# _ratchet_rc <repo-root> <baseline-path> — run the very checker the gate's
+# main body uses, against an arbitrary root + baseline. Prints the checker's
+# combined stdout+stderr; returns its rc. The baseline override is exported
+# inside a SUBSHELL so it cannot leak into a later scenario.
+_ratchet_rc() {
+    local root="$1" baseline="$2" scan out rc=0
+    scan="$(_scan_file "$root")"
+    out="$( ( export REIFY_CITED_TEST_PATH_BASELINE="$baseline"
+              _ratchet_check_subset "$scan" ) 2>&1 )" || rc=$?
+    printf '%s' "$out"
+    return "$rc"
+}
+
+# (1) EXACT COVER: live == baseline -> green.
+_ratchet_exact_cover_is_green() {
+    local b out rc=0
+    b="$(_write_baseline "$FP_A" "$FP_B")"
+    out="$(_ratchet_rc "$FIX_RATCHET" "$b")" || rc=$?
+    [ "$rc" -eq 0 ] && return 0
+    echo "expected rc0 for an exactly-covering baseline, got rc$rc:"; printf '%s\n' "$out"; return 1
+}
+
+assert "H: a baseline that exactly covers the live set returns 0" \
+    _ratchet_exact_cover_is_green
+
+# (2) STRICT SUBSET: baseline has rows with no live counterpart -> still green.
+#
+# THIS IS THE LOAD-BEARING ONE. It pins the one-directional semantics: an
+# author who repoints a citation without pruning its now-dead baseline row
+# must stay GREEN. Reddening here would make the gate punish exactly the
+# cleanup it exists to encourage, and every burn-down commit would need a
+# baseline edit in lockstep.
+_ratchet_strict_subset_is_green() {
+    local b out rc=0
+    b="$(_write_baseline "$FP_A" "$FP_B" 'docs/gone.md :: crates/mycrate/tests/already_repointed.rs')"
+    out="$(_ratchet_rc "$FIX_RATCHET" "$b")" || rc=$?
+    [ "$rc" -eq 0 ] && return 0
+    echo "expected rc0 for a baseline with a stale-but-harmless extra row, got rc$rc:"
+    printf '%s\n' "$out"; return 1
+}
+
+assert "H: a baseline row with no live counterpart stays green (repointing is never punished)" \
+    _ratchet_strict_subset_is_green
+
+# (3) REGRESSION: a live fingerprint absent from the baseline -> red, and the
+# offender is NAMED. An unactionable red is the failure mode the ptodo RCA
+# found; the fingerprint must land in assert()'s captured-output dump.
+_ratchet_regression_is_red_and_names_offender() {
+    local b out rc=0
+    b="$(_write_baseline "$FP_A")"          # beta deliberately ungrandfathered
+    out="$(_ratchet_rc "$FIX_RATCHET" "$b")" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "expected non-zero for an uncovered live fingerprint, got rc0:"; printf '%s\n' "$out"; return 1
+    fi
+    printf '%s\n' "$out" | grep -qF "$FP_B" || {
+        echo "checker did not NAME the offending fingerprint ($FP_B):"; printf '%s\n' "$out"; return 1
+    }
+    printf '%s\n' "$out" | grep -qF "$FP_A" && {
+        echo "checker wrongly named a COVERED fingerprint ($FP_A):"; printf '%s\n' "$out"; return 1
+    }
+    return 0
+}
+
+assert "H: an uncovered live fingerprint returns non-zero and names exactly that offender" \
+    _ratchet_regression_is_red_and_names_offender
+
+# (4) The failure output carries the SUGGESTED TARGET, so the message is
+# actionable without re-running anything by hand — the difference between
+# "something is wrong" and "change this line to that path".
+_ratchet_failure_carries_suggested_target() {
+    local b out rc=0
+    b="$(_write_baseline "$FP_A")"
+    out="$(_ratchet_rc "$FIX_RATCHET" "$b")" || rc=$?
+    [ "$rc" -ne 0 ] || { echo "expected a failure to inspect"; return 1; }
+    printf '%s\n' "$out" | grep -qF 'crates/mycrate/tests/harness_sub/beta.rs' && return 0
+    echo "failure output does not carry the suggested target for the offender:"
+    printf '%s\n' "$out"; return 1
+}
+
+assert "H: the failure output carries each offender's suggested target path" \
+    _ratchet_failure_carries_suggested_target
+
+# (5) An EMPTY baseline against a repo with live findings must be red — the
+# degenerate case that would otherwise let a lost/emptied baseline pass.
+_ratchet_empty_baseline_is_red() {
+    local b out rc=0
+    b="$(_write_baseline)"
+    out="$(_ratchet_rc "$FIX_RATCHET" "$b")" || rc=$?
+    [ "$rc" -ne 0 ] && return 0
+    echo "expected non-zero against an empty baseline with 2 live findings, got rc0:"
+    printf '%s\n' "$out"; return 1
+}
+
+assert "H: an empty baseline against a repo with live findings returns non-zero" \
+    _ratchet_empty_baseline_is_red
+
+# (6) A CLEAN repo (no stale citations at all) is green under an empty
+# baseline, and byte-for-byte silent: a green suite must stay quiet.
+_ratchet_clean_repo_is_green_and_silent() {
+    local b out rc=0
+    b="$(_write_baseline)"
+    out="$(_ratchet_rc "$FIX_INTER_CLEAN" "$b")" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "expected rc0 for a repo with no stale citations, got rc$rc:"; printf '%s\n' "$out"; return 1
+    fi
+    [ -z "$out" ] && return 0
+    echo "expected byte-for-byte silence on the green path, got:"; printf '%s\n' "$out"; return 1
+}
+
+FIX_INTER_CLEAN="$(_mktmpd)/repo"
+_fixture_init "$FIX_INTER_CLEAN"
+_fixture_write "$FIX_INTER_CLEAN" crates/mycrate/tests/harness_sub/ok.rs '// here'
+_fixture_write "$FIX_INTER_CLEAN" docs/n.md 'see crates/mycrate/tests/harness_sub/ok.rs'
+_fixture_commit "$FIX_INTER_CLEAN"
+
+assert "H: a repo with no stale citations is green and byte-for-byte silent" \
+    _ratchet_clean_repo_is_green_and_silent
 
 test_summary
