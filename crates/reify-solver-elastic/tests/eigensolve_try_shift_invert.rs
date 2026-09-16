@@ -40,7 +40,7 @@
 
 use faer::sparse::{SparseRowMat, Triplet};
 use reify_solver_elastic::eigensolve::{
-    EigenSolverOptions, ShiftInvertFailure, solve_eigen_shift_invert,
+    EigenSolverOptions, EigenSolverResult, ShiftInvertFailure, solve_eigen_shift_invert,
     try_solve_eigen_shift_invert,
 };
 
@@ -154,6 +154,157 @@ fn shift_invert_still_panics_on_the_same_singular_k() {
     let k = singular_laplacian(N / 2);
     let b = identity();
     let _ = solve_eigen_shift_invert(&k, &b, opts());
+}
+
+// ---------------------------------------------------------------------------
+// Clause 1b: the two domain failures are DISTINCT and non-interchangeable.
+//
+// A non-SPD K and a singular shift are different faults with different
+// remedies — apply boundary conditions vs. move sigma — so they must stay
+// distinguishable both as typed values and, on the panicking sibling, as
+// messages. A singular shift reported as "K must be SPD" would send an author
+// to check boundary conditions for a problem that is entirely about where they
+// put sigma.
+// ---------------------------------------------------------------------------
+
+/// `sigma` placed exactly on an eigenvalue of the SPD Laplacian.
+///
+/// Closed form `lambda_k = 2(1 - cos(k*pi/(N+1)))`; k=3 is well inside the
+/// spectrum, far from both ends.
+fn sigma_on_an_eigenvalue() -> f64 {
+    2.0 * (1.0 - f64::cos(3.0 * std::f64::consts::PI / (N as f64 + 1.0)))
+}
+
+/// **The control.** The surviving contract: a non-SPD `K` at sigma=0 still
+/// panics with "K must be SPD".
+///
+/// Already pinned by `shift_invert_still_panics_on_the_same_singular_k` above;
+/// re-asserted here as the control for the negative half of the next test, so
+/// the pair reads as one claim rather than two unrelated ones.
+#[test]
+#[should_panic(expected = "K must be SPD")]
+fn panicking_sibling_names_a_non_spd_k() {
+    let k = singular_laplacian(N / 2);
+    let b = identity();
+    let _ = solve_eigen_shift_invert(&k, &b, opts());
+}
+
+/// A singular SHIFT panics with a message that names the shift and the
+/// offending sigma.
+///
+/// The value is checked by catching the panic rather than by
+/// `#[should_panic(expected = ...)]`, because the load-bearing half of this
+/// claim is NEGATIVE — the message must NOT contain "K must be SPD" — and
+/// `should_panic` can only assert a substring is present, never that one is
+/// absent.
+#[test]
+fn panicking_sibling_names_the_shift_not_the_stiffness() {
+    let k = spd_laplacian();
+    let b = identity();
+    let sigma = sigma_on_an_eigenvalue();
+
+    let outcome = std::panic::catch_unwind(|| {
+        // Discarded rather than returned: `EigenSolverResult` is not `Debug`,
+        // and what this test needs from the Ok side is only that it did not
+        // happen.
+        let _ = solve_eigen_shift_invert(
+            &k,
+            &b,
+            EigenSolverOptions {
+                sigma,
+                ..opts()
+            },
+        );
+    });
+    let panicked = outcome.expect_err(
+        "sigma sits exactly on an eigenvalue, so K - sigma*B is singular and the panicking \
+         entry point must panic",
+    );
+
+    let message = panicked
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panicked.downcast_ref::<&str>().copied())
+        .unwrap_or("<non-string panic payload>")
+        .to_string();
+
+    let lower = message.to_lowercase();
+
+    // The NEGATIVE half, and the point of the whole test.
+    assert!(
+        !message.contains("K must be SPD"),
+        "a singular SHIFT must not be reported with the non-SPD wording — that sends an \
+         author to check boundary conditions for a problem that is entirely about where \
+         they put sigma. Got: {message}",
+    );
+    // Not a placeholder, either: an "internal error" tells the author nothing
+    // they can act on and is indistinguishable from a bug in the solver.
+    assert!(
+        !lower.contains("internal error"),
+        "a sigma landing on an eigenvalue is a DOMAIN fault with a remedy the author can \
+         apply, not an internal error. Got: {message}",
+    );
+
+    // The POSITIVE half: diagnosis, fault domain, and the offending value.
+    assert!(
+        lower.contains("singular"),
+        "the panic must say that K - sigma*B is SINGULAR — that is the diagnosis the \
+         remedy follows from. Got: {message}",
+    );
+    assert!(
+        lower.contains("shift"),
+        "the panic must name the SHIFT as the fault. Got: {message}",
+    );
+    assert!(
+        message.contains(&format!("{sigma}")),
+        "the panic must name the offending sigma ({sigma}), following the \
+         named-offending-value convention the rest of the module uses. Got: {message}",
+    );
+}
+
+/// At the `try_` level the two failures are distinguishable as VALUES, on the
+/// same two fixtures — so the widened channel is proved to carry the
+/// distinction rather than merely to have room for it.
+#[test]
+fn try_level_distinguishes_a_non_spd_k_from_a_singular_shift() {
+    let b = identity();
+
+    // `EigenSolverResult` is not `Debug`, so each outcome is reduced to its
+    // failure — which is the only part these assertions are about.
+    let failure_of = |r: Result<EigenSolverResult, ShiftInvertFailure>| r.err();
+
+    let not_spd = failure_of(try_solve_eigen_shift_invert(
+        &singular_laplacian(N / 2),
+        &b,
+        opts(),
+    ));
+    assert_eq!(
+        not_spd,
+        Some(ShiftInvertFailure::KNotSpd),
+        "a K with a zero-stiffness DOF must report Err(KNotSpd)",
+    );
+
+    let sigma = sigma_on_an_eigenvalue();
+    let singular_shift = failure_of(try_solve_eigen_shift_invert(
+        &spd_laplacian(),
+        &b,
+        EigenSolverOptions {
+            sigma,
+            ..opts()
+        },
+    ));
+    assert_eq!(
+        singular_shift,
+        Some(ShiftInvertFailure::ShiftAtEigenvalue { sigma }),
+        "an SPD K with sigma on an eigenvalue must report ShiftAtEigenvalue carrying that \
+         sigma — a DIFFERENT value from KNotSpd above, on fixtures that differ only in \
+         which fault they carry",
+    );
+    assert_ne!(
+        not_spd, singular_shift,
+        "the two domain failures must be distinguishable as values, not merely have room \
+         in the channel to be",
+    );
 }
 
 // ---------------------------------------------------------------------------
