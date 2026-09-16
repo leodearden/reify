@@ -4768,11 +4768,11 @@ fn push_inline_limitation(md: &mut String, inline: &SurveyRun) {
            `crates/` — test file or production source alike, since a `#[cfg(test)] mod\n\
            tests` hosts fixtures like any other — for raw-string literals (`r\"…\"`,\n\
            `r#\"…\"#`) whose text reads as Reify declaration grammar, and compiles each\n\
-           through the same pipeline as a tracked\n\
-           `.ri`. That reached **{total} inline member(s)**, of which **{templates}** were\n\
-           `format!` template(s) — listed above under their own coverage reason rather\n\
-           than dropped, because a template's `{{…}}` holes are not Reify syntax and a\n\
-           parse failure on one would say nothing about conformance.\n\
+           through the same pipeline as a tracked `.ri`. That reached **{total} inline\n\
+           member(s)**, of which **{templates}** were `format!` template(s) — listed\n\
+           above under their own coverage reason rather than dropped, because a\n\
+           template's `{{…}}` holes are not Reify syntax and a parse failure on one would\n\
+           say nothing about conformance.\n\
            What a raw-string walker does **not** reach, each named by the construct to\n\
            grep for: Reify text carried in an ORDINARY `\"…\"` string literal (including\n\
            the backslash-continued multi-line form); text assembled by `concat!`; and text\n\
