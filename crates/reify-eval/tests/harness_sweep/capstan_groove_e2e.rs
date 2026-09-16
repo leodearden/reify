@@ -150,10 +150,20 @@
 //! also the thematically right home — it already carries #5342's
 //! `helix_sweep_e2e`, whose `helix()` spine this design consumes.
 //!
-//! No other gate compiles `dev_capstan.ri` (printer.ri is compiled by
+//! This module OWNS the `dev_capstan.ri` fixtures for the whole `harness_sweep`
+//! compile unit: [`DEV_CAPSTAN`], [`dev_capstan_compiled`],
+//! [`dev_capstan_checked`] and [`dev_capstan`] are `pub(super)`, and the sibling
+//! [`super::idler_seat_e2e`] (#6135, the IdlerPulley end of the same standard)
+//! consumes them rather than loading the file a second time — so the file is
+//! read, parsed, stdlib-compiled, checked and OCCT-tessellated ONCE per test
+//! binary however many gates read it, and the single-compilation argument
+//! [`dev_capstan_compiled`] makes holds across both modules rather than only
+//! inside this one. Nothing outside the compile unit compiles `dev_capstan.ri`
+//! (printer.ri is compiled by
 //! `crates/reify-compiler/tests/harness_constructor_typing/orientation_constructor_typing_tests.rs`
-//! for orientation-inference warnings), so this module is currently the only
-//! regression guard on `dev_capstan.ri` as a whole. That is why
+//! for orientation-inference warnings, and by `idler_seat_e2e` for its own
+//! kernel-free surface), so these fixtures are the only regression guard on
+//! `dev_capstan.ri` as a whole. That is why
 //! its two FILE-WIDE claims — evaluation Error-freedom (`check_dev_capstan`,
 //! against an enumerated `volume()` exception list) and "constraints ran and
 //! none is violated" (`capstan_design_file_checks_clean_without_a_kernel`) —
@@ -171,7 +181,10 @@ use std::f64::consts::PI;
 use std::sync::OnceLock;
 
 /// The real design file under test, reached from this crate's manifest dir.
-const DEV_CAPSTAN: &str = concat!(
+///
+/// `pub(super)` so the sibling [`super::idler_seat_e2e`] names the same path
+/// rather than spelling a second `concat!` for the same file.
+pub(super) const DEV_CAPSTAN: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../prj/printer_v01/dev_capstan.ri"
 );
@@ -408,11 +421,16 @@ const MESH_RADIAL_TOL_FRAC: f64 = 0.10;
 /// The tessellated design, computed once per test binary.
 ///
 /// The full parse → compile → spawn-OCCT → sweep → boolean → tessellate pipeline
-/// costs ~5 s and every test in this module only ever *reads* the result, so it is
+/// costs ~5 s and every reader only ever *reads* the result, so it is
 /// memoized rather than run per test (same `OnceLock` caching idiom as
 /// `crates/reify-eval/tests/auto_type_param_determinism_tests.rs`). Callers must
 /// have already checked `reify_kernel_occt::OCCT_AVAILABLE`.
-fn dev_capstan() -> &'static TessellateResult {
+///
+/// `pub(super)`: the sibling [`super::idler_seat_e2e`] reads its `IdlerPulley`
+/// mesh out of THIS result. A second fixture over the same file would pay that
+/// ~5 s again and spawn a second OCCT kernel actor for a solid already in
+/// memory.
+pub(super) fn dev_capstan() -> &'static TessellateResult {
     static R: OnceLock<TessellateResult> = OnceLock::new();
     R.get_or_init(tessellate_dev_capstan)
 }
@@ -427,30 +445,37 @@ fn dev_capstan() -> &'static TessellateResult {
 /// is unavailable — which matters most for
 /// `capstan_drive_constrains_the_shuttle_to_cover_the_band`, whose entire claim
 /// is that the relation bites *outside* a full OCCT run.
-fn dev_capstan_checked() -> &'static CheckResult {
+///
+/// `pub(super)`: [`super::idler_seat_e2e`]'s lockstep gate reads this file's
+/// `IdlerPulley` cells off this same surface.
+pub(super) fn dev_capstan_checked() -> &'static CheckResult {
     static R: OnceLock<CheckResult> = OnceLock::new();
     R.get_or_init(check_dev_capstan)
 }
 
 /// The design file's compiled module, computed once per test binary — the
-/// single compilation EVERY other fixture and test in this module reads.
+/// single compilation EVERY fixture and test in the `harness_sweep` compile
+/// unit reads, this module's and [`super::idler_seat_e2e`]'s alike.
 ///
-/// Memoized for correctness first and cost second. Two gates read the compiled
+/// Memoized for correctness first and cost second. Three gates read the compiled
 /// module and the check surface *together*:
 /// `capstan_drive_constrains_the_shuttle_to_cover_the_band` counts
-/// `drive_template.constraints` against `result.constraint_results`, and
+/// `drive_template.constraints` against `result.constraint_results`,
 /// [`check_dev_capstan`] maps diagnostic label spans back through
-/// `templates[].value_cells`. Both comparisons are only meaningful if the two
-/// sides came from the SAME compilation; reaching [`compile_dev_capstan`]
+/// `templates[].value_cells`, and `idler_seat_e2e::idler_copies_stay_in_lockstep`
+/// compares this module's `IdlerPulley` `content_hash` against the cells
+/// [`dev_capstan_checked`] evaluated. Those comparisons are only meaningful if
+/// the two sides came from the SAME compilation; reaching [`compile_dev_capstan`]
 /// twice would make them agree only by assuming the compiler is deterministic
-/// — an assumption neither gate states, and one that a future span-numbering
+/// — an assumption none of them states, and one that a future span-numbering
 /// or template-ordering change could quietly break. One `OnceLock` makes it a
-/// fact instead of an assumption.
+/// fact instead of an assumption, and `pub(super)` is what extends that fact
+/// across the module boundary instead of stopping at it.
 ///
 /// The cost side is the ordinary saving: the file is read, parsed and
 /// stdlib-compiled once rather than once per caller, and the parse/compile
 /// Error-freedom assertions inside [`compile_dev_capstan`] run once.
-fn dev_capstan_compiled() -> &'static reify_compiler::CompiledModule {
+pub(super) fn dev_capstan_compiled() -> &'static reify_compiler::CompiledModule {
     static M: OnceLock<reify_compiler::CompiledModule> = OnceLock::new();
     M.get_or_init(compile_dev_capstan)
 }
@@ -535,8 +560,9 @@ const VOLUME_UNRESOLVED_CELLS: [&str; 2] = ["Capstan.blank_volume", "Capstan.bod
 /// a blanket ignore a cell they never touch (`flange_r`, a `ShuttlePlate` cell,
 /// a later `Fairlead` cell) could stop evaluating and nothing would observe it:
 /// the Error-freedom assertion would live solely in the OCCT-gated
-/// [`tessellate_dev_capstan`], and this module is the only regression guard on
-/// `dev_capstan.ri` as a whole. `capstan_design_file_checks_clean_without_a_kernel`
+/// [`tessellate_dev_capstan`], and this fixture is the only regression guard on
+/// `dev_capstan.ri` as a whole — for [`super::idler_seat_e2e`]'s reads of the
+/// file as much as for this module's. `capstan_design_file_checks_clean_without_a_kernel`
 /// closes the same gap on the CONSTRAINT half of that surface.
 fn check_dev_capstan() -> CheckResult {
     let compiled = dev_capstan_compiled();

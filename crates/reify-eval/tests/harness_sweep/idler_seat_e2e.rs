@@ -212,32 +212,22 @@ const PRINTER_ENUM_PATH_UNRESOLVED: &[&str] = &[
     "HomogenisedPanel.appearance",
 ];
 
-/// Evaluate and constraint-check a design file with NO kernel, asserting the
-/// pipeline raised no Error outside the two measured allowlists.
+/// Parse and stdlib-compile printer.ri, asserting no Error outside
+/// [`PRINTER_ENUM_PATH_UNRESOLVED`]. Use [`printer_compiled`] rather than
+/// calling this directly — every caller must share one compilation.
 ///
-/// Path- and allowlist-parameterised rather than written against printer.ri,
-/// because the lockstep gate needs the identical surface over dev_capstan.ri
-/// and the two files' allowlists differ. Each caller memoises its own result;
-/// see [`printer_checked`].
-///
-/// `DiagnosticCode::ConstraintViolated` is routed out for exactly the reason
-/// [`super::capstan_groove_e2e`]'s `Strictness` records: a violated constraint
-/// is a DESIGN failure, not an evaluation one, and left in this filter it
-/// panics the shared fixture first — in every test at once — under a message
-/// about evaluation that is false for that failure. The satisfaction gates own
-/// it and can say WHICH relation broke.
-fn compile_design(
-    path: &'static str,
-    module: &'static str,
-    enum_path_unresolved: &'static [&'static str],
-) -> reify_compiler::CompiledModule {
-    let source =
-        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+/// Written against printer.ri rather than parameterised over a path: this
+/// module loads exactly one file. dev_capstan.ri's own trio is
+/// [`super::capstan_groove_e2e`]'s and is imported at the head of the lockstep
+/// section.
+fn compile_printer() -> reify_compiler::CompiledModule {
+    let source = std::fs::read_to_string(PRINTER_RI)
+        .unwrap_or_else(|e| panic!("failed to read {PRINTER_RI}: {e}"));
 
-    let parsed = reify_syntax::parse(&source, ModulePath::single(module));
+    let parsed = reify_syntax::parse(&source, ModulePath::single("printer"));
     assert!(
         parsed.errors.is_empty(),
-        "parse errors in {path}: {:?}",
+        "parse errors in {PRINTER_RI}: {:?}",
         parsed.errors
     );
 
@@ -248,12 +238,12 @@ fn compile_design(
 
     // WHICH cell a diagnostic is about, structurally. Nothing below reads a
     // message: the prose belongs to another crate, and a rewording of it must
-    // not move a diagnostic between the arms here and in [`check_design`].
+    // not move a diagnostic between the arms here and in [`check_printer`].
     //
     // The two populations label differently, so each stage resolves the identity
     // its own way. This one wants the smallest CONTAINING cell, because an
     // `UnresolvedName` label sits on an expression INSIDE a cell rather than on
-    // the cell itself; [`check_design`] wants the cell's own span, exactly as the
+    // the cell itself; [`check_printer`] wants the cell's own span, exactly as the
     // capstan gate resolves it. Both are computed against this same compilation,
     // so neither hard-codes a byte offset and an edit to the file's own
     // `IdlerPulley` cannot shift them.
@@ -280,13 +270,13 @@ fn compile_design(
         .filter(|d| {
             !(d.code == Some(reify_core::DiagnosticCode::UnresolvedName)
                 && containing_cell(d)
-                    .is_some_and(|c| enum_path_unresolved.contains(&c.as_str())))
+                    .is_some_and(|c| PRINTER_ENUM_PATH_UNRESOLVED.contains(&c.as_str())))
         })
         .collect();
     assert!(
         compile_unexpected.is_empty(),
-        "unexpected COMPILE errors in {path}. Only an `UnresolvedName` inside a \
-         cell named in this file's enum-path allowlist is tolerated (a measured, \
+        "unexpected COMPILE errors in {PRINTER_RI}. Only an `UnresolvedName` inside \
+         a cell named in `PRINTER_ENUM_PATH_UNRESOLVED` is tolerated (a measured, \
          pre-existing gap: the enum-name scope is built from the module's own \
          `enum_defs`, and this file imports nothing). Anything else here is a \
          real compile regression: {compile_unexpected:#?}"
@@ -295,8 +285,9 @@ fn compile_design(
     compiled
 }
 
-/// Evaluate and constraint-check an already-compiled design with NO kernel,
-/// asserting the check stage raised no Error outside `volume_unresolved`.
+/// Evaluate and constraint-check an already-compiled printer.ri with NO kernel,
+/// asserting the check stage raised no Error outside
+/// [`PRINTER_VOLUME_UNRESOLVED`].
 ///
 /// Takes the compilation rather than making its own, so a gate that reads
 /// compiled constraint EXPRESSIONS and a gate that reads evaluated CELLS are
@@ -308,11 +299,7 @@ fn compile_design(
 /// the shared fixture first — in every test at once — under a message about
 /// evaluation that is false for that failure. The satisfaction gates own it and
 /// can say WHICH relation broke.
-fn check_design(
-    compiled: &reify_compiler::CompiledModule,
-    path: &'static str,
-    volume_unresolved: &'static [&'static str],
-) -> CheckResult {
+fn check_printer(compiled: &reify_compiler::CompiledModule) -> CheckResult {
     let exact: HashMap<SourceSpan, String> = compiled
         .templates
         .iter()
@@ -333,7 +320,7 @@ fn check_design(
         .filter(|d| d.severity == Severity::Error)
         .partition(|d| {
             d.code == Some(reify_core::DiagnosticCode::EvalUnresolved)
-                && labelled_cell(d).is_some_and(|c| volume_unresolved.contains(&c.as_str()))
+                && labelled_cell(d).is_some_and(|c| PRINTER_VOLUME_UNRESOLVED.contains(&c.as_str()))
         });
     let unexpected: Vec<_> = rest
         .into_iter()
@@ -341,9 +328,10 @@ fn check_design(
         .collect();
     assert!(
         unexpected.is_empty(),
-        "unexpected evaluation errors on the kernel-free surface of {path}: only \
-         the `volume()` geometry-consumer cells in this file's allowlist may fail \
-         to resolve here (constraint violations go to the satisfaction gates). An \
+        "unexpected evaluation errors on the kernel-free surface of {PRINTER_RI}: \
+         only the `volume()` geometry-consumer cells in \
+         `PRINTER_VOLUME_UNRESOLVED` may fail to resolve here (constraint \
+         violations go to the satisfaction gates). An \
          `EvalUnresolved` on any OTHER cell lands here by design: either a \
          `volume()` cell was added and the allowlist needs moving with it, or a \
          cell of the design stopped evaluating — and with no kernel this is the \
@@ -358,11 +346,14 @@ fn check_design(
         .map(|d| labelled_cell(d).expect("partitioned on the label resolving to a value cell"))
         .collect();
     got.sort();
-    let mut want: Vec<String> = volume_unresolved.iter().map(|s| (*s).to_string()).collect();
+    let mut want: Vec<String> = PRINTER_VOLUME_UNRESOLVED
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
     want.sort();
     assert_eq!(
         got, want,
-        "{path} must raise exactly one `EvalUnresolved` per allowlisted \
+        "{PRINTER_RI} must raise exactly one `EvalUnresolved` per allowlisted \
          `volume()` cell on the kernel-free surface. A MISSING entry means that \
          cell was dropped or renamed, and the allowlist is now claiming coverage \
          it does not have. Raw diagnostics: {volume_errors:#?}"
@@ -382,7 +373,7 @@ fn check_design(
 /// parsed and stdlib-compiled once.
 fn printer_checked() -> &'static CheckResult {
     static M: OnceLock<CheckResult> = OnceLock::new();
-    M.get_or_init(|| check_design(printer_compiled(), PRINTER_RI, PRINTER_VOLUME_UNRESOLVED))
+    M.get_or_init(|| check_printer(printer_compiled()))
 }
 
 /// The shared COMPILATION of printer.ri — the surface a gate reads constraint
@@ -394,7 +385,7 @@ fn printer_checked() -> &'static CheckResult {
 /// would make them agree only by assuming the compiler is deterministic.
 fn printer_compiled() -> &'static reify_compiler::CompiledModule {
     static M: OnceLock<reify_compiler::CompiledModule> = OnceLock::new();
-    M.get_or_init(|| compile_design(PRINTER_RI, "printer", PRINTER_ENUM_PATH_UNRESOLVED))
+    M.get_or_init(compile_printer)
 }
 
 /// Read a `Value::Scalar` cell of `entity` out of a value map, asserting its
@@ -1098,21 +1089,22 @@ fn idler_seat_clears_the_tendon() {
 
 // ── The second copy, and the fabricated solid ────────────────────────────────
 
-/// The design file carrying the SECOND copy of `IdlerPulley` — a standalone
-/// sketch, because v0.1 has no cross-file import.
-const DEV_CAPSTAN_RI: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../prj/printer_v01/dev_capstan.ri"
-);
-
-/// dev_capstan.ri's own `volume()` consumers — the same two
-/// [`super::capstan_groove_e2e`] enumerates for its own surface.
-const DEV_CAPSTAN_VOLUME_UNRESOLVED: &[&str] = &["Capstan.blank_volume", "Capstan.body_volume"];
-
-/// EMPTY, and measured so: unlike printer.ri, dev_capstan.ri names no qualified
-/// enum variant, so it compiles with zero Error diagnostics. An allowlist that
-/// tolerated them here would be tolerating something that does not happen.
-const DEV_CAPSTAN_ENUM_PATH_UNRESOLVED: &[&str] = &[];
+// dev_capstan.ri — the file carrying the SECOND copy of `IdlerPulley`, a
+// standalone sketch because v0.1 has no cross-file import — is loaded by
+// [`super::capstan_groove_e2e`], which OWNS its fixtures for the whole compile
+// unit. This module consumes them rather than making its own: both modules are
+// `#[path]`-included into the SAME `harness_sweep` binary, so a second trio
+// would read, parse, stdlib-compile and constraint-check the file twice and
+// OCCT-tessellate it twice — the ~5 s pipeline again, plus a second kernel
+// actor for a solid already in memory. Reusing them also extends that module's
+// single-compilation argument across the boundary: the `IdlerPulley` template
+// this module hashes and the cells it reads provably come from ONE compilation
+// of the file, rather than from two that agree only if the compiler is
+// deterministic. The printer.ri fixtures below stay local — nothing else reads
+// that file's kernel-free surface.
+use super::capstan_groove_e2e::{
+    dev_capstan, dev_capstan_checked, dev_capstan_compiled, DEV_CAPSTAN,
+};
 
 /// Every scalar cell the `IdlerPulley` structure computes, as
 /// `(name, Some(dimension))` — or `None` for the one `: Real` cell.
@@ -1147,70 +1139,6 @@ const IDLER_CELLS: &[(&str, Option<DimensionVector>)] = &[
     ("sheave_w", Some(DimensionVector::LENGTH)),
     ("bore_len", Some(DimensionVector::LENGTH)),
 ];
-
-/// dev_capstan.ri's shared COMPILATION.
-fn dev_capstan_compiled() -> &'static reify_compiler::CompiledModule {
-    static M: OnceLock<reify_compiler::CompiledModule> = OnceLock::new();
-    M.get_or_init(|| {
-        // `dev_capstan`, NOT `printer`: both files declare a structure literally
-        // named `IdlerPulley` — which is this gate's whole subject — so they must
-        // not both claim the same module path.
-        compile_design(
-            DEV_CAPSTAN_RI,
-            "dev_capstan",
-            DEV_CAPSTAN_ENUM_PATH_UNRESOLVED,
-        )
-    })
-}
-
-/// dev_capstan.ri's shared kernel-free surface.
-fn dev_capstan_checked() -> &'static CheckResult {
-    static M: OnceLock<CheckResult> = OnceLock::new();
-    M.get_or_init(|| {
-        check_design(
-            dev_capstan_compiled(),
-            DEV_CAPSTAN_RI,
-            DEV_CAPSTAN_VOLUME_UNRESOLVED,
-        )
-    })
-}
-
-/// dev_capstan.ri tessellated with a real OCCT kernel, once.
-///
-/// dev_capstan.ri and not printer.ri: `Engine::tessellate_realizations` takes no
-/// entity or scope argument, so tessellating printer.ri would tessellate all 32
-/// of its structures — see this module's header for the measurement.
-///
-/// Constraint VIOLATIONS are routed out of the Error filter for the reason
-/// [`super::capstan_groove_e2e`]'s `Strictness` records; it bites harder here,
-/// because this surface evaluates and constraint-checks BEFORE it tessellates,
-/// so one broken design relation left in the filter would panic here and take the
-/// mesh gate down under a message about geometry that is false for that failure.
-fn dev_capstan_tessellated() -> &'static reify_eval::TessellateResult {
-    static M: OnceLock<reify_eval::TessellateResult> = OnceLock::new();
-    M.get_or_init(|| {
-        let mut planner = reify_geometry::SingleKernelHolder::new();
-        planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-        let mut engine = reify_eval::Engine::new(
-            Box::new(reify_constraints::SimpleConstraintChecker),
-            Some(Box::new(planner)),
-        );
-        let result = engine.tessellate_realizations(dev_capstan_compiled());
-        let geom_errors: Vec<_> = result
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .filter(|d| d.code != Some(reify_core::DiagnosticCode::ConstraintViolated))
-            .collect();
-        assert!(
-            geom_errors.is_empty(),
-            "unexpected geometry errors tessellating {DEV_CAPSTAN_RI} (constraint \
-             violations are routed to the satisfaction gates and are not this \
-             fixture's business): {geom_errors:#?}"
-        );
-        result
-    })
-}
 
 /// The `sub` chain dev_capstan.ri's `CapstanDrive` binds the front-upper shuttle
 /// idler under — `CapstanDrive.shuttle.idler_fu` (dev_capstan.ri `Fairlead`).
@@ -1371,7 +1299,7 @@ fn idler_copies_stay_in_lockstep() {
 
     for &(cell, dim) in IDLER_CELLS {
         let a = idler_cell_of(printer, PRINTER_RI, cell, dim);
-        let b = idler_cell_of(sketch, DEV_CAPSTAN_RI, cell, dim);
+        let b = idler_cell_of(sketch, DEV_CAPSTAN, cell, dim);
         let err = if a == 0.0 { (a - b).abs() } else { rel_err(b, a) };
         assert!(
             err <= SCALAR_REL_TOL,
@@ -1395,7 +1323,7 @@ fn idler_copies_stay_in_lockstep() {
     let b_ids = scoped(&dev_capstan_checked().constraint_results);
     assert!(
         !b_ids.is_empty(),
-        "no `{IDLER_ENTITY}` constraint results at all from {DEV_CAPSTAN_RI} — an \
+        "no `{IDLER_ENTITY}` constraint results at all from {DEV_CAPSTAN} — an \
          empty set would satisfy the satisfaction filter below vacuously."
     );
     let bad: Vec<_> = dev_capstan_checked()
@@ -1405,7 +1333,7 @@ fn idler_copies_stay_in_lockstep() {
         .collect();
     assert!(
         bad.is_empty(),
-        "{DEV_CAPSTAN_RI} must satisfy every `{IDLER_ENTITY}` constraint at its \
+        "{DEV_CAPSTAN} must satisfy every `{IDLER_ENTITY}` constraint at its \
          defaults — {} did not: {bad:#?}",
         bad.len()
     );
@@ -1425,7 +1353,7 @@ fn idler_copies_stay_in_lockstep() {
     // Everything above compares an INVENTORY: named cells, counted constraints.
     // The body tree is in neither, so a fork inside it passes both. This sees it.
     let a_hash = idler_template(printer_compiled(), PRINTER_RI).content_hash;
-    let b_hash = idler_template(dev_capstan_compiled(), DEV_CAPSTAN_RI).content_hash;
+    let b_hash = idler_template(dev_capstan_compiled(), DEV_CAPSTAN).content_hash;
     assert_eq!(
         a_hash, b_hash,
         "the two `{IDLER_ENTITY}` copies have FORKED somewhere the assertions \
@@ -1490,7 +1418,7 @@ fn idler_sheave_mesh_has_the_declared_seat() {
     let brg_r = idler_cell("brg_r", DimensionVector::LENGTH);
     let sheave_w = idler_cell("sheave_w", DimensionVector::LENGTH);
 
-    let surface = idler_sheave(dev_capstan_tessellated());
+    let surface = idler_sheave(dev_capstan());
     let verts: Vec<(f64, f64, f64)> = surface
         .mesh
         .vertices
