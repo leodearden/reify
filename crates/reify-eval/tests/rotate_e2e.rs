@@ -11,7 +11,9 @@
 use reify_core::Severity;
 use reify_eval::{BuildResult, Engine};
 use reify_ir::{ExportFormat, GeometryOp};
-use reify_test_support::{MockConstraintChecker, MockGeometryKernel, parse_and_compile};
+use reify_test_support::{
+    MockConstraintChecker, MockGeometryKernel, compile_source, parse_and_compile,
+};
 
 // ── step-1 (RED) ─────────────────────────────────────────────────────────────
 
@@ -232,7 +234,14 @@ fn rotate_with_bare_radian_literal_is_rejected() {
         }
     "#;
 
-    let compiled = parse_and_compile(source);
+    // NOT `parse_and_compile` — that helper `assert!`s the compiled module has
+    // no Error-severity diagnostics, and this fixture's bare angle is a
+    // deliberate COMPILE-layer rejection since PRD 3 leaf ζ gave `rotate` an
+    // ANGLE slot. Under the panicking helper this test would die inside the
+    // helper before reaching a single assertion of its own, and the failure
+    // would read as "the fixture is wrong" rather than "the gate fired".
+    // Restoring `parse_and_compile` here re-breaks it.
+    let compiled = compile_source(source);
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
