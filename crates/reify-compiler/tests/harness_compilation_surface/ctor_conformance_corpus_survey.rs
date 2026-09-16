@@ -1288,6 +1288,10 @@ struct SurveySite {
     /// D9 owner class. Assigned by the corpus sweep via [`d9_owner`]; the
     /// builder leaves it `Unknown`, the conservative default.
     owner: Owner,
+    /// The 1-based line WITHIN the embedded snippet, for a row that came from
+    /// an inline Rust fixture; `None` for a tracked `.ri` row, where
+    /// [`SurveySite::line`] already IS the file line.
+    snippet_line: Option<u32>,
 }
 
 /// The `emit_arg_type_mismatch` prose prefix that introduces the offending param
@@ -1439,6 +1443,7 @@ fn survey_site_from_diagnostic(
         severity: format!("{:?}", d.severity),
         message: d.message.clone(),
         owner: Owner::Unknown,
+        snippet_line: None,
     })
 }
 
@@ -3035,6 +3040,195 @@ fn survey_corpus_orders_sites_deterministically() {
     );
 }
 
+// ─── the second half: Reify snippets embedded in Rust test source ────────────
+
+/// Sweep the Reify snippets embedded in `host_rel_paths` (resolved against
+/// `root`) and collect every ctor-conformance site.
+fn survey_inline_corpus(_root: &std::path::Path, _host_rel_paths: &[String]) -> SurveyRun {
+    SurveyRun::default()
+}
+
+/// One synthetic Rust host carrying, in order: an admitted Reify snippet that
+/// WARNS, a non-Reify blob, a Reify-shaped snippet that cannot parse, a
+/// `format!` template, and a Reify-shaped snippet hidden inside a doc comment.
+///
+/// The outer literal needs a DOUBLED hash count because the warning snippet
+/// already uses `r##"` (the shape `crates/reify-eval/src/engine_build/tests.rs`
+/// uses live).
+#[cfg(test)]
+const INLINE_SYNTH_HOST: &str = r####"// A synthetic host for the inline sweep.
+fn warns() {
+    let source = r##"
+structure def W {
+    param z : Length = 5.0
+}
+"##;
+    let _ = source;
+}
+
+fn not_reify() {
+    let json = r#"{"capabilities":{}}"#;
+    let _ = json;
+}
+
+fn unparseable() {
+    let broken = r#"
+module test.inline_broken
+((( this is not reify at all ]]] §§§
+"#;
+    let _ = broken;
+}
+
+fn templated() {
+    let t = format!(r#"
+structure def T {{
+    param q : Length = {WIDTH}
+}}
+"#);
+    let _ = t;
+}
+
+/// A doc comment carrying r#"structure def Ghost { param g : Length = 9.0 }"#
+/// must contribute nothing at all.
+fn documented() {}
+"####;
+
+/// The 1-based line of the ONE line of `host` containing `needle`.
+///
+/// Every expected host line below is COMPUTED with this rather than
+/// hand-counted, so a fixture edit fails on its anchor instead of silently
+/// invalidating an expectation.
+#[cfg(test)]
+fn host_line_of(host: &str, needle: &str) -> u32 {
+    let hits: Vec<u32> = host
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.contains(needle))
+        .map(|(i, _)| i as u32 + 1)
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "fixture anchor {needle:?} must appear on exactly one line, found {hits:?}"
+    );
+    hits[0]
+}
+
+/// Write [`INLINE_SYNTH_HOST`] into a temp dir and return
+/// `(dir, [host, missing host])` — the same tempfile idiom as [`synth_corpus`].
+#[cfg(test)]
+fn inline_synth_corpus() -> (tempfile::TempDir, Vec<String>) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("host.rs"), INLINE_SYNTH_HOST).expect("write synthetic host");
+    (dir, vec!["absent_host.rs".to_owned(), "host.rs".to_owned()])
+}
+
+#[test]
+fn survey_inline_corpus_finds_the_snippet_site_at_its_host_position() {
+    let (dir, hosts) = inline_synth_corpus();
+    let run = survey_inline_corpus(dir.path(), &hosts);
+
+    assert_eq!(
+        run.sites.len(),
+        1,
+        "exactly one ctor-conformance site across the synthetic host, got: {:#?}",
+        run.sites
+    );
+    let site = &run.sites[0];
+
+    assert_eq!(
+        site.file, "host.rs",
+        "a row's `file` is the HOST .rs path a human opens, not a synthesised snippet name"
+    );
+    assert_eq!(
+        site.line,
+        host_line_of(INLINE_SYNTH_HOST, "param z : Length"),
+        "a row's `line` is the HOST line of the offending declaration"
+    );
+    let snippet_line = site
+        .snippet_line
+        .expect("an inline row must carry its snippet-relative coordinate");
+    let snippet_start = host_line_of(INLINE_SYNTH_HOST, "structure def W {");
+    assert_eq!(
+        snippet_start + snippet_line - 1,
+        site.line,
+        "host_line_of_snippet_start + snippet_line - 1 must reconstruct the host line"
+    );
+    assert_eq!(site.field.as_deref(), Some("z"));
+    assert_eq!(
+        site.owner,
+        d9_owner(
+            site.def.as_deref(),
+            fea_owned_defs(),
+            stdlib_structure_defs()
+        ),
+        "the inline half must classify by the same `d9_owner` the .ri half uses"
+    );
+}
+
+#[test]
+fn survey_inline_corpus_records_every_unsurveyable_snippet_with_its_reason() {
+    let (dir, hosts) = inline_synth_corpus();
+    let run = survey_inline_corpus(dir.path(), &hosts);
+
+    let reason_for = |key: &str| -> Option<&str> {
+        run.not_surveyed
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, r)| r.as_str())
+    };
+
+    let broken_key = format!(
+        "host.rs:{}",
+        host_line_of(INLINE_SYNTH_HOST, "module test.inline_broken")
+    );
+    assert_eq!(
+        reason_for(&broken_key),
+        Some("parse-error"),
+        "an unparseable snippet is RECORDED at `<host>:<line>`, never dropped; \
+         not_surveyed = {:#?}",
+        run.not_surveyed
+    );
+
+    let template_key = format!(
+        "host.rs:{}",
+        host_line_of(INLINE_SYNTH_HOST, "structure def T {{")
+    );
+    assert_eq!(
+        reason_for(&template_key),
+        Some("format-template"),
+        "a `format!` template is disclosed under its own reason rather than \
+         landing as a noise parse-error; not_surveyed = {:#?}",
+        run.not_surveyed
+    );
+
+    assert_eq!(
+        reason_for("absent_host.rs"),
+        Some("read-error"),
+        "an unreadable host is recorded rather than panicking the sweep"
+    );
+
+    assert_eq!(
+        run.total,
+        run.surveyed + run.not_surveyed.len(),
+        "the coverage denominator must still account for every member exactly once"
+    );
+}
+
+#[test]
+fn survey_inline_corpus_orders_sites_deterministically() {
+    let (dir, hosts) = inline_synth_corpus();
+    let forward = survey_inline_corpus(dir.path(), &hosts);
+    let mut reversed = hosts.clone();
+    reversed.reverse();
+    let backward = survey_inline_corpus(dir.path(), &reversed);
+    assert_eq!(
+        forward.sites, backward.sites,
+        "site ordering must not depend on the order hosts are handed in"
+    );
+    assert_eq!(forward.not_surveyed, backward.not_surveyed);
+}
+
 // ─── γ (task #5305): the files γ migrated to ctor-conformance clean ──────────
 
 /// Repo-relative `.ri` files that task #5305 (γ) migrated to ctor-conformance
@@ -4162,6 +4356,7 @@ fn synth_site(file: &str, line: u32, def: &str, field: &str, owner: Owner) -> Su
             "argument '{field}' has type 'String' but param '{field}' requires type 'FaceSelector'"
         ),
         owner,
+        snippet_line: None,
     }
 }
 
@@ -4396,6 +4591,7 @@ fn render_survey_writes_an_em_dash_for_every_unrecoverable_cell() {
         severity: "Warning".to_owned(),
         message: "E_CTOR_ARITY: Bar() expects at most 1 argument, got 2".to_owned(),
         owner: Owner::Unknown,
+        snippet_line: None,
     };
     let run = SurveyRun {
         total: 1,
