@@ -3,49 +3,48 @@
 //! of the two shared `*_and_refresh_baseline` seams, never through a private
 //! emit of its own.
 //!
-//! The claim this mechanizes is stated in prose in two places and is NOT
-//! restated here — see point (a) on `write_on_engine_and_refresh_baseline` in
-//! `gui/src-tauri/src/debug_server.rs`, and the "Two seams, ONE stated
-//! exception" section of `docs/debug-mcp-contract.md`. Citations throughout
-//! this module are SYMBOL names, never line numbers: this gate exists to
-//! resist drift, and a line number goes stale the first time anyone edits a
-//! doc comment above it. Note the shape
-//! of the claim: "one of the two shared seams", NOT "all five route through
-//! `write_on_engine_and_refresh_baseline`" — `reify_open_file` reaches the
-//! same refresh through `open_source_into_engine_and_refresh_baseline`, for
-//! the #5193 lock-ordering reason point (d) gives.
+//! The claim is stated in prose — and NOT restated here — at point (a) on
+//! `write_on_engine_and_refresh_baseline` in `gui/src-tauri/src/debug_server.rs`
+//! and in `docs/debug-mcp-contract.md`'s "Two seams, ONE stated exception".
+//! Note its shape: "one of the TWO shared seams", not "all five route through
+//! `write_on_engine_and_refresh_baseline`". Citations here are SYMBOL names,
+//! never line numbers, and `every_anchor_this_module_cites_still_exists`
+//! checks them: a gate that exists to resist drift cannot itself ship
+//! pointers that go stale on the next edit above them.
 //!
 //! This reads `debug_server.rs` as TEXT and links nothing, so unlike
-//! `debug_boundary_tests` — which builds a real `EngineSession` — it carries
-//! NO `#[cfg(feature = "gui")]` gate. That is deliberate: it runs in the
-//! DEFAULT test pass rather than only in `verify.sh`'s conditionally-emitted
-//! `--features gui` arm, so the architecture gate cannot be silently skipped
-//! on a run that does not touch the GUI crate — exactly the run during which
-//! someone might add a bypassing tool elsewhere.
+//! `debug_boundary_tests` it carries NO `#[cfg(feature = "gui")]` gate and
+//! runs in the DEFAULT test pass rather than only in `verify.sh`'s
+//! conditionally-emitted `--features gui` arm. The architecture gate
+//! therefore cannot be skipped on a run that does not touch the GUI crate —
+//! exactly the run during which someone adds a bypassing tool elsewhere.
 //!
 //! REDUNDANT ENUMERATION: the write-tool set is read from TWO independent
 //! textual shapes — the `"reify_*" =>` dispatch arms and the `ToolDef`
-//! registry advertising the same names — which must agree. That is what makes
-//! an arm the scanner cannot read fail CLOSED: the tool reds as a set
-//! difference rather than vanishing from the sweep, whatever the reason the
-//! arm was unreadable. The residual is stated rather than papered over — a
-//! drop stays silent if BOTH enumerations miss the SAME tool in a correlated
-//! way, and the registry-side non-vacuity floor is what catches the case where
-//! both go to zero at once.
+//! registry advertising the same names — which must agree, so an arm the
+//! scanner cannot read reds as a set DIFFERENCE rather than vanishing from
+//! the sweep, whatever made it unreadable. Residual, stated rather than
+//! papered over: a drop stays silent if BOTH enumerations miss the SAME tool,
+//! and the registry-side non-vacuity floor is what catches them reaching zero
+//! together.
 //!
-//! POSTURE: ships default-ASSERT. The task called for contract → warn-mode
-//! corpus sweep → enforce; the sweep was performed at plan time (5/5 routed,
-//! clean) and is re-performed mechanically by
-//! `every_debug_write_tool_routes_through_the_delta_choke_point` on every
-//! run, so a warn-only default would emit no signal on a green tree and defer
-//! the leaf indefinitely. `REIFY_INV_GUI_2_BYPASS=1` is the break-glass
-//! escape hatch, mirroring `REIFY_MAIN_GATE_BYPASS` (CLAUDE.md), and it is
-//! genuinely live: it lets someone mid-refactor land a legitimate third seam
-//! by setting a knob instead of deleting the guard. A
-//! `REIFY_INV_GUI_2_ENFORCE` alias is deliberately NOT provided — against a
-//! default-assert shipped state it would be a no-op, and an unreachable knob
-//! is worse than an absent one. Same posture convention as
+//! POSTURE: default-ASSERT, `REIFY_INV_GUI_2_BYPASS=1` as break-glass — same
+//! convention as
 //! `crates/reify-eval/tests/harness_cache/snapshot_cache_divergence_gate.rs`.
+//! The warn-mode corpus sweep the task called for is re-performed
+//! mechanically on every run, so a warn-only default would emit no signal on
+//! a green tree and defer the leaf indefinitely. No `…_ENFORCE` alias:
+//! against a default-assert state it would be a no-op.
+//!
+//! The synthetic corpus every negative and positive claim below is pinned
+//! against lives in the sibling `debug_write_tool_routing_fixtures`; that
+//! module's header says why it is split out.
+
+use super::debug_write_tool_routing_fixtures::{
+    ADVERTISED_BUT_UNDISPATCHED_SOURCE, ARM_SHAPES_SOURCE, BYPASSING_SOURCE,
+    COMMENT_ONLY_MENTION_SOURCE, COMPLIANT_SOURCE, DELEGATED_PRIVATE_EMIT_SOURCE,
+    INLINE_ARM_SOURCE, LYING_SEAM_SOURCE, PRIVATE_EMIT_SOURCE, STRING_ONLY_MENTION_SOURCE,
+};
 
 /// One way a `reify_*` write tool can break INV-GUI-2.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -79,22 +78,19 @@ struct Bypass {
 /// or-pattern yields N entries against its one shared handler. `code` must
 /// already be comment-stripped.
 ///
-/// The write-tool set is ENUMERATED here rather than hardcoded, so a sixth
-/// `reify_*` tool is picked up automatically and must route or go red — which
-/// is the gap INV-GUI-2 exists to close. There is deliberately no read-only
-/// exemption set: a future read-only `reify_*` tool reds until someone
-/// classifies it consciously.
+/// ENUMERATED rather than hardcoded, with deliberately no read-only exemption
+/// set, so a sixth `reify_*` tool must route or go red until someone
+/// classifies it consciously — the gap INV-GUI-2 exists to close.
 ///
-/// Once a tool's `"reify_*"` pattern literal has been SEEN it is never
-/// dropped. An arm whose handler cannot be resolved still yields the tool,
-/// paired with whatever the scan did resolve (possibly nothing), which
-/// [`write_tool_bypasses`] reports as [`BypassKind::UnresolvedHandler`].
-/// Dropping was this checker's one false-GREEN direction: a tool missing from
-/// this list is swept by NEITHER half of the gate.
+/// Once a `"reify_*"` pattern literal has been SEEN it is never dropped: an
+/// unresolvable handler still yields its tool, which [`write_tool_bypasses`]
+/// reports as [`BypassKind::UnresolvedHandler`]. Dropping was this checker's
+/// one false-GREEN direction — a tool missing from this list is swept by
+/// NEITHER half of the gate.
 ///
 /// Retained approximation, in the module's fail-closed direction: the handler
 /// is the FIRST `identifier(` call in the arm, so a block arm that calls
-/// something else first — a guard, a `Box::pin` — resolves to the wrong fn and
+/// something else first (a guard, a `Box::pin`) resolves to the wrong fn and
 /// false-POSITIVES. Red, never silently green.
 fn dispatch_arms(code: &str) -> Vec<(String, String)> {
     let lines: Vec<&str> = code.lines().collect();
@@ -195,14 +191,8 @@ fn registry_tool_names(code: &str) -> Vec<String> {
         .collect()
 }
 
-/// Names the advertised `reify_*` tools the dispatch scan never saw, sorted.
-///
-/// REDUNDANT ENUMERATION: reading the tool set from two independent textual
-/// shapes is what makes an arm the scanner cannot read fail CLOSED. Without
-/// it, [`dispatch_arms`] silently DROPS such an arm and the tool vanishes from
-/// the sweep entirely — a false GREEN, the one direction this module must
-/// never have. Here it reds as a set difference instead, whatever the reason
-/// the arm was unreadable, including reasons nobody has anticipated.
+/// Names the advertised `reify_*` tools the dispatch scan never saw, sorted —
+/// the module header's REDUNDANT ENUMERATION, made concrete.
 ///
 /// It also catches a shape no arm parser could reach at all: a
 /// registry-advertised tool dispatched by a non-literal path, falling into
@@ -357,6 +347,14 @@ fn push_blanked(out: &mut String, span: &str) {
 /// escapes, across line boundaries. Raw strings (`r"…"`, `r#"…"#`) and the
 /// pathological `'"'` char literal, neither of which occurs in
 /// `debug_server.rs`, are not special-cased.
+///
+/// KNOWN SPOT COST: this is the third hand-rolled Rust source scanner in the
+/// repo, beside `crates/reify-eval/tests/version_id_discipline_gate.rs` and
+/// `crates/reify-builtins/tests/common/seed_name_scan.rs`, each with its own
+/// separately-documented blind spots — which is how the literal hole this fn
+/// now closes survived here while `seed_name_scan.rs` already handled it.
+/// Extracting the shared primitives spans three crates and so is not this
+/// task's to make; filed as a follow-up.
 fn blank_noncode(source: &str, blank_literals: bool) -> String {
     let bytes = source.as_bytes();
     let mut out = String::with_capacity(source.len());
@@ -529,10 +527,8 @@ const BYPASS_ENV: &str = "REIFY_INV_GUI_2_BYPASS";
 
 /// What the corpus sweep decided, as a VALUE rather than as control flow.
 ///
-/// Expressed as branches, the downgrade path would ship entirely unexercised:
-/// it only runs when the real file is dirty, which is never on a green tree,
-/// so an inverted condition or a typo'd env name would first be discovered by
-/// whoever needs the hatch mid-incident. As a value,
+/// As branches the downgrade path would ship unexercised — it runs only when
+/// the real file is dirty, never on a green tree. As a value,
 /// [`the_break_glass_knob_downgrades_a_real_bypass_to_a_warn`] drives every
 /// arm against a fixture on every run.
 #[derive(Debug, PartialEq, Eq)]
@@ -572,427 +568,6 @@ fn sweep_outcome(source: &str, bypass_env: Option<&str>) -> SweepOutcome {
         SweepOutcome::Fail(report)
     }
 }
-
-/// A synthetic `debug_server.rs` excerpt whose `reify_set_parameter` handler
-/// mutates the engine directly and pushes to the frontend without ever
-/// reaching a `*_and_refresh_baseline` seam. This is the defect INV-GUI-2
-/// exists to catch; the checker must flag it.
-const BYPASSING_SOURCE: &str = r#"
-async fn dispatch_tool(
-    state: &DebugServerState,
-    name: &str,
-    params: Value,
-) -> Result<Value, String> {
-    match name {
-        "engine_state" => handle_engine_state(state).await,
-        "reify_set_parameter" => handle_reify_set_parameter(state, params).await,
-        _ => state.debug_bridge.query_frontend(name, params).await,
-    }
-}
-
-async fn handle_reify_set_parameter(
-    state: &DebugServerState,
-    params: Value,
-) -> Result<Value, String> {
-    let (cell_id, value) = reify_set_parameter_params(&params)?;
-    let gs = run_on_engine(&state.engine, move |s| {
-        s.apply_param_to_source_str(&cell_id, &value)
-    })
-    .await?;
-    push_gui_state(&state.debug_bridge, &gs, None).await?;
-    Ok(reify_set_parameter_envelope(None, None, vec![]))
-}
-"#;
-
-/// A fixture whose `handle_reify_export` NAMES both seams in prose — a doc
-/// comment and a line comment — while its body bypasses them entirely.
-///
-/// Not hypothetical: the real `handle_reify_set_parameter`'s doc comment
-/// literally contains "1. `reify_set_parameter_on_engine_and_refresh_baseline`
-/// — splices the …". A checker that greps raw text greens any handler that
-/// merely mentions a seam while bypassing it in code.
-const COMMENT_ONLY_MENTION_SOURCE: &str = r#"
-async fn dispatch_tool(
-    state: &DebugServerState,
-    name: &str,
-    params: Value,
-) -> Result<Value, String> {
-    match name {
-        "reify_export" => handle_reify_export(state, params).await,
-        _ => state.debug_bridge.query_frontend(name, params).await,
-    }
-}
-
-/// Export the current model.
-///
-/// Flow:
-///  1. `reify_export_on_engine_and_refresh_baseline` — writes the file and
-///     refreshes the delta baseline.
-///  2. push the rebuilt `GuiState` to the frontend.
-async fn handle_reify_export(state: &DebugServerState, params: Value) -> Result<Value, String> {
-    let (format, output_path) = reify_export_params(&params)?;
-    // routes through write_on_engine_and_refresh_baseline
-    let gs = run_on_engine(&state.engine, move |s| s.export(&format, &output_path)).await?;
-    push_gui_state(&state.debug_bridge, &gs, None).await?;
-    Ok(reify_export_envelope(&output_path))
-}
-"#;
-
-/// A fixture reaching the same hole as [`COMMENT_ONLY_MENTION_SOURCE`]
-/// through STRING LITERALS instead of prose, in both directions at once:
-///
-/// - `handle_reify_save_file` names a seam only inside a `tracing` message
-///   while bypassing it in code — a false GREEN, the direction this module
-///   must never have. A span name, an error string or a `json!` field naming
-///   the seam being removed is an ordinary edit.
-/// - `handle_reify_export` routes correctly and merely mentions `.emit(` in a
-///   log string — a false RED, merely noisy, but fixed by the same blanking.
-const STRING_ONLY_MENTION_SOURCE: &str = r#"
-async fn dispatch_tool(
-    state: &DebugServerState,
-    name: &str,
-    params: Value,
-) -> Result<Value, String> {
-    match name {
-        "reify_save_file" => handle_reify_save_file(state, params).await,
-        "reify_export" => handle_reify_export(state, params).await,
-        _ => state.debug_bridge.query_frontend(name, params).await,
-    }
-}
-
-async fn handle_reify_save_file(state: &DebugServerState, params: Value) -> Result<Value, String> {
-    let path = reify_save_file_params(&params)?;
-    tracing::debug!("bypassing write_on_engine_and_refresh_baseline for speed");
-    let gs = run_on_engine(&state.engine, move |s| s.save_to(&path)).await?;
-    push_gui_state(&state.debug_bridge, &gs, None).await?;
-    Ok(reify_save_file_envelope(&path))
-}
-
-async fn handle_reify_export(state: &DebugServerState, params: Value) -> Result<Value, String> {
-    let (format, output_path) = reify_export_params(&params)?;
-    let gs = write_on_engine_and_refresh_baseline(&state.engine, &state.last_state, move |s| {
-        s.export(&format, &output_path)
-    })
-    .await?;
-    tracing::debug!("the frontend push replaced a state.app.emit( call here");
-    push_gui_state(&state.debug_bridge, &gs, None).await?;
-    Ok(reify_export_envelope(&output_path))
-}
-"#;
-
-/// Both compliant shapes the real file uses, side by side:
-///
-/// - `reify_set_parameter` names its seam directly in the handler body — the
-///   shape four of the five write tools take.
-/// - `reify_open_file` reaches the SAME refresh ONE HOP away
-///   (`handle_reify_open_file` → `open_path_into_engine` →
-///   `open_source_into_engine_and_refresh_baseline`). This is the one stated
-///   exception δ documented for θ, and the only shape that forces the checker
-///   to trace a delegation.
-const COMPLIANT_SOURCE: &str = r#"
-async fn dispatch_tool(
-    state: &DebugServerState,
-    name: &str,
-    params: Value,
-) -> Result<Value, String> {
-    match name {
-        "reify_open_file" => handle_reify_open_file(state, params).await,
-        "reify_set_parameter" => handle_reify_set_parameter(state, params).await,
-        _ => state.debug_bridge.query_frontend(name, params).await,
-    }
-}
-
-async fn handle_reify_open_file(
-    state: &DebugServerState,
-    params: Value,
-) -> Result<Value, String> {
-    let raw_path = open_file_path_param(&params)?;
-    let (frontend, content) = open_path_into_engine(state, &raw_path).await?;
-    frontend_ok(frontend, "open_file")?;
-    Ok(reify_open_file_envelope(&content))
-}
-
-async fn open_path_into_engine(
-    state: &DebugServerState,
-    raw_path: &str,
-) -> Result<(Value, String), String> {
-    let path = canonicalize_open_path(raw_path)?;
-    let gui_state =
-        open_source_into_engine_and_refresh_baseline(&state.engine, &state.last_state, &path)
-            .await?;
-    let frontend = push_gui_state(&state.debug_bridge, &gui_state, None).await?;
-    Ok((frontend, gui_state.source.clone()))
-}
-
-async fn handle_reify_set_parameter(
-    state: &DebugServerState,
-    params: Value,
-) -> Result<Value, String> {
-    let (cell_id, value) = reify_set_parameter_params(&params)?;
-    let gs = reify_set_parameter_on_engine_and_refresh_baseline(
-        &state.engine,
-        &state.last_state,
-        &cell_id,
-        &value,
-    )
-    .await?;
-    push_gui_state(&state.debug_bridge, &gs, None).await?;
-    Ok(reify_set_parameter_envelope(None, None, vec![]))
-}
-"#;
-
-/// A handler that DOES route through a seam but then emits a second time on
-/// its own — the private emission path point (b) on
-/// `write_on_engine_and_refresh_baseline` forbids in as many words: "Do NOT
-/// add a second emit path here or in any caller".
-const PRIVATE_EMIT_SOURCE: &str = r#"
-async fn dispatch_tool(
-    state: &DebugServerState,
-    name: &str,
-    params: Value,
-) -> Result<Value, String> {
-    match name {
-        "reify_update_source" => handle_reify_update_source(state, params).await,
-        _ => state.debug_bridge.query_frontend(name, params).await,
-    }
-}
-
-async fn handle_reify_update_source(
-    state: &DebugServerState,
-    params: Value,
-) -> Result<Value, String> {
-    let source = reify_update_source_params(&params)?;
-    let gs = reify_update_source_on_engine_and_refresh_baseline(
-        &state.engine,
-        &state.last_state,
-        &source,
-    )
-    .await?;
-    let delta = crate::diff::compute_delta(&state.last_state, &gs);
-    emit_delta(&state.app, &delta);
-    state.app.emit("state-delta", &delta).ok();
-    Ok(reify_update_source_envelope(&gs))
-}
-"#;
-
-/// A handler that is itself spotless and delegates everything to a helper
-/// that emits privately — the REAL `handle_reify_open_file` shape, which does
-/// nothing but call `open_path_into_engine`.
-///
-/// So while `reaches_a_seam` followed that hop and `emits_privately` did not,
-/// the one tool the whole delegation machinery exists for had its entire
-/// emission behaviour outside the sweep: an `app.emit(…)` added to
-/// `open_path_into_engine` left the gate green.
-const DELEGATED_PRIVATE_EMIT_SOURCE: &str = r#"
-async fn dispatch_tool(
-    state: &DebugServerState,
-    name: &str,
-    params: Value,
-) -> Result<Value, String> {
-    match name {
-        "reify_open_file" => handle_reify_open_file(state, params).await,
-        _ => state.debug_bridge.query_frontend(name, params).await,
-    }
-}
-
-async fn handle_reify_open_file(
-    state: &DebugServerState,
-    params: Value,
-) -> Result<Value, String> {
-    let raw_path = open_file_path_param(&params)?;
-    let (frontend, content) = open_path_into_engine(state, &raw_path).await?;
-    frontend_ok(frontend, "open_file")?;
-    Ok(reify_open_file_envelope(&content))
-}
-
-async fn open_path_into_engine(
-    state: &DebugServerState,
-    raw_path: &str,
-) -> Result<(Value, String), String> {
-    let path = canonicalize_open_path(raw_path)?;
-    let gui_state =
-        open_source_into_engine_and_refresh_baseline(&state.engine, &state.last_state, &path)
-            .await?;
-    let delta = crate::diff::compute_delta(&state.last_state, &gui_state);
-    state.app.emit("state-delta", &delta).ok();
-    let frontend = push_gui_state(&state.debug_bridge, &gui_state, None).await?;
-    Ok((frontend, gui_state.source.clone()))
-}
-"#;
-
-/// A handler that looks perfectly compliant — it calls a
-/// `*_and_refresh_baseline` fn — where that fn never reaches `compute_delta`.
-/// Without this check the whole gate would rest on a NAME rather than on
-/// behaviour, and a seam whose name lies would green it falsely.
-const LYING_SEAM_SOURCE: &str = r#"
-async fn dispatch_tool(
-    state: &DebugServerState,
-    name: &str,
-    params: Value,
-) -> Result<Value, String> {
-    match name {
-        "reify_export" => handle_reify_export(state, params).await,
-        _ => state.debug_bridge.query_frontend(name, params).await,
-    }
-}
-
-async fn handle_reify_export(state: &DebugServerState, params: Value) -> Result<Value, String> {
-    let (format, output_path) = reify_export_params(&params)?;
-    let gs = reify_export_on_engine_and_refresh_baseline(
-        &state.engine,
-        &state.last_state,
-        &format,
-        &output_path,
-    )
-    .await?;
-    push_gui_state(&state.debug_bridge, &gs, None).await?;
-    Ok(reify_export_envelope(&output_path))
-}
-
-pub async fn reify_export_on_engine_and_refresh_baseline(
-    engine: &Arc<Mutex<EngineSession>>,
-    last_state: &std::sync::Mutex<Option<crate::types::GuiState>>,
-    format: &str,
-    output_path: &str,
-) -> Result<crate::types::GuiState, String> {
-    let format = format.to_owned();
-    let output_path = output_path.to_owned();
-    let _ = last_state;
-    run_on_engine(engine, move |s| {
-        let fmt = crate::commands::parse_export_format(&format)?;
-        s.export(fmt, std::path::Path::new(&output_path))?;
-        s.build_gui_state()
-    })
-    .await
-}
-"#;
-
-/// A fixture whose `ToolDef` registry advertises BOTH `reify_alpha` and
-/// `reify_beta` while `dispatch_tool` carries a literal arm for `reify_alpha`
-/// only — `reify_beta` falls through to the `_ =>` frontend-delegation
-/// catch-all the live `dispatch_tool` also has, so it is dispatched but never
-/// seen by the arm scan.
-///
-/// No widening of the arm parser can reach this shape: there is no arm to
-/// read. Only a second, independent enumeration of the tool set catches it.
-const ADVERTISED_BUT_UNDISPATCHED_SOURCE: &str = r#"
-fn tool_definitions() -> Vec<ToolDef> {
-    vec![
-        ToolDef {
-            name: "reify_alpha",
-            description: "Set alpha.",
-            input_schema: json!({ "type": "object" }),
-        },
-        ToolDef {
-            name: "reify_beta",
-            description: "Set beta.",
-            input_schema: json!({ "type": "object" }),
-        },
-    ]
-}
-
-async fn dispatch_tool(
-    state: &DebugServerState,
-    name: &str,
-    params: Value,
-) -> Result<Value, String> {
-    match name {
-        "reify_alpha" => handle_reify_alpha(state, params).await,
-        _ => state.debug_bridge.query_frontend(name, params).await,
-    }
-}
-
-async fn handle_reify_alpha(state: &DebugServerState, params: Value) -> Result<Value, String> {
-    let value = reify_alpha_params(&params)?;
-    let gs = write_on_engine_and_refresh_baseline(&state.engine, &state.last_state, move |s| {
-        s.set_alpha(&value)
-    })
-    .await?;
-    push_gui_state(&state.debug_bridge, &gs, None).await?;
-    Ok(reify_alpha_envelope(&gs))
-}
-"#;
-
-/// The three shapes of ordinary Rust the review's probe confirmed the original
-/// per-line arm parser DROPPED — wrapped, block and or-pattern — each
-/// advertised in a matching `ToolDef` entry so the fixture exercises the
-/// registry cross-check alongside the scan.
-///
-/// With that cross-check in place these shapes already fail CLOSED, so
-/// widening the parser is false-POSITIVE reduction rather than a soundness
-/// fix. It is still worth doing: a gate that reds on ordinary Rust is a gate
-/// the next author weakens to get past. The or-pattern matters twice over —
-/// dropping one silently drops BOTH names.
-const ARM_SHAPES_SOURCE: &str = r#"
-fn tool_definitions() -> Vec<ToolDef> {
-    vec![
-        ToolDef {
-            name: "reify_wrapped",
-            description: "Handler on the following line.",
-            input_schema: json!({ "type": "object" }),
-        },
-        ToolDef {
-            name: "reify_blocked",
-            description: "Handler inside a block arm.",
-            input_schema: json!({ "type": "object" }),
-        },
-        ToolDef {
-            name: "reify_first",
-            description: "Shares one handler with reify_second.",
-            input_schema: json!({ "type": "object" }),
-        },
-        ToolDef {
-            name: "reify_second",
-            description: "Shares one handler with reify_first.",
-            input_schema: json!({ "type": "object" }),
-        },
-    ]
-}
-
-async fn dispatch_tool(
-    state: &DebugServerState,
-    name: &str,
-    params: Value,
-) -> Result<Value, String> {
-    match name {
-        "reify_wrapped" =>
-            handle_reify_wrapped(state, params).await,
-        "reify_blocked" => { handle_reify_blocked(state, params).await }
-        "reify_first" | "reify_second" => handle_shared(state, params).await,
-        _ => state.debug_bridge.query_frontend(name, params).await,
-    }
-}
-"#;
-
-/// A tool handled INLINE, with no handler fn anywhere in the file.
-///
-/// The trap: `Ok` IS an identifier followed by `(`, so a first-call-expression
-/// rule resolves the handler to `Ok` and then reports `NoBaselineRefresh` —
-/// telling the reader the handler skips the seam when the truth is that the
-/// checker never found a handler at all. Those two warrant different fixes, so
-/// they get different names.
-const INLINE_ARM_SOURCE: &str = r#"
-fn tool_definitions() -> Vec<ToolDef> {
-    vec![
-        ToolDef {
-            name: "reify_inline",
-            description: "Answered inline, with no handler fn.",
-            input_schema: json!({ "type": "object" }),
-        },
-    ]
-}
-
-async fn dispatch_tool(
-    state: &DebugServerState,
-    name: &str,
-    params: Value,
-) -> Result<Value, String> {
-    match name {
-        "reify_inline" => Ok(Value::Null),
-        _ => state.debug_bridge.query_frontend(name, params).await,
-    }
-}
-"#;
 
 #[test]
 fn bypassing_fixture_is_flagged() {
@@ -1081,21 +656,17 @@ fn compliant_fixtures_in_both_seam_shapes_are_clean() {
 fn every_debug_write_tool_routes_through_the_delta_choke_point() {
     let source = debug_server_source();
 
-    // NON-VACUITY FLOOR — checked before the real assertion so a moved file
-    // or a parser that silently stopped matching reds instead of passing
-    // vacuously (same shape as `every_test_module_file_is_declared`'s floor).
-    // It also fail-closes the split debug_server.rs weighed under its "WHY
-    // THE CLUSTER LIVES IN THIS FILE" note: if the write-tool cluster moves to
-    // its own module the registry vanishes here, this fires, and someone must
-    // re-point the checker.
+    // NON-VACUITY FLOOR — checked first so a moved file, a stopped parser, or
+    // the write-tool cluster moving to its own module (weighed under
+    // `debug_server.rs`'s "WHY THE CLUSTER LIVES IN THIS FILE" note) reds
+    // instead of passing vacuously.
     //
-    // Anchored on the REGISTRY rather than on the arms, which is what makes
-    // the headroom sound: if the arm parser breaks the arms go empty while the
-    // registry still reads five, so the set-difference assertion below fires
-    // first and only a gross REGISTRY-parser failure ever reaches this floor.
-    // The headroom is a fix in its own right — pinned to today's exact count,
-    // this floor would false-red a legitimate tool REMOVAL while still doing
-    // nothing about a dropped sixth tool, which is what it was doing before.
+    // Anchored on the REGISTRY, not the arms, which is what makes the headroom
+    // sound: a broken arm parser empties the arms while the registry still
+    // reads five, so the set-difference assertion below fires first and only a
+    // gross REGISTRY failure reaches this floor. Pinned instead to today's
+    // exact count, it would false-red a legitimate tool REMOVAL while still
+    // doing nothing about a dropped sixth tool.
     let advertised = registry_tool_names(&strip_comments(&source));
     assert!(
         advertised.len() >= 3,
