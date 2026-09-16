@@ -23,7 +23,9 @@
 use faer::{Mat, Side};
 use faer::sparse::{SparseRowMat, Triplet};
 use reify_solver_elastic::eigensolve::{EigenSolverOptions, solve_eigen_dense, solve_eigen_shift_invert};
-use reify_solver_elastic::{lanczos_shift_invert, SparseStiffnessOp, SparseMetricOp};
+use reify_solver_elastic::{
+    lanczos_shift_invert, SparseFactorRef, SparseMetricOp, SparseStiffnessOp,
+};
 
 // ---------------------------------------------------------------------------
 // Fixture-A helpers
@@ -608,7 +610,7 @@ fn lanczos_shift_invert_recovers_modal_eigenpairs_on_uniform_mass_laplacian() {
     let llt = k.sp_cholesky(Side::Lower).expect("K must be SPD");
 
     // Build generic operator pair.
-    let k_op = SparseStiffnessOp { llt: &llt, n };
+    let k_op = SparseStiffnessOp { factor: SparseFactorRef::Cholesky(&llt), n };
     let m_op = SparseMetricOp { m: m.as_ref() };
 
     let opts = EigenSolverOptions {
@@ -677,7 +679,10 @@ fn lanczos_shift_invert_panics_on_dimension_mismatch() {
     }
     let k = SparseRowMat::try_new_from_triplets(n_k, n_k, &k_trips).unwrap();
     let llt = k.sp_cholesky(Side::Lower).expect("K must be SPD");
-    let k_op = SparseStiffnessOp { llt: &llt, n: n_k };
+    let k_op = SparseStiffnessOp {
+        factor: SparseFactorRef::Cholesky(&llt),
+        n: n_k,
+    };
 
     // M = I (79×79) — dimension deliberately mismatched with k_op.n()=80.
     let m_trips: Vec<Triplet<usize, usize, f64>> =
@@ -712,7 +717,7 @@ fn lanczos_shift_invert_panics_on_zero_n_modes() {
     }
     let k = SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap();
     let llt = k.sp_cholesky(Side::Lower).expect("K must be SPD");
-    let k_op = SparseStiffnessOp { llt: &llt, n };
+    let k_op = SparseStiffnessOp { factor: SparseFactorRef::Cholesky(&llt), n };
 
     let m_trips: Vec<Triplet<usize, usize, f64>> =
         (0..n).map(|i| Triplet::new(i, i, 1.0)).collect();
@@ -739,7 +744,7 @@ fn lanczos_shift_invert_panics_on_non_finite_tol() {
     }
     let k = SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap();
     let llt = k.sp_cholesky(Side::Lower).expect("K must be SPD");
-    let k_op = SparseStiffnessOp { llt: &llt, n };
+    let k_op = SparseStiffnessOp { factor: SparseFactorRef::Cholesky(&llt), n };
 
     let m_trips: Vec<Triplet<usize, usize, f64>> =
         (0..n).map(|i| Triplet::new(i, i, 1.0)).collect();
@@ -766,7 +771,7 @@ fn lanczos_shift_invert_panics_on_zero_max_iters() {
     }
     let k = SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap();
     let llt = k.sp_cholesky(Side::Lower).expect("K must be SPD");
-    let k_op = SparseStiffnessOp { llt: &llt, n };
+    let k_op = SparseStiffnessOp { factor: SparseFactorRef::Cholesky(&llt), n };
 
     let m_trips: Vec<Triplet<usize, usize, f64>> =
         (0..n).map(|i| Triplet::new(i, i, 1.0)).collect();

@@ -163,7 +163,7 @@ use faer::matrix_free::eigen::{
 };
 use faer::sparse::linalg::LltError as SparseLltError;
 use faer::sparse::{SparseRowMat, SparseRowMatRef};
-use faer::sparse::linalg::solvers::Llt;
+use faer::sparse::linalg::solvers::{Llt, Lu};
 use faer::reborrow::ReborrowMut;
 
 /// Options controlling the eigensolver kernel.
@@ -342,9 +342,14 @@ fn check_eigen_options_and_shapes(
 
 /// Apply K⁻¹ in place on a vector (or multi-vector).
 ///
-/// Implementations wrap a pre-computed factorization of the stiffness matrix K.
-/// The operator is assumed to be self-adjoint and SPD, as required by the
-/// shift-invert Lanczos method.
+/// Implementations wrap a pre-computed factorization of the matrix the caller
+/// intends to invert.  On the UNSHIFTED path that matrix is K itself and is
+/// SPD; once a shift is applied it is `K − σB`, which is symmetric but may be
+/// INDEFINITE — a σ placed above some eigenvalue of the pencil is exactly the
+/// case where it is.  So self-adjointness is the standing assumption here;
+/// positive-definiteness is not, and an implementation must not rely on it.
+/// (That is why [`SparseStiffnessOp`] carries a [`SparseFactorRef`] rather than
+/// a Cholesky factor: an indefinite `K − σB` factors through LU instead.)
 ///
 /// # Design
 ///
@@ -391,12 +396,30 @@ pub trait MetricOp: Sync {
 // Sparse adapters (zero-cost borrowed-reference wrappers)
 // ---------------------------------------------------------------------------
 
-/// Zero-cost adapter: wraps a sparse Cholesky factor as a [`StiffnessOp`].
+/// A borrowed sparse factorization, of whichever kind the matrix admitted.
 ///
-/// Field layout: one fat pointer (`&Llt`) + one `usize` — equivalent to the
-/// former `ShiftInvertOp` field layout.  No heap allocation or matrix copy.
+/// Cholesky is the preferred arm and the only one the unshifted path ever
+/// reaches: it is cheaper, and its SUCCESS is itself evidence (by Sylvester's
+/// law of inertia) that the factored matrix is positive definite.  LU is the
+/// fallback for a `K − σB` that is symmetric but indefinite, where Cholesky
+/// necessarily fails with a non-positive pivot.
+///
+/// Both arms are borrowed references, so this enum is one discriminant plus one
+/// fat pointer — no heap allocation and no matrix copy, the same zero-cost
+/// shape [`SparseStiffnessOp`] has always had.
+pub enum SparseFactorRef<'a> {
+    /// `LLᵀ` of a positive-definite matrix.
+    Cholesky(&'a Llt<usize, f64>),
+    /// `PAQ = LU` of a matrix that is not positive definite.
+    Lu(&'a Lu<usize, f64>),
+}
+
+/// Zero-cost adapter: wraps a sparse factorization as a [`StiffnessOp`].
+///
+/// Field layout: one [`SparseFactorRef`] (discriminant + fat pointer) + one
+/// `usize`.  No heap allocation or matrix copy.
 pub struct SparseStiffnessOp<'a> {
-    pub llt: &'a Llt<usize, f64>,
+    pub factor: SparseFactorRef<'a>,
     pub n: usize,
 }
 
@@ -408,7 +431,18 @@ impl StiffnessOp for SparseStiffnessOp<'_> {
 
     #[inline]
     fn solve_in_place(&self, out: MatMut<'_, f64>) {
-        SolveCore::<f64>::solve_in_place_with_conj(self.llt, Conj::No, out);
+        // Both arms issue the SAME faer call with the SAME arguments in the
+        // SAME order; only the factor object differs.  The match is a branch,
+        // not an arithmetic change, so the Cholesky arm remains byte-equivalent
+        // to the pre-enum shape and the σ=0 goldens are untouched.
+        match self.factor {
+            SparseFactorRef::Cholesky(llt) => {
+                SolveCore::<f64>::solve_in_place_with_conj(llt, Conj::No, out);
+            }
+            SparseFactorRef::Lu(lu) => {
+                SolveCore::<f64>::solve_in_place_with_conj(lu, Conj::No, out);
+            }
+        }
     }
 }
 
@@ -1049,7 +1083,10 @@ pub fn try_solve_eigen_shift_invert(
     // The chained matvec+backsolve through the adapters is byte-equivalent to
     // the former ShiftInvertOp composition (same faer calls in same order),
     // so buckling goldens pass bit-for-bit.
-    let k_op = SparseStiffnessOp { llt: &llt, n };
+    let k_op = SparseStiffnessOp {
+        factor: SparseFactorRef::Cholesky(&llt),
+        n,
+    };
     let m_op = SparseMetricOp { m: b.as_ref() };
     Some(lanczos_shift_invert(&k_op, &m_op, opts))
 }
