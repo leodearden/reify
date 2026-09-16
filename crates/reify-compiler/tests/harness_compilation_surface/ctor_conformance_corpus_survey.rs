@@ -4565,7 +4565,7 @@ const DRIFT_DISCLOSURE_KEY: &str = "**Drifted `.ri` since the anchor:**";
 /// That stamp is the merge base, never the branch tip ([`survey_stamp`]). When
 /// tracked `.ri` have drifted from it, they are NAMED in the header rather than
 /// refused, so the snapshot stays honest by disclosure ([`SurveyStamp`]).
-fn render_survey(run: &SurveyRun, stamp: &SurveyStamp) -> String {
+fn render_survey(run: &SurveyRun, _inline: &SurveyRun, stamp: &SurveyStamp) -> String {
     use std::fmt::Write as _;
 
     let mut md = String::new();
@@ -4914,7 +4914,7 @@ fn render_survey_states_a_site_count_that_equals_the_rendered_rows() {
             synth_site("b.ri", 7, "Widget", "label", Owner::NonFea),
         ],
     };
-    let md = render_survey(&run, &SurveyStamp::at("deadbeef"));
+    let md = render_survey(&run, &SurveyRun::default(), &SurveyStamp::at("deadbeef"));
 
     // The stated count is COMPUTED, never typed — that is the task's
     // "site count stated" signal, and it must equal the rows actually drawn.
@@ -4951,7 +4951,7 @@ fn render_survey_states_a_site_count_that_equals_the_rendered_rows() {
         partial: vec![],
         sites: every_class,
     };
-    let md = render_survey(&run, &SurveyStamp::at("deadbeef"));
+    let md = render_survey(&run, &SurveyRun::default(), &SurveyStamp::at("deadbeef"));
     assert_eq!(
         rendered_site_rows(&md),
         run.sites.len(),
@@ -4995,7 +4995,7 @@ fn render_survey_groups_by_d9_owner_with_fea_first_and_marked_do_not_fix() {
             unresolved,
         ],
     };
-    let md = render_survey(&run, &SurveyStamp::at("cafe1234"));
+    let md = render_survey(&run, &SurveyRun::default(), &SurveyStamp::at("cafe1234"));
 
     // Anchor every ordering probe on the rendered `### <title>` heading, never on
     // a bare substring: the artifact's own `## Format` prose mentions "FEA"
@@ -5081,8 +5081,8 @@ fn render_survey_orders_rows_deterministically_within_a_group() {
     sorted.sort_by(|a, b| (&a.file, a.line, &a.field).cmp(&(&b.file, b.line, &b.field)));
 
     assert_eq!(
-        render_survey(&mk(shuffled), &SurveyStamp::at("sha")),
-        render_survey(&mk(sorted), &SurveyStamp::at("sha")),
+        render_survey(&mk(shuffled), &SurveyRun::default(), &SurveyStamp::at("sha")),
+        render_survey(&mk(sorted), &SurveyRun::default(), &SurveyStamp::at("sha")),
         "rows must render in (file, line, field) order regardless of input order"
     );
 }
@@ -5099,7 +5099,7 @@ fn render_survey_escapes_pipes_and_newlines_so_a_message_cannot_break_the_table(
         partial: vec![],
         sites: vec![site],
     };
-    let md = render_survey(&run, &SurveyStamp::at("sha"));
+    let md = render_survey(&run, &SurveyRun::default(), &SurveyStamp::at("sha"));
 
     let row = md
         .lines()
@@ -5142,7 +5142,7 @@ fn render_survey_writes_an_em_dash_for_every_unrecoverable_cell() {
         partial: vec![],
         sites: vec![site],
     };
-    let md = render_survey(&run, &SurveyStamp::at("sha"));
+    let md = render_survey(&run, &SurveyRun::default(), &SurveyStamp::at("sha"));
     let row = md
         .lines()
         .find(|l| l.starts_with("| `a.ri:1`"))
@@ -5186,7 +5186,7 @@ fn render_survey_renders_the_zero_site_case_explicitly() {
         partial: vec![],
         sites: vec![],
     };
-    let md = render_survey(&run, &SurveyStamp::at("sha"));
+    let md = render_survey(&run, &SurveyRun::default(), &SurveyStamp::at("sha"));
     assert!(
         md.contains("**Sites:** 0"),
         "the count must still be stated"
@@ -5224,7 +5224,7 @@ fn render_survey_reports_the_recovery_reason_instead_of_asserting_a_cause() {
         partial: vec![],
         sites: vec![site],
     };
-    let md = render_survey(&run, &SurveyStamp::at("sha"));
+    let md = render_survey(&run, &SurveyRun::default(), &SurveyStamp::at("sha"));
 
     assert!(
         md.contains(DefOrigin::SpanNotIdentifier.label()),
@@ -5244,7 +5244,7 @@ fn render_survey_reports_the_recovery_reason_instead_of_asserting_a_cause() {
         partial: vec![],
         sites: vec![synth_site("b.ri", 2, "Widget", "label", Owner::NonFea)],
     };
-    let md = render_survey(&recovered, &SurveyStamp::at("sha"));
+    let md = render_survey(&recovered, &SurveyRun::default(), &SurveyStamp::at("sha"));
     assert!(
         md.contains(DefOrigin::CallSiteAnchor.label()),
         "a recovered def must still say HOW it was recovered:\n{md}"
@@ -5266,7 +5266,7 @@ fn render_survey_names_every_drifted_ri_without_disturbing_the_anchor() {
             "tree-sitter-reify/test/fixtures/two.ri".to_owned(),
         ],
     };
-    let md = render_survey(&run, &drifted);
+    let md = render_survey(&run, &SurveyRun::default(), &drifted);
 
     assert!(
         md.contains(DRIFT_DISCLOSURE_KEY),
@@ -5300,7 +5300,7 @@ fn render_survey_omits_the_disclosure_entirely_when_nothing_drifted() {
     // rendered before the disclosure existed: no "0 files drifted" noise row,
     // so two runs generated on `main` stay byte-comparable with each other.
     let run = one_site_run();
-    let without = render_survey(&run, &SurveyStamp::at("cafe1234"));
+    let without = render_survey(&run, &SurveyRun::default(), &SurveyStamp::at("cafe1234"));
     assert!(
         !without.contains(DRIFT_DISCLOSURE_KEY),
         "an undrifted stamp must render no disclosure at all; got:\n{without}"
@@ -5311,6 +5311,7 @@ fn render_survey_omits_the_disclosure_entirely_when_nothing_drifted() {
     // than by eyeballing the two renderings.
     let with = render_survey(
         &run,
+        &SurveyRun::default(),
         &SurveyStamp {
             anchor: "cafe1234".to_owned(),
             drifted_ri: vec!["tests/prd-gate/fixtures/one.ri".to_owned()], // pg-drift:allow — same synthetic path as above
@@ -5355,7 +5356,7 @@ fn render_survey_carries_the_regeneration_command_and_the_coverage_section() {
         partial: vec![("multi.ri".to_owned(), "compile-error".to_owned())],
         sites: vec![synth_site("a.ri", 1, "W", "f", Owner::NonFea)],
     };
-    let md = render_survey(&run, &SurveyStamp::at("sha"));
+    let md = render_survey(&run, &SurveyRun::default(), &SurveyStamp::at("sha"));
 
     assert!(
         md.contains("## How to regenerate"),
@@ -5386,6 +5387,16 @@ fn render_survey_carries_the_regeneration_command_and_the_coverage_section() {
 #[cfg(test)]
 const DISPOSITION_COLUMN: &str = "disposition (γ ruling)";
 
+/// The heading that opens the INLINE half's section of the artifact.
+///
+/// One spelling, read by the renderer and by every test that locates the
+/// section — including the ones asserting a row is NOT in the `.ri` half, which
+/// is the stronger claim and the one a drifted spelling would silently pass.
+const INLINE_SECTION_HEADING: &str = "## Inline Rust fixtures";
+
+/// The header label of the inline table's snippet-relative coordinate column.
+const SNIPPET_LINE_COLUMN: &str = "snippet line";
+
 /// The disposition cell of the site row anchored at `row_anchor`.
 #[cfg(test)]
 fn disposition_cell(md: &str, row_anchor: &str) -> String {
@@ -5393,21 +5404,29 @@ fn disposition_cell(md: &str, row_anchor: &str) -> String {
         .lines()
         .find(|l| l.starts_with("| site |"))
         .unwrap_or_else(|| panic!("the site table header must be rendered:\n{md}"));
+    cell_by_column(md, header, DISPOSITION_COLUMN, row_anchor)
+}
+
+/// The cell of `row_anchor`'s row lying under `column` of `header`.
+///
+/// Located BY COLUMN NAME, never by a hard-coded index: a column inserted to the
+/// left of the one under test would otherwise silently shift every assertion
+/// onto a neighbour and keep passing.
+#[cfg(test)]
+fn cell_by_column(md: &str, header: &str, column: &str, row_anchor: &str) -> String {
     let idx = header
         .split('|')
         .map(str::trim)
-        .position(|c| c == DISPOSITION_COLUMN)
-        .unwrap_or_else(|| {
-            panic!("the site table header must carry a `{DISPOSITION_COLUMN}` column:\n{header}")
-        });
+        .position(|c| c == column)
+        .unwrap_or_else(|| panic!("the table header must carry a `{column}` column:\n{header}"));
     let row = md
         .lines()
         .find(|l| l.starts_with(row_anchor))
-        .unwrap_or_else(|| panic!("no site row anchored at {row_anchor:?}:\n{md}"));
+        .unwrap_or_else(|| panic!("no row anchored at {row_anchor:?}:\n{md}"));
     row.split('|')
         .map(str::trim)
         .nth(idx)
-        .unwrap_or_else(|| panic!("row {row:?} has no cell at the disposition index {idx}"))
+        .unwrap_or_else(|| panic!("row {row:?} has no cell at the `{column}` index {idx}"))
         .to_owned()
 }
 
@@ -5468,6 +5487,7 @@ fn render_survey_resolves_each_site_disposition_from_the_tables() {
             partial: vec![],
             sites,
         },
+        &SurveyRun::default(),
         &SurveyStamp::at("sha"),
     );
 
@@ -5643,6 +5663,321 @@ fn survey_stamp() -> SurveyStamp {
         .unwrap_or_else(|e| panic!("ctor_conformance_corpus_survey: {e}"))
 }
 
+// ─── rendering the second half ───────────────────────────────────────────────
+
+/// The slice of `md` from `heading` up to the next `## ` heading.
+///
+/// Section-scoped, so an assertion that a row is in the inline half cannot be
+/// satisfied by the `.ri` half carrying it — which a whole-document `contains`
+/// would happily do.
+#[cfg(test)]
+fn section_of(md: &str, heading: &str) -> String {
+    let start = md
+        .find(heading)
+        .unwrap_or_else(|| panic!("the artifact must carry a {heading:?} section:\n{md}"));
+    let body = &md[start + heading.len()..];
+    let end = body.find("\n## ").map_or(body.len(), |i| i + 1);
+    body[..end].to_owned()
+}
+
+/// One INLINE row, as [`survey_inline_corpus`] builds them.
+#[cfg(test)]
+fn synth_inline_row(
+    file: &str,
+    line: u32,
+    snippet_line: u32,
+    field: &str,
+    owner: Owner,
+) -> SurveySite {
+    let mut site = synth_inline_site(file, Some(field), WARNING_SEVERITY);
+    site.line = line;
+    site.snippet_line = Some(snippet_line);
+    site.owner = owner;
+    site
+}
+
+/// A populated inline run covering every [`Owner`] group and every coverage
+/// reason the inline sweep can record.
+#[cfg(test)]
+fn synth_inline_run() -> SurveyRun {
+    SurveyRun {
+        total: 7,
+        surveyed: 4,
+        not_surveyed: vec![
+            ("gone.rs".to_owned(), "read-error".to_owned()),
+            ("host.rs:200".to_owned(), "parse-error".to_owned()),
+            ("host.rs:300".to_owned(), "format-template".to_owned()),
+        ],
+        partial: vec![("host.rs:400".to_owned(), "compile-error".to_owned())],
+        sites: vec![
+            synth_inline_row("host.rs", 1453, 2, "material", Owner::Unknown),
+            synth_inline_row("host.rs", 1517, 3, "youngs_modulus", Owner::NonFea),
+            synth_inline_row("other.rs", 42, 7, "z", Owner::FeaDeferredToV06),
+            synth_inline_row("other.rs", 99, 1, "q", Owner::UnresolvedDef),
+        ],
+    }
+}
+
+/// The inline half renders in its OWN section, and its rows never leak into the
+/// `.ri` half's.
+#[test]
+fn render_survey_renders_the_inline_half_in_its_own_section() {
+    let ri = SurveyRun {
+        total: 1,
+        surveyed: 1,
+        sites: vec![synth_site("a.ri", 1, "Widget", "label", Owner::NonFea)],
+        ..SurveyRun::default()
+    };
+    let md = render_survey(&ri, &synth_inline_run(), &SurveyStamp::at("sha"));
+
+    let inline = section_of(&md, INLINE_SECTION_HEADING);
+    let sites = section_of(&md, "## Sites");
+
+    assert!(
+        inline.contains("host.rs:1453"),
+        "an inline row must render in the inline section:\n{inline}"
+    );
+    assert!(
+        !sites.contains("host.rs:1453"),
+        "an inline row must NOT leak into the `.ri` half's `## Sites` section — the \
+         two halves answer different questions and are sized separately:\n{sites}"
+    );
+    assert!(
+        !inline.contains("a.ri:1"),
+        "a tracked `.ri` row must NOT leak into the inline section:\n{inline}"
+    );
+}
+
+/// The inline section is grouped by the same derived [`Owner::render_order`].
+///
+/// Derived, not re-listed: a future `Owner` variant added to the enum must
+/// appear in BOTH halves or in neither. A local literal in either renderer is
+/// exactly how one half would silently drop a group.
+#[test]
+fn render_survey_groups_the_inline_half_by_the_same_owner_render_order() {
+    let md = render_survey(
+        &SurveyRun::default(),
+        &synth_inline_run(),
+        &SurveyStamp::at("sha"),
+    );
+    let inline = section_of(&md, INLINE_SECTION_HEADING);
+
+    let mut cursor = 0usize;
+    for owner in Owner::render_order() {
+        let at = inline[cursor..].find(owner.title()).unwrap_or_else(|| {
+            panic!(
+                "the inline section must carry an `{}` group, in `Owner::render_order` \
+                 order:\n{inline}",
+                owner.title()
+            )
+        });
+        cursor += at + owner.title().len();
+    }
+}
+
+/// Every inline row carries its snippet-relative coordinate, in a column located
+/// BY NAME.
+#[test]
+fn render_survey_gives_the_inline_half_a_snippet_line_column() {
+    let md = render_survey(
+        &SurveyRun::default(),
+        &synth_inline_run(),
+        &SurveyStamp::at("sha"),
+    );
+    let inline = section_of(&md, INLINE_SECTION_HEADING);
+    let header = inline
+        .lines()
+        .find(|l| l.starts_with("| site |"))
+        .unwrap_or_else(|| panic!("the inline table header must be rendered:\n{inline}"));
+
+    for (anchor, expected) in [("| `host.rs:1453`", "2"), ("| `other.rs:42`", "7")] {
+        assert_eq!(
+            cell_by_column(&inline, header, SNIPPET_LINE_COLUMN, anchor),
+            expected,
+            "the `{SNIPPET_LINE_COLUMN}` cell must carry the coordinate WITHIN the \
+             snippet; the `site` cell already carries the host position, and a reader \
+             needs both to find the declaration inside the literal:\n{inline}"
+        );
+    }
+}
+
+/// The stated inline site count equals the inline rows actually rendered.
+///
+/// Mirrors [`render_survey_states_a_site_count_that_equals_the_rendered_rows`]
+/// for the second half: a header number that can disagree with the table below
+/// it is worse than no number.
+#[test]
+fn render_survey_states_an_inline_site_count_that_equals_the_rendered_rows() {
+    let inline_run = synth_inline_run();
+    let md = render_survey(
+        &SurveyRun::default(),
+        &inline_run,
+        &SurveyStamp::at("sha"),
+    );
+    let inline = section_of(&md, INLINE_SECTION_HEADING);
+
+    let rendered = inline
+        .lines()
+        .filter(|l| l.starts_with("| `"))
+        .count();
+    assert_eq!(
+        rendered,
+        inline_run.sites.len(),
+        "the inline section rendered {rendered} row(s) for {} site(s):\n{inline}",
+        inline_run.sites.len()
+    );
+    let claimed: usize = inline
+        .lines()
+        .filter_map(|l| l.strip_prefix("### "))
+        .filter_map(|l| l.rsplit_once(" — "))
+        .filter_map(|(_, tail)| tail.split_whitespace().next()?.parse::<usize>().ok())
+        .sum();
+    assert_eq!(
+        claimed, rendered,
+        "the per-group counts must sum to the rendered rows:\n{inline}"
+    );
+}
+
+/// A zero-inline-site run renders an EXPLICIT zero, not an empty section.
+///
+/// An empty section reads as a truncated run. The `.ri` half already states its
+/// zero explicitly; the second half must not be the one that reads as silence.
+#[test]
+fn render_survey_renders_the_zero_inline_site_case_explicitly() {
+    let md = render_survey(
+        &SurveyRun::default(),
+        &SurveyRun::default(),
+        &SurveyStamp::at("sha"),
+    );
+    let inline = section_of(&md, INLINE_SECTION_HEADING);
+    assert!(
+        inline.contains("No ctor-conformance sites"),
+        "the zero-inline case must say so in words:\n{inline}"
+    );
+}
+
+/// The inline section carries its OWN coverage subsection, naming every
+/// unsurveyable snippet with its reason.
+#[test]
+fn render_survey_lists_every_unsurveyable_inline_snippet_with_its_reason() {
+    let md = render_survey(
+        &SurveyRun::default(),
+        &synth_inline_run(),
+        &SurveyStamp::at("sha"),
+    );
+    let inline = section_of(&md, INLINE_SECTION_HEADING);
+
+    for (member, reason) in [
+        ("gone.rs", "read-error"),
+        ("host.rs:200", "parse-error"),
+        ("host.rs:300", "format-template"),
+        ("host.rs:400", "compile-error"),
+    ] {
+        assert!(
+            inline.contains(member) && inline.contains(reason),
+            "the inline coverage subsection must name `{member}` with reason \
+             `{reason}` — a bounded sweep that does not state what it skipped reads \
+             as full coverage:\n{inline}"
+        );
+    }
+}
+
+/// The header states BOTH corpus sizes and BOTH parity floors.
+///
+/// A reader sizing the census has to be able to tell a thin artifact from a thin
+/// CORPUS, and the floors are what make "thin" checkable rather than a feeling.
+#[test]
+fn render_survey_header_states_both_corpus_sizes_and_both_parity_floors() {
+    let ri = SurveyRun {
+        total: 689,
+        surveyed: 616,
+        ..SurveyRun::default()
+    };
+    let md = render_survey(&ri, &synth_inline_run(), &SurveyStamp::at("sha"));
+    let header = section_of(&md, "# Struct-ctor field-type conformance — corpus survey");
+
+    for half in [CorpusHalf::TrackedRi, CorpusHalf::InlineRustHost] {
+        assert!(
+            header.contains(half.label()),
+            "the header must name the `{}` half:\n{header}",
+            half.label()
+        );
+        assert!(
+            header.contains(&half.floor().to_string()),
+            "the header must state the `{}` half's parity floor ({}):\n{header}",
+            half.label(),
+            half.floor()
+        );
+    }
+}
+
+/// The `**Sites:**` line distinguishes the two totals rather than summing them.
+///
+/// One unattributed number would be the single most misleading thing the header
+/// could say: the two halves have different dispositions, different owners and
+/// different actionability, and adding them erases all three.
+#[test]
+fn render_survey_states_the_two_site_totals_separately() {
+    let ri = SurveyRun {
+        total: 3,
+        surveyed: 3,
+        sites: vec![
+            synth_site("a.ri", 1, "W", "f", Owner::NonFea),
+            synth_site("b.ri", 2, "W", "g", Owner::NonFea),
+        ],
+        ..SurveyRun::default()
+    };
+    let inline_run = synth_inline_run();
+    let md = render_survey(&ri, &inline_run, &SurveyStamp::at("sha"));
+    let sites_line = md
+        .lines()
+        .find(|l| l.starts_with("**Sites:**"))
+        .unwrap_or_else(|| panic!("the header must carry a `**Sites:**` line:\n{md}"));
+
+    let sum = (ri.sites.len() + inline_run.sites.len()).to_string();
+    assert!(
+        !sites_line.split_whitespace().any(|w| w == sum),
+        "the `**Sites:**` line must not collapse the two halves into the single \
+         number {sum}: they carry different dispositions and different owners, and \
+         one total erases that; got {sites_line:?}"
+    );
+    assert!(
+        sites_line.contains(&ri.sites.len().to_string())
+            && sites_line.contains(&inline_run.sites.len().to_string()),
+        "the `**Sites:**` line must state BOTH totals; got {sites_line:?}"
+    );
+}
+
+/// Adding an inline half leaves the `.ri` half's section byte-identical.
+///
+/// The cross-contamination regression test. The two halves share the
+/// owner-grouping and table-body helpers, so a change made for one is a change
+/// made for both — this is what says which of those changes is allowed to be
+/// visible in the `.ri` half.
+#[test]
+fn render_survey_keeps_the_ri_half_byte_identical_when_an_inline_half_is_added() {
+    let ri = SurveyRun {
+        total: 5,
+        surveyed: 4,
+        not_surveyed: vec![("broken.ri".to_owned(), "parse-error".to_owned())],
+        partial: vec![("multi.ri".to_owned(), "compile-error".to_owned())],
+        sites: vec![
+            synth_site("a.ri", 1, "Widget", "label", Owner::NonFea),
+            synth_site("b.ri", 2, "Beam", "material", Owner::FeaDeferredToV06),
+        ],
+        ..SurveyRun::default()
+    };
+    let without = render_survey(&ri, &SurveyRun::default(), &SurveyStamp::at("sha"));
+    let with = render_survey(&ri, &synth_inline_run(), &SurveyStamp::at("sha"));
+
+    assert_eq!(
+        section_of(&without, "## Sites"),
+        section_of(&with, "## Sites"),
+        "the `.ri` half's counts, groups and rows must not move when an inline half \
+         is added"
+    );
+}
+
 /// **The survey generator.** Sweeps every tracked `.ri` and writes the artifact.
 ///
 /// `#[ignore]`d because it compiles the entire tracked corpus — ~2.5× the
@@ -5665,7 +6000,7 @@ fn survey_stamp() -> SurveyStamp {
 fn generate_ctor_conformance_corpus_survey() {
     let corpus = tracked_ri_corpus();
     let run = survey_corpus(std::path::Path::new(WORKSPACE_ROOT), corpus);
-    let rendered = render_survey(&run, &survey_stamp());
+    let rendered = render_survey(&run, &SurveyRun::default(), &survey_stamp());
     let out = survey_output_path();
     std::fs::write(&out, &rendered)
         .unwrap_or_else(|e| panic!("cannot write survey to {}: {e}", out.display()));
