@@ -26,12 +26,13 @@
 //! than here so that a measurement log cannot drift against the code it is
 //! embedded in.
 //!
-//! Headline, so a reader need not follow the pointer to learn the outcome: at
-//! the best-matched pairing in the table (+0.3% count mismatch) the morph took
-//! 123.98 s and the from-scratch remesh 1.98 s, i.e. the morph is **~63x
-//! SLOWER** at 100K. #2953's premise is inverted, not merely unmet. At 10K the
-//! two arms are roughly par, with which one wins depending on the build
-//! profile.
+//! The outcome, qualitatively, so a reader learns it without the hop: at the
+//! 100K scale the morph is **more than an order of magnitude SLOWER** than the
+//! from-scratch remesh, so #2953's premise is inverted rather than merely
+//! unmet; at 10K the two arms are roughly par, with which one wins depending
+//! on the build profile. Every figure behind those two sentences is in the
+//! note and deliberately nowhere else — a number repeated here is a number
+//! that can go stale here.
 //!
 //! ## How to run
 //!
