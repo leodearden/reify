@@ -87,10 +87,14 @@
 #       what a merge worker would gate on, and v1 is report-only. Stdout is the
 #       only result channel, and --format is binding in BOTH modes — a --task
 #       consult that asks for json gets json, never a table row.
-#   R4  Fail-safe degradation. An unreadable store, an unresolvable ref, a
-#       failed diff or a failed SQL engine degrades the affected row (or the
-#       whole report) to UNKNOWN with a stderr warning — never an abort, never
-#       a changed exit code.
+#   R4  Fail-safe degradation. An unreadable store, an id absent from the
+#       tag's non-terminal set, an unresolvable ref, a failed diff or a failed
+#       SQL engine degrades the affected row (or the whole report) to UNKNOWN
+#       with a stderr warning — never an abort, never a changed exit code.
+#       Degradation is decided BEFORE measurement, so a degraded row carries
+#       "-" in every column and can never be read as a benign verdict. This
+#       matters most in --task mode, which reports on a branch the caller
+#       named and so cannot fall back on fleet mode's "emit no row at all".
 #   R5  `behind` is CONTEXT, never a trigger. Measured over the 351 live task
 #       branches: median 2201 commits behind main (p25 878, p75 3781, p90
 #       5324), and 345 of 351 are >= 50 behind. A staleness-triggered verdict
@@ -439,6 +443,26 @@ _row_unknown() {
 _measure_branch() {
     local id="$1" ref tip
     _row_unknown "$id"
+
+    # R4's store half, returning BEFORE any measurement. Without it a --task
+    # consult whose store never loaded still measures the branch and reports a
+    # POSITIVELY BENIGN verdict — _classify_scope finds no declaration and says
+    # UNDECLARED, _census_commits rejects every citation for want of a peer
+    # status — so a typo'd --db or a permission change turns a SUSPECT branch
+    # clean on stdout, the caller's only result channel (R3).
+    #
+    # Sited at this ONE funnel rather than on the --task branch, so "a failure
+    # leaves the row exactly as _row_unknown shaped it" stays a property of the
+    # single entry point both modes call. Fleet mode is unaffected either way:
+    # its loop already filters on _STATUS before calling.
+    if [ "$_DB_READABLE" = 0 ]; then
+        warn "Task store was not read ($DB) — reporting scope=UNKNOWN for task $id."
+        return 0
+    fi
+    if [ -z "${_STATUS["$id"]:-}" ]; then
+        warn "Task $id is not in the non-terminal set for tag '$TAG' — reporting scope=UNKNOWN."
+        return 0
+    fi
 
     [ -n "$_MAIN_SHA" ] || return 0
 

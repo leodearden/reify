@@ -111,7 +111,7 @@ Resolved in this order; the order *is* the invariant, and it is total:
 
 | Verdict | Meaning |
 |---|---|
-| `UNKNOWN` | the git measurement failed (no such branch, unresolvable `--main-ref`, non-git `--repo`, failed diff) |
+| `UNKNOWN` | the branch was not measured: the store was not read, the id is not in this tag's non-terminal set, or the git measurement failed (no such branch, unresolvable `--main-ref`, non-git `--repo`, failed diff) |
 | `UNDECLARED` | the task declares no files. **Never** downgraded to `OUT-OF-SCOPE` |
 | `PEER-FILES` | some foreign path is declared by a live task other than this one |
 | `OUT-OF-SCOPE` | the foreign set is non-empty, but no live task declares any of it |
@@ -161,6 +161,13 @@ exclusive. Two further counters cross-cut it:
 A task with no branch ref produces no row at all in fleet mode. In `--task` mode it *does* get a
 row — a degraded `UNKNOWN` one — because the caller asked about that branch by name and is owed an
 answer.
+
+That asymmetry is why `--task` also degrades on the *store* side. Fleet mode never measures a
+branch whose id is missing from the non-terminal set — it has no row to emit. `--task` owes a row
+either way, so a typo'd `--db`, a wrong `--tag`, a store it cannot read, or an id whose task has
+gone terminal all produce `scope=UNKNOWN` with `-` in every measured column and a warning on
+stderr. Read `UNKNOWN` as *"this consult answered nothing"*, never as *"this branch is fine"* —
+the point of the degraded shape is that the two can never be confused on stdout.
 
 ## How to read a report
 
@@ -236,9 +243,11 @@ mutation-injection check proving the assertion can fail:
 * **R3** — non-gating: exit 0 on every valid invocation in both modes, whatever it finds. The only
   non-zero exit is 2, for a usage error or for `--format json` on a host with no python3 (refused
   up front, before any measurement). Stdout is the only result channel.
-* **R4** — fail-safe degradation: an unreadable store, an unresolvable ref, a failed diff or a
-  failed SQL engine degrades the affected row (or the whole report) to `UNKNOWN` with a warning on
-  stderr, never an abort.
+* **R4** — fail-safe degradation: an unreadable store, an id absent from the tag's non-terminal
+  set, an unresolvable ref, a failed diff or a failed SQL engine degrades the affected row (or the
+  whole report) to `UNKNOWN` with a warning on stderr, never an abort. The verdict is decided
+  *before* measurement, so a degraded row carries `-` in every column and can never be read as a
+  benign one.
 * **R5** — `behind` is context, never a trigger.
 
 ## Cross-references
