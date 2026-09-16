@@ -8,7 +8,7 @@
 //! function here shows up as dead code instead of being absorbed by
 //! `fixtures.rs`'s blanket `#![allow(dead_code)]`.
 
-use reify_ir::{Mesh, VolumeMesh};
+use reify_ir::{ElementOrderTag, Mesh, VolumeMesh};
 use std::collections::HashMap;
 
 /// Extract the outward-wound boundary triangle surface of a tetrahedral
@@ -35,9 +35,9 @@ use std::collections::HashMap;
 ///
 /// ## Panics
 ///
-/// Panics if `mesh` does not carry tet connectivity, matching this module's
-/// existing loud-failure style — a non-tet mesh here is a caller bug, not a
-/// recoverable condition.
+/// Panics if `mesh` does not carry tet connectivity, or carries it at an
+/// element order other than P1. Both are caller bugs rather than recoverable
+/// conditions, and both fail loudly in this module's existing style.
 pub fn boundary_surface(mesh: &VolumeMesh) -> Mesh {
     let tets = mesh.tet_indices().unwrap_or_else(|| {
         panic!(
@@ -46,6 +46,20 @@ pub fn boundary_surface(mesh: &VolumeMesh) -> Mesh {
             std::mem::discriminant(&mesh.connectivity)
         )
     });
+
+    // P1 only. `tet_indices` yields 4 indices per element at P1 but 10 at P2
+    // (`crates/reify-ir/src/geometry.rs`, `VolumeMesh::tet_indices`), and the
+    // enumeration below walks the table in 4-index chunks unconditionally. A
+    // P2 table would be re-grouped into bogus 4-tuples spanning element
+    // boundaries, yielding a garbage face multiset whose "boundary" could
+    // still satisfy `Mesh::validate` by accident. Assert the order the walk
+    // depends on rather than let that pass silently.
+    assert_eq!(
+        mesh.element_order(),
+        Some(ElementOrderTag::P1),
+        "boundary_surface: P2 tet connectivity carries 10 nodes/elem and cannot \
+         be walked in 4-index chunks"
+    );
 
     // The four faces of tet [0,1,2,3], each paired with the local index of the
     // vertex it is opposite to. Winding within a triple is provisional — it is
@@ -61,7 +75,13 @@ pub fn boundary_surface(mesh: &VolumeMesh) -> Mesh {
     // that triple is opposite to in the tet that first sighted it). Storing
     // the opposing vertex rather than an already-oriented triple is what lets
     // orientation be deferred to the survivors below.
-    let mut faces: HashMap<[u32; 3], (usize, [u32; 3], u32)> = HashMap::new();
+    // Pre-sized: a T-tet mesh has at most 4T distinct faces, and `tets.len()`
+    // IS 4T, so the table never rehashes. From zero capacity it would grow and
+    // rehash ~18 times over the ~220K entries this takes at the harness's n=18
+    // scale — setup cost only (extraction sits outside both timed regions),
+    // but the one nontrivial allocation profile in this module.
+    let mut faces: HashMap<[u32; 3], (usize, [u32; 3], u32)> =
+        HashMap::with_capacity(tets.len());
 
     for tet in tets.chunks_exact(4) {
         for (local, opposite) in TET_FACES {
@@ -91,9 +111,13 @@ pub fn boundary_surface(mesh: &VolumeMesh) -> Mesh {
     // run to run.
     boundary.sort_unstable();
 
-    // Compact: old -> new index over exactly the referenced vertices.
-    let mut remap: HashMap<u32, u32> = HashMap::new();
-    let mut vertices: Vec<f32> = Vec::new();
+    // Compact: old -> new index over exactly the referenced vertices. All three
+    // tables are pre-sized off the survivor count — a closed triangulated
+    // surface has V = F/2 + 2 by Euler, so `boundary.len()` comfortably
+    // over-estimates the distinct vertices about to be interned.
+    let vertex_estimate = boundary.len();
+    let mut remap: HashMap<u32, u32> = HashMap::with_capacity(vertex_estimate);
+    let mut vertices: Vec<f32> = Vec::with_capacity(vertex_estimate * 3);
     let mut indices: Vec<u32> = Vec::with_capacity(boundary.len() * 3);
     for tri in &boundary {
         for &old in tri {
