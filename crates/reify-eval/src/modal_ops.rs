@@ -21,7 +21,7 @@ use std::f64::consts::PI;
 
 use faer::sparse::{SparseRowMat, Triplet};
 
-use reify_core::{Diagnostic, DimensionVector};
+use reify_core::{Diagnostic, DiagnosticCode, DimensionVector};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_solver_elastic::{
     AssemblyElement, AssemblyMode, DirichletBc, EigenSolverOptions, EigenSolverResult,
@@ -400,7 +400,7 @@ pub(crate) fn eigensolve_modal(
         singular_k_over_ceiling,
         // Bound by name rather than swallowed by `..`, so a carrier added to the
         // outcome cannot reach this consumer unnoticed.
-        shift_at_eigenvalue: _,
+        shift_at_eigenvalue,
     } = solve_generalized_eigen(&k_free, &m_free, eigen_opts.clone(), under_constrained);
 
     // ---- Convert λ→f and scatter φ_free → φ_full --------------------------
@@ -525,6 +525,40 @@ pub(crate) fn eigensolve_modal(
              solve, not a result with rigid-body modes in it. Add supports that \
              remove all six rigid-body modes."
         )));
+    }
+
+    // A σ that landed ON an eigenvalue of the pencil: `K − σM` is singular at
+    // that shift, so shift-invert had no operator to apply and the solve returned
+    // nothing. Deliberately NOT the under-constrained vocabulary above — this
+    // model's supports may be perfectly fine, and the remedy is to move σ.
+    //
+    // The message is α's canonical template VERBATIM (`DiagnosticCode::
+    // ShiftAtEigenvalue`'s rustdoc), not a second wording: δ (#7261) reuses the
+    // same template, and two drifting messages for one condition is the SPOT
+    // violation this file guards against elsewhere.
+    //
+    // HONESTY LIMIT, recorded here rather than over-claimed in the message:
+    // `shift_is_numerically_singular` answers `true` for an EMPTY or non-finite
+    // spectrum as well as for a genuine λ-space collapse onto σ, so this Error
+    // can also fire when a σ≠0 solve simply converged nothing. That arm is LIVE
+    // on this path rather than theoretical: `B = M` here is a consistent mass
+    // matrix, never the identity, so `(K − σM)⁻¹M` is not Euclidean-self-adjoint
+    // and faer's Euclidean orthogonalization can degrade — the case a `B = I`
+    // fixture cannot exercise. The two causes are NOT split in this leaf; the
+    // conflation is filed as its own follow-up.
+    //
+    // TODO(#7261): δ owns the FULL surfacing — the λ-space surface conversion,
+    // `ShiftSkippedModes`, and the `.ri` fixture pair. What lands here is the
+    // refusal only, so δ verifies and extends rather than building from scratch.
+    if let Some(sigma) = shift_at_eigenvalue {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "E_ShiftAtEigenvalue: the shift sigma = {sigma} lies on an \
+                 eigenvalue of the pencil, so K − sigma·B is singular; move sigma \
+                 off the eigenvalue"
+            ))
+            .with_code(DiagnosticCode::ShiftAtEigenvalue),
+        );
     }
 
     // Convergence shortfall: `eig.converged` is false iff fewer modes were
