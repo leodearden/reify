@@ -1543,3 +1543,59 @@ fn wrong_dimension_through_a_non_generic_fn_is_rejected_at_the_call_site() {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+// ── PRD 3 leaf ζ (task 5782): the ANGLE producer slots, end to end ───────────
+//
+// PRD `docs/prds/v0_6/angle-units-surface-convergence.md`. The unit tests in
+// `builtin_signatures::tests` pin WHICH index each arm exposes; these pin the
+// user-facing MESSAGE and the count, which is where a wrong template or a
+// mis-firing arity guard actually shows up. Every expected message is built
+// from `ANGLE_HINT` — the hard-coded drift pin above, not the implementation's
+// const — so a reworded hint reds here rather than sliding through.
+
+/// SIGNAL — a bare 5-arg `rotate` angle is rejected, naming `angle`.
+///
+/// The exact string this leaf's acceptance criterion names. `rotate` is the
+/// headline case because it is the one producer whose angle was already
+/// user-visible as a wrong-by-default hazard: `rotate(b, 0, 0, 1, 45)` read the
+/// `45` as RADIANS, i.e. roughly seven full turns.
+///
+/// Exactly ONE error: the axis DIRECTION `0, 0, 1` is a dimensionless unit
+/// vector and must stay silent, so a count of four would mean the arm gated the
+/// direction as well.
+#[test]
+fn rotate_bare_angle_is_rejected_naming_the_angle() {
+    let compiled = compile_struct_body("    let r = rotate(b, 0, 0, 1, 45)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 ArgTypeMismatch — the axis DIRECTION must stay \
+         silent.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    assert_eq!(
+        errors[0].message,
+        format!("rotate: angle argument expects Angle, got Int; {ANGLE_HINT}")
+    );
+}
+
+/// BOUNDARY (PRD row B4) — the 2-arg Orientation overload must NOT mis-fire.
+///
+/// The other half of the arity guard, and the half a slot table gets wrong
+/// silently. `rotate(target, orientation)` is task 4166's overload: index 4
+/// does not exist and index 1 holds an `Orientation` VALUE. An arity-agnostic
+/// `angle@4` arm would be rescued here only by `compiled_args.get(4)` returning
+/// None — an accident of the SHORT call that says nothing about an arm's
+/// correctness, per the HAZARD block in `builtin_signatures.rs`.
+#[test]
+fn rotate_orientation_overload_yields_no_arg_type_mismatch() {
+    let compiled = compile_struct_body("    let r = rotate(b, orient_identity())\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        errors.is_empty(),
+        "`rotate(b, orient_identity())` is correct code — the ANGLE slot must be \
+         keyed to arity 5 and expose nothing here.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}

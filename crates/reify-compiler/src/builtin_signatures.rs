@@ -2185,6 +2185,47 @@ mod tests {
         );
     }
 
+    /// rotate(target, ax, ay, az, angle) → the ANGLE only, at arity 5 ONLY.
+    ///
+    /// PRD `docs/prds/v0_6/angle-units-surface-convergence.md` boundary row B4.
+    /// The guard is load-bearing rather than stylistic: task 4166 gave `rotate`
+    /// a 2-arg `rotate(target, orientation)` overload, so index 4 does not exist
+    /// at that arity and index 1 holds an `Orientation` VALUE, not a scalar. An
+    /// arity-agnostic `angle@4` arm would be saved only by the
+    /// `compiled_args.get(4)` bounds check — an ACCIDENT of the short call,
+    /// which the HAZARD block above the primitive arms spends forty lines
+    /// explaining cannot be relied on to distinguish "index absent" from "index
+    /// holds a different parameter".
+    ///
+    /// Stated positively: arity 2 exposes NO slots because nothing there is an
+    /// angle, not because nothing there is present.
+    #[test]
+    fn rotate_angle_slot_is_arity_5_only() {
+        assert_eq!(
+            builtin_arg_slots("rotate", 5),
+            vec![angle_slot(4, "angle")],
+            "rotate(target, ax, ay, az, angle) — arg0 is the geometry handle, \
+             args 1-3 are a dimensionless unit-vector DIRECTION, and only arg4 \
+             is the ANGLE"
+        );
+        assert!(
+            builtin_arg_slots("rotate", 2).is_empty(),
+            "at arity 2 (`rotate(target, orientation)`, task 4166's overload) the \
+             only non-handle argument is an Orientation VALUE and index 4 does \
+             not exist — the same class of false positive `mirror`'s and \
+             `circular_pattern`'s arity guards exist to prevent, so arity 2 must \
+             expose NO slots; got {:?}",
+            builtin_arg_slots("rotate", 2)
+        );
+        for arity in (0usize..=MAX_PROBED_ARITY).filter(|n| *n != 5) {
+            assert!(
+                builtin_arg_slots("rotate", arity).is_empty(),
+                "rotate at arity {arity} is not the 5-arg axis-angle form, so it \
+                 must expose NO slots — index 4 does not denote `angle` there"
+            );
+        }
+    }
+
     /// rotate_around(target, px, py, pz, ax, ay, az, angle) → the PIVOT only.
     ///
     /// The third STRADDLE case, and structurally identical to `revolve`'s: a
