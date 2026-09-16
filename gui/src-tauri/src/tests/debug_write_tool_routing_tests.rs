@@ -333,6 +333,37 @@ fn push_blanked(out: &mut String, span: &str) {
     }
 }
 
+/// The byte just past the char literal starting at `at`, or `None` when that
+/// `'` opens a LIFETIME (`&'static str`) instead.
+///
+/// Ported from `crates/reify-builtins/tests/common/seed_name_scan.rs`, whose
+/// reason applies verbatim: a quote inside a char literal is not a quote to
+/// any walk over the result. `'"'` would otherwise open a string here and
+/// blank every byte to the next quote.
+fn char_literal_end(raw: &[u8], at: usize) -> Option<usize> {
+    let first = at + 1;
+    if first >= raw.len() {
+        return None;
+    }
+    if raw[first] == b'\\' {
+        // An escape's payload can itself be a quote (`'\''`) or run several
+        // bytes (`'\u{7b}'`), so step past it and find the real closing quote.
+        let mut j = first + 2;
+        while j < raw.len() && raw[j] != b'\'' {
+            j += 1;
+        }
+        return (j < raw.len()).then_some(j + 1);
+    }
+    let width = match raw[first] {
+        b if b < 0x80 => 1,
+        b if b >> 5 == 0b110 => 2,
+        b if b >> 4 == 0b1110 => 3,
+        _ => 4,
+    };
+    let close = first + width;
+    (close < raw.len() && raw[close] == b'\'').then_some(close + 1)
+}
+
 /// Blanks every `//`/`///`/`//!` line comment and `/* … */` block comment —
 /// and, when `blank_literals`, the CONTENTS of every `"…"` string literal.
 ///
@@ -344,9 +375,9 @@ fn push_blanked(out: &mut String, span: &str) {
 ///
 /// It is a scanner, not a Rust lexer: it tracks `"` string literals — the only
 /// literal in this corpus that can contain a `//` (`"http://…"`) — with `\`
-/// escapes, across line boundaries. Raw strings (`r"…"`, `r#"…"#`) and the
-/// pathological `'"'` char literal, neither of which occurs in
-/// `debug_server.rs`, are not special-cased.
+/// escapes, across line boundaries, and steps over char literals so a `'"'`
+/// cannot open one. Raw strings (`r"…"`, `r#"…"#`), which `debug_server.rs`
+/// does not use, are still not special-cased.
 ///
 /// KNOWN SPOT COST: this is the third hand-rolled Rust source scanner in the
 /// repo, beside `crates/reify-eval/tests/version_id_discipline_gate.rs` and
@@ -397,6 +428,15 @@ fn blank_noncode(source: &str, blank_literals: bool) -> String {
                 .find("*/")
                 .map_or(source.len(), |n| i + n + "*/".len());
             push_blanked(&mut out, &source[i..end]);
+            i = end;
+            continue;
+        }
+        if rest[0] == b'\''
+            && let Some(end) = char_literal_end(bytes, i)
+        {
+            // Copied whole, never interpreted: one char can hold no
+            // identifier and no `.emit(`, but it CAN hold a `"`.
+            out.push_str(&source[i..end]);
             i = end;
             continue;
         }
@@ -625,6 +665,20 @@ fn the_string_scan_survives_slashes_and_escapes() {
     let escaped = r#"    let s = "a \" // b"; state.app.emit("d", &d);
 "#;
     assert!(strip_comments(escaped).contains(".emit("));
+
+    // A `"` inside a CHAR literal must not open a string. Blanking from there
+    // to the next quote swallows real code, and swallowed code false-GREENS
+    // the private-emit check — not merely noise, the forbidden direction.
+    let quote_char = r#"    let q = '"'; state.app.emit("d", &d);
+"#;
+    assert!(strip_comments(quote_char).contains(".emit("));
+    assert!(strip_prose(quote_char).contains(".emit("));
+
+    // A lifetime is NOT a char literal, so recognising `'` must not swallow
+    // the rest of `&'static str` either.
+    let lifetime = r#"    let n: &'static str = "x"; state.app.emit("d", &d);
+"#;
+    assert!(strip_comments(lifetime).contains(".emit("));
 
     // Blanking is equal-LENGTH, which is what lets `fn_body` slice one view
     // with offsets found in another: the comment's text is gone, the code
