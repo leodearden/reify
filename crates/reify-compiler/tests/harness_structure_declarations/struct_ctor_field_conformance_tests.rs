@@ -1196,6 +1196,135 @@ fn port_unannotated_param_default_takes_real_fallback_like_top_level() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Task 7174 no-false-positive fence.
+//
+// HONEST FRAMING, so nobody later reads these as acceptance probes: they are
+// REGRESSION FENCES and they are NOT red before the fix. Pre-fix the walk saw no
+// port cells at all, so their silence proved nothing. The task's
+// negative-assertion requirement is discharged by the OBSERVING probes above
+// (the three single-arm probes and the parity fence, all measured red-before /
+// green-after).
+//
+// Their value is forward: widening the walk widens what it JUDGES, so each arm
+// it now reaches for port cells must be pinned against over-firing on a
+// legitimate port-body default.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Assert `source` compiles with ZERO diagnostics of any severity, and that the
+/// port it declares really did compile `expected_members` member cells.
+///
+/// The member-count check is what keeps the zero-assertion honest. A bare
+/// "no diagnostics" probe passes just as well when the port body was dropped on
+/// the floor, or when the fixture stopped parsing the way it reads — the exact
+/// failure modes a silence-based fence is blind to. Pinning the count asserts
+/// the walk was actually HANDED these cells and chose to stay quiet.
+///
+/// Zero diagnostics of ANY severity (not just the ctor-conformance subset) is
+/// the measured truth for both fixtures below and is the stronger claim: it also
+/// catches a fixture that starts tripping an unrelated warning.
+fn assert_port_body_compiles_clean(
+    source: &str,
+    port_name: &str,
+    expected_members: usize,
+    label: &str,
+) {
+    let module = compile_source_with_stdlib(source);
+    assert!(
+        module.diagnostics.is_empty(),
+        "{label}: a port body whose param defaults are all well-typed must compile \
+         with zero diagnostics, got: {:#?}",
+        module.diagnostics
+    );
+    let members: Vec<usize> = module
+        .templates
+        .iter()
+        .flat_map(|t| &t.ports)
+        .filter(|p| p.name == port_name)
+        .map(|p| p.members.len())
+        .collect();
+    assert_eq!(
+        members,
+        vec![expected_members],
+        "{label}: expected exactly one port named {port_name:?} carrying \
+         {expected_members} member cells — without this the zero-diagnostic \
+         assertion above would pass vacuously on a dropped port body"
+    );
+}
+
+const SRC_PORT_BODY_ALL_DEFAULTS_WELL_TYPED: &str = r#"module test.port_clean
+enum Color { Red, Green }
+trait P {}
+structure def Widget { param label : String }
+structure def Root {
+    port mount : P {
+        param label : String = "ok"
+        param n : Int = 3
+        param w : Length = 5mm
+        param region : Geometry = box(1mm, 2mm, 3mm)
+        param part : Widget = Widget(label: "ok")
+        param c : Color = Color.Red
+    }
+}
+"#;
+
+/// Every arm the widened walk now reaches for port cells, given a LEGITIMATE
+/// default, stays silent — one default per arm:
+///
+/// - general concrete-leaf: `String = "ok"`, `Int = 3`, `Length = 5mm`
+/// - `Type::Geometry`: `Geometry = box(…)`, which also covers the GHR-γ
+///   scalar-placeholder path (geometry constructors compile to a dimensionless
+///   scalar, so a naive `type_compatible(Geometry, …)` would reject them)
+/// - `Type::StructureRef`: `Widget = Widget(label: "ok")`
+/// - annotated enum: `Color = Color.Red` — the shape the corpus was migrated to
+#[test]
+fn port_body_well_typed_param_defaults_stay_clean() {
+    assert_port_body_compiles_clean(
+        SRC_PORT_BODY_ALL_DEFAULTS_WELL_TYPED,
+        "mount",
+        6,
+        "well-typed port body, one default per walk arm",
+    );
+}
+
+const SRC_MIGRATED_HYDRO_CONFORMER: &str = r#"import std.ports.fluid
+
+structure def HydroConformer {
+    port p : in HydraulicPort {
+        param pressure : Pressure = 101325Pa
+        param flow_rate : VolumetricFlowRate = 1gal / 1s
+        param medium : String = "hydraulic_oil"
+        param fluid_type : FluidType = FluidType.Liquid
+        param frame : Frame3 = Frame3(
+            origin: vec3(0mm, 0mm, 0mm),
+            x_axis: vec3(1, 0, 0),
+            y_axis: vec3(0, 1, 0),
+            z_axis: vec3(0, 0, 1),
+        )
+        param fitting_type : FittingStandard = FittingStandard.NPT
+    }
+}
+"#;
+
+/// The MIGRATED `HydroConformer` shape — real stdlib enum types (`FluidType`,
+/// `FittingStandard`) annotated on port params under `import std.ports.fluid` —
+/// is clean.
+///
+/// This is the inline twin of the `examples/stdlib/ports_breadth.ri` migration:
+/// a cross-module enum annotation is the one part of the migration an inline
+/// `enum Color { … }` fixture cannot exercise, and it is the part that would
+/// break if enum resolution inside a port body ever regressed to the
+/// dimensionless-scalar fallback the un-annotated form takes.
+#[test]
+fn migrated_hydro_conformer_port_body_stays_clean() {
+    assert_port_body_compiles_clean(
+        SRC_MIGRATED_HYDRO_CONFORMER,
+        "p",
+        6,
+        "migrated HydroConformer (annotated stdlib enum port params)",
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Step-11 probes: per-family false-positive fences + α-value-floor guards.
 //
 // The general concrete-leaf arm shipped with a NEGATIVE skip list (`!matches!(
