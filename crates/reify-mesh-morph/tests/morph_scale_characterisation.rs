@@ -310,136 +310,196 @@ fn bracket_fixture_reaches_the_10k_and_100k_tet_calibration_scales() {
 
 /// The tet -> boundary-surface extractor that feeds the gmsh arm must emit
 /// exactly the once-occurring tet faces, wound outward, compacted onto only
-/// the vertices it actually references.
+/// the vertices it actually references — at every resolution the harness
+/// itself uses, not merely at the cheap one.
 ///
-/// The assertion target is `reify_ir::Mesh::validate`
-/// (`crates/reify-ir/src/geometry.rs:3187`) rather than a hand-rolled Euler
-/// check: it is precisely the producer-obligation set gmsh's preflight
-/// demands — finite, index-valid, non-degenerate, closed, and consistently
-/// wound on the position-welded quotient.
+/// The primary assertion target is `Mesh::validate`
+/// (`crates/reify-ir/src/geometry.rs`, `impl Mesh :: validate`): it is
+/// precisely the producer-obligation set gmsh's preflight demands — finite,
+/// index-valid, non-degenerate, closed, and consistently wound on the
+/// position-welded quotient.
 ///
-/// Cheap and always-on: n=4, the existing `calibration.rs` cost point.
+/// ## Why the resolution sweep
+///
+/// Block-interface conformity is the property `fixtures::bracket`'s polar
+/// half-turn ordering and arm-2 wedge ordering exist to guarantee, and the
+/// driver treats its violation as catastrophic rather than local: a single
+/// open surface makes HXT's `mesh_generate` fail, and per
+/// [`gmsh_tetrahedralise`]'s own notes that failure leaves thread-local
+/// state which survives `gmshClear()` and silently zeroes every SUBSEQUENT
+/// rung of the ladder. Pinning conformity only at n=4 while the driver
+/// extracts and meshes surfaces at [`N_10K`] and [`N_100K`] would leave that
+/// blast radius uncovered for the two resolutions that actually run.
+///
+/// The sweep runs n = 1, 2, 3, 4, [`N_10K`], [`N_100K`]: the coarse end
+/// because n=1 is the one resolution not covered by the generator's `n >= 2`
+/// closed form, n=4 because its surface is pinned to recorded literals below,
+/// and the last two because they are what the driver meshes.
+///
+/// Cheap and always-on even so: the whole sweep is pure fixture generation
+/// plus extraction, no morph and no meshing, and stays inside the existing
+/// `calibration.rs` cost envelope (~1 s at the time of writing).
 #[test]
 fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
     use std::collections::{HashMap, HashSet};
 
-    let (mesh, _surface_indices) = fixtures::bracket(ARM_LENGTH, THICKNESS, FILLET_BASE, 4);
-    let surface = boundary::boundary_surface(&mesh);
+    for n in [1, 2, 3, 4, N_10K, N_100K] {
+        let (mesh, _surface_indices) = fixtures::bracket(ARM_LENGTH, THICKNESS, FILLET_BASE, n);
+        let surface = boundary::boundary_surface(&mesh);
 
-    // (1) The full mesh contract. Naming the Err variant means a contract
-    // violation reports which obligation failed rather than "assert failed".
-    if let Err(violation) = surface.validate(1e-6) {
-        panic!(
-            "boundary_surface(bracket(n=4)) violates the mesh contract, so gmsh's \
-             preflight would reject it: {violation:?}"
+        // (1) The full mesh contract. Naming the Err variant means a contract
+        // violation reports which obligation failed rather than "assert failed".
+        if let Err(violation) = surface.validate(1e-6) {
+            panic!(
+                "boundary_surface(bracket(n={n})) violates the mesh contract, so \
+                 gmsh's preflight would reject it: {violation:?}"
+            );
+        }
+
+        assert_eq!(
+            surface.indices.len() % 3,
+            0,
+            "boundary_surface(n={n}) must emit whole triangles; got {} indices",
+            surface.indices.len()
+        );
+
+        let tris = surface.indices.len() / 3;
+        let verts = surface.vertices.len() / 3;
+
+        // (2) Euler characteristic of a closed genus-0 manifold: every edge at
+        // degree exactly 2, and V - E + F = 2. This is deliberately NOT a
+        // recomputation of the extractor's own algorithm — re-deriving the
+        // once-occurring-face set here from `tet_indices` would share the
+        // keying with the implementation, so any defect common to both (a
+        // per-tet rather than per-face count, a changed face enumeration)
+        // would satisfy the assertion identically. Edge degree and the Euler
+        // sum are properties of the EMITTED surface alone, and they are what
+        // "watertight enough for HXT" actually means.
+        //
+        // The count is taken in index space, not on the position-welded
+        // quotient `validate` uses, which makes it the stronger statement:
+        // two coincident-but-distinct vertices at a block interface weld away
+        // under `validate` but break degree-2 here. That is exactly the
+        // non-conformity this sweep is looking for.
+        let mut edge_degree: HashMap<[u32; 2], usize> = HashMap::new();
+        for tri in surface.indices.chunks_exact(3) {
+            for (a, b) in [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {
+                let mut edge = [a, b];
+                edge.sort_unstable();
+                *edge_degree.entry(edge).or_insert(0) += 1;
+            }
+        }
+        let irregular = edge_degree.values().filter(|&&d| d != 2).count();
+        assert_eq!(
+            irregular, 0,
+            "boundary_surface(n={n}) emitted {irregular} edges of degree != 2 out \
+             of {}; the surface is not a closed manifold, and gmsh's HXT backend \
+             fails on an open input in a way that poisons every later rung",
+            edge_degree.len()
+        );
+        let edges = edge_degree.len();
+        assert_eq!(
+            verts as i64 - edges as i64 + tris as i64,
+            2,
+            "boundary_surface(n={n}) has V-E+F = {}-{}+{} != 2; a closed genus-0 \
+             surface is what the bracket's three aligned blocks are supposed to \
+             bound",
+            verts,
+            edges,
+            tris
+        );
+
+        // (2b) At n=4 the three counts are pinned to the figures recorded
+        // independently in `fixtures::bracket`'s "## Conformity" paragraph, so
+        // the docstring and the extractor cannot drift apart unnoticed.
+        if n == 4 {
+            assert_eq!(
+                (verts, edges, tris),
+                (248, 738, 492),
+                "boundary_surface(bracket(n=4)) must reproduce the surface recorded \
+                 in `fixtures::bracket`'s conformity paragraph (248 vertices / 738 \
+                 edges / 492 triangles); got {verts} / {edges} / {tris}"
+            );
+        }
+
+        // (3) Compaction: every emitted vertex is referenced by some triangle,
+        // i.e. the extractor remaps rather than carrying interior nodes through.
+        let used: HashSet<u32> = surface.indices.iter().copied().collect();
+        assert_eq!(
+            used.len(),
+            verts,
+            "boundary_surface(n={n}) must carry only referenced vertices; {verts} \
+             emitted but only {} referenced (interior nodes would be handed to \
+             gmsh for nothing)",
+            used.len()
+        );
+
+        // (4) Compaction is a strict narrowing of the volume mesh's vertex table.
+        assert!(
+            verts <= mesh.vertices.len() / 3,
+            "boundary_surface(n={n}) emitted {verts} vertices from a {}-vertex \
+             volume mesh",
+            mesh.vertices.len() / 3
+        );
+
+        // (5) Winding SIGN — the half of "outward" that `validate` structurally
+        // cannot see. Its Closed/ConsistentWinding obligation asks only that
+        // every directed edge on the position-welded quotient have its reverse
+        // exactly once: that is orientABILITY, and a globally INVERTED closed
+        // surface satisfies it just as happily as an outward one. Nothing
+        // downstream catches the difference either — gmsh meshes the inverted
+        // surface without complaint — so `orient_outward` could silently flip
+        // and every other assertion in this file would stay green.
+        //
+        // The divergence theorem pins the sign in O(tris) with no new
+        // dependency: summing the signed volume of the tetrahedron each triangle
+        // spans with the origin, `dot(v0, cross(v1, v2)) / 6`, totals +V for an
+        // outward-wound closed surface and -V for an inward-wound one.
+        let vertex = |i: u32| -> [f64; 3] {
+            let base = i as usize * 3;
+            [
+                surface.vertices[base] as f64,
+                surface.vertices[base + 1] as f64,
+                surface.vertices[base + 2] as f64,
+            ]
+        };
+        let mut signed_volume = 0.0_f64;
+        for tri in surface.indices.chunks_exact(3) {
+            let (a, b, c) = (vertex(tri[0]), vertex(tri[1]), vertex(tri[2]));
+            let cross = [
+                b[1] * c[2] - b[2] * c[1],
+                b[2] * c[0] - b[0] * c[2],
+                b[0] * c[1] - b[1] * c[0],
+            ];
+            signed_volume += (a[0] * cross[0] + a[1] * cross[1] + a[2] * cross[2]) / 6.0;
+        }
+        assert!(
+            signed_volume > 0.0,
+            "boundary_surface(n={n}) emitted an INWARD-wound surface (signed volume \
+             {signed_volume}); `Mesh::validate` cannot see this, so this assertion \
+             is the only thing standing between a sign flip in `orient_outward` \
+             and a silently inverted gmsh input"
+        );
+
+        // ...and loosely, the right magnitude. The bracket's analytic volume is
+        //
+        //     (2*L*T - T^2 - (r^2 - pi*r^2/4)) * T
+        //   = (2*1.0*0.2 - 0.2^2 - (0.05^2 - pi*0.05^2/4)) * 0.2
+        //   = 0.071893
+        //
+        // for a smooth fillet; the fixture facets that concave arc and so
+        // undershoots a little (0.069617 measured at n=4). A +/-15% band absorbs
+        // faceting at any resolution while still catching a structural defect the
+        // sign check alone would miss — a duplicated or dropped face set moves the
+        // total by a factor, not by a few percent.
+        const ANALYTIC_VOLUME: f64 = 0.071_893;
+        assert!(
+            (0.85 * ANALYTIC_VOLUME..=1.15 * ANALYTIC_VOLUME).contains(&signed_volume),
+            "boundary_surface(n={n}) enclosed {signed_volume}, outside +/-15% of \
+             the bracket's analytic volume {ANALYTIC_VOLUME} — the surface is \
+             closed and outward-wound but does not bound the solid it came from"
         );
     }
-
-    assert_eq!(
-        surface.indices.len() % 3,
-        0,
-        "boundary_surface must emit whole triangles; got {} indices",
-        surface.indices.len()
-    );
-
-    // (2) Triangle count == number of tet faces occurring exactly once,
-    // recomputed here from `tet_indices` so the test does not merely restate
-    // the implementation.
-    let tets = mesh
-        .tet_indices()
-        .expect("bracket must expose tet connectivity");
-    let mut face_counts: HashMap<[u32; 3], usize> = HashMap::new();
-    for tet in tets.chunks_exact(4) {
-        for &[i, j, k] in &[[0usize, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]] {
-            let mut key = [tet[i], tet[j], tet[k]];
-            key.sort_unstable();
-            *face_counts.entry(key).or_insert(0) += 1;
-        }
-    }
-    let expected_tris = face_counts.values().filter(|&&c| c == 1).count();
-    assert_eq!(
-        surface.indices.len() / 3,
-        expected_tris,
-        "boundary_surface must emit exactly the once-occurring tet faces"
-    );
-
-    // (3) Compaction: every emitted vertex is referenced by some triangle,
-    // i.e. the extractor remaps rather than carrying interior nodes through.
-    let used: HashSet<u32> = surface.indices.iter().copied().collect();
-    assert_eq!(
-        used.len(),
-        surface.vertices.len() / 3,
-        "boundary_surface must carry only referenced vertices; {} emitted but only \
-         {} referenced (interior nodes would be handed to gmsh for nothing)",
-        surface.vertices.len() / 3,
-        used.len()
-    );
-
-    // (4) Compaction is a strict narrowing of the volume mesh's vertex table.
-    assert!(
-        surface.vertices.len() / 3 <= mesh.vertices.len() / 3,
-        "boundary_surface emitted {} vertices from a {}-vertex volume mesh",
-        surface.vertices.len() / 3,
-        mesh.vertices.len() / 3
-    );
-
-    // (5) Winding SIGN — the half of "outward" that `validate` structurally
-    // cannot see. Its Closed/ConsistentWinding obligation asks only that
-    // every directed edge on the position-welded quotient have its reverse
-    // exactly once: that is orientABILITY, and a globally INVERTED closed
-    // surface satisfies it just as happily as an outward one. Nothing
-    // downstream catches the difference either — gmsh meshes the inverted
-    // surface without complaint — so `orient_outward` could silently flip
-    // and every other assertion in this file would stay green.
-    //
-    // The divergence theorem pins the sign in O(tris) with no new
-    // dependency: summing the signed volume of the tetrahedron each triangle
-    // spans with the origin, `dot(v0, cross(v1, v2)) / 6`, totals +V for an
-    // outward-wound closed surface and -V for an inward-wound one.
-    let vertex = |i: u32| -> [f64; 3] {
-        let base = i as usize * 3;
-        [
-            surface.vertices[base] as f64,
-            surface.vertices[base + 1] as f64,
-            surface.vertices[base + 2] as f64,
-        ]
-    };
-    let mut signed_volume = 0.0_f64;
-    for tri in surface.indices.chunks_exact(3) {
-        let (a, b, c) = (vertex(tri[0]), vertex(tri[1]), vertex(tri[2]));
-        let cross = [
-            b[1] * c[2] - b[2] * c[1],
-            b[2] * c[0] - b[0] * c[2],
-            b[0] * c[1] - b[1] * c[0],
-        ];
-        signed_volume += (a[0] * cross[0] + a[1] * cross[1] + a[2] * cross[2]) / 6.0;
-    }
-    assert!(
-        signed_volume > 0.0,
-        "boundary_surface emitted an INWARD-wound surface (signed volume \
-         {signed_volume}); `Mesh::validate` cannot see this, so this assertion \
-         is the only thing standing between a sign flip in `orient_outward` \
-         and a silently inverted gmsh input"
-    );
-
-    // ...and loosely, the right magnitude. The bracket's analytic volume is
-    //
-    //     (2*L*T - T^2 - (r^2 - pi*r^2/4)) * T
-    //   = (2*1.0*0.2 - 0.2^2 - (0.05^2 - pi*0.05^2/4)) * 0.2
-    //   = 0.071893
-    //
-    // for a smooth fillet; the fixture facets that concave arc and so
-    // undershoots a little (0.069617 measured at n=4). A +/-15% band absorbs
-    // faceting at any resolution while still catching a structural defect the
-    // sign check alone would miss — a duplicated or dropped face set moves the
-    // total by a factor, not by a few percent.
-    const ANALYTIC_VOLUME: f64 = 0.071_893;
-    assert!(
-        (0.85 * ANALYTIC_VOLUME..=1.15 * ANALYTIC_VOLUME).contains(&signed_volume),
-        "boundary_surface enclosed {signed_volume}, outside +/-15% of the \
-         bracket's analytic volume {ANALYTIC_VOLUME} — the surface is closed \
-         and outward-wound but does not bound the solid it came from"
-    );
 }
 
 // ── Morph arm ────────────────────────────────────────────────────────────────
