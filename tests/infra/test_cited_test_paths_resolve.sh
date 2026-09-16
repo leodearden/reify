@@ -180,6 +180,67 @@ _ratchet_check_subset() {
     return 1
 }
 
+# ---------------------------------------------------------------------------
+# VACUITY FLOOR BOUNDS.
+#
+# MEASURED BASIS (this tree, when the gate was written):
+#   index units          1304   549 flat + 755 nested under crates/*/tests/
+#   citation occurrences 1860   spanning 790 distinct cited paths
+#
+# The floors sit far below those: roughly a sixth and a quarter. They are
+# lower bounds on THE INSTRUMENT WORKING, not targets for the tree — ordinary
+# churn, even deleting a whole crate's tests, cannot reach them, while a scan
+# that collapses toward zero does. Section I asserts the live corpus keeps at
+# least 2x headroom over both, so these can never quietly drift up to meet
+# the tree and become a second, accidental content assertion.
+# ---------------------------------------------------------------------------
+FLOOR_MIN_INDEX_UNITS=200
+FLOOR_MIN_CITATIONS=500
+
+# ---------------------------------------------------------------------------
+# _floor_check_corpus <index-units> <citation-occurrences>
+#
+# THE VACUITY FLOOR. Takes the two observed corpus sizes as EXPLICIT
+# ARGUMENTS rather than re-deriving them, so a degenerate case can be driven
+# without fabricating a fake repository, and so the gate's main body can feed
+# it the same numbers it already computed.
+#
+# READS THE BASELINE NOWHERE. That independence is the property that makes
+# this a real second signal: a floor that consulted the baseline would go
+# green exactly when the baseline was lost, which is one of the states it
+# exists to catch.
+#
+# rc0 and byte-for-byte silent when both floors are cleared; otherwise rc1
+# with a diagnostic naming WHICH floor broke and WHAT was observed. Both are
+# reported when both break — a diagnostic that stops at the first breach
+# hides half the picture.
+# ---------------------------------------------------------------------------
+_floor_check_corpus() {
+    local idx_n="$1" cit_n="$2" breached=0
+
+    # A non-numeric count is a breach, not a crash: it means the caller's own
+    # measurement failed, which is exactly the blindness this floor detects.
+    case "$idx_n" in (''|*[!0-9]*) idx_n=-1 ;; esac
+    case "$cit_n" in (''|*[!0-9]*) cit_n=-1 ;; esac
+
+    if [ "$idx_n" -lt "$FLOOR_MIN_INDEX_UNITS" ]; then
+        printf 'VACUITY FLOOR BREACHED — tracked-test index: observed %s, floor %s.\n' \
+            "$idx_n" "$FLOOR_MIN_INDEX_UNITS" >&2
+        printf '  An index this small cannot resolve anything, so every citation is\n' >&2
+        printf '  dropped and the ratchet goes quiet regardless of the tree.\n' >&2
+        breached=1
+    fi
+    if [ "$cit_n" -lt "$FLOOR_MIN_CITATIONS" ]; then
+        printf 'VACUITY FLOOR BREACHED — citation corpus: observed %s, floor %s.\n' \
+            "$cit_n" "$FLOOR_MIN_CITATIONS" >&2
+        printf '  The scan found almost nothing to resolve; the subset check below it\n' >&2
+        printf '  is then trivially satisfied by the empty set.\n' >&2
+        breached=1
+    fi
+    [ "$breached" -eq 0 ] || return 1
+    return 0
+}
+
 echo "=== cited test-path resolution gate (task 7095) ==="
 
 # Single EXIT trap over an array of fixtures: individual `trap ... EXIT` calls
