@@ -14,6 +14,8 @@
 //!   `docs/prds/v0_6/eval-cell-commit-substrate.md` §2.6 / §3 P3 / §7 B4), over
 //!   `examples/` only.
 //!
+//! # One eval, two checkers
+//!
 //! The merge is sound because `Engine::check_no_stale_undef` (`invariants.rs`)
 //! and `Engine::check_snapshot_cache_divergence` (`cache_divergence.rs`) both
 //! take `&self` and both read the SAME retained `eval_state()` snapshot the
@@ -304,14 +306,9 @@ fn shard_of(rel_path: &str) -> usize {
 /// The headline behaviour change task #7431 makes: a corpus file's shard is a
 /// function of the FILE ALONE, not of its position in a sorted corpus listing.
 ///
-/// Both pre-unification sweeps keyed their shards `i % CORPUS_SHARD_COUNT` on
-/// the file's index in a sorted discovery walk. That is perfectly balanced but
-/// insert-UNSTABLE: adding, deleting or renaming ONE `.ri` file shifts every
-/// later file by one index and therefore reassigns roughly 23/24 of the corpus
-/// to a different shard. A reproduction recorded as "shard 7 reds" stops being
-/// findable the moment anyone touches the corpus. Hash keying trades a little
-/// balance (quantified in `hash_sharding_partitions_the_corpus_within_measured_bounds`)
-/// for the property that a corpus edit reassigns only the edited file.
+/// The property [`shard_of`]'s doc argues for, asserted rather than argued
+/// again: a corpus edit reassigns ONLY the edited file, so a reproduction
+/// recorded as "shard 7 reds" survives an unrelated `.ri` landing.
 #[test]
 fn shard_of_is_independent_of_corpus_membership() {
     // (a) A pure function of the key: same input, same shard, every time, and
@@ -663,14 +660,8 @@ impl FileOutcome {
     }
 }
 
-/// The two ways a file can fail to have findings for an invariant are NOT the
-/// same fact, and only one of them is benign.
-///
-/// `run_corpus_shard` skips `None` without comment, which is right for a file
-/// outside an invariant's scope and catastrophic for an invariant that vanished
-/// from [`GATES`]: every shard would skip it exactly as it skips an out-of-scope
-/// file, and the sweep would stay green with half its coverage gone. Pinned here
-/// so the panic cannot be softened back into a `_ => None`.
+/// Both of [`FileOutcome::findings`]'s no-findings answers, so the distinction
+/// it draws cannot be softened back into a `_ => None`.
 #[test]
 #[should_panic(expected = "was not evaluated for")]
 fn a_vanished_invariant_is_loud_rather_than_an_out_of_scope_skip() {
@@ -895,11 +886,9 @@ const GATES: &[InvariantGate] = &[
 
 /// INV-EVAL-5's adapter: ONE `Engine` wrapper call, mapped to [`Finding`].
 ///
-/// Deliberately a separate named function from its sibling below. Task 5060 is
-/// explicit that the snapshot↔cache audit is a DISTINCT invariant and the two
-/// checkers must NOT be merged; keeping one adapter per invariant holds that at
-/// the code level, not just in `reify-eval`'s `src/`. What this file shares is
-/// the expensive corpus EVALUATION — never the checking.
+/// Deliberately a separate named function from its sibling below: one adapter
+/// per invariant is where the module header's "The two CHECKERS stay distinct
+/// (task 5060)" is held at the code level, not just in `reify-eval`'s `src/`.
 fn stale_undef_findings(engine: &reify_eval::Engine) -> Vec<Finding> {
     engine
         .check_no_stale_undef()
@@ -925,11 +914,8 @@ fn snapshot_cache_divergence_findings(engine: &reify_eval::Engine) -> Vec<Findin
 /// a future edit could quietly break: this function cannot evaluate anything,
 /// so a second eval would have to be written somewhere a reader can see it.
 ///
-/// Sound because `Engine::check_no_stale_undef` (`invariants.rs`) and
-/// `Engine::check_snapshot_cache_divergence` (`cache_divergence.rs`) are both
-/// `&self` reads of the same retained `eval_state()` snapshot the preceding
-/// `eval()` installed, and neither mutates the engine — so one evaluation feeds
-/// both, in either order, with no order-dependent result.
+/// Sound for the reason the module header states once, under "One eval, two
+/// checkers".
 fn check_file(engine: &reify_eval::Engine, rel: &str) -> FileOutcome {
     let per_invariant = GATES
         .iter()
@@ -955,11 +941,11 @@ fn check_file(engine: &reify_eval::Engine, rel: &str) -> FileOutcome {
 /// off a SINGLE compile+eval.
 ///
 /// Before unification each sweep compiled and evaluated its own copy of the
-/// overlapping corpus — 299 evals for INV-EVAL-5 plus 264 for INV-EVAL-4 across
-/// 48 test processes. The merge is sound because `Engine::check_no_stale_undef`
-/// (`invariants.rs`) and `Engine::check_snapshot_cache_divergence`
-/// (`cache_divergence.rs`) are both `&self` reads of the same retained
-/// `eval_state()` snapshot, and neither mutates the engine.
+/// overlapping corpus, across twice as many test processes. This test is where
+/// the module header's "One eval, two checkers" argument stops being an argument
+/// and becomes an assertion: (b) pins that each invariant's findings are exactly
+/// what its `Engine` wrapper returns on the shared engine, and (c) that neither
+/// running the routine twice nor swapping the checkers' order changes them.
 ///
 /// `examples/fdm_bracket.ri` is the fixture deliberately: it is a live
 /// KNOWN_RESIDUAL divergence entry, so at least one invariant returns a NON-empty
@@ -1282,13 +1268,8 @@ struct GateTally {
 }
 
 impl GateTally {
-    /// Why this invariant fails the shard — EMPTY when it is clean.
-    ///
-    /// Structured sections rather than a joined `String`: which policies fired
-    /// is a decision the sweep and its tests both read, and recovering it by
-    /// substring-matching the operator-facing prose would make a cosmetic
-    /// reword indistinguishable from a dispatch defect. Text is produced only
-    /// by [`FailureSection::render`], at the shard's edge.
+    /// Why this invariant fails the shard — EMPTY when it is clean. Structured
+    /// sections rather than a joined `String`; see [`FailureSection`].
     fn failure_sections(&self, gate: &InvariantGate) -> Vec<FailureSection> {
         let mut sections = Vec::new();
 
@@ -1309,10 +1290,11 @@ impl GateTally {
 ///
 /// The two variants come from the two policies that can fire, and a section is
 /// present exactly when its policy did: `StaleResiduals` only ever appears for a
-/// gate declaring `stale_residual_is_fatal`. That is what
-/// `report_routing_honours_each_gates_own_policy` asserts on — the variant set,
-/// so the prose below is free to be reworded for clarity without touching a test
-/// about dispatch.
+/// gate declaring `stale_residual_is_fatal`. Which policies fired is a fact the
+/// sweep and its tests both read, and recovering it by substring-matching the
+/// operator-facing prose would make a cosmetic reword indistinguishable from a
+/// dispatch defect — so `report_routing_honours_each_gates_own_policy` asserts
+/// on the VARIANT set and the text below stays free to be reworded.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum FailureSection {
     /// Files with real, unexempted findings, carried with those findings.
@@ -1323,8 +1305,7 @@ enum FailureSection {
 }
 
 impl FailureSection {
-    /// This section as the text an operator reads. PRESENTATION ONLY — nothing
-    /// in this file parses it back, and no test matches on its wording.
+    /// This section as the text an operator reads. Presentation only.
     ///
     /// `gate` is a parameter rather than a field because a section is a fact
     /// about a tally; which invariant OWNS it is the routing's business, and
@@ -1491,12 +1472,8 @@ fn bypass_hint<'g>(gates: impl IntoIterator<Item = &'g InvariantGate>) -> String
 /// this unification exists to foreclose, so the dispatch is pinned here.
 ///
 /// Synthetic gates and tallies throughout: these are pure functions of data, so
-/// the test needs no corpus evaluation and, critically, no env mutation.
-///
-/// Asserted on [`FailureSection`] VARIANTS, never on the report's prose. A
-/// dispatch test that recovered "which policy fired" by substring-matching the
-/// operator-facing sentence would red on a cosmetic reword and pass a real
-/// dispatch bug that happened to keep the phrase.
+/// the test needs no corpus evaluation and, critically, no env mutation. Every
+/// assertion below reads [`FailureSection`] variants, never the report's prose.
 #[test]
 fn report_routing_honours_each_gates_own_policy() {
     const RESIDUAL: &[(&str, &str)] = &[("examples/residual.ri", "a declared residual")];
@@ -1590,10 +1567,9 @@ fn report_routing_honours_each_gates_own_policy() {
         "with nothing bypassed every report fails — the downgrade is the exception"
     );
 
-    // (e) A gate is paired with its tally by `InvariantId`, not by position:
-    //     shuffling the tallies must change nothing. The positional `zip` this
-    //     replaced would hand STRICT's tally to LENIENT here — and, for slices of
-    //     unequal length, would DROP the trailing gate's report entirely.
+    // (e) `tally_of`'s keyed pairing, asserted: shuffling the tallies must
+    //     change nothing. The positional zip it replaced would hand STRICT's
+    //     tally to LENIENT here.
     let shuffled = [
         (InvariantId::SnapshotCacheDivergence, with_stale()),
         (InvariantId::StaleUndef, offender()),
