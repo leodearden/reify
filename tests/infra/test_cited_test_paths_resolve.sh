@@ -97,61 +97,104 @@ case "${1:-}" in
         ;;
 esac
 
-# --gate-only DISPATCHES HERE, before any scenario runs, and always exits.
-#
-# It must never fall through to the scenario sections: Section J re-invokes
-# this file with exactly this flag, so a fall-through would re-enter Section J
-# and recurse without bound. The `exit` below is the structural guarantee that
-# it cannot — not a convention, a control-flow fact.
-if [ "${1:-}" = "--gate-only" ]; then
-    _run_whole_tree_gate
-    exit $?
-fi
 
-if [ "${1:-}" = "--emit-baseline" ] || [ "${1:-}" = "--list" ]; then
-    if [ "${1:-}" = "--list" ]; then
-        cited_test_path_scan "$REPO_ROOT"
-        exit 0
+# Single EXIT trap over an array of fixtures: individual `trap ... EXIT` calls
+# replace one another, so one handler over an array removes every fixture
+# regardless of which section adds the last.
+_TMPDIRS=()
+_TMPFILES=()
+_cleanup() {
+    [ "${#_TMPDIRS[@]}" -gt 0 ] && rm -rf "${_TMPDIRS[@]}"
+    [ "${#_TMPFILES[@]}" -gt 0 ] && rm -f "${_TMPFILES[@]}"
+    return 0
+}
+trap _cleanup EXIT
+
+_mktmpd() {
+    local d
+    d="$(mktemp -d "${TMPDIR:-/tmp}/reify-cited-path.XXXXXX")"
+    _TMPDIRS+=("$d")
+    printf '%s\n' "$d"
+}
+
+# Fully isolated from user/system git config so no ambient hooksPath, signing
+# key or init template can perturb a fixture repo.
+_gitf() { GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git "$@"; }
+
+# _fixture_init <dir> — a fresh repo with a deterministic identity.
+_fixture_init() {
+    local dir="$1"
+    _gitf init -q -b main "$dir"
+    _gitf -C "$dir" config user.email t@e.x
+    _gitf -C "$dir" config user.name t
+}
+
+# _fixture_write <dir> <repo-rel-path> <content> — write (creating parents).
+_fixture_write() {
+    local dir="$1" rel="$2" content="$3"
+    mkdir -p "$dir/$(dirname "$rel")"
+    printf '%s\n' "$content" > "$dir/$rel"
+}
+
+_fixture_commit() {
+    local dir="$1"
+    _gitf -C "$dir" add -A
+    _gitf -C "$dir" commit -qm fixture
+}
+
+# _scan <repo-root> — run the lib's resolver in a child shell.
+_scan() {
+    bash -c 'set -euo pipefail; source "$1"; cited_test_path_scan "$2"' _ "$LIB" "$1"
+}
+
+# _expect_scan <repo-root> [<expected tab-separated record> ...]
+#
+# Compares the resolver's WHOLE output (order-insensitively) against the
+# expected record set; with no expected records, asserts the output is empty.
+# Every fixture below that asserts an empty result also carries a record that
+# MUST be reported, so a lib that emits nothing at all can never pass
+# vacuously.
+_expect_scan() {
+    local root="$1"; shift
+    local exp act rc=0
+    exp="$(mktemp)"; act="$(mktemp)"
+    if [ "$#" -gt 0 ]; then printf '%s\n' "$@" | sort > "$exp"; fi
+    _scan "$root" 2>/dev/null | sort > "$act" || rc=$?
+    if ! diff -u "$exp" "$act"; then
+        echo "(resolver output mismatch for fixture $root; scan rc=$rc)"
+        rm -f "$exp" "$act"
+        return 1
     fi
-    cat <<'HDR'
-# tests/infra/cited-test-path-baseline.manifest
+    rm -f "$exp" "$act"
+    return 0
+}
+
+_rec() { printf '%s\t%s\t%s\t%s' "$1" "$2" "$3" "$4"; }
+
+# _write_baseline <row...> -> prints the fixture baseline path. A leading
+# comment line is always written, so the comment-stripping path is exercised
+# even by the "empty baseline" fixtures.
+_write_baseline() {
+    local f
+    f="$(mktemp "${TMPDIR:-/tmp}/reify-cited-baseline.XXXXXX")"
+    _TMPFILES+=("$f")
+    printf '# fixture baseline\n' > "$f"
+    [ "$#" -gt 0 ] && printf '%s\n' "$@" >> "$f"
+    printf '%s\n' "$f"
+}
+
+# _scan_file <repo-root> -> path to a file of that root's scan records.
 #
-# GRANDFATHER BASELINE for the cited-test-path resolution contract —
-# task #7095. Read by tests/infra/test_cited_test_paths_resolve.sh; every row
-# is derived by tests/infra/cited-test-path-lib.sh, never by hand.
-#
-# WHAT A ROW MEANS: "<containing-file> cites <cited-path>, which no longer
-# resolves, and is grandfathered." The cited path's basename DOES resolve
-# elsewhere under the same crate's tests tree, so the citation is repointable
-# — a row here is a deferred fix, not a permanent exemption.
-#
-# FINGERPRINT GRAMMAR: `<containing-file> :: <cited-path>` — two ` :: `
-# separated fields. Line numbers and the suggested target are deliberately
-# ERASED, so moving a citation within its file, or a later change to where
-# its basename resolves, does not spuriously red the ratchet.
-#
-# REGENERATE WITH:
-#     bash tests/infra/test_cited_test_paths_resolve.sh --emit-baseline \
-#         > tests/infra/cited-test-path-baseline.manifest
-#
-# THE RATCHET IS ONE-DIRECTIONAL. The gate asserts live ⊆ baseline and
-# nothing more. Rows may be removed freely as citations are repointed, and
-# removing a row NEVER reds the gate — this file is a SHRINKING grandfather
-# list, not a lockstep mirror of the tree. The converse assertion is
-# deliberately absent: it would turn every citation fix into a red build,
-# punishing exactly the cleanup this gate exists to encourage (the same
-# ruling tests/infra/test_reify_audit_ptodo.sh records for ptodo).
-#
-# ADDING a row is therefore the deliberate act: do it only when a citation is
-# being knowingly grandfathered, by regenerating with the command above.
-#
-# Comment lines (^\s*#) and blank lines are ignored (same stripping style as
-# run-all-classification-lib.sh).
-#
-HDR
-    cited_test_path_scan "$REPO_ROOT" | cited_test_path_fingerprint | LC_ALL=C sort -u
-    exit 0
-fi
+# The checker consumes a SCAN FILE rather than a repo root, so the gate's main
+# body can feed ONE scan to both the ratchet and the vacuity floor without
+# scanning the tree twice.
+_scan_file() {
+    local f
+    f="$(mktemp "${TMPDIR:-/tmp}/reify-cited-scan.XXXXXX")"
+    _TMPFILES+=("$f")
+    cited_test_path_scan "$1" > "$f"
+    printf '%s\n' "$f"
+}
 
 # ---------------------------------------------------------------------------
 # _ratchet_check_subset <scan-records-file>
@@ -270,80 +313,95 @@ _floor_check_corpus() {
     return 0
 }
 
-echo "=== cited test-path resolution gate (task 7095) ==="
-
-# Single EXIT trap over an array of fixtures: individual `trap ... EXIT` calls
-# replace one another, so one handler over an array removes every fixture
-# regardless of which section adds the last.
-_TMPDIRS=()
-_TMPFILES=()
-_cleanup() {
-    [ "${#_TMPDIRS[@]}" -gt 0 ] && rm -rf "${_TMPDIRS[@]}"
-    [ "${#_TMPFILES[@]}" -gt 0 ] && rm -f "${_TMPFILES[@]}"
-    return 0
-}
-trap _cleanup EXIT
-
-_mktmpd() {
-    local d
-    d="$(mktemp -d "${TMPDIR:-/tmp}/reify-cited-path.XXXXXX")"
-    _TMPDIRS+=("$d")
-    printf '%s\n' "$d"
-}
-
-# Fully isolated from user/system git config so no ambient hooksPath, signing
-# key or init template can perturb a fixture repo.
-_gitf() { GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git "$@"; }
-
-# _fixture_init <dir> — a fresh repo with a deterministic identity.
-_fixture_init() {
-    local dir="$1"
-    _gitf init -q -b main "$dir"
-    _gitf -C "$dir" config user.email t@e.x
-    _gitf -C "$dir" config user.name t
-}
-
-# _fixture_write <dir> <repo-rel-path> <content> — write (creating parents).
-_fixture_write() {
-    local dir="$1" rel="$2" content="$3"
-    mkdir -p "$dir/$(dirname "$rel")"
-    printf '%s\n' "$content" > "$dir/$rel"
-}
-
-_fixture_commit() {
-    local dir="$1"
-    _gitf -C "$dir" add -A
-    _gitf -C "$dir" commit -qm fixture
-}
-
-# _scan <repo-root> — run the lib's resolver in a child shell.
-_scan() {
-    bash -c 'set -euo pipefail; source "$1"; cited_test_path_scan "$2"' _ "$LIB" "$1"
-}
-
-# _expect_scan <repo-root> [<expected tab-separated record> ...]
+# ---------------------------------------------------------------------------
+# _run_whole_tree_gate — THE GATE the merge pipeline consumes.
 #
-# Compares the resolver's WHOLE output (order-insensitively) against the
-# expected record set; with no expected records, asserts the output is empty.
-# Every fixture below that asserts an empty result also carries a record that
-# MUST be reported, so a lib that emits nothing at all can never pass
-# vacuously.
-_expect_scan() {
-    local root="$1"; shift
-    local exp act rc=0
-    exp="$(mktemp)"; act="$(mktemp)"
-    if [ "$#" -gt 0 ]; then printf '%s\n' "$@" | sort > "$exp"; fi
-    _scan "$root" 2>/dev/null | sort > "$act" || rc=$?
-    if ! diff -u "$exp" "$act"; then
-        echo "(resolver output mismatch for fixture $root; scan rc=$rc)"
-        rm -f "$exp" "$act"
-        return 1
-    fi
-    rm -f "$exp" "$act"
-    return 0
+# Scans the real repository ONCE and feeds that single scan to BOTH signals:
+#
+#   the RATCHET        live ⊆ committed baseline (are there NEW stale citations?)
+#   the VACUITY FLOOR  did the scan observe a real corpus at all?
+#
+# They are reported as two separate `assert` lines, deliberately. A combined
+# line cannot distinguish "the ratchet is satisfied" from "the scan never
+# ran" — and the second is what the floor exists to detect, so collapsing
+# them would delete the signal. The floor is asserted FIRST, so the
+# precondition is reported before the thing it conditions.
+# ---------------------------------------------------------------------------
+_run_whole_tree_gate() {
+    local scan idx_n cit_n
+
+    scan="$(_scan_file "$REPO_ROOT")"
+    idx_n="$(cited_test_path_index "$REPO_ROOT" | grep -c . || true)"
+    cit_n="$(cited_test_path_citations "$REPO_ROOT" | grep -c . || true)"
+
+    echo "=== cited test-path resolution gate — whole tree ==="
+    echo "    index units: $idx_n   citation occurrences: $cit_n"
+
+    assert "vacuity floor: the scan observed a real corpus" \
+        _floor_check_corpus "$idx_n" "$cit_n"
+    assert "ratchet: no stale citation outside the committed baseline" \
+        _ratchet_check_subset "$scan"
+
+    test_summary
 }
 
-_rec() { printf '%s\t%s\t%s\t%s' "$1" "$2" "$3" "$4"; }
+# --gate-only DISPATCHES HERE, before any scenario runs, and always exits.
+#
+# It must never fall through to the scenario sections: Section J re-invokes
+# this file with exactly this flag, so a fall-through would re-enter Section J
+# and recurse without bound. The `exit` below is the structural guarantee that
+# it cannot — not a convention, a control-flow fact.
+if [ "${1:-}" = "--gate-only" ]; then
+    _run_whole_tree_gate
+    exit $?
+fi
+
+if [ "${1:-}" = "--emit-baseline" ] || [ "${1:-}" = "--list" ]; then
+    if [ "${1:-}" = "--list" ]; then
+        cited_test_path_scan "$REPO_ROOT"
+        exit 0
+    fi
+    cat <<'HDR'
+# tests/infra/cited-test-path-baseline.manifest
+#
+# GRANDFATHER BASELINE for the cited-test-path resolution contract —
+# task #7095. Read by tests/infra/test_cited_test_paths_resolve.sh; every row
+# is derived by tests/infra/cited-test-path-lib.sh, never by hand.
+#
+# WHAT A ROW MEANS: "<containing-file> cites <cited-path>, which no longer
+# resolves, and is grandfathered." The cited path's basename DOES resolve
+# elsewhere under the same crate's tests tree, so the citation is repointable
+# — a row here is a deferred fix, not a permanent exemption.
+#
+# FINGERPRINT GRAMMAR: `<containing-file> :: <cited-path>` — two ` :: `
+# separated fields. Line numbers and the suggested target are deliberately
+# ERASED, so moving a citation within its file, or a later change to where
+# its basename resolves, does not spuriously red the ratchet.
+#
+# REGENERATE WITH:
+#     bash tests/infra/test_cited_test_paths_resolve.sh --emit-baseline \
+#         > tests/infra/cited-test-path-baseline.manifest
+#
+# THE RATCHET IS ONE-DIRECTIONAL. The gate asserts live ⊆ baseline and
+# nothing more. Rows may be removed freely as citations are repointed, and
+# removing a row NEVER reds the gate — this file is a SHRINKING grandfather
+# list, not a lockstep mirror of the tree. The converse assertion is
+# deliberately absent: it would turn every citation fix into a red build,
+# punishing exactly the cleanup this gate exists to encourage (the same
+# ruling tests/infra/test_reify_audit_ptodo.sh records for ptodo).
+#
+# ADDING a row is therefore the deliberate act: do it only when a citation is
+# being knowingly grandfathered, by regenerating with the command above.
+#
+# Comment lines (^\s*#) and blank lines are ignored (same stripping style as
+# run-all-classification-lib.sh).
+#
+HDR
+    cited_test_path_scan "$REPO_ROOT" | cited_test_path_fingerprint | LC_ALL=C sort -u
+    exit 0
+fi
+
+echo "=== cited test-path resolution gate (task 7095) ==="
 
 # ===========================================================================
 # Section A: positive control + both negative rules, in ONE fixture.
@@ -706,31 +764,6 @@ _fixture_commit "$FIX_RATCHET"
 FP_A='docs/a.md :: crates/mycrate/tests/alpha.rs'
 FP_B='docs/b.md :: crates/mycrate/tests/beta.rs'
 
-# _write_baseline <row...> -> prints the fixture baseline path. A leading
-# comment line is always written, so the comment-stripping path is exercised
-# even by the "empty baseline" fixtures.
-_write_baseline() {
-    local f
-    f="$(mktemp "${TMPDIR:-/tmp}/reify-cited-baseline.XXXXXX")"
-    _TMPFILES+=("$f")
-    printf '# fixture baseline\n' > "$f"
-    [ "$#" -gt 0 ] && printf '%s\n' "$@" >> "$f"
-    printf '%s\n' "$f"
-}
-
-# _scan_file <repo-root> -> path to a file of that root's scan records.
-#
-# The checker consumes a SCAN FILE rather than a repo root, so the gate's main
-# body can feed ONE scan to both the ratchet and the vacuity floor without
-# scanning the tree twice.
-_scan_file() {
-    local f
-    f="$(mktemp "${TMPDIR:-/tmp}/reify-cited-scan.XXXXXX")"
-    _TMPFILES+=("$f")
-    cited_test_path_scan "$1" > "$f"
-    printf '%s\n' "$f"
-}
-
 # _ratchet_rc <repo-root> <baseline-path> — run the very checker the gate's
 # main body uses, against an arbitrary root + baseline. Prints the checker's
 # combined stdout+stderr; returns its rc. The baseline override is exported
@@ -1008,16 +1041,22 @@ _real_gate_is_green() {
 assert "J: the gate against the real tree + committed baseline exits 0" \
     _real_gate_is_green
 
-# (2) WHOLE-TREE LIVENESS CONTROL. The same gate, same real tree, pointed at
-# an EMPTY baseline, must go red and report the live citations. This is what
-# proves the real scan reaches the real tree: without it, a gate that scanned
-# an empty directory would pass (1) just as happily.
+# (2) WHOLE-TREE LIVENESS CONTROL, in two halves.
 #
-# A conservative LOWER BOUND on the offender count, not an exact number: the
-# baseline is a shrinking list, so repointing citations over time must reduce
-# this count without flaking the assertion. Measured 308 when written.
+# The same gate, same real tree, pointed at an EMPTY baseline must go red and
+# must be seeing the whole tree. Without this, a gate that scanned an empty
+# directory would pass (1) just as happily.
+#
+# It is TWO assertions because assert() deliberately caps its captured-output
+# dump at `tail -50`. The wired gate's offender listing therefore reaches this
+# file already truncated to ~25 entries, so counting from it would measure
+# that cap rather than the tree. The red-ness is taken from the wired child
+# process; the COUNT is taken from the same checker called directly, where
+# nothing truncates it.
+
+# (2a) the wired gate itself goes red on the real tree.
 _real_gate_is_red_against_empty_baseline() {
-    local empty out rc=0 n
+    local empty out rc=0
     empty="$(_write_baseline)"
     out="$(REIFY_CITED_TEST_PATH_BASELINE="$empty" bash "$GATE_SELF" --gate-only 2>&1)" || rc=$?
     if [ "$rc" -eq 0 ]; then
@@ -1026,17 +1065,34 @@ _real_gate_is_red_against_empty_baseline() {
         printf '%s\n' "$out"
         return 1
     fi
-    n="$(printf '%s\n' "$out" | grep -c '^  + ' || true)"
+    printf '%s\n' "$out" | grep -qE '\+ [^ ]+ :: crates/' && return 0
+    echo "the gate went red but listed no offender:"; printf '%s\n' "$out"; return 1
+}
+
+assert "J: the wired gate against an EMPTY baseline goes red and lists offenders" \
+    _real_gate_is_red_against_empty_baseline
+
+# (2b) at SCALE: a conservative lower bound on the offender count, not an
+# exact number — the baseline is a shrinking list, so repointing citations
+# over time must reduce this without flaking the assertion (measured 308).
+_real_tree_reports_offenders_at_scale() {
+    local empty out rc=0 n
+    empty="$(_write_baseline)"
+    out="$(_ratchet_rc "$REPO_ROOT" "$empty")" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "the ratchet was GREEN against the real tree with an EMPTY baseline"; return 1
+    fi
+    n="$(printf '%s\n' "$out" | grep -cE '^  \+ [^ ]+ :: crates/' || true)"
     if [ "$n" -lt 100 ]; then
-        echo "expected >= 100 offenders against an empty baseline, got $n:"
+        echo "expected >= 100 live citations against an empty baseline, got $n:"
         printf '%s\n' "$out" | head -20
         return 1
     fi
     return 0
 }
 
-assert "J: the same gate against an EMPTY baseline goes red and reports >= 100 live citations" \
-    _real_gate_is_red_against_empty_baseline
+assert "J: the real tree yields >= 100 live citations against an empty baseline" \
+    _real_tree_reports_offenders_at_scale
 
 # (3) THE RATCHET AND THE FLOOR ARE REPORTED SEPARATELY.
 #
@@ -1082,4 +1138,13 @@ _unknown_argument_is_rejected() {
 assert "J: an unrecognised argument is rejected with a usage line, not run as the suite" \
     _unknown_argument_is_rejected
 
-test_summary
+# ===========================================================================
+# The gate itself, last: the scenarios above having passed, run the real
+# whole-tree check. This is the SAME function --gate-only dispatches to — the
+# full suite does not carry a second copy of the main body.
+#
+# test_summary is called by _run_whole_tree_gate and exits non-zero if any
+# assert in this whole file failed (the PASS/FAIL counters are file-global).
+# ===========================================================================
+echo ""
+_run_whole_tree_gate
