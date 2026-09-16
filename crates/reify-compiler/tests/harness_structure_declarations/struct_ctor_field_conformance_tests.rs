@@ -33,37 +33,22 @@ use reify_core::diagnostics::DiagnosticCode;
 use reify_core::{
     BASE_UNIT_SYMBOLS, Diagnostic, DimensionVector, NAMED_DIMENSIONS, Severity, SourceSpan,
 };
-use reify_test_support::{compile_source_with_stdlib, errors_only, warnings_only};
-
-/// True when `code` is one of the diagnostic codes emitted by the struct-ctor
-/// field-conformance surface (task 5302 / 5303 / 4584 / 4598 / 4622 / 4444).
-///
-/// Filtering to this set keeps the per-fixture "exactly one diagnostic" counts
-/// from being polluted by unrelated diagnostics (an incidental `W_*` warning, a
-/// downstream note, etc.). The first five codes already existed in
-/// `diagnostics.rs`; α minted none. ε (task 5303) adds the two structural codes
-/// `CtorUnknownField` / `CtorArity` — they belong here because they are emitted
-/// at the same `CTOR_FIELD_CONFORMANCE_SEVERITY` knob and δ flips them together
-/// with the α type codes, so the ε probes' "exactly N" counts must see them.
-fn is_ctor_conformance_code(code: Option<DiagnosticCode>) -> bool {
-    matches!(
-        code,
-        Some(
-            DiagnosticCode::ArgTypeMismatch
-                | DiagnosticCode::SelectorKindMismatch
-                | DiagnosticCode::TypeNotConformingToTrait
-                | DiagnosticCode::TypeNotConformingToStructureRef
-                | DiagnosticCode::TypeNotConformingToVector
-                | DiagnosticCode::CtorUnknownField
-                | DiagnosticCode::CtorArity
-        )
-    )
-}
+use reify_ir::{CompiledExprKind, Value};
+use reify_test_support::{
+    compile_source_with_stdlib, errors_only, is_ctor_conformance_code, warnings_only,
+};
 
 /// All ctor-conformance diagnostics in `module`, of any severity.
 ///
 /// Used by "exactly N diagnostics" / "zero diagnostics" assertions so an
-/// incidental unrelated diagnostic does not throw off the count.
+/// incidental unrelated diagnostic does not throw off the count: a probe
+/// compiled through `compile_source_with_stdlib` carries the whole stdlib
+/// prelude's diagnostics too, so without this narrowing an unrelated `W_*`
+/// warning or downstream note would pollute every per-fixture count.
+///
+/// The admission set is `reify_test_support::ctor_conformance`'s
+/// [`is_ctor_conformance_code`] — severity-agnostic, so δ's Warning→Error flip
+/// moves no pin that filters here.
 fn ctor_conformance_diags(module: &CompiledModule) -> Vec<&Diagnostic> {
     module
         .diagnostics
@@ -4959,5 +4944,319 @@ fn a_repeated_known_named_argument_is_a_duplicate_not_an_unknown_field() {
         Severity::Error,
         "the duplicate guard is a hard Error and is NOT behind the ctor-conformance \
          knob — it must not move with the δ flip"
+    );
+}
+
+// ═══ by-name ctor binding: the `expr.rs` binder contract ═════════════════════
+//
+// The two tests below and their shared helper pin the STRUCTURE-CTOR ARGUMENT
+// BINDER in `crates/reify-compiler/src/expr.rs`: task 4522's by-name binding,
+// and task 5303 (ε)'s diagnosed-but-still-lenient `__arg{i}` fallback for an
+// unknown label. That binder is this file's subject, which is why they live
+// here.
+//
+// `RayleighDamping` is only the VEHICLE. It is a two-param stdlib structure
+// whose params carry DISTINCT dimensions (`alpha : Frequency`, `beta : Time`),
+// so a binder that routed an argument to the wrong slot shows up as a swapped
+// (si_value, DimensionVector) pair rather than as two interchangeable numbers.
+// Nothing below is a claim about modal analysis, and a change to
+// `stdlib/modal_analysis.ri` that keeps that two-param shape need not touch it.
+
+// ─── ctor args bind BY NAME ──────────────────────────────────────────────────
+
+/// Structure-ctor arguments bind BY NAME, not positionally.
+///
+/// The guard for a claim three example files state in
+/// prose (`printer_gantry_modes.ri`, `transient_step_response.ri`,
+/// `printer_print_envelope.ri`) — all three previously asserted the OPPOSITE
+/// ("binding is POSITIONAL; `name:` labels are cosmetic"), which task-4522's
+/// by-name binder in `expr.rs` had already made false. A prose-only correction
+/// would rot the same way, so it is pinned here.
+///
+/// Compiles a `RayleighDamping` ctor in each argument FORM the prose claims
+/// about and asserts the lowered `ordered_args` always re-key to
+/// `[(alpha, 0.0 s⁻¹), (beta, 0.0003 s)]`. A positional binder would instead
+/// produce alpha = 0.0003 s and beta = 0.0 s⁻¹ for the reverse-labelled form,
+/// i.e. the same two names carrying each other's value.
+///
+/// Five arms, because the prose makes a TWO-clause claim and an all-labelled
+/// probe only exercises the first:
+///   (a) all-labelled, in REVERSE declaration order — the by-name clause;
+///   (b) MIXED, `beta` labelled, positional first (`0.0Hz, beta: 0.0003s`);
+///   (c) MIXED, `beta` labelled, positional last (`beta: 0.0003s, 0.0Hz`);
+///   (d) MIXED, `alpha` labelled, positional last (`alpha: 0.0Hz, 0.0003s`);
+///   (e) MIXED, `alpha` labelled, positional first (`0.0003s, alpha: 0.0Hz`).
+///
+/// (d) and (e) are the two that carry the second clause — "only UNLABELLED args
+/// fill the REMAINING slots in declaration order" — because they are the only
+/// forms whose result CHANGES if the binder's positional pass stops skipping
+/// already-named-bound slots (`reify-compiler/src/expr.rs`, pass 2's
+/// `while … param_arg[next_slot].is_some() { next_slot += 1 }`). With the skip
+/// removed, both bind the unlabelled `0.0003s` at slot 0, clobbering `alpha`
+/// and leaving `beta` unbound — so `ordered_args` becomes `[("alpha", 0.0003 s)]`
+/// and the key-list assertion goes red.
+///
+/// (b) and (c) do NOT discriminate that: `beta` occupies slot 1, so the
+/// positional pass lands on slot 0 either way. They are kept as the
+/// mixed-form PARSE + by-name coverage the prose also claims, not as skip
+/// pins — recorded here so a later reader does not mistake them for the guard.
+#[test]
+fn structure_ctor_args_bind_by_name_not_positionally() {
+    // (a) all-labelled, reverse declaration order.
+    assert_rayleigh_ctor_binds_canonically("CtorBindByNameProbe", "beta: 0.0003s, alpha: 0.0Hz");
+    // (b)/(c) mixed with `beta` labelled — the unlabelled arg fills slot 0.
+    assert_rayleigh_ctor_binds_canonically("CtorMixedBetaLabelLastProbe", "0.0Hz, beta: 0.0003s");
+    assert_rayleigh_ctor_binds_canonically("CtorMixedBetaLabelFirstProbe", "beta: 0.0003s, 0.0Hz");
+    // (d)/(e) mixed with `alpha` labelled — the unlabelled arg must SKIP the
+    //     named-bound slot 0 and land on slot 1 (`beta`). The skip pins.
+    assert_rayleigh_ctor_binds_canonically(
+        "CtorMixedAlphaLabelFirstProbe",
+        "alpha: 0.0Hz, 0.0003s",
+    );
+    assert_rayleigh_ctor_binds_canonically("CtorMixedAlphaLabelLastProbe", "0.0003s, alpha: 0.0Hz");
+}
+
+/// Compile `structure {probe} { let damping = RayleighDamping({ctor_args}) }`
+/// and assert the ctor lowers to exactly `[(alpha, 0.0 s⁻¹), (beta, 0.0003 s)]`
+/// — the canonical binding, whatever the argument FORM.
+///
+/// Shared by every arm of [`structure_ctor_args_bind_by_name_not_positionally`]
+/// so a new form is one call, not a copied block.
+fn assert_rayleigh_ctor_binds_canonically(probe: &str, ctor_args: &str) {
+    let source = format!(
+        r#"
+structure {probe} {{
+    let damping = RayleighDamping({ctor_args})
+}}
+"#
+    );
+    let module = compile_source_with_stdlib(&source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "`RayleighDamping({ctor_args})` must compile clean, got: {:?}",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == probe)
+        .unwrap_or_else(|| panic!("{probe} template should be compiled"));
+    let damping_expr = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "damping")
+        .and_then(|vc| vc.default_expr.as_ref())
+        .expect("the `damping` let cell should carry its ctor expression");
+
+    let CompiledExprKind::StructureInstanceCtor { ordered_args, .. } = &damping_expr.kind else {
+        panic!(
+            "`damping` should lower to a StructureInstanceCtor, got {:?}",
+            damping_expr.kind
+        );
+    };
+
+    let bound: Vec<(&str, Option<&Value>)> = ordered_args
+        .iter()
+        .map(|(name, e)| {
+            (
+                name.as_str(),
+                match &e.kind {
+                    CompiledExprKind::Literal(v) => Some(v),
+                    _ => None,
+                },
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        bound.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+        vec!["alpha", "beta"],
+        "`RayleighDamping({ctor_args})`: ordered_args must be re-keyed into \
+         template declaration order, with each label routed to its OWN param \
+         and each UNLABELLED arg filling the next REMAINING slot (never a \
+         synthetic `__arg{{i}}`); got: {:?}",
+        bound
+    );
+
+    let expected: &[(&str, f64, DimensionVector)] = &[
+        ("alpha", 0.0, DimensionVector::FREQUENCY),
+        ("beta", 0.0003, DimensionVector::TIME),
+    ];
+    for (i, (name, si, dim)) in expected.iter().enumerate() {
+        match bound[i].1 {
+            Some(Value::Scalar {
+                si_value,
+                dimension,
+            }) => {
+                assert_eq!(
+                    (*si_value, *dimension),
+                    (*si, *dim),
+                    "`RayleighDamping({ctor_args})`: `{}` must carry the value \
+                     written against ITS OWN label (a positional binder that \
+                     ignored labels, or one whose positional pass did not skip \
+                     named-bound slots, would swap the two)",
+                    name
+                );
+            }
+            other => panic!(
+                "`RayleighDamping({ctor_args})`: `{}` should bind a dimensioned \
+                 Scalar literal, got {:?}",
+                name, other
+            ),
+        }
+    }
+}
+
+// ─── …and the MISLABEL path is diagnosed but still lenient ───────────────────
+
+/// An UNKNOWN ctor label is DIAGNOSED — task 5303 (ε) emits
+/// `E_CTOR_UNKNOWN_FIELD` / [`DiagnosticCode::CtorUnknownField`] at the
+/// `CTOR_FIELD_CONFORMANCE_SEVERITY` knob (Warning pre-δ, Error at δ) — and is
+/// STILL appended as a positional `__arg{i}`, so the param it was meant for
+/// falls back to its default (or stays unbound).
+///
+/// The diagnostic and the lenient push carry DIFFERENT predicates on purpose
+/// (`crates/reify-compiler/src/expr.rs`, the by-name binder): ε is
+/// diagnostics-only and left the IR byte-for-byte what it was before, which is
+/// why (b) and (c) below are unchanged from this pin's pre-ε shape while (a)
+/// is inverted.
+///
+/// The hazard three example files describe in prose;
+/// pinned here so their wording cannot rot. If the diagnosis moves again —
+/// δ's Warning→Error flip is the scheduled one — update this pin AND the
+/// binding notes in `examples/modal/printer_gantry_modes.ri`,
+/// `examples/modal/transient_step_response.ri` and
+/// `examples/trajectory/printer_print_envelope.ri`.
+#[test]
+fn misspelled_ctor_label_is_diagnosed_but_still_leniently_appended() {
+    // `bta` is a typo for `beta`. Nothing REJECTS it: ε diagnoses it at
+    // Warning and binds it leniently anyway, so the compile still succeeds.
+    let module = compile_source_with_stdlib(
+        r#"
+structure CtorMisspelledLabelProbe {
+    let damping = RayleighDamping(alpha: 0.0Hz, bta: 0.0003s)
+}
+"#,
+    );
+
+    // (a) the typo IS judged. Deliberately NOT counted over
+    // `module.diagnostics` whole: that ranges over the probe source AND the
+    // whole stdlib prelude, so any unrelated future lint would turn this red
+    // with a message that actively misdirects. Narrowed to the diagnostics
+    // naming the typo'd label `bta` — a SOURCE IDENTIFIER that occurs nowhere
+    // in the prelude, so the count below is exact — with the code, severity
+    // and wording then asserted on the single hit.
+    //
+    // Narrowing on the IDENTIFIER rather than on the ctor-conformance code set
+    // is also what keeps this pin able to see a CODELESS emission. Codeless is
+    // no longer the shape of THIS diagnostic — ε (task 5303) gave it
+    // `DiagnosticCode::CtorUnknownField`, which is what (a) now asserts — but
+    // it is still a live shape on this surface: the sibling duplicate-named-arg
+    // diagnostic in the same binder is built with a bare `Diagnostic::error`
+    // and carries no code at all, so a code-set filter alone would miss a
+    // re-emission in that style.
+    //
+    // The label match is QUOTED (`'bta'` / `` `bta` ``), never a bare
+    // `contains("bta")`: the bare form matches the substring inside ordinary
+    // English words — "o(bta)in" is the obvious one — which would reintroduce
+    // exactly the unrelated-axis false red this narrowing exists to remove.
+    // Both quotings are accepted because the live emitters disagree:
+    // `E_CTOR_UNKNOWN_FIELD` says `argument 'bta'` and the duplicate-named-arg
+    // error says `duplicate named argument 'x'`, while backtick-quoting is
+    // common elsewhere in the diagnostic corpus. Passing this filter at all is
+    // therefore the "message names the offending label" assertion; the
+    // constructor half is asserted separately below.
+    let names_typo = |m: &str| m.contains("'bta'") || m.contains("`bta`");
+    let judging: Vec<&Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| names_typo(&d.message))
+        .collect();
+    assert_eq!(
+        judging.len(),
+        1,
+        "an unknown ctor label must emit exactly one diagnostic naming it \
+         (ε, task 5303 — before that it was silently accepted). Got {}: {:#?}",
+        judging.len(),
+        judging
+    );
+    assert_eq!(
+        judging[0].code,
+        Some(DiagnosticCode::CtorUnknownField),
+        "the unknown-label diagnostic must carry the CtorUnknownField code — \
+         `reify check` never prints the code, so this is the only place the \
+         machine-readable half is pinned from this file. Got: {:?}",
+        judging[0]
+    );
+    assert!(
+        is_ctor_conformance_code(judging[0].code),
+        "…and the SHARED `reify_test_support::ctor_conformance` admission set \
+         must recognise it. This arm is the behavioural proof, at a real \
+         former call site, that the hoisted predicate admits the code the \
+         assertions above independently established. Got: {:?}",
+        judging[0].code
+    );
+    assert_eq!(
+        judging[0].severity,
+        Severity::Warning,
+        "ε emits at the `CTOR_FIELD_CONFORMANCE_SEVERITY` knob, whose value is \
+         `Warning` pre-δ. The knob is `pub(crate)` inside a private \
+         `conformance` module, so an integration-test binary cannot name it \
+         and has to restate the value — δ's one-const flip must therefore move \
+         THIS line together with every other restatement of it: the sibling \
+         `Severity::Warning` pins earlier in this file and the ones in \
+         `harness_mechanics/modal_options_validation_tests.rs`. Got: {:?}",
+        judging[0]
+    );
+    assert!(
+        judging[0].message.starts_with("E_CTOR_UNKNOWN_FIELD: "),
+        "the mnemonic must be a message PREFIX — `reify check` renders \
+         `{{severity}}: {{message}}` and never prints the DiagnosticCode, so \
+         without it the signal is invisible at the CLI. Got: {:?}",
+        judging[0].message
+    );
+    assert!(
+        judging[0].message.contains("RayleighDamping"),
+        "the message must name the CONSTRUCTOR as well as the offending \
+         label, or a reader cannot tell which call is wrong. Got: {:?}",
+        judging[0].message
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "CtorMisspelledLabelProbe")
+        .expect("CtorMisspelledLabelProbe template should be compiled");
+    let damping_expr = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "damping")
+        .and_then(|vc| vc.default_expr.as_ref())
+        .expect("the `damping` let cell should carry its ctor expression");
+    let CompiledExprKind::StructureInstanceCtor { ordered_args, .. } = &damping_expr.kind else {
+        panic!(
+            "`damping` should lower to a StructureInstanceCtor, got {:?}",
+            damping_expr.kind
+        );
+    };
+    let bound: Vec<&str> = ordered_args.iter().map(|(n, _)| n.as_str()).collect();
+
+    // (b) the typo survives lowering as a synthetic positional key.
+    assert!(
+        bound.iter().any(|n| n.starts_with("__arg")),
+        "the unknown label must survive as a synthetic `__arg{{i}}` key; \
+         got ordered_args keys: {:?}",
+        bound
+    );
+
+    // (c) …and `beta` — the param the author meant — never got a value.
+    assert!(
+        !bound.contains(&"beta"),
+        "`beta` must be left unbound when its label is misspelled (it falls \
+         back to its default, which RayleighDamping does not have); got \
+         ordered_args keys: {:?}",
+        bound
     );
 }

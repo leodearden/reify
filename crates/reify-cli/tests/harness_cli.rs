@@ -69,6 +69,8 @@ mod cli_check_parametric_vec3;
 mod cli_check_result_prelude;
 #[path = "harness_cli/cli_check_variant_construction.rs"]
 mod cli_check_variant_construction;
+#[path = "harness_cli/cli_curated_unit_labels_eval.rs"]
+mod cli_curated_unit_labels_eval;
 #[path = "harness_cli/cli_datum_projection_check.rs"]
 mod cli_datum_projection_check;
 #[path = "harness_cli/cli_determinacy_gate.rs"]

@@ -6,9 +6,9 @@ Functions (`fn`) are non-entity declarations: no identity, no determinacy state.
 
 ```
 fn von_mises(t : Tensor<2, 3, Pressure>) -> Scalar<Pressure> {
-    let dx = t.xx - t.yy
-    let dy = t.yy - t.zz
-    let dz = t.zz - t.xx
+    let dx = t.xx - t.yy;
+    let dy = t.yy - t.zz;
+    let dz = t.zz - t.xx;
     sqrt(0.5 * (dx^2 + dy^2 + dz^2))
 }
 

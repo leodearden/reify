@@ -212,6 +212,22 @@ scripts/verify.sh                                 tests/infra/test_infra_classif
 .config/nextest.toml                 tests/infra/test_verify_offline_partition.sh
 scripts/heavy-test-filter-lib.sh     tests/infra/test_verify_offline_partition.sh
 
+# Task 6485: the slow-timeout tiering guard over .config/nextest.toml.
+# Closes a MEASURED gap -- tests/infra/test_nextest_slow_priority.sh had no row
+# anywhere, so a task-scope edit to the nextest overrides never selected the very
+# guard that covers them. It is NOT reachable via the
+# `scripts/verify.sh -> tests/infra/test_verify_*.sh` glob row above: that glob
+# matches on basename, and this one does not start with `test_verify_`, which is
+# why the explicit scripts/verify.sh row below is required rather than redundant.
+#
+# All three rows are load-bearing after task 6485: the guard DERIVES the heavy set
+# by sourcing scripts/heavy-test-filter-lib.sh (Assertions J/K) and EXTRACTS the
+# offline release wall from scripts/verify.sh (Assertion L), so an edit to either
+# can break it -- not merely an edit to the config it checks.
+.config/nextest.toml                 tests/infra/test_nextest_slow_priority.sh
+scripts/heavy-test-filter-lib.sh     tests/infra/test_nextest_slow_priority.sh
+scripts/verify.sh                    tests/infra/test_nextest_slow_priority.sh
+
 # Task 4955 doc-sync drift guard: operational docs cross-referenced by
 # tests/infra doc-sync checks (scripts/doc-sync-paths.txt) get their citing
 # infra test run as a fail-fast pole in any task-scope verify that edits

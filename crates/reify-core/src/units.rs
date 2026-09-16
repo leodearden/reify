@@ -13,7 +13,7 @@
 //!
 //! [`LENGTH_MIGRATION_HINT`] and [`DENSITY_MIGRATION_HINT`] are the exact
 //! clauses appended to a rejection at a LENGTH / Density argument slot. Both
-//! the EVAL layer (`reify-eval::arg_acceptance`) and the COMPILE layer
+//! the EVAL layer (`reify_ir::arg_acceptance`) and the COMPILE layer
 //! (`reify-compiler::builtin_signatures`) must render the same wording for the
 //! same authoring mistake — PRD `docs/prds/v0_6/units-length-gate-completion.md`
 //! decision D9 — so they live here, as one table with one edit site, exactly as
@@ -28,11 +28,22 @@
 //! That constraint is about the reify-eval → reify-compiler EDGE. `reify-core`
 //! sits BELOW both, so hoisting here never creates that cycle.
 //!
-//! The copy route was reconsidered and rejected on a measurement:
-//! `reify-eval/src/lib.rs` declares `pub(crate) mod arg_acceptance;`, so even
-//! though `reify-compiler` dev-depends on `reify-eval`, a drift-pin test cannot
-//! import `length_spec()` to compare against. Short of widening reify-eval's
-//! public API, sharing one const is the only structural pin available.
+//! The copy route was reconsidered and rejected on a measurement. When task
+//! 5750 made the call, `reify-eval/src/lib.rs` declared `pub(crate) mod
+//! arg_acceptance;`, so even though `reify-compiler` dev-depends on
+//! `reify-eval`, a drift-pin test could not import `length_spec()` to compare
+//! against: short of widening reify-eval's public API, sharing one const was
+//! the only structural pin available.
+//!
+//! Task 5791 (PRD `docs/prds/v0_6/dimension-checked-readers.md` §3 Leg A)
+//! relocated the family to `crates/reify-ir/src/arg_acceptance.rs`, where it is
+//! `pub`, so that particular blocker is GONE — `length_spec()` is importable
+//! today and a drift-pin test IS now writable. That does not weaken the hoist;
+//! it STRENGTHENS it. The shared const is now the thing both layers can NAME
+//! rather than merely the only pin available: a hypothetical drift-pin test
+//! would compare two literals and have to be updated in lockstep with either
+//! edit, whereas one const has one edit site and cannot drift at all. The
+//! conclusion below is unchanged — hoist, not copy.
 //!
 //! And unlike the conformance hint — COMPUTED from the `NAMED_DIMENSIONS`
 //! registry, and so drift-proof by construction — these two are IRREGULAR
@@ -49,7 +60,7 @@ use crate::DimensionVector;
 
 /// The migration hint appended to a rejection at a LENGTH argument slot.
 ///
-/// Read by BOTH layers — `reify-eval::arg_acceptance::length_spec` and the
+/// Read by BOTH layers — `reify_ir::arg_acceptance::length_spec` and the
 /// LENGTH slots of `reify-compiler::builtin_signatures::builtin_arg_slots` — so
 /// the compile-time and runtime diagnostics for one authoring mistake read
 /// identically (PRD decision D9). See the module doc for why this is a hoist
@@ -60,7 +71,7 @@ pub const LENGTH_MIGRATION_HINT: &str = "pass a dimensioned length such as `5mm`
 /// The migration hint appended to a rejection at a Density argument slot.
 ///
 /// Mirrors [`LENGTH_MIGRATION_HINT`]; read by
-/// `reify-eval::arg_acceptance::density_spec` and by the `center_of_mass` /
+/// `reify_ir::arg_acceptance::density_spec` and by the `center_of_mass` /
 /// `moment_of_inertia` density slots in `reify-compiler::builtin_signatures`.
 pub const DENSITY_MIGRATION_HINT: &str =
     "pass a dimensioned Density literal such as `7850kg/m^3`";
