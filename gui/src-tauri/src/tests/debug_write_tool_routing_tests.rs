@@ -310,66 +310,101 @@ fn identifiers(text: &str) -> impl Iterator<Item = &str> {
         .filter(|s| !s.is_empty())
 }
 
-/// Blanks every `//`/`///`/`//!` line comment and `/* … */` block comment,
-/// replacing each comment span with an equal number of ASCII spaces so byte
-/// offsets, line count and line lengths all survive unchanged — `fn_body`'s
-/// column-0 `}` sentinel therefore still means the same thing.
+/// Appends `span` to `out` as an equal-length run of ASCII spaces, keeping
+/// newlines, so byte offsets, line count and line lengths all survive
+/// unchanged — `fn_body`'s column-0 `}` sentinel therefore still means the
+/// same thing in a blanked view as in the source.
+fn push_blanked(out: &mut String, span: &str) {
+    for c in span.chars() {
+        out.push(if c == '\n' { '\n' } else { ' ' });
+        for _ in 1..c.len_utf8() {
+            out.push(' ');
+        }
+    }
+}
+
+/// Blanks every `//`/`///`/`//!` line comment and `/* … */` block comment —
+/// and, when `blank_literals`, the CONTENTS of every `"…"` string literal.
 ///
-/// Stripping must be genuinely correct rather than merely conservative,
-/// because the two checks it feeds fail in OPPOSITE directions: leaving a
-/// comment in place false-GREENS the seam check (prose naming a seam reads as
-/// routing), while blanking too much false-GREENS the private-emit check.
+/// Blanking must be genuinely correct rather than merely conservative, because
+/// the checks it feeds fail in OPPOSITE directions: leaving prose in place
+/// false-GREENS the seam check (a seam NAMED in a comment or a log message
+/// reads as routing), while blanking too much false-GREENS the private-emit
+/// check.
 ///
-/// It is a scanner, not a Rust lexer: it tracks `"` string literals — the
-/// only literal in this corpus that can contain a `//` (`"http://…"`) — with
-/// `\` escapes, across line boundaries. Raw strings (`r"…"`, `r#"…"#`) and
-/// the pathological `'"'` char literal, neither of which occurs in
+/// It is a scanner, not a Rust lexer: it tracks `"` string literals — the only
+/// literal in this corpus that can contain a `//` (`"http://…"`) — with `\`
+/// escapes, across line boundaries. Raw strings (`r"…"`, `r#"…"#`) and the
+/// pathological `'"'` char literal, neither of which occurs in
 /// `debug_server.rs`, are not special-cased.
-fn strip_comments(source: &str) -> String {
+fn blank_noncode(source: &str, blank_literals: bool) -> String {
     let bytes = source.as_bytes();
     let mut out = String::with_capacity(source.len());
     let mut in_string = false;
     let mut i = 0usize;
     while i < bytes.len() {
         let rest = &bytes[i..];
+        let width = source[i..].chars().next().map_or(1, char::len_utf8);
         if in_string {
-            match rest[0] {
-                b'\\' => {
-                    // Copy the backslash and the char it escapes together, so
-                    // an escaped quote (`\"`) cannot close the string.
-                    let width = 1 + source[i + 1..].chars().next().map_or(0, char::len_utf8);
-                    out.push_str(&source[i..i + width]);
-                    i += width;
-                    continue;
-                }
-                b'"' => in_string = false,
-                _ => {}
+            if rest[0] == b'"' {
+                // The delimiters are code; only what sits between them is prose.
+                in_string = false;
+                out.push('"');
+                i += 1;
+                continue;
             }
-        } else if rest.starts_with(b"//") {
+            // A backslash and the char it escapes move together, so an escaped
+            // quote (`\"`) can neither close the string nor be split in half.
+            let span = if rest[0] == b'\\' {
+                1 + source[i + 1..].chars().next().map_or(0, char::len_utf8)
+            } else {
+                width
+            };
+            if blank_literals {
+                push_blanked(&mut out, &source[i..i + span]);
+            } else {
+                out.push_str(&source[i..i + span]);
+            }
+            i += span;
+            continue;
+        }
+        if rest.starts_with(b"//") {
             let end = source[i..].find('\n').map_or(source.len(), |n| i + n);
-            out.push_str(&" ".repeat(end - i));
+            push_blanked(&mut out, &source[i..end]);
             i = end;
             continue;
-        } else if rest.starts_with(b"/*") {
+        }
+        if rest.starts_with(b"/*") {
             let end = source[i..]
                 .find("*/")
                 .map_or(source.len(), |n| i + n + "*/".len());
-            for c in source[i..end].chars() {
-                out.push(if c == '\n' { '\n' } else { ' ' });
-                for _ in 1..c.len_utf8() {
-                    out.push(' ');
-                }
-            }
+            push_blanked(&mut out, &source[i..end]);
             i = end;
             continue;
-        } else if rest[0] == b'"' {
+        }
+        if rest[0] == b'"' {
             in_string = true;
         }
-        let width = source[i..].chars().next().map_or(1, char::len_utf8);
         out.push_str(&source[i..i + width]);
         i += width;
     }
     out
+}
+
+/// Comments blanked, string literals INTACT — the view the two tool-set
+/// enumerations need, since both read tool names OUT of literals.
+fn strip_comments(source: &str) -> String {
+    blank_noncode(source, false)
+}
+
+/// Comments and string-literal contents both blanked — the view every
+/// BEHAVIOURAL check reads, so a seam or an emit named only in prose (a doc
+/// comment, a tracing message, a `json!` field) can never read as a call.
+///
+/// Both views are equal-length blankings of the same bytes, so an offset means
+/// the same thing in either and [`fn_body`] slices line up across them.
+fn strip_prose(source: &str) -> String {
+    blank_noncode(source, true)
 }
 
 /// Names every top-level fn in `code` whose name ends `_and_refresh_baseline`,
@@ -391,7 +426,7 @@ fn seam_fns(code: &str) -> Vec<&str> {
 /// direction as [`reaches_a_seam`] — if it delegates to another
 /// `*_and_refresh_baseline` fn in the same source that does.
 fn unrefreshing_seams(source: &str) -> Vec<String> {
-    let code = strip_comments(source);
+    let code = strip_prose(source);
     let refreshes = |name: &str| {
         fn_body(&code, name).is_some_and(|body| identifiers(body).any(|id| id == "compute_delta"))
     };
@@ -413,22 +448,26 @@ fn unrefreshing_seams(source: &str) -> Vec<String> {
 
 /// Every INV-GUI-2 violation in `source`, one per (write tool, defect).
 fn write_tool_bypasses(source: &str) -> Vec<Bypass> {
-    // Stripped ONCE here, at the single entry point, so every helper below
-    // sees code-only text and none can independently forget to.
+    // Both views are derived ONCE here, at the single entry point, so no
+    // helper below can independently forget to blank — or read the wrong view.
+    // The enumerations read tool names out of literals; the behavioural checks
+    // must not see them at all.
     let code = strip_comments(source);
+    let prose_free = strip_prose(source);
     let mut bypasses: Vec<Bypass> = dispatch_arms(&code)
         .into_iter()
         .flat_map(|(tool, handler)| {
             // RESOLUTION IS NOT NAME-MATCHING: a handler that is not a
             // top-level fn of this file is reported as unresolved, not
             // mislabelled as one that skips the seam.
-            let kinds = match fn_body(&code, &handler) {
+            let kinds = match fn_body(&prose_free, &handler) {
                 None => vec![BypassKind::UnresolvedHandler],
                 // The two defects are INDEPENDENT: a handler can route
                 // correctly and still emit privately, and collapsing them
                 // would hide one.
                 Some(body) => [
-                    (!reaches_a_seam(&code, &handler)).then_some(BypassKind::NoBaselineRefresh),
+                    (!reaches_a_seam(&prose_free, &handler))
+                        .then_some(BypassKind::NoBaselineRefresh),
                     emits_privately(body).then_some(BypassKind::PrivateEmit),
                 ]
                 .into_iter()
@@ -531,6 +570,48 @@ async fn handle_reify_export(state: &DebugServerState, params: Value) -> Result<
     let (format, output_path) = reify_export_params(&params)?;
     // routes through write_on_engine_and_refresh_baseline
     let gs = run_on_engine(&state.engine, move |s| s.export(&format, &output_path)).await?;
+    push_gui_state(&state.debug_bridge, &gs, None).await?;
+    Ok(reify_export_envelope(&output_path))
+}
+"#;
+
+/// A fixture reaching the same hole as [`COMMENT_ONLY_MENTION_SOURCE`]
+/// through STRING LITERALS instead of prose, in both directions at once:
+///
+/// - `handle_reify_save_file` names a seam only inside a `tracing` message
+///   while bypassing it in code — a false GREEN, the direction this module
+///   must never have. A span name, an error string or a `json!` field naming
+///   the seam being removed is an ordinary edit.
+/// - `handle_reify_export` routes correctly and merely mentions `.emit(` in a
+///   log string — a false RED, merely noisy, but fixed by the same blanking.
+const STRING_ONLY_MENTION_SOURCE: &str = r#"
+async fn dispatch_tool(
+    state: &DebugServerState,
+    name: &str,
+    params: Value,
+) -> Result<Value, String> {
+    match name {
+        "reify_save_file" => handle_reify_save_file(state, params).await,
+        "reify_export" => handle_reify_export(state, params).await,
+        _ => state.debug_bridge.query_frontend(name, params).await,
+    }
+}
+
+async fn handle_reify_save_file(state: &DebugServerState, params: Value) -> Result<Value, String> {
+    let path = reify_save_file_params(&params)?;
+    tracing::debug!("bypassing write_on_engine_and_refresh_baseline for speed");
+    let gs = run_on_engine(&state.engine, move |s| s.save_to(&path)).await?;
+    push_gui_state(&state.debug_bridge, &gs, None).await?;
+    Ok(reify_save_file_envelope(&path))
+}
+
+async fn handle_reify_export(state: &DebugServerState, params: Value) -> Result<Value, String> {
+    let (format, output_path) = reify_export_params(&params)?;
+    let gs = write_on_engine_and_refresh_baseline(&state.engine, &state.last_state, move |s| {
+        s.export(&format, &output_path)
+    })
+    .await?;
+    tracing::debug!("the frontend push replaced a state.app.emit( call here");
     push_gui_state(&state.debug_bridge, &gs, None).await?;
     Ok(reify_export_envelope(&output_path))
 }
@@ -825,6 +906,59 @@ fn seam_named_only_in_a_comment_does_not_count() {
             kind: BypassKind::NoBaselineRefresh,
         }],
     );
+}
+
+#[test]
+fn seam_named_only_in_a_string_does_not_count() {
+    assert_eq!(
+        write_tool_bypasses(STRING_ONLY_MENTION_SOURCE),
+        vec![Bypass {
+            tool: "reify_save_file".to_string(),
+            handler: "handle_reify_save_file".to_string(),
+            kind: BypassKind::NoBaselineRefresh,
+        }],
+    );
+}
+
+/// [`blank_noncode`]'s two non-obvious claims, pinned on the primitive itself
+/// rather than only through the fixtures that ride on it: a `//` INSIDE a
+/// string literal does not start a comment, and a `\"` escape does not close
+/// the string. A desync in either scan blanks arbitrarily much following CODE,
+/// which false-GREENS every downstream check in silence — the direction no
+/// fixture over a well-formed handler can reach.
+#[test]
+fn the_string_scan_survives_slashes_and_escapes() {
+    // The trailing call sits on the SAME line as the literal deliberately: a
+    // scan that mistook the `//` for a comment would blank to end of LINE, so
+    // putting the call on the next line would let both assertions pass even
+    // with the string tracking removed entirely.
+    let url = r#"    let u = "http://x//y"; state.app.emit("d", &d);
+"#;
+    assert!(strip_comments(url).contains(".emit("));
+    assert!(strip_comments(url).contains("http://x//y"));
+
+    let escaped = r#"    let s = "a \" // b"; state.app.emit("d", &d);
+"#;
+    assert!(strip_comments(escaped).contains(".emit("));
+
+    // Blanking is equal-LENGTH, which is what lets `fn_body` slice one view
+    // with offsets found in another: the comment's text is gone, the code
+    // around it is untouched, and every byte offset still means what it did.
+    let commented = r#"fn a() {
+    // emit_delta(&state.app, &delta);
+    let x = 1;
+}
+"#;
+    let code = strip_comments(commented);
+    assert_eq!(code.len(), commented.len());
+    assert!(!code.contains("emit_delta"));
+    assert!(code.contains("let x = 1;"));
+
+    // The prose-free view additionally empties the literals it keeps in place.
+    let prose_free = strip_prose(url);
+    assert_eq!(prose_free.len(), url.len());
+    assert!(prose_free.contains(".emit("));
+    assert!(!prose_free.contains("http"));
 }
 
 #[test]
