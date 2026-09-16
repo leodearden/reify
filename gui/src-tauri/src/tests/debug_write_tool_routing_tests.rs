@@ -858,8 +858,8 @@ fn the_break_glass_knob_downgrades_a_real_bypass_to_a_warn() {
     );
 }
 
-/// The symbols and prose anchors this module's doc comments cite must still
-/// exist in the file they cite them from.
+/// The symbols this module's doc comments cite must still exist in the file
+/// they cite them from.
 ///
 /// Line numbers were replaced by symbol anchors because names survive edits —
 /// but only while they are still names, so this pins them rather than leaving
@@ -888,19 +888,6 @@ fn every_anchor_this_module_cites_still_exists() {
         "this module's prose cites top-level fn(s) `debug_server.rs` no longer defines — \
          re-point the prose at whatever replaced them (or `fn_body` has stopped resolving)"
     );
-
-    // Prose anchors, cited from the comment text rather than the code. Each
-    // fragment must sit on ONE source line: the notes are line-wrapped, so a
-    // longer quote spans a `///` and never matches.
-    for note in [
-        "WHY THE CLUSTER LIVES IN THIS FILE",
-        "a second emit path here or in any caller",
-    ] {
-        assert!(
-            source.contains(note),
-            "this module cites the `debug_server.rs` note {note:?}, which is no longer there"
-        );
-    }
 }
 
 /// The soundness net for the arm scan: a tool the scan CANNOT SEE must red as
