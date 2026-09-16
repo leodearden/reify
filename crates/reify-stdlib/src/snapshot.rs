@@ -3529,13 +3529,9 @@ mod tests {
     /// exactly these values sits below `NewtonConfig::default()`'s
     /// `tol_rot_rad` / `tol_pos_m` on this same asymmetric chain pair. 1e-4 rad
     /// sits ~2 orders above solver noise (a 1e-6 m position residual over
-    /// ~0.116 m links maps to ~1e-5 rad) and ~4 orders below the 1.09 rad
-    /// error of the pre-fix answer.
-    ///
-    /// Before the defect-A fix the closing joint was appended to `path_b`
-    /// too, conjugating the residual and relocating the closure to pivot B;
-    /// that system is infeasible by 1.045 mm and Newton returns the
-    /// least-squares point (2.8936, −2.1083) rad instead.
+    /// ~0.116 m links maps to ~1e-5 rad) and ~4 orders below the ~1.09 rad
+    /// error a residual conjugated by the closing joint produces — so it
+    /// discriminates the two by a wide margin without being fitted to either.
     #[test]
     fn snapshot_grashof_fourbar_converges_to_analytic_closure() {
         fn angle_range(lo: f64, hi: f64) -> Value {
@@ -3658,13 +3654,11 @@ mod tests {
         let (r, rt) = (got(0), got(1));
         assert!(
             (r - THETA_ROCKER).abs() < 1e-4,
-            "θ_rocker must converge to the analytic assembly {THETA_ROCKER}, got {r} \
-             (pre-fix the double-counted closing joint yields ≈2.8936)"
+            "θ_rocker must converge to the analytic assembly {THETA_ROCKER}, got {r}"
         );
         assert!(
             (rt - THETA_ROCKER_TIP).abs() < 1e-4,
-            "θ_rocker_tip must converge to the analytic assembly {THETA_ROCKER_TIP}, got {rt} \
-             (pre-fix the double-counted closing joint yields ≈−2.1083)"
+            "θ_rocker_tip must converge to the analytic assembly {THETA_ROCKER_TIP}, got {rt}"
         );
     }
 
@@ -3693,22 +3687,14 @@ mod tests {
     /// That is an EXACT algebraic solution, so 1e-6 m is the solver's own
     /// `NewtonConfig::default()` `tol_pos_m` and not a fitted threshold.
     ///
-    /// Before the fix `pose` never reached the path at all: the closure
-    /// reduced to `T(j2) == T(j1)`, i.e. residual `(0.200, 0, d2 − d1)`.
-    /// The 200 mm x-error is unabsorbable — the platform pivot offset is
-    /// inexpressible, exactly as the p4_platform.ri fixture header records —
-    /// and Newton lands on the least-squares point `d1 = d2 = 0.300`,
-    /// 50 mm away from the true assembly.
-    ///
-    /// **The 50 mm z-component of the pose is load-bearing for this test.**
-    /// With a pure `(0.200, 0, 0)` offset (the plan's literal fixture) the
-    /// free variable d1 moves only in z, so the unabsorbable x-error is
-    /// ORTHOGONAL to the free direction and the pre-fix least-squares point
-    /// is still `d1 = 0.300` — numerically identical to the correct answer,
-    /// leaving the test green before the fix and proving nothing. Giving the
-    /// rigid offset a component ALONG the free direction is what makes the
-    /// pose observable in the converged value rather than only in the
-    /// (unsurfaced) residual norm.
+    /// **The 50 mm z-component of the pose is load-bearing for this test — do
+    /// not flatten the fixture to a pure `(0.200, 0, 0)` offset.** The free
+    /// variable d1 moves only in z. A pose with no z-component is therefore
+    /// ORTHOGONAL to the free direction, and a residual that ignored `pose`
+    /// entirely would land on the same `d1 = 0.300` a correct one does —
+    /// numerically indistinguishable, proving nothing. A rigid offset with a
+    /// component ALONG the free direction is what makes the pose observable in
+    /// the converged value rather than only in the (unsurfaced) residual norm.
     #[test]
     fn snapshot_rigid_platform_on_two_posts_closes_with_pose_offset() {
         fn post(x_m: f64) -> Value {
@@ -3800,7 +3786,7 @@ mod tests {
         assert!(
             (d1 - 0.250).abs() < 1e-6,
             "j1 must close at 0.250 m (== the bound j2 minus the pose's 50 mm \
-             z-offset), got {d1} (pre-fix the pose-blind residual yields 0.300)"
+             z-offset), got {d1}"
         );
 
         // The platform body (at=j1, pose=identity) must ride at z = 0.250 m
@@ -3857,8 +3843,7 @@ mod tests {
             assert!(
                 (closing[i] - DECK[i]).abs() < 1e-6,
                 "closing body t{axis} must be {} m (coincident with post2 — a rigid \
-                 tie), got {} (pre-fix the pose was applied twice, yielding \
-                 (0.400, 0, 0.350))",
+                 tie applied exactly once), got {}",
                 DECK[i],
                 closing[i]
             );

@@ -30,21 +30,12 @@
 //! per step would be needed to tell them apart end-to-end; that fixture
 //! is out of scope for v0.2 verification.
 //!
-//! **Task 7186 defect A.** The original 2-joint fixture closed jB onto
-//! itself (`body(m2, "solid_c", j_b, j_a)`).  Under the double-counted
-//! chains that put jB on BOTH sides — its chain_a copy resolving to the
-//! range midpoint (1.0 m) while its chain_b copy was the free variable,
-//! i.e. one joint carrying two different values at once, which is where
-//! the old `solved_jB = 1.0 − driver` prediction came from.  With the
-//! closing joint composed exactly once, that fixture has NO free variable
-//! at all (chain_b = [jA], directly bound by the sweep), so the free var
-//! is re-homed here onto a genuine two-deep spanning-tree side.  The
-//! PROPERTY under test — one loop, one free var, warm-start threaded
-//! across steps with a continuous trajectory — is unchanged; only the
-//! side of the loop the free var lives on, and hence the sign of the
-//! trajectory's slope, moved.  This mirrors the same repair already made
-//! to the in-crate twin `reify-stdlib::sweep::tests::
-//! sweep_threads_warm_start_through_closed_chain_steps`.
+//! The fixture needs THREE joints: the closing joint is composed on `path_a`
+//! alone (task 7186), so a two-joint loop closing jB onto itself leaves
+//! `chain_b = [jA]` — directly bound by the sweep, hence no free variable and
+//! nothing for a warm start to thread.  The free variable therefore lives on a
+//! genuine two-deep spanning-tree side here, as it does in the in-crate twin
+//! `reify-stdlib::sweep::tests::sweep_threads_warm_start_through_closed_chain_steps`.
 //!
 //! Also verifies the open-chain regression in `sweep_api_smoke.rs`: an
 //! open-chain mechanism still produces N snapshots, each with empty

@@ -613,32 +613,25 @@ fn append_body(
         // exact and cannot over-reject (pinned by the negative control
         // `non_world_parented_closing_edge_still_records`).
         //
-        // Why a loud rejection and not a softer repair. Both softer remedies —
-        // relaxing `strip_world_sentinel` to admit `[world]`, or pushing an
-        // identity anchor link so `path_b` reaches len 2 — produce a
-        // WELL-FORMED but structurally UNSOLVABLE record: with `parent ==
-        // world`, chain_b holds no joints; `is_zero_dof_joint`
-        // (loop_closure.rs) correctly keeps the 0-DOF link out of `free_b`, so
-        // `free_b == []` for ANY bindings; `validate_loop_closure_inputs`
-        // iterates `free_b` only, so an empty one validates; and `newton_solve`
-        // at n = 0 returns `NotConverged { x: [] }`, which snapshot.rs accepts
-        // on the same arm as `Converged`. Measured on the 5-arg form (which
-        // already reaches that state today via the pose link): bodies at
-        // 0.5 / 1.5 / 1.7 m carrying a residual twist of [0,0,0,-1.3,0,0] — a
-        // 1.3 m unsatisfied closure returned as a normal Snapshot Map with no
-        // diagnostic. Both remedies would therefore trade a loud
-        // whole-mechanism `Undef` for a SILENT wrong answer. The solver varies
-        // only the CLOSING side's joints; a world-parented closing edge is a
-        // GROUNDING constraint whose only candidate free variables live on
-        // chain_a, so making it solvable is a solver redesign, not a fix here.
+        // Rejection, not repair. With `parent == world` chain_b holds no
+        // joints, so `free_b == []` for ANY bindings, and an empty `free_b`
+        // validates: `newton_solve` at n = 0 returns `NotConverged { x: [] }`,
+        // which snapshot.rs accepts on the same arm as `Converged`. Every
+        // softer remedy (admitting `[world]` in `strip_world_sentinel`, or
+        // padding `path_b` with an identity anchor) therefore trades a loud
+        // whole-mechanism `Undef` for a normal-looking Snapshot carrying an
+        // arbitrarily large unsatisfied closure — measured at 1.3 m on the
+        // 5-arg form, with no diagnostic. The solver varies only the CLOSING
+        // side's joints, so a world-parented closing edge (a GROUNDING
+        // constraint, whose candidate free variables all live on chain_a) is
+        // solvable only after a solver redesign, not here.
         //
-        // Scope: only this world-parent subcase is closed, because it is
-        // decidable from the path shape alone — terminating `path_b` at the
-        // closing edge's `parent` is what makes it reachable. The GENERAL
-        // `free_b.is_empty()`
-        // case — every chain_b joint directly bound — has the same structural
-        // unsolvability but is not statically decidable here; it is the
-        // verdict-integrity surface owned by #7185.
+        // Scope: this world-parent subcase alone, because it is decidable from
+        // the path shape. The general `free_b.is_empty()` case — every chain_b
+        // joint directly bound — is structurally identical but not statically
+        // decidable here; it is the verdict-integrity surface owned by #7185,
+        // and terminating `path_b` at the closing edge's `parent` makes it
+        // easier to reach than it was.
         //
         // The guard is inside the parent-conflict arm on purpose: a plain OPEN
         // edge `body(m, s, j, world)` is the common case and is untouched.
