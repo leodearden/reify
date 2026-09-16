@@ -217,8 +217,8 @@ fn git_at_workspace_root_targets_git_dash_c_at_the_workspace_root() {
 /// Every TRACKED `.ri` file in the repository, as repo-relative
 /// forward-slash paths, sorted and deduplicated.
 ///
-/// Shells out to `git ls-files -z -- '*.ri'` at the workspace root rather than
-/// walking the filesystem, for three reasons:
+/// Goes through [`scan_tracked_corpus`] — `git ls-files -z` at the workspace
+/// root — rather than walking the filesystem, for three reasons:
 ///
 /// 1. The task defines the corpus as "all **tracked** `.ri`", and both the PRD
 ///    and the capability manifest cite `git ls-files '*.ri'` as the enumerating
@@ -236,9 +236,9 @@ fn git_at_workspace_root_targets_git_dash_c_at_the_workspace_root() {
 ///
 /// Enumerated ONCE per process, behind the same `OnceLock` that
 /// [`stdlib_structure_defs`] and [`fea_owned_defs`] use: the tracked corpus
-/// cannot change while the test binary runs, and the five gate-resident tests
-/// below plus the generator would otherwise spawn six separate
-/// `git ls-files` subprocesses and re-sort ~676 paths each time.
+/// cannot change while the test binary runs, and the gate-resident probes
+/// below plus the generator would otherwise spawn a `git ls-files` subprocess
+/// and re-sort ~700 paths each time.
 fn tracked_ri_corpus() -> &'static [String] {
     static CORPUS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
     CORPUS.get_or_init(scan_tracked_ri_corpus)
@@ -246,7 +246,64 @@ fn tracked_ri_corpus() -> &'static [String] {
 
 /// The uncached enumeration behind [`tracked_ri_corpus`].
 fn scan_tracked_ri_corpus() -> Vec<String> {
-    let out = git_at_workspace_root(&["ls-files", "-z", "--", "*.ri"])
+    scan_tracked_corpus("*.ri")
+}
+
+/// A BROKEN-ENUMERATION floor for the Rust-host half, deliberately far below
+/// the live count (1,307 measured 2026-09-16: 1,305 carrying a `tests`
+/// directory component under `crates/`, plus
+/// `crates/reify-eval/src/{engine_build,geometry_ops}/tests.rs`).
+///
+/// Same reasoning as the `.ri` floor below: it catches a wrong root, a wrong
+/// pathspec or a silent git failure, and must NOT red the merge gate when a
+/// test-consolidation task legitimately deletes a few hundred host files. The
+/// artifact header carries the live count.
+const RUST_HOST_CORPUS_FLOOR: usize = 300;
+
+/// Every tracked `*.rs` that can host an inline Reify fixture, as repo-relative
+/// forward-slash paths, sorted and deduplicated — the second corpus half
+/// (task #7543).
+///
+/// The `.ri` half enumerates FILES whose whole content is Reify; this half
+/// enumerates files that may CARRY Reify inside a raw-string literal, which
+/// `git ls-files -- '*.ri'` cannot reach. Both come from the same primitive,
+/// and both are cached behind the same `OnceLock` for the same reason
+/// [`tracked_ri_corpus`] is.
+fn tracked_rust_test_hosts() -> &'static [String] {
+    static HOSTS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    HOSTS.get_or_init(scan_tracked_rust_test_hosts)
+}
+
+/// The uncached enumeration behind [`tracked_rust_test_hosts`].
+///
+/// The same git-index primitive as the `.ri` half, narrowed by the SHARED
+/// [`rust_fixture_scan::is_inline_fixture_host`] predicate — the one place that
+/// decides what an in-scope host is, so the enumeration and the walker cannot
+/// disagree. The primitive's non-empty assertion covers a broken `*.rs`
+/// enumeration; a post-FILTER collapse (every host rejected) is the
+/// corpus-parity gate's business, which runs before any sweep.
+fn scan_tracked_rust_test_hosts() -> Vec<String> {
+    scan_tracked_corpus("*.rs")
+        .into_iter()
+        .filter(|p| rust_fixture_scan::is_inline_fixture_host(std::path::Path::new(p)))
+        .collect()
+}
+
+/// The SINGLE git-index primitive both corpus halves are enumerated through.
+///
+/// Routing both halves through one primitive is what makes the corpus-parity
+/// gate's shared floor structural: neither half can acquire its own
+/// enumeration strategy, its own sort order, or its own failure policy.
+///
+/// A filesystem walk was rejected for the same reason `git ls-files` was chosen
+/// for the `.ri` half: it would admit UNTRACKED files, which no commit
+/// reproduces — and the artifact is stamped against a commit.
+///
+/// Panics if git is unavailable, exits non-zero, or reports nothing. A
+/// silently-empty corpus would render a falsely-clean survey, which is the one
+/// failure mode this artifact must never have.
+fn scan_tracked_corpus(pathspec: &str) -> Vec<String> {
+    let out = git_at_workspace_root(&["ls-files", "-z", "--", pathspec])
         .output()
         .unwrap_or_else(|e| {
             panic!(
@@ -255,7 +312,7 @@ fn scan_tracked_ri_corpus() -> Vec<String> {
         });
     assert!(
         out.status.success(),
-        "ctor_conformance_corpus_survey: `git ls-files -z -- '*.ri'` in {WORKSPACE_ROOT} \
+        "ctor_conformance_corpus_survey: `git ls-files -z -- '{pathspec}'` in {WORKSPACE_ROOT} \
          exited {:?}: {}",
         out.status.code(),
         String::from_utf8_lossy(&out.stderr).trim()
@@ -272,38 +329,10 @@ fn scan_tracked_ri_corpus() -> Vec<String> {
     paths.dedup();
     assert!(
         !paths.is_empty(),
-        "ctor_conformance_corpus_survey: `git ls-files -z -- '*.ri'` returned nothing in \
+        "ctor_conformance_corpus_survey: `git ls-files -z -- '{pathspec}'` returned nothing in \
          {WORKSPACE_ROOT} — a silently-empty corpus would render a falsely-clean survey"
     );
     paths
-}
-
-/// A BROKEN-ENUMERATION floor for the Rust-host half, deliberately far below
-/// the live count (1,307 measured 2026-09-16: 1,305 carrying a `tests`
-/// directory component under `crates/`, plus
-/// `crates/reify-eval/src/{engine_build,geometry_ops}/tests.rs`).
-///
-/// Same reasoning as the `.ri` floor below: it catches a wrong root, a wrong
-/// pathspec or a silent git failure, and must NOT red the merge gate when a
-/// test-consolidation task legitimately deletes a few hundred host files. The
-/// artifact header carries the live count.
-const RUST_HOST_CORPUS_FLOOR: usize = 300;
-
-/// Every tracked `*.rs` that can host an inline Reify fixture — the second
-/// corpus half (task #7543).
-fn tracked_rust_test_hosts() -> &'static [String] {
-    static HOSTS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    HOSTS.get_or_init(scan_tracked_rust_test_hosts)
-}
-
-/// The uncached enumeration behind [`tracked_rust_test_hosts`].
-fn scan_tracked_rust_test_hosts() -> Vec<String> {
-    Vec::new()
-}
-
-/// The single git-index primitive both halves are enumerated through.
-fn scan_tracked_corpus(_pathspec: &str) -> Vec<String> {
-    Vec::new()
 }
 
 /// `Some(hosts)` when git can be spawned, `None` when it cannot — the
