@@ -19,8 +19,9 @@
 //! sink the seated rope 0.180 mm below the rim, and `sheave_od/2 == r_pitch`
 //! is not decoration in this design: `printer.ri` threads it into
 //! `CapstanUnit.r_pitch`, into `CarriageIdlers.ab_split` and into
-//! `DriveTendons` ("every tendon centreline is tangent to its rope's pitch
-//! circle"), behind 31 hand-derived placements. So the arc's CENTRE moves
+//! `DriveTendons.r_pitch`, which every idler centre is offset from so that the
+//! tendon centrelines come out tangent to their ropes' pitch circles — behind
+//! 31 hand-derived placements. So the arc's CENTRE moves
 //! outboard to compensate, and two exact, ratio-independent identities fall
 //! out — the seat bottom and the seated rope's centreline both stay where they
 //! were. Those identities are what the gates here pin.
@@ -30,7 +31,7 @@
 //! KERNEL-FREE (`compile_with_stdlib_checked` + `Engine::check`): cells and
 //! `constraint_results` only. `Engine::tessellate_realizations` takes no
 //! entity or scope argument, so tessellating printer.ri means tessellating all
-//! 32 of its structures — 3635 lines, 31 torus-boolean idlers, never once
+//! 32 of its structures — ~3.7 k lines, 31 torus-boolean idlers, never once
 //! tessellated by any test in this repo and plausibly minutes. A full stdlib
 //! COMPILE of it, by contrast, already runs in CI today
 //! (`crates/reify-compiler/tests/harness_constructor_typing/orientation_constructor_typing_tests.rs`),
@@ -68,16 +69,21 @@
 //!
 //! # The measured kernel-free surface of printer.ri (task #6135, pre-2)
 //!
-//! Every figure and every allowlist entry below was MEASURED on this branch
-//! before the first assertion was written, so the loader's error handling is
-//! sized to the file as it actually is. printer.ri parses with 0 errors, and
-//! `IdlerPulley`'s eleven cells and `DriveTendons.r_pitch` all resolve off the
-//! bare template — printer.ri instantiates `IdlerPulley` 31 times but task
-//! 4147 drops parameter overrides, so the bare-template form is the one to
-//! read. `DriveTendons.r_pitch` and `IdlerPulley.sheave_r` both measure
+//! **Everything in this section was measured on the file as it stood BEFORE
+//! this task's step 2**, which is what sized the loader's error handling; the
+//! counts are therefore a pre-change record and NOT a claim about the file
+//! today. The live counts are [`IDLER_CELLS`] (fourteen cells, the inventory
+//! the lockstep gate enforces) and whatever `assert_idler_constraints_ok`
+//! demands (five constraints) — those are executable and cannot drift.
+//!
+//! printer.ri parsed with 0 errors, and `IdlerPulley`'s eleven cells (then;
+//! fourteen now) and `DriveTendons.r_pitch` all resolved off the bare template
+//! — printer.ri instantiates `IdlerPulley` 31 times but task 4147 drops
+//! parameter overrides, so the bare-template form is the one to read.
+//! `DriveTendons.r_pitch` and `IdlerPulley.sheave_r` both measure
 //! 0.018000000000000002 m: BIT-IDENTICAL, because `36mm / 2` and `18mm` are
-//! the same IEEE-754 double. `IdlerPulley`'s three constraints are all
-//! `Satisfied`, out of 406 file-wide across 29 entities.
+//! the same IEEE-754 double. `IdlerPulley`'s three constraints (then; five now)
+//! were all `Satisfied`, out of 406 file-wide across 29 entities.
 //!
 //! Pre-change `IdlerPulley` figures, for the delta claims the gates below
 //! make: rim 18.000 mm, seat bottom 15.000 mm, seat opening at the rim
@@ -148,11 +154,17 @@ const IDLER_ENTITY: &str = "IdlerPulley";
 /// The structure whose `r_pitch` the idler's seated rope has to agree with.
 ///
 /// `printer.ri`'s cross-structure single source: `DriveTendons` declares
-/// `let r_pitch = 18mm` (:914) under the statement that "every tendon
-/// centreline is tangent to its rope's pitch circle" (:909), and the same 18 mm
-/// is threaded into `CapstanUnit` as "the single source (not hand-matched)"
-/// (:477) and into `CarriageIdlers.ab_split` (:830). Nothing in the repo
-/// checked the idler end of it before #6135.
+/// `let r_pitch = 18mm` under a comment deriving every idler centre from it —
+/// each one sits `r_pitch` inboard of its rail axis so the tendon centrelines
+/// come out tangent to their ropes' pitch circles — and the same 18 mm is
+/// `CapstanUnit.r_pitch` ("the single source (not hand-matched)") and
+/// `CarriageIdlers.ab_split`. Nothing in the repo checked the idler end of it
+/// before #6135.
+///
+/// Cited by IDENTIFIER, never by line number: `printer.ri` is 3.7 k lines and
+/// every task that edits it moves the rest, so a `:NNN` here would be stale by
+/// the next commit — and these citations are read at the one moment they have
+/// to be right, inside a failing assertion.
 const DRIVE_ENTITY: &str = "DriveTendons";
 
 
@@ -369,7 +381,7 @@ fn check_printer(compiled: &reify_compiler::CompiledModule) -> CheckResult {
 /// gives: the gates compare cells ACROSS entities (`IdlerPulley` against
 /// `DriveTendons`), and two separate compilations would make them agree only by
 /// assuming the compiler is deterministic — an assumption none of them states.
-/// The cost side is the ordinary saving: printer.ri is 3635 lines and is read,
+/// The cost side is the ordinary saving: printer.ri is ~3.7 k lines and is read,
 /// parsed and stdlib-compiled once.
 fn printer_checked() -> &'static CheckResult {
     static M: OnceLock<CheckResult> = OnceLock::new();
@@ -659,7 +671,8 @@ const IDLER_BODY_READS: &[&str] = &[
 ///     a 2.000000 mm miss. That is the measurement showing this half is genuinely
 ///     independent of (1) — a self-consistent seat on the wrong circle satisfies
 ///     (1), (2)'s first half and (3), and is caught here alone.
-///   * (4), against printer.ri:238 reverted to `torus(sheave_r, groove_r)`: the
+///   * (4), against printer.ri's `torus(seat_c, groove_r)` reverted to
+///     `torus(sheave_r, groove_r)`: the
 ///     read-set loses `seat_c`. That mutation is the exact uncompensated seat
 ///     this task removed, in the production file all 31 placements come from,
 ///     and it left ALL FIVE of this module's gates green — measured, which is
@@ -729,13 +742,14 @@ fn idler_seat_keeps_the_rope_on_the_pitch_circle() {
          mm — printer.ri's cross-structure single source — but it sits at {:.6} \
          mm (rel err {err_pitch:.3e}, tol {SCALAR_REL_TOL:.0e}), off by {:.6} mm. \
          THIS IS THE INVARIANT 31 HAND-DERIVED PLACEMENTS REST ON, and a miss \
-         here is not cosmetic: printer.ri states that \"every tendon centreline \
-         is tangent to its rope's pitch circle\" (:909), threads the same 18 mm \
-         into CapstanUnit as \"the single source (not hand-matched)\" (:477) and \
-         into CarriageIdlers.ab_split (:830). Every one of those positions is \
-         hand-derived from this number, so moving the rope without moving them \
-         silently falsifies all of them — and before #6135 nothing in the repo \
-         checked it.",
+         here is not cosmetic: printer.ri derives every idler centre from this \
+         number so that each tendon centreline comes out tangent to its rope's \
+         pitch circle, and threads the same 18 mm through CapstanUnit.r_pitch \
+         (\"the single source (not hand-matched)\") and CarriageIdlers.ab_split. \
+         Every one of those positions is hand-derived from it, so moving the \
+         rope without moving them silently falsifies all of them — and before \
+         #6135 nothing in the repo checked it. (Grep the identifiers; this \
+         message deliberately carries no line numbers, which would be stale.)",
         r_pitch * 1e3,
         seated_centreline * 1e3,
         (seated_centreline - r_pitch) * 1e3,
