@@ -305,3 +305,90 @@ fn gmsh_mesh_surface_to_volume_attributed_threads_boundary_onto_volume_mesh() {
         "expected at least one node attributed to the +Z face handle h(102)"
     );
 }
+
+/// The attributed producer must return a BIT-IDENTICAL mesh for repeated
+/// calls on the same surface — not merely a mesh of similar size.
+///
+/// # Why bit-identity is the right contract here
+///
+/// This producer is the morph arm's SOURCE-mesh supplier: `reify-eval`
+/// stashes its output as the next tick's `MorphSource::source_mesh`
+/// (`engine_build.rs:9604-9618`), and only this attributed branch can, since
+/// the stash requires the task-4092 `BoundaryAssociation` that the plain
+/// `mesh_surface_to_volume` sibling never produces. `reify-mesh-morph` then
+/// judges the MORPHED mesh against ABSOLUTE quality floors
+/// (`quality_floor_min_scaled_jacobian` 0.01, `quality_floor_pct_below_025`
+/// 0.01 — reify-mesh-morph/src/options.rs:235,248), so a source that varies
+/// run-to-run makes the morph-or-remesh verdict a function of thread
+/// scheduling rather than of the fixture. A count-tolerance contract would
+/// not catch that; bit-identity does.
+///
+/// MEASURED (task 7411): with `MeshingOptions::default()` at the override's
+/// injection point (`kernel_real.rs:664`) this test is deterministically RED
+/// — 3/3 separate processes failed on `tet_indices`, with per-rep tet counts
+/// ranging 1187..1258 and every rep distinct. With `deterministic: true`
+/// pinned there it is GREEN in 3/3 processes, all reps identical at
+/// verts=889 tets=1212 and identical ACROSS processes too. `deterministic`
+/// is excluded from the mesh cache key (options.rs:28-34, cache_key.rs:9),
+/// so the pin cannot alter cache-hit behaviour.
+///
+/// Deliberately takes no `MeshingOptions` parameter: the trait method has
+/// none, which is the point. This exercises the production frame exactly as
+/// `reify-eval`'s `engine_build.rs:9396` does, so it cannot pass by
+/// configuring something production leaves unconfigured.
+#[test]
+fn attributed_producer_output_is_reproducible_across_repeated_calls() {
+    let kernel = GmshKernel::new();
+    let surface = subdivided_unit_cube_surface();
+
+    // Same 6 face anchors as the sibling tests above.
+    let face_anchors: Vec<(GeometryHandleId, [f64; 3])> = vec![
+        (h(101), [0.0, 0.0, -0.5]),
+        (h(102), [0.0, 0.0, 0.5]),
+        (h(103), [0.0, -0.5, 0.0]),
+        (h(104), [0.0, 0.5, 0.0]),
+        (h(105), [-0.5, 0.0, 0.0]),
+        (h(106), [0.5, 0.0, 0.0]),
+    ];
+
+    const REPS: usize = 4;
+    let mut reps: Vec<(Vec<f32>, Vec<u32>)> = Vec::with_capacity(REPS);
+    for rep in 0..REPS {
+        let vm = kernel
+            .mesh_surface_to_volume_attributed(&surface, ElementOrderTag::P1, &face_anchors, 0.3)
+            .unwrap_or_else(|e| {
+                panic!("attributed producer must succeed on the watertight unit cube (rep {rep}): {e:?}")
+            });
+        let tets = vm
+            .tet_indices()
+            .expect("P1 tet mesh must have tet_indices")
+            .to_vec();
+        reps.push((vm.vertices.clone(), tets));
+    }
+
+    let (ref v0, ref t0) = reps[0];
+    for (rep, (verts, tets)) in reps.iter().enumerate().skip(1) {
+        // tet_indices first: the coarser, more legible signal.
+        assert_eq!(
+            tets.len() / 4,
+            t0.len() / 4,
+            "tet COUNT differs between rep 0 ({} tets) and rep {rep} ({} tets) — the \
+             attributed producer is not reproducible; check that its MeshingOptions \
+             still pin `deterministic: true` (kernel_real.rs, mesh_surface_to_volume_attributed)",
+            t0.len() / 4,
+            tets.len() / 4
+        );
+        assert_eq!(
+            tets, t0,
+            "tet_indices differ between rep 0 and rep {rep} at equal tet count ({} tets) — \
+             the attributed producer is not bit-reproducible",
+            t0.len() / 4
+        );
+        assert_eq!(
+            verts, v0,
+            "vertices differ between rep 0 and rep {rep} ({} verts) despite identical \
+             tet_indices — the attributed producer is not bit-reproducible",
+            v0.len() / 3
+        );
+    }
+}
