@@ -22,6 +22,7 @@
 
 use faer::{Mat, Side};
 use faer::sparse::{SparseRowMat, Triplet};
+use reify_solver_elastic::eigensolve::test_support::{laplacian_lambdas, laplacian_pencil};
 use reify_solver_elastic::eigensolve::{EigenSolverOptions, solve_eigen_dense, solve_eigen_shift_invert};
 use reify_solver_elastic::{
     lanczos_shift_invert, SparseFactorRef, SparseMetricOp, SparseStiffnessOp,
@@ -83,34 +84,18 @@ fn dense_recovers_known_spectrum_on_5x5_diagonal_pair() {
 // Fixture-B helpers: 50-DOF 1D-Laplacian pair
 // ---------------------------------------------------------------------------
 
-/// Build K = tridiag(-1, 2, -1) (50×50 Dirichlet Laplacian) and B = I (50×50).
+/// Fixture B: K = tridiag(-1, 2, -1) (50×50 Dirichlet Laplacian), B = I.
+const FIXTURE_B_N: usize = 50;
+
+/// Fixture B, from the crate's shared test-support seam — one definition of the
+/// pencil and its closed form across every site that drives them.
 fn fixture_b() -> (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>) {
-    let n = 50usize;
-    let mut k_trips = Vec::with_capacity(3 * n - 2);
-    for i in 0..n {
-        k_trips.push(Triplet::new(i, i, 2.0));
-        if i > 0 {
-            k_trips.push(Triplet::new(i, i - 1, -1.0));
-        }
-        if i + 1 < n {
-            k_trips.push(Triplet::new(i, i + 1, -1.0));
-        }
-    }
-    let b_trips: Vec<Triplet<usize, usize, f64>> =
-        (0..n).map(|i| Triplet::new(i, i, 1.0)).collect();
-    let k = SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap();
-    let b = SparseRowMat::try_new_from_triplets(n, n, &b_trips).unwrap();
-    (k, b)
+    laplacian_pencil(FIXTURE_B_N)
 }
 
-/// Closed-form smallest 5 eigenvalues of the 50-DOF Laplacian (Kφ = λBφ = λφ).
-/// λ_k = 2(1 − cos(kπ/51)) for k=1..=5.
+/// Closed-form smallest 5 eigenvalues of fixture B (Kφ = λBφ = λφ).
 fn fixture_b_expected_5() -> [f64; 5] {
-    let n = 50usize;
-    std::array::from_fn(|i| {
-        let k = (i + 1) as f64;
-        2.0 * (1.0 - f64::cos(k * std::f64::consts::PI / (n as f64 + 1.0)))
-    })
+    laplacian_lambdas(FIXTURE_B_N)
 }
 
 // ---------------------------------------------------------------------------
@@ -229,14 +214,9 @@ fn dense_recovers_closed_form_on_50dof_laplacian() {
 // eigenvalues and (b) the dense path, to 1e-8 (PRD §13 "8 digits").
 // ---------------------------------------------------------------------------
 
-/// Closed-form smallest 5 eigenvalues of the 80-DOF Laplacian (Kφ = λBφ = λφ).
-/// λ_k = 2(1 − cos(kπ/81)) for k=1..=5.
+/// Closed-form smallest 5 eigenvalues of fixture C (Kφ = λBφ = λφ).
 fn fixture_c_expected_5() -> [f64; 5] {
-    let n = 80usize;
-    std::array::from_fn(|i| {
-        let k = (i + 1) as f64;
-        2.0 * (1.0 - f64::cos(k * std::f64::consts::PI / (n as f64 + 1.0)))
-    })
+    laplacian_lambdas(FIXTURE_C_N)
 }
 
 // NOTE: this test requires the root Cargo.toml profile overrides added in
@@ -300,22 +280,13 @@ fn shift_invert_and_dense_agree_on_80dof_synthetic_pair() {
 // Fixture-C helpers: 80-DOF Laplacian (n > 64 so Lanczos actually runs)
 // ---------------------------------------------------------------------------
 
-/// Build K = tridiag(-1,2,-1) (80×80) and B = I (80×80).
+/// Fixture C: K = tridiag(-1,2,-1) (80×80), B = I, from the shared seam.
 /// n=80 > 64 so faer's effective_max_dim = min(max(32,64,10),80) = 64 < 80:
 /// partial_self_adjoint_eigen runs the Lanczos loop without the dense fallback.
+const FIXTURE_C_N: usize = 80;
+
 fn fixture_c() -> (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>) {
-    let n = 80usize;
-    let mut k_trips = Vec::with_capacity(3 * n - 2);
-    for i in 0..n {
-        k_trips.push(Triplet::new(i, i, 2.0));
-        if i > 0 { k_trips.push(Triplet::new(i, i - 1, -1.0)); }
-        if i + 1 < n { k_trips.push(Triplet::new(i, i + 1, -1.0)); }
-    }
-    let b_trips: Vec<Triplet<usize, usize, f64>> =
-        (0..n).map(|i| Triplet::new(i, i, 1.0)).collect();
-    let k = SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap();
-    let b = SparseRowMat::try_new_from_triplets(n, n, &b_trips).unwrap();
-    (k, b)
+    laplacian_pencil(FIXTURE_C_N)
 }
 
 // ---------------------------------------------------------------------------

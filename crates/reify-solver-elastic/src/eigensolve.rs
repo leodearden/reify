@@ -666,12 +666,35 @@ pub enum ShiftInvertFailure {
     /// `K` is not symmetric positive definite — its Cholesky hit a non-positive
     /// pivot.  The model is under-constrained (a DOF no element and no
     /// Dirichlet BC restrains), or the assembled `K` is otherwise singular.
+    ///
+    /// NOT reported at σ≠0: see [`try_solve_eigen_shift_invert`] for why that
+    /// detection limit is deliberate and what a caller using this as an
+    /// under-constrained-model detector must do about it.
     KNotSpd,
     /// `K − σB` is singular, or numerically indistinguishable from singular, at
     /// this shift: σ sits on (or within the pencil's own resolution floor of)
     /// an eigenvalue, so shift-invert has no operator to apply.  The remedy is
     /// to MOVE σ — which is why σ is carried here rather than left for the
     /// caller to re-derive from its own options (contract clause C6).
+    ///
+    /// # Distinct fault, distinct remedy — the canonical statement
+    ///
+    /// This and [`Self::KNotSpd`] must never be merged, and every consumer that
+    /// carries the distinction upward cites THIS paragraph rather than restating
+    /// it.  `KNotSpd` says "the model is under-constrained, add supports";  this
+    /// one says "`K − σB` is singular AT THE REQUESTED SHIFT, move σ" — on a
+    /// model whose supports may be perfectly fine.  Collapsing the two sends an
+    /// author to check boundary conditions for a problem that is entirely about
+    /// where σ was put, which is a confidently wrong diagnosis rather than a
+    /// merely unhelpful one.
+    ///
+    /// # Honesty limit
+    ///
+    /// [`shift_is_numerically_singular`] also answers `true` for an EMPTY or
+    /// non-finite spectrum, so this arm can be reached when a σ≠0 solve simply
+    /// converged nothing.  The conflation is real, pinned by
+    /// `empty_spectrum_at_a_healthy_shift_is_reported_as_a_singular_shift`, and
+    /// deliberately not split here — splitting it is δ (#7261)'s.
     ShiftAtEigenvalue { sigma: f64 },
 }
 
@@ -1233,11 +1256,29 @@ pub fn solve_eigen_shift_invert(
 /// mapping an allocation failure into this channel would surface it as
 /// `W_ModalRigidBodyMode: K_free is singular (the model is under-constrained)`.
 ///
-/// Typing the channel rather than returning a bare `None` is what lets the two
-/// domain failures stay DISTINGUISHABLE: a σ that lands on an eigenvalue is a
-/// fault in where the caller put the shift, and collapsing it into the non-SPD
-/// answer would send an author to check boundary conditions for a problem that
-/// is entirely about σ.
+/// Typing the channel rather than returning a bare `None` is what keeps the two
+/// domain failures DISTINGUISHABLE; [`ShiftInvertFailure::ShiftAtEigenvalue`]
+/// states why that distinction is load-bearing.
+///
+/// # `Err(KNotSpd)` is reported at σ=0 only — a DETECTION limit, not a claim
+///
+/// `K`'s own SPD-ness is measured only where `K` itself is factored, which is
+/// the σ=0 branch. At σ≠0 the factored matrix is `K − σB`, and on a problem
+/// small enough to route to [`solve_eigen_dense`] nothing is factored at all —
+/// so the very same singular `K` yields `Err(KNotSpd)` at σ=0 and `Ok(dense
+/// result)` at σ≠0.
+///
+/// The asymmetry is deliberate rather than hoisted away. `Ok` at σ≠0 is not
+/// wrong: the dense QZ path tolerates a singular `K` and returns the real
+/// spectrum, rigid-body modes and all, which is exactly what the caller asked
+/// for. Hoisting the dense check above the σ split to make the two branches
+/// agree would instead make the σ=0 branch STOP reporting a fault it can cheaply
+/// measure, and would change the σ=0 code path that
+/// `sigma_zero_factors_k_itself_not_k_minus_zero_b` pins. So the limit is
+/// documented instead: a caller using this entry point as an
+/// under-constrained-model DETECTOR (task 6663) must call it at σ=0, which is
+/// what `reify-eval`'s `solve_generalized_eigen` does — it pre-screens the whole
+/// dense regime before ever reaching here.
 ///
 /// The factorization is performed exactly ONCE: on `Ok` the very same factor
 /// feeds [`SparseStiffnessOp`], so the healthy path pays no extra cost relative
@@ -1468,10 +1509,30 @@ fn pencil_lambda_resolution_floor(
     }
     let norm_inf_shifted = row_sums.into_iter().fold(0.0_f64, f64::max);
 
+    // `‖B‖_∞` is the DIVISOR, so a degenerate B has to be refused rather than
+    // divided by. It is a CALLER bug — the generalized problem `Kφ = λBφ` is
+    // not defined without a B — and left unguarded it fails silently in two
+    // OPPOSITE directions: an all-zero B makes the floor `+∞`, so
+    // `shift_is_numerically_singular` answers `true` for every σ≠0 and a healthy
+    // solve is refused as a singular shift; and if `K − σB` is all zero too the
+    // floor is `NaN`, every `<=` against it is false, and PART B of the C6 guard
+    // silently disappears. Neither is visible from the outside, which is the
+    // argument for a loud panic over a defensive default.
+    //
+    // Checked HERE rather than in `check_eigen_options_and_shapes` on purpose:
+    // this is the only site that divides by it, and the σ=0 path — every pinned
+    // golden — forms no floor at all, so a guard hoisted to the shared entry
+    // check would newly refuse σ=0 callers over a quantity they never use.
     let b_ref = b.as_ref();
     let norm_inf_b = (0..b.nrows())
         .map(|i| b_ref.val_of_row(i).iter().map(|v| v.abs()).sum::<f64>())
         .fold(0.0_f64, f64::max);
+    assert!(
+        norm_inf_b > 0.0 && norm_inf_b.is_finite(),
+        "eigensolve: ‖B‖_∞ = {norm_inf_b} — the pencil's λ-space resolution \
+         floor is undefined for a degenerate B, and a degenerate B is a caller \
+         bug, not a property of the shift",
+    );
 
     shifted.nrows() as f64 * f64::EPSILON * norm_inf_shifted / norm_inf_b
 }
@@ -1489,6 +1550,25 @@ fn pencil_lambda_resolution_floor(
 /// 2. **An empty or non-finite spectrum.** At σ≠0 an empty result is a FAILURE,
 ///    not a silent answer: every μ was filtered out, so no λ was recovered at
 ///    all and there is nothing to report but the shift.
+///
+/// # Arm 2 CONFLATES two causes, knowingly
+///
+/// "σ sits on an eigenvalue" and "this σ≠0 solve converged nothing" are
+/// different facts, and arm 2 reports both as the same
+/// [`ShiftInvertFailure::ShiftAtEigenvalue`] carrying the same "move σ" remedy.
+/// That is a deliberate v1 limit, not an oversight: an empty spectrum at σ≠0
+/// leaves nothing to discriminate on, and inventing a second failure arm without
+/// a way to tell them apart would only move the guess.  The behaviour is PINNED
+/// by `empty_and_non_finite_spectra_are_conflated_with_a_singular_shift`, so δ
+/// (#7261) inherits a measured baseline rather than an assumption.
+///
+/// How far arm 2 actually REACHES was measured, not assumed, and the answer is
+/// "not observed end to end". Starving the 80-DOF fixture-C solve at a healthy
+/// σ still converges 2 of 2 modes at `max_restarts = 1` and `tol = 1e-300`, so
+/// no cheap `(K, B, σ)` that reaches this arm through
+/// [`try_solve_eigen_shift_invert`] is known. The arm is therefore pinned at the
+/// predicate rather than through a contrived pencil — the honest place, given
+/// that the behaviour being recorded is a limit rather than a feature.
 ///
 /// **No automatic perturbation, ever.** Nudging σ and re-solving is exactly the
 /// silent-substitution class this contract exists to close: it would answer a
@@ -1549,6 +1629,68 @@ fn with_provenance(
     }
 }
 
+/// Fixtures shared by this module's own tests, the crate's integration tests,
+/// and `reify-eval`'s in-crate modal tests.
+///
+/// `#[doc(hidden)] pub` rather than `#[cfg(test)]` for the same reason
+/// [`crate::assembly::test_support`] is: an integration test compiles against
+/// the built library, so a `#[cfg(test)]` item is invisible to it and every
+/// consumer ends up with its own copy. The closed form in particular was
+/// maintained in four places before this seam existed.
+#[doc(hidden)]
+pub mod test_support {
+    use faer::sparse::{SparseRowMat, Triplet};
+
+    /// The `n`-DOF 1-D Dirichlet Laplacian pencil: `K = tridiag(−1, 2, −1)`
+    /// (symmetric positive definite) with `B = I`.
+    ///
+    /// Its spectrum is closed-form ([`laplacian_lambda`]), which is what lets a
+    /// test place σ EXACTLY on an eigenvalue in f64 rather than near one to
+    /// within whatever tolerance some prior solve happened to reach.
+    ///
+    /// `n > 64` is the threshold above which [`super::routes_to_dense_fallback`]
+    /// is false and the real Lanczos path runs.
+    pub fn laplacian_pencil(n: usize) -> (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>) {
+        let mut k_trips = Vec::with_capacity(3 * n - 2);
+        for i in 0..n {
+            k_trips.push(Triplet::new(i, i, 2.0));
+            if i > 0 {
+                k_trips.push(Triplet::new(i, i - 1, -1.0));
+            }
+            if i + 1 < n {
+                k_trips.push(Triplet::new(i, i + 1, -1.0));
+            }
+        }
+        (
+            SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap(),
+            identity(n),
+        )
+    }
+
+    /// `I` (`n`×`n`), as a sparse row matrix.
+    pub fn identity(n: usize) -> SparseRowMat<usize, f64> {
+        let trips: Vec<Triplet<usize, usize, f64>> =
+            (0..n).map(|i| Triplet::new(i, i, 1.0)).collect();
+        SparseRowMat::try_new_from_triplets(n, n, &trips).unwrap()
+    }
+
+    /// Closed-form `λ_k = 2(1 − cos(kπ/(n+1)))` of [`laplacian_pencil`],
+    /// 1-INDEXED (λ₁ is the first mode, not λ₀), matching the formula.
+    pub fn laplacian_lambda(n: usize, k: usize) -> f64 {
+        assert!(
+            (1..=n).contains(&k),
+            "an n = {n} pencil has modes k = 1..={n}, not {k}",
+        );
+        2.0 * (1.0 - f64::cos(k as f64 * std::f64::consts::PI / (n as f64 + 1.0)))
+    }
+
+    /// The `m` smallest closed-form eigenvalues of [`laplacian_pencil`],
+    /// ascending.
+    pub fn laplacian_lambdas<const M: usize>(n: usize) -> [f64; M] {
+        std::array::from_fn(|i| laplacian_lambda(n, i + 1))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Unit tests for the private K − σB assembly
 //
@@ -1557,6 +1699,62 @@ fn with_provenance(
 // outside the module — the PUBLIC contract these support is pinned from
 // `tests/eigensolve_shift_contract.rs` instead.
 // ---------------------------------------------------------------------------
+
+/// Unit tests for the private C6 predicate.
+///
+/// In-crate for the same reason `shifted_pencil_tests` below is: the item is
+/// private, and its PUBLIC consequences are pinned from
+/// `tests/eigensolve_shift_contract.rs`. What these add is the one thing the
+/// public surface cannot show — which of the predicate's two arms answered —
+/// so the known conflation is recorded as a measured baseline for δ (#7261)
+/// instead of as a comment.
+#[cfg(test)]
+mod singular_shift_predicate_tests {
+    use super::shift_is_numerically_singular;
+
+    /// Both halves of arm 1, and the fact that they are INDISTINGUISHABLE from
+    /// arm 2 at this interface.
+    ///
+    /// An empty spectrum and a non-finite one are "this solve produced nothing
+    /// usable", not "σ sits on an eigenvalue" — different facts, one answer, one
+    /// "move σ" remedy downstream. Pinned so that splitting them (δ's) shows up
+    /// as a deliberate movement of this test rather than as a quietly different
+    /// diagnostic reaching an author.
+    #[test]
+    fn empty_and_non_finite_spectra_are_conflated_with_a_singular_shift() {
+        let floor = 1e-14;
+        assert!(
+            shift_is_numerically_singular(&[], 0.5, floor),
+            "arm 1: an empty spectrum at σ≠0 is reported as a singular shift",
+        );
+        assert!(
+            shift_is_numerically_singular(&[f64::NAN], 0.5, floor),
+            "arm 1: a non-finite λ is reported as a singular shift",
+        );
+        assert!(
+            shift_is_numerically_singular(&[f64::INFINITY, 0.1], 0.5, floor),
+            "arm 1 fires on ANY non-finite entry, not only on an all-bad set",
+        );
+        assert!(
+            shift_is_numerically_singular(&[0.5 + 0.5 * floor, 2.0], 0.5, floor),
+            "arm 2: a λ inside the floor of σ is the genuine λ-space collapse",
+        );
+    }
+
+    /// The negative half: a spectrum that stands clear of σ is NOT refused.
+    ///
+    /// Without this, a predicate that answered `true` unconditionally would
+    /// satisfy every assertion above — and would refuse every shifted solve.
+    #[test]
+    fn a_spectrum_clear_of_sigma_is_not_a_singular_shift() {
+        let floor = 1e-14;
+        assert!(!shift_is_numerically_singular(&[0.1, 2.0], 0.5, floor));
+        assert!(
+            !shift_is_numerically_singular(&[0.5 + 2.0 * floor], 0.5, floor),
+            "the floor is a threshold, not a neighbourhood the guard rounds up",
+        );
+    }
+}
 
 #[cfg(test)]
 mod shifted_pencil_tests {

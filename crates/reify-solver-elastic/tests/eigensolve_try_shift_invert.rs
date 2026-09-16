@@ -39,6 +39,9 @@
 //! Closed form: `λ_k = 2(1 − cos(kπ/81))`, k = 1..80.
 
 use faer::sparse::{SparseRowMat, Triplet};
+use reify_solver_elastic::eigensolve::test_support::{
+    identity as identity_of, laplacian_lambda, laplacian_lambdas, laplacian_pencil,
+};
 use reify_solver_elastic::eigensolve::{
     EigenSolverOptions, EigenSolverResult, ShiftInvertFailure, solve_eigen_shift_invert,
     try_solve_eigen_shift_invert,
@@ -47,19 +50,10 @@ use reify_solver_elastic::eigensolve::{
 const N: usize = 80;
 
 /// `K = tridiag(-1, 2, -1)` (N×N Dirichlet Laplacian) — symmetric positive
-/// definite, so `sp_cholesky` succeeds.
+/// definite, so `sp_cholesky` succeeds. From the crate's shared test-support
+/// seam, which owns the pencil and its closed form.
 fn spd_laplacian() -> SparseRowMat<usize, f64> {
-    let mut trips = Vec::with_capacity(3 * N - 2);
-    for i in 0..N {
-        trips.push(Triplet::new(i, i, 2.0));
-        if i > 0 {
-            trips.push(Triplet::new(i, i - 1, -1.0));
-        }
-        if i + 1 < N {
-            trips.push(Triplet::new(i, i + 1, -1.0));
-        }
-    }
-    SparseRowMat::try_new_from_triplets(N, N, &trips).unwrap()
+    laplacian_pencil(N).0
 }
 
 /// The same Laplacian with row/column `free` zeroed out: DOF `free` carries no
@@ -94,9 +88,7 @@ fn singular_laplacian(free: usize) -> SparseRowMat<usize, f64> {
 
 /// `B = I` (N×N).
 fn identity() -> SparseRowMat<usize, f64> {
-    let trips: Vec<Triplet<usize, usize, f64>> =
-        (0..N).map(|i| Triplet::new(i, i, 1.0)).collect();
-    SparseRowMat::try_new_from_triplets(N, N, &trips).unwrap()
+    identity_of(N)
 }
 
 fn opts() -> EigenSolverOptions {
@@ -108,13 +100,9 @@ fn opts() -> EigenSolverOptions {
     }
 }
 
-/// Closed-form smallest 5 eigenvalues of the N-DOF Dirichlet Laplacian:
-/// `λ_k = 2(1 − cos(kπ/(N+1)))`.
+/// Closed-form smallest 5 eigenvalues of the N-DOF Dirichlet Laplacian.
 fn expected_5() -> [f64; 5] {
-    std::array::from_fn(|i| {
-        let k = (i + 1) as f64;
-        2.0 * (1.0 - f64::cos(k * std::f64::consts::PI / (N as f64 + 1.0)))
-    })
+    laplacian_lambdas(N)
 }
 
 // ---------------------------------------------------------------------------
@@ -157,22 +145,15 @@ fn shift_invert_still_panics_on_the_same_singular_k() {
 }
 
 // ---------------------------------------------------------------------------
-// Clause 1b: the two domain failures are DISTINCT and non-interchangeable.
-//
-// A non-SPD K and a singular shift are different faults with different
-// remedies — apply boundary conditions vs. move sigma — so they must stay
-// distinguishable both as typed values and, on the panicking sibling, as
-// messages. A singular shift reported as "K must be SPD" would send an author
-// to check boundary conditions for a problem that is entirely about where they
-// put sigma.
+// Clause 1b: the two domain failures are DISTINCT and non-interchangeable —
+// as typed values, and on the panicking sibling as messages. The rationale is
+// stated once, on `ShiftInvertFailure::ShiftAtEigenvalue`.
 // ---------------------------------------------------------------------------
 
-/// `sigma` placed exactly on an eigenvalue of the SPD Laplacian.
-///
-/// Closed form `lambda_k = 2(1 - cos(k*pi/(N+1)))`; k=3 is well inside the
-/// spectrum, far from both ends.
+/// `sigma` placed exactly on an eigenvalue of the SPD Laplacian. k=3 is well
+/// inside the spectrum, far from both ends.
 fn sigma_on_an_eigenvalue() -> f64 {
-    2.0 * (1.0 - f64::cos(3.0 * std::f64::consts::PI / (N as f64 + 1.0)))
+    laplacian_lambda(N, 3)
 }
 
 /// **The control.** The surviving contract: a non-SPD `K` at sigma=0 still
@@ -233,9 +214,8 @@ fn panicking_sibling_names_the_shift_not_the_stiffness() {
     // The NEGATIVE half, and the point of the whole test.
     assert!(
         !message.contains("K must be SPD"),
-        "a singular SHIFT must not be reported with the non-SPD wording — that sends an \
-         author to check boundary conditions for a problem that is entirely about where \
-         they put sigma. Got: {message}",
+        "a singular SHIFT must not be reported with the non-SPD wording — wrong fault, \
+         wrong remedy (see ShiftInvertFailure::ShiftAtEigenvalue). Got: {message}",
     );
     // Not a placeholder, either: an "internal error" tells the author nothing
     // they can act on and is indistinguishable from a bug in the solver.

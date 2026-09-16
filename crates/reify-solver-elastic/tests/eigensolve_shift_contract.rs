@@ -91,6 +91,9 @@
 use faer::Side;
 use faer::Mat;
 use faer::sparse::{SparseRowMat, Triplet};
+use reify_solver_elastic::eigensolve::test_support::{
+    laplacian_lambda, laplacian_lambdas, laplacian_pencil,
+};
 use reify_solver_elastic::eigensolve::{
     EigenSolverOptions, EigenSolverResult, ShiftInvertFailure, SparseFactorRef, SparseMetricOp,
     SparseStiffnessOp, lanczos_shift_invert, solve_eigen_dense, solve_eigen_shift_invert,
@@ -120,23 +123,12 @@ fn fixture_a_expected() -> [f64; 5] {
 }
 
 /// Fixture C: K = tridiag(-1,2,-1) (80×80), B = I. n=80 > 64 so Lanczos runs.
+const FIXTURE_C_N: usize = 80;
+
+/// Fixture C, from the crate's shared seam so the pencil and its closed form
+/// have ONE definition across the four test sites that drive them.
 fn fixture_c() -> (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>) {
-    let n = 80usize;
-    let mut k_trips = Vec::with_capacity(3 * n - 2);
-    for i in 0..n {
-        k_trips.push(Triplet::new(i, i, 2.0));
-        if i > 0 {
-            k_trips.push(Triplet::new(i, i - 1, -1.0));
-        }
-        if i + 1 < n {
-            k_trips.push(Triplet::new(i, i + 1, -1.0));
-        }
-    }
-    let b_trips: Vec<Triplet<usize, usize, f64>> =
-        (0..n).map(|i| Triplet::new(i, i, 1.0)).collect();
-    let k = SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap();
-    let b = SparseRowMat::try_new_from_triplets(n, n, &b_trips).unwrap();
-    (k, b)
+    laplacian_pencil(FIXTURE_C_N)
 }
 
 /// Fixture D: K = diag(−2, −0.5, 1, 3, 4), B = I (5×5). Dense path only.
@@ -214,23 +206,15 @@ fn fixture_e() -> (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>) {
     (k, b)
 }
 
-/// Closed-form `λ_k = 2(1 − cos(kπ/81))` of the 80-DOF Laplacian, k = 1..=80.
-///
-/// 1-INDEXED, matching the formula and the way the modes are named throughout
-/// this file (λ₁ is the first mode, not λ₀).
+/// Closed-form `λ_k = 2(1 − cos(kπ/81))` of fixture C, k = 1..=80. 1-INDEXED,
+/// matching the formula and the way the modes are named throughout this file.
 fn fixture_c_lambda(k: usize) -> f64 {
-    assert!((1..=80).contains(&k), "fixture C has modes k = 1..=80, not {k}");
-    2.0 * (1.0 - f64::cos(k as f64 * std::f64::consts::PI / 81.0))
+    laplacian_lambda(FIXTURE_C_N, k)
 }
 
-/// Closed-form smallest 5 eigenvalues of the 80-DOF Laplacian:
-/// `λ_k = 2(1 − cos(kπ/81))` for k=1..=5.
+/// Closed-form smallest 5 eigenvalues of fixture C.
 fn fixture_c_expected_5() -> [f64; 5] {
-    let n = 80usize;
-    std::array::from_fn(|i| {
-        let k = (i + 1) as f64;
-        2.0 * (1.0 - f64::cos(k * std::f64::consts::PI / (n as f64 + 1.0)))
-    })
+    laplacian_lambdas(FIXTURE_C_N)
 }
 
 // ---------------------------------------------------------------------------
@@ -1459,8 +1443,8 @@ fn lanczos_reports_a_singular_shift_as_a_typed_failure() {
         }
         Err(ShiftInvertFailure::KNotSpd) => panic!(
             "BT5(a) Lanczos: σ = {sigma_on_eigenvalue} sits on λ₃ of an SPD K — this is a \
-             singular SHIFT, and reporting it as a non-SPD K would send an author to check \
-             boundary conditions for a problem that is entirely about where σ was put",
+             singular SHIFT, and the non-SPD arm is the wrong fault with the wrong remedy \
+             (see ShiftInvertFailure::ShiftAtEigenvalue)",
         ),
         Ok(result) => panic!(
             "BT5(a) Lanczos: σ = {sigma_on_eigenvalue} sits exactly on λ₃, so K − σB is \
@@ -1494,6 +1478,92 @@ fn lanczos_reports_a_singular_shift_as_a_typed_failure() {
              (the nearest is ~1.4e-2 away, eleven orders above the resolution floor), so \
              it must solve; got {e:?} — the guard fires unconditionally and has made every \
              shifted solve unreachable",
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PRD §5.3 PART A, pinned separately from part B
+// ---------------------------------------------------------------------------
+
+/// Fixture C with DOF `gap` structurally disconnected in BOTH operands.
+///
+/// `K` keeps `tridiag(−1, 2, −1)` everywhere except row/column `gap`, which
+/// carries no entry at all — not an explicit zero, absent from the pattern —
+/// and `B` is `I` with the same hole. `K − σB` therefore has a structurally
+/// EMPTY row for every σ, so LU's pivot search finds nothing and faer answers
+/// `LuError::SymbolicSingular`.
+///
+/// This is the shape fixture C cannot have. A full diagonal keeps the symbolic
+/// structure full-rank however close σ gets to an eigenvalue, which is exactly
+/// why part B exists — and equally why part A needs a fixture of its own.
+fn laplacian_with_a_structural_gap(
+    n: usize,
+    gap: usize,
+) -> (SparseRowMat<usize, f64>, SparseRowMat<usize, f64>) {
+    let mut k_trips = Vec::with_capacity(3 * n);
+    let mut b_trips = Vec::with_capacity(n);
+    for i in 0..n {
+        if i == gap {
+            continue;
+        }
+        k_trips.push(Triplet::new(i, i, 2.0));
+        if i > 0 && i - 1 != gap {
+            k_trips.push(Triplet::new(i, i - 1, -1.0));
+        }
+        if i + 1 < n && i + 1 != gap {
+            k_trips.push(Triplet::new(i, i + 1, -1.0));
+        }
+        b_trips.push(Triplet::new(i, i, 1.0));
+    }
+    (
+        SparseRowMat::try_new_from_triplets(n, n, &k_trips).unwrap(),
+        SparseRowMat::try_new_from_triplets(n, n, &b_trips).unwrap(),
+    )
+}
+
+/// **PRD §5.3 part A** — a STRUCTURALLY rank-deficient `K − σB` is reported as
+/// `ShiftAtEigenvalue`, not as `KNotSpd` and not as a panic.
+///
+/// `lanczos_reports_a_singular_shift_as_a_typed_failure` drives part B only, and
+/// says so: its fixture keeps a full diagonal, so `LuError::SymbolicSingular`
+/// cannot fire on it. Without this test the part-A arm is unexecuted, and a
+/// mis-mapping there — returning `KNotSpd`, or falling into the `Generic` panic
+/// — would leave every test in the suite green while a rank-deficient shifted
+/// pencil was reported in the non-SPD vocabulary this whole contract exists to
+/// keep separate ([`ShiftInvertFailure::ShiftAtEigenvalue`] carries the
+/// argument).
+///
+/// σ is deliberately NOT on an eigenvalue here: the fault is structural, so it
+/// must be reported at a σ that part B would wave through. That is what makes
+/// this test pin part A specifically rather than re-pinning part B by accident.
+#[test]
+fn structurally_singular_shifted_pencil_is_a_typed_shift_failure() {
+    let (k, b) = laplacian_with_a_structural_gap(FIXTURE_C_N, FIXTURE_C_N / 2);
+    let sigma = sigma_between_lambda_9_and_10();
+    let got = try_solve_eigen_shift_invert(
+        &k,
+        &b,
+        EigenSolverOptions {
+            n_modes: 2,
+            tol: 1e-10,
+            max_iters: 1000,
+            sigma,
+        },
+    );
+    match got {
+        Err(ShiftInvertFailure::ShiftAtEigenvalue { sigma: got_sigma }) => assert_eq!(
+            got_sigma, sigma,
+            "part A must carry the σ that was passed ({sigma}), not {got_sigma}",
+        ),
+        Err(e) => panic!(
+            "a structurally rank-deficient K − σB has no shift-invert operator to \
+             apply and must come back as ShiftAtEigenvalue; got {e:?}",
+        ),
+        Ok(result) => panic!(
+            "a structurally rank-deficient K − σB has no shift-invert operator to \
+             apply, so a spectrum is not an answer to give; got {:?}",
+            result.eigenvalues,
         ),
     }
 }
