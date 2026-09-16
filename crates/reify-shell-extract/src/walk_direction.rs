@@ -52,6 +52,8 @@
 //! looser degeneracy test would route them to a fallback that declines — and
 //! DROP them, turning a currently-working alignment into a regression.
 
+use std::cmp::Ordering;
+
 use reify_ir::value::SampledField;
 
 use crate::medial::{normalize3, sample_at_index};
@@ -76,7 +78,9 @@ pub(crate) fn medial_walk_direction(
 /// and every downstream test is symmetric under swapping `d⁺` with `d⁻`.
 fn interior_ridge_axis(sdf: &SampledField, idx: [usize; 3]) -> Option<[f64; 3]> {
     let phi = sample_at_index(sdf, idx);
-    if !(phi < 0.0) {
+    // Not `phi >= 0.0`: a NaN sample is not `Less` either, so this rejects it
+    // rather than walking from it.
+    if phi.partial_cmp(&0.0) != Some(Ordering::Less) {
         return None;
     }
 
