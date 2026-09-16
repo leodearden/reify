@@ -73,13 +73,16 @@
 //!   wrong `count`, `face_{i}` or `scale` factor is an arity or semantic
 //!   error, not a dimension one, and a LENGTH slot on a ratio would reject
 //!   correct `.ri` outright.
-//! - **Every ANGLE belongs to
-//!   `docs/prds/v0_6/angle-units-surface-convergence.md`** by binding seam
-//!   decree — `revolve`'s and `rotate_around`'s `angle`, `draft`'s `angle`.
-//!   The pre-existing ANGLE `tol` slots are that PRD's inheritance, not a
-//!   precedent to extend; adding a new one here would be a scope violation.
-//!   It is also why those slots still carry no migration hint: eval gained one
-//!   at leaf β, and PRD 3 closes the compile half at leaf ζ (task 5782).
+//! - **ANGLE positions ARE gated here, on one hint-carrying template.** PRD
+//!   `docs/prds/v0_6/angle-units-surface-convergence.md` leaf ζ (task 5782)
+//!   executed the seam decree this rule used to DEFER to: every angle that
+//!   occupies a real positional index at a call site is slotted, built by
+//!   [`angle_arg`] so the wording cannot fork (decision D11), and the
+//!   pre-existing selector `tol` slots moved onto that same template in the
+//!   same change. Two angles are still absent, and neither is a gap: an axis
+//!   DIRECTION component is dimensionless (the ORIGIN-vs-DIRECTION rule above),
+//!   and `revolve_full`'s 2π is SYNTHESIZED at lowering rather than written by
+//!   an author, so there is no positional index to key on.
 //! - **Polymorphic and coercing slots stay out.** Math args (no fixed
 //!   dimension), the `dir` Vec3 slot (accepts list literals like `[0,0,1]`
 //!   that coerce), and Range slots (`edges_by_length` / `faces_by_area`).
@@ -234,7 +237,7 @@
 //! skipped here and still relies on the eval-layer gate.  Both layers are load-
 //! bearing; removing either leaves a hole.
 
-use reify_core::units::{DENSITY_MIGRATION_HINT, LENGTH_MIGRATION_HINT};
+use reify_core::units::{ANGLE_MIGRATION_HINT, DENSITY_MIGRATION_HINT, LENGTH_MIGRATION_HINT};
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, SourceSpan, Type};
 use reify_ir::CompiledExpr;
 
@@ -272,8 +275,10 @@ pub(crate) enum ExpectedArg {
         /// authoring mistake cannot drift apart (PRD
         /// `docs/prds/v0_6/units-length-gate-completion.md` decision D9).
         ///
-        /// `None` where the eval layer likewise offers no hint — see the ANGLE
-        /// slots below.
+        /// `None` where the eval layer likewise offers no hint — today only
+        /// [`ExpectedArg::Int`]'s sibling case, since PRD 3 leaf ζ brought the
+        /// ANGLE slots onto [`ANGLE_MIGRATION_HINT`] alongside LENGTH and
+        /// DENSITY.
         ///
         /// NOT [`crate::conformance::dimensioned_scalar_migration_hint`], and
         /// deliberately so. That generator serves the DIMENSIONED struct-ctor /
@@ -345,6 +350,33 @@ const fn length_arg(index: usize, name: &'static str) -> CheckableArg {
             dimension: DimensionVector::LENGTH,
             type_name: "Length",
             migration_hint: Some(LENGTH_MIGRATION_HINT),
+        },
+    }
+}
+
+/// Build one ANGLE slot — the shape every gated angle position shares.
+///
+/// Hoisted for the same reason [`length_arg`] is, and with a sharper
+/// obligation behind it: PRD `docs/prds/v0_6/angle-units-surface-convergence.md`
+/// leaf ζ lands TWELVE angle slots at once — the four directional selectors'
+/// `tol`, and the eight producer positions across `rotate`, `rotate_around`,
+/// `revolve`, `arc`, `draft` and `circular_pattern` — and decision D11 requires
+/// every ANGLE rejection to read with ONE wording. Twelve longhand literals
+/// would be twelve places a `migration_hint` could go missing, which is exactly
+/// the drift this leaf exists to end: eval and compile already spent one PRD
+/// apart on this field.
+///
+/// Callers need the inline `const { &[…] }` block — a const-fn CALL is not
+/// promotable, as the "Shape" section on [`builtin_arg_slots`] explains for
+/// [`length_arg`].
+const fn angle_arg(index: usize, name: &'static str) -> CheckableArg {
+    CheckableArg {
+        index,
+        name,
+        expected: ExpectedArg::Scalar {
+            dimension: DimensionVector::ANGLE,
+            type_name: "Angle",
+            migration_hint: Some(ANGLE_MIGRATION_HINT),
         },
     }
 }
@@ -430,25 +462,18 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // arg2: tol → ANGLE ("Angle")
         // Task 3523 — faces_perpendicular_to/edges_perpendicular_to share the
         // directional (solid, dir, tol) shape, so arg2 tol is likewise ANGLE.
+        //
+        // These four were the table's ONLY angle slots until PRD 3 leaf ζ, and
+        // they carried no migration hint while eval's angle path carried one
+        // from leaf β. ζ closes that gap by routing them through [`angle_arg`]
+        // with the eight producer positions below, so ANGLE has one wording
+        // rather than an old one and a new one (decision D11). Pinned by
+        // `angle_slot_rejection_carries_the_migration_hint`, which asserts the
+        // reconciliation reached the OLDEST slot and not just the new ones.
         "faces_by_normal"
         | "edges_parallel_to"
         | "faces_perpendicular_to"
-        | "edges_perpendicular_to" => &[CheckableArg {
-            index: 2,
-            name: "tol",
-            expected: ExpectedArg::Scalar {
-                dimension: DimensionVector::ANGLE,
-                type_name: "Angle",
-                // No migration hint, deliberately: eval HAS carried
-                // `ANGLE_MIGRATION_HINT` since PRD 3 leaf β, and bringing these
-                // slots onto that template is leaf ζ (task 5782), not this
-                // layer's to anticipate — adding one early reds
-                // `angle_slot_rejection_carries_no_migration_hint`, which pins
-                // the un-hinted wording on purpose. (Prose, not a
-                // `TODO(#5782)`: a new ptodo fingerprint for no gain.)
-                migration_hint: None,
-            },
-        }],
+        | "edges_perpendicular_to" => const { &[angle_arg(2, "tol")] },
 
         // ── Height-based topology selectors ──────────────────────────────────
         // arg0: geometry handle (unchecked)
@@ -1100,11 +1125,12 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
 /// Concretely, for a LENGTH slot:
 /// `"box: width argument expects Length, got Int; pass a dimensioned length such as `5mm`"`
 ///
-/// The ANGLE slots render the un-hinted form. That is the one place the two
-/// layers knowingly disagree: eval's angle path gained `ANGLE_MIGRATION_HINT`
-/// with PRD 3 leaf β, and PRD 3 leaf ζ (task 5782) brings these slots onto the
-/// same template. Until ζ lands, an angle rejection reads with a repair
-/// instruction at eval and without one at compile time.
+/// The ANGLE slots render the SAME hinted form since PRD 3 leaf ζ (task 5782),
+/// which was the last dimension where the two layers knowingly disagreed —
+/// eval's angle path gained `ANGLE_MIGRATION_HINT` at leaf β and compile
+/// followed at ζ. Every `Scalar` slot now carries a repair instruction at both
+/// layers; only [`ExpectedArg::Int`] renders un-hinted, and for it there is
+/// nothing to migrate TO.
 ///
 /// `{builtin}` is the SURFACE call name — the identifier the author actually
 /// typed. The eval layer instead renders its prefix from the LOWERED kind
@@ -1585,9 +1611,12 @@ mod tests {
             expected: ExpectedArg::Scalar {
                 dimension: DimensionVector::ANGLE,
                 type_name: "Angle",
-                // Mirrors the table, which stays un-hinted until PRD 3 leaf ζ
-                // (task 5782) — eval HAS carried an angle hint since leaf β.
-                migration_hint: None,
+                // Mirrors the table, which carries the hint since PRD 3 leaf ζ.
+                // `CheckableArg` derives `PartialEq`, so the whole-struct
+                // comparisons below check this field: flipping the table
+                // without flipping this helper reds them, which is what makes
+                // the pair a coupling rather than two copies.
+                migration_hint: Some(ANGLE_MIGRATION_HINT),
             },
         }
     }
