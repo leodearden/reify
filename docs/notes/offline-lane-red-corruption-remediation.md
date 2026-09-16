@@ -404,9 +404,12 @@ landed (re-`get_task` the victim and confirm the field values), transition
 the human-gate task itself to `cancelled` — do not leave it `blocked`. Task
 #5315 initially missed this closure step (left `blocked` after its gated
 correction had already landed) until task #5321 flagged the gap and it was
-cancelled to match; #5321 is *filed* to generalize exactly this
-closure-staleness pattern into a standing sweep, but has not been delivered —
-perform this closure step by hand (see Cross-references).
+cancelled to match; #5321 *was* delivered, as a standing automated sweep, and
+that sweep was **retired in full** by #7351 (2026-09-16) after its
+`gate_closure` class cancelled seven tasks on an unsound premise. **Perform
+this closure step by hand — permanently.** Any future automation of it belongs
+to dark-factory, not reify; see
+`docs/notes/deterministic-gate-closure-staleness-sweep.md`.
 
 **2026-07-26:** three further instances of the same gap were found and closed
 by hand under task **#5574**: **#5537** (gating escalation `esc-5537-1`,
@@ -428,7 +431,7 @@ needed no edit; #5559 was a false premise).
 | **#5368** | Signature-1 victim (filed 2026-07-23, ~23h after the guard commit — see Audit Findings for the deploy-lag reasoning); corrected 2026-07-24 via **esc-5368-2**. Its *deliverable* is a **design PRD**, `docs/prds/verify-confirm-failed-self-discovery.md` — **not** an implementation. `scripts/verify.sh` contains zero occurrences of `confirm-failed` as of this sweep, so `verify.sh test --confirm-failed` still hits the `*)` arm and exits 64 with the usage dump. The PRD itself (§ at line 21) records that the offline lane "already carries a defensive guard, landed as task 5308 … this guard is precisely what stopped the original false-premise mis-scrape from recurring". |
 | **#5264** | Signature-1 victim; corrected. Human-gate: **#5315** (cancelled). Also a Signature-2 victim — corrected 2026-07-26 under **esc-5316-17** (see Audit Findings). |
 | **#5295** | Signature-2 victim; corrected. Human-gate: **#5309** (cancelled) — the precedent this recipe generalizes. |
-| **#5321** | Standing recon capability generalizing the human-gate closure-staleness check (§5's "close the loop" step) beyond `offline_lane_red`; builds on this note. **In progress** as of this sweep (was `pending`) — do not assume it is delivered yet. Its live description scopes an auto-re-dispatch action ("when the sweep confirms a stranded task's blocking premise has resolved on main, automatically trigger a re-verify/re-dispatch of that task"), but whether that extends to writing the gate's terminal status is undecided — perform §5's "close the loop" step by hand until #5321 lands and its docs say otherwise. |
+| **#5321** | Standing recon capability generalizing the human-gate closure-staleness check (§5's "close the loop" step) beyond `offline_lane_red`; built on this note. **Delivered, then RETIRED IN FULL by #7351 (2026-09-16)** — the script, its hermetic suite and both manifest registrations are gone, and nothing in reify runs a closure-staleness sweep any more. It was retired because its `gate_closure` class cancelled seven real tasks (6331, 6476, 6574, 6632, 6633, 7178, 7305) on an unsound premise: the absence of a live pending escalation is not evidence a deterministic gate task is finished. **§5's "close the loop" step is manual for good.** Surviving stranded-blocked recovery is dark-factory's `Scheduler._phase_redispatch_stranded_blocked` (DF 2408) and the harness deterministic-recon sweep, both of which re-pend or re-file and **never cancel**. Full record: `docs/notes/deterministic-gate-closure-staleness-sweep.md`. |
 | **#5537** | *Not an `offline_lane_red` victim — cited only as a §5 closure-staleness instance.* Human gate (falsified "design-invariants.md is NOT on main" Mem0 entries misdirecting /prd decompose G7); gating escalation `esc-5537-1` dismissed 2026-07-26 (Leo: delete outright). Closed `cancelled` 2026-07-26 under **#5574** (§5 closure step — see the 2026-07-26 note above). |
 | **#5549** | *Not an `offline_lane_red` victim — cited only as a §5 closure-staleness instance.* Human gate (DF task 3018 vs 2060 conflicting "durable fix" citations in a merge-worktree-leak Mem0 cluster); gating escalation `esc-5549-1` dismissed 2026-07-26 (Leo: option (a); no edit proved necessary). Closed `cancelled` 2026-07-26 under **#5574** (§5 closure step). |
 | **#5559** | *Not an `offline_lane_red` victim — cited only as a §5 closure-staleness instance.* Human gate (re-notify 7 stranded deterministic gates, no live L2 escalation found); gating escalation `esc-5559-1` dismissed 2026-07-26 as a verified-false premise (all 7 named gates demonstrably had live L2s). Closed `cancelled` 2026-07-26 under **#5574** (§5 closure step). |
