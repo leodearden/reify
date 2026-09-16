@@ -4152,45 +4152,8 @@ fn classify_material(val: &Value) -> Result<MaterialModel, FeaValueShapeError> {
     const IDENTITY: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
     match data.type_name.as_str() {
-        "OrthotropicMaterial" => {
-            let e1 = scalar_si_field(data, "e1")?;
-            let e2 = scalar_si_field(data, "e2")?;
-            let e3 = scalar_si_field(data, "e3")?;
-            let g12 = scalar_si_field(data, "g12")?;
-            let g13 = scalar_si_field(data, "g13")?;
-            let g23 = scalar_si_field(data, "g23")?;
-            let nu12 = real_field(data, "nu12")?;
-            let nu13 = real_field(data, "nu13")?;
-            let nu23 = real_field(data, "nu23")?;
-            let law = OrthotropicMaterial {
-                e1,
-                e2,
-                e3,
-                g12,
-                g13,
-                g23,
-                nu12,
-                nu13,
-                nu23,
-            };
-            let aniso = AnisotropicMaterial::from_law(&law, IDENTITY);
-            Ok(MaterialModel::Anisotropic(aniso))
-        }
-        "TransverseIsotropicMaterial" => {
-            let e_in_plane = scalar_si_field(data, "e_in_plane")?;
-            let e_axial = scalar_si_field(data, "e_axial")?;
-            let nu_in_plane = real_field(data, "nu_in_plane")?;
-            let nu_axial = real_field(data, "nu_axial")?;
-            let g_axial = scalar_si_field(data, "g_axial")?;
-            let law = TransverseIsotropicMaterial {
-                e_in_plane,
-                e_axial,
-                nu_in_plane,
-                nu_axial,
-                g_axial,
-            };
-            let aniso = AnisotropicMaterial::from_law(&law, IDENTITY);
-            Ok(MaterialModel::Anisotropic(aniso))
+        "OrthotropicMaterial" | "TransverseIsotropicMaterial" => {
+            Ok(MaterialModel::Anisotropic(law_from_value(data, val, IDENTITY)?))
         }
         _ => {
             // Isotropic fallback: reads youngs_modulus + poisson_ratio (unchanged
@@ -4201,6 +4164,11 @@ fn classify_material(val: &Value) -> Result<MaterialModel, FeaValueShapeError> {
             // defensive/unreachable from this call site; it exists so the leaf
             // is directly unit-testable on a non-StructureInstance input (see
             // extract_material_rejects_non_structure_instance).
+            //
+            // Deliberately NOT routed through `law_from_value`/`from_law`:
+            // this arm returns the bare `IsotropicElastic` as
+            // `MaterialModel::Isotropic`, not an `AnisotropicMaterial`, so a
+            // homogeneous isotropic field keeps its own compute path.
             Ok(MaterialModel::Isotropic(extract_material(val)?))
         }
     }
@@ -4504,19 +4472,28 @@ fn extract_zone_process_params(val: &Value) -> Result<ZoneProcessParams, FeaValu
 /// the local → global rotation (columns = local basis in global).
 ///
 /// PRD compute-fea-hardening D5: Result-ified leaf extractor. Returns
-/// `Err(FeaValueShapeError)` instead of panicking on a malformed `Value`,
-/// with no remaining panic: `law`'s `type_name` dispatches three ways —
+/// `Err(FeaValueShapeError)` instead of panicking on a malformed `Value`:
+/// `law`'s `type_name` dispatches three ways (the shared `law_from_value`) —
 /// `OrthotropicMaterial`, `TransverseIsotropicMaterial`, or (task #7210) an
 /// isotropic-structural fallback that reads `youngs_modulus`/`poisson_ratio`
 /// via `extract_material`. The prior "unsupported law type" panic (task
 /// #5084) rested on the premise that the DSL only ever emits the two named
-/// laws here; that premise was false — `constitutive.ri:152` declares
-/// `param law : ConstitutiveLaw`, and every isotropic preset in
+/// laws here; that premise was false — `AnisotropicMaterial.law` is declared
+/// `ConstitutiveLaw` in `constitutive.ri`, and every isotropic preset in
 /// `materials_fea.ri` is a `DampedMaterial : ElasticMaterial + Damped`,
 /// hence a legal `law` — so the panic was live, not merely prospective. A
-/// law that fits none of the three shapes now surfaces `extract_material`'s
+/// law that fits none of the three SHAPES now surfaces `extract_material`'s
 /// own `MissingField`/`ExpectedScalar`/`ExpectedReal`, all within the
-/// existing fixed C3 taxonomy.
+/// existing fixed C3 taxonomy. This is the ONE place this history is
+/// recorded — the isotropic-law tests below reference it rather than
+/// restate it.
+///
+/// This closes the remaining SHAPE panic only: a VALUE-domain violation
+/// (`youngs_modulus <= 0` or `poisson_ratio` outside `(-1, 0.5)`) still trips
+/// `IsotropicElastic::debug_assert_valid` in debug builds, inside
+/// `AnisotropicMaterial::from_law`'s `d_matrix_local()` call — pre-existing
+/// behaviour this function shares with the two named-law arms, not a check
+/// it performs itself.
 ///
 /// Its 3 call sites (`classify_material_as_printed_zones`'s mat_wall/
 /// mat_skin/mat_infill) thread the `Result` via `?` (task D6).
@@ -4584,8 +4561,9 @@ fn anisotropic_material_from_value(val: &Value) -> Result<AnisotropicMaterial, F
         ]
     };
 
-    // Parse the law: OrthotropicMaterial, TransverseIsotropicMaterial, or
-    // (fallback) an isotropic ConstitutiveLaw.
+    // Parse the law: destructure to a StructureInstance, then dispatch on
+    // type_name via the shared `law_from_value` (OrthotropicMaterial,
+    // TransverseIsotropicMaterial, or an isotropic fallback).
     let law_data = match law_val {
         Value::StructureInstance(d) => d,
         other => {
@@ -4596,6 +4574,27 @@ fn anisotropic_material_from_value(val: &Value) -> Result<AnisotropicMaterial, F
         }
     };
 
+    law_from_value(law_data, law_val, frame)
+}
+
+/// Resolve a law `Value::StructureInstance` to an `AnisotropicMaterial`
+/// under the given local→global `frame`. The shared three-way `type_name`
+/// dispatch — `OrthotropicMaterial`, `TransverseIsotropicMaterial`, or
+/// (structural, NOT name-based) an isotropic fallback — used by both
+/// `classify_material`'s two named-law arms (`frame = IDENTITY`) and
+/// `anisotropic_material_from_value` (the parsed `MaterialFrame`).
+///
+/// Precondition: `val` must be the `Value` that `law_data` was destructured
+/// from, i.e. `val` is `&Value::StructureInstance(_)` and `law_data` is its
+/// payload. Every caller's own match on `val` already returns `Err` on any
+/// other variant before reaching this function, which is what makes
+/// `extract_material`'s own `ExpectedStructureInstance` check
+/// defensive/unreachable from here.
+fn law_from_value(
+    law_data: &StructureInstanceData,
+    val: &Value,
+    frame: [[f64; 3]; 3],
+) -> Result<AnisotropicMaterial, FeaValueShapeError> {
     match law_data.type_name.as_str() {
         "OrthotropicMaterial" => {
             let law = OrthotropicMaterial {
@@ -4621,23 +4620,21 @@ fn anisotropic_material_from_value(val: &Value) -> Result<AnisotropicMaterial, F
             };
             Ok(AnisotropicMaterial::from_law(&law, frame))
         }
-        // Isotropic fallback (structural, NOT name-based) — mirrors
-        // classify_material's `_` arm (:3552-3562): every isotropic preset
-        // carries its OWN type_name (Steel_AISI_1045, Aluminium_6061_T6, ...)
-        // and authors may declare `structure def MySteel : DampedMaterial`,
-        // so presence of the youngs_modulus/poisson_ratio pair — not a name
-        // list — is the only sound discriminator. `law_val` is already known
-        // to be a `Value::StructureInstance` here (the `law_data` match above
-        // returns `Err` on any other variant before control reaches this arm),
-        // so `extract_material`'s own `ExpectedStructureInstance` check is
-        // defensive/unreachable from this call site.
+        // Isotropic fallback (structural, NOT name-based) — every isotropic
+        // preset carries its OWN type_name (Steel_AISI_1045,
+        // Aluminium_6061_T6, ...) and authors may declare `structure def
+        // MySteel : DampedMaterial`, so presence of the
+        // youngs_modulus/poisson_ratio pair — not a name list — is the only
+        // sound discriminator (mirrors `classify_material`'s own isotropic
+        // `_` arm, which calls `extract_material` directly rather than
+        // through this function — see its comment for why).
         //
         // Follow-on (#6879): when the resolved AnisotropicMaterial gains
         // {rho, eta}, this arm must also read law.density / law.loss_factor —
         // an isotropic DampedMaterial preset is exactly where a non-zero eta
         // matters for #6883 (eta, MSE).
         _ => {
-            let law = extract_material(law_val)?;
+            let law = extract_material(val)?;
             Ok(AnisotropicMaterial::from_law(&law, frame))
         }
     }
