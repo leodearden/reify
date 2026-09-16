@@ -531,14 +531,18 @@ pub struct SubDerivation {
     /// The PRD names a bare sibling-sub identifier, so the grammar admits no
     /// dotted path here and `mirror of a.child` is a parse error.
     pub prototype: SpannedIdent,
-    /// Param overrides from the derived body: `z = 55mm`, `w = auto(free)`.
+    /// Param overrides from the derived body: `z = 55mm`, `w = auto(free)`,
+    /// `z = 55mm where hinged`.
     ///
-    /// Mirrors `SubDecl::spec_param_overrides` in shape and in lowering path
-    /// (both route through `lower_binding_value`), so an `auto` override in a
-    /// derived body resolves identically to one in a specialization body.
+    /// Shares `SubDecl::spec_param_overrides`' lowering path — both route
+    /// through `lower_binding_value`, so an `auto` override in a derived body
+    /// resolves identically to one in a specialization body — but NOT its
+    /// `(String, Expr)` shape, because the derived surface carries a name span
+    /// and a `where` guard that a pair cannot hold. See [`SubParamOverride`].
+    ///
     /// Ordinary overrides only — a `<param> = default` RESET goes to
     /// `param_resets` instead.
-    pub param_overrides: Vec<(String, Expr)>,
+    pub param_overrides: Vec<SubParamOverride>,
     /// Params RESET to the prototype's declared default by `<param> = default`.
     ///
     /// Kept separate from `param_overrides` rather than encoded as a sentinel
@@ -555,6 +559,17 @@ pub struct SubDerivation {
     /// reordered list would point its diagnostics at the wrong item.
     pub dispositions: Vec<SubDisposition>,
     /// `let` and `constraint` members declared inside the derived body.
+    ///
+    /// NOT reached by [`walk_specialization_scope_members`], nor by any other
+    /// member walker in this module: all of them enter through `SubDecl::body`,
+    /// which the discriminator invariant keeps `None` on every derived sub. So
+    /// the specialization-scope check, the priv-redundant lint and the span
+    /// lookups all see a derived sub as having NO members, rather than failing
+    /// loudly. That is deliberate at A-alpha — a derived body is not a
+    /// specialization scope, and what its members scope to is a semantic
+    /// question A-beta (#6616) owns — but it means A-beta must WIRE the
+    /// traversal when derived subs start elaborating, not assume an existing
+    /// walker already covers them.
     pub members: Vec<MemberDecl>,
     pub span: SourceSpan,
 }
@@ -574,13 +589,43 @@ pub enum SubDerivationKind {
     Image { transform: Expr },
 }
 
+/// One param override in a derived body: `z = 55mm`, `w = auto(free)`,
+/// `z = 55mm where hinged`.
+///
+/// A struct rather than the `(String, Expr)` pair `SubDecl::spec_param_overrides`
+/// uses, because the derived surface carries two things that pair cannot hold:
+///
+/// * the override NAME's own span, so A-beta's "overrides a param the prototype
+///   does not declare" diagnostic underlines the param token ALONE — the same
+///   reasoning that makes [`SubDerivation::prototype`] and
+///   [`SubDerivation::param_resets`] spanned;
+/// * the optional `where` guard. The grammar admits one
+///   (`derived_param_assignment` ends in `optional(field('guard', …))`) and the
+///   spec documents it, so discarding it would silently hand A-beta a
+///   CONDITIONAL override indistinguishable from an unconditional one.
+#[derive(Debug, Clone)]
+pub struct SubParamOverride {
+    /// The overridden param's name, spanned: `z` in `z = 55mm`.
+    pub name: SpannedIdent,
+    /// The override value. `auto` / `auto(free)` reach `ExprKind::Auto` here,
+    /// exactly as on the specialization arm.
+    pub value: Expr,
+    /// The `where` guard, when the source carries one. Parsed and stored here
+    /// (A-alpha); evaluated by A-beta (#6616) together with the override.
+    pub guard: Option<WhereClause>,
+}
+
 /// One `keep` / `exclude` item in a derived body.
 #[derive(Debug, Clone)]
 pub struct SubDisposition {
     pub kind: SubDispositionKind,
     /// The dotted feature path, split into segments: `web.hub` → `["web",
     /// "hub"]`. Resolution against the prototype's feature tree is A-beta's.
-    pub path: Vec<String>,
+    ///
+    /// Segments are spanned, not bare `String`s, so an unresolvable-path
+    /// diagnostic underlines the failing HOP — the `hub` of `web.hub` — rather
+    /// than the whole disposition. Same reasoning as [`SubDerivation::prototype`].
+    pub path: Vec<SpannedIdent>,
     /// The plane from the RESERVED `keep <path> using <plane>` tail (PRD
     /// §3.3/§11).
     ///
@@ -788,6 +833,13 @@ pub fn find_param_default_expr<'a>(members: &'a [MemberDecl], name: &str) -> Opt
 /// `walk_members`'s wildcard-free match, which fails to compile until that
 /// classification is made rather than silently defaulting to "never descended
 /// into".
+///
+/// **Derived subs are invisible to every one of those sets.** Each of them
+/// reaches a sub's members through `SubDecl.body`, and `body` is `None` on
+/// every derived sub (`sub b = mirror of a across P { … }`), so a derived
+/// body's `let` / `constraint` members are never visited. See
+/// [`SubDerivation::members`] for why that is deliberate at task #6615 and
+/// what task #6616 must do about it.
 pub fn walk_specialization_scope_members<'a, F>(sub: &'a SubDecl, visitor: &mut F)
 where
     F: FnMut(&'a MemberDecl),

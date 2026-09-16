@@ -3399,8 +3399,14 @@ impl<'a> Lowering<'a> {
     /// No interim "not yet elaborated" rejection is emitted, deliberately
     /// unlike the indexed-sub `#5482` case above. There is no silent-miscompile
     /// window to close here: a derived `SubDecl` carries an EMPTY
-    /// `structure_name`, so A-beta's unknown-structure path rejects it loudly
-    /// rather than elaborating it to something wrong.
+    /// `structure_name`, so the compiler's unknown-structure path rejects it
+    /// loudly rather than elaborating it to something wrong. MEASURED on
+    /// `tests/prd-gate/fixtures/adt_mirror_of_arm.ri`, that rejection reads
+    /// `error: sub-component "unit_b" references unknown structure ""` — no
+    /// panic and no miscompile, so the safety argument holds, but the empty
+    /// quotes point nowhere useful. Giving that path a derived-aware message is
+    /// COMPILE-scope work and therefore A-beta's (#6616), which deletes the
+    /// whole interval by elaborating the arm.
     fn lower_derived_sub(
         &mut self,
         node: tree_sitter::Node,
@@ -3411,7 +3417,8 @@ impl<'a> Lowering<'a> {
         // if the derivation cannot be lowered whole, `lower_sub_derivation`
         // pushes a diagnostic and returns None, and the declaration is dropped
         // rather than emitted with a half-populated `SubDerivation`.
-        let derivation = self.lower_sub_derivation(derivation_node, &name)?;
+        let derivation =
+            self.lower_sub_derivation(derivation_node, node.child_by_field_name("body"), &name)?;
 
         let pose_expr = node
             .child_by_field_name("pose")
@@ -3450,9 +3457,18 @@ impl<'a> Lowering<'a> {
     /// Returns None — after pushing a diagnostic — when the plane/transform
     /// operand fails to lower, so a caller never sees a `SubDerivation` whose
     /// constructor is missing its operand.
+    ///
+    /// `body_node` is PASSED IN rather than reached by hopping up to
+    /// `derivation_node.parent()`: the only caller already holds the
+    /// `sub_declaration` node, and an upward hop would couple this helper to
+    /// where it is mounted AND fail open — a parent that is ever not the
+    /// `sub_declaration` (a future wrapper node, an alias) would silently yield
+    /// a `SubDerivation` with no overrides, dispositions or members, which is
+    /// exactly the half-lowering the `None` return above exists to prevent.
     fn lower_sub_derivation(
         &mut self,
         derivation_node: tree_sitter::Node,
+        body_node: Option<tree_sitter::Node>,
         sub_name: &str,
     ) -> Option<SubDerivation> {
         let prototype_node = derivation_node.child_by_field_name("prototype")?;
@@ -3502,17 +3518,12 @@ impl<'a> Lowering<'a> {
             return None;
         };
 
-        // The body is the derivation node's sibling under `sub_declaration`,
-        // reached from the parent's `body` field.
-        let mut param_overrides: Vec<(String, Expr)> = Vec::new();
+        let mut param_overrides: Vec<SubParamOverride> = Vec::new();
         let mut param_resets: Vec<SpannedIdent> = Vec::new();
         let mut dispositions: Vec<SubDisposition> = Vec::new();
         let mut members: Vec<MemberDecl> = Vec::new();
 
-        if let Some(body_node) = derivation_node
-            .parent()
-            .and_then(|p| p.child_by_field_name("body"))
-        {
+        if let Some(body_node) = body_node {
             let mut cursor = body_node.walk();
             for child in body_node.named_children(&mut cursor) {
                 match child.kind() {
@@ -3523,22 +3534,32 @@ impl<'a> Lowering<'a> {
                         let Some(value_node) = child.child_by_field_name("value") else {
                             continue;
                         };
-                        let param_name = self.node_text(name_node).to_string();
+                        let param = SpannedIdent {
+                            name: self.node_text(name_node).to_string(),
+                            span: self.span(name_node),
+                        };
                         if value_node.kind() == "default_reset" {
                             // `<param> = default` RESETS to the prototype's
                             // declared default. It carries no expression at
                             // all, so it goes to `param_resets`, not to
                             // `param_overrides` under a sentinel value.
-                            param_resets.push(SpannedIdent {
-                                name: param_name,
-                                span: self.span(name_node),
-                            });
-                        } else if let Some(expr) = self.lower_binding_value(value_node) {
+                            param_resets.push(param);
+                        } else if let Some(value) = self.lower_binding_value(value_node) {
                             // `lower_binding_value`, not `lower_expr`, so
                             // `auto` / `auto(free)` overrides lower to
                             // `ExprKind::Auto` exactly as on the
                             // specialization arm.
-                            param_overrides.push((param_name, expr));
+                            param_overrides.push(SubParamOverride {
+                                name: param,
+                                value,
+                                // The grammar's `optional(field('guard', …))`
+                                // tail, lowered through the SAME helper every
+                                // other guarded declaration uses. Stored, never
+                                // dropped: an override the source made
+                                // CONDITIONAL must not reach A-beta looking
+                                // unconditional.
+                                guard: self.lower_where_clause(child),
+                            });
                         }
                     }
                     "keep_disposition" => {
@@ -3586,7 +3607,12 @@ impl<'a> Lowering<'a> {
         let mut cursor = path_node.walk();
         for segment in path_node.named_children(&mut cursor) {
             if segment.kind() == "identifier" {
-                path.push(self.node_text(segment).to_string());
+                // Each segment carries its OWN span so A-beta's
+                // unresolvable-path diagnostic underlines the failing hop.
+                path.push(SpannedIdent {
+                    name: self.node_text(segment).to_string(),
+                    span: self.span(segment),
+                });
             }
         }
         if path.is_empty() {
