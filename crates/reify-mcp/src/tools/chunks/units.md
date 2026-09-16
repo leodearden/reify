@@ -27,11 +27,16 @@ unit degC : Temperature offset 273.15K
 
 ## Named Dimension Aliases
 
-```reify-fragment
+```reify-schematic
 type Force    = Mass * Length / Time^2
 type Pressure = Force / Length^2
 type Density  = Mass / Length^3
 ```
+
+**Notation, not source as written.** `type` aliases are real, and `*` and `/`
+compose dimensions — but v1 has no `^` exponent operator in a dimension
+expression, so all three lines above are a syntax error if you copy them.
+Repeat the factor instead: `type Pressure = Force / Length / Length`.
 
 35 standard named dimensions in `std.units.dimensions`.
 
@@ -237,9 +242,25 @@ Always the **no-space** literal: `1rad`. The spaced form `1 rad` is `Parse error
 This is not a style preference — the crossing is what makes the binding compile. On an annotated `param`/`let` whose initializer is an *expression*, omitting it is a hard error:
 
 ```reify-invalid
-let theta : Angle  = s / r      // error: declares rad, initializer is dimensionless
-let arc   : Length = r * theta  // error: declares m, initializer is m·rad
+structure def MissingCrossing {
+    param s     : Length = 5mm
+    param r     : Length = 2mm
+    param theta : Angle  = 30deg
+
+    // error: let binding 'bad_enter' declared `Scalar[rad]` but its
+    //        initializer evaluates to `Real`
+    let bad_enter : Angle  = s / r
+
+    // error: let binding 'bad_leave' declared `Scalar[m]` but its
+    //        initializer evaluates to `Scalar[m·rad]`
+    let bad_leave : Length = r * theta
+}
 ```
+
+The sample is a complete module on purpose. Written as two bare top-level
+`let`s it is a *syntax* error, and the compiler never reaches the dimensional
+check that is the whole lesson — so the block would read as a demonstration of
+something it never demonstrates.
 
 The verbatim compiler wording for these is transcribed once, in the compile-gated exemplar `examples/best_practices/angle_crossings.ri` — treat that file as the canonical copy and this one as a paraphrase of the error *shape*.
 

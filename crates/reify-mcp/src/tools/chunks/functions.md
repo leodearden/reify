@@ -31,14 +31,13 @@ fn clamp(x : Real, lo : Real, hi : Real) -> Real {
 
 Function overloading by parameter types IS permitted:
 
-> **The `rotate` pair below illustrates overloading SYNTAX; the 3-arg form is
-> not callable in v1.** The real builtin dispatches on arity as `rotate(target,
-> orientation)` or `rotate(target, ax, ay, az, angle)` — any other arity is a
-> compile error, `rotate() expects 2 or 5 arguments, got N`. Do not write
-> `rotate(geometry, axis, angle)`. Correction tracked as #6890 (filed from
-> #5479 as ticket `tkt_0RSZARG6RFJS45JZV6NX780TKC`); this fence is
-> `reify-schematic`, so the chunk fence gate never compiles it and cannot
-> catch the overstatement on its own.
+> **The `rotate` pair below illustrates overloading SYNTAX — copy the
+> declarations, not just the calls.** `rotate` is also a builtin, and the
+> builtin dispatches on ARITY: `rotate(target, orientation)` or
+> `rotate(target, ax, ay, az, angle)`, any other count being
+> `rotate() expects 2 or 5 arguments, got N`. Write the 3-arg declaration and
+> your overload wins; write only a 3-arg *call* and it resolves to the builtin
+> and fails. Correction tracked as #6890.
 
 ```reify-schematic
 fn area(surface: Surface) -> Scalar<Area> { ... }

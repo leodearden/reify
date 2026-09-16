@@ -34,9 +34,13 @@ Traits do NOT contain geometry or identity/state.
 
 ## Trait Composition
 
-```reify-fragment
+```reify-schematic
 trait MechatronicActuator : MechanicalActuator + ElectricalDevice + Controllable
 ```
+
+**The body is elided above, not optional.** A `trait` declaration always
+carries `{ ... }`, even when composition is all it adds:
+`trait MechatronicActuator : MechanicalActuator + ElectricalDevice + Controllable {}`.
 
 Conflict resolution:
 - Same name, same type → merge silently

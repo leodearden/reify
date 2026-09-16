@@ -97,13 +97,27 @@
 //! plants below. It is `reify-schematic` (a signature listing, not compilable
 //! source), so this gate exempts it by design; rather than let the tag make it
 //! cosmetically green, the chunk carries a markdown annotation directly above
-//! that fence naming the real 2-/5-arity dispatch and citing #6890, the
-//! follow-up that owns the correction. The annotation cites the TASK, not the
-//! ticket it was filed as: a reader of the shipped reference can look up
-//! `#6890` and see its status, whereas the ticket resolved to `combined` and is
-//! a dead end. `.md` is outside `ptodo.rs`'s scanned extensions (:786), so
-//! nothing will flag that cite when #6890 closes — the follow-up deletes the
-//! annotation along with the defect.
+//! that fence, narrowed to what #6890 actually measured — a user 3-arg
+//! DECLARATION wins over the builtin, so the hazard is copying the CALL form
+//! alone, not the overload itself. `.md` is outside `ptodo.rs`'s scanned
+//! extensions (:786), so nothing will flag that `#6890` cite when the task
+//! closes — the follow-up deletes the annotation along with the defect.
+//!
+//! The third gap is `reify-fragment` itself, and it is WIDER than the tag's
+//! wording admits. The tag says "real reify syntax, member-level or otherwise
+//! context-dependent", which asserts that SOME enclosing context would make the
+//! body parse. Nothing checks that, and checking it would need the invisible
+//! wrapper the bare `reify` tag was written to reject — so the tag is load-
+//! bearing on author judgement alone. Two fences reached the corpus where no
+//! context exists because the FORM is not v1 syntax: `units.md`'s dimension
+//! aliases (no `^` operator in a dimension expression) and `traits.md`'s
+//! composition line (a `trait` declaration always carries a body). Both are
+//! now `reify-schematic` with the real constraint spelled out beside them.
+//! That triage was done fence-by-fence against the parser and is NOT a
+//! property the gate maintains. The remaining `reify-fragment` fences were
+//! measured but not individually adjudicated, and a follow-up filed from #5479
+//! owns that sweep; until it lands, read `reify-fragment` as "the author
+//! asserts this is real syntax", never as "the gate agrees".
 //!
 //! There is one more gap, and it runs the OTHER way — a fence can be compiled,
 //! be green, and still name something that does not exist. An UNRESOLVED CALL
@@ -385,6 +399,85 @@ fn untagged_fence_violations(path: &str, fences: &[Fence]) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Compiling a fence body — ONE owner, for checks 1 and 3
+// ---------------------------------------------------------------------------
+
+/// What the compiler made of a fence body, split by the LAYER that rejected it.
+///
+/// `errors_only` alone cannot make this distinction: parse errors are folded
+/// into the same `.diagnostics` list as compile-layer ones, so "did not parse"
+/// and "parsed and then failed type checking" arrive indistinguishable. Check 3
+/// needs them apart — see [`FenceCompile::ParseRejected`].
+enum FenceCompile {
+    /// Parsed, compiled, zero `Severity::Error` diagnostics.
+    Clean,
+    /// The PARSER rejected the body, so it is not reify source at all. Any
+    /// compile-layer diagnostics downstream of a broken AST describe the
+    /// wreckage rather than the body, which is why this arm carries only the
+    /// parse messages.
+    ParseRejected(Vec<String>),
+    /// Parsed cleanly, then produced at least one `Severity::Error`.
+    SemanticErrors(Vec<String>),
+}
+
+impl FenceCompile {
+    /// The rendered diagnostics, one indented bullet per line.
+    fn rendered(messages: &[String]) -> String {
+        messages
+            .iter()
+            .map(|message| format!("    - {message}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+/// Compile one fence body VERBATIM — no wrapper — and report which layer, if
+/// any, rejected it.
+///
+/// # Why `_allow_parse_errors`
+///
+/// `compile_source_with_stdlib` (`helpers.rs:236`) PANICS on parse errors. One
+/// malformed fence would then abort the whole gate with a backtrace naming no
+/// file and no fence — defeating the "names file + fence ordinal +
+/// diagnostics" contract at exactly the moment it matters most. The
+/// `_allow_parse_errors` variant (`helpers.rs:354`) folds parse errors into
+/// `.diagnostics` at Error severity via `parse_errors_as_diagnostics`, so a
+/// malformed fence is reported as a normal, fully-attributed violation. Same
+/// accumulate-rather-than-panic reasoning `examples_smoke.rs` applies in its
+/// parse phase.
+///
+/// The extra `parse_with_stdlib` call is what separates the two layers. It is
+/// the SAME parse the helper performs internally, repeated rather than
+/// threaded out, because the helper's signature returns only a
+/// `CompiledModule`; a string match on the diagnostic text would be the
+/// alternative, and an ad-hoc parser over a message is what heuristic 12 exists
+/// to forbid.
+///
+/// The body is compiled VERBATIM — no wrapper. That is what makes bare
+/// ```` ```reify ```` mean "compiles standalone" rather than "compiles under
+/// whatever scaffolding some harness happens to inject".
+fn compile_fence_body(body: &str) -> FenceCompile {
+    let parsed = reify_compiler::parse_with_stdlib(body, reify_core::ModulePath::single("fence"));
+    if !parsed.errors.is_empty() {
+        return FenceCompile::ParseRejected(
+            parsed.errors.iter().map(|e| e.message.clone()).collect(),
+        );
+    }
+    let compiled = compile_source_with_stdlib_allow_parse_errors(body);
+    let errors = errors_only(&compiled);
+    if errors.is_empty() {
+        FenceCompile::Clean
+    } else {
+        FenceCompile::SemanticErrors(
+            errors
+                .iter()
+                .map(|diagnostic| diagnostic.message.clone())
+                .collect(),
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Check 1 — a bare ```reify fence must compile standalone
 // ---------------------------------------------------------------------------
 
@@ -398,21 +491,9 @@ fn untagged_fence_violations(path: &str, fences: &[Fence]) -> Vec<String> {
 /// trial-compile the entire exempt half of the corpus, which is precisely what
 /// those tags exist to prevent.
 ///
-/// # Why `_allow_parse_errors`
+/// Both rejection layers are violations here — see [`compile_fence_body`],
+/// which owns the compile and the layer split.
 ///
-/// `compile_source_with_stdlib` (helpers.rs:236) PANICS on parse errors. One
-/// malformed fence would then abort the whole gate with a backtrace naming no
-/// file and no fence — defeating the "names file + fence ordinal +
-/// diagnostics" contract at exactly the moment it matters most. The
-/// `_allow_parse_errors` variant (helpers.rs:354) folds parse errors into
-/// `.diagnostics` at Error severity via `parse_errors_as_diagnostics`, so the
-/// same filter reports a malformed fence as a normal, fully-attributed
-/// violation. Same accumulate-rather-than-panic reasoning `examples_smoke.rs`
-/// applies in its parse phase.
-///
-/// The body is compiled VERBATIM — no wrapper. That is what makes bare
-/// ```` ```reify ```` mean "compiles standalone" rather than "compiles under
-/// whatever scaffolding some harness happens to inject".
 /// Takes ALREADY-PARSED fences, for the reason given on
 /// `untagged_fence_violations`: `check_parse_outcome` is the one place a parse
 /// failure is turned into a violation.
@@ -421,26 +502,23 @@ fn reify_fence_violations(path: &str, fences: &[Fence]) -> Vec<String> {
         .iter()
         .filter(|fence| fence.tag.as_deref() == Some("reify"))
         .filter_map(|fence| {
-            let compiled = compile_source_with_stdlib_allow_parse_errors(&fence.body);
-            let errors = errors_only(&compiled);
-            if errors.is_empty() {
-                return None;
-            }
-            let rendered = errors
-                .iter()
-                .map(|diagnostic| format!("    - {}", diagnostic.message))
-                .collect::<Vec<_>>()
-                .join("\n");
+            let messages = match compile_fence_body(&fence.body) {
+                FenceCompile::Clean => return None,
+                FenceCompile::ParseRejected(messages) | FenceCompile::SemanticErrors(messages) => {
+                    messages
+                }
+            };
             Some(format!(
                 "{path}:{} — fence #{} is tagged ```reify but does NOT compile \
-                 standalone; {} Error diagnostic(s):\n{rendered}\n  --- fence \
+                 standalone; {} Error diagnostic(s):\n{}\n  --- fence \
                  body ---\n{}\n  --- end fence body ---\n  Either fix the body, \
                  or retag: `reify-fragment` if it is real reify syntax needing \
                  context it cannot carry, `reify-schematic` if it is not reify \
                  source at all, `reify-invalid` if the error is the lesson.",
                 fence.open_line,
                 fence.ordinal,
-                errors.len(),
+                messages.len(),
+                FenceCompile::rendered(&messages),
                 fence.body
             ))
         })
@@ -451,28 +529,20 @@ fn reify_fence_violations(path: &str, fences: &[Fence]) -> Vec<String> {
 // Check 3 — a ```reify-invalid fence must ACTUALLY be invalid
 // ---------------------------------------------------------------------------
 
-/// Every fence tagged EXACTLY ```` ```reify-invalid ```` whose body compiles
-/// CLEAN — i.e. whose "the error is the lesson" claim is no longer true.
+/// Every fence tagged EXACTLY ```` ```reify-invalid ```` that does not actually
+/// demonstrate what the tag claims. TWO ways to fail it, because the tag makes
+/// a claim about SEMANTICS — this body is reify, and the compiler's verdict on
+/// it is the lesson:
 ///
-/// # Why this tag, and not the other two exempt ones
+/// - a CLEAN compile, the obvious one: the sample no longer errors at all.
+/// - a PARSE rejection, the subtle one: the body never reached the phase whose
+///   verdict was being taught, so the tag is satisfied by "this is not reify"
+///   rather than by the documented error. Without this arm the tag is
+///   vacuously green under arbitrary prose, and every sample's real lesson can
+///   rot away unnoticed behind a syntax error introduced anywhere above it.
 ///
-/// The vocabulary defines four reify-family tags; three of them make claims a
-/// gate cannot check. `reify-fragment` says "real syntax, needs context it
-/// cannot carry" — checkable only by inventing a wrapper, and an invisible
-/// harness-side wrapper is exactly what the bare `reify` tag's meaning was
-/// written to reject. `reify-schematic` says "not reify source at all", which
-/// is a claim about intent.
-///
-/// `reify-invalid` is different in kind: it makes a FALSIFIABLE claim about the
-/// compiler's behaviour — this body errors, and the error is the point. Left
-/// unverified it is also the vocabulary's one free downgrade path: a `reify`
-/// fence that stops compiling can be made green by a one-line retag here, with
-/// no test noticing and no reviewer signal beyond the word itself. Checking it
-/// closes that path in the same direction the rest of the module argues for —
-/// executable over advisory.
-///
-/// The check is the MIRROR of `reify_fence_violations`: same helper, same
-/// message shape, opposite verdict. A clean compile is the violation.
+/// Why this tag and not the other two exempt ones is argued once, in the module
+/// header's tag vocabulary.
 ///
 /// Takes ALREADY-PARSED fences, for the reason given on
 /// `untagged_fence_violations`.
@@ -481,18 +551,32 @@ fn reify_invalid_fence_violations(path: &str, fences: &[Fence]) -> Vec<String> {
         .iter()
         .filter(|fence| fence.tag.as_deref() == Some("reify-invalid"))
         .filter_map(|fence| {
-            let compiled = compile_source_with_stdlib_allow_parse_errors(&fence.body);
-            if !errors_only(&compiled).is_empty() {
-                return None;
-            }
+            let failure = match compile_fence_body(&fence.body) {
+                FenceCompile::SemanticErrors(_) => return None,
+                FenceCompile::Clean => "compiles CLEAN: zero Error diagnostics. \
+                     That tag asserts the error IS the lesson, so either the \
+                     teaching sample no longer demonstrates what it claims (the \
+                     compiler changed, or the body drifted), or the tag is being \
+                     used to silence a fence that should be fixed and retagged \
+                     `reify`."
+                    .to_string(),
+                FenceCompile::ParseRejected(messages) => format!(
+                    "does not PARSE, so the compiler never reached the phase \
+                     whose verdict this sample teaches; its {} diagnostic(s) \
+                     are the parser's, and an unparseable body would satisfy \
+                     this tag just as well as arbitrary prose:\n{}\n  Give the \
+                     sample whatever context it needs to parse as a complete \
+                     module — then the documented error is what the compiler \
+                     actually reports. If the rejection really is a SYNTAX \
+                     lesson, it belongs under `reify-schematic` with the \
+                     rejection spelled out in prose.",
+                    messages.len(),
+                    FenceCompile::rendered(&messages)
+                ),
+            };
             Some(format!(
-                "{path}:{} — fence #{} is tagged ```reify-invalid but compiles \
-                 CLEAN: zero Error diagnostics. That tag asserts the error IS \
-                 the lesson, so either the teaching sample no longer demonstrates \
-                 what it claims (the compiler changed, or the body drifted), or \
-                 the tag is being used to silence a fence that should be fixed \
-                 and retagged `reify`.\n  --- fence body ---\n{}\n  --- end \
-                 fence body ---",
+                "{path}:{} — fence #{} is tagged ```reify-invalid but {failure}\
+                 \n  --- fence body ---\n{}\n  --- end fence body ---",
                 fence.open_line, fence.ordinal, fence.body
             ))
         })
@@ -1517,6 +1601,56 @@ fn a_reify_invalid_fence_that_compiles_clean_is_reported() {
     );
 }
 
+/// A `reify-invalid` fence whose body does not PARSE is reported.
+///
+/// The vacuity this arm closes, pinned on the shape that produced it: a pair of
+/// bare top-level `let`s referencing unbound names. That body DOES yield Error
+/// diagnostics, so the un-hardened check was satisfied — but they are the
+/// parser's, identical to what arbitrary prose yields, and the dimensional
+/// lesson the sample was written to teach is never reached. A tag that a
+/// syntax error can satisfy teaches nothing and protects nothing.
+#[test]
+fn a_reify_invalid_fence_that_only_fails_to_parse_is_reported() {
+    let md = "```reify-invalid\n\
+              let theta : Angle = s / r\n\
+              ```\n";
+
+    let violations = check_markdown("chunks/x.md", md, reify_invalid_fence_violations);
+
+    assert_eq!(violations.len(), 1, "got {violations:#?}");
+    let message = &violations[0];
+    assert!(
+        message.contains("does not PARSE"),
+        "the violation must name the LAYER that rejected the body — a parse \
+         rejection and a type error are opposite verdicts on the tag's claim, \
+         and a message that blurs them sends the author to the wrong fix, got: \
+         {message}"
+    );
+    assert!(
+        message.contains("complete module"),
+        "the violation must say what would fix it, got: {message}"
+    );
+}
+
+/// Arbitrary prose under `reify-invalid` is reported, for the same reason.
+///
+/// The reductio the arm above exists to make impossible: before it, a body with
+/// no reify in it at all satisfied the tag as fully as any real teaching
+/// sample, so `REIFY_INVALID_FENCE_FLOOR` could be met by text.
+#[test]
+fn prose_under_reify_invalid_does_not_satisfy_the_tag() {
+    let md = "```reify-invalid\n\
+              zzz not reify at all !!!\n\
+              ```\n";
+
+    assert_eq!(
+        check_markdown("chunks/x.md", md, reify_invalid_fence_violations).len(),
+        1,
+        "prose must not be able to satisfy a tag that claims the COMPILER's \
+         verdict is the lesson"
+    );
+}
+
 /// A `reify-invalid` fence that genuinely errors is NOT reported.
 ///
 /// The control. Reusing the phantom 3-arg `rotate` makes the pairing exact:
@@ -2265,3 +2399,4 @@ fn geometry_chunk_retains_bare_reify_fences_for_the_sibling_smoke_suite() {
          suite's own live count."
     );
 }
+
