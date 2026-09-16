@@ -4250,7 +4250,8 @@ mod tests {
         assemble_modal_km, build_beam_mesh, build_dirichlet_bcs, classify_damping,
         degenerate_displacement_history, degenerate_modal_result, displacement_at_trampoline,
         eigensolve_modal, extract_density_or_degenerate, extract_eigen_knobs,
-        extract_loss_factor, extract_reference_direction, mode_shape_value, nearest_node,
+        extract_loss_factor, extract_reference_direction, frobenius_norm, mode_shape_value,
+        nearest_node,
         placeholder_part, plan_modal_damping, read_real_list, read_scalar_si,
         resolve_location_node, run_modal_analysis, run_transient_response,
         simply_supported_pin_pin_bcs, solve_generalized_eigen, solve_mechanism_modal_trampoline,
@@ -5687,6 +5688,175 @@ mod tests {
             outcome.result.shift_skipped_modes,
             "no spectrum was computed here, so C5 forbids ESTABLISHING `false` — \
              the conservative answer is the only one this branch has evidence for",
+        );
+    }
+
+    /// The step-14 pencil wrapped in the smallest [`ModalAssembly`] that
+    /// [`eigensolve_modal`] accepts, so the refusal can be driven through the
+    /// DIAGNOSTIC-PRODUCING path and not only through the solver call.
+    ///
+    /// `eigensolve_modal` reads `K`/`M` over `3·n_nodes` DOFs and projects out
+    /// the constrained ones, so the free block is sized backwards from the pencil
+    /// wanted: 29 nodes → 87 DOFs, minus the 7 TRAILING DOFs the BCs pin →
+    /// `n_free = 80`. The free block of a tridiagonal matrix under a trailing
+    /// constraint set is its leading principal submatrix, so `K_free` is exactly
+    /// `tridiag(−1, 2, −1)` at 80 and `M_free` exactly `I` — the closed form
+    /// `λ_k = 2(1 − cos(kπ/81))` survives the projection intact, which is what
+    /// still lets σ be placed exactly on λ₃.
+    ///
+    /// SEVEN constrained DOFs, not six: `n_free = 80` needs `n_dofs ≡ 0 (mod 3)`
+    /// and 87 is the smallest such size above 86. Any count ≥ `RIGID_BODY_DOFS`
+    /// would do — what matters is that `under_constrained` stays FALSE, because
+    /// the cheap no-supports fast path would otherwise set `force_dense` and
+    /// bypass the shifted factorization entirely, leaving the fixture testing
+    /// nothing.
+    fn laplacian_modal_assembly() -> (ModalAssembly, Vec<DirichletBc>) {
+        const N_NODES: usize = 29;
+        const N_FREE: usize = 80;
+        let n_dofs = 3 * N_NODES;
+        let (k_full, m_full) = laplacian_pencil(n_dofs);
+        let bcs: Vec<DirichletBc> = (N_FREE..n_dofs)
+            .map(|dof| DirichletBc { dof, value: 0.0 })
+            .collect();
+        assert!(
+            n_dofs - bcs.len() == N_FREE && bcs.len() >= 6,
+            "the fixture must leave n_free = {N_FREE} free DOFs while keeping \
+             `under_constrained` false",
+        );
+        let assembly = ModalAssembly {
+            mass_matrix_norm: frobenius_norm(&m_full),
+            stiffness_matrix_norm: frobenius_norm(&k_full),
+            k_full,
+            m_full,
+            n_nodes: N_NODES,
+        };
+        (assembly, bcs)
+    }
+
+    /// β (#7259): a σ on an eigenvalue reaches the AUTHOR as an `Error`, and as
+    /// neither of the two diagnoses that would be confidently wrong.
+    ///
+    /// The out-of-band carrier from step-15 is invisible until something says
+    /// so, and an empty mode set that raises nothing is a SILENT WRONG ANSWER:
+    /// every frequency reads `Undef` (stdlib `first_frequency` is
+    /// `result.modes[0].frequency`, and an out-of-bounds index is `Undef`) while
+    /// `errors.is_empty()` still passes. That is the failure
+    /// `E_ModalNoModesComputed` was itself introduced to close, so the refusal is
+    /// not optional polish.
+    ///
+    /// # The negative half is the point
+    ///
+    /// `W_ModalRigidBodyMode` and `E_ModalNoModesComputed` both tell an author to
+    /// "add supports that remove all six rigid-body modes". This model's supports
+    /// are fine — its only fault is where σ was placed — so either of them here
+    /// is a confidently wrong diagnosis, which is exactly what δ (#7261) forbids
+    /// by name. Asserting only the positive half would pass on an implementation
+    /// that emitted the new Error ALONGSIDE the two wrong ones, which is the
+    /// likeliest way to get this subtly wrong.
+    ///
+    /// # Severity, not wording
+    ///
+    /// The refusal must be an `Error`: INV-SF-2 (`error-severity-exits-nonzero`)
+    /// is what makes `reify eval` exit non-zero, and a refusal that exits 0 is
+    /// not a refusal. The assertions key on the message PREFIX plus the attached
+    /// `DiagnosticCode` — the convention the file's existing
+    /// `message.starts_with("E_ModalNoModesComputed")` assertions already follow
+    /// — never on the full prose, which δ will extend.
+    #[test]
+    fn shift_on_an_eigenvalue_refuses_without_blaming_the_supports() {
+        const N_FREE: usize = 80;
+        let (assembly, bcs) = laplacian_modal_assembly();
+        let sigma = laplacian_lambda(N_FREE, 3);
+        let eigen_opts = EigenSolverOptions {
+            n_modes: 2,
+            tol: 1e-10,
+            max_iters: 1000,
+            sigma,
+        };
+
+        let result = eigensolve_modal(&assembly, [0.0, 0.0, 1.0], &bcs, &eigen_opts);
+
+        let errors: Vec<&Diagnostic> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "a refused shift must raise EXACTLY ONE Error — the refusal itself, \
+             and none of the under-constrained diagnoses; got {:?}",
+            result.diagnostics,
+        );
+        let refusal = errors[0];
+        assert!(
+            refusal.message.starts_with("E_ShiftAtEigenvalue:"),
+            "the refusal must carry the E_ShiftAtEigenvalue prefix consumers key \
+             on; got {:?}",
+            refusal.message,
+        );
+        assert!(
+            refusal.message.contains(&sigma.to_string()),
+            "the refusal must NAME the offending σ = {sigma} so the author knows \
+             which shift to move; got {:?}",
+            refusal.message,
+        );
+        assert_eq!(
+            refusal.code,
+            Some(reify_core::DiagnosticCode::ShiftAtEigenvalue),
+            "the refusal must carry the code α minted for exactly this consumer, \
+             so a machine reader need not parse the prose; got {:?}",
+            refusal.code,
+        );
+        assert_eq!(
+            refusal.severity,
+            Severity::Error,
+            "INV-SF-2: a refusal that exits 0 is not a refusal",
+        );
+
+        // The negative half.
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.message.starts_with("W_ModalRigidBodyMode")),
+            "this model's supports are fine — σ's placement is the fault — so no \
+             rigid-body diagnosis may fire; got {:?}",
+            result.diagnostics,
+        );
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.message.starts_with("E_ModalNoModesComputed")),
+            "the no-modes Error tells an author to add supports, which is the \
+             wrong remedy for a misplaced σ; got {:?}",
+            result.diagnostics,
+        );
+
+        // σ = 0 CONTROL, same fixture: the refusal must be specific to where σ
+        // was put, not raised by every shifted-capable solve.
+        let control = eigensolve_modal(
+            &assembly,
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &EigenSolverOptions {
+                sigma: 0.0,
+                ..eigen_opts
+            },
+        );
+        assert!(
+            !control
+                .diagnostics
+                .iter()
+                .any(|d| d.message.starts_with("E_ShiftAtEigenvalue")),
+            "σ = 0 on the same pencil is a healthy solve; got {:?}",
+            control.diagnostics,
+        );
+        assert!(
+            !control.frequencies.is_empty(),
+            "the control must actually solve, or it cannot witness that the \
+             refusal is about σ rather than about the fixture",
         );
     }
 
