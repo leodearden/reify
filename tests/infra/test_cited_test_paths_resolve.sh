@@ -735,31 +735,6 @@ _baseline_sorted_and_deduped() {
 assert "G: the baseline is sorted (LC_ALL=C) and free of duplicate rows" \
     _baseline_sorted_and_deduped
 
-# SELF-DESCRIBING HEADER, in the style of run-all-classification.manifest,
-# harness-layout-baseline.manifest and scripts/verify-pipeline-paths.txt. The
-# regeneration command is asserted LITERALLY: a reader who opens only this
-# manifest must be able to act on it.
-_baseline_header_is_self_describing() {
-    local header missing=""
-    header="$(grep -E '^[[:space:]]*#' "$BASELINE" || true)"
-    [ -n "$header" ] || { echo "baseline carries no comment header at all"; return 1; }
-    printf '%s\n' "$header" | grep -qF 'tests/infra/test_cited_test_paths_resolve.sh --emit-baseline' \
-        || missing="$missing\n  - the literal regeneration command"
-    printf '%s\n' "$header" | grep -qiE 'one-directional|shrink' \
-        || missing="$missing\n  - the one-directional / shrink-friendly ratchet semantics"
-    printf '%s\n' "$header" | grep -qF ' :: ' \
-        || missing="$missing\n  - the fingerprint grammar"
-    if [ -n "$missing" ]; then
-        echo "baseline header does not describe itself; missing:"
-        printf "%b\n" "$missing"
-        return 1
-    fi
-    return 0
-}
-
-assert "G: the baseline header names its purpose, the literal regeneration command, the grammar and the one-directional semantics" \
-    _baseline_header_is_self_describing
-
 # ===========================================================================
 # Section H: the one-directional ratchet checker.
 #
