@@ -4702,14 +4702,14 @@ fn push_inline_limitation(md: &mut String, inline: &SurveyRun) {
 
     let _ = write!(
         md,
-        "1. {INLINE_LIMITATION_KEY}, and only as those.** The *Inline Rust fixtures*\n\
-           section above sweeps every tracked `.rs` test host for raw-string literals\n\
-           (`r\"…\"`, `r#\"…\"#`) whose text reads as Reify declaration grammar, and\n\
-           compiles each through the same pipeline as a tracked `.ri`. That reached\n\
-           **{total} inline member(s)**, of which **{templates}** were `format!`\n\
-           template(s) — listed above under their own coverage reason rather than\n\
-           dropped, because a template's `{{…}}` holes are not Reify syntax and a parse\n\
-           failure on one would say nothing about conformance.\n\
+        "1. {INLINE_LIMITATION_KEY}, and only as those.**\n\
+           The *Inline Rust fixtures* section above sweeps every tracked `.rs` test host\n\
+           for raw-string literals (`r\"…\"`, `r#\"…\"#`) whose text reads as Reify\n\
+           declaration grammar, and compiles each through the same pipeline as a tracked\n\
+           `.ri`. That reached **{total} inline member(s)**, of which **{templates}** were\n\
+           `format!` template(s) — listed above under their own coverage reason rather\n\
+           than dropped, because a template's `{{…}}` holes are not Reify syntax and a\n\
+           parse failure on one would say nothing about conformance.\n\
            What a raw-string walker does **not** reach, each named by the construct to\n\
            grep for: Reify text carried in an ORDINARY `\"…\"` string literal (including\n\
            the backslash-continued multi-line form); text assembled by `concat!`; and text\n\
@@ -4853,10 +4853,10 @@ fn render_survey(run: &SurveyRun, inline: &SurveyRun, stamp: &SurveyStamp) -> St
             the anchor names OLDER bytes than the rows below describe. The list is filtered\n\
             to the two corpora, so it names exactly the files whose bytes a row could\n\
             describe and no unrelated churn. They are disclosed rather than refused because\n\
-            they are\n\
-            COMMITTED: each is reachable from the surveyed commit, so a reader can read back\n\
-            exactly what was swept. (Uncommitted bytes are reachable from no commit, which\n\
-            is why a dirty tree is refused outright instead — see `stamp_decision`.)\n\
+            they are COMMITTED: each is reachable from the surveyed commit, so a reader can\n\
+            read back exactly what was swept. (Uncommitted bytes are reachable from no\n\
+            commit, which is why a dirty tree is refused outright instead — see\n\
+            `stamp_decision`.)\n\
             \n",
             n = stamp.drifted.len(),
         );
