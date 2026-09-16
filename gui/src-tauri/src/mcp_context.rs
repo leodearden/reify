@@ -349,3 +349,12 @@ pub fn mcp_tool_call_impl(
         .call_tool(name, params, context)
         .map_err(|e| e.to_string())
 }
+
+/// `main.rs::mcp_tool_call`'s dispatch entry point (task 5466).
+pub fn mcp_tool_call_on_large_stack(
+    ctx: TauriToolContext,
+    name: String,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    mcp_tool_call_impl(&name, params, &ctx)
+}
