@@ -1342,4 +1342,70 @@ _assert_field "G4: ...and still owes its row"  700 scope UNKNOWN
 assert "G4: ...with no summary invented for a fleet of one" \
     bash -c '! printf "%s\n" "$1" | grep -q "^SWEEP:"' _ "$OUT"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Block 11 (step-26) — a render fault must not become an exit code (R3)
+#
+# The up-front `--format json` refusal covers python3 being ABSENT. It cannot
+# cover a python3 that is PRESENT and fails when run — a broken interpreter, an
+# ENOSPC on a redirected stdout, a decode error reading the rows file. Before
+# this, _render_report ran as a bare simple command under `set -e`, so that
+# status became the SCRIPT's, handing a merge worker a third exit code to
+# branch on. R3 allows exactly 0 and 2, because dark-factory wires this as a
+# NON-GATING advisory consult: an environment fault must never be able to make
+# it gate.
+#
+# The stub is a python3 that exits 3 without reading stdin, shadowing the real
+# one on PATH for the child only.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 11: a render fault is not an exit code ---"
+
+H_STUB="$(mktemp -d "${TMPDIR:-/tmp}/task-branch-sweep-badpy-XXXXXX")"
+_TMPDIRS+=("$H_STUB")
+printf '#!/bin/sh\nexit 3\n' > "$H_STUB/python3"
+chmod +x "$H_STUB/python3"
+
+# run_helper_badpy — run_helper with the failing python3 shadowing the real one.
+run_helper_badpy() {
+    local rc=0
+    > "$ERR_FILE"
+    OUT="$(PATH="$H_STUB:$PATH" bash "$SCRIPT" "$@" 2>"$ERR_FILE")" || rc=$?
+    ERR_OUT="$(cat "$ERR_FILE")"
+    RC=$rc
+}
+
+# The positive control: with the REAL python3 this fixture renders json fine,
+# so every RC=0 below is the guard working, not the render being a no-op.
+run_helper --task 700 --db "$G_DB" --repo "$G_REPO" --format json
+assert "H0: the good-interpreter baseline exits 0"   test "$RC" -eq 0
+assert "H0: ...and actually emits a json document" \
+    bash -c 'printf "%s" "$1" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d[\"branches\"]"' _ "$OUT"
+
+# And the stub really is reached — otherwise H1/H2 would pass vacuously.
+assert "H0: the stub python3 exits non-zero when run" \
+    bash -c 'PATH="$1:$PATH" python3 -c "" ; [ "$?" -eq 3 ]' _ "$H_STUB"
+
+for _mode in "--task 700" "--audit"; do
+    for _fmt in json table; do
+        run_helper_badpy $_mode --db "$G_DB" --repo "$G_REPO" --format "$_fmt"
+        assert "H1[$_mode/$_fmt]: a render fault still exits 0, never 3 (R3)" \
+            test "$RC" -eq 0
+    done
+done
+
+# json is the format that actually needs the interpreter: the fault must be
+# announced on stderr rather than passed off as an empty report.
+run_helper_badpy --audit --db "$G_DB" --repo "$G_REPO" --format json
+assert "H2: the render fault is reported on stderr" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "render failed"' _ "$ERR_OUT"
+assert "H2: and is NOT dressed up as a branch verdict" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "scope=|SUSPECT"' _ "$OUT"
+
+# table mode needs no interpreter at all, so a broken python3 must not degrade
+# it — that would turn an unrelated environment fault into a lost report.
+run_helper_badpy --audit --db "$G_DB" --repo "$G_REPO"
+assert "H3: table mode is unaffected by a broken python3" \
+    bash -c 'printf "%s\n" "$1" | grep -q "^SWEEP:"' _ "$OUT"
+unset _mode _fmt
+
 test_summary

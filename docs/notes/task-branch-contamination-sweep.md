@@ -267,7 +267,11 @@ mutation-injection check proving the assertion can fail:
   anywhere are two `mktemp` temporaries under `$TMPDIR`.
 * **R3** — non-gating: exit 0 on every valid invocation in both modes, whatever it finds. The only
   non-zero exit is 2, for a usage error or for `--format json` on a host with no python3 (refused
-  up front, before any measurement). Stdout is the only result channel.
+  up front, before any measurement). Stdout is the only result channel. A **render** fault is
+  covered too: the up-front refusal only catches an ABSENT python3, so a present-but-broken one
+  (or an ENOSPC on a redirected stdout) is caught at the `_render_report` boundary, which warns on
+  stderr and still exits 0. Never add a third exit code — an environment fault must not be able to
+  make a non-gating advisory consult gate.
 * **R4** — fail-safe degradation: an unreadable store, an id absent from the tag's non-terminal
   set, an unresolvable ref, a failed diff or a failed SQL engine degrades the affected row (or the
   whole report) to `UNKNOWN` with a warning on stderr, never an abort. The verdict is decided

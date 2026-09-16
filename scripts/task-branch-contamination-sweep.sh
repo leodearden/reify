@@ -102,6 +102,12 @@
 #       what a merge worker would gate on, and v1 is report-only. Stdout is the
 #       only result channel, and --format is binding in BOTH modes — a --task
 #       consult that asks for json gets json, never a table row.
+#       A RENDER fault is covered by this too, not just a measurement one: the
+#       up-front json/python3 refusal catches only an ABSENT interpreter, so a
+#       present-but-broken one (or an ENOSPC on a redirected stdout) is caught
+#       instead at _render_report, which warns and still exits 0. Never add a
+#       third exit code — dark-factory wires this as a non-gating advisory
+#       consult, and an environment fault must not be able to make it gate.
 #   R4  Fail-safe degradation. An unreadable store, an id absent from the
 #       tag's non-terminal set, an unresolvable ref, a failed diff or a failed
 #       SQL engine degrades the affected row (or the whole report) to UNKNOWN
@@ -721,14 +727,35 @@ _append_row() {
 }
 
 # _render_report [summary]
+# The FAIL-SAFE boundary around rendering, and the single definition of "a
+# render fault is not a classification" (R3). Both modes call it as a bare
+# simple command under `set -e`, so any status _render_rows leaks would become
+# the SCRIPT's exit status — a present-but-broken python3, an ENOSPC on a
+# redirected stdout or an unreadable $_ROWS would hand a merge worker a third
+# exit code to branch on, and the gate R3 exists to prevent. Sited here rather
+# than as `|| warn` at each call site so the two modes cannot drift apart.
+_render_report() {
+    _render_rows "${1:-}" || \
+        warn "Report render failed (--format $FORMAT) — stdout is empty or truncated. This is a render fault, NOT a verdict about any branch."
+    return 0
+}
+
+# _render_rows [summary]
 # Renders every accumulated row in $FORMAT, then the summary if there is one.
 # <summary> is the SWEEP counter string, and it is EMPTY in single-branch mode:
 # one branch the caller named by id is not a fleet and has no partition to
 # summarise, so neither format invents one there.
-_render_report() {
+#
+# Returns non-zero if the render could not complete. The two risky operations
+# below carry an EXPLICIT `|| return 1` rather than relying on `set -e`:
+# calling this from the `||` above SUSPENDS errexit for the whole function, so
+# without them a failed python3 would fall through to the `return 0` beneath it
+# and report success on an empty stdout — the precise fail-open this guard is
+# being added to close.
+_render_rows() {
     local summary="${1:-}"
     if [ "$FORMAT" = "json" ]; then
-        _TB_ROWS="$_ROWS" _TB_SUMMARY="$summary" "$_PYTHON_BIN" - <<'PY'
+        _TB_ROWS="$_ROWS" _TB_SUMMARY="$summary" "$_PYTHON_BIN" - <<'PY' || return 1
 import json, os, sys
 
 COLS = ("task", "status", "merge_base", "behind", "commits", "peer_commits",
@@ -771,7 +798,7 @@ PY
         printf 'task=%s status=%s merge_base=%s behind=%s commits=%s peer_commits=%s changed=%s foreign=%s peer_files=%s peers=%s scope=%s signature=%s\n' \
             "$c_task" "$c_status" "$c_mb" "$c_behind" "$c_commits" "$c_peer_commits" \
             "$c_changed" "$c_foreign" "$c_peer_files" "$c_peers" "$c_scope" "$c_signature"
-    done < "$_ROWS"
+    done < "$_ROWS" || return 1
     [ -z "$summary" ] || printf 'SWEEP: %s\n' "$summary"
     return 0
 }
