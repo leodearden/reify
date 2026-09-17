@@ -1,9 +1,16 @@
-//! Struct-constructor field-conformance tests (task 5302, struct-ctor-conformance α).
+//! Struct-constructor field-conformance tests (tasks 5302 α / 5303 ε / 5306 δ).
 //!
-//! Task 5302 generalizes task 4584's struct-ctor conformance chokepoint from its
+//! Task 5302 generalized task 4584's struct-ctor conformance chokepoint from its
 //! original 4-family allowlist (`List<TraitObject>` / `StructureRef` / `Vector` /
-//! `Selector`) to ALL concrete field types, at **Warning** severity behind a single
-//! module const (`CTOR_FIELD_CONFORMANCE_SEVERITY`; δ later flips it to Error).
+//! `Selector`) to ALL concrete field types, behind a single module const
+//! (`CTOR_FIELD_CONFORMANCE_SEVERITY`). α and ε landed that surface at **Warning**
+//! severity as a staging convenience; task 5306 (δ) flipped the const to
+//! **Error**, so the whole surface now rejects and `reify check` exits 1.
+//!
+//! The severity pins below are deliberately hard-coded rather than read from the
+//! knob: the const is `pub(crate)` and unreachable from an integration test, and
+//! an independent restatement is the only thing that makes PRD §6 C2(iv)
+//! severity-invariance checkable at all. Keep them literal.
 //!
 //! These are inline-source integration tests (NOT on-disk `.ri` fixtures under
 //! `examples/`, which would be swept by `examples_smoke.rs`). Each `const SOURCE`
@@ -15,8 +22,10 @@
 //! Convention (mirrors `param_binding_selector_coercion_tests.rs` /
 //! `vec3_type_tests.rs`): inline `const SOURCE` + assertions on the *filtered*
 //! diagnostics' code / severity / message. The [`ctor_conformance_diags`] /
-//! [`ctor_conformance_warnings`] helpers below filter to just the ctor-conformance
-//! diagnostic codes so unrelated diagnostics never pollute the counts.
+//! [`ctor_conformance_errors`] helpers below filter to just the ctor-conformance
+//! diagnostic codes so unrelated diagnostics never pollute the counts, and
+//! [`non_ctor_conformance_errors`] is the fixture-hygiene guard's counterpart —
+//! "well-formed apart from the one fault under test".
 //!
 //! No new diagnostic codes are minted in α; no reify-core change.
 //!
@@ -26,14 +35,14 @@
 //! argument, and an over-arity positional argument). Both are emitted from
 //! `crates/reify-compiler/src/expr.rs` at the SAME
 //! `CTOR_FIELD_CONFORMANCE_SEVERITY` knob as the α surface, so they are part of
-//! the ctor-conformance code set below and δ flips them with everything else.
+//! the ctor-conformance code set below and δ flipped them with everything else.
 
 use reify_compiler::CompiledModule;
 use reify_core::diagnostics::DiagnosticCode;
 use reify_core::{
     BASE_UNIT_SYMBOLS, Diagnostic, DimensionVector, NAMED_DIMENSIONS, Severity, SourceSpan,
 };
-use reify_test_support::{compile_source_with_stdlib, errors_only, warnings_only};
+use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 /// True when `code` is one of the diagnostic codes emitted by the struct-ctor
 /// field-conformance surface (task 5302 / 5303 / 4584 / 4598 / 4622 / 4444).
@@ -72,29 +81,34 @@ fn ctor_conformance_diags(module: &CompiledModule) -> Vec<&Diagnostic> {
         .collect()
 }
 
-/// Ctor-conformance diagnostics in `module` restricted to `Severity::Warning`.
+/// Ctor-conformance diagnostics in `module` restricted to `Severity::Error`.
 ///
-/// At α the whole ctor-conformance surface emits at Warning (the knob default),
-/// so most probe fixtures assert against this. Intersecting the code filter with
-/// [`warnings_only`] guards against a fixture that trips an unrelated warning.
-#[allow(dead_code)]
-fn ctor_conformance_warnings(module: &CompiledModule) -> Vec<&Diagnostic> {
-    warnings_only(module)
+/// Since δ (#5306) that is the whole surface: `CTOR_FIELD_CONFORMANCE_SEVERITY`
+/// is `Severity::Error`, so intersecting the code filter with [`errors_only`] is
+/// what the exit-code-contract probes assert against. The Warning-filtered twin
+/// this helper used to sit beside was retired with the flip — nothing emits a
+/// ctor-conformance Warning any more, so a caller of it could only ever have
+/// asserted emptiness.
+fn ctor_conformance_errors(module: &CompiledModule) -> Vec<&Diagnostic> {
+    errors_only(module)
         .into_iter()
         .filter(|d| is_ctor_conformance_code(d.code))
         .collect()
 }
 
-/// Ctor-conformance diagnostics in `module` restricted to `Severity::Error`.
+/// Error-severity diagnostics in `module` that are NOT ctor-conformance ones.
 ///
-/// Reserved for the (few) sites that must stay Error even at α — currently only
-/// the fn-call conformance path, which these ctor fixtures do not exercise; kept
-/// for symmetry with [`ctor_conformance_warnings`] and future δ-flip tests.
-#[allow(dead_code)]
-fn ctor_conformance_errors(module: &CompiledModule) -> Vec<&Diagnostic> {
+/// The fixture-hygiene guard nearly every probe below carries: "this fixture is
+/// well-formed apart from the one fault under test". Before δ that could be
+/// spelled `errors_only(..).is_empty()`, because the fault itself was a Warning.
+/// Post-δ the fault IS an Error, so the bare spelling would assert the opposite
+/// of what the guard means — and on the clean-fixture probes, where no
+/// ctor-conformance diagnostic fires at all, the two spellings coincide. One
+/// helper keeps all ~30 guard sites saying the same thing.
+fn non_ctor_conformance_errors(module: &CompiledModule) -> Vec<&Diagnostic> {
     errors_only(module)
         .into_iter()
-        .filter(|d| is_ctor_conformance_code(d.code))
+        .filter(|d| !is_ctor_conformance_code(d.code))
         .collect()
 }
 
@@ -125,8 +139,8 @@ fn row2_value_cell_string_param_given_int_warns_arg_type_mismatch() {
     );
     assert_eq!(
         diags[0].severity,
-        Severity::Warning,
-        "α: ctor field conformance is Warning-severity, got: {:?}",
+        Severity::Error,
+        "δ: ctor field conformance is Error-severity, got: {:?}",
         diags[0]
     );
     assert_eq!(
@@ -164,7 +178,7 @@ fn row4_sub_string_param_given_int_warns_arg_type_mismatch_exactly_once() {
         "sub-path String←Int must emit EXACTLY ONE ctor-conformance diagnostic \
          (C2(ii) double-emission pin), got: {diags:#?}"
     );
-    assert_eq!(diags[0].severity, Severity::Warning);
+    assert_eq!(diags[0].severity, Severity::Error);
     assert_eq!(
         diags[0].code,
         Some(DiagnosticCode::ArgTypeMismatch),
@@ -198,9 +212,10 @@ fn row3_value_cell_option_selector_implicit_some_is_clean() {
         "implicit-Some FaceSelector→Option<FaceSelector> must be clean, got: {diags:#?}"
     );
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must not produce compile errors, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must not produce compile errors beyond the ctor-conformance fault \
+         under test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
 }
 
@@ -242,7 +257,7 @@ fn row8_sub_option_selector_given_int_warns_arg_type_mismatch() {
         1,
         "Option<FaceSelector>←Int must emit exactly one ctor-conformance diagnostic, got: {diags:#?}"
     );
-    assert_eq!(diags[0].severity, Severity::Warning);
+    assert_eq!(diags[0].severity, Severity::Error);
     assert_eq!(
         diags[0].code,
         Some(DiagnosticCode::ArgTypeMismatch),
@@ -268,9 +283,10 @@ fn boundary7_real_param_given_int_is_clean() {
         "Int→dimensionless Real is compatible (C1.2); must be clean, got: {diags:#?}"
     );
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must not produce compile errors, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must not produce compile errors beyond the ctor-conformance fault \
+         under test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
 }
 
@@ -291,9 +307,10 @@ fn boundary8_empty_list_geometry_is_clean() {
         "empty-collection arg has TypeParam element type → skipped (C1.10); must be clean, got: {diags:#?}"
     );
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must not produce compile errors, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must not produce compile errors beyond the ctor-conformance fault \
+         under test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
 }
 
@@ -338,7 +355,7 @@ fn boundary13_option_trait_param_nonconforming_warns_trait_conformance() {
         "Option<MaterialSpec>←non-conforming must emit exactly one ctor-conformance diagnostic, \
          got: {diags:#?}"
     );
-    assert_eq!(diags[0].severity, Severity::Warning);
+    assert_eq!(diags[0].severity, Severity::Error);
     assert_eq!(
         diags[0].code,
         Some(DiagnosticCode::TypeNotConformingToTrait),
@@ -390,8 +407,8 @@ fn row6_value_cell_wrong_selector_kind_warns_selector_kind_mismatch() {
     );
     assert_eq!(
         diags[0].severity,
-        Severity::Warning,
-        "α: ctor field conformance is Warning-severity, got: {:?}",
+        Severity::Error,
+        "δ: ctor field conformance is Error-severity, got: {:?}",
         diags[0]
     );
     // RED until step-4: `emit_selector_mismatch` currently tags every selector
@@ -435,7 +452,7 @@ fn row9_value_cell_string_to_selector_param_warns_arg_type_mismatch() {
         1,
         "bare String→FaceSelector must emit exactly one ctor-conformance diagnostic, got: {diags:#?}"
     );
-    assert_eq!(diags[0].severity, Severity::Warning);
+    assert_eq!(diags[0].severity, Severity::Error);
     // A bare String literal is not a selector — disallow-string stays
     // ArgTypeMismatch; only a Selector(j)→Selector(k) kind mismatch is re-coded to
     // SelectorKindMismatch in step-4 (over-tag guard, 4581).
@@ -502,8 +519,8 @@ fn row1_value_cell_option_selector_given_pose_frame_warns_with_pose_hint() {
     );
     assert_eq!(
         diags[0].severity,
-        Severity::Warning,
-        "α: ctor field conformance is Warning-severity, got: {:?}",
+        Severity::Error,
+        "δ: ctor field conformance is Error-severity, got: {:?}",
         diags[0]
     );
     assert_eq!(
@@ -538,7 +555,7 @@ fn bare_selector_param_given_pose_frame_warns_with_pose_hint() {
         1,
         "pose→FaceSelector must emit exactly one ctor-conformance diagnostic, got: {diags:#?}"
     );
-    assert_eq!(diags[0].severity, Severity::Warning);
+    assert_eq!(diags[0].severity, Severity::Error);
     assert_eq!(
         diags[0].code,
         Some(DiagnosticCode::ArgTypeMismatch),
@@ -573,7 +590,7 @@ fn bare_selector_param_given_pose_transform_warns_with_pose_hint() {
         1,
         "Transform pose→FaceSelector must emit exactly one ctor-conformance diagnostic, got: {diags:#?}"
     );
-    assert_eq!(diags[0].severity, Severity::Warning);
+    assert_eq!(diags[0].severity, Severity::Error);
     assert_eq!(
         diags[0].code,
         Some(DiagnosticCode::ArgTypeMismatch),
@@ -627,8 +644,8 @@ fn param_default_string_given_int_warns_arg_type_mismatch() {
     );
     assert_eq!(
         diags[0].severity,
-        Severity::Warning,
-        "α: param-default conformance is knob-governed (Warning), got: {:?}",
+        Severity::Error,
+        "δ: param-default conformance is knob-governed (Error), got: {:?}",
         diags[0]
     );
     assert_eq!(
@@ -667,9 +684,10 @@ fn param_default_valid_int_and_real_is_clean() {
         "valid Int←Int and dimensionless Real←Int param defaults must be clean, got: {diags:#?}"
     );
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must not produce compile errors, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must not produce compile errors beyond the ctor-conformance fault \
+         under test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
 }
 
@@ -788,15 +806,17 @@ fn make() -> Widget { Widget(label: 42) }
 // Widget(label: 42) } }  structure def Root : Mk { param seed : Int = 0 }`.
 
 /// True when `module` carries at least one ctor-conformance `ArgTypeMismatch`
-/// Warning whose message names `label` / `String` / `Int` — the signature of the
+/// Error whose message names `label` / `String` / `Int` — the signature of the
 /// `Widget(label: 42)` String←Int mismatch. `.any()` (not exactly-one) because a
 /// context may legitimately host more than one ctor call (`constraint A == B`) or
 /// draw an incidental non-ctor-conformance diagnostic (already filtered).
-fn has_string_int_arg_type_mismatch_warning(module: &CompiledModule) -> bool {
+fn has_string_int_arg_type_mismatch_error(module: &CompiledModule) -> bool {
     ctor_conformance_diags(module).iter().any(|d| {
-        d.severity == Severity::Warning
+        d.severity == Severity::Error
             && d.code == Some(DiagnosticCode::ArgTypeMismatch)
-            && ["label", "String", "Int"].iter().all(|n| d.message.contains(n))
+            && ["label", "String", "Int"]
+                .iter()
+                .all(|n| d.message.contains(n))
     })
 }
 
@@ -822,14 +842,14 @@ fn per_context_string_int_ctor_mismatch_warns_everywhere() {
     let mut missing: Vec<(&str, String)> = Vec::new();
     for &(label, source) in cases {
         let module = compile_source_with_stdlib(source);
-        if !has_string_int_arg_type_mismatch_warning(&module) {
+        if !has_string_int_arg_type_mismatch_error(&module) {
             missing.push((label, format!("{:#?}", module.diagnostics)));
         }
     }
     assert!(
         missing.is_empty(),
         "per-context coverage: these contexts did NOT emit the expected String←Int \
-         ArgTypeMismatch Warning:\n{}",
+         ArgTypeMismatch Error:\n{}",
         missing
             .iter()
             .map(|(l, d)| format!("  [{l}] diagnostics:\n{d}"))
@@ -896,9 +916,9 @@ fn fea_pressure_smoke_example_has_no_ctor_conformance_diagnostics() {
          FaceSelector via face(body, \"x_max\")), got: {diags:#?}"
     );
     assert!(
-        errors_only(&module).is_empty(),
+        non_ctor_conformance_errors(&module).is_empty(),
         "fea_pressure_smoke.ri must compile without errors, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module)
     );
 }
 
@@ -1003,9 +1023,10 @@ fn point_param_given_matching_dimensioned_point3_call_stays_clean() {
     // (`point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch`)
     // supplies the structural half of the argument; this guard supplies the rest.
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must compile cleanly, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
     let diags = ctor_conformance_diags(&module);
     assert!(
@@ -1051,9 +1072,10 @@ fn list_of_point_param_given_matching_dimensioned_point3_calls_stays_clean() {
     // together they separate "silent because it agrees" from "silent because
     // nothing compiled".
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must compile cleanly, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
     let diags = ctor_conformance_diags(&module);
     assert!(
@@ -1124,9 +1146,10 @@ fn bare_numeric_literal_at_point_param_stays_clean() {
     // spelling is shown to resolve-and-reject by the cross-dimension fixture
     // further down this file, which uses the identical `Anchor` declaration.
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must compile cleanly, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
     let diags = ctor_conformance_diags(&module);
     assert!(
@@ -1176,9 +1199,10 @@ structure def Root {
 fn dimensioned_scalar_at_point_param_stays_clean() {
     let module = compile_source_with_stdlib(SRC_DIMENSIONED_SCALAR_AT_POINT_PARAM);
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must compile cleanly, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
     let diags = ctor_conformance_diags(&module);
     assert!(
@@ -1204,9 +1228,10 @@ fn dimensioned_scalar_at_point_param_stays_clean() {
 fn scalar_returning_call_at_point_param_stays_clean() {
     let module = compile_source_with_stdlib(SRC_SCALAR_CALL_AT_POINT_PARAM);
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must compile cleanly, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
     let diags = ctor_conformance_diags(&module);
     assert!(
@@ -1232,7 +1257,7 @@ structure def Root {
 /// admits `Bool`/`String`/`Enum`/`StructureRef`/`TraitObject`/`Geometry`.
 #[test]
 fn point_param_given_string_warns_arg_type_mismatch() {
-    assert_single_arg_type_mismatch_warning(
+    assert_single_arg_type_mismatch_error(
         SRC_POINT_GIVEN_STRING,
         "origin",
         "Point3<Length> ← String",
@@ -1270,7 +1295,7 @@ structure def Root {
 /// new `Point` arm, not fall through to the wrapper-shape catch-all.
 #[test]
 fn option_wrapped_point_param_given_string_warns() {
-    assert_single_arg_type_mismatch_warning(
+    assert_single_arg_type_mismatch_error(
         SRC_OPTION_POINT_GIVEN_STRING,
         "origin",
         "Option<Point3<Length>> ← String",
@@ -1323,7 +1348,7 @@ structure def Root {
 /// Value floor for the promoted `Matrix` family.
 #[test]
 fn matrix_param_given_string_warns_arg_type_mismatch() {
-    assert_single_arg_type_mismatch_warning(
+    assert_single_arg_type_mismatch_error(
         SRC_MATRIX_GIVEN_STRING,
         "inertia",
         "Matrix<3,3,MomentOfInertia> ← String",
@@ -1352,7 +1377,7 @@ structure def Root {
 /// placeholder tolerance already had.
 #[test]
 fn matrix_param_given_string_list_warns_arg_type_mismatch() {
-    assert_single_arg_type_mismatch_warning(
+    assert_single_arg_type_mismatch_error(
         SRC_MATRIX_GIVEN_STRING_LIST,
         "inertia",
         "Matrix<3,3,MomentOfInertia> ← List<String>",
@@ -1374,7 +1399,7 @@ structure def Root {
 /// judged at all.
 #[test]
 fn list_of_matrix_param_given_string_element_warns() {
-    assert_single_arg_type_mismatch_warning(
+    assert_single_arg_type_mismatch_error(
         SRC_LIST_OF_MATRIX_GIVEN_STRING_ELEMENT,
         "inertias",
         "List<Matrix<3,3,MomentOfInertia>> ← [String]",
@@ -1395,7 +1420,7 @@ structure def Root {
 /// accepts (`type_resolution.rs:3220`, three type args).
 #[test]
 fn tensor_param_given_string_warns_arg_type_mismatch() {
-    assert_single_arg_type_mismatch_warning(
+    assert_single_arg_type_mismatch_error(
         SRC_TENSOR_GIVEN_STRING,
         "stress",
         "Tensor<2,3,Pressure> ← String",
@@ -1489,7 +1514,7 @@ structure def Root {
 /// `field_param_accepts_function_arg` in `conformance/mod.rs`'s own `mod tests`.
 #[test]
 fn field_param_given_string_warns_arg_type_mismatch() {
-    assert_single_arg_type_mismatch_warning(
+    assert_single_arg_type_mismatch_error(
         SRC_FIELD_GIVEN_STRING,
         "mode_shape",
         "Field<Point3<Length>, Vector3<Length>> ← String",
@@ -1510,7 +1535,7 @@ structure def Root {
 /// recursion never reaches and the top-level probe above would not notice.
 #[test]
 fn list_of_field_param_given_string_element_warns() {
-    assert_single_arg_type_mismatch_warning(
+    assert_single_arg_type_mismatch_error(
         SRC_LIST_OF_FIELD_GIVEN_STRING_ELEMENT,
         "modes",
         "List<Field<…>> ← [String]",
@@ -1584,7 +1609,7 @@ structure def Root {
 /// pinned on its tolerance half.
 #[test]
 fn generic_enum_param_given_string_warns_arg_type_mismatch() {
-    assert_single_arg_type_mismatch_warning(
+    assert_single_arg_type_mismatch_error(
         SRC_GENERIC_ENUM_GIVEN_STRING,
         "r",
         "Result<Length, String> ← String",
@@ -1623,7 +1648,7 @@ structure def Root {
 /// any test noticing.
 #[test]
 fn enum_param_given_wrong_enum_warns_arg_type_mismatch() {
-    assert_single_arg_type_mismatch_warning(SRC_ENUM_CROSS_ENUM_MISMATCH, "c", "Hue ← Outline");
+    assert_single_arg_type_mismatch_error(SRC_ENUM_CROSS_ENUM_MISMATCH, "c", "Hue ← Outline");
 }
 
 // The REVERSE erasure pairing — a param declared as the BARE `Type::Enum(n)`
@@ -1688,19 +1713,19 @@ fn family_dimensioned_scalar_given_unit_literal_arg_is_silent() {
 // ── (c) α-value-floor guards: the RETAINED families must still warn ──────────
 
 /// Assert `source` emits exactly one ctor-conformance diagnostic, and that it is
-/// a `Warning`-severity `ArgTypeMismatch` naming `param_name`.
+/// an `Error`-severity `ArgTypeMismatch` naming `param_name`.
 ///
 /// Shared by the four value-floor guards below so each stays a one-liner and the
 /// four cases cannot drift apart in what they check.
-fn assert_single_arg_type_mismatch_warning(source: &str, param_name: &str, label: &str) {
-    assert_single_arg_type_mismatch_warning_in(
+fn assert_single_arg_type_mismatch_error(source: &str, param_name: &str, label: &str) {
+    assert_single_arg_type_mismatch_error_in(
         &compile_source_with_stdlib(source),
         param_name,
         label,
     );
 }
 
-/// `&CompiledModule`-taking half of [`assert_single_arg_type_mismatch_warning`],
+/// `&CompiledModule`-taking half of [`assert_single_arg_type_mismatch_error`],
 /// for a probe that has ALREADY compiled its fixture — e.g. to run the
 /// non-vacuity guard `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`
 /// documents — so the guard and the assertion share ONE compile of the source
@@ -1710,7 +1735,7 @@ fn assert_single_arg_type_mismatch_warning(source: &str, param_name: &str, label
 /// (the quantity sibling below) does not re-run [`ctor_conformance_diags`] over
 /// the module. Matches `assert_quantity_slot_conflict` (`conformance/mod.rs`),
 /// its fn-call twin, which returns its `Vec<Diagnostic>` for the same reason.
-fn assert_single_arg_type_mismatch_warning_in<'a>(
+fn assert_single_arg_type_mismatch_error_in<'a>(
     module: &'a CompiledModule,
     param_name: &str,
     label: &str,
@@ -1723,8 +1748,8 @@ fn assert_single_arg_type_mismatch_warning_in<'a>(
     );
     assert_eq!(
         diags[0].severity,
-        Severity::Warning,
-        "{label}: α ctor field conformance is Warning-severity, got: {:?}",
+        Severity::Error,
+        "{label}: δ ctor field conformance is Error-severity, got: {:?}",
         diags[0]
     );
     assert_eq!(
@@ -1741,12 +1766,12 @@ fn assert_single_arg_type_mismatch_warning_in<'a>(
     diags
 }
 
-/// Quantity-rule sibling of [`assert_single_arg_type_mismatch_warning_in`]: the
+/// Quantity-rule sibling of [`assert_single_arg_type_mismatch_error_in`]: the
 /// same four checks, PLUS the two fragments that discriminate the quantity-slot
 /// emitter from the whole-type `emit_arg_type_mismatch`.
 ///
 /// Without those fragments a quantity fixture is VACUOUS against a family/arity
-/// regression. Count, `Severity::Warning`, `ArgTypeMismatch` and "the message
+/// regression. Count, `Severity::Error`, `ArgTypeMismatch` and "the message
 /// names the param" are all satisfied by the whole-type emitter too, so if a
 /// shape arm's own family/arity check started rejecting the arg the pre-existing
 /// `emit_arg_type_mismatch` would fire instead — same code, same severity, still
@@ -1766,7 +1791,7 @@ fn assert_single_quantity_conflict_warning_in(
     expected_arg_quantity: &str,
     label: &str,
 ) {
-    let diags = assert_single_arg_type_mismatch_warning_in(module, param_name, label);
+    let diags = assert_single_arg_type_mismatch_error_in(module, param_name, label);
     let has_quantity = format!("has quantity '{expected_arg_quantity}'");
     let requires_quantity = format!("requires quantity '{expected_param_quantity}'");
     assert!(
@@ -1806,19 +1831,19 @@ structure def Root { let a = W(mag: "big") }
 /// if the allowlist ever loses a family.
 #[test]
 fn value_floor_string_param_given_int_still_warns() {
-    assert_single_arg_type_mismatch_warning(SRC_FLOOR_STRING, "label", "String ← Int");
+    assert_single_arg_type_mismatch_error(SRC_FLOOR_STRING, "label", "String ← Int");
 }
 
 /// Value floor: `Bool` stays validated.
 #[test]
 fn value_floor_bool_param_given_string_still_warns() {
-    assert_single_arg_type_mismatch_warning(SRC_FLOOR_BOOL, "flag", "Bool ← String");
+    assert_single_arg_type_mismatch_error(SRC_FLOOR_BOOL, "flag", "Bool ← String");
 }
 
 /// Value floor: `Int` stays validated.
 #[test]
 fn value_floor_int_param_given_string_still_warns() {
-    assert_single_arg_type_mismatch_warning(SRC_FLOOR_INT, "n", "Int ← String");
+    assert_single_arg_type_mismatch_error(SRC_FLOOR_INT, "n", "Int ← String");
 }
 
 /// Value floor: dimensionless `Scalar` (spelled `Real`) stays validated. Note
@@ -1826,7 +1851,7 @@ fn value_floor_int_param_given_string_still_warns() {
 /// half is excluded above, and the two must not be conflated.
 #[test]
 fn value_floor_dimensionless_real_param_given_string_still_warns() {
-    assert_single_arg_type_mismatch_warning(SRC_FLOOR_REAL, "mag", "Real ← String");
+    assert_single_arg_type_mismatch_error(SRC_FLOOR_REAL, "mag", "Real ← String");
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1849,15 +1874,17 @@ fn value_floor_dimensionless_real_param_given_string_still_warns() {
 //   FALSE-POSITIVE floor: their whole value is that the promotion must not
 //   disturb them, which is why they are written before it rather than after.
 //
-// Every assertion is on `DiagnosticCode` IDENTITY plus `Severity::Warning`,
+// Every assertion is on `DiagnosticCode` IDENTITY plus `Severity::Error`,
 // never on message prose beyond the param name (D4-8 / INV-SF-6, tasks
-// 2255/3416 precedent). There is NO exit-code assertion: γ is pre-δ, so
-// `CTOR_FIELD_CONFORMANCE_SEVERITY` is still `Warning` and γ does not touch it.
+// 2255/3416 precedent). γ wrote these at `Severity::Warning` and carried no
+// exit-code assertion because it was pre-δ; δ (#5306) moved the severity with
+// the knob. The exit-code contract itself is asserted once, by
+// `epsilon_fixtures_reject_at_error_severity_and_move_the_exit_code`.
 
 /// Assert `source` emits ZERO ctor-conformance diagnostics.
 ///
 /// The acceptance-floor counterpart of
-/// [`assert_single_arg_type_mismatch_warning`]. Scoped to the ctor-conformance
+/// [`assert_single_arg_type_mismatch_error`]. Scoped to the ctor-conformance
 /// code set only — a fixture may still emit unrelated diagnostics (an
 /// `auto`-resolution warning, an unresolved-name Error) without weakening the
 /// claim, which is exactly what makes the I6 and A3 floors expressible.
@@ -1903,7 +1930,7 @@ structure def Root { let a = W(d: true) }
 /// themselves distinguishes them.
 #[test]
 fn g_i2_cross_dimension_arg_at_dimensioned_slot_warns() {
-    assert_single_arg_type_mismatch_warning(
+    assert_single_arg_type_mismatch_error(
         SRC_G_I2_CROSS_DIMENSION,
         "p",
         "I2: Scalar<Pressure> ← Length literal",
@@ -1917,7 +1944,7 @@ fn g_i2_cross_dimension_arg_at_dimensioned_slot_warns() {
 /// unit literals, nothing else asserts what a bare arg does here.
 #[test]
 fn g_i3_bare_real_arg_at_dimensioned_slot_warns() {
-    assert_single_arg_type_mismatch_warning(
+    assert_single_arg_type_mismatch_error(
         SRC_G_I3_BARE_REAL,
         "p",
         "I3: Scalar<Velocity> ← bare Real",
@@ -1931,7 +1958,7 @@ fn g_i3_bare_real_arg_at_dimensioned_slot_warns() {
 /// keep failing-then-passing, never become silent.
 #[test]
 fn g_i3_bare_int_arg_at_dimensioned_slot_warns() {
-    assert_single_arg_type_mismatch_warning(
+    assert_single_arg_type_mismatch_error(
         SRC_G_I3_BARE_INT,
         "p",
         "I3: Scalar<Velocity> ← bare Int",
@@ -1941,13 +1968,13 @@ fn g_i3_bare_int_arg_at_dimensioned_slot_warns() {
 /// I4 — a `String` at a dimensioned slot is rejected (family-level mismatch).
 #[test]
 fn g_i4_string_arg_at_dimensioned_slot_warns() {
-    assert_single_arg_type_mismatch_warning(SRC_G_I4_STRING, "d", "I4: Scalar<Density> ← String");
+    assert_single_arg_type_mismatch_error(SRC_G_I4_STRING, "d", "I4: Scalar<Density> ← String");
 }
 
 /// I4 — a `Bool` at a dimensioned slot is rejected.
 #[test]
 fn g_i4_bool_arg_at_dimensioned_slot_warns() {
-    assert_single_arg_type_mismatch_warning(SRC_G_I4_BOOL, "d", "I4: Scalar<Density> ← Bool");
+    assert_single_arg_type_mismatch_error(SRC_G_I4_BOOL, "d", "I4: Scalar<Density> ← Bool");
 }
 
 const SRC_G_B1_B2_AUTHOR_SIDE: &str = r#"module test.g_b1_b2
@@ -1979,8 +2006,8 @@ fn g_b1_b2_two_wrong_dimensioned_args_warn_once_each() {
     for d in &diags {
         assert_eq!(
             d.severity,
-            Severity::Warning,
-            "B1/B2: γ ctor field conformance is Warning-severity, got: {d:?}"
+            Severity::Error,
+            "B1/B2: δ ctor field conformance is Error-severity, got: {d:?}"
         );
         assert_eq!(
             d.code,
@@ -2458,7 +2485,7 @@ fn g_a2_dimensionless_real_given_scalarparam_becomes_silent() {
 /// arm at once — the exact outcome that predicate's doc comment already forbids.
 #[test]
 fn g_i5_string_slot_given_scalarparam_still_warns() {
-    assert_single_arg_type_mismatch_warning(
+    assert_single_arg_type_mismatch_error(
         SRC_G_I5_STRING_GIVEN_SCALARPARAM,
         "label",
         "I5 fence: String ← ScalarParam(Q)",
@@ -2468,7 +2495,7 @@ fn g_i5_string_slot_given_scalarparam_still_warns() {
 /// FENCE — `Bool ← ScalarParam(Q)` STILL fires, for the same reason.
 #[test]
 fn g_i5_bool_slot_given_scalarparam_still_warns() {
-    assert_single_arg_type_mismatch_warning(
+    assert_single_arg_type_mismatch_error(
         SRC_G_I5_BOOL_GIVEN_SCALARPARAM,
         "flag",
         "I5 fence: Bool ← ScalarParam(Q)",
@@ -2486,7 +2513,7 @@ fn g_i5_bool_slot_given_scalarparam_still_warns() {
 /// at the promotion.
 #[test]
 fn g_i5_dimensioned_slot_given_concrete_cross_dimension_still_warns() {
-    assert_single_arg_type_mismatch_warning(
+    assert_single_arg_type_mismatch_error(
         SRC_G_I5_DIMENSIONED_GIVEN_CROSS_DIMENSION,
         "len",
         "I5 fence: Scalar<Length> ← Scalar<Mass>",
@@ -2499,7 +2526,7 @@ fn g_i5_dimensioned_slot_given_concrete_cross_dimension_still_warns() {
 /// other rejection γ exists to produce. Same restatement rationale as above.
 #[test]
 fn g_i5_dimensioned_slot_given_int_still_warns() {
-    assert_single_arg_type_mismatch_warning(
+    assert_single_arg_type_mismatch_error(
         SRC_G_I5_DIMENSIONED_GIVEN_INT,
         "len",
         "I5 fence: Scalar<Length> ← Int",
@@ -2541,7 +2568,7 @@ structure def Root {
 /// `vector_string_still_rejected_family_before_quantity` below.
 #[test]
 fn vec3_cross_dimension_at_dimensioned_vector_param_warns_arg_type_mismatch() {
-    assert_single_arg_type_mismatch_warning(
+    assert_single_arg_type_mismatch_error(
         SRC_VEC3_CROSS_DIMENSION,
         "axis",
         "Vector3<Length> ← Vector3<Mass>",
@@ -2571,9 +2598,10 @@ fn vec3_dimensionless_at_dimensioned_vector_param_stays_clean() {
     // ctor-conformance codes, so a compile-layer error in the fixture would leave
     // it empty and pass this fence for the wrong reason.
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must compile cleanly, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
     let diags = ctor_conformance_diags(&module);
     assert!(
@@ -2603,9 +2631,10 @@ fn vec3_matching_dimension_at_dimensioned_vector_param_stays_clean() {
     let module = compile_source_with_stdlib(SRC_VEC3_MATCHING_DIMENSION);
     // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must compile cleanly, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
     let diags = ctor_conformance_diags(&module);
     assert!(
@@ -2647,9 +2676,10 @@ fn vec3_dimensioned_at_dimensionless_vector_param_warns_arg_type_mismatch() {
     // emit zero ctor-conformance diagnostics and read as a RULE failure.
     let module = compile_source_with_stdlib(SRC_VEC3_DIMENSIONED_AT_DIMENSIONLESS);
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must compile cleanly, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
     // The `_in` variant so the guard above and the assertion share that one
     // compile, as the two sibling fences directly above do.
@@ -2704,9 +2734,10 @@ structure def Root {
 fn vec3_dimensioned_off_first_component_at_dimensionless_vector_param_stays_clean() {
     let module = compile_source_with_stdlib(SRC_VEC3_DIMENSIONED_OFF_FIRST_AT_DIMENSIONLESS);
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must compile cleanly, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
     let diags = ctor_conformance_diags(&module);
     assert!(
@@ -2756,9 +2787,10 @@ fn vec2_arg_at_vector3_param_warns_arity_type_not_conforming() {
     // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
     let module = compile_source_with_stdlib(SRC_VEC2_AT_VECTOR3_PARAM);
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must compile cleanly, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
     let diags = ctor_conformance_diags(&module);
     assert_eq!(
@@ -2827,9 +2859,10 @@ fn point3_dimensioned_at_dimensionless_point_param_warns_arg_type_mismatch() {
     // ctor-conformance diagnostics and read as a RULE failure.
     let module = compile_source_with_stdlib(SRC_POINT3_DIMENSIONED_AT_DIMENSIONLESS);
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must compile cleanly, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
     // The `_in` variant so the guard above and the assertion share that one
     // compile of the source plus the whole stdlib.
@@ -2857,9 +2890,10 @@ fn point3_dimensioned_at_dimensionless_point_param_warns_arg_type_mismatch() {
 fn point3_dimensioned_at_real_point_param_warns_arg_type_mismatch() {
     let module = compile_source_with_stdlib(SRC_POINT3_DIMENSIONED_AT_REAL);
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must compile cleanly, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
     assert_single_quantity_conflict_warning_in(
         &module,
@@ -2921,9 +2955,10 @@ fn list_of_point3_dimensioned_at_real_point_param_warns_arg_type_mismatch() {
     // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
     let module = compile_source_with_stdlib(SRC_LIST_OF_POINT3_DIMENSIONED_AT_REAL);
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must compile cleanly, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
     assert_single_quantity_conflict_warning_in(
         &module,
@@ -2977,9 +3012,10 @@ fn point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch() {
     // broken fixture.
     let module = compile_source_with_stdlib(SRC_POINT3_CROSS_DIMENSION_AT_DIMENSIONED);
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must compile cleanly, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
     // The `_in` variant so the guard above and the assertion share that one
     // compile of the source plus the whole stdlib.
@@ -3032,9 +3068,10 @@ fn point3_cross_dimension_via_let_at_dimensioned_point_param_warns_arg_type_mism
     // initialiser failed to compile emits zero ctor-conformance diagnostics.
     let module = compile_source_with_stdlib(SRC_POINT3_CROSS_DIMENSION_VIA_LET);
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must compile cleanly, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
     assert_single_quantity_conflict_warning_in(
         &module,
@@ -3088,9 +3125,10 @@ fn point3_dimensionless_at_dimensioned_point_param_stays_clean() {
     // Non-vacuity guard — ESSENTIAL for a CLEAN fixture; see the doc above for
     // the stronger structural proof the cross-dimension twin supplies.
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must compile cleanly, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
     let diags = ctor_conformance_diags(&module);
     assert!(
@@ -3144,13 +3182,14 @@ fn point2_arg_at_point3_param_warns_arity_arg_type_mismatch() {
     // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
     let module = compile_source_with_stdlib(SRC_POINT2_AT_POINT3_PARAM);
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must compile cleanly, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
     // The WHOLE-TYPE helper, deliberately NOT the quantity sibling: this cell's
     // quantity slots agree and only the arity differs.
-    let diags = assert_single_arg_type_mismatch_warning_in(
+    let diags = assert_single_arg_type_mismatch_error_in(
         &module,
         "origin",
         "Point3<Length> ← Point2<Length> (arity)",
@@ -3236,7 +3275,7 @@ structure def Root {
 /// passes and only the quantity slot separates them.
 #[test]
 fn matrix_builtin_cross_dimension_at_inertia_param_warns_arg_type_mismatch() {
-    assert_single_arg_type_mismatch_warning(
+    assert_single_arg_type_mismatch_error(
         SRC_MATRIX_CROSS_DIMENSION,
         "inertia",
         "Matrix<3,3,MomentOfInertia> ← Tensor2x3<Length>",
@@ -3300,9 +3339,10 @@ fn matrix_builtin_dimensioned_cell_at_dimensionless_matrix_param_warns_arg_type_
     // would emit zero ctor-conformance diagnostics and read as a RULE failure.
     let module = compile_source_with_stdlib(SRC_MATRIX_DIMENSIONED_CELL_AT_DIMENSIONLESS);
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must compile cleanly, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
     // The `_in` variant so the guard above and the assertion share that one
     // compile of the source plus the whole stdlib.
@@ -3344,9 +3384,10 @@ fn tensor_matching_dimension_at_moi_param_stays_clean() {
     // regression, or a change in how `1.0 * 1kg * 1m * 1m` types would otherwise
     // leave the fence passing vacuously.
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must compile cleanly, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
     let diags = ctor_conformance_diags(&module);
     assert!(
@@ -3398,9 +3439,9 @@ fn unknown_named_argument_emits_ctor_unknown_field_warning() {
     );
     assert_eq!(
         diags[0].severity,
-        Severity::Warning,
-        "ε emits at the CTOR_FIELD_CONFORMANCE_SEVERITY knob (Warning); a hard-coded \
-         severity here would silently survive δ's one-const flip. Got: {:?}",
+        Severity::Error,
+        "ε emits at the CTOR_FIELD_CONFORMANCE_SEVERITY knob (Error); a hard-coded \
+         severity here would have silently survived δ's one-const flip. Got: {:?}",
         diags[0]
     );
     assert!(
@@ -3421,9 +3462,9 @@ fn unknown_named_argument_emits_ctor_unknown_field_warning() {
         diags[0].message
     );
     assert!(
-        errors_only(&module).is_empty(),
-        "ε keeps exit code 0 — the unknown-field tightening is Warning-only until δ. \
-         Got errors: {:?}",
+        !ctor_conformance_errors(&module).is_empty(),
+        "δ (#5306) moved the exit code: the unknown-field tightening is Error-severity, \
+         so `reify check` now exits 1 on this fixture. Got errors: {:?}",
         errors_only(&module)
     );
 }
@@ -3496,9 +3537,10 @@ fn two_unknown_named_arguments_emit_one_diagnostic_each() {
         "one diagnostic must name `lable2`, got: {messages:#?}"
     );
     assert!(
-        errors_only(&module).is_empty(),
-        "ε keeps exit code 0, got errors: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
 }
 
@@ -3521,9 +3563,10 @@ fn correct_named_argument_emits_no_ctor_conformance_diagnostic() {
         "a correctly-named argument must stay silent, got: {diags:#?}"
     );
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must compile cleanly, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
 }
 
@@ -3652,8 +3695,8 @@ fn over_arity_positional_argument_emits_ctor_arity_warning() {
     );
     assert_eq!(
         diags[0].severity,
-        Severity::Warning,
-        "ε emits at the CTOR_FIELD_CONFORMANCE_SEVERITY knob (Warning), got: {:?}",
+        Severity::Error,
+        "ε emits at the CTOR_FIELD_CONFORMANCE_SEVERITY knob (Error), got: {:?}",
         diags[0]
     );
     let msg = &diags[0].message;
@@ -3676,8 +3719,9 @@ fn over_arity_positional_argument_emits_ctor_arity_warning() {
         "message must name the ACTUAL arity, got: {msg:?}"
     );
     assert!(
-        errors_only(&module).is_empty(),
-        "ε keeps exit code 0, got errors: {:?}",
+        !ctor_conformance_errors(&module).is_empty(),
+        "δ (#5306) moved the exit code: the over-arity tightening is Error-severity, \
+         so `reify check` now exits 1 on this fixture. Got errors: {:?}",
         errors_only(&module)
     );
 }
@@ -3828,9 +3872,10 @@ fn exact_arity_positional_call_emits_no_ctor_conformance_diagnostic() {
         "an exact-arity call must stay silent, got: {diags:#?}"
     );
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must compile cleanly, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
 }
 
@@ -3859,9 +3904,10 @@ fn under_arity_covered_by_defaults_emits_no_ctor_conformance_diagnostic() {
          got: {diags:#?}"
     );
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must compile cleanly, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
 }
 
@@ -3883,9 +3929,10 @@ fn zero_argument_call_emits_no_ctor_conformance_diagnostic() {
         "a zero-arg call must stay silent, got: {diags:#?}"
     );
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must compile cleanly, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
 }
 
@@ -3918,7 +3965,7 @@ fn unknown_named_argument_in_fn_body_emits_ctor_unknown_field() {
          got: {diags:#?}"
     );
     assert_eq!(diags[0].code, Some(DiagnosticCode::CtorUnknownField));
-    assert_eq!(diags[0].severity, Severity::Warning);
+    assert_eq!(diags[0].severity, Severity::Error);
 }
 
 const SRC_UNKNOWN_FIELD_NESTED: &str = r#"module test.unknown_field_nested
@@ -3968,7 +4015,7 @@ fn over_arity_in_fn_body_emits_ctor_arity() {
         "a free-fn body over-arity ctor must emit exactly one diagnostic, got: {diags:#?}"
     );
     assert_eq!(diags[0].code, Some(DiagnosticCode::CtorArity));
-    assert_eq!(diags[0].severity, Severity::Warning);
+    assert_eq!(diags[0].severity, Severity::Error);
 }
 
 const SRC_ALL_THREE_FAULTS: &str = r#"module test.all_three_faults
@@ -4011,7 +4058,7 @@ fn all_three_ctor_faults_on_one_call_emit_exactly_one_diagnostic_each() {
         );
     }
     assert!(
-        diags.iter().all(|d| d.severity == Severity::Warning),
+        diags.iter().all(|d| d.severity == Severity::Error),
         "all three must sit at the shared CTOR_FIELD_CONFORMANCE_SEVERITY knob so δ \
          moves them together, got: {diags:#?}"
     );
@@ -4075,7 +4122,7 @@ fn unknown_named_argument_does_not_consume_a_param_slot() {
          exactly one CtorUnknownField and no CtorArity expected, got: {diags:#?}"
     );
     assert_eq!(diags[0].code, Some(DiagnosticCode::CtorUnknownField));
-    assert_eq!(diags[0].severity, Severity::Warning);
+    assert_eq!(diags[0].severity, Severity::Error);
     assert_eq!(
         diags
             .iter()
@@ -4159,7 +4206,7 @@ fn unknown_named_argument_still_fires_when_its_value_is_poisoned() {
     // fixture would no longer exercise the anti-cascade path at all and would pass
     // for the wrong reason. Measured: `error: unresolved name: no_such_name_anywhere`.
     assert!(
-        !errors_only(&module).is_empty(),
+        !non_ctor_conformance_errors(&module).is_empty(),
         "fixture must genuinely poison the argument, else the carve-out is untested"
     );
     let unknown: Vec<&Diagnostic> = module
@@ -4174,16 +4221,22 @@ fn unknown_named_argument_still_fires_when_its_value_is_poisoned() {
          not suppress it (nor duplicate it), got all diagnostics: {:#?}",
         module.diagnostics
     );
-    assert_eq!(unknown[0].severity, Severity::Warning);
+    assert_eq!(unknown[0].severity, Severity::Error);
 }
 
-/// (h) BEHAVIOUR PRESERVATION. ε adds diagnostics only: every ε fixture whose
-/// faults are purely ctor-conformance ones still compiles to a module with NO
-/// errors, i.e. `reify check` keeps exit 0 until δ flips the knob. The poisoned
-/// fixture from (e) is deliberately excluded — its unresolved name is a genuine
-/// pre-existing Error unrelated to ε.
+/// (h) THE EXIT-CODE CONTRACT, stated once for the whole ε fixture set. δ
+/// (#5306) flipped `CTOR_FIELD_CONFORMANCE_SEVERITY` to `Severity::Error`, so
+/// every ε fixture whose faults are purely ctor-conformance ones now compiles to
+/// a module carrying at least one Error — `reify check` exits 1
+/// (`crates/reify-cli/src/main.rs`, `.any(|d| d.severity == Severity::Error)`).
+/// This is the inverse of the assertion ε shipped, and it is the reason δ is a
+/// behaviour change rather than a wording one.
+///
+/// The poisoned fixture from (e) is deliberately excluded: its unresolved name is
+/// a genuine pre-existing Error unrelated to ε, so it would satisfy this test
+/// without the flip.
 #[test]
-fn epsilon_fixtures_remain_error_free_and_exit_code_neutral() {
+fn epsilon_fixtures_reject_at_error_severity_and_move_the_exit_code() {
     let cases: &[(&str, &str)] = &[
         ("unknown field", SRC_UNKNOWN_FIELD),
         ("unknown field x2", SRC_UNKNOWN_FIELD_TWICE),
@@ -4201,22 +4254,27 @@ fn epsilon_fixtures_remain_error_free_and_exit_code_neutral() {
     let mut offenders: Vec<String> = Vec::new();
     for &(label, source) in cases {
         let module = compile_source_with_stdlib(source);
-        let errors = errors_only(&module);
-        if !errors.is_empty() {
-            offenders.push(format!("  [{label}] errors: {errors:#?}"));
+        if ctor_conformance_errors(&module).is_empty() {
+            offenders.push(format!(
+                "  [{label}] all diagnostics: {:#?}",
+                module.diagnostics
+            ));
         }
-        // Non-vacuity: each of these fixtures must actually be reaching a ctor
-        // emit site, else "no errors" would pass for the wrong reason.
+        // Non-vacuity in the OTHER direction from ε's: a fixture that emitted a
+        // ctor-conformance diagnostic at some non-Error severity would be caught
+        // above, but one that emitted a non-ctor-conformance Error would sneak
+        // past a bare `errors_only` check. Assert the fault is reached at all.
         assert!(
             !ctor_conformance_diags(&module).is_empty(),
             "[{label}] fixture must still trip a ctor-conformance diagnostic — a silent \
-             fixture would make the error-free assertion vacuous"
+             fixture would make the exit-code assertion vacuous"
         );
     }
     assert!(
         offenders.is_empty(),
-        "ε is a WARNING stage: these fixtures must still compile error-free (exit 0), \
-         and only δ's one-const flip may turn them into errors:\n{}",
+        "δ is the ERROR stage: every ε fixture must now carry at least one \
+         Error-severity ctor-conformance diagnostic, so `reify check` exits 1. These \
+         did not:\n{}",
         offenders.join("\n")
     );
 }
@@ -4960,4 +5018,229 @@ fn a_repeated_known_named_argument_is_a_duplicate_not_an_unknown_field() {
         "the duplicate guard is a hard Error and is NOT behind the ctor-conformance \
          knob — it must not move with the δ flip"
     );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// δ (task 5306) — THE PROMOTED CONTRACT, stated once over PRD §7 rows 1/2/3/11/12.
+//
+// The individual probes above each pin one row's code, severity and wording. This
+// one asserts the five headline rows TOGETHER, on the two axes the CLI probe-set
+// in `tests/prd-gate/struct-ctor-conformance-probe-set.json` cannot reach:
+//
+//   * C2(iv) severity invariance across BOTH emit families in one table — α's
+//     type surface (`conformance/mod.rs`) and ε's structural codes (`expr.rs`)
+//     read the same `pub(crate)` const, and a table that mixed them is what makes
+//     a half-flip visible;
+//   * C3's SPAN. `reify check` renders `{severity}: {message}` and never prints
+//     the DiagnosticLabel, so a probe-set row can assert the field name, the
+//     declared type and the found type — those live in the message — but cannot
+//     see where the label points. That axis only exists here. MEASURED, and
+//     deliberately not uniform: α's three rows anchor at the whole ctor CALL
+//     (the finest span the type walker holds), ε's two at the offending
+//     ARGUMENT. `LabelAnchor` names the split so a reader does not read it as
+//     drift.
+//
+// Deliberately one table rather than five more probes: the rows differ only in
+// their data, and a fifth hand-written copy of the same four assertions is what
+// lets one row's expectations drift from the others'.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const SRC_DELTA_ROW1_POSE_AT_SELECTOR: &str = r#"module test.delta_row1
+structure def PressureLoad { param face : Option<FaceSelector> }
+structure def Root {
+    param pose : Frame
+    let pl = PressureLoad(face: pose)
+}
+"#;
+
+const SRC_DELTA_ROW2_INT_AT_STRING: &str = r#"module test.delta_row2
+structure def Widget { param label : String }
+structure def Root {
+    let w = Widget(label: 42)
+}
+"#;
+
+const SRC_DELTA_ROW3_STRING_AT_SELECTOR: &str = r#"module test.delta_row3
+structure def PressureLoad { param face : Option<FaceSelector> }
+structure def Root {
+    let pl = PressureLoad(face: "x_max")
+}
+"#;
+
+const SRC_DELTA_ROW11_UNKNOWN_FIELD: &str = r#"module test.delta_row11
+structure def Widget { param label : String }
+structure def Root {
+    let w = Widget(labl: "x")
+}
+"#;
+
+const SRC_DELTA_ROW12_OVER_ARITY: &str = r#"module test.delta_row12
+structure def Widget { param label : String }
+structure def Root {
+    let w = Widget("a", "b")
+}
+"#;
+
+/// One PRD §7 row: its source, its expected code, the message fragments C3
+/// requires, and the source text its label span must land inside.
+struct DeltaRow {
+    /// PRD §7 row number, for the failure message.
+    row: u8,
+    source: &'static str,
+    code: DiagnosticCode,
+    /// Fragments that must ALL appear in the message. For the α rows these are
+    /// C3's three: the field name, the declared param type INCLUDING its wrapper,
+    /// and the found type. For the ε rows they are the mnemonic prefix plus the
+    /// names the structural diagnostic must carry.
+    message_contains: &'static [&'static str],
+    /// Which family this row's emitter belongs to, and therefore how fine its
+    /// label span is.
+    anchor: LabelAnchor,
+    /// The EXACT source text the label span must slice to. Asserted by equality,
+    /// not containment: a span that merely overlapped the right text — or the
+    /// representative whole-declaration span α's step-10 replaced — would satisfy
+    /// a `contains` check and pin nothing.
+    span_text: &'static str,
+}
+
+/// Where a ctor-conformance label anchors. The two emit families differ, and the
+/// difference is deliberate rather than an inconsistency to be tidied away.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LabelAnchor {
+    /// α's type surface (task 5302 step-10): the whole ctor CALL. That is the
+    /// finest span the type walker holds — it is handed the call site, not the
+    /// argument node — and it already replaced a coarser representative span.
+    CtorCall,
+    /// ε's structural codes (task 5303): the offending ARGUMENT itself, one level
+    /// finer. For an unknown field name or a surplus positional the actionable
+    /// token IS the argument, and `expr.rs`'s binder has it in hand.
+    OffendingArgument,
+}
+
+#[test]
+fn delta_promotes_the_five_headline_rows_with_code_severity_content_and_span() {
+    let rows: &[DeltaRow] = &[
+        DeltaRow {
+            row: 1,
+            source: SRC_DELTA_ROW1_POSE_AT_SELECTOR,
+            code: DiagnosticCode::ArgTypeMismatch,
+            // `FaceSelector`, not `Option<FaceSelector>`: α's Option-unwrap arm
+            // reaches the selector LEAF and the message names the type actually
+            // being conformed against. C3 asks for the declared type; at a
+            // wrapper param that is the unwrapped element type.
+            message_contains: &[
+                "face",
+                "FaceSelector",
+                "Frame3",
+                "a coordinate pose is not a region target",
+            ],
+            anchor: LabelAnchor::CtorCall,
+            span_text: "PressureLoad(face: pose)",
+        },
+        DeltaRow {
+            row: 2,
+            source: SRC_DELTA_ROW2_INT_AT_STRING,
+            code: DiagnosticCode::ArgTypeMismatch,
+            message_contains: &["label", "String", "Int"],
+            anchor: LabelAnchor::CtorCall,
+            span_text: "Widget(label: 42)",
+        },
+        DeltaRow {
+            row: 3,
+            source: SRC_DELTA_ROW3_STRING_AT_SELECTOR,
+            code: DiagnosticCode::ArgTypeMismatch,
+            message_contains: &["face", "FaceSelector", "String"],
+            anchor: LabelAnchor::CtorCall,
+            span_text: "PressureLoad(face: \"x_max\")",
+        },
+        DeltaRow {
+            row: 11,
+            source: SRC_DELTA_ROW11_UNKNOWN_FIELD,
+            code: DiagnosticCode::CtorUnknownField,
+            message_contains: &["E_CTOR_UNKNOWN_FIELD: ", "labl", "Widget"],
+            anchor: LabelAnchor::OffendingArgument,
+            span_text: "\"x\"",
+        },
+        DeltaRow {
+            row: 12,
+            source: SRC_DELTA_ROW12_OVER_ARITY,
+            code: DiagnosticCode::CtorArity,
+            message_contains: &["E_CTOR_ARITY: ", "Widget", "at most 1 argument", "got 2"],
+            anchor: LabelAnchor::OffendingArgument,
+            span_text: "\"b\"",
+        },
+    ];
+
+    for r in rows {
+        let module = compile_source_with_stdlib(r.source);
+        let diags = ctor_conformance_diags(&module);
+        assert_eq!(
+            diags.len(),
+            1,
+            "§7 row {}: expected exactly one ctor-conformance diagnostic, got: {diags:#?}",
+            r.row
+        );
+        let d = diags[0];
+
+        assert_eq!(
+            d.severity,
+            Severity::Error,
+            "§7 row {}: δ (#5306) promoted the whole ctor field-conformance surface to \
+             Error — a site still at Warning means CTOR_FIELD_CONFORMANCE_SEVERITY was \
+             half-flipped (C2(iv)). Got: {d:?}",
+            r.row
+        );
+        assert_eq!(
+            d.code,
+            Some(r.code),
+            "§7 row {}: δ moves severity only; the code is α's/ε's and must not change. \
+             Got: {d:?}",
+            r.row
+        );
+        for frag in r.message_contains {
+            assert!(
+                d.message.contains(frag),
+                "§7 row {}: C3 requires {frag:?} in the MESSAGE — `reify check` prints \
+                 neither the code nor the label, so anything not in the message is \
+                 invisible at the CLI. Got: {:?}",
+                r.row,
+                d.message
+            );
+        }
+
+        assert!(
+            !d.labels.is_empty(),
+            "§7 row {}: C3 requires a label span, got: {d:?}",
+            r.row
+        );
+        let span: SourceSpan = d.labels[0].span;
+        assert!(
+            !span.is_empty(),
+            "§7 row {}: label span must be NON-empty, got: {span:?}",
+            r.row
+        );
+        let sliced = &r.source[span.start as usize..span.end as usize];
+        assert_eq!(
+            sliced, r.span_text,
+            "§7 row {}: C3 pins WHERE the label points, and `reify check` never prints \
+             it — this is the axis the CLI probe-set cannot cover. Expected the span to \
+             slice to {:?}, got {sliced:?}",
+            r.row, r.span_text
+        );
+        let names_the_call = sliced.contains('(');
+        assert_eq!(
+            names_the_call,
+            r.anchor == LabelAnchor::CtorCall,
+            "§7 row {}: {:?} rows must{} span the ctor call. α's type walker holds only \
+             the call site; ε's binder holds the argument node and must stay one level \
+             finer. Got slice {sliced:?}",
+            r.row,
+            r.anchor,
+            if r.anchor == LabelAnchor::CtorCall {
+                ""
+            } else {
+                " NOT"
+            }
+        );
+    }
 }
