@@ -190,7 +190,7 @@ MAIN_REF="main"
 BRANCH_PREFIX="task/"
 FORMAT="table"
 
-# TASK_MODE is tracked separately from TASK_ID because `--task ''` must be a
+# TASK_MODE is a flag of its own, distinct from TASK_ID, because `--task ''` must be a
 # usage error, not an absent mode: testing -n "$TASK_ID" alone would report
 # "neither --task nor --audit" and hide the real fault.
 while [ $# -gt 0 ]; do
