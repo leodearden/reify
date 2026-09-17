@@ -936,6 +936,73 @@ mod tests {
         );
     }
 
+    /// Step-24 (task #5385): the single-valued `realization_by_cell` resolver
+    /// must answer "no backing realization" for a cell backed by MORE THAN ONE
+    /// realization, rather than silently naming whichever link the iteration
+    /// order happened to yield last.
+    ///
+    /// The N:1 fan-in is real from step-26 onward: a geometry-list let emits one
+    /// sibling realization per element (`holes#0`, `holes#1`, …), and all of
+    /// them back the single `List<Geometry>` value cell `holes`. This resolver
+    /// backs edges #1 (selector/query cell → realization) and #2 (constraint →
+    /// realization), where an arbitrary single edge is strictly worse than a
+    /// missing one — it would make ONE element stand in for the whole list.
+    ///
+    /// The guard must not over-prune: an unambiguous 1:1 cell in the SAME graph
+    /// still resolves to its one realization.
+    #[test]
+    fn realization_by_cell_drops_a_cell_backed_by_more_than_one_realization() {
+        use crate::graph::{EvaluationGraph, RealizationNodeData};
+        use reify_core::{ContentHash, RealizationNodeId};
+        use reify_ir::ReprKind;
+
+        let mut graph = EvaluationGraph::default();
+
+        let ambiguous = ValueCellId::new("S", "holes");
+        let unambiguous = ValueCellId::new("S", "merged");
+
+        // Two element realizations backing the SAME list cell (the step-26 fan-in).
+        let r_elem0 = RealizationNodeId::new("S", 0);
+        let r_elem1 = RealizationNodeId::new("S", 1);
+        // One ordinary realization with a 1:1 cell — the over-pruning control.
+        let r_solo = RealizationNodeId::new("S", 2);
+
+        for (rid, cell) in [
+            (&r_elem0, &ambiguous),
+            (&r_elem1, &ambiguous),
+            (&r_solo, &unambiguous),
+        ] {
+            graph.realizations.insert(
+                rid.clone(),
+                RealizationNodeData {
+                    produced_kernel: None,
+                    id: rid.clone(),
+                    geometry_cell: Some(cell.clone()),
+                    operations: vec![],
+                    content_hash: ContentHash::of_str(&format!("{}", rid)),
+                    produced_repr: ReprKind::BRep,
+                    input_cone_hash: None,
+                },
+            );
+        }
+
+        let by_cell = realization_by_cell(&graph);
+
+        assert_eq!(
+            by_cell.get(&ambiguous),
+            None,
+            "a cell backed by two realizations must resolve to NO realization \
+             (conservative miss), not to an arbitrary one of them; got {:?}",
+            by_cell.get(&ambiguous)
+        );
+        assert_eq!(
+            by_cell.get(&unambiguous),
+            Some(&r_solo),
+            "the guard must not over-prune: an unambiguous 1:1 cell in the same \
+             graph must still resolve to its one realization"
+        );
+    }
+
     /// P3.3 step-3: Edge #6 — VC → ComputeNode reverse-index registration.
     ///
     /// Build an EvaluationGraph with one ValueCell `load` and one
