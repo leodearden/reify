@@ -704,11 +704,22 @@ fn build_circular(source: &str) -> (Vec<reify_core::Diagnostic>, Vec<GeometryOp>
 /// REJECTED and the op DROPPED, never silently built with a 10 SI-metre plane
 /// offset.
 ///
-/// The assertion is deliberately specific: the diagnostic must be the shared
-/// `ArgRejection` one (`DiagnosticCode::DimensionedArgRejected`, worded
-/// "argument expects Length") and must name the ORIGIN component `ox` — the same
-/// name the scalar form has used since task 5214, so the two forms of the same
-/// author mistake now read identically.
+/// The VERDICT is unchanged by units-length ε (task 5746, R11): the op is still
+/// dropped and a `DimensionedArgRejected` `Severity::Error` is still emitted.
+/// The SPEAKER moved. `plane_yz(10)` is now `Value::Undef` at the PRODUCER, so
+/// `decode_plane` takes its wrong-variant arm and pushes nothing, and the
+/// surviving rejection is `make_plane`'s. Its argument name moved with it, from
+/// the synthesized origin component `ox` to `offset` — the argument the author
+/// actually wrote, and the vocabulary `make_plane` itself uses. MEASURED on this
+/// source after ε:
+///     plane_yz: offset argument expects Length, got Int; pass a dimensioned
+///     length such as `5mm`
+///
+/// δ's consumer-side `ox`/`oy`/`oz` gate is NOT retired by that move: it stays
+/// reachable through the five construction-datum producers ε deliberately leaves
+/// dimension-polymorphic (`plane_through`, `midplane`, the arity-2 `offset`,
+/// `axis_through`, `frame_at`), and its axis-side twin below still reads `ox`
+/// for its own reason.
 #[test]
 fn mirror_value_form_bare_plane_origin_drops_op_with_error() {
     let (diagnostics, mirror_ops) = build_mirror(
@@ -738,9 +749,9 @@ fn mirror_value_form_bare_plane_origin_drops_op_with_error() {
         rejection.message
     );
     assert!(
-        rejection.message.contains("ox"),
-        "the rejection must name the ORIGIN component `ox` — the same name the \
-         scalar form uses; got: {}",
+        rejection.message.contains("plane_yz: offset argument expects Length"),
+        "the rejection must be the PRODUCER's, naming the builtin and the `offset` \
+         argument the author wrote; got: {}",
         rejection.message
     );
     assert!(
