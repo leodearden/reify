@@ -16,13 +16,23 @@
 ///
 /// Replaces the former free-form `String` (PRD OQ#4 deferral resolved in task #4871):
 /// the engine consumer now branches on the reason, so a type-safe enum is warranted.
-/// `describe()` returns the **exact** strings that were previously inlined, so the
-/// user-facing diagnostic message is byte-identical before and after the migration.
+/// For the three variants #4871 migrated, `describe()` returns the **exact** strings
+/// that were previously inlined, so the user-facing diagnostic message is byte-identical
+/// before and after the migration.  Variants added later (see [`Self::EnumerationBudget`])
+/// carry wording of their own and make no such claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BestFoundReason {
     /// The derivative-free solver exhausted its iteration budget before the simplex
     /// converged.  This is the gate condition for `W_SOLVER_OPTIMALITY_UNPROVEN`.
     IterationLimit,
+    /// An exact solver stopped at a node/enumeration cap with part of the discrete
+    /// search space never visited, so the best candidate it saw may not be the global
+    /// optimum.  This too is a gate condition for `W_SOLVER_OPTIMALITY_UNPROVEN`
+    /// (task #6553; PRD `docs/prds/v0_6/discrete-cost-minimisation.md` §4.2).
+    ///
+    /// Distinct from [`Self::IterationLimit`] because the account differs, not just the
+    /// wording: nothing here is derivative-free, and nothing iterated to a limit.
+    EnumerationBudget,
     /// The solver converged within the iteration budget (no optimality proof, but not
     /// iteration-limited).  Does NOT trigger `W_SOLVER_OPTIMALITY_UNPROVEN`.
     ConvergedWithinBudget,
@@ -32,11 +42,15 @@ pub enum BestFoundReason {
 }
 
 impl BestFoundReason {
-    /// Returns the human-readable reason string (identical to the former inlined strings).
+    /// Returns the human-readable reason string.  For the three variants migrated by
+    /// #4871 these are identical to the strings formerly inlined at the diagnostic site.
     pub fn describe(&self) -> &'static str {
         match self {
             BestFoundReason::IterationLimit => {
                 "iteration limit reached; derivative-free solver cannot prove global optimality"
+            }
+            BestFoundReason::EnumerationBudget => {
+                "enumeration budget reached; the discrete search space was not exhausted, so global optimality is unproven"
             }
             BestFoundReason::ConvergedWithinBudget => {
                 "converged within iteration budget; derivative-free solver cannot prove global optimality"
