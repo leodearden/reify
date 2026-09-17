@@ -292,7 +292,7 @@ fn geometry_arg_indices(name: &str) -> &'static [usize] {
         | "circular_pattern" | "linear_pattern" | "mirror" | "arbitrary_pattern"
         | "linear_pattern_2d" | "extrude" | "extrude_symmetric" | "extrude_infinite"
         | "revolve" | "revolve_full" | "shell" | "shell_open" | "thicken" | "offset_solid"
-        | "offset_curve" | "draft" | "chamfer" | "chamfer_asymmetric" | "fillet" | "fillet_all"
+        | "offset_surface" | "offset_curve" | "draft" | "chamfer" | "chamfer_asymmetric" | "fillet" | "fillet_all"
         | "zone_slab" | "zone_cylinder" | "zone_annulus" | "zone_profile" | "isosurface" => &[0],
         "sweep" => &[0, 1],
         "sweep_guided" => &[0, 1, 2],
@@ -900,14 +900,189 @@ fn const_length_m(expr: &CompiledExpr) -> Option<f64> {
     }
 }
 
-/// Best-effort compile-time constraint check shared by `rounded_box` and
-/// `rounded_rect`: `corner_r > 0` and `2*corner_r < min(width, depth)`. Only
-/// fires when width/depth/corner_r all fold to constant literals
-/// (`const_length_m`); param-driven args cannot be checked statically and are
-/// silently skipped rather than false-flagged. Pushes a designer-readable
-/// `Diagnostic::error` naming the concrete offending SI values (metres) on
-/// violation. Returns `false` iff a diagnostic was pushed — callers should
-/// abort the arm (`return None`) in that case.
+/// Sink through which the geometry lowering emits **compiler-synthesized**
+/// `CompiledConstraint`s onto the enclosing entity's `TopologyTemplate`.
+///
+/// Some geometry-constructor preconditions (e.g. `rounded_box`/`rounded_rect`'s
+/// `2*corner_r < min(width, depth)`) are only statically decidable when every
+/// argument folds to a constant. When an argument is param-driven the check
+/// cannot be made at compile time, but it CAN be handed to the runtime checker
+/// and the solver as an ordinary constraint on the template — which is what
+/// this sink is for.
+///
+/// Mirrors the established compiler-synthesized-constraint idiom at
+/// `connect.rs`'s `connect_compat_*` and `traits.rs`'s guarded-group
+/// `emit_implies`: an id from `ConstraintNodeId::new(<scope name>, <index>)`,
+/// a `Some(label)`, and `domain`/`optimized_target`/`arg_bindings` left at
+/// their defaults, with the index bumped after each push. Sharing that shape
+/// means the synthesized constraint is indistinguishable from every other one
+/// downstream (collection, checking, solving, labelling).
+///
+/// Modelled on `entity.rs`'s `GeometryRealizationSink` "mutable output sinks"
+/// convention: the borrows are bundled into one struct rather than spread
+/// across parameters, so the recursive lowering threads one argument.
+pub(crate) struct GeometryConstraintSink<'a> {
+    /// Scope name for `ConstraintNodeId::new` — the enclosing entity's name.
+    entity_name: &'a str,
+    constraints: &'a mut Vec<CompiledConstraint>,
+    next_index: &'a mut u32,
+}
+
+impl<'a> GeometryConstraintSink<'a> {
+    pub(crate) fn new(
+        entity_name: &'a str,
+        constraints: &'a mut Vec<CompiledConstraint>,
+        next_index: &'a mut u32,
+    ) -> Self {
+        Self {
+            entity_name,
+            constraints,
+            next_index,
+        }
+    }
+
+    /// Reborrow for a shorter lifetime. The `&mut` fields are not `Copy`, so a
+    /// recursive call that takes `&mut GeometryConstraintSink<'_>` cannot move
+    /// `self`; this hands out a fresh sink borrowing from `*self` instead.
+    pub(crate) fn reborrow(&mut self) -> GeometryConstraintSink<'_> {
+        GeometryConstraintSink {
+            entity_name: self.entity_name,
+            constraints: self.constraints,
+            next_index: self.next_index,
+        }
+    }
+
+    /// Push one synthesized constraint. `label_for` receives the index the
+    /// constraint is being filed under (the same counter that feeds
+    /// `ConstraintNodeId::new`), so a caller can build a label that is unique
+    /// within the entity and stable for a given source without duplicating the
+    /// index bookkeeping.
+    ///
+    /// **Idempotent per (span, predicate).** The lowering re-inlines a geometry
+    /// let's initializer at EVERY reference of its name in geometry-argument
+    /// position (`compile_geometry_call_inner`, reached from
+    /// `resolve_boolean_arg`), so one source-level call re-runs its arm — and
+    /// would re-push a byte-identical constraint — once per reuse. Deduplicating
+    /// here rather than at any individual arm means `push` is the single
+    /// chokepoint every synthesized geometry constraint passes through, so a
+    /// future geometry-lowering arm inherits the fix instead of re-discovering
+    /// the duplication.
+    ///
+    /// The scan is over `self.constraints` — whichever vec this sink was handed
+    /// — so the EFFECTIVE key is `(the arm vec, span, content_hash)`. That is
+    /// the right key, not an accident of implementation: a guarded call's
+    /// predicate is filed into its own `CompiledGuardedGroup` arm (see
+    /// `emit_guarded_geometry_realizations`'s arm-routing contract), and the
+    /// same span and content under two different guards really are two
+    /// different constraints — each activates on a different condition, so
+    /// collapsing them would drop one arm's check.
+    ///
+    /// Both halves of the per-vec key are load-bearing, and each guards a
+    /// different failure:
+    ///
+    /// - **span** distinguishes two genuinely distinct source calls. Two
+    ///   `rounded_box` calls with character-for-character identical arguments
+    ///   produce structurally identical predicates — the SAME `content_hash` —
+    ///   so a content-only key would collapse them into one and silently drop a
+    ///   real check on the second call.
+    /// - **content_hash** keeps the key honest if a future change ever lets one
+    ///   span produce structurally different predicates.
+    ///
+    /// Deduplicating is the right shape rather than suppressing emission on the
+    /// re-inline path: a *guarded* geometry let emits no realization of its own
+    /// (entity.rs's third-pass `GuardedGroup` arm documents that as a separate,
+    /// unimplemented feature) while `collect_geometry_exprs` does recurse into
+    /// guarded groups when building the re-inline map — so for that shape the
+    /// re-inline is the ONLY emission path, and muting it would drop the
+    /// constraint entirely.
+    ///
+    /// On a skip `next_index` is NOT bumped, so indices stay contiguous and
+    /// labels stay stable for a given source.
+    ///
+    /// An `any` scan is enough: this is only reached on the synthesized-geometry
+    /// -constraint path, at a handful of constraints per entity.
+    pub(crate) fn push(
+        &mut self,
+        label_for: impl FnOnce(u32) -> String,
+        expr: CompiledExpr,
+        span: reify_core::SourceSpan,
+    ) {
+        if self
+            .constraints
+            .iter()
+            .any(|c| c.span == span && c.expr.content_hash == expr.content_hash)
+        {
+            return;
+        }
+        let idx = *self.next_index;
+        self.constraints.push(CompiledConstraint {
+            id: ConstraintNodeId::new(self.entity_name, idx),
+            label: Some(label_for(idx)),
+            expr,
+            span,
+            domain: None,
+            optimized_target: None,
+            arg_bindings: Vec::new(),
+        });
+        *self.next_index += 1;
+    }
+}
+
+/// Enforce `rounded_box`/`rounded_rect`'s shared corner-radius precondition —
+/// `corner_r > 0` and `2*corner_r < min(width, depth)` — by whichever of two
+/// paths the arguments allow.
+///
+/// **All three args fold to constants** (`const_length_m`): the check is made
+/// here and now. A violation pushes a designer-readable `Diagnostic::error`
+/// naming the concrete offending SI values (metres) and returns `false`, on
+/// which the caller aborts the arm (`return None`) so the bad geometry is
+/// never lowered at all.
+///
+/// **At least one arg is param-driven**: nothing is decidable at compile time,
+/// so instead of waving the call through (which left an oversized param radius
+/// to fail deep inside OCCT with an opaque kernel error), the same predicate is
+/// synthesized onto the enclosing template through `constraint_sink` and
+/// returns `true`. `Engine::check` evaluates it before `execute_realization_ops`
+/// runs, so the named violation precedes the kernel failure; and when
+/// `corner_r` reads an `auto` cell the solver picks it up too, so a
+/// solver-driven radius is genuinely constrained rather than merely reported.
+/// Both halves — the check verdict and the solve — are pinned end-to-end by
+/// `reify-eval/tests/harness_geometry/rounded_corner_runtime_constraint.rs`.
+///
+/// **Where the synthesized constraint lands** is not this function's choice —
+/// it pushes to whichever vec the caller's `constraint_sink` was built over. For
+/// a call inside a `where`/`else` group that is the group's own arm
+/// (`constraints` / `else_constraints`), NOT the entity's flat
+/// `TopologyTemplate::constraints`, so the predicate is only checked while its
+/// arm is live; see `emit_guarded_geometry_realizations` (entity.rs) for the
+/// routing contract and its consequences. The `auto` solver claim above is
+/// correspondingly narrower for a guarded call:
+/// `filter_constraints_reading_autos` reads only the flat vec, so a guard-only
+/// constraint is checked but not solver-bounded — a pre-existing property of
+/// every guarded constraint, noted in that same contract.
+///
+/// **Exception**: a `Type::Error` `corner_r` is left alone entirely — no
+/// diagnostic, no constraint. It only ever arrives on the param-driven path
+/// (`const_length_m` cannot fold a non-Scalar) and it always arrives with a
+/// root-cause error already on the list, so a predicate over poison would add
+/// only a redundant Indeterminate warning. This is the `is_error()`
+/// short-circuit `Type::Error`'s own doc asks every consumer site for, and it is
+/// deliberately narrower than "not a Scalar": a merely wrongly-typed radius
+/// (e.g. `Bool`) is reported by nothing else, so it keeps its constraint.
+///
+/// The two paths are deliberately exclusive. On the all-constant path the
+/// static check is strictly stronger — a `Violated` verdict does not abort the
+/// build, it only flips the CLI exit code — so also emitting a runtime
+/// constraint there would add nothing but noise to `reify check` output and an
+/// extra term in the solver's objective.
+///
+/// One source-level call yields exactly one constraint, but that is NOT because
+/// this function runs once per call — it runs again for every reuse of the
+/// enclosing geometry let, since `compile_geometry_call_inner` re-inlines a
+/// let's initializer at each reference of its name in geometry-argument
+/// position. What makes it one is `GeometryConstraintSink::push` being
+/// idempotent per `(span, predicate content_hash)`; see its doc for why the
+/// dedup lives there and why both halves of that key are required.
 fn validate_rounded_corner_constraint(
     name: &str,
     width: &CompiledExpr,
@@ -915,13 +1090,94 @@ fn validate_rounded_corner_constraint(
     corner_r: &CompiledExpr,
     span: reify_core::SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
+    constraint_sink: &mut GeometryConstraintSink<'_>,
 ) -> bool {
     let (Some(w), Some(d), Some(r)) = (
         const_length_m(width),
         const_length_m(depth),
         const_length_m(corner_r),
     ) else {
-        // At least one arg is param-driven (non-constant) — cannot check statically.
+        // At least one arg is param-driven (non-constant) — hand the predicate
+        // to the runtime checker and the solver instead of dropping it.
+        //
+        // ...unless `corner_r` is the `Type::Error` poison value, which is the
+        // short-circuit every consumer site owes it (see `Type::Error`'s doc).
+        // Compilation CONTINUES past a recorded type error, so this arm really
+        // is reachable: `rounded_rect(40mm, 30mm, nonexistent)` compiles the
+        // argument to `Type::Error` and lands here with "unresolved name"
+        // already on the diagnostic list. A predicate built over poison
+        // evaluates to `Undef`, so it would stack an Indeterminate-constraint
+        // warning on top of the real error — noise in `reify check` exactly when
+        // its output is least readable, saying nothing the root-cause error
+        // does not already say.
+        if corner_r.result_type.is_error() {
+            return true;
+        }
+        // Deliberately narrow: any OTHER non-Scalar type still gets its
+        // constraint. A well-formed but wrongly-typed radius — `param corner_r:
+        // Bool = true` — is reported by NOTHING today (it compiles clean, no
+        // error and no warning), so the Indeterminate verdict this predicate
+        // yields is the designer's only signal naming the constructor and the
+        // argument before the geometry fails opaquely inside the kernel.
+        // Skipping it there would restore precisely the silent skip #5665
+        // exists to remove.
+        //
+        // The zero is dimension-matched to `corner_r` so the comparison is
+        // dimensionally sound; a non-Scalar has no dimension to match, so it
+        // falls back to a plain dimensionless zero rather than fabricating one.
+        let zero = match &corner_r.result_type {
+            reify_core::Type::Scalar { dimension } => CompiledExpr::literal(
+                Value::Scalar {
+                    si_value: 0.0,
+                    dimension: *dimension,
+                },
+                corner_r.result_type.clone(),
+            ),
+            _ => CompiledExpr::literal(Value::Real(0.0), reify_core::Type::dimensionless_scalar()),
+        };
+        // two_r = corner_r * 2 — the SAME idiom `rounded_corner_dims` uses to
+        // build the `width - 2*corner_r` / `depth - 2*corner_r` body lengths
+        // below, so the bound is expressed over exactly the quantity the
+        // lowering subtracts and the two cannot drift apart.
+        let two_r = CompiledExpr::binop(
+            BinOp::Mul,
+            corner_r.clone(),
+            CompiledExpr::literal(Value::Real(2.0), reify_core::Type::dimensionless_scalar()),
+            corner_r.result_type.clone(),
+        );
+
+        // `And(Lt(2r, w), Lt(2r, d))` rather than `Lt(2r, min(w, d))`: `min` is
+        // a `std::min` math builtin whose evaluator returns `Undef` when the
+        // two Scalar operands' dimensions differ, which would silently downgrade
+        // the whole constraint to Indeterminate (a warning) exactly when width
+        // and depth are mis-dimensioned. The conjunction has no such failure
+        // mode, and it is strictly better for the solver: `And` sub-violations
+        // are SUMMED, so both bounds contribute gradient simultaneously, whereas
+        // the `min` form exposes only the currently-active one.
+        let fits = CompiledExpr::binop(
+            BinOp::And,
+            CompiledExpr::binop(BinOp::Lt, two_r.clone(), width.clone(), Type::Bool),
+            CompiledExpr::binop(BinOp::Lt, two_r, depth.clone(), Type::Bool),
+            Type::Bool,
+        );
+        let predicate = CompiledExpr::binop(
+            BinOp::And,
+            CompiledExpr::binop(BinOp::Gt, corner_r.clone(), zero, Type::Bool),
+            fits,
+            Type::Bool,
+        );
+        // The label names the constructor AND carries the sink's index, which
+        // is the same counter that feeds `ConstraintNodeId::new` — so labels are
+        // unique within the entity and stable for a given source. Both halves
+        // matter because the label is the only designer-visible text on a
+        // violation (see this function's doc and `Engine::labeled_diagnostics`):
+        // without the name it says nothing about which constructor failed,
+        // without the index it cannot distinguish two calls in one entity.
+        constraint_sink.push(
+            |idx| format!("{name}_corner_r_valid_{idx}"),
+            predicate,
+            span,
+        );
         return true;
     };
 
@@ -1102,6 +1358,7 @@ pub(crate) fn compile_geometry_call(
     step_offset: usize,
     geometry_lets: &HashMap<&str, &reify_ast::Expr>,
     visiting: &mut HashSet<String>,
+    constraint_sink: &mut GeometryConstraintSink<'_>,
 ) -> Option<Vec<CompiledGeometryOp>> {
     // Bound compiler expression-recursion depth (task #5337) — the SAME depth
     // cap and on-demand stack growth used by compile_expr_guarded_with_expected,
@@ -1123,6 +1380,7 @@ pub(crate) fn compile_geometry_call(
                 step_offset,
                 geometry_lets,
                 visiting,
+                constraint_sink,
             )
         },
     )
@@ -1144,6 +1402,7 @@ fn compile_geometry_call_inner(
     step_offset: usize,
     geometry_lets: &HashMap<&str, &reify_ast::Expr>,
     visiting: &mut HashSet<String>,
+    constraint_sink: &mut GeometryConstraintSink<'_>,
 ) -> Option<Vec<CompiledGeometryOp>> {
     // Resolve let-bound geometry variable references: when the expression is an
     // Ident that names a geometry let, recursively compile the initializer.
@@ -1167,6 +1426,7 @@ fn compile_geometry_call_inner(
                 step_offset,
                 geometry_lets,
                 visiting,
+                &mut constraint_sink.reborrow(),
             );
             visiting.remove(name.as_str());
             return result;
@@ -1196,6 +1456,7 @@ fn compile_geometry_call_inner(
             step_offset,
             geometry_lets,
             visiting,
+            constraint_sink,
         );
     }
 
@@ -1279,6 +1540,7 @@ fn compile_geometry_call_inner(
             step_offset,
             geometry_lets,
             visiting,
+            constraint_sink,
         );
     }
 
@@ -1302,6 +1564,7 @@ fn compile_geometry_call_inner(
                 step_offset,
                 geometry_lets,
                 visiting,
+                constraint_sink,
             );
         }
         _ => {}
@@ -1393,6 +1656,7 @@ fn compile_geometry_call_inner(
                     current_offset,
                     geometry_lets,
                     visiting,
+                    &mut constraint_sink.reborrow(),
                 );
                 if let Some(ops) = inner_ops {
                     let result_step = current_offset + ops.len() - 1;
@@ -2458,6 +2722,7 @@ fn compile_geometry_call_inner(
                 &corner_r,
                 expr.span,
                 diagnostics,
+                constraint_sink,
             ) {
                 return None;
             }
@@ -2555,6 +2820,7 @@ fn compile_geometry_call_inner(
                 &corner_r,
                 expr.span,
                 diagnostics,
+                constraint_sink,
             ) {
                 return None;
             }
@@ -2619,7 +2885,7 @@ fn compile_geometry_call_inner(
         // --- Modify extensions ---
         // These modifiers take a geometry target as their first argument (correctly
         // resolved from geom_refs via geom_ref(0)) and are registered in geometry_arg_indices().
-        "shell" | "shell_open" | "thicken" | "offset_solid" | "offset_curve" | "draft"
+        "shell" | "shell_open" | "thicken" | "offset_solid" | "offset_surface" | "offset_curve" | "draft"
         | "chamfer" | "chamfer_asymmetric" | "fillet" | "fillet_all" | "zone_slab" => {
             compile_modify_op(
                 name,
@@ -2774,6 +3040,51 @@ pub(crate) fn unsupported_geometry_fn_message(name: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Test-only shim preserving [`compile_geometry_call`]'s pre-constraint-sink
+    /// 8-argument signature: allocates a throwaway constraint sink and discards
+    /// whatever the lowering synthesizes into it.
+    ///
+    /// Deliberately `#[cfg(test)]` rather than a production wrapper. A
+    /// production-visible "no constraints" overload would be a silent footgun:
+    /// a future caller that reached for it would drop every synthesized
+    /// constraint with no signal. Confining the discard to the test build keeps
+    /// exactly one way to call the lowering in production code, and it always
+    /// carries a real sink.
+    ///
+    /// The unit tests in this module all assert on the returned
+    /// `Vec<CompiledGeometryOp>`; constraint emission is covered at the
+    /// integration level (`tests/rounded_primitives_tests.rs`, which compiles
+    /// whole sources and inspects `template.constraints`).
+    #[allow(clippy::too_many_arguments)]
+    fn compile_geometry_call_no_constraints(
+        expr: &reify_ast::Expr,
+        scope: &CompilationScope,
+        enum_defs: &[reify_ir::EnumDef],
+        functions: &[CompiledFunction],
+        diagnostics: &mut Vec<Diagnostic>,
+        step_offset: usize,
+        geometry_lets: &HashMap<&str, &reify_ast::Expr>,
+        visiting: &mut HashSet<String>,
+    ) -> Option<Vec<CompiledGeometryOp>> {
+        let mut discarded_constraints: Vec<CompiledConstraint> = Vec::new();
+        let mut discarded_index: u32 = 0;
+        compile_geometry_call(
+            expr,
+            scope,
+            enum_defs,
+            functions,
+            diagnostics,
+            step_offset,
+            geometry_lets,
+            visiting,
+            &mut GeometryConstraintSink::new(
+                "__test__",
+                &mut discarded_constraints,
+                &mut discarded_index,
+            ),
+        )
+    }
+
     /// Builder-routed composite-lowering names: these have explicit arms in
     /// `compile_geometry_call` that lower to multi-op sequences (Thicken/Pipe +
     /// Boolean), but intentionally have NO bare-variant descriptor row in
@@ -2808,7 +3119,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        compile_geometry_call(
+        compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -3718,7 +4029,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -3778,7 +4089,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -3868,7 +4179,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -3962,7 +4273,7 @@ mod tests {
         // (proves the cap only fires past MAX, not on ordinary input).
         {
             let mut diagnostics: Vec<Diagnostic> = vec![];
-            let result = compile_geometry_call(
+            let result = compile_geometry_call_no_constraints(
                 &box_expr,
                 &scope,
                 &enum_defs,
@@ -3991,7 +4302,7 @@ mod tests {
             .map(|_| RecursionDepthGuard::enter())
             .collect();
         let mut diagnostics: Vec<Diagnostic> = vec![];
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &box_expr,
             &scope,
             &enum_defs,
@@ -4018,7 +4329,7 @@ mod tests {
         // not permanently poisoned by a leaked count.
         drop(guards);
         let mut diagnostics: Vec<Diagnostic> = vec![];
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &box_expr,
             &scope,
             &enum_defs,
@@ -4101,7 +4412,7 @@ mod tests {
 
                 let scope = CompilationScope::new("test");
                 let mut diags: Vec<Diagnostic> = vec![];
-                let result = compile_geometry_call(
+                let result = compile_geometry_call_no_constraints(
                     &nested,
                     &scope,
                     &[],
@@ -4751,7 +5062,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &cond_expr,
             &scope,
             &enum_defs,
@@ -4927,7 +5238,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &match_expr,
             &scope,
             &enum_defs,
@@ -5635,7 +5946,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &cond_expr,
             &scope,
             &enum_defs,
@@ -5687,7 +5998,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -5734,7 +6045,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -5771,7 +6082,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -5818,7 +6129,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -5856,7 +6167,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -5903,7 +6214,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -5941,7 +6252,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -5981,7 +6292,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -6019,7 +6330,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -6067,7 +6378,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -6101,7 +6412,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -6139,7 +6450,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -6186,7 +6497,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -6225,7 +6536,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -6280,7 +6591,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -6331,7 +6642,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -6378,7 +6689,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,
@@ -6421,7 +6732,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
 
-        let result = compile_geometry_call(
+        let result = compile_geometry_call_no_constraints(
             &expr,
             &scope,
             &enum_defs,

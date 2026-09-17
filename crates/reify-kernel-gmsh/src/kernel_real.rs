@@ -120,6 +120,26 @@ impl GmshKernel {
     /// `options`: user-tunable knobs (see [`MeshingOptions`](crate::MeshingOptions)).
     /// `element_order`: P1 (4-node) or P2 (10-node) tets.
     ///
+    /// # Global mesh-size clamp: leaves nothing
+    ///
+    /// Since task #6298 this function **leaves the
+    /// `Mesh.MeshSizeMin`/`Mesh.MeshSizeMax` pair at gmsh's documented
+    /// defaults on every exit path**, early `?`-returns included, via
+    /// [`crate::mesh_size_clamp::MeshSizeClampReset`]. Gmsh's option table is
+    /// process-global and `gmshClear()` does not reset it, so without that
+    /// restore the resolved size written below would outlive the call and pin
+    /// every later *defaults-relying* gmsh call in the process to a size
+    /// nobody requested.
+    ///
+    /// The claim is enforced, not asserted:
+    /// `tests/mesh_to_volume_clamp_hermeticity.rs::mesh_to_volume_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call`
+    /// straddles one of these calls with two runs of the same
+    /// `mesh_plane_2d(_, _, None, …)` probe and requires them to be equal.
+    ///
+    /// This is the outbound direction only. Inbound, the clamp writes are
+    /// skipped when the resolved size is `0.0`, so such a call still inherits
+    /// whatever is in the table — task #6212 owns that hole.
+    ///
     /// # Errors
     ///
     /// Returns `GeometryError::OperationFailed` annotated with the gmsh
@@ -182,6 +202,40 @@ impl GmshKernel {
         // permanently disable meshing for the rest of the process lifetime.
         let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init::ensure_initialized();
+
+        // --- Mesh-size clamp: leave nothing behind (task #6298) ---
+        //
+        // Gmsh's option table is process-global and `ffi::clear()` clears
+        // MODELS, not OPTIONS, so the `Mesh.MeshSizeMin`/`MeshSizeMax` pair
+        // written below survives this call for the life of the process. Any
+        // later caller that deliberately writes no clamp of its own —
+        // `mesh_plane_2d(_, _, None, …)`, reached in production whenever
+        // `reify_solver_elastic::mesher`'s `auto_mesh_size_from_boundary`
+        // returns 0.0 and it falls through to "gmsh's own default" — would
+        // otherwise inherit it and be pinned to a size nobody requested.
+        //
+        // Armed HERE, not next to the two writes further down, so it covers
+        // every `?` early-return in the body as well as the success path.
+        //
+        // Drop order is what makes it correct: `_clamp_reset` is declared
+        // AFTER `_guard`, so it drops FIRST and its two FFI writes land while
+        // `GMSH_LOCK` is still held. The `PhantomData<&'g MutexGuard>` borrow
+        // makes that structural rather than a comment a refactor can violate —
+        // see `mesh_size_clamp`'s "Why it borrows the lock guard".
+        //
+        // The pair is restored to gmsh's DEFAULTS, not to the values found on
+        // entry: this crate's FFI surface has no `option_get_number`, so "as
+        // found" is not observable here, and defaults are what a
+        // defaults-relying caller expects anyway.
+        //
+        // This closes the OUTBOUND direction only. The remaining INBOUND hole
+        // — when `resolved_size <= 0.0` the two writes below are skipped and
+        // this call inherits whatever a sibling left in the table — is
+        // deliberately out of #6298's scope and owned by name by task #6212,
+        // which also owns the still-unshared `Mesh.MeshSizeFromPoints` /
+        // `MeshSizeFromCurvature` / `MeshSizeExtendFromBoundary` trio.
+        let _clamp_reset = crate::mesh_size_clamp::MeshSizeClampReset::armed(&_guard);
+
         ffi::clear()?;
         // Silence gmsh's stdout chatter — keeps test output readable.
         ffi::option_set_number("General.Terminal", 0.0)?;
@@ -573,10 +627,61 @@ impl GeometryKernel for GmshKernel {
     ///
     /// # Why `repair_cfg = None`
     ///
-    /// The attribution producer rejects vertex-merging repair (it would
-    /// invalidate per-node attribution). The caller (the engine realization
-    /// edge, step-18) is therefore responsible for supplying a watertight
-    /// surface and degrades to the plain producer on any error here.
+    /// `None` does not disable welding: since task ξ (#5116), `repair_cfg`
+    /// only *selects* the weld configuration (`None` means
+    /// `RepairConfig::default()`) rather than gating whether welding can
+    /// happen at all, as it did pre-ξ. With `None` the weld is on demand,
+    /// not unconditional — a cheap watertightness preflight on the raw
+    /// surface decides whether the O(n²) merge scan is worth paying for:
+    /// an already-watertight surface is used as-is, an unwelded one is
+    /// welded with the default config. This is safe for attribution
+    /// because attribution is derived from gmsh entity membership after
+    /// re-meshing, never from input-vertex identity, and the entity
+    /// anchors here are face-centroid positions that a weld never moves
+    /// (survivors keep their exact coordinates) — see the repair/welding
+    /// discussion on [`crate::mesh_surface_to_volume_with_attribution`]
+    /// for the full argument. A surface with a genuine open boundary
+    /// still fails the post-weld watertightness check and returns
+    /// `Err`, which the engine realization edge (task 4092 step-18,
+    /// `reify-eval`'s `engine_build.rs`) degrades to the plain
+    /// [`Self::mesh_surface_to_volume`] path (boundary `None`).
+    ///
+    /// # Why `deterministic: true`
+    ///
+    /// Load-bearing, not decorative — same register as `reify-eval`'s
+    /// `RealizedAdaptiveProblem::new`, which pins the adaptive-REFINE step for
+    /// the same reason; this closes the seed/refine asymmetry noted there.
+    ///
+    /// `reify-eval`'s `engine_build` stashes any produced `VolumeMesh` as the
+    /// next tick's `MorphSource::source_mesh`, but `decide_morph_or_remesh`
+    /// (`reify-eval`'s `morph_producer`) remeshes unless that source carries a
+    /// task-4092 `BoundaryAssociation` — which only this branch attaches, so in
+    /// practice this override is the morph arm's sole source supplier.
+    /// `reify-mesh-morph` judges the MORPHED mesh against ABSOLUTE quality
+    /// floors, so a source that varies run-to-run makes the morph-or-remesh
+    /// verdict depend on thread scheduling rather than on the geometry.
+    /// `deterministic: true` pins `General.NumThreads = 1` (the thread block in
+    /// [`crate::mesh_surface_to_volume_with_attribution`]) and makes the output
+    /// bit-reproducible.
+    ///
+    /// The pin is NOT morph-only in reach: `reify-eval` takes this branch for
+    /// EVERY boundary-demanded `VolumeMesh` realization — i.e. every FEA
+    /// face-selector-BC solve on real user geometry — always at the
+    /// auto-derived mesh size, since the trait method carries no
+    /// `MeshingOptions` for a caller to opt out with. MEASURED (task 7411)
+    /// rather than assumed away: single-threaded is FASTER at every scale
+    /// measured on this 32-core host (one unit-cube call, pinned vs.
+    /// `default()`) — 1.2k tets 0.016s vs 2.2–3.7s, 33k 0.26s vs 11–15s, 149k
+    /// 1.0s vs 10–21s, 491k 3.4–4.3s vs 25–27s — and `default()` drifts at
+    /// every one of those scales, while the pinned arm repeats its tet count
+    /// exactly. Pinned, this producer is bit-identical across 12 runs spanning
+    /// 2 processes; `NumThreads = 1` alone suffices, with no `Mesh.RandomSeed`
+    /// needed or set anywhere in `crates/`. Full log:
+    /// `docs/notes/adaptive-e2e-seed-mesh-drift-measurement.md`.
+    ///
+    /// Guarded by `tests/mesh_surface_to_volume_attributed.rs`'s
+    /// `attributed_producer_output_is_reproducible_across_repeated_calls`,
+    /// which is deterministically red without the pin.
     #[cfg(feature = "mesh-morph")]
     fn mesh_surface_to_volume_attributed(
         &self,
@@ -593,7 +698,7 @@ impl GeometryKernel for GmshKernel {
         };
         let report = crate::mesh_surface_to_volume_with_attribution(
             surface,
-            &crate::MeshingOptions::default(),
+            &crate::MeshingOptions { deterministic: true, ..Default::default() },
             element_order,
             None,
             None,

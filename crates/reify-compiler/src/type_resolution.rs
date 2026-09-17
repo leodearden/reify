@@ -124,6 +124,67 @@ impl Drop for LocalEnumShadowScope {
     }
 }
 
+thread_local! {
+    /// Alias names currently being re-resolved by the DEFERRED use-site arm of
+    /// [`resolve_type_expr_with_aliases_kinded`] (task 6259). Membership means
+    /// "this alias is already on the resolution stack" — re-entering it is a
+    /// cycle, and the arm bails out instead of recursing.
+    ///
+    /// Why this is mandatory rather than defensive: `type C1 = C2` /
+    /// `type C2 = C1` leaves BOTH registry entries with `resolved_type: None`
+    /// AND `type_expr: Some(..)`, which is exactly the shape the deferred arm
+    /// fires on — a naive recursion would ping-pong between them until the
+    /// compiler's stack overflows.
+    ///
+    /// Why a thread-local rather than a `depth` argument (the mechanism
+    /// `resolve_parameterized_alias` uses): the deferral recurses back through
+    /// `resolve_type_expr_with_aliases_kinded` itself — once per link of a
+    /// chain like `A2 = A1 = Zq` — so a counter would have to be threaded
+    /// through that function's signature. That is precisely the signature that
+    /// must stay fixed, for the reason already documented on
+    /// [`RESOLUTION_ENUM_NAMES`] above (~100 transitive call sites across the
+    /// crate). An in-progress set is also cycle-EXACT rather than
+    /// depth-approximate, so a genuine cycle keeps its existing
+    /// `circular type alias 'C1'` diagnostic instead of being replaced by a
+    /// spurious depth-exceeded error.
+    ///
+    /// Termination needs no depth cap: each nested level consumes a distinct
+    /// name from the finite alias registry, and this set rejects repeats.
+    ///
+    /// Type resolution is single-threaded per module and every entry is
+    /// removed by its [`AliasDeferScope`] guard's `Drop`.
+    static ALIAS_DEFER_IN_PROGRESS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+}
+
+/// RAII guard marking one alias name as in-progress in
+/// [`ALIAS_DEFER_IN_PROGRESS`] for its lifetime (task 6259).
+///
+/// [`AliasDeferScope::new`] returns `None` when `name` is ALREADY in progress —
+/// i.e. the deferred arm has looped back onto an alias it is still resolving.
+/// Callers must treat `None` as "cycle: do not recurse" and fall through to
+/// their existing unresolved handling, which preserves the pre-existing
+/// `circular type alias` + `unresolved type` output byte-for-byte.
+struct AliasDeferScope {
+    name: String,
+}
+
+impl AliasDeferScope {
+    fn new(name: &str) -> Option<Self> {
+        let inserted = ALIAS_DEFER_IN_PROGRESS.with(|s| s.borrow_mut().insert(name.to_string()));
+        inserted.then(|| AliasDeferScope {
+            name: name.to_string(),
+        })
+    }
+}
+
+impl Drop for AliasDeferScope {
+    fn drop(&mut self) {
+        ALIAS_DEFER_IN_PROGRESS.with(|s| {
+            s.borrow_mut().remove(&self.name);
+        });
+    }
+}
+
 /// Internal type alias entry — stored in the registry during compilation.
 ///
 /// For non-parameterized aliases, `resolved_type` holds the fully-resolved `Type`.
@@ -166,19 +227,32 @@ impl TypeAliasEntry {
     /// across the module boundary.  This enables `resolve_parameterized_alias` to
     /// instantiate them at use sites via `resolve_type_alias_expr_with_subst`.
     ///
-    /// Non-parametric aliases (`type_params.is_empty()`) never reach
-    /// `resolve_parameterized_alias`, so their body is not carried across — this
-    /// avoids a wasted deep-clone of every non-parametric alias body in the per-
-    /// compile prelude-seed loop.
+    /// An UNRESOLVED non-parametric alias (`resolved_type: None`) also carries
+    /// its body across (task 6259). Such an entry is an alias whose body names
+    /// an entity — `pub type Fq = SomeEnum` / `= SomeStructureDef` /
+    /// `= SomeOccurrenceDef` / `= SomeTrait`; the alias DFS runs before those
+    /// name sets exist, so it legitimately leaves the entry unresolved, and the
+    /// deferred use-site arm in `resolve_type_expr_with_aliases_kinded` reads
+    /// `type_expr` to finish the job. Dropping the body here would leave the
+    /// seeded entry with BOTH `resolved_type: None` and `type_expr: None`, so
+    /// that arm could not fire and the use site would report a hard
+    /// `unresolved type` for the rest of the module.
+    ///
+    /// The allocation optimisation is retained for the overwhelmingly common
+    /// case: an already-resolved non-parametric alias still skips the deep
+    /// clone, because it resolves via `resolved_type` and no path reads its
+    /// body. Only the parametric and the still-unresolved entries pay for it.
     pub(crate) fn from_compiled_for_prelude(cta: &CompiledTypeAlias) -> TypeAliasEntry {
         TypeAliasEntry {
             name: cta.name.clone(),
             resolved_type: cta.resolved_type.clone(),
             type_params: cta.type_params.clone(),
-            // Only clone the body for parametric aliases — non-parametric ones resolve
-            // via resolved_type and never read type_expr, so skipping the clone avoids
-            // an unnecessary allocation in the per-compile prelude-seed loop.
-            type_expr: if cta.type_params.is_empty() {
+            // Skip the clone ONLY for an already-resolved non-parametric alias:
+            // it resolves via `resolved_type` and nothing reads its body. A
+            // parametric alias needs the body for `resolve_parameterized_alias`;
+            // an unresolved non-parametric one needs it for the deferred
+            // use-site arm (task 6259).
+            type_expr: if cta.type_params.is_empty() && cta.resolved_type.is_some() {
                 None
             } else {
                 cta.type_expr.clone()
@@ -658,9 +732,17 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         // translation) — see crates/reify-core/src/ty.rs:305/462.  Surfacing the
         // bare "Transform3" name makes `pub type Pose3 = Transform3` and
         // `param : Transform3` annotations resolvable.  "Frame3" is intentionally
-        // absent (collides with the ports.ri structure def), as are "Orientation"
-        // and "AffineMap3" (out of scope for this task).
+        // absent (collides with the `structure Frame3` in ports.ri), as is
+        // "AffineMap3" (no surface demand).
         "Transform3" => Some(Type::Transform(3)),
+        // Orientation type-name surface (task 6384).  WHY: without an arm here
+        // `stdlib/joints.ri`'s `with orientation: Orientation` degrades to
+        // `Type::Error` and the joint DOF self-check is silently SKIPPED.
+        // Full rationale — defect chain, both spellings, the shadowing it
+        // accepts, the `W_RESERVED_TYPE_NAME` widening it causes — is stated
+        // ONCE in the "Orientation type-name resolution" header of this file's
+        // `mod tests`.  Keep it there.
+        "Orientation" | "Orientation3" => Some(Type::Orientation(3)),
         "Bool" => Some(Type::Bool),
         "Int" => Some(Type::Int),
         "Real" => Some(Type::dimensionless_scalar()),
@@ -721,6 +803,24 @@ pub(crate) fn resolve_type_with_params(
 /// that check into this body: it cannot see `type_args` here, and collapsing the
 /// applied `N<Args>` form to `Type::Enum` breaks the generic-enum `Applied` path
 /// (`tests::applied_form_is_not_shadowed`).
+///
+/// # Unresolved non-parametric aliases are deferred, not a dead end (task 6259)
+///
+/// The alias arm below matches only an entry that already carries a
+/// `resolved_type`. An alias whose body names an ENTITY (enum / structure def /
+/// occurrence def / trait) cannot be resolved by the alias DFS — that phase runs
+/// before those name sets exist — so it reaches this function with
+/// `resolved_type: None` and falls through to `None` here. That is NOT the end
+/// of the road: [`resolve_type_expr_with_aliases_kinded`] catches exactly that
+/// case afterwards and re-resolves the stored `type_expr` body at the use site,
+/// where all four namespaces are in scope. Callers that invoke this function
+/// DIRECTLY rather than through `_kinded` (e.g. `functions.rs`'s
+/// `resolve_field_type_name`) do not get that deferral.
+///
+/// Hygiene caveat: that deferral re-resolves the body in an EMPTY type/dim
+/// parameter scope, never the use site's. A type alias is always a top-level
+/// declaration, so a non-parametric one's body cannot name a type or dimension
+/// parameter; resolving it in the caller's scope would be capture.
 pub(crate) fn resolve_type_with_aliases(
     name: &str,
     type_param_names: &HashSet<String>,
@@ -1515,7 +1615,20 @@ pub(crate) fn resolve_type_alias_expr(
                 propagate_inner_diags_if_needed(inner_diag_policy, tmp_diags, diagnostics)?;
                 // Defer: silently return None — deferred to instantiation time
             }
-            // Simple name: check builtins, then alias registry
+            // Simple name: check builtins, then alias registry.
+            //
+            // The empty structure/trait sets are a deliberate DEFERRAL, not a
+            // limitation (task 6259). Structures, traits and enums are not
+            // compiled yet at this point in the phase order, so a body naming an
+            // entity — `type AL = SomeEnum` / `= SomeStructureDef` /
+            // `= SomeOccurrenceDef` / `= SomeTrait` — legitimately returns `None`
+            // here and the entry stays `resolved_type: None`. It is NOT dropped:
+            // the raw body is retained in `TypeAliasEntry::type_expr` (stored
+            // unconditionally by `resolve_alias_dfs` for every alias, parametric
+            // or not), and `resolve_type_expr_with_aliases_kinded` re-resolves it
+            // at each use site, where all four namespaces are finally in scope.
+            // So do NOT "fix" this by threading name sets in — that would require
+            // reordering `phase_aliases` against the names/enums phases.
             let empty = HashSet::new();
             let empty_structs = HashSet::new();
             let empty_traits = HashSet::new();
@@ -1955,6 +2068,91 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
         return Some(Type::Enum(name.to_string()));
     }
 
+    // Deferred non-parametric alias body (task 6259): `type AL = <Body>` whose
+    // body names an ENTITY — an enum, a structure def, an occurrence def or a
+    // trait — cannot be resolved by the alias DFS, which runs in
+    // `phase_aliases` BEFORE the structure/trait/enum name sets exist. The DFS
+    // therefore leaves such an entry with `resolved_type: None`, and
+    // `resolve_type_with_aliases` above skips it (its alias arm requires
+    // `resolved_type`), so the name used to fall all the way through to the
+    // caller's hard `unresolved type: AL`.
+    //
+    // Resolve it HERE instead, at the use site, where all four namespaces are
+    // finally in scope: `structure_names` / `trait_names` as arguments, enums
+    // via the ambient `RESOLUTION_ENUM_NAMES` fallback just above. This is the
+    // same deferral the parametric-alias path already performs — and it needs
+    // no producer-side change, because `resolve_alias_dfs` stores
+    // `type_expr: Some(..)` unconditionally for EVERY alias, parametric or not.
+    //
+    // Placement: after the ambient-enum fallback (so a same-named enum still
+    // wins, matching `resolve_type_with_aliases`'s builtin-before-alias
+    // precedence) and before the E_BARE_SCALAR guard (so `type S = Scalar<Q>`
+    // used as `S` resolves rather than tripping the bare-`Scalar` error).
+    //
+    // Three non-obvious requirements, each pinned by a regression lock in
+    // `tests/harness_langcore/type_alias_compile_tests.rs`:
+    //
+    //   * `AliasDeferScope` is MANDATORY, not defensive. `type C1 = C2` /
+    //     `type C2 = C1` leaves both entries in exactly this shape, so without
+    //     the cycle guard this recurses until the stack overflows. On `None`
+    //     (cycle) we fall through, preserving the existing `circular type
+    //     alias` + `unresolved type` output.
+    //
+    //   * Inner diagnostics go to a SCRATCH vector and are committed only on
+    //     success. The definition-site DFS already reported an unresolvable
+    //     body (e.g. `type Bad = Scalar<NotADim>`, pinned by
+    //     `alias_dfs_diagnostic_tests.rs`); re-resolving that body at every use
+    //     site with the caller's real vector would duplicate the error once per
+    //     use. Same commit-on-success / discard-on-failure discipline as
+    //     `resolve_type_alias_expr`'s `tmp_diags`.
+    //
+    //   * The recursion runs in an EMPTY type/dim parameter scope, NOT the
+    //     caller's. `reify-ast/src/decl.rs:36` documents `Declaration` as "A
+    //     top-level declaration in a module" and `Declaration::TypeAlias` is
+    //     one of its variants — there is no nested-scope alias form anywhere in
+    //     the AST, so a type alias is ALWAYS declared where no type or
+    //     dimension parameter is in scope. Combined with the
+    //     `type_params.is_empty()` guard below, the body of a NON-parametric
+    //     alias can never legitimately name one. An empty set is therefore not
+    //     merely the safer choice — it IS the alias's own declaration-site
+    //     scope, i.e. the correct one. Threading the use site's scope in is
+    //     capture, never a feature: it made `type AL = T` used inside
+    //     `structure def D<T>` lower to `Type::TypeParam("T")` with no
+    //     diagnostic at all, and made `type AD = Q` used in
+    //     `fn k<Q: Dimension>(..)` report `Q`, a name the alias's declaration
+    //     scope never had. Do not "restore" the caller's scope believing it
+    //     usefully threads context through.
+    if type_args.is_empty()
+        && let Some(alias_entry) = alias_registry.lookup(name)
+        && alias_entry.resolved_type.is_none()
+        && alias_entry.type_params.is_empty()
+        // Clone the body to release the `&alias_registry` borrow before recursing.
+        && let Some(body) = alias_entry.type_expr.clone()
+        && let Some(_guard) = AliasDeferScope::new(name)
+    {
+        let mut tmp_diags = Vec::new();
+        // The alias's own declaration scope — a top-level decl has neither a
+        // type nor a dimension parameter in scope (see the third bullet above).
+        let no_params: HashSet<String> = HashSet::new();
+        if let Some(ty) = resolve_type_expr_with_aliases_kinded(
+            &body,
+            &no_params,
+            &no_params,
+            alias_registry,
+            &mut tmp_diags,
+            structure_names,
+            trait_names,
+        ) {
+            // Success: surface any diagnostics the body legitimately produced
+            // on the way to resolving (the def-site DFS could not have emitted
+            // these — it failed before reaching them).
+            diagnostics.extend(tmp_diags);
+            return Some(ty);
+        }
+        // Failure: DISCARD tmp_diags. The definition site already reported this
+        // body; the caller's `unresolved type: AL` remains the use-site error.
+    }
+
     // E_BARE_SCALAR guard: bare `Scalar` (no type arg) is not a valid type.
     //
     // Fires ONLY when name == "Scalar" AND type_args is empty — which means:
@@ -2000,6 +2198,109 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
     }
 
     None
+}
+
+/// Walk a chain of UNRESOLVED, NON-PARAMETRIC type aliases to the name their
+/// bodies ultimately spell, e.g. `A2 = A1` / `A1 = Zq` yields `Some("Zq")`
+/// (task 6259).
+///
+/// # Why this exists — three positions that own a PRIVATE enum namespace
+///
+/// The deferred use-site arm in [`resolve_type_expr_with_aliases_kinded`]
+/// resolves an entity-bodied alias by RECURSING into that same function, so the
+/// body's ENUM-ness is only visible where the ambient [`RESOLUTION_ENUM_NAMES`]
+/// set is live. [`EnumNameScope`] installs it at exactly two places: struct-param
+/// resolution (`entity.rs`) and fn param/return resolution (`functions.rs`).
+///
+/// Three other declared-type positions install no such scope. Each instead owns
+/// a PRIVATE enum namespace, consulted by a post-hoc fallback AFTER
+/// `resolve_type_expr_with_aliases` has already returned `None`, and keyed on
+/// the OUTER name — which for `type AL = Zq` is `AL`, never `Zq`. The body's
+/// enum-ness is therefore structurally unreachable at:
+///
+///   * `compile_builder/enums_phase.rs` — enum variant payload field;
+///   * `traits.rs` — trait member `param`/`let` annotation;
+///   * `compile_builder/defs_phase.rs` — constraint-def param.
+///
+/// Each of those sites resolves its private namespace against
+/// `unresolved_alias_body_name(name, reg).unwrap_or_else(|| name.to_string())`,
+/// so the lookup sees `Zq` and matches the direct spelling exactly.
+///
+/// # Why NOT install `EnumNameScope` at those three sites instead
+///
+/// That uniform-looking alternative perturbs the DIRECT path, and at the
+/// constraint-def site the perturbation is a real semantic change outside this
+/// task's scope. Today `constraint def K { param g : Zq }` stores `ty: None`:
+/// `resolve_type_expr_with_aliases` returns `None` for a bare enum there and
+/// `defs_phase.rs`'s guard only SUPPRESSES the diagnostic via `resolve_enum_type`
+/// — it never populates `ty`. An ambient enum scope would make that same direct
+/// spelling start storing `Some(Type::Enum("Zq"))`, changing what
+/// `expand_constraint_inst` type-checks at every instantiation site.
+///
+/// This helper cannot do that: it is consulted ONLY on a branch the direct
+/// spelling never reaches (the `.or_else(..)` / `is_none()` fallback that runs
+/// after resolution has already failed), so the direct path is provably
+/// unperturbed. Do not "simplify" it back into an `EnumNameScope` install.
+///
+/// # Contract
+///
+/// * Walks only entries with `resolved_type.is_none() && type_params.is_empty()`
+///   — a RESOLVED alias needs no hop (`resolve_type_with_aliases` already
+///   handled it) and a PARAMETRIC one belongs to `resolve_parameterized_alias`.
+/// * Follows only a bare `Named { type_args: [] }` body. A non-bare body
+///   (`type A = Option<Zq>`, a `DimensionalOp`, …) yields `None`, leaving those
+///   cases at today's behaviour — which is also what the DIRECT spelling does
+///   there, so parity still holds (pinned by the direct-baseline assertions in
+///   `alias_to_entity_type_private_enum_namespaces`).
+/// * Carries a `visited` set so `type C1 = C2` / `type C2 = C1` terminates
+///   instead of looping. This is the SAME cycle hazard [`AliasDeferScope`]
+///   guards for the deferred arm, in a second place — mandatory, not defensive:
+///   a circular alias leaves BOTH entries in exactly the shape this walk
+///   follows. A local `HashSet` is used rather than the shared
+///   [`ALIAS_DEFER_IN_PROGRESS`] thread-local because this walk is a plain loop
+///   with no re-entrancy into the resolver, so it needs no ambient state and
+///   must not disturb an enclosing deferral in progress.
+/// * Returns the TERMINAL name — the first body name that is not itself an
+///   unresolved non-parametric alias. That name may still be unknown to the
+///   caller's namespace, in which case the caller's existing unresolved
+///   handling runs unchanged.
+pub(crate) fn unresolved_alias_body_name(name: &str, reg: &TypeAliasRegistry) -> Option<String> {
+    let mut visited: HashSet<&str> = HashSet::new();
+    let mut current = name;
+    let mut hopped: Option<&str> = None;
+
+    loop {
+        if !visited.insert(current) {
+            // Cycle (`type C1 = C2` / `type C2 = C1`): the chain has no terminal
+            // body name, so yield `None`. The caller then keeps its raw name and
+            // runs its existing unresolved handling, which leaves the
+            // definition-site `circular type alias` diagnostic as the only report.
+            return None;
+        }
+        let Some(entry) = reg.lookup(current) else {
+            break;
+        };
+        if entry.resolved_type.is_some() || !entry.type_params.is_empty() {
+            break;
+        }
+        let Some(body) = entry.type_expr.as_ref() else {
+            break;
+        };
+        let reify_ast::TypeExprKind::Named {
+            name: body_name,
+            type_args,
+        } = &body.kind
+        else {
+            return None;
+        };
+        if !type_args.is_empty() {
+            return None;
+        }
+        hopped = Some(body_name.as_str());
+        current = body_name.as_str();
+    }
+
+    hopped.map(str::to_string)
 }
 
 /// Maximum recursion depth for parameterized alias instantiation.
@@ -5049,6 +5350,376 @@ mod tests {
             format!("{}", Type::Transform(3)),
             "Transform3",
             "Type::Transform(3) should display as \"Transform3\" to match the resolver spelling"
+        );
+    }
+
+    // ── Orientation type-name resolution (task 6384) ─────────────────────────
+    //
+    // Two facts about `resolve_type_name`'s `"Orientation" | "Orientation3"`
+    // arm that the tests below cannot state themselves. Everything else about
+    // the arm is in the test names and assertion messages.
+    //
+    // 1. WHY THE DEFECT WAS SILENT, and so why the integration companions in
+    //    `standard_joint_library_tests.rs` use a positive/mutation oracle
+    //    rather than zero-diagnostics: an unresolved bare name returns None
+    //    from `resolve_type_expr_with_aliases` WITHOUT a diagnostic → the joint
+    //    DOF type becomes `Type::Error` → the §7.1 verdict gate in
+    //    `compile_builder::entities_phase` reads that as already-diagnosed,
+    //    sets `skip_verdict` and emits nothing (anti-cascade). So an
+    //    `Orientation` DOF was byte-identical in output to a `Blorp` one, and
+    //    `stdlib/joints.ri`'s `with orientation: Orientation` silently disabled
+    //    the self-check for every orientation-bearing joint.
+    //
+    // 2. THE TRADE THIS ARM ACCEPTS. Like every builtin arm it SHADOWS a
+    //    same-named alias, structure def and enum: the declaration keeps
+    //    compiling but every annotation naming it changes meaning, silently at
+    //    the USE site. Accepted because nothing in any tracked .ri file binds
+    //    either spelling and the surface is load-bearing (without it the joint
+    //    DOF self-check cannot run at all); the residual exposure is
+    //    out-of-repo models, bounded by `compile_builder::reserved_name_lint`,
+    //    whose predicate is `resolve_type_name(name).is_some()` — so this arm
+    //    also WIDENED that lint onto those three declaration forms. Both halves
+    //    are pinned below, being a behaviour change rather than an accident.
+    //
+    // Arity: bare `Orientation` takes 3 per the `"Frame" => Type::Frame(3)`
+    // precedent. Parameterised `Orientation<N>` is not DISTINGUISHED — the
+    // argument is discarded and any N yields `Type::Orientation(3)`, the
+    // pre-existing behaviour of every non-`is_parameterized_builtin_name` name
+    // (`Frame<7>`, `Transform3<9>`), which matters here because the language
+    // spec and stdlib reference both spell this type `Orientation<3>`.
+
+    /// (a) The direct unit lock on the arm; the integration companions in
+    /// `standard_joint_library_tests.rs` reach it only through a whole compile.
+    #[test]
+    fn resolve_type_name_recognises_orientation() {
+        assert_eq!(
+            resolve_type_name("Orientation"),
+            Some(Type::Orientation(3)),
+            "\"Orientation\" should resolve to Type::Orientation(3)"
+        );
+    }
+
+    /// (b) The alias-aware entry point must inherit the builtin arm, so
+    /// annotations resolve with no registry entry.
+    #[test]
+    fn resolve_type_with_aliases_inherits_orientation() {
+        let reg = TypeAliasRegistry::new();
+        let result = resolve_type_with_aliases(
+            "Orientation",
+            &HashSet::new(),
+            &reg,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            result,
+            Some(Type::Orientation(3)),
+            "resolve_type_with_aliases(\"Orientation\", …) should return Type::Orientation(3)"
+        );
+    }
+
+    /// (c) A name copied out of a compiler message must resolve — the
+    /// Display/resolver round-trip convention task 4577 pinned for Transform3
+    /// (`transform3_display_matches_resolver_spelling`), and the only reason
+    /// the arm carries the `Orientation3` spelling at all.
+    #[test]
+    fn orientation3_display_matches_resolver_spelling() {
+        assert_eq!(
+            format!("{}", Type::Orientation(3)),
+            "Orientation3",
+            "Type::Orientation(3) should display as \"Orientation3\""
+        );
+        assert_eq!(
+            resolve_type_name("Orientation3"),
+            Some(Type::Orientation(3)),
+            "the resolver must accept the Display spelling \"Orientation3\" so the \
+             Display/resolver round-trip holds"
+        );
+    }
+
+    /// (d) The use-site half of trade 2 above; the declaration-site half is
+    /// `orientation_declaration_draws_reserved_type_name_warning` below. Same
+    /// shape as `builtin_dimension_shadows_same_named_alias_with_different_dimension`
+    /// (task #5892).
+    #[test]
+    fn builtin_orientation_shadows_same_named_alias_and_structure() {
+        for spelling in ["Orientation", "Orientation3"] {
+            let reg = one_entry_alias_registry(spelling, DimensionVector::MASS, true);
+            let structure_names: HashSet<String> = [spelling.to_string()].into_iter().collect();
+            let result = resolve_type_with_aliases(
+                spelling,
+                &HashSet::new(),
+                &reg,
+                &structure_names,
+                &HashSet::new(),
+            );
+            assert_eq!(
+                result,
+                Some(Type::Orientation(3)),
+                "the builtin {spelling:?} arm must win over BOTH a same-named \
+                 alias-registry entry (which says MASS) and a same-named \
+                 structure def, per the precedence documented on \
+                 resolve_type_with_aliases; got: {result:?}"
+            );
+        }
+
+        // Negative control 1: a name with no builtin arm still resolves from
+        // the alias registry.
+        let rotor_alias = one_entry_alias_registry("Rotor", DimensionVector::MASS, true);
+        let from_alias = resolve_type_with_aliases(
+            "Rotor",
+            &HashSet::new(),
+            &rotor_alias,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            from_alias,
+            Some(Type::Scalar {
+                dimension: DimensionVector::MASS
+            }),
+            "a non-builtin name must still resolve FROM the alias registry; \
+             got: {from_alias:?}"
+        );
+
+        // Negative control 2: a name with no builtin arm and no alias entry
+        // still resolves from the structure-name arm.
+        let rotor_structs: HashSet<String> = ["Rotor".to_string()].into_iter().collect();
+        let from_struct = resolve_type_with_aliases(
+            "Rotor",
+            &HashSet::new(),
+            &TypeAliasRegistry::new(),
+            &rotor_structs,
+            &HashSet::new(),
+        );
+        assert_eq!(
+            from_struct,
+            Some(Type::StructureRef("Rotor".to_string())),
+            "a non-builtin name must still resolve FROM the structure-name arm; \
+             got: {from_struct:?}"
+        );
+    }
+
+    /// Compile `source` through the crate's OWN stdlib entry points.
+    ///
+    /// Deliberately NOT `reify_test_support::compile_source_with_stdlib`: the
+    /// crate's `[dev-dependencies]` self-pull puts two `reify_compiler`
+    /// instances in the unit-test graph and that helper returns the *external*
+    /// instance's `CompiledModule` (see the same note on
+    /// `relation_signatures.rs`'s `compile_module`).
+    fn compile_orientation_probe(source: &str) -> crate::CompiledModule {
+        let parsed = crate::parse_with_stdlib(source, reify_core::ModulePath::single("test"));
+        crate::compile_with_stdlib(&parsed)
+    }
+
+    /// The resolved `cell_type` of `param o` in the probe's `structure S`.
+    ///
+    /// Panics with the available cells listed rather than a bare `unwrap`, so a
+    /// compile that silently dropped the declaration is attributable.
+    fn probe_param_o_type(module: &crate::CompiledModule) -> &Type {
+        let template = module
+            .templates
+            .iter()
+            .find(|t| t.name == "S")
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected template `S` in the probe module; templates: {:?}",
+                    module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+                )
+            });
+        template
+            .value_cells
+            .iter()
+            .find(|vc| vc.kind == crate::types::ValueCellKind::Param && vc.id.member == "o")
+            .map(|vc| &vc.cell_type)
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected `param o` in template `S`; value_cells: {:?}",
+                    template
+                        .value_cells
+                        .iter()
+                        .map(|vc| &vc.id)
+                        .collect::<Vec<_>>()
+                )
+            })
+    }
+
+    /// (f) The declaration-site half of trade 2 above: each row asserts BOTH
+    /// that the declaration draws exactly one `ReservedTypeName` warning AND
+    /// that the annotation still resolves to the builtin — the lint is
+    /// advisory, so it must not let the user declaration win in type position.
+    ///
+    /// HOME. This test and `orientation_annotations_compile_clean` below are
+    /// full-prelude COMPILE tests in a unit-test module, and their two helpers
+    /// re-derive `reserved_name_lint_tests.rs`'s `find_template` /
+    /// `find_param_cell`. Both belong in that file beside
+    /// `structure_named_frame_emits_reserved_type_name_warning` and
+    /// `param_type_resolves_to_builtin_direction_when_user_enum_collides`,
+    /// which pin these same contracts for `Frame` / `Direction`; they are here
+    /// only because that file was outside task 6384's module locks. The
+    /// fold-over, including deleting both helpers, is task #7196.
+    #[test]
+    fn orientation_declaration_draws_reserved_type_name_warning() {
+        for (label, source) in [
+            (
+                "structure def Orientation",
+                "structure def Orientation {}\n\
+                 structure S {\n    param o : Orientation = orient_identity()\n}",
+            ),
+            (
+                "type Orientation = Bool",
+                "pub type Orientation = Bool\n\
+                 structure S {\n    param o : Orientation = orient_identity()\n}",
+            ),
+            // The enum row is NOT redundant with the two above: an enum name
+            // reaches type position through `resolve_enum_type`, a chain
+            // separate from the alias-registry / structure-name arms, so its
+            // shadowing is only assertable here (the arm comment claims all
+            // three declaration forms; this is what stops the enum third of
+            // that claim from being prose alone).
+            (
+                "enum Orientation { A, B }",
+                "enum Orientation { A, B }\n\
+                 structure S {\n    param o : Orientation = orient_identity()\n}",
+            ),
+            (
+                "structure def Orientation3 (Display spelling)",
+                "structure def Orientation3 {}\n\
+                 structure S {\n    param o : Orientation3 = orient_identity()\n}",
+            ),
+        ] {
+            let module = compile_orientation_probe(source);
+            let reserved: Vec<&Diagnostic> = module
+                .diagnostics
+                .iter()
+                .filter(|d| {
+                    d.code == Some(reify_core::DiagnosticCode::ReservedTypeName)
+                        && d.severity == Severity::Warning
+                })
+                .collect();
+            assert_eq!(
+                reserved.len(),
+                1,
+                "{label}: declaring a type named after the new builtin must draw \
+                 exactly one W_RESERVED_TYPE_NAME warning (the predicate is \
+                 `resolve_type_name(name).is_some()`).\nsource:\n{source}\n\
+                 reserved: {reserved:#?}"
+            );
+
+            // The lint is ADVISORY: the builtin must still win in type position.
+            let errors: Vec<&Diagnostic> = module
+                .diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Error)
+                .collect();
+            assert!(
+                errors.is_empty(),
+                "{label}: a shadowing declaration must stay Warning-only (programs \
+                 keep compiling); got errors: {errors:#?}"
+            );
+            assert_eq!(
+                probe_param_o_type(&module),
+                &Type::Orientation(3),
+                "{label}: the annotation must still resolve to the BUILTIN \
+                 Type::Orientation(3) despite the same-named user declaration"
+            );
+        }
+
+        // NON-VACUITY control: a structure whose name has no builtin arm must
+        // draw NO ReservedTypeName warning, so the assertions above cannot pass
+        // by the lint firing indiscriminately.
+        let control = compile_orientation_probe("structure def Rotor {}");
+        let control_reserved: Vec<&Diagnostic> = control
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(reify_core::DiagnosticCode::ReservedTypeName))
+            .collect();
+        assert!(
+            control_reserved.is_empty(),
+            "control: `structure def Rotor` binds no builtin name and must draw NO \
+             ReservedTypeName warning; got: {control_reserved:#?}"
+        );
+    }
+
+    /// (e) Annotation-surface coverage end to end through a real compile:
+    /// (a)–(d) call the resolver directly and the integration companions reach
+    /// it only through a joint's `with` DOF record, so a regression confined to
+    /// ordinary annotation positions would otherwise go unnoticed.
+    ///
+    /// The resolved-type oracle is what makes the alias and `Orientation<3>`
+    /// rows mean anything: zero-errors alone stays green if either resolves to
+    /// some wrong-but-compatible type. (`Undef` / unused-binding warnings are
+    /// irrelevant and not filtered on.)
+    #[test]
+    fn orientation_annotations_compile_clean() {
+        for (label, source) in [
+            (
+                "bare param annotation",
+                "structure S {\n    param o : Orientation = orient_identity()\n}",
+            ),
+            (
+                "Display-spelling param annotation",
+                "structure S {\n    param o : Orientation3 = orient_identity()\n}",
+            ),
+            (
+                "param annotation via a type alias bound to the name",
+                "pub type Rot = Orientation\n\
+                 structure S {\n    param o : Rot = orient_identity()\n}",
+            ),
+            // The documented spelling: docs/reify-language-spec.md and
+            // docs/reify-stdlib-reference.md both write `Orientation<3>` /
+            // `Orientation<N>`, so a user copying either lands on the
+            // argument-discarding path (Arity, header above) rather than on a
+            // diagnostic. On record here, not left emergent.
+            (
+                "documented parameterised spelling — the arg is discarded",
+                "structure S {\n    param o : Orientation<3> = orient_identity()\n}",
+            ),
+            (
+                "any arity discards identically — no arity check exists",
+                "structure S {\n    param o : Orientation<7> = orient_identity()\n}",
+            ),
+        ] {
+            let module = compile_orientation_probe(source);
+            let errors: Vec<&Diagnostic> = module
+                .diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Error)
+                .collect();
+            assert!(
+                errors.is_empty(),
+                "{label}: `Orientation` must be usable in an ordinary annotation \
+                 position and compile with zero Error-severity diagnostics.\n\
+                 source:\n{source}\nerrors: {errors:#?}"
+            );
+            assert_eq!(
+                probe_param_o_type(&module),
+                &Type::Orientation(3),
+                "{label}: the annotation must RESOLVE to Type::Orientation(3), not \
+                 merely fail to error — for the alias row this is the only \
+                 assertion that exercises the alias→builtin hop at all.\n\
+                 source:\n{source}"
+            );
+        }
+
+        // NON-VACUITY control: a zero-errors oracle proves something only where
+        // an UNRESOLVABLE name in the same position is loud. It is, in `param`
+        // position — but not in the joint `with` DOF position (fact 1 above).
+        let control = compile_orientation_probe(
+            "structure S {\n    param o : Blorp = orient_identity()\n}",
+        );
+        let control_errors: Vec<&Diagnostic> = control
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            control_errors
+                .iter()
+                .any(|d| d.message.contains("unresolved type: Blorp")),
+            "control: an unresolvable param type MUST draw an Error-severity \
+             `unresolved type: …` diagnostic, or the zero-errors assertions above \
+             prove nothing; got: {control_errors:#?}"
         );
     }
 

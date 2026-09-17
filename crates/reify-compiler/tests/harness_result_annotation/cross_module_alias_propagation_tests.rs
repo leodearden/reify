@@ -1133,3 +1133,200 @@ fn parametric_prelude_let_none_emits_single_info_diagnostic() {
         info_diags
     );
 }
+
+// ─── task 6259: prelude-seeded alias whose body names an entity type ────────
+//
+// Task #6259 makes a non-parametric `type AL = <Body>` whose body names an
+// enum / structure def / occurrence def / trait resolve at its USE SITE (the
+// alias DFS in `phase_aliases` runs before those name sets exist, so the entry
+// legitimately leaves that phase with `resolved_type: None` and the deferred
+// arm in `resolve_type_expr_with_aliases_kinded` reads the retained
+// `type_expr` body instead).
+//
+// That deferral has a second, independent gap on the PRELUDE path:
+// `TypeAliasEntry::from_compiled_for_prelude` drops `type_expr` for every
+// non-parametric alias, on the premise that "non-parametric ones resolve via
+// `resolved_type` and never read `type_expr`" — exactly the premise the
+// deferral invalidates. A seeded entry then has BOTH `resolved_type: None` AND
+// `type_expr: None`, the deferred arm cannot fire, and `unresolved type: Fq`
+// persists across the module boundary.
+//
+// Fixture names are collision-free with stdlib (`Fit`/`FitCategory` are taken
+// by stdlib/tolerancing.ri and would silently resolve against the stdlib
+// entity instead of the fixture).
+
+/// Return the declared `Type` of `entity`'s `member` param.
+///
+/// Params live in `TopologyTemplate.value_cells` — there is no `.params` field.
+fn entity_param_type(module: &reify_compiler::CompiledModule, entity: &str, member: &str) -> Type {
+    let errors: Vec<&str> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == entity)
+        .unwrap_or_else(|| panic!("template `{entity}` not found; errors: {errors:?}"));
+    template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == member)
+        .unwrap_or_else(|| panic!("value cell `{entity}.{member}` not found; errors: {errors:?}"))
+        .cell_type
+        .clone()
+}
+
+fn error_messages(module: &reify_compiler::CompiledModule) -> Vec<&str> {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect()
+}
+
+/// End-to-end: a prelude module declaring BOTH an enum and a
+/// `pub type Fq = <that enum>` must make `param p : Fq` resolve in a
+/// downstream user module, identically to spelling the enum directly.
+#[test]
+fn pub_prelude_alias_to_prelude_enum_resolves_in_user_module() {
+    let prelude_src = "enum Zq { Close, Medium }\npub type Fq = Zq\n";
+    let prelude_parsed = reify_syntax::parse(
+        prelude_src,
+        ModulePath::single("entity_alias_prelude"),
+    );
+    assert!(
+        prelude_parsed.errors.is_empty(),
+        "prelude parse errors: {:?}",
+        prelude_parsed.errors
+    );
+    let prelude_m = reify_compiler::compile(&prelude_parsed);
+    assert_eq!(
+        error_count(&prelude_m),
+        0,
+        "the prelude module itself must compile cleanly; got: {:?}",
+        error_messages(&prelude_m)
+    );
+
+    // Oracle: the same enum spelled DIRECTLY in the user module, with the same
+    // prelude in scope. This baseline also pins that prelude enum names
+    // propagate at all — without it the parity assertion below could pass
+    // vacuously (both sides Error).
+    let direct_parsed = reify_syntax::parse(
+        "structure def D { param p : Zq }",
+        ModulePath::single("entity_alias_user_direct"),
+    );
+    assert!(
+        direct_parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        direct_parsed.errors
+    );
+    let direct = compile_with_prelude(&direct_parsed, std::slice::from_ref(&prelude_m));
+    assert_eq!(
+        error_count(&direct),
+        0,
+        "DIRECT baseline must compile cleanly for the parity oracle to mean \
+         anything; got: {:?}",
+        error_messages(&direct)
+    );
+    let direct_ty = entity_param_type(&direct, "D", "p");
+
+    let alias_parsed = reify_syntax::parse(
+        "structure def D { param p : Fq }",
+        ModulePath::single("entity_alias_user_alias"),
+    );
+    assert!(
+        alias_parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        alias_parsed.errors
+    );
+    let compiled = compile_with_prelude(&alias_parsed, std::slice::from_ref(&prelude_m));
+    assert_eq!(
+        error_count(&compiled),
+        0,
+        "a prelude `pub type Fq = Zq` must resolve in the user module; got: {:?}",
+        error_messages(&compiled)
+    );
+    assert_eq!(
+        entity_param_type(&compiled, "D", "p"),
+        direct_ty,
+        "`param p : Fq` must lower exactly as the direct `param p : Zq` does"
+    );
+}
+
+/// Unit-level pin at the SOURCE of the prelude-seeding change: seeding a
+/// `CompiledTypeAlias` that is non-parametric AND still unresolved must
+/// preserve its `type_expr` body in the seeded registry entry, otherwise the
+/// use-site deferral has nothing to read.
+///
+/// The enum lives in the USER module here, so this observes ONLY the body
+/// carry-over — prelude enum-name propagation is deliberately not involved
+/// (the end-to-end test above covers that half).
+#[test]
+fn seeded_unresolved_non_parametric_alias_retains_its_body() {
+    let alias = CompiledTypeAlias {
+        name: "Gq".to_string(),
+        // Entity-bodied alias: the DFS in `phase_aliases` could not resolve it
+        // (structures/traits/enums are not compiled yet at that point).
+        resolved_type: None,
+        type_params: vec![],
+        type_expr: Some(reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Named {
+                name: "Zq".to_string(),
+                type_args: vec![],
+            },
+            span: SourceSpan::new(0, 0),
+        }),
+        is_pub: true,
+        span: SourceSpan::new(0, 0),
+        content_hash: ContentHash::of_str("Gq"),
+    };
+    let prelude_m = CompiledModuleBuilder::new(ModulePath::single("body_carry_prelude"))
+        .type_alias(alias)
+        .build();
+
+    let direct_parsed = reify_syntax::parse(
+        "enum Zq { Close, Medium }\nstructure def D { param p : Zq }",
+        ModulePath::single("body_carry_user_direct"),
+    );
+    assert!(
+        direct_parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        direct_parsed.errors
+    );
+    let direct = compile_with_prelude(&direct_parsed, std::slice::from_ref(&prelude_m));
+    assert_eq!(
+        error_count(&direct),
+        0,
+        "DIRECT baseline must compile cleanly; got: {:?}",
+        error_messages(&direct)
+    );
+    let direct_ty = entity_param_type(&direct, "D", "p");
+
+    let alias_parsed = reify_syntax::parse(
+        "enum Zq { Close, Medium }\nstructure def D { param p : Gq }",
+        ModulePath::single("body_carry_user_alias"),
+    );
+    assert!(
+        alias_parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        alias_parsed.errors
+    );
+    let compiled = compile_with_prelude(&alias_parsed, std::slice::from_ref(&prelude_m));
+    assert_eq!(
+        error_count(&compiled),
+        0,
+        "seeding a non-parametric alias with `resolved_type: None` and \
+         `type_expr: Some(..)` must keep the body so the use-site deferral can \
+         read it; got: {:?}",
+        error_messages(&compiled)
+    );
+    assert_eq!(
+        entity_param_type(&compiled, "D", "p"),
+        direct_ty,
+        "the seeded `Gq` alias must lower exactly as the direct `Zq` does"
+    );
+}

@@ -12,6 +12,10 @@
 //! `binary(…)`/`test(=…)` selector naming a former id must be updated; verify.sh's failed-only
 //! retry is unaffected — it derives `test(=…)` at run time from its own attempt-0 and refuses
 //! on tree drift (see `scripts/verify.sh` retry_failed_only).
+#[path = "harness_geometry/dimensionless_sub_pose_diagnostic_e2e.rs"]
+mod dimensionless_sub_pose_diagnostic_e2e;
+#[path = "harness_geometry/empty_boolean_result_diagnostic_e2e.rs"]
+mod empty_boolean_result_diagnostic_e2e;
 #[path = "harness_geometry/geometry_conditional_e2e.rs"]
 mod geometry_conditional_e2e;
 #[path = "harness_geometry/geometry_dispatch_registry_guard.rs"]
@@ -34,14 +38,20 @@ mod geometry_query_kernel_dispatch;
 mod geometry_sub_ref_e2e;
 #[path = "harness_geometry/modify_sweep_length_units_e2e.rs"]
 mod modify_sweep_length_units_e2e;
+#[path = "harness_geometry/offset_surface_e2e.rs"]
+mod offset_surface_e2e;
 #[path = "harness_geometry/primitive_profile_length_units_e2e.rs"]
 mod primitive_profile_length_units_e2e;
+#[path = "harness_geometry/rounded_corner_runtime_constraint.rs"]
+mod rounded_corner_runtime_constraint;
 #[path = "harness_geometry/symbolic_geometry_eval.rs"]
 mod symbolic_geometry_eval;
 #[path = "harness_geometry/symbolic_selector_composition_eval.rs"]
 mod symbolic_selector_composition_eval;
 #[path = "harness_geometry/symbolic_selector_eval.rs"]
 mod symbolic_selector_eval;
+#[path = "harness_geometry/transform_translation_length_units_e2e.rs"]
+mod transform_translation_length_units_e2e;
 #[path = "harness_geometry/trait_assoc_fn_cylinder.rs"]
 mod trait_assoc_fn_cylinder;
 #[path = "harness_geometry/trait_assoc_fn_static_e2e.rs"]

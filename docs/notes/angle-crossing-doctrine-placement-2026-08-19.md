@@ -278,9 +278,13 @@ to own registry-name-vs-chunk coverage", PRD
 `docs/prds/v0_6/doc-chunk-truth-enforcement.md` task δ). #5480 pre-dates
 this ticket: `crates/reify-audit/src/lib.rs`'s `PDocCover` doc comment
 already named it as the baseline's owner ("the census is non-empty until
-#5480 seeds the baseline") before #6290 filed anything, so **#5480, not
-the now-superseded ticket id, is the task to follow for this gap's live
-status.** It is deliberately not inline in this task: it lands in
+#5480 seeds the baseline") before #6290 filed anything — which is why
+that doc comment still names #5480 rather than a fresher id. **#5480 was
+itself coalesced into #6931** by the 2026-08-28 backlog sweep
+(`x_coalesced_from: [5480, 6233, 6891]`) and is now `status: deferred`,
+so **#6931 — not #5480, and not the now-superseded ticket id — is the
+task to follow for this gap's live status today.** It is deliberately
+not inline in this task: it lands in
 `reify-audit`, not `reify-mcp`, and is likely to touch verify-pipeline
 files, which per `CLAUDE.md` forces the full `--scope all --profile both`
 gate — a high-risk gate change has no place on a branch whose entire

@@ -136,13 +136,28 @@ fn build_fea_violated_constraint_exits_nonzero() {
 /// is not a violation and does not gate the exit code.
 ///
 /// Rationale for the check posture: registering compute trampolines in `check`
-/// would run a potentially slow FEA solve inside the lightweight static-check
-/// path, violating "check attaches no kernel by design".  Use `reify build` or
-/// `reify eval` as the FEA gate.
+/// would run a potentially slow FEA solve inside the static-check path.  Use
+/// `reify build` or `reify eval` as the FEA gate.
+///
+/// Corrected for task #5748: this rationale used to read "violating 'check
+/// attaches no kernel by design'".  Post-#5748 that phrasing is false — `check`
+/// DOES attach a geometry kernel (`Engine::with_registered_kernel`,
+/// engine_admin.rs) for any geometry-bearing module.  The accurate statement is
+/// that `check` never registers a compute TRAMPOLINE: `register_compute_
+/// trampolines` lives only in `configured_eval_engine`, which `cmd_check`
+/// deliberately does not call on either sub-path.  The two axes are
+/// independent, and #5748 moves only the geometry-kernel one — which is exactly
+/// why this test still sees INDETERMINATE + exit 0 here while `reify eval` on
+/// the same fixture reports VIOLATED + exit 1.  Assertions unchanged.
 ///
 /// Note: stderr is NOT asserted clean here — check still surfaces the
-/// engine-owned Error-severity trampoline diagnostic by design (the severity
-/// downgrade is an engine-side concern out of this CLI task's scope).
+/// engine-owned trampoline diagnostic by design.  Its severity is no longer
+/// deferred: task 5311 landed the downgrade, so under `check` (whose compute
+/// registry is empty) the line is a `warning:`, while `reify eval` / `reify
+/// build` keep printing it as `error:`.  That contrast is pinned by
+/// `check_downgrades_unregistered_trampoline_fallback_to_warning_while_eval_and_build_keep_erroring`
+/// in `cli_check.rs`.  This test's own assertions are severity-blind (they
+/// match message TEXT) and are unaffected.
 #[test]
 fn check_fea_violated_constraint_is_not_gated() {
     let path = common::fixture_path("fea_cantilever_violated.ri");

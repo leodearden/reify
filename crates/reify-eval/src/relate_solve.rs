@@ -953,11 +953,19 @@ fn fmt_mm(meters: f64) -> String {
 /// degrees from `inst`'s trailing scalar operand; mate relations render their fixed
 /// geometric demand (e.g. `concentric` → coincident at 0 mm). Never solver units.
 fn describe_demand(inst: &RelationInstance) -> String {
-    let scalar = inst
+    // Every metric operand, in declaration order. `tangent`'s two-radius combos
+    // (`tangent(a, b, r1, r2)`) carry BOTH radii, so the whole list is collected
+    // rather than the first match. The single-metric relations below read
+    // `scalars.first()`, which for them is the value the previous `.find(..)`
+    // returned — they each carry exactly one metric operand, so first and only
+    // coincide and no existing phrasing moves.
+    let scalars: Vec<f64> = inst
         .operands
         .iter()
-        .find(|o| o.sub.is_none())
-        .and_then(|o| o.datum.as_f64());
+        .filter(|o| o.sub.is_none())
+        .filter_map(|o| o.datum.as_f64())
+        .collect();
+    let scalar = scalars.first().copied();
     match inst.name.as_str() {
         "concentric" | "coincident" => "coincident (0 mm apart)".to_string(),
         "flush" => "coplanar (flush, 0 mm offset)".to_string(),
@@ -965,7 +973,24 @@ fn describe_demand(inst: &RelationInstance) -> String {
         "antiparallel" => "anti-parallel".to_string(),
         "perpendicular" => "perpendicular".to_string(),
         "on" => "incident".to_string(),
-        "tangent" => "tangent".to_string(),
+        // `tangent` is metric like distance/offset — its radii travel as trailing
+        // scalar operands (task 5540), so the phrase must name them. The bare word
+        // "tangent" told an author whose tangency could not be satisfied nothing at
+        // all about WHAT separation was demanded. The centre-distance target the
+        // residual actually drives is `|r1 + r2|`, so it is spelled out too: that is
+        // the number a conflicting placement is being measured against, and under the
+        // signed-radius convention (a negative radius = internal tangency) it is not
+        // inferable from the two radii by eye.
+        "tangent" => match scalars.as_slice() {
+            [r] => format!("tangent ({} radius)", fmt_mm(*r)),
+            [r1, r2] => format!(
+                "tangent ({} and {} radii — {} between axes)",
+                fmt_mm(*r1),
+                fmt_mm(*r2),
+                fmt_mm((r1 + r2).abs())
+            ),
+            _ => "tangent".to_string(),
+        },
         "distance" => match scalar {
             Some(d) => format!("{} apart", fmt_mm(d)),
             None => "a fixed distance apart".to_string(),
@@ -1243,8 +1268,19 @@ structure Mech2 {
             );
         }
         // Non-motion StructureRef tags — none must match.
+        // `JacobianColumn` is the joint_jacobian result tag since task 6102;
+        // `Twist` stays — it is still the transform_log / transform_exp tag.
+        // Both must be non-motion: a Jacobian column and a spatial velocity are
+        // neither of them a joint kind.
         for tag in &[
-            "Coupling", "Mechanism", "Snapshot", "JointBinding", "BodyId", "SweepDim", "Twist",
+            "Coupling",
+            "Mechanism",
+            "Snapshot",
+            "JointBinding",
+            "BodyId",
+            "SweepDim",
+            "Twist",
+            "JacobianColumn",
         ] {
             assert!(
                 !is_motion_joint_cell_type(&Type::StructureRef((*tag).to_string())),

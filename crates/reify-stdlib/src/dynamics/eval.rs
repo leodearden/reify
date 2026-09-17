@@ -52,6 +52,12 @@ const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
 
 /// Extract an `f64` from a numeric value cell (`Int` / `Real` / dimensioned
 /// `Scalar`). Mirrors `dynamics_ops::cell_f64`; non-numeric cells yield `None`.
+///
+/// **This is where the dimension is ERASED.** The `Value::Scalar` arm takes
+/// `si_value` and DISCARDS the `DimensionVector` outright, so every `f64` this
+/// function returns is an undimensioned SI magnitude and the caller carries the
+/// dimensional meaning implicitly. See [`compliance_cell_f64`] for the full
+/// declaration of that contract and why it is not gated here (#6184).
 fn cell_f64(v: &Value) -> Option<f64> {
     match v {
         Value::Int(n) => Some(*n as f64),
@@ -97,7 +103,62 @@ fn cell_mass_f64(v: &Value) -> Option<f64> {
 /// for the dimension-stripping step, accepting `Int` and `Real` as well as
 /// `Scalar`. Used by `joint_compliance` to read `spring_rate`, `damping`,
 /// and `neutral` from a flexure joint Map in either the bare-Scalar shape
-/// that `make_flexure_joint` emits today or an Option-wrapped future shape.
+/// that `make_flexure_joint` emits today or an Option-wrapped future shape —
+/// and by the RNEA link loop to read the joint coordinate `q` itself (both
+/// call sites are enumerated under "Dimension erasure" below).
+///
+/// # Dimension erasure — a declared, deliberate one (INV-AD-4; #6184)
+///
+/// This reader takes the SI-coherent magnitude and DISCARDS the
+/// `DimensionVector` (the erasure itself happens in [`cell_f64`]). Every value
+/// it returns is an undimensioned SI `f64`, and each caller carries the
+/// dimensional meaning implicitly. There are TWO callers, not one, and they
+/// erase different things:
+///
+/// 1. `joint_compliance` reads the flexure-joint Map — `spring_rate`,
+///    `damping`, `neutral`. Their dimensions are whatever the joint's own
+///    generalized coordinate implies.
+/// 2. The RNEA link-building loop in `snapshot_inverse_dynamics` reads the
+///    per-body generalized coordinate `q` ITSELF out of `positions`, and hands
+///    the bare `f64` straight to `joint_compliance` as its `position` argument.
+///    That site erases the COORDINATE's own dimension — an ANGLE for a revolute
+///    joint, a LENGTH for a prismatic one.
+///
+/// Site 2 is the one an audit of the erasure surface most needs to find, and it
+/// is what makes that surface more than just the spring/damping constants:
+/// `spring_rate` (possibly `ROTATIONAL_STIFFNESS`, carrying rad⁻²), `neutral`
+/// (an ANGLE) and `q` (the same ANGLE) are erased as a COHERENT SET, not as
+/// three unrelated scalars. The spring term `−k·(q − neutral)` is only
+/// meaningful because all three agree, and after this reader nothing in the
+/// types records that they do.
+///
+/// The ANGULAR cases are why this site is declared here rather than left
+/// implicit: for a ROTATIONAL PRB flexure joint, `spring_rate` may be
+/// `ROTATIONAL_STIFFNESS` (N·m/rad², i.e. carrying rad⁻²) and `neutral` is an
+/// ANGLE (this module's own tests use `neutral = π/12` with `position = π/6`).
+/// Under rad = 1 SI coherence the erased `f64` is NUMERICALLY CORRECT — the
+/// defect INV-AD-4 names is that nothing DECLARED it.
+///
+/// ## Contrast: the house declared-bridge pattern
+///
+/// The guarded sibling is `spring_rate_for_lumped_dof` in
+/// `crates/reify-eval/src/modal_ops.rs`, whose `StiffnessSkipKind` enum REFUSES
+/// `ROTATIONAL_STIFFNESS` outright (and refuses any other unexpected dimension
+/// rather than silently propagating an upstream labelling bug).
+///
+/// The two differ for a real reason, not by oversight: that model's eigenvalue
+/// is `λ = k / m_body`, which is only valid for ONE dimension, so it MUST gate —
+/// `k_θ / m` is dimensionally wrong and the correct eigenvalue there is
+/// `k_θ / I_body`. This reader instead hands each value on in whatever
+/// generalized coordinate the joint already declares, so a gate would need that
+/// coordinate's dimension threaded in at BOTH call sites above — and site 2 is
+/// the harder half, because `positions` carries a bare per-body value with no
+/// joint-type context at that point, so the joint's DECLARED coordinate
+/// dimension would have to be plumbed through to reach it. That is exactly the
+/// dimension-checked-readers work PRD 5 owns (see the PRD-5 reader-gating
+/// bookmark in `docs/prds/v0_6/angle-dimension-completion.md`). Adding a guard
+/// here today would be a behaviour change, which this declarations-only leaf
+/// deliberately does not make.
 fn compliance_cell_f64(v: &Value) -> Option<f64> {
     match v {
         Value::Option(Some(inner)) => compliance_cell_f64(inner),

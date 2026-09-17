@@ -1,6 +1,10 @@
+use std::collections::HashSet;
+
 use tower_lsp::lsp_types::{
     CompletionItem, CompletionItemKind, Documentation, MarkupContent, MarkupKind, Position, Url,
 };
+
+use reify_core::units::LENGTH_MIGRATION_HINT;
 
 use crate::analysis::AnalysisContext;
 use crate::convert::position_to_offset;
@@ -148,6 +152,7 @@ pub fn compute_completions_in_context(
             push_keywords(&mut items, TOP_LEVEL_KEYWORDS);
             push_builtins(&mut items);
             push_type_names(&mut items);
+            push_type_alias_names(&mut items, ctx);
             push_entity_names(&mut items, ctx);
         }
         CursorContext::StructureBody { ref structure_name } => {
@@ -155,6 +160,7 @@ pub fn compute_completions_in_context(
             push_keywords(&mut items, EXPR_KEYWORDS);
             push_builtins(&mut items);
             push_type_names(&mut items);
+            push_type_alias_names(&mut items, ctx);
             push_scoped_members(&mut items, ctx, structure_name);
             push_entity_names(&mut items, ctx);
         }
@@ -164,6 +170,7 @@ pub fn compute_completions_in_context(
             push_keywords(&mut items, EXPR_KEYWORDS);
             push_builtins(&mut items);
             push_type_names(&mut items);
+            push_type_alias_names(&mut items, ctx);
             if let Some(name) = structure_name {
                 push_scoped_members(&mut items, ctx, name);
             } else {
@@ -177,6 +184,7 @@ pub fn compute_completions_in_context(
         }
         CursorContext::TypePosition => {
             push_type_names(&mut items);
+            push_type_alias_names(&mut items, ctx);
             push_entity_names(&mut items, ctx);
         }
     }
@@ -202,11 +210,112 @@ fn push_builtins(items: &mut Vec<CompletionItem>) {
             detail: Some(info.signature.to_string()),
             documentation: Some(Documentation::MarkupContent(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: info.doc.to_string(),
+                value: builtin_doc_with_length_gate_note(info),
             })),
             sort_text: Some(format!("{}-{}", info.sort_group, info.name)),
             ..Default::default()
         });
+    }
+}
+
+/// The qualifier [`LENGTH_GATED_EXAMPLES`] attaches to `half_space`'s row —
+/// the one builtin here whose signature mixes a LENGTH-gated slot group
+/// (`px`/`py`/`pz`) with a legitimately dimensionless one (`nx`/`ny`/`nz`,
+/// the outward normal) — the same ORIGIN-vs-DIRECTION split
+/// `arg_acceptance`'s module doc draws for the same builtin
+/// (crates/reify-eval/src/arg_acceptance.rs) — so the general units clause
+/// would otherwise read as covering the normal too. This is the SPOT for the
+/// qualifier's wording and for why it exists: both the renderer
+/// ([`builtin_doc_with_length_gate_note`]) and
+/// `tests::gated_length_builtins_advertise_their_dimension_requirement` read
+/// this const by symbol, so a reword can never silently leave the test's
+/// negative arm (every row without this qualifier must NOT carry it) passing
+/// vacuously.
+const DIMENSIONLESS_NORMAL_NOTE: &str =
+    " Its outward normal (`nx`/`ny`/`nz`) is a dimensionless direction and stays bare.";
+
+/// Per-builtin dimensioned example, plus an optional extra doc qualifier,
+/// for entries whose LENGTH-semantic arguments Contract C gates (task 6450).
+/// Keyed by name rather than new `BuiltinFunctionInfo` fields so the other
+/// ~80 non-geometry entries need no touch. This is NOT a restatement of the
+/// authoritative position table — that table is `pub(crate)` to
+/// reify-compiler/reify-eval and unreachable from here (see `arg_acceptance`'s
+/// module doc, crates/reify-eval/src/arg_acceptance.rs) — it is pinned
+/// BEHAVIOURALLY by
+/// `completion::tests::gated_length_builtins_advertise_their_dimension_requirement`,
+/// which asserts the bare form of every row here is actually rejected, the
+/// dimensioned form actually evaluates clean, and the qualifier (if any) is
+/// attached to exactly the right row.
+///
+/// Only `half_space` carries a qualifier today — see
+/// [`DIMENSIONLESS_NORMAL_NOTE`] for its wording and the reason it exists.
+///
+/// Positions elsewhere in `BUILTIN_FUNCTIONS` deliberately left
+/// dimensionless, scoped to what actually appears in this table (the wider
+/// gated families named in task 6450's own description — patterns,
+/// translate/rotate_around, revolve, line_segment, arc, helix, interp,
+/// bezier, nurbs poles, ... — have no entry here at all, so naming them
+/// would invent a residual with no surface). The full "deliberately NOT
+/// gated" enumeration lives in `arg_acceptance`'s module doc — cited, not
+/// restated here (G7).
+///
+/// RESIDUAL: this table is a snapshot of the families gated as of task 5750
+/// (leaf η — see `builtin_signatures.rs`'s module doc, which attributes the
+/// PRIMITIVE/PROFILE compile-layer slots this table mirrors to that task),
+/// taken before the units-length-gate-completion PRD's closure guard (task
+/// ι) has landed to close the gated set by construction. TODO(#5752): once ι
+/// lands, re-check this table against its allowlist — the gated set can
+/// still grow via ι's downstream siblings.
+const LENGTH_GATED_EXAMPLES: &[(&str, &str, Option<&'static str>)] = &[
+    ("box", "box(20mm, 10mm, 30mm)", None),
+    ("cylinder", "cylinder(5mm, 20mm)", None),
+    ("sphere", "sphere(10mm)", None),
+    ("box_centered", "box_centered(20mm, 10mm, 30mm)", None),
+    ("cylinder_centered", "cylinder_centered(5mm, 20mm)", None),
+    ("cone", "cone(10mm, 5mm, 20mm)", None),
+    ("rounded_box", "rounded_box(20mm, 20mm, 10mm, 2mm)", None),
+    ("torus", "torus(20mm, 5mm)", None),
+    (
+        "half_space",
+        "half_space(0mm, 0mm, 0mm, 0, 0, 1)",
+        Some(DIMENSIONLESS_NORMAL_NOTE),
+    ),
+    ("wedge", "wedge(20mm, 20mm, 10mm, 5mm)", None),
+    ("rectangle", "rectangle(20mm, 10mm)", None),
+    ("circle", "circle(10mm)", None),
+    ("rounded_rect", "rounded_rect(20mm, 20mm, 2mm)", None),
+    ("polygon", "polygon(0mm, 0mm, 10mm, 0mm, 5mm, 10mm)", None),
+    ("ellipse", "ellipse(10mm, 5mm)", None),
+];
+
+/// Render a builtin's popup documentation, appending a units clause built
+/// from the shared [`LENGTH_MIGRATION_HINT`] const plus that row's optional
+/// qualifier, for entries in [`LENGTH_GATED_EXAMPLES`]. `doc` cannot carry
+/// the units clause baked in as a `&'static str` literal: `concat!` only
+/// accepts literal tokens, not a named `const` (confirmed —
+/// `concat!("...", LENGTH_MIGRATION_HINT, "...")` fails to compile with
+/// "expected a literal"), so composing here at completion-render time is how
+/// the popup imports the one shared wording instead of hand-copying it (G7).
+///
+/// The clause reads "a bare number would mean SI metres and is rejected",
+/// not "is read as ... and rejected": under the gate a bare number is never
+/// actually read as metres, it is rejected outright — the 1000×-metres
+/// misreading is the historical hazard Contract C closes, so asserting both
+/// in one breath would be self-contradictory.
+fn builtin_doc_with_length_gate_note(info: &BuiltinFunctionInfo) -> String {
+    match LENGTH_GATED_EXAMPLES
+        .iter()
+        .find(|(name, _, _)| *name == info.name)
+    {
+        Some((_, example, qualifier)) => {
+            format!(
+                "{} Length arguments must be dimensioned — a bare number would mean SI metres \
+                 and is rejected; {LENGTH_MIGRATION_HINT}, e.g. `{example}`.{}",
+                info.doc,
+                qualifier.unwrap_or("")
+            )
+        }
+        None => info.doc.to_string(),
     }
 }
 
@@ -217,6 +326,72 @@ fn push_type_names(items: &mut Vec<CompletionItem>) {
             kind: Some(CompletionItemKind::CLASS),
             ..Default::default()
         });
+    }
+}
+
+/// Push user-declared type aliases as CLASS-kind completions.
+///
+/// Iterates the PARSED declarations and keeps only those whose name is also in
+/// `CompiledModule.type_aliases`. That set holds only the OPEN DOCUMENT's own
+/// aliases — prelude-seeded aliases are filtered out by the compiler's
+/// `TypeAliasRegistry::into_compiled` — so the membership test is exactly the
+/// document-scoping filter, and no stdlib alias can leak into the list.
+///
+/// Driving the loop from the parse rather than from `compiled.type_aliases` buys
+/// three things:
+///
+/// 1. **Determinism.** `into_compiled` drains a `HashMap`, so its `Vec` order
+///    varies per process under std's `RandomState`. Source order does not, and
+///    these items carry no `sort_text` to re-impose an order downstream.
+/// 2. **A single signature source.** `format_type_alias_signature` takes the
+///    parsed `reify_ast::TypeAliasDecl`, which is always available here —
+///    keeping the completion `detail` byte-identical to hover with no divergent
+///    fallback. The compiled entry could not feed it: `CompiledTypeAlias`
+///    carries `type_params` as `reify_ir::TypeParam`, not the
+///    `reify_ast::TypeParamDecl` that `format_type_params` consumes, so
+///    rendering from it would need a SECOND, IR-shaped renderer of the same
+///    user-visible grammar — the exact drift this reuse avoids.
+///
+///    Note what is NOT a reason: `type_expr` being `None`. Every entry in
+///    `compiled.type_aliases` has `type_expr == Some(..)`, parameterized or
+///    not — both `resolve_alias_dfs` registration sites clone it
+///    unconditionally (`crates/reify-compiler/src/type_resolution.rs:3790`
+///    and `:3827`) and `into_compiled` carries it through verbatim. The `None`
+///    arm arises only for NON-PARAMETRIC PRELUDE entries built by
+///    `from_compiled_for_prelude`, and those are excluded from
+///    `type_aliases` by `seeded_names`. So `type_expr.is_none()` is not a
+///    parameterized-alias discriminator and must not be used as one.
+/// 3. **O(D + A) instead of O(D × A).** Completion fires per keystroke, and the
+///    previous shape rescanned every declaration once per alias.
+///
+/// Task #6341.
+fn push_type_alias_names(items: &mut Vec<CompletionItem>, ctx: &AnalysisContext) {
+    if ctx.compiled.type_aliases.is_empty() {
+        return;
+    }
+    let mut in_document: HashSet<&str> = ctx
+        .compiled
+        .type_aliases
+        .iter()
+        .map(|a| a.name.as_str())
+        .collect();
+    for decl in &ctx.parsed.declarations {
+        // `remove` doubles as the membership test and the emitted-once guard: a
+        // document that declares the same alias twice (a normal transient state
+        // while editing) parses as two `TypeAlias` decls but compiles to one
+        // entry, and a plain `contains` would offer the name twice. Draining the
+        // set on first use keeps each name to a single item without a second
+        // allocation. Task #6341.
+        if let reify_ast::Declaration::TypeAlias(t) = decl
+            && in_document.remove(t.name.as_str())
+        {
+            items.push(CompletionItem {
+                label: t.name.clone(),
+                kind: Some(CompletionItemKind::CLASS),
+                detail: Some(crate::hover::format_type_alias_signature(t)),
+                ..Default::default()
+            });
+        }
     }
 }
 
@@ -275,8 +450,15 @@ fn push_complex_methods(items: &mut Vec<CompletionItem>) {
 }
 
 /// Keywords that are only valid at the top level (outside structure bodies).
-pub(crate) const TOP_LEVEL_KEYWORDS: &[&str] =
-    &["structure", "occurrence", "import", "fn", "trait", "enum"];
+pub(crate) const TOP_LEVEL_KEYWORDS: &[&str] = &[
+    "structure",
+    "occurrence",
+    "import",
+    "fn",
+    "trait",
+    "enum",
+    "type",
+];
 
 /// Keywords that start declaration lines inside a structure body.
 pub(crate) const BODY_KEYWORDS: &[&str] = &[
@@ -315,19 +497,19 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
     // --- 01-geometry: solid geometry primitives ---
     BuiltinFunctionInfo {
         name: "box",
-        signature: "box(width: Real, height: Real, depth: Real) -> Solid",
+        signature: "box(width: Length, height: Length, depth: Length) -> Solid",
         doc: "Creates a rectangular box solid centred at the origin.",
         sort_group: "01-geometry",
     },
     BuiltinFunctionInfo {
         name: "cylinder",
-        signature: "cylinder(radius: Real, height: Real) -> Solid",
+        signature: "cylinder(radius: Length, height: Length) -> Solid",
         doc: "Creates a cylinder solid along the Z axis.",
         sort_group: "01-geometry",
     },
     BuiltinFunctionInfo {
         name: "sphere",
-        signature: "sphere(radius: Real) -> Solid",
+        signature: "sphere(radius: Length) -> Solid",
         doc: "Creates a sphere solid centred at the origin.",
         sort_group: "01-geometry",
     },
@@ -363,7 +545,7 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
     },
     BuiltinFunctionInfo {
         name: "half_space",
-        signature: "half_space(px: Length, py: Length, pz: Length, nx: Float, ny: Float, nz: Float) -> Solid",
+        signature: "half_space(px: Length, py: Length, pz: Length, nx: Real, ny: Real, nz: Real) -> Solid",
         doc: "Creates an unbounded half-space solid. The boundary plane passes through (px, py, pz) with outward normal (nx, ny, nz) pointing toward the retained material side. Unbounded=true: use with boolean intersection to obtain bounded results.",
         sort_group: "01-geometry",
     },
@@ -393,7 +575,7 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
     },
     BuiltinFunctionInfo {
         name: "polygon",
-        signature: "polygon(x1, y1, x2, y2, ...) -> Surface",
+        signature: "polygon(x1: Length, y1: Length, x2: Length, y2: Length, ...) -> Surface",
         doc: "Creates a polygonal 2D profile from variadic flat coordinate pairs — at least 3 vertices (6 args), and an even number of args.",
         sort_group: "01-geometry",
     },
@@ -825,21 +1007,26 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
         sort_group: "08-coordinate",
     },
     // --- 09-bbox: bounding box ---
+    // A BoundingBox is Length-valued by construction (task 6081), so the two
+    // accessors return `Vector3<Length>` / `Point3<Length>` — not an
+    // unqualified `Vector` / `Point`. `bbox` is the 2-point CONSTRUCTOR; the
+    // one-argument `bbox(solid)` form these entries used to declare is
+    // `bounding_box`'s signature, not this one.
     BuiltinFunctionInfo {
         name: "bbox",
-        signature: "bbox(solid) -> BoundingBox",
-        doc: "Returns the axis-aligned bounding box of a solid.",
+        signature: "bbox(min: Point3<Length>, max: Point3<Length>) -> BoundingBox",
+        doc: "Constructs an axis-aligned bounding box from its min and max corner points.",
         sort_group: "09-bbox",
     },
     BuiltinFunctionInfo {
         name: "bbox_size",
-        signature: "bbox_size(bb: BoundingBox) -> Vector",
+        signature: "bbox_size(bb: BoundingBox) -> Vector3<Length>",
         doc: "Returns the size (width × height × depth) of a bounding box.",
         sort_group: "09-bbox",
     },
     BuiltinFunctionInfo {
         name: "bbox_center",
-        signature: "bbox_center(bb: BoundingBox) -> Point",
+        signature: "bbox_center(bb: BoundingBox) -> Point3<Length>",
         doc: "Returns the centre point of a bounding box.",
         sort_group: "09-bbox",
     },
@@ -1044,8 +1231,8 @@ mod tests {
 
     #[test]
     fn polygon_completion_advertises_compiling_flat_form() {
-        // Authoritative compiler arm: crates/reify-compiler/src/geometry.rs:1570
-        // (the `polygon` match arm in `compile_profile_op`) accepts ONLY
+        // Authoritative compiler arm: crates/reify-compiler/src/geometry.rs's
+        // `compile_geometry_call_inner`, "polygon" match arm — accepts ONLY
         // variadic flat coordinate pairs (x1, y1, x2, y2, ...) — at least 6
         // args (3 points), an even count — NOT a `List<Point2<Length>>`
         // structured argument. The served completion signature must match
@@ -1069,6 +1256,398 @@ mod tests {
             detail.contains("x1") && detail.contains("y1"),
             "polygon signature must advertise the compiling variadic flat coordinate-pair form (x1, y1, ...), got: {detail}"
         );
+        // polygon's Length-typing is pinned by
+        // `geometry_completion_signatures_type_gated_slots_as_length`, not
+        // duplicated here.
+    }
+
+    // --- task 6450: gated-length builtins advertise their dimension requirement ---
+    //
+    // The authoritative per-builtin position table lives outside this crate's
+    // reach — reify-compiler::builtin_signatures and reify-eval::arg_acceptance
+    // are both `pub(crate)` to their own crate (see the module doc of the
+    // latter, crates/reify-eval/src/arg_acceptance.rs, for the full table) —
+    // so instead of hand-copying it, each row below is pinned BEHAVIOURALLY
+    // against the real gate: the compiler is the oracle, not a restatement of
+    // it (G7).
+
+    /// Evaluate a single `.ri` expression through the same parse → compile →
+    /// check pipeline `AnalysisContext` runs for the LSP (`AnalysisContext::new`
+    /// delegating to `AnalysisContext::from_parsed`), and return every
+    /// diagnostic message from BOTH layers Contract C spans.
+    /// `AnalysisContext` keeps `compiled` (COMPILE-time diagnostics — where
+    /// box/cylinder/sphere/... are gated, per reify-compiler::builtin_signatures)
+    /// and `check_result` (the lightweight EVAL-time `check()` diagnostics)
+    /// as separate fields, mirroring reify-lsp/src/diagnostics.rs's own
+    /// two-source merge for published diagnostics; a caller wanting the full
+    /// picture a user would see must combine them, same as here. Neither
+    /// field observes polygon's variadic route or rounded_box/rounded_rect's
+    /// lowered gate — see [`GateReach::BuildOnly`] for where those actually
+    /// fire and why that makes them structurally invisible here.
+    fn eval_expr_diagnostics(expr: &str) -> Vec<String> {
+        let source = format!("structure S {{\n    let v = {expr}\n}}");
+        let ctx = AnalysisContext::new(&source, &test_uri());
+        ctx.compiled
+            .diagnostics
+            .iter()
+            .chain(ctx.check_result.diagnostics.iter())
+            .map(|d| d.message.clone())
+            .collect()
+    }
+
+    /// Where a row's LENGTH gate can be OBSERVED from, which decides whether
+    /// this test can pin it behaviourally (task 6450, esc-6450-2).
+    #[derive(PartialEq)]
+    enum GateReach {
+        /// The surface name has a `builtin_arg_slots` entry in
+        /// `reify-compiler`'s `builtin_signatures.rs`, so `check_builtin_arg_types`
+        /// diagnoses the bare form at COMPILE time — reachable from the
+        /// lightweight `AnalysisContext::check()` pipeline reify-lsp itself
+        /// uses, hence assertable here.
+        CompileCheck,
+        /// The name is deliberately UNSLOTTED at compile time, so its gate
+        /// fires only from inside `reify-eval`'s realization loop
+        /// (`engine_build.rs`), under `build()`/`realize_for_check()` — which
+        /// `AnalysisContext::from_parsed` never calls (the "C2" lightweight
+        /// path). It is structurally invisible to reify-lsp either way —
+        /// reaching it here would mean linking `reify-kernel-occt` into
+        /// reify-lsp's dev-deps purely to prove a doc string — so these rows
+        /// assert (c) only. The requirement itself is confirmed to varying
+        /// degrees per row, not by a comment here but by reify-eval's own
+        /// tests: `polygon`'s fully-bare form is pinned end-to-end, hint text
+        /// included, by `polygon_bare_vertex_drops_op_dimensioned_builds`
+        /// (crates/reify-eval/tests/harness_geometry/geometry_length_args_units_e2e.rs).
+        /// `rounded_box`'s MIXED-dimension form is pinned as dropped — though
+        /// under a different "unresolved" message, not the hint — by
+        /// `rounded_box_bare_corner_radius_reports_unresolved_not_non_finite`
+        /// in the same file; neither its nor `rounded_rect`'s fully-bare form
+        /// has a test pinning the hint text. That gap is filed as a
+        /// follow-up rather than fixed here — reify-eval is outside this
+        /// task's `reify-lsp`-only scope.
+        BuildOnly,
+    }
+    use GateReach::{BuildOnly, CompileCheck};
+
+    /// Look up a gated builtin's canonical dimensioned example from
+    /// [`LENGTH_GATED_EXAMPLES`] — the same table `builtin_doc_with_length_gate_note`
+    /// renders the served documentation from — rather than hand-copying it
+    /// into a second table. That is what makes `length_gated_tables_stay_in_sync`
+    /// below meaningful: a dimensioned example can only ever come from one
+    /// place.
+    fn dimensioned_example(name: &str) -> &'static str {
+        LENGTH_GATED_EXAMPLES
+            .iter()
+            .find(|(n, _, _)| *n == name)
+            .unwrap_or_else(|| panic!("{name}: no LENGTH_GATED_EXAMPLES entry"))
+            .1
+    }
+
+    /// The same row's optional doc qualifier (see [`DIMENSIONLESS_NORMAL_NOTE`]),
+    /// looked up the same way as [`dimensioned_example`] so
+    /// `gated_length_builtins_advertise_their_dimension_requirement`'s
+    /// positive/negative qualifier assertions are a data lookup rather than a
+    /// name-keyed branch mirroring the renderer's.
+    fn qualifier_for(name: &str) -> Option<&'static str> {
+        LENGTH_GATED_EXAMPLES
+            .iter()
+            .find(|(n, _, _)| *n == name)
+            .unwrap_or_else(|| panic!("{name}: no LENGTH_GATED_EXAMPLES entry"))
+            .2
+    }
+
+    /// One row per empirically-gated `01-geometry` builtin (task 6450):
+    /// `(builtin_name, bare_call, gate_reach)`. The dimensioned call is
+    /// deliberately NOT a fourth column here — it is looked up from
+    /// `LENGTH_GATED_EXAMPLES` via `dimensioned_example` so the doc-string
+    /// example and this test's behavioural pin can never drift apart (see
+    /// `length_gated_tables_stay_in_sync`, which also
+    /// asserts the two tables name the same builtins and that every
+    /// `LENGTH_GATED_EXAMPLES` row is a real `BUILTIN_FUNCTIONS` entry).
+    /// `half_space` deliberately leaves `nx`/`ny`/`nz` bare — see
+    /// [`DIMENSIONLESS_NORMAL_NOTE`] for why.
+    ///
+    /// The three `BuildOnly` rows are exactly the three names this table
+    /// shares with `LENGTH_GATED_EXAMPLES` that have NO arm in
+    /// `builtin_signatures.rs`'s `builtin_arg_slots` (they fall through its
+    /// `_ => &[]`): `rounded_box` / `rounded_rect` lower to boolean composes,
+    /// and `polygon`'s variadic vertex stream is excluded there by design.
+    const GATED_LENGTH_BUILTIN_ROWS: &[(&str, &str, GateReach)] = &[
+        ("box", "box(20, 10, 30)", CompileCheck),
+        ("cylinder", "cylinder(5, 20)", CompileCheck),
+        ("sphere", "sphere(10)", CompileCheck),
+        ("box_centered", "box_centered(20, 10, 30)", CompileCheck),
+        ("cylinder_centered", "cylinder_centered(5, 20)", CompileCheck),
+        ("cone", "cone(10, 5, 20)", CompileCheck),
+        ("rounded_box", "rounded_box(20, 20, 10, 2)", BuildOnly),
+        ("torus", "torus(20, 5)", CompileCheck),
+        ("half_space", "half_space(0, 0, 0, 0, 0, 1)", CompileCheck),
+        ("wedge", "wedge(20, 20, 10, 5)", CompileCheck),
+        ("rectangle", "rectangle(20, 10)", CompileCheck),
+        ("circle", "circle(10)", CompileCheck),
+        ("rounded_rect", "rounded_rect(20, 20, 2)", BuildOnly),
+        ("polygon", "polygon(0, 0, 10, 0, 5, 10)", BuildOnly),
+        ("ellipse", "ellipse(10, 5)", CompileCheck),
+    ];
+
+    /// Drift guard: `LENGTH_GATED_EXAMPLES` (the doc-string example table)
+    /// and `GATED_LENGTH_BUILTIN_ROWS` (this suite's behavioural-pin table)
+    /// must name exactly the same builtins; every `LENGTH_GATED_EXAMPLES`
+    /// entry must resolve to a real `BUILTIN_FUNCTIONS` row; and every
+    /// `BUILTIN_FUNCTIONS` signature that types a slot `Length` must have a
+    /// `LENGTH_GATED_EXAMPLES` row. That third check is the direction that
+    /// actually rots: a builtin that becomes LENGTH-gated but gains no example row
+    /// would silently omit the units clause from its popup, and neither of
+    /// the first two checks nor
+    /// `geometry_completion_signatures_type_gated_slots_as_length` (whose
+    /// loop is scoped to these same 15 rows) would ever inspect it. Without
+    /// the first two: a row added to `GATED_LENGTH_BUILTIN_ROWS` alone is
+    /// caught the moment `dimensioned_example` fails to find it, but a row
+    /// added to `LENGTH_GATED_EXAMPLES` alone would ship a doc claim with no
+    /// behavioural pin at all, and a typo'd or stale `LENGTH_GATED_EXAMPLES`
+    /// key is simply never looked up by `builtin_doc_with_length_gate_note`'s
+    /// `find` and never reds. All three are exactly the failure modes the
+    /// TODO(#5752) residual anticipates as the gated set grows.
+    #[test]
+    fn length_gated_tables_stay_in_sync() {
+        let example_names: HashSet<&str> = LENGTH_GATED_EXAMPLES
+            .iter()
+            .map(|(name, _, _)| *name)
+            .collect();
+        let row_names: HashSet<&str> = GATED_LENGTH_BUILTIN_ROWS
+            .iter()
+            .map(|(name, _, _)| *name)
+            .collect();
+        assert_eq!(
+            example_names, row_names,
+            "LENGTH_GATED_EXAMPLES and GATED_LENGTH_BUILTIN_ROWS must name \
+             exactly the same builtins"
+        );
+        for name in &example_names {
+            assert!(
+                BUILTIN_FUNCTIONS.iter().any(|info| info.name == *name),
+                "LENGTH_GATED_EXAMPLES has a dead row: {name:?} is not a \
+                 registered BUILTIN_FUNCTIONS entry"
+            );
+        }
+        // Converse: a builtin whose signature already types a slot `Length`
+        // but has no LENGTH_GATED_EXAMPLES row would silently serve a popup
+        // with no units clause. Scoped to the `01-geometry` sort group — the
+        // documented boundary of this sweep (see LENGTH_GATED_EXAMPLES's doc
+        // comment) — so this cannot fire on an unrelated Length-typed
+        // neighbour like `09-bbox`'s `bbox(min: Point3<Length>, ...)`, whose
+        // STATIC signature narrowing (task 6081) is not a Contract C argument
+        // gate. Matches "Length" anywhere in the signature rather than the
+        // exact "`: Length`" spelling every row happens to use today, so a
+        // future `01-geometry` row typed `Point3<Length>`/`Vector3<Length>`
+        // (rather than flat scalar slots) cannot escape this check the way an
+        // exact-substring match would let it. Verified: today exactly the 15
+        // rows above have a Length-typed slot, so this is green on landing
+        // and reds the moment a 16th one appears unpaired.
+        for info in BUILTIN_FUNCTIONS
+            .iter()
+            .filter(|info| info.sort_group == "01-geometry")
+        {
+            if info.signature.contains("Length") {
+                assert!(
+                    example_names.contains(info.name),
+                    "{}: BUILTIN_FUNCTIONS signature types a slot as Length \
+                     but has no LENGTH_GATED_EXAMPLES entry, so its popup \
+                     would omit the units clause",
+                    info.name
+                );
+            }
+        }
+    }
+
+    /// Each gated geometry builtin's SERVED completion documentation must
+    /// carry the units requirement AND its dimensioned example — pinned
+    /// BEHAVIOURALLY so the doc can never claim a gate that does not exist
+    /// and every advertised example is one that actually evaluates clean.
+    ///
+    /// Assertion (c) reads the completion item's rendered `documentation`
+    /// (via `compute_completions`), not the raw `BuiltinFunctionInfo.doc`
+    /// field directly — see [`builtin_doc_with_length_gate_note`] for why
+    /// `doc` cannot carry this baked in. This mirrors the existing
+    /// `polygon_completion_advertises_compiling_flat_form` and
+    /// `builtin_completions_have_documentation` precedent of asserting on
+    /// served completion output rather than the source struct.
+    ///
+    /// Per row: (a) for `CompileCheck` rows, the BARE form is rejected with
+    /// `LENGTH_MIGRATION_HINT` — matching the hint TEXT, not the builtin
+    /// name, since a lowered alias diagnoses under its lowered
+    /// `box`/`cylinder` name; `BuildOnly` rows instead pin the premise that
+    /// justifies skipping this check (see [`GateReach::BuildOnly`]). (b) the
+    /// DIMENSIONED form evaluates with NO diagnostics at all, for all 15
+    /// rows — not merely none containing the hint, so a wrong-arity or
+    /// misspelled example reds here instead of shipping into the popup
+    /// unnoticed. (c) the served `documentation` contains both the hint and
+    /// the dimensioned example, for all 15 rows, plus [`qualifier_for`]'s
+    /// qualifier where the row has one.
+    #[test]
+    fn gated_length_builtins_advertise_their_dimension_requirement() {
+        use reify_core::units::LENGTH_MIGRATION_HINT;
+        use tower_lsp::lsp_types::Documentation;
+
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+
+        for (name, bare, reach) in GATED_LENGTH_BUILTIN_ROWS {
+            let (name, bare) = (*name, *bare);
+            let dimensioned = dimensioned_example(name);
+            let bare_diags = eval_expr_diagnostics(bare);
+            if *reach == CompileCheck {
+                assert!(
+                    bare_diags.iter().any(|m| m.contains(LENGTH_MIGRATION_HINT)),
+                    "{name}: bare form `{bare}` should be rejected with the \
+                     LENGTH_MIGRATION_HINT, got diagnostics: {bare_diags:?}"
+                );
+            } else {
+                // Pins the premise that justifies skipping the positive
+                // check above: a `BuildOnly` row's bare form must genuinely
+                // be undiagnosed by this harness today. If a future compiler
+                // change gives the builtin a `builtin_arg_slots` arm, this
+                // reds and says so — promote it to `CompileCheck` rather
+                // than leaving a stale, silently-wrong opt-out.
+                assert!(
+                    !bare_diags.iter().any(|m| m.contains(LENGTH_MIGRATION_HINT)),
+                    "{name}: marked BuildOnly but its bare form IS diagnosed \
+                     here — promote it to CompileCheck. diagnostics: {bare_diags:?}"
+                );
+            }
+
+            let dimensioned_diags = eval_expr_diagnostics(dimensioned);
+            assert!(
+                dimensioned_diags.is_empty(),
+                "{name}: dimensioned form `{dimensioned}` should evaluate \
+                 clean (no diagnostics), got: {dimensioned_diags:?}"
+            );
+
+            let item = find_builtin_item(&items, name);
+            let doc_text = match &item.documentation {
+                Some(Documentation::MarkupContent(mc)) => mc.value.as_str(),
+                other => panic!("{name}: expected MarkupContent documentation, got: {other:?}"),
+            };
+            assert!(
+                doc_text.contains(LENGTH_MIGRATION_HINT),
+                "{name}: served documentation should contain the LENGTH_MIGRATION_HINT, got: {doc_text}"
+            );
+            assert!(
+                doc_text.contains(dimensioned),
+                "{name}: served documentation should show the dimensioned example `{dimensioned}`, got: {doc_text}"
+            );
+
+            // Pinning both directions (a row's own qualifier present; every
+            // other row's absent) means deleting a qualifier, or
+            // mis-attaching it to the wrong builtin, reds here — see
+            // DIMENSIONLESS_NORMAL_NOTE for why half_space is the only row
+            // with one today.
+            match qualifier_for(name) {
+                Some(qualifier) => assert!(
+                    doc_text.contains(qualifier),
+                    "{name}: served documentation should contain its qualifier, got: {doc_text}"
+                ),
+                None => assert!(
+                    !doc_text.contains(DIMENSIONLESS_NORMAL_NOTE),
+                    "{name}: served documentation should not carry \
+                     half_space's DIMENSIONLESS_NORMAL_NOTE qualifier, got: {doc_text}"
+                ),
+            }
+        }
+    }
+
+    /// `builtin_doc_with_length_gate_note`'s `None` arm — a builtin absent
+    /// from `LENGTH_GATED_EXAMPLES` — must serve its documentation
+    /// byte-identical to the raw `BuiltinFunctionInfo.doc`, with no units
+    /// clause at all. Nothing else in this suite iterates the ~80 non-gated
+    /// rows, so an over-broad match (e.g. a future `starts_with` in place of
+    /// the exact-name `find`) could silently ship a false dimension claim on
+    /// a dimensionless builtin like `sqrt` with no test reddening — the same
+    /// failure class `half_space`'s `Float`-vs-gate contradiction was, just
+    /// inverted.
+    #[test]
+    fn non_gated_builtin_documentation_is_served_unchanged() {
+        use reify_core::units::LENGTH_MIGRATION_HINT;
+        use tower_lsp::lsp_types::Documentation;
+
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+
+        let item = find_builtin_item(&items, "sqrt");
+        let doc_text = match &item.documentation {
+            Some(Documentation::MarkupContent(mc)) => mc.value.as_str(),
+            other => panic!("sqrt: expected MarkupContent documentation, got: {other:?}"),
+        };
+        let raw_doc = BUILTIN_FUNCTIONS
+            .iter()
+            .find(|info| info.name == "sqrt")
+            .expect("sqrt must be a registered builtin")
+            .doc;
+        assert_eq!(
+            doc_text, raw_doc,
+            "sqrt is not LENGTH-gated; its served documentation must equal \
+             its raw doc verbatim"
+        );
+        assert!(
+            !doc_text.contains(LENGTH_MIGRATION_HINT),
+            "sqrt is not LENGTH-gated; its served documentation must not \
+             carry the units clause, got: {doc_text}"
+        );
+    }
+
+    /// A gated geometry builtin's served completion **signature** (the
+    /// `detail` field) must type its LENGTH-gated slots as `Length`, not
+    /// `Real` — advertising `Real` is worse than omitting a units note
+    /// entirely, because it affirmatively contradicts the gate. Scoped to
+    /// exactly the 15 `GATED_LENGTH_BUILTIN_ROWS` names (not every builtin in
+    /// the table) so this cannot fire on a legitimately dimensionless
+    /// neighbour elsewhere — e.g. `02-numeric`'s `sqrt(x: Real)`.
+    ///
+    /// Two checks per row: the negative `!detail.contains(": Real")`, and a
+    /// positive `detail.contains(": Length")`. The negative alone passes for
+    /// a signature with NO type annotations at all — `polygon`'s shape
+    /// before its coordinates were retyped — so the positive check is what
+    /// actually closes that gap, uniformly for every row.
+    ///
+    /// `half_space` needs a different negative check: its signature mixes a
+    /// gated and a dimensionless slot group (the same split
+    /// [`DIMENSIONLESS_NORMAL_NOTE`] documents), which would trip a blanket
+    /// `!detail.contains(": Real")` even though nothing is wrong. So
+    /// `half_space` checks its three gated slot names by substring (`px:
+    /// Length` etc.) instead of banning `Real` from the whole signature;
+    /// every other row here has no non-gated slot at all, so the blanket
+    /// check is exact for them.
+    #[test]
+    fn geometry_completion_signatures_type_gated_slots_as_length() {
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+
+        for (name, _, _) in GATED_LENGTH_BUILTIN_ROWS {
+            let name = *name;
+            let detail = served_signature(&items, name);
+            if name == "half_space" {
+                // Gated slots only — see the doc comment above.
+                for slot in ["px", "py", "pz"] {
+                    assert!(
+                        detail.contains(&format!("{slot}: Length")),
+                        "{name}: gated slot `{slot}` should be typed Length, got: {detail}"
+                    );
+                    assert!(
+                        !detail.contains(&format!("{slot}: Real")),
+                        "{name}: gated slot `{slot}` should not be typed Real, got: {detail}"
+                    );
+                }
+                continue;
+            }
+            assert!(
+                !detail.contains(": Real"),
+                "{name}: signature should not type any gated slot as Real, got: {detail}"
+            );
+            assert!(
+                detail.contains(": Length"),
+                "{name}: signature should type at least one gated slot as \
+                 Length, got: {detail}"
+            );
+        }
     }
 
     #[test]
@@ -1219,6 +1798,25 @@ mod tests {
         assert!(
             !keyword_labels.contains(&"sub"),
             "top-level should NOT include 'sub'"
+        );
+    }
+
+    /// `type` declares a top-level type alias, so it belongs in TOP_LEVEL_KEYWORDS
+    /// alongside structure/fn/trait/enum. Task #6341.
+    #[test]
+    fn completion_top_level_offers_type_keyword() {
+        let source = "structure Foo {\n    param x: Length = 1mm\n}\n";
+        let items = compute_completions(source, &test_uri(), Position::new(3, 0));
+
+        let keyword_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::KEYWORD))
+            .map(|k| k.label.as_str())
+            .collect();
+
+        assert!(
+            keyword_labels.contains(&"type"),
+            "top-level should include the 'type' keyword, got: {keyword_labels:?}"
         );
     }
 
@@ -1449,6 +2047,146 @@ mod tests {
             var_labels.contains(&"height"),
             "should include Bracket's 'height', got: {:?}",
             var_labels
+        );
+    }
+
+    // --- task #6341: user-declared type aliases in type position ---
+
+    /// An alias declared in the open document completes in type position, with a
+    /// `detail` byte-identical to the hover signature so the two surfaces agree.
+    #[test]
+    fn completion_type_position_includes_user_type_aliases() {
+        let source = "type Speed = Length / Time\nstructure Foo {\n    param x: \n}";
+        // Line 2, col 13 is after "    param x: " — in type position.
+        let items = compute_completions(source, &test_uri(), Position::new(2, 13));
+
+        let alias = items
+            .iter()
+            .find(|i| i.label == "Speed")
+            .unwrap_or_else(|| {
+                panic!(
+                    "type position should offer the user alias 'Speed', got: {:?}",
+                    items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(alias.kind, Some(CompletionItemKind::CLASS));
+        assert_eq!(alias.detail, Some("type Speed = Length / Time".to_string()));
+    }
+
+    /// The document-scoped contract: prelude-seeded aliases are filtered out of
+    /// `compiled.type_aliases`, so completion must not surface them either.
+    /// `Rate`, `HeatCapacity` and `Stress` are real stdlib prelude aliases.
+    #[test]
+    fn completion_type_position_excludes_stdlib_aliases() {
+        let source = "structure Foo {\n    param x: \n}";
+        let items = compute_completions(source, &test_uri(), Position::new(1, 13));
+
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        for stdlib_alias in ["Rate", "HeatCapacity", "Stress"] {
+            assert!(
+                !labels.contains(&stdlib_alias),
+                "stdlib prelude alias '{stdlib_alias}' must not be offered, got: {labels:?}"
+            );
+        }
+    }
+
+    /// Aliases appear everywhere `push_type_names` already runs, not only in
+    /// `TypePosition`.
+    #[test]
+    fn completion_structure_body_includes_user_type_aliases() {
+        let source = "type Speed = Length / Time\nstructure Foo {\n    param x: Length = 1mm\n\n}";
+        // Line 3 is the blank line inside Foo's body.
+        let items = compute_completions(source, &test_uri(), Position::new(3, 0));
+
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(
+            labels.contains(&"Speed"),
+            "structure body should also offer the user alias 'Speed', got: {labels:?}"
+        );
+    }
+
+    /// Order pin. `TypeAliasRegistry::into_compiled` drains a
+    /// `HashMap<String, TypeAliasEntry>`, so iterating `compiled.type_aliases`
+    /// yielded a different order per process under std's `RandomState`, and these
+    /// items set no `sort_text` to re-impose one. Driving the loop from the parse
+    /// makes the order source order. The three names are deliberately ordered so
+    /// source order differs from alphabetical, catching a sort-by-name too.
+    #[test]
+    fn completion_type_aliases_are_offered_in_source_order() {
+        let source = "type Zeta = Length / Time\ntype Alpha = Bool\ntype Mid = Length\n\
+                      structure Foo {\n    param x: \n}";
+        // Line 4, col 13 is after "    param x: " — in type position.
+        let items = compute_completions(source, &test_uri(), Position::new(4, 13));
+
+        let aliases: Vec<&str> = items
+            .iter()
+            .map(|i| i.label.as_str())
+            .filter(|l| matches!(*l, "Zeta" | "Alpha" | "Mid"))
+            .collect();
+        assert_eq!(
+            aliases,
+            vec!["Zeta", "Alpha", "Mid"],
+            "aliases must be offered in source order, not HashMap order"
+        );
+    }
+
+    /// Shadow path. `phase_aliases` SKIPS prelude seeding for any name the user
+    /// redeclares (`crates/reify-compiler/src/compile_builder/aliases_phase.rs`),
+    /// so a user alias that reuses a prelude alias name is registered as
+    /// user-declared and must still be offered — it is never marked into
+    /// `seeded_names` and so is never filtered out of `compiled.type_aliases`.
+    ///
+    /// This is the one boundary the two negative tests above cannot pin: they
+    /// assert "prelude alias absent" using names the user never declares, so if
+    /// the compiler ever DID mark a shadowed name as seeded, the alias would
+    /// silently vanish from completion and hover while every one of those tests
+    /// kept passing (more strongly, even). `Rate` is a real stdlib prelude alias.
+    #[test]
+    fn completion_offers_user_alias_that_shadows_a_prelude_alias() {
+        let source = "type Rate = Length
+structure Foo {
+    param x: 
+}";
+        // Line 2, col 13 is after "    param x: " — in type position.
+        let items = compute_completions(source, &test_uri(), Position::new(2, 13));
+
+        let shadowing: Vec<&CompletionItem> = items.iter().filter(|i| i.label == "Rate").collect();
+        assert_eq!(
+            shadowing.len(),
+            1,
+            "the shadowing user alias 'Rate' must be offered exactly once, got: {:?}",
+            items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+        );
+        assert_eq!(shadowing[0].kind, Some(CompletionItemKind::CLASS));
+        assert_eq!(
+            shadowing[0].detail,
+            Some("type Rate = Length".to_string()),
+            "the shadowing alias must render the USER's body, not the prelude's"
+        );
+    }
+
+    /// A document that declares the same alias twice parses as two `TypeAlias`
+    /// declarations but compiles to a single entry (the compiler emits a
+    /// duplicate-alias diagnostic and keeps one). Since the loop is driven from
+    /// the parse, a plain membership test would push the name twice. Half-typed
+    /// duplicate declarations are a normal transient state while editing, so the
+    /// list must stay free of cosmetic duplicates in an already-erroring buffer.
+    #[test]
+    fn completion_offers_a_duplicated_alias_only_once() {
+        let source = "type Speed = Length / Time
+type Speed = Length
+                      structure Foo {
+    param x: 
+}";
+        // Line 3, col 13 is after "    param x: " — in type position.
+        let items = compute_completions(source, &test_uri(), Position::new(3, 13));
+
+        let speeds = items.iter().filter(|i| i.label == "Speed").count();
+        assert_eq!(
+            speeds,
+            1,
+            "a doubly-declared alias must be offered once, got {speeds} items: {:?}",
+            items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
         );
     }
 
@@ -1927,6 +2665,95 @@ mod tests {
         assert!(
             func_labels.contains(&"bbox_center"),
             "should include 'bbox_center'"
+        );
+    }
+
+    // --- bbox declared signatures are Length-valued (task 6081) ---
+    //
+    // A bounding box is spatial by construction, so the two accessors return
+    // `Vector3<Length>` / `Point3<Length>`, not an unqualified `Vector` /
+    // `Point`. These are the only other USER-VISIBLE declared signatures for
+    // these builtins, so leaving them un-narrowed would reintroduce the exact
+    // static/runtime disagreement the ruling removes, just in another surface.
+    //
+    // `bbox`'s entry also carried a pre-existing ARITY bug: `bbox(solid)` is
+    // `bounding_box`'s signature, not the 2-point constructor's.
+    //
+    // Asserted by CONTENT, not by full-string equality against the table rows.
+    // What this pins is the semantic claim — the declared quantities are
+    // Length-narrowed, and `bbox` is the 2-point constructor. Parameter names,
+    // spacing and arrow rendering are cosmetic, and pinning them would mean a
+    // purely presentational reword reds these tests while saying nothing about
+    // behaviour.
+
+    /// Find a builtin's completion item by name, as `compute_completions`
+    /// would serve it to an editor. The shared lookup behind
+    /// `served_signature` below, and used directly wherever a test needs
+    /// another field of the served `CompletionItem` (e.g. `documentation`),
+    /// so no test needs to close over `items` in a bespoke find of its own.
+    fn find_builtin_item<'a>(items: &'a [CompletionItem], name: &str) -> &'a CompletionItem {
+        items
+            .iter()
+            .find(|i| i.kind == Some(CompletionItemKind::FUNCTION) && i.label == name)
+            .unwrap_or_else(|| panic!("{name}: missing FUNCTION completion"))
+    }
+
+    /// A builtin's SERVED completion signature (the rendered `detail`
+    /// field) — what an editor actually shows for it. `builtin_signature`
+    /// below reads the source `BUILTIN_FUNCTIONS` table directly instead:
+    /// prefer `served_signature` when the claim under test is about served
+    /// output, and reach for `builtin_signature` only when the claim is
+    /// about the table itself, as `bbox_declared_signatures_are_length_narrowed`
+    /// deliberately is.
+    fn served_signature(items: &[CompletionItem], name: &str) -> String {
+        find_builtin_item(items, name)
+            .detail
+            .clone()
+            .unwrap_or_else(|| panic!("{name}: completion has no detail (signature)"))
+    }
+
+    fn builtin_signature(name: &str) -> &'static str {
+        BUILTIN_FUNCTIONS
+            .iter()
+            .find(|info| info.name == name)
+            .unwrap_or_else(|| panic!("{name:?} must be a registered builtin"))
+            .signature
+    }
+
+    #[test]
+    fn bbox_declared_signatures_are_length_narrowed() {
+        // (builtin, the qualified type its declared signature must carry)
+        for (name, qualified) in [
+            ("bbox", "Point3<Length>"),
+            ("bbox_size", "Vector3<Length>"),
+            ("bbox_center", "Point3<Length>"),
+        ] {
+            let sig = builtin_signature(name);
+            assert!(
+                sig.contains(qualified),
+                "{name}'s declared signature must carry the Length-narrowed \
+                 {qualified}; got: {sig}"
+            );
+            // The pre-narrowing spellings: an unqualified return type, which is
+            // the static/runtime disagreement this ruling removes.
+            assert!(
+                !sig.ends_with("-> Vector") && !sig.ends_with("-> Point"),
+                "{name} must not declare an unqualified Vector/Point return; got: {sig}"
+            );
+        }
+
+        // `bbox` is the 2-point CONSTRUCTOR. Its entry used to declare the
+        // one-argument `bbox(solid)`, which is `bounding_box`'s signature.
+        let bbox_sig = builtin_signature("bbox");
+        let params = bbox_sig
+            .split_once('(')
+            .and_then(|(_, rest)| rest.rsplit_once(')'))
+            .map(|(params, _)| params)
+            .unwrap_or_else(|| panic!("bbox signature must be a call form; got: {bbox_sig}"));
+        assert_eq!(
+            params.split(',').count(),
+            2,
+            "bbox takes two corner points; the 1-arg form is `bounding_box`. got: {bbox_sig}"
         );
     }
 

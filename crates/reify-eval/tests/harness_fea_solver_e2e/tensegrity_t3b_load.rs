@@ -263,6 +263,19 @@ fn trampoline_no_slack_transverse_load_solves() {
 /// diagnostic whose message also contains `needle` (proving the specific guard /
 /// `describe()` arm fired, not merely *some* infeasibility).
 fn assert_failed_infeasible(outcome: ComputeOutcome, needle: &str) {
+    assert_failed_infeasible_needles(outcome, &[needle], &[]);
+}
+
+/// The several-needle form of [`assert_failed_infeasible`], for a guard whose
+/// wording is pinned by more than one needle — including *negative* ones, which
+/// catch a degenerate labelling that every positive needle would still satisfy.
+///
+/// Every needle is checked against ONE flattened diagnostic set, so a caller
+/// invokes the trampoline once and the assertions provably describe the same
+/// message rather than several independently-produced ones. It is also the
+/// single site where a `Failed` outcome's diagnostics are flattened; the
+/// single-needle form above delegates here rather than re-spelling that.
+fn assert_failed_infeasible_needles(outcome: ComputeOutcome, must: &[&str], must_not: &[&str]) {
     match outcome {
         ComputeOutcome::Failed { diagnostics, .. } => {
             let joined = diagnostics
@@ -274,10 +287,18 @@ fn assert_failed_infeasible(outcome: ComputeOutcome, needle: &str) {
                 joined.contains("E_TensegrityLoadInfeasible"),
                 "expected an E_TensegrityLoadInfeasible diagnostic, got: {joined}"
             );
-            assert!(
-                joined.contains(needle),
-                "expected the diagnostic to mention {needle:?}, got: {joined}"
-            );
+            for &needle in must {
+                assert!(
+                    joined.contains(needle),
+                    "expected the diagnostic to mention {needle:?}, got: {joined}"
+                );
+            }
+            for &needle in must_not {
+                assert!(
+                    !joined.contains(needle),
+                    "expected the diagnostic NOT to mention {needle:?}, got: {joined}"
+                );
+            }
         }
         other => panic!("expected ComputeOutcome::Failed, got {other:?}"),
     }
@@ -444,6 +465,46 @@ fn trampoline_swapped_section_units_is_failed() {
         Value::List(vec![Value::Int(0), Value::Int(2)]),
     ];
     assert_failed_infeasible(call_tensegrity_load(&value_inputs), "wrong unit");
+}
+
+/// (b5) The `loads` slot is a `List<Vector3<Force>>`, so every *component* of
+/// every entry is unit-checked individually, not just the entry as a whole. A
+/// Length in the y component of the middle entry must surface a located
+/// `E_TensegrityLoadInfeasible` "wrong unit" diagnostic naming `loads[1].y` —
+/// both the offending entry index and the offending component letter, so the
+/// author is told exactly which of the nine numbers is wrong.
+///
+/// Three load entries are supplied for the three nodes of `two_cable_string`,
+/// and corrupting a single *component* leaves that entry count intact, so the
+/// `loads.len() != nodes.len()` guard provably cannot be what fires; `loads` is
+/// cracked at input [4] ahead of every count guard in `run`. The located
+/// `loads[{i}].{x|y|z}` labelling is what this test exists to pin: index 1 (not
+/// 0) distinguishes a real entry index from a hardcoded constant, and component
+/// `y` (not `x`) distinguishes per-component labels from one label copy-pasted
+/// across all three reads. The negative `loads[0]` needle is what rules out the
+/// constant index, which every positive needle would still satisfy — and all
+/// four are checked against ONE invocation's diagnostics, so they provably
+/// describe the same message.
+#[test]
+fn trampoline_length_in_load_component_is_failed() {
+    let value_inputs = vec![
+        two_cable_string(2.0),
+        Value::List(vec![force(5_000.0), force(5_000.0)]),
+        pressure(200.0e9),
+        area(1.0e-4),
+        Value::List(vec![
+            force_vec(0.0, 0.0, 0.0),
+            // loads[1].y is a Length where a Force belongs.
+            Value::Vector(vec![force(0.0), length(50.0), force(0.0)]),
+            force_vec(0.0, 0.0, 0.0),
+        ]),
+        Value::List(vec![Value::Int(0), Value::Int(2)]),
+    ];
+    assert_failed_infeasible_needles(
+        call_tensegrity_load(&value_inputs),
+        &["wrong unit", "expected a Force", "loads[1].y"],
+        &["loads[0]"],
+    );
 }
 
 // ── step-13: dedicated solver::tensegrity_load target registration ───────────

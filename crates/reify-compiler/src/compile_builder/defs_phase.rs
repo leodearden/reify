@@ -24,6 +24,7 @@ use crate::annotations::{
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::type_resolution::{
     TypeAliasRegistry, convert_type_params, resolve_enum_type, resolve_type_expr_with_aliases,
+    unresolved_alias_body_name,
 };
 use crate::types::{CompiledConstraintDef, CompiledConstraintParam};
 
@@ -105,11 +106,35 @@ fn compile_constraint_def(
             // neither a builtin nor a declared type parameter, the name is unknown — emit
             // an error so the user sees the typo at def-compile time rather than silently
             // accepting it and getting a confusing error at the instantiation site.
+            //
+            // `enum_defs` is this site's PRIVATE enum namespace — no
+            // `EnumNameScope` is installed around constraint-def compilation, so
+            // the ambient set the deferred alias arm in
+            // `resolve_type_expr_with_aliases_kinded` consults is empty here and
+            // `type AL = Zq` arrives still spelled `AL`. Hop the unresolved-alias
+            // chain to the name the body ultimately spells before the enum
+            // lookup, so an enum-bodied alias is suppressed exactly as the direct
+            // enum spelling is (task 6259).
+            //
+            // This SUPPRESSES the spurious diagnostic and nothing more: `ty` stays
+            // `None`, which is what the DIRECT spelling stores too (measured — the
+            // guard below only gates the diagnostic, it never populates `ty`).
+            // Populating it would change what `expand_constraint_inst` checks at
+            // every instantiation site, which is out of this task's scope.
+            //
+            // The enum lookup moved inside the block so the hop can be named; it
+            // and the `structure_names` test are both pure predicates, so the
+            // reordering is behaviour-preserving.
             if let Some(te) = &param.type_expr
                 && resolved_ty.is_none()
                 && let reify_ast::TypeExprKind::Named { name, .. } = &te.kind
-                && resolve_enum_type(name, enum_defs).is_none()
                 && !structure_names.contains(name.as_str())
+                && resolve_enum_type(
+                    &unresolved_alias_body_name(name, alias_registry)
+                        .unwrap_or_else(|| name.clone()),
+                    enum_defs,
+                )
+                .is_none()
             {
                 diagnostics.push(
                     Diagnostic::error(format!(

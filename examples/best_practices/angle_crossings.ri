@@ -31,10 +31,19 @@ module angle_crossings
 // Neither of the first two is a style preference — both are hard errors, and
 // the third does not parse. Measured with a built `reify check`.
 //
-// CANONICAL COPY: this block. The verbatim compiler wording lives here, in the
-// compile-gated file; `crates/reify-mcp/src/tools/chunks/units.md` paraphrases
-// the SHAPE of these errors rather than re-quoting them. If a diagnostic is
-// reworded, re-measure here first and let the chunk follow.
+// CANONICAL COPY: this block. The verbatim compiler wording lives here, and the
+// gate that keeps it verbatim is
+// `crates/reify-compiler/tests/harness_doc_chunks/angle_crossings_diagnostics_smoke.rs`,
+// which SCRAPES the four transcriptions below out of this comment and asserts
+// each one equals what the compiler and parser actually emit for a minimal
+// fixture. Reword a diagnostic and that test goes red rather than this block
+// rotting silently.
+//
+// `crates/reify-mcp/src/tools/chunks/units.md` paraphrases the SHAPE of these
+// errors rather than re-quoting them, except for the one parse error it quotes
+// verbatim — which the same test pins against this block. If a diagnostic is
+// reworded, re-measure here first and let the chunk follow; that precedence is
+// enforced, not aspirational.
 //
 //     let   theta : Angle = s / r
 //         -> error: let binding 'theta' declared `Scalar[rad]` but its
@@ -49,7 +58,14 @@ module angle_crossings
 //            evaluates to `Scalar[m·rad]`; declared type and initializer type
 //            must agree
 //     let   x = 2.5 * 1 rad
-//         -> Parse error: syntax error: rad
+//         -> Parse error: syntax error in structure body
+//
+// The `-> ` lines transcribe the diagnostic BODY only. Since task #5392 a real
+// `reify check` also prints a `line:col` ahead of it: on the gate's own
+// three-line fixture for the last entry — `structure S`, then the `let` line,
+// then `}` — the run prints `Parse error: 2:19: syntax error in structure
+// body`. That position is a property of where a declaration sits in a file,
+// not of the diagnostic, so it is deliberately not part of the canonical copy.
 //
 // Drop the annotation on the arc-length case and the error becomes silence
 // instead: `let arc = r * theta` evaluates clean to `0.005 m·rad` — a value

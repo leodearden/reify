@@ -12,6 +12,33 @@ chartered.
 (2026-08-26); main has since advanced. Main moves fast — cite-by-symbol; re-locate
 lines at implementation time.
 
+**Amendment A1 (2026-09-03) — ε's signal restated; it was not achievable as authored.**
+ε (#6722) originally asserted "`reify check` … prints the remaining slack per inequality
+constraint and `n/a` for an equality". That signal could not be produced from ε's own
+scope, for two independent reasons, both established by execution (D3 run
+`wf_96ec9b6e-8eb` plus first-hand probes against a `target/release/reify` built
+2026-09-01):
+
+1. **No renderer was in scope.** ε's modules are the solver/IR/eval crates; none is a
+   CLI file. Per-constraint output is formatted by `report_constraint_results`
+   (`crates/reify-cli/src/main.rs`), which writes only `"  {status} {label}"`. **No leaf
+   of this PRD owns `reify check`'s per-constraint rendering** — ξ is the only leaf
+   scoped to that file and its signal is `reify explain`.
+2. **`reify check` does not resolve `auto` params**, so there is no post-solve value map
+   to compute slack from on the very fixture class the signal described. Measured on
+   `param w : Length = auto` with `w >= 8mm`, `w <= 12mm`, `minimize w`: `reify check`
+   returns `INDETERMINATE` for both constraints with *"undefined inputs"* and exit 0,
+   while `reify eval` resolves `w = 0.01 m`. Auto resolution runs on the eval/solve
+   path, not the check path; making `cmd_check` resolve is **P1-δ #6693**'s deliverable.
+
+This is the G6 branch-3 shape (esc-3436-210): a signal demanding output its own
+dependency set cannot produce. The capability manifest scored ε PASS because its
+bindings check only the **producer** side; nothing checked that a renderer exists.
+**No edge to #6693 was added** — an edge alone changes nothing without a renderer owner.
+If `reify check` should print slack, that is a **separate leaf** requiring both a CLI
+renderer owner and the #6693 edge. ε's WORK items, honesty contract, lockstep
+obligation and #6653 prereq are unchanged.
+
 ---
 
 ## §1 — Goal
@@ -587,10 +614,15 @@ Four movements, in dependency order:
   `engine_eval.rs::has_inequality_slack`. Add `margin: Option<f64>` to
   `ConstraintCheckEntry` (a sibling field, **not** a payload on `Satisfaction`,
   whose `content_hash` feeds the incremental cache key). Evaluate at the post-solve
-  value map inside `check_constraints_against_templates`. *Leaf.* Signal: `reify check`
-  on a fixture with an active `>= 2mm` clearance bound prints the remaining slack per
-  inequality constraint and `n/a` for an equality — today no surface anywhere reports
-  slack. Depends on #6653.
+  value map inside `check_constraints_against_templates`. *Intermediate* — unlocks
+  ζ, ξ, λ. Signal (**restated 2026-09-03, see Amendment A1**): a Rust test drives a
+  model with one active `>= 2mm` inequality bound and one pinned equality through the
+  **eval/solve path** and asserts the escaping `ConstraintCheckEntry` carries a
+  populated `margin` for the inequality and `None` for the equality — structurally
+  impossible today, the field does not exist. The renderers are downstream and already
+  owned: ζ (`ConstraintPanel` slack column), ξ (`reify explain` slack lines), λ
+  (`solve_report`). Printing slack in `reify check` **stdout is deliberately NOT this
+  leaf's signal** (A1). Depends on #6653.
 
 **Phase 2 — repair the dead surfaces (integration-gate cluster).**
 

@@ -67,14 +67,16 @@ tasks:
       expect: present
   - name: equality-has-no-signed-slack
     binding: G6 branch 4 (honest absence) — Eq/Ne/Or are explicitly skipped by the decomposition,
-      so margin is None for an equality. epsilon's signal asserts n/a, never 0. Verified by
-      reading the collect_slack_terms doc contract.
+      so margin is None for an equality, NEVER 0 which would read as no margin left. Verified
+      by reading the collect_slack_terms doc contract.
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: a negative semantic property of a match arm; the assertion is that epsilon's
-        fixture reports n/a for an equality row, which is a test postcondition rather than
-        a repo pattern.
+      reason: a negative semantic property of a match arm; the assertion is a test
+        postcondition on epsilon's own Rust test rather than a repo pattern. Signal restated
+        2026-09-03 under PRD Amendment A1 — epsilon asserts margin=None on the escaping
+        ConstraintCheckEntry, and the n/a RENDERING of that None belongs to the downstream
+        renderers zeta/xi/lambda, not to epsilon.
   - name: tolerance-upstream
     binding: capability→producer via dependency closure — toleranced Scalar equality verdicts
       are delivered by task 6653, wired UPSTREAM of epsilon. Without it a correctly-solved

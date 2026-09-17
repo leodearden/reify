@@ -3952,7 +3952,12 @@ describe('reify.grammar snippets — joint definitions', () => {
  * ledger movement would ever reveal it if they did not.
  */
 describe('reify.grammar snippets — `·` as unit multiplication', () => {
-  // Corpus-attested VERBATIM: tests/prd-gate/fixtures/unit_middot_mul.ri:25.
+  // Corpus-attested VERBATIM: the `torque_like` binding of
+  // tests/prd-gate/fixtures/unit_middot_mul.ri. Cited by BINDING NAME, not by
+  // line: task #5784 refreshed that fixture's header and shifted every line
+  // number, and verify.sh's _RUST_COUPLED_RI_FIXTURES comment records why the
+  // repo avoids file:line citations — nothing validates them and they rot on
+  // the first edit.
   it('parses a middot-composed unit', () => {
     const src = 'structure def S { let torque_like = 5N·m }';
     expect(countErrorNodes(src)).toBe(0);
@@ -3960,7 +3965,7 @@ describe('reify.grammar snippets — `·` as unit multiplication', () => {
   });
 
   /**
-   * :26. Asserted on a COUNT: the `/rad` is part of the UNIT, not a division,
+   * The `with_div` binding. Asserted on a COUNT: the `/rad` is part of the UNIT, not a division,
    * so the wrong tree — one quantity divided by an identifier — would also
    * reach 0 errors and an error count alone would sail past it.
    */
@@ -3970,7 +3975,10 @@ describe('reify.grammar snippets — `·` as unit multiplication', () => {
     expect(countNodesNamed(src, 'QuantityLiteral')).toBe(1);
   });
 
-  // :27 — `·` composed with `^` and a negative exponent, in one literal.
+  // The `composed` binding — `·` composed with `^` and a negative exponent, in
+  // one literal. Cited by BINDING NAME for the same reason as its two siblings
+  // above: the fixture's line numbers moved under #5784 and nothing validates a
+  // file:line cite.
   it('composes middots with unit exponents', () => {
     const src = 'structure def S { let composed = 5m^2·kg·s^-2 }';
     expect(countErrorNodes(src)).toBe(0);
@@ -4007,6 +4015,182 @@ describe('reify.grammar snippets — `·` as unit multiplication', () => {
     ]) {
       expect(countErrorNodes(src)).toBe(0);
       expect(countNodesNamed(src, 'QuantityLiteral')).toBe(1);
+    }
+  });
+});
+
+/**
+ * `sub_declaration`'s DERIVED arm — `sub b = mirror of a across <plane> { … }`
+ * and `sub b = image of a under <transform> { … }`.
+ *
+ * Leaf A-alpha of docs/prds/v0_6/assembly-derivation-toolbox.md (task #6615).
+ * The tree-sitter half landed first; this block mirrors it into the GUI's Lezer
+ * grammar. The Rust-side CST contract lives in
+ * tree-sitter-reify/tests/derived_sub_grammar_tests.rs.
+ *
+ * MEASURED RED before the reify.grammar change (every count below is against
+ * the pre-change parser):
+ *   the fixture                       → 4 errors
+ *   the mirror snippet                → 3 errors
+ *   the image snippet                 → 3 errors
+ *   the `at`-after-body snippet       → 3 errors
+ *   the contextual-keyword battery    → 0 errors (passes on arrival; it is the
+ *                                       reading the change could quietly break)
+ */
+describe('reify.grammar snippets — derived sub arm', () => {
+  const MIRROR_SRC =
+    'structure S { sub b = mirror of a across plane_yz { z = 55mm  keep drum  exclude web.hub } }';
+  const IMAGE_SRC = 'structure S { sub b = image of a under c2_z { span_bu = default } }';
+
+  /**
+   * THE HEADLINE SIGNAL. The committed PRD fixture parses clean in the GUI
+   * parser too, so the editor stops rendering the file as broken. Its path is
+   * also added to EXPECTED_CLEAN below, which is what makes the drift ledger
+   * hold it clean from here on.
+   */
+  it('parses the adt_mirror_of_arm.ri fixture clean', () => {
+    expect(countErrorNodes(readFixture('tests/prd-gate/fixtures/adt_mirror_of_arm.ri'))).toBe(0);
+  });
+
+  /**
+   * Asserted on COUNTS, not on set membership — the #5957 lesson recorded in
+   * `countNodesNamed`'s doc comment: a self-nested production reads as a single
+   * hit under `toContain`, so a grammar that nested two derivations or folded
+   * two bodies into one would satisfy a membership check and pin nothing.
+   */
+  it('produces exactly one SubDerivation and one DerivedBody', () => {
+    expect(countErrorNodes(MIRROR_SRC)).toBe(0);
+    expect(countNodesNamed(MIRROR_SRC, 'SubDerivation')).toBe(1);
+    expect(countNodesNamed(MIRROR_SRC, 'DerivedBody')).toBe(1);
+  });
+
+  it('names the disposition and override nodes', () => {
+    const names = nodeNames(MIRROR_SRC);
+    expect(names).toContain('SubDerivation');
+    expect(names).toContain('DerivedBody');
+    expect(names).toContain('DerivedParamAssignment');
+    expect(names).toContain('KeepDisposition');
+    expect(names).toContain('ExcludeDisposition');
+    expect(names).toContain('DispositionPath');
+    // One `keep` and one `exclude`, not one node covering both.
+    expect(countNodesNamed(MIRROR_SRC, 'KeepDisposition')).toBe(1);
+    expect(countNodesNamed(MIRROR_SRC, 'ExcludeDisposition')).toBe(1);
+  });
+
+  /**
+   * MEASURED DIVERGENCE FROM grammar.js, pinned so it stays a decision.
+   *
+   * Upstream gives `<param> = default` its own `default_reset` node, so
+   * lowering can tell a RESET from an override without re-reading source text.
+   * lezer cannot reproduce that node, and this asserts the shape it produces
+   * instead: `default` reduces to a plain `Identifier`.
+   *
+   * WHY, measured not assumed: `DefaultReset { ekw<"default"> }` in this slot
+   * generates with zero conflicts and then never matches, and a
+   * `!derivedDefault` precedence marker changes nothing — the choice is made in
+   * the TOKENIZER. `@extend` yields its keyword token only where the parser
+   * state does not otherwise admit `Identifier`, and this slot admits one
+   * (`bindingValue` → `expression` → `Identifier`). Upstream separates them
+   * with tree-sitter lexer rule #2, which lezer does not share — the same
+   * divergence the `List` collection arm records. `kw<"default">`
+   * (`@specialize`) would force it and is the wrong instrument: it is
+   * context-FREE, and `default` occurs 333 times in the committed corpus.
+   *
+   * Nothing is lost: the reset/override discrimination is consumed only by the
+   * Rust lowering, which reads the tree-sitter CST (pinned by
+   * `image_arm_lowers_with_param_resets_separated_from_overrides` in
+   * reify-syntax), never by GUI code.
+   */
+  it('parses the image arm, with `default` reading as an Identifier', () => {
+    expect(countErrorNodes(IMAGE_SRC)).toBe(0);
+    const names = nodeNames(IMAGE_SRC);
+    expect(names).toContain('SubDerivation');
+    expect(names).toContain('DerivedParamAssignment');
+    expect(countNodesNamed(IMAGE_SRC, 'SubDerivation')).toBe(1);
+    // The divergence itself. `not.toContain` alone would pass vacuously if the
+    // whole arm stopped parsing, so the positive reading is asserted too.
+    expect(names).not.toContain('DefaultReset');
+    expect(nodeNamesSpanning(IMAGE_SRC, 'default')).toContain('Identifier');
+  });
+
+  /**
+   * `at` is deliberately ACCEPTED after a derived body. Placement of a derived
+   * sub is derived, so an explicit `at` is an error — but a COMPILE-scope one,
+   * `E_DERIVED_SUB_EXPLICIT_AT` (T8), owned by A-beta (#6616) per the
+   * D3-adversary ownership ruling. A parse error here would pre-empt T8 with a
+   * worse message, so the GUI grammar must keep parsing it.
+   */
+  it('accepts an `at` pose after a derived body', () => {
+    const src = 'structure S { sub b = mirror of a across P { } at origin }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('PoseClause');
+  });
+
+  it('accepts an empty derived body and the `priv aux` modifiers', () => {
+    for (const src of [
+      'structure S { sub b = mirror of a across P { } }',
+      'structure S { priv aux sub b = mirror of a across P { } }',
+    ]) {
+      expect(countErrorNodes(src)).toBe(0);
+      expect(countNodesNamed(src, 'DerivedBody')).toBe(1);
+    }
+  });
+
+  /**
+   * CONTEXTUAL-KEYWORD NON-REGRESSION — the assertion that actually constrains
+   * the implementation.
+   *
+   * Every new word must be introduced with `ekw<>` (`@extend`), never `kw<>`
+   * (`@specialize`). `@specialize` replaces the token unconditionally and is
+   * context-FREE, so it would stop these words lexing as `Identifier`
+   * everywhere else — the exact failure the `at` note at reify.grammar:1524-1541
+   * records, where promoting `at` with `kw<"at">` un-pinned two committed files
+   * that pass `at` as a named-argument label.
+   *
+   * MEASURED occurrences of each word as ordinary source text across the 673
+   * committed `.ri` files: mirror 65, image 15, across 64, under 143, keep 21,
+   * symmetry 5, exclude 0 (`of` 937). A `@specialize` promotion would un-pin
+   * all of them.
+   *
+   * `nodeNamesSpanning` is the discriminator: it asks what the token ACTUALLY
+   * reduced to, so a word that silently became a keyword node fails here even
+   * though the error count stays 0.
+   */
+  it('keeps every new word lexing as an ordinary Identifier', () => {
+    const cases: Array<[string, string]> = [
+      ['mirror', 'structure S { let mi = mirror(solid, plane_xy(0mm)) }'],
+      ['image', 'structure S { let im = image(m, v) }'],
+      ['keep', 'structure S { let k = keep }'],
+      ['exclude', 'structure S { let e = exclude }'],
+      ['under', 'structure S { let u = under }'],
+      ['across', 'structure S { let ac = across }'],
+      ['using', 'structure S { let us = using }'],
+      ['of', 'structure S { let o = of }'],
+      // PRD §8 contract item (ii): `symmetry` is RESERVED by comment only and
+      // gets NO production, so it must still lex as an ordinary identifier.
+      // This row is the runtime evidence for that reservation.
+      ['symmetry', 'structure S { let sy = symmetry }'],
+    ];
+    for (const [word, src] of cases) {
+      expect(countErrorNodes(src), `${word}: ${src}`).toBe(0);
+      expect(nodeNamesSpanning(src, word), `${word} must still reduce to Identifier`).toContain(
+        'Identifier',
+      );
+    }
+  });
+
+  /**
+   * The named-argument-LABEL position, which is where the `at` promotion broke
+   * committed files. `g(at: 1, keep: 2, mirror: 3)` needs all three to still
+   * lex as `Identifier` for `NamedArgument` to match.
+   */
+  it('keeps the new words usable as named-argument labels and param names', () => {
+    for (const src of [
+      'structure S { let r = g(at: 1, keep: 2, mirror: 3) }',
+      'structure S { param of : Length = 1mm }',
+      'structure S { let u = Unit(of: 3mm) }',
+    ]) {
+      expect(countErrorNodes(src), src).toBe(0);
     }
   });
 });
@@ -4478,6 +4662,10 @@ describe('reifyLanguage — fold and indent coverage', () => {
     // { let a = 1.0; a }`).
     FnBody: 'fn g() -> Real { let a = 1.0; a }',
     SpecializationBody: 'structure def S { sub x : Foo<T> { bore = 5mm } }',
+    // The derived sub's body (task #6615). Brace-FIRST: the `{` opens the
+    // node, with `mirror of a across P` sitting in the sibling
+    // `SubDerivation`.
+    DerivedBody: 'structure def S { sub b = mirror of a across P { z = 55mm } }',
     PortBody: 'structure def F { port inlet : in FluidPort { param diameter : Length = 25mm } }',
     ConnectBody:
       'structure def F { connect outlet -> inlet { diameter -> diameter, flow_rate -> flow_rate } }',
@@ -4757,11 +4945,13 @@ describe('reifyLanguage — fold and indent coverage', () => {
 // WHY THE LAST THREE FILES REMAIN — one line each, because "27 short of the
 // corpus" is not a finding and "which three, and whose" is:
 //
-//   - stdlib_ns_qualified_expr.ri  ) `pp.Pulley` binding-qualified references,
-//   - stdlib_ns_qualified_type.ri  ) OWNED BY TASK #5495 (pending; verified at
-//     the time of writing). Its own file list already covers this grammar, the
-//     dedicated reifyGrammarQualifiedRef test, and both of these fixtures. Left
-//     deliberately: duplicating it here would collide with that task.
+//   - stdlib_ns_qualified_expr.ri  ) `pp.Pulley` binding-qualified references.
+//   - stdlib_ns_qualified_type.ri  ) LANDED by #5495 μ, which round 4 named as
+//     the only inheritable work IT HAD IDENTIFIED. Both are now in the ledger
+//     below. The node shapes the two new productions must produce — and the
+//     controls they must not disturb — are pinned in
+//     reifyGrammarQualifiedRef.test.ts, the file that task owns; this ledger
+//     records only that the two fixtures parse clean.
 //   - arrow_type.ri — NOT A GRAMMAR GAP AT ALL. Its `param` is at TOP LEVEL,
 //     and `param` is not a top-level declaration in tree-sitter's
 //     `_declaration` (grammar.js:134) or in the compiler's `lower_source_file`
@@ -4771,9 +4961,28 @@ describe('reifyLanguage — fold and indent coverage', () => {
 //     pinned above: the member-position arrow type IS clean, and the top-level
 //     `param` MUST error.
 //
-// So the only inheritable work left in this ledger is #5495's, and it is
-// already assigned. A future round adding a family should extend the arithmetic
-// above rather than start a fresh block.
+// THE ARITHMETIC ABOVE IS INHERITED AND ITS DENOMINATOR IS STALE. Every "of
+// 330" in this block dates from an earlier round's corpus inventory; #5495 μ
+// re-measured it through this test's own walk and `countErrorNodes`, and the
+// corpus is bigger than the block assumes:
+//
+//     361 committed .ri under CORPUS_ROOTS · 358 parse clean · 329 pinned below
+//
+// So arrow_type.ri is NOT the only un-pinned file: 29 currently-clean files sit
+// outside the ratchet — examples/best_practices/angle_crossings.ri, the ten
+// tests/prd-gate/fixtures/pnrg_envelope_*.ri, compose_fn_field_resolves.ri and
+// the rest. That gap is real inheritable work and is the reason this comment no
+// longer claims completeness: a grammar change could regress any of those 29
+// and the ledger — the artifact whose whole purpose is catching exactly that —
+// would stay green.
+//
+// DO NOT RE-STATE THOSE THREE NUMBERS AS THE NEW TRUTH. They were measured on
+// 2026-08-23 and go stale the next time anyone adds a `.ri`, which is how the
+// "330" above rotted in the first place. The LIVE arithmetic is printed by this
+// test's own failure message (`measured N clean of M …; K clean files are not
+// pinned`); to see it on demand, read those three counts off a run rather than
+// off this comment. A future round adding a family should shrink the 29 and
+// leave the counting to the test.
 //
 // AND NOTE WHAT THIS BLOCK DELIBERATELY DOES NOT CONTAIN. The per-production
 // reasoning for every change above — why `ekw<>` and not `kw<>`, why the
@@ -4809,8 +5018,9 @@ describe('reifyLanguage — fold and indent coverage', () => {
 // every path below is expected to parse clean, filtered by what still exists
 // on disk. Removals drop out naturally, a genuine regression names the exact
 // file that stopped parsing, and a coverage gain is a visible one-line
-// addition here. #5950 turned that ratchet to 327 of 330; the 327 entries below
-// are now exactly the clean set, so the next gain is #5495's two fixtures.
+// addition here. #5950 turned that ratchet to 327 entries; #5495 μ added its two
+// fixtures. The entries below are a SUBSET of the clean set, not the whole of
+// it — see the re-measured arithmetic above and the 29-file gap it names.
 const EXPECTED_CLEAN = [
   'examples/ad_hoc_face_selector.ri',
   'examples/affine_tapered_spacer.ri',
@@ -5071,6 +5281,7 @@ const EXPECTED_CLEAN = [
   'examples/unit_expressions.ri',
   'examples/whole_model_cost_min.ri',
   'examples/whole_model_joint_drive.ri',
+  'tests/prd-gate/fixtures/adt_mirror_of_arm.ri',
   'tests/prd-gate/fixtures/bare_angle_silently_accepted.ri',
   'tests/prd-gate/fixtures/collection_expr_index_resolves.ri',
   'tests/prd-gate/fixtures/collection_sub_at_placement_rejected.ri',
@@ -5130,6 +5341,8 @@ const EXPECTED_CLEAN = [
   'tests/prd-gate/fixtures/stdlib_ns_buckling_mode_coexist.ri',
   'tests/prd-gate/fixtures/stdlib_ns_mode_member.ri',
   'tests/prd-gate/fixtures/stdlib_ns_mode_member_modal.ri',
+  'tests/prd-gate/fixtures/stdlib_ns_qualified_expr.ri',
+  'tests/prd-gate/fixtures/stdlib_ns_qualified_type.ri',
   'tests/prd-gate/fixtures/stdlib_ns_std_nonexistent_import.ri',
   'tests/prd-gate/fixtures/stdlib_units_import_resolves.ri',
   'tests/prd-gate/fixtures/subbody_objective_ignored.ri',
@@ -5191,12 +5404,20 @@ describe('reify.grammar — corpus drift ledger', () => {
     const stillPresent = EXPECTED_CLEAN.filter((p) => existsSync(join(REPO_ROOT, p)));
     const regressed = stillPresent.filter((p) => !cleanSet.has(p));
 
+    // Clean but NOT pinned — the ledger's blind spot, reported alongside the
+    // regression list so the coverage gap is always a measured number rather
+    // than a prose claim that goes stale (#5495 μ; the comment block above used
+    // to assert completeness it did not have).
+    const pinnedSet = new Set(EXPECTED_CLEAN);
+    const unpinnedClean = [...cleanSet].filter((p) => !pinnedSet.has(p));
+
     expect(
       regressed,
       `These committed .ri files parsed with zero error nodes but no longer do — ` +
         `the grammar regressed:\n${regressed.map((p) => `  ${p}`).join('\n')}\n` +
         `(measured ${cleanSet.size} clean of ${allFiles.length} committed .ri files; ` +
-        `${stillPresent.length} of the ${EXPECTED_CLEAN.length} pinned paths still exist on disk)`,
+        `${stillPresent.length} of the ${EXPECTED_CLEAN.length} pinned paths still exist on disk; ` +
+        `${unpinnedClean.length} clean files are not pinned by this ledger)`,
     ).toEqual([]);
   }, LEDGER_TIMEOUT_MS);
 });

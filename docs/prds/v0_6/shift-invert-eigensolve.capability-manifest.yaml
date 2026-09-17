@@ -1,0 +1,379 @@
+prd: docs/prds/v0_6/shift-invert-eigensolve.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 7258
+  title: 'shift-invert α: EigenSolverOptions.sigma contract (C1-C6) + dense-path selection
+    by |lambda-sigma| + two-way boundary-test harness'
+  capabilities:
+  - name: dense-path-computes-full-spectrum-so-selection-is-the-only-change
+    binding: capability->producer (substrate, wired-on-main). solve_eigen_dense in
+      crates/reify-solver-elastic/src/eigensolve.rs densifies (K, B), calls faer's
+      gevd_real (QZ), recovers lambda_i = S_re[i]/beta[i] for ALL n, then sorts by
+      |lambda| and takes n_modes. Verified 2026-09-03 at c8bfba6087. Honoring sigma
+      on this path is therefore a sort-key change with no factorization and no new
+      failure mode, and the exact skipped-below-sigma count is available for free.
+      It is reached on the production path from three live dispatch sites, not test-only
+      - modal_ops.rs solve_generalized_eigen small-model regime and singular-K fallback,
+      plus try_solve_eigen_shift_invert's own Lanczos-floor fallback.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: shift_skipped_modes
+      paths:
+      - crates/reify-solver-elastic/src/eigensolve.rs
+      expect: present
+  - name: eigensolveroptions-sigma-is-a-dead-field-this-leaf-revives
+    binding: 'G6 premise, re-measured 2026-09-03 at c8bfba6087 (the chartering record
+      measured it 2026-09-01 at different line numbers; substance unchanged). `grep
+      -n sigma` over crates/reify-solver-elastic/src/eigensolve.rs returns EXACTLY
+      THREE lines - the defaults doc, `pub sigma: f64`, and the Default impl. No solver
+      function reads it. The premise that the field exists and is dead is therefore
+      true, not stale.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: negative structural fact about main BEFORE this leaf lands (the field
+        is unread). An expect:absent on the bare token `sigma` would be violently
+        over-broad - eigensolve.rs and its neighbours use `sigma` for InitialStress3
+        and for element stress. The positive half is the shift_skipped_modes check
+        above.
+  - name: three-diagnostic-variants-are-additive-substrate
+    binding: capability->producer (substrate). DiagnosticCode in crates/reify-core/src/diagnostics.rs
+      is a plain enum whose variants carry rustdoc-documented W_/E_ mnemonics; adding
+      variants is additive. This leaf mints all three variants the PRD fixes normatively
+      - ShiftSkippedModes (W), ShiftAtEigenvalue (E) and FirstModeNotInShiftedResult
+      (E) - so the two sibling wiring leaves gamma and delta do not both edit diagnostics.rs
+      and serialize against each other. None of the three exists today (measured count
+      0, 2026-09-03).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: FirstModeNotInShiftedResult
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+      expect: present
+  - name: boundary-tests-are-gate-resident-and-need-same-diff-registration
+    binding: capability->producer (substrate). crates/reify-solver-elastic test binaries
+      are gate-resident BY DEFAULT - scripts/heavy-test-filter-lib.sh's REIFY_HEAVY_NEXTEST_FILTER
+      excludes only {determinism, analytical_validation, modal_benchmarks} from that
+      package. Verified 2026-09-03. A new eigensolver boundary-test binary therefore
+      joins the merge gate immediately, and .config/nextest.toml's default 1200s slow-timeout
+      applies unless the binary carries its own override. Per the reify overlay's
+      gate-test drift-guard rule this registration is a SAME-DIFF obligation on this
+      leaf, not a sibling ordered by prose - the esc-4914-162 failure shape.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the registration is conditional on whether the leaf's tests actually
+        exceed the default ceiling, so no single grep pattern is honest. Covered by
+        the leaf text's explicit same-diff obligation and by the merge gate itself,
+        which reds on an unregistered slow binary.
+- label: β
+  task_id: 7259
+  title: 'shift-invert β: K-sigma*B assembly and Cholesky-then-LU shifted factorization
+    on the Lanczos path'
+  capabilities:
+  - name: sparse-lu-with-partial-pivoting-exists-and-is-a-stiffnessop-dropin
+    binding: capability->producer (substrate). CORRECTION APPLIED to the chartering
+      record, which proposed LDL^T. faer 0.24 ships NO sparse LDL^T solver - faer::sparse::solvers
+      declares exactly Llt, Qr, Lu. `sp_lu()` (documented "the LU decomposition of
+      self with partial (row) pivoting") exists on BOTH SparseColMat and SparseRowMat
+      and returns Result<Lu<I,T>, LuError>; `impl SolveCore<T> for Lu<I,T>` and `impl
+      ShapeCore for Lu<I,T>` both exist, so Lu is a drop-in behind StiffnessOp::solve_in_place
+      exactly as Llt is today. LDL^T is reachable only via the low-level UNPIVOTED
+      factorize_{simplicial,supernodal}_numeric_ldlt, which breaks down on indefinite
+      matrices without regularization. Verified 2026-09-03 against the vendored crate
+      source.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: sp_lu
+      paths:
+      - crates/reify-solver-elastic/src/eigensolve.rs
+      expect: present
+  - name: luerror-arity-matches-the-existing-none-vs-panic-discipline
+    binding: capability->producer (substrate). LuError carries exactly two arms -
+      SymbolicSingular{index} and Generic(FaerError) - mirroring the SparseLltError
+      Numeric/Generic split that try_solve_eigen_shift_invert already discriminates
+      on. So the existing contract ("None means EXACTLY one thing; a resource failure
+      panics rather than arriving disguised as an under-constrained model") extends
+      to the LU path without inventing a new error vocabulary. Verified 2026-09-03.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: upstream-crate structural fact, already true; asserting it as a delivered_check
+        would be vacuous. The behavioural cover is boundary test BT5 (singular shift
+        produces the C6 typed failure, not a panic).
+  - name: sigma-zero-preserves-the-landed-goldens-structurally
+    binding: 'G6 premise (numeric floor, inverted - this asserts NO movement rather
+      than a bound). The PRD 5.1 dispatch special-cases sigma == 0.0 to today''s exact
+      sp_cholesky call, so the byte-identity claim rests on code-path identity, not
+      on a tolerance. This matters because four landed suites pin numbers on this
+      path: crates/reify-solver-elastic/tests/ euler_column_pin_pin.rs (four BC families,
+      bounds 0.09-0.11), reify-eval-fea-tests buckling_smoke.rs and buckling_persistent_cache_round_trip.rs
+      (both include_str! the example and pin its result), plus the modal goldens.
+      The reify byte-identity ruling holds byte-identity to be WRONG for iterative
+      methods and right for closed-form; the claim here is narrower and legitimate
+      - same faer calls in the same order, which is the identical argument the in-file
+      comment already makes for the SparseStiffnessOp refactor.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: '"the goldens did not move" is proven by those suites staying green
+        on the merge gate, not by a grep. Bound to boundary test BT1 (sigma=0 identity,
+        both implementations).'
+- label: γ
+  task_id: 7260
+  title: 'shift-invert γ: buckling kernel sigma input + trampoline wiring; retire
+    the BucklingOptionUnsupported sigma arm only'
+  capabilities:
+  - name: bucklingkerneloptions-has-no-sigma-and-both-call-sites-hardcode-zero
+    binding: 'G6 premise, re-measured 2026-09-03 at c8bfba6087. BucklingKernelOptions
+      in crates/reify-solver-elastic/src/buckling_kernel.rs declares exactly five
+      fields - n_modes, eigen_tol, eigen_max_iters, cg_tolerance, cg_max_iter - and
+      no shift input. Both solve_buckling_kernel arms (P1 and P2) construct EigenSolverOptions
+      with a literal `sigma: 0.0`. So this leaf ADDS an input rather than threading
+      an existing one, and `pub sigma` does not currently appear anywhere in that
+      file (measured count: 0), making the delivered_check a genuine landing signal
+      rather than a vacuous match.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub sigma
+      paths:
+      - crates/reify-solver-elastic/src/buckling_kernel.rs
+      expect: present
+  - name: shiftskippedmodes-warning-reaches-the-production-trampoline
+    binding: 'capability->producer (wired-on-main entry path). solve_buckling_trampoline
+      in crates/reify-eval/src/compute_targets/buckling.rs is registered in the compute_targets
+      dispatch table as "solver::buckling" (crates/reify-eval/src/compute_targets/mod.rs)
+      and already assembles a Vec<Diagnostic> on the production path via buckling_unsupported_option_diagnostics.
+      Emitting the new Warning is an addition to an existing live diagnostic path,
+      not a new seam. DiagnosticCode is a plain enum with rustdoc-documented mnemonics
+      and additive variants; ShiftSkippedModes does not exist today (measured count:
+      0).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ShiftSkippedModes
+      paths:
+      - crates/reify-eval/src/compute_targets/buckling.rs
+      expect: present
+  - name: only-the-sigma-arm-retires-mode-and-auto_dense-belong-to-7179
+    binding: 'G4 seam boundary, made mechanical. buckling_unsupported_option_diagnostics
+      carries three arms behind one shared unsupported_diag template. This leaf retires
+      ONLY the sigma arm; the mode and auto_dense arms are #7179''s and must survive
+      this diff. The check is scoped to the sigma arm''s own kernel_note string rather
+      than to a bare `sigma` token, per the reify overlay''s expect:absent scoping
+      rule - a bare token would match the P1/P2 stress variables in the same file.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: has no shift-origin input yet
+      paths:
+      - crates/reify-eval/src/compute_targets/buckling.rs
+      expect: absent
+  - name: g2-signal-is-a-mode-set-difference-not-a-silenced-warning
+    binding: G2, explicitly guarded. The signal is a committed fixture PAIR under
+      tests/prd-gate/fixtures/ whose only textual difference is the sigma value, compared
+      through `reify eval` - never "the warning stopped firing", which is the vacuity
+      trap this PRD exists to close. Per the reify FEA design-surface precedent the
+      observation vehicle is `reify eval`, not `reify check` (check exits 0 on Indeterminate
+      and the check-time engine carries no kernel). The fixture must state which solver
+      path it exercises, because a fixture below n = max(64, 2*n_modes) reaches only
+      the dense path and never touches the Lanczos work this PRD is mostly about.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a mode-set DIFFERENCE between two files cannot be expressed as a single-file
+        grep. The fixtures land in this leaf's own diff; the mechanical half is the
+        ShiftSkippedModes and `pub sigma` checks above.
+- label: δ
+  task_id: 7261
+  title: 'shift-invert δ: modal trampoline honors the shift surface-agnostically in
+    lambda-space; retire #6097''s not-yet-honored modal warning'
+  capabilities:
+  - name: modal-already-plumbs-the-shift-to-the-dead-field
+    binding: G6 premise, re-measured 2026-09-03 at c8bfba6087, and it CORRECTS the
+      chartering record's symmetric framing. extract_eigen_knobs in crates/reify-eval/src/modal_ops.rs
+      returns (n_modes, tol, max_iters, sigma) and its caller writes `sigma` straight
+      into the EigenSolverOptions literal at the free_vibration call site. So modal's
+      wiring is already complete up to the dead field and this leaf's work is the
+      lambda-space CONVERSION plus the diagnostics - materially less than buckling's,
+      which has no kernel input at all.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ShiftSkippedModes
+      paths:
+      - crates/reify-eval/src/modal_ops.rs
+      expect: present
+  - name: independence-from-6097-is-real-not-asserted
+    binding: 'G4 seam, no dependency edge in either direction (Leo''s ruling, 2026-09-01,
+      carried in both #7178 and #6097). The leaf reads the shift surface-agnostically
+      - `shift_frequency : Frequency` converts with lambda = (2*pi*f)^2 via the inverse
+      of eigenvalue_to_frequency_hz that #6097 adds in crates/reify-stdlib/src/modal/free_vibration.rs;
+      `sigma : Real` passes through as lambda directly. EigenSolverOptions.sigma receives
+      lambda-space either way, so leaves alpha and beta never learn which surface
+      fed them and neither task blocks the other. The leaf must CHECK #6097''s landed
+      state rather than assume it - the same check-do-not-assume discipline #7081
+      applies to #7179.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: which branch the leaf takes depends on main's state at implementation
+        time, so no single pattern is correct for both. The invariant that DOES hold
+        in both branches - the diagnostic reaches modal_ops.rs - is the check above.
+  - name: modal-has-no-unsupported-option-warning-today
+    binding: 'G3 substrate, and a scope correction. crates/reify-eval-fea-tests/tests/
+      contains buckling_option_unsupported.rs and NO modal equivalent (verified 2026-09-03),
+      so the modal warning this leaf retires exists only if #6097 has landed first.
+      If it has not, the retirement is a no-op and the leaf must not manufacture a
+      warning in order to retire it.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'conditional on #6097''s landed state; an unconditional expect:absent
+        would pass vacuously today and prove nothing.'
+- label: ε
+  task_id: 7262
+  title: 'shift-invert ε: skipped-mode provenance on BucklingResult/ModalResult; critical_load,
+    safety_factor_buckling and first_frequency refuse a shifted result'
+  capabilities:
+  - name: three-helpers-read-modes-zero-blind-and-fail-unconservatively
+    binding: G6 premise, measured 2026-09-03. critical_load(result, reference_load)
+      is `result.modes[0].eigenvalue * reference_load`; safety_factor_buckling is
+      `result.modes[0].eigenvalue` (both crates/reify-compiler/stdlib/solver_buckling_fns.ri);
+      first_frequency is `result.modes[0].frequency` (crates/reify-compiler/stdlib/modal_analysis_fns.ri,
+      under a comment asserting "modes[0] is the fundamental mode"). None can see
+      sigma. At sigma != 0 each reports a value from the middle of the spectrum as
+      if it were the first mode - HIGHER than the truth, i.e. the unconservative direction.
+      This is a correctness defect, not a presentation one, which is why the disposition
+      is an Error and not a Warning.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the DiagnosticCode variant itself is minted by leaf alpha (see alpha's
+        three-diagnostic-variants-are-additive-substrate), so a grep here would report
+        alpha's landing rather than this leaf's. This leaf's landing signal is the
+        trampoline conversion check below.
+  - name: optimized-trampoline-conversion-is-existing-substrate
+    binding: 'capability->producer (substrate, wired-on-main). A pure .ri function
+      body cannot raise a diagnostic - Reify constraint clauses express only scalar
+      predicates over a struct''s own cells - so the refusal must be Rust-side. @optimized
+      is the existing mechanism: 55 uses across crates/reify-compiler/stdlib/*.ri,
+      including solve_buckling ("solver::buckling") and modal_analysis ("modal::free_vibration")
+      in the very files being edited, each registered in the compute_targets dispatch
+      table. Converting the three helpers is a port of a live shape, not a new seam.
+      Returning Value::Undef instead was considered and rejected - Undef is the silent-failure
+      sentinel INV-SF-1 exists to eradicate.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: solver::critical_load
+      paths:
+      - crates/reify-compiler/stdlib/solver_buckling_fns.ri
+      expect: present
+  - name: both-result-structs-are-frozen-and-the-assertions-move-with-them
+    binding: G3 substrate + blast radius, measured 2026-09-03. BucklingResult is asserted
+      at EXACTLY 4 param cells by crates/reify-compiler/tests/buckling_stdlib_compile.rs
+      ("BucklingResult should have exactly 4 param cells"); ModalResult at EXACTLY
+      6 by crates/reify-compiler/tests/modal_options_validation_tests.rs ("ModalResult
+      should have exactly 6 param cells"). Adding the provenance param moves both
+      assertions IN THIS DIFF. Named so it is not discovered at merge.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the assertion is a numeric literal inside a test message string; grepping
+        for "exactly 5 param cells" would pin an implementation detail of the fix
+        rather than the capability. The merge gate is the real cover - a stale assertion
+        reds the compiler suite.
+- label: ζ
+  task_id: 7263
+  title: 'shift-invert ζ: flip BucklingOptions.sigma and ModalOptions.shift_frequency
+    to PDROP C1 honored; retire every #7178 cite'
+  capabilities:
+  - name: the-c1-declaration-surface-is-owned-elsewhere-so-check-do-not-assume
+    binding: 'G4 seam. The C1 honored/ignored/not_applicable declaration mechanism
+      is #7079''s (trampoline-param-drop alpha); the buckling declaration is written
+      by #7081; the PDROP detector that reads them is #7085. None is guaranteed landed
+      when this leaf runs. The leaf therefore flips whatever declaration exists and,
+      if none does, records that the params are honored so the eventual declaration
+      is written correctly - it must not invent the declaration mechanism itself.
+      No fourth C1 disposition is added: Leo''s 2026-09-01 ruling forbids a ratified
+      set, and `not_applicable` is reserved for semantically meaningless params, which
+      a working shift origin is not.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the declaration''s syntax belongs to #7079 and is not fixed at this
+        PRD''s authoring time, so no pattern can be bound without guessing another
+        task''s output format.'
+  - name: the-7178-cite-retirement-is-not-vacuously-satisfiable
+    binding: 'PTODO/PDROP contract. #7178 does not appear in tracked source TODAY
+      - #7081 and #6097 add the cites when they land. So an unconditional `expect:
+      absent` on `#7178` would pass vacuously right now and prove nothing, which is
+      exactly the vacuity class this PRD exists to close. The obligation is stated
+      in the leaf text and enforced behaviourally by the PTODO fingerprint ratchet,
+      which reds on an orphaned cite once #7178 goes terminal.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: expect:absent would pass vacuously against today's main. Real cover
+        is the PTODO fingerprint ratchet in tests/infra/test_reify_audit_ptodo.sh,
+        which reds on a cite to a terminal task.
+- label: η
+  task_id: 7264
+  title: 'shift-invert η: spectral_shift best-practices exemplar + reify-design index
+    line; FEA doc-chunk waiver and follow-up'
+  capabilities:
+  - name: fea-has-zero-doc-chunk-presence-so-the-chunk-leaf-is-waived
+    binding: Docs-truth gate, waiver evidence measured 2026-09-03. No file under crates/reify-mcp/src/tools/chunks/
+      mentions buckling, modal, eigen, FEA or any solve_* function - the 17 chunks
+      cover collections, connect, constraints, enums, fields, functions, geometry,
+      guards, occurrences, parameters, purposes, stdlib, structures, syntax, traits,
+      types and units, and none covers the solver surface. A chunk edit here would
+      be a one-paragraph orphan in a topic that does not exist. The gate's other three
+      obligations (exemplar corpus, reify-design index line, intent-level discoverability)
+      ARE delivered; the chunk obligation is waived with this rationale and a follow-up
+      task filed for FEA chunk coverage as a whole.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: spectral_shift
+      paths:
+      - examples/best_practices/INDEX.md
+      expect: present
+  - name: examples-corpus-is-compile-gated-so-the-exemplar-cannot-rot
+    binding: 'capability->producer (substrate, wired-on-main). examples/best_practices/
+      is auto-compile- gated by crates/reify-compiler/tests/examples_smoke.rs, so
+      the graduated exemplar is held green by the merge gate rather than by prose.
+      Note the cost, which is expected and not a defect: examples/*.ri has no carve-out
+      arm in scripts/verify.sh''s decide_scope and falls to the conservative default,
+      so this leaf''s diff runs the full workspace gate.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: '"the corpus gate covers it" is a property of the existing test harness,
+        already true; a delivered_check on it would be vacuous. The INDEX.md check
+        above is the landing signal.'
+- label: θ
+  task_id: 7265
+  title: 'shift-invert θ: PRD close - terminal SHIPPED stamp, landed leaf ids, AS-AUTHORED
+    freeze header'
+  capabilities:
+  - name: terminal-vocabulary-is-closed-and-this-leaf-is-the-only-stamper
+    binding: Reify PRD overlay, "PRD terminal status" - the terminal vocabulary is
+      exactly {SHIPPED, SUPERSEDED, WITHDRAWN}, matched case-insensitively on the
+      first token after the Status label. Without a decompose-filed close leaf nothing
+      ever stamps one, which is why only 5 of roughly 350 tracked PRDs had ever reached
+      a terminal status, every one by retroactive hand-fix. This leaf depends by real
+      add_dependency edges on every sibling; a cancelled sibling counts as satisfied.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Status:\*\* \*\*SHIPPED
+      paths:
+      - docs/prds/v0_6/shift-invert-eigensolve.md
+      expect: present

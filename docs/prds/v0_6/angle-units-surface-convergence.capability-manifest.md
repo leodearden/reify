@@ -34,10 +34,21 @@ stamped into the filed task descriptions as `DECOMPOSE ADDENDUM — BINDING`.
 
 ### C1 — κ's scanner contract is factually wrong; coding to it yields a dead branch
 
-PRD §5 C2: *"`UNIT_MUL_OP` fires on ASCII `*` **or** U+00B7 (UTF-8 `0xC2 0xB7`)"*; §3.8: *"a
+PRD §5 C2, **as it read at decompose**: *"`UNIT_MUL_OP` fires on ASCII `*` **or** U+00B7 (UTF-8 `0xC2 0xB7`)"*; §3.8: *"a
 scanner-local widening … plus a **UTF-8-aware read**"*. `tree-sitter-reify/src/tree_sitter/parser.h:49`
 declares `int32_t lookahead;` — tree-sitter delivers **decoded codepoints**. U+00B7 arrives as the
 single value `0xB7`; `0xC2` is never observable and one unmodified `advance()` consumes both bytes.
+
+**Provenance (2026-08-29, task 5949).** Both quoted strings above are the PRD's **pre-correction**
+wording and are no longer asserted there as fact: task 5949 corrected §5 C2 and §3.8 **in place**.
+Grepping the PRD for either still hits, by design — expect that rather than absence. Every such
+hit is one of two kinds, and neither is C2 or §3.8 asserting the byte contract: the superseded
+wording quoted inside that PRD's `CORRECTION 2026-08-29` block, or the corrected sentence's own
+explicit negation of it (§5 C2: "**not** the UTF-8 byte pair `0xC2 0xB7`"; §3.8: "no UTF-8-aware
+decoding is required"). No hit count is pinned here — that would be a transient fact about a
+companion file, falsified by any later rewording of C2 or §3.8 and checked by nothing. C1 remains
+the binding record of *why* the contract is a codepoint; every anchor, measurement and verdict
+below is unchanged.
 
 Controlled experiment (three isolated repo copies, isolated `XDG_CACHE_HOME`, recompilation proven
 by a deliberate `#error` variant that failed to build):
@@ -418,7 +429,7 @@ Evidence forms: `probe:` executed command + captured output · `grep:file:line` 
 | Capability | Evidence | Verdict |
 |---|---|---|
 | the chunks exist and are stale | `grep:crates/reify-mcp/src/tools/chunks/units.md:36` *"35 standard named dimensions"* (real 51 → 52 after η); `:50` "Angle as Base Dimension" | PASS |
-| the exemplar corpus + its bidirectional gate | `examples/best_practices/` (7 files incl. `INDEX.md`, `bolt_circle.ri`); `INDEX.md:43` bolt_circle row; gate `crates/reify-compiler/tests/examples_smoke.rs` | PASS |
+| the exemplar corpus + its bidirectional gate | `examples/best_practices/` (8 files incl. `INDEX.md`, `bolt_circle.ri`); `INDEX.md:53` bolt_circle row; gate `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs` | PASS |
 | gap (b) target + its runtime coupling | `grep:examples/unit_expressions.ri:10,19`; `crates/reify-eval/tests/unit_expressions_e2e.rs:20`; `crates/reify-compiler/tests/harness_units_materials/materials_fea_tests.rs:274-280` | PASS |
 | cheatsheet anchors | `grep:.claude/skills/reify-design/SKILL.md:53` (**Quantities:**), `:135` (**Always units**) | PASS |
 | ρ asserts findability, not a build | scripted grep-and-read over the chunks + `INDEX.md`; no new capability asserted | PASS |

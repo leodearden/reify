@@ -290,14 +290,20 @@ enum EulerConvention { XYZ, XZY, YXZ, YZX, ZXY, ZYX }
 Added to support the closed-chain kinematic loop-closure solver — see
 [`v0_2/kinematic-constraints.md`](prds/v0_2/kinematic-constraints.md). All
 operations validate inputs and return `Undef` on shape mismatch, wrong
-argument count, dimensional mismatch, or non-finite components.
+argument count, dimensional mismatch, or non-finite components. Two of them —
+`orient_exp` and `transform_exp` — additionally emit an **error** diagnostic
+naming the offending dimension when the *rotation vector* they are handed
+carries the wrong dimension, so `reify eval` exits non-zero rather than leaving
+a bare `Undef` behind; see *Rotation-vector dimension convention* below. Every
+other failure mode, on those two builtins and on all the others, stays a silent
+`Undef`.
 
 ```
 // SO(3) — quaternion algebra on Orientation<3>
 fn orient_compose(a: Orientation<3>, b: Orientation<3>) -> Orientation<3>
 fn orient_inverse(q: Orientation<3>) -> Orientation<3>
-fn orient_log(q: Orientation<3>) -> Vector3<Dimensionless>           // axis * angle (rotation vector)
-fn orient_exp(rot_vec: Vector3<Dimensionless>) -> Orientation<3>     // inverse of orient_log
+fn orient_log(q: Orientation<3>) -> Vector3<Angle>                   // axis * angle (rotation vector)
+fn orient_exp(rot_vec: Vector3<Angle>) -> Orientation<3>             // inverse of orient_log
 fn orient_slerp(a: Orientation<3>, b: Orientation<3>, t: Real) -> Orientation<3>
 fn orient_to_axis_angle(q: Orientation<3>) -> Map { axis: Vector3<Dimensionless>, angle: Angle }
 fn orient_to_euler(convention: EulerConvention, q: Orientation<3>) -> List<Angle>  // 3 elements
@@ -316,34 +322,154 @@ the `Orientation * Orientation` and `Transform * Transform` operators
 respectively, and produce bit-identical results to the operator path.
 
 **Twist representation.** SE(3) twists are encoded as a `Map` keyed by
-`"angular"` (a `Vector3<Dimensionless>` holding `axis * angle` in radians) and
+`"angular"` (a `Vector3<Angle>` holding `axis * angle`, i.e. radians) and
 `"linear"` (a `Vector3<Length>` holding the translational component):
 
 ```
-type Twist = Map { angular: Vector3<Dimensionless>, linear: Vector3<Length> }
+type Twist = Map { angular: Vector3<Angle>, linear: Vector3<Length> }
 ```
 
 A `Map` shape (rather than a 6-component `Vector`) is required because
 `Vector` enforces a single shared dimension across components; a twist mixes
-dimensionless rotation and `Length` translation. The same `Map` shape is
-returned by `joint_jacobian` (§13.1) so that solver code can compose twists
-and Jacobian columns uniformly.
+`Angle` rotation and `Length` translation. `joint_jacobian` (§13.1) does
+**not** return a `Twist`: its columns are partial derivatives of pose with
+respect to a joint coordinate (dpose/dq), not spatial velocities (dpose/dt), and
+they have their own type, `JacobianColumn`. The two happen to share the
+`angular`/`linear` key names; they are not interchangeable, and a Jacobian column
+must not be fed to `transform_exp`.
 
-**Linear-component dimension convention.** `transform_log` preserves the
-input `Transform`'s translation dimension on `linear` verbatim, and
-`transform_exp` accepts `linear` with the same polymorphic policy:
+The two halves are governed by two **monomorphic** conventions, documented below
+as siblings: `angular` is `Vector3<Angle>` and `linear` is `Vector3<Length>`.
+Neither is a polymorphism table — each admits exactly one dimension and rejects
+every other with an `Error` diagnostic and a non-zero `reify eval` exit.
 
-| `linear` dimension | accepted? | notes                                   |
-|--------------------|-----------|-----------------------------------------|
-| `Length`           | ✓         | canonical — matches the `Twist` type    |
-| `Dimensionless`    | ✓         | unit-less twists / numerical work       |
-| `Angle`, `Mass`, … | ✗         | rejected as `Undef`                     |
+**Rotation-vector dimension convention (`angular`).** A rotation vector is
+`axis * angle` — a dimensionless unit axis scaled by an angle — so it carries
+`Angle`:
 
-The pair `transform_log` ↔ `transform_exp` round-trips exactly under both
-policies, so a `Transform` whose translation is `Dimensionless` will round-trip
-through a `Dimensionless` linear, and likewise for `Length`. `joint_jacobian`
-always emits `Dimensionless` on both `angular` and `linear` because joint
-parameters are unit-less in the joint's local frame.
+| `angular` dimension      | accepted? | notes                                                                       |
+|--------------------------|-----------|------------------------------------------------------------------------------|
+| `Angle`                  | ✓         | canonical — matches the `Twist` type (SI unit: `rad`)                        |
+| `Dimensionless`          | ✗         | rejected as `Undef`, with a dimension `Error` naming the offending dimension |
+| `Length`, `Mass`, …      | ✗         | same rejection + `Error`                                                     |
+
+Rejection is uniform: every non-`Angle` dimension takes the same branch.
+
+This governs `orient_log` / `orient_exp` and the `angular` half of
+`transform_log` / `transform_exp` alike: `orient_log` and `transform_log`
+*emit* `Angle`-dimensioned components, and `orient_exp` and `transform_exp`
+*accept* only those, so both ends of each seam gate identically and
+`exp(log(x)) == x` stays well-typed. Identity and pure-rotation transforms are
+unaffected: their rotation vector is an `Angle` zero.
+
+> **RULING #6080** (Leo, 2026-08-17): a rotation vector carries `Angle` and only
+> `Angle` — `orient_log` / `orient_exp` and a twist's `angular` half alike.
+> Grounds: `log(q)` is `axis * angle`, so its magnitude *is* an angle in radians;
+> that is what makes d/dt of one an angular velocity rather than a frequency, and
+> what makes `orient_log(q)` agree with `orient_to_axis_angle(q).angle * .axis`,
+> the sibling it previously contradicted.
+>
+> `Dimensionless` is rejected on purpose, and NOT tolerated for back-compat. It is
+> a **specific** dimension — the zero exponent vector — not a wildcard, so
+> admitting it as a tolerant alias would re-open the hole decision D11 of
+> `docs/prds/v0_6/units-length-gate-completion.md` closed for this family: the
+> same grounds on which #6126 narrowed the sibling `linear` half. Reify already
+> spells a bare radian as `1.5708rad` / `90deg`.
+>
+> The "transcendentals need dimensionless arguments" objection does not apply:
+> reify's own trig already accepts an `Angle` argument (`sin(90deg) ==
+> sin(1.5707963267948966) == 1`), which establishes that `Angle` is acceptable —
+> not that `Dimensionless` must remain so.
+>
+> The rejection is a `Severity::Error`, so `reify eval` exits 1 — the same
+> severity the `linear` half reports at, so one fault class does not report two
+> ways across one builtin family. The diagnostic carries an
+> `E_RotationVectorDimension` token in its message text and
+> `reify_core::DiagnosticCode::DimensionedArgRejected` as its code — the
+> reused, pre-existing runtime dimension-rejection code, the same one the
+> `linear` half carries. No `DiagnosticCode::ArgDimensionMismatch` is minted:
+> under BINDING ruling A7 (Leo, 2026-08-30, esc-5791-3) one rejection *reason*
+> gets one code, and this seam shares that reason with `bbox` and with
+> `reify_eval::geometry_ops`' `arg_acceptance`-backed chokepoints. See
+> `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 1's RECONCILIATION
+> block.
+
+**Migration.** `Dimensionless` rotation vectors used to be the accepted
+spelling, so this is a breaking change. Dimension **every** component of the
+rotation vector, not just the non-zero ones — `vec3(0rad, 0rad, 1.5708rad)`, or
+`vec3(0deg, 0deg, 90deg)`. Because the rejection is an error diagnostic that
+names the offending dimension (rather than a silent `Undef`), an unmigrated call
+site fails loudly and self-describes the fix.
+
+Migrate a **whole** vector at a time: a partial migration is the one case that
+does *not* fail loudly. `vec3(0, 0, 1.5708rad)` mixes `Dimensionless` and
+`Angle` components, and a mixed-dimension `vec3` collapses to `undef` at its own
+construction site — *before* `orient_exp` / `transform_exp` is ever called. The
+rotation-vector diagnostic classifies that builtin's argument, so it never sees
+the offending vector and cannot fire; the call fails the old silent way (a bare
+`undef` plus an `OpContractViolation` note, `reify eval` exit 0). Diagnosing a
+mixed-dimension container at its construction site is a separate, general
+concern and is tracked as follow-up work.
+
+**Linear-component dimension convention.** The sibling of the convention above,
+with the same shape on the other half of the twist: `transform_log` requires the
+input `Transform`'s translation to be `Vector3<Length>` and emits `linear` as
+`Vector3<Length>`; `transform_exp` requires `linear` to be `Vector3<Length>`:
+
+| `linear` dimension       | accepted? | notes                                                                            |
+|--------------------------|-----------|----------------------------------------------------------------------------------|
+| `Length`                 | ✓         | canonical — matches the `Twist` type                                             |
+| `Dimensionless`          | ✗         | rejected as `Undef`, with a dimension `Error` naming the offending dimension      |
+| `Angle`, `Mass`, …       | ✗         | same rejection + `Error`                                                          |
+
+Rejection is uniform: every non-`Length` dimension takes the same branch.
+
+There is now ONE policy — `Length` — and both ends of the seam gate identically,
+so `transform_log` ↔ `transform_exp` round-trips exactly on `Length` and both
+ends reject in lockstep otherwise. Identity and pure-rotation transforms are
+unaffected: `transform3_identity` builds `Length` zeros.
+
+> **RULING #6126** (Leo, 2026-08-07): a twist's `linear` half is
+> `Vector3<Length>`, and mirrored, a `Transform`'s translation crossing this seam
+> carries `Length` and only `Length`. Grounds: decision D11 of
+> `docs/prds/v0_6/units-length-gate-completion.md` — after the `Real` →
+> `Scalar{Dimensionless}` unification, "also admits `Dimensionless`" means "also
+> admits bare numbers". This closes the last `Length | Dimensionless` disjunction
+> **on this seam**, which is the whole of the ruling's scope.
+>
+> **Severity amendment** (Leo, 2026-08-19, via esc-6080-6): the rejection is a
+> `Severity::Error`, so `reify eval` exits 1. A wrong dimension is a
+> design-correctness fault rather than a degradation to tolerate, and the sibling
+> angular half of the same builtin family reports its equivalent fault at the same
+> severity (#6080, above — now landed) — so one fault class does not report two
+> ways across one seam. The diagnostic carries
+> `reify_core::DiagnosticCode::DimensionedArgRejected` — the reused, pre-existing
+> runtime dimension-rejection code, attached by task 5791 under BINDING ruling A7
+> (Leo, 2026-08-30, esc-5791-3). No `DiagnosticCode::ArgDimensionMismatch` is
+> minted: one rejection *reason* gets one code, and this seam shares that reason
+> with `bbox` and with `reify_eval::geometry_ops`' `arg_acceptance`-backed
+> chokepoints. See `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 1's
+> RECONCILIATION block.
+
+**Scope: this seam only.** The gate above is *not* evidence that the transform
+family is uniformly `Length`-only. `transform3`'s signature above declares
+`translation: Vector3<Length>`, but the evaluator applies no dimension check to
+it — only a 3-component `Vector` shape check — and `transform_compose` /
+`transform_inverse` propagate whatever dimension they are handed. So
+`transform3(orient_identity(), vec3(1.0, 2.0, 3.0))` still constructs, composes,
+and inverts without complaint; the rejection surfaces only downstream at
+`transform_log`. That asymmetry is deliberate and owned elsewhere — task #6089
+rules `Transform` translation `Length` and stamps the constructor arms, and
+#5747 (R12/R8) narrows the affine and pose-decode readers.
+
+By CONTRAST, `joint_jacobian` (§13.1) shares the `Map { angular, linear }` shape
+but its columns are ∂pose/∂q, **not** twists — a revolute column's linear part is
+m/rad — so they are governed by NEITHER convention above, angular or linear. The
+shared shape lets solver code destructure both uniformly; it is not a type match,
+and nothing feeds a Jacobian column to `transform_exp`. They keep emitting
+`Dimensionless` on both halves because joint parameters are unit-less in the
+joint's local frame. Giving those columns their own structure, and correcting
+§13.1's `joint_jacobian -> Twist` rows accordingly, is tracked by `#6102`.
 
 ### 3.2 `std.geometry.primitive`
 
@@ -1236,7 +1362,7 @@ structure def ISOToleranceGrade {
     param grade : Int
     param nominal_min : Length
     param nominal_max : Length
-    let tolerance_value = iso_it_tolerance(grade, nominal_min, nominal_max)  // ISO 286-1 IT5–IT18, nominal ≤500mm
+    let tolerance_value = iso_it_tolerance(nominal_min, nominal_max, grade)  // ISO 286-1 IT5–IT18, nominal ≤500mm
 }
 ```
 
@@ -1557,16 +1683,18 @@ enum PointCloudFormat { PLY, PCD, XYZ, LAS }
 
 ```
 trait Analysis {
+    // yield_strength deliberately stays `Real`: it belongs to task 5807, not to
+    // RULING Q7 posture 2 (#6165), which scoped itself to AnalysisResult.
     param yield_strength : Real        // material yield strength for safety-factor (Pa; Real placeholder)
     constraint yield_strength > 0
 }
 
 trait AnalysisResult {
-    param von_mises_stress    : Real
-    param principal_stress_1  : Real
-    param principal_stress_2  : Real
-    param principal_stress_3  : Real
-    param max_shear_stress    : Real
+    param von_mises_stress    : Stress
+    param principal_stress_1  : Stress
+    param principal_stress_2  : Stress
+    param principal_stress_3  : Stress
+    param max_shear_stress    : Stress
     param safety_factor_value : Real
     constraint von_mises_stress >= 0
     constraint max_shear_stress >= 0
@@ -1574,12 +1702,20 @@ trait AnalysisResult {
 }
 ```
 
-`AnalysisResult` is a **structural contract**: each param uses `Real` as a
-dimension-agnostic placeholder (the runtime stress builtins below produce
-correctly-dimensioned values, e.g. `Scalar<Pressure>` for the stresses and a
-dimensionless `Real` for `safety_factor_value`), and the trait does **not**
-participate in dimension checking — it will not reject dimensioned conforming
-values. (The v0.1 doc's `mesh_resolution`/`convergence_target` on `Analysis`
+`AnalysisResult` **participates in dimension checking**. Its five stress params
+— `von_mises_stress`, `principal_stress_1/2/3`, `max_shear_stress` — are
+dimension-checked `Scalar<Pressure>`, spelled via the `Stress` alias documented
+above; they were tightened from `Real` by RULING Q7 posture 2 (task #6165) so
+that a trait member's declared type matches the `Scalar<Pressure>` the producing
+builtins under "Stress post-processing" below already yield. `safety_factor_value`
+stays `Real` because it is genuinely dimensionless. The user-visible consequence:
+a conformer that declares any of the five stress params `: Real` is **rejected at
+compile time** (`TypeMismatchForTraitMember`, one diagnostic per member) — declare
+them `: Stress` (equivalently `: Pressure`) with Pa-valued defaults. The bare `0`
+in the positivity constraints above is correct as written: a syntactic zero
+comparison operand is coerced to its sibling operand's dimension, so do **not**
+spell it `0Pa`. `Analysis.yield_strength` deliberately remains `Real`, pending
+task 5807. (The v0.1 doc's `mesh_resolution`/`convergence_target` on `Analysis`
 and `source`/`mesh` on `AnalysisResult` were never shipped — task 341.)
 
 **Stress post-processing (`std.analysis.stress`):**
@@ -1631,6 +1767,55 @@ fn divergence<N: Nat, Q: Dimension>(field: Field<Point<N,Length>, Vector<N,Q>>) 
 fn curl<Q: Dimension>(field: Field<Point3<Length>, Vector3<Q>>) -> Field<Point3<Length>, Vector3<Q/Length>>
 fn laplacian<N: Nat, Q: Dimension>(field: Field<Point<N,Length>, Scalar<Q>>) -> Field<Point<N,Length>, Scalar<Q/Length^2>>
 ```
+
+**`ElasticResult` derivative channels.** Distinct from the operators above:
+these are *result channels* populated by `solve_elastic_static`, not operators
+you apply. They are documented here so the operator `curl` and the result
+channel `curl` sit adjacent and cannot be confused.
+
+```
+ElasticResult.curl     : Field<Point3<Length>, Vector3<Real>>    // ∇×u
+ElasticResult.rotation : Field<Point3<Length>, Vector3<Angle>>   // ∇×u / 2
+```
+
+(`stdlib/solver_elastic.ri` spells curl's quantity `Dimensionless`; `Real` is
+the dimension-position synonym for it, so the two declarations are the same
+type.)
+
+`curl` is **dimensionless by decision, not by default** (ruling task #6164).
+∇×u is Length/Length, so the derivative algebra stays quotient-pure, and
+`result.curl` is type-identical to `curl(result.displacement)` — the operator
+row above. An angle is an arc measure, and ANGLE is introduced only at named
+primitives that assert one (`asin`, `orient_log`), never by differentiation.
+
+`rotation` is that named primitive here: the infinitesimal rotation vector
+ω = ∇×u / 2, and the designated crossing where the radian enters explicitly.
+The two channels are exactly related by `curl = 2 * rotation`, componentwise
+and bit-exactly. `rotation` is valid as an angle only in the small-deformation
+regime (‖∇u‖ ≪ 1); the exact finite-rotation extraction is the polar
+decomposition F = RU of the deformation gradient, which is future work — hence
+a new channel rather than a retype of `curl`.
+
+Both are populated on the tet/solid path and are `undef` on the shell path
+(honest absence, as for `divergence` / `gradient`).
+
+Having `rotation` carry a real ANGLE unlocks three things that
+`Vector3<Real>` cannot express:
+
+- `rotational_stiffness * rotation` reduces to a **torque** — N·m/rad² × rad
+  = N·m/rad — instead of collapsing to a dimensionless product;
+- `deg` / `rad` literals become usable in assertions and constraints against
+  the channel — worked example: `examples/differential_field_ops.ri` carries
+  `constraint rot_probe > 0.001deg` / `constraint rot_probe < 0.5deg`, gated
+  in CI by `differential_field_ops_e2e`. One limitation: the comparison is
+  against an ANGLE **scalar** (there, `magnitude` of a sampled
+  `Vector3<Angle>`), because no in-language Vector3 component access exists
+  yet — a per-component `deg` comparison is still out of reach;
+- a future `d/dt` of `rotation` yields **angular velocity** (rad/s) rather
+  than a bare frequency (1/s).
+
+See `docs/prds/v0_6/differential-field-operators.md` for the decision table
+and the full channel specification.
 
 ---
 
@@ -1754,7 +1939,7 @@ structure def Fixed : Joint {}  // 0-DOF rigid sub-assembly grouping; no motion 
 
 This hierarchy is enforced via nominal conformance, not merely declared: `bind`/`sweep`/`dim` (§13.3–§13.4) carry a `DrivingJoint` bound checked at both the runtime (L1) and compile-time (L2) layers and reject `Coupling`/`Fixed` arguments with `error[E_MECHANISM_NONDRIVING_JOINT]`.
 
-`JointBinding` (the `bind()` return type, §13.3) and `Twist` (the `joint_jacobian` return type, below) are likewise declared marker structures — `bind(joint, value)` and `joint_jacobian(joint)` return typed `JointBinding`/`Twist` values rather than bare `Map`s, even though neither structure yet declares member fields (field layout is a follow-on, not part of this reconciliation).
+`JointBinding` (the `bind()` return type, §13.3) and `JacobianColumn` (the `joint_jacobian` return type, below) are likewise declared structures — `bind(joint, value)` and `joint_jacobian(joint)` return typed `JointBinding`/`JacobianColumn` values rather than bare `Map`s. `JointBinding` is still a field-less marker (its field layout is a follow-on, not part of this reconciliation); `JacobianColumn` does declare its members, `angular` and `linear`, so a column's parts are readable from user code.
 
 The parametric spelling `Coupling<P>` and the projected associated type `P::MotionValue` above are the stdlib's own internal nominal-generic declarations, which the compiler resolves and enforces today. Writing a *user*-authored generic function or structure parameterized over an arbitrary joint kind (`fn foo<J: DrivingJoint>(j: J) -> ...` in user code) requires general user-defined generics, a separate, broader language feature that has not shipped — tracked by the generics PRD (tasks 4232/4235); `Coupling<P>` should be read as a forward-reference to that surface, not as evidence it already exists for user code. At runtime every joint kind, `Coupling<P>` included, is still represented as an untyped `Value::Map` — the nominal types above are compile-time-only tags.
 
@@ -1788,17 +1973,22 @@ fn transform_at(j: Coupling<P>, v: P::MotionValue) -> Transform<3>
 These are the registered builtin names (`crates/reify-stdlib/src/joints.rs:676,693,705,719`). Earlier drafts of this section used bare `axis`/`range`/`ratio`/`offset`, which return `Undef` — those names are not registered. No bare aliases are provided: Reify's builtin namespace is flat and global, so an unqualified `axis`/`range` would collide across unrelated stdlib modules; the `joint_`-prefixed spelling is the collision-safe, self-documenting form and is the only one that ships.
 
 **Jacobian.** `joint_jacobian` is a live builtin (`crates/reify-stdlib/src/joints.rs:733`, delegating to
-`joint_jacobian_value` at `:776`) that returns the analytic SE(3) twist column
+`joint_jacobian_value` at `:777`) that returns the analytic Jacobian column
 for a single joint, used by the closed-chain loop-closure solver — see
 [`v0_2/kinematic-constraints.md`](prds/v0_2/kinematic-constraints.md). The
-returned `Twist` shape (`Map { angular, linear }`) is the same one used by
-`transform_log` / `transform_exp` (§3.1), so solver code can compose joint
-Jacobian columns and twists uniformly.
+returned type is `JacobianColumn`: the partial derivative of pose with respect
+to the joint's own coordinate, dpose/dq, whose `angular`/`linear` components
+carry per-joint-kind *rates* — for a revolute joint `linear` is m/rad, for a
+prismatic joint `angular` is rad/m. That is why a column is deliberately **not**
+a `Twist` (§3.1), which is a spatial velocity, dpose/dt, and why a column must
+not be fed to `transform_exp`. The two types share the `angular`/`linear` key
+names and nothing else; multiplying a column by a joint rate is the consumer's
+job.
 
 ```
-fn joint_jacobian(j: Prismatic) -> Twist          // angular = 0,        linear  = unit(axis)
-fn joint_jacobian(j: Revolute)  -> Twist          // angular = unit(axis), linear = 0
-fn joint_jacobian(j: Coupling<P>) -> Twist        // ratio * joint_jacobian(parent)
+fn joint_jacobian(j: Prismatic) -> JacobianColumn    // angular = 0,        linear  = unit(axis)
+fn joint_jacobian(j: Revolute)  -> JacobianColumn    // angular = unit(axis), linear = 0
+fn joint_jacobian(j: Coupling<P>) -> JacobianColumn  // ratio * joint_jacobian(parent)
 ```
 
 The axis is unit-normalized in the return value (matching `transform_at`'s

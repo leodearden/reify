@@ -14,7 +14,9 @@ use reify_ir::{EnumDef, EnumVariantDef, VariantPayload};
 
 use crate::CompiledModule;
 use crate::compile_builder::ctx::CompilationCtx;
-use crate::type_resolution::{resolve_enum_type_with_args, resolve_type_expr_with_aliases};
+use crate::type_resolution::{
+    resolve_enum_type_with_args, resolve_type_expr_with_aliases, unresolved_alias_body_name,
+};
 
 /// Resolve each enum variant's named-field payload `TypeExpr`s into the IR's
 /// `VariantPayload::Named(Vec<(String, Type)>)` (task δ #3942).
@@ -147,10 +149,38 @@ pub(crate) fn resolve_enum_variant_payloads(
                             // trait-member (`traits.rs`) type resolution use.
                             match &type_expr.kind {
                                 reify_ast::TypeExprKind::Named { name, type_args }
-                                    if type_args.is_empty()
-                                        && enum_names.contains(name.as_str()) =>
+                                    if type_args.is_empty() =>
                                 {
-                                    Some(Type::Enum(name.clone()))
+                                    // `enum_names` is this phase's PRIVATE enum
+                                    // namespace — the ambient `RESOLUTION_ENUM_NAMES`
+                                    // set (which the deferred alias arm in
+                                    // `resolve_type_expr_with_aliases_kinded` consults)
+                                    // is NOT installed here. So `type AL = Zq` reaches
+                                    // this arm still spelled `AL`, and a raw
+                                    // `enum_names.contains("AL")` misses the enum-ness
+                                    // of its body. Hop the unresolved-alias chain to the
+                                    // name the body ultimately spells, and key BOTH the
+                                    // membership test and the resulting `Type::Enum` on
+                                    // it, so the payload type equals the direct
+                                    // spelling's (task 6259).
+                                    //
+                                    // Strictly additive: this runs only after
+                                    // `resolve_type_expr_with_aliases` above already
+                                    // returned `None`, a branch the direct spelling
+                                    // never reaches. `unresolved_alias_body_name`
+                                    // returns `None` for a non-alias (and for a
+                                    // resolved / parametric / non-bare-`Named`-bodied
+                                    // one), so the raw name is used unchanged there.
+                                    let lookup = unresolved_alias_body_name(
+                                        name,
+                                        &ctx.alias_registry,
+                                    )
+                                    .unwrap_or_else(|| name.clone());
+                                    if enum_names.contains(lookup.as_str()) {
+                                        Some(Type::Enum(lookup))
+                                    } else {
+                                        None
+                                    }
                                 }
                                 // Generic enum reference WITH type args — e.g. a
                                 // self-/sibling-referential `left: Tree<T>` inside

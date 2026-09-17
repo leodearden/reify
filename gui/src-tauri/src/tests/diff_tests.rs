@@ -55,6 +55,7 @@ fn sample_mesh(entity_path: &str, vertices: Vec<f32>) -> MeshData {
         indices: vec![0, 1, 2],
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
+        scalar_channel_tags: Default::default(),
         displaced_positions: None,
         element_kind: None,
         region_tags: None,
@@ -143,7 +144,7 @@ fn diff_identical_states_returns_empty_delta() {
     let state = GuiState {
         meshes: vec![sample_mesh("Bracket.body", vec![0.0, 0.0, 0.0])],
         values: vec![sample_value("Bracket.width", "80")],
-        constraints: vec![sample_constraint("Bracket.0", "Satisfied")],
+        constraints: vec![sample_constraint("Bracket.0", "satisfied")],
         files: vec![],
         tessellation_diagnostics: vec![],
         compile_diagnostics: vec![],
@@ -218,7 +219,7 @@ fn diff_detects_changed_constraint() {
     let old = GuiState {
         meshes: vec![],
         values: vec![],
-        constraints: vec![sample_constraint("Bracket.0", "Satisfied")],
+        constraints: vec![sample_constraint("Bracket.0", "satisfied")],
         files: vec![],
         tessellation_diagnostics: vec![],
         compile_diagnostics: vec![],
@@ -233,7 +234,7 @@ fn diff_detects_changed_constraint() {
     let new = GuiState {
         meshes: vec![],
         values: vec![],
-        constraints: vec![sample_constraint("Bracket.0", "Violated")],
+        constraints: vec![sample_constraint("Bracket.0", "violated")],
         files: vec![],
         tessellation_diagnostics: vec![],
         compile_diagnostics: vec![],
@@ -250,7 +251,7 @@ fn diff_detects_changed_constraint() {
 
     assert_eq!(delta.changed_constraints.len(), 1, "one constraint changed");
     assert_eq!(delta.changed_constraints[0].node_id, "Bracket.0");
-    assert_eq!(delta.changed_constraints[0].status, "Violated");
+    assert_eq!(delta.changed_constraints[0].status, "violated");
     assert!(delta.removed_constraint_ids.is_empty());
 }
 
@@ -359,7 +360,7 @@ fn full_delta_contains_all_items_from_state() {
             sample_mesh("Bracket.hole", vec![1.0, 1.0, 1.0]),
         ],
         values: vec![sample_value("Bracket.width", "80")],
-        constraints: vec![sample_constraint("Bracket.0", "Satisfied")],
+        constraints: vec![sample_constraint("Bracket.0", "satisfied")],
         files: vec![],
         tessellation_diagnostics: vec![],
         compile_diagnostics: vec![],
@@ -439,7 +440,7 @@ fn delta_to_events_returns_correct_tuples_for_changes_and_removals() {
     let delta = StateDelta {
         changed_meshes: vec![sample_mesh("Bracket.body", vec![1.0, 2.0, 3.0])],
         changed_values: vec![sample_value("Bracket.width", "120")],
-        changed_constraints: vec![sample_constraint("Bracket.0", "Violated")],
+        changed_constraints: vec![sample_constraint("Bracket.0", "violated")],
         removed_mesh_paths: vec!["Bracket.old_body".to_string()],
         removed_value_ids: vec!["Bracket.old_param".to_string()],
         removed_constraint_ids: vec!["Bracket.old_constraint".to_string()],

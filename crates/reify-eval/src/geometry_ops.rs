@@ -174,19 +174,40 @@ pub(crate) fn eval_named_arg(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_ir::Value> {
-    match args.iter().find(|(n, _)| n == name) {
-        Some((_, expr)) => Some(reify_expr::eval_expr(
-            expr,
-            &eval_ctx_with_meta(values, functions, meta_map),
-        )),
-        None => {
-            diagnostics.push(Diagnostic::warning(format!(
-                "missing required geometry argument '{}' for {}",
-                name, kind_label
-            )));
-            None
-        }
+    let value = lookup_named_arg_value(name, args, values, functions, meta_map);
+    if value.is_none() {
+        diagnostics.push(Diagnostic::warning(format!(
+            "missing required geometry argument '{}' for {}",
+            name, kind_label
+        )));
     }
+    value
+}
+
+/// The SINGLE owner of the name-to-expression binding rule for a geometry
+/// builtin's named argument: find it in `args`, evaluate it, and return the
+/// `Value`. Absent is `None`, and this helper has no opinion about that — it
+/// pushes no diagnostic, so each arity layers its OWN absent-arg policy on top.
+///
+/// That split is the whole reason it exists: [`eval_named_arg`] adds the
+/// missing-arg Warning (REQUIRED), [`optional_length_value`]'s callers pass the
+/// `None` straight through to a documented default (OPTIONAL), and
+/// `isosurface`'s `adaptive` defaults to `false`. Only the POLICY differs, so
+/// only the policy is written three times. It matters that the lookup itself is
+/// written once, because live task #6313 is a proposal to CHANGE this rule —
+/// geometry builtins bind by position today, not by label.
+fn lookup_named_arg_value(
+    name: &str,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+) -> Option<reify_ir::Value> {
+    let (_, expr) = args.iter().find(|(n, _)| n == name)?;
+    Some(reify_expr::eval_expr(
+        expr,
+        &eval_ctx_with_meta(values, functions, meta_map),
+    ))
 }
 
 /// Look up a named argument, evaluate it, and convert to a finite `f64`.
@@ -239,7 +260,7 @@ pub(crate) enum LengthArg {
     /// The argument evaluated to `Value::Undef` — not YET resolved (an
     /// unresolved param, or a `ValueMap` cell still empty during a partial /
     /// fixpoint build), as opposed to *wrong*. No diagnostic was pushed
-    /// (quiet degradation, matching `resolve_scalar_dim_arg`).
+    /// (quiet degradation, matching [`resolve_spec_arg`]'s `Undefined` arm).
     Unresolved,
     /// The argument is missing, non-finite, or defined-but-not-a-LENGTH (a bare
     /// `Real`/`Int` or a wrong-dimension `Scalar`). Exactly one diagnostic
@@ -408,12 +429,90 @@ pub(crate) fn accept_length_value(
     }
 }
 
-/// `Result` adapter over [`eval_named_arg_length`]: the SINGLE owner of the
-/// caller-facing error wording for a required LENGTH-semantic argument (it was
-/// previously copy-pasted at six call sites). An `Unresolved` argument gets its
-/// own message — asserting "missing or non-Length" for a cell that is merely
-/// not yet resolved is actively misleading during solver iteration, where Undef
-/// cells are expected transient state.
+/// The SINGLE owner of the UNRESOLVED-argument wording, shared by every gated
+/// dimension.
+///
+/// An `Undef` argument gets its own sentence rather than the dimension
+/// rejection's: asserting "missing or non-Length" for a cell that is merely not
+/// yet resolved is actively misleading during solver iteration, where Undef
+/// cells are expected transient state. PRD-1 decision D10; the ANGLE gate
+/// (PRD 3 leaf γ) adopts it verbatim so the two PRDs' chokepoints behave
+/// identically (INV-SF-1), which is only true by construction if there is one
+/// sentence rather than one per dimension.
+fn unresolved_arg_message(
+    name: impl std::fmt::Display,
+    kind_label: impl std::fmt::Display,
+) -> String {
+    format!(
+        "argument '{}' for {} is unresolved (Undef)",
+        name, kind_label
+    )
+}
+
+/// The SINGLE owner of the GROUP-READ policy, shared by every gated dimension:
+/// read a whole named set, diagnose EVERY failing member, hand back the FIRST
+/// error.
+///
+/// Both properties are load-bearing and neither is recoverable from a call
+/// site. ALL FAILURES AT ONCE — the member reads are deliberately NOT
+/// `?`-chained, because a gated set is written as ONE gesture (`translate(g, 5,
+/// 0, 0)`, `arc`'s `start_angle`/`end_angle`), so a bare set is usually bare in
+/// EVERY member and short-circuiting would hand the author one arg name per
+/// rebuild. FIRST-ERROR-WINS — the returned `Err` is the one the per-slot read
+/// order reported, so an `Unresolved` member is never masked by a later
+/// `Invalid` one.
+///
+/// `read` is the ONLY thing that varies between [`required_length_args`] and
+/// [`required_angle_args`], so the precedence rule above is stated once here
+/// rather than once per dimension.
+fn required_args_with<const N: usize>(
+    names: [&str; N],
+    mut read: impl FnMut(&str) -> Result<f64, String>,
+) -> Result<[f64; N], String> {
+    let mut out = [0.0_f64; N];
+    let mut first_err: Option<String> = None;
+    for (slot, name) in out.iter_mut().zip(names) {
+        match read(name) {
+            Ok(si) => *slot = si,
+            Err(e) => {
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
+        }
+    }
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(out),
+    }
+}
+
+/// The SINGLE owner of the caller-facing `Err` wording for a LENGTH-semantic
+/// argument (decision D9) — previously copy-pasted at six call sites, now
+/// minted here and here only, for BOTH arities of the named-arg route
+/// ([`required_length_arg`] and [`optional_length_value`]). The `Unresolved`
+/// row delegates to [`unresolved_arg_message`], which every gated dimension
+/// shares.
+fn length_arg_to_result(
+    state: LengthArg,
+    name: &str,
+    kind_label: impl std::fmt::Display + Copy,
+) -> Result<f64, String> {
+    match state {
+        LengthArg::Length(si) => Ok(si),
+        LengthArg::Unresolved => Err(unresolved_arg_message(name, kind_label)),
+        LengthArg::Invalid => Err(format!(
+            "missing or non-Length argument '{}' for {}",
+            name, kind_label
+        )),
+    }
+}
+
+/// `Result` adapter over [`eval_named_arg_length`] for a REQUIRED
+/// LENGTH-semantic argument: an absent arg is a diagnosed failure.
+///
+/// See [`optional_length_value`] for the sibling arity, and
+/// [`length_arg_to_result`] for the shared wording both inherit.
 pub(crate) fn required_length_arg(
     name: &str,
     kind_label: impl std::fmt::Display + Copy,
@@ -423,25 +522,57 @@ pub(crate) fn required_length_arg(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<f64, String> {
-    match eval_named_arg_length(
+    length_arg_to_result(
+        eval_named_arg_length(
+            name,
+            kind_label,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        ),
         name,
         kind_label,
-        args,
-        values,
-        functions,
-        meta_map,
-        diagnostics,
-    ) {
-        LengthArg::Length(si) => Ok(si),
-        LengthArg::Unresolved => Err(format!(
-            "argument '{}' for {} is unresolved (Undef)",
-            name, kind_label
-        )),
-        LengthArg::Invalid => Err(format!(
-            "missing or non-Length argument '{}' for {}",
-            name, kind_label
-        )),
-    }
+    )
+}
+
+/// The OPTIONAL arity of the Contract C length gate: a slot that may be omitted
+/// entirely, but is LENGTH-gated the moment it is present.
+///
+/// `Ok(None)` means ABSENT — no diagnostic, no rejection, and the caller
+/// supplies its own documented default (`…?.unwrap_or(default)`). A PRESENT
+/// value is classified exactly as [`required_length_arg`] classifies one, and
+/// on failure produces the identical `Err` text via the shared
+/// [`length_arg_to_result`], so an optional slot is not a second dialect.
+///
+/// Distinct from the required arity in exactly one respect, and that respect is
+/// the whole point: routing an absent optional arg through
+/// [`required_length_arg`] would push [`eval_named_arg`]'s "missing required
+/// geometry argument" Warning at every call site that legitimately omits it.
+///
+/// Takes an already-evaluated `Option<&Value>` rather than reading `args`,
+/// mirroring [`accept_length_value`]'s position under [`eval_named_arg_length`]:
+/// the caller pairs it with [`lookup_named_arg_value`], and one that must also
+/// INSPECT the offending value (as `isosurface` does, to hint at the #6313
+/// positional misbind) then has it in hand without a second lookup.
+///
+/// First caller: `isosurface`'s `iso` (task 5755, decision D12).
+pub(crate) fn optional_length_value(
+    name: &str,
+    kind_label: impl std::fmt::Display + Copy,
+    value: Option<&reify_ir::Value>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<Option<f64>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    length_arg_to_result(
+        accept_length_value(name, kind_label, value, diagnostics),
+        name,
+        kind_label,
+    )
+    .map(Some)
 }
 
 /// As [`required_length_arg`], re-wrapped as a LENGTH `Value::Scalar`.
@@ -498,6 +629,189 @@ pub(crate) fn required_length_value(
         diagnostics,
     )
     .map(|[v]| v)
+}
+
+/// The SINGLE owner of the caller-facing `Err` wording for an ANGLE-semantic
+/// argument — the counterpart of [`length_arg_to_result`]'s `Invalid` row, and
+/// minted here for the same reason: it is read by BOTH routes into the gate
+/// ([`accept_angle_value`]'s dimension rejection and [`required_angle_arg`]'s
+/// missing-arg arm), so a reword that reached only one would fork the two
+/// halves of one contract. The `Unresolved` row delegates to
+/// [`unresolved_arg_message`], which every gated dimension shares.
+fn invalid_angle_message(
+    name: impl std::fmt::Display,
+    kind_label: impl std::fmt::Display,
+) -> String {
+    format!("missing or non-Angle argument '{}' for {}", name, kind_label)
+}
+
+/// The VALUE-LEVEL core of the ANGLE gate: classify an already-evaluated
+/// `Value` as a finite ANGLE, and push the rejection diagnostic when it is not.
+///
+/// The arm-for-arm counterpart of [`accept_length_value`], sharing the same
+/// `accept_arg` classifier, the same `Diagnostic::error(..).with_code(..)`
+/// rejection shape and the same `Undef`-is-not-`Invalid` distinction — so an
+/// angle rejection and a length rejection differ only where their `ArgSpec`s
+/// differ, which is the whole point of contract C1.
+///
+/// # Why `Result<f64, String>` and not an `AngleArg` three-state enum
+///
+/// [`LengthArg`] exists to serve the VARIADIC route: a coordinate stream is
+/// classified BEFORE any member is known to be the first failure, so reporting
+/// every failing member with `Unresolved`-beats-a-later-`Invalid` precedence
+/// needs the two failure states kept apart until the whole set is in. ANGLE has
+/// no variadic consumer — there is no angle stream and no angle grid, so every
+/// angle-bearing position is reached by NAME.
+///
+/// A builtin with MORE THAN ONE named angle slot does exist — `arc` carries
+/// `start_angle` and `end_angle` — and is served by [`required_angle_args`],
+/// which gets the same every-member reporting and the same precedence out of
+/// first-error-wins over this `Result`, exactly as [`required_length_args`]
+/// does over [`required_length_arg`]. That is what makes the three-state enum
+/// unnecessary here rather than merely unused: a parallel `AngleArg` whose two
+/// failure states no caller ever inspects separately would be shape borrowed
+/// from a requirement that does not exist. This is recorded so a later reader
+/// does not "restore symmetry" and reintroduce it.
+fn accept_angle_value(
+    name: impl std::fmt::Display + Copy,
+    kind_label: impl std::fmt::Display + Copy,
+    value: &reify_ir::Value,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<f64, String> {
+    use crate::arg_acceptance::{Acceptance, accept_arg, angle_spec};
+
+    match accept_arg(value, &angle_spec()) {
+        Acceptance::Accepted(si) if si.is_finite() => Ok(si),
+        Acceptance::Accepted(_) => {
+            // CODE-LESS BY CLASS, not by omission: the dimension was ACCEPTED
+            // here and only the numeric value is non-finite, so this is a
+            // VALUE-domain verdict and INV-SF-6 — "a `DiagnosticCode` on every
+            // `ArgSpec`-backed REJECTION" — does not reach it. Byte-identical
+            // to `accept_length_value`'s non-finite arm on purpose: if this
+            // class is ever given a code, both arms move together.
+            diagnostics.push(Diagnostic::warning(format!(
+                "argument '{}' for {} evaluated to a non-finite Angle",
+                name, kind_label
+            )));
+            Err(format!(
+                "non-finite Angle argument '{}' for {}",
+                name, kind_label
+            ))
+        }
+        Acceptance::Undefined => Err(unresolved_arg_message(name, kind_label)),
+        Acceptance::Rejected(rej) => {
+            // SEVERITY: Error, as contract C1 invariant 3 requires, so
+            // `reify eval` exits nonzero through the pure severity gate at
+            // `reify-cli/src/main.rs` (INV-SF-2). This mirrors
+            // `accept_length_value`'s promoted arm rather than β's
+            // `resolve_angle_scalar_arg`, which stays a Warning: β added a hint
+            // to a PRE-EXISTING reader whose callers continue on `None`, while
+            // every caller of this one drops the op.
+            diagnostics.push(
+                Diagnostic::error(rej.message(&kind_label.to_string(), &name.to_string()))
+                    .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
+            );
+            Err(invalid_angle_message(name, kind_label))
+        }
+    }
+}
+
+/// The named-arg route into the ANGLE gate, for a REQUIRED angle slot:
+/// `rotate` / `rotate_around` / `revolve`'s angle, `arc`'s `start_angle` and
+/// `end_angle` (PRD 3 leaf γ), `draft`'s angle (leaf δ) and
+/// `circular_pattern`'s (leaf ε).
+///
+/// The lookup goes through [`eval_named_arg`], so the missing-arg Warning and
+/// its anti-cascade contract are INHERITED rather than re-derived — a missing
+/// angle produces exactly one Warning and no dimension rejection stacked on it.
+///
+/// Reach for [`required_angle_args`] whenever a builtin has MORE THAN ONE gated
+/// angle slot: this singular form is `?`-chained at its call sites, so a
+/// per-slot read reports only the first bare angle.
+fn required_angle_arg(
+    name: &str,
+    kind_label: impl std::fmt::Display + Copy,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<f64, String> {
+    let Some(value) = eval_named_arg(
+        name,
+        kind_label,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    ) else {
+        // `eval_named_arg` has already named the culprit; adding a dimension
+        // rejection here would be the cascade that contract forbids.
+        return Err(invalid_angle_message(name, kind_label));
+    };
+    accept_angle_value(name, kind_label, &value, diagnostics)
+}
+
+/// As [`required_angle_arg`], re-wrapped as an ANGLE `Value::Scalar`.
+///
+/// The ANGLE counterpart of [`required_length_value`], and the R7 raw-`Value`
+/// route the angle-bearing `reify_ir::GeometryOp` FIELDS take — `Draft`'s angle
+/// (leaf δ) and `CircularPattern`'s (leaf ε). It re-wraps the ACCEPTED SI
+/// radians, so the stored representation the kernel reads is unchanged by the
+/// check and gating such a slot stays a one-line swap of its `eval_arg` read.
+fn required_angle_value(
+    name: &str,
+    kind_label: impl std::fmt::Display + Copy,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::Value, String> {
+    required_angle_arg(
+        name,
+        kind_label,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .map(reify_ir::Value::angle)
+}
+
+/// The GROUP form of [`required_angle_arg`]: read a whole set of named angle
+/// slots in one call, under [`required_args_with`]'s every-member /
+/// first-error-wins policy.
+///
+/// Why `arc` needs it (reviewer amendment):
+/// `arc(0mm, 0mm, 0mm, 10mm, 0, 90, 0, 0, 1)` is written as ONE gesture, so an
+/// author who forgot the units on `start_angle` forgot them on `end_angle` too.
+/// `?`-chaining two [`required_angle_arg`] calls would hand back one slot name
+/// per rebuild — two edit-build cycles for one mistake — and would be
+/// inconsistent with the LENGTH group `arc` already reads its centre and radius
+/// through, twelve lines above its angles.
+fn required_angle_args<const N: usize>(
+    names: [&str; N],
+    kind_label: impl std::fmt::Display + Copy,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<[f64; N], String> {
+    required_args_with(names, |name| {
+        required_angle_arg(
+            name,
+            kind_label,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        )
+    })
 }
 
 /// The GROUP form of [`required_length_value`]: read a whole set of
@@ -557,19 +871,16 @@ fn required_length_values<const N: usize>(
 /// Which positions are routed here is enumerated ONCE, in the `arg_acceptance`
 /// module doc.
 ///
-/// ALL FAILURES AT ONCE (reviewer amendment, task 5623): the member reads are
-/// deliberately NOT `?`-chained. A coordinate group is written as one gesture —
-/// `translate(g, 5, 0, 0)`, `line_segment(0, 0, 0, 10, 0, 0)` — so a bare group
-/// is usually bare in EVERY member, and short-circuiting would hand the author
-/// one arg name per rebuild: three edit-build cycles to fix one line, six for
-/// `line_segment`. Every member is therefore evaluated (each pushing its own
-/// diagnostic via [`required_length_arg`] — a `Severity::Error` carrying
+/// ALL FAILURES AT ONCE (reviewer amendment, task 5623) comes from
+/// [`required_args_with`], which owns that policy for every gated dimension:
+/// each member is read through [`required_length_arg`], pushing its own
+/// diagnostic — a `Severity::Error` carrying
 /// `DiagnosticCode::DimensionedArgRejected` for a dimension rejection, per
-/// [`eval_named_arg_length`]'s table) and only then is the FIRST
-/// error returned — so the caller-facing `Err` wording, and the
-/// `Unresolved`-beats-a-later-`Invalid` precedence it encodes, are unchanged.
-/// Grouping the WHOLE gated set of a builtin into one call (rather than several
-/// chained calls) is what makes that guarantee reach every position.
+/// [`eval_named_arg_length`]'s table — and only then is the FIRST error
+/// returned. Grouping the WHOLE gated set of a builtin into one call (rather
+/// than several chained calls) is what makes that guarantee reach every
+/// position: three edit-build cycles to fix `translate(g, 5, 0, 0)` collapse to
+/// one, six for `line_segment`.
 ///
 /// BORROW ORDERING (the reason this is a free function and not a closure):
 /// each call takes `&mut diagnostics`, so the whole group must be read BEFORE
@@ -586,10 +897,8 @@ fn required_length_args<const N: usize>(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<[f64; N], String> {
-    let mut out = [0.0_f64; N];
-    let mut first_err: Option<String> = None;
-    for (slot, name) in out.iter_mut().zip(names) {
-        match required_length_arg(
+    required_args_with(names, |name| {
+        required_length_arg(
             name,
             kind_label,
             args,
@@ -597,22 +906,8 @@ fn required_length_args<const N: usize>(
             functions,
             meta_map,
             diagnostics,
-        ) {
-            Ok(si) => *slot = si,
-            Err(e) => {
-                // FIRST error wins: it is the one the pre-existing read order
-                // reported, and an `Unresolved` member must not be masked by a
-                // later `Invalid` one.
-                if first_err.is_none() {
-                    first_err = Some(e);
-                }
-            }
-        }
-    }
-    match first_err {
-        Some(e) => Err(e),
-        None => Ok(out),
-    }
+        )
+    })
 }
 
 /// [`required_length_args`] specialised to the `ox`/`oy`/`oz` ORIGIN triple —
@@ -848,10 +1143,7 @@ fn accept_variadic_length_args(
                     out[i] = si;
                     None
                 }
-                LengthArg::Unresolved => Some(format!(
-                    "argument '{}' for {} is unresolved (Undef)",
-                    display, label
-                )),
+                LengthArg::Unresolved => Some(unresolved_arg_message(display, label)),
                 LengthArg::Invalid => Some(format!(
                     "missing or non-Length argument '{}' for {}",
                     display, label
@@ -932,10 +1224,20 @@ fn accept_variadic_length_args(
 /// a bare one is usually bare in EVERY component; short-circuiting would hand
 /// the author one coordinate name per rebuild.
 ///
-/// A wrong SHAPE is deliberately NOT a units rejection: it returns the
-/// caller-supplied `shape_err()` VERBATIM and pushes no diagnostic. This helper
-/// replaces [`point3_components`]' ACCEPTANCE policy, not its shape check, so
-/// every pre-δ wrong-variant / wrong-arity message survives byte-identical.
+/// A wrong SHAPE is deliberately NOT a units rejection: it hands the caller's
+/// `shape_err` the diagnostic sink and returns its `String` VERBATIM, minting
+/// nothing of its own. This helper replaces [`point3_components`]' ACCEPTANCE
+/// policy, not its shape check, so every pre-δ wrong-variant / wrong-arity
+/// message survives byte-identical.
+///
+/// `shape_err` takes the sink so that ONE closure owns BOTH halves of a shape
+/// rejection — the `Diagnostic` a caller wants the user to see AND the `Err`
+/// text — and cannot be forwarded in a form that keeps only half. δ's own three
+/// callers push nothing (their outer layer owns the Warning) and so ignore the
+/// argument; ζ's [`accept_transform_to_arrays`] pushes, and before this
+/// parameter existed it had to wrap its two-part closure as
+/// `|| f(&mut Vec::new())` — which dropped the Warning on the floor the moment
+/// this arm became reachable.
 ///
 /// `names` is `[N; 3]` with `N: Display + Copy` rather than `[&str; 3]` so a
 /// caller whose names are COMPUTED can hand over lazy renderers instead of
@@ -968,14 +1270,15 @@ fn accept_length_point3<N: std::fmt::Display + Copy>(
     value: &reify_ir::Value,
     names: [N; 3],
     kind_label: impl std::fmt::Display + Copy,
-    shape_err: impl FnOnce() -> String,
+    shape_err: impl FnOnce(&mut Vec<Diagnostic>) -> String,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<[f64; 3], String> {
     // SHAPE check, mirroring `point3_components` exactly — same variants, same
-    // arity. A mismatch keeps the caller's pre-δ wording and emits nothing.
+    // arity. A mismatch keeps the caller's pre-δ wording and mints nothing here:
+    // whatever the caller's `shape_err` pushes is the whole of it.
     let comps = match value {
         reify_ir::Value::Point(c) | reify_ir::Value::Vector(c) if c.len() == 3 => c,
-        _ => return Err(shape_err()),
+        _ => return Err(shape_err(diagnostics)),
     };
 
     let mut out = [0.0_f64; 3];
@@ -987,10 +1290,7 @@ fn accept_length_point3<N: std::fmt::Display + Copy>(
                 *slot = si;
                 None
             }
-            LengthArg::Unresolved => Some(format!(
-                "argument '{}' for {} is unresolved (Undef)",
-                name, kind_label
-            )),
+            LengthArg::Unresolved => Some(unresolved_arg_message(name, kind_label)),
             LengthArg::Invalid => Some(format!(
                 "missing or non-Length argument '{}' for {}",
                 name, kind_label
@@ -1217,6 +1517,198 @@ pub(crate) fn resolve_subhandle_list(
     Ok(canonical_subhandle_ids(ids))
 }
 
+/// The curated sub-shape selector argument names carried by a
+/// [`reify_compiler::CompiledGeometryOp::Modify`] op (task 5208).
+///
+/// **Lockstep invariant** — this set MUST mirror the selector argument names
+/// emitted by `reify_compiler::geometry_modify::compile_modify_op`: `"edges"`
+/// (3-arg `fillet` / `chamfer`, 4-arg `chamfer_asymmetric`), `"faces"` (4-arg
+/// curated `draft`) and `"open_faces"` (3-arg `shell_open`). A curated form
+/// added there without a matching name here silently loses inline-selector
+/// pre-hydration (it would fall back to the pure-eval `Undef` error path);
+/// the eval arms that consume these args are the `resolve_curated_edges_p2`
+/// call sites in `compile_geometry_op`.
+const CURATED_SELECTOR_ARG_NAMES: &[&str] = &["edges", "faces", "open_faces"];
+
+/// Per-realization-walk memo for [`prehydrate_inline_curated_selector_args`],
+/// keyed on the selector argument's [`reify_ir::CompiledExpr::content_hash`]
+/// (task 5208).
+///
+/// # Why memoize
+///
+/// The same AUTHORED op is dispatched once per realization of its parent, and
+/// an entity that is both its own named realization AND an operand of a later
+/// boolean realizes twice — `examples/topology_selectors/bottom_deck_selectors.ri`
+/// records 10 curated `Fillet` ops for 7 authored fillets for exactly that
+/// reason. A named-let selector pays its kernel query once (at its scheduled
+/// `HydrateCell` slot); without this memo the INLINE form — the authoring
+/// shape the docs steer designers toward — would pay a full
+/// `resolve_with_attributes` round-trip (out-of-process under
+/// `OcctKernelHandle::spawn()`) on every one of those dispatches.
+///
+/// # Why the key is sufficient
+///
+/// A resolution is a pure function of `(selector_expr, named_steps, values,
+/// table, realized_reprs, kernel)`. Across one call of the realization walk
+/// that owns the memo, all five non-expr inputs are FIXED: `named_steps`,
+/// `values`, `table` and `realized_reprs` are shared `&` borrows for the
+/// walk's whole lifetime, and kernel handles are immutable once created (an op
+/// produces a NEW handle rather than mutating an input), so re-resolving an
+/// already-resolved selector against an already-realized parent is guaranteed
+/// to yield the same ids. The expression's content hash therefore identifies
+/// the resolution completely. The memo MUST NOT outlive one walk — construct
+/// it at the top of the realization loop and drop it there.
+pub(crate) type InlineSelectorMemo = HashMap<reify_core::ContentHash, reify_ir::Value>;
+
+/// Pre-resolve an **inline** curated edge/face selector argument of a
+/// `Modify` op to a concrete `Value::List<Geometry>` literal, using the kernel
+/// at the in-loop slot where the op's parent solid is already realized
+/// (task 5208).
+///
+/// # Why this exists (the inline-vs-named-let reachability gap)
+///
+/// The curated eval arms (`modify_fillet` / `modify_chamfer` / …) evaluate
+/// their `edges`/`faces` argument with the **pure, kernel-free**
+/// [`reify_expr::eval_expr`]. That works when the designer binds the selector
+/// to its own `let` —
+///
+/// ```ri
+/// let e = edges_parallel_to(b, up, 1deg)   // ← a top-level value CELL
+/// let f = fillet(b, e, 3mm)                // ← arg is ValueRef(e): already a List
+/// ```
+///
+/// — because the cell is hydrated to a `List<Geometry>` by
+/// [`crate::Engine::hydrate_value_cell_in_loop`] at its scheduled `HydrateCell`
+/// slot, so the pure evaluator just reads the resolved list out of `values`.
+///
+/// It does **not** work when the selector is written INLINE at the call site —
+///
+/// ```ri
+/// let f = fillet(b, edges_parallel_to(b, up, 1deg), 3mm)   // ← no cell exists
+/// ```
+///
+/// — because an inline argument expression is not a top-level value cell, so
+/// nothing hydrates it: the kernel-free evaluator cannot execute the
+/// kernel-bearing topology query and yields `Value::Undef`, and the eval arm
+/// then rejects the op ("the edge selector cannot be resolved at the point this
+/// fillet runs"). Inline selectors are the natural authoring form (every
+/// curated fillet in `examples/topology_selectors/bottom_deck_selectors.ri`
+/// writes one), so the capability was unreachable from the production `.ri`
+/// pipeline despite the named-let path passing its e2e.
+///
+/// This helper closes that gap at the realization slot: it performs the same
+/// resolution `hydrate_value_cell_in_loop` branch (b) performs for a cell —
+/// [`resolve_selector_to_list`], the kernel-bearing query — but for an
+/// argument expression, and rewrites the argument to a literal carrying the
+/// result so the downstream pure eval arm reads a `List` exactly as it would
+/// for the named-let form. The two forms therefore converge on ONE resolution
+/// policy (`resolve_selector_to_list`), rather than the inline form getting a
+/// second, divergent one.
+///
+/// # Contract
+///
+/// * Returns `None` — meaning "use the original op unchanged" — for every op
+///   that is not a `Modify`, that carries no curated selector argument, or
+///   whose curated arguments the pure evaluator can ALREADY produce as a
+///   `List` (the named-let form). Every such op is byte-identical to
+///   pre-5208 behaviour; the fast path is a match + a name compare.
+/// * Only an argument whose pure evaluation is **not** a `Value::List` is
+///   offered to `resolve_selector_to_list`, and only a `Value::List` result is
+///   substituted. A selector that genuinely cannot resolve (`None`, or the
+///   gated `Value::Undef`) is left untouched so the eval arm emits its own
+///   actionable diagnostic — this helper never converts a hard failure into a
+///   silent all-edges fallback.
+/// * An **empty** resolved list is substituted verbatim: distinguishing
+///   "selector present but matched nothing" from "no selector at all" is the
+///   eval arm's `E_EMPTY_SELECTION` guard's job, not this helper's.
+/// * **Silent on failure.** Diagnostics that [`resolve_selector_to_list`]
+///   pushes on a path whose result is then DISCARDED (the #4812 capability
+///   gate's `QueryNotSupportedOnRepr` Error, the kernel-error / `ByRole` /
+///   provenance warnings — all of which return `Undef`) are buffered and
+///   dropped, so the eval arm stays the single reporter for a selector that
+///   did not resolve. Without this the designer would see the same authoring
+///   mistake reported twice per dispatch (and the op is re-dispatched
+///   whenever its parent realizes more than once).
+/// * **Memoized per realization walk** via `memo`: see [`InlineSelectorMemo`].
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prehydrate_inline_curated_selector_args(
+    op: &reify_compiler::CompiledGeometryOp,
+    named_steps: &HashMap<String, KernelHandle>,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    kernel: &mut dyn GeometryKernel,
+    table: &reify_ir::TopologyAttributeTable,
+    realized_reprs: &HashMap<reify_core::identity::RealizationNodeId, reify_ir::ReprKind>,
+    memo: &mut InlineSelectorMemo,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_compiler::CompiledGeometryOp> {
+    let reify_compiler::CompiledGeometryOp::Modify { args, .. } = op else {
+        return None;
+    };
+    // Collect (arg index, resolved list) for every curated selector argument the
+    // PURE evaluator cannot already produce as a `List<Geometry>`. Collected
+    // first (rather than mutating as we go) so the common no-op case never
+    // clones the op.
+    let mut resolved: Vec<(usize, reify_ir::Value)> = Vec::new();
+    for (idx, (name, expr)) in args.iter().enumerate() {
+        if !CURATED_SELECTOR_ARG_NAMES.contains(&name.as_str()) {
+            continue;
+        }
+        // Named-let form: the cell is already hydrated, the pure eval yields the
+        // list. Leave it alone — re-resolving would re-run the kernel query.
+        if matches!(
+            reify_expr::eval_expr(expr, &eval_ctx_with_meta(values, functions, meta_map)),
+            reify_ir::Value::List(_)
+        ) {
+            continue;
+        }
+        // Memo hit: this exact selector expression already resolved during this
+        // realization walk (the SAME authored op re-dispatches once per parent
+        // realization). Reuse the list — a repeat is a pure kernel round-trip
+        // with no new information. A memoized entry is by construction a
+        // `List` (only the success path is inserted), and the resolution that
+        // produced it emitted no diagnostics (see below), so replaying it
+        // needs no diagnostic replay either.
+        if let Some(cached) = memo.get(&expr.content_hash) {
+            resolved.push((idx, cached.clone()));
+            continue;
+        }
+        // Buffer-then-merge — the same scratch-buffer contract
+        // [`eval_variadic_composition_symbolic`] already uses in this file:
+        // `resolve_selector_to_list` reports on paths
+        // whose value we discard, and a discarded resolution must stay silent —
+        // the eval arm's own "did not resolve to a concrete edge list" Err is
+        // the single designer-facing report for that case.
+        let mut scratch: Vec<Diagnostic> = Vec::new();
+        if let Some(value @ reify_ir::Value::List(_)) = resolve_selector_to_list(
+            expr,
+            named_steps,
+            values,
+            kernel,
+            table,
+            realized_reprs,
+            &mut scratch,
+        ) {
+            diagnostics.append(&mut scratch);
+            memo.insert(expr.content_hash, value.clone());
+            resolved.push((idx, value));
+        }
+    }
+    if resolved.is_empty() {
+        return None;
+    }
+    let mut rewritten = op.clone();
+    let reify_compiler::CompiledGeometryOp::Modify { args, .. } = &mut rewritten else {
+        unreachable!("`rewritten` is a clone of the `Modify` op matched above");
+    };
+    let list_geometry = reify_core::Type::List(Box::new(reify_core::Type::Geometry));
+    for (idx, value) in resolved {
+        args[idx].1 = reify_ir::CompiledExpr::literal(value, list_geometry.clone());
+    }
+    Some(rewritten)
+}
+
 /// Op-specific user-facing wording for the shared legacy-P2 curated-edge
 /// resolver [`resolve_curated_edges_p2`]. The resolution POLICY is identical
 /// across the three local-feature ops (Fillet, Chamfer, ChamferAsymmetric);
@@ -1234,9 +1726,9 @@ struct CuratedEdgeLabels {
     /// Short op name: the prefix of the returned `Err` strings and the
     /// "at the point this {short} runs" phrasing.
     short: &'static str,
-    /// User-actionable tail for the unresolved-selector (legacy-P2 `Undef`)
-    /// `Err`. The 2-arg fallback hint differs per op; `chamfer_asymmetric` has
-    /// no 2-arg form, so its tail only points at the η/ε follow-up.
+    /// User-actionable tail for the unresolved-selector `Err`: the all-edges
+    /// escape hatch, when the op has one. `chamfer_asymmetric` has no 2-arg
+    /// form, so its tail names the only remaining move — fix the selector.
     unresolved_hint: &'static str,
 }
 
@@ -1245,24 +1737,20 @@ impl CuratedEdgeLabels {
         call_form: "fillet(solid, edges, radius)",
         verb: "fillet",
         short: "fillet",
-        unresolved_hint: "Use 2-arg fillet(solid, radius) to fillet all edges, or \
-                          wait for curated edge selection (engine-unified-build-dag \
-                          tasks 4360/4358).",
+        unresolved_hint: "Use 2-arg fillet(solid, radius) to fillet all edges instead.",
     };
     const CHAMFER: Self = Self {
         call_form: "chamfer(solid, edges, distance)",
         verb: "chamfer",
         short: "chamfer",
-        unresolved_hint: "Use 2-arg chamfer(solid, distance) to chamfer all edges, or \
-                          wait for curated edge selection (engine-unified-build-dag \
-                          tasks 4360/4358).",
+        unresolved_hint: "Use 2-arg chamfer(solid, distance) to chamfer all edges instead.",
     };
     const CHAMFER_ASYMMETRIC: Self = Self {
         call_form: "chamfer_asymmetric(solid, edges, d1, d2)",
         verb: "chamfer",
         short: "chamfer_asymmetric",
-        unresolved_hint: "Wait for curated edge selection (engine-unified-build-dag \
-                          tasks 4360/4358).",
+        unresolved_hint: "chamfer_asymmetric has no all-edges form, so the selector \
+                          itself must be corrected.",
     };
 }
 
@@ -1299,18 +1787,21 @@ fn resolve_curated_edges_p2(
 ) -> Result<Vec<GeometryHandleId>, String> {
     let elems = match edges_val {
         reify_ir::Value::List(elems) => elems,
-        // The selector did not resolve to a List — on the legacy pipeline it is
-        // `Undef` (the edges selector resolves in P4, after this P2 arm). This
-        // is NOT an empty selection, so do NOT emit `EmptyEdgeSelection` (that
-        // would false-positive on every legacy 3-arg/4-arg call); return a
-        // USER-ACTIONABLE `Err` so the cell stays Undef and η resolves it
-        // in-loop. Removed once engine-unified-build-dag η/ε (tasks 4360/4358)
-        // make curated selection reachable end-to-end.
+        // The selector did not resolve to a List. This is NOT an empty
+        // selection, so do NOT emit `EmptyEdgeSelection` (that would
+        // false-positive whenever the value is simply `Undef`); return a
+        // USER-ACTIONABLE `Err` and leave the cell Undef.
+        //
+        // Task 5208 rewording: curated selection IS reachable through the
+        // production `.ri` pipeline now, so this `Err` is a genuine authoring
+        // failure — THIS selector did not resolve — not a staging notice. The
+        // message must therefore describe what went wrong and what to check,
+        // never tell the designer to wait for a pending task.
         other => {
             return Err(format!(
-                "{}: curated edge selection is not yet available on the current \
-                 build pipeline — the edge selector cannot be resolved at the \
-                 point this {} runs. {} [edge selector evaluated to {:?}]",
+                "{}: the edge selector did not resolve to a concrete edge list \
+                 at the point this {} runs — check that it selects edges from a \
+                 realized solid in scope. {} [edge selector evaluated to {:?}]",
                 labels.call_form, labels.short, labels.unresolved_hint, other
             ));
         }
@@ -1396,6 +1887,99 @@ fn validate_pattern_count(
         return Err("invalid pattern count: exceeds upper bound".to_string());
     }
     Ok(raw as usize)
+}
+
+/// Read a GROUP of PROFILE DIMENSION slots — a rectangle's `width`/`height`, a
+/// circle's `radius`, an ellipse's `semi_major`/`semi_minor` — and require each
+/// to be POSITIVE.
+///
+/// This is [`required_length_values`] with one extra judgement layered on top,
+/// and the division of labour between the two is the whole design:
+///
+/// * [`required_length_args`], which this delegates to, already settles that
+///   every slot is a FINITE LENGTH — Contract C1's three-state mapping (task
+///   5743 routed the profile slots through it). A bare `Real`/`Int` or a
+///   wrong-dimension `Scalar` is an `Error` carrying
+///   [`reify_core::DiagnosticCode::DimensionedArgRejected`]; a NaN/±inf LENGTH
+///   `Scalar` is a `Warning`; an `Undef` slot drops the op with the distinct
+///   `unresolved (Undef)` wording. NONE of those states can reach the sign loop
+///   below, so this helper deliberately has no non-finite arm and no `Undef`
+///   arm — either one would be dead code implying the LENGTH gate had not run.
+/// * What that gate leaves open, and what this closes, is the SIGN.
+///   `circle(0mm)` and `rectangle(-30mm, 50mm)` are finite LENGTHs, so Contract
+///   C accepts them, and nothing downstream rejects them either: the mesher's
+///   `validate_boundary` only rejects a ring whose |signed area| falls below
+///   [`DEGENERATE_RING_AREA_TOLERANCE`], and `w*h == -0.0015` clears that
+///   comfortably. A negative dimension therefore produced a geometrically
+///   meaningless (clockwise, inside-out) cross-section with no diagnostic
+///   anywhere, and a zero one a degenerate face.
+///
+/// The OCCT kernel does already reject these inputs BY NAME inside
+/// `kernel.execute()` — `"rectangle_profile width must be a finite positive
+/// value"` and its siblings in `reify-kernel-occt/src/lib.rs` — so the gain
+/// here is NOT better wording. It is WHEN the rejection fires and WHAT it
+/// arrives as: there, a `GeometryError::OperationFailed` raised only once the
+/// op has been compiled and dispatched, and only on the OCCT path; here, a
+/// build-time `Diagnostic` ahead of dispatch, on every path.
+///
+/// # `PROFILE` is in the name because it is in the MESSAGE
+///
+/// Unlike its family-agnostic [`required_length_args`] /
+/// [`required_length_values`] siblings, this helper hardcodes the noun
+/// `profile` in its diagnostic ("… profile dropped: …", "profile dimensions
+/// must be > 0"). The same defect class exists for PRIMITIVE dimensions
+/// (`box`/`cylinder`/`sphere` — all likewise LENGTH-gated but sign-open), and
+/// reusing this verbatim there would emit "box profile dropped: …", a wrong
+/// noun in user-facing output. The name says `profile` so that mismatch is
+/// caught at the call site rather than in a user's console. Extending to the
+/// primitive family means lifting the noun to a parameter, not calling this
+/// as-is.
+///
+/// # The FIRST bad dimension short-circuits
+///
+/// [`required_length_args`] deliberately reads its whole group before
+/// returning, so a wholly bare gesture is diagnosed in one build. The SIGN loop
+/// deliberately does not: it returns on the first failure, giving exactly one
+/// `Warning` here plus one `Error` at the caller, per the anti-cascade contract
+/// on [`eval_named_arg`]. The reasoning that makes all-at-once right for the
+/// LENGTH gate does not carry over — a group is bare in every member because
+/// dimensionlessness is a property of how the author wrote the whole gesture,
+/// whereas a sign error is per-slot.
+///
+/// # An accepted dimension is stored exactly as an ungated one would be
+///
+/// The `Ok` arm hands back `si.map(reify_ir::Value::length)` — byte-identical
+/// to what [`required_length_values`] stores — so gating a profile for SIGN
+/// changes nothing about the IR representation of an accepted dimension, and
+/// the golden characterization snapshots are untouched.
+fn required_positive_profile_dimensions<const N: usize>(
+    names: [&str; N],
+    kind_label: impl std::fmt::Display + Copy,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<[reify_ir::Value; N], String> {
+    let si = required_length_args(
+        names,
+        kind_label,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
+    for (value, name) in si.iter().zip(names) {
+        if *value <= 0.0 {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{} profile dropped: {}={} is not positive (profile dimensions must be > 0)",
+                kind_label, name, value
+            )));
+            return Err(format!("non-positive {} dimension '{}'", kind_label, name));
+        }
+    }
+    Ok(si.map(reify_ir::Value::length))
 }
 
 /// Extract three SI-valued `f64` components from a [`reify_ir::Value::Point`]
@@ -1516,7 +2100,7 @@ pub(crate) fn decode_plane(
         origin_val,
         ["ox", "oy", "oz"],
         kind_label,
-        || "Plane origin is not a valid 3-component numeric Point/Vector".to_string(),
+        |_| "Plane origin is not a valid 3-component numeric Point/Vector".to_string(),
         diagnostics,
     )?;
     // The plane NORMAL is a dimensionless unit vector — stays bare f64, exactly
@@ -1595,7 +2179,7 @@ pub(crate) fn decode_axis(
         origin_val,
         ["ox", "oy", "oz"],
         kind_label,
-        || "Axis origin is not a valid 3-component numeric Point/Vector".to_string(),
+        |_| "Axis origin is not a valid 3-component numeric Point/Vector".to_string(),
         diagnostics,
     )?;
     // The axis DIRECTION is a dimensionless unit vector — stays bare f64, exactly
@@ -1607,34 +2191,6 @@ pub(crate) fn decode_axis(
     let unit_dir =
         unit_vector3(dir_raw).map_err(|e| format!("Axis has a degenerate direction: {e}"))?;
     Ok((origin_arr, unit_dir))
-}
-
-/// Convert a bare-numeric angle [`reify_ir::Value`] to radians, emitting a
-/// deprecation warning diagnostic.
-///
-/// CAD convention: a bare `Real` or `Int` angle (no unit suffix in source) is
-/// interpreted as degrees and converted to radians.  Values that already carry
-/// an `ANGLE` dimension (from `deg` / `rad` suffixes) pass through unchanged.
-///
-/// Extracted to a shared free function to prevent verbatim duplication between
-/// the value-form and scalar-form branches of the `circular_pattern` eval arm.
-fn resolve_bare_angle(raw: reify_ir::Value, diagnostics: &mut Vec<Diagnostic>) -> reify_ir::Value {
-    let as_deg: Option<f64> = match &raw {
-        reify_ir::Value::Real(v) => Some(*v),
-        reify_ir::Value::Int(i) => Some(*i as f64),
-        _ => None,
-    };
-    if let Some(deg) = as_deg {
-        let rad = deg * std::f64::consts::PI / 180.0;
-        diagnostics.push(Diagnostic::warning(format!(
-            "circular_pattern: bare numeric angle `{}` interpreted as {}°; \
-             use `{}deg` or `{:.6}rad` for explicit units",
-            deg, deg, deg, rad
-        )));
-        reify_ir::Value::angle(rad)
-    } else {
-        raw
-    }
 }
 
 /// Translate a compiled geometry operation into a runtime `GeometryOp` by
@@ -1919,7 +2475,7 @@ pub(crate) fn compile_geometry_op(
                                     GridCoordName::z(ri, ci),
                                 ],
                                 kind,
-                                || {
+                                |_| {
                                     format!(
                                         "nurbs_surface: control_points[{}][{}] must be \
                                          a Point3<Length>, got {:?}",
@@ -2150,53 +2706,63 @@ pub(crate) fn compile_geometry_op(
         }
         // isosurface(grid, iso?, adaptive?) → GeometryOp::Surface { grid,
         // iso_level, adaptive } — marching-cubes extraction from a Voxel-repr
-        // grid operand. `iso`/`adaptive` are optional: absence is the normal,
-        // expected shape (mirroring the `edges`/`faces`/`third` optional-arg
-        // convention — e.g. `modify_offset_curve`'s `third_expr` lookup above),
-        // so they are read directly rather than through `eval_named_arg`'s
-        // "missing required argument" Warning path. Defaults: iso_level=0.0
+        // grid operand. Both optional args default silently: iso_level=0.0
         // exactly, adaptive=false.
+        //
+        // `iso` is OPTIONAL-but-LENGTH-GATED (units-length λ, task 5755,
+        // decision D12): ABSENT keeps the un-gated 0.0 default, PRESENT goes to
+        // the shared Contract C chokepoint so a bare `5` is REJECTED rather than
+        // read as 5 SI metres. `optional_length_value` is that shape, and owns
+        // the rationale for keeping the two halves apart.
         CompiledGeometryOp::Isosurface { grid, args } => {
             let grid_id = resolve_geom_ref(grid, step_handles)?;
 
-            let iso_level = match args.iter().find(|(n, _)| n == "iso").map(|(_, e)| e) {
-                None => 0.0,
-                Some(expr) => {
-                    let v = reify_expr::eval_expr(
-                        expr,
-                        &eval_ctx_with_meta(values, functions, meta_map),
-                    );
-                    v.as_f64().unwrap_or_else(|| {
-                        diagnostics.push(Diagnostic::warning(
-                            "isosurface: 'iso' argument evaluated to a non-numeric \
-                             value — defaulting to 0.0"
-                                .to_string(),
-                        ));
-                        0.0
-                    })
-                }
-            };
-
-            let adaptive = match args.iter().find(|(n, _)| n == "adaptive").map(|(_, e)| e) {
-                None => false,
-                Some(expr) => {
-                    let v = reify_expr::eval_expr(
-                        expr,
-                        &eval_ctx_with_meta(values, functions, meta_map),
-                    );
-                    match v {
-                        reify_ir::Value::Bool(b) => b,
-                        _ => {
-                            diagnostics.push(Diagnostic::warning(
-                                "isosurface: 'adaptive' argument evaluated to a \
-                                 non-Bool value — defaulting to false"
+            let iso = lookup_named_arg_value("iso", args, values, functions, meta_map);
+            let iso_level =
+                match optional_length_value("iso", "isosurface", iso.as_ref(), diagnostics) {
+                    Ok(present) => present.unwrap_or(0.0),
+                    Err(e) => {
+                        // A Bool in a LENGTH slot is the observable signature of
+                        // the pre-existing positional-lowering quirk owned by
+                        // live task #6313: optional args bind by POSITION, so a
+                        // lone `isosurface(g, adaptive: true)` lands its `Bool`
+                        // in `iso` and is rejected under a name the author never
+                        // wrote. The rejection text is untouched —
+                        // `length_arg_to_result` solely owns it (D9) — and this
+                        // supplementary Info states what ARRIVED rather than
+                        // what was typed, so it stays true for any spelling that
+                        // reaches the slot.
+                        if matches!(iso, Some(reify_ir::Value::Bool(_))) {
+                            diagnostics.push(Diagnostic::info(
+                                "isosurface: a Bool reached the `iso` slot — geometry \
+                                 builtins currently bind arguments by POSITION, not by \
+                                 label, so an `adaptive:` written without an isovalue \
+                                 lands there; write the isovalue explicitly, e.g. \
+                                 `isosurface(g, 0mm, true)` (#6313)"
                                     .to_string(),
                             ));
-                            false
                         }
+                        return Err(e);
                     }
-                }
-            };
+                };
+
+            // `adaptive` is a dimensionless `Bool` with no unit to get wrong, so
+            // Contract C does not reach it and it keeps its pre-λ
+            // warn-and-default-to-false behaviour (decision D12 gates `iso`
+            // alone) — the asymmetry above is deliberate.
+            let adaptive =
+                match lookup_named_arg_value("adaptive", args, values, functions, meta_map) {
+                    None => false,
+                    Some(reify_ir::Value::Bool(b)) => b,
+                    Some(_) => {
+                        diagnostics.push(Diagnostic::warning(
+                            "isosurface: 'adaptive' argument evaluated to a \
+                             non-Bool value — defaulting to false"
+                                .to_string(),
+                        ));
+                        false
+                    }
+                };
 
             Ok(reify_ir::GeometryOp::Surface {
                 grid: grid_id,
@@ -2777,13 +3343,12 @@ fn modify_shell(
             }
             other => {
                 return Err(format!(
-                    "shell_open(solid, thickness, open_faces): curated \
-                     face selection is not yet available on the current \
-                     build pipeline — the face selector cannot be resolved \
-                     at the point this shell_open runs. Use numeric \
+                    "shell_open(solid, thickness, open_faces): the face \
+                     selector did not resolve to a concrete face list at the \
+                     point this shell_open runs — check that it selects faces \
+                     from a realized solid in scope. Use numeric \
                      shell(solid, thickness, face_N) to remove specific \
-                     faces by index, or wait for curated face selection \
-                     (engine-unified-build-dag tasks 4360/4358). \
+                     faces by index instead. \
                      [face selector evaluated to {:?}]",
                     other
                 ));
@@ -2851,11 +3416,30 @@ fn modify_draft(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
-    let angle = eval_arg("angle")?;
+    // δ BREADCRUMB: this ONE read is the whole gate, deliberately. PRD §11 Q4
+    // asked for "both modify_draft arms" (the no-faces and curated-faces
+    // constructions below), but that premise was REFUTED at decompose: this
+    // binding sits ABOVE the `match faces_expr` split and the two arms are
+    // mutually-exclusive CONSUMERS of it, not two reads. Gating here covers
+    // both arities; gating at the two constructions would be the same check
+    // written twice.
+    //
+    // It also stays ABOVE the plane resolution below, which is what makes δ
+    // observable at all: `draft` cannot reach eval from `.ri` source today, so
+    // every input fails either way and only the diagnostic TEXT changes. The
+    // angle rejection SHORT-CIRCUITS and replaces the plane error.
+    //
+    // The `eval_arg` closure this replaced had exactly one caller — this line —
+    // so it died with the change rather than lingering as a one-use wrapper.
+    let angle = required_angle_value(
+        "angle",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     // plane is resolved via step_handles.last() (a pre-existing approximation —
     // plane_xy yields a Value::Plane, not a sub-op; the full plane-handle plumbing
     // fix is out of scope for δ). Filter INVALID so a preceding compile failure
@@ -2933,13 +3517,12 @@ fn modify_draft(
                     })
                 }
                 other => Err(format!(
-                    "draft(solid, faces, angle, neutral_plane): curated \
-                     face selection is not yet available on the current \
-                     build pipeline — the face selector cannot be resolved \
-                     at the point this draft runs. Use 3-arg \
+                    "draft(solid, faces, angle, neutral_plane): the face \
+                     selector did not resolve to a concrete face list at the \
+                     point this draft runs — check that it selects faces from \
+                     a realized solid in scope. Use 3-arg \
                      draft(solid, angle, neutral_plane) to draft all \
-                     faces, or wait for curated face selection \
-                     (engine-unified-build-dag tasks 4360/4358). \
+                     faces instead. \
                      [face selector evaluated to {:?}]",
                     other
                 )),
@@ -3002,6 +3585,35 @@ fn modify_zone_slab(
     })
 }
 
+/// Shared shape for 2-arg modify ops of the form `op(target, distance)`:
+/// read the single `distance` argument through the R7 LENGTH chokepoint
+/// (task 5744, units-length γ) and hand it to `build` to construct the
+/// resulting `GeometryOp`. `modify_offset_solid` and `modify_offset_surface`
+/// are identical apart from the constructed variant, so they delegate here
+/// instead of duplicating the gated-read boilerplate.
+#[allow(clippy::too_many_arguments)]
+fn modify_offset_distance(
+    kind: &reify_compiler::ModifyKind,
+    target_id: GeometryHandleId,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+    build: fn(GeometryHandleId, reify_ir::Value) -> reify_ir::GeometryOp,
+) -> Result<reify_ir::GeometryOp, String> {
+    let distance = required_length_value(
+        "distance",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
+    Ok(build(target_id, distance))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn modify_offset_solid(
     kind: &reify_compiler::ModifyKind,
@@ -3013,20 +3625,27 @@ fn modify_offset_solid(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    // R7 LENGTH chokepoint (task 5744, units-length γ).
-    let distance = required_length_value(
-        "distance",
-        kind,
-        args,
-        values,
-        functions,
-        meta_map,
-        diagnostics,
-    )?;
-    Ok(reify_ir::GeometryOp::OffsetSolid {
-        target: target_id,
-        distance,
-    })
+    modify_offset_distance(
+        kind, target_id, args, values, functions, meta_map, diagnostics,
+        |target, distance| reify_ir::GeometryOp::OffsetSolid { target, distance },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn modify_offset_surface(
+    kind: &reify_compiler::ModifyKind,
+    target_id: GeometryHandleId,
+    _step_handles: &[GeometryHandleId],
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::GeometryOp, String> {
+    modify_offset_distance(
+        kind, target_id, args, values, functions, meta_map, diagnostics,
+        |target, distance| reify_ir::GeometryOp::OffsetSurface { target, distance },
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3144,16 +3763,33 @@ fn transform_rotate(
             }
         }
     } else {
-        let mut f64_arg = |name: &str| -> Result<f64, String> {
-            eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
-                .ok_or_else(|| {
-                    format!("missing or non-finite argument '{}' for {}", name, kind)
-                })
+        // The axis DIRECTION is a dimensionless unit vector and stays bare
+        // (C1 inv. 4); the ANGLE is gated. The closure is SCOPED so its
+        // `diagnostics` borrow ends before the gate runs — that is what keeps
+        // the ax/ay/az-then-angle read order, and so the diagnostic order,
+        // exactly as it was.
+        let axis = {
+            let mut f64_arg = |name: &str| -> Result<f64, String> {
+                eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+                    .ok_or_else(|| {
+                        format!("missing or non-finite argument '{}' for {}", name, kind)
+                    })
+            };
+            [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?]
         };
+        let angle_rad = required_angle_arg(
+            "angle",
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        )?;
         Ok(reify_ir::GeometryOp::Rotate {
             target: target_id,
-            axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
-            angle_rad: f64_arg("angle")?,
+            axis,
+            angle_rad,
         })
     }
 }
@@ -3216,19 +3852,33 @@ fn transform_rotate_around(
         meta_map,
         diagnostics,
     )?;
-    // The axis is a dimensionless unit vector and `angle` is PRD 3's, not
-    // ours — both stay on the bare-accepting path.
-    let mut f64_arg = |name: &str| -> Result<f64, String> {
-        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| {
-                format!("missing or non-finite argument '{}' for {}", name, kind)
-            })
+    // The axis is a dimensionless unit vector and stays on the bare-accepting
+    // path (C1 inv. 4). The ANGLE is gated as of PRD 3 leaf γ; its closure is
+    // SCOPED so the borrow ends before the gate runs, preserving the read and
+    // diagnostic order.
+    let axis = {
+        let mut f64_arg = |name: &str| -> Result<f64, String> {
+            eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+                .ok_or_else(|| {
+                    format!("missing or non-finite argument '{}' for {}", name, kind)
+                })
+        };
+        [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?]
     };
+    let angle_rad = required_angle_arg(
+        "angle",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     Ok(reify_ir::GeometryOp::RotateAround {
         target: target_id,
         point,
-        axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
-        angle_rad: f64_arg("angle")?,
+        axis,
+        angle_rad,
     })
 }
 
@@ -3250,25 +3900,27 @@ fn transform_apply(
         meta_map,
         diagnostics,
     ) {
-        Some(v) => match decompose_transform_to_arrays(&v) {
-            Some((rotation, translation)) => {
-                Ok(reify_ir::GeometryOp::ApplyTransform {
-                    target: target_id,
-                    rotation,
-                    translation,
-                })
-            }
-            None => {
+        // The LOUD route into the ζ/R8 gate: a wrong-DIMENSION translation gets
+        // the C1 units diagnostic naming `translation.x|y|z`, while a wrong
+        // SHAPE keeps its pre-ζ Warning and `Err` byte-identical via the closure
+        // below (which both pushes and returns).
+        Some(v) => accept_transform_to_arrays(
+            &v,
+            "apply_transform",
+            &|diagnostics: &mut Vec<Diagnostic>| {
                 diagnostics.push(Diagnostic::warning(
                     "apply_transform dropped: 'transform' arg is not a valid Transform<3>"
                         .to_string(),
                 ));
-                Err(
-                    "apply_transform: 'transform' arg is not a valid Transform<3>"
-                        .into(),
-                )
-            }
-        },
+                "apply_transform: 'transform' arg is not a valid Transform<3>".to_string()
+            },
+            diagnostics,
+        )
+        .map(|(rotation, translation)| reify_ir::GeometryOp::ApplyTransform {
+            target: target_id,
+            rotation,
+            translation,
+        }),
         None => {
             Err("apply_transform: 'transform' arg is missing".into())
         }
@@ -3465,6 +4117,16 @@ fn pattern_circular(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
+    // The SURFACE name the author typed, bound ONCE (SPOT) and used at every
+    // site in this function that must not render `kind`. `PatternKind::Circular`
+    // Displays as "circular", so `kind` in these messages names a builtin that
+    // does not exist; `PatternKind::Linear` was already given its surface name
+    // (task 5755), and doing the same for Circular/Arbitrary is task #6874.
+    // That repair lives in reify-compiler and moves every OTHER diagnostic
+    // rendering this kind too — a migration of its own, not a clause of ε —
+    // which is why it is a follow-up and this is a local binding. When #6874
+    // lands, this binding and its uses collapse back to `kind`.
+    let surface_name = "circular_pattern";
     if args.iter().any(|(n, _)| n == "axis") {
         let axis_val = eval_named_arg(
             "axis",
@@ -3477,7 +4139,7 @@ fn pattern_circular(
         )
         .ok_or_else(|| format!("missing required argument 'axis' for {}", kind))?;
         let (axis_origin, axis_dir) = decode_axis(&axis_val, kind, diagnostics)
-            .map_err(|e| format!("circular_pattern: {}", e))?;
+            .map_err(|e| format!("{}: {}", surface_name, e))?;
         let count_raw = eval_named_arg_f64(
             "count",
             kind,
@@ -3491,17 +4153,27 @@ fn pattern_circular(
             format!("missing or non-finite argument 'count' for {}", kind)
         })?;
         let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
-        let raw_angle = eval_named_arg(
+        // TASK #1763 REVERSED HERE: a bare `circular_pattern` angle no longer
+        // means DEGREES, and the shared resolver that converted it (with a
+        // code-less deprecation Warning) is gone. #1763 was decided
+        // per-builtin; the case for settling it across the whole surface
+        // instead is docs/prds/v0_6/angle-units-surface-convergence.md §3.10.
+        // Do not re-derive #1763 from this one call site and restore it.
+        //
+        // `surface_name`, not `kind`: passing `kind` would render "circular:
+        // angle argument expects Angle" at a call the author wrote as
+        // `circular_pattern(...)`. The retired warning hard-coded that name and
+        // the compile layer's slot renders the surface call name too, so `kind`
+        // here would regress the wording AND split it across the two layers.
+        let angle = required_angle_value(
             "angle",
-            kind,
+            surface_name,
             args,
             values,
             functions,
             meta_map,
             diagnostics,
-        )
-        .ok_or_else(|| format!("missing required argument 'angle' for {}", kind))?;
-        let angle = resolve_bare_angle(raw_angle, diagnostics);
+        )?;
         Ok(reify_ir::GeometryOp::CircularPattern {
             target: target_id,
             axis_origin,
@@ -3532,17 +4204,18 @@ fn pattern_circular(
         let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
         let count_raw = f64_arg("count")?;
         let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
-        let raw_angle = eval_named_arg(
+        // The scalar-axis sibling of the value-axis form above: same gate,
+        // same task-#1763 reversal and same `surface_name`, whose rationale is
+        // recorded there in full rather than copied here.
+        let angle = required_angle_value(
             "angle",
-            kind,
+            surface_name,
             args,
             values,
             functions,
             meta_map,
             diagnostics,
-        )
-        .ok_or_else(|| format!("missing required argument 'angle' for {}", kind))?;
-        let angle = resolve_bare_angle(raw_angle, diagnostics);
+        )?;
         Ok(reify_ir::GeometryOp::CircularPattern {
             target: target_id,
             axis_origin,
@@ -3727,20 +4400,26 @@ fn pattern_arbitrary(
         }
         let mut transforms = Vec::with_capacity(elements.len());
         for element in elements {
-            match decompose_transform_to_arrays(element) {
-                Some(decoded) => transforms.push(decoded),
-                None => {
+            // The second LOUD route into the ζ/R8 gate (task 5747). The
+            // early-return-on-first-bad-element behaviour is UNCHANGED: a partial
+            // pattern is worse than a dropped op, and the all-failures-at-once
+            // discipline applies WITHIN one transform's triple — which
+            // `accept_length_point3` already provides — not ACROSS list elements,
+            // where widening it would turn one bad transform into a storm.
+            transforms.push(accept_transform_to_arrays(
+                element,
+                "arbitrary_pattern",
+                &|diagnostics: &mut Vec<Diagnostic>| {
                     diagnostics.push(Diagnostic::warning(
                         "arbitrary_pattern dropped: 'transform_list' element is not a valid \
                          Transform<3>"
                             .to_string(),
                     ));
-                    return Err(
-                        "arbitrary_pattern: 'transform_list' element is not a valid Transform<3>"
-                            .into(),
-                    );
-                }
-            }
+                    "arbitrary_pattern: 'transform_list' element is not a valid Transform<3>"
+                        .to_string()
+                },
+                diagnostics,
+            )?);
         }
         return Ok(reify_ir::GeometryOp::ArbitraryPattern {
             target: target_id,
@@ -3748,6 +4427,11 @@ fn pattern_arbitrary(
         });
     }
 
+    // The SCALAR-TRIPLE form below is deliberately untouched by ζ/5747: its
+    // `t{i}_dx/dy/dz` offsets are already LENGTH-gated by task 5744's
+    // `required_length_args` group read (see the comment inside the loop), so it
+    // reaches the SAME Contract C chokepoint by the NAMED-ARG route while the
+    // list form above reaches it by the decoded-value route.
     let mut transforms = Vec::new();
     let mut idx = 0;
     loop {
@@ -3910,21 +4594,25 @@ fn sweep_revolve(
     // before the direction's magnitude check.
     let axis_origin =
         required_length_origin3(kind, args, values, functions, meta_map, diagnostics)?;
-    let mut f64_arg = |name: &str| -> Result<f64, String> {
-        eval_named_arg_f64(
-            name,
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        )
-        .ok_or_else(|| {
-            format!("missing or non-finite argument '{}' for {}", name, kind)
-        })
+    // Axis DIRECTION only — a dimensionless unit vector, un-gated (C1 inv. 4).
+    // SCOPED so the borrow ends before the angle gate below.
+    let axis_dir = {
+        let mut f64_arg = |name: &str| -> Result<f64, String> {
+            eval_named_arg_f64(
+                name,
+                kind,
+                args,
+                values,
+                functions,
+                meta_map,
+                diagnostics,
+            )
+            .ok_or_else(|| {
+                format!("missing or non-finite argument '{}' for {}", name, kind)
+            })
+        };
+        [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?]
     };
-    let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
     let mag = axis_dir.iter().map(|x| x * x).sum::<f64>().sqrt();
     if !mag.is_finite() || mag < GEOMETRY_EPSILON {
         diagnostics.push(Diagnostic::warning(format!(
@@ -3934,7 +4622,19 @@ fn sweep_revolve(
         )));
         return Err(format!("revolve axis has degenerate magnitude: {}", mag));
     }
-    let angle_rad = f64_arg("angle")?;
+    // The DIMENSION gate runs BEFORE the degeneracy check below, deliberately:
+    // a bare `0` is both bare and degenerate, and reporting it as "angle is
+    // degenerate" would send the author to fix the wrong thing. Pinned by
+    // `compile_geometry_op_revolve_bare_zero_reports_units_not_degeneracy`.
+    let angle_rad = required_angle_arg(
+        "angle",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     if angle_rad.abs() < DEGENERATE_ANGLE_RAD {
         diagnostics.push(Diagnostic::warning(format!(
             "revolve dropped: angle={} rad is degenerate \
@@ -4303,26 +5003,45 @@ fn curve_arc(
         diagnostics,
     )?;
     let center = [cx, cy, cz];
-    let mut f64_arg = |name: &str| -> Result<f64, String> {
-        eval_named_arg_f64(
-            name,
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        )
-        .ok_or_else(|| {
-            format!("missing or non-finite argument '{}' for {}", name, kind)
-        })
+    // Both ANGLES are gated (PRD 3 leaf γ) and read FIRST, which is also their
+    // existing source order — so the diagnostic order is unchanged. They go
+    // through the GROUP reader for the same reason the centre and radius above
+    // do: `arc` is the one builtin with two angle slots, they are written as
+    // one gesture, and a bare `start_angle` is almost always beside a bare
+    // `end_angle`. The axis DIRECTION stays bare (C1 inv. 4) behind a scoped
+    // closure.
+    let [start_angle, end_angle] = required_angle_args(
+        ["start_angle", "end_angle"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
+    let axis = {
+        let mut f64_arg = |name: &str| -> Result<f64, String> {
+            eval_named_arg_f64(
+                name,
+                kind,
+                args,
+                values,
+                functions,
+                meta_map,
+                diagnostics,
+            )
+            .ok_or_else(|| {
+                format!("missing or non-finite argument '{}' for {}", name, kind)
+            })
+        };
+        [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?]
     };
     Ok(reify_ir::GeometryOp::Arc {
         center,
         radius,
-        start_angle: f64_arg("start_angle")?,
-        end_angle: f64_arg("end_angle")?,
-        axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
+        start_angle,
+        end_angle,
+        axis,
     })
 }
 
@@ -4574,7 +5293,7 @@ fn profile_rectangle(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let [width, height] = required_length_values(
+    let [width, height] = required_positive_profile_dimensions(
         ["width", "height"],
         kind,
         args,
@@ -4594,16 +5313,52 @@ fn profile_circle(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    // One gated slot — see `prim_sphere`.
-    Ok(reify_ir::GeometryOp::CircleProfile {
-        radius: required_length_value(
-            "radius", kind, args, values, functions, meta_map, diagnostics,
-        )?,
-    })
+    // One gated slot, so the group form is called at `N == 1` — nothing to
+    // short-circuit past, exactly as in `prim_sphere`. It is the GROUP form
+    // rather than `required_length_value` because the positive-dimension
+    // judgement lives there.
+    let [radius] = required_positive_profile_dimensions(
+        ["radius"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
+    Ok(reify_ir::GeometryOp::CircleProfile { radius })
 }
 
+/// Degenerate-ring tolerance, in SI square metres.
+///
+/// NOT an independently-chosen tolerance: this is the same value
+/// `validate_boundary` already applies to the sampled outer ring (and to each
+/// hole) in `reify-solver-elastic/src/mesher.rs`, on the same SI-metre
+/// coordinates. Keeping the two equal is what makes the build-time check a
+/// strict pre-image of the existing downstream gate — a ring this check accepts
+/// can still fail later for other reasons, but a ring it rejects would
+/// certainly have failed there.
+///
+/// It is a local `const` only because the mesher's copy is still an INLINE
+/// `1e-14` literal inside a private `fn`, so there is nothing to import. Its
+/// companion [`reify_solver_elastic::ring_signed_area_2d`] no longer has that
+/// problem — task 5218 promoted it to `pub` and re-exported it at the crate
+/// root, which is why the shoelace formula itself is imported here rather than
+/// copied. Lifting the threshold to a `pub const` beside it would let this
+/// declaration go the same way.
+///
+/// That equality is load-bearing, so it is asserted in code rather than only in
+/// prose: `degenerate_ring_area_tolerance_matches_mesher_gate` (this module's
+/// tests) reads the mesher source and fails if the two values diverge.
+/// Complementary but NOT a substitute — they derive their rings from this
+/// constant and so move with it — are the two boundary tests
+/// `..._area_just_below_tolerance_returns_err` /
+/// `..._area_just_above_tolerance_returns_ok`, which pin that the gate honours
+/// whatever value this holds, with the correct sense and scale.
+const DEGENERATE_RING_AREA_TOLERANCE: f64 = 1e-14;
+
 fn profile_polygon(
-    _kind: &reify_compiler::ProfileKind,
+    kind: &reify_compiler::ProfileKind,
     args: &[(String, reify_ir::CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
@@ -4632,10 +5387,13 @@ fn profile_polygon(
     //   position in one build, not just the first: the pre-5661 reader
     //   short-circuited via `collect::<Option<_>>()`.
     //
-    // The label stays the literal `"polygon"`, which here happens to equal
-    // `ProfileKind::Polygon`'s `Display` — unlike `CurveKind::InterpCurve`,
-    // which renders `interp_curve`. Spelling it out keeps today's label bytes
-    // and leaves `_kind` unused, as in `curve_interp_curve`.
+    // The Contract C label stays the literal `"polygon"`, which here happens to
+    // equal `ProfileKind::Polygon`'s `Display` — unlike `CurveKind::InterpCurve`,
+    // which renders `interp_curve`. Spelling it out keeps today's label bytes.
+    // (The parameter is now bound as `kind` rather than `_kind`, because task
+    // 5664's degenerate-ring diagnostic below renders it; the literal above is
+    // deliberately NOT switched over with it, so the Contract C wording stays
+    // byte-stable independently of `Display`.)
     let vals = eval_all_args_to_values(args, values, functions, meta_map);
     let coords = accept_variadic_length_args(
         "polygon",
@@ -4645,6 +5403,37 @@ fn profile_polygon(
         diagnostics,
     )?;
     let points: Vec<[f64; 2]> = coords.chunks_exact(2).map(|c| [c[0], c[1]]).collect();
+    // A well-formed-arity but ZERO-AREA ring (e.g. three collinear points)
+    // clears the compiler-side arity guard and used to survive all the way to
+    // a late, opaque `Mesh2dError::DegenerateBoundary`. Catch it here instead.
+    // The check is on `abs()`, so a clockwise (negative-area) ring is fine —
+    // winding order is not this gate's business. Self-intersection is
+    // deliberately NOT detected here (an O(n²) sweep with robust predicates is
+    // materially different engineering; tracked separately as #5666).
+    //
+    // The shoelace formula is the SHARED one — `reify_solver_elastic`'s
+    // crate-root `ring_signed_area_2d`, the very function `validate_boundary`
+    // calls — not a local re-derivation, so "pre-image" is a structural fact
+    // about one function rather than a claim about two copies staying in step.
+    // (`sweep_classifier.rs` already calls it, so this adds no new dependency
+    // edge.) Only the TOLERANCE is still duplicated; see the const's doc.
+    //
+    // No separate `points.len() < 3` arity guard: `ring_signed_area_2d` returns
+    // exactly 0.0 for any ring of fewer than 3 points, and `0.0 <` the
+    // tolerance, so an under-3-point ring is caught by this same area test.
+    // Adding the arity disjunct would be dead as a distinct branch and would
+    // imply the two conditions were independent.
+    let signed_area = reify_solver_elastic::ring_signed_area_2d(&points);
+    if signed_area.abs() < DEGENERATE_RING_AREA_TOLERANCE {
+        diagnostics.push(Diagnostic::warning(format!(
+            "{} profile dropped: {} point(s) enclose a degenerate signed area of {} \
+             (the ring must enclose a non-zero area)",
+            kind,
+            points.len(),
+            signed_area
+        )));
+        return Err(format!("degenerate (zero-area) {} profile", kind));
+    }
     Ok(reify_ir::GeometryOp::PolygonProfile { points })
 }
 
@@ -4656,7 +5445,10 @@ fn profile_ellipse(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let [semi_major, semi_minor] = required_length_values(
+    // Named in semi_major-then-semi_minor order: the LENGTH gate reports every
+    // bad member, then the sign check short-circuits on the first, so two
+    // negative semi-axes yield exactly one Warning naming `semi_major`.
+    let [semi_major, semi_minor] = required_positive_profile_dimensions(
         ["semi_major", "semi_minor"],
         kind,
         args,
@@ -4693,6 +5485,7 @@ static MODIFY_COMPILERS: &[(reify_compiler::ModifyKind, ModifyCompileFn)] = &[
     (reify_compiler::ModifyKind::Thicken, modify_thicken),
     (reify_compiler::ModifyKind::ZoneSlab, modify_zone_slab),
     (reify_compiler::ModifyKind::OffsetSolid, modify_offset_solid),
+    (reify_compiler::ModifyKind::OffsetSurface, modify_offset_surface),
     (reify_compiler::ModifyKind::OffsetCurve, modify_offset_curve),
 ];
 
@@ -9846,7 +10639,9 @@ fn resolve_vec3_arg(
 /// dimension + type name, with the hint hard-wired to `None` — is what lets
 /// [`resolve_length_scalar_arg`] share the ONE canonical `length_spec()` with
 /// the pattern/mirror chokepoint [`eval_named_arg_length`], so both LENGTH
-/// rejection paths emit identical text (task 5214 amendment).
+/// rejection paths emit identical text (task 5214 amendment). PRD 3 leaf β
+/// made [`resolve_angle_scalar_arg`] share `angle_spec()` the same way, so
+/// BOTH readers now name a canonical spec and neither can mint its own wording.
 fn resolve_spec_arg(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
@@ -9878,9 +10673,10 @@ fn resolve_spec_arg(
             // migration this leaf does not own. The promotion is filed as a
             // follow-up rather than smuggled in with the code.
             //
-            // Structurally this covers Contract C's `resolve_length_scalar_arg`,
-            // the arbitrary-dimension `resolve_scalar_dim_arg`, and the hint-less
-            // ANGLE spec that PRD 3 will later give a migration hint.
+            // Structurally this covers both spec-backed scalar readers —
+            // Contract C's `resolve_length_scalar_arg` and its ANGLE sibling
+            // `resolve_angle_scalar_arg`, which since PRD 3 leaf β shares the
+            // canonical `angle_spec()` and so renders a migration hint here too.
             diagnostics.push(
                 Diagnostic::warning(rej.message(builtin, arg_name))
                     .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
@@ -9890,40 +10686,23 @@ fn resolve_spec_arg(
     }
 }
 
-/// [`resolve_spec_arg`] for a dimension that has no canonical `ArgSpec`
-/// constructor of its own: builds an inline hint-less spec from `expected_dim`
-/// + `type_name`.
-fn resolve_scalar_dim_arg(
-    expr: &reify_ir::CompiledExpr,
-    values: &reify_ir::ValueMap,
-    expected_dim: reify_core::DimensionVector,
-    type_name: &'static str,
-    builtin: &str,
-    arg_name: &str,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Option<f64> {
-    resolve_spec_arg(
-        expr,
-        values,
-        &crate::arg_acceptance::ArgSpec {
-            type_name,
-            dimension: expected_dim,
-            migration_hint: None,
-        },
-        builtin,
-        arg_name,
-        diagnostics,
-    )
-}
-
 /// Resolve an ANGLE-dimensioned scalar arg to its SI value (radians).
 /// EVALUATES the arg expr (task ε): an inline dimensioned-angle literal, a
 /// `ValueRef → ANGLE Scalar` (let-bound `let tol = 1deg`), or an angle-typed
 /// arithmetic expression all WORK. A `Value::Undef` (missing cell, etc.)
 /// degrades quietly; a defined-but-wrong value (wrong dimension, non-Scalar)
-/// pushes exactly one `Severity::Warning` naming `builtin`/`arg_name`. Pins the
-/// ANGLE dimension for the angular-tolerance args of `faces_by_normal` /
+/// pushes exactly one `Severity::Warning` naming `builtin`/`arg_name` — and,
+/// since PRD 3 leaf β, the repair instruction minted by `angle_spec()`. Pins
+/// the ANGLE dimension for the angular-tolerance args of `faces_by_normal` /
 /// `edges_parallel_to`.
+///
+/// Shares the ONE canonical `arg_acceptance::angle_spec()` with every other
+/// angle-bearing position, exactly as [`resolve_length_scalar_arg`] shares
+/// `length_spec()` — previously this path reached `resolve_spec_arg` through an
+/// arbitrary-dimension indirection that built its own inline `ArgSpec` with
+/// `migration_hint: None`, so an angle rejection told the author what was wrong
+/// but never how to fix it, while the LENGTH sibling did. That indirection had
+/// no other caller and died with the fix.
 fn resolve_angle_scalar_arg(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
@@ -9931,11 +10710,10 @@ fn resolve_angle_scalar_arg(
     arg_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<f64> {
-    resolve_scalar_dim_arg(
+    resolve_spec_arg(
         expr,
         values,
-        reify_core::DimensionVector::ANGLE,
-        "Angle",
+        &crate::arg_acceptance::angle_spec(),
         builtin,
         arg_name,
         diagnostics,
@@ -11277,9 +12055,10 @@ pub(crate) fn eval_sub_pose(
 /// The identity child→parent [`reify_ir::Value::Transform`] — `Orientation(1,0,0,0)`
 /// + zero-LENGTH `Vector` translation.
 ///
-/// Shared by [`eval_sub_pose`]'s `None` arm (a sub with no `at` clause) and
-/// [`eval_auto_sub_pose`]'s fallback (an `at auto` sub with no solved Frame). Same
-/// shape as `compose_pose_chain(&[])` but allocation-only (no builtin dispatch).
+/// Shared by [`eval_sub_pose`]'s `None` arm (a sub with no `at` clause),
+/// [`eval_auto_sub_pose`]'s fallback (an `at auto` sub with no solved Frame), and
+/// [`fold_pose_chain`]'s seed — so `compose_pose_chain(&[])` returns exactly this
+/// value rather than a second hand-written copy of it (task 6099 amendment).
 fn identity_pose_transform() -> reify_ir::Value {
     reify_ir::Value::Transform {
         rotation: Box::new(reify_ir::Value::Orientation {
@@ -11416,54 +12195,100 @@ pub(crate) fn realization_is_aux(realization: &reify_compiler::RealizationDecl) 
 
 /// Decompose a `Value::Transform` into raw quaternion + SI-metre translation
 /// arrays for building a kernel-agnostic `reify_ir::GeometryOp::ApplyTransform`
-/// (T5 step-8/10).
+/// (T5 step-8/10), with the translation triple LENGTH-gated through the
+/// Contract C chokepoint (task 5747, units-length ζ / R8).
 ///
 /// Accepts `Transform { rotation: Orientation { w, x, y, z }, translation:
 /// Vector([s0, s1, s2]) }` where each translation component is a finite LENGTH
-/// or dimensionless `Scalar`; returns `Some(([w,x,y,z], [tx,ty,tz]))` with the
-/// translation read straight off `Scalar.si_value` (SI metres). Returns `None`
-/// for any other shape — non-`Transform`, non-`Orientation` rotation, a
-/// translation that is not a 3-component `Vector`, or a component that is not a
-/// LENGTH/dimensionless finite `Scalar`. Each component is checked independently,
-/// so a mixed-dimension translation (e.g. one ANGLE among LENGTHs) is rejected.
+/// `Scalar`; returns `Ok(([w,x,y,z], [tx,ty,tz]))` with the translation read
+/// straight off `Scalar.si_value` (SI metres).
+///
+/// TWO KINDS OF FAILURE, deliberately kept apart — the distinction is the whole
+/// point of this function existing beside [`decompose_transform_to_arrays`]:
+///
+/// - a wrong SHAPE (non-`Transform`, non-`Orientation` rotation, a translation
+///   that is not a 3-component `Vector`) calls `on_shape_mismatch` and returns
+///   ITS `String` as the `Err`. The closure both PUSHES the caller's pre-ζ
+///   `Diagnostic` and RETURNS its pre-ζ `Err` text, which is what keeps every
+///   caller's shape wording byte-identical across ζ. It is forwarded WHOLE to
+///   [`accept_length_point3`]'s own `shape_err`, so the two halves travel
+///   together down every path and neither can be dropped;
+/// - a wrong DIMENSION is a UNITS rejection, handed WHOLE to
+///   [`accept_length_point3`] under the names `translation.x|y|z`. That helper
+///   already owns the C1 wording, the `Severity::Error` +
+///   `DiagnosticCode::DimensionedArgRejected` promotion (task 5743), D10's
+///   `unresolved (Undef)` message and the FIRST-error-wins / all-failures-at-once
+///   precedence across the triple, so none of it is re-derived here.
+///
+/// R8's user-visible change is the SECOND branch's MESSAGE, not an exit code:
+/// pre-ζ a bare or wrong-dimension translation was already dropped, but under
+/// the generic `'transform' arg is not a valid Transform<3>`, which names
+/// neither the offending coordinate nor the fix. The one genuine accept→reject
+/// flip is a `Scalar{DIMENSIONLESS}` component, which pre-ζ reached the kernel
+/// as that many SI METRES.
+///
+/// `accept_length_point3` admits `Value::Point | Value::Vector`; a `Transform`
+/// translation is always a `Vector`, so the explicit `Value::Vector` check stays
+/// HERE rather than silently widening the shape this decoder accepts.
 ///
 /// `reify_stdlib`'s own `decompose_transform` is private, so this local
 /// pattern-match keeps the change inside reify-eval while feeding the IR op's
 /// raw float arrays (the IR is kernel-agnostic by design).
-pub(crate) fn decompose_transform_to_arrays(v: &reify_ir::Value) -> Option<([f64; 4], [f64; 3])> {
+fn accept_transform_to_arrays(
+    v: &reify_ir::Value,
+    kind_label: impl std::fmt::Display + Copy,
+    on_shape_mismatch: &dyn Fn(&mut Vec<Diagnostic>) -> String,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<([f64; 4], [f64; 3]), String> {
     let reify_ir::Value::Transform {
         rotation,
         translation,
     } = v
     else {
-        return None;
+        return Err(on_shape_mismatch(diagnostics));
     };
     let reify_ir::Value::Orientation { w, x, y, z } = rotation.as_ref() else {
-        return None;
+        return Err(on_shape_mismatch(diagnostics));
     };
-    let reify_ir::Value::Vector(components) = translation.as_ref() else {
-        return None;
-    };
-    if components.len() != 3 {
-        return None;
+    if !matches!(translation.as_ref(), reify_ir::Value::Vector(c) if c.len() == 3) {
+        return Err(on_shape_mismatch(diagnostics));
     }
-    let mut t = [0.0_f64; 3];
-    for (i, c) in components.iter().enumerate() {
-        let reify_ir::Value::Scalar {
-            si_value,
-            dimension,
-        } = c
-        else {
-            return None;
-        };
-        let dim_ok = *dimension == reify_core::DimensionVector::LENGTH
-            || *dimension == reify_core::DimensionVector::DIMENSIONLESS;
-        if !dim_ok || !si_value.is_finite() {
-            return None;
-        }
-        t[i] = *si_value;
-    }
-    Some(([*w, *x, *y, *z], t))
+    // The translation SHAPE is already known good, so `accept_length_point3`'s
+    // own `shape_err` arm is unreachable from here (the guard above admits a
+    // strict SUBSET of what the helper does). It is wired to the SAME closure
+    // anyway, forwarded WHOLE, so a future widening of either shape check keeps
+    // both halves of the rejection — the pushed `Diagnostic` and the `Err` text.
+    let t = accept_length_point3(
+        translation.as_ref(),
+        ["translation.x", "translation.y", "translation.z"],
+        kind_label,
+        on_shape_mismatch,
+        diagnostics,
+    )?;
+    Ok(([*w, *x, *y, *z], t))
+}
+
+/// QUIET `Option` wrapper over [`accept_transform_to_arrays`] — the same gate,
+/// with every diagnostic swallowed and every failure collapsed back to `None`.
+///
+/// It survives ζ because its two remaining callers are POSE READERS that must
+/// stay silent: `interferes` / `min_clearance`'s per-body `world_transform`
+/// (~:5746) and `walk_templates`' `composed_world` (~:11704). Both already treat
+/// `None` as "identity / not decomposable → use the raw handle, no kernel op",
+/// and both read transforms that are LENGTH BY CONSTRUCTION —
+/// `identity_pose_transform` and `compose_pose_chain`'s seed both mint
+/// `reify_ir::Value::length(0.0)`, `frame_to_pose_transform` already hard-requires
+/// LENGTH components, and `reify_stdlib::compose_transforms` requires
+/// `t1_dim == t2_dim` so composition preserves the dimension. A rejection there
+/// is therefore unreachable in production, and emitting one would DOUBLE-REPORT
+/// a failure the pose producer has already diagnosed.
+///
+/// Routing them through the gate rather than leaving a second un-gated decoder
+/// is what makes this ONE gate instead of two — the silence is a caller policy,
+/// not a hole.
+pub(crate) fn decompose_transform_to_arrays(v: &reify_ir::Value) -> Option<([f64; 4], [f64; 3])> {
+    let mut sink = Vec::new();
+    accept_transform_to_arrays(v, "transform", &|_| String::new(), &mut sink).ok()
 }
 
 /// Decode a `Value::Orientation` quaternion into an `(axis, angle_rad)` pair
@@ -11505,22 +12330,245 @@ pub(crate) fn decode_orientation_to_axis_angle(
 /// stdlib builtin rather than hand-rolling quaternion math; `reify-eval` already
 /// depends on `reify-stdlib`.
 pub(crate) fn compose_pose_chain(poses: &[reify_ir::Value]) -> reify_ir::Value {
-    let identity = reify_ir::Value::Transform {
-        rotation: Box::new(reify_ir::Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        }),
-        translation: Box::new(reify_ir::Value::Vector(vec![
-            reify_ir::Value::length(0.0),
-            reify_ir::Value::length(0.0),
-            reify_ir::Value::length(0.0),
-        ])),
-    };
-    poses.iter().fold(identity, |acc, next| {
+    fold_pose_chain(poses.iter())
+}
+
+/// Compose exactly two poses — `parent ∘ child` — without cloning either operand.
+///
+/// Identical in result to `compose_pose_chain(&[parent.clone(), child.clone()])`
+/// BY CONSTRUCTION: both delegate to the same [`fold_pose_chain`] seeded with the
+/// same identity, and that equivalence is pinned by
+/// `compose_pose_pair_equals_two_element_chain`.
+///
+/// Exists because `compose_pose_chain` takes `&[reify_ir::Value]`, so building a
+/// two-element array literal for it MOVES its elements — forcing the caller to
+/// clone both operands on top of the clone `eval_builtin`'s owned-`&[Value]`
+/// signature already requires internally. The placement walk composes exactly two
+/// poses per sub and needs `sub_pose` to stay alive for
+/// [`diagnose_pose_composition_failure`], so it pays that cost on every sub of
+/// every walk; borrowing halves it.
+pub(crate) fn compose_pose_pair(
+    parent: &reify_ir::Value,
+    child: &reify_ir::Value,
+) -> reify_ir::Value {
+    fold_pose_chain([parent, child].into_iter())
+}
+
+/// The shared left-fold behind [`compose_pose_chain`] and [`compose_pose_pair`].
+///
+/// Kept as ONE body so the two entry points cannot drift: a change to the seed or
+/// to the builtin dispatched here lands in both. The `next.clone()` is forced by
+/// `reify_stdlib::eval_builtin`'s `&[Value]` (owned) argument slice and is the
+/// only clone either entry point performs.
+fn fold_pose_chain<'a>(poses: impl Iterator<Item = &'a reify_ir::Value>) -> reify_ir::Value {
+    poses.fold(identity_pose_transform(), |acc, next| {
         reify_stdlib::eval_builtin("transform_compose", &[acc, next.clone()])
     })
+}
+
+/// Human-readable label for a [`reify_core::DimensionVector`], suitable for a
+/// user-facing diagnostic.
+///
+/// [`reify_core::DimensionVector::canonical_name`] deliberately excludes
+/// `DIMENSIONLESS` from its named-singleton table and returns `None` for it —
+/// which is precisely the case task 6099 is about — so the dimensionless check
+/// comes FIRST and yields the literal `"dimensionless"`. Unnamed composite
+/// dimensions (e.g. `MONEY/MASS`) fall through to the `Display` exponent form.
+fn dimension_label(d: reify_core::DimensionVector) -> String {
+    if d.is_dimensionless() {
+        return "dimensionless".to_string();
+    }
+    match d.canonical_name() {
+        Some(name) => name.to_string(),
+        None => format!("{d}"),
+    }
+}
+
+/// The translation dimension of a pose [`reify_ir::Value::Transform`], if it has one.
+///
+/// Goes through the `translation` field on purpose: `Value::dimension()` called
+/// on a `Transform` itself falls into that method's catch-all arm and reports
+/// `DIMENSIONLESS` for EVERY transform, which would make a genuine LENGTH pose
+/// indistinguishable from the dimensionless one this diagnostic exists to catch.
+/// `Value::Vector(items).dimension()` correctly derives from item 0.
+///
+/// Returns `None` for a non-`Transform`, and for a translation whose three
+/// components do not agree on a single dimension — the latter is a MALFORMED
+/// pose that `decompose_xyz3` rejects before `compose_transforms`' dimension
+/// gate is ever reached, so claiming a clean two-dimension mismatch for it
+/// would be a fabricated diagnosis.
+fn pose_translation_dimension(v: &reify_ir::Value) -> Option<reify_core::DimensionVector> {
+    let reify_ir::Value::Transform { translation, .. } = v else {
+        return None;
+    };
+    let reify_ir::Value::Vector(items) = translation.as_ref() else {
+        return None;
+    };
+    if items.len() != 3 {
+        return None;
+    }
+    let dim = items[0].dimension();
+    if items[1].dimension() != dim || items[2].dimension() != dim {
+        return None;
+    }
+    Some(dim)
+}
+
+/// Classify a failed sub-pose composition into a build-failing [`Diagnostic`],
+/// or `None` when nothing went wrong here.
+///
+/// # Why this exists
+///
+/// `compose_pose_chain` folds through `reify_stdlib::eval_builtin`'s
+/// `transform_compose`, whose `compose_transforms` implementation returns a bare
+/// `Value::Undef` when the two operands' translation dimensions differ — and
+/// `eval_builtin` has no diagnostic channel to report that. The `Undef` then
+/// falls into `decompose_transform_to_arrays`' `None` arm at the placement site,
+/// which is indistinguishable from a genuine identity pose, so no
+/// `ApplyTransform` op is issued and the whole child subtree is SILENTLY placed
+/// at the world origin. A `.ri` source with `at transform3(orient_identity(),
+/// vec3(5.0, 0.0, 0.0))` — a legal but dimensionless pose, since `transform3`
+/// performs no dimension validation — therefore passed `reify check` clean and
+/// exported a wrong STEP file with zero diagnostics (task 6099).
+///
+/// This is a pure function so it can be unit-tested directly: its call site,
+/// `walk_placed_realizations`, takes 16 arguments including a
+/// `&mut BTreeMap<String, Box<dyn GeometryKernel>>`.
+///
+/// # Contract
+///
+/// - `None` when `child_world` is not `Undef` (the composition succeeded).
+/// - `None` when either origination guard fires (see their inline rationale).
+/// - Otherwise ALWAYS `Some(Diagnostic::error(..))` naming `sub_name` and
+///   `scope` — with both dimension labels and a remedy hint when the failure
+///   really was a two-dimension mismatch, and a generically-worded message
+///   otherwise.
+///
+/// The result is deliberately keyed on `(sub_name, scope)` only, so it is stable
+/// across containment paths; the call site routes it through
+/// [`push_pose_diagnostic_deduped`] so a template reached through N paths still
+/// reports one authoring mistake once. The returned diagnostic carries no
+/// [`reify_core::DiagnosticCode`] and no span label: minting a code for it means
+/// adding a variant to `reify-core`, and anchoring a label means threading the
+/// `at` clause's span into `walk_placed_realizations`, both of which are outside
+/// task 6099's locked scope and are filed as follow-up work. Until then,
+/// downstream consumers must match on the message text, and reify-cli's
+/// code-keyed dedup helpers cannot see these diagnostics — which is exactly why
+/// the dedup has to happen here.
+///
+/// **Invariant.** There is NO path from an `Undef` `child_world` back to `None`
+/// once both guards have been cleared. That is what makes "a failed pose is
+/// never silently swallowed into an identity fallback" structurally true rather
+/// than incidental: `compose_transforms` has several rejection paths BESIDE its
+/// dimension gate — a mixed-dimension or non-finite translation is refused by
+/// `decompose_xyz3` before that gate is reached, and a degenerate quaternion by
+/// `normalize_quat_input` after it has already passed — and a classifier that
+/// only recognised the dimension mismatch would re-open the exact silent drop
+/// this function exists to close. Pinned by
+/// `pose_composition_non_uniform_translation_dimensions_is_diagnosed` and
+/// `pose_composition_degenerate_rotation_is_diagnosed`.
+pub(crate) fn diagnose_pose_composition_failure(
+    parent_world: &reify_ir::Value,
+    sub_pose: &reify_ir::Value,
+    child_world: &reify_ir::Value,
+    scope: &str,
+    sub_name: &str,
+) -> Option<Diagnostic> {
+    if !matches!(child_world, reify_ir::Value::Undef) {
+        return None;
+    }
+
+    // Origination guard 1 — the failure happened at a SHALLOWER level.
+    //
+    // `child_world` is written back as the next level's `composed_world`, and
+    // `transform_compose` returns `Undef` whenever EITHER operand is not a
+    // well-formed Transform. So one bad pose at depth 1 poisons every deeper
+    // composition; without this guard a depth-N subtree emits N copies of the
+    // same error for a single authoring mistake, and the message's "the sub you
+    // must edit is `X`" promise becomes false at every level but the first.
+    // Do not "simplify" this away — pinned by
+    // `pose_composition_silent_when_parent_world_already_undef`.
+    if matches!(parent_world, reify_ir::Value::Undef) {
+        return None;
+    }
+
+    // Origination guard 2 — this sub's pose ALREADY reported itself.
+    //
+    // `eval_sub_pose`'s catch-all arm pushes its own `Diagnostic::error`
+    // ("`at` pose expression must evaluate to a Transform or Frame") for a pose
+    // that failed to evaluate, then returns `Undef` — which composes to an
+    // `Undef` child here. Firing again would double-report one mistake.
+    // Pinned by `pose_composition_silent_when_sub_pose_already_undef`.
+    if matches!(sub_pose, reify_ir::Value::Undef) {
+        return None;
+    }
+
+    let parent_dim = pose_translation_dimension(parent_world);
+    let sub_dim = pose_translation_dimension(sub_pose);
+
+    if let (Some(pd), Some(sd)) = (parent_dim, sub_dim)
+        && pd != sd
+    {
+        return Some(Diagnostic::error(format!(
+            "sub `{sub_name}` in structure `{scope}`: its `at` pose has a \
+             {} translation, but the enclosing world pose is {} — the two \
+             cannot be composed, so `{sub_name}` would be placed at the origin. \
+             Give the pose length-dimensioned components, e.g. \
+             `vec3(5.0mm, 0.0mm, 0.0mm)`.",
+            dimension_label(sd),
+            dimension_label(pd),
+        )));
+    }
+
+    // Generic arm — the composition failed for a reason that is NOT a clean
+    // two-dimension mismatch, so say so without fabricating one. Reached when a
+    // translation vector's components disagree or are non-finite, or when a
+    // rotation quaternion is degenerate; see the invariant above for why this
+    // must never become a `None`.
+    Some(Diagnostic::error(format!(
+        "sub `{sub_name}` in structure `{scope}`: its `at` pose could not be \
+         composed with the enclosing world pose, so `{sub_name}` would be \
+         placed at the origin. Check that the pose's translation components \
+         are finite and share one dimension (e.g. \
+         `vec3(5.0mm, 0.0mm, 0.0mm)`) and that its rotation is a non-degenerate \
+         quaternion."
+    )))
+}
+
+/// Push a [`diagnose_pose_composition_failure`] diagnostic onto `diagnostics`,
+/// unless an identical one is already there.
+///
+/// # Why this is needed on top of the origination guards
+///
+/// Those guards are DEPTH-wise: they stop one bad pose from re-reporting at every
+/// level of the subtree it poisons. This is the BREADTH-wise counterpart. The
+/// classifier's message is keyed on `(sub_name, scope)` — the two names the author
+/// needs in order to find the offending `at` clause — and the call site sits inside
+/// `walk_placed_realizations`' `for sub in &template.sub_components` loop. A
+/// template instantiated under N parents (or reached through N containment paths,
+/// as in `sub_placement_surfacing.rs`'s
+/// `shared_child_surfaces_under_each_parent_from_one_handle`) is therefore walked N
+/// times, and one authoring mistake yields N byte-identical errors.
+///
+/// Nothing downstream can collapse them: `cmd_build` prints `result.diagnostics`
+/// straight through `report_eval_output`, and reify-cli's `merge_build_diagnostics`
+/// dedup helpers key on `DiagnosticCode`, which `Diagnostic::error` leaves `None`.
+/// So the walk must not emit the duplicates in the first place.
+///
+/// Compares `(severity, message)` rather than identity: `Diagnostic` derives no
+/// `PartialEq`, and those two fields are exactly what a reader would see twice.
+/// The scan is `O(len)` but runs ONLY on the failure path, which is by definition
+/// a build that is about to fail. Pinned by
+/// `pose_diagnostic_push_is_deduplicated` and the e2e
+/// `shared_template_with_bad_pose_errors_once_per_authoring_mistake`.
+fn push_pose_diagnostic_deduped(diagnostics: &mut Vec<Diagnostic>, d: Diagnostic) {
+    if diagnostics
+        .iter()
+        .any(|prev| prev.severity == d.severity && prev.message == d.message)
+    {
+        return;
+    }
+    diagnostics.push(d);
 }
 
 /// Indices into `module.templates` of the *root* templates for surfacing: those
@@ -11807,7 +12855,33 @@ pub(crate) fn walk_placed_realizations<V>(
         } else {
             eval_sub_pose(sub.pose.as_ref(), values, functions, meta_map, diagnostics)
         };
-        let child_world = compose_pose_chain(&[composed_world.clone(), sub_pose]);
+        // Composed through `compose_pose_pair`, not `compose_pose_chain`: the
+        // latter takes `&[reify_ir::Value]`, and the two-element array literal
+        // needed to call it MOVES its elements — so both operands would have to
+        // be cloned at this call site, on top of the clone `eval_builtin`'s
+        // owned-args signature already forces inside the fold. `sub_pose` must
+        // survive the call for the classifier below, and this is the per-sub
+        // walk, so the borrow-taking pair form is the right one here (task 6099).
+        let child_world = compose_pose_pair(composed_world, &sub_pose);
+        // A failed composition collapses to `Value::Undef`, which the placement
+        // decomposition below cannot distinguish from a genuine identity pose —
+        // so without this the whole child subtree is SILENTLY placed at the
+        // world origin. Diagnose it; deliberately do NOT `continue`, so the
+        // walk's placement/surfacing shape stays byte-identical and only the
+        // diagnostics vector changes (pinned by the e2e
+        // `posed_subtree_still_surfaces_after_diagnostic`).
+        if let Some(d) = diagnose_pose_composition_failure(
+            composed_world,
+            &sub_pose,
+            &child_world,
+            &template.name,
+            &sub.name,
+        ) {
+            // Deduped, not pushed raw: this loop runs once per containment path
+            // to `template`, so a shared template's single bad `at` clause would
+            // otherwise emit one byte-identical error per instantiating parent.
+            push_pose_diagnostic_deduped(diagnostics, d);
+        }
 
         // task-4147: for constructor-arg subs, re-realize the child's handles
         // against the per-instance override value scope BEFORE the recursive
@@ -11885,16 +12959,31 @@ pub(crate) fn non_final_realization_indices(
         .map(|(t_idx, template)| {
             // Index of the final geometry-producing realization (highest r_idx
             // with a recorded terminal handle) — equals `step_handles.last()`.
+            //
+            // task 5345: a query-only realization (a hoisted `__geoq_<N>`
+            // inline geometry-query argument) is measurement scaffolding, not a
+            // body, so it is INELIGIBLE to be the final realization. Without
+            // this, `let body = box(..)  let v = volume(torus(..))` would give
+            // `body`->r0 and `__geoq_0`->r1, and the user's real box would be
+            // silently dropped from STEP/STL/3MF in favour of the torus.
             let final_idx = terminal_handles.get(t_idx).and_then(|handles| {
-                handles
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .find_map(|(r_idx, h)| h.is_some().then_some(r_idx))
+                handles.iter().enumerate().rev().find_map(|(r_idx, h)| {
+                    let query_only = template
+                        .realizations
+                        .get(r_idx)
+                        .is_some_and(|r| r.is_query_only);
+                    (h.is_some() && !query_only).then_some(r_idx)
+                })
             });
-            // Skip every realization that is not the final one.
+            // Skip every realization that is not the final one — and every
+            // query-only realization unconditionally (it is never `final_idx`
+            // by the guard above, so this is belt-and-braces documentation of
+            // intent rather than an extra exclusion).
             (0..template.realizations.len())
-                .filter(|r_idx| Some(*r_idx) != final_idx)
+                .filter(|r_idx| {
+                    Some(*r_idx) != final_idx
+                        || template.realizations[*r_idx].is_query_only
+                })
                 .collect()
         })
         .collect()
@@ -12055,6 +13144,19 @@ pub(crate) fn surface_subtree(
     // contains misleading 0.0 entries (honest absence = missing key, B3).
     achieved_repr_tol: &mut BTreeMap<String, f64>,
 ) {
+    // Tessellation surfaces all *bodies*, so there is no path filter — but a
+    // query-only realization (task 5345: a hoisted `__geoq_<N>` inline
+    // geometry-query argument) is not a body at all. Without this gate the
+    // viewer/mesh list would show a phantom solid the user never declared,
+    // while the export walk correctly omits it (`non_final_realization_indices`)
+    // — the two lists must agree.
+    let not_query_only = |t: usize, r: usize, _path: &str| {
+        !module
+            .templates
+            .get(t)
+            .and_then(|tpl| tpl.realizations.get(r))
+            .is_some_and(|real| real.is_query_only)
+    };
     walk_placed_realizations(
         module,
         t_idx,
@@ -12070,9 +13172,7 @@ pub(crate) fn surface_subtree(
         functions,
         meta_map,
         diagnostics,
-        // Tessellation surfaces all bodies (no path filter needed); pass None to
-        // avoid any pre-filter overhead on the hot path.
-        None,
+        Some(&not_query_only),
         &mut |kernel, placed_id, entity_path, default_visible, t, r, diag| {
             let budget = tessellation_budgets[t][r];
             match kernel.tessellate(placed_id, budget) {

@@ -220,6 +220,24 @@ pub mod ffi {
         fn make_half_space(px: f64, py: f64, pz: f64, nx: f64, ny: f64, nz: f64) -> Result<UniquePtr<OcctShape>>;
 
         // --- Boolean operations ---
+
+        /// Fuse / cut / intersect two shapes.
+        ///
+        /// The returned shape is NORMALIZED, not the raw
+        /// `BRepAlgoAPI_*::Shape()`: BRepAlgoAPI always wraps its answer in a
+        /// bare `TopoDS_COMPOUND`, which fails the SOLID|COMPSOLID|SHELL guard
+        /// in `is_watertight`/`is_closed` and defeats
+        /// `BRepExtrema_DistShapeShape`'s inner-solution test in
+        /// `query_distance`/`min_clearance`. All three ops route through the
+        /// shared `normalize_boolean_result`, which tightens the wrapper to the
+        /// topology-preserving type the result actually is — one solid → bare
+        /// SOLID, several → COMPSOLID, none → the compound untouched
+        /// (task 7054).
+        ///
+        /// Consequence for the Rust side: stamp the stored `BRepKind` via
+        /// `brep_kind_of_shape` (which reads `shape_type_name`), never a
+        /// hardcoded `BRepKind::Solid` — a disjoint fuse really is a
+        /// multi-body COMPSOLID.
         fn boolean_fuse(left: &OcctShape, right: &OcctShape) -> Result<UniquePtr<OcctShape>>;
         fn boolean_cut(left: &OcctShape, right: &OcctShape) -> Result<UniquePtr<OcctShape>>;
         fn boolean_common(left: &OcctShape, right: &OcctShape) -> Result<UniquePtr<OcctShape>>;
@@ -531,6 +549,15 @@ pub mod ffi {
             dy: f64,
             dz: f64,
         ) -> Result<UniquePtr<OcctShape>>;
+        /// Rotate `shape` about the axis `(ax, ay, az)` through the origin.
+        ///
+        /// **Angular unit contract** (INV-AD-4; #6184): `angle_rad` is SI
+        /// RADIANS and crosses this bridge UNSCALED — the C++ side hands it
+        /// straight to `gp_Trsf::SetRotation`, which takes radians too, so no
+        /// layer converts. Lengths cross unscaled here as well (model space is
+        /// SI metres); the x1000 the STEP writer applies is an EXPORT-time
+        /// rescale, not a bridge-time one. Same contract on
+        /// `rotate_around_shape` and `make_revolve`/`make_revolve_with_history`.
         fn rotate_shape(
             shape: &OcctShape,
             ax: f64,
@@ -545,6 +572,9 @@ pub mod ffi {
             cy: f64,
             cz: f64,
         ) -> Result<UniquePtr<OcctShape>>;
+        /// Rotate `shape` about the axis `(ax, ay, az)` through the pivot
+        /// point `(px, py, pz)`. `angle_rad` is SI radians, unscaled — see
+        /// `rotate_shape` above for the contract (#6184).
         fn rotate_around_shape(
             shape: &OcctShape,
             px: f64,
@@ -688,6 +718,11 @@ pub mod ffi {
 
         // --- Thicken / Shell / Offset Solid ---
         fn offset_solid_shape(shape: &OcctShape, distance: f64) -> Result<UniquePtr<OcctShape>>;
+        /// Offset a surface (open face/shell) by `distance` along its normal via
+        /// `BRepOffsetAPI_MakeOffsetShape` in Skin mode (offset_surface θ).
+        /// Positive `distance` offsets along the face's +normal. Errs when
+        /// `distance` is ~0 or the result is degenerate/invalid.
+        fn make_offset_surface(shape: &OcctShape, distance: f64) -> Result<UniquePtr<OcctShape>>;
         fn thicken_shape(shape: &OcctShape, offset: f64) -> Result<UniquePtr<OcctShape>>;
         fn zone_slab_shape(face: &OcctShape, width: f64) -> Result<UniquePtr<OcctShape>>;
         fn shell_shape(
@@ -830,6 +865,10 @@ pub mod ffi {
             dz: f64,
             both: bool,
         ) -> Result<UniquePtr<OcctShape>>;
+        /// Revolve `profile` about the axis through `(ox, oy, oz)` with
+        /// direction `(ax, ay, az)`. `angle_rad` is SI radians, unscaled (a
+        /// full revolution is `2*PI`) — see `rotate_shape` for the contract
+        /// (#6184).
         fn make_revolve(
             profile: &OcctShape,
             ox: f64,
@@ -1153,10 +1192,16 @@ pub mod ffi {
 
         /// Return the canonical name of `shape`'s top-level TopAbs shape type
         /// ("Solid", "CompSolid", "Compound", "Shell", "Face", "Wire", "Edge",
-        /// "Vertex", or "Shape"). Lets `OcctKernel::fuse_all` classify a
-        /// single-pass fuse result — SOLID (overlapping), COMPSOLID (disjoint),
-        /// or the sole input's kind (identity) — into the right BRepKind
-        /// instead of assuming Solid (task 5213 amendment).
+        /// "Vertex", or "Shape"). Backs `brep_kind_of_shape`, the ONE classifier
+        /// every boolean path uses to stamp the right `BRepKind` instead of
+        /// assuming Solid:
+        ///   - `OcctKernel::fuse_all` — SOLID (overlapping), COMPSOLID
+        ///     (disjoint), or the sole input's kind (identity), task 5213;
+        ///   - all six binary boolean arms — the three plain
+        ///     `Union`/`Difference`/`Intersection` arms of `execute` and the
+        ///     three `boolean_*_with_history` variants, task 7054. Since every
+        ///     boolean result is normalized, a disjoint fuse really is a
+        ///     multi-body COMPSOLID and the old hardcoded Solid was a lie.
         fn shape_type_name(shape: &OcctShape) -> Result<String>;
 
         fn get_edges(shape: &OcctShape) -> Result<UniquePtr<OcctShapeVec>>;

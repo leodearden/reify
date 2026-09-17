@@ -12,6 +12,10 @@ use reify_ir::{
 };
 use reify_test_support::*;
 
+#[path = "../common/angle_expr.rs"]
+mod angle_expr;
+use angle_expr::angle_literal;
+
 // ---------------------------------------------------------------------------
 // Shared helper: build a CompiledModule with fixed params and optional ops
 // ---------------------------------------------------------------------------
@@ -1667,7 +1671,7 @@ fn build_revolve_degenerate_axis_emits_diagnostic() {
             ("ax".into(), real_literal(0.0)),
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(0.0)),
-            ("angle".into(), real_literal(std::f64::consts::PI)),
+            ("angle".into(), angle_literal(std::f64::consts::PI)),
         ],
     };
 
@@ -1743,7 +1747,7 @@ fn build_revolve_zero_angle_emits_diagnostic() {
             ("ax".into(), real_literal(0.0)),
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(1.0)),
-            ("angle".into(), real_literal(0.0)),
+            ("angle".into(), angle_literal(0.0)),
         ],
     };
 
@@ -1928,8 +1932,10 @@ fn draft_plane_invalid_sentinel_causes_compile_failure() {
         args: vec![
             // "target" arg (not used for target_id resolution — that comes from `target` field)
             ("target".into(), mm_literal(10.0)),
-            // "angle" arg must evaluate to a Value so the `eval_arg("angle")?` succeeds
-            ("angle".into(), real_literal(5.0)),
+            // The angle must PASS δ's gate, so that the PLANE resolution is what
+            // this test observes failing. A bare literal would now be rejected
+            // first and the assertion below would hold for the wrong reason.
+            ("angle".into(), angle_literal(5.0)),
             // "plane" arg is in args but not used for plane resolution (step_handles.last() is used)
             ("plane".into(), real_literal(0.0)),
         ],
@@ -2334,7 +2340,7 @@ fn build_revolve_angle_just_below_threshold_rejected() {
             ("ax".into(), real_literal(0.0)),
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(1.0)),
-            ("angle".into(), real_literal(1e-13)),
+            ("angle".into(), angle_literal(1e-13)),
         ],
     };
 
@@ -2391,7 +2397,7 @@ fn build_revolve_angle_negative_just_below_threshold_rejected() {
             ("ax".into(), real_literal(0.0)),
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(1.0)),
-            ("angle".into(), real_literal(-1e-13)),
+            ("angle".into(), angle_literal(-1e-13)),
         ],
     };
 
@@ -2456,7 +2462,7 @@ fn build_circular_pattern_missing_count_no_kernel_error() {
             ("ax".into(), real_literal(0.0)),
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(1.0)),
-            ("angle".into(), real_literal(90.0)),
+            ("angle".into(), angle_literal(std::f64::consts::FRAC_PI_2)),
             // count deliberately omitted
         ],
     };
@@ -2518,7 +2524,7 @@ fn build_circular_pattern_missing_axis_no_kernel_error() {
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(1.0)),
             ("count".into(), real_literal(3.0)),
-            ("angle".into(), real_literal(90.0)),
+            ("angle".into(), angle_literal(std::f64::consts::FRAC_PI_2)),
         ],
     };
 

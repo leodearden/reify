@@ -5,10 +5,14 @@
 //! covered instead by the per-kind unit tests in `reify-ir/src/node_traits.rs`
 //! (T1's PRD-assigned crate); T3 was specified against a `concurrent_eval`-style
 //! fixture on the `reify_runtime::concurrent` scheduler stack deleted under
-//! #5065, so it is obsolete as written rather than merely pending. T5 landed
+//! #5065, so it is obsolete as written rather than merely deferred. T5 landed
 //! under task #3579 and was dropped under #5065 along with the `concurrent.rs`
 //! scheduler stack it pinned; the WARM_STARTABLE coextension invariant itself
 //! remains covered by `reify-runtime/src/warm_startable_assert.rs`.
+//!
+//! T3/T5 above narrate obsolete or landed work — re-wording either as an
+//! outstanding deferral needs the §6.8 inline escape (PTODO lane δ-B; §16
+//! Row 2, "narrated non-deferral").
 //!
 //! All tests use real `reify_eval::cache::NodeId` values so that the
 //! `impl HasNodeKind for NodeId` bridge in `reify-eval/src/cache.rs` is exercised
@@ -98,9 +102,10 @@ fn node_traits_map_with_node_id_instance_wins_over_kind() {
 //   - Value → AlwaysCancelWhenStale                      (IMMEDIATE, no COMMITTABLE; Q-3 resolution)
 //
 // PRD §5 B3: "absent COMMITTABLE → always cancellable; present → CommitIfSlow".
-// The AlwaysCancelWhenStale for Value is safe because task η/3581 (B4) will
-// short-circuit Value cancellation at the scheduler before resolve_with_traits
-// is wired into scheduler dispatch.
+// The AlwaysCancelWhenStale for Value is intentional, and the mismatch stays
+// cosmetic: the IMMEDIATE→never-cancelled guard was task η (#3581, B4), and the
+// scheduler that would have consumed it was deleted with `concurrent.rs` in
+// c1b8dba3f7 (task ο, #5065), so no dispatch path observes the mismatch today.
 
 #[test]
 fn t2_default_overrides_matches_arch_kind_defaults() {

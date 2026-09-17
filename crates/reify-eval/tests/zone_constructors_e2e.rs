@@ -657,11 +657,16 @@ fn zone_profile_structural_lowers_to_four_ops() {
     }
 }
 
-/// OCCT realize-smoke for zone_profile.
+/// OCCT realize-smoke for zone_profile: pins that the compile-to-kernel
+/// pipeline is wired end to end, not that the annular shell is correct.
 ///
-/// zone_profile(box(10mm,10mm,10mm), 1mm) builds an annular shell around the box surface.
-/// Asserts: Volume > 0 AND Volume < box volume = (10mm)³ = 1e-6 m³.
-/// No closed-form volume formula; the realize-smoke validates buildability.
+/// zone_profile(box(10mm,10mm,10mm), 1mm) is INTENDED to build an annular shell
+/// around the box surface; it does not yet, so its volume is exactly 0.0 and
+/// becomes > 0 only once #7287 lands — that is #7287's acceptance criterion,
+/// not this smoke's. Asserts what holds either way: every op succeeds, and
+/// 0 ≤ volume ≤ box volume = (10mm)³ = 1e-6 m³. WHY the result is empty, and
+/// why an empty result is legal rather than a failure, is recorded at the
+/// realization step below.
 ///
 /// Parallel OcctKernel replay: Box + Thicken(+0.5mm) + Thicken(-0.5mm) + Difference.
 /// OCCT-gated; skips cleanly when OCCT is unavailable.
@@ -692,15 +697,17 @@ fn zone_profile_realize_smoke() {
 
     // ── Full-pipeline: Engine + OcctKernelHandle (no Error diag, realize completes) ──
     //
-    // NOTE (task 4476 γ-slice): OCCT's `BRepOffsetAPI_MakeOffsetShape::PerformBySimple`
-    // is designed for open shells. When applied to a closed solid (box), it can produce
-    // shapes with degenerate edge topology that `BRepMesh_IncrementalMesh` cannot
-    // triangulate — resulting in an empty mesh (no vertices/indices) without raising
-    // an error. This is a known OCCT limitation for the composition-only γ-slice.
-    // The structural test (zone_profile_structural_lowers_to_four_ops) is the
-    // primary kernel-less RED/GREEN anchor for this constructor. Functional
-    // correctness (volume > 0, volume < solid) is validated by the direct
-    // OcctKernel replay below, which does not depend on tessellation.
+    // OCCT's `BRepOffsetAPI_MakeOffsetShape::PerformBySimple` is documented for
+    // OPEN SHELLS. On a closed solid (box) it does not yield a valid solid for
+    // the cut, so the Difference this lowering ends in is GENUINELY EMPTY —
+    // zero volume, and a mesh with no vertices, without OCCT raising anything.
+    // An empty boolean result is a legal kernel value, so realization stays
+    // silent; what this smoke pins is that the compile-to-kernel pipeline is
+    // wired end to end, not that the annular shell is correct.
+    //
+    // The underlying geometry defect — zone_profile does not actually build the
+    // annular shell — is tracked by #7287 (replace the PerformBySimple
+    // Thicken+Difference lowering with a MakeThickSolid-based construction).
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
@@ -721,31 +728,23 @@ fn zone_profile_realize_smoke() {
         !tess_result.meshes.is_empty(),
         "zone_profile should produce at least 1 mesh result"
     );
-    // Tessellation produces a result entry, but vertices may be empty due to the
-    // PerformBySimple-on-closed-solid OCCT limitation noted above. We log the
-    // vertex count for diagnostics but do not assert non-empty here.
+    // Tessellation produces a result entry, but vertices may be empty because
+    // of the PerformBySimple-on-closed-solid limitation noted above. Log the
+    // vertex count for diagnostics; do not assert non-empty here.
     let mesh = &tess_result.meshes[0].mesh;
     eprintln!(
         "zone_profile tessellation: {} vertices, {} indices \
-         (empty is expected for OCCT PerformBySimple-on-box; see task 4476 note)",
+         (empty is expected until #7287 replaces PerformBySimple)",
         mesh.vertices.len(),
         mesh.indices.len()
     );
 
-    // ── Direct OcctKernel replay — diagnostic smoke ──
+    // ── Direct OcctKernel replay — build smoke ──
     //
-    // NOTE (task 4476 γ-slice / OCCT PerformBySimple limitation):
-    // `BRepOffsetAPI_MakeOffsetShape::PerformBySimple` is documented for open
-    // shells; on a closed solid (box) it does NOT produce a valid solid for
-    // BooleanCut — the resulting Difference has 0 volume.  This means the
-    // Thicken+Difference lowering for zone_profile is not fully functional at
-    // the OCCT level in the composition-only γ-slice.  The δ-slice kernel work
-    // will implement proper MakeThickSolid-based offset-zone construction.
-    //
-    // We replay the ops below as a BUILD-SMOKE (all three execute() calls must
-    // succeed without error — i.e., the compile-to-kernel pipeline is wired
-    // correctly), but we do NOT assert on the volume value since PerformBySimple
-    // on a box + BooleanCut returns 0.
+    // All four ops must succeed: Box, both Thickens and the final Difference.
+    // The Difference is empty, which is a legal result the kernel returns as an
+    // empty compound — so this replay pins the WIRING, and deliberately does
+    // not assert a volume value, which is 0.0 until #7287 lands.
     let box_side = 0.010_f64; // 10mm in metres
     let box_volume = box_side.powi(3); // 1e-6 m³
 
@@ -775,15 +774,14 @@ fn zone_profile_realize_smoke() {
             right: inner_h.id,
         })
         .expect("Difference execute should succeed");
-    // Volume diagnostic: expected ~6e-7 m³ once PerformBySimple is replaced by
-    // MakeThickSolid in the δ-slice.  Currently returns 0 due to the OCCT
-    // limitation above — logged but not asserted.
+    // Volume diagnostic: expected ~6e-7 m³ once #7287 replaces PerformBySimple
+    // with MakeThickSolid. Currently 0 — logged, not asserted.
     let vol = kernel
         .query(&GeometryQuery::Volume(profile_h.id))
         .expect("Volume query should succeed");
     let v = vol.as_f64().expect("volume should be numeric");
     eprintln!(
-        "zone_profile direct-replay volume = {:.3e} m³ (expected ~6e-7 once δ fixes \
+        "zone_profile direct-replay volume = {:.3e} m³ (expected ~6e-7 once #7287 fixes \
          PerformBySimple; currently {} of box_volume={:.3e})",
         v,
         if v > 0.0 { "within" } else { "OUTSIDE (0)" },

@@ -141,7 +141,7 @@ mod shaper_family_guard {
         // leading IDENTIFIER. Taking the identifier prefix rather than the
         // whole trimmed segment is what makes the trailing body brace (and any
         // trailing comment) fall away without this file having to spell a
-        // brace character — see the brace-balance note on
+        // brace character — see the fixture-shape note on
         // `shaper_refiner_name_accepts_every_single_line_declaration_form`.
         bounds
             .split('+')
@@ -258,63 +258,57 @@ mod shaper_family_guard {
     /// is one the grammar admits (`grammar.js` `structure_definition`), and
     /// each rejected form is one that must NOT be mistaken for a shaper decl.
     ///
-    /// ⚠ BRACE BALANCE — every fixture below closes its brace pair, and no
-    /// line in this module may leave one open. Do NOT "fix" these to end in a
-    /// dangling open brace the way a real decl line does.
-    /// `scripts/audit-orphan-producers.sh` masks `#[cfg(test)]` items by
-    /// counting brace characters per LINE with no string awareness, so an
-    /// unbalanced brace inside a string literal (or inside a comment, this one
-    /// included) extends the mask past the end of this module and silently
-    /// hides the REST of this file from the orphan audit — at which point the
-    /// 14 `// G-allow:` pins over the SQP helpers below drop out of the audit's
-    /// allow-list and `new_orphans_2026_06_02_g_allow.rs` goes red. Measured
-    /// first-hand: 14 fixtures with a dangling brace masked lines 79→EOF.
-    /// The paired form is itself a real spelling — every empty marker
-    /// structure uses it, e.g. `structure def NaturalSpline :
-    /// BoundaryCondition` with an empty body — and the dangling form is
-    /// covered for real by [`every_shipped_shaper_structure_is_recognised`],
-    /// which scans the actual shipped file.
+    /// Fixtures below end in a dangling open `{` — the real single-line decl
+    /// shape — rather than a same-line-closed pair. That used to be
+    /// forbidden here: `scripts/audit-orphan-producers.sh` masked
+    /// `#[cfg(test)]` items by counting brace characters per LINE with no
+    /// string awareness, so an unbalanced brace inside one of these string
+    /// literals extended the mask past the end of this module and silently
+    /// hid the REST of this file from the orphan audit. Task #6421 made that
+    /// mask literal/comment-aware (`strip_literals_and_comments`), so a
+    /// brace inside a fixture string no longer perturbs it — see that
+    /// script for the counting mechanism.
     #[test]
     fn shaper_refiner_name_accepts_every_single_line_declaration_form() {
         for (line, expected) in [
             // The plain form the stdlib uses today.
-            ("structure def ZVShaper : Shaper { }", Some("ZVShaper")),
+            ("structure def ZVShaper : Shaper {", Some("ZVShaper")),
             // `def` is optional in the grammar.
-            ("structure ZVShaper : Shaper { }", Some("ZVShaper")),
+            ("structure ZVShaper : Shaper {", Some("ZVShaper")),
             // `pub` is optional and live in the stdlib (solver_elastic.ri:660).
-            ("pub structure def PubShaper : Shaper { }", Some("PubShaper")),
-            ("pub structure PubShaper : Shaper { }", Some("PubShaper")),
+            ("pub structure def PubShaper : Shaper {", Some("PubShaper")),
+            ("pub structure PubShaper : Shaper {", Some("PubShaper")),
             // Shaper need not be FIRST in a `+`-separated bound list
             // (multi-bound refinement is live: kinematic.ri:145/163).
             (
-                "structure def FooShaper : Marker + Shaper { }",
+                "structure def FooShaper : Marker + Shaper {",
                 Some("FooShaper"),
             ),
             (
-                "structure def FooShaper : Shaper + Marker { }",
+                "structure def FooShaper : Shaper + Marker {",
                 Some("FooShaper"),
             ),
             // The type-parameter colon must not be read as the bound colon
             // (cf. kinematic.ri:214), and the `<…>` must not reach the name.
             (
-                "structure def GenShaper<T: Bound> : Shaper { }",
+                "structure def GenShaper<T: Bound> : Shaper {",
                 Some("GenShaper"),
             ),
             // Whitespace is `extras`, so spacing must not matter.
-            ("structure def TightShaper:Shaper{ }", Some("TightShaper")),
+            ("structure def TightShaper:Shaper{", Some("TightShaper")),
             // ── must NOT match ──
             // A structure refining nothing.
-            ("structure def Waypoint { }", None),
+            ("structure def Waypoint {", None),
             // A different marker trait entirely.
-            ("structure def NaturalSpline : BoundaryCondition { }", None),
+            ("structure def NaturalSpline : BoundaryCondition {", None),
             // A bound that merely CONTAINS "Shaper" is a different trait.
-            ("structure def X : ShaperLike { }", None),
-            ("structure def X : NotAShaper { }", None),
+            ("structure def X : ShaperLike {", None),
+            ("structure def X : NotAShaper {", None),
             // Only the type-parameter bound is Shaper — the structure itself
             // does not refine it.
-            ("structure def X<T: Shaper> { }", None),
+            ("structure def X<T: Shaper> {", None),
             // Not a structure declaration at all.
-            ("occurrence def X : Shaper { }", None),
+            ("occurrence def X : Shaper {", None),
             ("pub fn input_shape(profile: Profile, shaper: Shaper)", None),
         ] {
             assert_eq!(

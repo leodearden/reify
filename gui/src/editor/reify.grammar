@@ -345,16 +345,46 @@ TypeAnnotation {
   ":" TypeExpr
 }
 
-// Four-way choice transliterated from tree-sitter-reify grammar.js:1064-1140.
+// Five-way choice transliterated from tree-sitter-reify's `type_expr` rule.
 // The leading token is unique per alternative — `(` for FunctionType, `Name<`
-// for ParameterizedType, `Name::` for QualifiedType — so no precedence hacks
-// are needed. `auto_type_arg` (`Bearing<auto: Seal>`), which task 5907 left
-// deferred here, is now implemented — see AutoTypeArg below.
+// for ParameterizedType, `Name::` for QualifiedType, `Name.` for
+// NamespacedName — so no precedence hacks are needed. `auto_type_arg`
+// (`Bearing<auto: Seal>`), which task 5907 left deferred here, is now
+// implemented — see AutoTypeArg below.
 TypeExpr {
   FunctionType |
   ParameterizedType |
   QualifiedType |
+  NamespacedName |
   Identifier
+}
+
+// Qualified reference through an import binding: `pp.Pulley`, from
+// `import parts as pp` (task 5495 μ; PRD docs/prds/v0_6/stdlib-namespace.md
+// §3.3 NS-Q1). Transliterated from grammar.js's `namespaced_name` rule, which
+// upstream uses for BOTH type position and `sub`'s structure-name slot so the
+// two cannot drift; the same single rule serves both here.
+//
+// Putting it on `TypeExpr` rather than on `TypeAnnotation` is what makes it
+// reachable from every type position at once, `List<pp.Pulley>` included
+// (`TypeArgList → typeArg → TypeExpr`) — pinned in
+// reifyGrammarQualifiedRef.test.ts rather than claimed here.
+//
+// EXACTLY TWO SEGMENTS, and NO `("<" TypeArgList ">")?` tail — a PARSER-CONFLICT
+// artifact, not an enforced scope boundary. The note on grammar.js's
+// `namespaced_name` rule records that the tail is the one formulation producing
+// an unresolved LR conflict there, so upstream omits it and this port must too:
+// adding it here would make the editor accept what neither tree-sitter nor the
+// compiler does — the third-dialect failure the AutoTypeArg note already
+// forbids. The acceptance that results is POSITION-DEPENDENT rather than
+// uniform: `param p : pp.Box<T>` is rejected, while `sub h : pp.Pulley<T>` IS
+// accepted, because the specialization arm carries its own type-argument slot
+// AFTER the structure name (see `subSpecializedName` below). "Qualified
+// generics are out of scope for μ" would describe that as a decision; it is the
+// LR limitation showing through. The corpus test pins `pp.Box<T>` still
+// erroring, so a later widening has to be deliberate.
+NamespacedName {
+  Identifier "." Identifier
 }
 
 // Arrow / function type: `(T) -> U`, `(A, B) -> C`, `() -> U`
@@ -694,11 +724,75 @@ JointBody {
 // (crates/reify-syntax/tests/sub_decl_specialization_body_parser_tests.rs),
 // never by GUI code — so folding is behaviour-preserving for every consumer
 // here and removes an unresolvable lexer dependency.
+// THE STRUCTURE-NAME SLOT IS NOT A `TypeExpr` in either arm, so widening
+// `TypeExpr` with `NamespacedName` does not reach it — both arms are widened
+// explicitly (see `subInstanceName` / `subSpecializedName` below), exactly as
+// upstream widens all three of its own `sub_declaration` arms' `structure_name`
+// to `choice($.identifier, $.namespaced_name)`. `sub p = pp.Pulley()` and `sub p : pp.Pulley` are the
+// two shapes; the collection arm folded into the `:` arm above reaches
+// `List<pp.Pulley>` through `ParameterizedType`.
 SubDeclaration {
-  kw<"priv">? kw<"aux">? kw<"sub"> Identifier (
-    "=" Identifier ("<" TypeArgList ">")? ArgList ~where WhereClause? |
-    ":" (ParameterizedType | Identifier) ~where WhereClause? subBody?
-  ) PoseClause?
+  kw<"priv">? kw<"aux">? kw<"sub"> Identifier subArm PoseClause?
+}
+
+// The three arms, as a lowercase rule rather than an inline choice, for the
+// same MEASURED reason `subBody` below is one. Adding the derived arm inline
+// pushed `SubDeclaration` to 104 expansions and tripped lezer-generator's
+// "generating a lot of choices" advisory, which this grammar did NOT trip
+// before — the arm's optionals multiply against `kw<"priv">?`, `kw<"aux">?`
+// and `PoseClause?`. Naming the choice keeps the rule under the threshold.
+// Lowercase, so it does not appear in the tree — the node names the corpus
+// test pins are unchanged.
+//
+// The first two arms' structure-name slots are the NAMED `subInstanceName` /
+// `subSpecializedName` rules below, not inline choices — same instrument, same
+// measured reason.
+subArm {
+  "=" subInstanceName ("<" TypeArgList ">")? ArgList ~where WhereClause? |
+  ":" subSpecializedName ~where WhereClause? subBody? |
+  // grammar.js's FOURTH arm — the DERIVED sub (assembly-derivation-toolbox.md
+  // leaf A-alpha, task #6615). See `SubDerivation` below for the ekw/kw
+  // reasoning and the measured conflict report.
+  "=" SubDerivation DerivedBody
+}
+
+// The two structure-name slots, as NAMED rules rather than inline choices —
+// the same instrument, and for the same measured reason, as `subBody` below.
+// MEASURED: widening both slots inline pushed `SubDeclaration` from 128 to 160
+// expansions and re-tripped lezer-generator's "generating a lot of choices"
+// advisory that naming `subBody` had cleared; naming these two brings it back
+// under the threshold. Lowercase, so neither appears in the tree — the arms'
+// own node names (`NamespacedName`, `ParameterizedType`, `Identifier`) stay
+// exactly what reifyGrammarQualifiedRef.test.ts pins.
+subInstanceName {
+  NamespacedName | Identifier
+}
+
+// The `:` arm's slot. Its `NamespacedName` alternative carries an OPTIONAL
+// type-argument tail, which the `ParameterizedType` alternative already
+// supplies for the unqualified case — `sub h : pp.Pulley<T>`.
+//
+// MEASURED THREE-SURFACE PARITY, not a speculative widening. Upstream's
+// `sub_declaration` specialization arm keeps its own
+// `optional(field('type_args', …))` slot AFTER the widened `structure_name`, so
+// `sub h : pp.Pulley<T>` parses there with zero ERROR nodes and `lower_sub`
+// builds a valid
+// `SubDecl { structure_name: "pp.Pulley", type_args: [T] }` with no diagnostic.
+// Without the tail here this grammar produced 2 error nodes on that source —
+// the editor STRICTER than the compiler, which is precisely the silent
+// degradation reifyGrammarQualifiedRef.test.ts exists to catch. Pinned on both
+// surfaces now: `sub_specialization_arm_accepts_namespaced_name_with_type_args`
+// (tree-sitter-reify/tests/qualified_ref_grammar_tests.rs) and the
+// `sub h : pp.Pulley<T>` case in reifyGrammarQualifiedRef.test.ts.
+//
+// This is NOT the excluded qualified-GENERIC form, and it is not a tail on
+// `NamespacedName` itself — see that rule's note. `param p : pp.Box<T>` in TYPE
+// position still errors on both surfaces; the tail belongs to the `sub` arm,
+// exactly as upstream spells it. Shape mirrors upstream too: `NamespacedName`
+// and `TypeArgList` come out as SIBLINGS, not wrapped in a
+// `ParameterizedType`, because `subSpecializedName` is lowercase/inline.
+subSpecializedName {
+  ParameterizedType | NamespacedName ("<" TypeArgList ">")? | Identifier
 }
 
 // grammar.js:900-920. Accepts both param assignments and ordinary members;
@@ -724,6 +818,139 @@ ParamAssignment {
 // `SpecializationBody`/`KeyedMemberBlock` stay the nodes the corpus test pins.
 subBody {
   SpecializationBody | KeyedMemberBlock
+}
+
+// ── Derived sub arm ─────────────────────────────────────
+// grammar.js's fourth `sub_declaration` arm — `sub b = mirror of a across
+// <plane> { … }` and `sub b = image of a under <transform> { … }` (leaf
+// A-alpha of docs/prds/v0_6/assembly-derivation-toolbox.md, task #6615).
+//
+// EVERY NEW WORD IS `ekw<>` (`@extend`), NEVER `kw<>` (`@specialize`). This is
+// the single most load-bearing choice in this family. `@specialize` replaces
+// the token unconditionally and is context-FREE, so promoting any of these
+// words would stop it lexing as `Identifier` everywhere else. MEASURED
+// occurrences as ordinary source text across the 673 committed `.ri` files:
+// mirror 65, image 15, across 64, under 143, keep 21, symmetry 5, exclude 0
+// (`of` 937). The `at` note at PoseClause above records the same failure
+// happening for real: `kw<"at">` un-pinned two committed files that pass `at`
+// as a named-argument label. Pinned here by the contextual-keyword battery in
+// reifyGrammarCorpus.test.ts, which uses `nodeNamesSpanning` to assert each
+// word still REDUCES to `Identifier` — an error count alone would not catch a
+// silent promotion.
+//
+// `symmetry` is RESERVED by PRD §8 contract item (ii) and deliberately gets NO
+// production here: a production would start capturing the 5 committed
+// occurrences. The reservation is documentation-only, and the corpus test's
+// `symmetry` row is its runtime evidence.
+//
+// `keep <path> using <plane>` is RESERVED syntax for v2 (PRD §3.3/§11): it
+// parses and is stored, with no v1 meaning.
+//
+// ── CONFLICTS: MEASURED, none ─────────────────────────────────────────────
+//
+// Two collisions were expected here and neither materialised, so this family
+// carries no `~` ambiguity marker and no `@precedence` entry:
+//
+//   (a) `"=" Identifier …` (the instantiation arm) versus `"=" SubDerivation`.
+//       Upstream separates these in the LEXER, via tree-sitter's rule #2
+//       (an anonymous string beats the identifier regex on an equal-length
+//       match) — a mechanism lezer does not share. Here `ekw` keeps both
+//       readings alive and the parser picks by what FOLLOWS: `mirror` followed
+//       by `of` can only be a derivation, `mirror` followed by `(` can only be
+//       a constructor. That is one token of lookahead, which LR(1) has.
+//
+//   (b) `across <expression> {` versus `VariantConstruction`
+//       (`Identifier "{" …`, :1147), where upstream gets the split free from
+//       GLR. lezer-generator reports no conflict for it either.
+//
+// MEASURED: lezer-generator reports ZERO conflicts for this family. Had it
+// reported one, the instrument would have been a `~` ambiguity marker
+// following the `~poseWhere` precedent above — explicitly NOT a precedence
+// level, which makes greedy shift win unconditionally.
+//
+// `xs[<element>]` element addressing inside a disposition path is RESERVED
+// (PRD §8 item iii) and not implemented: `DispositionPath` is a dotted
+// identifier chain only.
+SubDerivation {
+  ekw<"mirror"> ekw<"of"> Identifier ekw<"across"> expression |
+  ekw<"image"> ekw<"of"> Identifier ekw<"under"> expression
+}
+
+// grammar.js `derived_body`. Deliberately NOT `SpecializationBody`: that rule
+// admits the full `Member` set, whereas a derived body admits exactly param
+// overrides, `keep`/`exclude` dispositions, `let` and `constraint`.
+//
+// The brace is REQUIRED (the slot in `SubDeclaration` is not optional),
+// upholding INV-SF-7: a derivation ends in an `expression`, so an optional
+// body would leave a dangling right edge free to absorb the following line.
+//
+// Zero-or-more, so an empty `{ }` body is legal — the derivation alone is a
+// complete specification.
+DerivedBody {
+  "{" (
+    DerivedParamAssignment |
+    KeepDisposition |
+    ExcludeDisposition |
+    LetDeclaration |
+    ConstraintDeclaration
+  )* "}"
+}
+
+// grammar.js `derived_param_assignment`. Distinct from `ParamAssignment` only
+// because of `DefaultReset` — `<param> = default` resets an inherited value to
+// the prototype's declared default, which is meaningless in a specialization
+// body.
+//
+// ── `DefaultReset` IS DELIBERATELY NOT TRANSLITERATED ─────────────────────
+//
+// grammar.js has a `default_reset` node here so lowering can discriminate a
+// reset from an override without re-reading source text. That node CANNOT be
+// reproduced in lezer, and the attempt was measured rather than assumed:
+//
+//   `DefaultReset { ekw<"default"> }` in the value slot generates cleanly
+//   (zero conflicts) and then never matches — MEASURED, `span_bu = default`
+//   yields `DerivedParamAssignment(Identifier, "=", Identifier)`, with
+//   `default` reducing to `Identifier`. Adding a `!derivedDefault` precedence
+//   marker (declared in the @precedence block) changed nothing, which is the
+//   diagnostic: the choice is made in the TOKENIZER, not by parser precedence.
+//   `@extend` yields its keyword token only where the state does not otherwise
+//   admit `Identifier`, and this slot admits one — `bindingValue` reaches
+//   `expression` reaches `Identifier`. That is why `ekw<"default">` DOES work
+//   at `DefaultDeclaration` (:102), where no identifier reading is live.
+//
+// Upstream separates them with tree-sitter lexer rule #2 (an anonymous string
+// beats the identifier regex on an equal-length match) — the same mechanism
+// the `List` collection arm relies on, and the same one the `SubDeclaration`
+// note above records lezer as not sharing. `kw<"default">` (@specialize) would
+// force it, and is exactly the wrong instrument: it is context-FREE, and
+// `default` occurs 333 times in the 673 committed `.ri` files.
+//
+// So a rule that provably never matches is left OUT rather than shipped as
+// decoration: the value slot is plain `bindingValue`, `default` reads as an
+// `Identifier`, and the divergence is pinned by an explicit assertion in
+// reifyGrammarCorpus.test.ts. Nothing is lost — the reset/override
+// discrimination is consumed only by the Rust lowering, which reads the
+// tree-sitter CST, never by GUI code. This is the same call, for the same
+// stated reason, as folding the collection arm into the specialization arm at
+// `SubDeclaration` above.
+DerivedParamAssignment {
+  Identifier "=" bindingValue
+}
+
+KeepDisposition {
+  ekw<"keep"> DispositionPath (ekw<"using"> expression)?
+}
+
+ExcludeDisposition {
+  ekw<"exclude"> DispositionPath
+}
+
+// grammar.js `disposition_path` — the dotted-identifier shape, NOT an
+// expression. An expression-valued path could absorb the next
+// newline-separated body item at its right edge (INV-SF-7), and it would
+// silently accept the reserved `xs[<element>]` addressing.
+DispositionPath {
+  Identifier ("." Identifier)*
 }
 
 // ── Keyed sub-member block ──────────────────────────────
@@ -1311,6 +1538,8 @@ primaryExpression {
   QualifiedAccess |
   InstanceQualifiedAccess |
   TraitMethodCall |
+  // grammar.js's `namespaced_call` — the `.` twin of TraitMethodCall (5495 μ).
+  NamespacedCall |
   ListLiteral |
   SetLiteral |
   MapLiteral |
@@ -1510,6 +1739,33 @@ TraitMethodCall {
   (QualifiedAccess | InstanceQualifiedAccess) !postfix ArgListExpr
 }
 
+// Call through an import binding: `pp.Pulley()`, `pp.compute(1, scale: 2)`
+// (task 5495 μ; PRD docs/prds/v0_6/stdlib-namespace.md §3.3 NS-Q2 / D-7).
+// Structurally the `.` twin of `TraitMethodCall` directly above — a whole
+// qualified access as the callee, the shared `ArgListExpr` as the tail — and
+// it sits on the same `postfix` level for the same reason, so `pp.Pulley`
+// followed by `(` shifts into the call rather than settling as a bare
+// `MemberAccess`. MEASURED: lezer-generator reports zero conflicts, so no `~`
+// ambiguity marker was needed; the separation is the ONE token after the
+// callee, the same one-token parting `InstanceQualifiedAccess` vs
+// `MemberAccess` already rests on.
+//
+// THE CALLEE IS A FULL `MemberAccess`, not an inline `Identifier "." Identifier`
+// — mirroring grammar.js's `namespaced_call`, where the inline form collides
+// with `member_access` as a reduce-reduce ambiguity. Two consequences worth
+// stating because neither is visible from the rule:
+//   • the callee node is IDENTICAL to the call-LESS `pp.Pulley`, which stays a
+//     plain `MemberAccess` here (it is indistinguishable from `self.width` at
+//     parse time), so the resolution phase sees one uniform base on every
+//     surface;
+//   • a 3+-segment callee (`a.b.c()`) is syntactically ACCEPTED. Bare full-path
+//     qualification is out of scope (D-7 / PRD §9) and the compiler rejects it
+//     in LOWERING with a specific diagnostic — so accepting it here is what
+//     keeps the editor from being a stricter third dialect than the compiler.
+NamespacedCall {
+  MemberAccess !postfix ArgListExpr
+}
+
 ParenthesizedExpression {
   "(" expression ")"
 }
@@ -1630,12 +1886,24 @@ ReservedWord {
   // THE TRADE, stated rather than left to be rediscovered: being tightest,
   // greedy SHIFT always wins. That preserves `Box<T>`, `Tensor<2, 3, Force>`,
   // `auto(free)`, `auto(seed = 5mm)` and `#pragma(a = 1)`, every one of them
-  // attested in a pinned file. It sacrifices only the mirror image — a
-  // predicate whose FIRST token is `<` (the one-sided RangeExpression arm) or
-  // `(` on the line directly after a param/let/pragma item — a shape attested
-  // in none of the 330 committed `.ri`. All five preserved readings are pinned
-  // by node-name assertions in reifyGrammarCorpus.test.ts, not by error counts,
-  // because a precedence edit reshapes a tree in silence.
+  // attested in a pinned file. It sacrifices the mirror image: a predicate whose
+  // FIRST token is `<` (the one-sided RangeExpression arm) or `(`, on the line
+  // directly after an item the parser can still extend. All five preserved
+  // readings are pinned by node-name assertions in reifyGrammarCorpus.test.ts,
+  // not by error counts, because a precedence edit reshapes a tree in silence.
+  //
+  // THE SACRIFICED SET IS WIDER THAN `itemStart` ALONE. It is not only the
+  // param/let/pragma items whose tail `itemStart` shifts: any item the parser
+  // can still extend swallows a following `(` line. `FunctionCall` does it via
+  // `postfix` after a BARE trailing ident (`a` ⏎ `(x) > 0` is one predicate,
+  // not two — measured, and it predates task 5495), and since μ
+  // `NamespacedCall` does it after a trailing `.name` (`a.b` ⏎ `(x) > 0`
+  // likewise). μ WIDENS this accepted trade rather than inventing it. Still
+  // unattested: no committed `.ri` has a line ending in `.ident` directly above
+  // a line opening with `(`. All three joined readings are pinned in
+  // reifyGrammarQualifiedRef.test.ts and in tree-sitter-reify's
+  // test/corpus/namespaced_ref.txt, so the shape is visible rather than
+  // rediscovered.
   //
   // Note this is the OPPOSITE instrument to the one `~poseWhere` uses on a
   // conflict that looks similar. Precedence is right here only because the
