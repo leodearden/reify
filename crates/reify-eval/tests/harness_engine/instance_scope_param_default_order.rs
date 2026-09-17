@@ -293,8 +293,7 @@ fn cyclic_param_defaults_are_still_committed_at_instance_scope() {
 /// cannot fix it: `elaborate_child_params_only` (phase 1) runs entirely before
 /// `elaborate_child_lets_only` (phase 2). Closing it is the instance-scope
 /// analogue of task #4317's template-scope phase unification — a design change,
-/// not a loop-ordering fix — tracked by follow-up ticket
-/// `tkt_0RTKT9B322NQ9VTT2SY6DK5AYN`.
+/// not a loop-ordering fix — tracked by #7511.
 ///
 /// If this arm ever REDS, the sibling-let gap has closed and the assertion
 /// should become an equality against the template cell, like the ones above.
@@ -327,8 +326,8 @@ fn param_default_reading_a_sibling_let_still_degrades_at_instance_scope() {
         "CHARACTERIZATION: the sibling-LET half is NOT fixed here. Phase 1 \
          (`elaborate_child_params_only`) runs entirely before phase 2 \
          (`elaborate_child_lets_only`), so no ordering of params among \
-         themselves can make `dbl` visible to `p`. Tracked by follow-up ticket \
-         tkt_0RTKT9B322NQ9VTT2SY6DK5AYN. If this now equals the template's \
+         themselves can make `dbl` visible to `p`. Tracked by #7511. If this now \
+         equals the template's \
          Int(6), that gap has closed and this arm should become an equality \
          against the template cell"
     );

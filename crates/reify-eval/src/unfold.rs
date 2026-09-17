@@ -1546,8 +1546,7 @@ fn elaborate_child_params_only<'f>(
             // function runs before `elaborate_child_lets_only`, so no ordering
             // of params among themselves reaches it; closing it is the
             // instance-scope analogue of task #4317's template-scope phase
-            // unification, filed as ticket `tkt_0RTKT9B322NQ9VTT2SY6DK5AYN` (no
-            // `#NNNN` cite because the curator assigns task ids asynchronously).
+            // unification, tracked by #7511.
             //
             // All three are pinned by
             // tests/harness_engine/instance_scope_param_default_order.rs, and
