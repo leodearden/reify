@@ -467,8 +467,11 @@ fn scan_file(content: &str) -> Vec<Site> {
                 }
                 // Probe from the anchor rightwards so a `.with_code(`
                 // belonging to an EARLIER constructor on the same line
-                // cannot code a later one.
-                let coded = line[at..].contains(CODE_PROBE) || code_in_window(&lines, &mask, i);
+                // cannot code a later one. A terminator in the anchor's own
+                // tail is carried into the window as the seed, so the pair
+                // `; … <anchor>` bounds across the line break too.
+                let coded = line[at..].contains(CODE_PROBE)
+                    || code_in_window(&lines, &mask, &anchors, i, line[at..].contains(';'));
                 out.push(Site { line: i + 1, coded });
             }
         }
@@ -484,16 +487,112 @@ fn scan_file(content: &str) -> Vec<Site> {
     out
 }
 
-/// `true` when a `.with_code(` appears on one of the [`PDIAG_CODE_WINDOW`]
-/// non-comment lines below `anchor_line` (a 0-based index into `lines`).
-fn code_in_window(lines: &[&str], mask: &[bool], anchor_line: usize) -> bool {
+/// One segment's verdict for the forward code probe.
+///
+/// `Undecided` is not "no code here" — it is "keep walking", which is what
+/// lets the probe cross the blank chain lines a multi-line constructor wraps
+/// over.
+enum Probe {
+    /// A `.with_code(` reachable from this site.
+    Attached,
+    /// A constructor beyond a statement end. Anything past it belongs to that
+    /// constructor, not to this site.
+    Bounded,
+    /// Neither; the caller continues, spending one line of window budget.
+    Undecided,
+}
+
+/// Probe `line` from byte offset `from` rightwards for this site's code
+/// attachment, stopping at the bound.
+///
+/// **The bound is the ordered pair `; … <anchor>`, and only that pair.** A
+/// statement terminator alone never bounds the probe, an anchor alone never
+/// bounds it; a constructor SEPARATED from this site by a terminator does.
+/// Both halves of that are load-bearing on landed code:
+///
+/// - Terminating at a bare `;` would red the binding shape
+///   (`crates/reify-eval/src/engine_compute.rs:165-170`,
+///   `crates/reify-compiler/src/expr.rs:3314`), where the constructor is bound
+///   to a variable and coded in a LATER statement — the `;` falls between the
+///   site and its own code. The corpus carries three such sites, and
+///   expr.rs:3314 is the very site appendix A names as the measured 14 -> 15
+///   window step.
+/// - Terminating at a bare anchor — [`escape_in_window`]'s bound — would red
+///   the `if {…} else {…}.with_code(code)` severity dispatch
+///   (`crates/reify-eval/src/compute_targets/fea_diagnostics.rs:48-53`), where
+///   the first constructor must reach PAST the second to their shared trailing
+///   code.
+///
+/// The pair is exactly right because a `.with_code(` belonging to a DIFFERENT
+/// constructor is necessarily preceded by that constructor's own anchor, while
+/// a code attached to THIS site through a variable in a later statement has no
+/// intervening anchor.
+///
+/// `anchors_after` are the anchor offsets eligible to bound this probe — every
+/// anchor on the line when walking the window, only the anchors to the RIGHT
+/// of the site when probing its own line. `past_terminator` carries "a
+/// terminator has already been crossed" across segments, and is updated in
+/// place: it is what lets the pair span a line break.
+///
+/// Residual imprecision is the module header's business; the two entries this
+/// bound owns are the `,`-separated match-arm tail (not a terminator, so
+/// absorption survives there) and the interleaved binding it can false-RED.
+fn probe_segment(
+    line: &str,
+    anchors_after: &[usize],
+    from: usize,
+    past_terminator: &mut bool,
+) -> Probe {
+    // Read the flag BEFORE the closure: `bound` only needs the value as it
+    // stood on ENTRY, and copying it out keeps the in-place update below from
+    // colliding with the borrow.
+    let past = *past_terminator;
+    let semi = line[from..].find(';').map(|rel| from + rel);
+    let bound = anchors_after
+        .iter()
+        .copied()
+        .find(|&at| at >= from && (past || semi.is_some_and(|semi| at > semi)));
+    let code = line[from..].find(CODE_PROBE).map(|rel| from + rel);
+    *past_terminator |= semi.is_some();
+
+    match (code, bound) {
+        (Some(code), Some(bound)) if code < bound => Probe::Attached,
+        (Some(_), None) => Probe::Attached,
+        (_, Some(_)) => Probe::Bounded,
+        (None, None) => Probe::Undecided,
+    }
+}
+
+/// `true` when a `.with_code(` reachable from `anchor_line` (a 0-based index
+/// into `lines`) appears within the [`PDIAG_CODE_WINDOW`] non-comment lines
+/// below it.
+///
+/// The walk is [`probe_segment`]'s, one segment per non-comment line, so the
+/// window is bounded by the ordered `; … <anchor>` pair as well as by budget —
+/// see that function for why the pair and not either half alone.
+/// `past_terminator` seeds the walk with whether the site's own tail already
+/// carried a terminator, which is what lets the pair straddle the line break
+/// immediately below the anchor.
+///
+/// Comment lines are skipped entirely: invisible to the probe, and costing no
+/// budget, exactly as they cost none for [`escape_in_window`].
+fn code_in_window(
+    lines: &[&str],
+    mask: &[bool],
+    anchors: &[Vec<usize>],
+    anchor_line: usize,
+    past_terminator: bool,
+) -> bool {
+    let mut past = past_terminator;
     let mut budget = PDIAG_CODE_WINDOW;
-    for (line, is_comment) in lines.iter().zip(mask).skip(anchor_line + 1) {
-        if *is_comment {
+    for j in (anchor_line + 1)..lines.len() {
+        if mask[j] {
             continue;
         }
-        if line.contains(CODE_PROBE) {
-            return true;
+        match probe_segment(lines[j], &anchors[j], 0, &mut past) {
+            Probe::Attached => return true,
+            Probe::Bounded => return false,
+            Probe::Undecided => {}
         }
         budget -= 1;
         if budget == 0 {
@@ -2113,18 +2212,18 @@ mod tests {
         );
 
         // (iv) Termination is coded-agnostic: a CODED constructor bounds the
-        //      escape exactly as an uncoded one does. `a` reads back as coded
-        //      here only through the CODE probe's own documented permissive
-        //      reach (module header, "an unrelated `.with_code(` inside a
-        //      site's window can mark it coded"), which is a separate and
-        //      lower-severity gap. What this case pins is that `a` is still a
-        //      SITE at all — the escape did not delete it.
+        //      escape exactly as an uncoded one does. What this case pins is
+        //      that `a` is still a SITE at all — the escape bounded at `b` did
+        //      not delete it. `a` reads code-less because `b`'s code sits past
+        //      both a statement end and `b`'s own anchor, which is the code
+        //      probe's bound ([`probe_segment`]); the two probes agree here,
+        //      by different rules.
         let src = file(&[
             "    let a = Diagnostic::error(m);",
             "    let b = Diagnostic::warning(m).with_code(c);",
             "    // pdiag:allow — reviewed, applies to the constructor above",
         ]);
-        assert_eq!(sites(&src), vec![(1, true)]);
+        assert_eq!(sites(&src), vec![(1, false)]);
     }
 
     #[test]
