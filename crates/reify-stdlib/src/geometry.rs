@@ -1680,6 +1680,40 @@ fn dimension_label(dim: DimensionVector) -> String {
         .unwrap_or_else(|| dim.to_string())
 }
 
+/// Classify a SCALAR value at a position that must carry LENGTH.
+///
+/// The one predicate that owns "is this a LENGTH rejection" in this module.
+/// Returns `Some(rejection)` only when `value` is well-formed enough to BE a
+/// units rejection — numeric and FINITE — and its dimension is not LENGTH.
+/// `None` otherwise, and each silent cause is silent for its own reason, none of
+/// them a units fault:
+/// - `Value::Undef` and any other non-numeric value: a type failure, and an
+///   unresolved cell is not a wrong one (decision D10);
+/// - a NON-FINITE numeric value: a finiteness failure, which the callers' gates
+///   reject on their own grounds;
+/// - an accepted LENGTH value: nothing to say.
+///
+/// The rejection is obtained from [`accept_arg`] rather than rendered here, so
+/// Contract C1 invariant (i) holds literally: the wording is produced only by
+/// `ArgRejection::message`, and there is no hand-rolled rejection string in this
+/// crate to drift. `length_rejection_wording_is_the_shared_arg_rejection_template`
+/// is the standing guard.
+fn length_scalar_rejection(value: &Value) -> Option<ArgRejection> {
+    if !value.as_f64().is_some_and(f64::is_finite) {
+        return None;
+    }
+    if value.dimension() == DimensionVector::LENGTH {
+        return None;
+    }
+    match accept_arg(value, &length_spec()) {
+        Acceptance::Rejected(rejection) => Some(rejection),
+        // Unreachable by construction: the guards above have already accepted the
+        // value as numeric and finite (so not `Undefined`) and excluded LENGTH (so
+        // not `Accepted`).
+        Acceptance::Accepted(_) | Acceptance::Undefined => None,
+    }
+}
+
 /// Classify a 3-component group that must share ONE LENGTH dimension.
 ///
 /// Returns `Some(rejection)` when the group is well-formed enough to be a UNITS
@@ -1688,27 +1722,20 @@ fn dimension_label(dim: DimensionVector) -> String {
 /// non-finite component, MIXED dimensions (a `decompose_xyz3` CONSISTENCY
 /// failure, not a LENGTH one), or an accepted LENGTH group.
 ///
-/// The rejection is obtained from [`accept_arg`] rather than rendered here, so
-/// Contract C1 invariant (i) holds literally: the wording is produced only by
-/// `ArgRejection::message`, and there is no hand-rolled rejection string in this
-/// crate to drift. `length_rejection_wording_is_the_shared_arg_rejection_template`
-/// is the standing guard.
+/// The LENGTH verdict and its wording both come from [`length_scalar_rejection`],
+/// so ONE predicate owns them rather than two near-identical helpers drifting
+/// apart. Delegating is behaviour-preserving: [`decompose_xyz3`] has already
+/// established that all three components are numeric, finite and share one
+/// dimension, so `items[0].dimension()` IS that shared dimension and the
+/// sibling's own LENGTH guard performs exactly the test this helper used to
+/// spell itself.
 ///
-/// Only the first component is offered to `accept_arg` because `decompose_xyz3`
+/// Only the first component is offered to the sibling because `decompose_xyz3`
 /// has ALREADY required all three to share one dimension, so they reject
 /// identically — which is also why the one message names the whole triple.
 fn length_group_rejection(items: &[Value]) -> Option<ArgRejection> {
-    let ([_, _, _], dim) = decompose_xyz3(items)?;
-    if dim == DimensionVector::LENGTH {
-        return None;
-    }
-    match accept_arg(&items[0], &length_spec()) {
-        Acceptance::Rejected(rejection) => Some(rejection),
-        // Unreachable by construction: `decompose_xyz3` has already accepted the
-        // component as numeric and finite (so not `Undefined`) and the guard above
-        // has already excluded LENGTH (so not `Accepted`).
-        Acceptance::Accepted(_) | Acceptance::Undefined => None,
-    }
+    let ([_, _, _], _) = decompose_xyz3(items)?;
+    length_scalar_rejection(&items[0])
 }
 
 /// Why an `affine_map(linear, translation)` call cannot be built — the fault
@@ -1826,6 +1853,16 @@ fn classify_affine_map_args(args: &[Value]) -> Result<([[f64; 3]; 3], [f64; 3]),
 ///   eval arm share, rather than restated in each. The same ordering claim as
 ///   `transform_exp`'s above, upheld the same way: by the gate's own order, not by
 ///   a convention restated at each reader.
+/// - **`plane_xy`** / **`plane_xz`** / **`plane_yz`** (exactly 1 arg) — an OFFSET
+///   that is not a Length, and **`axis_x`** / **`axis_y`** / **`axis_z`** (exactly
+///   1 arg) — an ORIGIN that is not a `Point3<Length>` (task 5746, units-length ε
+///   / R11). These are the PRODUCER end of the same rule task δ gates at the
+///   consumer end; the five sibling construction-datum constructors stay
+///   dimension-polymorphic and are NOT served here (see [`make_plane`]'s scope
+///   statement). The axis arm names the whole triple `ox/oy/oz` in ONE message,
+///   for `affine_translate`'s reason: its decoder has already required the three
+///   components to share one dimension, so all three positions offend identically
+///   and naming them together is complete information.
 /// - **`bbox`** (exactly 2 args) — a corner that is not `Point3<Length>`
 ///   (task 6081: a BoundingBox is spatial by construction), including one whose
 ///   components carry MIXED dimensions. Every SHAPE failure stays silent — a
@@ -1846,7 +1883,11 @@ fn classify_affine_map_args(args: &[Value]) -> Result<([[f64; 3]; 3], [f64; 3]),
 /// The units-length ζ arms are bound the same way, one level down: they route through
 /// [`length_group_rejection`], which applies `DimensionVector::LENGTH` to the output of
 /// [`decompose_xyz3`] — the SAME helper the `affine_translate` / `affine_map` eval arms
-/// decode through, and the same dimension. (Same VALUE as `TWIST_LINEAR_DIM`, read
+/// decode through, and the same dimension. ε's `axis_*` arm reads that same helper, and
+/// so reaches its verdict through the very decoder [`make_axis`]'s gate reads; its
+/// `plane_*` arm reads [`length_scalar_rejection`], the sibling predicate that owns the
+/// LENGTH comparison `length_group_rejection` now delegates to and that [`make_plane`]'s
+/// gate applies to the same argument. (Same VALUE as `TWIST_LINEAR_DIM`, read
 /// separately on purpose: that const is scoped to the log↔exp seam by its own doc, and
 /// an affine translation is not a twist.)
 ///
@@ -1864,8 +1905,9 @@ fn classify_affine_map_args(args: &[Value]) -> Result<([[f64; 3]; 3], [f64; 3]),
 ///   factor is discarded and evaluation proceeds.
 /// - EVERY dimension arm is `Severity::Error` — `transform_log` and BOTH halves of
 ///   `transform_exp` (RULING #6126 for `linear`, RULING #6080 for `angular`), `bbox`
-///   (task 6081), and `affine_translate` / `affine_map` (task 5747, units-length ζ,
-///   PRD `docs/prds/v0_6/units-length-gate-completion.md` decision D11). ONE reason
+///   (task 6081), `affine_translate` / `affine_map` (task 5747, units-length ζ,
+///   PRD `docs/prds/v0_6/units-length-gate-completion.md` decision D11), and ε's
+///   two construction-datum families (task 5746, same PRD, R11 / D4). ONE reason
 ///   serves all six rather than one argued per family: a wrong dimension
 ///   is a design-correctness fault and an outright CONSTRUCTION failure — no twist,
 ///   no BoundingBox, no AffineMap is produced at all — not a drop-and-continue.
@@ -1877,8 +1919,8 @@ fn classify_affine_map_args(args: &[Value]) -> Result<([[f64; 3]; 3], [f64; 3]),
 ///   two arms joined it there rather than opening a third way.
 ///
 /// `DiagnosticCode` is NOT uniform across the arms, but every DIMENSION arm
-/// agrees. All SIX — `transform_log`, BOTH halves of `transform_exp`, `bbox` and
-/// ζ's `affine_translate` / `affine_map` — carry the
+/// agrees. All EIGHT — `transform_log`, BOTH halves of `transform_exp`, `bbox`,
+/// ζ's `affine_translate` / `affine_map` and ε's `plane_*` / `axis_*` — carry the
 /// PRE-EXISTING [`reify_core::DiagnosticCode::DimensionedArgRejected`], which
 /// `reify_eval::geometry_ops` already attaches to exactly this fault class (a
 /// `Severity::Error` runtime dimension rejection of a positional argument). The
@@ -1964,6 +2006,51 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
             ),
             Ok(_) | Err(AffineMapFault::Shape | AffineMapFault::LinearNotDimensionless) => None,
         },
+        // ε's construction-datum arms. `offset` is the argument the author
+        // actually wrote and the vocabulary `make_plane` itself uses
+        // (`offset_index` / `offset_val` / `offset_f`), not the synthesized
+        // origin coordinate the consumer-side gate names.
+        //
+        // `length_scalar_rejection` returning None is this arm's
+        // no-mis-attribution guard: a non-numeric argument is a type failure and
+        // a non-finite one a finiteness failure, both rejected by `make_plane` on
+        // their own grounds, and an unresolved cell is not a wrong one (D10).
+        "plane_xy" | "plane_xz" | "plane_yz" => {
+            if args.len() != 1 {
+                return None;
+            }
+            let rejection = length_scalar_rejection(&args[0])?;
+            Some(
+                reify_core::Diagnostic::error(rejection.message(name, "offset"))
+                    .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
+            )
+        }
+        // The axis arm names the whole origin triple `ox/oy/oz` in ONE message
+        // rather than one position per rebuild, for `affine_translate`'s reason
+        // stated above: `decompose_xyz3` — which `make_axis` reads its verdict
+        // through too — has ALREADY required all three components to share one
+        // dimension, so when this gate fires all three positions offend
+        // identically and naming them together is COMPLETE information, not a
+        // shortcut (β's all-failures-at-once amendment, esc-5743-4, expressed
+        // inside a hook whose signature is `Option<Diagnostic>`). `ox`/`oy`/`oz`
+        // are also byte-identical to task δ's consumer-side naming for the same
+        // coordinates.
+        //
+        // A non-`Point` argument is a SHAPE failure and stays silent here, as does
+        // every cause `length_group_rejection` folds into None.
+        "axis_x" | "axis_y" | "axis_z" => {
+            if args.len() != 1 {
+                return None;
+            }
+            let Value::Point(comps) = &args[0] else {
+                return None;
+            };
+            let rejection = length_group_rejection(comps)?;
+            Some(
+                reify_core::Diagnostic::error(rejection.message(name, "ox/oy/oz"))
+                    .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
+            )
+        }
         "transform_log" => {
             if args.len() != 1 {
                 return None;
