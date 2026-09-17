@@ -1013,13 +1013,20 @@ pub fn verify_static_scope(scope: &RelateScope, realized: &RealizedDatums) -> Re
     solution
 }
 
-/// `"2 relations are"` / `"1 relation is"` — the shared subject phrase of both
-/// aggregates, so the two cannot drift apart in grammatical agreement.
+/// `"1 relation"` / `"{n} relations"` — the counted NOUN PHRASE both aggregate
+/// headers open with. What it guarantees is number agreement with the count, the
+/// one concern the two sites genuinely share.
+///
+/// The VERB belongs to each call site, which is why none appears here. Folding a
+/// copula in is what produced "relate: 1 relation is could not be statically
+/// verified": one helper cannot serve both "could not be statically verified"
+/// and "not satisfied by …". Splitting into two per-site helpers is the wrong
+/// repair — the counted noun phrase stays SPOT.
 fn plural_relations(n: usize) -> String {
     if n == 1 {
-        "1 relation is".to_string()
+        "1 relation".to_string()
     } else {
-        format!("{n} relations are")
+        format!("{n} relations")
     }
 }
 

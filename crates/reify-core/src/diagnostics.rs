@@ -3279,7 +3279,7 @@ pub enum DiagnosticCode {
     /// verification arm of `solve_scopes`, DIC α).
     ///
     /// Canonical message form:
-    /// `"relate: 2 relations are geometrically violated at the subs' fixed \
+    /// `"relate: 2 relations not satisfied by the subs' fixed \
     /// placements: concentric(bush.bore_axis, plate.boss_axis) off by 30 mm; \
     /// flush(bush.seat_plane, plate.top_plane) off by 5 mm"` — ONE aggregated
     /// Error per relate block naming the full violated set, never one per
