@@ -282,12 +282,86 @@ held-after-exit rates are **not repeated here** — same reason as the soak
 section above: they live in the `LANE-LOCK RELEASE CONTRACT` block at the flock
 acquire in `scripts/seed-warm-lane.sh`.
 
+## Cited test-path resolution (`cited-test-path-baseline.manifest`)
+
+`test_cited_test_paths_resolve.sh` guards a single contract: **prose that
+names a `crates/<crate>/tests/**/*.rs` file must name a path that still
+resolves.**  The `harness_<subsystem>/` consolidation moved test units
+wholesale, and every doc comment, `.ri` prose block, corpus fixture and README
+citing a moved unit went stale at once — commit `276d32f025` was a 123-file
+manual cleanup with no gate behind it, so the next consolidation would reopen
+the same hole.  This gate closes the root cause.
+
+Derivation lives **only** in `cited-test-path-lib.sh`, which both the gate and
+the baseline generator source.  The scan is **extension-agnostic by
+construction** — there is no allowlist, just `git grep` over every tracked
+file — because the stale citations measured when the gate was written spanned
+8 extensions across `crates/`, `examples/`, `docs/`, `tests/`,
+`tree-sitter-reify/`, `gui/` and `.claude/`.
+
+### What is flagged
+
+A cited path is reported when it is **not** a tracked file **and** its
+basename resolves to some other tracked path under the **same crate's** tests
+tree — i.e. the citation is *repointable*.  The record carries the suggested
+target; when a basename resolves to more than one candidate the record is
+marked `ambiguous:<N>` and lists them all, rather than guessing one.
+
+**Scope limit, stated rather than left to inference:** a citation whose
+basename resolves to *nothing* is **not** reported.  That covers a genuinely
+DELETED test and synthetic fixture paths such as `crates/foo/tests/bar.rs`.
+Repointing those is impossible and a guessed target would be noise, so they
+are out of charter.  This gate does **not** tell you every citation is live —
+only that no citation is stale *in the repointable sense*.
+
+### Fingerprint grammar
+
+Baseline rows are `<containing-file> :: <cited-path>`.  Line numbers **and**
+the suggested target are deliberately erased, so moving a citation within its
+file — or a later change to where its basename resolves — does not spuriously
+red the ratchet.  Same shape as `crates/reify-audit/ptodo-baseline.txt`.
+
+### Regenerating the baseline
+
+```bash
+bash tests/infra/test_cited_test_paths_resolve.sh --emit-baseline \
+    > tests/infra/cited-test-path-baseline.manifest
+```
+
+`--list` prints the live scan records (file, cited path, verdict, target)
+human-readably without touching the manifest.
+
+### The ratchet is ONE-DIRECTIONAL
+
+The gate asserts `live ⊆ baseline` and nothing more.  Rows may be removed
+freely as citations are repointed, and **removing a row never reds the gate** —
+the manifest is a *shrinking grandfather list*, not a lockstep mirror of the
+tree.  The converse (`comm -13`) is deliberately absent for the reason
+`test_reify_audit_ptodo.sh` records for ptodo: asserting it turns every
+citation fix into a red build, punishing exactly the cleanup the gate exists
+to encourage.  The accepted cost is that a grandfathered row may sit in the
+baseline indefinitely, with no forcing function to drain it.
+
+### Two independent signals
+
+The gate reports a **ratchet** and a **vacuity floor** as two separate
+asserts, never collapsed into one.  `comm -23` can only ever say "no NEW
+fingerprints", and the empty set is a subset of everything — so a regex typo
+or a wrong repo root would leave the ratchet permanently and invisibly green.
+The floor observes the **corpus** (index units and citation occurrences), never
+the findings and never the baseline, and fails if the scan collapses toward
+zero.  Its bounds are conservative lower bounds on *the instrument working*,
+not targets for the tree.
+
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `run_all.sh` | Discovery runner — runs all `test_*.sh` files |
 | `test_helpers.sh` | Shared library: `assert()` and `test_summary()` |
+| `cited-test-path-lib.sh` | Shared library: cited-test-path scan, resolve and fingerprint derivation |
+| `cited-test-path-baseline.manifest` | Grandfather baseline for the cited-test-path ratchet |
+| `test_cited_test_paths_resolve.sh` | Regression guard: prose citing a `crates/*/tests/**.rs` path that no longer resolves |
 | `test_flock_detached_fork_guard.sh` | Regression guard: a locally-opened flock FD held across a detached `&` fork with no `flock -u` release |
 | `test_no_new_wallclock_upper_bounds.sh` | Regression guard: static-grep for new wall-clock upper-bound asserts |
 | `test_npm_ci_hardening.sh` | Tests npm ci guard conventions in dark-factory-orchestrator.yaml |

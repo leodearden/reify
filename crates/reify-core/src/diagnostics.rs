@@ -1751,6 +1751,135 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_UNRESOLVED_NAME`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     UnresolvedName,
+    /// Origin: `crates/reify-compiler/src/expr.rs` — the **terminal first-arg
+    /// fallback** of the `NoUserFunctions` arm of the `FunctionCall` ladder.
+    ///
+    /// Emitted as `Severity::Warning` when a call's CALLEE is neither
+    ///
+    /// 1. a builtin name in the closed-world union computed by
+    ///    `reify_compiler::is_known_builtin` (every classification family, plus
+    ///    the `FIRST_ARG_TYPED_NAMES` allowlist and the
+    ///    `EVAL_DEFERRED_BUILTIN_NAMES` manifest), NOR
+    /// 2. a name the enclosing module DECLARES — its `fn`s (local + prelude)
+    ///    and its structures, whose constructors share call syntax.
+    ///
+    /// The warning is additionally withheld when the callee names a local of
+    /// `Type::Function` — a function-typed value applied by bare name, as in
+    /// `fn apply(f: (Real) -> Real) -> Real = f(1.0)`.
+    ///
+    /// Condition 2 is not redundant, and reading it as such was the original
+    /// defect: a **fn body** compiles against a function table that is still
+    /// being built in source order, so a call to a later-declared sibling
+    /// arrives here with a perfectly real name. The full account lives beside
+    /// the field that carries the vocabulary,
+    /// `reify_compiler::scope::CompilationScope::declared_callable_names`, and
+    /// is deliberately not restated here.
+    ///
+    /// Before task #5371 such a call compiled with ZERO diagnostics and
+    /// silently adopted its first argument's type — `line(point3(1mm,2mm,3mm),
+    /// …)` type-checked clean as `Scalar<LENGTH>`.
+    ///
+    /// Canonical message form:
+    /// `"unresolved function: <name>"`
+    ///
+    /// # How this differs from [`DiagnosticCode::UnresolvedName`]
+    ///
+    /// They are neighbours, not synonyms, and consumers matching on the code
+    /// depend on the split:
+    ///
+    /// | | `UnresolvedName` | `UnresolvedFunction` |
+    /// |---|---|---|
+    /// | mnemonic | `E_UNRESOLVED_NAME` | `W_UNRESOLVED_FUNCTION` |
+    /// | severity | Error | Warning |
+    /// | what is unresolved | an unbound IDENTIFIER in expression context | the CALLEE of a `FunctionCall`, declared nowhere in the module |
+    /// | origin | `expr.rs:670-681`, `annotations.rs:321` | the terminal fallback in `expr.rs` |
+    ///
+    /// It is also distinct from [`DiagnosticCode::FnTypeArgUnresolved`], which
+    /// concerns an unresolved TYPE ARGUMENT of a call that *did* resolve.
+    ///
+    /// # Why a Warning, and what changes it
+    ///
+    /// The mnemonic is `W_UNRESOLVED_FUNCTION` per the crate's severity
+    /// convention (`W_*` → Warning, `E_*` → Error). Warn-mode is deliberate and
+    /// interim: #5371 changes NO typing, so the existing corpus cannot break on
+    /// it, and the corpus sweep must be green before the severity can move.
+    /// **#5997 flips this to `E_UNRESOLVED_FUNCTION`/`Severity::Error` behind a
+    /// break-glass env knob**; #6014 (registry ω) then deletes the fallback
+    /// itself, at which point this code becomes the sole outcome of a
+    /// lookup miss rather than a warning layered over a guess.
+    UnresolvedFunction,
+    /// Origin: `crates/reify-compiler/src/expr.rs` — the same **terminal
+    /// first-arg fallback** as [`DiagnosticCode::UnresolvedFunction`], one
+    /// check earlier.
+    ///
+    /// Emitted as `Severity::Warning` when the callee IS a known builtin but
+    /// an **arg-aware** ladder arm declined the call because its ARGUMENT
+    /// SHAPE was not the family's. Three arms are arg-aware:
+    ///
+    /// | family | resolver | declines when |
+    /// |---|---|---|
+    /// | list-helper | `list_helpers::infer_list_helper_return_type` | arg0 is not a `List`, or the lambda's return type is wrong |
+    /// | field-op | `units::field_op_result_type` | arg0 is not a `Field` (or not a `Function`, for `fn_field`) |
+    /// | affine-algebra | `units::affine_map_algebra_result_type` | arg0 is not an `AffineMap` / `Point` |
+    ///
+    /// Each returns `None` for anti-cascade reasons, and at the call site that
+    /// `None` is indistinguishable from "not my name" — so the call slid to
+    /// the fallback and was typed from arg0 with **no diagnostic at all**.
+    /// Measured pre-#5371: `single(42)` and `sample(42, 7)` both compiled
+    /// clean as `Int`.
+    ///
+    /// Canonical message form:
+    /// `"builtin '<name>' does not recognise this argument shape"`, with the
+    /// expected shape carried in the label. The mnemonic is
+    /// `W_BUILTIN_ARG_SHAPE`.
+    ///
+    /// # Mutually exclusive with `UnresolvedFunction`
+    ///
+    /// The two are complements, never a hierarchy: "I have never heard of this
+    /// name" and "I know this name and you called it wrong" cannot both hold
+    /// of one call. All three families above are inside `is_known_builtin`'s
+    /// closed world, so a call carrying this code is by construction not
+    /// unresolved. It also suppresses the legacy bare zero-arg warning, on the
+    /// same one-defect-one-line reasoning.
+    ///
+    /// # The fallback has THREE outcomes, and the third is silence
+    ///
+    /// A callee the enclosing module declares but that this body cannot yet
+    /// resolve (a forward-referenced sibling `fn`, a constructor inside any
+    /// trait fn body — static or assoc, or a function-typed local applied by
+    /// bare name) emits neither this code nor `UnresolvedFunction` nor the
+    /// legacy zero-arg warning, and is still typed from arg0. Pinned by
+    /// `forward_referenced_sibling_emits_neither_warning` and
+    /// `forward_reference_typing_is_byte_identical`.
+    ///
+    /// That silence is narrower than the pre-#5371 open-world silence in the
+    /// general case — it is granted only to names the module demonstrably
+    /// declares — but it is **strictly WIDER for one case**, and #5997 must not
+    /// discover that by surprise: a ZERO-ARG call to such a name used to earn
+    /// the legacy "cannot infer return type of zero-arg function" warning, and
+    /// now earns nothing. `known` is false (it is not a builtin) so the legacy
+    /// warning is suppressed, and the name is declared so `UnresolvedFunction`
+    /// is suppressed too. The result is a silent `dimensionless_scalar()`
+    /// default for a call the compiler could not resolve.
+    ///
+    /// That is a deliberate ruling, not an oversight — the alternative is to
+    /// tell the user their forward-referenced sibling has an uninferrable
+    /// return type, which is a mechanical consequence of a compiler-internal
+    /// ordering rather than anything they can act on. It is called out here
+    /// because it is the one place #5371 removed a signal outright, and is
+    /// recorded as an explicit precondition on #5997 in
+    /// `docs/notes/unresolved-function-warn-sweep-2026-08-29.md`.
+    ///
+    /// # Interim, and deliberately non-poisoning
+    ///
+    /// This code changes NO typing — the fallback still adopts arg0. That is
+    /// what makes it corpus-safe. **#6002 introduces a sibling
+    /// `E_BuiltinArgShape` that POISONS the cell to `Type::Error`**; this code
+    /// is not that, and must not be conflated with it by a consumer matching
+    /// on either. #6014 (registry ω) supersedes both by deleting the fallback
+    /// outright, at which point an unrecognised arg shape becomes an ordinary
+    /// signature mismatch against the builtin's registry row.
+    BuiltinArgShapeUnrecognized,
     /// Origin: `crates/reify-eval/src/shell_extract_compute.rs` (γ trampoline
     /// mapping of [`reify_shell_extract::SegmentationError::InvalidThreshold`]).
     ///
@@ -4065,18 +4194,34 @@ pub enum DiagnosticCode {
     /// round-trips automatically (follows the `TraitRefinementChainTooDeep`
     /// too-deep precedent).
     ExpressionNestingTooDeep,
-    /// Origin: `crates/reify-eval/src/geometry_ops.rs` — the eval-layer
-    /// `arg_acceptance`-backed chokepoints, i.e. `eval_named_arg_length`
-    /// (every LENGTH-semantic geometry arg: primitive/profile dimensions,
-    /// pattern spacing, mirror-plane and circular-pattern axis origins), plus
-    /// the two quiet-degrade readers `resolve_spec_arg` and
-    /// `resolve_density_arg`.
+    /// Origin: every `arg_acceptance`-backed chokepoint, on BOTH sides of the
+    /// eval/stdlib split. The original (task 5743) is
+    /// `crates/reify-eval/src/geometry_ops.rs` — `eval_named_arg_length` (every
+    /// LENGTH-semantic geometry arg: primitive/profile dimensions, pattern
+    /// spacing, mirror-plane and circular-pattern axis origins), plus the two
+    /// quiet-degrade readers `resolve_spec_arg` and `resolve_density_arg`.
+    ///
+    /// Since task 5791 the origin ALSO covers the reify-stdlib READER and FIELD
+    /// surface: `reify_ir::arg_acceptance::accept_field` (the struct-field
+    /// sibling of `accept_arg`), the reify-stdlib `diagnose` classifiers (the 8
+    /// `*_diagnose` re-exports in `crates/reify-stdlib/src/lib.rs`), and the
+    /// `ComputeOutcome::Failed { diagnostics, .. }` transport that carries them
+    /// out. That widening is not speculative: the `bbox` arm at
+    /// `crates/reify-stdlib/src/geometry.rs:1670-1681` (task 6081) has carried
+    /// this code since 2026-08-27, which is the already-shipped counter-example
+    /// proving the old eval-only line was too narrow.
+    ///
+    /// One code for one rejection REASON, across both surfaces — BINDING ruling
+    /// A7 (Leo, 2026-08-30, esc-5791-3) and PRD
+    /// `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 1's
+    /// RECONCILIATION block (landed b3ba3228f5). `ArgDimensionMismatch` is
+    /// deliberately NOT minted.
     ///
     /// Canonical message form:
     /// `"{builtin}: {arg_name} argument expects {expected}, got {got}; {hint}"`
     ///
     /// The wording is owned SOLELY by
-    /// `crates/reify-eval/src/arg_acceptance::ArgRejection::message` — producers
+    /// `crates/reify-ir/src/arg_acceptance.rs`'s `ArgRejection::message` — producers
     /// attach this code, they never re-phrase the text. That single-owner rule is
     /// what lets the ANGLE (PRD 3) and reader (PRD 5) follow-ups inherit
     /// byte-identical diagnostics, and it is why the migration hint (e.g.
@@ -4273,6 +4418,47 @@ pub enum DiagnosticCode {
     /// the workspace, so adding one variant is purely additive and round-trips
     /// through the feature-gated serde derives automatically.
     NoRegisteredComputeTrampoline,
+    /// Origin: the FEA load-kind read surface,
+    /// `crates/reify-eval/src/compute_targets/elastic_static.rs::extract_loads`
+    /// (:4111-4152), whose `PointLoad` / `PressureLoad` / `Gravity`
+    /// if/else-if chain has NO `else` arm and therefore silently DISCARDS every
+    /// other `type_name`. The two kinds this code exists for are stdlib-declared
+    /// but solver-unreachable: `TractionLoad`
+    /// (`crates/reify-compiler/stdlib/fea_multi_case.ri:447`) and `BodyForce`
+    /// (:477). An author who writes either one today gets a silently
+    /// zero-contribution solve rather than a fault.
+    ///
+    /// Emitted at `Severity::Error`. Per PRD
+    /// `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 6, BOTH kinds
+    /// self-identify in their own `.ri` comments as PLACEHOLDERS needing a
+    /// type-surface extension this PRD does not own, so INV-SF-3 forbids the
+    /// silent no-op and they get an explicit NAMED REJECTION rather than a
+    /// wire-up. CONSTRUCTING a `TractionLoad`/`BodyForce` value stays legal —
+    /// only passing one to a solver errors.
+    ///
+    /// Canonical message form:
+    /// `"{solver}: unsupported FEA load kind '{type_name}'"`
+    ///
+    /// PRD-prose mnemonic: `E_FeaLoadKindUnsupported` (severity convention:
+    /// `E_*` → Error).
+    ///
+    /// The EMITTING call site is leaf γ3's, NOT task 5791's — α mints the
+    /// vocabulary only. Note that the existing guard
+    /// `extract_loads_unknown_type_name_is_silently_skipped`
+    /// (`elastic_static.rs:8493-8524`) asserts ZERO NUMERIC CONTRIBUTION and
+    /// NOT the absence of a diagnostic, so γ3 can start emitting without
+    /// retargeting it.
+    ///
+    /// Minting rationale: `DiagnosticCode` is `#[non_exhaustive]` with no
+    /// `impl` block anywhere in the workspace (no `as_str`/`Display`/`FromStr`/
+    /// exhaustive match-on-self), no exhaustiveness test, no docs registry, no
+    /// `reify-audit` check and no mirrored GUI enum
+    /// (`crates/reify-lsp/src/convert.rs:435-459` is a deliberate 4-variant
+    /// representative spread, not a census) — so this is a one-variant addition
+    /// that is non-breaking for downstream consumers and round-trips through
+    /// the feature-gated serde derives automatically (same measured argument as
+    /// `DimensionedArgRejected` and `EvalCachedGuardedGroupsFallback` above).
+    FeaLoadKindUnsupported,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -4769,8 +4955,9 @@ mod tests {
     //
     // This is the shared RUNTIME code for "a builtin argument that must carry a
     // physical dimension was given a bare / wrongly-dimensioned value", emitted
-    // from `crates/reify-eval/src/geometry_ops.rs`'s `arg_acceptance`-backed
-    // chokepoints.
+    // from the `crates/reify-ir/src/arg_acceptance.rs`-backed chokepoints in
+    // `crates/reify-eval/src/geometry_ops.rs` and in reify-stdlib's `diagnose`
+    // classifiers.
     //
     // As with `DimensionMismatch` above, Copy/Clone/PartialEq/Eq/Hash/Debug are
     // already covered by the variant-agnostic `diagnostic_code_derives` test, so
@@ -4792,6 +4979,54 @@ mod tests {
     // That ruling lives in the variant's own doc comment and in
     // `docs/prds/v0_6/units-length-gate-completion.md`; it is a naming decision,
     // not a runtime behaviour a test can pin.
+
+    // --- FeaLoadKindUnsupported tests (dimension-checked-readers α, task 5791) ---
+    //
+    // The ONE variant this task mints. Per BINDING ruling A7 (Leo, 2026-08-30,
+    // esc-5791-3) `ArgDimensionMismatch` is NOT minted — the dimension
+    // rejection reason reuses the shipped `DimensionedArgRejected` — so there
+    // is deliberately no test for it here.
+    //
+    // No exhaustiveness test is written over `DiagnosticCode`. MEASURED: the
+    // enum is `#[non_exhaustive]`, there is no `impl DiagnosticCode` anywhere
+    // in the workspace, no `as_str`/`Display`/`FromStr`, no exhaustiveness
+    // test, no docs registry and no mirrored GUI enum
+    // (`crates/reify-lsp/src/convert.rs:435-459` is a deliberate 4-variant
+    // representative spread, not a census). A variant addition therefore has
+    // exactly zero other update obligations.
+
+    /// Under `feature = "serde"`, `DiagnosticCode::FeaLoadKindUnsupported`
+    /// serializes as `"FeaLoadKindUnsupported"` (PascalCase, from
+    /// `rename_all = "PascalCase"`), and deserializes back to the same variant.
+    /// This is the wire form downstream tooling reads as an opaque string, so
+    /// it is a compatibility surface.
+    ///
+    /// RED until step-12 adds the variant.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn fea_load_kind_unsupported_serializes_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::FeaLoadKindUnsupported).unwrap();
+        assert_eq!(s, "\"FeaLoadKindUnsupported\"");
+
+        let back: DiagnosticCode = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, DiagnosticCode::FeaLoadKindUnsupported);
+    }
+
+    /// The variant attaches through the ordinary builder and reads back, at
+    /// `Severity::Error` — PRD §6 decision 6: the stdlib-declared but
+    /// solver-unreachable FEA load kinds get an explicit named REJECTION rather
+    /// than the silent no-op INV-SF-3 forbids.
+    ///
+    /// RED until step-12 adds the variant.
+    #[test]
+    fn fea_load_kind_unsupported_attaches_to_a_diagnostic() {
+        use super::Severity;
+
+        let d = Diagnostic::error("unsupported FEA load kind 'TractionLoad'")
+            .with_code(DiagnosticCode::FeaLoadKindUnsupported);
+        assert_eq!(d.code, Some(DiagnosticCode::FeaLoadKindUnsupported));
+        assert_eq!(d.severity, Severity::Error);
+    }
 
     /// Under `feature = "serde"`, `DiagnosticCode::DimensionedArgRejected`
     /// serializes as `"DimensionedArgRejected"` (PascalCase, from
@@ -5772,6 +6007,75 @@ mod tests {
     fn diagnostic_code_unresolved_name_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::UnresolvedName).unwrap();
         assert_eq!(s, "\"UnresolvedName\"");
+    }
+
+    // --- UnresolvedFunction tests (task 5371 — W_UNRESOLVED_FUNCTION) ---
+    // Pairs with the terminal first-arg fallback in
+    // `crates/reify-compiler/src/expr.rs`'s `NoUserFunctions` ladder, which
+    // previously typed an entirely unknown CALLEE from its first argument and
+    // emitted nothing at all. Mirrors the `UnresolvedName` block directly
+    // above; the variant-agnostic derives are covered by
+    // `diagnostic_code_derives`.
+
+    /// `DiagnosticCode::UnresolvedFunction` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)`.
+    ///
+    /// Constructed as a WARNING, not an error, because #5371 is warn-mode-first:
+    /// the mnemonic is `W_UNRESOLVED_FUNCTION` and #5997 owns the flip to
+    /// `E_UNRESOLVED_FUNCTION`.
+    #[test]
+    fn diagnostic_code_unresolved_function_with_code_round_trips() {
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::UnresolvedFunction);
+        assert_eq!(d.code, Some(DiagnosticCode::UnresolvedFunction));
+        assert_eq!(d.severity, crate::Severity::Warning);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::UnresolvedFunction`
+    /// serializes as `"UnresolvedFunction"` (PascalCase, from
+    /// `rename_all = "PascalCase"`). The LSP ships this string on the wire, so
+    /// a rename is a breaking change for editor consumers.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_unresolved_function_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::UnresolvedFunction).unwrap();
+        assert_eq!(s, "\"UnresolvedFunction\"");
+    }
+
+    // The two codes' DISTINCTNESS is not tested here: `assert_ne!` between two
+    // variants of one enum is true by construction and cannot fail. The claim
+    // that matters — a mis-shaped known builtin yields
+    // `BuiltinArgShapeUnrecognized` and an unknown callee yields
+    // `UnresolvedFunction` — is an end-to-end mapping, pinned in
+    // `reify-compiler/tests/harness_type_checking/unresolved_function_tests.rs`
+    // (`mis_shaped_known_builtins_are_never_reported_unresolved` and
+    // `every_reachable_arg_shape_arm_warns_once_with_its_parameter_list`).
+
+    // --- BuiltinArgShapeUnrecognized tests (task 5371 — W_BUILTIN_ARG_SHAPE) ---
+    // The sibling of `UnresolvedFunction` at the same terminal fallback: the
+    // callee IS a known builtin, but an arg-aware ladder arm (list-helper /
+    // affine-algebra / field-op) returned `None` because the ARGUMENT SHAPE was
+    // not the family's, and the call then rode the fallback silently.
+
+    /// `DiagnosticCode::BuiltinArgShapeUnrecognized` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)`.
+    ///
+    /// Constructed as a WARNING: #5371 changes no typing, so a mis-shaped call
+    /// keeps compiling. #6002's sibling `E_BuiltinArgShape` is the code that
+    /// POISONS to `Type::Error`; this one deliberately does not.
+    #[test]
+    fn diagnostic_code_builtin_arg_shape_with_code_round_trips() {
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::BuiltinArgShapeUnrecognized);
+        assert_eq!(d.code, Some(DiagnosticCode::BuiltinArgShapeUnrecognized));
+        assert_eq!(d.severity, crate::Severity::Warning);
+    }
+
+    /// Under `feature = "serde"` the code serializes PascalCase; the LSP ships
+    /// this string on the wire, so a rename breaks editor consumers.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_builtin_arg_shape_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::BuiltinArgShapeUnrecognized).unwrap();
+        assert_eq!(s, "\"BuiltinArgShapeUnrecognized\"");
     }
 
     /// Pins per-variant severity + variant-existence at the reify-types layer

@@ -732,10 +732,28 @@ JointBody {
 // two shapes; the collection arm folded into the `:` arm above reaches
 // `List<pp.Pulley>` through `ParameterizedType`.
 SubDeclaration {
-  kw<"priv">? kw<"aux">? kw<"sub"> Identifier (
-    "=" subInstanceName ("<" TypeArgList ">")? ArgList ~where WhereClause? |
-    ":" subSpecializedName ~where WhereClause? subBody?
-  ) PoseClause?
+  kw<"priv">? kw<"aux">? kw<"sub"> Identifier subArm PoseClause?
+}
+
+// The three arms, as a lowercase rule rather than an inline choice, for the
+// same MEASURED reason `subBody` below is one. Adding the derived arm inline
+// pushed `SubDeclaration` to 104 expansions and tripped lezer-generator's
+// "generating a lot of choices" advisory, which this grammar did NOT trip
+// before — the arm's optionals multiply against `kw<"priv">?`, `kw<"aux">?`
+// and `PoseClause?`. Naming the choice keeps the rule under the threshold.
+// Lowercase, so it does not appear in the tree — the node names the corpus
+// test pins are unchanged.
+//
+// The first two arms' structure-name slots are the NAMED `subInstanceName` /
+// `subSpecializedName` rules below, not inline choices — same instrument, same
+// measured reason.
+subArm {
+  "=" subInstanceName ("<" TypeArgList ">")? ArgList ~where WhereClause? |
+  ":" subSpecializedName ~where WhereClause? subBody? |
+  // grammar.js's FOURTH arm — the DERIVED sub (assembly-derivation-toolbox.md
+  // leaf A-alpha, task #6615). See `SubDerivation` below for the ekw/kw
+  // reasoning and the measured conflict report.
+  "=" SubDerivation DerivedBody
 }
 
 // The two structure-name slots, as NAMED rules rather than inline choices —
@@ -800,6 +818,139 @@ ParamAssignment {
 // `SpecializationBody`/`KeyedMemberBlock` stay the nodes the corpus test pins.
 subBody {
   SpecializationBody | KeyedMemberBlock
+}
+
+// ── Derived sub arm ─────────────────────────────────────
+// grammar.js's fourth `sub_declaration` arm — `sub b = mirror of a across
+// <plane> { … }` and `sub b = image of a under <transform> { … }` (leaf
+// A-alpha of docs/prds/v0_6/assembly-derivation-toolbox.md, task #6615).
+//
+// EVERY NEW WORD IS `ekw<>` (`@extend`), NEVER `kw<>` (`@specialize`). This is
+// the single most load-bearing choice in this family. `@specialize` replaces
+// the token unconditionally and is context-FREE, so promoting any of these
+// words would stop it lexing as `Identifier` everywhere else. MEASURED
+// occurrences as ordinary source text across the 673 committed `.ri` files:
+// mirror 65, image 15, across 64, under 143, keep 21, symmetry 5, exclude 0
+// (`of` 937). The `at` note at PoseClause above records the same failure
+// happening for real: `kw<"at">` un-pinned two committed files that pass `at`
+// as a named-argument label. Pinned here by the contextual-keyword battery in
+// reifyGrammarCorpus.test.ts, which uses `nodeNamesSpanning` to assert each
+// word still REDUCES to `Identifier` — an error count alone would not catch a
+// silent promotion.
+//
+// `symmetry` is RESERVED by PRD §8 contract item (ii) and deliberately gets NO
+// production here: a production would start capturing the 5 committed
+// occurrences. The reservation is documentation-only, and the corpus test's
+// `symmetry` row is its runtime evidence.
+//
+// `keep <path> using <plane>` is RESERVED syntax for v2 (PRD §3.3/§11): it
+// parses and is stored, with no v1 meaning.
+//
+// ── CONFLICTS: MEASURED, none ─────────────────────────────────────────────
+//
+// Two collisions were expected here and neither materialised, so this family
+// carries no `~` ambiguity marker and no `@precedence` entry:
+//
+//   (a) `"=" Identifier …` (the instantiation arm) versus `"=" SubDerivation`.
+//       Upstream separates these in the LEXER, via tree-sitter's rule #2
+//       (an anonymous string beats the identifier regex on an equal-length
+//       match) — a mechanism lezer does not share. Here `ekw` keeps both
+//       readings alive and the parser picks by what FOLLOWS: `mirror` followed
+//       by `of` can only be a derivation, `mirror` followed by `(` can only be
+//       a constructor. That is one token of lookahead, which LR(1) has.
+//
+//   (b) `across <expression> {` versus `VariantConstruction`
+//       (`Identifier "{" …`, :1147), where upstream gets the split free from
+//       GLR. lezer-generator reports no conflict for it either.
+//
+// MEASURED: lezer-generator reports ZERO conflicts for this family. Had it
+// reported one, the instrument would have been a `~` ambiguity marker
+// following the `~poseWhere` precedent above — explicitly NOT a precedence
+// level, which makes greedy shift win unconditionally.
+//
+// `xs[<element>]` element addressing inside a disposition path is RESERVED
+// (PRD §8 item iii) and not implemented: `DispositionPath` is a dotted
+// identifier chain only.
+SubDerivation {
+  ekw<"mirror"> ekw<"of"> Identifier ekw<"across"> expression |
+  ekw<"image"> ekw<"of"> Identifier ekw<"under"> expression
+}
+
+// grammar.js `derived_body`. Deliberately NOT `SpecializationBody`: that rule
+// admits the full `Member` set, whereas a derived body admits exactly param
+// overrides, `keep`/`exclude` dispositions, `let` and `constraint`.
+//
+// The brace is REQUIRED (the slot in `SubDeclaration` is not optional),
+// upholding INV-SF-7: a derivation ends in an `expression`, so an optional
+// body would leave a dangling right edge free to absorb the following line.
+//
+// Zero-or-more, so an empty `{ }` body is legal — the derivation alone is a
+// complete specification.
+DerivedBody {
+  "{" (
+    DerivedParamAssignment |
+    KeepDisposition |
+    ExcludeDisposition |
+    LetDeclaration |
+    ConstraintDeclaration
+  )* "}"
+}
+
+// grammar.js `derived_param_assignment`. Distinct from `ParamAssignment` only
+// because of `DefaultReset` — `<param> = default` resets an inherited value to
+// the prototype's declared default, which is meaningless in a specialization
+// body.
+//
+// ── `DefaultReset` IS DELIBERATELY NOT TRANSLITERATED ─────────────────────
+//
+// grammar.js has a `default_reset` node here so lowering can discriminate a
+// reset from an override without re-reading source text. That node CANNOT be
+// reproduced in lezer, and the attempt was measured rather than assumed:
+//
+//   `DefaultReset { ekw<"default"> }` in the value slot generates cleanly
+//   (zero conflicts) and then never matches — MEASURED, `span_bu = default`
+//   yields `DerivedParamAssignment(Identifier, "=", Identifier)`, with
+//   `default` reducing to `Identifier`. Adding a `!derivedDefault` precedence
+//   marker (declared in the @precedence block) changed nothing, which is the
+//   diagnostic: the choice is made in the TOKENIZER, not by parser precedence.
+//   `@extend` yields its keyword token only where the state does not otherwise
+//   admit `Identifier`, and this slot admits one — `bindingValue` reaches
+//   `expression` reaches `Identifier`. That is why `ekw<"default">` DOES work
+//   at `DefaultDeclaration` (:102), where no identifier reading is live.
+//
+// Upstream separates them with tree-sitter lexer rule #2 (an anonymous string
+// beats the identifier regex on an equal-length match) — the same mechanism
+// the `List` collection arm relies on, and the same one the `SubDeclaration`
+// note above records lezer as not sharing. `kw<"default">` (@specialize) would
+// force it, and is exactly the wrong instrument: it is context-FREE, and
+// `default` occurs 333 times in the 673 committed `.ri` files.
+//
+// So a rule that provably never matches is left OUT rather than shipped as
+// decoration: the value slot is plain `bindingValue`, `default` reads as an
+// `Identifier`, and the divergence is pinned by an explicit assertion in
+// reifyGrammarCorpus.test.ts. Nothing is lost — the reset/override
+// discrimination is consumed only by the Rust lowering, which reads the
+// tree-sitter CST, never by GUI code. This is the same call, for the same
+// stated reason, as folding the collection arm into the specialization arm at
+// `SubDeclaration` above.
+DerivedParamAssignment {
+  Identifier "=" bindingValue
+}
+
+KeepDisposition {
+  ekw<"keep"> DispositionPath (ekw<"using"> expression)?
+}
+
+ExcludeDisposition {
+  ekw<"exclude"> DispositionPath
+}
+
+// grammar.js `disposition_path` — the dotted-identifier shape, NOT an
+// expression. An expression-valued path could absorb the next
+// newline-separated body item at its right edge (INV-SF-7), and it would
+// silently accept the reserved `xs[<element>]` addressing.
+DispositionPath {
+  Identifier ("." Identifier)*
 }
 
 // ── Keyed sub-member block ──────────────────────────────

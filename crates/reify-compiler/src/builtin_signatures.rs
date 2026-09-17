@@ -74,8 +74,8 @@
 //!   decree — `revolve`'s and `rotate_around`'s `angle`, `draft`'s `angle`.
 //!   The pre-existing ANGLE `tol` slots are that PRD's inheritance, not a
 //!   precedent to extend; adding a new one here would be a scope violation.
-//!   It is also why those slots carry no migration hint: the eval layer has
-//!   none to mirror, and PRD 3 owns closing both halves together.
+//!   It is also why those slots still carry no migration hint: eval gained one
+//!   at leaf β, and PRD 3 closes the compile half at leaf ζ (task 5782).
 //! - **Polymorphic and coercing slots stay out.** Math args (no fixed
 //!   dimension), the `dir` Vec3 slot (accepts list literals like `[0,0,1]`
 //!   that coerce), and Range slots (`edges_by_length` / `faces_by_area`).
@@ -415,15 +415,13 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
             expected: ExpectedArg::Scalar {
                 dimension: DimensionVector::ANGLE,
                 type_name: "Angle",
-                // No migration hint, deliberately: the eval layer has no
-                // `angle_spec` hint either, and this check exists to MIRROR
-                // that layer's wording (PRD decision D9), not to get ahead of
-                // it. Closing the ANGLE gap is PRD 3's by binding seam decree,
-                // and it owns BOTH halves together — adding one here alone
-                // would make the layers disagree in the other direction.
-                // Pinned by `angle_slot_rejection_carries_no_migration_hint`.
-                // Prose rather than a TODO on purpose: a TODO must cite a live
-                // task under the PTODO grammar, and PRD 3 has no task id yet.
+                // No migration hint, deliberately: eval HAS carried
+                // `ANGLE_MIGRATION_HINT` since PRD 3 leaf β, and bringing these
+                // slots onto that template is leaf ζ (task 5782), not this
+                // layer's to anticipate — adding one early reds
+                // `angle_slot_rejection_carries_no_migration_hint`, which pins
+                // the un-hinted wording on purpose. (Prose, not a
+                // `TODO(#5782)`: a new ptodo fingerprint for no gain.)
                 migration_hint: None,
             },
         }],
@@ -1033,8 +1031,11 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
 /// Concretely, for a LENGTH slot:
 /// `"box: width argument expects Length, got Int; pass a dimensioned length such as `5mm`"`
 ///
-/// The ANGLE slots render the un-hinted form, because the eval layer has no
-/// angle hint to mirror; PRD 3 owns closing both halves together.
+/// The ANGLE slots render the un-hinted form. That is the one place the two
+/// layers knowingly disagree: eval's angle path gained `ANGLE_MIGRATION_HINT`
+/// with PRD 3 leaf β, and PRD 3 leaf ζ (task 5782) brings these slots onto the
+/// same template. Until ζ lands, an angle rejection reads with a repair
+/// instruction at eval and without one at compile time.
 ///
 /// `{builtin}` is the SURFACE call name — the identifier the author actually
 /// typed. The eval layer instead renders its prefix from the LOWERED kind
@@ -1478,7 +1479,8 @@ mod tests {
             expected: ExpectedArg::Scalar {
                 dimension: DimensionVector::ANGLE,
                 type_name: "Angle",
-                // Mirrors the table: eval has no angle hint, so neither has this.
+                // Mirrors the table, which stays un-hinted until PRD 3 leaf ζ
+                // (task 5782) — eval HAS carried an angle hint since leaf β.
                 migration_hint: None,
             },
         }

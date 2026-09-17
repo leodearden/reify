@@ -1,8 +1,8 @@
 //! Integration tests for circular_pattern angle unit handling.
 //!
 //! Verifies that:
-//! - A bare numeric angle (`360`) is interpreted as degrees and emits a
-//!   deprecation warning in the build diagnostics.
+//! - A bare numeric angle (`360`) is REJECTED (PRD 3 leaf ε reverses task
+//!   #1763, which had made this the one builtin reading bare as degrees).
 //! - An explicit angle unit (`360deg`) passes through without any warning.
 
 use reify_core::Severity;
@@ -15,8 +15,8 @@ use reify_test_support::{MockConstraintChecker, MockGeometryKernel, parse_and_co
 ///
 /// The axis ORIGIN is dimensioned (`0mm`) — it is length-semantic and gated as
 /// a Length since task 5350. The axis DIRECTION `0, 0, 1` stays bare (a
-/// dimensionless unit vector), and a bare `angle_expr` stays bare on purpose:
-/// these tests exercise the degrees coercion, which this file is about.
+/// dimensionless unit vector). The `angle_expr` is the variable under test:
+/// one case passes it bare (rejected since ε) and one dimensioned (accepted).
 fn plate_source(angle_expr: &str) -> String {
     format!(
         r#"
@@ -41,39 +41,45 @@ fn build_plate(source: &str) -> BuildResult {
 
 // ── step-6 ───────────────────────────────────────────────────────────────────
 
-/// `circular_pattern` with a bare numeric angle (`360`) should emit a
-/// deprecation warning informing the user that the value is treated as degrees.
+/// `circular_pattern` with a bare numeric angle (`360`) is REJECTED.
+///
+/// INVERTED by PRD 3 leaf ε (task 5781), reversing task #1763. This asserted
+/// the opposite — that a bare angle warns and is coerced from degrees — and
+/// that mechanism is exactly what ε deletes. Flipping it IS the fix.
 #[test]
-fn circular_pattern_bare_360_emits_deprecation_warning() {
+fn circular_pattern_bare_360_is_rejected() {
     let source = plate_source("360");
     let result = build_plate(&source);
 
-    // Guard: ensure the build did not fail with hard errors before reaching
-    // the angle-conversion code (which would make the diagnostic check vacuous).
-    let errors: Vec<_> = result
+    let rejection = result
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "build produced unexpected errors before angle conversion: {:?}",
-        errors
+        .find(|d| d.message.contains("angle argument expects Angle, got "))
+        .unwrap_or_else(|| {
+            panic!(
+                "a bare circular_pattern angle must be rejected by name; got: {:?}",
+                result.diagnostics
+            )
+        });
+    assert_eq!(
+        rejection.severity,
+        Severity::Error,
+        "this was a Warning with exit 0 before ε; got: {rejection:?}"
     );
-
-    let degree_warnings: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| {
-            d.severity == Severity::Warning
-                && (d.message.contains("deg") || d.message.contains("degrees"))
-        })
-        .collect();
-
     assert!(
-        !degree_warnings.is_empty(),
-        "expected at least one Warning diagnostic about implicit degree conversion, \
-         but got: {:?}",
+        rejection
+            .message
+            .contains(reify_core::units::ANGLE_MIGRATION_HINT),
+        "the rejection must tell the author how to fix it; got: {:?}",
+        rejection.message
+    );
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("bare numeric angle")),
+        "the deprecation warning must be GONE, not merely joined by a \
+         rejection; got: {:?}",
         result.diagnostics
     );
 }

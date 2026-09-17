@@ -165,6 +165,12 @@
 #                                  merge_verify_cold_command_timeout_secs (task 5383) in
 #                                  dark-factory-orchestrator.yaml — that key's comment
 #                                  block is the single source for the relationship.
+#                                  ROLE-SCOPED (task 6485): under DF_VERIFY_ROLE=offline
+#                                  the default is 13h (46800s), not 90m, so that
+#                                  .config/nextest.toml's 12h heavy per-test ceiling is
+#                                  REACHABLE and a hung heavy test is killed BY NAME.
+#                                  An explicit valid value still wins verbatim under
+#                                  either role. Rationale: PRD offline-deep-test-lane DA6.
 #   REIFY_VERIFY_PREBUILD_TIMEOUT — outer timeout for the merge-path RELEASE
 #                                  pre-builds (`cargo build --release -p reify-audit`
 #                                  and `-p reify-cli`). Default 45m. These run ONLY on
@@ -446,6 +452,34 @@ _resolve_timeout_knob() {
 # REIFY_VERIFY_TEST_TIMEOUT_RELEASE (90m) — see add_test_passes for the derivation.
 _VERIFY_TEST_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT 60m)"
 _VERIFY_TEST_TIMEOUT_RELEASE="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE 90m)"
+# OFFLINE role: re-resolve the RELEASE budget with a 13h default (task 6485), so
+# .config/nextest.toml's 12h heavy per-test ceiling is REACHABLE and a hung heavy
+# test is SIGTERM'd BY NAME before this outer wall can fire exit 124 attributing
+# nothing. 13h never binds in practice; it exists only to make the per-test
+# ceiling the binding bound. Why the tiers are what they are:
+# docs/prds/offline-deep-test-lane.md DA6. Pinned by test_occt_flock_gate.sh
+# T14-T17 and by test_nextest_slow_priority.sh Assertion L, which DERIVES this
+# wall and the role it is scoped to from the block below.
+#
+# Three things here are load-bearing and will otherwise be "simplified" away:
+#   - The 90m line above is preserved VERBATIM rather than folded into one
+#     role-derived default: T10 extracts that literal and models the MERGE path
+#     against merge_verify_cold_command_timeout_secs. 90m is and must remain the
+#     release inner budget there; the offline default must never enter that sum.
+#   - The re-resolution is UNCONDITIONAL under offline, not skipped when the knob
+#     is set. Routing through the same validator twice keeps an explicit VALID
+#     value winning verbatim while making a MALFORMED one fall back to 13h rather
+#     than to the 90m the first call just produced — the "only when unset" form
+#     would leave offline silently at 90m under a 12h ceiling. Cost is a
+#     duplicated WARNING on malformed input; a loud duplicate beats a silent
+#     wrong budget. T16 pins it.
+#   - Only the RELEASE wall is scoped, because offline forces PROFILE=release; a
+#     debug pass happens only under an explicit --profile, a manual invocation on
+#     which the ceiling is unreachable (DA6's accepted residual).
+# DF_VERIFY_ROLE is env-only (no CLI flag), so it is readable this early.
+if [ "${DF_VERIFY_ROLE:-task}" = "offline" ]; then
+    _VERIFY_TEST_TIMEOUT_RELEASE="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE 13h)"
+fi
 _VERIFY_PREBUILD_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_PREBUILD_TIMEOUT 45m)"
 _VERIFY_CLIPPY_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_CLIPPY_TIMEOUT 45m)"
 _VERIFY_GUI_FEATURE_TEST_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_GUI_FEATURE_TEST_TIMEOUT 45m)"
@@ -1111,8 +1145,9 @@ is_occt_crate() {
 # basenames NAMED BY a compiled Rust test target, and so EXCLUDED from
 # decide_scope's no-heavy-checks carve-out for that directory:
 #   proven runtime reads (a #[test] builds the path and opens the file):
-#     geometry_let_selector_consumer.ri (pushed into no_stale_undef_invariant_
-#     gate.rs's corpus_files()), geometry_let_selector_consumer_edit.ri,
+#     geometry_let_selector_consumer.ri (pushed into corpus_files() by
+#     harness_corpus_gates/eval_invariant_corpus_sweep.rs),
+#     geometry_let_selector_consumer_edit.ri,
 #     stdlib_ns_buckling_mode_coexist.ri, unit_nm_torque_immediate.ri
 #     (read via std::fs::read_to_string by torque_unit_tests.rs, task 5786),
 #     unit_curated_labels_ascii.ri (likewise, by volume_unit_tests.rs, task 5788),
@@ -1132,7 +1167,11 @@ is_occt_crate() {
 #     existing_sub_arms_regression_floor, task 5481);
 #     stdlib_ns_qualified_expr.ri, stdlib_ns_qualified_type.ri (the two
 #     qualified-reference probes held as qualified_ref_grammar_tests.rs's
-#     prd_gate_qualified_{expr,type}_fixture_parses_with_zero_errors, task 5495)
+#     prd_gate_qualified_{expr,type}_fixture_parses_with_zero_errors, task 5495);
+#     adt_mirror_of_arm.ri, adt_relation_verbs.ri (the derived sub arm's
+#     signal and its relation-verb regression floor, held as
+#     derived_sub_grammar_tests.rs's derived_sub_fixture_parses_with_zero_error_nodes
+#     and relation_verbs_fixture_regression_floor, task 6615)
 #   named by a WAIVER TABLE in a compiled test (task 5305): the seven fixtures
 #     keyed by (file, param) in ctor_conformance_corpus_survey.rs's
 #     CTOR_CONFORMANCE_CORPUS_RESIDUAL —
@@ -1176,7 +1215,7 @@ is_occt_crate() {
 # (mirrors select_infra_tests/select_harness_kloc_guard) — required here
 # because one name is a strict prefix of another
 # (geometry_let_selector_consumer.ri vs …_consumer_edit.ri).
-_RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri cost_robustness_tradeoff_form.ri curvature_rad_literal.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri dcr_load_ctor_dimension_silent.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri jacobian_column_members.ri r3b_displacement_at_selector_grammar.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
+_RUST_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri compiler_type_hygiene_trait_args_silent_accept.ri cost_robustness_tradeoff_form.ri curvature_rad_literal.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri dcr_load_ctor_dimension_silent.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri jacobian_column_members.ri r3b_displacement_at_selector_grammar.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
 
 # GUI-COUPLED prd-gate fixtures (task 6435). Basenames PINNED in EXPECTED_CLEAN
 # in gui/src/__tests__/reifyGrammarCorpus.test.ts — the grammar drift ledger,
@@ -1203,18 +1242,20 @@ _RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri co
 # also a grammar-ledger pin is listed below as well, and the rust arm already
 # sets gui=1, so it short-circuits them. They are retained here deliberately so
 # that dropping a fixture from the rust list can never silently drop its gui
-# coverage too. THREE members are not EXPECTED_CLEAN pins and so have no gui
+# coverage too. FOUR members are not EXPECTED_CLEAN pins and so have no gui
 # entry to retain: jacobian_column_members.ri (read by a compiled Rust target
-# but never pinned, task 6102), and task 6877's
+# but never pinned, task 6102), task 6877's
 # damped_material_{mixin,preset}_conformance.ri (deliberately not pinned — an
 # unpinned fixture is inert for that ledger, so pinning them would add the
-# PG-DRIFT-GUI obligation for no added signal).
+# PG-DRIFT-GUI obligation for no added signal), and adt_relation_verbs.ri
+# (task 6615's tree-sitter regression floor; its lezer twin pins only
+# adt_mirror_of_arm.ri).
 #
 # Deliberately unnumbered: nothing validates a count in prose (PG-DRIFT checks
 # MEMBERSHIP, PG-DRIFT-GUI checks the ledger), so a hard-coded size silently
 # rots on the next addition — this one already had, still reading 10 after the
 # list had grown past it, when task #5784 added unit_middot_mul.ri.
-_GUI_COUPLED_RI_FIXTURES=" bare_angle_silently_accepted.ri collection_expr_index_resolves.ri collection_sub_at_placement_rejected.ri collection_sub_member_cell_consumable.ri collection_sub_per_member_cells.ri collection_sub_value_position_undef_baseline.ri compiler_type_hygiene_integration_gate.ri compiler_type_hygiene_mul_scale_guard_defeat.ri compiler_type_hygiene_mul_vec_silent_int.ri compiler_type_hygiene_trait_args_silent_accept.ri cost_min_money_objective.ri cost_robustness_tradeoff_form.ri cross_sub_geometry_ref.ri dcr_dimension_rejection_channel_fires.ri dcr_fn_force_param_already_rejects.ri dcr_langsurface_crossdim_silent.ri dcr_load_ctor_dimension_silent.ri dcr_load_retype_target_resolves.ri dcr_material_dimension_correct.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_bare.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri engine_build_hardening_kappa_mixed_kernel_selector.ri expected_type_pushdown_arg.ri expected_type_pushdown_let.ri faces_by_normal_symbolic_eval_silent.ri forall_collection_resolves.ri forall_range_domain_rejected.ri geometry_let_selector_consumer_edit.ri geometry_let_selector_consumer.ri hand_placed_twin_two_subs_eval.ri indexed_sub_bare_member_resolves.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_oob_computed_silent_undef.ri indexed_sub_oob_literal_silent_undef.ri indexed_sub_self_member_misrouted.ri indexed_sub_self_member_nogeom_unsupported.ri indexed_sub_silent_undef_baseline.ri indexed_sub_spec_arm_baseline.ri ir_clean_eval.ri objective_inherit_ambiguous.ri posed_subs_distance_query_unresolvable.ri purpose_nested_structure.ri quantifier_expr_int_domain_resolves.ri quantifier_expr_member_access_rejected.ri quantifier_expr_range_domain_rejected.ri r3b_displacement_at_selector_grammar.ri revolute_silent_accept.ri scalar_codomain_mismatch.ri self_collection_count_redirect_rejected.ri single_sub_pose_resolves.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member_modal.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri stdlib_ns_std_nonexistent_import.ri stdlib_units_import_resolves.ri subbody_objective_ignored.ri transform3_unresolved.ri typeparam_member_access.ri uncons_box_no_error.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
+_GUI_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri bare_angle_silently_accepted.ri collection_expr_index_resolves.ri collection_sub_at_placement_rejected.ri collection_sub_member_cell_consumable.ri collection_sub_per_member_cells.ri collection_sub_value_position_undef_baseline.ri compiler_type_hygiene_integration_gate.ri compiler_type_hygiene_mul_scale_guard_defeat.ri compiler_type_hygiene_mul_vec_silent_int.ri compiler_type_hygiene_trait_args_silent_accept.ri cost_min_money_objective.ri cost_robustness_tradeoff_form.ri cross_sub_geometry_ref.ri dcr_dimension_rejection_channel_fires.ri dcr_fn_force_param_already_rejects.ri dcr_langsurface_crossdim_silent.ri dcr_load_ctor_dimension_silent.ri dcr_load_retype_target_resolves.ri dcr_material_dimension_correct.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_bare.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri engine_build_hardening_kappa_mixed_kernel_selector.ri expected_type_pushdown_arg.ri expected_type_pushdown_let.ri faces_by_normal_symbolic_eval_silent.ri forall_collection_resolves.ri forall_range_domain_rejected.ri geometry_let_selector_consumer_edit.ri geometry_let_selector_consumer.ri hand_placed_twin_two_subs_eval.ri indexed_sub_bare_member_resolves.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_oob_computed_silent_undef.ri indexed_sub_oob_literal_silent_undef.ri indexed_sub_self_member_misrouted.ri indexed_sub_self_member_nogeom_unsupported.ri indexed_sub_silent_undef_baseline.ri indexed_sub_spec_arm_baseline.ri ir_clean_eval.ri objective_inherit_ambiguous.ri posed_subs_distance_query_unresolvable.ri purpose_nested_structure.ri quantifier_expr_int_domain_resolves.ri quantifier_expr_member_access_rejected.ri quantifier_expr_range_domain_rejected.ri r3b_displacement_at_selector_grammar.ri revolute_silent_accept.ri scalar_codomain_mismatch.ri self_collection_count_redirect_rejected.ri single_sub_pose_resolves.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member_modal.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri stdlib_ns_std_nonexistent_import.ri stdlib_units_import_resolves.ri subbody_objective_ignored.ri transform3_unresolved.ri typeparam_member_access.ri uncons_box_no_error.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
 
 decide_scope() {
     if [ "$SCOPE" = "all" ]; then
@@ -1352,11 +1393,12 @@ decide_scope() {
                 # .capability-manifest.yaml + its .ri fixtures, gated by
                 # hooks/pre-commit -> `--scope staged`) stays a seconds-long
                 # hook instead of escalating to a full workspace nextest run.
-                #   • Nothing globs this directory: reify-eval's
-                #     no_stale_undef_invariant_gate.rs corpus_files() walks only
-                #     its own tests/fixtures + examples/, then pushes ONE
-                #     explicit prd-gate path — so ADDING a fixture provably
-                #     cannot change any Rust target's inputs. EDITING one of the
+                #   • Nothing globs this directory: reify-eval's unified corpus
+                #     sweep (harness_corpus_gates/eval_invariant_corpus_sweep.rs,
+                #     corpus_files()) walks only its own tests/fixtures +
+                #     examples/, then pushes ONE explicit prd-gate path — so
+                #     ADDING a fixture provably cannot change any Rust target's
+                #     inputs. EDITING one of the
                 #     names in _RUST_COUPLED_RI_FIXTURES can, hence the exclusion
                 #     below (a blanket rule would let such an edit reach `main`
                 #     through the hook-gated docs path with no heavy checks and
@@ -2634,6 +2676,16 @@ add_test_passes() {
     #    model, and why the inner ceilings are not summed against it. Do not restate
     #    its arithmetic here; it drifted once already (esc-5382-1 amendment review).
     #    tests/infra/test_occt_flock_gate.sh T10 mechanises that relationship.
+    #    OFFLINE TIER (task 6485): under DF_VERIFY_ROLE=offline this budget is 13h
+    #    (46800s) instead, so that the 12h (43200s) per-test ceiling
+    #    .config/nextest.toml gives the 8 heavy members is REACHABLE — a wall that
+    #    does not strictly exceed the ceiling degrades a hang to a bare exit 124
+    #    with zero per-test attribution (the task 4877/4878 shape). Offline is NOT
+    #    the only role that runs the heavy filterset (background does too, and does
+    #    not get this tier); which wall binds which role, and the accepted residual
+    #    that follows, are normative in docs/prds/offline-deep-test-lane.md DA6.
+    #    T14-T17 mechanise the rendering; test_nextest_slow_priority.sh Assertion L
+    #    mechanises wall > ceiling with every operand derived from a file.
     # NOTE: outer timeouts asserted in tests/infra/test_occt_flock_gate.sh
     # (Test 17 — debug pass, Test 17b — release pass; T1/T2/T8/T9 knob behavior) — keep in sync.
     local _profile _rel

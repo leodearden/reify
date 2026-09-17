@@ -36,6 +36,32 @@ pub struct ParsedModule {
     pub declared_module_path: Option<ModulePath>,
 }
 
+impl ParsedModule {
+    /// Render every parse error against `source` as `line:col: message`, in parse order.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+    /// The three production surfaces that print parse errors — the two loops in
+    /// `reify-cli/src/main.rs` and `CliToolContext::load_file` — all want exactly this, and
+    /// this is where they get it, so no caller has to rebuild the loop or re-derive positions
+    /// its own way.
+    ///
+    /// `source` must be the string the spans index (the one handed to the parser); a different
+    /// string yields wrong positions, never a panic. Batched via
+    /// [`ParseError::render_all`], so the newline table is built once for the whole list
+    /// rather than once per diagnostic.
+    ///
+    /// Exists as a METHOD rather than leaving callers to write
+    /// `reify_ast::ParseError::render_all(&parsed.errors, source)` because `reify-cli` does not
+    /// depend on `reify-ast` and so cannot name that path. The only route that resolves today
+    /// is `reify_syntax::ParseError`, via the `pub use reify_ast::*` block that
+    /// `reify-syntax/src/lib.rs` marks TRANSIENT and slates for removal by the PRD task η
+    /// follow-up — building three new production call sites on a re-export scheduled for
+    /// deletion would hand that sweep a breakage. Method resolution needs no crate path.
+    pub fn render_errors(&self, source: &str) -> Vec<String> {
+        ParseError::render_all(&self.errors, source)
+    }
+}
+
 /// A top-level declaration in a module.
 #[derive(Debug, Clone)]
 pub enum Declaration {
@@ -443,8 +469,178 @@ pub struct SubDecl {
     /// would (`MemberDecl::Relate`); both homes enforce `Type::Relation`
     /// identically (`E_RELATE_EXPECTS_RELATION`).
     pub relate_relations: Vec<Expr>,
+    /// The derivation clause of a DERIVED sub — `sub b = mirror of a across
+    /// <plane> { … }` / `sub b = image of a under <transform> { … }`
+    /// (assembly-derivation-toolbox.md, leaf A-alpha, task #6615).
+    ///
+    /// `Some(_)` only for the derived arm; `None` for the bare instantiation,
+    /// collection and specialization arms.
+    ///
+    /// # Discriminator invariant
+    ///
+    /// When `derivation.is_some()`, every specialization-scope field is empty:
+    /// `structure_name.is_empty()`, `body.is_none()`,
+    /// `spec_param_overrides.is_empty()`, `keyed_members.is_empty()`,
+    /// `args.is_empty()`, `type_args.is_empty()`, `is_collection == false`.
+    ///
+    /// This is enforced at the single producer (`ts_parser::lower_sub`) rather
+    /// than encoded in the type, and it is load-bearing rather than tidy:
+    /// existing compiler consumers read `structure_name` / `args` /
+    /// `is_collection` as SPECIALIZATION-SCOPE signals, so a derived sub that
+    /// left any of them populated would be silently mistaken for one of their
+    /// own. Any new producer must uphold it; it is pinned by
+    /// `derived_sub_leaves_every_specialization_scope_field_empty` in
+    /// reify-syntax's `harness_syntax::derived_sub_arm_parser_tests`.
+    ///
+    /// Note that `pose_expr` is deliberately NOT part of that invariant: an
+    /// explicit `at` on a derived sub parses and lowers here, and is rejected
+    /// one layer down as `E_DERIVED_SUB_EXPLICIT_AT` (T8) — a compile-scope
+    /// diagnostic, per the D3-adversary ownership ruling.
+    ///
+    /// Parsed and stored here (A-alpha); first consumed by A-beta (#6616),
+    /// which owns every compile-scope rejection for the derived arm.
+    ///
+    /// # Why this is boxed
+    ///
+    /// `SubDerivation` is 232 bytes, and `SubDecl` is the largest
+    /// `MemberDecl` variant, so storing it inline grew `MemberDecl` from 536
+    /// to 768 bytes — past `clippy::large_enum_variant`'s 200-byte gap over
+    /// the second-largest variant (`ForallConstraint`, 384). Boxing costs one
+    /// pointer on the common (`None`) path, which every non-derived sub takes,
+    /// instead of 232 bytes on every `MemberDecl` in the AST. Consumers reach
+    /// the fields through auto-deref unchanged.
+    pub derivation: Option<Box<SubDerivation>>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
+}
+
+/// The derivation clause of a derived sub: which prototype, under which
+/// transform, and what the derived copy overrides or drops.
+///
+/// `docs/prds/v0_6/assembly-derivation-toolbox.md` leaf A-alpha (task #6615).
+#[derive(Debug, Clone)]
+pub struct SubDerivation {
+    /// Which derivation constructor this is, carrying its transform operand.
+    pub kind: SubDerivationKind,
+    /// The prototype sub this one is derived FROM — the `a` in `mirror of a`.
+    ///
+    /// A `SpannedIdent` rather than a bare `String` because A-beta's unknown /
+    /// non-sibling / cyclic-prototype diagnostics must underline the prototype
+    /// token ALONE; a derivation-wide span would degrade all three messages.
+    ///
+    /// The PRD names a bare sibling-sub identifier, so the grammar admits no
+    /// dotted path here and `mirror of a.child` is a parse error.
+    pub prototype: SpannedIdent,
+    /// Param overrides from the derived body: `z = 55mm`, `w = auto(free)`,
+    /// `z = 55mm where hinged`.
+    ///
+    /// Shares `SubDecl::spec_param_overrides`' lowering path — both route
+    /// through `lower_binding_value`, so an `auto` override in a derived body
+    /// resolves identically to one in a specialization body — but NOT its
+    /// `(String, Expr)` shape, because the derived surface carries a name span
+    /// and a `where` guard that a pair cannot hold. See [`SubParamOverride`].
+    ///
+    /// Ordinary overrides only — a `<param> = default` RESET goes to
+    /// `param_resets` instead.
+    pub param_overrides: Vec<SubParamOverride>,
+    /// Params RESET to the prototype's declared default by `<param> = default`.
+    ///
+    /// Kept separate from `param_overrides` rather than encoded as a sentinel
+    /// value: a reset carries no expression at all, so there is nothing
+    /// meaningful to put in an `Expr`, and a consumer must be able to tell
+    /// "inherit the default" from "override with this value" without
+    /// pattern-matching for a magic node. `SpannedIdent` so a diagnostic about
+    /// resetting an unknown param can underline the param name.
+    pub param_resets: Vec<SpannedIdent>,
+    /// `keep` / `exclude` dispositions, in SOURCE ORDER.
+    ///
+    /// Order is load-bearing: A-beta resolves each path against the
+    /// prototype's feature tree and reports failures positionally, so a
+    /// reordered list would point its diagnostics at the wrong item.
+    pub dispositions: Vec<SubDisposition>,
+    /// `let` and `constraint` members declared inside the derived body.
+    ///
+    /// NOT reached by [`walk_specialization_scope_members`], nor by any other
+    /// member walker in this module: all of them enter through `SubDecl::body`,
+    /// which the discriminator invariant keeps `None` on every derived sub. So
+    /// the specialization-scope check, the priv-redundant lint and the span
+    /// lookups all see a derived sub as having NO members, rather than failing
+    /// loudly. That is deliberate at A-alpha — a derived body is not a
+    /// specialization scope, and what its members scope to is a semantic
+    /// question A-beta (#6616) owns — but it means A-beta must WIRE the
+    /// traversal when derived subs start elaborating, not assume an existing
+    /// walker already covers them.
+    pub members: Vec<MemberDecl>,
+    pub span: SourceSpan,
+}
+
+/// Which derivation constructor a [`SubDerivation`] uses.
+///
+/// An ELEMENT type with several constructors (PRD §6 D1), NOT a flattened
+/// plane-or-transform pair: Layer-3 group elements become FURTHER constructors
+/// here, and consumers are expected to switch on the constructor. Flattening it
+/// to a bare `plane: Option<Expr>` / `transform: Option<Expr>` would make every
+/// such addition a breaking change to every consumer.
+#[derive(Debug, Clone)]
+pub enum SubDerivationKind {
+    /// `mirror of <prototype> across <plane>`
+    Mirror { plane: Expr },
+    /// `image of <prototype> under <transform>`
+    Image { transform: Expr },
+}
+
+/// One param override in a derived body: `z = 55mm`, `w = auto(free)`,
+/// `z = 55mm where hinged`.
+///
+/// A struct rather than the `(String, Expr)` pair `SubDecl::spec_param_overrides`
+/// uses, because the derived surface carries two things that pair cannot hold:
+///
+/// * the override NAME's own span, so A-beta's "overrides a param the prototype
+///   does not declare" diagnostic underlines the param token ALONE — the same
+///   reasoning that makes [`SubDerivation::prototype`] and
+///   [`SubDerivation::param_resets`] spanned;
+/// * the optional `where` guard. The grammar admits one
+///   (`derived_param_assignment` ends in `optional(field('guard', …))`) and the
+///   spec documents it, so discarding it would silently hand A-beta a
+///   CONDITIONAL override indistinguishable from an unconditional one.
+#[derive(Debug, Clone)]
+pub struct SubParamOverride {
+    /// The overridden param's name, spanned: `z` in `z = 55mm`.
+    pub name: SpannedIdent,
+    /// The override value. `auto` / `auto(free)` reach `ExprKind::Auto` here,
+    /// exactly as on the specialization arm.
+    pub value: Expr,
+    /// The `where` guard, when the source carries one. Parsed and stored here
+    /// (A-alpha); evaluated by A-beta (#6616) together with the override.
+    pub guard: Option<WhereClause>,
+}
+
+/// One `keep` / `exclude` item in a derived body.
+#[derive(Debug, Clone)]
+pub struct SubDisposition {
+    pub kind: SubDispositionKind,
+    /// The dotted feature path, split into segments: `web.hub` → `["web",
+    /// "hub"]`. Resolution against the prototype's feature tree is A-beta's.
+    ///
+    /// Segments are spanned, not bare `String`s, so an unresolvable-path
+    /// diagnostic underlines the failing HOP — the `hub` of `web.hub` — rather
+    /// than the whole disposition. Same reasoning as [`SubDerivation::prototype`].
+    pub path: Vec<SpannedIdent>,
+    /// The plane from the RESERVED `keep <path> using <plane>` tail (PRD
+    /// §3.3/§11).
+    ///
+    /// Stored only — it has no v1 meaning and no lowering consequence. Parsing
+    /// and storing it now keeps the surface stable for v2 without committing to
+    /// a semantics; `None` on every `exclude`, and on a `keep` with no tail.
+    pub using_plane: Option<Expr>,
+    pub span: SourceSpan,
+}
+
+/// `keep` or `exclude`.
+#[derive(Debug, Clone)]
+pub enum SubDispositionKind {
+    Keep,
+    Exclude,
 }
 
 /// `minimize volume`
@@ -637,6 +833,13 @@ pub fn find_param_default_expr<'a>(members: &'a [MemberDecl], name: &str) -> Opt
 /// `walk_members`'s wildcard-free match, which fails to compile until that
 /// classification is made rather than silently defaulting to "never descended
 /// into".
+///
+/// **Derived subs are invisible to every one of those sets.** Each of them
+/// reaches a sub's members through `SubDecl.body`, and `body` is `None` on
+/// every derived sub (`sub b = mirror of a across P { … }`), so a derived
+/// body's `let` / `constraint` members are never visited. See
+/// [`SubDerivation::members`] for why that is deliberate at task #6615 and
+/// what task #6616 must do about it.
 pub fn walk_specialization_scope_members<'a, F>(sub: &'a SubDecl, visitor: &mut F)
 where
     F: FnMut(&'a MemberDecl),
@@ -1583,6 +1786,296 @@ pub struct ParseError {
     pub span: SourceSpan,
 }
 
+impl ParseError {
+    /// Render as `line:col: message`, both 1-based, using the source text the span indexes.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392:
+    /// a parse error a user cannot locate is only marginally better than silence. `SourceSpan`
+    /// carries byte offsets only, and this — together with
+    /// [`render_with_offsets`](Self::render_with_offsets), which it delegates to — is the
+    /// single place that converts them for human output, so every caller reports positions the
+    /// same way.
+    ///
+    /// Degrades rather than aborting on a span that does not index `source`: the prelude
+    /// sentinel ([`SourceSpan::PRELUDE_SENTINEL_OFFSET`]) becomes the canonical
+    /// "no user-file location" fallback `1:1`, and any other out-of-range offset (a stale
+    /// span, or one belonging to a different file) is clamped to `source.len()`. See
+    /// [`render_with_offsets`](Self::render_with_offsets) for why each is handled that way.
+    ///
+    /// This builds a newline table to serve ONE lookup, which is the same O(len(source)) it
+    /// would cost to scan; rendering a whole list should go through
+    /// [`render_all`](Self::render_all) instead, which builds one table for all of them.
+    pub fn render(&self, source: &str) -> String {
+        self.render_with_offsets(source, &reify_core::build_line_offsets(source))
+    }
+
+    /// Render every error in `errors` against `source`, building the newline table ONCE.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+    /// [`render`](Self::render) is O(len(source)) per call, and every caller renders in a loop
+    /// over `Parsed::errors`, so the naive shape costs O(errors × len(source)). That was
+    /// tolerable when a malformed file produced one or two parse errors; it is not now that
+    /// `diagnose_error_node` emits up to 8 diagnostics per `ERROR` node and a file can carry
+    /// several such nodes (measured on the 24-broken-function corpus: 22 diagnostics from one
+    /// parse), each of which would re-scan the whole source from byte 0.
+    ///
+    /// Same output as mapping [`render`](Self::render), one string per input error, in order —
+    /// by construction, since both go through
+    /// [`render_with_offsets`](Self::render_with_offsets).
+    pub fn render_all(errors: &[ParseError], source: &str) -> Vec<String> {
+        // The only short-circuit worth having: with nothing to render, the table would be a
+        // scan of the whole source for no lookups at all. A SINGLE error is deliberately NOT
+        // special-cased — `render` builds exactly this same table to serve its one lookup, so
+        // forking there would buy nothing and leave two code paths to keep in agreement.
+        if errors.is_empty() {
+            return Vec::new();
+        }
+        let line_offsets = reify_core::build_line_offsets(source);
+        errors
+            .iter()
+            .map(|e| e.render_with_offsets(source, &line_offsets))
+            .collect()
+    }
+
+    /// [`render`](Self::render) against a pre-built newline table.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+    /// `line_offsets` must be [`reify_core::build_line_offsets`] of the SAME `source`; passing
+    /// another file's table yields a wrong position, never a panic. O(log M) to find the line
+    /// plus O(column) to count the codepoints on it, against
+    /// [`reify_core::byte_offset_to_line_col`]'s O(len(source)) scan from byte 0.
+    ///
+    /// Deliberately reproduces that function's semantics exactly, including its two degenerate
+    /// inputs, rather than approximating them:
+    ///
+    /// - The prelude sentinel ([`SourceSpan::PRELUDE_SENTINEL_OFFSET`]) short-circuits to
+    ///   `(1, 1)`, the canonical "no user-file location" fallback, before anything indexes
+    ///   `source`.
+    /// - Any other out-of-range offset (a stale span, or one belonging to a different file) is
+    ///   clamped to `source.len()`.
+    ///
+    /// A `line`/`col` pair is derived the same way `byte_offset_to_line_col` derives it: the
+    /// line is one more than the number of `'\n'` strictly before `offset` (a binary search
+    /// here, a full character walk there), and the column is one more than the number of
+    /// codepoints between the start of that line and `offset`. The column walk starts at the
+    /// line start — always a character boundary, since `'\n'` is one byte — and stops at
+    /// `offset` without ever slicing there, so an offset that is not a character boundary
+    /// degrades to a position rather than panicking, exactly as the scanning version does.
+    ///
+    /// "Reproduces exactly" is a DUPLICATION, not a settled placement, and
+    /// `render_with_offsets_agrees_with_the_scanning_render` — an exhaustive `0..=source.len()`
+    /// equivalence test — exists only to hold the two in lockstep. The conversion belongs in
+    /// `reify_core` beside [`reify_core::build_line_offsets`] and its table-based INVERSE
+    /// `line_col_to_byte_offset_with_offsets`, as the missing forward sibling of that pair,
+    /// with [`reify_core::byte_offset_to_line_col`] delegating to it; this method would then be
+    /// a formatting wrapper and that test would collapse to a couple of unit cases. Only the
+    /// PARSE-ERROR formatting has a reason to live here — `reify-cli` cannot name
+    /// `reify_ast::ParseError` — and that reason does not extend to the line/col algorithm,
+    /// since `reify-cli` depends on `reify-core` directly. Not done here: `reify-core` is
+    /// outside task #5392's lock set.
+    pub fn render_with_offsets(&self, source: &str, line_offsets: &[usize]) -> String {
+        let offset = self.span.start as usize;
+        if offset == SourceSpan::PRELUDE_SENTINEL_OFFSET {
+            return format!("1:1: {}", self.message);
+        }
+        let offset = offset.min(source.len());
+
+        // Number of newlines strictly before `offset`; `line_offsets` is sorted ascending.
+        let preceding_newlines = line_offsets.partition_point(|&nl| nl < offset);
+        let line = preceding_newlines + 1;
+        let line_start = match preceding_newlines.checked_sub(1) {
+            Some(i) => line_offsets[i] + 1,
+            None => 0,
+        };
+        let col = source[line_start..]
+            .char_indices()
+            .take_while(|(i, _)| line_start + i < offset)
+            .count()
+            + 1;
+        format!("{line}:{col}: {}", self.message)
+    }
+}
+
+#[cfg(test)]
+mod parse_error_render_tests {
+    use super::ParseError;
+    use reify_core::SourceSpan;
+
+    /// A parse error a user cannot locate is only marginally better than silence.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392:
+    /// `SourceSpan` carries byte offsets only, and the CLI printed `err.message` alone — no
+    /// file, no line, no column. `render` is the single place that converts an offset into a
+    /// position a human can act on.
+    #[test]
+    fn parse_error_render_includes_line_and_column() {
+        let source =
+            "structure T {\n  let v = f(1)\n}\nfn f(i: Int) -> Real {\n  let x0 = 1\n  x0\n}\n";
+        let off = source
+            .find("let x0")
+            .expect("fixture must contain 'let x0'") as u32;
+
+        let err = ParseError {
+            message: "missing ';' after `let` binding in function body".to_string(),
+            span: SourceSpan::new(off, off + 6),
+        };
+
+        let rendered = err.render(source);
+
+        // `let x0` is on line 5, indented two spaces, so column 3 — both 1-based.
+        assert!(
+            rendered.starts_with("5:3:"),
+            "expected the rendered error to lead with its 1-based line:column position \
+             `5:3:`; got {rendered:?}",
+        );
+        assert!(
+            rendered.contains("missing ';'"),
+            "the rendered error must still carry its message; got {rendered:?}",
+        );
+        assert!(
+            !rendered.contains('\n'),
+            "a rendered parse error must be a single line — a multi-line render means source \
+             is being echoed back into the diagnostic; got {rendered:?}",
+        );
+    }
+
+    /// Offset 0 is the boundary the loop in `byte_offset_to_line_col` never enters: it must
+    /// still report `1:1`, not `0:0`.
+    #[test]
+    fn parse_error_render_at_offset_zero_is_one_one() {
+        let source = "fn f() -> Int { 1 }\n";
+        let err = ParseError {
+            message: "syntax error in source file".to_string(),
+            span: SourceSpan::new(0, 2),
+        };
+
+        let rendered = err.render(source);
+        assert!(
+            rendered.starts_with("1:1:"),
+            "byte offset 0 must render as the 1-based position `1:1:`; got {rendered:?}",
+        );
+    }
+
+    /// A prelude-sentinel span must degrade, never abort.
+    ///
+    /// `SourceSpan::PRELUDE_SENTINEL_OFFSET` (`u32::MAX`) lies far past the end of any real
+    /// source. `byte_offset_to_line_col` short-circuits it to `(1, 1)` ahead of its
+    /// `debug_assert!(offset <= source.len())`, but only if `render` passes the sentinel
+    /// through unclamped — clamping it to `source.len()` first would silently turn a
+    /// "no user-file location" marker into a bogus end-of-file position.
+    #[test]
+    fn parse_error_render_tolerates_the_prelude_sentinel() {
+        let source = "fn f() -> Int { 1 }\n";
+        let sentinel = SourceSpan::PRELUDE_SENTINEL_OFFSET as u32;
+        let err = ParseError {
+            message: "syntax error in source file".to_string(),
+            span: SourceSpan::new(sentinel, sentinel),
+        };
+
+        let rendered = err.render(source);
+        assert!(
+            rendered.starts_with("1:1:"),
+            "a prelude-sentinel span must render as the `1:1:` no-user-file-location \
+             fallback rather than panicking or reporting an end-of-file position; \
+             got {rendered:?}",
+        );
+    }
+
+    /// The batch path must agree with the scanning path at EVERY offset.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+    /// `render_with_offsets` exists only to avoid re-scanning the source once per diagnostic;
+    /// it earns that by reproducing `reify_core::byte_offset_to_line_col` exactly, so the two
+    /// are compared here at every byte offset of a fixture chosen to hit each way they could
+    /// diverge: an offset before any newline (line 1, where the `checked_sub` line-start
+    /// branch is taken), offsets on and immediately after a newline (the off-by-one the binary
+    /// search would get wrong), MULTI-BYTE characters (byte length != codepoint count, so a
+    /// column computed from bytes would drift), consecutive newlines (an empty line, whose
+    /// line start IS its line end), a trailing newline, and `source.len()` itself.
+    ///
+    /// Offsets that fall inside a multi-byte character are included deliberately: a span is
+    /// normally on a character boundary, but the scanning version tolerates one that is not,
+    /// and a slicing implementation would panic there instead.
+    #[test]
+    fn render_with_offsets_agrees_with_the_scanning_render() {
+        let source = "fn f() -> Int {
+  let α = 1
+
+  α + 1
+}
+";
+        let line_offsets = reify_core::build_line_offsets(source);
+
+        for offset in 0..=source.len() {
+            let err = ParseError {
+                message: "m".to_string(),
+                span: SourceSpan::new(offset as u32, offset as u32),
+            };
+            let (line, col) = reify_core::byte_offset_to_line_col(source, offset);
+            assert_eq!(
+                err.render_with_offsets(source, &line_offsets),
+                format!("{line}:{col}: m"),
+                "batch render disagrees with the scanning render at byte offset {offset} \
+                 of {source:?}",
+            );
+        }
+    }
+
+    /// `render_all` is the loop the CLI and MCP call sites run: empty in, empty out, and the
+    /// spans that have no line to report still degrade rather than panicking.
+    ///
+    /// INV-SF-7, task #5392. `render_all` has ONE code path — only the empty case returns
+    /// early, and it builds nothing — so agreement with mapping `render` holds by
+    /// construction and is not what needs pinning. What does is the behaviour on the two
+    /// inputs that carry no usable position: an offset past the end of `source` (a stale
+    /// span, or one belonging to a different file) and the prelude sentinel.
+    #[test]
+    fn render_all_handles_empty_input_and_locationless_spans() {
+        let source = "fn f() -> Int {
+  let x = 1
+  x
+}
+";
+        let mk = |off: u32, msg: &str| ParseError {
+            message: msg.to_string(),
+            span: SourceSpan::new(off, off),
+        };
+
+        assert!(
+            ParseError::render_all(&[], source).is_empty(),
+            "rendering no errors must yield no strings",
+        );
+
+        let errors = vec![
+            mk(0, "first"),
+            mk(18, "second"),
+            // Out of range: clamped to the end of the source, never a panic.
+            mk(source.len() as u32 + 500, "past end"),
+            mk(SourceSpan::PRELUDE_SENTINEL_OFFSET as u32, "prelude"),
+        ];
+        let rendered = ParseError::render_all(&errors, source);
+
+        assert_eq!(
+            rendered.len(),
+            errors.len(),
+            "render_all must yield one string per input error, in order; got {rendered:?}",
+        );
+
+        // Derived, not hard-coded: the clamp target is whatever the canonical scanning
+        // conversion reports for the end of the source.
+        let (end_line, end_col) = reify_core::byte_offset_to_line_col(source, source.len());
+        assert_eq!(
+            rendered[2],
+            format!("{end_line}:{end_col}: past end"),
+            "an out-of-range offset must clamp to the end of the source",
+        );
+        assert_eq!(
+            rendered[3], "1:1: prelude",
+            "a prelude-sentinel span has no user-file location and must fall back to `1:1`",
+        );
+    }
+}
+
 #[cfg(test)]
 mod number_class_tests {
     use super::{classify_number_literal, NumberClass};
@@ -1845,6 +2338,7 @@ mod member_test_fixtures {
             index_binder: None,
             index_domain: None,
             relate_relations: Vec::new(),
+            derivation: None,
             span: SourceSpan::new(0, 1),
             content_hash: ContentHash(0),
         }

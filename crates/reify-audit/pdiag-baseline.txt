@@ -1,0 +1,95 @@
+# PDIAG baseline — per-file allowance of code-less Diagnostic::error/warning
+# construction sites (INV-SF-6 diagnostics-carry-codes).
+#
+# GENERATED — do not hand-edit. Regenerate with:
+#   cargo run -p reify-audit --bin pdiag-baseline-gen -- --project-root . \
+#     > crates/reify-audit/pdiag-baseline.txt
+#
+# Counts may only DECREASE. A row going up, or a new file appearing here, is a
+# hard-gate (High) finding from `reify-audit --pattern PDIAG`.
+#
+# Regenerating is NOT a remediation — it just re-blesses the new sites. If your
+# diff went RED, the three real fixes (attach a DiagnosticCode / take the
+# reviewed `// pdiag:allow — reason` opt-out / fix the sites and shrink the row
+# IN THE SAME COMMIT) are in docs/notes/diagnostic-severity-policy.md §3. The
+# one exception is a pure MOVE or RENAME, where regenerating IS the fix — §3(d).
+#
+# A regeneration is valid for EXACTLY the tree it ran against. Any later
+# rebase, merge, amend or cherry-pick — including one the merge queue performs
+# — is a different tree and invalidates it. Counts below are ABSOLUTE, so a
+# file your branch never touched can drift underneath you. Re-verify on the
+# COMMITTED tree, after the commit and after any such replay:
+#   git status --porcelain    # must be empty
+#   cargo run -p reify-audit --bin pdiag-baseline-gen -- --project-root . \
+#     | diff -u crates/reify-audit/pdiag-baseline.txt -
+# An empty diff is the proof; a green captured before the commit is not. See
+# docs/notes/diagnostic-severity-policy.md §3 "Regeneration is tree-bound".
+#
+# Format: `<repo-relative-path> <count>`, ascending by path, no zero rows.
+crates/reify-compiler/src/annotations.rs 6
+crates/reify-compiler/src/annotations/display.rs 1
+crates/reify-compiler/src/annotations/schema.rs 12
+crates/reify-compiler/src/arg_check.rs 3
+crates/reify-compiler/src/compile_builder/aliases_phase.rs 1
+crates/reify-compiler/src/compile_builder/auto_type_param_phase.rs 2
+crates/reify-compiler/src/compile_builder/ctx.rs 1
+crates/reify-compiler/src/compile_builder/defs_phase.rs 2
+crates/reify-compiler/src/compile_builder/entities_phase.rs 5
+crates/reify-compiler/src/compile_builder/post_passes.rs 1
+crates/reify-compiler/src/compile_builder/pre_pass.rs 4
+crates/reify-compiler/src/compile_builder/units_phase.rs 4
+crates/reify-compiler/src/conformance/checker.rs 3
+crates/reify-compiler/src/conformance/mod.rs 1
+crates/reify-compiler/src/conformance/sub_component_validation.rs 1
+crates/reify-compiler/src/connect.rs 11
+crates/reify-compiler/src/diagnostics.rs 1
+crates/reify-compiler/src/entity.rs 50
+crates/reify-compiler/src/expr.rs 64
+crates/reify-compiler/src/forall_elaborate.rs 2
+crates/reify-compiler/src/functions.rs 10
+crates/reify-compiler/src/geometry.rs 17
+crates/reify-compiler/src/geometry_boolean.rs 1
+crates/reify-compiler/src/geometry_modify.rs 4
+crates/reify-compiler/src/guards.rs 7
+crates/reify-compiler/src/ice.rs 1
+crates/reify-compiler/src/lib.rs 1
+crates/reify-compiler/src/module_dag.rs 11
+crates/reify-compiler/src/module_pragmas.rs 37
+crates/reify-compiler/src/scc.rs 2
+crates/reify-compiler/src/stdlib_topo.rs 1
+crates/reify-compiler/src/termination.rs 4
+crates/reify-compiler/src/traits.rs 12
+crates/reify-compiler/src/type_resolution.rs 28
+crates/reify-compiler/src/units.rs 3
+crates/reify-compiler/src/variant_construct.rs 2
+crates/reify-constraints/src/relate_solve.rs 1
+crates/reify-eval/src/compute_targets/bc_resolve.rs 3
+crates/reify-eval/src/compute_targets/buckling_multi_case.rs 8
+crates/reify-eval/src/compute_targets/elastic_static.rs 12
+crates/reify-eval/src/compute_targets/fdm_slice.rs 2
+crates/reify-eval/src/compute_targets/form_find.rs 2
+crates/reify-eval/src/compute_targets/membrane_load.rs 1
+crates/reify-eval/src/compute_targets/multi_case.rs 8
+crates/reify-eval/src/compute_targets/tensegrity_load.rs 1
+crates/reify-eval/src/dynamics_ops.rs 4
+crates/reify-eval/src/engine_admin.rs 2
+crates/reify-eval/src/engine_build.rs 48
+crates/reify-eval/src/engine_compute.rs 1
+crates/reify-eval/src/engine_constraints.rs 1
+crates/reify-eval/src/engine_edit.rs 6
+crates/reify-eval/src/engine_eval.rs 21
+crates/reify-eval/src/geometry_ops.rs 137
+crates/reify-eval/src/modal_ops.rs 25
+crates/reify-eval/src/morph_producer.rs 1
+crates/reify-eval/src/realization_content.rs 4
+crates/reify-eval/src/relate_solve.rs 3
+crates/reify-eval/src/shell_extract_compute.rs 6
+crates/reify-eval/src/structural_query.rs 3
+crates/reify-eval/src/tolerance_combine.rs 1
+crates/reify-eval/src/unfold.rs 10
+crates/reify-eval/src/unfold/optimized_instance_reuse.rs 1
+crates/reify-shell-extract/src/result.rs 2
+crates/reify-stdlib/src/dfm.rs 12
+crates/reify-stdlib/src/geometry.rs 2
+crates/reify-stdlib/src/tolerancing.rs 2
+gui/src-tauri/src/engine.rs 1

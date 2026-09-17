@@ -31,7 +31,11 @@ use reify_test_support::*;
 #[test]
 fn parse_error_malformed_syntax() {
     // `@@@` inside the structure body is invalid; tree-sitter produces an ERROR node,
-    // which the ts_parser lowering converts to a ParseError with "syntax error: @@@".
+    // which the ts_parser lowering converts to a ParseError. Since task #5392 that message
+    // is "syntax error in structure body" — the fault has no enclosing `let` to anchor to,
+    // and the message no longer interpolates the offending source text (INV-SF-7
+    // `parse-is-value-faithful`, docs/legibility/design-invariants.md). The assertions below
+    // are deliberately shape-independent, so they hold across that rewording.
     let source = "structure S { @@@ }";
     let parsed = reify_syntax::parse(source, ModulePath::single("test_malformed"));
     let compiled = reify_compiler::compile(&parsed);

@@ -4,7 +4,7 @@
 
 `connect` creates connections between ports, generating constraints and optional connector instances.
 
-```
+```reify-fragment
 connect motor.shaft -> coupling.driver
 connect coupling.driven -> gearbox.input : SplineConnection { tooth_count = 24 }
 connect plate_a.face <-> plate_b.face : ButtWeld
@@ -25,7 +25,7 @@ A `connect` statement desugars into:
 
 ## Connector Parameterization
 
-```
+```reify-fragment
 connect housing.bore -> shaft.journal : ShrinkFit {
     interference = 0.02mm
     assembly_temperature_delta = 150degC
@@ -34,7 +34,7 @@ connect housing.bore -> shaft.journal : ShrinkFit {
 
 ## Port Mapping
 
-```
+```reify-fragment
 connect motor.nema17 -> adapter.side_a {
     shaft -> input_bore
     bolt_hole_1 -> mounting_a
@@ -44,7 +44,7 @@ connect motor.nema17 -> adapter.side_a {
 
 ## Ad-hoc Connections
 
-```
+```reify-fragment
 connect bracket@face(top_surface) -> plate@face(bottom_surface) : Adhesive
 connect pipe@region(outer_surface, z = 0mm..50mm) -> clamp@region(inner_surface)
 ```
@@ -54,7 +54,7 @@ The `@` operator creates ad-hoc ports by designating geometric regions.
 ## Chain Statement
 
 Sugar for connecting sequential occurrences via default ports:
-```
+```reify-fragment
 chain casting -> machining -> heat_treat -> finishing
 // Desugars to:
 connect casting.default_out -> machining.default_in

@@ -46,6 +46,7 @@ pub mod puntested;
 pub mod player;
 pub mod ptodo;
 pub mod pdssentinel;
+pub mod pdiag;
 pub mod pdoccover;
 pub mod fused_memory_client;
 pub mod jcodemunch_client;
@@ -182,6 +183,35 @@ pub enum Pattern {
     ///
     /// Reference: `docs/prds/dimensionless-scalar-sentinel-stampout.md` §8/§10.
     PDsSentinel,
+    /// PDIAG — codes-mandatory ratchet (`INV-SF-6 diagnostics-carry-codes`):
+    /// a `Diagnostic::error(...)` / `Diagnostic::warning(...)` construction
+    /// site in scoped Rust source with no `.with_code(...)` attached within a
+    /// bounded forward line window, and not marked with a `// pdiag:allow —
+    /// reason` escape. The escape is forward-scoped and bounded by the next
+    /// constructor as well as by the window, so one escape covers exactly one
+    /// site and can never reach backwards over the site above it. Per-file
+    /// counts ratchet against the committed
+    /// `crates/reify-audit/pdiag-baseline.txt` manifest.
+    ///
+    /// **High** severity for a count that exceeds its baseline row (or a file
+    /// with sites and no row) — unlike PTODO/PDSSENTINEL this pattern DOES
+    /// move the process exit code, which is the hard gate PRD §8 boundary
+    /// row 8 requires. Under-count and orphan-row advisories are Medium and
+    /// exit-neutral, so an opportunistic fix never turns a diff RED. OPT-IN
+    /// via `is_some_and` (mirroring `run_pdead`), NOT a member of the
+    /// no-`--pattern` default sweep: because its verdicts move the exit code,
+    /// joining that sweep would make every consumer which omits `--pattern`
+    /// go RED the moment this ratchet drifted. Structural: reads the working
+    /// tree via `ls_files()` + `std::fs`, never contacts jcodemunch or the
+    /// task DB.
+    ///
+    /// Scope: `crates/<name>/src/**.rs` + `gui/src-tauri/src/**.rs`, minus the
+    /// detector's own crate, `reify-test-support`, `tests/`-segment paths and
+    /// `#[cfg(test)]` bodies.
+    ///
+    /// Reference: `docs/prds/v0_6/eradicate-silent-undef.md` §3 Leg C / §7;
+    /// remediation: `docs/notes/diagnostic-severity-policy.md` §3.
+    PDiag,
     /// PDOCCOVER — bidirectional registry↔chunk name drift between the
     /// compiler's builtin-name registries and the MCP language-reference
     /// chunks (`crates/reify-mcp/src/tools/chunks/*.md`). ONE detector, two
@@ -1335,13 +1365,33 @@ impl GitOps for MockGitOps {
 /// metadata so the detector stays pure-logic (it never reads source files —
 /// symmetric with how [`GitOps::diff_added_lines`] pre-extracts strings).
 /// Per `f-infra-design.md` §3 and §5 P1.
+///
+/// KNOWN LIMITATION — the three suppression fields carry no "unknown".
+/// `false` / `None` means EITHER "the declaration was read and carries no
+/// opt-out" OR "the declaration could not be located and nothing was read".
+/// A consumer that treats them as an opt-out having been DECLINED will,
+/// on the second reading, report a symbol its author did suppress. Today
+/// `line == 0` is the only in-band signal, and it covers just one of the
+/// two ways a declaration goes unlocatable (the wire reported no line);
+/// the other — a line past the declaring file's current end, i.e. a stale
+/// index — is known only to the enrichment pass, which reports it to the
+/// operator on stderr and does not record it per symbol. Distinguishing
+/// the states at the type is tracked as a follow-up rather than fixed
+/// here, since it reaches beyond this seam into `p1_producer_orphan`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChangedSymbol {
     /// The symbol's name, used as the key for [`JCodemunchOps::find_references`].
     pub name: String,
     /// Workspace-relative path of the file declaring the symbol.
     pub file: String,
-    /// 1-based line of the declaration (forensic evidence locator).
+    /// 1-based line of the declaration (forensic evidence locator) WHEN
+    /// the wire reports one. `0` is the sentinel for "not reported",
+    /// mirroring [`SymbolReference::line`]: a `get_changed_symbols` payload
+    /// that omits the `line` column still yields the symbol, located at
+    /// `0`, rather than dropping it. Suppression enrichment treats `0` as
+    /// unlocatable and leaves the flags below at their neutral defaults —
+    /// which is why a consumer reading those flags must check this field
+    /// first; see the KNOWN LIMITATION on the struct.
     pub line: usize,
     /// `true` when the declaration carries `#[allow(dead_code)]` — an
     /// intentional-orphan opt-out (suppresses the finding). Per
@@ -1364,7 +1414,9 @@ pub struct ChangedSymbol {
 pub struct SymbolReference {
     /// Workspace-relative path of the referencing file.
     pub file: String,
-    /// 1-based line of the reference.
+    /// 1-based line of the reference WHEN the wire reports one. `0` is the
+    /// sentinel for "not reported": jcodemunch's `find_references` records
+    /// carry only `file`/`specifier`/`match_type`, no line number.
     pub line: usize,
 }
 
@@ -1386,7 +1438,11 @@ pub struct DeadSymbol {
     pub kind: String,
     /// Workspace-relative path of the file declaring the symbol.
     pub file: String,
-    /// 1-based line of the declaration.
+    /// 1-based line of the declaration WHEN the wire reports one. `0` is the
+    /// sentinel for "not reported", mirroring [`ChangedSymbol::line`] and
+    /// [`SymbolReference::line`]: a `get_dead_code_v2` payload that omits the
+    /// `line` column still yields the symbol, located at `0`, rather than
+    /// dropping it from the PDEAD sweep.
     pub line: usize,
     /// Jcodemunch's confidence score that the symbol is truly unreachable
     /// (0.0 = uncertain; 1.0 = certain). Filtered by `min_confidence` in
@@ -1478,6 +1534,48 @@ pub trait JCodemunchOps {
     /// imports that violate the project's layering rules. Returns an empty vec
     /// when none found. Per PRD §4-b.
     fn get_layer_violations(&self) -> Vec<LayerViolation>;
+}
+
+/// Inert [`JCodemunchOps`] — every query answers "nothing".
+///
+/// Unlike [`MockJCodemunchOps`] this is NOT test-support: it is the production
+/// binding whenever a run does not need the jcodemunch seam at all, and it is
+/// ungated for exactly that reason. Three call sites, all of them real:
+///
+/// 1. `--no-jcodemunch` — the explicit offline escape hatch: P1 runs and
+///    produces zero findings without opening a socket.
+/// 2. Detector runs that never touch the seam (`needs_jcodemunch() == false`):
+///    P5/pre-done, P2-only, and the purely structural lanes (PTODO, PDIAG).
+/// 3. `pdiag-baseline-gen`, a structural census that still has to populate
+///    [`AuditContext`]'s field.
+///
+/// Lives here rather than in each bin because it was copy-pasted into three of
+/// them, so every future change to the trait had to be replayed by hand in
+/// three places — a silent drift hazard with no compiler backstop until one
+/// copy stopped building. Two of the three now bind this one.
+///
+/// The third, `src/bin/ptodo-baseline-gen.rs`, still carries a private copy
+/// that re-opens that hazard in the one bin that still has it — a residual
+/// defect, not a design choice, tracked as #7132.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoopJCodemunchOps;
+
+impl JCodemunchOps for NoopJCodemunchOps {
+    fn get_changed_symbols(&self, _since_sha: &str, _until_sha: &str) -> Vec<ChangedSymbol> {
+        vec![]
+    }
+    fn find_references(&self, _symbol: &ChangedSymbol) -> Vec<SymbolReference> {
+        vec![]
+    }
+    fn get_dead_code(&self, _min_confidence: f64) -> Vec<DeadSymbol> {
+        vec![]
+    }
+    fn get_untested_symbols(&self, _min_confidence: f64) -> Vec<UntestedSymbol> {
+        vec![]
+    }
+    fn get_layer_violations(&self) -> Vec<LayerViolation> {
+        vec![]
+    }
 }
 
 /// HashMap-backed [`JCodemunchOps`] for tests. Gated behind

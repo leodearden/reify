@@ -58,12 +58,16 @@ mod constraint_def_tests;
 mod constraint_inst_tests;
 #[path = "harness_syntax/default_decl_tests.rs"]
 mod default_decl_tests;
+#[path = "harness_syntax/derived_sub_arm_parser_tests.rs"]
+mod derived_sub_arm_parser_tests;
 #[path = "harness_syntax/edge_case_tests.rs"]
 mod edge_case_tests;
 #[path = "harness_syntax/field_tests.rs"]
 mod field_tests;
 #[path = "harness_syntax/fn_body_expr_parser_tests.rs"]
 mod fn_body_expr_parser_tests;
+#[path = "harness_syntax/fn_body_separator_ambiguity_tests.rs"]
+mod fn_body_separator_ambiguity_tests;
 #[path = "harness_syntax/fn_param_default_tests.rs"]
 mod fn_param_default_tests;
 #[path = "harness_syntax/forall_statement_tests.rs"]

@@ -297,6 +297,16 @@ fn sub_direct_exprs(s: &SubDecl) -> impl Iterator<Item = &Expr> {
         index_binder: _,
         index_domain,
         relate_relations,
+        // The DERIVED arm's clause — `sub b = mirror of a across P { … }`
+        // (task #6615). Deliberately `_`-bound, not folded into the chain
+        // below: its expression-bearing parts (the `SubDerivationKind`
+        // transform operand, each `SubParamOverride` value) and its
+        // `members` are reached only once derived subs elaborate, which is
+        // A-beta (#6616)'s semantics to define — the same deferral, for the
+        // same reason, that `SubDerivation::members`' doc comment records
+        // against every member walker in reify-ast. A-beta must wire both
+        // together rather than inherit either silently.
+        derivation: _,
         span: _,
         content_hash: _,
     } = s;
@@ -4483,6 +4493,104 @@ structure Assembly {
         assert!(
             main_after.contains("import parts.Bore"),
             "main.ri import renamed to `parts.Bore`: {main_after}"
+        );
+        assert!(
+            main_after.contains("= Bore()"),
+            "main.ri construction site renamed to `Bore()`: {main_after}"
+        );
+    }
+
+    #[test]
+    fn compute_rename_cross_file_one_char_structure_name_does_not_corrupt_keyword() {
+        // BLAST-RADIUS GUARD (task 7529). A declaration span starts at its
+        // keyword, so a name-token locator that is not whole-word matches the
+        // `s` of `structure` before the `s` of `structure s`. That span reaches
+        // this write path: the parts.ri edit rewrites byte 0, yielding
+        // `Boretructure s { … }`, which does not parse.
+        //
+        // The DESTRUCTURED import form is load-bearing and must not be
+        // "simplified" to `import parts.s`: ts_parser classifies a trailing
+        // import-path segment as an entity only when it starts with an
+        // uppercase character, so `import parts.s` lowers to
+        // `ImportKind::Module`, the cross-file home never resolves, and this
+        // test would silently assert nothing. `import parts.{s}` lowers to
+        // `ImportKind::Destructured(["s"])`, which `import_exposes_entity`
+        // admits.
+        const SHORT_PARTS_SRC: &str = "structure s {\n    param diameter: Length = 10mm\n}";
+        const SHORT_MAIN_SRC: &str =
+            "import parts.{s}\nstructure Assembly {\n    sub hole = s()\n}";
+
+        let docs = workspace_docs(&[(parts_uri(), SHORT_PARTS_SRC), (main_uri(), SHORT_MAIN_SRC)]);
+        let mut map = HashMap::new();
+        map.insert(
+            "parts".to_string(),
+            (parts_uri(), SHORT_PARTS_SRC.to_string()),
+        );
+        let resolver = mock_resolver(map);
+
+        let parsed_main = reify_syntax::parse(SHORT_MAIN_SRC, ModulePath::single("main"));
+        // `occurrences` is unusable for a one-character name (every `s` in
+        // `structure`/`parts`/`sub` matches), so anchor on the construction site.
+        let assign = SHORT_MAIN_SRC.find("= s()").expect("fixture: construction site");
+        let main_use = assign + "= ".len(); // the `s` of `= s()`
+        assert_eq!(&SHORT_MAIN_SRC[main_use..main_use + 1], "s");
+
+        let edit = compute_rename_cross_file(
+            SHORT_MAIN_SRC,
+            &parsed_main,
+            &main_uri(),
+            offset_to_position(SHORT_MAIN_SRC, main_use as u32),
+            "Bore",
+            &docs,
+            &resolver,
+        )
+        .expect("cross-file rename of a one-character name yields a WorkspaceEdit");
+
+        let changes = edit.changes.expect("changes present");
+        assert_eq!(changes.len(), 2, "edit spans both parts.ri and main.ri");
+
+        let parts_edits = changes.get(&parts_uri()).expect("parts.ri edits present");
+        assert_eq!(
+            parts_edits.len(),
+            1,
+            "parts.ri: 1 edit (structure decl token)"
+        );
+        let main_edits = changes.get(&main_uri()).expect("main.ri edits present");
+        assert_eq!(
+            main_edits.len(),
+            2,
+            "main.ri: 2 edits (import token + sub use)"
+        );
+        assert!(
+            parts_edits
+                .iter()
+                .chain(main_edits)
+                .all(|e| e.new_text == "Bore"),
+            "every edit writes Bore"
+        );
+
+        // Invariant 5: apply per-file edits, re-parse, assert ZERO errors in BOTH.
+        let parts_after = apply_edits(SHORT_PARTS_SRC, parts_edits);
+        let main_after = apply_edits(SHORT_MAIN_SRC, main_edits);
+        let parts_reparsed = reify_syntax::parse(&parts_after, ModulePath::single("parts"));
+        assert!(
+            parts_reparsed.errors.is_empty(),
+            "parts.ri re-parses clean after renaming a one-character name: {:?}\n{parts_after}",
+            parts_reparsed.errors
+        );
+        let main_reparsed = reify_syntax::parse(&main_after, ModulePath::single("main"));
+        assert!(
+            main_reparsed.errors.is_empty(),
+            "main.ri re-parses clean after renaming a one-character name: {:?}\n{main_after}",
+            main_reparsed.errors
+        );
+        assert!(
+            parts_after.contains("structure Bore"),
+            "parts.ri now declares `structure Bore` — the keyword is intact: {parts_after}"
+        );
+        assert!(
+            main_after.contains("import parts.{Bore}"),
+            "main.ri import renamed to `parts.{{Bore}}`: {main_after}"
         );
         assert!(
             main_after.contains("= Bore()"),

@@ -189,11 +189,13 @@ assert "PG-1/docs+fixture: hook still completes in seconds — no cargo nextest 
 echo ""
 echo "--- Scenario PG-2: Rust-consumed prd-gate fixture -> stays conservative (control, green before AND after) ---"
 # geometry_let_selector_consumer.ri is pushed into corpus_files() by
-# crates/reify-eval/tests/no_stale_undef_invariant_gate.rs:772 — it is a
-# runtime input to a compiled test target, so EDITING it must keep today's
-# conservative classification even though ADDING an unrelated fixture is inert.
+# crates/reify-eval/tests/harness_corpus_gates/eval_invariant_corpus_sweep.rs
+# (no line number: the previous cite had already drifted, so a fresh one would
+# only re-drift) — it is a runtime input to a compiled test target, so EDITING it
+# must keep today's conservative classification even though ADDING an unrelated
+# fixture is inert.
 plan_for staged tests/prd-gate/fixtures/geometry_let_selector_consumer.ri
-assert "PG-2/coupled fixture: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (read by no_stale_undef_invariant_gate.rs)" \
+assert "PG-2/coupled fixture: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (read by eval_invariant_corpus_sweep.rs)" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_OUT"
 
 echo ""
@@ -2489,10 +2491,14 @@ assert "GV-5b: gui lane carries npm test" \
 # edit to a fixture it pins. A narrowing that skipped vitest here would delete
 # that task's whole coverage argument while leaving its RUN_GUI=1 assertion
 # (PG-DRIFT-GUI, above) passing. Derived from the same ledger as PG-DRIFT-GUI,
-# so it cannot drift from the real pin set.
+# so it cannot drift from the real pin set. The pin must be GUI-ONLY (absent
+# from PG-DRIFT's Rust-coupled set): a Rust-coupled pin classifies RUN_RUST=1,
+# which is a different arm — and the first pin in sort order became one when
+# task 6615 pinned adt_mirror_of_arm.ri.
 echo ""
 echo "--- Scenario GV-6: EXPECTED_CLEAN-pinned prd-gate fixture -> vitest runs (task 6435) ---"
-_GV6_PIN="$(printf '%s\n' "$_PG_GUI_PINS" | head -1)"
+_GV6_PIN="$(printf '%s\n' "$_PG_GUI_PINS" \
+    | grep -vxF -f <(printf '%s\n' "$_PG_COUPLED") | head -1 || true)"
 assert "GV-6: a pinned fixture was derived (guard is not vacuous)" \
     test -n "$_GV6_PIN"
 plan_for staged "$_GV6_PIN"

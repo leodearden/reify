@@ -105,6 +105,14 @@ pub const MATH_OPERATION_NAMES: &[&str] = &[
 /// drift to the first-arg default but are out of scope (deferred), mirroring
 /// how task-4182 froze its 26 §3 names and left trig out.
 ///
+/// That deferral has an owner: #6003 (registry τ1) registers
+/// floor/ceil/round/log10/remap/sinh/cosh/tanh as builtin-signature rows and
+/// deletes this paragraph when it lands. The class is already machine-visible
+/// in `unresolved_function::EVAL_DEFERRED_BUILTIN_NAMES` under that same owner
+/// cite, so read the manifest rather than this prose for which names ride the
+/// first-arg fallback today — prose drifts, and the manifest is pinned by
+/// `eval_deferred_manifest_contains_the_known_deferred_names`.
+///
 /// Case-sensitive snake_case, mirroring the sibling slices.
 pub const MATH_TRANSCENDENTAL_NAMES: &[&str] = &[
     // forward trig (accept ANGLE-or-Real, return dimensionless Scalar ratio)
