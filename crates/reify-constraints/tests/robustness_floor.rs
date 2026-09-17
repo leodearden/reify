@@ -42,15 +42,25 @@
 //!   - `genuinely_unsatisfiable_constraints_keep_the_region_empty_wording` above
 //!     serves as the second pair's empty half.
 //!
-//! Task #5714 review round — a witness satisfying the originals says NOTHING
-//! about the floor, so the emit site re-checks it and words THREE classes:
-//! 1 no witness (region empty), 2 witness misses the floor (margin named, with
-//! its shortfall), 3 witness meets the floor too (a convergence limit, and none
-//! of class 2's remedies apply).  The measured 2/3 boundary on
-//! `2·x > 60mm ∧ 2·x < HI` sits between HI = 61mm and HI = 62.5mm:
+//! Task #5714 review rounds — a witness verified against one constraint set says
+//! NOTHING about another, so the emit site runs a SEPARATE search per claim and
+//! words THREE classes: 3 a point meets the FLOORED set (a convergence limit,
+//! and none of class 2's remedies apply), 2 else a point meets the originals
+//! (their satisfiability is claimed; the floor half is reported as a search that
+//! declined), 1 else neither (the original region-empty wording).
+//!
+//! The 2/3 discriminator is pinned by three tests, and the third is the one that
+//! matters most.  `2·x > 60mm ∧ 2·x < HI` has asymmetric synthesised margins, so
+//! its floored window closes at HI = 61.6mm:
 //!   - `wide_underivable_bracket_does_not_blame_a_satisfiable_margin` (class 3,
 //!     HI = 100mm) — pairs with the class-2 `61mm` test above, which differs
-//!     ONLY in that bound, so the two pin the discriminator itself.
+//!     ONLY in that bound.
+//!   - `asymmetric_margin_band_does_not_blame_a_satisfiable_margin` (class 3,
+//!     HI = 62.0mm) — inside the window that pair STRADDLED, where the
+//!     re-check-based discriminator was false for every shape (esc-5714-4).
+//!   - `floored_window_emptiness_decides_the_class_across_the_band` — sweeps the
+//!     transition in 0.2mm steps and predicts the class in CLOSED FORM, so an
+//!     endpoint pair can never again hide a misclassified interior.
 
 use reify_constraints::DimensionalSolver;
 use reify_core::{DiagnosticCode, DimensionVector, Type, ValueCellId};
@@ -963,7 +973,7 @@ fn floor_infeasible_message(problem: &ResolutionProblem) -> String {
 /// the diagnostic must say so and name the robustness margin — not the constraints —
 /// as what could not be met.
 ///
-/// WHICH RUNG of `original_constraints_witness` this shape exercises, and why its
+/// WHICH RUNG of `constraints_witness` this shape exercises, and why its
 /// steep Length sibling is kept alongside it rather than folded into it: here the
 /// objective `1 USD × q` has gradient 1, the floored solve's shift is ~2.5e-7, and
 /// its converged point stays inside [99, 100] — so RUNG 1 (that converged point,
@@ -1314,12 +1324,12 @@ fn steep_objective_over_an_underivable_bracket_still_names_the_margin() {
         "the diagnostic must keep the cost_robustness_tradeoff override hint (PRD \
          §2.4/§9); got: {message}"
     );
-    // CLASS 2 specifically: the witness does NOT meet the floor, so the shortfall
-    // clause must be PRESENT.  Its class-3 neighbour
-    // `wide_underivable_bracket_does_not_blame_a_satisfiable_margin` differs ONLY in
-    // the upper bound and sits the other side of the measured 61mm/62.5mm transition,
-    // where this clause is absent because every floor term IS met — an absent clause
-    // is exactly what made the old unconditional "cannot be met" sentence false.
+    // CLASS 2 specifically.  The floored window here is `2·x ∈ [61.2mm, 60.6mm]` —
+    // INVERTED, i.e. genuinely empty — so the floored search declines and the
+    // shortfall clause must be PRESENT to quantify how far off the margin is.  Its
+    // class-3 neighbours sit the other side of the transition at HI = 61.6mm, where
+    // the window opens: `asymmetric_margin_band_does_not_blame_a_satisfiable_margin`
+    // (HI = 62.0mm) is the nearest one, and it differs ONLY in this upper bound.
     assert!(
         message.contains("worst slack there:"),
         "a margin-only failure must quantify the shortfall, so the user can see how \
@@ -1329,41 +1339,54 @@ fn steep_objective_over_an_underivable_bracket_still_names_the_margin() {
 
 /// A NON-EMPTY floored region must not be blamed on the margin.
 ///
-/// `original_constraints_witness` promises only that its result satisfies the
-/// ORIGINAL constraints.  That says NOTHING about the synthesised floor — and
-/// rung 2 actively biases the witness TOWARD satisfying it, because dropping the
-/// objective hands the search `build_centrality_objective`, which maximises the
-/// minimum slack and so lands on the Chebyshev centre: the point most likely to
-/// clear the floor as well.  When it does, the old unconditional sentence
-/// ("it is the synthesised 2% robustness margin that cannot be met") was
-/// provably false, and `worst_unmet_floor_term` returned `None` so the shortfall
-/// clause vanished — an absent clause was the only tell.
+/// A witness verified against the ORIGINAL constraints says NOTHING about the
+/// synthesised floor, in EITHER direction.  `constraints_witness` is explicit
+/// that its contract stops at the set it was handed, so class 3 must rest on a
+/// point verified against `effective_constraints` — which is why the emit site
+/// searches the FLOORED set directly rather than re-checking an originals-witness
+/// against it.
+///
+/// Two successive cuts got this wrong, and this test plus
+/// `asymmetric_margin_band_does_not_blame_a_satisfiable_margin` are the pair that
+/// pin them:
+///
+///   - inferring "the margin cannot be met" from an originals-witness ALONE was
+///     false whenever that witness also met the floor, which is common because
+///     dropping the objective hands the search `build_centrality_objective` and
+///     so lands on the Chebyshev centre — the point most likely to clear the
+///     floor too.  This fixture (HI = 100mm) is that case.
+///   - re-checking the witness and reading a MISS as class 2 was false across a
+///     whole band, because the centre maximises the RAW minimum slack while the
+///     floor demands asymmetric per-side margins.  That is the band fixture.
 ///
 /// MEASURED SWEEP, `2·x > 60mm ∧ 2·x < HI` under `minimize 5 USD × (x / 1mm)`,
-/// probing the real `original_constraints_witness` path.  Synthesised margins
-/// are 1.200e-3 on the `2·x > 60mm` side and 4.000e-4 on the upper side:
+/// against the current two-search emit site.  Synthesised margins are 1.200e-3
+/// on the `2·x > 60mm` side and 4.000e-4 on the upper side, so the floored
+/// window on `2·x` is `[61.2mm, HI − 0.4mm]` and closes at HI = 61.6mm:
 ///
-/// | HI      | witness x | resid vs ORIGINALS | resid vs EFFECTIVE | class |
-/// |---------|-----------|--------------------|--------------------|-------|
-/// | 20mm    | — (None)  | —                  | —                  | 1     |
-/// | 61mm    | 30.25mm   | 0.0                | 7.000e-4           | 2     |
-/// | 62.5mm  | 30.625mm  | 0.0                | 0.0                | 3     |
-/// | 65mm    | 31.25mm   | 0.0                | 0.0                | 3     |
-/// | 70mm    | 32.5mm    | 0.0                | 0.0                | 3     |
-/// | 80mm    | 35mm      | 0.0                | 0.0                | 3     |
-/// | 100mm   | 40mm      | 0.0                | 0.0                | 3     |
-/// | 200mm   | 65mm      | 0.0                | 0.0                | 3     |
+/// | HI      | floored window on `2·x` | non-empty | class |
+/// |---------|-------------------------|-----------|-------|
+/// | 20mm    | — (originals empty too) | —         | 1     |
+/// | 61.0mm  | [61.2mm, 60.6mm]        | no        | 2     |
+/// | 61.4mm  | [61.2mm, 61.0mm]        | no        | 2     |
+/// | 61.6mm  | [61.2mm, 61.2mm]        | yes       | 3     |
+/// | 62.0mm  | [61.2mm, 61.6mm]        | yes       | 3     |
+/// | 62.4mm  | [61.2mm, 62.0mm]        | yes       | 3     |
+/// | 65mm    | [61.2mm, 64.6mm]        | yes       | 3     |
+/// | 100mm   | [61.2mm, 99.6mm]        | yes       | 3     |
 ///
-/// The class-2/class-3 transition is measured, not guessed: it sits between
-/// HI = 61mm and HI = 62.5mm, exactly where the floored region stops being
-/// empty.  This fixture is HI = 100mm, whose floored region `x ∈ (30.6mm,
-/// 49.4mm)` is plainly non-empty and contains the witness x = 40mm.
+/// The class boundary now coincides EXACTLY with floored-window emptiness — that
+/// is the property `floored_window_emptiness_decides_the_class_across_the_band`
+/// asserts in closed form, and it is what the old re-check could not deliver
+/// (its apparent boundary sat at 62.5mm, an artifact of where the un-floored
+/// centre happened to clear the asymmetric margins).  This fixture is HI = 100mm,
+/// whose floored region is plainly non-empty and contains the witness x = 40mm.
 ///
 /// So NONE of the class-2 remedies apply: nothing is over-constrained and there
 /// is no cost/robustness conflict to trade off, which is why "relax opposing
 /// constraints", "widen the tolerance margin" and `cost_robustness_tradeoff`
-/// must all be ABSENT here.  The invariant this test defends: the caller must
-/// RE-CHECK the witness against the floor before attributing the failure to it.
+/// must all be ABSENT here.  The invariant this test defends: a claim about the
+/// floored region must be earned by a search of the FLOORED set.
 #[test]
 fn wide_underivable_bracket_does_not_blame_a_satisfiable_margin() {
     let x_id = ValueCellId::new("UnderivableWide", "x");
@@ -1428,4 +1451,168 @@ fn wide_underivable_bracket_does_not_blame_a_satisfiable_margin() {
         "the margin must still be identified even though it is not the culprit; \
          got: {message}"
     );
+}
+
+/// The class-2/class-3 boundary, probed INSIDE the band the wide/tight pair
+/// straddles (task #5714 second review round, esc-5714-4).
+///
+/// `wide_underivable_bracket_does_not_blame_a_satisfiable_margin` (HI = 100mm)
+/// and `steep_objective_over_an_underivable_bracket_still_names_the_margin`
+/// (HI = 61mm) jump straight over HI ∈ [61.6mm, 62.4mm), and the first cut of
+/// the re-check was wrong across that whole window: discriminating on whether
+/// the ORIGINALS-witness clears the floor asks the wrong question, because
+/// rung 2 lands on the Chebyshev centre of the UN-floored box while the floor
+/// demands ASYMMETRIC per-side margins.  `collect_floor_terms` reads each
+/// margin off the `Lt`/`Le` bound evaluated AT THE SEED, so here the lower
+/// margin is 1.200e-3 (from the `2·x > 60mm` literal) and the upper only
+/// 4.000e-4 — a 3x asymmetry that is region-independent.  The un-floored centre
+/// therefore sits BELOW a non-empty floored window for a whole band of shapes.
+///
+/// MEASURED at HI = 62.0mm: the floored window is `2·x ∈ [61.2mm, 61.6mm]`,
+/// i.e. `x ∈ [30.6mm, 30.8mm]` — NON-EMPTY.  At x = 30.70mm, `2·x = 61.4mm`
+/// gives lower slack 1.4e-3 ≥ 1.2e-3 and upper slack 6.0e-4 ≥ 4.0e-4, so every
+/// original AND every floor term is met.  Yet the un-floored Chebyshev centre
+/// is x = 30.50mm (lower slack 1.0e-3 < 1.2e-3), which is why the
+/// originals-witness re-check declined and the class-2 sentence fired.
+///
+/// The invariant: the class-2/class-3 discriminator must be a search for a
+/// point meeting the FLOORED set, not a re-check of a point found for the
+/// un-floored one.  A witness that misses the floor is evidence about that
+/// witness, never about the floored region.
+#[test]
+fn asymmetric_margin_band_does_not_blame_a_satisfiable_margin() {
+    let x_id = ValueCellId::new("UnderivableBand", "x");
+
+    let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
+        auto_params: vec![length_auto_param(x_id.clone())],
+        constraints: vec![
+            (
+                constraint_id("UnderivableBand", 0),
+                scaled_length_cmp(2.0, BinOp::Gt, &x_id, 0.060),
+            ),
+            (
+                constraint_id("UnderivableBand", 1),
+                scaled_length_cmp(2.0, BinOp::Lt, &x_id, 0.062),
+            ),
+        ],
+        current_values: ValueMap::new(),
+        objective: Some(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            money_expr_x_per_mm(&x_id),
+        )),
+        functions: vec![].into(),
+    };
+
+    let message = floor_infeasible_message(&problem);
+
+    assert!(
+        !message.contains("cannot be met"),
+        "x = 30.70mm meets every original AND every floor term, so the margin \
+         demonstrably CAN be met — blaming it is a false claim; got: {message}"
+    );
+    assert!(
+        !message.contains("feasible region is empty"),
+        "the floored region x ∈ [30.6mm, 30.8mm] is non-empty; got: {message}"
+    );
+    assert!(
+        !message.contains("relax opposing constraints"),
+        "nothing is over-constrained here — telling the user to relax constraints is \
+         wrong advice; got: {message}"
+    );
+    assert!(
+        message.contains("both satisfiable"),
+        "the diagnostic must state that the originals AND the margin are both \
+         satisfiable at a verified point; got: {message}"
+    );
+}
+
+/// The class-2/class-3 boundary must track FLOORED-WINDOW EMPTINESS across the
+/// whole band, not just at the two endpoints the earlier pair probed.
+///
+/// This is the regression guard for esc-5714-4's root complaint: the controls
+/// `steep_objective_over_an_underivable_bracket_still_names_the_margin` (61mm)
+/// and `wide_underivable_bracket_does_not_blame_a_satisfiable_margin` (100mm)
+/// straddled a window in which EVERY shape was misclassified, so two passing
+/// endpoint tests said nothing about the 1.4mm of HI between them.  A sweep is
+/// the only shape of test that can see that, and it is cheap here because the
+/// expected class is not a hand-recorded table but a CLOSED-FORM prediction.
+///
+/// `2·x > 60mm ∧ 2·x < HI` under `minimize 5 USD × (x / 1mm)`.  Both synthesised
+/// margins are constants read off their own bound at the seed, so the floored
+/// window on `2·x` is exactly `[60mm + 1.2e-3, HI − 4.0e-4]` and its emptiness
+/// is decidable in closed form — which is what `expect_satisfiable` computes.
+/// A non-empty window means some point meets every original AND every floor
+/// term, i.e. class 3 is the only honest verdict; an empty one leaves class 2.
+///
+/// The band deliberately straddles the transition at HI = 61.6mm (where the
+/// window closes to exactly zero width) in 0.2mm steps, so the four shapes the
+/// review measured as falsely class-2 — HI = 61.6 / 61.8 / 62.0 / 62.2mm — are
+/// all inside it.
+#[test]
+fn floored_window_emptiness_decides_the_class_across_the_band() {
+    // Margins synthesised by `collect_floor_terms`, both from the SEED: 2% of
+    // the 60mm lower literal, and 2% of... the upper side's own bound, which is
+    // why they are asymmetric and why the un-floored Chebyshev centre is not a
+    // valid discriminator.
+    const LOWER_MARGIN_M: f64 = 1.2e-3;
+    const UPPER_MARGIN_M: f64 = 4.0e-4;
+
+    for hi_mm in [
+        60.5, 61.0, 61.2, 61.4, // floored window empty  → class 2
+        61.6, 61.8, 62.0, 62.2, 62.4, // the review's false window → class 3
+        62.5, 63.0, 65.0, 100.0, // already-covered wide end → class 3
+    ] {
+        let hi_m = hi_mm / 1000.0;
+        let x_id = ValueCellId::new("SweptBand", "x");
+
+        let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
+            auto_params: vec![length_auto_param(x_id.clone())],
+            constraints: vec![
+                (
+                    constraint_id("SweptBand", 0),
+                    scaled_length_cmp(2.0, BinOp::Gt, &x_id, 0.060),
+                ),
+                (
+                    constraint_id("SweptBand", 1),
+                    scaled_length_cmp(2.0, BinOp::Lt, &x_id, hi_m),
+                ),
+            ],
+            current_values: ValueMap::new(),
+            objective: Some(ObjectiveSet::single(
+                ObjectiveSense::Minimize,
+                money_expr_x_per_mm(&x_id),
+            )),
+            functions: vec![].into(),
+        };
+
+        let message = floor_infeasible_message(&problem);
+        let expect_satisfiable = (hi_m - UPPER_MARGIN_M) >= (0.060 + LOWER_MARGIN_M);
+
+        if expect_satisfiable {
+            assert!(
+                message.contains("both"),
+                "HI = {hi_mm}mm has a NON-EMPTY floored window, so some point meets \
+                 every original and every floor term — the diagnostic must report both \
+                 as satisfiable; got: {message}"
+            );
+            assert!(
+                !message.contains("relax opposing constraints"),
+                "HI = {hi_mm}mm is not over-constrained — relaxing constraints is wrong \
+                 advice; got: {message}"
+            );
+        } else {
+            assert!(
+                !message.contains("both"),
+                "HI = {hi_mm}mm has an EMPTY floored window, so no point meets the floor \
+                 — the diagnostic must not report it as satisfiable; got: {message}"
+            );
+            assert!(
+                message.contains("original constraints"),
+                "HI = {hi_mm}mm still has a non-empty ORIGINAL box, which must be \
+                 reported as satisfiable; got: {message}"
+            );
+        }
+    }
 }
