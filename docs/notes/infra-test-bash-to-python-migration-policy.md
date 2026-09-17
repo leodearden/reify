@@ -6,24 +6,63 @@
 
 ## The rule
 
-1. **A new infra test is authored in Python.** Not bash.
-2. **An existing bash member is ported the next time it is touched to fix a
-   flake.** The flake fix and the port land together.
+The policy has two arms. **They are not both in force yet.**
 
-There is **no scheduled mass migration**, and porting a member for its own sake
-is not sanctioned work. `tests/infra` is 194 files and ~140k lines; a migration
-run at that scale would itself be the largest source of gate churn on the
-repo. The port cadence is deliberately coupled to the flake cadence so the
-files that actually cost the gate move first and the quiet ones never move at
-all.
+### Arm 1 — new infra tests are authored in Python. **ACTIVE.**
 
-A port is a **behaviour-preserving** rewrite of an existing member. It is not
-licence to change what the test asserts. Because a port is green on arrival by
-construction, RED-first proves nothing about it — establish non-vacuity by
-**mutating the implementation** and confirming the port catches each mutant.
-(Task 7430's port of `test_verify_env_ambient_isolation.sh` was validated this
-way with five mutants; one was missed on the first pass and the assertion had
-to be strengthened, which is the entire argument for doing this.)
+Not bash. This arm is demonstrated end to end and carries no open
+prerequisite: `tests/infra/test_flake_density_report.py` and its thin
+`test_flake_density_report.sh` wrapper landed green together, and the wrapper
+holds `run-all-classification.manifest` row `:99`, so `run_all.sh` executes a
+Python member for real today. Copy that pair when adding a new infra test.
+
+### Arm 2 — port a bash member when it is next touched for a flake. **DEFERRED.**
+
+The intended rule is that a flake fix to a bash member and that member's port
+to Python land together, with **no scheduled mass migration** — `tests/infra`
+is 194 files and ~140k lines, and a migration run at that scale would itself be
+the largest source of gate churn on the repo. Coupling the port cadence to the
+flake cadence moves the files that actually cost the gate and leaves the quiet
+ones alone.
+
+**Do not port a member today.** Porting one silently removes it from a
+load-bearing guard. `test_slot_timeout_marker.sh` derives which suites are
+deadline-capable, and whether each such site leaks stderr, by reading the
+**text of sibling `.sh` files**: its Section F builds the closure from
+`test_*.sh` plus `run_all.sh`, and its invocation-edge grammar admits only the
+verbs `bash`, `sh` and `source`. A ported member is therefore not a node, and a
+`python3`-verb invocation of a nested suite creates no edge — so the member
+drops out of F's derived roster and out of Section G's non-vacuity check
+**without any assertion failing to announce it**. Measured on the one port
+attempted: replacing `test_verify_env_ambient_isolation.sh` with its wrapper
+took that guard from 144/0 to 141/3 (`FC6b`, `F1`, `G3`).
+
+Teaching Sections F and G a Python-sibling shape is the prerequisite, and it is
+not a small edit: every rule in that grammar carries a measured
+false-admission rationale, and widening it carelessly produces **false greens
+in a deadline-capability check** — the opposite of what this policy is for. It
+needs its own RED and its own review. Filed as follow-up ticket
+`tkt_0RTQTESPHBBB84KKAJCHKJF6X0`, which owns that work and, once it lands,
+unblocks this arm. (No `#NNNN` is cited here on purpose: the curator assigns
+task ids asynchronously, so a number written today would be an orphaned cite
+under the TODO-citation convention.)
+
+That follow-up also carries the port already written for
+`test_verify_env_ambient_isolation.sh`: 540 lines, 26/26 green, validated by
+five mutants rather than RED-first. **Recover it from git history rather than
+rewriting it** — it is the commit subject *"Port the verify_env
+ambient-isolation guard to Python"* on task 7430's branch (`eac9251c59` as
+merged; note that any pre-merge SHA quoted elsewhere was invalidated by a
+rebase, so match on the subject, not on a remembered hash).
+
+### What a port is, when the arm reopens
+
+A port is a **behaviour-preserving** rewrite. It is not licence to change what
+the test asserts. Because a port is green on arrival by construction, RED-first
+proves nothing about it — establish non-vacuity by **mutating the
+implementation** and confirming the port catches each mutant. In the one port
+done so far, one of five mutants was *missed* on the first pass and the
+assertion had to be strengthened. That is the entire argument for doing this.
 
 ---
 
@@ -96,8 +135,14 @@ as a nested subprocess, so any assertion that flakes inside #2 reds #3 too.
 **Note the shape of that fix, because it is the policy's own counter-example:**
 the defect was in shared bash libraries and was fixed *in bash*. Porting any of
 the three files would not have fixed it. Ranks #4 and #5 do not share this root
-cause and were not investigated — #7622 owns root-causing them, and each fix
-there is also its port trigger under rule 2 above.
+cause and were not investigated — #7622 owns root-causing them. Under Arm 2
+each of those fixes would also be its port trigger; while Arm 2 is deferred,
+#7622 fixes them in bash and the ports wait with everyone else's.
+
+This is also why deferring Arm 2 costs less than it appears: **not one of the
+five was fixed by porting it.** Ranks #1–#3 were closed by a library fix in
+bash, and #4/#5 are bash fixes too. The migration is a maintainability policy,
+not the flake remedy.
 
 ---
 
@@ -129,9 +174,11 @@ is never executed — **it reads as coverage while asserting nothing.**
 The fix is a ~30-line `tests/infra/test_<name>.sh` wrapper that asserts
 `command -v python3` and that `python3 <the .py>` exits 0. The **wrapper** is
 what `run_all.sh` discovers and what takes the
-`run-all-classification.manifest` row. Four existing wrappers to copy:
-`test_sn_gate.sh`, `test_prd_capability_check.sh`,
-`test_prd_decompose_verify.sh`, `test_reify_overlap_detector.sh`.
+`run-all-classification.manifest` row. Wrappers to copy — `test_sn_gate.sh`,
+`test_prd_capability_check.sh`, `test_prd_decompose_verify.sh`,
+`test_reify_overlap_detector.sh`, and `test_flake_density_report.sh`, the one
+this policy landed and the only one whose `.py` lives beside it in
+`tests/infra/` rather than in `scripts/`.
 
 This trap is not hypothetical. **`scripts/test_legibility_reify_config.py` has
 no wrapper and no runner of any kind** — the only reference to it in the tree
@@ -160,19 +207,24 @@ That deferral has three measured costs. All are real; none was hidden:
    `test_no_new_wallclock_upper_bounds.sh` scans `"$dir"/*.sh` (`:107`), so a
    wall-clock upper-bound assert written in Python is outside its scan scope. A
    port therefore moves code out from under an active ratchet.
-3. **The deadline-capable-suite derivation does not see Python.**
-   `test_slot_timeout_marker.sh`'s Section F builds its closure from
-   `test_*.sh` + `run_all.sh` (`_f_node_list`, `:1704`) and admits only the
-   verbs `bash|sh|source` when matching an invocation edge (`F_EDGE_VERB_RE`,
-   `:1743`). A `python3`-verb invocation creates no edge, so a ported member
-   silently drops out of the derived roster. Measured: replacing
-   `test_verify_env_ambient_isolation.sh` with a wrapper takes that guard from
-   144/0 to 141/3 (`FC6b`, `F1`, `G3`).
+3. **The deadline-capable-suite derivation does not see Python.** Entry points
+   are `_f_node_list` (`test_slot_timeout_marker.sh:1704`) and
+   `F_EDGE_VERB_RE` (`:1743`). This is the cost that **defers Arm 2 outright**
+   — see "The rule" above for the mechanism and the measurement; it is not
+   restated here.
 
 Costs 1 and 2 are **task #7445**'s charter (native `test_*.py` discovery, which
 retires the wrapper idiom, plus widening the wall-clock guard's scan scope).
-Cost 3 is not yet owned by any task and is the one to watch: it is a hole the
-migration policy itself opens, and it widens with every future port.
+Cost 3 is owned by the follow-up ticket described under Arm 2.
+
+Cost 3 is the one to watch, and it is worth naming why it is different in kind
+from the other two. Costs 1 and 2 fail **loudly or not at all**: a missing
+manifest row reds the classification gate, and a wall-clock assert that escapes
+the ratchet is at worst an unratcheted assert that still runs. Cost 3 fails
+**silently and in the green direction** — the member keeps passing, the roster
+keeps deriving, and a deadline-capability guard simply stops covering one
+suite. A migration policy that traded loud coverage for quiet coverage loss
+would be worse than no policy, which is why Arm 2 waits.
 
 ---
 
