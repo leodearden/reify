@@ -36,6 +36,12 @@ use crate::ffi;
 /// `pub` for this crate's integration test binaries — separate compilation
 /// units that cannot reach `pub(crate)` symbols — whose need is only to
 /// serialise their own raw-FFI access against the production path.
+///
+/// Taking it directly buys serialisation and nothing else. The refusal that
+/// keeps a caller out of a library finalized beyond recovery lives in [`lock`],
+/// so the raw acquirers in `tests/` bypass it and would call into a finalized
+/// library — tolerable only because a run that reaches that state has already
+/// failed something louder.
 pub static GMSH_LOCK: Mutex<()> = Mutex::new(());
 
 /// Set once libgmsh has been finalized with nothing live behind it. Sticky by
@@ -84,9 +90,11 @@ impl Deref for GmshGuard {
 /// panic anywhere under the lock would disable meshing for the rest of the
 /// process lifetime.
 ///
-/// [`GMSH_DEAD`] is read AFTER the lock is taken, because its only writer sets
-/// it while holding the lock. Every entry point in this crate reaches its
-/// first FFI call through here, so this one check is the whole enforcement.
+/// `GMSH_DEAD` is read AFTER the lock is taken, because its only writer sets it
+/// while holding the lock. Every entry point in `src/` reaches its first FFI
+/// call through here, so for this crate's own callers this one check is the
+/// whole enforcement; the `tests/` binaries that take [`GMSH_LOCK`] directly
+/// are outside it, as that static's doc records.
 pub fn lock() -> Result<GmshGuard, GeometryError> {
     let guard = GmshGuard(GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner()));
     if GMSH_DEAD.load(Ordering::Acquire) {
@@ -264,14 +272,44 @@ fn verify_tet_readback(
     Ok(())
 }
 
-/// Both [`verify_tet_readback`] rejections, over both element orders.
+/// The decisions this module makes with no live gmsh model behind them: the
+/// dead-library refusal at [`lock`], and both [`verify_tet_readback`]
+/// rejections over both element orders.
 ///
-/// The empty-buffer rejection is unreachable from any measured production path
-/// (see [`read_tet_connectivity`]), so without these a guard inverted or
-/// deleted outright would ship green.
+/// Neither is reachable from a measured production path — the empty-buffer
+/// rejection for the reason [`read_tet_connectivity`] records, and the refusal
+/// because its flag is only ever set by a `gmshInitialize` that failed. So
+/// without these, a guard inverted or deleted outright would ship green.
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Once [`GMSH_DEAD`] is set, [`lock`] must refuse instead of handing back
+    /// a guard onto a finalized library, and must say why in the one message
+    /// the recovery site also emits.
+    ///
+    /// The flag is set here directly: its production writer needs a
+    /// `gmshInitialize` failure, which no test can provoke. It is cleared
+    /// again before the first assertion, and the window it spans is one
+    /// [`lock`] call that cannot panic, so a failure here cannot leak a sticky
+    /// refusal into the rest of this binary.
+    #[test]
+    fn a_library_finalized_beyond_recovery_is_refused_at_the_lock() {
+        GMSH_DEAD.store(true, Ordering::Release);
+        let refusal = lock().err();
+        GMSH_DEAD.store(false, Ordering::Release);
+
+        let err = refusal.expect(
+            "lock must refuse while GMSH_DEAD is set — otherwise every later entry \
+             point calls into a library that is no longer there",
+        );
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains(GMSH_DEAD_MESSAGE),
+            "the refusal must carry the shared dead-library message, so a caller \
+             reads the same explanation wherever it surfaces; got: {msg}"
+        );
+    }
 
     #[test]
     fn an_empty_tet_buffer_is_rejected_and_names_its_caller() {
