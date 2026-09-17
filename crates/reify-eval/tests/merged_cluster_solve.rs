@@ -1252,19 +1252,24 @@ fn merged_cluster_no_progress_propagates_diagnostic_and_failed_autos_for_every_m
 }
 
 /// A solver that returns `RankedSolveResult::Ranked` with
-/// `OptimalityStatus::BestFound { reason: BestFoundReason::IterationLimit }`.
+/// `OptimalityStatus::BestFound { reason }`, for a caller-chosen `reason`.
 ///
 /// No shared `reify-test-support` mock constructs this directly: its spies
 /// only implement `ConstraintSolver::solve` and rely on the trait's default
 /// `solve_ranked` lift, which always reports `BestFoundReason::Unreported`
-/// (see `reify_ir::ConstraintSolver::solve_ranked`'s doc) -- never
-/// `IterationLimit`. Mirrors the locally-defined `EmptyRankedSolver` in
+/// (see `reify_ir::ConstraintSolver::solve_ranked`'s doc) -- never a
+/// gate-firing reason. Mirrors the locally-defined `EmptyRankedSolver` in
 /// `reify-eval/tests/solver_optimality_unproven.rs`.
-struct IterationLimitRankedSolver {
+///
+/// The reason is a PARAMETER rather than a second mock: the substance here is
+/// "a solver whose solve_ranked reports a given BestFound reason with canned
+/// values", and both gate-firing reasons need exactly that (task #6553).
+struct BestFoundRankedSolver {
     values: HashMap<ValueCellId, Value>,
+    reason: BestFoundReason,
 }
 
-impl ConstraintSolver for IterationLimitRankedSolver {
+impl ConstraintSolver for BestFoundRankedSolver {
     fn solve(&self, _problem: &ResolutionProblem) -> SolveResult {
         SolveResult::Solved {
             values: self.values.clone(),
@@ -1280,10 +1285,20 @@ impl ConstraintSolver for IterationLimitRankedSolver {
                 unique: true,
             }],
             optimality: OptimalityStatus::BestFound {
-                reason: BestFoundReason::IterationLimit,
+                reason: self.reason,
             },
         }
     }
+}
+
+/// The canned solved-values map both merged-cluster gate tests drive through
+/// `spanning_objective_cluster_module()`.
+fn spanning_objective_solved_values() -> HashMap<ValueCellId, Value> {
+    let mut solved = HashMap::new();
+    solved.insert(ValueCellId::new("Parent", "total"), mm(1.0));
+    solved.insert(ValueCellId::new("ChildA", "cost"), mm(2.0));
+    solved.insert(ValueCellId::new("ChildB", "cost"), mm(3.0));
+    solved
 }
 
 /// A merged spanning-objective solve whose solver hits the iteration limit
@@ -1294,12 +1309,10 @@ impl ConstraintSolver for IterationLimitRankedSolver {
 fn merged_cluster_iteration_limit_emits_solver_optimality_unproven() {
     let module = spanning_objective_cluster_module();
 
-    let mut solved = HashMap::new();
-    solved.insert(ValueCellId::new("Parent", "total"), mm(1.0));
-    solved.insert(ValueCellId::new("ChildA", "cost"), mm(2.0));
-    solved.insert(ValueCellId::new("ChildB", "cost"), mm(3.0));
-
-    let spy = IterationLimitRankedSolver { values: solved };
+    let spy = BestFoundRankedSolver {
+        values: spanning_objective_solved_values(),
+        reason: BestFoundReason::IterationLimit,
+    };
 
     let mut engine =
         Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
@@ -1320,6 +1333,67 @@ fn merged_cluster_iteration_limit_emits_solver_optimality_unproven() {
     assert!(
         warnings[0].message.contains("W_SOLVER_OPTIMALITY_UNPROVEN"),
         "message must contain the user-observable mnemonic; got: {}",
+        warnings[0].message,
+    );
+}
+
+/// The same merged-cluster gate must ALSO fire when the solver stopped at an
+/// enumeration cap rather than an iteration limit (task #6553), and must report
+/// the enumeration's own reason.
+///
+/// Assertion set is deliberately identical to
+/// `enumeration_budget_objective_emits_solver_optimality_unproven_warning` in
+/// `solver_optimality_unproven.rs`: the merged and per-template arms claim to
+/// mirror each other verbatim, so they are pinned to one contract. This test is
+/// what makes a single-arm widening unlandable -- without it, the merged path
+/// could silently keep the narrow gate and drop the warning entirely, which is
+/// the D5 "truncation is never silent" violation.
+#[test]
+fn merged_cluster_enumeration_budget_emits_solver_optimality_unproven() {
+    let module = spanning_objective_cluster_module();
+
+    let spy = BestFoundRankedSolver {
+        values: spanning_objective_solved_values(),
+        reason: BestFoundReason::EnumerationBudget,
+    };
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+    let result = engine.eval(&module);
+
+    let warnings: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::SolverOptimalityUnproven))
+        .collect();
+    assert!(
+        !warnings.is_empty(),
+        "expected a DiagnosticCode::SolverOptimalityUnproven warning when the merged \
+         solve stopped at its enumeration budget (D5: truncation is never silent); \
+         got: {:#?}",
+        result.diagnostics,
+    );
+    assert_eq!(warnings[0].severity, Severity::Warning);
+    assert!(
+        warnings[0].message.contains("W_SOLVER_OPTIMALITY_UNPROVEN"),
+        "message must contain the user-observable mnemonic; got: {}",
+        warnings[0].message,
+    );
+
+    // The honesty contract: the reason the user reads must be the enumeration's own.
+    assert!(
+        warnings[0]
+            .message
+            .contains(BestFoundReason::EnumerationBudget.describe()),
+        "warning must carry EnumerationBudget.describe(); got: {}",
+        warnings[0].message,
+    );
+    assert!(
+        !warnings[0]
+            .message
+            .contains(BestFoundReason::IterationLimit.describe()),
+        "warning must NOT carry IterationLimit.describe() -- an exact enumeration that \
+         hit a node cap is neither derivative-free nor iteration-limited (#6553); got: {}",
         warnings[0].message,
     );
 }
@@ -2014,7 +2088,7 @@ fn eval_vs_eval_cached_merged_cluster_values_equal() {
 /// `solve_ranked_multistart_dominates_single_start_solve`,
 /// reify-constraints/tests/solver_integration.rs). This is not a contrived
 /// mock-only quirk -- it is the same divergence CLASS a real solver exhibits;
-/// unlike `SpyConstraintSolver`/`IterationLimitRankedSolver` (which return
+/// unlike `SpyConstraintSolver`/`BestFoundRankedSolver` (which return
 /// the SAME values from both entry points), this spy makes the divergence
 /// observable.
 struct DivergentRankedSolver {
