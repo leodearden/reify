@@ -549,12 +549,14 @@ scripts/reify-audit-snapshot-filter.jq  tests/infra/test_reify_audit_predone_wra
 scripts/task-branch-contamination-sweep.sh    tests/infra/test_task_branch_contamination_sweep.sh
 
 # Task 7244: scripts/lib_task_citation.sh is the SINGLE copy of the "this commit
-# message cites task N" grammar (it mirrors dark-factory orchestrator/git_ops.py
-# byte-for-byte), so it needs a row per CONSUMER — the one-artifact-multiple-
-# rows pattern scripts/seed-warm-lane.sh and scripts/warm-lane-audit.sh already
-# use. Its own unit suite plus warm-lane-degenerate-ref-check.sh's suite, which
-# load-bears the lib since the delegation: a lib-only diff that selected only
-# the lib's unit tests would leave its other consumer's 70-assertion
-# classification contract unrun on the very edit that can break it.
+# message cites task N" grammar (its header records, arm by arm, where it agrees
+# with dark-factory's DEFAULT_COMMIT_CITATION_PATTERN), so it needs a row per
+# CONSUMER — the one-artifact-multiple-rows pattern scripts/seed-warm-lane.sh and
+# scripts/warm-lane-audit.sh already use. Its own unit suite plus BOTH consumers'
+# suites, each of which load-bears the lib: a lib-only diff that selected only
+# the lib's unit tests would leave the consumers' classification contracts
+# unrun on the very edit that can break them (esc-7244-16's grammar change
+# moved 81 live degenerate verdicts and the sweep's census at once).
 scripts/lib_task_citation.sh    tests/infra/test_lib_task_citation.sh
 scripts/lib_task_citation.sh    tests/infra/test_warm_lane_degenerate_ref.sh
+scripts/lib_task_citation.sh    tests/infra/test_task_branch_contamination_sweep.sh

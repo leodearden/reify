@@ -33,10 +33,20 @@
 #
 # The citation predicate is NOT defined here. It lives in
 # scripts/lib_task_citation.sh, the single copy of a grammar that is normative
-# across the reify/dark-factory seam, which this script sources: a merge-commit
-# subject `Merge <prefix><id> into …` OR a `#<id>` reference, both with
-# digit-boundary safety (task/1 does not match "Merge task/10 into main"; #45
-# does not match #4588). Do not re-inline it here — see that file's header.
+# across the reify/dark-factory seam, which this script sources: a
+# `Merge <prefix><id> into …` line, a conventional-commit subject citing the id
+# (`impl(<id>): …`, dark-factory's kind list), OR a `#<id>` reference, each
+# boundary-safe (task/1 does not match "Merge task/10 into main"; impl(5) does
+# not match impl(50); #45 does not match #4588). Do not re-inline it here — see
+# that file's header, which also records where it agrees with dark-factory.
+#
+# The conventional-commit arm is what makes `landed` reachable for reify's
+# usual tip: a branch whose last commit reads "fix(<id>): …" and is on main.
+# Without it, 81 of the 427 refs this script reported degenerate over the live
+# pool were such tips (2026-09-17, esc-7244-16: every one of the 81 flipped to
+# landed, and no landed ref flipped back) — and dark-factory treats degenerate
+# as "zero task work", downgrading a MARK_DONE recovery to a
+# revert-and-redispatch.
 #
 # Usage — two mutually exclusive modes:
 #

@@ -124,21 +124,34 @@ live        ⟺  rev-list --count <main>..task/N  > 0
 absent      ⟺  refs/heads/<prefix>N does not exist
 ```
 
-### 4b. Citation predicate — byte-for-byte agreement with dark-factory
+### 4b. Citation predicate — shared grammar, measured agreement with dark-factory
 
-`_cites_task <commit> <id>` mirrors (does **not** import — separate repo)
-dark-factory's `orchestrator/git_ops.py` citation regex (~line 145-154, with the
-task/1-vs-task/10 substring-safety note ~line 3696):
+`_cites_task <commit> <id>` fetches the tip's message and delegates the verdict to
+`scripts/lib_task_citation.sh`, reify's single copy of the "cites task N" grammar
+(shared with `scripts/task-branch-contamination-sweep.sh`). A message cites `<id>` iff:
 
-- a merge-commit subject matching `^Merge <prefix><id> into `, OR
-- a `#<id>` reference,
+- a line of it matches `^Merge <prefix><id> into `, OR
+- its **subject** is a conventional-commit head citing `<id>` — `impl(<id>): …`,
+  `fix(<id>: …`, or a kind followed later on the line by `<prefix><id>` — using
+  dark-factory's closed kind list, OR
+- it carries a `#<id>` reference,
 
-both with **digit-boundary safety**: no adjacent digit before/after the id, so
-`task/1` does not match `Merge task/10 into main`, and `#45` does not match
-`#4588`. Keeping this predicate byte-for-byte identical to DF's own citation
-regex is what lets reify's `degenerate` classification and DF's citation-missing
-sweep agree on every ref — if they diverged, the sweep could still re-fire on a
-ref reify calls safe to skip.
+each **boundary-safe**: `task/1` does not match `Merge task/10 into main`, `impl(5)`
+does not match `impl(50)`, and `#45` does not match `#4588`.
+
+Agreement with dark-factory is **per arm, not byte-for-byte** — the earlier claim of
+byte-for-byte parity was false by the time it was measured (esc-7244-16, 2026-09-17).
+DF's normative pattern is `orchestrator/git_ops.py` `DEFAULT_COMMIT_CITATION_PATTERN`,
+applied to the subject only. The merge-subject and conventional-commit arms mirror it;
+the `#<id>` arm is reify-only; DF's unanchored `(#?<id>)` / `(task <id>)` alternatives
+are deliberately not mirrored. The library header records the reason for each.
+
+The conventional-commit arm matters here more than anywhere: it is how reify's
+commonest **landed** tip cites its task (`fix(<id>): …`). Without it, 81 of the 427 refs
+the audit reported `degenerate` over the live pool were landed tips of that shape.
+Adding the arm flipped all 81 to `landed` and flipped nothing back. DF's
+citation-missing sweep already recognised that form, so the two sides now agree on
+those refs instead of disagreeing.
 
 `--branch-prefix` is regex-escaped (`_regex_escape`) before it is interpolated
 into the merge-subject pattern, so a caller-supplied prefix containing ERE

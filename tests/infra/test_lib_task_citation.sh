@@ -498,7 +498,7 @@ assert "G5: the digit boundary still holds at size ('task/200' is not 'task/20')
 # non-merge commits on main, 4671 carry an id-headed subject and 4569 of those
 # use one of dark-factory's kinds. A grammar without this arm missed the
 # esc-6205-4 contamination outright (14 `kind(5686)` commits, 0 citations
-# recognised), and warm-lane-degenerate-ref-check.sh classified 85 genuinely
+# recognised), and warm-lane-degenerate-ref-check.sh classified 81 genuinely
 # landed refs as degenerate because their tips read `kind(<own id>): …`.
 #
 # The arm mirrors DF's DEFAULT_COMMIT_CITATION_PATTERN first alternative and is
