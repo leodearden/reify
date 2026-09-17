@@ -40,7 +40,8 @@
 # (external dep dark_factory:5205) re-measures 10 days after 5205 is live and asks Leo
 # whether to raise this back up. RED-tier: effective at the next orchestrator restart.
 # warm_lane_pool.task_pool_size_source derives the lane pool from this value at startup
-# (N = 24 + spare_warm_lanes 8 = 32 lanes); no second edit is needed there.
+# (N = max_concurrent_tasks + git.spare_warm_lanes), so a cut here SHRINKS the pool unless
+# spare_warm_lanes absorbs it — see the pool-size invariant at git.spare_warm_lanes.
 max_concurrent_tasks: 24
 max_per_module: 1
 # lock_depth 4→10 (Leo 2026-06-18): make module locks effectively file-granular. At
@@ -1225,7 +1226,12 @@ git:
   # dropped by OrchestratorConfig(extra='ignore'), so the +8 spare was phantom
   # since 2026-06-29 (pool was 48, not 56). Sized per the warm-lane pool sizing PRD
   # (docs/prds/warm-lane-pool-sizing-lifecycle.md). Read once at startup.
-  spare_warm_lanes: 8
+  # POOL-SIZE INVARIANT (8 -> 32, reify #7649): N must not drop below the highest
+  # resident _lane-K + 1 (today 56, _lane-0.._lane-55). Recovery treats a lane outside
+  # the pool as infra-owned and never re-pins it, so its task's branch stays checked out
+  # there and every re-dispatch faults rc=128 — #7532's 48 -> 24 cut stranded 24 tasks
+  # this way. Hence 24 + 32 = 56; lower it only after draining the high lanes.
+  spare_warm_lanes: 32
   # DF-1933 reclaim-on-exhaustion safety valve: on pool exhaustion, steals the
   # oldest non-dispatched non-terminal lane (with WIP-commit preservation) instead
   # of hard-faulting to the inv.6 cold-fallback. Enabled after the 2026-07-22
