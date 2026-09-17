@@ -46,7 +46,9 @@
 # `tests/` SIBLING because it was deliberately NOT moved — the shared `common`
 # helper at `crates/<c>/tests/common/mod.rs`. There a bare `mod common;` is
 # correct precisely BECAUSE crate-root-relative resolution lands on it
-# (harness_cli, harness_occt, harness_fea_solver_e2e do this; harness_langcore
+# (harness_cli, harness_fea_solver_e2e, harness_occt_measurement do this —
+# harness_occt itself dropped its bare `mod common;` in the #7466 split, which
+# moved the include to the new sibling along with its consumers; harness_langcore
 # and harness_patterns spell the equivalent `#[path = "common/mod.rs"]`, and
 # harness_selective_demand does the same for `common/differential.rs`). The
 # rule is therefore scoped: `#[path]` is mandatory for every former-standalone
