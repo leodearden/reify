@@ -191,8 +191,11 @@ no wrapper and no runner of any kind** — the only reference to it in the tree
 is a prose comment in `docs/legibility/legibility.yaml` — and it is **red
 today** (11 tests, 4 failures, measured 2026-09-17). It rotted unobserved for
 exactly as long as it has existed. Task 7430's own plan mis-listed it as a
-working precedent, which is how it stayed invisible through a review. Filed as
-a follow-up.
+working precedent, which is how it stayed invisible through a review — the
+lesson being that a plan's *enumerated lists* need re-deriving just as much as
+its numbers. Filed as follow-up ticket `tkt_0RTQTRYZHDGW40K1C73PAZJV6N`, which
+notes it must be fixed before it is wrapped: wrapping it while red would land a
+red gate member.
 
 ### `run_all.sh` discovery is deliberately unchanged — and what that costs
 
