@@ -151,26 +151,11 @@
 
 // OCCT STEP model introspection — the plane-angle unit refusal guard (#6344)
 // walks the transferred `Interface_InterfaceModel` entity by entity and
-// classifies every angular unit it finds. See `step_export_guard_refusal`
-// below for what each of these is used for; the two `…And…` composite classes
-// are the shapes an SI angular unit and a degree/grad unit actually take in an
-// emitted file (a plain `StepBasic_PlaneAngleUnit` downcast finds neither).
-// `StepBasic_PlaneAngleUnit` itself is nonetheless included: Part 21 permits a
-// bare NAMED_UNIT/PLANE_ANGLE_UNIT pair that is neither composite, and
-// `classify_step_angle_unit` needs a third downcast to recognise it as ANGULAR
-// (and refuse it as unverifiable) rather than silently classifying it as
-// non-angular and then reporting the containing context as declaring nothing.
-// The SAME shape of hazard applies on the CONTEXT side: OCCT 7.8 defines TWO
-// complex representation-context spellings that carry a
-// `StepRepr_GlobalUnitAssignedContext` by composition — the three-part
-// `…GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx` reify's own solid
-// export emits, and the two-part
-// `…GeometricRepresentationContextAndGlobalUnitAssignedContext` (no
-// uncertainty component) other writer paths can emit. Both are included, and
-// `step_unit_assigned_context` unwraps both, because a context spelling it
-// does not know about is skipped SILENTLY: the count under-reports, the
-// per-context arms never run for it, and the guard passes vacuously for
-// exactly the entity it was written to check.
+// classifies every angular unit it finds. WHICH spellings it has to unwrap,
+// and why omitting one is SILENT rather than loud, is documented on the two
+// functions that downcast to these types: `step_unit_assigned_context` for
+// the representation-context spellings, `classify_step_angle_unit` for the
+// unit spellings.
 #include <Interface_InterfaceModel.hxx>
 #include <StepRepr_GlobalUnitAssignedContext.hxx>
 #include <StepRepr_RepresentationContext.hxx>
@@ -6767,13 +6752,9 @@ namespace {
 // they are exercised through `export_step_with_injected_fault_for_test`
 // rather than through a crafted input shape.
 //
-// THE WALK IS BY ASSOCIATION, NOT BY COUNT. An earlier draft of this guard
-// compared `plane_angle_unit_count == unit_assigned_context_count`. That
-// proxy is measured-true against system OCCT 7.8 but is NOT a property STEP
-// guarantees — several contexts may legally share ONE unit instance, so an
-// OCCT bump that deduped unit entities would have reddened the guard on a
-// perfectly correct file. The same reasoning is recorded on the #6184
-// text-level walk in src/handle.rs, whose model-level mirror this is.
+// THE WALK IS BY ASSOCIATION, NOT BY COUNT — the choice and its reasoning
+// live on `StepPlaneAngleAuditCounts` below, which is the one place to change
+// if it is ever revisited.
 // ===========================================================================
 
 /// Counts from one walk of a transferred STEP model's plane-angle units.
@@ -7001,12 +6982,9 @@ StepAngleUnitKind classify_step_angle_unit(const Handle(Standard_Transient)& ent
     // derive from `StepBasic_PlaneAngleUnit` (they compose a handle to one),
     // so this cannot shadow them; it catches only the forms neither composite
     // covers — a bare NAMED_UNIT/PLANE_ANGLE_UNIT pair, which Part 21 permits,
-    // or a future OCCT composite spelling. Recognising it as ANGULAR is what
-    // keeps the diagnostic honest: fall through to `NotAngular` instead and
-    // the containing context is reported as declaring NO plane-angle unit,
-    // which is false — one was declared, this classifier just could not read
-    // it — and a reader sent looking for a missing declaration will not find
-    // one.
+    // or a future OCCT composite spelling. Why recognising those as ANGULAR
+    // rather than letting them fall through: `StepAngleUnitKind::
+    // UnrecognisedAngular` above.
     Handle(StepBasic_PlaneAngleUnit) bare =
         Handle(StepBasic_PlaneAngleUnit)::DownCast(entity);
     if (!bare.IsNull()) {
@@ -7097,10 +7075,9 @@ std::string describe_reached_units(const Handle(Interface_InterfaceModel)& model
 ///   V4  an angular unit entity that NO context references is not the
 ///       unprefixed SI radian. Disjoint from V3 by construction (V3 covers
 ///       the referenced ones), so between them every angular unit entity in
-///       the model is checked exactly once. DELIBERATELY STRONGER than
-///       INV-AD-4 as worded — reify's contract is "the file contains no
-///       non-radian plane-angle unit at all", not merely "every context
-///       declares the radian". See the V4 block below for what that costs.
+///       the model is checked exactly once. It is deliberately STRONGER than
+///       INV-AD-4 as worded; the V4 block below is where that widening, and
+///       what it costs, are recorded.
 ///
 /// Appends one line per violation to `violations` (when non-null) and returns
 /// the counts either way — the counts are also useful on the accepting path,
@@ -8152,9 +8129,8 @@ static StepExportLockedResult export_step_locked(const OcctShape& shape,
     // (V1) the model carries at least one unit-assigned context, (V2) every
     // context reaches at least one angular unit, (V3) every angular unit a
     // context reaches is the unprefixed SI radian, (V4) every angular unit no
-    // context references is too. It walks the model BY ASSOCIATION rather than
-    // comparing global counts, for the reason spelled out on the handle.rs
-    // helper: STEP permits several contexts to share one unit instance.
+    // context references is too. Why it walks BY ASSOCIATION rather than
+    // comparing global counts: `StepPlaneAngleAuditCounts` above.
     //
     // Its failure arms are unreachable from ordinary inputs — as stated above,
     // OCCT emits the radian unconditionally, so no input shape and no

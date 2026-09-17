@@ -932,15 +932,13 @@ fn guard_refuses_an_orphaned_unverifiable_plane_angle_unit() {
 /// A wrong unit reached through the OTHER complex context spelling is still
 /// attributed to its CONTEXT.
 ///
-/// OCCT 7.8 defines two complex representation-context classes that carry a
-/// `StepRepr_GlobalUnitAssignedContext` by composition: the three-part
-/// `…GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx` reify's solid
-/// export emits, and the two-part
-/// `…GeometricRepresentationContextAndGlobalUnitAssignedContext` that other
-/// writer paths (AP203, wireframe, a future XCAF/assembly writer) can emit.
+/// Which complex context spellings exist, and why every one of them must be
+/// unwrapped, is documented on `step_unit_assigned_context`
+/// (`cpp/occt_wrapper.cpp`). What this test adds is coverage of the spelling
+/// reify's own solid export never emits:
 /// `guard_accepts_a_real_multi_context_export` cross-checks the resolved count
-/// against the file text, but only for the ONE fixture it exports — it cannot
-/// speak for a spelling that fixture never produces.
+/// against the file text, but only for the ONE fixture it exports, so it
+/// cannot speak for a spelling that fixture never produces.
 ///
 /// THE FAILURE MODE IS SILENT AND MISLEADING, which is why this is pinned by
 /// behaviour rather than by the count alone. Drop the two-part downcast and
