@@ -1145,8 +1145,9 @@ is_occt_crate() {
 # basenames NAMED BY a compiled Rust test target, and so EXCLUDED from
 # decide_scope's no-heavy-checks carve-out for that directory:
 #   proven runtime reads (a #[test] builds the path and opens the file):
-#     geometry_let_selector_consumer.ri (pushed into no_stale_undef_invariant_
-#     gate.rs's corpus_files()), geometry_let_selector_consumer_edit.ri,
+#     geometry_let_selector_consumer.ri (pushed into corpus_files() by
+#     harness_corpus_gates/eval_invariant_corpus_sweep.rs),
+#     geometry_let_selector_consumer_edit.ri,
 #     stdlib_ns_buckling_mode_coexist.ri, unit_nm_torque_immediate.ri
 #     (read via std::fs::read_to_string by torque_unit_tests.rs, task 5786),
 #     unit_curated_labels_ascii.ri (likewise, by volume_unit_tests.rs, task 5788),
@@ -1386,11 +1387,12 @@ decide_scope() {
                 # .capability-manifest.yaml + its .ri fixtures, gated by
                 # hooks/pre-commit -> `--scope staged`) stays a seconds-long
                 # hook instead of escalating to a full workspace nextest run.
-                #   • Nothing globs this directory: reify-eval's
-                #     no_stale_undef_invariant_gate.rs corpus_files() walks only
-                #     its own tests/fixtures + examples/, then pushes ONE
-                #     explicit prd-gate path — so ADDING a fixture provably
-                #     cannot change any Rust target's inputs. EDITING one of the
+                #   • Nothing globs this directory: reify-eval's unified corpus
+                #     sweep (harness_corpus_gates/eval_invariant_corpus_sweep.rs,
+                #     corpus_files()) walks only its own tests/fixtures +
+                #     examples/, then pushes ONE explicit prd-gate path — so
+                #     ADDING a fixture provably cannot change any Rust target's
+                #     inputs. EDITING one of the
                 #     names in _RUST_COUPLED_RI_FIXTURES can, hence the exclusion
                 #     below (a blanket rule would let such an edit reach `main`
                 #     through the hook-gated docs path with no heavy checks and
