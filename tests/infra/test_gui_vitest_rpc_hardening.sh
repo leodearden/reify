@@ -254,4 +254,55 @@ fixture_run "" 0 0 -- src/__tests__/unitLadder.test.ts
 assert "B7: caller-supplied vitest args are forwarded to the first run" \
     bash -c "[ \"\$(sed -n 1p '$FIX_ARGV')\" = 'test -- src/__tests__/unitLadder.test.ts' ]"
 
+# -- Section C: the wiring — one definition of how vitest is invoked ---------
+# CLAUDE.md requires scripts/gui-test.sh and verify.sh's gui block to stay
+# equivalent ("if the gui block's command shape changes materially, update this
+# script to match"). Routing both through the one runner turns that convention
+# into a structural property instead of a promise.
+echo ""
+echo "--- Section C: verify.sh and gui-test.sh both route through the runner ---"
+
+GUI_TEST_SH="$REPO_ROOT/scripts/gui-test.sh"
+
+assert "C1: verify.sh's gui_inner invokes scripts/gui-vitest-run.sh" \
+    bash -c "grep -qE '^[[:space:]]*gui_inner\+?=.*gui-vitest-run\.sh' '$VERIFY_SH'"
+
+assert "C1: verify.sh's gui_inner has NO bare 'npm test' leaf left" \
+    bash -c "! grep -qE '^[[:space:]]*gui_inner\+?=.*npm test' '$VERIFY_SH'"
+
+# Both arms must route through the runner: the validated REIFY_GUI_RETRY_SPECS
+# subset AND the loud full-suite fallback. Missing either would split the
+# command shape back in two.
+assert "C1: BOTH gui_inner arms (retry subset and full fallback) use the runner" \
+    bash -c "[ \"\$(grep -cE '^[[:space:]]*gui_inner\+=.*gui-vitest-run\.sh' '$VERIFY_SH')\" -eq 2 ]"
+
+# The δ honest marker counts the validated specs at the single narrowing site;
+# rewiring the leaf must not disturb that accounting.
+assert "C1: the _RETRY_GUI_SUBSET_APPLIED accounting survives the rewiring" \
+    grep -q '_RETRY_GUI_SUBSET_APPLIED=\${#_gui_retry_toks\[@\]}' "$VERIFY_SH"
+
+assert "C1: the REIFY_GUI_RETRY_SPECS allowlist and leading-dash guard survive" \
+    bash -c "grep -q 'A-Za-z0-9._' '$VERIFY_SH' && grep -q 'REIFY_GUI_RETRY_SPECS' '$VERIFY_SH'"
+
+assert "C2: scripts/gui-test.sh invokes the SAME runner" \
+    grep -q 'gui-vitest-run.sh' "$GUI_TEST_SH"
+
+assert "C2: scripts/gui-test.sh has NO bare 'npm test' invocation left" \
+    bash -c "! grep -E '^[[:space:]]*(npm test|.*[^-]npm test )' '$GUI_TEST_SH' | grep -qv '^[[:space:]]*#'"
+
+# (3) The block's wall-clock budget. MEASURED on this branch before keeping 15:
+# a two-suite retry costs ~5-7 s idle, and the worst recorded starved gui run
+# was 473.90 s (task 7431) against a 51 s idle baseline -- a 9.3x dilation. Even
+# dilating the retry by the same factor (~65 s) and npm ci + typecheck with it
+# (~25 s idle -> ~230 s), the worst case lands near 770 s, inside 900 s. The
+# retry therefore does NOT demand a wider budget, and widening it speculatively
+# would only slow down the detection of a genuinely hung block.
+assert "C3: the gui block keeps its 15-minute wrap_subshell budget" \
+    grep -q 'wrap_subshell gui 15' "$VERIFY_SH"
+
+# (4) An edit to the runner must route to the full --scope all gate, not the
+# merge worker's config fast-path.
+assert "C4: verify-pipeline-guard recognises the runner as load-bearing" \
+    bash "$REPO_ROOT/scripts/verify-pipeline-guard.sh" requires-full-gate scripts/gui-vitest-run.sh
+
 test_summary
