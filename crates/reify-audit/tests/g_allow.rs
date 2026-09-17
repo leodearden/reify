@@ -42,7 +42,6 @@
 //!
 //! None can notice another going vacuous. Retire them together or not at all.
 
-use std::path::Path;
 use std::process::{Command, ExitStatus, Output};
 
 use reify_test_support::run_orphan_audit;
@@ -426,13 +425,16 @@ struct AuditRun {
     stderr: String,
 }
 
-/// Run `scripts/audit-orphan-producers.sh --scope <scope> --quiet --format
-/// json` TWICE against one shared [`common::git_env::decoy_repo`]: once with
+/// Run the command [`reify_test_support::orphan_audit::audit_command`]
+/// builds TWICE against one shared [`common::git_env::decoy_repo`]: once with
 /// the hook poison ambient in the child, once with
 /// [`reify_audit::git_env::sanitize`] applied — the canonical sanitizer
 /// production uses, not a hand-rolled removal of the three vars poisoned here.
-/// Both commands come from ONE closure against ONE decoy, so the environment is
-/// provably the only delta.
+/// Both commands come from ONE closure against ONE decoy, so the environment
+/// is provably the only delta: the closure's base is already `audit_command`'s
+/// own sanitized command, so the poisoned half's delta from it is exactly the
+/// three poisoned vars, and the sanitized half's is those same three vars
+/// poisoned and then removed again.
 ///
 /// Returns `None`, with an explanatory `stderr` note, exactly when
 /// `reify_test_support::run_orphan_audit` declines an envelope for `scope`.
@@ -467,84 +469,55 @@ fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(AuditRun, 
         return None;
     }
 
-    // CARGO_MANIFEST_DIR is evaluated in THIS crate, which always sits at
-    // <repo>/crates/reify-audit; two `.parent()` walks reach the repo root.
-    //
-    // TODO(#6153): delete this walk and the argv below in favour of a public
-    // seam on `reify_test_support::orphan_audit`, and drop the two premise
-    // checks that exist only to bound them. Both the walk and the argv are a
-    // second copy of module-private code in that crate — outside the lock set
-    // of the task that owns this file, which is why the copy is here at all.
-    // (This crate is on the ptodo detector's own allowlist, so this cite
-    // documents rather than enrols; the task is the record either way.)
-    //
-    // The two premise checks below bound the WALK ONLY. The argv copy is
-    // UNGUARDED: `build_audit_command` is module-private, so nothing here can
-    // observe the argv production actually spawns, and a flag added or renamed
-    // there leaves this helper on the old argv — still green, no longer
-    // mirroring production. Do not read the adjacent asserts as pinning the
-    // whole copy; closing that half needs the same public seam.
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let script = Path::new(manifest_dir)
-        .parent()
-        .expect("crates/reify-audit has a parent (crates/)")
-        .parent()
-        .expect("crates/ has a parent (repo root)")
-        .join("scripts/audit-orphan-producers.sh");
-
-    let repo_root = script
-        .parent()
-        .expect("scripts/ dir exists")
-        .parent()
-        .expect("repo root exists");
-
-    // Premise checks on the walk directly above — NOT a second copy of the skip
-    // protocol. The gate already ran the script to completion, so anything
-    // wrong here is a bug in this helper rather than an environmental
-    // condition, and both fail loudly instead of skipping.
-    assert!(
-        script.exists(),
-        "reify_test_support::run_orphan_audit({scope:?}) just ran the audit script \
-         successfully, but this crate's own CARGO_MANIFEST_DIR walk resolves it to \
-         {script:?}, where nothing exists — the two `.parent()` walks disagree, so \
-         this helper would spawn a different script (or none) than the one the skip \
-         protocol vetted"
-    );
-
-    // Two walks resolving to existing but DIFFERENT roots — a nested checkout,
-    // a vendored copy, either crate moved out of `crates/` — pass the check
-    // above silently while spawning a script the gate never vetted. Since
-    // `reify_test_support`'s own walk is two `.parent()`s off ITS manifest dir,
-    // finding that crate here proves the other walk lands back on this root.
-    // Bounded: it does not distinguish this repo from a byte-identical vendored
-    // copy laid out the same way. Closing that needs the path itself rather
-    // than a reconstruction of it — the same seam #6153 tracks above.
-    let sibling_manifest = repo_root.join("crates/reify-test-support");
-    assert!(
-        sibling_manifest.join("Cargo.toml").exists(),
-        "this crate's CARGO_MANIFEST_DIR walk resolves the repo root to \
-         {repo_root:?}, but {sibling_manifest:?} holds no Cargo.toml — so \
-         `reify_test_support`'s own two-`.parent()` walk, which the skip protocol \
-         above just ran through, cannot have landed on this same root. The two \
-         walks resolve DIFFERENT roots and this helper is about to spawn a script \
-         the gate never vetted"
-    );
-
     let decoy = common::git_env::decoy_repo();
 
     // One closure, so the two spawns are provably identical apart from the
-    // environment delta below. Identical to each OTHER is all this pins: that
-    // they match `build_audit_command`'s argv is the unguarded half of the
-    // #6153 copy noted above.
-    let build = || {
-        let mut cmd = Command::new(&script);
-        cmd.args(["--scope", scope, "--quiet", "--format", "json"])
-            .current_dir(repo_root);
-        cmd
-    };
+    // environment delta below. Identical to each OTHER is all this pins —
+    // that they also match production's program, argv and current_dir is now
+    // STRUCTURAL rather than asserted: both commands come from the one seam
+    // production itself builds from.
+    let build = || reify_test_support::orphan_audit::audit_command(scope);
 
     let mut poisoned_cmd = build();
     common::git_env::poison_with_hook_git_env(&mut poisoned_cmd, &decoy);
+
+    // Premise: `audit_command` returns an ALREADY-sanitized command (its
+    // three `env_remove`s recorded as `(key, None)`), so the poison just
+    // applied above is layered ON TOP of that sanitize. std's `CommandEnv` is
+    // one map keyed by var name, so the later `.env(..)` call wins over the
+    // earlier `.env_remove(..)` — assert that here rather than leave the
+    // reader to derive it from std's docs. Filtering `get_envs()` to `Some`
+    // entries and checking each points inside `decoy`'s tempdir avoids a
+    // fourth copy of the GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE list, whose one
+    // home is `common::git_env::hook_git_env`.
+    let decoy_root = decoy.work_tree().to_string_lossy().into_owned();
+    let poisoned_values: Vec<(String, String)> = poisoned_cmd
+        .get_envs()
+        .filter_map(|(name, value)| {
+            value.map(|v| {
+                (
+                    name.to_string_lossy().into_owned(),
+                    v.to_string_lossy().into_owned(),
+                )
+            })
+        })
+        .collect();
+    assert!(
+        !poisoned_values.is_empty(),
+        "poisoning a command audit_command already sanitized left no Some(..) \
+         env var at all on poisoned_cmd — the poison did not survive being \
+         layered onto the sanitize, so neither run below would demonstrate \
+         anything"
+    );
+    for (name, value) in &poisoned_values {
+        assert!(
+            value.starts_with(decoy_root.as_str()),
+            "poisoned env var {name} = {value:?} does not point inside the \
+             decoy repo {decoy_root:?} — poison_with_hook_git_env's env(..) \
+             calls did not win over audit_command's earlier env_remove(..) \
+             calls the way std's CommandEnv is documented to"
+        );
+    }
 
     let mut sanitized_cmd = build();
     common::git_env::poison_with_hook_git_env(&mut sanitized_cmd, &decoy);
