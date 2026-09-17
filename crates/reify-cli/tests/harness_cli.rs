@@ -87,6 +87,8 @@ mod cli_doc;
 mod cli_eval_auto_resolve;
 #[path = "harness_cli/cli_eval_data_carrying_enum.rs"]
 mod cli_eval_data_carrying_enum;
+#[path = "harness_cli/cli_eval_datum_units.rs"]
+mod cli_eval_datum_units;
 #[path = "harness_cli/cli_eval_fallback_recovery.rs"]
 mod cli_eval_fallback_recovery;
 #[path = "harness_cli/cli_eval_generic_enum.rs"]

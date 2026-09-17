@@ -134,8 +134,9 @@
 //!   module into `reify-ir` — which reify-stdlib already depends on — and made
 //!   it `pub`, so reify-stdlib CAN call [`accept_arg`] — and does. The mirror is
 //!   DELETED and R12 reads its rejection straight from this module, pinned by
-//!   `r12_rejection_wording_is_the_shared_arg_rejection_template` in
-//!   reify-stdlib's own test module. One owner, nothing left to drift;
+//!   `length_rejection_wording_is_the_shared_arg_rejection_template` in
+//!   reify-stdlib's own test module (renamed from its R12-only spelling when
+//!   task 5746 / R11 joined the same table). One owner, nothing left to drift;
 //! - reify-stdlib's OWN `decompose_transform` (`crates/reify-stdlib/src/geometry.rs`)
 //!   and its consumers. Measured on ζ's final tree, they are NOT uniform, which
 //!   is why ζ did not fold them in wholesale: `affine_from_transform` DISCARDS

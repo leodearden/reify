@@ -1691,7 +1691,7 @@ fn dimension_label(dim: DimensionVector) -> String {
 /// The rejection is obtained from [`accept_arg`] rather than rendered here, so
 /// Contract C1 invariant (i) holds literally: the wording is produced only by
 /// `ArgRejection::message`, and there is no hand-rolled rejection string in this
-/// crate to drift. `r12_rejection_wording_is_the_shared_arg_rejection_template`
+/// crate to drift. `length_rejection_wording_is_the_shared_arg_rejection_template`
 /// is the standing guard.
 ///
 /// Only the first component is offered to `accept_arg` because `decompose_xyz3`
@@ -7010,10 +7010,209 @@ mod tests {
         }
     }
 
-    /// R12's rejection wording must be the SHARED
+    // ── diagnose: ε's construction-datum LENGTH arms (task 5746, R11) ─────────
+    // The gate is user-observable ONLY through this hook. A bare datum call
+    // returns `Value::Undef`, which on its own prints `undef` and exits 0
+    // (measured against `target/debug/reify` before the arms landed:
+    // "DatumUnitsPlaneBare.p = undef", exit 0) — `push_op_contract_failure`
+    // writes `undef_causes`, not the diagnostics sink, and the CLI exit gate is a
+    // pure `Severity::Error` fold. So the Error these arms emit IS the exit code.
+
+    /// The `got` shapes that can reach ε's gate. `as_f64` must succeed for it to
+    /// fire, so only `Real`, `Int` and `Scalar` ever arrive, and a LENGTH
+    /// `Scalar` is accepted rather than rejected — leaving the dimensionless and
+    /// dimensioned `Scalar` forms. Exhaustive by that argument, which is what
+    /// makes the enumeration executable rather than aspirational.
+    fn non_length_offenders() -> [Value; 4] {
+        [
+            Value::Real(5.0),
+            Value::Int(5),
+            Value::Scalar {
+                si_value: 5.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+            Value::Scalar {
+                si_value: 5.0,
+                dimension: DimensionVector::MASS,
+            },
+        ]
+    }
+
+    /// Every offending shape, on every name in the plane family, is reported as
+    /// the SHARED `ArgRejection` sentence at `Severity::Error` carrying the
+    /// pre-existing `DimensionedArgRejected` code — ruling A7, one rejection
+    /// REASON gets one code, which is how ε joins the six landed dimension arms
+    /// rather than opening a seventh way to report the same fault class.
+    ///
+    /// The expected wording is obtained LIVE from the owner on every row instead
+    /// of being spelled here, so a reword on `ArgRejection::message`'s side fails
+    /// this test rather than silently forking this crate's copy (Contract C1
+    /// invariant (i)).
+    #[test]
+    fn diagnose_plane_family_non_length_offset_is_the_shared_coded_error() {
+        use reify_ir::arg_acceptance::{Acceptance, accept_arg, length_spec};
+
+        for offender in non_length_offenders() {
+            let Acceptance::Rejected(rejection) = accept_arg(&offender, &length_spec()) else {
+                panic!("{offender:?}: the owner must REJECT this at a length_spec position");
+            };
+            for name in ["plane_xy", "plane_xz", "plane_yz"] {
+                let diag = super::diagnose(name, std::slice::from_ref(&offender))
+                    .unwrap_or_else(|| panic!("{name}({offender:?}) must be diagnosed"));
+                assert_eq!(diag.severity, reify_core::Severity::Error, "{diag:?}");
+                assert_eq!(
+                    diag.code,
+                    Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                    "{diag:?}"
+                );
+                assert_eq!(diag.message, rejection.message(name, "offset"), "{diag:?}");
+            }
+        }
+    }
+
+    /// The axis half of the row above. ONE message names the whole `ox/oy/oz`
+    /// triple: the decoder both the gate and the classifier read has ALREADY
+    /// required the three components to share one dimension, so when this fires
+    /// all three positions offend identically and naming them together is
+    /// COMPLETE information, not a shortcut.
+    #[test]
+    fn diagnose_axis_family_non_length_origin_is_the_shared_coded_error() {
+        use reify_ir::arg_acceptance::{Acceptance, accept_arg, length_spec};
+
+        for offender in non_length_offenders() {
+            let Acceptance::Rejected(rejection) = accept_arg(&offender, &length_spec()) else {
+                panic!("{offender:?}: the owner must REJECT this at a length_spec position");
+            };
+            let origin = Value::Point(vec![offender.clone(), offender.clone(), offender.clone()]);
+            for name in ["axis_x", "axis_y", "axis_z"] {
+                let diag = super::diagnose(name, std::slice::from_ref(&origin))
+                    .unwrap_or_else(|| panic!("{name}({origin:?}) must be diagnosed"));
+                assert_eq!(diag.severity, reify_core::Severity::Error, "{diag:?}");
+                assert_eq!(
+                    diag.code,
+                    Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                    "{diag:?}"
+                );
+                assert_eq!(diag.message, rejection.message(name, "ox/oy/oz"), "{diag:?}");
+            }
+        }
+    }
+
+    /// ε's two arms speak ONLY for a well-formed, dimension-consistent,
+    /// non-LENGTH argument. Every OTHER cause of the same `Value::Undef` stays
+    /// silent, so an unrelated failure is never mis-attributed to a dimension
+    /// problem — the no-mis-attribution contract the four landed sibling arms
+    /// already hold.
+    ///
+    /// Each row is a cause the gate rejects for its OWN reason: wrong arity; an
+    /// unresolved cell (D10 — an unresolved cell is not a wrong one); a
+    /// non-numeric argument or component; a NON-FINITE one (a finiteness
+    /// failure, which is exactly why `plane_xy_nan_returns_undef` /
+    /// `plane_xy_inf_returns_undef` stay green for their own reason); an
+    /// accepted LENGTH argument; and — on the axis side — a non-`Point`, a
+    /// wrong-length `Point`, and a MIXED-dimension `Point`, which is a
+    /// `decompose_xyz3` CONSISTENCY failure rather than a LENGTH one.
+    #[test]
+    fn diagnose_datum_non_dimension_causes_stay_silent() {
+        let triple = |c: Value| Value::Point(vec![c.clone(), c.clone(), c]);
+        let mass = Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::MASS,
+        };
+        for (label, name, args) in [
+            ("plane: wrong arity (zero)", "plane_xy", vec![]),
+            (
+                "plane: wrong arity (two)",
+                "plane_xy",
+                vec![Value::Real(0.0), Value::Real(0.0)],
+            ),
+            ("plane: Undef argument (D10)", "plane_xy", vec![Value::Undef]),
+            (
+                "plane: non-numeric argument",
+                "plane_xy",
+                vec![Value::Bool(true)],
+            ),
+            (
+                "plane: NaN argument",
+                "plane_xy",
+                vec![Value::Real(f64::NAN)],
+            ),
+            (
+                "plane: infinite argument",
+                "plane_xz",
+                vec![Value::Real(f64::INFINITY)],
+            ),
+            (
+                "plane: accepted LENGTH",
+                "plane_yz",
+                vec![Value::length(0.005)],
+            ),
+            ("axis: wrong arity (zero)", "axis_x", vec![]),
+            (
+                "axis: wrong arity (two)",
+                "axis_x",
+                vec![triple(Value::length(0.0)), triple(Value::length(0.0))],
+            ),
+            ("axis: Undef argument (D10)", "axis_x", vec![Value::Undef]),
+            (
+                "axis: Undef component (D10)",
+                "axis_x",
+                vec![triple(Value::Undef)],
+            ),
+            ("axis: non-Point argument", "axis_y", vec![Value::Real(0.0)]),
+            (
+                "axis: Point of length 2",
+                "axis_y",
+                vec![Value::Point(vec![Value::Real(0.0), Value::Real(0.0)])],
+            ),
+            (
+                "axis: non-numeric component",
+                "axis_z",
+                vec![triple(Value::Bool(true))],
+            ),
+            (
+                "axis: NaN component",
+                "axis_z",
+                vec![triple(Value::Real(f64::NAN))],
+            ),
+            (
+                "axis: infinite component",
+                "axis_z",
+                vec![triple(Value::Real(f64::INFINITY))],
+            ),
+            (
+                "axis: MIXED dimensions",
+                "axis_x",
+                vec![Value::Point(vec![
+                    Value::length(1.0),
+                    mass.clone(),
+                    Value::length(0.0),
+                ])],
+            ),
+            (
+                "axis: accepted LENGTH",
+                "axis_x",
+                vec![triple(Value::length(0.005))],
+            ),
+        ] {
+            assert!(
+                super::diagnose(name, &args).is_none(),
+                "{label}: must stay silent; got: {:?}",
+                super::diagnose(name, &args)
+            );
+        }
+    }
+
+    /// R12's AND R11's rejection wording must be the SHARED
     /// `reify_ir::arg_acceptance::ArgRejection::message` template, not a fork of it
     /// — PRD C1 invariant (i): "wording is produced only by `ArgRejection::message`
     /// — no hand-rolled rejection strings".
+    ///
+    /// ε (task 5746, R11) joins this test rather than forking a twin of it. Its two
+    /// construction-datum arms answer to the same invariant from the same owner, and
+    /// the `got`-shape loop below is already exhaustive for their argument positions
+    /// too, so ONE table covering four builtins is one place to reword rather than
+    /// two to keep in step.
     ///
     /// The reference string is built from the OWNER on every row: `accept_arg` is
     /// asked for the rejection that the SAME component value produces at a
@@ -7030,13 +7229,15 @@ mod tests {
     /// records that it adds no new crate edge; this is the same path, used for the
     /// wording rather than for the verdict.
     ///
-    /// The rows below are EXHAUSTIVE over the `got` shapes that can reach an R12
-    /// rejection, which is what makes the enumeration executable rather than
+    /// The rows below are EXHAUSTIVE over the `got` shapes that can reach an R11 or
+    /// R12 rejection, which is what makes the enumeration executable rather than
     /// aspirational: `decompose_xyz3` requires `Value::as_f64` to succeed, so only
     /// `Real`, `Int` and `Scalar` ever arrive; a LENGTH `Scalar` is accepted rather
-    /// than rejected, leaving the dimensionless and dimensioned `Scalar` forms.
+    /// than rejected, leaving the dimensionless and dimensioned `Scalar` forms. R11's
+    /// plane offset is gated by `as_f64` directly, so the same four shapes exhaust it
+    /// too.
     #[test]
-    fn r12_rejection_wording_is_the_shared_arg_rejection_template() {
+    fn length_rejection_wording_is_the_shared_arg_rejection_template() {
         use reify_ir::arg_acceptance::{Acceptance, accept_arg, length_spec};
 
         let scalar = |v: f64, dimension| Value::Scalar {
@@ -7069,7 +7270,7 @@ mod tests {
                 panic!("{shape}: the owner must REJECT this component at a length_spec position");
             };
 
-            let triple = vec![offender, zero.clone(), zero];
+            let triple = vec![offender.clone(), zero.clone(), zero];
             for (builtin, arg_name, args) in [
                 ("affine_translate", "dx/dy/dz", triple.clone()),
                 (
@@ -7077,13 +7278,15 @@ mod tests {
                     "translation",
                     vec![matrix3x3(IDENTITY_3X3), Value::Vector(triple.clone())],
                 ),
+                ("plane_yz", "offset", vec![offender]),
+                ("axis_x", "ox/oy/oz", vec![Value::Point(triple.clone())]),
             ] {
                 let diag = super::diagnose(builtin, &args)
                     .unwrap_or_else(|| panic!("{builtin} / {shape}: must be diagnosed"));
                 assert_eq!(
                     diag.message,
                     rejection.message(builtin, arg_name),
-                    "{builtin} / {shape}: R12's wording has forked from the shared \
+                    "{builtin} / {shape}: this wording has forked from the shared \
                      ArgRejection template"
                 );
             }
