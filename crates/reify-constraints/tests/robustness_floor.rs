@@ -1211,3 +1211,81 @@ fn underivable_empty_box_keeps_the_region_empty_wording() {
          got: {message}"
     );
 }
+
+/// A steep objective over a bracket the BOUND DERIVATION cannot read must still
+/// name the margin.
+///
+/// `2·x > 60mm ∧ 2·x < 61mm` — i.e. `x ∈ (30mm, 30.5mm)`, non-empty — and
+/// genuinely floor-infeasible: the synthesised margin is 2% × 60mm = 1.2mm,
+/// wider than the 1mm gap.  What makes it a second increment rather than a
+/// rehearsal of `steep_objective_margin_only_infeasibility_names_the_margin`,
+/// all MEASURED:
+///
+///   - `derive_param_intervals` abstains COMPLETELY on the coefficient form
+///     (`DerivedInterval { lo: None, hi: None }`), so `extract_initial_point`
+///     falls through to the fixed `0.01`, whose residual against the original
+///     constraints is 4.0e-2 — neither the seed nor the floored solve's
+///     converged point can witness this box.
+///   - a witness re-solve that KEEPS the Money objective also fails here:
+///     minimising `5000·x + 1e6·(0.060 − 2x)²` parks the penalty minimiser at
+///     x ≈ 2.9375e-2, residual 1.25e-3.  Objective steepness is the defect, so
+///     only dropping the objective from the witness search reaches this shape.
+///
+/// Its near-twin `underivable_empty_box_keeps_the_region_empty_wording` differs
+/// only in the upper bound and carries the IDENTICAL derived box while being
+/// EMPTY, so the pair jointly pin that the search discriminates on a verified
+/// point, not on the box.
+#[test]
+fn steep_objective_over_an_underivable_bracket_still_names_the_margin() {
+    let x_id = ValueCellId::new("UnderivableTight", "x");
+
+    let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
+        auto_params: vec![length_auto_param(x_id.clone())],
+        constraints: vec![
+            (
+                constraint_id("UnderivableTight", 0),
+                scaled_length_cmp(2.0, BinOp::Gt, &x_id, 0.060),
+            ),
+            (
+                constraint_id("UnderivableTight", 1),
+                scaled_length_cmp(2.0, BinOp::Lt, &x_id, 0.061),
+            ),
+        ],
+        current_values: ValueMap::new(),
+        objective: Some(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            money_expr_x_per_mm(&x_id),
+        )),
+        functions: vec![].into(),
+    };
+
+    let message = floor_infeasible_message(&problem);
+
+    assert!(
+        !message.contains("feasible region is empty"),
+        "x ∈ (30mm, 30.5mm) is non-empty and x = 30.25mm satisfies both constraints \
+         — a bracket the bound derivation cannot read must not be reported as empty; \
+         got: {message}"
+    );
+    assert!(
+        message.contains("original constraints"),
+        "the diagnostic must say the ORIGINAL constraints are satisfiable, verified at \
+         a witness; got: {message}"
+    );
+    assert!(
+        message.contains("robustness margin"),
+        "the diagnostic must name the synthesised robustness margin as what cannot be \
+         met; got: {message}"
+    );
+    assert!(
+        message.contains("2%"),
+        "the diagnostic must report the REL_MARGIN (2%) the user has to relax; \
+         got: {message}"
+    );
+    assert!(
+        message.contains("cost_robustness_tradeoff"),
+        "the diagnostic must keep the cost_robustness_tradeoff override hint (PRD \
+         §2.4/§9); got: {message}"
+    );
+}
