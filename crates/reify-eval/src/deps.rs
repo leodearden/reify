@@ -278,15 +278,24 @@ impl ReverseDependencyIndex {
 /// index builder ([`ReverseDependencyIndex::build_from_graph_and_fields`]), and
 /// the cold/incremental eval-trace wiring in `engine_eval.rs` / `engine_edit.rs`.
 ///
-/// **1:1 invariant.** Each geometry cell is expected to be backed by at most one
-/// realization: `from_templates` links a realization to the `Type::Geometry`
-/// value cell whose `member == realization.name`, and realization names are
-/// unique within an entity, so distinct realizations resolve to distinct cells.
+/// **Cardinality.** A geometry cell is backed by exactly one realization, OR —
+/// for a geometry-LIST cell (task #5385) — by one realization per element:
+/// `from_templates` links a single-geometry realization to the `Type::Geometry`
+/// cell whose `member == realization.name`, and links each `<list>#k` element
+/// realization to the one `Type::List(Box::new(Type::Geometry))` cell named by
+/// its `list_binding`. Realization names are unique within an entity, so the
+/// only fan-in is the list one, and it is N:1 by design.
+///
 /// Callers that fold these links into a per-cell `realization_reads` list MUST
-/// nonetheless accumulate (not overwrite-last) so they stay consistent with the
-/// `push`-accumulating [`build_trace_map_and_fields`] even if that invariant is
-/// ever violated — use [`geometry_cell_realization_reads`] rather than calling
+/// therefore accumulate, never overwrite-last, so they stay consistent with the
+/// `push`-accumulating [`build_trace_map_and_fields`] — use
+/// [`geometry_cell_realization_reads`] rather than calling
 /// [`crate::cache::CacheStore::set_realization_reads`] once per raw link.
+/// Callers that need a SINGLE backing realization cannot be made correct by
+/// accumulation and must instead tolerate a miss: [`realization_by_cell`] drops
+/// every cell with more than one backing realization, so edges #1 and #2 report
+/// "no backing realization" for a list cell rather than naming one arbitrary
+/// element as if it were the whole list.
 pub(crate) fn geometry_cell_realization_links(
     graph: &crate::graph::EvaluationGraph,
 ) -> impl Iterator<Item = (RealizationNodeId, ValueCellId)> + '_ {

@@ -375,21 +375,49 @@ impl EvaluationGraph {
                         .iter()
                         .map(|op| ContentHash::of_str(&format!("{:?}", op))),
                 );
-                // GHR-δ S2: link this realization to the `Type::Geometry` value
-                // cell it backs, if any — the same name-match rule GHR-γ applies
-                // in `post_process_geometry_handle_cells`
-                // (`cell.id.member == realization.name && cell_type == Geometry`).
+                // GHR-δ S2: link this realization to the value cell it backs, if
+                // any. There are two cell shapes, matching the two lowerings that
+                // eval's `post_process_geometry_handle_cells` hydrates:
+                //
+                //  * a single-geometry `let` → one `Type::Geometry` cell whose
+                //    member IS the realization name, found by name match;
+                //  * a geometry-LIST `let` (task #5385) → one
+                //    `Type::List(Box::new(Type::Geometry))` cell holding every
+                //    element's handle, backed by one sibling realization PER
+                //    element, each named `<list>#k` and carrying `list_binding`.
+                //    The name match can never find that cell — `holes#0` is not
+                //    `holes`, and the type is a list — so the binding names it.
+                //
+                // The two arms are disjoint by construction (a `#`-suffixed
+                // element name cannot equal a cell member), so their order is
+                // clarity, not precedence.
+                //
+                // The list shape makes this link deliberately N:1 — N element
+                // realizations resolve to ONE cell — so callers must not assume
+                // 1:1. `deps::geometry_cell_realization_reads` accumulates every
+                // backing realization, and the single-valued
+                // `deps::realization_by_cell` declines to name any of them
+                // (conservative miss) rather than picking one arbitrarily.
+                //
                 // Riding the link on the graph lets the trace builders record the
                 // Realization→ValueCell freshness edge in both directions without
                 // re-deriving the cell↔realization correspondence (which the eval
                 // graph's RealizationNodeData otherwise drops).
-                let geometry_cell = realization.name.as_deref().and_then(|name| {
-                    template
-                        .value_cells
-                        .iter()
-                        .find(|c| c.id.member == name && c.cell_type == Type::Geometry)
-                        .map(|c| c.id.clone())
-                });
+                let geometry_cell = realization
+                    .list_binding
+                    .as_ref()
+                    .map(|binding| {
+                        ValueCellId::new(realization.id.entity.as_str(), &binding.list_name)
+                    })
+                    .or_else(|| {
+                        realization.name.as_deref().and_then(|name| {
+                            template
+                                .value_cells
+                                .iter()
+                                .find(|c| c.id.member == name && c.cell_type == Type::Geometry)
+                                .map(|c| c.id.clone())
+                        })
+                    });
                 let node = RealizationNodeData {
                     id: realization.id.clone(),
                     operations: realization.operations.clone(),
