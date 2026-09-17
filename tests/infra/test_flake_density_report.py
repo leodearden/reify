@@ -150,6 +150,32 @@ class TestDenominators(LedgerFixture):
         self.assertEqual(by_test["test_a.sh"].distinct_runs, 2)
         self.assertEqual(by_test["test_b.sh"].distinct_runs, 1)
 
+    def test_rows_without_a_run_id_add_no_phantom_run(self):
+        """A run_id-less row is still a flake RECORD, but it names no run. Left
+        in the set, every such row collapses into one shared `None` bucket and
+        reads as one extra distinct run — inflating the very denominator this
+        report exists to report honestly."""
+        ledger = self.write_ledger([
+            _row("test_a.sh", run_id="r1"),
+            {"ts": "2026-07-19T22:22:50Z", "test": "test_a.sh", "role": "merge"},
+        ])
+        report = fdr.build_report(fdr.read_ledger(ledger).rows)
+        self.assertEqual(report.records, 2)
+        self.assertEqual(report.distinct_runs, 1)
+        self.assertEqual(report.members[0].flakes, 2)
+        self.assertEqual(report.members[0].distinct_runs, 1)
+
+    def test_a_member_whose_rows_all_lack_a_run_id_reports_zero_runs(self):
+        """The degenerate case of the above: zero known runs, not one, and not
+        a KeyError from a member that never seeded a run set."""
+        ledger = self.write_ledger([
+            {"ts": "2026-07-19T22:22:50Z", "test": "test_a.sh", "role": "merge"},
+        ])
+        report = fdr.build_report(fdr.read_ledger(ledger).rows)
+        self.assertEqual(report.records, 1)
+        self.assertEqual(report.distinct_runs, 0)
+        self.assertEqual(report.members[0].distinct_runs, 0)
+
     def test_no_density_without_total_runs(self):
         """run_all.sh:729-731 — a clean run writes NO line, so the ledger alone
         cannot support a flakes-per-gate density."""
@@ -276,6 +302,17 @@ class TestWindowing(LedgerFixture):
         report = fdr.build_report(rows, since="2026-08-01T00:00:00Z")
         self.assertEqual([m.test for m in report.members], ["test_new.sh"])
         self.assertEqual(report.undated_excluded, 1)
+
+    def test_unparseable_since_is_rejected_by_the_cli_not_silently_ignored(self):
+        """The ValueError branch is CLI-reachable, and a window silently
+        ignored would report the WHOLE ledger under a windowed heading. Pinned
+        through the CLI, like the sibling --total-runs 0 rejection."""
+        ledger = self.write_ledger([_row("test_a.sh")])
+        result = self.run_cli(
+            "--ledger", str(ledger), "--since", "not-a-timestamp")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn("not-a-timestamp", result.stderr)
 
     def test_undated_records_are_kept_when_no_window_is_given(self):
         ledger = self.write_ledger([

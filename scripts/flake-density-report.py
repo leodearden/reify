@@ -177,10 +177,19 @@ def build_report(rows: list[dict], *, top: int | None = None,
     flakes: Counter[str] = Counter()
     runs_by_test: dict[str, set] = {}
     roles_by_test: dict[str, Counter[str]] = {}
+    runs: set[str] = set()
     for row in rows:
         test = row["test"]
         flakes[test] += 1
-        runs_by_test.setdefault(test, set()).add(row.get("run_id"))
+        test_runs = runs_by_test.setdefault(test, set())
+        # A row carrying no run_id is still a flake RECORD but names no RUN.
+        # Admitting it would put every such row in one shared `None` bucket,
+        # reading as one extra distinct run in a denominator this report exists
+        # to state honestly. Empty counts as absent, as it does for `role`.
+        run_id = row.get("run_id")
+        if run_id:
+            test_runs.add(run_id)
+            runs.add(run_id)
         roles_by_test.setdefault(test, Counter())[row.get("role") or "unknown"] += 1
 
     records = len(rows)
@@ -199,7 +208,7 @@ def build_report(rows: list[dict], *, top: int | None = None,
     return Report(
         ledger_path=ledger_path,
         records=records,
-        distinct_runs=len({row.get("run_id") for row in rows}),
+        distinct_runs=len(runs),
         malformed=malformed,
         undated_excluded=undated_excluded,
         since=since,
