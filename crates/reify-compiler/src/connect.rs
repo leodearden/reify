@@ -354,7 +354,9 @@ pub(crate) fn chain_hops(
 ///     the hop's endpoint. An indexer is stripped at the FIRST `[` because
 ///     `sub_port_directions` keys on the SUB name and every element of a
 ///     collection shares one child template — the same decomposition
-///     `endpoint_direction` uses.
+///     `endpoint_direction` uses. Zero or several such ports is the §6.2
+///     failure: it names what was actually found and sends the author to (c),
+///     and the endpoint is left unresolved so `chain_hops` drops the hop.
 ///
 /// A `sub_port_directions` MISS is handed back verbatim rather than diagnosed
 /// here: per that map's absence contract a miss means "not resolvable at this
@@ -366,7 +368,7 @@ fn resolve_chain_endpoint(
     ctx: &ConnectContext,
     elem: &reify_ast::Expr,
     needed: reify_core::PortDirection,
-    _diagnostics: &mut Vec<Diagnostic>,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_ast::Expr> {
     let Some(name) = resolve_port_name(elem) else {
         return Some(elem.clone());
@@ -381,16 +383,45 @@ fn resolve_chain_endpoint(
     let Some(child_ports) = ctx.scope.sub_port_directions.get(sub) else {
         return Some(elem.clone());
     };
-    let mut in_direction = child_ports.iter().filter(|(_, dir)| **dir == needed);
-    match (in_direction.next(), in_direction.next()) {
-        (Some((port, _)), None) => Some(reify_ast::Expr {
-            kind: reify_ast::ExprKind::MemberAccess {
-                object: Box::new(elem.clone()),
-                member: port.clone(),
-            },
-            span: elem.span,
-        }),
-        _ => Some(elem.clone()),
+    let candidates: Vec<&str> = child_ports
+        .iter()
+        .filter(|(_, dir)| **dir == needed)
+        .map(|(port, _)| port.as_str())
+        .collect();
+    let dir = direction_word(needed);
+    let found = match candidates.as_slice() {
+        [port] => {
+            return Some(reify_ast::Expr {
+                kind: reify_ast::ExprKind::MemberAccess {
+                    object: Box::new(elem.clone()),
+                    member: (*port).to_string(),
+                },
+                span: elem.span,
+            });
+        }
+        [] => format!("has no '{dir}' port"),
+        several => format!("has several '{dir}' ports ({})", several.join(", ")),
+    };
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "chain element '{name}' {found}; name the port explicitly on that element, \
+             e.g. '{name}.<port>'"
+        ))
+        .with_label(DiagnosticLabel::new(
+            elem.span,
+            format!("no unique '{dir}' port"),
+        )),
+    );
+    None
+}
+
+/// The source spelling of a port direction, for diagnostics that quote it back.
+fn direction_word(direction: reify_core::PortDirection) -> &'static str {
+    use reify_core::PortDirection::*;
+    match direction {
+        In => "in",
+        Out => "out",
+        Bidi => "bidi",
     }
 }
 
