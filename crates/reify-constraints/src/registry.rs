@@ -1551,10 +1551,25 @@ mod objective_consumption_tests {
         );
     }
 
-    /// The classifier's components are the SAME SET `solve_inner` builds from
-    /// main's five-arg prelude, and the verdict's `component` index really
-    /// names the component that carries the objective — the executable form of
-    /// the G7 single-source claim, over a two-component joint-drive shape.
+    /// The verdict's `component` index really names the component that carries
+    /// the objective, over a two-component joint-drive shape.
+    ///
+    /// **What this test no longer tries to do.** Until step-18, `solve_inner`
+    /// carried the decomposition sequence inline and this test re-ran that
+    /// sequence to prove the classifier agreed with it. Step-18 moved BOTH onto
+    /// one `decompose_prelude` body, so the G7 single-source property is now
+    /// structural — there is one body, and a drift between classifier and
+    /// routing is no longer expressible. The re-run was therefore comparing the
+    /// production prelude against a hand-copied duplicate of itself: a SPOT
+    /// violation that could only ever red when the copy was edited, which is
+    /// the opposite of the property it claimed. Deleted in review round 3
+    /// (finding 3).
+    ///
+    /// What survives carries real information and is not derivable from "one
+    /// body exists": that the fixture really decomposes into TWO components (so
+    /// the index below discriminates at all), and that the index the verdict
+    /// carries resolves, IN THE CLASSIFIER'S OWN VECTOR, to the component
+    /// holding the autos the objective reaches.
     ///
     /// Compared on `auto_params` per component (`SubProblem` derives only
     /// `Debug`), CANONICALLY SORTED rather than in vector order. That is not
@@ -1570,38 +1585,15 @@ mod objective_consumption_tests {
     /// from one decomposition cannot be used to index another. `solve_inner`
     /// attaches the objective with `objective_component == Some(ci)` over the
     /// vector it holds, so the index and the vector must come from ONE call —
-    /// which is precisely what step-18 makes true. The second assertion below
-    /// pins the resulting coherence.
+    /// which is precisely what step-18 makes true, and what the second
+    /// assertion below pins.
     #[test]
-    fn classifier_components_match_solve_inners_five_arg_prelude() {
+    fn the_verdicts_component_index_names_the_objectives_component() {
         let p = problem_with_deps(
             vec![auto("P", "a"), auto("P", "b"), auto("Q", "c")],
             vec![ge_one("P", "s", 0), ge_one("Q", "c", 1)],
             Some(minimize_ref("P", "s")),
             vec![dep("P", "s", &[("P", "a"), ("P", "b")])],
-        );
-
-        // Exactly what `solve_inner`'s prelude does, spelled out here.
-        let dependent_auto_reads =
-            crate::decompose::dependent_cell_auto_reads(&p.dependent_cells, &p.auto_params);
-        let mut obj_reach: Vec<ValueCellId> = Vec::new();
-        let obj_refs = p.objective.as_ref().map(|obj: &ObjectiveSet| {
-            let mut refs = std::collections::HashSet::new();
-            for term in &obj.terms {
-                crate::decompose::collect_value_refs_pub(&term.expr, &mut refs);
-            }
-            obj_reach = crate::decompose::expand_refs_through_dependent_cells(
-                &mut refs,
-                &dependent_auto_reads,
-            );
-            refs
-        });
-        let routed = crate::decompose::decompose_into_components_with_reads(
-            &p.auto_params,
-            &p.constraints,
-            obj_refs.as_ref(),
-            Some(&obj_reach),
-            &dependent_auto_reads,
         );
 
         let (classified, verdict) = decompose_and_classify(&p);
@@ -1621,14 +1613,6 @@ mod objective_consumption_tests {
             out.sort();
             out
         }
-        assert_eq!(
-            shape(&classified),
-            shape(&routed),
-            "the classifier and `solve_inner` must decompose into the same \
-             components — the verdict's `component` index is meaningless \
-             otherwise"
-        );
-
         // `s` couples `a` and `b`; `Q.c` is constrained on its own.
         assert_eq!(
             shape(&classified),

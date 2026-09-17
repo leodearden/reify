@@ -286,17 +286,18 @@ fn edit_height_inrange_still_satisfied() {
         .expect("edit_check should succeed");
 
     // Positive presence check: all constraints should still be evaluated (not silently dropped).
-    // Height does not touch the `determined(origin)` guard, so no constraints are excluded —
-    // the full assembly count (measured as 51) must be present.
-    // Floor is 49: 51 total minus the 2 guarded constraints excluded by esc-295-78.
-    // #5417 raised the Assembly total from 49 to 51: `examples/integration_full_v01.ri`
+    // Height does not touch the `determined(origin)` guard, so no constraints are excluded and
+    // the FULL assembly count must be present — MEASURED as 51 on this tree.
+    // #5417 raised that total from 49 to 51: `examples/integration_full_v01.ri`
     // gained two bracketing constraints on `load_free` so its `minimize load_free`
     // objective is genuinely consumed rather than structurally inert.
-    assert!(
-        check_result.constraint_results.len() >= 49,
-        "expected >= 49 constraint results after height=400mm, got {} \
-         (constraints may have been silently dropped; \
-          floor is 51 total minus 2 esc-295-78-guarded constraints = 49)",
+    // Pinned exactly, not floored: a `>=` floor let the two constraints the comment
+    // above insists must be present vanish silently.
+    assert_eq!(
+        check_result.constraint_results.len(),
+        51,
+        "expected all 51 constraint results after height=400mm, got {} \
+         (constraints may have been silently dropped)",
         check_result.constraint_results.len()
     );
 
@@ -398,15 +399,14 @@ fn edit_height_below_width_triggers_ordering_violation() {
         .edit_check(height_id, mm(100.0))
         .expect("edit_check should succeed");
 
-    // Total count still >=49 (no short-circuit on violation).
-    // Floor is 49: 51 total minus the 2 guarded constraints excluded by esc-295-78.
+    // Full count still present (no short-circuit on violation) — MEASURED as 51.
     // #5417 raised the Assembly total from 49 to 51: `examples/integration_full_v01.ri`
     // gained two bracketing constraints on `load_free` so its `minimize load_free`
     // objective is genuinely consumed rather than structurally inert.
-    assert!(
-        check_result.constraint_results.len() >= 49,
-        "expected >=49 constraint results even with height=100mm (violation), got {} \
-         (floor is 51 total minus 2 esc-295-78-guarded constraints = 49)",
+    assert_eq!(
+        check_result.constraint_results.len(),
+        51,
+        "expected all 51 constraint results even with height=100mm (violation), got {}",
         check_result.constraint_results.len()
     );
 
@@ -440,18 +440,19 @@ fn edit_position_x_determinacy_predicates_hold() {
         .edit_check(px_id, mm(200.0))
         .expect("edit_check should succeed");
 
-    // Positive presence check: due to esc-295-78, the 2 guarded constraints are excluded from
-    // the result when position_x is in the dirty cone.  Even so, the remaining 49 constraints
-    // must all be present — any further silent dropping would indicate a regression.
-    // Floor is 49: 51 total minus the 2 guarded constraints excluded by esc-295-78.
+    // Positive presence check: all 51 constraints come back even with position_x in the dirty
+    // cone — MEASURED on this tree, by raising this floor to an unreachable value and reading
+    // the panic. An earlier revision of this comment said the 2 esc-295-78 guarded constraints
+    // are EXCLUDED from the result here, leaving 49; that is not what the engine returns today.
+    // Their satisfaction is asserted separately below; their presence is asserted here.
     // #5417 raised the Assembly total from 49 to 51: `examples/integration_full_v01.ri`
     // gained two bracketing constraints on `load_free` so its `minimize load_free`
     // objective is genuinely consumed rather than structurally inert.
-    assert!(
-        check_result.constraint_results.len() >= 49,
-        "expected >= 49 constraint results after position_x=200mm, got {} \
-         (constraints may have been silently dropped; \
-          note esc-295-78 excludes 2 guarded constraints leaving floor of 49)",
+    assert_eq!(
+        check_result.constraint_results.len(),
+        51,
+        "expected all 51 constraint results after position_x=200mm, got {} \
+         (constraints may have been silently dropped)",
         check_result.constraint_results.len()
     );
 
