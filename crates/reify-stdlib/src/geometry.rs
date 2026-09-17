@@ -1275,7 +1275,28 @@ fn construct_point_or_vector(args: &[Value], expected_n: usize, is_point: bool) 
     }
 }
 
-/// Build a Plane from a single offset argument.
+/// Build a Plane from a single offset argument, which is REQUIRED to be a
+/// Length — units-length ε, R11 / decision D4 of
+/// `docs/prds/v0_6/units-length-gate-completion.md`.
+///
+/// The offset is the only dimensioned input, so the whole origin triple
+/// consequently carries LENGTH: the two zeros are minted at the gated dimension,
+/// and `plane_xy(5mm)` has origin `(0m, 0m, 5mm)`. That mirroring is VERIFIED by
+/// `plane_xy_length_zero_mirrors_length_into_origin_and_keeps_normal_bare`
+/// rather than argued here, which is why the origin is built from
+/// [`make_point3`] at LENGTH instead of from a closure that still carried a
+/// DIMENSIONLESS branch the gate has made unreachable. The synthesized normal
+/// stays DIMENSIONLESS: a unit vector legitimately has bare components
+/// (decision D3), and nothing in ε widens the gate to it.
+///
+/// SCOPE. ε gates THIS producer family (`plane_xy` / `plane_xz` / `plane_yz`,
+/// and [`make_axis`] beside it) and nothing else. The five sibling
+/// construction-datum constructors — `midplane`, `axis_through`, `plane_through`,
+/// the arity-2 `offset` and `frame_at` (task 4387 / η, the section below) —
+/// stay dimension-POLYMORPHIC: they enforce dimension AGREEMENT among their
+/// inputs, never LENGTH. `decode_plane`'s consumer-side `ox`/`oy`/`oz` gate
+/// (task δ / 5745) therefore stays live and reachable through them, which is why
+/// ε shuts R11 at both ends rather than retiring either.
 fn make_plane(args: &[Value], offset_index: usize, normal: [f64; 3]) -> Value {
     if args.len() != 1 {
         return Value::Undef;
@@ -1288,29 +1309,18 @@ fn make_plane(args: &[Value], offset_index: usize, normal: [f64; 3]) -> Value {
     if !offset_f.is_finite() {
         return Value::Undef;
     }
-    let dim = offset_val.dimension();
-    let make_zero = || -> Value {
-        if dim.is_dimensionless() {
-            Value::Real(0.0)
-        } else {
-            Value::Scalar {
-                si_value: 0.0,
-                dimension: dim,
-            }
-        }
-    };
-    let offset_component = offset_val.clone();
-    let zero = make_zero();
-    let mut comps = [zero.clone(), zero.clone(), zero];
-    comps[offset_index] = offset_component;
-    let origin = Value::Point(comps.to_vec());
+    if offset_val.dimension() != DimensionVector::LENGTH {
+        return Value::Undef;
+    }
+    let mut origin_si = [0.0; 3];
+    origin_si[offset_index] = offset_f;
     let normal_vec = Value::Vector(vec![
         Value::Real(normal[0]),
         Value::Real(normal[1]),
         Value::Real(normal[2]),
     ]);
     Value::Plane {
-        origin: Box::new(origin),
+        origin: Box::new(make_point3(origin_si, DimensionVector::LENGTH)),
         normal: Box::new(normal_vec),
     }
 }
