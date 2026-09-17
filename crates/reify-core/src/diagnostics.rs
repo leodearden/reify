@@ -4065,19 +4065,28 @@ pub enum DiagnosticCode {
     /// not `Warning` (open Q4): an absent optional external tool is not a defect
     /// in the user's model.
     FdmSlicerUnavailable,
-    /// Origin: `crates/reify-eval/src/engine_eval.rs` — the main eval objective-solve
-    /// path (inside `for template in &module.templates`).
+    /// Origin: `crates/reify-eval/src/engine_eval.rs` — two mirrored gate sites, the
+    /// main eval objective-solve path (inside `for template in &module.templates`)
+    /// and its merged-cluster generalisation for spanning objectives.
     ///
     /// Emitted as a `Severity::Warning` when an objective solve returns
-    /// `OptimalityStatus::BestFound { reason: BestFoundReason::IterationLimit }`
-    /// (i.e. `TerminationReason::MaxItersReached` on the Nelder-Mead path).  The
-    /// solve still returns a best-found value (B5: byte-identical to
+    /// `OptimalityStatus::BestFound` carrying either of the two reasons that mean the
+    /// search stopped short of a proof:
+    /// - `BestFoundReason::IterationLimit` — `TerminationReason::MaxItersReached` on
+    ///   the Nelder-Mead path.
+    /// - `BestFoundReason::EnumerationBudget` — the CP-SAT capped-enumeration path,
+    ///   which stops at a node cap with part of the discrete space unvisited
+    ///   (task #6553; PRD `docs/prds/v0_6/discrete-cost-minimisation.md` §4.2,
+    ///   boundary row B6).
+    ///
+    /// In both cases the solve still returns a best-found value (B5: byte-identical to
     /// `ConstraintSolver::solve()`), but optimality is unproven.
     ///
-    /// The gate is a variant match on `BestFoundReason::IterationLimit`, not a
-    /// string-contains check (task #4871, S2 — structurally immune to rewording):
+    /// The gate is a variant match on those two reasons, not a string-contains check
+    /// (task #4871, S2 — structurally immune to rewording):
     /// `BestFoundReason::ConvergedWithinBudget` solves share the `BestFound` variant
-    /// but must NOT trigger this warning (B6 — no false-positive).
+    /// but must NOT trigger this warning (B6 — no false-positive), and neither does
+    /// `BestFoundReason::Unreported`.
     ///
     /// Canonical message prefix: `"W_SOLVER_OPTIMALITY_UNPROVEN: ..."`.
     /// The PRD-prose mnemonic is `W_SOLVER_OPTIMALITY_UNPROVEN` (task #4804).
