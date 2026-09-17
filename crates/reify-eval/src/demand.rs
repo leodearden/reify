@@ -745,4 +745,57 @@ mod tests {
         reg.set_full_scope(false);
         assert!(!reg.is_full_scope());
     }
+
+    /// Task #4954 γ, extended to geometry lists: demanding a geometry-list
+    /// ELEMENT realization must pull the `List<Geometry>` cell the list
+    /// occupies into the demand cone.
+    ///
+    /// The γ arm above rides `RealizationNodeData.geometry_cell`, which was
+    /// `None` for every element until `from_templates` learned to derive it
+    /// from `list_binding`. Without the pull, an all-visible selective cone
+    /// schedules strictly LESS than full scope — it drops `S.holes` — breaking
+    /// the "all-visible selectivity is a no-op: schedule EXACTLY what full
+    /// scope does" invariant.
+    ///
+    /// Asserted for EVERY element: any one of them alone must suffice to bring
+    /// the shared list cell in.
+    #[test]
+    fn demanding_a_geometry_list_element_pulls_its_list_cell_into_the_cone() {
+        use crate::graph::EvaluationGraph;
+        use reify_test_support::parse_and_compile;
+
+        let module = parse_and_compile(
+            r#"structure S {
+    param r : Length = 5mm
+    let holes = generate(3, |i| cylinder(r, 20mm))
+    let merged = union_all(holes)
+}"#,
+        );
+        let element_ids: Vec<_> = (0..3)
+            .map(|k| {
+                let want = format!("holes#{k}");
+                module
+                    .templates
+                    .iter()
+                    .flat_map(|t| t.realizations.iter())
+                    .find(|r| r.name.as_deref() == Some(&want))
+                    .unwrap_or_else(|| panic!("repro must compile a realization named {want:?}"))
+                    .id
+                    .clone()
+            })
+            .collect();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let holes = NodeId::Value(ValueCellId::new("S", "holes"));
+
+        for (k, rid) in element_ids.iter().enumerate() {
+            let mut reg = DemandRegistry::new();
+            reg.add_demand(NodeId::Realization(rid.clone()));
+            reg.rebuild_cone(&graph);
+
+            assert!(
+                reg.is_demanded(&holes),
+                "demanding holes#{k} must pull Value(S.holes) into the cone"
+            );
+        }
+    }
 }

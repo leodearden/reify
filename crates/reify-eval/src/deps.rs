@@ -1029,6 +1029,145 @@ mod tests {
         );
     }
 
+    /// The canonical geometry-list repro (task #5385): three element
+    /// realizations `holes#0..holes#2` backing ONE `List<Geometry>` cell
+    /// `S.holes`, plus an ordinary single-geometry realization `merged`.
+    ///
+    /// The eval graph's `RealizationNodeData` does not carry the realization
+    /// name, so element ids are resolved by name from the compiled template.
+    /// Returns `(graph, [holes#0, holes#1, holes#2], merged)`.
+    fn geometry_list_repro() -> (
+        crate::graph::EvaluationGraph,
+        Vec<RealizationNodeId>,
+        RealizationNodeId,
+    ) {
+        use crate::graph::EvaluationGraph;
+        use reify_test_support::parse_and_compile;
+
+        let module = parse_and_compile(
+            r#"structure S {
+    param r : Length = 5mm
+    let holes = generate(3, |i| cylinder(r, 20mm))
+    let merged = union_all(holes)
+}"#,
+        );
+        let id_named = |want: &str| {
+            module
+                .templates
+                .iter()
+                .flat_map(|t| t.realizations.iter())
+                .find(|r| r.name.as_deref() == Some(want))
+                .unwrap_or_else(|| panic!("repro must compile a realization named {want:?}"))
+                .id
+                .clone()
+        };
+        let elements = (0..3).map(|k| id_named(&format!("holes#{k}"))).collect();
+        let merged = id_named("merged");
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        (graph, elements, merged)
+    }
+
+    /// GHR-δ S2 for geometry lists: each element realization must link to the
+    /// `List<Geometry>` cell its list occupies.
+    ///
+    /// `from_templates` derived `geometry_cell` by a name match against a
+    /// `Type::Geometry` cell only. A list element is named `holes#k` and its
+    /// cell is `holes` with type `List(Geometry)`, so BOTH halves of that
+    /// predicate failed and every element's `geometry_cell` was `None`.
+    ///
+    /// Asserted PER ELEMENT — a single-link assertion would pass on a partial
+    /// fix that linked only the first (or last) element.
+    #[test]
+    fn from_templates_links_each_geometry_list_element_to_its_list_cell() {
+        let (graph, elements, merged) = geometry_list_repro();
+        let holes = ValueCellId::new("S", "holes");
+
+        for (k, rid) in elements.iter().enumerate() {
+            assert_eq!(
+                graph.realizations.get(rid).unwrap().geometry_cell,
+                Some(holes.clone()),
+                "element holes#{k} ({rid}) must link to the list cell S.holes"
+            );
+        }
+
+        assert_eq!(
+            graph.realizations.get(&merged).unwrap().geometry_cell,
+            Some(ValueCellId::new("S", "merged")),
+            "the ordinary single-geometry path must be unregressed"
+        );
+    }
+
+    /// GHR-δ S4 for geometry lists: the Realization→ValueCell freshness edge
+    /// must be registered for EVERY element, in both the reverse index and the
+    /// accumulating forward fold.
+    ///
+    /// The forward assertion also pins that `geometry_cell_realization_reads`
+    /// accumulates rather than overwrites under the new N:1 fan-in — the
+    /// property its doc comment promises but which no real graph could exercise
+    /// before geometry lists existed.
+    #[test]
+    fn geometry_list_elements_register_the_s4_freshness_edge_for_every_element() {
+        let (graph, elements, _merged) = geometry_list_repro();
+        let holes = ValueCellId::new("S", "holes");
+        let holes_node = NodeId::Value(holes.clone());
+
+        let index = ReverseDependencyIndex::build_from_graph_and_fields(&graph, &[]);
+        for (k, rid) in elements.iter().enumerate() {
+            assert!(
+                index.realization_dependents_of(rid).contains(&holes_node),
+                "realization_dependents_of(holes#{k}) must contain Value(S.holes), got {:?}",
+                index.realization_dependents_of(rid)
+            );
+        }
+
+        let reads = geometry_cell_realization_reads(&graph);
+        let backing = reads
+            .get(&holes)
+            .expect("S.holes must have backing realizations recorded");
+        for (k, rid) in elements.iter().enumerate() {
+            assert!(
+                backing.contains(rid),
+                "geometry_cell_realization_reads[S.holes] must accumulate holes#{k}, got {backing:?}"
+            );
+        }
+        assert_eq!(
+            backing.len(),
+            elements.len(),
+            "the fold must accumulate every element exactly once, got {backing:?}"
+        );
+    }
+
+    /// The step-25 ambiguity guard firing against a REAL compiled fan-in rather
+    /// than a hand-built fixture: once every element links to `S.holes`, the
+    /// single-valued resolver must decline to name any one of them, while the
+    /// 1:1 `S.merged` in the same graph still resolves.
+    ///
+    /// Unlike its three siblings this assertion is NOT red before the S2 link
+    /// lands — but only degenerately so: `S.holes` is absent from the map today
+    /// because no element links to it at all, not because the guard declined an
+    /// ambiguous key. It earns its keep in the composed state, where it is the
+    /// only thing separating "conservative miss" from "one arbitrary element
+    /// standing in for the whole list": drop the step-25 guard and this test
+    /// reds, while the other three stay green.
+    #[test]
+    fn a_geometry_list_cell_is_not_resolved_to_any_single_backing_realization() {
+        let (graph, _elements, merged) = geometry_list_repro();
+        let by_cell = realization_by_cell(&graph);
+
+        assert_eq!(
+            by_cell.get(&ValueCellId::new("S", "holes")),
+            None,
+            "a list cell backed by three element realizations must resolve to none \
+             of them, not to an arbitrary one; got {:?}",
+            by_cell.get(&ValueCellId::new("S", "holes"))
+        );
+        assert_eq!(
+            by_cell.get(&ValueCellId::new("S", "merged")),
+            Some(&merged),
+            "the unambiguous single-geometry cell must still resolve"
+        );
+    }
+
     /// P3.3 step-3: Edge #6 — VC → ComputeNode reverse-index registration.
     ///
     /// Build an EvaluationGraph with one ValueCell `load` and one
