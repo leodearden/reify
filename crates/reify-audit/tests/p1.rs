@@ -1366,6 +1366,167 @@ mod tests {
             f.summary
         );
     }
+
+    /// A declaration the enrichment pass never located carries NO opt-out
+    /// judgement — `suppression: None` means "could not check", not "the
+    /// author declined every opt-out". Reporting it turns a jcodemunch
+    /// grammar drift, a stale index, or an unreadable file into a
+    /// false-positive over every intentionally suppressed symbol.
+    ///
+    /// Two symbols in ONE task, asserted as a PARTITION of the finding set:
+    /// a test that only checked the unlocatable symbol's absence would also
+    /// pass under a guard that suppressed everything, which is the opposite
+    /// failure. The located sibling differs from it in exactly the one field
+    /// under test, so the surviving finding pins that the guard is narrow.
+    #[test]
+    fn unlocatable_declaration_is_not_reported_as_an_orphan() {
+        let done_at = NOW - 15 * DAY;
+        let sha = task_sha("7600");
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            &format!("{sha}^1"),
+            &sha,
+            vec![
+                ChangedSymbol {
+                    suppression: None,
+                    ..changed_symbol("unlocatable_widget", "crates/reify-x/src/unlocatable.rs")
+                },
+                changed_symbol("located_widget", "crates/reify-x/src/located.rs"),
+            ],
+        );
+        // No caller for either, so the caller guard cannot be what suppresses.
+        jc.set_find_references(
+            "crates/reify-x/src/unlocatable.rs",
+            "unlocatable_widget",
+            vec![],
+        );
+        jc.set_find_references("crates/reify-x/src/located.rs", "located_widget", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "7600".to_string(),
+            done_meta("7600", done_at, Some("docs/x.md")),
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+            producer_branch: None,
+        };
+
+        let findings = p1_producer_orphan::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "the located symbol must still be flagged and the unlocatable one \
+             must not; got {findings:?}",
+        );
+        let f = &findings[0];
+        assert_eq!(f.severity, Severity::Medium, "15 days > 14-day grace → Medium");
+        assert!(
+            f.summary.contains("located_widget"),
+            "the surviving finding must be the LOCATED symbol's; got summary: {:?}",
+            f.summary
+        );
+        assert!(
+            f.evidence.iter().any(|e| matches!(
+                e,
+                EvidenceRef::File { path } if path == "crates/reify-x/src/located.rs"
+            )),
+            "surviving finding must cite located.rs; got {:?}",
+            f.evidence
+        );
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.summary.contains("unlocatable_widget")),
+            "a symbol whose declaration was never located must not be reported \
+             — its author may well have written `#[allow(dead_code)]`; got \
+             {findings:?}",
+        );
+    }
+
+    /// The skip PRECEDES the severity computation rather than merely
+    /// downgrading Medium to Low.
+    ///
+    /// Inside the grace window a surviving symbol is Low, so a guard that only
+    /// downgraded would leave the unlocatable symbol indistinguishable from
+    /// the located one here — both Low, two findings. Exactly one finding is
+    /// what separates "skipped" from "downgraded", and no assertion in the
+    /// past-the-window sibling above can tell them apart.
+    #[test]
+    fn unlocatable_declaration_is_skipped_even_inside_the_grace_window() {
+        let done_at = NOW - DAY;
+        let sha = task_sha("7601");
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            &format!("{sha}^1"),
+            &sha,
+            vec![
+                ChangedSymbol {
+                    suppression: None,
+                    ..changed_symbol("unlocatable_widget", "crates/reify-x/src/unlocatable.rs")
+                },
+                changed_symbol("located_widget", "crates/reify-x/src/located.rs"),
+            ],
+        );
+        jc.set_find_references(
+            "crates/reify-x/src/unlocatable.rs",
+            "unlocatable_widget",
+            vec![],
+        );
+        jc.set_find_references("crates/reify-x/src/located.rs", "located_widget", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "7601".to_string(),
+            done_meta("7601", done_at, Some("docs/x.md")),
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+            producer_branch: None,
+        };
+
+        let findings = p1_producer_orphan::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "an unlocatable declaration is SKIPPED, not downgraded — a \
+             downgrade would leave two Low findings here; got {findings:?}",
+        );
+        let f = &findings[0];
+        assert_eq!(
+            f.severity,
+            Severity::Low,
+            "1 day is inside the 14-day grace window; got {:?}",
+            f.severity
+        );
+        assert!(
+            f.summary.contains("located_widget"),
+            "the surviving finding must be the LOCATED symbol's; got summary: {:?}",
+            f.summary
+        );
+    }
 }
 
 } // mod p1
