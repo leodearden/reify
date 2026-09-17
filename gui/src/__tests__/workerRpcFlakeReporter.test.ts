@@ -24,7 +24,11 @@ describe('classifyWorkerRpcFlake', () => {
     const verdict = classifyWorkerRpcFlake(
       summary([
         {
-          filepath: 'vitest.setup.ts',
+          // The failed SUITE is a test file; gui/vitest.setup.ts is the module
+          // it was fetching when the host stalled — the fetch ARGUMENT, not the
+          // suite. isolate:true refetches the one setupFile per test file, which
+          // is why that argument recurs across every recorded occurrence.
+          filepath: 'src/__tests__/engineStore.test.ts',
           errorMessages: [
             rpcTimeout('fetch', '[\\"/home/leo/src/reify/gui/vitest.setup.ts\\",\\"web\\"]'),
           ],
@@ -44,7 +48,7 @@ describe('classifyWorkerRpcFlake', () => {
     expect(verdict).not.toBeNull()
     expect(verdict!.kind).toBe('worker_rpc_timeout')
     expect(verdict!.suites).toEqual([
-      'vitest.setup.ts',
+      'src/__tests__/engineStore.test.ts',
       'src/__tests__/meshManager.attributeResize.test.ts',
     ])
     // Both suites timed out on `fetch`; the method set is de-duplicated.
@@ -92,7 +96,7 @@ describe('classifyWorkerRpcFlake', () => {
     const verdict = classifyWorkerRpcFlake(
       summary([
         {
-          filepath: 'vitest.setup.ts',
+          filepath: 'src/__tests__/engineStore.test.ts',
           errorMessages: [rpcTimeout('fetch', '[\\"…/vitest.setup.ts\\",\\"web\\"]')],
         },
         {
@@ -217,7 +221,7 @@ const TIMEOUT_FETCH = '[vitest-worker]: Timeout calling "fetch" with "[\\"x\\",\
 const TIMEOUT_SNAPSHOT = '[vitest-worker]: Timeout calling "snapshotSaved"'
 
 const starvedRun = (): ReportedModule[] => [
-  testModule(`${ROOT}/vitest.setup.ts`, { failed: true, errors: [TIMEOUT_FETCH] }),
+  testModule(`${ROOT}/src/__tests__/engineStore.test.ts`, { failed: true, errors: [TIMEOUT_FETCH] }),
   testModule(`${ROOT}/src/__tests__/meshManager.attributeResize.test.ts`, {
     failed: true,
     errors: [TIMEOUT_SNAPSHOT],
@@ -274,7 +278,7 @@ describe('WorkerRpcFlakeReporter — JSON artifact', () => {
     reporter.onTestRunEnd(starvedRun(), [])
 
     expect(JSON.parse(writes[0].contents).suites).toEqual([
-      'vitest.setup.ts',
+      'src/__tests__/engineStore.test.ts',
       'src/__tests__/meshManager.attributeResize.test.ts',
     ])
   })

@@ -166,7 +166,11 @@ STUB
 npm_invocations() { wc -l < "$FIX_ARGV" | tr -d ' '; }
 export -f npm_invocations
 
-TWO_SUITES='{"kind":"worker_rpc_timeout","suites":["vitest.setup.ts","src/__tests__/meshManager.attributeResize.test.ts"],"methods":["fetch"]}'
+# Realistic artifact contents: the reporter names failed MODULES, which are
+# always collectable test files. (gui/vitest.setup.ts appears in the recorded
+# errors as the fetch ARGUMENT, never as the failed suite -- it is a setupFile,
+# outside the test include pattern, so vitest could not re-run it as a spec.)
+TWO_SUITES='{"kind":"worker_rpc_timeout","suites":["src/__tests__/engineStore.test.ts","src/__tests__/meshManager.attributeResize.test.ts"],"methods":["fetch"]}'
 
 # (1) A green run must not retry, and must not consult the artifact at all.
 fixture_run "" 0 0 --
@@ -182,7 +186,7 @@ assert "B2: classified failure + passing retry => runner exits 0" \
 assert "B2: npm invoked exactly twice (bounded to ONE retry)" \
     bash -c "[ \"\$(npm_invocations)\" -eq 2 ]"
 assert "B2: the retry passes ONLY the two suites named in the artifact" \
-    bash -c "[ \"\$(sed -n 2p '$FIX_ARGV')\" = 'test -- vitest.setup.ts src/__tests__/meshManager.attributeResize.test.ts' ]"
+    bash -c "[ \"\$(sed -n 2p '$FIX_ARGV')\" = 'test -- src/__tests__/engineStore.test.ts src/__tests__/meshManager.attributeResize.test.ts' ]"
 assert "B2: the retry is announced with an @@REIFY_GUI_FLAKE@@ outcome marker" \
     bash -c "grep -qE '^@@REIFY_GUI_FLAKE@@ .*outcome=retried' '$FIX_OUT'"
 
