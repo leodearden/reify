@@ -74,7 +74,7 @@ mod tests {
     /// - task 2658 → P1 guard B2: `done_provenance=None` (legacy_meta) →
     ///   P1 skips the task at commit-resolution before per-symbol iteration.
     /// - task 2699 → P1 guard B7: `g_allow_marker=Some("non-blank")` →
-    ///   `is_g_allow_suppressed` returns true → P1 skips the symbol.
+    ///   `DeclSuppression::opts_out` returns true → P1 skips the symbol.
     /// - task 2954 → P2 guard C2: `files=["crates/x/tests/foo.rs"]` →
     ///   `is_test_path` fires → P2 skips the diff scan entirely.
     ///
@@ -273,7 +273,7 @@ mod tests {
 
         // Fixture 6 — task 2699, guard B7 (P1 G-allow marker):
         // changed_symbols entry has g_allow_marker=Some("non-blank") →
-        // is_g_allow_suppressed returns true → P1 skips the symbol.
+        // DeclSuppression::opts_out returns true → P1 skips the symbol.
         // done_provenance=None → P5 early-returns (guard A1).
         task_metadata.insert(
             "2699".to_string(),

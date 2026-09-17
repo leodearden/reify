@@ -1595,7 +1595,7 @@ fn build_high_finding(meta: &TaskMetadata, missing: &[String], summary: &str) ->
 /// 3. **Per-symbol suppression guards** (reuses P1's opt-out set):
 ///    - Symbol file starts with `crates/reify-stdlib/` (scope-exclude).
 ///    - `has_allow_dead_code` or `has_cfg_test` (intentional-orphan opt-outs).
-///    - Non-blank `// G-allow:` marker (mirrors `p1_producer_orphan::is_g_allow_suppressed`).
+///    - Non-blank `// G-allow:` marker (all three via [`DeclSuppression::opts_out`]).
 /// 4. **No non-test workspace caller**: `find_references` returns only test-path
 ///    refs (or none) for the symbol.
 ///

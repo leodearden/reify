@@ -21,14 +21,18 @@
 //! - Per task: not `done`; no `done_at`; `audit_foundation`
 //!   (foundation/scaffold task); a pending/in-progress/review consumer task
 //!   whose `consumer_ref` matches this producer's `prd`; no `done_provenance.commit`.
-//! - Per symbol: `#[allow(dead_code)]` / `#[cfg(test)]` attribute opt-out;
-//!   a non-blank `// G-allow:` marker; a non-test workspace caller.
+//! - Per symbol: the declaration could not be located, so whether its author
+//!   opted out is UNKNOWN ([`ChangedSymbol::decl_located`]) — SKIPPED outright
+//!   rather than downgraded, since unknown is not "no opt-out"; an opt-out the
+//!   located declaration carries — `#[allow(dead_code)]` / `#[cfg(test)]` /
+//!   a non-blank `// G-allow:` marker ([`DeclSuppression::opts_out`]);
+//!   a non-test workspace caller.
 //! - Surviving symbols: severity is Medium only once *strictly more than*
 //!   14 days have elapsed since the done-flip (design §5 P1, line 83:
 //!   ">14 days"); at exactly the boundary and anywhere inside the window it
 //!   is Low ("log only").
 
-use crate::{AuditContext, ChangedSymbol, EvidenceRef, Finding, Pattern, Severity};
+use crate::{AuditContext, DeclSuppression, EvidenceRef, Finding, Pattern, Severity};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 14-day grace window. `f-infra-design.md` §5 P1 line 83 specifies a
@@ -62,20 +66,6 @@ fn has_pending_consumer(ctx: &AuditContext, producer_prd: &str) -> bool {
         matches!(t.status.as_str(), "pending" | "in-progress" | "review")
             && t.consumer_ref.as_deref() == Some(producer_prd)
     })
-}
-
-/// Returns `true` when the symbol carries a non-blank `// G-allow:` marker.
-///
-/// Mirrors `scripts/audit-orphan-producers.sh:150`
-/// `G_ALLOW_RE = //\s*G-allow:\s*(.+)`: the `(.+)` requires at least one
-/// non-whitespace character, so a blank/whitespace-only marker does NOT
-/// suppress — keeping this detector and the orphan script in lockstep.
-fn is_g_allow_suppressed(symbol: &ChangedSymbol) -> bool {
-    symbol
-        .suppression
-        .as_ref()
-        .and_then(|s| s.g_allow_marker.as_deref())
-        .is_some_and(|r| !r.trim().is_empty())
 }
 
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
@@ -130,18 +120,26 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         let until_sha = commit;
 
         for symbol in ctx.jcodemunch.get_changed_symbols(&since_sha, until_sha) {
-            // Per-symbol guard: intentional-orphan opt-outs —
-            // `#[allow(dead_code)]` / `#[cfg(test)]` (design §5 P1).
+            // Per-symbol guard: the declaration could not be located, so whether
+            // its author opted out is UNKNOWN, not "no". Reporting here is what
+            // turns a jcodemunch grammar drift (a release that stops emitting
+            // `line`, as 1.108.54 already did for `find_references`), a stale
+            // index, or an unreadable file into a false-positive storm over
+            // every intentionally suppressed symbol. The enrichment pass has
+            // already told the operator.
+            if !symbol.decl_located() {
+                continue;
+            }
+            // Per-symbol guard: an intentional-orphan opt-out the located
+            // declaration carries — `#[allow(dead_code)]` / `#[cfg(test)]` /
+            // a non-blank `// G-allow:` marker, whose shared rule (and the
+            // orphan-script regex it mirrors) lives in `DeclSuppression`
+            // (design §5 P1).
             if symbol
                 .suppression
                 .as_ref()
-                .is_some_and(|s| s.has_allow_dead_code || s.has_cfg_test)
+                .is_some_and(DeclSuppression::opts_out)
             {
-                continue;
-            }
-            // Per-symbol guard: a non-blank `// G-allow:` marker on the
-            // declaration (design §5 P1; mirrors the orphan-script regex).
-            if is_g_allow_suppressed(&symbol) {
                 continue;
             }
             // A non-test workspace caller proves the symbol is consumed —

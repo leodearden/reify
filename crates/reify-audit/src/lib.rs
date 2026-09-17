@@ -1846,9 +1846,9 @@ fn is_test_path(p: &str) -> bool {
 /// from a clean one.
 ///
 /// Used by both P1 (`p1_producer_orphan`) and P5 H2 (`check_live_path_stranded`)
-/// so the opt-out semantics stay in lockstep. `p1_producer_orphan` still holds
-/// its own private `is_g_allow_suppressed` copy of the G-allow half;
-/// [`DeclSuppression::opts_out`] is the canonical home. Per
+/// so the opt-out semantics stay in lockstep — P1 calls
+/// [`DeclSuppression::opts_out`] directly rather than through this helper,
+/// because it deliberately does NOT apply the stdlib scope-exclude above. Per
 /// `f-infra-design.md` §5 P1/P5.
 // G-allow: shared suppression predicate; callers are intra-crate (p5_phantom_done::check_live_path_stranded) — orphan-audit script counts only inter-crate call sites
 pub(crate) fn is_symbol_suppressed(symbol: &ChangedSymbol) -> bool {
