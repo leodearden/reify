@@ -11,6 +11,13 @@ use tower_lsp::lsp_types::{DocumentSymbol, Range, SymbolKind, Url};
 
 use crate::convert::{is_ident_byte, offset_to_position, span_to_range};
 
+/// Fixtures and helpers shared by several modules' `tests`, in their own file
+/// so no production module carries test data. Declared here, next to the
+/// `decl_name_and_span` oracle whose per-kind table is the largest of them.
+#[cfg(test)]
+#[path = "test_fixtures.rs"]
+pub(crate) mod test_fixtures;
+
 /// Extract a module name from a file URI.
 ///
 /// e.g., `file:///path/to/test.ri` → `"test"`.
@@ -507,6 +514,56 @@ pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<
     None
 }
 
+/// The name a top-level [`Declaration`] declares, paired with the
+/// declaration's own statement span — or `None` for the kinds that declare
+/// no name of their own.
+///
+/// The match is deliberately **exhaustive with no `_` wildcard arm**, and that
+/// is the load-bearing part of the design: a new `Declaration` variant becomes
+/// a COMPILE ERROR here, forcing an explicit named-vs-unnamed decision instead
+/// of a silent omission. Every other declaration scan in this crate is a
+/// per-kind allowlist ending in `_`, and each of them silently dropped kinds as
+/// the parser grew them.
+///
+/// The returned span is the whole declaration statement, NOT the name token —
+/// narrow it with [`name_token_span`] when a jump target is wanted.
+///
+/// SCOPE — same-file go-to-definition (task 6388); `goto_def::resolve_decl_name`
+/// is its one production consumer. The other scans are NOT migrated onto it,
+/// for two different reasons:
+/// - `goto_def::find_declaration_name_span` and
+///   `references::classify_top_level_decl` MUST stay narrower — they feed
+///   rename/references, and widening them corrupts a rename. The argument and
+///   the measurement behind it live on the guard test
+///   `references::tests::rename_and_references_unaffected_by_same_file_goto_def_declaration_names`.
+/// - [`compute_document_symbols_from_parsed`] carries no such hazard; its
+///   allowlist is simply UN-MIGRATED, because adopting this pair would need a
+///   `SymbolKind` decision per newly-admitted kind and would change the
+///   outline. Tracked as #6533.
+pub(crate) fn decl_name_and_span(decl: &Declaration) -> Option<(&str, SourceSpan)> {
+    let named = match decl {
+        Declaration::Structure(s) => (s.name.as_str(), s.span),
+        Declaration::Occurrence(o) => (o.name.as_str(), o.span),
+        Declaration::Enum(e) => (e.name.as_str(), e.span),
+        Declaration::Function(f) => (f.name.as_str(), f.span),
+        Declaration::Trait(t) => (t.name.as_str(), t.span),
+        Declaration::Field(f) => (f.name.as_str(), f.span),
+        Declaration::Purpose(p) => (p.name.as_str(), p.span),
+        Declaration::Constraint(c) => (c.name.as_str(), c.span),
+        Declaration::Unit(u) => (u.name.as_str(), u.span),
+        Declaration::TypeAlias(t) => (t.name.as_str(), t.span),
+        Declaration::Joint(j) => (j.name.as_str(), j.span),
+        // Binds a path/entity, not a new name — goto-def's cross-file Phase 0
+        // owns the cursor-in-import case.
+        Declaration::Import(_) => return None,
+        // A dotted module path, not a declared name.
+        Declaration::Module(_) => return None,
+        // Binds an EXISTING type to a value; introduces no new name.
+        Declaration::Default(_) => return None,
+    };
+    Some(named)
+}
+
 /// Recursively count Param, Let, and Constraint members, including those
 /// nested inside `GuardedGroup.members` and `GuardedGroup.else_members`.
 ///
@@ -848,12 +905,12 @@ fn name_selection_range(source: &str, span: SourceSpan, name: &str) -> Range {
 /// the `s` of `structure s`. The UTF-8 char-boundary snap mirrors
 /// `convert::offset_to_position`.
 ///
-/// The crate's single name-token locator — no second implementation of this
-/// search exists: `references.rs` uses it for the declaration name-token span,
-/// the `include_declaration` token and the prepare/compute-rename declaration
-/// path; `goto_def::decl_name_span_in` uses it for top-level declarations; and
-/// `name_selection_range` uses it for the LSP `selection_range`, degrading the
-/// empty-span fallback to the declaration start.
+/// The crate's single name-token locator; no second implementation of this
+/// search exists. Consumers disagree only on how they treat the empty-span
+/// fallback, which is what makes that fallback the risky thing to change:
+/// `goto_def::decl_name_token` maps it to `None` (a zero-width jump target is
+/// useless), `name_selection_range` degrades it to the declaration start, and
+/// `references.rs` propagates it into the rename/references span set.
 pub fn name_token_span(source: &str, member_span: SourceSpan, name: &str) -> SourceSpan {
     let mut start = (member_span.start as usize).min(source.len());
     // Snap forward to a valid UTF-8 boundary if we landed mid-character.
@@ -893,6 +950,7 @@ pub fn name_token_span(source: &str, member_span: SourceSpan, name: &str) -> Sou
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::test_fixtures::{NAMED_DECL_SNIPPETS, parse_one_clean};
     use reify_core::{DiagnosticCode, DimensionVector, Severity};
     use tower_lsp::lsp_types::Url;
 
@@ -2502,6 +2560,135 @@ mod tests {
     fn enclosing_decl_at_empty_declarations() {
         let decl = enclosing_decl_at(&[], 0);
         assert!(decl.is_none(), "empty declarations should return None");
+    }
+
+    // --- decl_name_and_span free function tests (task 6388) ---
+
+    #[test]
+    fn decl_name_and_span_returns_name_and_span_for_every_named_kind() {
+        for (source, expected_name) in NAMED_DECL_SNIPPETS {
+            let parsed = parse_one_clean(source, "test");
+
+            let got = decl_name_and_span(&parsed.declarations[0]);
+            let (name, span) = got.unwrap_or_else(|| {
+                panic!("decl_name_and_span returned None for named kind, source: {source}")
+            });
+            assert_eq!(name, *expected_name, "name mismatch for source: {source}");
+            assert!(
+                span.start < span.end,
+                "span must be non-empty for source: {source}, got {span:?}"
+            );
+            let sliced = &source[span.start as usize..span.end as usize];
+            assert!(
+                sliced.contains(expected_name),
+                "declaration span {span:?} sliced to {sliced:?} must contain \
+                 {expected_name:?} for source: {source}"
+            );
+        }
+    }
+
+    /// Map a parsed declaration to a dense index over the NAMED `Declaration`
+    /// variants — a SECOND wildcard-free match, existing only so that adding a
+    /// variant is a compile error here too.
+    ///
+    /// [`decl_name_and_span`]'s exhaustive match forces a new variant to get an
+    /// explicit named-vs-unnamed decision; it does not force the FIXTURE that
+    /// exercises it. Pairing it with this index lets
+    /// `named_decl_snippets_cover_every_named_kind` detect a DUPLICATE or a GAP
+    /// in [`NAMED_DECL_SNIPPETS`]'s coverage, and lets that test assert the two
+    /// matches AGREE on which kinds are named.
+    ///
+    /// What the pair still cannot see: a variant given both a named arm and the
+    /// next free index but no snippet row leaves the indices dense, so the
+    /// coverage assertion stays green. Closing that needs an enumeration of the
+    /// variants themselves, which Rust does not offer without a derive.
+    fn kind_index(decl: &Declaration) -> Option<u8> {
+        match decl {
+            Declaration::Structure(_) => Some(0),
+            Declaration::Occurrence(_) => Some(1),
+            Declaration::Enum(_) => Some(2),
+            Declaration::Function(_) => Some(3),
+            Declaration::Trait(_) => Some(4),
+            Declaration::Field(_) => Some(5),
+            Declaration::Purpose(_) => Some(6),
+            Declaration::Constraint(_) => Some(7),
+            Declaration::Unit(_) => Some(8),
+            Declaration::TypeAlias(_) => Some(9),
+            Declaration::Joint(_) => Some(10),
+            Declaration::Import(_) => None,
+            Declaration::Module(_) => None,
+            Declaration::Default(_) => None,
+        }
+    }
+
+    #[test]
+    fn named_decl_snippets_cover_every_named_kind() {
+        let mut seen: Vec<u8> = Vec::new();
+        for (source, expected_name) in NAMED_DECL_SNIPPETS {
+            let parsed = parse_one_clean(source, "test");
+            let decl = &parsed.declarations[0];
+
+            // The two wildcard-free matches must agree on which kinds are
+            // named. Both force an arm for a new variant, but nothing forces
+            // those arms to say the same thing: a kind admitted as named by
+            // `decl_name_and_span` and mapped to None here would silently need
+            // no snippet row.
+            assert_eq!(
+                kind_index(decl).is_some(),
+                decl_name_and_span(decl).is_some(),
+                "`kind_index` and `decl_name_and_span` disagree on whether this \
+                 kind is named: {source}"
+            );
+
+            let index = kind_index(decl).unwrap_or_else(|| {
+                panic!(
+                    "row {expected_name:?} parsed to an UNNAMED declaration kind, \
+                     so it covers none of the named kinds: {source}"
+                )
+            });
+            assert!(
+                !seen.contains(&index),
+                "two rows parse to the same kind (index {index}), which leaves \
+                 another named kind with no snippet at all: {source}"
+            );
+            seen.push(index);
+        }
+
+        assert_eq!(
+            seen.len(),
+            NAMED_DECL_SNIPPETS.len(),
+            "every row must contribute a kind index"
+        );
+        seen.sort_unstable();
+        assert_eq!(
+            seen,
+            (0..seen.len() as u8).collect::<Vec<u8>>(),
+            "NAMED_DECL_SNIPPETS must hold exactly one snippet per NAMED \
+             Declaration variant, with no gap in `kind_index`'s numbering. A \
+             variant newly admitted to `decl_name_and_span` and `kind_index` \
+             needs a row here too, or \
+             `decl_name_and_span_returns_name_and_span_for_every_named_kind` and \
+             `goto_def::tests::goto_def_cursor_on_declaration_name_resolves_for_every_kind` \
+             silently under-cover it."
+        );
+    }
+
+    #[test]
+    fn decl_name_and_span_returns_none_for_unnamed_kinds() {
+        // The three variants that declare no name of their own: Import binds a
+        // path/entity, Module is a dotted path, Default binds an existing type.
+        let unnamed = [
+            "import parts.Hole",
+            "module a.b.c",
+            "default Material = steel",
+        ];
+        for source in unnamed {
+            let parsed = parse_one_clean(source, "test");
+            assert!(
+                decl_name_and_span(&parsed.declarations[0]).is_none(),
+                "unnamed declaration kind must yield None for source: {source}"
+            );
+        }
     }
 
     // --- depth-limit tests for find_named_member_span ---

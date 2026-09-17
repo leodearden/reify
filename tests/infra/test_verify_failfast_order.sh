@@ -102,8 +102,8 @@ assert "merge test plan: contains check-manifold-deps.sh" \
 assert "merge test plan: contains tree-sitter-generate.sh" \
     bash -c 'printf "%s\n" "$1" | grep -q "tree-sitter-generate\.sh"' _ "$MERGE_TEST_PLAN"
 
-assert "merge test plan: contains npm ci && npm run typecheck && npm test (gui chain intact)" \
-    bash -c 'printf "%s\n" "$1" | grep -q "npm ci && npm run typecheck && npm test"' _ "$MERGE_TEST_PLAN"
+assert "merge test plan: contains npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh (gui chain intact)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh"' _ "$MERGE_TEST_PLAN"
 
 assert "merge test plan: gated OCCT pass ABSENT (task 4451: OCCT folded into nextest pool)" \
     bash -c '! printf "%s\n" "$1" | grep -q "cargo-test-occt-gated\.sh"' _ "$MERGE_TEST_PLAN"
@@ -120,8 +120,8 @@ assert "all plan: contains check-manifold-deps.sh" \
 assert "all plan: contains tree-sitter-generate.sh" \
     bash -c 'printf "%s\n" "$1" | grep -q "tree-sitter-generate\.sh"' _ "$ALL_PLAN"
 
-assert "all plan: contains npm ci && npm run typecheck && npm test (gui chain intact)" \
-    bash -c 'printf "%s\n" "$1" | grep -q "npm ci && npm run typecheck && npm test"' _ "$ALL_PLAN"
+assert "all plan: contains npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh (gui chain intact)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh"' _ "$ALL_PLAN"
 
 assert "all plan: gated OCCT pass ABSENT (task 4451: OCCT folded into nextest pool)" \
     bash -c '! printf "%s\n" "$1" | grep -q "cargo-test-occt-gated\.sh"' _ "$ALL_PLAN"

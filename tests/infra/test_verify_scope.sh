@@ -20,7 +20,7 @@
 #   gui/src-tauri          -> Rust+GUI, OCCT-clean (RUN_OCCT_GATE=0)
 #   Cargo.lock / unknown   -> conservative gate (RUN_OCCT_GATE=1)
 #   MERGE_HEAD present     -> forces --scope all regardless of stage
-#   vitest lane            -> tsc/npm-ci run whenever RUN_GUI=1, but `npm test`
+#   vitest lane            -> tsc/npm-ci run whenever RUN_GUI=1, but the vitest runner (`gui-vitest-run.sh`)
 #                             runs only when RUN_GUI_VITEST=1: a frontend-read
 #                             path changed, or the affected-crate closure
 #                             reaches reify-gui (or is unavailable) — task 7427
@@ -2410,7 +2410,7 @@ assert "EX-1n: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (case glob * 
 # The gui block's own inner chain, distinguished from the sidecar block's
 # (which ends `npm run typecheck:test'`). The trailing quote is what pins
 # "typecheck ran and nothing followed it".
-_GUI_LANE_WITH_VITEST="cd gui && .*npm ci && npm run typecheck && npm test'"
+_GUI_LANE_WITH_VITEST="cd gui && .*npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh'"
 _GUI_LANE_TSC_ONLY="cd gui && .*npm ci && npm run typecheck'"
 
 echo ""
@@ -2421,8 +2421,8 @@ assert "GV-1: RUN_GUI_VITEST=0 appended after RUN_OCCT_GATE (RUN_RUST=1 RUN_GUI=
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0 RUN_GUI_VITEST=0'
 assert "GV-1: gui typecheck still runs (generated bindings)" \
     plan_has "$_GUI_LANE_TSC_ONLY"
-assert "GV-1: vitest skipped — no npm test anywhere in the plan" \
-    plan_lacks 'npm test'
+assert "GV-1: vitest skipped — no gui-vitest-run.sh anywhere in the plan" \
+    plan_lacks 'gui-vitest-run.sh'
 
 echo ""
 echo "--- Scenario GV-2: crate INSIDE reify-gui's cone -> full npm ci && typecheck && test ---"
@@ -2438,7 +2438,7 @@ echo "--- Scenario GV-3: frontend change, no Rust at all -> vitest runs ---"
 plan_for_branch_env "" gui/src/App.tsx
 assert "GV-3: RUN_RUST=0 RUN_GUI=1 RUN_GUI_VITEST=1 (a frontend-read path changed)" \
     _check_scope_header 'RUN_RUST=0 RUN_GUI=1 RUN_OCCT_GATE=0 RUN_GUI_VITEST=1'
-assert "GV-3: gui lane carries npm test" \
+assert "GV-3: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
 
 # The three fixtures above cover the SKIP decision and its two positive
@@ -2450,7 +2450,7 @@ echo "--- Scenario GV-4: C5 unmappable path (ALL sentinel) -> vitest runs ---"
 plan_for_branch_env "" scripts/foo.sh
 assert "GV-4: RUN_GUI_VITEST=1 — a widened closure can never SKIP the lane" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
-assert "GV-4: gui lane carries npm test" \
+assert "GV-4: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
 
 # GV-4b isolates what GV-4 cannot. An unmappable path also takes
@@ -2463,7 +2463,7 @@ echo "--- Scenario GV-4b: malformed closure knob + crates/** path -> fail WIDE t
 plan_for_branch_env "REIFY_AFFECTED_CRATES_OVERRIDE=   " crates/reify-doc/src/lib.rs
 assert "GV-4b: RUN_GUI_VITEST=1 — a whitespace-only knob is 'unavailable', not 'excludes reify-gui'" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0 RUN_GUI_VITEST=1'
-assert "GV-4b: gui lane carries npm test" \
+assert "GV-4b: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
 
 echo ""
@@ -2471,7 +2471,7 @@ echo "--- Scenario GV-5a: --scope all -> vitest unconditional (C2) ---"
 plan_for all crates/reify-doc/src/lib.rs
 assert "GV-5a: RUN_GUI_VITEST=1 at scope=all — the merge gate never narrows" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
-assert "GV-5a: gui lane carries npm test" \
+assert "GV-5a: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
 
 # The same crate GV-1 skips on. DF_VERIFY_ROLE=merge forces --scope all, so
@@ -2483,7 +2483,7 @@ echo "--- Scenario GV-5b: DF_VERIFY_ROLE=merge --scope branch (forced to all) ->
 plan_for_branch_env "DF_VERIFY_ROLE=merge" crates/reify-doc/src/lib.rs
 assert "GV-5b: RUN_GUI_VITEST=1 under the merge role" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
-assert "GV-5b: gui lane carries npm test" \
+assert "GV-5b: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
 
 # GV-6 — task 6435 regression guard. The _GUI_COUPLED_RI_FIXTURES arm sets
@@ -2504,7 +2504,7 @@ assert "GV-6: a pinned fixture was derived (guard is not vacuous)" \
 plan_for staged "$_GV6_PIN"
 assert "GV-6: $_GV6_PIN -> RUN_RUST=0 RUN_GUI=1 RUN_GUI_VITEST=1 (the ledger is the point of gui=1)" \
     _check_scope_header 'RUN_RUST=0 RUN_GUI=1 RUN_OCCT_GATE=0 RUN_GUI_VITEST=1'
-assert "GV-6: gui lane carries npm test" \
+assert "GV-6: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
 
 # GV-7 — task 6268's arm 2, the OVERLOADED empty closure. A tests/infra-only
@@ -2516,7 +2516,7 @@ echo "--- Scenario GV-7: tests/infra-only branch diff (empty closure) -> vitest 
 plan_for_branch_env "" tests/infra/foo.sh
 assert "GV-7: RUN_GUI_VITEST=1 on an empty closure (task 6268 arm 2)" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
-assert "GV-7: gui lane carries npm test" \
+assert "GV-7: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
 
 echo ""
@@ -2524,7 +2524,7 @@ echo "--- Scenario GV-8: examples/*.ri branch diff -> vitest runs (grammar ledge
 plan_for_branch_env "" examples/foo.ri
 assert "GV-8: RUN_GUI_VITEST=1 for a corpus edit" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
-assert "GV-8: gui lane carries npm test" \
+assert "GV-8: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
 
 # GV-9 — an explicit spec request is a third route into the lane. dark-factory
@@ -2544,8 +2544,8 @@ plan_for_branch_env "REIFY_AFFECTED_CRATES_OVERRIDE=reify-cli reify-doc reify-do
 unset REIFY_GUI_RETRY_SPECS
 assert "GV-9: RUN_GUI_VITEST=1 — a requested spec is never silently dropped" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0 RUN_GUI_VITEST=1'
-assert "GV-9: the gui lane forwards the requested spec, not a bare npm test" \
-    plan_has "cd gui && .*npm ci && npm run typecheck && npm test -- src/__tests__/foo\.test\.ts'"
+assert "GV-9: the gui lane forwards the requested spec, not a bare runner invocation" \
+    plan_has "cd gui && .*npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh src/__tests__/foo\.test\.ts'"
 
 # ---------------------------------------------------------------------------
 # GV-FAILWIDE-* (task 7427): decide_scope's rename-source fail-wide returns.
@@ -2618,7 +2618,7 @@ assert "GV-FAILWIDE-1: the C5 WARNING is still printed" \
     bash -c 'grep -q "rename-source diff failed — failing WIDE" "$1"' _ "$_FW_ERR"
 assert "GV-FAILWIDE-1: RUN_GUI_VITEST=1 — failing wide runs the whole lane" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
-assert "GV-FAILWIDE-1: gui lane carries npm test" \
+assert "GV-FAILWIDE-1: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
 
 # The branch twin. plan_for_branch_env's `env ${2:+"$2"}` hook (pre-1) carries
@@ -2633,7 +2633,7 @@ assert "GV-FAILWIDE-2: the shim fired (the fail-wide return was actually taken)"
     test -s "$_FW_FIRED"
 assert "GV-FAILWIDE-2: RUN_GUI_VITEST=1 — failing wide runs the whole lane" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
-assert "GV-FAILWIDE-2: gui lane carries npm test" \
+assert "GV-FAILWIDE-2: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
 
 test_summary
