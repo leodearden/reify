@@ -469,8 +469,178 @@ pub struct SubDecl {
     /// would (`MemberDecl::Relate`); both homes enforce `Type::Relation`
     /// identically (`E_RELATE_EXPECTS_RELATION`).
     pub relate_relations: Vec<Expr>,
+    /// The derivation clause of a DERIVED sub — `sub b = mirror of a across
+    /// <plane> { … }` / `sub b = image of a under <transform> { … }`
+    /// (assembly-derivation-toolbox.md, leaf A-alpha, task #6615).
+    ///
+    /// `Some(_)` only for the derived arm; `None` for the bare instantiation,
+    /// collection and specialization arms.
+    ///
+    /// # Discriminator invariant
+    ///
+    /// When `derivation.is_some()`, every specialization-scope field is empty:
+    /// `structure_name.is_empty()`, `body.is_none()`,
+    /// `spec_param_overrides.is_empty()`, `keyed_members.is_empty()`,
+    /// `args.is_empty()`, `type_args.is_empty()`, `is_collection == false`.
+    ///
+    /// This is enforced at the single producer (`ts_parser::lower_sub`) rather
+    /// than encoded in the type, and it is load-bearing rather than tidy:
+    /// existing compiler consumers read `structure_name` / `args` /
+    /// `is_collection` as SPECIALIZATION-SCOPE signals, so a derived sub that
+    /// left any of them populated would be silently mistaken for one of their
+    /// own. Any new producer must uphold it; it is pinned by
+    /// `derived_sub_leaves_every_specialization_scope_field_empty` in
+    /// reify-syntax's `harness_syntax::derived_sub_arm_parser_tests`.
+    ///
+    /// Note that `pose_expr` is deliberately NOT part of that invariant: an
+    /// explicit `at` on a derived sub parses and lowers here, and is rejected
+    /// one layer down as `E_DERIVED_SUB_EXPLICIT_AT` (T8) — a compile-scope
+    /// diagnostic, per the D3-adversary ownership ruling.
+    ///
+    /// Parsed and stored here (A-alpha); first consumed by A-beta (#6616),
+    /// which owns every compile-scope rejection for the derived arm.
+    ///
+    /// # Why this is boxed
+    ///
+    /// `SubDerivation` is 232 bytes, and `SubDecl` is the largest
+    /// `MemberDecl` variant, so storing it inline grew `MemberDecl` from 536
+    /// to 768 bytes — past `clippy::large_enum_variant`'s 200-byte gap over
+    /// the second-largest variant (`ForallConstraint`, 384). Boxing costs one
+    /// pointer on the common (`None`) path, which every non-derived sub takes,
+    /// instead of 232 bytes on every `MemberDecl` in the AST. Consumers reach
+    /// the fields through auto-deref unchanged.
+    pub derivation: Option<Box<SubDerivation>>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
+}
+
+/// The derivation clause of a derived sub: which prototype, under which
+/// transform, and what the derived copy overrides or drops.
+///
+/// `docs/prds/v0_6/assembly-derivation-toolbox.md` leaf A-alpha (task #6615).
+#[derive(Debug, Clone)]
+pub struct SubDerivation {
+    /// Which derivation constructor this is, carrying its transform operand.
+    pub kind: SubDerivationKind,
+    /// The prototype sub this one is derived FROM — the `a` in `mirror of a`.
+    ///
+    /// A `SpannedIdent` rather than a bare `String` because A-beta's unknown /
+    /// non-sibling / cyclic-prototype diagnostics must underline the prototype
+    /// token ALONE; a derivation-wide span would degrade all three messages.
+    ///
+    /// The PRD names a bare sibling-sub identifier, so the grammar admits no
+    /// dotted path here and `mirror of a.child` is a parse error.
+    pub prototype: SpannedIdent,
+    /// Param overrides from the derived body: `z = 55mm`, `w = auto(free)`,
+    /// `z = 55mm where hinged`.
+    ///
+    /// Shares `SubDecl::spec_param_overrides`' lowering path — both route
+    /// through `lower_binding_value`, so an `auto` override in a derived body
+    /// resolves identically to one in a specialization body — but NOT its
+    /// `(String, Expr)` shape, because the derived surface carries a name span
+    /// and a `where` guard that a pair cannot hold. See [`SubParamOverride`].
+    ///
+    /// Ordinary overrides only — a `<param> = default` RESET goes to
+    /// `param_resets` instead.
+    pub param_overrides: Vec<SubParamOverride>,
+    /// Params RESET to the prototype's declared default by `<param> = default`.
+    ///
+    /// Kept separate from `param_overrides` rather than encoded as a sentinel
+    /// value: a reset carries no expression at all, so there is nothing
+    /// meaningful to put in an `Expr`, and a consumer must be able to tell
+    /// "inherit the default" from "override with this value" without
+    /// pattern-matching for a magic node. `SpannedIdent` so a diagnostic about
+    /// resetting an unknown param can underline the param name.
+    pub param_resets: Vec<SpannedIdent>,
+    /// `keep` / `exclude` dispositions, in SOURCE ORDER.
+    ///
+    /// Order is load-bearing: A-beta resolves each path against the
+    /// prototype's feature tree and reports failures positionally, so a
+    /// reordered list would point its diagnostics at the wrong item.
+    pub dispositions: Vec<SubDisposition>,
+    /// `let` and `constraint` members declared inside the derived body.
+    ///
+    /// NOT reached by [`walk_specialization_scope_members`], nor by any other
+    /// member walker in this module: all of them enter through `SubDecl::body`,
+    /// which the discriminator invariant keeps `None` on every derived sub. So
+    /// the specialization-scope check, the priv-redundant lint and the span
+    /// lookups all see a derived sub as having NO members, rather than failing
+    /// loudly. That is deliberate at A-alpha — a derived body is not a
+    /// specialization scope, and what its members scope to is a semantic
+    /// question A-beta (#6616) owns — but it means A-beta must WIRE the
+    /// traversal when derived subs start elaborating, not assume an existing
+    /// walker already covers them.
+    pub members: Vec<MemberDecl>,
+    pub span: SourceSpan,
+}
+
+/// Which derivation constructor a [`SubDerivation`] uses.
+///
+/// An ELEMENT type with several constructors (PRD §6 D1), NOT a flattened
+/// plane-or-transform pair: Layer-3 group elements become FURTHER constructors
+/// here, and consumers are expected to switch on the constructor. Flattening it
+/// to a bare `plane: Option<Expr>` / `transform: Option<Expr>` would make every
+/// such addition a breaking change to every consumer.
+#[derive(Debug, Clone)]
+pub enum SubDerivationKind {
+    /// `mirror of <prototype> across <plane>`
+    Mirror { plane: Expr },
+    /// `image of <prototype> under <transform>`
+    Image { transform: Expr },
+}
+
+/// One param override in a derived body: `z = 55mm`, `w = auto(free)`,
+/// `z = 55mm where hinged`.
+///
+/// A struct rather than the `(String, Expr)` pair `SubDecl::spec_param_overrides`
+/// uses, because the derived surface carries two things that pair cannot hold:
+///
+/// * the override NAME's own span, so A-beta's "overrides a param the prototype
+///   does not declare" diagnostic underlines the param token ALONE — the same
+///   reasoning that makes [`SubDerivation::prototype`] and
+///   [`SubDerivation::param_resets`] spanned;
+/// * the optional `where` guard. The grammar admits one
+///   (`derived_param_assignment` ends in `optional(field('guard', …))`) and the
+///   spec documents it, so discarding it would silently hand A-beta a
+///   CONDITIONAL override indistinguishable from an unconditional one.
+#[derive(Debug, Clone)]
+pub struct SubParamOverride {
+    /// The overridden param's name, spanned: `z` in `z = 55mm`.
+    pub name: SpannedIdent,
+    /// The override value. `auto` / `auto(free)` reach `ExprKind::Auto` here,
+    /// exactly as on the specialization arm.
+    pub value: Expr,
+    /// The `where` guard, when the source carries one. Parsed and stored here
+    /// (A-alpha); evaluated by A-beta (#6616) together with the override.
+    pub guard: Option<WhereClause>,
+}
+
+/// One `keep` / `exclude` item in a derived body.
+#[derive(Debug, Clone)]
+pub struct SubDisposition {
+    pub kind: SubDispositionKind,
+    /// The dotted feature path, split into segments: `web.hub` → `["web",
+    /// "hub"]`. Resolution against the prototype's feature tree is A-beta's.
+    ///
+    /// Segments are spanned, not bare `String`s, so an unresolvable-path
+    /// diagnostic underlines the failing HOP — the `hub` of `web.hub` — rather
+    /// than the whole disposition. Same reasoning as [`SubDerivation::prototype`].
+    pub path: Vec<SpannedIdent>,
+    /// The plane from the RESERVED `keep <path> using <plane>` tail (PRD
+    /// §3.3/§11).
+    ///
+    /// Stored only — it has no v1 meaning and no lowering consequence. Parsing
+    /// and storing it now keeps the surface stable for v2 without committing to
+    /// a semantics; `None` on every `exclude`, and on a `keep` with no tail.
+    pub using_plane: Option<Expr>,
+    pub span: SourceSpan,
+}
+
+/// `keep` or `exclude`.
+#[derive(Debug, Clone)]
+pub enum SubDispositionKind {
+    Keep,
+    Exclude,
 }
 
 /// `minimize volume`
@@ -663,6 +833,13 @@ pub fn find_param_default_expr<'a>(members: &'a [MemberDecl], name: &str) -> Opt
 /// `walk_members`'s wildcard-free match, which fails to compile until that
 /// classification is made rather than silently defaulting to "never descended
 /// into".
+///
+/// **Derived subs are invisible to every one of those sets.** Each of them
+/// reaches a sub's members through `SubDecl.body`, and `body` is `None` on
+/// every derived sub (`sub b = mirror of a across P { … }`), so a derived
+/// body's `let` / `constraint` members are never visited. See
+/// [`SubDerivation::members`] for why that is deliberate at task #6615 and
+/// what task #6616 must do about it.
 pub fn walk_specialization_scope_members<'a, F>(sub: &'a SubDecl, visitor: &mut F)
 where
     F: FnMut(&'a MemberDecl),
@@ -2161,6 +2338,7 @@ mod member_test_fixtures {
             index_binder: None,
             index_domain: None,
             relate_relations: Vec::new(),
+            derivation: None,
             span: SourceSpan::new(0, 1),
             content_hash: ContentHash(0),
         }

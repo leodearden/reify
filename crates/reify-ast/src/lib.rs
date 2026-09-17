@@ -46,6 +46,7 @@ pub use decl::{
     MemberDecl, MemberSpanInfo, MetaBlockDecl, MinimizeDecl, ModuleDecl, NumberClass,
     OccurrenceDef, ParamDecl, ParseError, ParsedModule, PortDecl, PortRef, Pragma, PragmaArg,
     PragmaValue, KeyedSubMemberEntry, PurposeDef, PurposeParam, RelateDecl, StructureDef, SubDecl,
+    SubDerivation, SubDerivationKind, SubDisposition, SubDispositionKind, SubParamOverride,
     TraitBoundRef, TraitDecl, TypeAliasDecl, TypeParamDecl, UnitDecl, VariantPayload, WhereClause,
     classify_number_literal, find_named_member_span, find_param_default_expr,
     find_param_default_span, has_test_annotation,
