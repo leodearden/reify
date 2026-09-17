@@ -26,8 +26,8 @@ Over let-bound geometry the low-ceremony pair is `intersects(a, b) -> Bool` (do 
 
 Both forms need a realized geometry kernel, and there are traps that make a wrong gate read as a
 PASS rather than an error. Those, the posed and multi-body form, and a worked example are in the
-`geometry` chunk — topic `geometry` of `reify_language_reference` — under "Interference &
-Clearance Queries". Read it before writing a clearance gate.
+`geometry` chunk — topic `geometry` of `reify_language_reference`. Read it before writing a
+clearance gate.
 
 ## Constraint Definitions
 

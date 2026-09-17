@@ -63,8 +63,7 @@ surface gap) — both over let-bound geometry.
 
 Both need a realized geometry kernel, and there are traps that make a wrong answer read as a PASS
 rather than an error. Those, the posed and multi-body form, and a worked example are in the
-`geometry` chunk — topic `geometry` of `reify_language_reference` — under "Interference &
-Clearance Queries".
+`geometry` chunk — topic `geometry` of `reify_language_reference`.
 
 ## Constants
 
