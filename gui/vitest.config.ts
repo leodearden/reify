@@ -29,6 +29,11 @@ export default defineConfig({
     // cross-worktree cargo load; esc-3061-3 class of jitter).
     testTimeout: 15_000,
     hookTimeout: 90_000,
+    // ADDITIONAL to 'default', so human-readable output is unchanged. Registered
+    // unconditionally rather than behind isVerifyLane: it is inert unless the
+    // worker->host RPC starvation signature matches, and a local reproduction
+    // should classify identically (task 7630).
+    reporters: ['default', './vitest-worker-rpc-flake-reporter.ts'],
     // Raised from the default 10 000 ms so workers have time to complete
     // their teardown (including the snapshotSaved RPC) under verify-lane
     // starvation before the pool force-terminates them (esc-4853-42 / task 4856).

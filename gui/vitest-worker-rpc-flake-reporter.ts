@@ -1,3 +1,5 @@
+import { rmSync, writeFileSync } from 'node:fs'
+
 // Detects the worker->host RPC starvation signature in a vitest run (task 7630).
 //
 // Under heavy cross-worktree load the vitest host process can stall past
@@ -22,6 +24,13 @@ export interface FailedSuiteRecord {
 export interface WorkerRpcFailureSummary {
   readonly failedSuites: readonly FailedSuiteRecord[]
   readonly failedTestCount: number
+  /**
+   * Errors vitest raised outside any suite. They also fail the run, and a run
+   * that failed only on one of these has no failed suite to retry — so an
+   * unhandled error that is not itself an RPC timeout vetoes, exactly as an
+   * unexplained suite failure does.
+   */
+  readonly unhandledErrorMessages?: readonly string[]
 }
 
 export interface WorkerRpcFlakeVerdict {
@@ -61,10 +70,117 @@ export function classifyWorkerRpcFlake(
     if (found.length === 0) return null
     for (const method of found) methods.add(method)
   }
+  for (const message of summary.unhandledErrorMessages ?? []) {
+    const method = timedOutMethod(message)
+    if (method === null) return null
+    methods.add(method)
+  }
 
   return {
     kind: 'worker_rpc_timeout',
     suites: summary.failedSuites.map((s) => s.filepath),
     methods: [...methods].sort(),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The vitest-facing half: a thin adapter, then the two outputs. All decision
+// logic stays in the classifier above, so the signature has one definition.
+// ---------------------------------------------------------------------------
+
+/**
+ * The part of vitest's TestModule this reporter reads. Declared structurally
+ * rather than imported so the adapter depends on four members instead of
+ * vitest's whole reported-task surface.
+ */
+export interface ReportedModule {
+  readonly moduleId: string
+  state(): string
+  errors(): ReadonlyArray<{ message?: string }>
+  readonly children: { allTests(state?: string): Iterable<unknown> }
+}
+
+/**
+ * Where the reporter writes, relative to the gui root. Lives under
+ * node_modules because that directory is already gitignored and npm ci
+ * recreates it before every run, so the artifact can never be committed and
+ * never outlives an install.
+ *
+ * SHARED CONSTANT: scripts/gui-vitest-run.sh reads this same path — it is the
+ * single seam between the two halves. The infra suite pins that they agree.
+ */
+export const WORKER_RPC_FLAKE_ARTIFACT = 'node_modules/.reify-gui-rpc-flake.json'
+
+/** The escalation history this marker belongs to, so a recurrence self-identifies. */
+const LINEAGE = '3185,4856,7630'
+
+/** Everything the reporter touches outside itself, injectable for testing. */
+export interface FlakeReporterOutput {
+  rootDir: string
+  artifactPath: string
+  emit: (line: string) => void
+  writeArtifact: (path: string, contents: string) => void
+  discardArtifact: (path: string) => void
+}
+
+const countFailedTests = (modules: readonly ReportedModule[]): number => {
+  let failed = 0
+  for (const module of modules) for (const _ of module.children.allTests('failed')) failed++
+  return failed
+}
+
+const messageOf = (error: { message?: string } | undefined): string =>
+  typeof error?.message === 'string' ? error.message : String(error)
+
+const relativeTo = (rootDir: string, moduleId: string): string =>
+  moduleId.startsWith(`${rootDir}/`) ? moduleId.slice(rootDir.length + 1) : moduleId
+
+export default class WorkerRpcFlakeReporter {
+  private readonly out: FlakeReporterOutput
+
+  constructor(output: Partial<FlakeReporterOutput> = {}) {
+    const rootDir = output.rootDir ?? process.cwd()
+    this.out = {
+      rootDir,
+      artifactPath: output.artifactPath ?? `${rootDir}/${WORKER_RPC_FLAKE_ARTIFACT}`,
+      emit: output.emit ?? ((line) => process.stdout.write(`${line}\n`)),
+      // Synchronous by requirement, not by habit: vitest may exit as soon as
+      // the last reporter hook returns, and a deferred write would be lost
+      // exactly when the runner needs the artifact.
+      writeArtifact: output.writeArtifact ?? writeFileSync,
+      discardArtifact: output.discardArtifact ?? ((path) => rmSync(path, { force: true })),
+    }
+  }
+
+  /** A stale artifact from an earlier run must never be read as this run's. */
+  onTestRunStart(): void {
+    this.out.discardArtifact(this.out.artifactPath)
+  }
+
+  onTestRunEnd(
+    testModules: readonly ReportedModule[],
+    unhandledErrors: ReadonlyArray<{ message?: string }> = [],
+  ): void {
+    const verdict = classifyWorkerRpcFlake({
+      failedSuites: testModules
+        .filter((module) => module.state() === 'failed')
+        .map((module) => ({
+          filepath: relativeTo(this.out.rootDir, module.moduleId),
+          errorMessages: module.errors().map(messageOf),
+        })),
+      failedTestCount: countFailedTests(testModules),
+      unhandledErrorMessages: unhandledErrors.map(messageOf),
+    })
+
+    if (verdict === null) {
+      this.out.discardArtifact(this.out.artifactPath)
+      return
+    }
+
+    this.out.emit(
+      `@@REIFY_GUI_FLAKE@@ kind=${verdict.kind} suites=${verdict.suites.length}` +
+        ` methods=${verdict.methods.join(',')} lineage=${LINEAGE}`,
+    )
+    this.out.writeArtifact(this.out.artifactPath, `${JSON.stringify(verdict, null, 2)}\n`)
   }
 }
