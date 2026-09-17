@@ -992,7 +992,7 @@ mod inert_objective_tests {
     //!
     //! Written RED in step-3: `inert_objective_finding` and
     //! `InertObjectiveFinding` are introduced in step-4.
-    use super::{TopologyTemplate, inert_objective_finding};
+    use super::{TopologyTemplate, inert_objective_finding, objective_sense_word};
     use crate::types::{
         CompiledGuardedGroup, EntityKind, GuardState, SubComponentDecl, ValueCellDecl,
         ValueCellKind, Visibility,
@@ -1000,7 +1000,8 @@ mod inert_objective_tests {
     use reify_ast::QuantifierKind;
     use reify_core::{ContentHash, SourceSpan, Type, ValueCellId};
     use reify_ir::{
-        BinOp, CompiledExpr, CompiledExprKind, ObjectiveSense, ObjectiveSet, Value,
+        BinOp, CompiledExpr, CompiledExprKind, ObjectiveSense, ObjectiveSet, ObjectiveTerm,
+        Value,
     };
     use std::collections::{HashMap, HashSet};
 
@@ -1112,6 +1113,19 @@ mod inert_objective_tests {
 
     fn minimize(expr: CompiledExpr) -> ObjectiveSet {
         ObjectiveSet::single(ObjectiveSense::Minimize, expr)
+    }
+
+    fn maximize(expr: CompiledExpr) -> ObjectiveSet {
+        ObjectiveSet::single(ObjectiveSense::Maximize, expr)
+    }
+
+    /// A two-term set whose terms disagree on sense — the only input that
+    /// reaches [`objective_sense_word`]'s neutral fallback.
+    fn mixed_senses(minimized: CompiledExpr, maximized: CompiledExpr) -> ObjectiveSet {
+        let mut set = minimize(minimized);
+        set.terms
+            .push(ObjectiveTerm::new(ObjectiveSense::Maximize, maximized));
+        set
     }
 
     /// An empty guarded group whose `members` / `else_members` the caller fills.
@@ -1629,5 +1643,195 @@ mod inert_objective_tests {
         let mut t = no_autos_template();
         t.objective = None;
         assert!(inert_objective_finding(&t, std::slice::from_ref(&t), NO_IMPORTS).is_none());
+    }
+
+    // ── OBLIGATION 6: the arms that cannot attribute an override ────────────
+
+    /// A scoped `auto` whose owning sub is reached through a NESTED path
+    /// (`Other.a.b`/`k`) names a sub of a sub. Resolving it needs a walk
+    /// `auto_override_possible` deliberately does not do, so it counts as a
+    /// possible override and the predicate must stay silent.
+    #[test]
+    fn a_nested_scoped_auto_override_bails_conservatively() {
+        let t = no_autos_template();
+        let mut other = tmpl("Other");
+        other.sub_components = vec![sub_decl("a", "Middle")];
+        other.value_cells = vec![auto("Other.a.b", "k")];
+
+        let all = vec![t.clone(), other];
+        assert!(
+            inert_objective_finding(&t, &all, NO_IMPORTS).is_none(),
+            "a nested `Other.a.b`/`k` auto may well be an override of ours"
+        );
+    }
+
+    /// A scoped `auto` whose entity does not start with its own template's
+    /// name is unattributable — it is scoped to something, and nothing here can
+    /// say it is not us.
+    #[test]
+    fn a_scoped_auto_that_does_not_belong_to_its_template_bails() {
+        let t = no_autos_template();
+        let mut other = tmpl("Other");
+        other.value_cells = vec![auto("Foreign.x", "k")];
+
+        let all = vec![t.clone(), other];
+        assert!(
+            inert_objective_finding(&t, &all, NO_IMPORTS).is_none(),
+            "an auto scoped to an entity this module cannot attribute is \
+             unaccounted for, so assume the worst"
+        );
+    }
+
+    // ── OBLIGATION 5′: the auto the guarded-`let` lowering erased ───────────
+
+    /// The erased shape itself: `ValueCellKind::Let` with a `Literal(Undef)`
+    /// default, inside a guarded group. That is what `guards.rs` produces for a
+    /// `where`-guarded `let m = auto`, and obligation 5 (`kind.is_auto()`)
+    /// walks straight past it.
+    ///
+    /// The two neighbouring guarded cases use a real `ValueCellKind::Auto`, so
+    /// this is the only place the erased shape is pinned — without it,
+    /// `is_auto_shaped_guarded_let` could be deleted and only the source-level
+    /// probes in `objective_conflict.rs` would notice.
+    #[test]
+    fn an_erased_guarded_auto_let_is_not_inert() {
+        let mut t = tmpl("Erased");
+        let mut group = guarded_group("Erased");
+        group.members = vec![cell(
+            "Erased",
+            "m",
+            ValueCellKind::Let,
+            Some(raw(CompiledExprKind::Literal(Value::Undef))),
+        )];
+        t.guarded_groups = vec![group];
+        t.objective = Some(minimize(vref("Erased", "m")));
+
+        assert!(
+            inert_objective_finding(&t, std::slice::from_ref(&t), NO_IMPORTS).is_none(),
+            "the author wrote `let m = auto`; the lowering ate it, and judging \
+             the residue would print \"`m` is never `auto`\" over that very line"
+        );
+    }
+
+    /// The control: the same `Literal(Undef)` `let` OUTSIDE a guarded group is
+    /// not the erased shape — `entity.rs`'s top-level auto-let path mints a
+    /// real `Auto` there, so an unguarded `Let` with an `Undef` default is
+    /// something else entirely and must not silence the rule.
+    #[test]
+    fn an_undef_let_outside_a_guarded_group_is_still_judged() {
+        let mut t = tmpl("Unguarded");
+        t.value_cells = vec![cell(
+            "Unguarded",
+            "m",
+            ValueCellKind::Let,
+            Some(raw(CompiledExprKind::Literal(Value::Undef))),
+        )];
+        t.objective = Some(minimize(vref("Unguarded", "m")));
+
+        let finding = inert_objective_finding(&t, std::slice::from_ref(&t), NO_IMPORTS)
+            .expect("an unguarded `Undef` let is not the erased guarded shape");
+        assert_eq!(finding.never_auto_cells, vec![ValueCellId::new("Unguarded", "m")]);
+    }
+
+    // ── OBLIGATION 7: the containment walk's own arms ────────────────────────
+
+    /// The PRUNE arm. A descendant that carries its own objective governs its
+    /// own subtree, so `template`'s objective cannot be inherited past it — and
+    /// the autos below it are that descendant's business, not ours.
+    ///
+    /// Delete the `if child.objective.is_some() { continue }` arm and this goes
+    /// silent, because `Child`'s auto would then answer "inheritance possible".
+    #[test]
+    fn an_objective_bearing_descendant_prunes_the_inheritance_walk() {
+        let mut t = no_autos_template();
+        t.sub_components = vec![sub_decl("c", "Child")];
+
+        let mut child = tmpl("Child");
+        child.value_cells = vec![auto("Child", "z")];
+        child.objective = Some(minimize(vref("Child", "z")));
+
+        let all = vec![t.clone(), child];
+        let finding = inert_objective_finding(&t, &all, NO_IMPORTS)
+            .expect("`Child` governs its own subtree, so nothing can inherit ours");
+        assert_eq!(finding.never_auto_cells, vec![ValueCellId::new("DicMinNoAutos", "k")]);
+    }
+
+    /// The UNRESOLVED arm. A sub whose structure is in no template of this
+    /// module may contain anything at all, including an auto to inherit the
+    /// objective.
+    #[test]
+    fn a_sub_whose_structure_is_unknown_bails() {
+        let mut t = no_autos_template();
+        t.sub_components = vec![sub_decl("c", "NotInThisModule")];
+
+        assert!(
+            inert_objective_finding(&t, std::slice::from_ref(&t), NO_IMPORTS).is_none(),
+            "a sub we cannot resolve may contain anything at all"
+        );
+    }
+
+    /// The `seen` RECURSION GUARD. A template containing a sub of itself must
+    /// terminate — this test HANGS rather than fails if the guard is removed,
+    /// which is the only way a non-termination bug can be pinned.
+    ///
+    /// Recursion is detected by `phase_recursion_detection`, but this walk must
+    /// not assume that pass ran, or that it ran first.
+    #[test]
+    fn a_recursive_containment_walk_terminates() {
+        let mut t = no_autos_template();
+        t.sub_components = vec![sub_decl("self_ref", "DicMinNoAutos")];
+
+        let finding = inert_objective_finding(&t, std::slice::from_ref(&t), NO_IMPORTS)
+            .expect("a self-containing template with no autos is still inert");
+        assert_eq!(finding.never_auto_cells, vec![ValueCellId::new("DicMinNoAutos", "k")]);
+    }
+
+    /// A sub name can match SEVERAL templates: a locally-monomorphised generic
+    /// puts both `G` and `G$Seal` in the module, and `names_same_structure`
+    /// accepts both for a sub declaring `structure_name: "G"`.
+    ///
+    /// The walk must visit every match. Resolving to the first one — `G`, which
+    /// carries an objective and so prunes — would answer "inheritance
+    /// impossible" and report a FALSE `E_OBJECTIVE_INERT`, while the real
+    /// monomorph `G$Seal` sits there objective-less with an auto of its own,
+    /// inheriting the objective and being governed by it. Review round 3,
+    /// finding 8.
+    ///
+    /// `G` is placed FIRST in `all_templates` deliberately: that is the order
+    /// in which a first-match walk gets the wrong answer.
+    #[test]
+    fn a_sibling_monomorph_without_an_objective_keeps_the_rule_quiet() {
+        let mut t = no_autos_template();
+        t.sub_components = vec![sub_decl("g", "G")];
+
+        let mut generic = tmpl("G");
+        generic.value_cells = vec![param("G", "unrelated", 1.0)];
+        generic.objective = Some(minimize(vref("G", "unrelated")));
+
+        let mut mono = tmpl("G$Seal");
+        mono.value_cells = vec![auto("G$Seal", "z")];
+
+        let all = vec![t.clone(), generic, mono];
+        assert!(
+            inert_objective_finding(&t, &all, NO_IMPORTS).is_none(),
+            "`G$Seal` is objective-less and declares an auto, so it inherits \
+             this objective and is governed by it"
+        );
+    }
+
+    // ── RENDERING: the sense word ───────────────────────────────────────────
+
+    /// `maximize` and the mixed-sense fallback. Both arms are reachable from
+    /// source — `maximize` is ordinary syntax and an objective SET may hold
+    /// terms of either sense — and neither had coverage.
+    #[test]
+    fn the_sense_word_follows_the_terms() {
+        assert_eq!(objective_sense_word(&minimize(lit(1.0))), "minimize");
+        assert_eq!(objective_sense_word(&maximize(lit(1.0))), "maximize");
+        assert_eq!(
+            objective_sense_word(&mixed_senses(lit(1.0), lit(2.0))),
+            "objective",
+            "a set whose terms disagree has no one sense to name"
+        );
     }
 }

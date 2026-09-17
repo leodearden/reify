@@ -13786,4 +13786,312 @@ mod objective_auto_reach_tests {
         let got = objective_auto_reach(&objective, &cells, &autos);
         assert_eq!(reached(&got), vec![id("S", "a")]);
     }
+    /// `dependent_cells` may hold MORE THAN ONE entry per id — stage (g) of
+    /// `build_dependent_cells` emits instance-path aliases beside the
+    /// template-keyed original — and the closure must follow every one.
+    ///
+    /// The two entries for `S.v` reach different autos here, so a first-match
+    /// map (`HashMap<&ValueCellId, &CompiledExpr>` instead of the `Vec`) finds
+    /// exactly one of them and the other auto silently drops out of the
+    /// reported set. No other fixture in this module has a duplicate id, so
+    /// this is the only thing pinning the documented behaviour.
+    #[test]
+    fn every_entry_for_a_repeated_dependent_cell_id_is_followed() {
+        let objective = minimize(value_ref("S", "v"));
+        let cells = [
+            dep("S", "v", value_ref("S", "a")),
+            dep("S", "v", value_ref("S", "b")),
+        ];
+        let autos = [auto_param("S", "a"), auto_param("S", "b")];
+
+        let got = objective_auto_reach(&objective, &cells, &autos);
+        assert_eq!(
+            reached(&got),
+            vec![id("S", "a"), id("S", "b")],
+            "collapsing the duplicate entries to a first match loses one auto"
+        );
+    }
+}
+
+#[cfg(test)]
+mod objective_unconsumed_gate_tests {
+    //! Unit tests for the `E_OBJECTIVE_UNCONSUMED` gate — DIC γ's runtime
+    //! decision (task #5417, PRD
+    //! `docs/prds/v0_6/declared-intent-consumption-accounting.md` §3/§4.2).
+    //!
+    //! The e2e suite (`reify-eval/tests/harness_engine/objective_consumption_e2e.rs`)
+    //! drives the gate through a real solve, which is the right level for "does
+    //! this model report". It cannot reach the gate's individual conditions
+    //! independently, though: a source fixture fixes all five at once, and
+    //! several combinations — a `declared` objective that DIFFERS from the one
+    //! the solver saw, an `Undef` write-back — are not constructible from
+    //! source at all. Those are what this module pins.
+    //!
+    //! `ResolutionProblem` is hand-built, the same idiom
+    //! `reify-constraints`' own registry tests use.
+    use std::collections::HashMap;
+
+    use reify_core::{DimensionVector, Type, ValueCellId};
+    use reify_ir::{
+        AutoParam, CompiledExpr, ObjectiveSense, ObjectiveSet, ObjectiveTerm, ResolutionProblem,
+        Value, ValueMap,
+    };
+    use reify_test_support::{literal, value_ref};
+
+    use super::{objective_sense_word, objective_unconsumed_finding};
+
+    // ── builders ────────────────────────────────────────────────────────────
+
+    fn id(entity: &str, member: &str) -> ValueCellId {
+        ValueCellId::new(entity, member)
+    }
+
+    fn auto_param(entity: &str, member: &str) -> AutoParam {
+        AutoParam {
+            id: id(entity, member),
+            param_type: Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+            bounds: None,
+            free: true,
+        }
+    }
+
+    fn minimize(expr: CompiledExpr) -> ObjectiveSet {
+        ObjectiveSet::single(ObjectiveSense::Minimize, expr)
+    }
+
+    /// A problem with autos and NO constraints: the decomposition builds no
+    /// component, so the registry drops the objective (`NoComponents`) — the
+    /// `dic_min_unconstrained.ri` shape, and the cheapest way to put the gate
+    /// past condition 2.
+    fn dropped_objective_problem(objective: Option<ObjectiveSet>) -> ResolutionProblem {
+        ResolutionProblem {
+            auto_params: vec![auto_param("S", "a"), auto_param("S", "b")],
+            constraints: Vec::new(),
+            current_values: ValueMap::new(),
+            objective,
+            functions: vec![].into(),
+            dependent_cells: Vec::new(),
+        }
+    }
+
+    fn nothing_bound() -> HashMap<ValueCellId, Value> {
+        HashMap::new()
+    }
+
+    // ── the baseline positive ───────────────────────────────────────────────
+
+    /// The case the rule exists for: the solve succeeded, the objective reaches
+    /// a real auto, no component took it, and the auto is still unbound.
+    #[test]
+    fn a_dropped_objective_over_an_unbound_auto_is_reported() {
+        let objective = minimize(value_ref("S", "a"));
+        let diagnostic = objective_unconsumed_finding(
+            "S",
+            Some(&objective),
+            &dropped_objective_problem(Some(objective.clone())),
+            &nothing_bound(),
+            true,
+        )
+        .expect("a dropped objective over an unbound auto must be reported");
+
+        assert_eq!(
+            diagnostic.code,
+            Some(reify_core::DiagnosticCode::ObjectiveUnconsumed)
+        );
+        assert!(
+            diagnostic.message.contains("`S.a`"),
+            "the message must name the auto that was left unsolved, got: {:?}",
+            diagnostic.message
+        );
+    }
+
+    // ── condition 0: the solve must have succeeded ──────────────────────────
+
+    /// Same problem, failed solve: γ's claim is "the solve succeeded and your
+    /// `minimize` was silently dropped", and on a failed solve that is both
+    /// untrue and a second Error on top of the solve's own report.
+    #[test]
+    fn a_failed_solve_reports_nothing() {
+        let objective = minimize(value_ref("S", "a"));
+        assert!(
+            objective_unconsumed_finding(
+                "S",
+                Some(&objective),
+                &dropped_objective_problem(Some(objective.clone())),
+                &nothing_bound(),
+                false,
+            )
+            .is_none()
+        );
+    }
+
+    // ── condition 1: the objective must be USER-DECLARED ────────────────────
+
+    /// A scope that declared nothing — the synthesised Chebyshev-centre shape
+    /// (task 4013) — has no declared intent to report as discarded, even though
+    /// the solver really did drop the objective it was given.
+    #[test]
+    fn an_undeclared_objective_reports_nothing() {
+        let objective = minimize(value_ref("S", "a"));
+        assert!(
+            objective_unconsumed_finding(
+                "S",
+                None,
+                &dropped_objective_problem(Some(objective)),
+                &nothing_bound(),
+                true,
+            )
+            .is_none()
+        );
+    }
+
+    // ── §6.1: reach follows the objective the SOLVER saw ────────────────────
+
+    /// `declared` and `problem.objective` can differ — under §6.1 objective
+    /// inheritance the scope declares one thing and the solver is handed
+    /// another — and the reported cells must come from the one that was
+    /// actually dropped.
+    ///
+    /// Not constructible from source at this granularity, which is why it lives
+    /// here: the fixture would have to be a whole inheriting scope, and the
+    /// assertion would no longer isolate which objective the reach followed.
+    #[test]
+    fn the_reach_follows_the_objective_the_solver_saw() {
+        let declared = minimize(value_ref("S", "b"));
+        let effective = minimize(value_ref("S", "a"));
+
+        let diagnostic = objective_unconsumed_finding(
+            "S",
+            Some(&declared),
+            &dropped_objective_problem(Some(effective)),
+            &nothing_bound(),
+            true,
+        )
+        .expect("the effective objective was dropped over an unbound auto");
+
+        assert!(
+            diagnostic.message.contains("`S.a`") && !diagnostic.message.contains("`S.b`"),
+            "the cells must come from the objective the solver saw, got: {:?}",
+            diagnostic.message
+        );
+    }
+
+    // ── condition 3: an objective that reaches no auto is the compile half's ─
+
+    /// `minimize 1mm` reaches no solver variable at all. That is
+    /// `E_OBJECTIVE_INERT`'s business, and reporting it here too would
+    /// double-report the same source line under two codes.
+    #[test]
+    fn an_objective_reaching_no_auto_reports_nothing() {
+        let objective = minimize(literal(Value::Real(1.0)));
+        assert!(
+            objective_unconsumed_finding(
+                "S",
+                Some(&objective),
+                &dropped_objective_problem(Some(objective.clone())),
+                &nothing_bound(),
+                true,
+            )
+            .is_none()
+        );
+    }
+
+    // ── condition 4: the O2 vacuous-healthy rule ────────────────────────────
+
+    /// Every auto the objective reaches is concretely bound this run, so there
+    /// is nothing left to optimise and saying so would be noise on a healthy
+    /// model.
+    #[test]
+    fn an_objective_whose_every_reached_auto_is_bound_reports_nothing() {
+        let objective = minimize(value_ref("S", "a"));
+        let bound = HashMap::from([(id("S", "a"), Value::Real(4.0))]);
+
+        assert!(
+            objective_unconsumed_finding(
+                "S",
+                Some(&objective),
+                &dropped_objective_problem(Some(objective.clone())),
+                &bound,
+                true,
+            )
+            .is_none()
+        );
+    }
+
+    /// An `Undef` write-back is NOT a binding. The solver writes one for an
+    /// auto it failed to pin, so counting it as bound would silence the very
+    /// case γ exists to report.
+    #[test]
+    fn an_undef_write_back_does_not_count_as_bound() {
+        let objective = minimize(value_ref("S", "a"));
+        let bound = HashMap::from([(id("S", "a"), Value::Undef)]);
+
+        assert!(
+            objective_unconsumed_finding(
+                "S",
+                Some(&objective),
+                &dropped_objective_problem(Some(objective.clone())),
+                &bound,
+                true,
+            )
+            .is_some(),
+            "an `Undef` entry is the solver saying it could not pin the auto"
+        );
+    }
+
+    /// The PARTIAL case: one reached auto bound, one not. The remainder keeps
+    /// the diagnostic alive, and only the unbound cell is named.
+    #[test]
+    fn only_the_still_unbound_reached_autos_are_named() {
+        let mut objective = minimize(value_ref("S", "a"));
+        objective
+            .terms
+            .push(ObjectiveTerm::new(ObjectiveSense::Minimize, value_ref("S", "b")));
+        let bound = HashMap::from([(id("S", "a"), Value::Real(4.0))]);
+
+        let diagnostic = objective_unconsumed_finding(
+            "S",
+            Some(&objective),
+            &dropped_objective_problem(Some(objective.clone())),
+            &bound,
+            true,
+        )
+        .expect("`S.b` is still unbound, so the objective had no effect on it");
+
+        assert!(
+            diagnostic.message.contains("`S.b`") && !diagnostic.message.contains("`S.a`"),
+            "only the unbound remainder may be named, got: {:?}",
+            diagnostic.message
+        );
+    }
+
+    // ── rendering: the sense word ───────────────────────────────────────────
+
+    /// `maximize` and the mixed-sense fallback, neither of which any fixture in
+    /// this crate reaches. Mirrors the same case in `reify-compiler`'s
+    /// `inert_objective_tests`, which is what keeps the two halves of DIC γ
+    /// saying the same word.
+    #[test]
+    fn the_sense_word_follows_the_terms() {
+        let mut mixed = minimize(literal(Value::Real(1.0)));
+        mixed
+            .terms
+            .push(ObjectiveTerm::new(ObjectiveSense::Maximize, literal(Value::Real(2.0))));
+
+        assert_eq!(objective_sense_word(&minimize(literal(Value::Real(1.0)))), "minimize");
+        assert_eq!(
+            objective_sense_word(&ObjectiveSet::single(
+                ObjectiveSense::Maximize,
+                literal(Value::Real(1.0))
+            )),
+            "maximize"
+        );
+        assert_eq!(
+            objective_sense_word(&mixed),
+            "objective",
+            "a set whose terms disagree has no one sense to name"
+        );
+    }
 }

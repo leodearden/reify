@@ -18,8 +18,15 @@
 //! vacuous-healthy rule), and the synthesised Chebyshev-centre objective a
 //! scope never declared (task 4013's exemption).
 //!
-//! Assertions target `DiagnosticCode`, never message substrings (INV-SF-6), and
-//! the sources are byte-mirrors of the committed PRD fixtures so the tests track
+//! Presence and absence are asserted on `DiagnosticCode` (INV-SF-6); message
+//! text is asserted only where the text IS the property — that the mnemonic the
+//! PRD prose promises is in the rendered string, and that the cell list names
+//! the right entity-qualified auto. `assert_solve_failure_still_reported` is the
+//! one exception in the other direction: the solver's own failure reports carry
+//! no code of their own, so matching their prose is the only way to pin that the
+//! failure survives.
+//!
+//! The sources are byte-mirrors of the committed PRD fixtures so the tests track
 //! the same user-observable signal the PRD measured.
 //!
 //! Written RED in step-9: nothing emits `ObjectiveUnconsumed` until step-10.
@@ -278,13 +285,35 @@ structure DicGoverning {
 /// nothing left to optimise, and saying so would be noise on a healthy model.
 ///
 /// The reach here spans BOTH an auto (`w`) and a concrete param (`base`), which
-/// is what distinguishes this case from
-/// `let_indirected_objective_over_a_solved_auto_reports_nothing` above: it pins
-/// that the unbound-remainder test intersects with `auto_params` per id, so
-/// `base` never enters the set and cannot keep the diagnostic alive once `w` is
-/// bound. Consumption is `FallbackComponentZero` (the registry matches the
-/// objective's DIRECT refs, which name only `total`), so condition 2 does not
-/// fire — the vacuous-healthy rule is the sole reason this stays quiet.
+/// is what this case pins: the unbound-remainder test intersects with
+/// `auto_params` per id, so `base` never enters the set and cannot keep the
+/// diagnostic alive once `w` is bound.
+///
+/// **Which gate condition actually silences it — corrected, and MEASURED.**
+/// Condition 2, not the vacuous-healthy rule. An earlier revision of this doc
+/// claimed consumption was `FallbackComponentZero` because the registry matched
+/// the objective's DIRECT refs (`total` alone); step-18 made `decompose_prelude`
+/// expand objective refs through `dependent_cells` before the first-match scan
+/// (`registry.rs`, pinned by `let_indirected_objective_is_consumed_not_fallback`),
+/// so `total` now reaches `w` and this classifies `Consumed` — the same verdict
+/// as `let_indirected_objective_over_a_solved_auto_reports_nothing` below, whose
+/// shape this is structurally identical to. The gate returns at condition 2 and
+/// never reaches the O2 filter.
+///
+/// **Where condition 4 IS covered.** Directly, by
+/// `objective_unconsumed_gate_tests` in `engine_eval.rs`
+/// (`an_objective_whose_every_reached_auto_is_bound_reports_nothing`,
+/// `an_undef_write_back_does_not_count_as_bound`,
+/// `only_the_still_unbound_reached_autos_are_named`), and end-to-end by the
+/// merged joint-drive canary below. No SINGLE-SCOPE source fixture reaches it:
+/// condition 4 needs a dropped verdict (`NoComponents` /
+/// `FallbackComponentZero`) to coexist with a reached auto that is nonetheless
+/// bound, and on the single-scope path the two cannot both hold — a
+/// connector-pinned auto is partitioned out of `auto_params` upstream so it
+/// never enters the reach, and a solver-bound auto means a component consumed
+/// the objective. It is the merged write-back that makes the pair coexist, so
+/// end-to-end condition 4 is merged-path-only by construction rather than by
+/// omission.
 ///
 /// **Pin-shape note (resolved in step-10).** The shape step-9 first wrote here —
 /// `w` pinned by two mutually-tight inequalities — is RED on its *premise*, not
