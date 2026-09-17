@@ -1214,4 +1214,58 @@ mod tests {
              has"
         );
     }
+
+    /// The two premises `reify-audit`'s `g_allow.rs` hazard probe used to
+    /// assert about its OWN `CARGO_MANIFEST_DIR` walk — "the script this walk
+    /// names is really on disk" and "this root really holds both crates, so
+    /// the two walks cannot have resolved different trees" — relocated to the
+    /// single resolution site [`audit_command`] now composes, rather than a
+    /// second copy of them at the call site.
+    ///
+    /// One substantive upgrade over the assertions this replaces: those could
+    /// only RECONSTRUCT this crate's root from `reify-audit`'s own walk and
+    /// compare, which does not distinguish this repo from a byte-identical
+    /// vendored copy laid out the same way. Here there is only ONE walk, so
+    /// that reconstruction — and its blind spot — is gone.
+    ///
+    /// The `crates/reify-audit/Cargo.toml` check is kept anyway, even though
+    /// nothing about THIS crate's own resolution needs it: it is what makes
+    /// `audit_command`'s only external consumer (`reify-audit`'s
+    /// `g_allow.rs`) reachable from the root this seam hands back. That is a
+    /// deliberate DOWNWARD reference to a consumer crate by PATH, checked on
+    /// disk — not a dependency edge, which would be a cycle (`reify-audit`
+    /// depends on this crate, never the reverse).
+    ///
+    /// PASSES on arrival: this pins an existing property of
+    /// [`resolve_script_and_root`] at its new home rather than driving new
+    /// behaviour — the relocation is the point, not a fresh RED.
+    #[test]
+    fn audit_command_names_an_existing_script_under_a_root_holding_both_crates() {
+        let cmd = audit_command("crates/reify-audit/src");
+
+        let script = Path::new(cmd.get_program());
+        assert!(
+            script.exists(),
+            "audit_command's resolved script {script:?} does not exist on \
+             disk — the two `.parent()` walks in resolve_script_and_root no \
+             longer land on the real script"
+        );
+
+        let root = cmd
+            .get_current_dir()
+            .expect("audit_command sets current_dir");
+        assert!(
+            root.join("crates/reify-test-support/Cargo.toml").exists(),
+            "audit_command's resolved root {root:?} holds no \
+             crates/reify-test-support/Cargo.toml — this crate's own \
+             manifest is not reachable from the root the seam hands back"
+        );
+        assert!(
+            root.join("crates/reify-audit/Cargo.toml").exists(),
+            "audit_command's resolved root {root:?} holds no \
+             crates/reify-audit/Cargo.toml — audit_command's only external \
+             consumer's crate is not reachable from the root this seam hands \
+             back (a downward reference by path, not a dependency edge)"
+        );
+    }
 }
