@@ -12,24 +12,37 @@ use crate::geometry_traits_inference::{
 use reify_core::BASE_UNIT_SYMBOLS;
 use std::cell::RefCell;
 
-/// Severity knob for struct-constructor field-conformance diagnostics
-/// (task 5302, struct-ctor-conformance α).
+/// Severity of struct-constructor field-conformance diagnostics: **`Error`**.
 ///
-/// α generalizes the 4584 struct-ctor conformance chokepoint from its original
-/// 4-family allowlist (`List<TraitObject>` / `StructureRef` / `Vector` /
-/// `Selector`) to ALL concrete field types, at **Warning** severity behind this
-/// single const. The ctor field-conformance surface reads its severity from
-/// here (threaded through `WalkCtx.severity`), so the δ follow-up is a literal
-/// one-const flip to `Severity::Error` that promotes that surface uniformly.
+/// Task 5302 (α) generalized the 4584 struct-ctor conformance chokepoint from
+/// its original 4-family allowlist (`List<TraitObject>` / `StructureRef` /
+/// `Vector` / `Selector`) to ALL concrete field types; task 5303 (ε) added the
+/// two structural codes. Both landed at `Severity::Warning` behind this const —
+/// a landing convenience under PRD decision D4, so a large diagnostic surface
+/// could reach the corpus before it could reject. **Task 5306 (δ) closed that
+/// warn window.** A non-conforming ctor argument is now an Error, so
+/// `reify check` exits 1 on it (`crates/reify-cli/src/main.rs`,
+/// `.any(|d| d.severity == Severity::Error)`).
 ///
-/// **Two emit sites are deliberately outside this knob** and will NOT flip with
-/// the const: (1) the fn-call conformance entry (`check_fn_arg_conformance`)
-/// hard-codes `Severity::Error` (out of scope; see the `WalkCtx.severity` field
-/// doc); (2) the geometry-trait leaf (`Bounded` / `Connected` / `Convex`, reached
-/// via [`emit_geometry_unbounded`] / [`emit_geometry_trait_violation`]) hard-codes
-/// `Severity::Error` because those codes (`GeometryUnbounded` and the geometry
-/// `TypeNotConformingToTrait`) belong to the geometry-primitive-constructors PRD,
-/// not to this ctor-field knob (see the `WalkCtx.severity` doc's carve-out note).
+/// The surface still reads its severity from HERE (threaded through
+/// `WalkCtx.severity`) rather than hard-coding `Severity::Error` at each emit
+/// site, because that is what made δ a one-const flip and what keeps every
+/// knob-governed site provably uniform. **There is no config flag and no
+/// environment variable behind this const, and none may be added**: a
+/// per-invocation severity would make `reify check`'s exit code depend on
+/// something other than the source, which is the failure mode the whole staged
+/// promotion existed to avoid.
+///
+/// **Two emit sites are deliberately outside this knob** and did NOT move with
+/// δ, because they were already Error: (1) the fn-call conformance entry
+/// (`check_fn_arg_conformance`) hard-codes `Severity::Error` (out of scope; see
+/// the `WalkCtx.severity` field doc); (2) the geometry-trait leaf (`Bounded` /
+/// `Connected` / `Convex`, reached via [`emit_geometry_unbounded`] /
+/// [`emit_geometry_trait_violation`]) hard-codes `Severity::Error` because those
+/// codes (`GeometryUnbounded` and the geometry `TypeNotConformingToTrait`) belong
+/// to the geometry-primitive-constructors PRD, not to this ctor-field knob (see
+/// the `WalkCtx.severity` doc's carve-out note). Both carve-outs remain live: a
+/// future re-scoping of this const must not silently absorb them.
 ///
 /// **ε (task 5303) additionally reads this knob from outside this module.** The
 /// two structural emit sites in the `StructureInstanceCtor` by-name binder
@@ -37,12 +50,12 @@ use std::cell::RefCell;
 /// ([`DiagnosticCode::CtorUnknownField`]) and over-arity positional argument
 /// ([`DiagnosticCode::CtorArity`]) — build their diagnostics with
 /// [`diag_at`]`(CTOR_FIELD_CONFORMANCE_SEVERITY, …)` rather than a literal
-/// `Severity::Warning`, which is why both this const and [`diag_at`] are
-/// `pub(crate)`. Keeping every knob-governed site on this one const is what keeps
-/// δ a literal one-const flip; a duplicated `Severity::Warning` literal in
-/// expr.rs would silently survive that flip (the C2(iv) severity-invariance
-/// failure mode).
-pub(crate) const CTOR_FIELD_CONFORMANCE_SEVERITY: Severity = Severity::Warning;
+/// severity, which is why both this const and [`diag_at`] are `pub(crate)`. That
+/// is what made δ a literal one-const flip; a duplicated `Severity::Warning`
+/// literal in expr.rs would have silently survived it (the C2(iv)
+/// severity-invariance failure mode). The same reasoning applies to any emit site
+/// added here later: read the const, never a literal.
+pub(crate) const CTOR_FIELD_CONFORMANCE_SEVERITY: Severity = Severity::Error;
 
 /// Build a `Diagnostic` at an explicit `severity`.
 ///
@@ -6824,11 +6837,12 @@ mod tests {
             diagnostics.len(),
         );
         let d = &diagnostics[0];
-        // task 5302 α (Option-A uniform downgrade): check_trait_arg_conformance is a
-        // ctor-conformance entry, so its diagnostics are emitted at
-        // CTOR_FIELD_CONFORMANCE_SEVERITY (Warning) rather than Error. Code/count/message
-        // are unchanged; δ later flips the knob back to Error.
-        assert_eq!(d.severity, Severity::Warning);
+        // check_trait_arg_conformance is a ctor-conformance entry, so its diagnostics
+        // are emitted at CTOR_FIELD_CONFORMANCE_SEVERITY. Task 5302 α downgraded that
+        // knob to Warning (Option-A uniform downgrade); task 5306 δ flipped it back to
+        // Error. Code/count/message were unchanged by both moves. Written as a literal
+        // rather than a read of the const so a future re-flip cannot pass vacuously.
+        assert_eq!(d.severity, Severity::Error);
         assert_eq!(
             d.code,
             Some(DiagnosticCode::TypeNotConformingToTrait),
