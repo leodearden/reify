@@ -2733,6 +2733,12 @@ fn objective_unconsumed_diagnostic(
 ///    objective. Calling the registry's own classifier — rather than
 ///    re-deriving the verdict — is what makes the reported fact and the
 ///    routing that produced it one source (G7).
+///    Only two of the three drop verdicts are listed. The third,
+///    `NoAutoParams`, is the COMPILE half's case and is structurally
+///    unreachable here: the registry returns it exactly when
+///    `problem.auto_params` is empty, and with an empty auto set condition 3
+///    below intersects to nothing and stops the gate anyway. Listing it would
+///    read as live coverage of a drop site this function can never report.
 /// 3. The objective actually reaches an auto param ([`objective_auto_reach`]).
 ///    An objective that reaches none is the *compile* half's business
 ///    (`E_OBJECTIVE_INERT`), and firing here too would double-report it.
@@ -2776,13 +2782,11 @@ fn objective_unconsumed_finding(
     // (1) user-declared only.
     declared?;
 
-    // (2) the registry dropped it. `Consumed` and `NoObjective` are the quiet
-    // verdicts; the other three are the documented drop sites.
+    // (2) the registry dropped it, at one of the two drop sites this half owns.
     let consumption = reify_constraints::objective_consumption(problem);
     if !matches!(
         consumption,
-        reify_constraints::ObjectiveConsumption::NoAutoParams
-            | reify_constraints::ObjectiveConsumption::NoComponents
+        reify_constraints::ObjectiveConsumption::NoComponents
             | reify_constraints::ObjectiveConsumption::FallbackComponentZero
     ) {
         return None;

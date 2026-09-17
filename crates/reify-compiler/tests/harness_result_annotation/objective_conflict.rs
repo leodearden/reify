@@ -236,12 +236,49 @@ fn inert_diags(compiled: &reify_compiler::CompiledModule) -> Vec<&reify_core::Di
         .collect()
 }
 
-/// Assert the module reports exactly one inert objective, that it is an Error
-/// naming `cell`, and that it is renderable.
+/// Every backticked token of a rendered message that is a cell id.
+///
+/// The renderer backticks exactly five kinds of thing: the sense word
+/// (`minimize` / `maximize`), the template name, `auto`, `= auto`, and the cell
+/// ids. Only the last carry a `.`, because cells render through
+/// `ValueCellId`'s entity-qualified `Display` — which is what lets this pick
+/// them out by shape instead of parsing the prose around them, and is what
+/// makes a SUPERSET assertion possible at all.
+fn backticked_cell_ids(message: &str) -> std::collections::BTreeSet<String> {
+    message
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|token| token.contains('.'))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Assert the module reports exactly one inert objective: an Error on
+/// `template` whose rendered cell list is EXACTLY `reads`, whose remedy names
+/// EXACTLY `remedy`, and which is renderable.
 ///
 /// "Exactly one" is the #5014 aggregation rule: one diagnostic per objective
 /// *declaration*, however many cells it names — not one per never-auto cell.
-fn assert_one_inert_error_naming(compiled: &reify_compiler::CompiledModule, cell: &str) {
+///
+/// `reads` and `remedy` are given as BARE member names and qualified here with
+/// `template`. That qualification is itself part of the assertion: the renderer
+/// emits `ValueCellId`'s entity-qualified `Display`, so a regression to a bare
+/// member name reds. The two lists differ exactly when the objective reads a
+/// `let` — it *reads* the let, but the declaration a reader must edit is the
+/// `param` leaf behind it.
+///
+/// Three independent things are pinned, and each fails on its own: the read
+/// list appears verbatim and in order, the remedy list appears verbatim and in
+/// order, and NO OTHER cell id appears anywhere in the message — so a
+/// regression that names the expected cells plus three spurious ones is caught
+/// too.
+fn assert_one_inert_error(
+    compiled: &reify_compiler::CompiledModule,
+    template: &str,
+    reads: &[&str],
+    remedy: &[&str],
+) {
     let found = inert_diags(compiled);
     assert_eq!(
         found.len(),
@@ -263,14 +300,53 @@ fn assert_one_inert_error_naming(compiled: &reify_compiler::CompiledModule, cell
         "message must carry the PRD-prose mnemonic, got: {:?}",
         diag.message
     );
-    // Backticked, not bare. `post_passes.rs` renders each proven cell as
-    // `` `member` `` and joins those into the message's cell list, so the
-    // backticks pin this to that list rather than to the static remedy prose —
-    // a bare `contains("k")` matched the `k` in "make" and so held for any cell
-    // list at all, including the wrong one or none.
     assert!(
-        diag.message.contains(&format!("`{cell}`")),
-        "message must name the never-auto cell `{cell}` in its backticked cell list, got: {:?}",
+        diag.message.contains(&format!("`{template}`")),
+        "message must name the template `{template}` it judged, got: {:?}",
+        diag.message
+    );
+
+    let qualify = |members: &[&str]| {
+        members
+            .iter()
+            .map(|m| format!("{template}.{m}"))
+            .collect::<Vec<_>>()
+    };
+    let list = |ids: &[String]| {
+        ids.iter()
+            .map(|id| format!("`{id}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let read_ids = qualify(reads);
+    let remedy_ids = qualify(remedy);
+
+    let verb = if read_ids.len() == 1 { "is" } else { "are" };
+    assert!(
+        diag.message.contains(&format!(
+            "reads only {}, which {verb} never `auto`",
+            list(&read_ids)
+        )),
+        "message must name exactly the cells the objective reads, in order, and \
+         inflect for {} of them, got: {:?}",
+        read_ids.len(),
+        diag.message
+    );
+    let remedy_intro = if remedy_ids.len() == 1 { "" } else { "one of " };
+    assert!(
+        diag.message.contains(&format!(
+            "Declare {remedy_intro}{} `auto`",
+            list(&remedy_ids)
+        )),
+        "remedy must name exactly the declarations a reader can turn into `auto`, got: {:?}",
+        diag.message
+    );
+    let named: std::collections::BTreeSet<String> =
+        read_ids.iter().chain(remedy_ids.iter()).cloned().collect();
+    assert_eq!(
+        backticked_cell_ids(&diag.message),
+        named,
+        "message must name NO cell beyond the ones expected, got: {:?}",
         diag.message
     );
 
@@ -386,16 +462,27 @@ fn compile_child_and_main(child_src: &str, main_src: &str) -> reify_compiler::mo
     dag
 }
 
-/// Assert `module_name`'s compiled form in `dag` reports no inert objective.
+/// Assert `module_name`'s compiled form in `dag` reports no inert objective —
+/// and that `objective_bearing` is really there, carrying a real objective.
+///
+/// The anti-vacuity half is the DAG counterpart of
+/// [`assert_template_has_objective`], and it is load-bearing for exactly the
+/// same reason: without it, a DAG case degenerates into "no objective-bearing
+/// template was built, so of course nothing was reported". If
+/// `phase_auto_type_param_resolution` stopped cloning the imported generic into
+/// `main`, or `child.ri` stopped carrying an objective, every case below would
+/// pass while testing nothing.
 fn assert_dag_module_has_no_inert(
     dag: &reify_compiler::module_dag::ModuleDag,
     module_name: &str,
+    objective_bearing: &str,
     why: &str,
 ) {
     let compiled = dag
         .modules
         .get(module_name)
         .unwrap_or_else(|| panic!("module `{module_name}` must be in the DAG"));
+    assert_template_has_objective(compiled, objective_bearing);
     assert_no_inert(compiled, why);
 }
 
@@ -430,6 +517,7 @@ structure Root {
     assert_dag_module_has_no_inert(
         &dag,
         "child",
+        "Widget",
         "a downstream `sub w : Widget { k = auto }` makes `k` a solver variable; \
          the objective governs it and the program is legal",
     );
@@ -486,13 +574,10 @@ structure Root {
     sub w : Widget {}
 }
 "#;
-    assert_one_inert_error_naming(&compile_source_with_stdlib(src), "k");
+    assert_one_inert_error(&compile_source_with_stdlib(src), "Widget", &["k"], &["k"]);
 }
 
-/// SECOND ROUTE into the same false positive, found while verifying finding 1
-/// and absent from the review: an imported GENERIC objective-bearing structure
-/// reaches `ctx.templates` as a monomorph CLONE, so the pass judges ANOTHER
-/// module's objective with only *this* module's visibility.
+/// A `pub` imported generic, monomorphised into this module, stays clean.
 ///
 /// `phase_auto_type_param_resolution` resolves the target from a registry that
 /// chains prelude templates in unfiltered (`auto_type_param_phase.rs`'s
@@ -500,13 +585,25 @@ structure Root {
 /// clones it (`let mut mono = target.clone();`) and pushes the clone into
 /// `ctx.templates`. That phase's own known-gap comment lists `objective` among
 /// the fields it does NOT substitute, so the clone carries the generic's
-/// `minimize` verbatim. It runs well before `phase_inert_objective_check`
-/// (`lib.rs`), which then reports on it — anchoring the label at a
-/// `SourceSpan` that indexes into the *defining* module's source text, so even
-/// the rendered location is wrong.
+/// `minimize` verbatim, and it runs well before `phase_inert_objective_check`
+/// (`lib.rs`).
+///
+/// **Which obligation catches it, MEASURED:** obligation 0, not 0′. The clone
+/// inherits `visibility` verbatim from the target, so a clone of a `pub`
+/// generic is `Public` — main's templates hold `Bearing$ORingSeal` with
+/// `visibility=Public` — and `inert_objective_finding` returns at the
+/// visibility bail before `imported_template_names` is consulted at all. This
+/// case therefore pins the same obligation as
+/// `exported_template_compiled_alone_is_compile_clean`, reached through the
+/// monomorph route instead of directly; it is NOT the 0′ probe, and it would
+/// stay green with 0′ deleted.
+///
+/// The 0′-specific claim belongs to, and is owned by,
+/// `imported_private_generic_monomorph_objective_is_compile_clean` below, whose
+/// clone lands `Private` and so runs past obligation 0.
 ///
 /// The assertion is on `main`, not `child`: `child` compiled alone is the
-/// first route and is covered above.
+/// visibility route without the monomorph step, and is covered above.
 #[test]
 fn imported_generic_monomorph_objective_is_compile_clean() {
     let dag = compile_child_and_main(
@@ -534,6 +631,7 @@ structure Root { sub a : Assembly {} }
     assert_dag_module_has_no_inert(
         &dag,
         "main",
+        "Bearing$ORingSeal",
         "a monomorph clone of an IMPORTED generic carries the defining module's \
          objective; this module can see neither that module's overrides nor its \
          downstream consumers, so inertness is not provable here",
@@ -558,7 +656,12 @@ structure DicMinNoAutos {
 }
 "#;
 
-    assert_one_inert_error_naming(&compile_source_with_stdlib(src), "k");
+    assert_one_inert_error(
+        &compile_source_with_stdlib(src),
+        "DicMinNoAutos",
+        &["k"],
+        &["k"],
+    );
 }
 
 /// Byte-mirror of `docs/prds/v0_6/fixtures/dic_min_unread.ri`.
@@ -580,7 +683,12 @@ structure DicMinUnread {
 }
 "#;
 
-    assert_one_inert_error_naming(&compile_source_with_stdlib(src), "k");
+    assert_one_inert_error(
+        &compile_source_with_stdlib(src),
+        "DicMinUnread",
+        &["k"],
+        &["k"],
+    );
 }
 
 // ── NEGATIVE: the objective genuinely reaches an auto ────────────────────────
@@ -825,6 +933,7 @@ structure Root { sub a : Assembly {} }
     assert_dag_module_has_no_inert(
         &dag,
         "main",
+        "Bearing$ORingSeal",
         "a private imported generic monomorphises into this module all the same, \
          so the clone's `Private` visibility does not make its objective judgeable here",
     );
@@ -1089,7 +1198,12 @@ structure GuardedButInert {
 }
 "#;
 
-    assert_one_inert_error_naming(&compile_source_with_stdlib(src), "k");
+    assert_one_inert_error(
+        &compile_source_with_stdlib(src),
+        "GuardedButInert",
+        &["k"],
+        &["k"],
+    );
 }
 
 // ── OBJECTIVE INHERITANCE: governing a descendant, not itself ───────────────
@@ -1194,7 +1308,7 @@ structure C {
 ///
 /// This is also the one fixture carrying a deliberately distinctive param name:
 /// `bore_q` appears nowhere in the diagnostic's static prose, so
-/// `assert_one_inert_error_naming` cannot be satisfied here by accident. The
+/// `assert_one_inert_error` cannot be satisfied here by accident. The
 /// other positive fixtures keep `k` because two of them are byte-mirrors of the
 /// PRD's B6 probes under `docs/prds/v0_6/fixtures/`.
 #[test]
@@ -1207,7 +1321,12 @@ structure InertNoSubs {
 }
 "#;
 
-    assert_one_inert_error_naming(&compile_source_with_stdlib(src), "bore_q");
+    assert_one_inert_error(
+        &compile_source_with_stdlib(src),
+        "InertNoSubs",
+        &["bore_q"],
+        &["bore_q"],
+    );
 }
 
 /// NEGATIVE GUARD 2 — the load-bearing one. A template that DOES have a sub,
@@ -1242,5 +1361,105 @@ structure HasSubs {
 }
 "#;
 
-    assert_one_inert_error_naming(&compile_source_with_stdlib(src), "k");
+    assert_one_inert_error(&compile_source_with_stdlib(src), "HasSubs", &["k"], &["k"]);
+}
+
+// ── RENDERING: what the message names, and what it tells the reader to edit ──
+
+/// An inert objective that reads a `let` must send the reader to the `param`
+/// behind it, not to the `let`.
+///
+/// `InertObjectiveFinding` keeps two lists precisely for this shape: the
+/// objective *reads* `v`, but `v` has no literal default and turning it into
+/// `let v = auto` throws the formula away — the edit that makes the objective
+/// effective is `param k = auto`. Before the split, the remedy named `v` and
+/// the label anchored on `v`'s line, which pointed at the one declaration in
+/// the closure the reader should not touch.
+#[test]
+fn inert_let_indirected_objective_names_the_param_behind_the_let() {
+    let src = r#"module inert_let_indirect
+
+structure InertLetIndirect {
+    param k : Real = 3.0
+    let v = k * 2.0
+    minimize v
+}
+"#;
+
+    assert_one_inert_error(
+        &compile_source_with_stdlib(src),
+        "InertLetIndirect",
+        &["v"],
+        &["k"],
+    );
+}
+
+/// The PLURAL rendering path: two never-`auto` cells, comma-joined, with the
+/// verb and the remedy both inflected.
+///
+/// Every other positive fixture names exactly one cell, so the `"are"` /
+/// `"one of "` arms of the renderer had no coverage at all and could be
+/// deleted without reddening anything.
+#[test]
+fn inert_objective_reading_two_never_auto_params_names_both() {
+    let src = r#"module inert_two_reads
+
+structure InertTwoReads {
+    param a : Real = 2.0
+    param b : Real = 5.0
+    minimize a + b
+}
+"#;
+
+    assert_one_inert_error(
+        &compile_source_with_stdlib(src),
+        "InertTwoReads",
+        &["a", "b"],
+        &["a", "b"],
+    );
+}
+
+/// The #5014 aggregation rule is per objective DECLARATION, not per module:
+/// two inert templates in one module draw two diagnostics, each naming its own
+/// cell.
+///
+/// `assert_one_inert_error`'s "exactly one" cannot distinguish the two rules,
+/// because every fixture it is used on has exactly one objective-bearing
+/// template. This is the case that can: a pass that aggregated per module would
+/// emit one diagnostic here, and a pass that emitted per never-auto cell would
+/// emit the same two — so the assertion is on the cell each one names, not on
+/// the count alone.
+#[test]
+fn two_inert_templates_in_one_module_draw_one_diagnostic_each() {
+    let src = r#"module two_inert
+
+structure FirstInert {
+    param k : Real = 3.0
+    minimize k * k
+}
+
+structure SecondInert {
+    param j : Real = 4.0
+    minimize j
+}
+"#;
+    let compiled = compile_source_with_stdlib(src);
+    let found = inert_diags(&compiled);
+    assert_eq!(
+        found.len(),
+        2,
+        "one diagnostic per objective declaration, got {}: {:#?}",
+        found.len(),
+        compiled.diagnostics
+    );
+    for (template, cell) in [("FirstInert", "k"), ("SecondInert", "j")] {
+        let want = format!("`{template}.{cell}`");
+        assert!(
+            found
+                .iter()
+                .any(|d| d.message.contains(&format!("in `{template}`"))
+                    && d.message.contains(&want)),
+            "one diagnostic must name `{template}` and its cell {want}, got: {found:#?}"
+        );
+    }
 }

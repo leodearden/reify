@@ -291,11 +291,25 @@ pub(crate) struct InertObjectiveFinding {
     /// transitive closure: they are the identifiers the author actually wrote,
     /// which is what a "your objective reads only X" message must name.
     pub never_auto_cells: Vec<ValueCellId>,
+    /// The declarations a reader can actually turn into `auto` — the `param`
+    /// members of the proof closure, sorted and deduplicated.
+    ///
+    /// Distinct from [`Self::never_auto_cells`] because the two answer
+    /// different questions, and they diverge exactly when the objective reads a
+    /// `let`: for `minimize v` over `let v = k * 2.0`, the objective *reads*
+    /// `v` but the edit that makes it effective is on `k`. Naming `v` in the
+    /// remedy told the reader to change a cell that has no literal default and
+    /// is not where the inertness comes from.
+    ///
+    /// Non-empty by construction: a closure with no `param` at all bottoms out
+    /// in literal-backed `let`s, and those fall back to the direct refs, where
+    /// `let v = auto` really is the edit.
+    pub remedy_cells: Vec<ValueCellId>,
     /// A non-empty span to anchor the diagnostic's primary label on. Neither
     /// `TopologyTemplate` nor `CompiledExpr` carries a declaration span, so the
-    /// finding borrows the `ValueCellDecl.span` of the first reported cell —
-    /// the declaration that *proves* the inertness, and therefore the place a
-    /// reader must edit (`k` must become `auto`).
+    /// finding borrows the `ValueCellDecl.span` of the first
+    /// [`Self::remedy_cells`] entry — the declaration that *proves* the
+    /// inertness, and therefore the place a reader must edit.
     pub anchor_span: SourceSpan,
 }
 
@@ -475,7 +489,13 @@ fn declares_any_auto(template: &TopologyTemplate) -> bool {
 ///
 /// The walk:
 /// - descends `sub_components`, resolving each `structure_name` through
-///   [`names_same_structure`] so a monomorphised child still matches;
+///   [`names_same_structure`] so a monomorphised child still matches — and
+///   visits EVERY match, not just the first. A locally-monomorphised generic
+///   puts both `G` and `G$Arg` in the module and both satisfy the predicate;
+///   stopping at whichever the vector happened to hold first would let an
+///   objective-less sibling monomorph with an auto of its own go unseen, and
+///   answering `false` there is a FALSE `E_OBJECTIVE_INERT` — the one direction
+///   this rule may never take;
 /// - **prunes at an objective-bearing descendant** — the nearest
 ///   objective-bearing ancestor is the one that governs, so that subtree
 ///   inherits from the descendant, not from `template`;
@@ -504,24 +524,27 @@ fn objective_inheritance_possible(
 
     while let Some(current) = frontier.pop() {
         for sub in &current.sub_components {
-            let Some(child) = all_templates
+            let mut matches = all_templates
                 .iter()
-                .find(|t| names_same_structure(&t.name, &sub.structure_name))
-            else {
+                .filter(|t| names_same_structure(&t.name, &sub.structure_name))
+                .peekable();
+            if matches.peek().is_none() {
                 // A sub we cannot resolve may contain anything at all.
                 return true;
-            };
-            if !seen.insert(child.name.as_str()) {
-                continue;
             }
-            if child.objective.is_some() {
-                // `child` and everything under it inherit from `child`.
-                continue;
+            for child in matches {
+                if !seen.insert(child.name.as_str()) {
+                    continue;
+                }
+                if child.objective.is_some() {
+                    // `child` and everything under it inherit from `child`.
+                    continue;
+                }
+                if declares_any_auto(child) {
+                    return true;
+                }
+                frontier.push(child);
             }
-            if declares_any_auto(child) {
-                return true;
-            }
-            frontier.push(child);
         }
     }
 
@@ -799,11 +822,25 @@ pub(crate) fn inert_objective_finding(
         return None;
     }
 
-    // Anchor on the declaration that proves the inertness, so the reader lands
-    // on the `param` they must turn into an `auto`.
-    let anchor_span = cells.get(&named[0])?.span;
+    // The `param` leaves of the closure — the declarations the remedy must name
+    // and the label must anchor on, which are NOT the objective's direct refs
+    // once a `let` sits between them. `closure` is a `BTreeSet`, so this is
+    // sorted and deduplicated already. A closure with no `param` at all is
+    // literal-backed `let`s, where `let v = auto` is the edit and the direct
+    // refs are the right thing to name.
+    let mut remedy_cells: Vec<ValueCellId> = closure
+        .iter()
+        .filter(|id| matches!(cells.get(id).map(|d| &d.kind), Some(ValueCellKind::Param)))
+        .cloned()
+        .collect();
+    if remedy_cells.is_empty() {
+        remedy_cells = named.clone();
+    }
+
+    let anchor_span = cells.get(&remedy_cells[0])?.span;
     Some(InertObjectiveFinding {
         never_auto_cells: named,
+        remedy_cells,
         anchor_span,
     })
 }
@@ -874,12 +911,27 @@ pub(crate) fn phase_inert_objective_check(
         };
 
         let sense = objective_sense_word(objective);
-        let cells = finding
-            .never_auto_cells
-            .iter()
-            .map(|id| format!("`{}`", id.member))
-            .collect::<Vec<_>>()
-            .join(", ");
+        // Entity-qualified (`ValueCellId`'s own `Display`), matching
+        // `reify-eval`'s `E_OBJECTIVE_UNCONSUMED` renderer so the two halves of
+        // DIC γ spell a cell the same way. The qualification is not redundant
+        // even here: `phase_sub_override_autos` mints `Parent.sub`/`member`
+        // cells into the parent template, so a bare member name can collide
+        // with the parent's own.
+        let render = |ids: &[ValueCellId]| {
+            ids.iter()
+                .map(|id| format!("`{id}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let cells = render(&finding.never_auto_cells);
+        // "Declare `T.k` `auto`" for one candidate, "Declare one of `T.k`,
+        // `T.j` `auto`" for several.
+        let remedy_intro = if finding.remedy_cells.len() == 1 {
+            ""
+        } else {
+            "one of "
+        };
+        let remedy = render(&finding.remedy_cells);
         // Only the verb inflects — the subject phrase is the same either way,
         // so binding it twice just invited a reader to hunt for a difference
         // that is not there (#5417 step-15 tidy).
@@ -903,9 +955,9 @@ pub(crate) fn phase_inert_objective_check(
                 "E_OBJECTIVE_INERT: the `{sense}` declared in `{name}` reads only \
                  {cells}, which {verb} never `auto` anywhere in `{name}` — so no solver \
                  variable can change its value and the objective has nothing to \
-                 optimise. Declare one of them `auto` (e.g. `= auto` in place of the \
-                 literal default) to make the objective effective, or remove the \
-                 objective.",
+                 optimise. Declare {remedy_intro}{remedy} `auto` (e.g. `= auto` in \
+                 place of the literal default) to make the objective effective, or \
+                 remove the objective.",
                 name = template.name
             ))
             .with_code(DiagnosticCode::ObjectiveInert)

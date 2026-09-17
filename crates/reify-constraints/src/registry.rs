@@ -442,10 +442,6 @@ impl SolverRegistry {
 
         // Early exit: no auto params → already solved
         if problem.auto_params.is_empty() {
-            debug_assert!(
-                !matches!(consumption, ObjectiveConsumption::Consumed { .. }),
-                "no auto params cannot consume an objective"
-            );
             return (
                 SolveResult::Solved {
                     values: HashMap::new(),
