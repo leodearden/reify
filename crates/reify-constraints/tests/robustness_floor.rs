@@ -27,6 +27,20 @@
 //! HONESTY for the shapes steps 2-8 cannot rescue:
 //!   - `margin_only_infeasibility_names_the_margin_not_an_empty_region`
 //!   - `genuinely_unsatisfiable_constraints_keep_the_region_empty_wording`
+//!
+//! Task #5714 section (WITNESS SEARCH) at the bottom of the file extends that
+//! honesty to shapes whose floored converged point lands OUTSIDE the user's box,
+//! which is what a steep Money objective does.  Four tests, in two pairs — each
+//! pair a satisfiable shape and a genuinely empty near-twin, so every honest
+//! message is pinned against an over-claim:
+//!   - `steep_objective_margin_only_infeasibility_names_the_margin` (rung 2 on the
+//!     headline Length bracket; the `.ri` fixture shape)
+//!   - `steep_objective_over_an_underivable_bracket_still_names_the_margin`
+//!     (rung 2 where the bound derivation abstains entirely)
+//!   - `underivable_empty_box_keeps_the_region_empty_wording` (anti-shortcut
+//!     control: genuinely empty, yet its DERIVED box is non-degenerate)
+//!   - `genuinely_unsatisfiable_constraints_keep_the_region_empty_wording` above
+//!     serves as the second pair's empty half.
 
 use reify_constraints::DimensionalSolver;
 use reify_core::{DiagnosticCode, DimensionVector, Type, ValueCellId};
@@ -935,24 +949,26 @@ fn floor_infeasible_message(problem: &ResolutionProblem) -> String {
 ///
 /// `q ∈ [99, 100]` is a 1-unit-wide, perfectly satisfiable box.  Only the synthesised
 /// margins (2% of 99 = 1.98 below, 2% of 100 = 2.0 above) invert it: q ≥ 100.98 ∧
-/// q ≤ 98.  The returned point still satisfies the user's ORIGINAL constraints, so
+/// q ≤ 98.  A point satisfying the user's ORIGINAL constraints therefore exists, so
 /// the diagnostic must say so and name the robustness margin — not the constraints —
 /// as what could not be met.
 ///
-/// WHY THIS FIXTURE and not the `x > 10mm ∧ x < 10.3mm` Length bracket that already
-/// sits in this file (`floor_infeasible_emits_distinct_diagnostic`), which reads like
-/// the more obvious choice: measured, that shape does NOT satisfy its own original
-/// constraints at the returned point.  Its objective `5 USD × (x / 1mm)` has gradient
-/// 5000 per metre against `PENALTY_WEIGHT = 1e6`, so the penalty minimiser sits
-/// ~1.25e-3 m BELOW the floored lower bound — i.e. outside the user's box — and
-/// step-10's residual check correctly refuses to claim otherwise.  Here the objective
-/// `1 USD × q` has gradient 1, the shift is ~2.5e-7, and the returned point stays
-/// inside [99, 100].
+/// WHICH RUNG of `original_constraints_witness` this shape exercises, and why its
+/// steep Length sibling is kept alongside it rather than folded into it: here the
+/// objective `1 USD × q` has gradient 1, the floored solve's shift is ~2.5e-7, and
+/// its converged point stays inside [99, 100] — so RUNG 1 (that converged point,
+/// free) witnesses it and no re-solve happens at all.  The `x > 10mm ∧ x < 10.3mm`
+/// Length bracket under `5 USD × (x / 1mm)` has gradient 5000 per metre against
+/// `PENALTY_WEIGHT = 1e6`, so its penalty minimiser sits ~1.35e-3 m BELOW the floored
+/// lower bound — outside the user's box — and only RUNG 2 (the feasibility-only
+/// re-solve) reaches it.  That is
+/// `steep_objective_margin_only_infeasibility_names_the_margin`; a third pair, the
+/// `2·x` brackets, pins that the search discriminates on a verified point rather than
+/// on the derived box.
 ///
-/// That gap is real but is NOT this task's headline: making the honest branch reachable
-/// for a steep objective means changing WHICH point a floor-infeasible solve reports,
-/// which is solver semantics.  Filed as task #5714 (see also the step-10 note at the
-/// emit site in `solver.rs`).  Do not "simplify" this test onto the Length fixture.
+/// So do not "simplify" this test onto the Length fixture: the two shapes take
+/// different rungs, and collapsing them would leave rung 1 — the only rung that runs
+/// on the common case — untested.
 #[test]
 fn margin_only_infeasibility_names_the_margin_not_an_empty_region() {
     let q_id = ValueCellId::new("Bracketed", "q");
