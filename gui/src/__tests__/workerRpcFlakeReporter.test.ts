@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import {
+import WorkerRpcFlakeReporter, {
   classifyWorkerRpcFlake,
+  WORKER_RPC_FLAKE_ARTIFACT,
+  type ReportedModule,
   type WorkerRpcFailureSummary,
 } from '../../vitest-worker-rpc-flake-reporter'
 
@@ -165,5 +167,207 @@ describe('classifyWorkerRpcFlake', () => {
     )
 
     expect(verdict).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The reporter's two OUTPUTS: one column-0 marker line, and one JSON artifact.
+// Driven through the public reporter entry point with synthetic module records
+// and injected IO, so these tests touch no real filesystem and assume no cwd.
+// ---------------------------------------------------------------------------
+
+/** A synthetic stand-in for vitest's TestModule, satisfying ReportedModule. */
+const testModule = (
+  moduleId: string,
+  opts: { failed?: boolean; errors?: string[]; failedTests?: number } = {},
+): ReportedModule => ({
+  moduleId,
+  state: () => (opts.failed ? 'failed' : 'passed'),
+  errors: () => (opts.errors ?? []).map((message) => ({ message })),
+  children: {
+    allTests: (state?: string) =>
+      state === 'failed' ? new Array(opts.failedTests ?? 0).fill(null) : [],
+  },
+})
+
+const ROOT = '/lane/gui'
+
+interface Recorder {
+  readonly reporter: WorkerRpcFlakeReporter
+  readonly lines: string[]
+  readonly writes: { path: string; contents: string }[]
+  readonly discards: string[]
+}
+
+const recordingReporter = (artifactPath = '/tmp/flake.json'): Recorder => {
+  const lines: string[] = []
+  const writes: { path: string; contents: string }[] = []
+  const discards: string[] = []
+  const reporter = new WorkerRpcFlakeReporter({
+    rootDir: ROOT,
+    artifactPath,
+    emit: (line) => lines.push(line),
+    writeArtifact: (path, contents) => writes.push({ path, contents }),
+    discardArtifact: (path) => discards.push(path),
+  })
+  return { reporter, lines, writes, discards }
+}
+
+const TIMEOUT_FETCH = '[vitest-worker]: Timeout calling "fetch" with "[\\"x\\",\\"web\\"]"'
+const TIMEOUT_SNAPSHOT = '[vitest-worker]: Timeout calling "snapshotSaved"'
+
+const starvedRun = (): ReportedModule[] => [
+  testModule(`${ROOT}/vitest.setup.ts`, { failed: true, errors: [TIMEOUT_FETCH] }),
+  testModule(`${ROOT}/src/__tests__/meshManager.attributeResize.test.ts`, {
+    failed: true,
+    errors: [TIMEOUT_SNAPSHOT],
+  }),
+  testModule(`${ROOT}/src/__tests__/diff.test.ts`),
+]
+
+describe('WorkerRpcFlakeReporter — marker line', () => {
+  it('emits exactly one column-0 @@REIFY_GUI_FLAKE@@ line on the positive signature', () => {
+    const { reporter, lines } = recordingReporter()
+    reporter.onTestRunEnd(starvedRun(), [])
+
+    expect(lines).toHaveLength(1)
+    expect(lines[0].startsWith('@@REIFY_GUI_FLAKE@@ ')).toBe(true)
+  })
+
+  it('carries kind, suite count and the method csv in the established key=value grammar', () => {
+    const { reporter, lines } = recordingReporter()
+    reporter.onTestRunEnd(starvedRun(), [])
+
+    expect(lines[0]).toContain('kind=worker_rpc_timeout')
+    expect(lines[0]).toContain('suites=2')
+    expect(lines[0]).toContain('methods=fetch,snapshotSaved')
+  })
+
+  // Self-identifying: a recurrence must name its own lineage so the next
+  // responder reads the history off the line instead of re-diagnosing it.
+  it('carries the task lineage so a recurrence needs no re-diagnosis', () => {
+    const { reporter, lines } = recordingReporter()
+    reporter.onTestRunEnd(starvedRun(), [])
+
+    expect(lines[0]).toContain('lineage=3185,4856,7630')
+  })
+
+  it('emits no newline of its own inside the marker (one grep-able line)', () => {
+    const { reporter, lines } = recordingReporter()
+    reporter.onTestRunEnd(starvedRun(), [])
+
+    expect(lines[0]).not.toContain('\n')
+  })
+})
+
+describe('WorkerRpcFlakeReporter — JSON artifact', () => {
+  it('writes the artifact to the caller-supplied path', () => {
+    const { reporter, writes } = recordingReporter('/tmp/somewhere/flake.json')
+    reporter.onTestRunEnd(starvedRun(), [])
+
+    expect(writes).toHaveLength(1)
+    expect(writes[0].path).toBe('/tmp/somewhere/flake.json')
+  })
+
+  it('names the affected suites as ROOT-RELATIVE paths the runner can pass to vitest', () => {
+    const { reporter, writes } = recordingReporter()
+    reporter.onTestRunEnd(starvedRun(), [])
+
+    expect(JSON.parse(writes[0].contents).suites).toEqual([
+      'vitest.setup.ts',
+      'src/__tests__/meshManager.attributeResize.test.ts',
+    ])
+  })
+
+  it('records the kind and the method set alongside the suites', () => {
+    const { reporter, writes } = recordingReporter()
+    reporter.onTestRunEnd(starvedRun(), [])
+
+    const artifact = JSON.parse(writes[0].contents)
+    expect(artifact.kind).toBe('worker_rpc_timeout')
+    expect(artifact.methods).toEqual(['fetch', 'snapshotSaved'])
+  })
+
+  it('defaults the artifact path under the gui root when none is injected', () => {
+    expect(WORKER_RPC_FLAKE_ARTIFACT).toBe('node_modules/.reify-gui-rpc-flake.json')
+  })
+})
+
+describe('WorkerRpcFlakeReporter — the negatives write nothing', () => {
+  // The artifact's ABSENCE is what vetoes the retry in scripts/gui-vitest-run.sh,
+  // so every one of these is load-bearing, not merely tidy.
+  const cases: Array<[string, () => ReportedModule[], unknown[]]> = [
+    [
+      'a failed test alongside a perfect RPC signature',
+      () => [
+        testModule(`${ROOT}/a.test.ts`, { failed: true, errors: [TIMEOUT_FETCH], failedTests: 1 }),
+      ],
+      [],
+    ],
+    [
+      'an ordinary suite failure',
+      () => [testModule(`${ROOT}/a.test.ts`, { failed: true, errors: ['SyntaxError: boom'] })],
+      [],
+    ],
+    [
+      'only some failed suites carrying an RPC timeout',
+      () => [
+        testModule(`${ROOT}/a.test.ts`, { failed: true, errors: [TIMEOUT_FETCH] }),
+        testModule(`${ROOT}/b.test.ts`, { failed: true, errors: ['SyntaxError: boom'] }),
+      ],
+      [],
+    ],
+    ['an all-green run', () => [testModule(`${ROOT}/a.test.ts`)], []],
+    [
+      'an unrelated unhandled error riding alongside the starvation event',
+      () => [testModule(`${ROOT}/a.test.ts`, { failed: true, errors: [TIMEOUT_FETCH] })],
+      [{ message: 'Error: unhandled rejection in a passing suite' }],
+    ],
+  ]
+
+  it.each(cases)('emits no marker and writes no artifact for %s', (_name, modules, unhandled) => {
+    const { reporter, lines, writes } = recordingReporter()
+    reporter.onTestRunEnd(modules(), unhandled as never[])
+
+    expect(lines).toEqual([])
+    expect(writes).toEqual([])
+  })
+
+  // An unhandled error that IS the same starvation event must not veto: the
+  // onUnhandledError RPC shares the one 60 s bound and was observed timing out.
+  it('still classifies when the unhandled error is itself an RPC timeout', () => {
+    const { reporter, writes } = recordingReporter()
+    reporter.onTestRunEnd(
+      [testModule(`${ROOT}/a.test.ts`, { failed: true, errors: [TIMEOUT_FETCH] })],
+      [{ message: '[vitest-worker]: Timeout calling "onUnhandledError" with "boom"' }],
+    )
+
+    expect(writes).toHaveLength(1)
+    expect(JSON.parse(writes[0].contents).methods).toEqual(['fetch', 'onUnhandledError'])
+  })
+})
+
+describe('WorkerRpcFlakeReporter — stale artifacts never leak into a later run', () => {
+  it('discards any stale artifact when a run starts', () => {
+    const { reporter, discards } = recordingReporter('/tmp/flake.json')
+    reporter.onTestRunStart()
+
+    expect(discards).toEqual(['/tmp/flake.json'])
+  })
+
+  it('discards the artifact when a finished run does NOT match the signature', () => {
+    const { reporter, discards, writes } = recordingReporter('/tmp/flake.json')
+    reporter.onTestRunEnd([testModule(`${ROOT}/a.test.ts`)], [])
+
+    expect(writes).toEqual([])
+    expect(discards).toEqual(['/tmp/flake.json'])
+  })
+
+  it('does not discard the artifact it just wrote', () => {
+    const { reporter, discards, writes } = recordingReporter('/tmp/flake.json')
+    reporter.onTestRunEnd(starvedRun(), [])
+
+    expect(writes).toHaveLength(1)
+    expect(discards).toEqual([])
   })
 })
