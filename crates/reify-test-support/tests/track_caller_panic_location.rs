@@ -43,20 +43,33 @@ fn panic_site(f: impl FnOnce()) -> PanicSite {
     // refusing on it would turn an unrelated failure into a cascade.
     let _serialised = PANIC_HOOK.lock().unwrap_or_else(|e| e.into_inner());
 
+    // libtest runs this binary's tests as parallel threads of ONE process, so
+    // the hook we install below — process-global — would otherwise also
+    // capture (and silence) a panic raised by a sibling test on another
+    // thread. Only record on this thread; forward everything else to the
+    // hook that was previously installed, wrapped in an `Arc` so both the
+    // temporary hook (which forwards) and the final restore (below) can
+    // reach it.
+    let calling_thread = std::thread::current().id();
     let location: Arc<Mutex<Option<(String, u32)>>> = Arc::new(Mutex::new(None));
     let location_hook = Arc::clone(&location);
 
-    let previous = std::panic::take_hook();
+    let previous = Arc::new(std::panic::take_hook());
+    let previous_for_hook = Arc::clone(&previous);
     std::panic::set_hook(Box::new(move |info| {
-        if let Some(loc) = info.location() {
-            *location_hook.lock().unwrap_or_else(|e| e.into_inner()) =
-                Some((loc.file().to_string(), loc.line()));
+        if std::thread::current().id() == calling_thread {
+            if let Some(loc) = info.location() {
+                *location_hook.lock().unwrap_or_else(|e| e.into_inner()) =
+                    Some((loc.file().to_string(), loc.line()));
+            }
+        } else {
+            previous_for_hook(info);
         }
     }));
 
     let outcome = catch_unwind(AssertUnwindSafe(f));
 
-    std::panic::set_hook(previous);
+    std::panic::set_hook(Box::new(move |info| previous(info)));
 
     let payload = match outcome {
         Ok(()) => panic!("expected the captured call to panic, but it returned normally"),
@@ -81,19 +94,22 @@ fn require_default_expr_panic_reports_caller_not_helpers_rs() {
         .auto_param("S", "x", reify_core::Type::dimensionless_scalar())
         .build();
 
-    // `line!()` sits on the SAME physical line as the guarded call so the
-    // expected line needs no arithmetic and cannot drift when this file is
-    // edited above — see the module header and this task's design notes.
-    let site = panic_site(|| { reify_test_support::get_let_expr_in_template(&template, "x"); }); let expected_line = line!();
+    let site = panic_site(|| {
+        reify_test_support::get_let_expr_in_template(&template, "x");
+    });
 
+    // File identity alone discriminates the regression: helpers.rs is a
+    // different file by construction, so "attributes to the caller, not
+    // helpers.rs" is fully captured without pinning an exact line (which
+    // `rustfmt --edition 2024` would otherwise be free to shift, per this
+    // task's review). `site.line` is still surfaced below for diagnosis.
     assert_eq!(
-        (site.file.as_str(), site.line),
-        (file!(), expected_line),
+        site.file.as_str(),
+        file!(),
         "require_default_expr's panic must attribute to the CALLER (this \
-         file), not to helpers.rs; reported {}:{}, expected {}:{expected_line}",
+         file), not to helpers.rs; reported {}:{}",
         site.file,
         site.line,
-        file!(),
     );
     assert!(
         site.message.contains("has no default expr"),
@@ -107,18 +123,19 @@ fn require_default_expr_panic_reports_caller_not_helpers_rs() {
 fn cell_value_panic_reports_caller_not_helpers_rs() {
     let result = reify_test_support::eval_source("structure S { let x = 1.0 }");
 
-    // `line!()` sits on the SAME physical line as the guarded call — see
-    // `require_default_expr_panic_reports_caller_not_helpers_rs` above.
-    let site = panic_site(|| { reify_test_support::cell_value(&result, "Nope", "missing"); }); let expected_line = line!();
+    let site = panic_site(|| {
+        reify_test_support::cell_value(&result, "Nope", "missing");
+    });
 
+    // See `require_default_expr_panic_reports_caller_not_helpers_rs` above:
+    // file identity is the contract; the exact line is diagnostic-only.
     assert_eq!(
-        (site.file.as_str(), site.line),
-        (file!(), expected_line),
+        site.file.as_str(),
+        file!(),
         "cell_value's panic must attribute to the CALLER (this file), not to \
-         helpers.rs; reported {}:{}, expected {}:{expected_line}",
+         helpers.rs; reported {}:{}",
         site.file,
         site.line,
-        file!(),
     );
     assert!(
         site.message.contains("not found in eval result"),
