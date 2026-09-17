@@ -974,12 +974,12 @@ impl GitOps for RealGitOps {
         // test provides defense-in-depth against persistent spawn pressure.
         //
         // Residual transient risk: a spawn failure here returns false
-        // (not-ignored), potentially scanning a file that should be excluded
-        // and surfacing a spurious finding (exit 0→1).  That is the
-        // conservative / extra-finding direction — the opposite of the exit 1→0
-        // flake task #4800 targets — and caught by re-running.
+        // (not-ignored).  In the SWEEP that is the extra-finding direction and
+        // is caught by re-running.  At the PRE-DONE gate it INVERTS: the
+        // unfiltered entry stays in the declared set a blocking refusal is
+        // built from, so a hiccup refuses a legitimate done-flip.
         match crate::git_env::command(&self.project_root)
-            .args(["check-ignore", "--quiet", path])
+            .args(["check-ignore", "--quiet", "--", path])
             .output()
         {
             Ok(out) if out.status.code() == Some(0) => true,
