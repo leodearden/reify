@@ -23,8 +23,8 @@
 //! 19700 lines (156 root + 18385 across 56 module files + 1159 external) against
 //! CAP_LINES = 20000. The 16 modules that consumed the shared `tests/common/` helpers moved to
 //! the sibling `harness_occt_measurement.rs`, AND TOOK `mod common;` WITH THEM — so this root
-//! no longer declares `mod common;` at all and the 1159-line external include is charged to
-//! that unit alone (measured here: `external_files = 0`). The seam is mechanical, not
+//! no longer declares `mod common;` at all and `tests/common/mod.rs` is charged to that unit
+//! alone (measured here: `external_files = 0`). The seam is mechanical, not
 //! thematic: a test belongs HERE iff it consumes NONE of `tests/common/`, and
 //! `grep -rn 'common::' crates/reify-kernel-occt/tests/harness_occt/` must stay empty. The
 //! compiler enforces that direction — with no `mod common;` in this root, a new

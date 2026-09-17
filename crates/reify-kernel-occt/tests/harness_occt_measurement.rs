@@ -21,10 +21,12 @@
 //! moved even though they are the smaller side (16 modules against 40). The guard's own rule
 //! (a) remedy for an `external_lines`-bearing unit is to "move the including submodules — and
 //! the include with them — into their own harness": this root carries the bare `mod common;`,
-//! so the 1159-line external include is charged to THIS unit alone and `harness_occt` now
-//! measures `external_files = 0`. Had the non-consumers moved instead, both roots would have
-//! needed the include, and rustc really does compile a separate copy per test binary — 1159
-//! duplicated lines, counted twice under the C2 cap.
+//! so `tests/common/mod.rs` is charged to THIS unit alone and `harness_occt` now measures
+//! `external_files = 0`. Had the non-consumers moved instead, both roots would have needed
+//! the include, and rustc really does compile a separate copy per test binary — every line of
+//! it duplicated, and counted twice under the C2 cap. Read the live split off
+//! `harness_layout_unit_lines` on both roots rather than trusting a count quoted here; the
+//! invariant that does not drift is `external_files`, which must stay 0 here and 1 there.
 //!
 //! `mod common;` above is bare (no `#[path]`) — the ONE principled exception Section 6 of the
 //! kLOC guard encodes. `common` was deliberately NOT moved under a harness directory; it is a
