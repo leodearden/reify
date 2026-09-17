@@ -69,6 +69,11 @@ pub mod lifetime_wired;
 pub mod stmt_trailing_comment;
 pub mod comment_header_target;
 pub mod comment_header_probe;
+pub mod cfg_comment_target;
+pub mod cfg_comment_probe;
+pub mod cfg_marker_guard;
+pub mod cfg_string_target;
+pub mod cfg_string_probe;
 
 // Private driver — provides a genuine bare-call token for `wired`.
 fn drive_wired() -> i32 { wired() }
@@ -278,6 +283,57 @@ mod tests {
     #[test]
     fn t() { comment_header_target(); }
 }
+RUST
+
+# cfg_comment_probe.rs / cfg_comment_target.rs -- a `#[cfg(test)]` that is
+# only MENTIONED inside a `//` line comment, mirroring the real-world shape
+# at crates/reify-eval/src/geometry_ops.rs that hid `capability_kind`: an
+# `#[allow(dead_code)]` whose trailing comment explains the allow by naming
+# the attribute.  Pre-fix the mask-START test read RAW line text, so the
+# comment opened a cfg(test) mask, the skip loop landed on the `pub fn`
+# below it, and the brace walk masked that function whole -- hiding BOTH the
+# producer and the call it makes.  Two files (not one) for the same reason
+# the comment_header_* pair above needs two; see that fixture's comment on
+# `external = total - per_file[same_file]`.  No G-allow marker on either:
+# post-fix the probe is a genuine zero-caller orphan, and the target's only
+# caller is the probe.
+cat > "$FIXTURE/crates/reify-fixture/src/cfg_comment_target.rs" <<'RUST'
+pub fn cfg_comment_target() -> i32 { 11 }
+RUST
+
+cat > "$FIXTURE/crates/reify-fixture/src/cfg_comment_probe.rs" <<'RUST'
+#[allow(dead_code)] // used in #[cfg(test)] and by downstream tasks
+pub fn cfg_comment_probe() -> i32 { cfg_comment_target() }
+RUST
+
+# cfg_marker_guard.rs -- a `// G-allow:` marker whose own REASON TEXT names
+# `#[cfg(test)]`.  A marker that explains a cfg(test) interaction masked the
+# very fn it annotates, so the opt-out silently became a disappearance.
+# Asserted with assert_allowed rather than assert_not_orphan: only the
+# former separates "correctly allow-listed" from "invisible because a mask
+# swallowed it" (see that helper's own comment), which is exactly the
+# pre-fix/post-fix difference pinned here.  One file suffices -- membership
+# in allowed[] does not depend on any caller.
+cat > "$FIXTURE/crates/reify-fixture/src/cfg_marker_guard.rs" <<'RUST'
+// G-allow: hermetic fixture; marker text mentions #[cfg(test)]
+pub fn cfg_marker_guard() -> i32 { 1 }
+RUST
+
+# cfg_string_probe.rs / cfg_string_target.rs -- `#[cfg(test)]` inside a
+# STRING LITERAL, the other half of the corpus occurrences (a tool that
+# greps for the attribute naturally holds it as a pattern constant).
+# Pre-fix the const line started a mask whose skip loop landed on the `pub
+# fn` directly below and block-masked it, taking the cross-file call with
+# it.  The `pub const` is not itself a candidate (PUB_FN_RE requires `fn`),
+# so it contributes the trigger and nothing else.  Two files for the
+# cross-file accounting reason documented on the comment_header_* pair.
+cat > "$FIXTURE/crates/reify-fixture/src/cfg_string_target.rs" <<'RUST'
+pub fn cfg_string_target() -> i32 { 13 }
+RUST
+
+cat > "$FIXTURE/crates/reify-fixture/src/cfg_string_probe.rs" <<'RUST'
+pub const MARKER_PATTERN: &str = "#[cfg(test)]";
+pub fn cfg_string_probe() -> i32 { cfg_string_target() }
 RUST
 
 # ---------------------------------------------------------------------------
@@ -509,6 +565,32 @@ assert "after_nested_comment_guard (dangling { inside a nested block comment) is
 
 assert "comment_header_target (block comment between #[cfg(test)] and its item header) is flagged orphan, not hidden by the leaked test body" \
     assert_orphan comment_header_target
+
+# ---------------------------------------------------------------------------
+# cfg(test) attribute detection: literal/comment-aware mask START
+#
+# The section above pins what happens INSIDE a mask (where it ends); this one
+# pins whether a mask should have started at all.  In all three shapes the
+# attribute is merely MENTIONED -- in a line comment, in a marker's reason
+# text, in a string literal -- and none of them should open a mask.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- cfg(test) attribute detection: literal/comment-aware mask START ---"
+
+assert "cfg_comment_probe (#[cfg(test)] only mentioned in a line comment above it) is flagged orphan, not swallowed by a spurious mask" \
+    assert_orphan cfg_comment_probe
+
+assert "cfg_comment_target (its sole caller sits under that spurious mask) is not orphan" \
+    assert_not_orphan cfg_comment_target
+
+assert "cfg_marker_guard (G-allow reason text mentions #[cfg(test)]) is allow-listed, not swallowed" \
+    assert_allowed cfg_marker_guard
+
+assert "cfg_string_probe (#[cfg(test)] inside a string literal above it) is flagged orphan, not swallowed by a spurious mask" \
+    assert_orphan cfg_string_probe
+
+assert "cfg_string_target (its sole caller sits under that spurious mask) is not orphan" \
+    assert_not_orphan cfg_string_target
 
 # ---------------------------------------------------------------------------
 # EOF self-check: a genuinely unclosed cfg(test) mask warns on stderr
