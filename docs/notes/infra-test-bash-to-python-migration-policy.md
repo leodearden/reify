@@ -41,11 +41,8 @@ Teaching Sections F and G a Python-sibling shape is the prerequisite, and it is
 not a small edit: every rule in that grammar carries a measured
 false-admission rationale, and widening it carelessly produces **false greens
 in a deadline-capability check** — the opposite of what this policy is for. It
-needs its own RED and its own review. Filed as follow-up ticket
-`tkt_0RTQTESPHBBB84KKAJCHKJF6X0`, which owns that work and, once it lands,
-unblocks this arm. (No `#NNNN` is cited here on purpose: the curator assigns
-task ids asynchronously, so a number written today would be an orphaned cite
-under the TODO-citation convention.)
+needs its own RED and its own review. Owned by **task #7626** (filed as ticket
+`tkt_0RTQTESPHBBB84KKAJCHKJF6X0`); once it lands, this arm reopens.
 
 That follow-up also carries the port already written for
 `test_verify_env_ambient_isolation.sh`: 540 lines, 26/26 green, validated by
@@ -193,9 +190,9 @@ today** (11 tests, 4 failures, measured 2026-09-17). It rotted unobserved for
 exactly as long as it has existed. Task 7430's own plan mis-listed it as a
 working precedent, which is how it stayed invisible through a review — the
 lesson being that a plan's *enumerated lists* need re-deriving just as much as
-its numbers. Filed as follow-up ticket `tkt_0RTQTRYZHDGW40K1C73PAZJV6N`, which
-notes it must be fixed before it is wrapped: wrapping it while red would land a
-red gate member.
+its numbers. Owned by **task #7627** (filed as ticket
+`tkt_0RTQTRYZHDGW40K1C73PAZJV6N`), which records that it must be fixed before
+it is wrapped: wrapping it while red would land a red gate member.
 
 ### `run_all.sh` discovery is deliberately unchanged — and what that costs
 
@@ -212,10 +209,26 @@ That deferral has three measured costs. All are real; none was hidden:
 1. **Every Python member needs a hand-written wrapper.** Forgetting the
    manifest row is caught (the classification gate fails in both directions);
    forgetting the *wrapper* is caught by nothing.
-2. **The wall-clock upper-bound ratchet does not see Python.**
-   `test_no_new_wallclock_upper_bounds.sh` scans `"$dir"/*.sh` (`:107`), so a
-   wall-clock upper-bound assert written in Python is outside its scan scope. A
-   port therefore moves code out from under an active ratchet.
+2. **The wall-clock upper-bound ratchet does not see Python — and widening its
+   glob would not fix that.** `test_no_new_wallclock_upper_bounds.sh` is a
+   NEW-construct ratchet: it flags new absolute-wall-clock upper-bound asserts
+   so the flake class tasks 4841-4847 retired cannot silently return. It scans
+   `"$dir"/*.sh` (`:107`), so a Python member is out of scan scope — but its
+   detector is **bash-grammar-bound** as well, so scan scope is only half the
+   gap. A violation must satisfy three conditions on one logical line
+   (`:223-228`), and the upper-bound one is `_op_re='-l[et][[:space:]][0-9]'`
+   (`:78`) — a `test`-builtin operator. Measured against
+   `self.assertLess(elapsed, 5.0, "boot under 5s")`: the assert-wired and
+   time-lexeme conditions both match, the operator condition does not. The fix
+   is a **grammar extension** — a Python operator dialect — not a glob
+   widening; #7445 Part B is currently written as the latter.
+
+   **Interim rule, until #7445 lands: a new Python infra member must not assert
+   a wall-clock upper bound at all.** Arm 1 is ACTIVE and routes every new infra
+   test to Python, so this is the cost that bites TODAY rather than at the next
+   port: the door the ratchet exists to hold shut stands open for exactly the
+   population the policy now sends through it. A bound you cannot avoid belongs
+   in a `.sh` member until the grammar can see it.
 3. **The deadline-capable-suite derivation does not see Python.** Entry points
    are `_f_node_list` (`test_slot_timeout_marker.sh:1704`) and
    `F_EDGE_VERB_RE` (`:1743`). This is the cost that **defers Arm 2 outright**
@@ -223,17 +236,22 @@ That deferral has three measured costs. All are real; none was hidden:
    restated here.
 
 Costs 1 and 2 are **task #7445**'s charter (native `test_*.py` discovery, which
-retires the wrapper idiom, plus widening the wall-clock guard's scan scope).
-Cost 3 is owned by the follow-up ticket described under Arm 2.
+retires the wrapper idiom, plus teaching the wall-clock guard Python — read
+its Part B as the grammar extension cost 2 describes, not only the scan-scope
+widening it is worded as). Cost 3 is owned by **task #7626**, described under
+Arm 2.
 
-Cost 3 is the one to watch, and it is worth naming why it is different in kind
-from the other two. Costs 1 and 2 fail **loudly or not at all**: a missing
-manifest row reds the classification gate, and a wall-clock assert that escapes
-the ratchet is at worst an unratcheted assert that still runs. Cost 3 fails
-**silently and in the green direction** — the member keeps passing, the roster
-keeps deriving, and a deadline-capability guard simply stops covering one
-suite. A migration policy that traded loud coverage for quiet coverage loss
-would be worse than no policy, which is why Arm 2 waits.
+The three fail in different directions, which is what decides how each is held.
+Cost 1 fails **loudly**: a missing manifest row reds the classification gate in
+both directions. Cost 2 fails **quietly but non-silently** — an unratcheted
+wall-clock assert still runs and still asserts, so no coverage is lost; what is
+lost is the ratchet that stops a retired flake class from being re-admitted,
+which is why cost 2 is carried by the interim rule above rather than by a
+guard. Cost 3 is the one to watch: it fails **silently and in the green
+direction** — the member keeps passing, the roster keeps deriving, and a
+deadline-capability guard simply stops covering one suite. A migration policy
+that traded loud coverage for quiet coverage loss would be worse than no
+policy, which is why Arm 2 waits.
 
 ---
 
