@@ -151,7 +151,7 @@ STUB
     chmod +x "$FIX_DIR/bin/npm"
 
     FIX_RC=0
-    FIX_ARGV="$FIX_DIR/state/argv.log"
+    export FIX_ARGV="$FIX_DIR/state/argv.log"
     FIX_OUT="$FIX_DIR/state/out.log"
     : > "$FIX_OUT"
     if [ -x "$FIX_DIR/scripts/gui-vitest-run.sh" ]; then
@@ -162,7 +162,9 @@ STUB
     fi
 }
 
+# Exported so the `bash -c` assertions below (a fresh shell each) can call it.
 npm_invocations() { wc -l < "$FIX_ARGV" | tr -d ' '; }
+export -f npm_invocations
 
 TWO_SUITES='{"kind":"worker_rpc_timeout","suites":["vitest.setup.ts","src/__tests__/meshManager.attributeResize.test.ts"],"methods":["fetch"]}'
 
