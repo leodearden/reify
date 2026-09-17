@@ -180,6 +180,34 @@ assert "occt_plan_grep_or_dump: an oversize plan dump is bounded (fewer lines th
 assert "occt_plan_grep_or_dump: a bounded dump says it is truncated" \
     grep -qi 'truncat' "$_dumpf4"
 
+# (f3) THE BOUND MUST HOLD IN THE EXPORTED-FUNCTION CHILD TOO — the path case
+#      (b) already uses, and the one a `bash -c` caller gets. `bash -c` inherits
+#      the exported FUNCTION but NOT a plain shell variable, so a bound read
+#      from a source-time global is unset there: the comparison emits
+#      "integer expression expected" once per plan line and the plan dumps
+#      whole. (f2) cannot see that — it runs in THIS shell, where such a global
+#      is in scope — which is why the bound needs its own child-side pin.
+#      Measured before the fix: 208 dump lines + 201 stderr lines in the child
+#      against 128 and 0 in-shell, on the same plan.
+#      THE PLAN GOES THROUGH A FILE, NOT ARGV. Linux caps a SINGLE argv element
+#      at MAX_ARG_STRLEN (128 KiB) independently of the total ARG_MAX, and this
+#      fixture is ~218 KB, so passing it directly to `bash -c` fails E2BIG: the
+#      child never runs, its dump is EMPTY, and a "fewer lines than the plan"
+#      assert then passes for the wrong reason. Observed while writing this case.
+#      Comparing against (f2)'s in-shell dump rather than counting lines keeps it
+#      non-vacuous by construction — an absent child cannot match a 128-line dump
+#      — and states the real invariant: the bound is not path-dependent.
+_dumpf6="$(mktemp)"
+_errf6="$(mktemp)"
+_planf6="$(mktemp)"
+printf '%s' "$_OVERSIZE_PLAN" > "$_planf6"
+bash -c 'occt_plan_grep_or_dump "ABSENT_PATTERN_QQQ" "$(cat "$1")" /dev/null' \
+    _ "$_planf6" > "$_dumpf6" 2> "$_errf6" || true
+assert "occt_plan_grep_or_dump: exported-function child produces the SAME bounded dump as in-shell" \
+    cmp -s "$_dumpf4" "$_dumpf6"
+assert "occt_plan_grep_or_dump: exported-function child leaks NO stderr (bound is live, not inert)" \
+    test ! -s "$_errf6"
+
 # (g) RE-PIN (d) against the (f) enrichment: on a MATCH the helper emits NOTHING
 #     AT ALL. (d) only proves the errfile sentinel is absent; the pattern and the
 #     plan are now dumped too, and neither may leak into the passing path or
@@ -189,6 +217,6 @@ occt_plan_grep_or_dump 'plan' 'some plan text' "$_errf" > "$_dumpf5" 2>&1 || tru
 assert "occt_plan_grep_or_dump: match => emits nothing at all (dump enrichment stays off the passing path)" \
     test ! -s "$_dumpf5"
 
-rm -f "$_errf" "$_dumpf" "$_dumpf2" "$_dumpf3" "$_dumpf4" "$_dumpf5"
+rm -f "$_errf" "$_dumpf" "$_dumpf2" "$_dumpf3" "$_dumpf4" "$_dumpf5" "$_dumpf6" "$_errf6" "$_planf6"
 
 test_summary

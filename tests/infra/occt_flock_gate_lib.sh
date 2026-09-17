@@ -187,11 +187,20 @@ export -f occt_serial3_n2_serialized
 #   PATTERN  ERE, matched per-line (grep -qE semantics) by plan_match.
 #   PLAN     the multi-line captured plan string (from `--print-plan`).
 #   ERRFILE  the captured verify.sh stderr (a file path; may be empty).
-_OCCT_PLAN_DUMP_MAX_LINES="${_OCCT_PLAN_DUMP_MAX_LINES:-120}"
 occt_plan_grep_or_dump() {
     local pattern="$1"
     local plan="$2"
     local errfile="$3"
+    # The dump bound is read HERE rather than from a source-time global because
+    # this function is `export -f`'d: a `bash -c` child inherits the FUNCTION
+    # but not a plain shell variable, so a global bound is UNSET in exactly the
+    # path case (b) of the bounds file exercises. Unset, `[ "$_n" -gt ... ]`
+    # emits "integer expression expected" once per plan line and the bound goes
+    # inert (measured: 208 dump lines + 201 stderr errors in the child against
+    # 128 bounded in-shell, same 200-line plan). This is the same inherited-
+    # dependency class `export -f plan_match` closes in plan_capture_lib.sh.
+    # An exported override is still honoured, and the default lives in one place.
+    local _max="${_OCCT_PLAN_DUMP_MAX_LINES:-120}"
     if plan_match "$plan" "$pattern"; then
         return 0
     fi
@@ -201,8 +210,8 @@ occt_plan_grep_or_dump() {
     local _n=0 _line
     while IFS= read -r _line; do
         _n=$((_n + 1))
-        if [ "$_n" -gt "$_OCCT_PLAN_DUMP_MAX_LINES" ]; then
-            echo "(plan dump truncated at $_OCCT_PLAN_DUMP_MAX_LINES lines)"
+        if [ "$_n" -gt "$_max" ]; then
+            echo "(plan dump truncated at $_max lines)"
             break
         fi
         echo "$_line"
