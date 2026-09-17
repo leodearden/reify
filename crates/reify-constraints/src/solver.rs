@@ -3376,12 +3376,15 @@ mod resolution_problem_spread_pin {
     /// `resolution_problem_field_set_is_pinned_at_the_registry_spread_sites`,
     /// whose doc carries the full rationale.
     ///
-    /// SIX production sites in this crate build a `ResolutionProblem` with
+    /// SEVEN production sites in this crate build a `ResolutionProblem` with
     /// functional-update syntax, inheriting every field their literal does not
     /// name:
     ///
     /// - `solver.rs`: `solve_cost_robustness_tradeoff`'s `cost_problem`,
-    ///   `rob_problem` and `blend_problem` — the three directly above
+    ///   `rob_problem` and `blend_problem` — the three directly above — and
+    ///   `constraints_witness`'s `feasibility_problem`, which is NOT directly
+    ///   above: it sits ~2000 lines up, so the break still lands in this file
+    ///   but the reader has to go find that one
     /// - `registry.rs`: `solve_inner`'s `sub_problem`,
     ///   `solve_lexicographic`'s `stage_problem` and its degenerate
     ///   single-priority `ws_problem`
