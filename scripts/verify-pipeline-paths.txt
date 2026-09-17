@@ -224,4 +224,14 @@ scripts/check-compute-trampoline-registration.sh
 #   the guard's normalizer would make the row redundant and is the better fix;
 #   until then the derived set also carries a harmless unmatchable
 #   `../scripts/gui-vitest-run.sh` token alongside this row.
+#
+#   COMPLEMENTARY REGISTRATION STILL MISSING (7630 amendment pass): this row
+#   routes an EDIT to the full --scope all gate, but it does not make a
+#   task-scope verify select the runner's guard test. That needs a row in
+#   scripts/verify-pipeline-infra-tests.txt mapping scripts/gui-vitest-run.sh
+#   (and gui/vitest-worker-rpc-flake-reporter.ts, gui/vitest.config.ts) to
+#   tests/infra/test_gui_vitest_rpc_hardening.sh. That file is outside task
+#   7630's locked scope, so it is deferred to a follow-up rather than edited
+#   here; until it lands, an agent iterating on the runner at --scope branch
+#   discovers a break only at merge time.
 scripts/gui-vitest-run.sh
