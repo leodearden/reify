@@ -296,14 +296,19 @@ RUST
 # the comment_header_* pair above needs two; see that fixture's comment on
 # `external = total - per_file[same_file]`.  No G-allow marker on either:
 # post-fix the probe is a genuine zero-caller orphan, and the target's only
-# caller is the probe.
+# caller is the probe.  The probe's body is deliberately NOT a one-liner: the
+# caller-counting pass blanks each candidate's own DECLARATION line (so a name
+# cannot count itself as its own caller), which would swallow a call sharing
+# that line and leave the target an orphan no matter what the mask does.
 cat > "$FIXTURE/crates/reify-fixture/src/cfg_comment_target.rs" <<'RUST'
 pub fn cfg_comment_target() -> i32 { 11 }
 RUST
 
 cat > "$FIXTURE/crates/reify-fixture/src/cfg_comment_probe.rs" <<'RUST'
 #[allow(dead_code)] // used in #[cfg(test)] and by downstream tasks
-pub fn cfg_comment_probe() -> i32 { cfg_comment_target() }
+pub fn cfg_comment_probe() -> i32 {
+    cfg_comment_target()
+}
 RUST
 
 # cfg_marker_guard.rs -- a `// G-allow:` marker whose own REASON TEXT names
@@ -333,7 +338,9 @@ RUST
 
 cat > "$FIXTURE/crates/reify-fixture/src/cfg_string_probe.rs" <<'RUST'
 pub const MARKER_PATTERN: &str = "#[cfg(test)]";
-pub fn cfg_string_probe() -> i32 { cfg_string_target() }
+pub fn cfg_string_probe() -> i32 {
+    cfg_string_target()
+}
 RUST
 
 # ---------------------------------------------------------------------------
