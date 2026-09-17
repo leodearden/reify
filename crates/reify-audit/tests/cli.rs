@@ -1119,6 +1119,84 @@ mod cli {
         );
     }
 
+    /// End-to-end regression for the same defect
+    /// `real_git_ops::is_gitignored_leading_dash_entry_does_not_latch_later_probes`
+    /// pins at the seam: a `metadata.files` entry beginning with `-` must not
+    /// silence the gitignore filter for the rest of the run.
+    ///
+    /// Deliberately a REAL git repo, not the non-git tempdir the two
+    /// breadcrumb tests above use: there every `check-ignore` exits 128 and the
+    /// filter is legitimately unavailable, so the defect cannot show. Here git
+    /// is healthy, and the only thing that can make the second entry read as
+    /// "not ignored" is the FIRST entry having latched the instance.
+    ///
+    /// `files` is a Vec iterated in order, so the leading-dash entry is probed
+    /// first by construction.
+    #[test]
+    fn leading_dash_metadata_file_does_not_suppress_gitignored_finding() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+
+        // A committed .gitignore plus a genuinely-ignored build artefact.
+        std::fs::write(dir.join(".gitignore"), "build/generated.rs\n")
+            .expect("write .gitignore");
+        std::fs::create_dir_all(dir.join("build")).expect("create build dir");
+        std::fs::write(dir.join("build/generated.rs"), "// generated\n")
+            .expect("write generated.rs");
+
+        let tasks = vec![task_fixture_with_files(
+            "7113",
+            "in-progress",
+            None,
+            None,
+            &["--weird-file", "build/generated.rs"],
+        )];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+        git_init_commit_all(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "7113",
+                "--pre-done",
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --task 7113 --pre-done");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !stderr.contains("reify-audit: git check-ignore exited"),
+            "a leading-dash declared entry must be passed to git as a path, so a              HEALTHY repo emits no check-ignore breadcrumb at all; full stderr:\n{stderr}"
+        );
+
+        let findings = parse_findings_from_stderr(&stderr);
+        let gitignored = findings.iter().find(|f| {
+            f["pattern"].as_str() == Some("P5MetadataFilesGitignored")
+                && f["task_id"].as_str() == Some("7113")
+        });
+        assert!(
+            gitignored.is_some(),
+            "the genuinely-gitignored second entry must still be flagged after a \
+             leading-dash first entry; findings:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert!(
+            serde_json::to_string(gitignored.unwrap())
+                .expect("serialize finding")
+                .contains("build/generated.rs"),
+            "the finding must name the ignored entry; got:\n{:#}",
+            gitignored.unwrap()
+        );
+    }
+
     /// Duplicate flags follow last-wins semantics.
     ///
     /// The pre-done hook wrapper (`scripts/reify-audit-predone-wrapper.sh`)

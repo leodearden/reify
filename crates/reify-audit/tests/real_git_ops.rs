@@ -39,13 +39,13 @@ mod common;
 /// helper's assertion message says so — always diagnose against the clean
 /// parent run first.
 ///
-/// The floor of 11 is today's selection (10 real tests + this one). It exists
+/// The floor of 12 is today's selection (11 real tests + this one). It exists
 /// because libtest exits 0 on a zero-match filter; with an empty filter that
 /// cannot happen today, but the floor also catches a test being deleted or
 /// moved out of this binary, which would silently shrink the proof.
 #[test]
 fn real_git_ops_helpers_survive_ambient_hook_git_env() {
-    common::git_env::replay_self_under_hook_git_env(&[""], 11);
+    common::git_env::replay_self_under_hook_git_env(&[""], 12);
 }
 
 /// Run `git <args…>` against the repository at `dir` and assert it succeeded.
@@ -753,5 +753,56 @@ fn changed_paths_in_commit_reports_both_sides_of_a_rename() {
          un-landed branch-tip leg has the identical false-refusal defect; got: {:?}",
         tip_sha,
         tip,
+    );
+}
+
+// -----------------------------------------------------------------------
+// End-of-options separator: a declared path may begin with `-`
+// -----------------------------------------------------------------------
+
+/// Pin that a `metadata.files` entry beginning with `-` does not poison the
+/// gitignore probe for the rest of the process.
+///
+/// `metadata.files` is hand-authored and nothing normalises it, so an entry
+/// like `--weird-file` reaches `git check-ignore` verbatim. Without an
+/// end-of-options `--` separator git parses it as an option and exits 129 —
+/// neither 0 (ignored) nor 1 (not ignored) — which latches `RealGitOps`'s
+/// per-instance breadcrumb budget and short-circuits EVERY later probe on that
+/// instance. The CLI constructs exactly one `RealGitOps` per invocation, so
+/// that latch is process-wide: `P5MetadataFilesGitignored` goes silent for the
+/// rest of the run, and at the pre-done gate the unfiltered entry stays in the
+/// declared set that a blocking refusal is built from.
+///
+/// The SECOND probe is the load-bearing assertion. It reads the latch's
+/// user-visible consequence through the public seam rather than the private
+/// `AtomicBool`, so it would still fail if the suppression were reintroduced
+/// by some other mechanism.
+///
+/// Must be a real-git test: a mock returns whatever the fixture seeded, so it
+/// is structurally incapable of catching a defect in git's argv.
+#[test]
+fn is_gitignored_leading_dash_entry_does_not_latch_later_probes() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    git_init(root);
+    write_file(root, ".gitignore", "ignored.txt\n");
+    git_commit(root, "base commit");
+    write_file(root, "ignored.txt", "build artefact\n");
+
+    // ONE instance, as the CLI builds one per invocation — the latch is
+    // per-instance, so a fresh `RealGitOps` per probe would hide the defect.
+    let git = RealGitOps::new(root);
+
+    assert!(
+        !git.is_gitignored("--weird-file"),
+        "a declared entry beginning with `-` must reach git as a PATH (git \
+         answers \"not ignored\"), not as an unknown option",
+    );
+    assert!(
+        git.is_gitignored("ignored.txt"),
+        "a genuinely-gitignored path must still be reported as ignored AFTER a \
+         leading-dash entry was probed — otherwise the first entry latched the \
+         instance and silenced every later probe",
     );
 }
