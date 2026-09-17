@@ -2716,14 +2716,13 @@ fn objective_unconsumed_diagnostic(
 ///    [`SolveResult::Solved`]. γ's claim is *the solve succeeded and your
 ///    `minimize` was silently dropped*; on `Infeasible` / `NoProgress` that
 ///    claim is unwarranted, because the objective was not consumed for the
-///    trivial reason that nothing was solved at all. Added in review round 1
-///    (finding 2), which found three faults on the failure arms at once: the
-///    Error is a FALSE POSITIVE (the remedy text asks for constraints relating
-///    the cell "to the rest of the scope" that the source already declares), it
-///    DOUBLE-REPORTS on top of the failing solve's own diagnostic, and on the
-///    `NoProgress` arm it ESCALATES that diagnostic's severity from warning to
-///    Error on a model whose behaviour never changed. The gate lives here, once,
-///    rather than at the two call sites, so neither site can drift from it.
+///    trivial reason that nothing was solved at all. Three faults at once on
+///    the failure arms: the Error is a FALSE POSITIVE (the remedy asks for
+///    constraints relating the cell "to the rest of the scope" that the source
+///    already declares), it DOUBLE-REPORTS on top of the failing solve's own
+///    diagnostic, and on `NoProgress` it ESCALATES that diagnostic from warning
+///    to Error on a model whose behaviour never changed. The gate lives here,
+///    once, rather than at the two call sites, so neither can drift from it.
 /// 1. `declared.is_some()` — a **user-declared** objective. A synthesised
 ///    Chebyshev-centre scope has `template.objective == None` at compile time
 ///    (it is recorded in `centrality_synthesized_scopes` instead), so this is

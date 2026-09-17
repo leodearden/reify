@@ -135,23 +135,14 @@ fn declared_cells(template: &TopologyTemplate) -> impl Iterator<Item = &ValueCel
 /// the bare `auto` node falls through to the expression fallback, yielding a
 /// `Literal(Value::Undef)` default. The author's `auto` is gone by the time
 /// this pass runs, and obligation (5) (`decl.kind.is_auto()`) walks past it.
+/// Both reachable spellings (`= auto`, `= auto(free)`) lower to that same
+/// residue, and the default's `result_type` is a dimensionless `Scalar` rather
+/// than `Type::Error`, so the `Literal(Undef)` payload is the only
+/// discriminator available.
 ///
-/// MEASURED, not inferred. Both reachable spellings lower identically —
-/// `let m : Real = auto` and `let m : Real = auto(free)` each produce
-/// `kind=Let, default_expr=Literal(Undef)` — and there is no third spelling to
-/// miss: `let m : Real = auto * 2.0` is rejected by the parser
-/// ("invalid guarded block"), so `auto` cannot reach a guarded let buried
-/// inside a larger expression. The default's `result_type` is a dimensionless
-/// `Scalar`, **not** `Type::Error`, so a poison-type test would not find it;
-/// the `Literal(Undef)` payload is the discriminator.
-///
-/// This is deliberately the NARROW test. The alternative — refusing to conclude
-/// on any template with a non-empty `guarded_groups` — would silence the rule
-/// for every guarded template including the ones it judges correctly. Measured
-/// cost of the narrow choice being wrong is bounded: across the 261-file
-/// `examples/` corpus exactly one file (`integration_full_v01.ri`, its
-/// `Assembly`) has both a guard block and an objective, and none of the
-/// rule's three existing positives is guarded at all.
+/// Deliberately the NARROW test: refusing to conclude on any template with a
+/// non-empty `guarded_groups` would silence the rule for every guarded
+/// template, including the ones it judges correctly.
 ///
 /// **This bail is removable**, and that is the point of naming its cause here:
 /// it exists only because the `MemberDecl::Let` arm skips `extract_auto_free`.
@@ -220,15 +211,13 @@ fn declares_any_auto(template: &TopologyTemplate) -> bool {
 /// whose objective reaches nothing in its own scope may still be governing
 /// something entirely real one level down.
 ///
-/// **This is deliberately a structural question, not a semantic one, and it
-/// must stay that way.** It asks only whether inheritance is POSSIBLE. It does
-/// not — and must not — try to work out which objective actually wins at eval
-/// time; that is `governing_objective`'s job in `reify-eval`, it depends on
+/// **Structural, not semantic, and it must stay that way.** It asks only
+/// whether inheritance is POSSIBLE. Working out which objective actually wins
+/// at eval time is `governing_objective`'s job in `reify-eval`; it needs
 /// runtime scope resolution the compiler does not have, and a second
-/// implementation of it here would be a lockstep duplicate that drifts. A later
-/// reader tempted to "improve" this into a real inheritance resolver should
-/// stop: the extra precision buys nothing, because the only thing this caller
-/// does with a `true` is stay quiet.
+/// implementation here would be a lockstep duplicate that drifts. The extra
+/// precision would buy nothing anyway — the only thing this caller does with a
+/// `true` is stay quiet.
 ///
 /// The walk:
 /// - descends `sub_components`, resolving each `structure_name` through
@@ -250,13 +239,12 @@ fn declares_any_auto(template: &TopologyTemplate) -> bool {
 ///   terminates. Recursion is detected elsewhere ([`phase_recursion_detection`])
 ///   but this walk must not assume that ran, or that it ran first.
 ///
-/// The narrow walk is preferred over the coarse alternative — "never conclude
-/// about a template that has any `sub_components`" — because the coarse form
-/// silences the rule for every composite template in the language, which is
-/// most of the interesting ones.
+/// Preferred over the coarse alternative — "never conclude about a template
+/// that has any `sub_components`" — which would silence the rule for every
+/// composite template in the language.
 /// `inert_objective_with_subs_that_contain_no_autos_still_errors` in
-/// `objective_conflict.rs` is what keeps the two distinguishable: it goes red
-/// under the coarse bail and green under this one.
+/// `objective_conflict.rs` keeps the two distinguishable: it reds under the
+/// coarse bail and passes under this one.
 fn objective_inheritance_possible(
     template: &TopologyTemplate,
     all_templates: &[TopologyTemplate],
@@ -368,9 +356,8 @@ fn auto_override_possible(
 /// legal code, whereas a missed one merely leaves today's silence in place, so
 /// the asymmetry is deliberate (PRD §3 decision 5).
 ///
-/// The proof obligations, in order. Each of the five primed/0-numbered ones was
-/// added by review round 1, and each names the route by which the unprimed list
-/// alone reported legal code:
+/// The proof obligations, in order. The primed and 0-numbered ones each name a
+/// route by which the unprimed list alone reported legal code:
 ///
 /// - **0.** the template is **module-private**. An exported template's rescuing
 ///   `auto` override may live in a module that imports this one — possibly one
@@ -407,72 +394,42 @@ fn auto_override_possible(
 /// which it could still be governing something is open.* The diagnostic's
 /// wording tracks that narrower claim.
 ///
-/// `all_templates` is the **module currently being compiled**, `template`
-/// included — and nothing else. It is `ctx.templates`, which is initialised
-/// empty (`ctx.rs`'s ctor: "no prelude content is seeded here"); imported
-/// templates live in borrow-only prelude registries during compilation and are
-/// appended to the finished `CompiledModule` only afterwards, by
-/// `merge_imported_pub_templates`. An earlier revision of this doc claimed
-/// `all_templates` "is the whole module", which read as *the whole program*
-/// and was the false premise behind review round 1's finding 1.
+/// **`all_templates` is the module currently being compiled and nothing else.**
+/// It is `ctx.templates`, initialised empty; imported templates live in
+/// borrow-only prelude registries during compilation and are appended to the
+/// finished `CompiledModule` afterwards by `merge_imported_pub_templates`.
+/// Obligations 0 and 0′ are what that boundary costs.
 ///
-/// Obligation 0 exists because of that boundary. Obligation 6 —
-/// [`auto_override_possible`] — is the only thing that can rescue a template
-/// whose own cells are all non-`auto`, and it can only see overrides declared
-/// in `all_templates`. For a `pub` template the rescuing override may live in
-/// a module that imports this one, and the set of such modules is unknowable
-/// here **in principle**, not merely unavailable: a consumer may not have been
-/// written yet. Threading the prelude does not help, because a prelude holds
-/// the modules this one IMPORTS (upstream) and the override is DOWNSTREAM. So
-/// for an exported template no positive proof of inertness exists, and PRD §3
-/// decision 5 makes that silence.
+/// Obligation 6 ([`auto_override_possible`]) is the only thing that can rescue
+/// a template whose own cells are all non-`auto`, and it sees only overrides
+/// declared in `all_templates`. For a `pub` template the rescuing override may
+/// live in a module that imports this one — unknowable here **in principle**,
+/// not merely unavailable, since a consumer may not have been written yet.
+/// Threading the prelude does not help: a prelude holds the modules this one
+/// IMPORTS, and the override is downstream.
 ///
-/// The measured repro: `pub structure def Widget { param k : Real = 3.0
-/// constraint k > 0.0  minimize k }` in `child.ri`, made governing by
-/// `sub w : Widget { k = auto }` in a downstream `main.ri`, drew
-/// `E_OBJECTIVE_INERT` on legal code.
+/// Obligation 0′ closes a second route to the same mistake.
+/// `phase_auto_type_param_resolution` clones an imported generic into
+/// `ctx.templates` without substituting `objective`, so the clone carries the
+/// *defining* module's `minimize` while being judged against the *importing*
+/// module's templates, at a span indexing the other module's source. Obligation
+/// 0 does not subsume it: that phase's registry is built from the prelude with
+/// no visibility filter, so a module-PRIVATE imported generic is monomorphed
+/// the same way and its clone lands `Private`. Hence
+/// `imported_template_names`: a template whose name resolves to a prelude
+/// template — directly, or through [`names_same_structure`]'s `Generic$Arg`
+/// split — is refused, and so is a local template that merely SHADOWS an
+/// imported name.
 ///
-/// Obligation 0′ closes a SECOND route to the same mistake, one that
-/// obligation 0 does **not** subsume. `phase_auto_type_param_resolution` clones
-/// an imported generic into `ctx.templates` (`let mut mono = target.clone();`)
-/// without substituting `objective`, so the clone carries the *defining*
-/// module's `minimize` — judged here against the *importing* module's
-/// templates, and anchored at a span that indexes into the other module's
-/// source text.
-///
-/// It would be tempting to argue obligation 0 already covers this, since the
-/// clone inherits the target's `visibility` verbatim (the clone site reassigns
-/// `name`, `type_params` and `content_hash`, and nothing else), so a clone of a
-/// `pub` generic is `Public`. MEASURED, and false: a **module-private**
-/// imported generic is monomorphed all the same. Compiling
-/// `structure def Bearing<T: Seal> { param bore : Real = 25.0  minimize bore }`
-/// — no `pub` — in `child.ri`, against a `main.ri` whose only reference is
-/// `sub b = Bearing<auto: Seal>()`, puts `Bearing$ORingSeal` in main's
-/// templates with `visibility=Private`, and `E_OBJECTIVE_INERT` fires.
-/// `phase_auto_type_param_resolution` builds its `template_registry` from
-/// `prelude.iter().flat_map(|m| m.templates)` with no visibility filter, which
-/// is what lets a private target through. (That the private target is
-/// reachable across the import boundary at all looks like a separate defect;
-/// it is not this function's to fix, and obligation 0′ does not depend on
-/// whether it is one.)
-///
-/// So `imported_template_names` is threaded in and a template whose name
-/// resolves to a prelude template — directly, or through
-/// [`names_same_structure`]'s `Generic$Arg` split — is refused. A local
-/// template that merely SHADOWS an imported name is refused too; that is
-/// silence on a legal program, which is the side of the asymmetry this rule is
-/// built to fall on.
-///
-/// The UPSTREAM direction needs no such thread, and this is a proof rather than
+/// The UPSTREAM direction needs no such thread, and that is a proof rather than
 /// an omission. `auto_override_possible` can miss a rescuing override only if
 /// some template outside `all_templates` declares a `sub` of `template`. For a
-/// template that survives obligations 0 and 0′ — module-private, and not a
-/// clone of anything imported — there are exactly three places such a `sub`
-/// could live: this module (that IS `all_templates`); a downstream module
-/// (which cannot name it, since `merge_imported_pub_templates` exports only
+/// template that survives obligations 0 and 0′ there are exactly three places
+/// such a `sub` could live: this module (that IS `all_templates`); a downstream
+/// module (which cannot name it — `merge_imported_pub_templates` exports only
 /// `Visibility::Public` templates); or an upstream prelude module (which would
 /// have to import this one, and `ModuleDag`'s `in_progress` DFS rejects the
-/// resulting import cycle). The set is therefore closed.
+/// resulting cycle). The set is closed.
 pub(crate) fn inert_objective_finding(
     template: &TopologyTemplate,
     all_templates: &[TopologyTemplate],
@@ -481,7 +438,7 @@ pub(crate) fn inert_objective_finding(
     // (0) module-private only. `all_templates` spans this module alone, so an
     // exported template's rescuing `auto` override — which may live in a module
     // that imports this one, or in one nobody has written yet — is invisible
-    // here by construction. Review round 1, finding 1.
+    // here by construction.
     if template.visibility == Visibility::Public {
         return None;
     }
@@ -539,9 +496,9 @@ pub(crate) fn inert_objective_finding(
         }
         // (5′) the author wrote `auto`, but a `where`-guarded `let` lost it in
         // lowering. Judging the residue would print "`m` … is never `auto`"
-        // over a source line that says `let m = auto`. Review round 1,
-        // finding 4; see `is_auto_shaped_guarded_let` for the measurement and
-        // for the condition under which this bail can be deleted.
+        // over a source line that says `let m = auto`. See
+        // `is_auto_shaped_guarded_let` for the shape and for the condition
+        // under which this bail can be deleted.
         if guarded_ids.contains(&id) && is_auto_shaped_guarded_let(decl) {
             return None;
         }
@@ -560,7 +517,7 @@ pub(crate) fn inert_objective_finding(
 
     // (7) — the objective may not be for this scope at all. Under F-inherit it
     // attaches to an objective-less descendant and governs the autos there,
-    // with no auto needed in this template. Review round 1, finding 5.
+    // with no auto needed in this template.
     if objective_inheritance_possible(template, all_templates) {
         return None;
     }
@@ -675,24 +632,18 @@ pub(crate) fn phase_inert_objective_check(
             "one of "
         };
         let remedy = render(&finding.remedy_cells);
-        // Only the verb inflects — the subject phrase is the same either way,
-        // so binding it twice just invited a reader to hunt for a difference
-        // that is not there (#5417 step-15 tidy).
+        // Only the verb inflects; the subject phrase is the same either way.
         let verb = if finding.never_auto_cells.len() == 1 {
             "is"
         } else {
             "are"
         };
 
-        // WORDING. The first draft opened "cannot govern anything", and every
-        // false positive review round 1 found made that sentence untrue: the
-        // objective was governing a downstream override, an imported generic's
-        // cells, an auto the guarded-let lowering had eaten, or a descendant's
-        // autos by inheritance. The claim here is now exactly the one the
-        // obligations actually establish — nothing this objective reads is ever
-        // `auto` *within this template* — so a reader who does know better is
-        // being told something true and narrow rather than something confident
-        // and wrong. See `inert_objective_finding`'s obligation list.
+        // WORDING. The claim is exactly the one the obligations establish —
+        // nothing this objective reads is ever `auto` *within this template* —
+        // and deliberately not the broader "cannot govern anything", which
+        // obligations 0, 0′ and 7 exist precisely because this pass cannot
+        // decide. See `inert_objective_finding`'s obligation list.
         findings.push(
             Diagnostic::error(format!(
                 "E_OBJECTIVE_INERT: the `{sense}` declared in `{name}` reads only \
@@ -919,7 +870,7 @@ mod inert_objective_tests {
     // ── OBLIGATION 0: visibility ────────────────────────────────────────────
 
     /// The byte-identical template that IS reported when module-private must go
-    /// silent the moment it is `pub`. Obligation 0, review round 1 finding 1.
+    /// silent the moment it is `pub`. Obligation 0.
     ///
     /// The pair is deliberately a one-field perturbation of
     /// `objective_over_literal_param_with_no_autos_is_inert` above: nothing
@@ -1537,8 +1488,7 @@ mod inert_objective_tests {
     /// carries an objective and so prunes — would answer "inheritance
     /// impossible" and report a FALSE `E_OBJECTIVE_INERT`, while the real
     /// monomorph `G$Seal` sits there objective-less with an auto of its own,
-    /// inheriting the objective and being governed by it. Review round 3,
-    /// finding 8.
+    /// inheriting the objective and being governed by it.
     ///
     /// `G` is placed FIRST in `all_templates` deliberately: that is the order
     /// in which a first-match walk gets the wrong answer.
