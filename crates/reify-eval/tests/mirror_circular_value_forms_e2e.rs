@@ -749,7 +749,9 @@ fn mirror_value_form_bare_plane_origin_drops_op_with_error() {
         rejection.message
     );
     assert!(
-        rejection.message.contains("plane_yz: offset argument expects Length"),
+        rejection
+            .message
+            .contains("plane_yz: offset argument expects Length"),
         "the rejection must be the PRODUCER's, naming the builtin and the `offset` \
          argument the author wrote; got: {}",
         rejection.message

@@ -1297,6 +1297,26 @@ fn construct_point_or_vector(args: &[Value], expected_n: usize, is_point: bool) 
 /// inputs, never LENGTH. `decode_plane`'s consumer-side `ox`/`oy`/`oz` gate
 /// (task δ / 5745) therefore stays live and reachable through them, which is why
 /// ε shuts R11 at both ends rather than retiring either.
+///
+/// MIGRATION FOOTPRINT, MEASURED on this leaf's own tree (C6 forbids asserting a
+/// workspace-wide count, so this is an enumeration of what ε broke, not a claim
+/// about the whole corpus). FIVE test call sites had to change, all in this diff:
+/// the two pre-doctrine locking rows in this file's `mod tests` (both FLIPPED —
+/// the fix, not a regression), `mirror_value_form_bare_plane_origin_drops_op_with_error`
+/// in reify-eval's value-form e2e (re-anchored on the producer, since the verdict
+/// is unchanged and only the SPEAKER moved), and reify-cli's two `cli_check` rows
+/// (re-anchored on the post-ε compile-gate error, with their load-bearing D2
+/// dedup pin re-verified by measurement). The axis twin of the e2e row,
+/// `circular_pattern_value_form_bare_axis_origin_drops_op_with_error`, was run
+/// and is green UNCHANGED.
+///
+/// The `.ri` corpus needed ZERO source migrations. Nine datum call sites predate
+/// ε: the two deliberately BARE ones in
+/// `reify-cli/tests/fixtures/mirror_bare_origin{,_purpose}.ri` stay bare and are
+/// now tests OF this gate (D7 — only their measured-baseline headers changed),
+/// and the other seven were ALREADY dimensioned — five in
+/// `reify-compiler/tests/fixtures/stdlib_geometry_ops_smoke.ri` and two in
+/// `examples/`, so the examples corpus needed no edit at all.
 fn make_plane(args: &[Value], offset_index: usize, normal: [f64; 3]) -> Value {
     if args.len() != 1 {
         return Value::Undef;
@@ -3397,11 +3417,7 @@ mod tests {
         assert_eq!(*o, origin, "a LENGTH origin must round-trip verbatim");
         assert_eq!(
             *direction,
-            Value::Vector(vec![
-                Value::Real(1.0),
-                Value::Real(0.0),
-                Value::Real(0.0)
-            ]),
+            Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]),
             "the synthesized direction is a unit vector and stays dimensionless (D3)"
         );
     }
@@ -4015,11 +4031,7 @@ mod tests {
         );
         assert_eq!(
             *normal,
-            Value::Vector(vec![
-                Value::Real(0.0),
-                Value::Real(0.0),
-                Value::Real(1.0)
-            ]),
+            Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
             "the synthesized normal is a unit vector and stays dimensionless (D3)"
         );
     }
@@ -7180,7 +7192,11 @@ mod tests {
                     Some(reify_core::DiagnosticCode::DimensionedArgRejected),
                     "{diag:?}"
                 );
-                assert_eq!(diag.message, rejection.message(name, "ox/oy/oz"), "{diag:?}");
+                assert_eq!(
+                    diag.message,
+                    rejection.message(name, "ox/oy/oz"),
+                    "{diag:?}"
+                );
             }
         }
     }
@@ -7213,7 +7229,11 @@ mod tests {
                 "plane_xy",
                 vec![Value::Real(0.0), Value::Real(0.0)],
             ),
-            ("plane: Undef argument (D10)", "plane_xy", vec![Value::Undef]),
+            (
+                "plane: Undef argument (D10)",
+                "plane_xy",
+                vec![Value::Undef],
+            ),
             (
                 "plane: non-numeric argument",
                 "plane_xy",
