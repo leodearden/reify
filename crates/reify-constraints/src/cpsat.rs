@@ -1126,23 +1126,17 @@ impl CpSatSolver {
         // dependency cannot accidentally acquire a second input. A shorter list
         // is not a shorter search (PRD2 §4.2).
         //
-        // `IterationLimit` for the truncated case is a deliberate, imperfect
-        // choice. It is the ONLY existing `BestFoundReason` variant that gates
-        // the engine's `W_SOLVER_OPTIMALITY_UNPROVEN` warning — engine_eval.rs
-        // (6127, 7539) matches on it explicitly, and `ConvergedWithinBudget` /
-        // `Unreported` do NOT fire the warning. Picking either of those would
-        // make a truncated enumeration SILENT, which is precisely what D5
-        // forbids. The cost is that `describe()` says "iteration limit reached;
-        // derivative-free solver cannot prove global optimality", which is
-        // inaccurate for an enumeration cap on an exact solver. An honest
-        // `BestFoundReason::EnumerationBudget` variant plus the two engine gate
-        // arms is task #6553 — cross-crate (reify-ir + reify-eval), outside
-        // this task's module scope.
+        // A truncated enumeration reports `EnumerationBudget`, which says what
+        // actually happened: an exact search stopped at its node cap with part of
+        // the discrete space never visited. The engine's
+        // `W_SOLVER_OPTIMALITY_UNPROVEN` gate fires on that reason, so the
+        // truncation stays LOUD as D5 requires, and the account the user reads is
+        // the enumeration's own.
         let optimality = if complete {
             OptimalityStatus::ProvenOptimal
         } else {
             OptimalityStatus::BestFound {
-                reason: BestFoundReason::IterationLimit,
+                reason: BestFoundReason::EnumerationBudget,
             }
         };
 
