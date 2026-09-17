@@ -5770,47 +5770,25 @@ mod tests {
     // (`reify-eval/src/engine_eval.rs`), mirroring the ObjectiveConflict and
     // ObjectiveDimensionIncoherent test pairs above.
 
-    /// `DiagnosticCode::ObjectiveInert` round-trips through
-    /// `Diagnostic::error(...).with_code(...)`, reports
-    /// `Some(DiagnosticCode::ObjectiveInert)`, carries `Severity::Error`
-    /// (the `E_*` → Error convention), and Debug-prints the variant name.
+    /// Each γ code survives `Diagnostic::error(...).with_code(...)` and is
+    /// reported back as itself — the one variant-specific thing construction
+    /// can get wrong, and what catches an enum reorganisation that drops or
+    /// collapses a variant.
+    ///
+    /// Deliberately NOT asserted, following the leaner `#4791` block below
+    /// rather than the older `ObjectiveConflict` pair above: that
+    /// `Diagnostic::error` yields `Severity::Error` (true of every code, and
+    /// covered by the severity tests), and that `{:?}` over a
+    /// `#[derive(Debug)]` fieldless enum prints the variant name (true of every
+    /// variant, and a property of the derive rather than of γ). Both held for
+    /// ANY code, so neither could ever red for a γ-specific reason.
     #[test]
-    fn diagnostic_code_objective_inert_with_code_round_trips() {
-        use super::Severity;
-        let d = Diagnostic::error("x").with_code(DiagnosticCode::ObjectiveInert);
-        assert_eq!(d.code, Some(DiagnosticCode::ObjectiveInert));
-        assert_eq!(d.severity, Severity::Error);
-        assert!(format!("{:?}", d.code).contains("ObjectiveInert"));
-    }
-
-    /// `DiagnosticCode::ObjectiveUnconsumed` round-trips through
-    /// `Diagnostic::error(...).with_code(...)`, reports
-    /// `Some(DiagnosticCode::ObjectiveUnconsumed)`, carries `Severity::Error`
-    /// (the `E_*` → Error convention), and Debug-prints the variant name.
-    #[test]
-    fn diagnostic_code_objective_unconsumed_with_code_round_trips() {
-        use super::Severity;
-        let d = Diagnostic::error("x").with_code(DiagnosticCode::ObjectiveUnconsumed);
-        assert_eq!(d.code, Some(DiagnosticCode::ObjectiveUnconsumed));
-        assert_eq!(d.severity, Severity::Error);
-        assert!(format!("{:?}", d.code).contains("ObjectiveUnconsumed"));
-    }
-
-    /// The two γ codes are distinct from each other and from the neighbouring
-    /// objective-family codes, so a consumer can route on them independently
-    /// (a future enum reorganisation that collapses them is caught here).
-    #[test]
-    fn diagnostic_code_objective_gamma_variants_are_distinct() {
-        assert_ne!(
+    fn diagnostic_code_objective_gamma_variants_round_trip() {
+        for code in [
             DiagnosticCode::ObjectiveInert,
-            DiagnosticCode::ObjectiveUnconsumed
-        );
-        for other in [
-            DiagnosticCode::ObjectiveConflict,
-            DiagnosticCode::ObjectiveDimensionIncoherent,
+            DiagnosticCode::ObjectiveUnconsumed,
         ] {
-            assert_ne!(DiagnosticCode::ObjectiveInert, other);
-            assert_ne!(DiagnosticCode::ObjectiveUnconsumed, other);
+            assert_eq!(Diagnostic::error("x").with_code(code).code, Some(code));
         }
     }
 

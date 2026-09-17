@@ -965,7 +965,7 @@ structure Root { sub a : Assembly {} }
 // line discards the declared type annotation in favour of the fallback's
 // dimensionless scalar. That is a pre-existing defect at auto binding site 3 of
 // the four in `examples/auto_binding_sites.ri`, filed as its own follow-up
-// (ticket tkt_0RSZ2Y7HC64HCWNVKR2BGSVKBR, spawned from #5417). What #5417 owes
+// (task #6888, spawned from #5417). What #5417 owes
 // here is only the obligation it created: its new compile Error must not fire
 // on the shape.
 
