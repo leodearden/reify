@@ -11,6 +11,7 @@
 #include <numeric>
 #include <set>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 // OCCT primitives
@@ -172,6 +173,7 @@
 // exactly the entity it was written to check.
 #include <Interface_InterfaceModel.hxx>
 #include <StepRepr_GlobalUnitAssignedContext.hxx>
+#include <StepRepr_RepresentationContext.hxx>
 #include <StepGeom_GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx.hxx>
 #include <StepGeom_GeometricRepresentationContextAndGlobalUnitAssignedContext.hxx>
 #include <StepBasic_NamedUnit.hxx>
@@ -6834,6 +6836,17 @@ struct StepPlaneAngleAuditCounts {
 /// the one fixture that test exports, so the completeness has to live here.
 Handle(StepRepr_GlobalUnitAssignedContext) step_unit_assigned_context(
     const Handle(Standard_Transient)& entity) {
+    // ONE discriminating downcast ahead of the three spellings below: every
+    // one of them derives from `StepRepr_RepresentationContext` (verified in
+    // the OCCT 7.8 headers — including `StepRepr_GlobalUnitAssignedContext`
+    // itself), while a transferred model is overwhelmingly CARTESIAN_POINT /
+    // ADVANCED_FACE / EDGE_CURVE entities that are none of them. This walk
+    // runs on EVERY production export over hundreds of thousands of Part-21
+    // entities on a large assembly, so the common case must cost one type
+    // walk rather than three.
+    if (Handle(StepRepr_RepresentationContext)::DownCast(entity).IsNull()) {
+        return Handle(StepRepr_GlobalUnitAssignedContext)();
+    }
     Handle(StepRepr_GlobalUnitAssignedContext) direct =
         Handle(StepRepr_GlobalUnitAssignedContext)::DownCast(entity);
     if (!direct.IsNull()) {
@@ -6944,6 +6957,13 @@ enum class StepAngleUnitKind {
 /// description of what was observed, for the refusal diagnostic.
 StepAngleUnitKind classify_step_angle_unit(const Handle(Standard_Transient)& entity,
                                            std::string* detail) {
+    // Same discriminator-first shape as `step_unit_assigned_context`, for the
+    // same always-on cost: all three angular forms below derive from
+    // `StepBasic_NamedUnit`, and nearly every entity in a model derives from
+    // none of them.
+    if (Handle(StepBasic_NamedUnit)::DownCast(entity).IsNull()) {
+        return StepAngleUnitKind::NotAngular;
+    }
     Handle(StepBasic_SiUnitAndPlaneAngleUnit) si =
         Handle(StepBasic_SiUnitAndPlaneAngleUnit)::DownCast(entity);
     if (!si.IsNull()) {
@@ -7123,7 +7143,7 @@ StepPlaneAngleAuditCounts audit_step_plane_angle_units(
         StepAngleUnitKind kind = StepAngleUnitKind::NotAngular;
         std::string detail;
     };
-    std::set<const Standard_Transient*> referenced;
+    std::unordered_set<const Standard_Transient*> referenced;
     std::vector<AngularCandidate> candidates;
     for (Standard_Integer i = 1; i <= n; ++i) {
         const Handle(Standard_Transient)& entity = model->Value(i);
