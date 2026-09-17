@@ -307,11 +307,37 @@ pub(crate) fn geometry_cell_realization_links(
 /// - Inverting it lets the edge-extraction code look up "which realization
 ///   backs cell X?" in O(1) during the value-cells and constraints loops,
 ///   without re-iterating the realizations map per cell.
+///
+/// **Conservative miss on ambiguity.** A cell backed by MORE THAN ONE
+/// realization is dropped from the map entirely, so lookups answer "no backing
+/// realization" rather than naming an arbitrary one. This is single-valued
+/// resolution feeding edges that are then treated as fact: for a geometry-list
+/// cell, whose elements each emit their own sibling realization, keeping the
+/// last link would make ONE element stand in for the whole list. A wrong edge
+/// is strictly worse than a missing one — a missing edge costs a conservative
+/// re-evaluation, a wrong one silently reports the wrong upstream. The sibling
+/// [`member_realization_index`] already applies exactly this policy to the same
+/// shape (>1 realization per member name → [`resolve_sub_ref`] returns `None`).
+///
+/// Callers that need EVERY backing realization of a cell (rather than a single
+/// one) must use the accumulating [`geometry_cell_realization_reads`], which
+/// keeps the full list instead of dropping the ambiguous key.
 fn realization_by_cell(
     graph: &crate::graph::EvaluationGraph,
 ) -> HashMap<ValueCellId, RealizationNodeId> {
-    geometry_cell_realization_links(graph)
-        .map(|(rid, cell)| (cell, rid))
+    // Two passes through one map: `Some(rid)` marks a uniquely-backed cell,
+    // `None` marks one seen more than once (ambiguous), then the `None`s are
+    // filtered away.
+    let mut unique: HashMap<ValueCellId, Option<RealizationNodeId>> = HashMap::new();
+    for (rid, cell) in geometry_cell_realization_links(graph) {
+        unique
+            .entry(cell)
+            .and_modify(|slot| *slot = None)
+            .or_insert(Some(rid));
+    }
+    unique
+        .into_iter()
+        .filter_map(|(cell, rid)| rid.map(|rid| (cell, rid)))
         .collect()
 }
 
