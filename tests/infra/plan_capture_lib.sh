@@ -57,8 +57,8 @@ export -f plan_match
 # Returns 0 iff <dump> is structurally whole, which takes THREE conditions —
 # both of the markers verify.sh unconditionally emits in every --print-plan
 # invocation, AND at least one non-empty line after the second one:
-#   "# verify.sh plan"   — header (verify.sh:1099)
-#   "# --- commands"     — commands-block marker (verify.sh:1104)
+#   "# verify.sh plan"   — header (verify.sh:3636)
+#   "# --- commands"     — commands-block marker (verify.sh:3661)
 #   <a non-empty line after the commands marker>
 #
 # WHY THE MARKER PAIR ALONE IS INSUFFICIENT: both markers sit in the plan
@@ -93,7 +93,7 @@ plan_capture_complete() {
 # plan_narrow_active <dump>
 #
 # Extracts the NARROW_ACTIVE value from the --print-plan narrowing header
-# emitted by verify.sh:1101:
+# emitted by verify.sh:3658:
 #   # narrowing — NARROW_ACTIVE=N affected=...
 #
 # Prints the numeric value (0 or 1) to stdout; prints nothing if the line
