@@ -1097,12 +1097,13 @@ pub fn mesh_aabb(mesh: &reify_ir::Mesh) -> ([f32; 3], [f32; 3]) {
 #[track_caller]
 pub fn cell_value(result: &reify_eval::EvalResult, structure: &str, member: &str) -> reify_ir::Value {
     let id = reify_core::ValueCellId::new(structure, member);
-    result.values.get(&id).cloned().unwrap_or_else(|| {
+    let Some(value) = result.values.get(&id) else {
         panic!(
             "{structure}.{member} not found in eval result; available: {:?}",
             result.values.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
         )
-    })
+    };
+    value.clone()
 }
 
 /// Sorted `member` list of every cell `result` produced for `entity` — used to
