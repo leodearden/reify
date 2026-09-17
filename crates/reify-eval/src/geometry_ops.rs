@@ -13234,3 +13234,6 @@ pub(crate) fn surface_subtree(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod dispatch_table_uniqueness;
