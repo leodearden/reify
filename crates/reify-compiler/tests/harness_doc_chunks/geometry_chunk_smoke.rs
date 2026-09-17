@@ -88,7 +88,9 @@
 //! raised to `pub(crate)`) rather than copying them. That is why those helpers
 //! take `chunk_path` / `tag` / `section_title` parameters instead of reading
 //! this module's consts — a sibling's failure must name the sibling's chunk, and
-//! 6258's are two chunks this module does not own at all. The extraction below
+//! 6258's are two chunks this module does not own at all. 6258 also SHARES a
+//! const rather than copying it: `GEOMETRY_ORACLE_NAMES` is the one list both
+//! the oracle section and those two pointers are held to. The extraction below
 //! is still owed; this is reuse inside the existing binary, not the shared
 //! module.
 //!
@@ -482,6 +484,10 @@ fn isosurface_with_named_options_compiles() {
 /// const must move with it — the failure mode is a loud `expect` on the read,
 /// not a silent skip. Mirrors the `CHUNK_PATH` const in
 /// `stdlib_chunk_geometry_ops_smoke.rs`.
+///
+/// `pub(crate)` since task 6258: `oracle_xref_smoke.rs` resolves this path's
+/// filename STEM against the retrieval topic `constraints.md` and `stdlib.md`
+/// route readers to, so renaming the chunk is RED at those referrers too.
 pub(crate) const CHUNK_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../reify-mcp/src/tools/chunks/geometry.md"
@@ -505,19 +511,15 @@ pub(crate) const CHUNK_PATH: &str = concat!(
 /// preamble forbids. An inert HTML comment costs the chunk one line, is invisible
 /// in rendered markdown, and leaves the title free to change.
 ///
-/// THIS MARKER IS NO LONGER SCOPED TO THIS MODULE. Since task 6258
-/// `oracle_xref_smoke.rs` resolves constraints.md's and stdlib.md's pointers at
-/// the oracle through it, so DELETING OR MOVING IT BREAKS A GUARD IN ANOTHER
-/// FILE as well as the scans below. Retitling the heading stays free — and that
-/// freedom is now load-bearing rather than merely convenient: those two pointers
-/// name the retrieval TOPIC precisely because this heading may change, which is
-/// only safe while the marker does not.
-pub(crate) const ORACLE_SECTION_MARKER: &str = "<!-- ORACLE-SECTION -->";
+/// That retitling freedom is load-bearing beyond this file: task 6258's pointers
+/// in `constraints.md` and `stdlib.md` name the retrieval TOPIC rather than this
+/// section's heading precisely because the heading may change.
+const ORACLE_SECTION_MARKER: &str = "<!-- ORACLE-SECTION -->";
 
 /// Human-readable name of the marked section. Used ONLY in panic text, so a
 /// reader is told which part of the chunk to look at; nothing matches on it.
 /// A retitle may update this for legibility but need not — no test reads it.
-pub(crate) const ORACLE_SECTION_TITLE: &str = "## Interference & Clearance Queries";
+const ORACLE_SECTION_TITLE: &str = "## Interference & Clearance Queries";
 
 /// Marker that OPENS the section cataloguing WHICH ARGUMENT of which geometry
 /// constructor is length-semantic. Matched BYTE-EXACTLY on the trimmed line,
@@ -781,7 +783,15 @@ const KINEMATIC_ORACLE_NAMES: &[&str] = &["interferes", "interferes_with", "min_
 /// question, so only these two belong in the oracle section. Names outside this
 /// pair are documented elsewhere in the chunk corpus and are the sibling
 /// `stdlib_chunk_geometry_ops_smoke.rs`'s coverage concern, not this file's.
-const GEOMETRY_ORACLE_NAMES: &[&str] = &["intersects", "distance"];
+///
+/// `pub(crate)` since task 6258, and read by TWO suites rather than one.
+/// `oracle_xref_smoke.rs` requires `constraints.md`'s and `stdlib.md`'s pointer
+/// regions to name every entry here as a call form, while
+/// [`interference_oracle_names_documented_in_geometry_chunk`] requires the
+/// destination section to document the same entries — so ONE edit here retires a
+/// form from both sides at once, and neither can be left pointing at a name the
+/// other dropped.
+pub(crate) const GEOMETRY_ORACLE_NAMES: &[&str] = &["intersects", "distance"];
 
 /// A kinematic query added to the compiler but never documented must be RED.
 ///
