@@ -1090,11 +1090,13 @@ fn worst_unmet_floor_term(
 ///      already in hand.  A shallow objective leaves it inside the user's box,
 ///      so this rung carries the `q ∈ [99, 100]` shape by itself, with the slack
 ///      digits it has always reported.
-///   2. one bounded re-solve with the floor switched OFF.  A Money objective
-///      steep relative to `PENALTY_WEIGHT` parks the floored penalty minimiser
-///      outside the user's box — measured, `x > 10mm ∧ x < 10.3mm` under
-///      `5 USD × (x / 1mm)` lands at x ≈ 8.85e-3 — which is exactly what rung 1
-///      cannot rescue and what this rung is for (task #5714).
+///   2. one bounded FEASIBILITY-ONLY re-solve — floor off, objective dropped.
+///      A Money objective steep relative to `PENALTY_WEIGHT` parks the floored
+///      penalty minimiser outside the user's box (measured, `x > 10mm ∧
+///      x < 10.3mm` under `5 USD × (x / 1mm)` lands at x ≈ 8.85e-3), which is
+///      what rung 1 cannot rescue and what this rung is for (task #5714).
+///      Dropping the objective is what makes the rung immune to that steepness
+///      by construction rather than by luck — see the rung itself.
 ///
 /// The return is deliberately a WITNESS — a concrete point re-checked against
 /// `problem.constraints` — never an inference from a derived box.
@@ -1126,10 +1128,39 @@ fn original_constraints_witness(
         return Some(converged.clone());
     }
 
-    // ── rung 2: one floor-free re-solve ──────────────────────────────────────
-    let seed = extract_initial_point(problem, dispatch);
+    // ── rung 2: one floor-free, OBJECTIVE-FREE re-solve ──────────────────────
+    //
+    // Dropping the objective is the root-cause fix, not a trick.  A Money
+    // objective steep relative to `PENALTY_WEIGHT` is exactly what parks the
+    // penalty minimiser outside the user's box, so a witness search that keeps
+    // it inherits the very defect it is meant to route around: MEASURED, the
+    // objective-KEEPING form returns `Infeasible` on `2·x ∈ (60mm, 61mm)` (its
+    // minimiser of `5000·x + 1e6·(0.060 − 2x)²` sits at x ≈ 2.9375e-2, residual
+    // 1.25e-3), while the objective-DROPPED form returns x = 3.025e-2 at
+    // residual 0.0 — and still returns x = 1.015e-2 on the headline bracket.
+    //
+    // With `objective: None`, `solve_core_with_sd_tolerance` synthesises the eta
+    // centrality (Chebyshev-centre) objective from the SAME slack terms via
+    // `build_centrality_objective`, so the search MAXIMISES THE MINIMUM SLACK
+    // and cannot be pulled off the feasible set by cost at all.
+    //
+    // Both genuinely-empty controls still decline under this form (MEASURED
+    // `Infeasible`): `x >= 50mm ∧ x <= 10mm` and `2·x > 60mm ∧ 2·x < 20mm`.
+    //
+    // `..problem.clone()` functional-update form, not an explicit field literal:
+    // it is the established idiom (`registry.rs:453`, `:789`) and it is what
+    // keeps a future seventh `ResolutionProblem` field from being silently
+    // dropped here — the compile tripwire is
+    // `resolution_problem_field_set_is_pinned_at_the_solver_spread_sites`.  The
+    // clone is paid once on an already-failing path; its only real cost is the
+    // `CompiledExpr` deep clone of `constraints`.
+    let feasibility_problem = ResolutionProblem {
+        objective: None,
+        ..problem.clone()
+    };
+    let seed = extract_initial_point(&feasibility_problem, dispatch);
     let (result, _) = solve_core_with_sd_tolerance(
-        problem,
+        &feasibility_problem,
         &seed,
         sd_tolerance,
         /* apply_robustness_floor = */ false,
