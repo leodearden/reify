@@ -27,6 +27,8 @@
 #             mutation-injection check proving the assertion can fail
 #   step-22 — --task mode's degradation matrix: the fail-open R4 gap that
 #             --audit's own non-terminal filter kept out of step-17's reach
+#   esc-7244-16 — C8-C10: the census reads SUBJECTS in reify's own
+#             `kind(<id>):` form, and fires on the esc-6205-4 shape itself
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -626,9 +628,9 @@ _assert_field "S7: ...and peers='-'"   9413 peers -
 # ─────────────────────────────────────────────────────────────────────────────
 # Block 5 (step-13) — the commit-citation census and `signature`
 #
-# This is the sharp signal: the defect the sweep exists to find is foreign
-# COMMITS, so the census measures commits directly rather than inferring them
-# from files.
+# The defect the sweep exists to find is foreign COMMITS, so the census
+# measures commits directly rather than inferring them from files. It reads
+# each commit's SUBJECT — the part that names an owner (C8-C10).
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block 5: commit-citation census and signature ---"
@@ -728,6 +730,58 @@ _assert_field "C7: a deeply stale branch reports its exact distance" 9530 behind
 _assert_field "C7: ...peer_commits=0"                                9530 peer_commits 0
 _assert_field "C7: ...and signature is STILL '-' — behind never triggers" \
     9530 signature -
+
+# C8 — reify's own commit form. Its task commits are `kind(<id>): …`, not
+#      `#<id>`, so a peer's commits riding on this branch look like these.
+_add_task 9540 pending '{"files":["o40.rs"]}'
+_branch_at "task/9540" "$(_git rev-parse main)"
+_commit_files "task/9540" "feat(9540): own" o40.rs
+_commit_msg   "task/9540" "impl(9501): GREEN — a live peer's step"
+_commit_msg   "task/9540" "test(9502): RED — another live peer's step"
+_commit_msg   "task/9540" "docs(9503): a done task's step"
+run_helper --task 9540 --db "$C_DB" --repo "$REPO"
+_assert_field "C8: 'kind(<live peer>): …' subjects are peer commits (the done one is not)" \
+    9540 peer_commits 2
+_assert_field "C8: ...naming both live peers" 9540 peers 9501,9502
+_assert_field "C8: ...so signature=SUSPECT"   9540 signature SUSPECT
+
+# C9 — SUBJECT, not message. A body that mentions a live peer is this task
+#      talking about a sibling; it names no owner. Whole-message citation is
+#      what flagged 30 live branches with no subject-level evidence at all.
+_add_task 9541 pending '{"files":["o41.rs"]}'
+_branch_at "task/9541" "$(_git rev-parse main)"
+_commit_files "task/9541" "feat(9541): own" o41.rs
+_commit_msg   "task/9541" "chore: tidy the fixture loader
+
+Follows up on #9501; the same shape impl(9502) used."
+run_helper --task 9541 --db "$C_DB" --repo "$REPO"
+_assert_field "C9: a live peer cited only in the BODY is NOT a peer commit" \
+    9541 peer_commits 0
+_assert_field "C9: ...so signature='-'" 9541 signature -
+
+# C10 — the esc-6205-4 shape, end to end. task/9551 is cut from the tip of a
+#       LIVE peer's branch; the peer is then REBASED, so none of the copied
+#       commits is an ancestor of its tip any more. That rebase is what made
+#       peer-tip ancestry miss the real incident (0 of 21), so the fixture has
+#       to reproduce it or C10 would not discriminate.
+_add_task 9550 pending '{"files":["p50.rs"]}'
+_add_task 9551 pending '{"files":["o51.rs"]}'
+_branch_at "task/9550" "$(_git rev-parse main)"
+_commit_files "task/9550" "test(9550): RED — the peer's first step"  p50.rs
+_commit_files "task/9550" "impl(9550): GREEN — the peer's second step" p50.rs
+_branch_at "task/9551" "$(_git rev-parse task/9550)"
+_commit_files "task/9551" "impl(9551): own work" o51.rs
+C10_COPIED="$(_git rev-parse "task/9551~1")"
+_commit_main "main advances under the peer"
+git -C "$REPO" checkout -q task/9550
+git -C "$REPO" rebase -q main
+git -C "$REPO" checkout -q main
+assert "C10: fixture is the REBASED shape (a copied commit is not an ancestor of the peer tip)" \
+    bash -c '! git -C "$1" merge-base --is-ancestor "$2" task/9550' _ "$REPO" "$C10_COPIED"
+run_helper --task 9551 --db "$C_DB" --repo "$REPO"
+_assert_field "C10: both copied peer commits are counted" 9551 peer_commits 2
+_assert_field "C10: ...the peer is named"                 9551 peers 9550
+_assert_field "C10: ...so signature=SUSPECT"              9551 signature SUSPECT
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block 6 (step-15) — --audit fleet mode, the SWEEP: summary, --format json

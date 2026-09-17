@@ -22,9 +22,10 @@ today.
 
 The sweep reports two independent dimensions of that fault:
 
-* **`signature`** — the *commit* census. Does this branch's own commit range carry commits that
-  cite another live task? This is the sharp signal, and it is the one that reproduces the
-  incident.
+* **`signature`** — the *commit* census. Does this branch's own commit range carry commits whose
+  **subject** names another live task? This one fires on the incident: 14 of the 16 foreign
+  commits on the pre-repair `task/6205` tip (`4ceb2868e7`, still in the object store) are
+  flagged. See *Why subjects, and why not ancestry or patch-id* below.
 * **`scope`** — the *file* cross-check. Do the branch's changed files fall outside what the task
   declared in `metadata.files`, and if so, does a live peer declare them?
 
@@ -127,15 +128,41 @@ it would let a declared `x/a/b.rs` cover a changed `a/b.rs`.
 ### `signature` — the commit-citation census
 
 `SUSPECT` **iff `peer_commits > 0`**, else `-`. A commit in `<main-ref>..<branch>` counts as a peer
-commit iff its message cites at least one id that is non-terminal in the store and is not this
-task's own — *and* the message does not also cite this task's own id. That last condition skips the
-whole commit: an amend that says "re-lands #N, coordinated with #M" is this task's own work
-referencing a sibling, not somebody else's commit riding along.
+commit iff its **subject** cites at least one id that is non-terminal in the store and is not this
+task's own — *and* the subject does not also cite this task's own id. That last condition skips the
+whole commit: `amend(N): re-lands #N, coordinated with #M` is this task's own work referencing a
+sibling, not somebody else's commit riding along.
 
 The citation grammar lives in exactly one place, `scripts/lib_task_citation.sh`, shared with
-`scripts/warm-lane-degenerate-ref-check.sh`; it mirrors dark-factory `orchestrator/git_ops.py`
-byte-for-byte. Never re-inline it in a consumer —
+`scripts/warm-lane-degenerate-ref-check.sh`. It recognises `kind(<id>): …` (dark-factory's
+conventional-commit alternative, same kind list), `Merge <prefix><id> into …`, and `#<id>`; its
+header records, arm by arm, where it agrees with dark-factory's `DEFAULT_COMMIT_CITATION_PATTERN`
+and where it deliberately does not. Never re-inline it in a consumer —
 `tests/infra/test_lib_task_citation.sh` fails if a second copy appears.
+
+#### Why subjects, and why not ancestry or patch-id
+
+Measured 2026-09-17 (esc-7244-16) against the real incident — the pre-repair `task/6205` tip
+`4ceb2868e7`: 22 commits, 6 its own, 14 `kind(5686)`, 1 `verify(5686)`, 1 id-less
+`chore: save WIP before requeue rebase` — and against every live task branch:
+
+| Oracle | Incident: foreign commits flagged | Live pool: branches flagged |
+|---|---|---|
+| whole-message citation (the v1 census) | 0 of 16 | 30 — none with subject-level evidence |
+| peer-tip ancestry (`merge-base --is-ancestor <commit> task/<peer>`) | 0 of 21 non-merge | — |
+| patch-id (`git cherry task/<peer> <tip> main`) | 6 of 15 non-merge | — |
+| **subject citation (this census)** | **14 of 16** | **0** |
+
+Ancestry fails *because of* the incident's own shape: `task/6205` was cut from the **pre-rebase** tip
+of `task/5686`, and once the peer is rebased none of the copied commits are its ancestors. Patch-id
+survives a clean rebase, but not one that resolved conflicts or squashed, and it cannot say *whose*
+a commit is — it would flag `task/5686` as sharing work with `task/6205` just as loudly. A subject
+names its owner. Its known misses are a kind outside the grammar's list (`verify(5686)`) and an
+id-less orchestrator WIP commit; the file cross-check (`scope`) still sees those commits' files.
+
+The runbook rule that "patch-id, never reachability" is the discriminator
+(`docs/notes/warm-lane-audit-runbook.md`) answers a different question — whether a rewritten
+done-step SHA's work is still present — and does not transfer to attribution.
 
 `scope` and `signature` are **orthogonal**, not one collapsed verdict: a branch can be `CLEAN`
 and `SUSPECT` (a foreign commit that touched only files this task also declares), or
@@ -197,7 +224,8 @@ shape is that the two can never be confused on stdout.
 ## How to read a report
 
 **1. Start at `signature`.** `SUSPECT` means this branch's own commit range carries a commit
-citing another live task. That is the incident's mechanism, measured directly.
+whose subject names another live task as its owner. That is the incident's mechanism, measured
+directly.
 
 **2. `SUSPECT` is investigate-then-adjudicate — never an auto-repair trigger.** The sweep reports;
 a human or a merge worker decides. It is a *signal that foreign commits are present*, not a proof

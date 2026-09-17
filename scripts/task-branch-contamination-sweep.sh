@@ -53,7 +53,8 @@
 #   merge_base   abbreviated `git merge-base <branch> <main-ref>`
 #   behind       commits on <main-ref> since merge_base — CONTEXT ONLY (R5)
 #   commits      commits in <main-ref>..<branch>
-#   peer_commits how many of those cite a non-terminal task that is NOT this one
+#   peer_commits how many of those have a SUBJECT citing a non-terminal task that
+#                is NOT this one
 #   changed      files in `git diff -z --name-only <merge_base> <branch>`
 #   foreign      changed files absent from this task's metadata.files
 #   peer_files   foreign files declared by a non-terminal task that is NOT this one
@@ -578,21 +579,31 @@ _measure_branch() {
 }
 
 # ── the commit-citation census ────────────────────────────────────────────────
-# The SHARP signal. The mechanism esc-6205-4 describes is foreign COMMITS on a
-# branch, so this measures commits directly rather than inferring them from
-# files — closer to the fault and far less noisy than the file cross-check.
+# The mechanism esc-6205-4 describes is foreign COMMITS on a branch, so this
+# measures commits directly rather than inferring them from files.
 #
-# A commit counts as a peer commit iff its message cites at least one id that
+# A commit counts as a peer commit iff its SUBJECT cites at least one id that
 # is (a) non-terminal in the store, (b) not this task's own, and (c) the
-# message does not ALSO cite this task's own id. Condition (c) is checked
-# first and skips the whole commit: an amend that says "re-lands #N,
-# coordinated with #M" is this task's own work referencing a sibling, not
-# somebody else's commit riding along.
+# subject does not ALSO cite this task's own id. Condition (c) is checked
+# first and skips the whole commit: "amend(N): re-lands #N, coordinated with
+# #M" is this task's own work referencing a sibling, not somebody else's
+# commit riding along.
+#
+# SUBJECT, not message, because the question here is OWNERSHIP, and a subject
+# names its owner (`impl(5686): …`) while a body names whatever it mentions.
+# Measured over every live task branch (esc-7244-16): whole-message citations
+# flagged 30 branches, none with any subject-level evidence of a foreign
+# commit, while subject citations flag 0. Against the esc-6205-4 branch itself
+# (pre-repair tip 4ceb2868e7), subject citations flag 14 of its 16 foreign
+# commits; the misses are `verify(5686)` (a kind outside the grammar's list)
+# and an id-less "chore: save WIP before requeue rebase". Two oracles that
+# look sharper are not: peer-tip ancestry matched 0 of 21, because task/5686
+# had since been rebased, and patch-id equivalence matched 6 of 15 foreign
+# commits and cannot say whose a commit is.
 #
 # ONE `git log` per branch, not one `git log -1` per commit: the pool has
 # branches with tens of commits and the sweep runs over hundreds of branches.
-# Messages are record-separated with US so a multi-line body cannot be read as
-# several commits.
+# Subjects are record-separated with US.
 #
 # `behind` is deliberately absent from this function. It is CONTEXT ONLY and
 # never a trigger (R5): over the 351 live task branches the median is 2201
@@ -603,13 +614,17 @@ _census_commits() {
     local id="$1" tip="$2" log msg peer_id
     R_PEER_COMMITS=0
 
-    log="$(_git log --format="%B%x1f" "${_MAIN_SHA}..${tip}" 2>/dev/null || true)"
+    log="$(_git log --format="%s%x1f" "${_MAIN_SHA}..${tip}" 2>/dev/null || true)"
     [ -n "$log" ] || return 0
 
     local commit_peers="" found
     while IFS= read -r -d $'\x1f' msg; do
+        # git log terminates every entry with a newline, so each record after
+        # the first arrives as "\n<subject>". The grammar's conventional-commit
+        # arm reads only the FIRST line, which would then be empty.
+        msg="${msg#$'\n'}"
         [ -n "${msg//[[:space:]]/}" ] || continue
-        # (c) its own id anywhere in the message exempts the whole commit.
+        # (c) its own id anywhere in the subject exempts the whole commit.
         if task_citation_message_cites "$msg" "$id" "$_BRANCH_PREFIX_RE"; then
             continue
         fi
