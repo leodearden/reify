@@ -723,7 +723,7 @@ _die_nextest_config() {
     echo "verify.sh: ERROR — gen-nextest-config.sh refused to generate the nextest config (exit $1); its diagnostic is immediately above" >&2
     exit "$1"
 }
-DF_VERIFY_ROLE="${DF_VERIFY_ROLE:-task}"
+export DF_VERIFY_ROLE="${DF_VERIFY_ROLE:-task}"  # exported: gui/vitest.config.ts reads it from the child env (task 7630)
 # Role-based PROFILE default: when no explicit --profile was given and the
 # orchestrator merge path stamps DF_VERIFY_ROLE=merge, default to 'both' so
 # release-only tests are exercised on every merge (matching the local

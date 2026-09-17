@@ -7,8 +7,9 @@ import solidPlugin from 'vite-plugin-solid';
 // DEFAULT_TIMEOUT is hardcoded at 60 s; no config knob in vitest 3.x).
 // Reducing concurrent fork workers from the default (nCPU-1 ≈ 31) to a
 // small cap relieves the main process so it can respond within 60 s.
-// Gated on DF_VERIFY_ROLE (task|merge, set by verify.sh:328 and injected
-// by the orchestrator) so local `npm test` retains full parallelism.
+// Gated on DF_VERIFY_ROLE (task|merge), which verify.sh EXPORTS (the export is
+// load-bearing — task 7630) and the orchestrator injects; local `npm test`
+// leaves it unset and so retains full parallelism.
 // teardownTimeout is also raised from the default 10 000 ms: under severe
 // starvation, graceful worker shutdown takes longer than 10 s, and a
 // force-kill during teardown compounds the RPC-timeout failures.
