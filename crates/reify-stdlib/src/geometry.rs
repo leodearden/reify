@@ -1325,13 +1325,41 @@ fn make_plane(args: &[Value], offset_index: usize, normal: [f64; 3]) -> Value {
     }
 }
 
-/// Build an Axis from a single Point3 origin argument.
+/// Build an Axis from a single `Point3<Length>` origin argument, which is
+/// REQUIRED to carry LENGTH — units-length ε, R11 / decision D4 of
+/// `docs/prds/v0_6/units-length-gate-completion.md`.
+///
+/// The origin is decoded through [`decompose_xyz3`] — the SAME helper
+/// [`length_group_rejection`] reads, and therefore the same one [`diagnose`]'s
+/// axis arm reaches the verdict through. That sharing is load-bearing, not
+/// tidiness: a gate and its post-`Undef` classifier that spell the same
+/// predicate twice drift ASYMMETRICALLY, leaving eval returning `Undef` while
+/// the classifier stays silent — which degrades a loud rejection back to the
+/// silent `undef` at exit 0 this PRD exists to close, with no test failing
+/// because every case exercises a value both spellings agree on. It is the
+/// discipline [`classify_bbox_corner`] and [`classify_affine_map_args`] already
+/// establish in this file.
+///
+/// Reading through that helper also TIGHTENS the gate beyond dimension: the
+/// shape-only check it replaces admitted non-numeric, non-finite and
+/// mixed-dimension component triples. Those are shape/consistency failures, not
+/// units ones, and they now fail closed here just as they long have in
+/// [`make_plane`].
+///
+/// The accepted origin is cloned VERBATIM so a `Point3<Length>` round-trips
+/// byte-identically (`decode_axis_producer_round_trip_*`). The synthesized
+/// direction stays DIMENSIONLESS: a unit vector legitimately has bare components
+/// (decision D3). See [`make_plane`]'s doc for the scope statement the two
+/// share.
 fn make_axis(args: &[Value], direction: [f64; 3]) -> Value {
     if args.len() != 1 {
         return Value::Undef;
     }
-    match &args[0] {
-        Value::Point(comps) if comps.len() == 3 => {}
+    let Value::Point(comps) = &args[0] else {
+        return Value::Undef;
+    };
+    match decompose_xyz3(comps) {
+        Some((_, dim)) if dim == DimensionVector::LENGTH => {}
         _ => return Value::Undef,
     }
     let dir_vec = Value::Vector(vec![
