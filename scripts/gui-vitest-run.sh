@@ -24,9 +24,10 @@
 # defect cannot satisfy. The classification arrives as a JSON artifact, the one
 # seam between the two halves; no vitest output is ever parsed. The artifact's
 # ABSENCE is what vetoes a retry, so an unclassified failure propagates
-# verbatim. The retry is bounded to one, covers only the named suites, and is
-# announced on stdout whether or not it rescues the run, so recurrences stay
-# counted instead of being absorbed.
+# verbatim. The retry is bounded to one, narrows the SPEC FILTERS to the named
+# suites while carrying the caller's own options through unchanged (see
+# partition_args), and is announced on stdout whether or not it rescues the
+# run, so recurrences stay counted instead of being absorbed.
 #
 # Knob: REIFY_GUI_RPC_FLAKE_RETRY=0 disables the retry (default 1).
 
@@ -55,6 +56,36 @@ run_vitest() {
     fi
 }
 
+# Partition the caller's argv ONCE, at entry, into RETRY_OPTS (the tokens a
+# retry must carry) and the positional spec filters (which the retry replaces
+# with the classified suites). A token with a leading '-' is an OPTION, and the
+# token following one is treated as that option's VALUE.
+#
+# Without this, `scripts/gui-test.sh -- -t someName` or `-- --coverage` lost the
+# filter or the flag on retry and reported success for a different run than the
+# one asked for. Dropping a flag's VALUE would be worse still: a dangling `-t`
+# would swallow the first classified suite path as its argument.
+#
+# The value rule is deliberately over-inclusive. Without a per-flag arity table
+# — an ad-hoc parser of vitest's CLI we decline to grow, and which would drift
+# from it — `--coverage src/a.test.ts` cannot be told apart from `-t someName`,
+# so a spec path in that position is kept as if it were a value. That only ever
+# WIDENS the retry, because vitest ORs positional filters, and a wider retry
+# can never mask a failure.
+partition_args() {
+    RETRY_OPTS=()
+    local expect_value=0 tok
+    for tok in "$@"; do
+        case "$tok" in
+            -*) RETRY_OPTS+=("$tok"); expect_value=1; continue ;;
+        esac
+        if [ "$expect_value" -eq 1 ]; then
+            RETRY_OPTS+=("$tok")
+            expect_value=0
+        fi
+    done
+}
+
 # Read the classified suite list, one per line, or fail. Parsed with node —
 # a real JSON parser, not a grep — so the seam stays structured data.
 read_classified_suites() {
@@ -68,10 +99,15 @@ read_classified_suites() {
     ' "$ARTIFACT"
 }
 
-# A safe spec token is a plain relative path. Same allowlist and leading-dash
-# rules as REIFY_GUI_RETRY_SPECS in verify.sh — one definition of "safe token"
-# across the pipeline — plus the two rules a file source additionally needs:
-# no absolute path, no parent-directory escape.
+# A safe spec token is a plain relative path.
+#
+# DELIBERATE DUPLICATE, not a SPOT violation to be fixed by sharing: verify.sh
+# validates REIFY_GUI_RETRY_SPECS as one space-separated STRING (so its class
+# includes a space), while this validates one already-split TOKEN from a JSON
+# array (so a space is a rejection) and adds the two rules a file source
+# additionally needs — no absolute path, no parent-directory escape. The shared
+# part is the character class, and tests/infra/test_gui_vitest_rpc_hardening.sh
+# extracts both literals and compares them, so widening either side alone reds.
 is_safe_spec() {
     local tok="$1"
     [ -n "$tok" ] || return 1
@@ -85,6 +121,8 @@ is_safe_spec() {
 reject() {
     echo "gui-vitest-run.sh: WARNING — $1; not retrying, propagating the original failure" >&2
 }
+
+partition_args "$@"
 
 rc=0
 run_vitest "$@" || rc=$?
@@ -115,10 +153,10 @@ done
 rm -f "$ARTIFACT"
 
 echo "@@REIFY_GUI_FLAKE@@ kind=worker_rpc_timeout outcome=retrying suites=${#suites[@]} lineage=${MARKER_LINEAGE}"
-echo "gui-vitest-run.sh: re-running ${#suites[@]} suite(s) classified as worker->host RPC starvation: ${suites[*]}" >&2
+echo "gui-vitest-run.sh: re-running ${#suites[@]} suite(s) classified as worker->host RPC starvation: ${RETRY_OPTS[*]+${RETRY_OPTS[*]} }${suites[*]}" >&2
 
 retry_rc=0
-run_vitest "${suites[@]}" || retry_rc=$?
+run_vitest ${RETRY_OPTS[@]+"${RETRY_OPTS[@]}"} "${suites[@]}" || retry_rc=$?
 
 if [ "$retry_rc" -eq 0 ]; then
     echo "@@REIFY_GUI_FLAKE@@ kind=worker_rpc_timeout outcome=retried suites=${#suites[@]} lineage=${MARKER_LINEAGE}"

@@ -254,6 +254,22 @@ fixture_run "" 0 0 -- src/__tests__/unitLadder.test.ts
 assert "B7: caller-supplied vitest args are forwarded to the first run" \
     bash -c "[ \"\$(sed -n 1p '$FIX_ARGV')\" = 'test -- src/__tests__/unitLadder.test.ts' ]"
 
+# (8) A retry must answer the question that was ASKED. scripts/gui-test.sh
+# advertises `-- <vitest args>`, so dropping `-t <name>`, `--coverage` or `-u`
+# on the retry would report success for a different run than the requested one
+# -- and a dropped VALUE would leave a dangling `-t` that swallowed a suite
+# path. Options (and the token following one) carry through; only the
+# positional spec filters are replaced by the classified suites.
+fixture_run "$TWO_SUITES" 1 0 -- -t someName --coverage
+assert "B8: the retry carries the caller's options and their values through" \
+    bash -c "[ \"\$(sed -n 2p '$FIX_ARGV')\" = 'test -- -t someName --coverage src/__tests__/engineStore.test.ts src/__tests__/meshManager.attributeResize.test.ts' ]"
+
+# (9) ...and the positional filters really are REPLACED, not unioned, so the
+# retry stays narrowed to what the reporter classified.
+fixture_run "$TWO_SUITES" 1 0 -- src/__tests__/unitLadder.test.ts
+assert "B9: the retry replaces the caller's positional spec filters" \
+    bash -c "[ \"\$(sed -n 2p '$FIX_ARGV')\" = 'test -- src/__tests__/engineStore.test.ts src/__tests__/meshManager.attributeResize.test.ts' ]"
+
 # -- Section C: the wiring — one definition of how vitest is invoked ---------
 # CLAUDE.md requires scripts/gui-test.sh and verify.sh's gui block to stay
 # equivalent ("if the gui block's command shape changes materially, update this
@@ -283,6 +299,26 @@ assert "C1: the _RETRY_GUI_SUBSET_APPLIED accounting survives the rewiring" \
 
 assert "C1: the REIFY_GUI_RETRY_SPECS allowlist and leading-dash guard survive" \
     bash -c "grep -q 'A-Za-z0-9._' '$VERIFY_SH' && grep -q 'REIFY_GUI_RETRY_SPECS' '$VERIFY_SH'"
+
+# The runner's is_safe_spec and verify.sh's REIFY_GUI_RETRY_SPECS check are a
+# DELIBERATE duplicate (different inputs: one already-split token from JSON vs
+# one space-separated string), but they must not DRIFT. Extract both character
+# class literals and compare them, so widening either side alone reds here
+# instead of silently opening a hole on one path only.
+extract_char_class() {  # <file> <shell-var-name>
+    grep -oE "\\\$\{$2//\[[^]]*\]/\}" "$1" | head -1 | sed -E 's/^.*\[([^]]*)\].*$/\1/'
+}
+_VERIFY_CLASS="$(extract_char_class "$VERIFY_SH" _gui_retry_specs || true)"
+_RUNNER_CLASS="$(extract_char_class "$RUNNER" tok || true)"
+
+assert "C5: both spec-token character classes are still locatable" \
+    bash -c "[ -n '$_VERIFY_CLASS' ] && [ -n '$_RUNNER_CLASS' ]"
+
+# verify.sh validates the whole space-separated string, so its class carries the
+# one extra ' '. Strip it and the two must be identical.
+_V="$_VERIFY_CLASS" _R="$_RUNNER_CLASS" \
+assert "C5: verify.sh's spec allowlist is exactly the runner's plus a space" \
+    bash -c '[ "${_V/ /}" = "$_R" ]'
 
 assert "C2: scripts/gui-test.sh invokes the SAME runner" \
     grep -q 'gui-vitest-run.sh' "$GUI_TEST_SH"
