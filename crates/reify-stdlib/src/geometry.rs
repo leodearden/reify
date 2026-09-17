@@ -3192,14 +3192,103 @@ mod tests {
         assert!(eval_builtin("axis_y", &[make_point3_length(), make_point3_length()]).is_undef());
     }
 
+    /// FLIPPING THIS ROW IS THE FIX, NOT A REGRESSION — the axis-side twin of
+    /// `plane_xy_real_zero_is_rejected_expects_length`.
+    ///
+    /// Its predecessor asserted that a DIMENSIONLESS `Point3` origin built an
+    /// `Axis` carrying that origin verbatim. `make_axis` checked SHAPE only, so
+    /// that recorded an accidental pre-doctrine gap rather than a sanctioned
+    /// contract. `docs/prds/v0_6/units-length-gate-completion.md` task ε (R11,
+    /// decision D4) shuts it: the origin is REQUIRED to be a `Point3<Length>`.
+    ///
+    /// Do NOT re-flip this back to an acceptance. Doing so re-opens R11 at the
+    /// producer while task δ's consumer-side gate stays shut, so a bare origin
+    /// silently places an axis 1000× out again.
     #[test]
-    fn axis_x_with_dimensionless_point3() {
+    fn axis_x_dimensionless_point3_is_rejected_expects_length() {
         let origin = Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
-        let result = eval_builtin("axis_x", std::slice::from_ref(&origin));
-        match result {
-            Value::Axis { origin: o, .. } => assert_eq!(*o, origin),
-            other => panic!("expected Axis, got {:?}", other),
+        assert!(eval_builtin("axis_x", std::slice::from_ref(&origin)).is_undef());
+    }
+
+    /// The whole axis family rejects a non-LENGTH origin, in every `got` shape
+    /// that can reach the gate — `decompose_xyz3` requires `as_f64` to succeed,
+    /// so only `Real`, `Int` and `Scalar` arrive, and a LENGTH `Scalar` is
+    /// accepted. The three names share ONE `make_axis`; enumerating them keeps
+    /// that sharing honest rather than assumed.
+    #[test]
+    fn axis_family_rejects_non_length_origins() {
+        let mass = Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::MASS,
+        };
+        let triples = [
+            Value::Point(vec![Value::Int(0), Value::Int(0), Value::Int(0)]),
+            Value::Point(vec![mass.clone(), mass.clone(), mass]),
+        ];
+        for name in ["axis_x", "axis_y", "axis_z"] {
+            for origin in &triples {
+                assert!(
+                    eval_builtin(name, std::slice::from_ref(origin)).is_undef(),
+                    "{name}({origin:?}) must be Undef: the ox/oy/oz argument expects Length"
+                );
+            }
         }
+    }
+
+    /// A MIXED-dimension origin fails CLOSED, but for `decompose_xyz3`'s
+    /// CONSISTENCY rule rather than the LENGTH rule — the distinction
+    /// [`diagnose`]'s no-mis-attribution contract turns on, which is why the
+    /// gate still says `Undef` here while the classifier stays silent.
+    #[test]
+    fn axis_x_mixed_dimension_origin_returns_undef() {
+        let origin = Value::Point(vec![
+            Value::length(1.0),
+            Value::Real(0.0),
+            Value::length(0.0),
+        ]);
+        assert!(eval_builtin("axis_x", std::slice::from_ref(&origin)).is_undef());
+    }
+
+    /// A NON-FINITE LENGTH origin is rejected too. That is a deliberate, stated
+    /// TIGHTENING, not a units rejection: it makes `make_axis` symmetric with
+    /// `make_plane`'s long-standing finiteness guard, which the shape-only gate
+    /// this replaces never had.
+    #[test]
+    fn axis_x_non_finite_length_origin_returns_undef() {
+        let origin = Value::Point(vec![
+            Value::length(f64::NAN),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        assert!(eval_builtin("axis_x", std::slice::from_ref(&origin)).is_undef());
+    }
+
+    /// The anti-vacuity partner of the rows above: a `Point3<Length>` origin
+    /// still builds an `Axis`, carrying that point VERBATIM (the byte-identical
+    /// round-trip `decode_axis_producer_round_trip_*` depends on), with a
+    /// DIMENSIONLESS direction — decision D3's scope lock, since a unit vector
+    /// legitimately has bare components.
+    #[test]
+    fn axis_x_length_origin_round_trips_and_keeps_direction_bare() {
+        let origin = make_point3_length();
+        let result = eval_builtin("axis_x", std::slice::from_ref(&origin));
+        let Value::Axis {
+            origin: o,
+            direction,
+        } = result
+        else {
+            panic!("expected Value::Axis, got {result:?}");
+        };
+        assert_eq!(*o, origin, "a LENGTH origin must round-trip verbatim");
+        assert_eq!(
+            *direction,
+            Value::Vector(vec![
+                Value::Real(1.0),
+                Value::Real(0.0),
+                Value::Real(0.0)
+            ]),
+            "the synthesized direction is a unit vector and stays dimensionless (D3)"
+        );
     }
 
     // ── bbox tests (step-9) ──────────────────────────────────────────────────
