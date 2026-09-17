@@ -149,7 +149,7 @@ pub fn refine_volume_with_size_field(
     }
 
     // --- Acquire lock + initialise ---
-    let _guard = init::lock();
+    let _guard = init::lock()?;
     init::ensure_initialized();
     ffi::clear()?;
     ffi::option_set_number("General.Terminal", 0.0)?;

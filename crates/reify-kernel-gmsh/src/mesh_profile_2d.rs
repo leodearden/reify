@@ -79,7 +79,7 @@ pub fn mesh_plane_2d(
     use crate::ffi;
     use crate::init;
 
-    let _guard = init::lock();
+    let _guard = init::lock()?;
     init::ensure_initialized();
     ffi::clear()?;
     ffi::option_set_number("General.Terminal", 0.0)?;
@@ -222,6 +222,22 @@ pub fn mesh_plane_2d(
         )));
     }
     let quad_indices = remap(&quad_node_tags)?;
+
+    // The 2D form of the emptiness rejection `init::read_tet_connectivity`
+    // applies to the three tet meshers: gmsh can report a successful generate
+    // and hold no elements at all, and a `MeshPlane2dResult` with neither a
+    // triangle nor a quad in it is a silent wrong answer no caller can tell
+    // from a real mesh of a plane surface. Both buffers together, because
+    // `recombine` legitimately drives either one to empty on its own.
+    if triangle_indices.is_empty() && quad_indices.is_empty() {
+        return Err(GeometryError::OperationFailed(format!(
+            "mesh_plane_2d: gmshModelMeshGenerate reported success but the model \
+             holds neither triangles nor quads for a {}-vertex outline with {} \
+             hole(s) — returning an empty mesh would be a silent wrong answer",
+            outer.len(),
+            holes.len(),
+        )));
+    }
 
     // Note: we intentionally do NOT issue a trailing `ffi::clear()` here.
     // The leading `ffi::clear()?` at the top of every `mesh_plane_2d` call

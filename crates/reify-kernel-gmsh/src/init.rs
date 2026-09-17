@@ -12,21 +12,18 @@
 //! instead of the FFI roundtrip on every call. Mirrors
 //! `crates/reify-kernel-openvdb/src/init.rs:22-37`.
 //!
-//! Because the library's lifetime is this module's business, so is putting
-//! it back when the mesher breaks: [`mesh_generate_with_recovery`] recycles
-//! gmsh in place after a failed generate, and the recycle is an
-//! [`ensure_initialized`] invariant before it is anything else — the
-//! OnceLock keeps recording "initialized" across it, so the finalize and the
-//! re-initialize must be an inseparable pair or that cached fact becomes a
-//! lie.
+//! Because the library's lifetime is this module's business, so is putting it
+//! back when the mesher breaks ([`mesh_generate_with_recovery`]) and refusing
+//! to keep going when it cannot be put back ([`lock`]).
 //!
 //! [`read_tet_connectivity`] is that recovery's companion on the way out: a
 //! broken mesher's characteristic output is an EMPTY element buffer, so all
-//! three meshers read their tets back through one shared, checked call.
+//! three tet meshers read their tets back through one shared, checked call.
 //!
 //! Only compiled when `cfg(has_gmsh)` is set by `build.rs`.
 
 use std::ops::Deref;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use reify_ir::{ElementOrderTag, GeometryError};
@@ -41,7 +38,20 @@ use crate::ffi;
 /// serialise their own raw-FFI access against the production path.
 pub static GMSH_LOCK: Mutex<()> = Mutex::new(());
 
-/// Proof that its holder acquired [`GMSH_LOCK`] — not merely *a* mutex.
+/// Set once libgmsh has been finalized with nothing live behind it. Sticky by
+/// design: nothing clears it, because nothing can repair the library
+/// afterwards. Written only under [`GMSH_LOCK`], by
+/// [`mesh_generate_with_recovery`]; read by [`lock`].
+static GMSH_DEAD: AtomicBool = AtomicBool::new(false);
+
+/// What a caller is told once [`GMSH_DEAD`] is set. One string, so the message
+/// the recovery site emits and the one every later entry point emits cannot
+/// drift apart.
+const GMSH_DEAD_MESSAGE: &str = "libgmsh is finalized and could not be \
+     re-initialized; meshing is disabled for the rest of this process";
+
+/// Proof that its holder acquired [`GMSH_LOCK`] — not merely *a* mutex — and
+/// that libgmsh was still usable when they took it.
 ///
 /// [`lock`] is the only constructor and the field is private, so a function
 /// that asks for a `&GmshGuard` cannot be reached without the real
@@ -49,9 +59,12 @@ pub static GMSH_LOCK: Mutex<()> = Mutex::new(());
 /// that: it finalizes libgmsh, which no thread inside the library survives. A
 /// `&MutexGuard<'_, ()>` parameter would have been satisfied by a guard
 /// borrowed from any `Mutex<()>` the caller cared to declare.
+/// [`crate::mesh_size_clamp::MeshSizeClampReset::armed`] is that same idiom
+/// one notch weaker — proportionate there, where a violation restores two
+/// options at the wrong moment, and not here, where it tears the library down.
 ///
 /// Derefs to the guard it wraps, so it still serves as the lifetime witness
-/// [`crate::mesh_size_clamp::MeshSizeClampReset::armed`] borrows.
+/// `MeshSizeClampReset::armed` borrows.
 pub struct GmshGuard(MutexGuard<'static, ()>);
 
 impl Deref for GmshGuard {
@@ -62,15 +75,24 @@ impl Deref for GmshGuard {
     }
 }
 
-/// Acquire [`GMSH_LOCK`] for a gmsh entry point.
+/// Acquire [`GMSH_LOCK`] for a gmsh entry point, refusing once libgmsh is
+/// unrecoverable.
 ///
 /// Recovers from a poisoned lock rather than propagating the failure: every
 /// entry point in this crate opens with `ffi::clear()`, which wipes whatever
 /// half-built model state a panicked prior call left behind. Without this, one
 /// panic anywhere under the lock would disable meshing for the rest of the
 /// process lifetime.
-pub fn lock() -> GmshGuard {
-    GmshGuard(GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner()))
+///
+/// [`GMSH_DEAD`] is read AFTER the lock is taken, because its only writer sets
+/// it while holding the lock. Every entry point in this crate reaches its
+/// first FFI call through here, so this one check is the whole enforcement.
+pub fn lock() -> Result<GmshGuard, GeometryError> {
+    let guard = GmshGuard(GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner()));
+    if GMSH_DEAD.load(Ordering::Acquire) {
+        return Err(GeometryError::OperationFailed(GMSH_DEAD_MESSAGE.into()));
+    }
+    Ok(guard)
 }
 
 /// `OnceLock`-guarded `gmshInitialize`. Idempotent: the first caller pays
@@ -105,36 +127,29 @@ pub fn ensure_initialized() {
 /// The caller's diagnostic stays the mesher's own message; recovery
 /// bookkeeping never displaces it.
 ///
-/// # Why it takes the guard
+/// `_guard` is taken purely for its lifetime, never touched, so that "caller
+/// must hold [`GMSH_LOCK`]" is enforced by the signature rather than by a
+/// comment a refactor can quietly violate — see [`GmshGuard`].
 ///
-/// `_guard` is taken purely for its lifetime — the guard itself is never
-/// touched. Finalizing gmsh while another thread is inside the library frees
-/// the world out from under it, so "caller must hold [`GMSH_LOCK`]" is
-/// enforced by the signature rather than by a comment a refactor can quietly
-/// violate. [`GmshGuard`] is what makes that enforcement real rather than
-/// suggestive: one constructor, private field, so the only way to reach this
-/// function is to already hold the process-global lock.
-/// [`crate::mesh_size_clamp::MeshSizeClampReset::armed`] is the same idiom one
-/// notch weaker — it accepts any `&MutexGuard` — which is proportionate there,
-/// where a violation restores two options at the wrong moment, and is not here,
-/// where it tears the library down.
+/// # When the recycle itself fails
 ///
-/// # Aborts
+/// A failed `gmshFinalize` leaves the library up and the mesher still
+/// poisoned; a failed `gmshInitialize` after a successful finalize leaves no
+/// library at all. Neither is repairable from here, so the first is reported
+/// in the returned error and the second additionally sets [`GMSH_DEAD`],
+/// after which every entry point refuses at [`lock`] instead of calling into
+/// a finalized library.
 ///
-/// If `gmshInitialize` fails after a successful `gmshFinalize`, this aborts
-/// the process. gmsh is then finalized while [`ensure_initialized`]'s
-/// `OnceLock` still records "initialized", so every later gmsh call in the
-/// process is undefined.
-///
-/// A panic would not contain that, which is why this is deliberately not the
-/// stance [`ensure_initialized`] takes for its own `gmshInitialize` failure.
-/// That panic leaves state consistent — the `OnceLock` cell stays unset, gmsh
-/// stays uninitialized, a retry re-attempts init — whereas this one unwinds
-/// holding [`GMSH_LOCK`], and [`lock`] deliberately recovers from a poisoned
-/// lock, so the next caller would walk straight into the finalized library
-/// instead of being stopped. The unwind is unsound in its own right: it drops
-/// [`crate::mesh_size_clamp::MeshSizeClampReset`], whose `Drop` calls back
-/// into gmsh to restore the size clamp.
+/// Both paths RETURN; neither panics and neither aborts the process. A panic
+/// would unwind out holding [`GMSH_LOCK`], which [`lock`] deliberately
+/// un-poisons, so the next caller would sail past the refusal. An abort would
+/// hold the same property the flag already buys, at the cost of killing a
+/// `reify-gui` session — this crate is linked into one — over a library fault
+/// the user could otherwise have saved their model through. The
+/// [`crate::mesh_size_clamp::MeshSizeClampReset`] drop that runs on the way
+/// out is harmless either way: measured on libgmsh 4.15.2, an FFI call after
+/// `gmshFinalize` returns `ierr=1` ("Gmsh has not been initialized") and does
+/// nothing.
 pub fn mesh_generate_with_recovery(_guard: &GmshGuard, dim: i32) -> Result<(), GeometryError> {
     let original = match ffi::mesh_generate(dim) {
         Ok(()) => return Ok(()),
@@ -151,12 +166,10 @@ pub fn mesh_generate_with_recovery(_guard: &GmshGuard, dim: i32) -> Result<(), G
         )));
     }
     if let Err(init_err) = ffi::initialize() {
-        eprintln!(
-            "reify-kernel-gmsh: gmshInitialize failed while recovering from a failed \
-             gmshModelMeshGenerate ({init_err}); gmsh is finalized but still recorded as \
-             initialized, so every later gmsh call would be undefined — aborting"
-        );
-        std::process::abort();
+        GMSH_DEAD.store(true, Ordering::Release);
+        return Err(GeometryError::OperationFailed(format!(
+            "{original} (and {GMSH_DEAD_MESSAGE}: {init_err})"
+        )));
     }
 
     // `gmshInitialize` resets the process-global option table, so without
@@ -171,27 +184,17 @@ pub fn mesh_generate_with_recovery(_guard: &GmshGuard, dim: i32) -> Result<(), G
 }
 
 /// Read this call's tetrahedra back out of gmsh, rejecting a buffer that
-/// cannot be a real mesh.
-///
-/// Both numbers the element order fixes come from one [`tet_element_spec`]
-/// lookup. Derived separately — the type code at the readback, the stride at
-/// the check — they were two facts taken from one dimension of variability at
-/// four sites, and a site that asked gmsh for 10-node tets while validating
-/// against a 4-node stride would mis-slice the connectivity into plausible
-/// nonsense.
-///
-/// Two ways the buffer can be unusable are therefore rejected here rather than
-/// returned:
-///
-///   - a length that is not a whole number of tets; and
-///   - an EMPTY buffer, which would become an `Ok` `VolumeMesh` holding no
-///     tetrahedra — a wrong answer no caller can tell from a right one.
+/// cannot be a real mesh: a length that is not a whole number of tets, or an
+/// EMPTY buffer.
 ///
 /// The emptiness half is the output-side twin of the empty-INPUT rejection in
 /// [`crate::GmshKernel::mesh_to_volume`]: gmsh accepts the degenerate case and
 /// yields a zero-tet mesh, which is never a useful caller outcome. Stating it
-/// once, here, is what keeps that invariant uniform across the three readbacks
-/// rather than enforced in whichever of them was edited last.
+/// once, here, is what keeps that rejection uniform across the three tet
+/// meshers rather than enforced in whichever of them was edited last. This
+/// crate's fourth mesher, [`crate::mesh_profile_2d::mesh_plane_2d`], reads
+/// back triangles and quads instead of tets, so it cannot share this call; it
+/// carries the 2D form of the same rejection at its own readback.
 ///
 /// Since every `mesh_generate` in this crate routes through
 /// [`mesh_generate_with_recovery`], no path measured today reaches the empty
@@ -215,9 +218,17 @@ pub fn read_tet_connectivity(
 /// [`ffi::get_elements_by_type`], and the nodes-per-element stride of the flat
 /// buffer that call returns.
 ///
-/// One table because they are one fact — gmsh numbers its element types by
-/// shape AND order (4 = 4-node tet, 11 = 10-node tet), so the code and the
-/// stride are never independently chosen.
+/// One table because for this readback they are one fact — gmsh numbers its
+/// element types by shape AND order (4 = 4-node tet, 11 = 10-node tet), so a
+/// site that asked gmsh for 10-node tets while validating against a 4-node
+/// stride would mis-slice the connectivity into plausible nonsense.
+///
+/// The gmsh type code is local to this crate. The stride is NOT: it is a
+/// fourth copy of P1→4 / P2→10, alongside `reify_ir::VolumeMesh::nodes_per_element`
+/// (the same table over a wider element family) and the `match` in each of
+/// [`crate::through_thickness`] and [`crate::fill_metrics`]. Collapsing those
+/// belongs next to the `reify_ir` element-order type that owns the fact, not
+/// here.
 fn tet_element_spec(element_order: ElementOrderTag) -> (i32, usize) {
     match element_order {
         ElementOrderTag::P1 => (4, 4),

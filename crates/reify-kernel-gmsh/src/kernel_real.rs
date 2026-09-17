@@ -202,9 +202,10 @@ impl GmshKernel {
         }
 
         // `init::lock` rather than `GMSH_LOCK.lock()`: it carries the
-        // poisoned-lock recovery every entry point here needs, and its
-        // `GmshGuard` is the witness `mesh_generate_with_recovery` demands.
-        let _guard = init::lock();
+        // poisoned-lock recovery every entry point here needs, refuses outright
+        // once libgmsh has been finalized beyond recovery, and its `GmshGuard`
+        // is the witness `mesh_generate_with_recovery` demands.
+        let _guard = init::lock()?;
         init::ensure_initialized();
 
         // --- Mesh-size clamp: leave nothing behind (task #6298) ---
