@@ -597,9 +597,9 @@ _measure_branch() {
 # (pre-repair tip 4ceb2868e7), subject citations flag 14 of its 16 foreign
 # commits; the misses are `verify(5686)` (a kind outside the grammar's list)
 # and an id-less "chore: save WIP before requeue rebase". Two oracles that
-# look sharper are not: peer-tip ancestry matched 0 of 21, because task/5686
-# had since been rebased, and patch-id equivalence matched 6 of 15 foreign
-# commits and cannot say whose a commit is.
+# look sharper are not: peer-tip ancestry matched 0 of 15 foreign non-merge
+# commits, because task/5686 had since been rebased, and patch-id equivalence
+# matched 6 of 15 and cannot say whose a commit is.
 #
 # ONE `git log` per branch, not one `git log -1` per commit: the pool has
 # branches with tens of commits and the sweep runs over hundreds of branches.

@@ -19,9 +19,12 @@
 # The grammar — a message cites <id> iff ANY of:
 #   * a line of it is `Merge <prefix><id> into …` (grep's `^` is a LINE anchor;
 #     see Block B of the test suite for why that is kept);
-#   * its SUBJECT (first line only) is a conventional-commit head citing <id>:
-#     `<kind>(<id>)` / `<kind>(<id>:`, or `<kind>` followed later on the line
-#     by `<prefix><id>`, where <kind> is dark-factory's closed list;
+#   * its SUBJECT is a conventional-commit head citing <id>: `<kind>(<id>)` /
+#     `<kind>(<id>:`, or — for a non-empty prefix — `<kind>` followed later in
+#     the subject by `<prefix><id>`, where <kind> is dark-factory's closed list.
+#     SUBJECT means what git's `%s` means: the first paragraph, its lines
+#     joined by single spaces. A caller holding `%B` and a caller holding `%s`
+#     therefore get the same verdict;
 #   * it carries a `#<id>` reference anywhere,
 # each with boundary safety in both directions: task/1 must not match
 # "Merge task/10 into main", impl(5) must not match impl(50), and #45 must not
@@ -33,19 +36,23 @@
 #   * merge-subject arm — agrees with DF's `^Merge task/{tid} into `
 #     alternative, and with find_merge_marker's unanchored search.
 #   * conventional-commit arm — mirrors DF's first alternative, kind list and
-#     `[):]` terminator included, and is subject-only for the same reason DF's
-#     is: a squash or merge body that LISTS `impl(<id>): …` lines is not a
-#     citation. This is the form reify's own commits actually use, so without
-#     it the grammar missed ~98% of task commits.
+#     `[):]` terminator included, for the default prefix `task/` (DF hardcodes
+#     `task/` there; this arm takes the caller's prefix, and drops the
+#     `…<prefix><id>` alternative for an EMPTY prefix, where it would accept any
+#     bare number). It is subject-only for the same reason DF's is: a squash or
+#     merge body that LISTS `impl(<id>): …` lines is not a citation. This is the
+#     form reify's own commits actually use, so without it the grammar missed
+#     ~98% of task commits.
 #   * `#<id>` arm — reify-only; DF has no counterpart. Kept because
 #     warm-lane-degenerate-ref-check.sh's `landed` verdict rests on it for tips
 #     like "feat(selectors): … (#4857, Option B)".
 #   * DF's two UNANCHORED paren alternatives, `(#?<id>)` and `(task <id>)`, are
-#     deliberately NOT mirrored. DF backs them with an effect-present check at
-#     every call site; neither consumer here has one, and on reify's history
-#     they attribute orchestrator subjects such as "chore: save WIP before
-#     warm-lane reclaim (task 1933)" to 1933, and enumerations like "(2)" to
-#     task 2.
+#     deliberately NOT mirrored. DF's own comment on them (task 2870) accepts
+#     their collision risk because its landing attribution also requires the
+#     citing commit's effect to be present at main HEAD; neither consumer here
+#     has such a check, and on reify's history they attribute orchestrator
+#     subjects such as "chore: save WIP before warm-lane reclaim (task 1933)"
+#     to 1933, and enumerations like "(2)" to task 2.
 #
 # Purity contract — every function here takes all of its input as explicit
 # parameters. No git invocation, no caller global (REPO_DIR, BRANCH_PREFIX_RE
@@ -61,8 +68,8 @@
 # then promotes into the pipeline's status, turning a MATCH into a non-match.
 # The arbiter therefore feeds grep by REDIRECTION (`<<<`), so grep's own
 # match/no-match is the verdict and no second process can overrule it. The
-# harvest's pipeline is exempt for a checkable reason, not a size guess: every
-# stage there (`grep -oE`, `sed`, `sort`) consumes to EOF, so no reader ever
+# harvest's pipes are exempt for a checkable reason, not a size guess: their
+# readers (the candidate loop, `sort`) consume to EOF, so no reader ever
 # departs early and there is no SIGPIPE window to lose a citation through.
 # Block G of tests/infra/test_lib_task_citation.sh pins this.
 #
@@ -99,18 +106,30 @@ task_citation_regex_escape() {
 # <escaped_prefix> must already have been through task_citation_regex_escape.
 #
 # This function is the single ARBITER of the grammar: task_citation_peer_ids
-# below harvests candidates permissively and defers every verdict here, so the
-# two can never disagree about what "cites" means. That claim holds only
-# because of the normalisation invariant documented on the harvest below;
-# Block F of tests/infra/test_lib_task_citation.sh enforces it as set
-# equality, in both directions, over a corpus of branch prefixes.
+# below offers it a provably complete candidate set and defers every verdict
+# here, so the two can never disagree about what "cites" means. Block F of
+# tests/infra/test_lib_task_citation.sh enforces that as set equality, in both
+# directions, over a corpus of branch prefixes.
+#
+# The conventional-commit grep runs under LC_ALL=C: in a UTF-8 locale glibc's
+# `[A-Za-z]` also matches letters such as 'é', so the id boundary would
+# otherwise depend on the caller's environment.
 task_citation_message_cites() {
-    local msg="$1" id="$2" prefix_re="$3"
+    local msg="$1" id="$2" prefix_re="$3" line subject="" kind_ref
     if grep -qE "^Merge ${prefix_re}${id} into " <<<"$msg"; then
         return 0
     fi
-    if grep -qE "^${_TASK_CITATION_KINDS}(\(${id}[):]|.*[^A-Za-z0-9_]${prefix_re}${id}([^A-Za-z0-9_]|\$))" \
-            <<<"${msg%%$'\n'*}"; then
+    while IFS= read -r line; do
+        if [ -z "${line//[[:space:]]/}" ]; then
+            [ -z "$subject" ] || break
+            continue
+        fi
+        subject="${subject:+$subject }$line"
+    done <<<"$msg"
+    kind_ref="\(${id}[):]"
+    [ -z "$prefix_re" ] \
+        || kind_ref="$kind_ref|.*[^A-Za-z0-9_]${prefix_re}${id}([^A-Za-z0-9_]|\$)"
+    if LC_ALL=C grep -qE "^${_TASK_CITATION_KINDS}(${kind_ref})" <<<"$subject"; then
         return 0
     fi
     if grep -qE "(^|[^0-9])#${id}([^0-9]|\$)" <<<"$msg"; then
@@ -124,41 +143,29 @@ task_citation_message_cites() {
 # de-duplicated; prints nothing when it cites none. No id-width restriction —
 # the grammar is digit-boundary-delimited, not width-delimited.
 #
-# Two stages, deliberately: a PERMISSIVE scan collects every digit run that
-# follows a '#', a '(' or the branch prefix (a superset of what the grammar
-# accepts — the scan is not subject-scoped, the arbiter is),
-# then task_citation_message_cites adjudicates each candidate. The scan is not
-# a second copy of the grammar — it decides nothing — which is why a candidate
-# like the '5686' in "4#5686" is collected and then correctly rejected.
-#
-# NORMALISATION INVARIANT — a candidate id is what REMAINS once the matched
-# sigil is stripped, never what a character class re-derives from the whole
-# match. The branch prefix is CALLER-SUPPLIED and may itself contain digits,
-# and neither obvious alternative survives that:
-#   * deleting every non-digit from the match fuses the prefix's digits onto
-#     the id — prefix `t2/` turns "Merge t2/200 into main" into 2200, which
-#     the arbiter then correctly rejects, so the real id 200 is never emitted
-#     and the caller sees a SILENT FALSE NEGATIVE on the very merge-subject
-#     form this grammar exists to recognise;
-#   * taking the trailing digit run fails the same way whenever the prefix's
-#     digit is trailing with no separator — prefix `t2` over
-#     "Merge t2200 into main" yields 2200 again.
-# Stripping the matched sigil yields 200 in both. The strip reuses the
-# escaping contract already in force: task_citation_regex_escape backslashes
-# every non-alphanumeric byte, so an escaped prefix interpolates into a
-# /-delimited `sed -E` as safely as into the `grep -E` above (a '/' arrives as
-# '\/', never as a bare delimiter). An empty prefix is unaffected — the
-# alternation matches empty and strips nothing.
+# Two stages, deliberately: enumerate CANDIDATES, then let
+# task_citation_message_cites adjudicate each one. The candidates are every
+# SUFFIX of every maximal digit run in the message, which is complete by
+# construction: every arm requires a non-digit immediately after the id, so an
+# accepted id always ends where its digit run ends. Nothing about a sigil or
+# the prefix is consulted to find them, and that is the point — an earlier
+# harvest that scanned for `#`, `(` or the prefix lost ids whenever one sigil's
+# match swallowed the start of another's (prefix `1/` over "see (1/200)"
+# yielded nothing), and before that it fused a digit-bearing prefix onto the
+# id. The enumeration cannot do either.
 task_citation_peer_ids() {
-    local msg="$1" prefix_re="$2" candidates id
-    candidates="$(printf '%s\n' "$msg" \
-        | grep -oE "(#|${prefix_re}|\()[0-9]+" 2>/dev/null \
-        | sed -E "s/^(#|${prefix_re}|\()//" \
-        | sort -u)" || candidates=""
-    # Word-splitting is safe and intended here: every candidate is a digit run.
-    for id in $candidates; do
-        if task_citation_message_cites "$msg" "$id" "$prefix_re"; then
-            printf '%s\n' "$id"
-        fi
-    done | sort -nu
+    local msg="$1" prefix_re="$2" run i id
+    local -A seen=()
+    {
+        while IFS= read -r run; do
+            for ((i = 0; i < ${#run}; i++)); do
+                id="${run:i}"
+                [ -z "${seen[$id]:-}" ] || continue
+                seen[$id]=1
+                if task_citation_message_cites "$msg" "$id" "$prefix_re"; then
+                    printf '%s\n' "$id"
+                fi
+            done
+        done < <(grep -oE '[0-9]+' <<<"$msg" || true)
+    } | sort -nu
 }

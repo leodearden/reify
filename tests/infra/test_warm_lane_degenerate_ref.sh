@@ -394,7 +394,15 @@ assert "H3: show-ref is byte-identical across both runs (read-only invariant)" \
 # K3 — task/49 tip's SUBJECT cites nothing and its BODY lists `impl(49): …`
 #      (count==0) -> exit 0, "degenerate <sha>": the arm is subject-only, so
 #      a squash body listing this task's commits is not a citation.
-# K4 — show-ref is byte-identical across all three runs (read-only invariant).
+# K4 — show-ref is byte-identical across all five runs (read-only invariant).
+# K5 — task/50 tip's first paragraph spans two lines, the id on the second
+#      -> exit 4, "landed <sha>": this script holds %B, and the grammar's
+#      subject is git's %s (the joined first paragraph), so it agrees with the
+#      sweep and dark-factory, which hold %s.
+# K6 — task/51 tip is ANOTHER task's `fix(4812): rebase onto task/51` commit
+#      -> exit 4, "landed <sha>". Pinned as a known consequence, not a goal:
+#      the verdict is "the tip cites N", and that subject does. The seam doc
+#      (§4b) records why dark-factory's consumer tolerates it.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- amendment: conventional-commit citation-form coverage ---"
@@ -420,10 +428,15 @@ fixture_branch_at_message_commit "$K_REPO" 48 "impl(4812): a different task's st
 fixture_branch_at_message_commit "$K_REPO" 49 "chore: squash summary
 
 impl(49): a listed commit, not a citation"
+fixture_branch_at_message_commit "$K_REPO" 50 "fix: rebase the loader
+onto task/50 before landing"
+fixture_branch_at_message_commit "$K_REPO" 51 "fix(4812): rebase onto task/51"
 
 K_47_TIP="$(git -C "$K_REPO" rev-parse refs/heads/task/47)"
 K_48_TIP="$(git -C "$K_REPO" rev-parse refs/heads/task/48)"
 K_49_TIP="$(git -C "$K_REPO" rev-parse refs/heads/task/49)"
+K_50_TIP="$(git -C "$K_REPO" rev-parse refs/heads/task/50)"
+K_51_TIP="$(git -C "$K_REPO" rev-parse refs/heads/task/51)"
 K_SHOWREF_BEFORE="$(git -C "$K_REPO" show-ref 2>/dev/null || true)"
 
 run_helper --task 47 --repo "$K_REPO"
@@ -443,8 +456,20 @@ assert "K3: task 49 (own id only in a BODY line, count==0) exits 0 (degenerate)"
 assert "K3: stdout is 'degenerate <tip sha>'" \
     bash -c '[ "$1" = "degenerate $2" ]' _ "$OUT" "$K_49_TIP"
 
+run_helper --task 50 --repo "$K_REPO"
+assert "K5: a two-line first paragraph citing 50 on its second line exits 4 (landed)" \
+    test "$RC" -eq 4
+assert "K5: stdout is 'landed <tip sha>'" \
+    bash -c '[ "$1" = "landed $2" ]' _ "$OUT" "$K_50_TIP"
+
+run_helper --task 51 --repo "$K_REPO"
+assert "K6: a foreign 'fix(4812): rebase onto task/51' tip exits 4 (landed — the subject cites 51)" \
+    test "$RC" -eq 4
+assert "K6: stdout is 'landed <tip sha>'" \
+    bash -c '[ "$1" = "landed $2" ]' _ "$OUT" "$K_51_TIP"
+
 K_SHOWREF_AFTER="$(git -C "$K_REPO" show-ref 2>/dev/null || true)"
-assert "K4: show-ref is byte-identical across all three runs (read-only invariant)" \
+assert "K4: show-ref is byte-identical across all five runs (read-only invariant)" \
     bash -c '[ "$1" = "$2" ]' _ "$K_SHOWREF_BEFORE" "$K_SHOWREF_AFTER"
 
 echo ""

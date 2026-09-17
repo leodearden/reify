@@ -131,8 +131,9 @@ absent      ⟺  refs/heads/<prefix>N does not exist
 (shared with `scripts/task-branch-contamination-sweep.sh`). A message cites `<id>` iff:
 
 - a line of it matches `^Merge <prefix><id> into `, OR
-- its **subject** is a conventional-commit head citing `<id>` — `impl(<id>): …`,
-  `fix(<id>: …`, or a kind followed later on the line by `<prefix><id>` — using
+- its **subject** — git's `%s`, the first paragraph joined into one line — is a
+  conventional-commit head citing `<id>`: `impl(<id>): …`, `fix(<id>: …`, or (for a
+  non-empty prefix) a kind followed later in the subject by `<prefix><id>`, using
   dark-factory's closed kind list, OR
 - it carries a `#<id>` reference,
 
@@ -152,6 +153,16 @@ the audit reported `degenerate` over the live pool were landed tips of that shap
 Adding the arm flipped all 81 to `landed` and flipped nothing back. DF's
 citation-missing sweep already recognised that form, so the two sides now agree on
 those refs instead of disagreeing.
+
+**What the verdict does and does not prove.** `landed` means *the tip cites task N*,
+not *the tip is task N's own work*. A foreign tip whose subject names the task —
+`fix(4812): rebase onto task/51`, or a sanctioned docs-only commit made directly on
+`main` such as `docs(7305): …` — also reads `landed` for a zero-commit ref parked on
+it (pinned by K6). The `#<id>` arm always carried the same exposure. Dark-factory's
+consumer tolerates it because the verdict is never its only guard: its stranded-task
+recovery also treats a tip equal to the recorded `branch_base_sha` as degenerate
+(`harness.py`, `_branch_is_degenerate`), and its lane-abort path only ever *retains*
+a branch it cannot prove degenerate.
 
 `--branch-prefix` is regex-escaped (`_regex_escape`) before it is interpolated
 into the merge-subject pattern, so a caller-supplied prefix containing ERE

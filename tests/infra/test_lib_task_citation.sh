@@ -204,10 +204,10 @@ test(4880): a body line listing another commit" "$PFX"
 
 # D9-D12 (step-20) — the branch prefix is CALLER-SUPPLIED and may itself carry
 # digits, so the id can never be re-derived from the matched text by a
-# character class: it is only ever what REMAINS once the matched sigil is
-# stripped. D11 is the discriminating case — a prefix whose digit is trailing
-# with no separator defeats a trailing-digit-run normalisation too, so this
-# assertion is what forbids that repair as well as the character-class one.
+# character class. D11 is the discriminating case — a prefix whose digit is
+# trailing with no separator defeats a trailing-digit-run normalisation too.
+# D13-D14 (esc-7244-16 review) are the shapes a sigil-scanning harvest lost:
+# one sigil's match swallowing the leading digit of a digit-bearing prefix.
 D_T2SLASH_RE="$(task_citation_regex_escape 't2/')"
 assert "D9: a digit INSIDE the prefix does not fuse onto the id (t2/ + t2/200)" \
     stdout_is '200' task_citation_peer_ids 'Merge t2/200 into main' "$D_T2SLASH_RE"
@@ -222,6 +222,11 @@ assert "D11: a digit TRAILING a separatorless prefix does not fuse (t2 + t2200)"
 
 assert "D12: the '#' form is unaffected by a digit-bearing prefix" \
     stdout_is '200' task_citation_peer_ids 'closes #200' "$D_T2SLASH_RE"
+assert "D13: a '(' before a digit-LEADING prefix does not hide the id (1/ + 'fix: see (1/200)')" \
+    stdout_is '200' task_citation_peer_ids 'fix: see (1/200)' "$D_ONESLASH_RE"
+assert "D14: a '#' before a digit-LEADING prefix does not hide the id (1/ + 'fix: see #1/200')" \
+    stdout_is '1
+200' task_citation_peer_ids 'fix: see #1/200' "$D_ONESLASH_RE"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block E (step-3) — SPOT-delegation guard
@@ -329,9 +334,11 @@ assert "E7: no other file under scripts/ or hooks/ carries the grammar in code" 
 # false negative, the other way permits a false positive, and only the
 # conjunction pins the arbiter as the sole authority on what "cites" means.
 #
-# The oracle is derived INDEPENDENTLY of the harvest: enumerate every id the
-# arbiter COULD accept and adjudicate each one through
-# task_citation_message_cites. That candidate set is every SUFFIX of every
+# The oracle enumerates every id the arbiter COULD accept and adjudicates each
+# one through task_citation_message_cites. Since esc-7244-16's review the
+# harvest enumerates the same way (a sigil scan lost ids twice), so this block
+# is now the guard against regressing to a scan — the `(@PFX@` and `#@PFX@`
+# templates are the shapes a scan loses. That candidate set is every SUFFIX of every
 # maximal digit run in the message, which is provably complete: every citation
 # form requires a non-digit (' ' for the merge form, `[):]` or a non-word byte
 # for the conventional-commit form, `[^0-9]|$` for the '#' form) immediately
@@ -409,6 +416,8 @@ Re-lands #100.'
 
 test(4880): a body line citing nothing'
     'test(4414/step-5): RED — id followed by a slash'
+    'fix: see (@PFX@200)'
+    'fix: see #@PFX@200'
 )
 
 for _pfx in "${F_PREFIXES[@]}"; do
@@ -520,6 +529,8 @@ assert "H4: every DF kind is recognised (merge … build)" \
         task_citation_message_cites "$k(77): s" 77 "$2" || { echo "kind $k rejected"; exit 1; }; done' _ "$LIB" "$PFX"
 assert "H5: the arm honours an escaped metacharacter prefix" \
     task_citation_message_cites 'fix: land t.sk/7 now' 7 "$A_DOT_RE"
+assert "H5b: ...LITERALLY — 'tXsk/7' does NOT match the escaped 't.sk/'" \
+    not task_citation_message_cites 'fix: land tXsk/7 now' 7 "$A_DOT_RE"
 
 assert "H6: boundary — 'impl(56860)' does NOT cite 5686, 'impl(5686)' does NOT cite 568" \
     bash -c 'source "$1"; ! task_citation_message_cites "impl(56860): s" 5686 "$2" \
@@ -539,6 +550,36 @@ assert "H9: DF's unanchored paren arms are NOT mirrored ('(task 1933)', '(2)')" 
         && ! task_citation_message_cites "feat: gate entry point (2)" 2 "$2"' _ "$LIB" "$PFX"
 assert "H9b: '<prefix><id>' without a kind head does NOT cite (D6's shape)" \
     not task_citation_message_cites 'rebased onto task/5686 yesterday' 5686 "$PFX"
+
+# H10 — SUBJECT means git's `%s`: the first paragraph, lines joined by a space.
+#       warm-lane-degenerate-ref-check.sh holds `%B`; the sweep and
+#       dark-factory hold `%s`. Cutting at the first newline instead would make
+#       the same commit cite for one caller and not the other.
+assert "H10: a first paragraph spanning lines is ONE subject (git %s parity)" \
+    task_citation_message_cites "fix: rebase the loader
+onto task/48 before landing
+
+Body." 48 "$PFX"
+assert "H10b: leading blank lines are skipped before the subject, as git does" \
+    task_citation_message_cites "
+
+impl(48): after two blank lines" 48 "$PFX"
+assert "H10c: a whitespace-only line ends the subject paragraph" \
+    not task_citation_message_cites "chore: tidy
+   
+fix: rebase onto task/48" 48 "$PFX"
+
+# H11 — an EMPTY prefix keeps `<kind>(<id>)` but drops `<kind> … <prefix><id>`,
+#       which with nothing to anchor on would accept any bare number.
+H_EMPTY_RE="$(task_citation_regex_escape '')"
+assert "H11: empty prefix — 'fix: bump pool to 2 threads' does NOT cite 2" \
+    not task_citation_message_cites 'fix: bump pool to 2 threads' 2 "$H_EMPTY_RE"
+assert "H11b: empty prefix — 'impl(2): …' still cites 2" \
+    task_citation_message_cites 'impl(2): the paren form needs no prefix' 2 "$H_EMPTY_RE"
+
+# H12 — the arm's boundary is locale-independent.
+assert "H12: 'fix: task/48é' cites 48 under a UTF-8 locale too (the arm runs under LC_ALL=C)" \
+    bash -c 'source "$1"; LC_ALL=en_US.UTF-8 task_citation_message_cites "fix: task/48é" 48 "$2"' _ "$LIB" "$PFX"
 
 
 test_summary

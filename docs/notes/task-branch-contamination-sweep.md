@@ -149,7 +149,7 @@ Measured 2026-09-17 (esc-7244-16) against the real incident — the pre-repair `
 | Oracle | Incident: foreign commits flagged | Live pool: branches flagged |
 |---|---|---|
 | whole-message citation (the v1 census) | 0 of 16 | 30 — none with subject-level evidence |
-| peer-tip ancestry (`merge-base --is-ancestor <commit> task/<peer>`) | 0 of 21 non-merge | — |
+| peer-tip ancestry (`merge-base --is-ancestor <commit> task/<peer>`) | 0 of 15 non-merge | — |
 | patch-id (`git cherry task/<peer> <tip> main`) | 6 of 15 non-merge | — |
 | **subject citation (this census)** | **14 of 16** | **0** |
 
