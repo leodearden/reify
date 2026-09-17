@@ -6505,13 +6505,19 @@ impl Engine {
                 }
 
                 // γ (task #4804): surface W_SOLVER_OPTIMALITY_UNPROVEN when the
-                // objective solve hit the iteration limit.  Gate: BestFound AND
-                // reason == BestFoundReason::IterationLimit — converged solves share
-                // the BestFound variant but carry ConvergedWithinBudget, which does
-                // NOT match the gate (B6 no-false-positive).  Variant match is
+                // objective solve stopped short of a proof.  Gate: BestFound AND
+                // reason is IterationLimit (the derivative-free solver ran out of
+                // iterations) or EnumerationBudget (an exact solver hit its node cap
+                // with part of the discrete space unvisited — task #6553).  The other
+                // two reasons do NOT match: converged solves share the BestFound
+                // variant but carry ConvergedWithinBudget, and unreporting solvers
+                // carry Unreported (B6 no-false-positive).  Variant match is
                 // structurally immune to rewording (task #4871, S2).
                 if let Some(OptimalityStatus::BestFound { reason }) = optimality_status
-                    && matches!(reason, BestFoundReason::IterationLimit)
+                    && matches!(
+                        reason,
+                        BestFoundReason::IterationLimit | BestFoundReason::EnumerationBudget
+                    )
                 {
                     diagnostics.push(
                         Diagnostic::warning(format!(
