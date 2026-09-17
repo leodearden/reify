@@ -32,10 +32,17 @@
 //! being medial: the mask can only GROW, never shrink, and no consumer of it
 //! can lose output.
 //!
-//! Nor can a consumer GAIN a WRONG output. A newly-admitted voxel is measured
-//! across the wall it actually crosses rather than along the axis it happened
-//! to be walked down — see the next section — so the honest `NoMeasurement`
-//! this replaces cannot turn into a confident over-read.
+//! Nor can a consumer GAIN a WRONG output, in EITHER direction. A
+//! newly-admitted voxel is measured across the wall it actually crosses rather
+//! than along the axis it happened to be walked down — see the next section —
+//! so the honest `NoMeasurement` this replaces cannot turn into a confident
+//! OVER-read. And the factor that buys that is itself floored at
+//! [`MIN_RIDGE_NORMAL_COSINE`], so it cannot become a confident UNDER-read
+//! either: a factor below any obliquity a unit normal can produce is proof the
+//! voxel is not a medial kink at all, and the fallback declines rather than
+//! scaling a reading by it. An under-read is no better than an over-read — it
+//! reaches the same DFM min-wall verdict, as a spurious violation instead of a
+//! missed one.
 //!
 //! # Why the fallback is interior-only
 //!
@@ -83,13 +90,48 @@
 //! The obliquity factor is exact only at a voxel sitting ON the medial plane;
 //! one `δ` off it reads `|n_a| − |δ|/h` instead, and the `min(1, ·)` clamp
 //! holds a non-Lipschitz field to `1.0`. Both err LOW, which is the direction
-//! that keeps `min_wall_thickness` a conservative lower bound.
+//! that keeps `min_wall_thickness` a conservative lower bound — but only down
+//! to [`MIN_RIDGE_NORMAL_COSINE`], past which the reading is declined outright
+//! rather than trusted.
+//!
+//! That floor is what keeps the fallback safe against a producer whose narrow
+//! band does NOT cover the whole interior. OpenVDB's `meshToLevelSet` saturates
+//! `φ` beyond the band, and a saturated interior plateau exactly one voxel
+//! thick presents a strict valley whose one-sided slopes are a fraction of a
+//! unit — `0.5` for a 2-voxel band on a 5-voxel wall — with no obliquity
+//! anywhere in sight. Read as a conversion factor it would halve the wall.
+//! Every in-tree producer sizes the band to cover the interior
+//! (`MeshToVoxelOptions::{honest_floor, for_resolution}`), so this is
+//! belt-and-braces rather than a live path; the point is that the fallback's
+//! safety no longer rests on a producer-side invariant this module can neither
+//! state nor check.
 
 use std::cmp::Ordering;
 
 use reify_ir::value::SampledField;
 
 use crate::medial::{normalize3, sample_at_index};
+
+/// Smallest `|n̂ · a|` a genuine medial kink can present to the axis `a` the
+/// ridge search picks — `1/√3`, attained on the body diagonal.
+///
+/// The search takes the axis of MAXIMUM one-sided slope, and `max_a |n_a| ≥
+/// 1/√3` for every unit normal, so the bound is exact and free rather than
+/// tuned. Below it the valley is not an obliquity being observed down a grid
+/// axis; it is a field that is not a unit-slope distance function near this
+/// voxel, and the "conversion factor" read off it would rescale a thickness by
+/// an arbitrary amount instead of correcting it.
+const MIN_RIDGE_NORMAL_COSINE: f64 = 0.577_350_269_189_625_8;
+
+/// Relative slack on [`MIN_RIDGE_NORMAL_COSINE`], for the body-diagonal
+/// orientation that sits exactly ON it.
+///
+/// The slope is recovered from differences of stored samples, so it can land a
+/// few ulp below the bound it should meet exactly. `1e-6` covers that with ~9
+/// orders of magnitude to spare, and still covers a grid stored as `f32`
+/// (relative ε `1.2e-7`) — while staying far below the gap to anything this is
+/// meant to reject.
+const RIDGE_NORMAL_COSINE_SLACK: f64 = 1e-6;
 
 /// A direction to walk, together with the factor that converts a distance
 /// walked along it into a PERPENDICULAR one.
@@ -109,14 +151,17 @@ pub(crate) struct WalkDirection {
     pub(crate) normal_cosine: f64,
 }
 
-/// Direction to walk from voxel `idx`, given the already-computed raw
-/// `gradient` there.
+/// Direction to walk from voxel `idx`, given the field value `phi` and the
+/// already-computed raw `gradient` there.
 ///
-/// The gradient is a parameter rather than recomputed here so that
-/// `compute_medial_mask` keeps using its precomputed gradient grid.
+/// Both are parameters rather than re-read here, for the same reason: each call
+/// site already holds them — `compute_medial_mask` from its narrow-band test and
+/// its precomputed gradient grid — and a second read would decouple the fallback
+/// from the values that call site gates and asserts on.
 pub(crate) fn medial_walk_direction(
     sdf: &SampledField,
     idx: [usize; 3],
+    phi: f64,
     gradient: [f64; 3],
 ) -> Option<WalkDirection> {
     normalize3(gradient)
@@ -124,7 +169,7 @@ pub(crate) fn medial_walk_direction(
             direction,
             normal_cosine: 1.0,
         })
-        .or_else(|| interior_ridge_axis(sdf, idx))
+        .or_else(|| interior_ridge_axis(sdf, idx, phi))
 }
 
 /// Walk along the axis whose one-sided differences form the sharpest strict
@@ -132,8 +177,7 @@ pub(crate) fn medial_walk_direction(
 ///
 /// The returned SIGN is arbitrary (always `+axis`): every caller walks `±g`
 /// and every downstream test is symmetric under swapping `d⁺` with `d⁻`.
-fn interior_ridge_axis(sdf: &SampledField, idx: [usize; 3]) -> Option<WalkDirection> {
-    let phi = sample_at_index(sdf, idx);
+fn interior_ridge_axis(sdf: &SampledField, idx: [usize; 3], phi: f64) -> Option<WalkDirection> {
     // Not `phi >= 0.0`: a NaN sample is not `Less` either, so this rejects it
     // rather than walking from it.
     if phi.partial_cmp(&0.0) != Some(Ordering::Less) {
@@ -168,16 +212,23 @@ fn interior_ridge_axis(sdf: &SampledField, idx: [usize; 3]) -> Option<WalkDirect
         }
     }
 
-    best.map(|(sharpness, axis)| {
+    best.and_then(|(sharpness, axis)| {
+        // Half the sharpness is the mean one-sided slope, which at a kink voxel
+        // IS `|n_a|`. Clamped above so the conversion can only ever reduce a
+        // reading: a super-unit slope is not an obliquity.
+        let normal_cosine = (0.5 * sharpness).min(1.0);
+        // Bounded below for the converse reason: a slope no obliquity could
+        // produce is not a correction factor, and scaling by it would replace an
+        // honest `NoMeasurement` with a confident under-read.
+        if normal_cosine < MIN_RIDGE_NORMAL_COSINE * (1.0 - RIDGE_NORMAL_COSINE_SLACK) {
+            return None;
+        }
         let mut direction = [0.0; 3];
         direction[axis] = 1.0;
-        WalkDirection {
+        Some(WalkDirection {
             direction,
-            // Half the sharpness is the mean one-sided slope, which at a kink
-            // voxel IS `|n_a|`. Clamped so the conversion can only ever reduce
-            // a reading: a super-unit slope is not an obliquity.
-            normal_cosine: (0.5 * sharpness).min(1.0),
-        }
+            normal_cosine,
+        })
     })
 }
 
@@ -186,6 +237,12 @@ mod tests {
     use super::*;
     use reify_ir::value::{InterpolationKind, SampledGridKind};
     use std::sync::atomic::AtomicBool;
+
+    /// [`medial_walk_direction`] with the voxel's own `φ`, which is what both
+    /// production call sites pass.
+    fn walk_at(sdf: &SampledField, idx: [usize; 3], gradient: [f64; 3]) -> Option<WalkDirection> {
+        medial_walk_direction(sdf, idx, sample_at_index(sdf, idx), gradient)
+    }
 
     /// `n³` Regular3D field whose value at `(i, j, k)` is `phi(i, j, k)`, with
     /// grid point `(i, j, k)` at world `(i·sx, j·sy, k·sz)`.
@@ -236,7 +293,7 @@ mod tests {
     fn a_usable_gradient_is_returned_normalised_and_otherwise_unchanged() {
         let sdf = interior_k_valley(3, [1.0; 3]);
         assert_eq!(
-            medial_walk_direction(&sdf, [1, 1, 1], [0.0, 3.0, 4.0]),
+            walk_at(&sdf, [1, 1, 1], [0.0, 3.0, 4.0]),
             perpendicular([0.0, 0.6, 0.8])
         );
     }
@@ -244,26 +301,26 @@ mod tests {
     #[test]
     fn a_flat_region_has_no_walk_direction() {
         let sdf = index_field(3, [1.0; 3], |_i, _j, _k| -1.0);
-        assert_eq!(medial_walk_direction(&sdf, [1, 1, 1], [0.0; 3]), None);
+        assert_eq!(walk_at(&sdf, [1, 1, 1], [0.0; 3]), None);
     }
 
     #[test]
     fn a_voxel_with_no_interior_neighbour_pair_on_the_kink_axis_has_no_walk_direction() {
         let sdf = interior_k_valley(3, [1.0; 3]);
-        assert_eq!(medial_walk_direction(&sdf, [1, 1, 0], [0.0; 3]), None);
+        assert_eq!(walk_at(&sdf, [1, 1, 0], [0.0; 3]), None);
     }
 
     #[test]
     fn an_exterior_kink_is_not_a_medial_axis_of_the_material() {
         let sdf = index_field(3, [1.0; 3], |_i, _j, k| (k as f64 - 1.0).abs() + 1.0);
-        assert_eq!(medial_walk_direction(&sdf, [1, 1, 1], [0.0; 3]), None);
+        assert_eq!(walk_at(&sdf, [1, 1, 1], [0.0; 3]), None);
     }
 
     #[test]
     fn an_interior_valley_yields_the_unit_vector_along_its_axis() {
         let sdf = interior_k_valley(3, [1.0; 3]);
         assert_eq!(
-            medial_walk_direction(&sdf, [1, 1, 1], [0.0; 3]),
+            walk_at(&sdf, [1, 1, 1], [0.0; 3]),
             perpendicular([0.0, 0.0, 1.0])
         );
     }
@@ -275,7 +332,7 @@ mod tests {
             (i as f64 - 1.0).abs().max(2.0 * (k as f64 - 1.0).abs()) - 3.0
         });
         assert_eq!(
-            medial_walk_direction(&sdf, [1, 1, 1], [0.0; 3]),
+            walk_at(&sdf, [1, 1, 1], [0.0; 3]),
             perpendicular([0.0, 0.0, 1.0])
         );
     }
@@ -286,7 +343,7 @@ mod tests {
             (i as f64 - 1.0).abs().max((k as f64 - 1.0).abs()) - 3.0
         });
         assert_eq!(
-            medial_walk_direction(&sdf, [1, 1, 1], [0.0; 3]),
+            walk_at(&sdf, [1, 1, 1], [0.0; 3]),
             perpendicular([1.0, 0.0, 0.0])
         );
     }
@@ -299,7 +356,7 @@ mod tests {
     fn an_axis_aligned_valley_needs_no_obliquity_conversion() {
         let sdf = interior_k_valley(3, [1.0; 3]);
         assert_eq!(
-            medial_walk_direction(&sdf, [1, 1, 1], [0.0; 3]).map(|walk| walk.normal_cosine),
+            walk_at(&sdf, [1, 1, 1], [0.0; 3]).map(|walk| walk.normal_cosine),
             Some(1.0)
         );
     }
@@ -320,7 +377,7 @@ mod tests {
             diagonal * ((i as f64 - 1.0) + (k as f64 - 1.0)).abs() - 2.0
         });
         assert_eq!(
-            medial_walk_direction(&sdf, [1, 1, 1], [0.0; 3]),
+            walk_at(&sdf, [1, 1, 1], [0.0; 3]),
             Some(WalkDirection {
                 // The x and z valleys are equally sharp; the tie-break picks x.
                 direction: [1.0, 0.0, 0.0],
@@ -337,8 +394,47 @@ mod tests {
     fn a_super_unit_slope_is_clamped_rather_than_inflating_the_reading() {
         let sdf = index_field(3, [1.0; 3], |_i, _j, k| 3.0 * (k as f64 - 1.0).abs() - 5.0);
         assert_eq!(
-            medial_walk_direction(&sdf, [1, 1, 1], [0.0; 3]),
+            walk_at(&sdf, [1, 1, 1], [0.0; 3]),
             perpendicular([0.0, 0.0, 1.0])
+        );
+    }
+
+    /// A valley far too shallow to be an obliquity is DECLINED, not scaled by.
+    ///
+    /// `φ = clamp(|k − 1| − 2.5, ±2)` is the shape a narrow-band-saturated SDF
+    /// takes where its interior clamp plateau is exactly one voxel thick: a
+    /// strict valley whose one-sided slopes are `±0.5`, on a wall of true
+    /// thickness 5. Scaling by that `0.5` would halve the wall and hand
+    /// `min_wall_thickness` a confident 2× under-read in place of an honest
+    /// `NoMeasurement`.
+    #[test]
+    fn a_sub_unit_slope_valley_is_declined_rather_than_scaling_the_reading() {
+        let sdf = index_field(3, [1.0; 3], |_i, _j, k| {
+            ((k as f64 - 1.0).abs() - 2.5).clamp(-2.0, 2.0)
+        });
+        assert_eq!(walk_at(&sdf, [1, 1, 1], [0.0; 3]), None);
+    }
+
+    /// The body diagonal is the shallowest orientation a real medial plane can
+    /// present to its own sharpest axis, so it sits exactly ON
+    /// [`MIN_RIDGE_NORMAL_COSINE`] and must still be ACCEPTED — the bound
+    /// separates non-kinks from obliquities, and must not clip the worst
+    /// obliquity off the top of the range it admits.
+    #[test]
+    fn the_body_diagonal_sits_on_the_bound_and_is_still_accepted() {
+        let diagonal = 1.0 / 3f64.sqrt();
+        // φ = |n̂·p| − 2 about (1, 1, 1), with n̂ = (1, 1, 1)/√3.
+        let sdf = index_field(3, [1.0; 3], |i, j, k| {
+            diagonal * ((i as f64 - 1.0) + (j as f64 - 1.0) + (k as f64 - 1.0)).abs() - 2.0
+        });
+        let walk = walk_at(&sdf, [1, 1, 1], [0.0; 3])
+            .expect("the body diagonal is ON the bound, not below it");
+        // All three axes are equally sharp here; the tie-break picks x.
+        assert_eq!(walk.direction, [1.0, 0.0, 0.0]);
+        assert!(
+            (walk.normal_cosine - diagonal).abs() <= 1e-12,
+            "body-diagonal cosine {} is not 1/√3",
+            walk.normal_cosine
         );
     }
 
@@ -350,7 +446,7 @@ mod tests {
             (i as f64 - 1.0).abs().max((k as f64 - 1.0).abs()) - 3.0
         });
         assert_eq!(
-            medial_walk_direction(&sdf, [1, 1, 1], [0.0; 3]),
+            walk_at(&sdf, [1, 1, 1], [0.0; 3]),
             perpendicular([0.0, 0.0, 1.0])
         );
     }

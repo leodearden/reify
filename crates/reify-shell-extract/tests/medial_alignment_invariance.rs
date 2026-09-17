@@ -427,3 +427,78 @@ fn min_wall_thickness_is_not_inflated_by_an_oblique_medial_plane() {
         );
     }
 }
+
+/// The obliquity factor must not be read off a valley that no obliquity could
+/// have produced.
+///
+/// A narrow-band SDF saturates `φ` beyond its band (OpenVDB's `meshToLevelSet`
+/// does), and where the interior clamp plateau is exactly one voxel thick the
+/// mid-plane voxel still presents the ridge fallback a strict valley — but one
+/// whose one-sided slopes are a FRACTION of a unit rather than a direction
+/// cosine. Read as a conversion factor it scales the wall down by that
+/// fraction: `0.5` here, turning a `5h` wall into a confident `Measured(2.5)`
+/// where the honest answer is `NoMeasurement`. An under-read reaches
+/// `reify-eval`'s min-wall DFM verdict as a spurious violation exactly as an
+/// over-read reaches it as a missed one.
+///
+/// `1/√3` is the smallest cosine any unit normal can present to its own
+/// sharpest axis, so a slope of `0.5` is PROOF this is not a medial kink, and
+/// the fallback declines rather than measuring. The unsaturated control pins
+/// that the geometry and the narrow band are otherwise fine: it is the plateau
+/// that is being declined, not the fixture.
+///
+/// No in-tree producer reaches this state — `MeshToVoxelOptions::honest_floor`
+/// and `::for_resolution` both size the band to cover the whole interior — so
+/// this pins an invariant the extractor now enforces for itself instead of
+/// inheriting it from a producer it cannot see.
+#[test]
+fn a_saturated_narrow_band_declines_to_measure_rather_than_under_reading() {
+    let h = 1.0;
+    let n = 25;
+    let bounds_min = -12.0;
+    let thickness = 5.0 * h;
+    let saturation = 2.0 * h;
+
+    let control = slab_field(0.0, thickness, h, n, bounds_min);
+    let control_measured = min_wall_thickness(&control, h)
+        .expect("the analytic slab is a structurally valid Regular3D field");
+    let MinWallThickness::Measured(v) = control_measured else {
+        panic!(
+            "control: expected Measured for the same wall without saturation; \
+             got {control_measured:?}"
+        );
+    };
+    assert!(
+        (v - thickness).abs() <= 1e-9,
+        "control min-wall {v} differs from the true thickness {thickness}"
+    );
+
+    let saturated = regular3d_field("saturated-band-slab", h, n, bounds_min, |_x, _y, z| {
+        (z.abs() - 0.5 * thickness).clamp(-saturation, saturation)
+    });
+
+    let mask = compute_medial_mask(&saturated, &MedialOptions::default())
+        .expect("the saturated slab is a structurally valid Regular3D field");
+    assert!(
+        mask.voxels.is_empty(),
+        "the plateau's one-sided slopes are ±0.5, below the 1/√3 floor any real \
+         obliquity clears, so no voxel may be tagged medial; got {} voxels",
+        mask.voxels.len()
+    );
+
+    assert_eq!(
+        min_wall_thickness(&saturated, h)
+            .expect("the saturated slab is a structurally valid Regular3D field"),
+        MinWallThickness::NoMeasurement,
+        "a {thickness}-thick wall whose band saturates one voxel short of its \
+         own mid-plane must not be measured at all"
+    );
+    assert_eq!(
+        min_feature_size_measure(&saturated, h)
+            .expect("the saturated slab is a structurally valid Regular3D field"),
+        MinFeatureSize::NoMeasurement,
+        "the same plateau caps 2·min|φ| at {}, a full voxel below the true \
+         {thickness}, and must not be reported either",
+        2.0 * saturation
+    );
+}

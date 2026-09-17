@@ -403,11 +403,13 @@ pub fn min_wall_thickness(
         // sites go through `medial_walk_direction`.
         //
         // `gradient_at_index` is the gradient source because this path has no
-        // precomputed gradient grid to draw on.
+        // precomputed gradient grid to draw on; `phi` likewise has no cached
+        // source here, so unlike `compute_medial_mask` this site reads it.
         let world = world_at_index(sdf, idx);
+        let phi = sample_at_index(sdf, idx);
         let grad_raw = gradient_at_index(sdf, idx);
         // None → skip: neither a usable gradient nor an interior ridge axis.
-        let walk = medial_walk_direction(sdf, idx, grad_raw)?;
+        let walk = medial_walk_direction(sdf, idx, phi, grad_raw)?;
         // Bidirectional walk: d⁺ + d⁻ for this voxel. None → skip.
         let (d_plus, d_minus, _, _) =
             bidirectional_distances(sdf, world, walk.direction, max_steps, walk_step)?;
@@ -693,7 +695,11 @@ pub fn compute_medial_mask(
                                  |phi|={phi} > band_width={band_width}"
                             );
                             let grad = gradient_grid_ref[i * ny * nz + j * nz + k];
-                            let Some(walk) = medial_walk_direction(sdf, [i, j, k], grad) else {
+                            // `phi` is handed on rather than re-read, so the
+                            // ridge fallback's interior test is made on the very
+                            // value the band filter and debug_assert above gate.
+                            let Some(walk) = medial_walk_direction(sdf, [i, j, k], phi, grad)
+                            else {
                                 continue;
                             };
                             // `.direction` only: the equality test below stays
