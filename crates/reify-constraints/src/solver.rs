@@ -1081,6 +1081,84 @@ fn worst_unmet_floor_term(
         .max_by(|(a_got, a_need), (b_got, b_need)| (a_need - a_got).total_cmp(&(b_need - b_got)))
 }
 
+/// A point that VERIFIABLY satisfies `problem.constraints` (the ORIGINAL set,
+/// synthesised floor excluded), or `None` when no candidate does.
+///
+/// Two rungs, cheapest first:
+///
+///   1. `converged` — the floored solve's own converged point.  Free: it is
+///      already in hand.  A shallow objective leaves it inside the user's box,
+///      so this rung carries the `q ∈ [99, 100]` shape by itself, with the slack
+///      digits it has always reported.
+///   2. one bounded re-solve with the floor switched OFF.  A Money objective
+///      steep relative to `PENALTY_WEIGHT` parks the floored penalty minimiser
+///      outside the user's box — measured, `x > 10mm ∧ x < 10.3mm` under
+///      `5 USD × (x / 1mm)` lands at x ≈ 8.85e-3 — which is exactly what rung 1
+///      cannot rescue and what this rung is for (task #5714).
+///
+/// The return is deliberately a WITNESS — a concrete point re-checked against
+/// `problem.constraints` — never an inference from a derived box.
+/// `derive_param_intervals` SKIPs nonlinear and multi-auto shapes, so a
+/// non-degenerate derived box is not evidence of satisfiability: measured,
+/// `2·x > 60mm ∧ 2·x < 20mm` derives `DerivedInterval { lo: None, hi: None }`
+/// and hence the non-degenerate `default_bounds_for(Length) = (1e-6, 10.0)` for
+/// a region that is genuinely EMPTY.  A box-emptiness shortcut would over-claim
+/// exactly there; control test
+/// `underivable_empty_box_keeps_the_region_empty_wording`.
+///
+/// RECURSION is exactly one level deep BY CONSTRUCTION, not by a counter: rung 2
+/// passes `apply_robustness_floor = false`, so `floor_applied` is false inside
+/// that solve and the caller's `floor_applied` arm — the only call site — is
+/// structurally unreachable there.
+fn original_constraints_witness(
+    problem: &ResolutionProblem,
+    converged: &ValueMap,
+    sd_tolerance: f64,
+    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
+) -> Option<ValueMap> {
+    let satisfies_originals = |values: &ValueMap| {
+        max_constraint_residual(&problem.constraints, values, &problem.functions, dispatch)
+            <= FEASIBILITY_THRESHOLD
+    };
+
+    // ── rung 1: the floored solve's converged point (free) ───────────────────
+    if satisfies_originals(converged) {
+        return Some(converged.clone());
+    }
+
+    // ── rung 2: one floor-free re-solve ──────────────────────────────────────
+    let seed = extract_initial_point(problem, dispatch);
+    let (result, _) = solve_core_with_sd_tolerance(
+        problem,
+        &seed,
+        sd_tolerance,
+        /* apply_robustness_floor = */ false,
+        dispatch,
+    );
+    let SolveResult::Solved { values, .. } = result else {
+        // `Infeasible` and `NoProgress` both mean "no witness found here" — the
+        // caller must then keep the region-empty wording rather than guess.
+        return None;
+    };
+    // `SolveResult::Solved` carries only the autos, so rebuild the full map the
+    // residual check needs — dependent cells included — via the same helper the
+    // solve itself uses.  Any missing or non-numeric auto declines.
+    let xs: Vec<f64> = problem
+        .auto_params
+        .iter()
+        .map(|p| values.get(&p.id).and_then(Value::as_f64))
+        .collect::<Option<_>>()?;
+    let witness = build_trial_values(
+        &problem.current_values,
+        &problem.auto_params,
+        &xs,
+        &problem.dependent_cells,
+        &problem.functions,
+        dispatch,
+    );
+    satisfies_originals(&witness).then_some(witness)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Constraint-derived parameter bounds (task #5618)
 //
@@ -2697,7 +2775,7 @@ fn solve_core_with_sd_tolerance(
         return (
             SolveResult::Infeasible {
                 diagnostics: vec![if floor_applied {
-                    // ── Diagnostic honesty (task #5618 step-10) ──────────────────
+                    // ── Diagnostic honesty (task #5618 step-10, #5714) ───────────
                     // `final_max_residual` above is measured against
                     // `effective_constraints`, i.e. the user's constraints PLUS the
                     // synthesised floor.  It cannot tell "your constraints admit no
@@ -2708,70 +2786,66 @@ fn solve_core_with_sd_tolerance(
                     // complaint: the diagnostic sent the user off relaxing a design
                     // that was never over-constrained.
                     //
-                    // So re-measure against `problem.constraints` — the ORIGINAL set,
-                    // floor excluded — at the point actually being reported.  This is
-                    // deliberately a claim about THAT POINT, not about the feasible
-                    // region: it is verified, not inferred, so the new wording can
-                    // never over-claim.  Deriving the raw box instead (via
-                    // `derive_param_intervals`) would be cheaper but unsound —
-                    // that helper SKIPs nonlinear and multi-auto shapes, so a
-                    // non-degenerate derived box is not evidence of satisfiability.
+                    // So SEARCH for a point that satisfies `problem.constraints` —
+                    // the ORIGINAL set, floor excluded.  #5618 only ever checked the
+                    // floored solve's own converged point, which a steep Money
+                    // objective drags outside the user's box; `original_constraints_witness`
+                    // adds one floor-free re-solve behind that free check (#5714).
                     //
-                    // KNOWN GAP (not a regression; #5618 does not close it): the
-                    // honest branch is only reachable when the returned point stays
-                    // inside the user's box.  Under a steep objective it need not —
-                    // measured, `x > 10mm ∧ x < 10.3mm` with `5 USD × (x / 1mm)`
-                    // (gradient 5000/m vs PENALTY_WEIGHT = 1e6) parks ~1.25e-3 m below
-                    // the floored lower bound, outside the 0.3mm-wide user box, so
-                    // this check correctly declines and the region-empty wording
-                    // stands even though the region is not empty.  Making it reachable
-                    // means changing WHICH point a floor-infeasible solve reports —
-                    // solver semantics, and its own task: #5714, which carries this
-                    // measurement and the reason the cheap box-emptiness shortcut is
-                    // unsound.  See the
-                    // `margin_only_infeasibility_names_the_margin_not_an_empty_region`
-                    // doc comment in `tests/robustness_floor.rs` for the measurement.
-                    let original_max_residual = max_constraint_residual(
-                        &problem.constraints,
+                    // The claim stays about a CONCRETE POINT, never about the
+                    // feasible region: verified, not inferred, so the honest wording
+                    // can never over-claim.  The invariants that keep it that way —
+                    // one-level recursion by construction, and why the cheap
+                    // `derive_param_intervals` box-emptiness shortcut is unsound —
+                    // are documented on the helper, with the control test that pins
+                    // each.  Cost: one extra bounded solve on an already-failing
+                    // path, up to `K = 2·(dim+1)` of them under `solve_ranked_impl`
+                    // multistart for a fully floor-infeasible model.  Accepted.
+                    match original_constraints_witness(
+                        problem,
                         &final_values,
-                        &problem.functions,
+                        sd_tolerance,
                         dispatch,
-                    );
-                    if original_max_residual <= FEASIBILITY_THRESHOLD {
-                        // The floor terms occupy the tail of `effective_constraints`
-                        // past the originals — the ORDERING INVARIANT documented at
-                        // the `synthesise_floor_constraints` call site is what makes
-                        // this slice well-defined.
-                        let shortfall = match worst_unmet_floor_term(
-                            &effective_constraints[problem.constraints.len()..],
-                            &final_values,
-                            &problem.functions,
-                            dispatch,
-                        ) {
-                            Some((achieved, required)) => format!(
-                                " (worst slack at that point: {achieved:.3e} achieved vs \
-                                 {required:.3e} required)"
-                            ),
-                            None => String::new(),
-                        };
-                        reify_core::Diagnostic::error(format!(
-                            "infeasible under robustness floor: the original constraints ARE \
-                             satisfied at the returned point — it is the synthesised {:.0}% \
-                             robustness margin that cannot be met{}; relax opposing \
-                             constraints, widen the tolerance margin, or take explicit \
-                             control with `minimize cost_robustness_tradeoff(<cost-expr>, λ)`",
-                            REL_MARGIN * 100.0,
-                            shortfall
-                        ))
-                        .with_code(DiagnosticCode::RobustnessFloorInfeasible)
-                    } else {
-                        reify_core::Diagnostic::error(format!(
+                    ) {
+                        Some(witness) => {
+                            // The floor terms occupy the tail of `effective_constraints`
+                            // past the originals — the ORDERING INVARIANT documented at
+                            // the `synthesise_floor_constraints` call site is what makes
+                            // this slice well-defined.  Evaluated AT THE WITNESS: the
+                            // margins are constant literals synthesised once from the
+                            // seed, so the shortfall is the one the user would hit at
+                            // the point being reported as satisfiable.
+                            let shortfall = match worst_unmet_floor_term(
+                                &effective_constraints[problem.constraints.len()..],
+                                &witness,
+                                &problem.functions,
+                                dispatch,
+                            ) {
+                                Some((achieved, required)) => format!(
+                                    " (worst slack there: {achieved:.3e} achieved vs \
+                                     {required:.3e} required)"
+                                ),
+                                None => String::new(),
+                            };
+                            reify_core::Diagnostic::error(format!(
+                                "infeasible under robustness floor: the original constraints \
+                                 ARE satisfiable — verified at a point that meets them — so it \
+                                 is the synthesised {:.0}% robustness margin that cannot be \
+                                 met{}; relax opposing constraints, widen the tolerance \
+                                 margin, or take explicit control with `minimize \
+                                 cost_robustness_tradeoff(<cost-expr>, λ)`",
+                                REL_MARGIN * 100.0,
+                                shortfall
+                            ))
+                            .with_code(DiagnosticCode::RobustnessFloorInfeasible)
+                        }
+                        None => reify_core::Diagnostic::error(format!(
                             "infeasible under robustness floor: the floored feasible region is \
                              empty (max absolute residual: {:.2e}); relax opposing constraints \
                              or widen the tolerance margin",
                             final_max_residual
                         ))
-                        .with_code(DiagnosticCode::RobustnessFloorInfeasible)
+                        .with_code(DiagnosticCode::RobustnessFloorInfeasible),
                     }
                 } else {
                     reify_core::Diagnostic::error(format!(
