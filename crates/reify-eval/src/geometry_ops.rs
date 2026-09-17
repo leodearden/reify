@@ -9339,7 +9339,7 @@ pub(crate) fn try_eval_topology_selector(
             // and d > 0.0 → Bool(false) (shapes apart).
             //
             // This reproduces the shipped shapes_intersect adapter semantics
-            // (reify-kernel-occt/src/lib.rs:770: "Ok(true) iff min BREP distance
+            // (`OcctKernel::shapes_intersect`: "Ok(true) iff min BREP distance
             // ≤ 0.0") and the kinematic interferes_with precedent
             // (`KinematicHelper::InterferesWith`'s `Some(d) => Bool(d <= 0.0)` arm).
             //
@@ -10097,7 +10097,7 @@ enum TopologySelectorHelper {
     /// Routes through `GeometryQuery::Distance{from,to}` via `kernel_distance`,
     /// classifying `d <= 0.0` → `Bool(true)` and `d > 0.0` → `Bool(false)`.
     /// This reproduces the shipped `shapes_intersect` adapter semantics
-    /// (`reify-kernel-occt/src/lib.rs:770`: "Ok(true) iff min BREP distance ≤ 0.0")
+    /// (`OcctKernel::shapes_intersect`: "Ok(true) iff min BREP distance ≤ 0.0")
     /// and the kinematic `interferes_with` precedent (`KinematicHelper::InterferesWith`).
     ///
     /// Both args must be Shape ValueRefs (resolved via `resolve_geometry_handle_arg`

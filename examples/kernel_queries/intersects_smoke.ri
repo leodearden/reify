@@ -16,11 +16,13 @@
 //
 // Dispatch route (task 3612 design decision):
 //   Routes through GeometryQuery::Distance{from,to} classifying d <= 0.0 → Bool,
-//   matching the shapes_intersect adapter semantics (reify-kernel-occt/src/lib.rs:770).
+//   matching the shapes_intersect adapter semantics (OcctKernel::shapes_intersect).
 //
 // Pinning test:
-//   crates/reify-eval/tests/harness_kernel_realization/kernel_queries_intersects_smoke.rs::
-//     intersects_smoke_evals_expected_booleans
+//   cargo test -p reify-eval --test harness_kernel_realization intersects_smoke_evals_expected_booleans
+//   (crates/reify-eval/tests/harness_kernel_realization/kernel_queries_intersects_smoke.rs —
+//   a #[path]-included module of the harness_kernel_realization test target, not its own
+//   `cargo test --test` target)
 
 structure def IntersectsSmoke {
     let a        = box(10mm, 10mm, 10mm)
