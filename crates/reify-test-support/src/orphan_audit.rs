@@ -358,6 +358,41 @@ fn resolve_script_and_root() -> (PathBuf, PathBuf) {
     (script, repo_root)
 }
 
+/// The unexecuted [`Command`] [`run_orphan_audit`] spawns for `scope`:
+/// program, argv, `current_dir`, and [`crate::git_env::sanitize`] already
+/// applied. Composes [`build_audit_command`] and [`resolve_script_and_root`]
+/// — no new resolution logic, no new argv — so it cannot fork from what
+/// production actually spawns.
+///
+/// Public because `reify-audit`'s `tests/g_allow.rs` hazard probe needs to
+/// spawn this EXACT command TWICE, under two different environments, to
+/// compare them — something [`run_orphan_audit`] (one spawn, sanitized,
+/// parsed to a JSON envelope) cannot express. Contrast [`OrphanAudit`]'s doc
+/// above, which declines to promote a finer-grained type ahead of a real
+/// external consumer: this item has one, so it is promoted.
+///
+/// # Composition contract
+///
+/// The returned command is ALREADY sanitized. A caller that then adds
+/// `Command::env` for one of [`crate::git_env::REPO_REDIRECT_VARS`] is
+/// deliberately re-poisoning a sanitized command — e.g. to demonstrate a
+/// hazard synthetically — not working around a missing sanitize. See
+/// [`crate::git_env`] for what sanitization is for and why.
+///
+/// # Not a substitute for [`run_orphan_audit`]
+///
+/// Every REAL invocation of the audit goes through [`run_orphan_audit`],
+/// which wraps this same command with the graceful-skip protocol
+/// (`python3`/`git` presence, script-on-disk, `repo_root`-is-a-git-work-tree,
+/// `EXCLUDE_CRATES` membership), the repo-root premise probe, and the
+/// empty-stdout hard failure. Spawning this command directly buys none of
+/// those — it is for a caller that needs the command ITSELF, unexecuted, to
+/// compare against another.
+pub fn audit_command(scope: &str) -> Command {
+    let (script, repo_root) = resolve_script_and_root();
+    build_audit_command(&script, scope, &repo_root)
+}
+
 /// Like [`run_orphan_audit`], but returns the full three-way [`OrphanAudit`]
 /// outcome instead of collapsing two of them to `None`.
 ///
