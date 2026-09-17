@@ -72,8 +72,9 @@ fn has_pending_consumer(ctx: &AuditContext, producer_prd: &str) -> bool {
 /// suppress — keeping this detector and the orphan script in lockstep.
 fn is_g_allow_suppressed(symbol: &ChangedSymbol) -> bool {
     symbol
-        .g_allow_marker
-        .as_deref()
+        .suppression
+        .as_ref()
+        .and_then(|s| s.g_allow_marker.as_deref())
         .is_some_and(|r| !r.trim().is_empty())
 }
 
@@ -131,7 +132,11 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         for symbol in ctx.jcodemunch.get_changed_symbols(&since_sha, until_sha) {
             // Per-symbol guard: intentional-orphan opt-outs —
             // `#[allow(dead_code)]` / `#[cfg(test)]` (design §5 P1).
-            if symbol.has_allow_dead_code || symbol.has_cfg_test {
+            if symbol
+                .suppression
+                .as_ref()
+                .is_some_and(|s| s.has_allow_dead_code || s.has_cfg_test)
+            {
                 continue;
             }
             // Per-symbol guard: a non-blank `// G-allow:` marker on the

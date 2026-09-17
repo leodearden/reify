@@ -53,7 +53,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::{
-    ChangedSymbol, DeadSymbol, JCodemunchOps, LayerViolation, SymbolReference,
+    ChangedSymbol, DeadSymbol, DeclSuppression, JCodemunchOps, LayerViolation, SymbolReference,
     UntestedSymbol,
 };
 
@@ -694,8 +694,9 @@ fn untested_symbols_from_wire(decoded: &Value) -> Vec<UntestedSymbol> {
 /// Adapter: MUNCH-decoded value → `Vec<ChangedSymbol>`.
 ///
 /// Reads ONLY the `added_symbols` table (per PRD §8; removed/changed are
-/// decoded but ignored). Maps `name/file/line` by column name; suppression
-/// flags are defaulted to `false/false/None` — enrichment happens later in
+/// decoded but ignored). Maps `name/file/line` by column name; suppression is
+/// left UNKNOWN, since the decode step reads no source file and so has no
+/// basis for an opt-out judgement — enrichment happens later in
 /// [`RealJCodemunchOps::get_changed_symbols`].
 ///
 /// `name` and `file` are MANDATORY — a row without them names no locatable
@@ -704,7 +705,7 @@ fn untested_symbols_from_wire(decoded: &Value) -> Vec<UntestedSymbol> {
 /// symbol, so a drifted grammar under-reports the declaration LOCATION
 /// rather than shrinking the P1 sweep's input set. The sentinel is carried
 /// end-to-end: [`decl_line_out_of_range`] treats `0` as unlocatable,
-/// [`extract_suppression`] returns its neutral triple for it, and
+/// [`extract_suppression`] declines to answer for it, and
 /// [`stale_decl_line_diagnostic`] surfaces it on stderr.
 fn changed_symbols_from_wire(decoded: &Value) -> Vec<ChangedSymbol> {
     let rows = match decoded
@@ -723,9 +724,7 @@ fn changed_symbols_from_wire(decoded: &Value) -> Vec<ChangedSymbol> {
                 name,
                 file,
                 line,
-                has_allow_dead_code: false,
-                has_cfg_test: false,
-                g_allow_marker: None,
+                suppression: None,
             })
         })
         .collect()
@@ -1072,12 +1071,14 @@ fn enrich_suppression_flags(symbols: &mut [ChangedSymbol], project_root: &Path) 
                 v.insert(entry)
             }
         };
+        // No `else`: a file that could not be read leaves `suppression` at
+        // the `None` the decode step set, which is the CORRECT answer — no
+        // declaration was scanned, so no opt-out judgement exists. That is an
+        // absence of evidence, not evidence of absence, and
+        // `read_source_lines_for_enrichment`'s own per-path message above is
+        // what keeps it from being silent.
         if let Ok(lines) = cached {
-            let (has_allow_dead_code, has_cfg_test, g_allow_marker) =
-                extract_suppression(lines, sym.line);
-            sym.has_allow_dead_code = has_allow_dead_code;
-            sym.has_cfg_test = has_cfg_test;
-            sym.g_allow_marker = g_allow_marker;
+            sym.suppression = extract_suppression(lines, sym.line);
         }
     }
     // A second pass over the now-fully-populated `file_cache` rather than
@@ -1115,9 +1116,12 @@ fn decl_line_out_of_range(decl_line_1based: usize, line_count: usize) -> bool {
 // -----------------------------------------------------------------------
 
 /// Scan the contiguous attribute/comment block immediately above a
-/// declaration and extract suppression flags.
+/// declaration and extract the opt-outs it carries.
 ///
-/// Returns `(has_allow_dead_code, has_cfg_test, g_allow_marker)`.
+/// Returns `Some(DeclSuppression)` when the declaration was located and
+/// scanned, `None` when it was not. The two are DIFFERENT answers, and
+/// collapsing them is what let an unlocatable declaration read as "the
+/// author declined every opt-out".
 ///
 /// Scans upward from the line immediately above `decl_line_1based` over
 /// lines that are: attribute lines (`#[...]`), line-comments (`//`), or
@@ -1130,25 +1134,22 @@ fn decl_line_out_of_range(decl_line_1based: usize, line_count: usize) -> bool {
 /// `decl_line_1based` arrives verbatim off the jcodemunch wire as
 /// [`ChangedSymbol::line`](crate::ChangedSymbol::line) and is UNTRUSTED: it
 /// must never index `lines` unchecked. This function is TOTAL — `0` or a
-/// line beyond `lines.len()` returns the neutral `(false, false, None)`
-/// rather than panicking. (Observed 2026-08-22, before that guard:
+/// line beyond `lines.len()` returns `None` rather than panicking.
+/// (Observed 2026-08-22, before that guard:
 /// `index out of bounds: the len is 13165 but the index is 18319`, a stale
 /// index pointing past a 13165-line `crates/reify-eval/src/engine_build.rs`.)
 ///
 /// Deliberately does NOT clamp to `lines.len()` and scan from there: that
 /// reads an arbitrary unrelated block and could fabricate an
-/// `#[allow(dead_code)]` / `// G-allow:` the symbol never carried. The
-/// neutral triple is the only answer that cannot invent one — and
+/// `#[allow(dead_code)]` / `// G-allow:` the symbol never carried. `None` —
+/// declining to answer — is the only answer that cannot invent one, and
 /// [`stale_decl_line_diagnostic`] is what keeps it from being silent.
 ///
 /// Takes `&[String]`, not `&[&str]`, so the caller's cached file contents
 /// pass straight through without re-materialising an adapter per symbol.
-fn extract_suppression(
-    lines: &[String],
-    decl_line_1based: usize,
-) -> (bool, bool, Option<String>) {
+fn extract_suppression(lines: &[String], decl_line_1based: usize) -> Option<DeclSuppression> {
     if decl_line_out_of_range(decl_line_1based, lines.len()) {
-        return (false, false, None);
+        return None;
     }
     let decl_idx = decl_line_1based - 1; // 0-based
     let mut has_allow_dead_code = false;
@@ -1183,7 +1184,11 @@ fn extract_suppression(
         }
     }
 
-    (has_allow_dead_code, has_cfg_test, g_allow_marker)
+    Some(DeclSuppression {
+        has_allow_dead_code,
+        has_cfg_test,
+        g_allow_marker,
+    })
 }
 
 fn is_attr_or_comment(line: &str) -> bool {
@@ -2903,9 +2908,7 @@ mod tests {
                 name: name.to_string(),
                 file: file.to_string(),
                 line,
-                has_allow_dead_code: false,
-                has_cfg_test: false,
-                g_allow_marker: None,
+                suppression: None,
             }
         }
         let symbols = vec![
@@ -3258,9 +3261,7 @@ mod tests {
                 name: "widget".to_string(),
                 file: file.to_string(),
                 line,
-                has_allow_dead_code: false,
-                has_cfg_test: false,
-                g_allow_marker: None,
+                suppression: None,
             }
         }
 
@@ -4141,9 +4142,7 @@ mod tests {
                 name: "JCodemunchOps".to_string(),
                 file: "crates/reify-audit/src/jcodemunch_client.rs".to_string(),
                 line: 1,
-                has_allow_dead_code: false,
-                has_cfg_test: false,
-                g_allow_marker: None,
+                suppression: None,
             };
             let refs = ops.find_references(&symbol);
 

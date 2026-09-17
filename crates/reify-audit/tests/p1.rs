@@ -61,16 +61,16 @@ fn task_sha(task_id: &str) -> String {
     format!("sha_{task_id}")
 }
 
-/// Build a `ChangedSymbol` with no suppression metadata (the orphan-candidate
-/// default); individual tests flip `has_*` / `g_allow_marker` as needed.
+/// Build a `ChangedSymbol` whose declaration was LOCATED and carries no
+/// opt-out — the orphan-candidate default, and what every P1 test that does
+/// not say otherwise means. Tests override `suppression` to opt out, or set it
+/// to `None` to model a declaration that was never located.
 fn changed_symbol(name: &str, file: &str) -> ChangedSymbol {
     ChangedSymbol {
         name: name.to_string(),
         file: file.to_string(),
         line: 42,
-        has_allow_dead_code: false,
-        has_cfg_test: false,
-        g_allow_marker: None,
+        suppression: Some(DeclSuppression::default()),
     }
 }
 
@@ -502,13 +502,19 @@ mod tests {
             &sha,
             vec![
                 ChangedSymbol {
-                    g_allow_marker: Some(
+                    suppression: Some(DeclSuppression {
+                        g_allow_marker: Some(
                         "F-infra T-4 CLI consumer (crates/reify-audit-cli)".to_string(),
                     ),
+                        ..Default::default()
+                    }),
                     ..changed_symbol("marked_widget", "crates/reify-x/src/marked.rs")
                 },
                 ChangedSymbol {
-                    g_allow_marker: Some(String::new()),
+                    suppression: Some(DeclSuppression {
+                        g_allow_marker: Some(String::new()),
+                        ..Default::default()
+                    }),
                     ..changed_symbol("blank_marked_widget", "crates/reify-x/src/blank.rs")
                 },
             ],
@@ -586,11 +592,17 @@ mod tests {
             &sha,
             vec![
                 ChangedSymbol {
-                    has_allow_dead_code: true,
+                    suppression: Some(DeclSuppression {
+                        has_allow_dead_code: true,
+                        ..Default::default()
+                    }),
                     ..changed_symbol("dead_widget", "crates/reify-x/src/dead.rs")
                 },
                 ChangedSymbol {
-                    has_cfg_test: true,
+                    suppression: Some(DeclSuppression {
+                        has_cfg_test: true,
+                        ..Default::default()
+                    }),
                     ..changed_symbol("cfg_test_widget", "crates/reify-x/src/cfgt.rs")
                 },
                 changed_symbol("live_widget", "crates/reify-x/src/live.rs"),
@@ -1264,17 +1276,26 @@ mod tests {
                 changed_symbol("solve_closed_chain", "crates/reify-stdlib/src/dynamics/closed_chain.rs"),
                 // (ii) has_allow_dead_code — suppressed
                 ChangedSymbol {
-                    has_allow_dead_code: true,
+                    suppression: Some(DeclSuppression {
+                        has_allow_dead_code: true,
+                        ..Default::default()
+                    }),
                     ..changed_symbol("stdlib_dead", "crates/reify-stdlib/src/dynamics/dead.rs")
                 },
                 // (iii) non-blank g_allow_marker — suppressed
                 ChangedSymbol {
-                    g_allow_marker: Some("in-flight; consumer task 4146".to_string()),
+                    suppression: Some(DeclSuppression {
+                        g_allow_marker: Some("in-flight; consumer task 4146".to_string()),
+                        ..Default::default()
+                    }),
                     ..changed_symbol("stdlib_marked", "crates/reify-stdlib/src/dynamics/marked.rs")
                 },
                 // (iv) has_cfg_test — suppressed
                 ChangedSymbol {
-                    has_cfg_test: true,
+                    suppression: Some(DeclSuppression {
+                        has_cfg_test: true,
+                        ..Default::default()
+                    }),
                     ..changed_symbol("stdlib_cfgtest", "crates/reify-stdlib/src/dynamics/cfgtest.rs")
                 },
             ],

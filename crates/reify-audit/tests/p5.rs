@@ -3043,9 +3043,7 @@ mod tests {
                 name: "compile_purpose".to_string(),
                 file: "crates/reify-eval/src/lib.rs".to_string(),
                 line: 42,
-                has_allow_dead_code: false,
-                has_cfg_test: false,
-                g_allow_marker: None,
+                suppression: Some(reify_audit::DeclSuppression::default()),
             }],
         );
         // No callers returned → stranded.
@@ -3245,9 +3243,7 @@ mod tests {
                 name: "compile_purpose".to_string(),
                 file: "crates/reify-eval/src/lib.rs".to_string(),
                 line: 42,
-                has_allow_dead_code: false,
-                has_cfg_test: false,
-                g_allow_marker: None,
+                suppression: Some(reify_audit::DeclSuppression::default()),
             }],
         );
         // There IS a non-test caller → symbol is not stranded.
@@ -3338,9 +3334,7 @@ mod tests {
                 name: "expand_purpose".to_string(),
                 file: "crates/reify-eval/src/expander.rs".to_string(),
                 line: 15,
-                has_allow_dead_code: false,
-                has_cfg_test: false,
-                g_allow_marker: None,
+                suppression: Some(reify_audit::DeclSuppression::default()),
             }],
         );
         // No callers set → empty.
@@ -3421,9 +3415,10 @@ mod tests {
                 name: "internal_helper".to_string(),
                 file: "crates/reify-eval/src/lib.rs".to_string(),
                 line: 100,
-                has_allow_dead_code: true,  // opt-out
-                has_cfg_test: false,
-                g_allow_marker: None,
+                suppression: Some(reify_audit::DeclSuppression {
+                    has_allow_dead_code: true,  // opt-out
+                    ..Default::default()
+                }),
             }],
         );
         // No callers.
@@ -3639,9 +3634,7 @@ mod tests {
                 name: "expand_purpose_reflective_placeholders".to_string(),
                 file: "crates/reify-compiler/src/compile.rs".to_string(),
                 line: 58,
-                has_allow_dead_code: false,
-                has_cfg_test: false,
-                g_allow_marker: None,
+                suppression: Some(reify_audit::DeclSuppression::default()),
             }],
         );
         // No callers → stranded.
@@ -3654,9 +3647,7 @@ mod tests {
                 name: "compile_purpose".to_string(),
                 file: "crates/reify-compiler/src/compile.rs".to_string(),
                 line: 20,
-                has_allow_dead_code: false,
-                has_cfg_test: false,
-                g_allow_marker: None,
+                suppression: Some(reify_audit::DeclSuppression::default()),
             }],
         );
         jc.set_find_references(

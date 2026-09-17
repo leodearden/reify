@@ -1719,7 +1719,7 @@ fn crate_root_count(files: &[String]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DoneProvenance, MockGitOps, MockJCodemunchOps};
+    use crate::{DeclSuppression, DoneProvenance, MockGitOps, MockJCodemunchOps};
     use rusqlite::Connection;
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -1745,9 +1745,10 @@ mod tests {
             name: "my_fn".to_string(),
             file: "crates/foo/src/lib.rs".to_string(),
             line: 42,
-            has_allow_dead_code: false,
-            has_cfg_test: false,
-            g_allow_marker: None,
+            // Located and clean: the non-empty case only needs a symbol that
+            // exists, and a located one keeps the fixture off the unlocatable
+            // path entirely.
+            suppression: Some(DeclSuppression::default()),
         };
         let result = h2_vacuous_breadcrumb(&[sym], "4144", "abc123^1", "abc123");
         assert!(
