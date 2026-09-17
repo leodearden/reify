@@ -379,9 +379,9 @@ pub fn mcp_tool_call_impl(
 /// whatever engine job the single-consumer lane is running, where before this
 /// routing they answered immediately on a Tauri command thread. That is a new
 /// latency coupling for exactly the navigation tools an AI client uses while a
-/// drag is in flight, and it is NEW: `large_stack::Lane`'s "What the split does
-/// NOT buy" describes intra-lane serialization among work that was ALREADY on
-/// the lane, not work newly enrolled into it.
+/// drag is in flight, and it is not an instance of a cost already written down:
+/// `large_stack::Lane`'s "What the split does NOT buy" describes serialization
+/// among work that was ALREADY on the lane, not work newly enrolled into it.
 ///
 /// Accepted rather than bypassed. Keeping those four off the lane means a
 /// tool-name-keyed predicate here, which would duplicate the registry's own
