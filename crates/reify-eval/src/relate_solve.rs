@@ -2149,6 +2149,14 @@ structure PosedOperandScope {
         );
         assert_eq!(d.code, Some(DiagnosticCode::RelateStaticUnverifiable));
         assert!(
+            d.message
+                .starts_with("relate: 1 relation could not be statically verified"),
+            "the header must read grammatically at the SINGULAR cardinality. \
+             Anchored at the start on purpose: a `contains` probe passes on \
+             \"1 relation is could not be statically verified\" too. Got {:?}",
+            d.message
+        );
+        assert!(
             d.message.contains("concentric") && d.message.contains("bush.bore_axis"),
             "the warning must name the relation AND the operand that did not \
              resolve, or the reader cannot act on it; got {:?}",
@@ -2269,6 +2277,88 @@ structure PosedOperandScope {
                 violated: 1,
                 unverifiable: 1,
             })
+        );
+    }
+
+    /// Both aggregate headers read grammatically at BOTH cardinalities.
+    ///
+    /// Nothing else in this module can catch a malformed header: every other
+    /// assertion here is a `contains("concentric")` / `contains("plate")`
+    /// substring probe and the e2e filters on [`DiagnosticCode`], so word ORDER
+    /// is entirely unpinned. That is how the unverifiable site came to emit
+    /// "relate: 1 relation is could not be statically verified: …" unnoticed.
+    /// These pins are `starts_with` on the header prefix rather than `contains`:
+    /// only an ANCHORED prefix fails on a doubled or mis-ordered verb.
+    ///
+    /// Four pins across this test and (c), not one on the site that broke,
+    /// because the defect class is "one shared helper is asked to serve two
+    /// different verb forms" — pinning only the broken site lets the other drift
+    /// back in unobserved.
+    ///
+    /// The expected strings are the canonical message forms documented on
+    /// [`DiagnosticCode::RelateStaticViolated`] and
+    /// [`DiagnosticCode::RelateStaticUnverifiable`], so this pins the code TO the
+    /// doc rather than inventing a third wording.
+    #[test]
+    fn verify_static_scope_headers_agree_in_number_at_both_sites() {
+        // Each case below renders exactly one aggregate, so the sole message IS
+        // the header under test.
+        let sole_message = |solution: &super::RelateSolution| -> String {
+            assert_eq!(
+                solution.diagnostics.len(),
+                1,
+                "each case here must render exactly ONE aggregate, or the message \
+                 picked below is not the one under test; got {:?}",
+                solution
+                    .diagnostics
+                    .iter()
+                    .map(|d| d.message.clone())
+                    .collect::<Vec<_>>()
+            );
+            solution.diagnostics[0].message.clone()
+        };
+
+        // (b) PLURAL unverifiable. No existing fixture yields two unverifiable
+        // relations, so both of `StaticScope`'s relations lose their `bush`
+        // operand here.
+        let plural_unverifiable = sole_message(&verify_static_scope(
+            &scope("StaticScope"),
+            &realized(&[
+                ("bush", "bore_axis", Value::Undef),
+                ("plate", "boss_axis", axis_v(SPLIT, (0.0, 0.0, 1.0))),
+                ("bush", "seat_plane", Value::Undef),
+                ("plate", "top_plane", plane_v(SPLIT, (0.0, 0.0, 1.0))),
+            ]),
+        ));
+        assert!(
+            plural_unverifiable
+                .starts_with("relate: 2 relations could not be statically verified"),
+            "PLURAL unverifiable header must agree in number and carry no second \
+             verb; got {plural_unverifiable:?}"
+        );
+
+        // (c) SINGULAR violated — `SingleRelationScope`'s one relation, measured
+        // across the 30 mm split.
+        let singular_violated = sole_message(&verify_static_scope(
+            &scope("SingleRelationScope"),
+            &realized(&[
+                ("bush", "bore_axis", axis_v((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+                ("plate", "boss_axis", axis_v(SPLIT, (0.0, 0.0, 1.0))),
+            ]),
+        ));
+        assert!(
+            singular_violated
+                .starts_with("relate: 1 relation not satisfied by the subs' fixed placements"),
+            "SINGULAR violated header; got {singular_violated:?}"
+        );
+
+        // (d) PLURAL violated — the split-datum pair, both relations false.
+        let plural_violated =
+            sole_message(&verify_static_scope(&scope("StaticScope"), &split_datums()));
+        assert!(
+            plural_violated
+                .starts_with("relate: 2 relations not satisfied by the subs' fixed placements"),
+            "PLURAL violated header; got {plural_violated:?}"
         );
     }
 
