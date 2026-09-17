@@ -305,4 +305,138 @@ assert "C3: the gui block keeps its 15-minute wrap_subshell budget" \
 assert "C4: verify-pipeline-guard recognises the runner as load-bearing" \
     bash "$REPO_ROOT/scripts/verify-pipeline-guard.sh" requires-full-gate scripts/gui-vitest-run.sh
 
+# -- Section D: end-to-end — real reporter, real runner, real vitest ---------
+# Sections B and C mock the two halves separately; this one pins them as ONE
+# contract. A throwaway vitest project holds two trivial specs, one of which
+# throws the exact `[vitest-worker]: Timeout calling "fetch"` message at module
+# load on its FIRST evaluation and passes thereafter -- reproducing the recorded
+# signature (a failed suite, zero failed tests) without needing real starvation.
+#
+# node_modules is a REAL directory of symlinks to the installed packages rather
+# than a symlink to the directory itself, so the artifact the reporter writes
+# lands inside the fixture and never touches the repo's own gui/node_modules.
+echo ""
+echo "--- Section D: reporter -> artifact -> runner, end to end ---"
+
+REAL_NODE_MODULES="$REPO_ROOT/gui/node_modules"
+
+if [ ! -x "$REAL_NODE_MODULES/.bin/vitest" ]; then
+    echo "  SKIP: Section D needs gui/node_modules (run 'scripts/gui-test.sh' or"
+    echo "  SKIP: 'cd gui && npm ci' first). Sections A-C above cover the contract"
+    echo "  SKIP: deterministically; this section adds the end-to-end pinning."
+else
+    E2E="$(mktemp -d "${TMPDIR:-/tmp}/reify-guie2e.XXXXXX")"
+    mkdir -p "$E2E/scripts" "$E2E/gui/specs" "$E2E/gui/node_modules"
+    cp "$RUNNER" "$E2E/scripts/gui-vitest-run.sh"
+    chmod +x "$E2E/scripts/gui-vitest-run.sh"
+    # The REAL reporter, byte-for-byte -- not a stand-in.
+    cp "$REPO_ROOT/gui/vitest-worker-rpc-flake-reporter.ts" "$E2E/gui/"
+
+    for _entry in "$REAL_NODE_MODULES"/*; do
+        ln -sfn "$_entry" "$E2E/gui/node_modules/"
+    done
+    ln -sfn "$REAL_NODE_MODULES/.bin" "$E2E/gui/node_modules/.bin"
+
+    cat > "$E2E/gui/package.json" <<'PKG'
+{ "name": "e2e-fixture", "private": true, "type": "module",
+  "scripts": { "test": "vitest run" } }
+PKG
+
+    cat > "$E2E/gui/vitest.config.ts" <<'CFG'
+export default {
+  test: {
+    globals: true,
+    include: ['specs/**/*.test.ts'],
+    reporters: ['default', './vitest-worker-rpc-flake-reporter.ts'],
+  },
+}
+CFG
+
+    # Throws on its first evaluation only, so the retry finds it green -- the
+    # transient-starvation shape, reproduced deterministically.
+    cat > "$E2E/gui/specs/starved.test.ts" <<'SPEC'
+import { existsSync, writeFileSync } from 'node:fs'
+const seen = process.env.E2E_SEEN_FILE as string
+if (!existsSync(seen)) {
+  writeFileSync(seen, 'x')
+  throw new Error('[vitest-worker]: Timeout calling "fetch" with "["/gui/vitest.setup.ts","web"]"')
+}
+it('passes once the host is responsive again', () => {
+  expect(1).toBe(1)
+})
+SPEC
+
+    cat > "$E2E/gui/specs/healthy.test.ts" <<'SPEC'
+it('is unaffected by the starvation event', () => {
+  expect(true).toBe(true)
+})
+SPEC
+
+    E2E_ARTIFACT="$E2E/gui/node_modules/.reify-gui-rpc-flake.json"
+
+    # Phase 1 -- vitest alone, so the reporter's two outputs can be inspected
+    # before the runner consumes the artifact.
+    E2E_SEEN="$E2E/state-phase1"
+    p1_rc=0
+    ( cd "$E2E/gui" && E2E_SEEN_FILE="$E2E_SEEN" npm test ) >"$E2E/phase1.log" 2>&1 || p1_rc=$?
+
+    assert "D1: the starved run fails (a failed suite, zero failed tests)" \
+        bash -c "[ '$p1_rc' -ne 0 ] && grep -q '1 failed' '$E2E/phase1.log'"
+
+    assert "D2: the real reporter emits the marker at COLUMN 0" \
+        grep -qE '^@@REIFY_GUI_FLAKE@@ kind=worker_rpc_timeout ' "$E2E/phase1.log"
+
+    assert "D3: the marker carries the lineage" \
+        grep -qE '^@@REIFY_GUI_FLAKE@@ .*lineage=3185,4856,7630' "$E2E/phase1.log"
+
+    assert "D4: the real reporter writes the artifact" \
+        test -f "$E2E_ARTIFACT"
+
+    assert "D5: the artifact names ONLY the starved suite, gui-relative" \
+        bash -c "[ \"\$(node -e 'process.stdout.write(JSON.parse(require(\"node:fs\").readFileSync(process.argv[1],\"utf8\")).suites.join(\",\"))' '$E2E_ARTIFACT')\" = 'specs/starved.test.ts' ]"
+
+    # Phase 2 -- the runner over the same project from a clean slate: it must
+    # see the same failure, read the same artifact, and retry just that suite.
+    rm -f "$E2E_ARTIFACT"
+    E2E_SEEN="$E2E/state-phase2"
+    p2_rc=0
+    E2E_SEEN_FILE="$E2E_SEEN" "$E2E/scripts/gui-vitest-run.sh" >"$E2E/phase2.log" 2>&1 || p2_rc=$?
+
+    assert "D6: the runner's retry rescues the run (final exit 0)" \
+        bash -c "[ '$p2_rc' -eq 0 ]"
+
+    assert "D7: the runner announces the retry AND its outcome" \
+        bash -c "
+            grep -qE '^@@REIFY_GUI_FLAKE@@ .*outcome=retrying' '$E2E/phase2.log' &&
+            grep -qE '^@@REIFY_GUI_FLAKE@@ .*outcome=retried' '$E2E/phase2.log'
+        "
+
+    # The log holds both runs; the FIRST summarises 2 files, the retry 1. That
+    # last summary is the direct evidence the healthy suite was not re-run.
+    assert "D8: the retry ran ONLY the starved suite, not the healthy one" \
+        bash -c "grep 'Test Files' '$E2E/phase2.log' | tail -n1 | grep -q '1 passed (1)'"
+
+    assert "D9: the rescued run leaves no artifact behind for the next run" \
+        bash -c "[ ! -f '$E2E_ARTIFACT' ]"
+
+    # A genuine failure over the SAME project must not be retried: the spec
+    # below fails a TEST, which vetoes the classification outright.
+    cat > "$E2E/gui/specs/starved.test.ts" <<'SPEC'
+it('is a real defect', () => {
+  expect(1).toBe(2)
+})
+SPEC
+    p3_rc=0
+    E2E_SEEN_FILE="$E2E/state-phase3" "$E2E/scripts/gui-vitest-run.sh" >"$E2E/phase3.log" 2>&1 || p3_rc=$?
+
+    assert "D10: a genuine test failure propagates, with no marker and no retry" \
+        bash -c "
+            [ '$p3_rc' -ne 0 ] &&
+            ! grep -q '@@REIFY_GUI_FLAKE@@' '$E2E/phase3.log' &&
+            [ ! -f '$E2E_ARTIFACT' ]
+        "
+
+    rm -rf "$E2E"
+fi
+
 test_summary
