@@ -2021,10 +2021,10 @@ fn reload_for_watch_impl_runs_correctly_through_large_stack() {
 //
 // These stand in for the 15 un-headless-testable `main.rs` command wrappers that
 // run through the persistent worker — the 14 step-8 routed, plus `mcp_tool_call`
-// (task 5466) — exactly as the task-5357 guards
-// above stand in for its three. Those wrappers take `tauri::State` / `AppHandle`
-// and cannot be constructed headlessly, so what is testable — and what actually
-// matters — is the COMPOSITION they perform:
+// (task 5466) — exactly as the task-5357 guards above stand in for its three.
+// Those wrappers take `tauri::State` / `AppHandle` and cannot be constructed
+// headlessly, so what is testable — and what actually matters — is the
+// COMPOSITION they perform:
 // `run_on_worker(move || commands::x_impl(&engine, ..))`, with the
 // `Arc<Mutex<EngineSession>>` MOVED into a `'static` closure rather than
 // borrowed as the scoped `run_on_large_stack` tier permits.
@@ -2069,12 +2069,12 @@ fn migrated_command_payloads_are_send_and_static() {
     assert_send_static::<Option<String>>(); // get_entity_at_source_location, get_active_fea_case
     assert_send_static::<()>(); // export, sync_demand, sync_observed_demand, set_active_fea_case
     assert_send_static::<serde_json::Value>(); // mcp_tool_call's payload
-    // Task 5466: moved into the job whole, unlike the fourteen sites above,
-    // which move only the engine `Arc`. A persistent lane takes `'static`
-    // closures, so a future non-`Send` field on the context — an `Rc` emitter,
-    // a borrowed selection — must fail HERE rather than at the `main.rs` call
-    // site, which only builds under `--features gui`.
-    assert_send_static::<crate::mcp_context::TauriToolContext>();
+    // Task 5466's `TauriToolContext` is deliberately absent: unlike the payloads
+    // above, which no lib-side signature constrains, it is moved whole into a
+    // `Send + 'static` closure by `mcp_context::mcp_tool_call_on_large_stack` in
+    // an UNGATED module, so a non-`Send` field on it is already a lib compile
+    // error. Re-asserting it here would read as load-bearing while being unable
+    // to fail on its own.
 
     // The handle every migrated closure captures. Already proven in practice by
     // `debug_server::run_on_engine`, which clones it into a `'static`
