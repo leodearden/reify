@@ -407,11 +407,16 @@ pub fn min_wall_thickness(
         let world = world_at_index(sdf, idx);
         let grad_raw = gradient_at_index(sdf, idx);
         // None → skip: neither a usable gradient nor an interior ridge axis.
-        let g = medial_walk_direction(sdf, idx, grad_raw)?;
-        // Bidirectional walk: d⁺ + d⁻ for this voxel.
+        let walk = medial_walk_direction(sdf, idx, grad_raw)?;
+        // Bidirectional walk: d⁺ + d⁻ for this voxel. None → skip.
         let (d_plus, d_minus, _, _) =
-            bidirectional_distances(sdf, world, g, max_steps, walk_step)?; // None → skip
-        let sum = d_plus + d_minus;
+            bidirectional_distances(sdf, world, walk.direction, max_steps, walk_step)?;
+        // Converted from a distance along the walk direction to a PERPENDICULAR
+        // thickness. The ridge fallback walks a grid axis, which crosses an
+        // oblique medial plane diagonally and would otherwise over-read the
+        // wall by up to √3× — the reverse of this measure's documented
+        // conservative-lower-bound bias.
+        let sum = (d_plus + d_minus) * walk.normal_cosine;
         sum.is_finite().then_some(sum)
     })? {
         None => Ok(MinWallThickness::NoMeasurement),
@@ -688,9 +693,15 @@ pub fn compute_medial_mask(
                                  |phi|={phi} > band_width={band_width}"
                             );
                             let grad = gradient_grid_ref[i * ny * nz + j * nz + k];
-                            let Some(g) = medial_walk_direction(sdf, [i, j, k], grad) else {
+                            let Some(walk) = medial_walk_direction(sdf, [i, j, k], grad) else {
                                 continue;
                             };
+                            // `.direction` only: the equality test below stays
+                            // in the walk-axis metric deliberately, so this
+                            // mask can only ever GROW. Correcting it would be
+                            // a no-op anyway — see `walk_direction`'s
+                            // "Walking an axis, measuring a perpendicular".
+                            let g = walk.direction;
 
                             // (c) bidirectional ray walk from the voxel's
                             // world coordinate in ±g, with sub-voxel

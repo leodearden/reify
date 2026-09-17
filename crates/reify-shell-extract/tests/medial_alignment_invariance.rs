@@ -420,7 +420,7 @@ fn min_wall_thickness_is_not_inflated_by_an_oblique_medial_plane() {
             panic!("expected Measured min-feature for normal {normal:?}; got {feature:?}");
         };
         assert!(
-            f >= OBLIQUE_THICKNESS - SWEEP_H - 1e-9 && f <= OBLIQUE_THICKNESS + 1e-9,
+            (OBLIQUE_THICKNESS - SWEEP_H - 1e-9..=OBLIQUE_THICKNESS + 1e-9).contains(&f),
             "min-feature {f} outside [t − h, t] = [{}, {OBLIQUE_THICKNESS}] for a \
              medial plane with normal {normal:?}",
             OBLIQUE_THICKNESS - SWEEP_H

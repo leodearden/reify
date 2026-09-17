@@ -32,6 +32,11 @@
 //! being medial: the mask can only GROW, never shrink, and no consumer of it
 //! can lose output.
 //!
+//! Nor can a consumer GAIN a WRONG output. A newly-admitted voxel is measured
+//! across the wall it actually crosses rather than along the axis it happened
+//! to be walked down — see the next section — so the honest `NoMeasurement`
+//! this replaces cannot turn into a confident over-read.
+//!
 //! # Why the fallback is interior-only
 //!
 //! An exterior ridge — the mid-plane of the GAP between two plates, say — is
@@ -40,6 +45,29 @@
 //! with small `|φ|` into the mask, and `min_feature_size_measure`'s
 //! `2·min|φ|` reduction would report a feature size that does not exist.
 //! Hence the `φ < 0` guard.
+//!
+//! # Walking an axis, measuring a perpendicular
+//!
+//! The fallback walks a grid AXIS, but the medial plane it crosses need not be
+//! perpendicular to that axis. On an oblique plane the walk is stretched by
+//! `1/|n̂·axis|`, so `d⁺ + d⁻` reads `t / |n̂·axis|` — an over-read of up to
+//! √3×, which would break `min_wall_thickness`'s conservative-lower-bound
+//! contract and let a too-thin wall pass a DFM constraint. [`WalkDirection`]
+//! therefore carries the conversion factor alongside the direction it belongs
+//! to, so no call site can walk without converting.
+//!
+//! The factor costs no extra sampling. At a kink voxel the field along the
+//! chosen axis is `φ(x₀ ± s) = |n_a·s| − t/2`, so the one-sided slopes are
+//! exactly `±|n_a|` and their mean IS the obliquity factor — already computed
+//! by the ridge search, as half its `sharpness`.
+//!
+//! The MASK is deliberately left in the walk-axis metric. Keeping its equality
+//! test uncorrected is what preserves the monotone invariant above, and it
+//! costs nothing: the `1/|n_a|` stretch of the admitted band in axis terms is
+//! exactly cancelled by the `|n_a|` projection back to perpendicular, so the
+//! perpendicular band the mask admits is unchanged. Hence
+//! `min_feature_size_measure`, whose `2|φ|` reduction is already
+//! perpendicular, reads identically with and without this.
 //!
 //! # Residual limitation
 //!
@@ -51,12 +79,35 @@
 //! strict valley (their backward difference is zero, not negative), so a
 //! looser degeneracy test would route them to a fallback that declines — and
 //! DROP them, turning a currently-working alignment into a regression.
+//!
+//! The obliquity factor is exact only at a voxel sitting ON the medial plane;
+//! one `δ` off it reads `|n_a| − |δ|/h` instead, and the `min(1, ·)` clamp
+//! holds a non-Lipschitz field to `1.0`. Both err LOW, which is the direction
+//! that keeps `min_wall_thickness` a conservative lower bound.
 
 use std::cmp::Ordering;
 
 use reify_ir::value::SampledField;
 
 use crate::medial::{normalize3, sample_at_index};
+
+/// A direction to walk, together with the factor that converts a distance
+/// walked along it into a PERPENDICULAR one.
+///
+/// The two are always produced and consumed together — a caller that walks
+/// without converting over-reads an oblique wall's thickness — so they travel
+/// as one value rather than as a pair of parallel results the call sites could
+/// drift apart on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct WalkDirection {
+    /// Unit vector; callers walk `±direction` from the voxel.
+    pub(crate) direction: [f64; 3],
+    /// `|n̂ · direction|`, where `n̂` is the crossed medial plane's normal.
+    /// Multiply a distance walked along `direction` by it to get the
+    /// perpendicular distance. Exactly `1.0` whenever the walk already follows
+    /// the gradient, which is normal to that plane by construction.
+    pub(crate) normal_cosine: f64,
+}
 
 /// Direction to walk from voxel `idx`, given the already-computed raw
 /// `gradient` there.
@@ -67,16 +118,21 @@ pub(crate) fn medial_walk_direction(
     sdf: &SampledField,
     idx: [usize; 3],
     gradient: [f64; 3],
-) -> Option<[f64; 3]> {
-    normalize3(gradient).or_else(|| interior_ridge_axis(sdf, idx))
+) -> Option<WalkDirection> {
+    normalize3(gradient)
+        .map(|direction| WalkDirection {
+            direction,
+            normal_cosine: 1.0,
+        })
+        .or_else(|| interior_ridge_axis(sdf, idx))
 }
 
-/// Unit vector along the axis whose one-sided differences form the sharpest
-/// strict valley at an interior voxel, or `None` if there is no such axis.
+/// Walk along the axis whose one-sided differences form the sharpest strict
+/// valley at an interior voxel, or `None` if there is no such axis.
 ///
 /// The returned SIGN is arbitrary (always `+axis`): every caller walks `±g`
 /// and every downstream test is symmetric under swapping `d⁺` with `d⁻`.
-fn interior_ridge_axis(sdf: &SampledField, idx: [usize; 3]) -> Option<[f64; 3]> {
+fn interior_ridge_axis(sdf: &SampledField, idx: [usize; 3]) -> Option<WalkDirection> {
     let phi = sample_at_index(sdf, idx);
     // Not `phi >= 0.0`: a NaN sample is not `Less` either, so this rejects it
     // rather than walking from it.
@@ -112,10 +168,16 @@ fn interior_ridge_axis(sdf: &SampledField, idx: [usize; 3]) -> Option<[f64; 3]> 
         }
     }
 
-    best.map(|(_, axis)| {
+    best.map(|(sharpness, axis)| {
         let mut direction = [0.0; 3];
         direction[axis] = 1.0;
-        direction
+        WalkDirection {
+            direction,
+            // Half the sharpness is the mean one-sided slope, which at a kink
+            // voxel IS `|n_a|`. Clamped so the conversion can only ever reduce
+            // a reading: a super-unit slope is not an obliquity.
+            normal_cosine: (0.5 * sharpness).min(1.0),
+        }
     })
 }
 
@@ -156,6 +218,15 @@ mod tests {
         }
     }
 
+    /// The expected result for a walk that already crosses its medial plane
+    /// perpendicularly, so needs no obliquity conversion.
+    fn perpendicular(direction: [f64; 3]) -> Option<WalkDirection> {
+        Some(WalkDirection {
+            direction,
+            normal_cosine: 1.0,
+        })
+    }
+
     /// Interior solid with a `k`-axis kink at `k = 1`: `φ = |k − 1| − 2`.
     fn interior_k_valley(n: usize, spacing: [f64; 3]) -> SampledField {
         index_field(n, spacing, |_i, _j, k| (k as f64 - 1.0).abs() - 2.0)
@@ -166,7 +237,7 @@ mod tests {
         let sdf = interior_k_valley(3, [1.0; 3]);
         assert_eq!(
             medial_walk_direction(&sdf, [1, 1, 1], [0.0, 3.0, 4.0]),
-            Some([0.0, 0.6, 0.8])
+            perpendicular([0.0, 0.6, 0.8])
         );
     }
 
@@ -193,7 +264,7 @@ mod tests {
         let sdf = interior_k_valley(3, [1.0; 3]);
         assert_eq!(
             medial_walk_direction(&sdf, [1, 1, 1], [0.0; 3]),
-            Some([0.0, 0.0, 1.0])
+            perpendicular([0.0, 0.0, 1.0])
         );
     }
 
@@ -205,7 +276,7 @@ mod tests {
         });
         assert_eq!(
             medial_walk_direction(&sdf, [1, 1, 1], [0.0; 3]),
-            Some([0.0, 0.0, 1.0])
+            perpendicular([0.0, 0.0, 1.0])
         );
     }
 
@@ -216,7 +287,58 @@ mod tests {
         });
         assert_eq!(
             medial_walk_direction(&sdf, [1, 1, 1], [0.0; 3]),
-            Some([1.0, 0.0, 0.0])
+            perpendicular([1.0, 0.0, 0.0])
+        );
+    }
+
+    /// A valley perpendicular to its walk axis needs no conversion, so every
+    /// pre-existing axis-aligned reading — the square bar's `4h` cross-section,
+    /// the whole sub-voxel alignment sweep — is provably unchanged by #7527's
+    /// obliquity correction.
+    #[test]
+    fn an_axis_aligned_valley_needs_no_obliquity_conversion() {
+        let sdf = interior_k_valley(3, [1.0; 3]);
+        assert_eq!(
+            medial_walk_direction(&sdf, [1, 1, 1], [0.0; 3]).map(|walk| walk.normal_cosine),
+            Some(1.0)
+        );
+    }
+
+    /// The central difference cancels on an OBLIQUE medial plane too, so the
+    /// fallback fires and walks an axis that crosses the wall diagonally. The
+    /// conversion factor is what stops `d⁺ + d⁻` being read as a thickness it
+    /// is not: here the walk is √2 too long, and the factor is `1/√2`.
+    ///
+    /// Exactness: the one-sided difference recovers `1/√2` bit-for-bit, because
+    /// subtracting and re-adding the same `−2.0` offset is exact at this
+    /// magnitude.
+    #[test]
+    fn an_oblique_valley_reports_the_cosine_between_its_plane_and_the_walk_axis() {
+        let diagonal = 1.0 / 2f64.sqrt();
+        // φ = |n̂·p| − 2 about (1, ·, 1), with n̂ = (1, 0, 1)/√2.
+        let sdf = index_field(3, [1.0; 3], |i, _j, k| {
+            diagonal * ((i as f64 - 1.0) + (k as f64 - 1.0)).abs() - 2.0
+        });
+        assert_eq!(
+            medial_walk_direction(&sdf, [1, 1, 1], [0.0; 3]),
+            Some(WalkDirection {
+                // The x and z valleys are equally sharp; the tie-break picks x.
+                direction: [1.0, 0.0, 0.0],
+                normal_cosine: diagonal,
+            })
+        );
+    }
+
+    /// A slope above 1 is not an obliquity — a true distance field is
+    /// 1-Lipschitz — so the factor is clamped. Without the clamp such a field
+    /// would INFLATE a reading, and the whole point of carrying the factor is
+    /// that it can only ever reduce one.
+    #[test]
+    fn a_super_unit_slope_is_clamped_rather_than_inflating_the_reading() {
+        let sdf = index_field(3, [1.0; 3], |_i, _j, k| 3.0 * (k as f64 - 1.0).abs() - 5.0);
+        assert_eq!(
+            medial_walk_direction(&sdf, [1, 1, 1], [0.0; 3]),
+            perpendicular([0.0, 0.0, 1.0])
         );
     }
 
@@ -229,7 +351,7 @@ mod tests {
         });
         assert_eq!(
             medial_walk_direction(&sdf, [1, 1, 1], [0.0; 3]),
-            Some([0.0, 0.0, 1.0])
+            perpendicular([0.0, 0.0, 1.0])
         );
     }
 }
