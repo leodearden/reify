@@ -1122,4 +1122,61 @@ mod tests {
             );
         }
     }
+
+    /// [`audit_command`] must be the EXACT command [`run_orphan_audit`]
+    /// spawns for `scope` — a composition of [`build_audit_command`] and
+    /// [`resolve_script_and_root`], never a second implementation built from
+    /// the same ingredients.
+    ///
+    /// Deliberately does NOT spell the literal argv a second time (e.g.
+    /// `assert_eq!(args, ["--scope", scope, "--quiet", "--format", "json"])`)
+    /// — that would compare the code against a transcription of itself, the
+    /// exact duplication this task exists to delete. What is worth pinning is
+    /// that `audit_command` never FORKS from `build_audit_command`: a future
+    /// edit that re-implements the seam with its own `Command::new` and argv
+    /// would re-create the duplication inside this one file, and this test
+    /// reds on it. Direct analogue of the retired
+    /// `repo_redirect_vars_matches_reify_test_support_orphan_audit_copy`,
+    /// relocated to the seam where it can actually be written.
+    ///
+    /// Neither command is ever spawned, so this needs no `python3`/`git` on
+    /// `PATH` and takes no graceful skip.
+    #[test]
+    fn audit_command_is_the_command_run_orphan_audit_spawns() {
+        let scope = "crates/reify-audit/src";
+        let (script, repo_root) = resolve_script_and_root();
+        let public = audit_command(scope);
+        let production = build_audit_command(&script, scope, &repo_root);
+
+        assert_eq!(
+            public.get_program(),
+            production.get_program(),
+            "audit_command(scope) spawns a different program than \
+             build_audit_command does — an external consumer (reify-audit's \
+             g_allow.rs hazard probe) would run a command production never \
+             runs"
+        );
+        assert_eq!(
+            public.get_args().collect::<Vec<_>>(),
+            production.get_args().collect::<Vec<_>>(),
+            "audit_command(scope) passes different arguments than \
+             build_audit_command does — an external consumer would spawn a \
+             different argv than production ever spawns"
+        );
+        assert_eq!(
+            public.get_current_dir(),
+            production.get_current_dir(),
+            "audit_command(scope) sets a different current_dir than \
+             build_audit_command does — an external consumer would scan a \
+             different tree than production ever scans"
+        );
+        assert_eq!(
+            crate::git_env::removed_vars(&public),
+            crate::git_env::removed_vars(&production),
+            "audit_command(scope) sanitizes a different set of vars than \
+             build_audit_command does — an external consumer would spawn a \
+             command with different environment hygiene than production ever \
+             has"
+        );
+    }
 }
