@@ -28,6 +28,23 @@
 //! name — search for it in this file when
 //! `assert_eq!(matching_allowed.len(), 1)` fires unexpectedly.
 //!
+//! One row left by a route that contract did not anticipate, and the exception
+//! is worth recording so the next reader does not read it as a violation.
+//! `capability_kind` (`crates/reify-ir/src/geometry.rs`) was removed with no
+//! consumer-wiring commit, because its consumer had been wired all along:
+//! `gate_query_capability` in `crates/reify-eval/src/geometry_ops.rs` calls
+//! `query.capability_kind()` from production, non-test code — exactly the
+//! "capability-dispatch arm" its own `// G-allow:` marker named in advance.
+//! The audit could not see that call edge: the line comment directly above
+//! `gate_query_capability` merely MENTIONS `#[cfg(test)]`, and the orphan
+//! script decided where a `cfg(test)` mask starts from raw line text, so the
+//! comment opened a mask over the whole function and hid both it and its call.
+//! Making that decision literal-aware revealed the edge and moved
+//! `capability_kind` to `callers: 1`.  The contract's precondition — confirm a
+//! real call edge was wired — was therefore satisfied by an existing call site
+//! rather than a new one, and its prescribed action, delete the row, applied
+//! unchanged.
+//!
 //! Graceful skip: if `python3`, `git`, or the audit script are absent
 //! from PATH/disk the test prints a note to stderr and returns without
 //! failing.  The shared helper is `reify_test_support::run_orphan_audit`.
@@ -68,10 +85,6 @@ const PINS: &[(&str, &str)] = &[
     (
         "crates/reify-solver-elastic/src/assembly/global.rs",
         "detect_orphan_dofs",
-    ),
-    (
-        "crates/reify-ir/src/geometry.rs",
-        "capability_kind",
     ),
     (
         "crates/reify-ir/src/value.rs",
