@@ -1041,3 +1041,173 @@ fn genuinely_unsatisfiable_constraints_keep_the_region_empty_wording() {
          got: {message}"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// task #5714 — WITNESS SEARCH: a steep objective must not cost the user an
+// honest diagnostic.
+//
+// #5618's honesty check (above) re-measures the ORIGINAL constraints at the
+// point the floored solve happened to converge to.  That point is chosen by a
+// penalty minimiser over `objective + PENALTY_WEIGHT·violation`, so a Money
+// objective steep relative to `PENALTY_WEIGHT = 1e6` drags it clean out of the
+// user's box — and the check then correctly declines, leaving the region-empty
+// wording on a region that is demonstrably non-empty.
+//
+// The fix is to SEARCH for a witness rather than accept whichever point the
+// floored solve landed on.  What must NOT change is the discipline: the claim
+// stays VERIFIED about a concrete point and is never inferred from a derived
+// box — see `underivable_empty_box_keeps_the_region_empty_wording` for the
+// measurement that makes a box-emptiness shortcut unsound.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── helper: `coeff * x OP bound_si_m` (Length) ──
+//
+// Sibling of `length_cmp` for the COEFFICIENT form.  `derive_param_intervals`
+// abstains on it entirely (measured: `DerivedInterval { lo: None, hi: None }`),
+// which is precisely what the #5714 tests need — a bracket the bound derivation
+// cannot read, so neither the seed nor any box check can stand in for a witness.
+fn scaled_length_cmp(coeff: f64, op: BinOp, x_id: &ValueCellId, bound_si_m: f64) -> CompiledExpr {
+    let length_dim = DimensionVector::LENGTH;
+    let dimensionless = DimensionVector::DIMENSIONLESS;
+    let scaled = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::literal(
+            Value::Scalar { si_value: coeff, dimension: dimensionless },
+            Type::Scalar { dimension: dimensionless },
+        ),
+        CompiledExpr::value_ref(x_id.clone(), Type::Scalar { dimension: length_dim }),
+        Type::Scalar { dimension: length_dim },
+    );
+    CompiledExpr::binop(
+        op,
+        scaled,
+        CompiledExpr::literal(
+            Value::Scalar { si_value: bound_si_m, dimension: length_dim },
+            Type::Scalar { dimension: length_dim },
+        ),
+        Type::Bool,
+    )
+}
+
+/// A STEEP objective must not downgrade the diagnostic to region-empty.
+///
+/// This is the same problem as `floor_infeasible_emits_distinct_diagnostic`
+/// above — `x > 10mm ∧ x < 10.3mm` under `5 USD × (x / 1mm)` — and it is the
+/// shape `crates/reify-eval/tests/fixtures/cost_min_floor_infeasible.ri`
+/// compiles to, i.e. the one the original user report was about.  The user's
+/// box is 0.3mm wide and non-empty; only the 2% margin does not fit in it.
+///
+/// WHY the floored solve's own converged point cannot witness that, all
+/// MEASURED: the floored derived interval INVERTS (floored lower 10.2mm >
+/// floored upper ≈ 10.094mm), so `compose_interval` returns `None` and
+/// `resolve_bounds` falls back wholesale to `default_bounds_for(Length) =
+/// (1e-6, 10.0)`.  With no useful clamp the minimiser of
+/// `5000·x + 1e6·[(0.010 − x)² + (0.0102 − x)²]` parks at x ≈ 8.85e-3 — 1.35e-3
+/// below the floored lower bound and OUTSIDE the user's box — so #5618's
+/// residual check declines.  Contrast its shallow sibling
+/// `margin_only_infeasibility_names_the_margin_not_an_empty_region`, where
+/// `1 USD × q` has gradient 1, the shift is ~2.5e-7, and the converged point
+/// stays inside [99, 100] — that fixture is already honest today.
+#[test]
+fn steep_objective_margin_only_infeasibility_names_the_margin() {
+    let x_id = ValueCellId::new("FloorInfeasible", "x");
+
+    let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
+        auto_params: vec![length_auto_param(x_id.clone())],
+        constraints: vec![
+            (constraint_id("FloorInfeasible", 0), gt_expr(&x_id, 0.010)),
+            (constraint_id("FloorInfeasible", 1), lt_expr(&x_id, 0.0103)),
+        ],
+        current_values: ValueMap::new(),
+        objective: Some(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            money_expr_x_per_mm(&x_id),
+        )),
+        functions: vec![].into(),
+    };
+
+    let message = floor_infeasible_message(&problem);
+
+    assert!(
+        !message.contains("feasible region is empty"),
+        "x ∈ (10mm, 10.3mm) is a non-empty box and x = 10.15mm satisfies it — a steep \
+         objective parking the floored solve's converged point outside that box must \
+         not cost the user an honest diagnostic; got: {message}"
+    );
+    assert!(
+        message.contains("original constraints"),
+        "the diagnostic must say the ORIGINAL constraints are satisfiable, verified at \
+         a witness; got: {message}"
+    );
+    assert!(
+        message.contains("robustness margin"),
+        "the diagnostic must name the synthesised robustness margin as what cannot be \
+         met; got: {message}"
+    );
+    assert!(
+        message.contains("2%"),
+        "the diagnostic must report the REL_MARGIN (2%) the user has to relax; \
+         got: {message}"
+    );
+    assert!(
+        message.contains("cost_robustness_tradeoff"),
+        "the diagnostic must keep the cost_robustness_tradeoff override hint (PRD \
+         §2.4/§9); got: {message}"
+    );
+}
+
+/// ANTI-SHORTCUT CONTROL: a genuinely empty region whose DERIVED BOX is
+/// non-degenerate keeps the region-empty wording.
+///
+/// `2·x > 60mm ∧ 2·x < 20mm` admits no point at all.  MEASURED,
+/// `derive_param_intervals` abstains completely on the coefficient form —
+/// `DerivedInterval { lo: None, hi: None }` — so `compose_interval` hands back
+/// the NON-DEGENERATE `default_bounds_for(Length) = (1e-6, 10.0)` for a region
+/// that is empty.  A cheap "is the derived box empty?" test would therefore
+/// claim satisfiability *exactly here*, which is why the witness must stay a
+/// verified point and never an inferred box.
+///
+/// Its near-twin `steep_objective_over_an_underivable_bracket_still_names_the_margin`
+/// differs only in the upper bound (61mm vs 20mm) and so carries the IDENTICAL
+/// derived box while being non-empty: together the pair pin that the search
+/// discriminates on the point, not on the box.
+#[test]
+fn underivable_empty_box_keeps_the_region_empty_wording() {
+    let x_id = ValueCellId::new("UnderivableEmpty", "x");
+
+    let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
+        auto_params: vec![length_auto_param(x_id.clone())],
+        constraints: vec![
+            (
+                constraint_id("UnderivableEmpty", 0),
+                scaled_length_cmp(2.0, BinOp::Gt, &x_id, 0.060),
+            ),
+            (
+                constraint_id("UnderivableEmpty", 1),
+                scaled_length_cmp(2.0, BinOp::Lt, &x_id, 0.020),
+            ),
+        ],
+        current_values: ValueMap::new(),
+        objective: Some(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            money_expr_x_per_mm(&x_id),
+        )),
+        functions: vec![].into(),
+    };
+
+    let message = floor_infeasible_message(&problem);
+
+    assert!(
+        message.contains("the floored feasible region is empty"),
+        "2·x > 60mm ∧ 2·x < 20mm admits no point — the region-empty wording must \
+         survive even though the DERIVED box is the non-degenerate (1µm, 10m); \
+         got: {message}"
+    );
+    assert!(
+        !message.contains("original constraints ARE"),
+        "must not claim the original constraints are satisfied when they are not; \
+         got: {message}"
+    );
+}
