@@ -1304,4 +1304,118 @@ fn steep_objective_over_an_underivable_bracket_still_names_the_margin() {
         "the diagnostic must keep the cost_robustness_tradeoff override hint (PRD \
          §2.4/§9); got: {message}"
     );
+    // CLASS 2 specifically: the witness does NOT meet the floor, so the shortfall
+    // clause must be PRESENT.  Its class-3 neighbour
+    // `wide_underivable_bracket_does_not_blame_a_satisfiable_margin` differs ONLY in
+    // the upper bound and sits the other side of the measured 61mm/62.5mm transition,
+    // where this clause is absent because every floor term IS met — an absent clause
+    // is exactly what made the old unconditional "cannot be met" sentence false.
+    assert!(
+        message.contains("worst slack there:"),
+        "a margin-only failure must quantify the shortfall, so the user can see how \
+         far off the margin is; got: {message}"
+    );
+}
+
+/// A NON-EMPTY floored region must not be blamed on the margin.
+///
+/// `original_constraints_witness` promises only that its result satisfies the
+/// ORIGINAL constraints.  That says NOTHING about the synthesised floor — and
+/// rung 2 actively biases the witness TOWARD satisfying it, because dropping the
+/// objective hands the search `build_centrality_objective`, which maximises the
+/// minimum slack and so lands on the Chebyshev centre: the point most likely to
+/// clear the floor as well.  When it does, the old unconditional sentence
+/// ("it is the synthesised 2% robustness margin that cannot be met") was
+/// provably false, and `worst_unmet_floor_term` returned `None` so the shortfall
+/// clause vanished — an absent clause was the only tell.
+///
+/// MEASURED SWEEP, `2·x > 60mm ∧ 2·x < HI` under `minimize 5 USD × (x / 1mm)`,
+/// probing the real `original_constraints_witness` path.  Synthesised margins
+/// are 1.200e-3 on the `2·x > 60mm` side and 4.000e-4 on the upper side:
+///
+/// | HI      | witness x | resid vs ORIGINALS | resid vs EFFECTIVE | class |
+/// |---------|-----------|--------------------|--------------------|-------|
+/// | 20mm    | — (None)  | —                  | —                  | 1     |
+/// | 61mm    | 30.25mm   | 0.0                | 7.000e-4           | 2     |
+/// | 62.5mm  | 30.625mm  | 0.0                | 0.0                | 3     |
+/// | 65mm    | 31.25mm   | 0.0                | 0.0                | 3     |
+/// | 70mm    | 32.5mm    | 0.0                | 0.0                | 3     |
+/// | 80mm    | 35mm      | 0.0                | 0.0                | 3     |
+/// | 100mm   | 40mm      | 0.0                | 0.0                | 3     |
+/// | 200mm   | 65mm      | 0.0                | 0.0                | 3     |
+///
+/// The class-2/class-3 transition is measured, not guessed: it sits between
+/// HI = 61mm and HI = 62.5mm, exactly where the floored region stops being
+/// empty.  This fixture is HI = 100mm, whose floored region `x ∈ (30.6mm,
+/// 49.4mm)` is plainly non-empty and contains the witness x = 40mm.
+///
+/// So NONE of the class-2 remedies apply: nothing is over-constrained and there
+/// is no cost/robustness conflict to trade off, which is why "relax opposing
+/// constraints", "widen the tolerance margin" and `cost_robustness_tradeoff`
+/// must all be ABSENT here.  The invariant this test defends: the caller must
+/// RE-CHECK the witness against the floor before attributing the failure to it.
+#[test]
+fn wide_underivable_bracket_does_not_blame_a_satisfiable_margin() {
+    let x_id = ValueCellId::new("UnderivableWide", "x");
+
+    let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
+        auto_params: vec![length_auto_param(x_id.clone())],
+        constraints: vec![
+            (
+                constraint_id("UnderivableWide", 0),
+                scaled_length_cmp(2.0, BinOp::Gt, &x_id, 0.060),
+            ),
+            (
+                constraint_id("UnderivableWide", 1),
+                scaled_length_cmp(2.0, BinOp::Lt, &x_id, 0.100),
+            ),
+        ],
+        current_values: ValueMap::new(),
+        objective: Some(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            money_expr_x_per_mm(&x_id),
+        )),
+        functions: vec![].into(),
+    };
+
+    let message = floor_infeasible_message(&problem);
+
+    assert!(
+        !message.contains("cannot be met"),
+        "the witness x = 40mm satisfies every floor term (residual 0.0 against the \
+         EFFECTIVE constraints), so the margin demonstrably CAN be met — blaming it \
+         is a false claim; got: {message}"
+    );
+    assert!(
+        !message.contains("feasible region is empty"),
+        "the floored region x ∈ (30.6mm, 49.4mm) is non-empty, so this is not class 1 \
+         either; got: {message}"
+    );
+    assert!(
+        !message.contains("relax opposing constraints"),
+        "nothing is over-constrained here — telling the user to relax constraints is \
+         wrong advice; got: {message}"
+    );
+    assert!(
+        !message.contains("cost_robustness_tradeoff"),
+        "there is no cost/robustness conflict to trade off when both the constraints \
+         and the margin are satisfiable — the override hint is wrong advice here; \
+         got: {message}"
+    );
+    assert!(
+        message.contains("both satisfiable"),
+        "the diagnostic must state that the originals AND the margin are both \
+         satisfiable at a verified point; got: {message}"
+    );
+    assert!(
+        message.contains("did not converge"),
+        "the diagnostic must attribute the failure to the floored solve not reaching \
+         that point, which is what actually happened; got: {message}"
+    );
+    assert!(
+        message.contains("2%"),
+        "the margin must still be identified even though it is not the culprit; \
+         got: {message}"
+    );
 }
