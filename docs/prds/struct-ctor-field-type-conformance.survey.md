@@ -1,10 +1,10 @@
 # Struct-ctor field-type conformance — corpus survey
 
-**Base commit:** `43a442d85743fa9b566543803507ce883d25704c`
+**Base commit:** `512162f4ac632609d41b418c644bdf55237da505`
 **Tool:** `crates/reify-compiler/tests/harness_compilation_surface/ctor_conformance_corpus_survey.rs`
 **Design:** `docs/prds/struct-ctor-field-type-conformance.md` (task β, §8)
 **Sites:** 16 in the tracked `.ri` corpus; 274 in inline Rust fixtures
-**Corpus:** 701 members of the `tracked .ri corpus` (enumeration parity floor 100); 3378 snippets extracted from the `inline Rust fixture hosts` (enumeration parity floor 300 hosts)
+**Corpus:** 701 members of the `tracked .ri corpus` (enumeration parity floor 100); 3386 snippets extracted from the `inline Rust fixture hosts` (enumeration parity floor 300 hosts)
 **`.ri` coverage:** 696 surveyed, 5 not surveyed, 78 partial
 
 **Drifted corpus members since the anchor:** 4 tracked corpus members — `.ri` files, `.rs` hosts,
@@ -196,7 +196,7 @@ cannot recur unnoticed on the next severity change.
 | `crates/reify-compiler/tests/multi_load_case_stdlib_tests.rs:380` | 2 | LoadCase | ctor call-site anchor | loads | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'FixedSupport' does not conform to trait 'Load' required by param 'loads' |
 | `crates/reify-eval/tests/structure_instance_e2e.rs:311` | 6 | PointLoad | ctor call-site anchor | mat | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'PointLoad' does not conform to trait 'ElasticMaterial' required by param 'mat' |
 
-### non-FEA structure def — γ per-case judgment — 120 site(s)
+### non-FEA structure def — γ per-case judgment — 121 site(s)
 
 | site | snippet line | def | def source | field | expected | found | code | severity | hint (advisory) | disposition (γ ruling) | message |
 |---|---|---|---|---|---|---|---|---|---|---|---|
@@ -301,6 +301,7 @@ cannot recur unnoticed on the next severity change.
 | `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:4865` | 4 | WRepeat | diagnostic prose | labl | — | — | `CtorUnknownField` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_UNKNOWN_FIELD: unknown named argument 'labl' in call to 'WRepeat'; 'WRepeat' has no parameter with that name |
 | `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:5139` | 2 | RayleighDamping | diagnostic prose | bta | — | — | `CtorUnknownField` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | E_CTOR_UNKNOWN_FIELD: unknown named argument 'bta' in call to 'RayleighDamping'; 'RayleighDamping' has no parameter with that name |
 | `crates/reify-compiler/tests/harness_traits/trait_typed_param_tests.rs:314` | 4 | NotAMaterial | ctor call-site anchor | m | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'NotAMaterial' does not conform to trait 'MaterialSpec' required by param 'm' |
+| `crates/reify-compiler/tests/harness_traits/trait_typed_param_tests.rs:425` | 6 | Rigid | ctor call-site anchor | m | Material | Rigid | `TypeNotConformingToStructureRef` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'm' has type 'Rigid' but param 'm' requires structure type 'Material' |
 | `crates/reify-eval-fea-tests/tests/dynamics_compute_node.rs:41` | 2 | Frame3 | ctor call-site anchor | x_axis | Real | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'x_axis' has quantity 'Scalar[m]' but param 'x_axis' requires quantity 'Real' (the compared shape 'Vector3<Scalar[m]>' is otherwise accepted at 'Vector3<Real>'; only the quantity slot disagrees) |
 | `crates/reify-eval-fea-tests/tests/dynamics_compute_node.rs:41` | 2 | Frame3 | ctor call-site anchor | y_axis | Real | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'y_axis' has quantity 'Scalar[m]' but param 'y_axis' requires quantity 'Real' (the compared shape 'Vector3<Scalar[m]>' is otherwise accepted at 'Vector3<Real>'; only the quantity slot disagrees) |
 | `crates/reify-eval-fea-tests/tests/dynamics_compute_node.rs:41` | 2 | Frame3 | ctor call-site anchor | z_axis | Real | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'z_axis' has quantity 'Scalar[m]' but param 'z_axis' requires quantity 'Real' (the compared shape 'Vector3<Scalar[m]>' is otherwise accepted at 'Vector3<Real>'; only the quantity slot disagrees) |
@@ -321,7 +322,7 @@ cannot recur unnoticed on the next severity change.
 | `crates/reify-eval/tests/structure_instance_e2e.rs:729` | 6 | Frame3 | ctor call-site anchor | y_axis | Real | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'y_axis' has quantity 'Scalar[m]' but param 'y_axis' requires quantity 'Real' (the compared shape 'Vector3<Scalar[m]>' is otherwise accepted at 'Vector3<Real>'; only the quantity slot disagrees) |
 | `crates/reify-eval/tests/structure_instance_e2e.rs:729` | 6 | Frame3 | ctor call-site anchor | z_axis | Real | Scalar[m] | `ArgTypeMismatch` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'z_axis' has quantity 'Scalar[m]' but param 'z_axis' requires quantity 'Real' (the compared shape 'Vector3<Scalar[m]>' is otherwise accepted at 'Vector3<Real>'; only the quantity slot disagrees) |
 
-### name recovered, but it is not a known structure def — needs manual triage — 62 site(s)
+### name recovered, but it is not a known structure def — needs manual triage — 61 site(s)
 
 | site | snippet line | def | def source | field | expected | found | code | severity | hint (advisory) | disposition (γ ruling) | message |
 |---|---|---|---|---|---|---|---|---|---|---|---|
@@ -343,7 +344,6 @@ cannot recur unnoticed on the next severity change.
 | `crates/reify-compiler/tests/harness_statement_semantics/generate_combinator_tests.rs:135` | 2 | generate | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | generate: n argument expects Int, got Scalar[m] |
 | `crates/reify-compiler/tests/harness_statement_semantics/generate_combinator_tests.rs:157` | 2 | generate | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | generate: n argument expects Int, got Real |
 | `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs:725` | 4 | box | ctor call-site anchor | — | — | — | `ArgTypeMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | box: width argument expects Length, got Widget; pass a dimensioned length such as `5mm` |
-| `crates/reify-compiler/tests/harness_traits/trait_typed_param_tests.rs:425` | 6 | Rigid | ctor call-site anchor | m | Material | Rigid | `TypeNotConformingToStructureRef` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | argument 'm' has type 'Rigid' but param 'm' requires structure type 'Material' |
 | `crates/reify-compiler/tests/harness_traits/trait_typed_param_tests.rs:538` | 4 | some | ctor call-site anchor | m | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'NotAMaterial' does not conform to trait 'MaterialSpec' required by param 'm' |
 | `crates/reify-compiler/tests/harness_traits/trait_typed_param_tests.rs:1593` | 8 | some | ctor call-site anchor | ms | — | — | `TypeNotConformingToTrait` | Warning | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | type 'NotAMaterial' does not conform to trait 'MaterialSpec' required by param 'ms' |
 | `crates/reify-compiler/tests/param_binding_selector_coercion_tests.rs:143` | 5 | needs_face | ctor call-site anchor | — | — | — | `SelectorKindMismatch` | Error | no mechanical hint — γ per-case judgment | census — inline Rust fixture, sites owned by #5306: enumerated here, fixed there | no matching overload for needs_face(EdgeSelector), candidates: needs_face(FaceSelector) -> Int |
@@ -478,7 +478,7 @@ cannot recur unnoticed on the next severity change.
 
 ### Inline coverage
 
-Of 3378 inline member(s) — one per extracted snippet, plus one per host that could not be read at all — **3292 were swept** and **86 were not**. A further **722** were swept only PARTIALLY. A member is keyed `<host>:<line>`, the host line the snippet's own line 1 sits on.
+Of 3386 inline member(s) — one per extracted snippet, plus one per host that could not be read at all — **3300 were swept** and **86 were not**. A further **722** were swept only PARTIALLY. A member is keyed `<host>:<line>`, the host line the snippet's own line 1 sits on.
 
 #### Not swept (contributed no sites)
 
@@ -493,7 +493,7 @@ Of 3378 inline member(s) — one per extracted snippet, plus one per host that c
 | `crates/reify-compiler/tests/ambient_default_material_integration_gate.rs:55` | `format-template` |
 | `crates/reify-compiler/tests/ambient_default_material_integration_gate.rs:92` | `format-template` |
 | `crates/reify-compiler/tests/guard_compilation.rs:722` | `parse-error` |
-| `crates/reify-compiler/tests/harness_compilation_surface/ctor_conformance_corpus_survey.rs:3211` | `format-template` |
+| `crates/reify-compiler/tests/harness_compilation_surface/ctor_conformance_corpus_survey.rs:3235` | `format-template` |
 | `crates/reify-compiler/tests/harness_compilation_surface/purpose_compile_tests.rs:537` | `format-template` |
 | `crates/reify-compiler/tests/harness_constructor_typing/math_signatures.rs:662` | `format-template` |
 | `crates/reify-compiler/tests/harness_constructor_typing/math_signatures.rs:696` | `format-template` |
@@ -1402,7 +1402,7 @@ The *Inline Rust fixtures* section above sweeps every tracked `.rs` under
 `crates/` — test file or production source alike, since a `#[cfg(test)] mod
 tests` hosts fixtures like any other — for raw-string literals (`r"…"`,
 `r#"…"#`) whose text reads as Reify declaration grammar, and compiles each
-through the same pipeline as a tracked `.ri`. That reached **3378 inline
+through the same pipeline as a tracked `.ri`. That reached **3386 inline
 member(s)**, of which **72** were `format!` template(s) — listed
 above under their own coverage reason rather than dropped, because a
 template's `{…}` holes are not Reify syntax and a parse failure on one would
