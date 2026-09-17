@@ -574,7 +574,7 @@ structure def NonPsdFixture {
         mass: 1kg,
         com: point3(0mm, 0mm, 0mm),
         inertia: [[1,0,0],[0,1,0],[0,0,-1]],
-        origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0mm, 0mm, 0mm), y_axis: vec3(0mm, 0mm, 0mm), z_axis: vec3(0mm, 0mm, 0mm))
+        origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0.0, 0.0, 0.0), y_axis: vec3(0.0, 0.0, 0.0), z_axis: vec3(0.0, 0.0, 0.0))
     )
 }
 "#;
@@ -728,7 +728,7 @@ structure def PsdFixture {
         mass: 1kg,
         com: point3(0mm, 0mm, 0mm),
         inertia: [[1,0,0],[0,1,0],[0,0,1]],
-        origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0mm, 0mm, 0mm), y_axis: vec3(0mm, 0mm, 0mm), z_axis: vec3(0mm, 0mm, 0mm))
+        origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0.0, 0.0, 0.0), y_axis: vec3(0.0, 0.0, 0.0), z_axis: vec3(0.0, 0.0, 0.0))
     )
 }
 "#;
