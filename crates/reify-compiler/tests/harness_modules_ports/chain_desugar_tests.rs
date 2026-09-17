@@ -6,7 +6,7 @@
 //! `connect` surface at 2368 lines.
 
 use reify_core::*;
-use reify_test_support::compile_source;
+use reify_test_support::{assert_no_diagnostic, compile_source};
 
 /// The spec §6.2 worked shape: three single-in/single-out occurrences chained
 /// by bare name. Each hop must resolve the source element to its unique `out`
@@ -64,5 +64,116 @@ structure def Pipeline {
     assert_eq!(
         pipeline.connections[1].operator,
         reify_ast::ConnectOp::Forward
+    );
+}
+
+/// §6.2 refuses to guess. An element whose sub has several ports in the
+/// direction the hop needs is a compile error that names the candidates, so the
+/// author can pick one by dotting the element.
+///
+/// The hop must be dropped rather than half-emitted: the author gets exactly
+/// this one diagnostic, not this one plus `compile_connection`'s misleading
+/// `undefined port 'a'` — which is the only thing this shape reports today.
+#[test]
+fn chain_element_with_multiple_ports_in_needed_direction_is_an_error() {
+    let source = r#"
+trait FluidPort { param diameter : Length }
+occurrence def Splitter {
+    port inlet : in FluidPort { param diameter : Length = 25mm }
+    port outA : out FluidPort { param diameter : Length = 25mm }
+    port outB : out FluidPort { param diameter : Length = 25mm }
+}
+structure def Pipeline {
+    sub a = Splitter()
+    sub b = Splitter()
+    chain a -> b
+}
+"#;
+
+    let module = compile_source(source);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one error — only `a` is ambiguous, `b` has a unique `in` port; got: {:?}",
+        errors
+    );
+
+    let message = &errors[0].message;
+    for expected in ["'a'", "'out'", "outA", "outB"] {
+        assert!(
+            message.contains(expected),
+            "ambiguity error should name {expected}, got: {message}"
+        );
+    }
+    assert_no_diagnostic(&module.diagnostics, Severity::Error, "undefined port");
+
+    let pipeline = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Pipeline")
+        .expect("expected template Pipeline");
+    assert!(
+        pipeline.connections.is_empty(),
+        "a hop with an unresolved endpoint must not be emitted, got: {:?}",
+        pipeline.connections
+    );
+}
+
+/// The other half of the §6.2 uniqueness rule: zero ports in the needed
+/// direction fails just as loudly as several, and says so in its own words —
+/// there is nothing to list, so the author is pointed at dotting the element.
+///
+/// `Sink` has no `out` port, so `a` cannot source a hop. `b` still resolves to
+/// its unique `in` port, which is what keeps this to a single diagnostic.
+#[test]
+fn chain_element_with_no_port_in_needed_direction_is_an_error() {
+    let source = r#"
+trait FluidPort { param diameter : Length }
+occurrence def Sink {
+    port inlet : in FluidPort { param diameter : Length = 25mm }
+}
+structure def Pipeline {
+    sub a = Sink()
+    sub b = Sink()
+    chain a -> b
+}
+"#;
+
+    let module = compile_source(source);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one error — only `a` lacks the port its role needs; got: {:?}",
+        errors
+    );
+
+    let message = &errors[0].message;
+    for expected in ["'a'", "'out'", "no "] {
+        assert!(
+            message.contains(expected),
+            "missing-port error should name {expected}, got: {message}"
+        );
+    }
+    assert_no_diagnostic(&module.diagnostics, Severity::Error, "undefined port");
+
+    let pipeline = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Pipeline")
+        .expect("expected template Pipeline");
+    assert!(
+        pipeline.connections.is_empty(),
+        "a hop with an unresolved endpoint must not be emitted, got: {:?}",
+        pipeline.connections
     );
 }
