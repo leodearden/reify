@@ -506,10 +506,5 @@ fn out_of_bounds_index_errors() {
 // `indices_length_not_multiple_of_three_errors`, `out_of_bounds_index_errors`)
 // cover the preflight validation that does have testable error paths.
 //
-// Deliberately failing a mesh is the business of
-// `tests/mesher_poison_recovery.rs`, not this binary — kept separate so that a
-// regression in gmsh's mesher-recovery reds one binary whose name states the
-// cause, instead of reddening unrelated assertions here. A failed
-// `mesh_generate` no longer escapes its own call: `init::mesh_generate_with_recovery`
-// recycles gmsh while `GMSH_LOCK` is still held, at all four of this crate's
-// `mesh_generate` call sites.
+// Deliberate mesher failures live in `tests/mesher_poison_recovery.rs`, whose
+// header carries the mechanism and why they are kept out of this binary.
