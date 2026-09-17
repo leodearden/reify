@@ -1365,13 +1365,33 @@ impl GitOps for MockGitOps {
 /// metadata so the detector stays pure-logic (it never reads source files —
 /// symmetric with how [`GitOps::diff_added_lines`] pre-extracts strings).
 /// Per `f-infra-design.md` §3 and §5 P1.
+///
+/// KNOWN LIMITATION — the three suppression fields carry no "unknown".
+/// `false` / `None` means EITHER "the declaration was read and carries no
+/// opt-out" OR "the declaration could not be located and nothing was read".
+/// A consumer that treats them as an opt-out having been DECLINED will,
+/// on the second reading, report a symbol its author did suppress. Today
+/// `line == 0` is the only in-band signal, and it covers just one of the
+/// two ways a declaration goes unlocatable (the wire reported no line);
+/// the other — a line past the declaring file's current end, i.e. a stale
+/// index — is known only to the enrichment pass, which reports it to the
+/// operator on stderr and does not record it per symbol. Distinguishing
+/// the states at the type is tracked as a follow-up rather than fixed
+/// here, since it reaches beyond this seam into `p1_producer_orphan`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChangedSymbol {
     /// The symbol's name, used as the key for [`JCodemunchOps::find_references`].
     pub name: String,
     /// Workspace-relative path of the file declaring the symbol.
     pub file: String,
-    /// 1-based line of the declaration (forensic evidence locator).
+    /// 1-based line of the declaration (forensic evidence locator) WHEN
+    /// the wire reports one. `0` is the sentinel for "not reported",
+    /// mirroring [`SymbolReference::line`]: a `get_changed_symbols` payload
+    /// that omits the `line` column still yields the symbol, located at
+    /// `0`, rather than dropping it. Suppression enrichment treats `0` as
+    /// unlocatable and leaves the flags below at their neutral defaults —
+    /// which is why a consumer reading those flags must check this field
+    /// first; see the KNOWN LIMITATION on the struct.
     pub line: usize,
     /// `true` when the declaration carries `#[allow(dead_code)]` — an
     /// intentional-orphan opt-out (suppresses the finding). Per
@@ -1394,7 +1414,9 @@ pub struct ChangedSymbol {
 pub struct SymbolReference {
     /// Workspace-relative path of the referencing file.
     pub file: String,
-    /// 1-based line of the reference.
+    /// 1-based line of the reference WHEN the wire reports one. `0` is the
+    /// sentinel for "not reported": jcodemunch's `find_references` records
+    /// carry only `file`/`specifier`/`match_type`, no line number.
     pub line: usize,
 }
 
@@ -1416,7 +1438,11 @@ pub struct DeadSymbol {
     pub kind: String,
     /// Workspace-relative path of the file declaring the symbol.
     pub file: String,
-    /// 1-based line of the declaration.
+    /// 1-based line of the declaration WHEN the wire reports one. `0` is the
+    /// sentinel for "not reported", mirroring [`ChangedSymbol::line`] and
+    /// [`SymbolReference::line`]: a `get_dead_code_v2` payload that omits the
+    /// `line` column still yields the symbol, located at `0`, rather than
+    /// dropping it from the PDEAD sweep.
     pub line: usize,
     /// Jcodemunch's confidence score that the symbol is truly unreachable
     /// (0.0 = uncertain; 1.0 = certain). Filtered by `min_confidence` in
