@@ -1,41 +1,28 @@
 //! Wave-protocol contract pin for PDIAG (task #6768, against landed #5405).
 //!
-//! `docs/prds/v0_6/spec-conformance-suite.md`'s Phase-3 wave protocol
-//! mandates that each rejection-surface wave (leaf ρ) codes its section's
-//! `Diagnostic::error`/`Diagnostic::warning` construction sites and shrinks
-//! that file's row in `crates/reify-audit/pdiag-baseline.txt` IN THE SAME
-//! DIFF. This file pins the PDIAG-side contract that mandate leans on: the
-//! composed before/after transaction, the two seeded-fire directions that
-//! make mandating a same-diff shrink safe, the zero-row deletion rule, and
-//! the two model deltas accepted with the 2026-08-28 ruling.
+//! Pins the PDIAG contract the suite's Phase-3 wave protocol depends on: the
+//! composed before/after transaction, the `Exceeded`-vs-`NewFile` directions
+//! that make mandating a same-diff shrink safe, the zero-row deletion rule,
+//! and the two model deltas accepted 2026-08-28. The protocol text and the
+//! "PDIAG is the ONE ratchet — no suite-local second ratchet" rule are
+//! normative in `docs/prds/v0_6/spec-conformance-suite.md` (D8, Phase-3);
+//! this file pins them rather than restating them (SPOT). Remediation menu:
+//! `docs/notes/diagnostic-severity-policy.md` §3.
 //!
-//! PDIAG (`reify_audit::pdiag`, #5405) is the ONE ratchet over the
-//! `Diagnostic::error`/`Diagnostic::warning`-without-code population. A
-//! suite-local second ratchet over the same population is FORBIDDEN — that
-//! is precisely the rescope task #6768 exists to install. Every assertion
-//! below drives `pdiag::check` through its public
-//! `pdiag::test_support::Fixture` seam; nothing here re-derives a census, a
-//! count, or a baseline parse.
+//! Drives `pdiag::check` only through its public
+//! `pdiag::test_support::Fixture` seam. `crates/reify-audit/src/pdiag.rs`'s
+//! own `mod tests` exhaustively covers `ratchet()`'s four verdicts and the
+//! generator seam is pinned by `crates/reify-audit/tests/pdiag_baseline.rs`
+//! — neither is restated here. New here: a single file's `coded_src` +
+//! `codeless_src` MIX (that combination appears nowhere in `pdiag.rs`'s own
+//! tests), and the zero-row-vs-dropped-row fork. A future change to the
+//! ratchet's severity/exit-code table should be checked against both
+//! `pdiag.rs`'s `mod tests` and this file.
 //!
-//! This file deliberately does NOT restate PDIAG's own static-census
-//! coverage — `ratchet()`'s four verdicts are exhaustively unit-tested in
-//! `crates/reify-audit/src/pdiag.rs`, and the generator seam is pinned by
-//! `crates/reify-audit/tests/pdiag_baseline.rs`. What is pinned here is the
-//! composed wave TRANSACTION those unit tests never compose: a before/after
-//! pair with coding-as-the-mechanism.
-//!
-//! Nor does this file restate the remediation menu (attach a
-//! `DiagnosticCode` / take the reviewed `pdiag:allow` opt-out / shrink the
-//! row same-commit / regenerate on a move-or-rename) — that lives in
-//! `docs/notes/diagnostic-severity-policy.md` §3, which `pdiag.rs`'s own
-//! High findings already cite. A third copy here would be exactly the
-//! two-copy drift the suite PRD's G7 walk warns against.
-//!
-//! User-observable signal:
-//!   `cargo test -p reify-audit --test pdiag_wave_protocol`
+//! Signal: `cargo test -p reify-audit --test pdiag_wave_protocol`
 
 use reify_audit::pdiag::test_support::{Fixture, codeless_src, coded_src};
-use reify_audit::{Finding, Severity};
+use reify_audit::{EvidenceRef, Finding, Pattern, Severity};
 
 /// The one fixed swept path every test in this file shares. `crates/<name>/src/`
 /// is required by `pdiag::is_swept_path`; `reify-compiler` is an arbitrary
@@ -44,15 +31,9 @@ use reify_audit::{Finding, Severity};
 /// `SCOPE_EXCLUDE_PREFIXES`).
 const WAVE_SECTION: &str = "crates/reify-compiler/src/wave_section.rs";
 
-/// Build a tempdir tree with exactly ONE swept file at [`WAVE_SECTION`],
-/// composed of `coded` coded sites followed by `codeless` code-less ones,
-/// plant `raw_baseline` verbatim as the manifest content, and run the
-/// detector end to end.
-///
-/// The shared builder behind [`wave_tree`] AND the raw-row escape a
-/// deliberately malformed row (e.g. a literal `0`, which `parse_baseline`
-/// rejects) needs: taking the bytes directly here is what keeps that escape
-/// from duplicating the fixture setup.
+/// Shared builder behind [`wave_tree`] and the raw-baseline escape a
+/// deliberately malformed row (e.g. a literal `0`) needs — taking bytes
+/// directly here is what keeps that escape from duplicating fixture setup.
 fn wave_tree_raw(codeless: usize, coded: usize, raw_baseline: &str) -> Vec<Finding> {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut fx = Fixture::new(tmp.path());
@@ -61,15 +42,12 @@ fn wave_tree_raw(codeless: usize, coded: usize, raw_baseline: &str) -> Vec<Findi
     fx.run()
 }
 
-/// [`wave_tree_raw`], for the common case of a well-formed baseline row:
-/// `row` plants that file's baseline allowance (`None` omits the row — an
-/// empty baseline, the "no row" idiom `pdiag.rs`'s own tests already use).
-///
-/// The ONE tree-builder every ordinary test in this file shares, so a wave's
-/// before/after pair reads as a two-line change of counts rather than
-/// duplicated fixture setup. `row` is always a real ratchet count (>= 1):
-/// `parse_baseline` itself rejects `0`, so a test that needs exactly that
-/// malformed row goes through [`wave_tree_raw`] instead of here.
+/// [`wave_tree_raw`] for the common well-formed-row case: `row` plants that
+/// file's baseline allowance, `None` omits the row entirely. Every ordinary
+/// test in this file shares this one builder, so a wave's before/after pair
+/// reads as a two-line change of counts. `row` is always >= 1 — `0` is a
+/// real `parse_baseline` rejection, so that case goes through
+/// [`wave_tree_raw`] instead.
 fn wave_tree(codeless: usize, coded: usize, row: Option<u32>) -> Vec<Finding> {
     let baseline = row.map_or_else(String::new, |n| {
         debug_assert!(n >= 1, "a real baseline row is never 0 — use wave_tree_raw for that");
@@ -113,32 +91,53 @@ fn a_row_shrunk_further_than_its_sites_were_coded_is_a_high() {
     // The shrink is not a rubber stamp: the wave rewrites the row to N-K but
     // only codes K-1 sites, so live (N-K+1) exceeds the row it just wrote.
     // Without this direction, mandating a same-diff shrink would be
-    // mandating a way to launder sites past the gate.
+    // mandating a way to launder sites past the gate. This is the
+    // `Exceeded` arm — a row that IS present but too small — distinct from
+    // the `NewFile` arm (no row at all) the next test pins.
     let n = 5usize;
     let k = 2usize;
-    let findings = wave_tree(n - (k - 1), k - 1, Some((n - k) as u32));
+    let live = n - (k - 1);
+    let baseline = n - k;
+    let findings = wave_tree(live, k - 1, Some(baseline as u32));
     let high = highs(&findings);
     assert_eq!(high.len(), 1, "expected exactly one High, got {findings:?}");
+    // Verdict identity, not just the path: an `Exceeded` naming this path
+    // must not be confused with some other High also naming it. The summary
+    // needle pins WHICH verdict fired, mirroring pdiag.rs's own
+    // `live_count_over_the_baseline_row_is_one_high_finding`.
+    assert_eq!(high[0].pattern, Pattern::PDiag);
+    assert_eq!(high[0].task_id, WAVE_SECTION);
+    assert_eq!(high[0].evidence, vec![EvidenceRef::File { path: WAVE_SECTION.to_string() }]);
     assert!(
-        high[0].summary.contains(WAVE_SECTION),
-        "{WAVE_SECTION} missing from {:?}",
+        high[0].summary.contains(&format!("has {live} code-less"))
+            && high[0].summary.contains(&format!("baseline allows {baseline}")),
+        "expected an Exceeded verdict naming live={live}/baseline={baseline}, got {:?}",
         high[0].summary
     );
 }
 
 #[test]
-fn a_new_uncoded_site_added_during_a_wave_reds_against_the_shrunk_row() {
-    // The second half of κ's user-observable signal: start from step-1's
-    // clean AFTER state (coded K / code-less N-K, row N-K), then add ONE
-    // further code-less site during the same wave.
+fn a_wave_introducing_a_new_section_file_is_a_newfile_high() {
+    // The other seeded-fire direction, genuinely distinct from the one
+    // above (not just a re-parameterization of it): a wave that opens a
+    // brand-new section file mid-migration — some sites already coded, the
+    // rest not, and NO baseline row at all yet — hits `NewFile`, not
+    // `Exceeded`. There is no row to compare against, versus a row that is
+    // merely too small; this is the direction a wave that introduces a new
+    // file for its section actually trips first.
     let n = 5usize;
     let k = 2usize;
-    let findings = wave_tree(n - k + 1, k, Some((n - k) as u32));
+    let live = n - k;
+    let findings = wave_tree(live, k, None);
     let high = highs(&findings);
     assert_eq!(high.len(), 1, "expected exactly one High, got {findings:?}");
+    assert_eq!(high[0].pattern, Pattern::PDiag);
+    assert_eq!(high[0].task_id, WAVE_SECTION);
+    assert_eq!(high[0].evidence, vec![EvidenceRef::File { path: WAVE_SECTION.to_string() }]);
     assert!(
-        high[0].summary.contains(WAVE_SECTION),
-        "{WAVE_SECTION} missing from {:?}",
+        high[0].summary.contains("is new to the baseline")
+            && high[0].summary.contains(&format!("has {live} code-less")),
+        "expected a NewFile verdict naming live={live}, got {:?}",
         high[0].summary
     );
 }
@@ -152,12 +151,17 @@ fn a_fully_coded_file_must_drop_its_row_rather_than_write_zero() {
     // verdicts — a red gate, not a clean one.
     let n = 3usize;
     let zero_row = wave_tree_raw(0, n, &format!("{WAVE_SECTION} 0\n"));
-    let high = highs(&zero_row);
-    assert_eq!(high.len(), 1, "expected exactly one High, got {zero_row:?}");
+    // Assert the WHOLE list, not just its High subset: "INSTEAD OF the
+    // ratchet's verdicts" means the malformed-baseline finding is the ONLY
+    // finding produced. Filtering through `highs()` first would let a stray
+    // Medium ride alongside it undetected, silently passing the one claim
+    // this test exists to pin.
+    assert_eq!(zero_row.len(), 1, "expected exactly one finding total, got {zero_row:?}");
+    assert_eq!(zero_row[0].severity, Severity::High);
     assert!(
-        high[0].summary.contains("pdiag-baseline-unreadable"),
+        zero_row[0].summary.contains("pdiag-baseline-unreadable"),
         "expected the malformed-baseline finding, not a ratchet verdict, got {:?}",
-        high[0].summary
+        zero_row[0].summary
     );
 
     // The correct fork: DELETE the row instead. Confirmed here rather than
