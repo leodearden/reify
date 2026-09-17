@@ -17,7 +17,13 @@ const rpcTimeout = (method: string, tail?: string) =>
 const summary = (
   failedSuites: WorkerRpcFailureSummary['failedSuites'],
   failedTestCount = 0,
-): WorkerRpcFailureSummary => ({ failedSuites, failedTestCount })
+  rest: Partial<WorkerRpcFailureSummary> = {},
+): WorkerRpcFailureSummary => ({ failedSuites, failedTestCount, ...rest })
+
+/** The recorded 7431 signature, reused wherever a POSITIVE input is needed. */
+const starvedSuites = (): WorkerRpcFailureSummary['failedSuites'] => [
+  { filepath: 'src/__tests__/engineStore.test.ts', errorMessages: [rpcTimeout('fetch', '[\\"x\\"]')] },
+]
 
 describe('classifyWorkerRpcFlake', () => {
   it('classifies the recorded 7431 signature: RPC timeouts with zero failed tests', () => {
@@ -109,6 +115,32 @@ describe('classifyWorkerRpcFlake', () => {
     expect(verdict).toBeNull()
   })
 
+  // THE SECOND LOAD-BEARING VETO, and the one the rules above cannot see: they
+  // reason only about suites that FAILED. A starved forks pool can die partway,
+  // leaving suites 'queued' that never ran at all — retrying the two that failed
+  // would green a gate that silently skipped the rest.
+  it('returns null when any suite never reached a terminal state', () => {
+    expect(
+      classifyWorkerRpcFlake(
+        summary(starvedSuites(), 0, { unfinishedSuites: ['src/__tests__/never-ran.test.ts'] }),
+      ),
+    ).toBeNull()
+  })
+
+  it('classifies normally when the unfinished-suite list is empty', () => {
+    expect(classifyWorkerRpcFlake(summary(starvedSuites(), 0, { unfinishedSuites: [] }))).not.toBeNull()
+  })
+
+  it('returns null when the run was interrupted, however clean the signature', () => {
+    expect(
+      classifyWorkerRpcFlake(summary(starvedSuites(), 0, { runEndReason: 'interrupted' })),
+    ).toBeNull()
+  })
+
+  it.each(['passed', 'failed'])('still classifies when the run ended as "%s"', (reason) => {
+    expect(classifyWorkerRpcFlake(summary(starvedSuites(), 0, { runEndReason: reason }))).not.toBeNull()
+  })
+
   it('returns null when no suites failed at all', () => {
     expect(classifyWorkerRpcFlake(summary([]))).toBeNull()
   })
@@ -180,13 +212,17 @@ describe('classifyWorkerRpcFlake', () => {
 // and injected IO, so these tests touch no real filesystem and assume no cwd.
 // ---------------------------------------------------------------------------
 
-/** A synthetic stand-in for vitest's TestModule, satisfying ReportedModule. */
+/**
+ * A synthetic stand-in for vitest's TestModule, satisfying ReportedModule.
+ * `state` accepts any TestModuleState ('skipped' | 'pending' | 'failed' |
+ * 'passed' | 'queued'); `failed` is the shorthand for the common two.
+ */
 const testModule = (
   moduleId: string,
-  opts: { failed?: boolean; errors?: string[]; failedTests?: number } = {},
+  opts: { failed?: boolean; state?: string; errors?: string[]; failedTests?: number } = {},
 ): ReportedModule => ({
   moduleId,
-  state: () => (opts.failed ? 'failed' : 'passed'),
+  state: () => opts.state ?? (opts.failed ? 'failed' : 'passed'),
   errors: () => (opts.errors ?? []).map((message) => ({ message })),
   children: {
     allTests: (state?: string) =>
@@ -201,20 +237,36 @@ interface Recorder {
   readonly lines: string[]
   readonly writes: { path: string; contents: string }[]
   readonly discards: string[]
+  readonly warnings: string[]
 }
 
-const recordingReporter = (artifactPath = '/tmp/flake.json'): Recorder => {
+/**
+ * `artifactPath: null` constructs the reporter WITHOUT one, exercising the
+ * constructor's default. `overrides` lets a test make an IO channel throw
+ * without touching a disk.
+ */
+const recordingReporter = (
+  artifactPath: string | null = '/tmp/flake.json',
+  overrides: Partial<{
+    rootDir: string
+    writeArtifact: (path: string, contents: string) => void
+    discardArtifact: (path: string) => void
+  }> = {},
+): Recorder => {
   const lines: string[] = []
   const writes: { path: string; contents: string }[] = []
   const discards: string[] = []
+  const warnings: string[] = []
   const reporter = new WorkerRpcFlakeReporter({
     rootDir: ROOT,
-    artifactPath,
+    ...(artifactPath === null ? {} : { artifactPath }),
     emit: (line) => lines.push(line),
     writeArtifact: (path, contents) => writes.push({ path, contents }),
     discardArtifact: (path) => discards.push(path),
+    warn: (message) => warnings.push(message),
+    ...overrides,
   })
-  return { reporter, lines, writes, discards }
+  return { reporter, lines, writes, discards, warnings }
 }
 
 const TIMEOUT_FETCH = '[vitest-worker]: Timeout calling "fetch" with "[\\"x\\",\\"web\\"]"'
@@ -292,8 +344,22 @@ describe('WorkerRpcFlakeReporter — JSON artifact', () => {
     expect(artifact.methods).toEqual(['fetch', 'snapshotSaved'])
   })
 
-  it('defaults the artifact path under the gui root when none is injected', () => {
-    expect(WORKER_RPC_FLAKE_ARTIFACT).toBe('node_modules/.reify-gui-rpc-flake.json')
+  // The constructor's default is the real seam with scripts/gui-vitest-run.sh's
+  // "$GUI_DIR/node_modules/.reify-gui-rpc-flake.json", so drive it rather than
+  // asserting the exported constant equals itself.
+  it('defaults the artifact path to rootDir + the shared constant when none is injected', () => {
+    const { reporter, writes } = recordingReporter(null)
+    reporter.onTestRunEnd(starvedRun(), [])
+
+    expect(writes).toHaveLength(1)
+    expect(writes[0].path).toBe(`${ROOT}/${WORKER_RPC_FLAKE_ARTIFACT}`)
+  })
+
+  it('discards that same defaulted path at run start', () => {
+    const { reporter, discards } = recordingReporter(null)
+    reporter.onTestRunStart()
+
+    expect(discards).toEqual([`${ROOT}/node_modules/.reify-gui-rpc-flake.json`])
   })
 })
 
@@ -323,6 +389,22 @@ describe('WorkerRpcFlakeReporter — the negatives write nothing', () => {
     ],
     ['an all-green run', () => [testModule(`${ROOT}/a.test.ts`)], []],
     [
+      'a suite left queued when the starved forks pool died partway',
+      () => [
+        testModule(`${ROOT}/a.test.ts`, { failed: true, errors: [TIMEOUT_FETCH] }),
+        testModule(`${ROOT}/never-ran.test.ts`, { state: 'queued' }),
+      ],
+      [],
+    ],
+    [
+      'a suite still pending when the run ended',
+      () => [
+        testModule(`${ROOT}/a.test.ts`, { failed: true, errors: [TIMEOUT_FETCH] }),
+        testModule(`${ROOT}/mid-flight.test.ts`, { state: 'pending' }),
+      ],
+      [],
+    ],
+    [
       'an unrelated unhandled error riding alongside the starvation event',
       () => [testModule(`${ROOT}/a.test.ts`, { failed: true, errors: [TIMEOUT_FETCH] })],
       [{ message: 'Error: unhandled rejection in a passing suite' }],
@@ -335,6 +417,42 @@ describe('WorkerRpcFlakeReporter — the negatives write nothing', () => {
 
     expect(lines).toEqual([])
     expect(writes).toEqual([])
+  })
+
+  // vitest passes the run's TestRunEndReason as onTestRunEnd's third argument.
+  // 'interrupted' means the run was cut short, so its module list is not a
+  // complete picture and nothing in it can be called a mere flake.
+  it('emits no marker and writes no artifact when the run was interrupted', () => {
+    const { reporter, lines, writes } = recordingReporter()
+    reporter.onTestRunEnd(starvedRun(), [], 'interrupted')
+
+    expect(lines).toEqual([])
+    expect(writes).toEqual([])
+  })
+
+  it('still classifies on the reasons that mean the run ran to completion', () => {
+    for (const reason of ['passed', 'failed']) {
+      const { reporter, writes } = recordingReporter()
+      reporter.onTestRunEnd(starvedRun(), [], reason)
+
+      expect(writes).toHaveLength(1)
+    }
+  })
+
+  // A 'skipped' module IS terminal — vitest ran the file's collection and
+  // decided not to run it. It must not be mistaken for a never-ran suite.
+  it('treats a skipped suite as terminal, not as one that never ran', () => {
+    const { reporter, writes } = recordingReporter()
+    reporter.onTestRunEnd(
+      [
+        testModule(`${ROOT}/a.test.ts`, { failed: true, errors: [TIMEOUT_FETCH] }),
+        testModule(`${ROOT}/b.test.ts`, { state: 'skipped' }),
+      ],
+      [],
+      'failed',
+    )
+
+    expect(writes).toHaveLength(1)
   })
 
   // An unhandled error that IS the same starvation event must not veto: the
@@ -373,5 +491,45 @@ describe('WorkerRpcFlakeReporter — stale artifacts never leak into a later run
 
     expect(writes).toHaveLength(1)
     expect(discards).toEqual([])
+  })
+})
+
+// A reporter that exists to make a bad run LEGIBLE must never be the thing
+// that makes it illegible. gui/vitest.config.ts registers it on every vitest
+// invocation, including ones where gui/node_modules is absent, read-only, or
+// out of space — so every artifact touch degrades to a warning, and the runner
+// reads the resulting absent artifact as "do not retry".
+describe('WorkerRpcFlakeReporter — IO failures degrade, never abort the run', () => {
+  const exploding = (message: string) => () => {
+    throw new Error(message)
+  }
+
+  it('survives a failing artifact write and warns instead', () => {
+    const { reporter, lines, warnings } = recordingReporter('/tmp/flake.json', {
+      writeArtifact: exploding('ENOSPC: no space left on device'),
+    })
+
+    expect(() => reporter.onTestRunEnd(starvedRun(), [])).not.toThrow()
+    // The marker still reaches stdout: recognition does not depend on the disk.
+    expect(lines).toHaveLength(1)
+    expect(warnings.join('\n')).toContain('ENOSPC')
+  })
+
+  it('survives a failing stale-artifact discard at run start', () => {
+    const { reporter, warnings } = recordingReporter('/tmp/flake.json', {
+      discardArtifact: exploding('EACCES: permission denied'),
+    })
+
+    expect(() => reporter.onTestRunStart()).not.toThrow()
+    expect(warnings.join('\n')).toContain('EACCES')
+  })
+
+  it('survives a failing discard on the negative path', () => {
+    const { reporter, warnings } = recordingReporter('/tmp/flake.json', {
+      discardArtifact: exploding('ENOENT: no such file or directory'),
+    })
+
+    expect(() => reporter.onTestRunEnd([testModule(`${ROOT}/a.test.ts`)], [])).not.toThrow()
+    expect(warnings.join('\n')).toContain('ENOENT')
   })
 })

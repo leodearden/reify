@@ -31,6 +31,19 @@ export interface WorkerRpcFailureSummary {
    * unexplained suite failure does.
    */
   readonly unhandledErrorMessages?: readonly string[]
+  /**
+   * Suites that never reached a terminal state — vitest leaves them 'pending'
+   * or 'queued'. Under starvation the forks pool can die partway, so a run can
+   * report two RPC-timeout failures while twenty more suites simply never ran.
+   * Retrying only the failures would green the gate on a run that never
+   * executed them, so any unfinished suite vetoes.
+   */
+  readonly unfinishedSuites?: readonly string[]
+  /**
+   * vitest's TestRunEndReason: 'passed' | 'interrupted' | 'failed'. An
+   * interrupted run was cut short, so nothing about it is a complete picture.
+   */
+  readonly runEndReason?: string
 }
 
 export interface WorkerRpcFlakeVerdict {
@@ -57,12 +70,19 @@ const timedOutMethod = (message: string): string | null =>
  *  - Every failed suite carries an RPC timeout. One suite failing for any
  *    other reason vetoes the whole run, so a real defect coinciding with a
  *    starvation event is never absorbed.
+ *  - Every suite reached a terminal state and the run was not interrupted.
+ *    The two rules above reason only about suites that FAILED; this one closes
+ *    the same hole for suites that never RAN, which a dying forks pool leaves
+ *    behind. Without it a retry of the two failures could green a gate that
+ *    silently skipped twenty more.
  */
 export function classifyWorkerRpcFlake(
   summary: WorkerRpcFailureSummary,
 ): WorkerRpcFlakeVerdict | null {
   if (summary.failedTestCount !== 0) return null
   if (summary.failedSuites.length === 0) return null
+  if (summary.runEndReason === 'interrupted') return null
+  if ((summary.unfinishedSuites?.length ?? 0) !== 0) return null
 
   const methods = new Set<string>()
   for (const suite of summary.failedSuites) {
@@ -111,6 +131,15 @@ export interface ReportedModule {
  */
 export const WORKER_RPC_FLAKE_ARTIFACT = 'node_modules/.reify-gui-rpc-flake.json'
 
+/**
+ * vitest's TestModuleState is `TestSuiteState | "queued"`, i.e.
+ * 'skipped' | 'pending' | 'failed' | 'passed' | 'queued'
+ * (node_modules/vitest/dist/chunks/reporters.d.*.d.ts:270-271). Only the first
+ * three of those mean the module is DONE; 'pending' and 'queued' mean the run
+ * never got to it.
+ */
+const TERMINAL_MODULE_STATES: ReadonlySet<string> = new Set(['passed', 'failed', 'skipped'])
+
 /** The escalation history this marker belongs to, so a recurrence self-identifies. */
 const LINEAGE = '3185,4856,7630'
 
@@ -121,6 +150,7 @@ export interface FlakeReporterOutput {
   emit: (line: string) => void
   writeArtifact: (path: string, contents: string) => void
   discardArtifact: (path: string) => void
+  warn: (message: string) => void
 }
 
 const countFailedTests = (modules: readonly ReportedModule[]): number => {
@@ -149,17 +179,35 @@ export default class WorkerRpcFlakeReporter {
       // exactly when the runner needs the artifact.
       writeArtifact: output.writeArtifact ?? writeFileSync,
       discardArtifact: output.discardArtifact ?? ((path) => rmSync(path, { force: true })),
+      warn: output.warn ?? ((message) => process.stderr.write(`${message}\n`)),
+    }
+  }
+
+  /**
+   * A reporter that only diagnoses must never be the thing that fails a run.
+   * Every artifact touch goes through here, so an absent node_modules, a
+   * read-only mount or an ENOSPC lane degrades to "no artifact" — which the
+   * runner already reads as "do not retry", the conservative outcome.
+   */
+  private tryIo(what: string, io: () => void): void {
+    try {
+      io()
+    } catch (error) {
+      this.out.warn(`WorkerRpcFlakeReporter: could not ${what}: ${String(error)}`)
     }
   }
 
   /** A stale artifact from an earlier run must never be read as this run's. */
   onTestRunStart(): void {
-    this.out.discardArtifact(this.out.artifactPath)
+    this.tryIo('discard a stale flake artifact', () =>
+      this.out.discardArtifact(this.out.artifactPath),
+    )
   }
 
   onTestRunEnd(
     testModules: readonly ReportedModule[],
     unhandledErrors: ReadonlyArray<{ message?: string }> = [],
+    reason?: string,
   ): void {
     const verdict = classifyWorkerRpcFlake({
       failedSuites: testModules
@@ -170,10 +218,16 @@ export default class WorkerRpcFlakeReporter {
         })),
       failedTestCount: countFailedTests(testModules),
       unhandledErrorMessages: unhandledErrors.map(messageOf),
+      unfinishedSuites: testModules
+        .filter((module) => !TERMINAL_MODULE_STATES.has(module.state()))
+        .map((module) => relativeTo(this.out.rootDir, module.moduleId)),
+      runEndReason: reason,
     })
 
     if (verdict === null) {
-      this.out.discardArtifact(this.out.artifactPath)
+      this.tryIo('discard the flake artifact', () =>
+        this.out.discardArtifact(this.out.artifactPath),
+      )
       return
     }
 
@@ -181,6 +235,8 @@ export default class WorkerRpcFlakeReporter {
       `@@REIFY_GUI_FLAKE@@ kind=${verdict.kind} suites=${verdict.suites.length}` +
         ` methods=${verdict.methods.join(',')} lineage=${LINEAGE}`,
     )
-    this.out.writeArtifact(this.out.artifactPath, `${JSON.stringify(verdict, null, 2)}\n`)
+    this.tryIo('write the flake artifact', () =>
+      this.out.writeArtifact(this.out.artifactPath, `${JSON.stringify(verdict, null, 2)}\n`),
+    )
   }
 }
