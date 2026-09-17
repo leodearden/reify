@@ -17,8 +17,10 @@
 //! failure arms are unreachable from ordinary inputs. Without injection the
 //! guard would be decorative. `export_step_with_injected_fault_for_test`
 //! therefore runs the SAME `export_step_locked` body under the SAME mutex,
-//! corrupting exactly one thing first — the established `*_for_test`
-//! fixture-hook pattern this crate already uses for `make_null_shape_for_test`
+//! corrupting exactly one thing first. Which thing is a `StepGuardFault`, a
+//! shared cxx enum, so a misspelled fault is a compile error here rather than
+//! a runtime rejection — and the established `*_for_test` fixture-hook pattern
+//! this crate already uses for `make_null_shape_for_test`
 //! ("the exact crash input … it cannot be built from Rust because `OcctShape`
 //! is opaque"; the same argument applies to a STEP model with a corrupted unit
 //! context).
@@ -52,7 +54,7 @@
 #![cfg(all(has_occt, feature = "test-fixtures"))]
 
 use reify_ir::{ExportError, GeometryHandleId, GeometryOp, Value};
-use reify_kernel_occt::{OcctKernel, StepGuardProbeResult};
+use reify_kernel_occt::{OcctKernel, StepGuardFault, StepGuardProbeResult};
 
 // ---------------------------------------------------------------------------
 // Fixture
@@ -111,7 +113,7 @@ fn guard_accepts_a_real_multi_context_export() {
     let (kernel, union_id) = two_cone_union_kernel();
 
     let audit = kernel
-        .export_step_with_injected_fault_for_test(union_id, "AP214", "none")
+        .export_step_with_injected_fault_for_test(union_id, "AP214", StepGuardFault::None)
         .expect("a legitimate export must be ACCEPTED — a guard that refuses a \
                  correct file is worse than no guard at all");
 
@@ -214,7 +216,11 @@ fn assert_reify_authored_refusal(msg: &str) {
 }
 
 /// Helper: run one fault and require it to be REFUSED, returning the message.
-fn refusal_message(kernel: &OcctKernel, id: GeometryHandleId, fault: &str) -> String {
+fn refusal_message(
+    kernel: &OcctKernel,
+    id: GeometryHandleId,
+    fault: StepGuardFault,
+) -> String {
     match kernel.export_step_with_injected_fault_for_test(id, "AP214", fault) {
         Err(ExportError::FormatError(msg)) => {
             assert_reify_authored_refusal(&msg);
@@ -252,7 +258,7 @@ fn refusal_message(kernel: &OcctKernel, id: GeometryHandleId, fault: &str) -> St
 fn refusal(
     kernel: &OcctKernel,
     id: GeometryHandleId,
-    fault: &str,
+    fault: StepGuardFault,
 ) -> (String, StepGuardProbeResult) {
     let msg = refusal_message(kernel, id, fault);
     let probe = kernel
@@ -376,7 +382,7 @@ fn guard_refuses_a_non_radian_plane_angle_declaration() {
 
     // (a) + (b): refused, with Reify attribution rather than OCCT's, and the
     // same finding read back structurally.
-    let (msg, probe) = refusal(&kernel, union_id, "non_radian");
+    let (msg, probe) = refusal(&kernel, union_id, StepGuardFault::NonRadian);
 
     // (c) The offending unit is NAMED. `.STERADIAN.` is the STEP token for
     // what the fault installs; `sunSteradian` is the OCCT enumerator spelling.
@@ -455,7 +461,7 @@ fn guard_refuses_a_prefixed_radian_declaration() {
     let (kernel, union_id) = two_cone_union_kernel();
 
     // (a) Refused, with the same Reify attribution as the non-radian arm.
-    let (msg, probe) = refusal(&kernel, union_id, "prefixed");
+    let (msg, probe) = refusal(&kernel, union_id, StepGuardFault::Prefixed);
 
     // (b) The PREFIX is named. "wrong unit" is not enough here — the reader
     // has to be told the unit is a MILLIradian, or the natural next move is to
@@ -509,7 +515,7 @@ fn guard_refuses_a_context_with_no_plane_angle_declaration() {
     let (kernel, union_id) = two_cone_union_kernel();
 
     // (a) Refused, same attribution arms.
-    let (msg, probe) = refusal(&kernel, union_id, "missing");
+    let (msg, probe) = refusal(&kernel, union_id, StepGuardFault::Missing);
 
     // (b) The offending context is named by entity index, and the units it DID
     // reach are listed. When a context declares nothing, the diagnostic
@@ -581,7 +587,7 @@ fn guard_refuses_a_conversion_based_degree_declaration() {
     let (kernel, union_id) = two_cone_union_kernel();
 
     // (a) Refused, with the same Reify attribution as every other arm.
-    let (msg, probe) = refusal(&kernel, union_id, "conversion_based");
+    let (msg, probe) = refusal(&kernel, union_id, StepGuardFault::ConversionBased);
 
     // (b) V3 — the unit is REFERENCED, so this is the association arm. And
     // NOT UNVERIFIABLE: the guard recognised this form and rejected it, which
@@ -649,7 +655,7 @@ fn guard_refuses_the_half_wired_degree_angle_mode() {
     let (kernel, union_id) = two_cone_union_kernel();
 
     // (a) Refused, same attribution arms as every other refusal.
-    let (msg, probe) = refusal(&kernel, union_id, "angle_mode_deg");
+    let (msg, probe) = refusal(&kernel, union_id, StepGuardFault::AngleModeDeg);
 
     // (b) The diagnostic names the static VERBATIM and explains the mechanism.
     // "some angle setting is wrong" would send the reader looking through the
@@ -715,7 +721,7 @@ fn guard_refuses_the_half_wired_degree_angle_mode() {
     // refuse. This also pins restoration on the THROWING path, which is the
     // only path this fault ever takes.
     kernel
-        .export_step_with_injected_fault_for_test(union_id, "AP214", "none")
+        .export_step_with_injected_fault_for_test(union_id, "AP214", StepGuardFault::None)
         .expect(
             "the injected `step.angleunit.mode` value must be restored even \
              though the export threw — it is a process-global Interface_Static \
@@ -731,10 +737,10 @@ fn guard_refuses_the_half_wired_degree_angle_mode() {
 ///
 /// V4 is the only arm that quantifies over unit ENTITIES rather than over
 /// (context, unit) associations, and it needs its own fault because no other
-/// one can reach it. `"missing"` orphans a unit too — but a still-correct
-/// unprefixed radian, which V4 skips by design; `"non_radian"` produces a
-/// wrong unit that is still REFERENCED, so V3 claims it first. Only dropping
-/// every reference AND making the unit wrong lands here.
+/// one can reach it. `Missing` orphans a unit too — but a still-correct
+/// unprefixed radian, which V4 skips by design; `NonRadian` produces a wrong
+/// unit that is still REFERENCED, so V3 claims it first. Only dropping every
+/// reference AND making the unit wrong lands here.
 ///
 /// WHY THE ARM EXISTS AT ALL. The entity is in the emitted bytes, spelled as a
 /// plane-angle unit, while being reachable from no context — so a consumer
@@ -747,7 +753,7 @@ fn guard_refuses_an_orphaned_non_radian_plane_angle_unit() {
     let (kernel, union_id) = two_cone_union_kernel();
 
     // (a) Refused, with the same Reify attribution as every other arm.
-    let (msg, probe) = refusal(&kernel, union_id, "orphan_non_radian");
+    let (msg, probe) = refusal(&kernel, union_id, StepGuardFault::OrphanNonRadian);
 
     // (b) V4 fired, and it is the arm that names the finding. V3 must NOT:
     // no context reaches this unit any more, so blaming a context would point
@@ -829,7 +835,7 @@ fn guard_refuses_an_unverifiable_plane_angle_declaration() {
     let (kernel, union_id) = two_cone_union_kernel();
 
     // (a) Refused, with the same Reify attribution as every other arm.
-    let (msg, probe) = refusal(&kernel, union_id, "unrecognised_angular");
+    let (msg, probe) = refusal(&kernel, union_id, StepGuardFault::UnrecognisedAngular);
 
     // (b) V3 — the unit is still REFERENCED by a context, so this is the
     // association arm. V2 must stay silent: something IS declared here.
@@ -890,7 +896,7 @@ fn guard_refuses_an_orphaned_unverifiable_plane_angle_unit() {
     let (kernel, union_id) = two_cone_union_kernel();
 
     // (a) Refused, same attribution.
-    let (msg, probe) = refusal(&kernel, union_id, "orphan_unrecognised");
+    let (msg, probe) = refusal(&kernel, union_id, StepGuardFault::OrphanUnrecognised);
 
     // (b) V4 alone, qualified UNVERIFIABLE. Nothing existing was touched, so a
     // hit on any other arm means the fault did more than it claims to; and V4
@@ -959,10 +965,10 @@ fn guard_resolves_the_two_part_complex_context_spelling() {
     // Baseline from the SAME kernel and shape, so the only difference between
     // the two runs is the injected context.
     let clean = kernel
-        .export_step_with_injected_fault_for_test(union_id, "AP214", "none")
+        .export_step_with_injected_fault_for_test(union_id, "AP214", StepGuardFault::None)
         .expect("the uncorrupted export must be accepted");
 
-    let (msg, probe) = refusal(&kernel, union_id, "two_part_context");
+    let (msg, probe) = refusal(&kernel, union_id, StepGuardFault::TwoPartContext);
 
     // (a) The finding is attributed to the CONTEXT that declares the unit —
     // arm V3 — and NOT to V4, which is where an unresolved context's unit
@@ -1024,7 +1030,7 @@ fn guard_refuses_a_model_with_no_unit_assigned_context() {
     let (kernel, union_id) = two_cone_union_kernel();
 
     // (a) Refused, same attribution.
-    let (msg, probe) = refusal(&kernel, union_id, "no_context");
+    let (msg, probe) = refusal(&kernel, union_id, StepGuardFault::NoContext);
 
     // (b) V1 alone. V2 cannot fire (it quantifies over contexts, and there are
     // none); V3 likewise; V4 sees the now-unreferenced units but they are all
@@ -1085,58 +1091,4 @@ fn guard_refuses_a_model_with_no_unit_assigned_context() {
          them; got orphan_angular_units={} in: {msg}",
         probe.orphan_angular_units
     );
-}
-
-// ---------------------------------------------------------------------------
-// The fixture hook's own contract
-// ---------------------------------------------------------------------------
-
-/// An unrecognised fault NAME is rejected, not silently ignored.
-///
-/// This pins the property every negative test above depends on. If the unknown
-/// branch of `parse_step_guard_fault` were ever refactored into a silent
-/// `return StepGuardFault::None`, or into "nearest known fault wins", a typo
-/// in any of those tests would stop injecting anything — and a test that
-/// asserts a refusal against an UNCORRUPTED export would either flip to a
-/// confusing failure or, in the nearest-match case, keep passing while
-/// exercising the wrong arm. The rejection is what makes a typo read as a
-/// rejected fault instead.
-///
-/// `"nonradian"` (the real name is `"non_radian"`) is deliberately a
-/// near-miss: it is the typo a nearest-match implementation would silently
-/// absorb.
-#[test]
-fn guard_rejects_an_unrecognised_fault_name() {
-    let (kernel, union_id) = two_cone_union_kernel();
-
-    match kernel.export_step_with_injected_fault_for_test(union_id, "AP214", "nonradian") {
-        Err(ExportError::FormatError(msg)) => {
-            assert_reify_authored_refusal(&msg);
-            assert!(
-                msg.contains("unknown injected fault"),
-                "the rejection must say the FAULT NAME was not recognised — \
-                 not merely fail — so a typo in a test cannot be mistaken for \
-                 the guard refusing a corrupt model; got: {msg}"
-            );
-            assert!(
-                msg.contains("nonradian"),
-                "the rejection must echo the unrecognised name back; got: {msg}"
-            );
-            assert!(
-                msg.contains("non_radian"),
-                "the rejection must list the accepted fault names, so the \
-                 reader can see the correct spelling next to their typo; \
-                 got: {msg}"
-            );
-        }
-        Err(other) => panic!(
-            "an unrecognised fault name must surface as \
-             ExportError::FormatError; got Err({other:?})"
-        ),
-        Ok(_) => panic!(
-            "an unrecognised fault name must be REJECTED. Returning a STEP \
-             file here means the injection was silently skipped, which is \
-             exactly what turns a typo in a negative test into a vacuous pass"
-        ),
-    }
 }

@@ -83,6 +83,11 @@ struct ExportStepResult;
 /// Returned by `export_step_with_injected_fault_for_test` (#6344); defined by
 /// the cxx bridge (ffi.rs).
 struct StepGuardProbeResult;
+/// Taken by the two #6344 fixture hooks; defined by the cxx bridge (ffi.rs),
+/// which is where each value's meaning is documented. Declared opaquely
+/// (underlying type spelled as cxx generates it) because the generated header
+/// includes THIS one before it defines the enum.
+enum class StepGuardFault : ::std::uint8_t;
 struct TopologyCacheBuildCounts;
 struct InertiaTensor3x3;
 /// Returned by `revolve_synthesis_post_sort_for_test`; defined by cxx bridge.
@@ -1613,81 +1618,21 @@ std::unique_ptr<OcctShape> apply_test_placement_for_test(
 /// because its crash input "cannot be built from Rust".
 ///
 /// `fault` selects the corruption, applied inside the export mutex and after
-/// the shape has been transferred:
-///   - `"none"`        — no fault; asserts the guard ACCEPTS a legitimate
-///                       export and reports counts proving it saw the model.
-///   - `"non_radian"`  — rename the FIRST SI plane-angle unit to STERADIAN.
-///                       Exactly one, so the other contexts stay radian: that
-///                       partial flip is invisible to a file-wide `.RADIAN.`
-///                       grep and can only be caught by the association walk.
-///   - `"prefixed"`    — give the FIRST SI plane-angle unit the MILLI prefix,
-///                       leaving its name at RADIAN: a MILLIRADIAN, which a
-///                       name-only check and a `.RADIAN.` grep both accept.
-///   - `"missing"`     — rebuild the FIRST unit-assigned context's `Units()`
-///                       list without any angular unit, leaving the unit
-///                       entity itself in the model: the declaration is MISSING
-///                       for that context while the file still contains a
-///                       perfectly good `SI_UNIT($,.RADIAN.)` nothing points at.
-///   - `"orphan_non_radian"` — drop the FIRST SI plane-angle unit from EVERY
-///                       context's `Units()` list AND rename it to STERADIAN.
-///                       The only fault that reaches the V4 arm, and the only
-///                       one that can: `"missing"` orphans a unit that is still
-///                       a correct radian, which V4 skips by design. Both
-///                       halves are required — dropping the reference alone
-///                       leaves a radian V4 accepts, renaming alone leaves it
-///                       referenced so V3 catches it instead.
-///   - `"unrecognised_angular"` — replace, IN PLACE, the first angular unit
-///                       the first context reaches with a bare
-///                       `StepBasic_PlaneAngleUnit` (the plain
-///                       NAMED_UNIT/PLANE_ANGLE_UNIT pair Part 21 permits,
-///                       which neither `…And…` composite covers). The context
-///                       still reaches as many units as before — replaced, not
-///                       dropped — so V2 stays silent and V3 reports a
-///                       declaration it CANNOT VERIFY, which is a distinct
-///                       finding from a declaration it verified as wrong.
-///   - `"conversion_based"` — replace, IN PLACE, the first angular unit the
-///                       first context reaches with a
-///                       `StepBasic_ConversionBasedUnitAndPlaneAngleUnit`
-///                       whose conversion factor points at the radian it
-///                       displaced: the spelling a real DEGREE or GRAD unit
-///                       takes, and the arm closest to the defect INV-AD-4
-///                       exists to prevent. Reported by V3 as a unit the guard
-///                       READ and rejected — not as UNVERIFIABLE.
-///   - `"orphan_unrecognised"` — add a bare `StepBasic_PlaneAngleUnit` that no
-///                       context references. The V4 twin of the above: same
-///                       unverifiable unit, reached through the orphan arm,
-///                       which formats its own message.
-///   - `"no_context"`   — null the `GlobalUnitAssignedContext` every complex
-///                       representation context composes, so the model
-///                       resolves to ZERO unit-assigned contexts. The only way
-///                       to reach V1's non-null-model branch — the arm that
-///                       exists to turn "the walk saw nothing" into a loud
-///                       refusal instead of a vacuous pass.
-///   - `"two_part_context"` — add a
-///                       `StepGeom_GeometricRepresentationContextAndGlobalUnitAssignedContext`
-///                       (the TWO-part complex context spelling reify's own
-///                       solid export does not emit, but AP203/wireframe/XCAF
-///                       paths can) reaching a steradian. The only fault that
-///                       reaches `step_unit_assigned_context`'s third
-///                       downcast; without it that context resolves to
-///                       NOTHING, V3 never runs for it, and its steradian is
-///                       misreported by V4 as an orphan.
-///   - `"angle_mode_deg"` — set the process-global `step.angleunit.mode`
-///                       static to the Deg regime for this export only,
-///                       restored by RAII (including on the throwing path).
-///                       Caught by the SEPARATE mode arm, not by the
-///                       declaration walk, which provably cannot see it.
+/// the shape has been transferred. Each value names the defect it models and
+/// the guard arm it reaches on the `StepGuardFault` variant itself (declared in
+/// `src/ffi.rs`, generated into both languages); how it is injected is
+/// `apply_step_guard_fault` in `occt_wrapper.cpp`.
 ///
-/// Throws (as a `ContractViolation`, i.e. surfacing as `"export_step: …"`) on
-/// an unrecognised `fault`, so a typo in a test reads as a rejected fault name
-/// rather than as a silently-skipped injection that passes vacuously — and, of
+/// Throws (as a `ContractViolation`, i.e. surfacing as `"export_step: …"`) when
+/// the fault cannot be injected into this fixture — a fixture with nothing to
+/// corrupt would otherwise make a negative test pass vacuously — and, of
 /// course, on a guard REFUSAL, which is the production behaviour these tests
 /// exist to pin. `StepGuardProbeResult::refusal` is therefore always empty
 /// here; use `step_guard_probe_for_test` to read a refusal's counts.
 StepGuardProbeResult export_step_with_injected_fault_for_test(
     const OcctShape& shape,
     rust::Str schema,
-    rust::Str fault
+    StepGuardFault fault
 );
 
 /// The same injected export, REPORTING the guard's finding instead of throwing
@@ -1711,13 +1656,13 @@ StepGuardProbeResult export_step_with_injected_fault_for_test(
 /// because both render it from one `step_export_guard_refusal` call. A test
 /// asserting that equality is what keeps the two dispositions from drifting.
 ///
-/// Still THROWS for a fault that could not be injected and for an unrecognised
-/// fault name: those are fixture defects, not findings about the model, and
-/// reporting them as a refusal would let a typo read as a guard hit.
+/// Still THROWS for a fault that could not be injected: that is a fixture
+/// defect, not a finding about the model, and reporting it as a refusal would
+/// let a fixture with nothing to corrupt read as a guard hit.
 StepGuardProbeResult step_guard_probe_for_test(
     const OcctShape& shape,
     rust::Str schema,
-    rust::Str fault
+    StepGuardFault fault
 );
 
 // --- Export ---

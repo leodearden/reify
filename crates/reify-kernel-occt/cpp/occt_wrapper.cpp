@@ -7405,143 +7405,21 @@ enum class StepGuardDisposition {
     Report,
 };
 
-/// A fault `export_step_locked` injects into the transferred model at ONE
-/// documented point, immediately before the guard runs.
-///
-/// The seam is an explicit parameter rather than a flag read from the
-/// environment or a static, so `export_step`'s `StepGuardFault::None` argument
-/// makes the production path provably fault-free BY CONSTRUCTION. The fault is
-/// deliberately never threaded into the guard itself — the guard cannot be
-/// taught which corruption to expect, so it has to detect it the same way it
-/// would detect a real one.
-enum class StepGuardFault {
-    /// No injection. The only value any production caller passes.
-    None,
-    /// Rename the first SI plane-angle unit to STERADIAN.
-    NonRadian,
-    /// Give the first SI plane-angle unit the MILLI prefix, LEAVING its name
-    /// at RADIAN. The declaration then reads `SI_UNIT(.MILLI.,.RADIAN.)` — a
-    /// milliradian — which a name-only check and a `.RADIAN.` grep both
-    /// accept, and which is off from the payload by exactly 1000x.
-    Prefixed,
-    /// Rebuild the FIRST unit-assigned context's `Units()` list without any
-    /// angular unit, leaving the unit ENTITY itself untouched in the model.
-    /// The declaration is then MISSING for that context while the file still
-    /// contains a perfectly good `SI_UNIT($,.RADIAN.)` that nothing points at.
-    Missing,
-    /// Orphan the first SI plane-angle unit — drop it from EVERY context's
-    /// `Units()` list — and rename it to STERADIAN. The only fault that
-    /// reaches V4, and the only one that can: `Missing` orphans a unit that is
-    /// still a correct radian, which V4 deliberately skips.
-    ///
-    /// Distinct from `Missing` in what it proves. `Missing` asks "does every
-    /// context reach an angular unit?"; this asks "is every angular unit
-    /// ENTITY in the file the radian, including the ones nothing points at?" —
-    /// a question no per-context walk can answer, because the offending
-    /// declaration is in the emitted bytes while being reachable from no
-    /// context at all.
-    OrphanNonRadian,
-    /// Replace, IN PLACE, the first angular unit the first unit-assigned
-    /// context reaches with a bare `StepBasic_PlaneAngleUnit` — the plain
-    /// NAMED_UNIT/PLANE_ANGLE_UNIT pair Part 21 permits and neither `…And…`
-    /// composite covers. The only fault that produces
-    /// `StepAngleUnitKind::UnrecognisedAngular` on a REFERENCED unit, so the
-    /// only one that reaches V3's "which it cannot verify" branch and
-    /// `classify_step_angle_unit`'s third downcast.
-    UnrecognisedAngular,
-    /// Replace, IN PLACE, the first angular unit the first unit-assigned
-    /// context reaches with a `StepBasic_ConversionBasedUnitAndPlaneAngleUnit`
-    /// whose conversion factor points at the radian it replaced — the exact
-    /// spelling a real DEGREE or GRAD unit takes.
-    ///
-    /// The arm closest to the defect INV-AD-4 exists to prevent: a degrees
-    /// file emitted under reify's radian payload. Without it
-    /// `StepAngleUnitKind::ConversionBased` is the one classification with no
-    /// fault behind it, so the second downcast in `classify_step_angle_unit`
-    /// is unexercised — and mistyping it (say to
-    /// `…ConversionBasedUnitAndSolidAngleUnit`) would silently demote a real
-    /// degree unit to `UnrecognisedAngular` or `NotAngular` with nothing
-    /// reddening.
-    ConversionBased,
-    /// Add a bare `StepBasic_PlaneAngleUnit` to the model that NO context
-    /// references. The V4 twin of `UnrecognisedAngular`: same unverifiable
-    /// unit, reached through the orphan arm instead of the association arm,
-    /// which is a separate message-formatting branch.
-    OrphanUnrecognised,
-    /// Null out the `GlobalUnitAssignedContext` every complex representation
-    /// context composes, so the model resolves to ZERO unit-assigned
-    /// contexts. The only fault that reaches V1's non-null-model branch —
-    /// the arm that exists precisely to turn a walk that sees nothing into a
-    /// loud refusal rather than a vacuous pass.
-    NoContext,
-    /// Add a `StepGeom_GeometricRepresentationContextAndGlobalUnitAssignedContext`
-    /// — the TWO-part complex context spelling, the one reify's own solid
-    /// export does not emit — reaching a steradian.
-    ///
-    /// The only fault that reaches `step_unit_assigned_context`'s third
-    /// downcast, and it is worth its own fault because the failure mode is
-    /// SILENT: drop that downcast and this context resolves to nothing, so V3
-    /// never runs for it, `contexts` under-counts, and the steradian is
-    /// reported by V4 as an ORPHAN instead. The test pins the difference
-    /// (V3 fires, V4 does not, `contexts` grows by one), which is what makes
-    /// the omission loud rather than invisible.
-    TwoPartContext,
-    /// Set `step.angleunit.mode` to the Deg regime for the duration of ONE
-    /// export. Unlike the model mutations above this is applied BEFORE
-    /// Transfer (the static is consumed during Transfer) and is restored by
-    /// RAII, so it cannot escape into a sibling test — see
-    /// `StepAngleModeOverride`.
-    AngleModeDeg,
-};
-
-/// Map the FFI fault name onto the enum.
-///
-/// An unrecognised name is a `ContractViolation`, not a silent no-op: a typo
-/// in a test must read as a rejected fault rather than as a skipped injection
-/// whose assertions then pass vacuously against a perfectly good export.
-StepGuardFault parse_step_guard_fault(const std::string& name) {
-    if (name == "none") {
-        return StepGuardFault::None;
-    }
-    if (name == "non_radian") {
-        return StepGuardFault::NonRadian;
-    }
-    if (name == "prefixed") {
-        return StepGuardFault::Prefixed;
-    }
-    if (name == "missing") {
-        return StepGuardFault::Missing;
-    }
-    if (name == "orphan_non_radian") {
-        return StepGuardFault::OrphanNonRadian;
-    }
-    if (name == "unrecognised_angular") {
-        return StepGuardFault::UnrecognisedAngular;
-    }
-    if (name == "conversion_based") {
-        return StepGuardFault::ConversionBased;
-    }
-    if (name == "orphan_unrecognised") {
-        return StepGuardFault::OrphanUnrecognised;
-    }
-    if (name == "no_context") {
-        return StepGuardFault::NoContext;
-    }
-    if (name == "two_part_context") {
-        return StepGuardFault::TwoPartContext;
-    }
-    if (name == "angle_mode_deg") {
-        return StepGuardFault::AngleModeDeg;
-    }
-    throw ContractViolation(
-        "unknown injected fault \"" + name +
-        "\"; accepted faults: none, non_radian, prefixed, missing, "
-        "orphan_non_radian, unrecognised_angular, conversion_based, "
-        "orphan_unrecognised, no_context, two_part_context, angle_mode_deg");
-}
+// The fault VOCABULARY is the shared cxx enum `StepGuardFault`, declared in
+// src/ffi.rs and generated into both languages: every fixture call site is
+// therefore compile-checked, and there is no name-parsing step to get wrong.
+// What each value models is documented on the variant; what it corrupts is
+// `apply_step_guard_fault` below.
+//
+// The seam is an explicit PARAMETER rather than a flag read from the
+// environment or a static, so `export_step`'s `StepGuardFault::None` argument
+// makes the production path provably fault-free BY CONSTRUCTION. The fault is
+// deliberately never threaded into the guard itself — the guard cannot be
+// taught which corruption to expect, so it has to detect it the same way it
+// would detect a real one.
 
 /// RAII override of the `step.angleunit.mode` Interface_Static, used by the
-/// `angle_mode_deg` fault.
+/// `StepGuardFault::AngleModeDeg` fault.
 ///
 /// RESTORATION IS THE WHOLE DESIGN. The static is PROCESS-GLOBAL and the
 /// integration harness runs its tests as threads in one process, so a value
@@ -7565,7 +7443,7 @@ public:
         }
         if (Interface_Static::IsPresent("step.angleunit.mode") != Standard_True) {
             throw ContractViolation(
-                "cannot inject the \"angle_mode_deg\" fault: this OCCT build has "
+                "cannot inject the AngleModeDeg fault: this OCCT build has "
                 "not registered the `step.angleunit.mode` static, so the trap "
                 "this fault models is unreachable and the test would pass "
                 "vacuously");
@@ -7647,8 +7525,8 @@ bool rebuild_units_keeping(
     }
     if (keep.empty()) {
         std::ostringstream oss;
-        oss << "cannot inject the \"" << fault_name
-            << "\" fault: a unit-assigned context reaches only units this "
+        oss << "cannot inject the " << fault_name
+            << " fault: a unit-assigned context reaches only units this "
                "fault removes, so no non-empty Units() array survives the "
                "strip (an HArray1 with lower > upper is not constructible) — "
                "the fixture no longer exercises this arm and needs revisiting";
@@ -7755,25 +7633,25 @@ void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
                     return classify_step_angle_unit(unit, nullptr) ==
                            StepAngleUnitKind::NotAngular;
                 },
-                "missing", &angular);
+                "Missing", &angular);
             if (!filtered) {
                 // A null Units() on the FIRST context is a fixture defect, not
                 // a context that merely has nothing to strip: there is no
                 // angular reference to remove, so the fault would do nothing.
                 throw ContractViolation(
-                    "cannot inject the \"missing\" fault: the first unit-assigned "
+                    "cannot inject the Missing fault: the first unit-assigned "
                     "context already has a null Units() array");
             }
             if (angular == 0) {
                 throw ContractViolation(
-                    "cannot inject the \"missing\" fault: the first unit-assigned "
+                    "cannot inject the Missing fault: the first unit-assigned "
                     "context already reaches no angular unit, so this negative "
                     "test would pass without the fault doing anything");
             }
             return;
         }
         throw ContractViolation(
-            "cannot inject the \"missing\" fault: the transferred model carries "
+            "cannot inject the Missing fault: the transferred model carries "
             "no unit-assigned context to strip");
     }
 
@@ -7789,7 +7667,7 @@ void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
         }
         if (victim.IsNull()) {
             throw ContractViolation(
-                "cannot inject the \"orphan_non_radian\" fault: the transferred "
+                "cannot inject the OrphanNonRadian fault: the transferred "
                 "model carries no SI plane-angle unit to orphan, so this "
                 "negative test would pass vacuously");
         }
@@ -7807,14 +7685,14 @@ void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
             size_t dropped_here = 0;
             const Standard_Transient* target = victim.get();
             // A null Units() array here is NOT a fixture defect (unlike the
-            // "missing" fault above): this loop visits EVERY context, and one
+            // Missing fault above): this loop visits EVERY context, and one
             // that references nothing simply cannot be holding the victim.
             if (!rebuild_units_keeping(
                     ctx,
                     [target](const Handle(StepBasic_NamedUnit)& unit) {
                         return unit.get() != target;
                     },
-                    "orphan_non_radian", &dropped_here)) {
+                    "OrphanNonRadian", &dropped_here)) {
                 continue;
             }
             if (dropped_here == 0) {
@@ -7824,12 +7702,12 @@ void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
         }
         if (removed == 0) {
             throw ContractViolation(
-                "cannot inject the \"orphan_non_radian\" fault: no unit-assigned "
+                "cannot inject the OrphanNonRadian fault: no unit-assigned "
                 "context referenced the target unit, so it was already an "
                 "orphan and this fault would not be what made it one");
         }
         // Now the rename, so the orphan is not the accepted unprefixed radian.
-        // STERADIAN for the same reason "non_radian" uses it: a real SI unit
+        // STERADIAN for the same reason NonRadian uses it: a real SI unit
         // name that is unambiguously not a plane angle.
         victim->SetName(StepBasic_sunSteradian);
         return;
@@ -7848,7 +7726,7 @@ void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
             });
         if (!applied) {
             throw ContractViolation(
-                "cannot inject the \"unrecognised_angular\" fault: no "
+                "cannot inject the UnrecognisedAngular fault: no "
                 "unit-assigned context reaches an angular unit to replace, so "
                 "this negative test would pass vacuously");
         }
@@ -7884,7 +7762,7 @@ void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
             });
         if (!applied) {
             throw ContractViolation(
-                "cannot inject the \"conversion_based\" fault: no unit-assigned "
+                "cannot inject the ConversionBased fault: no unit-assigned "
                 "context reaches an angular unit to replace, so this negative "
                 "test would pass vacuously");
         }
@@ -7901,7 +7779,7 @@ void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
         model->AddEntity(orphan);
         if (model->Number(orphan) == 0) {
             throw ContractViolation(
-                "cannot inject the \"orphan_unrecognised\" fault: the added "
+                "cannot inject the OrphanUnrecognised fault: the added "
                 "plane-angle unit did not become a model entity, so the walk "
                 "would never see it and this negative test would pass "
                 "vacuously");
@@ -7918,7 +7796,7 @@ void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
         Handle(StepBasic_SiUnitAndPlaneAngleUnit) wrong =
             new StepBasic_SiUnitAndPlaneAngleUnit();
         // `hasAprefix = False` makes the prefix argument inert; STERADIAN for
-        // the same reason "non_radian" uses it.
+        // the same reason NonRadian uses it.
         wrong->Init(Standard_False, StepBasic_spMilli, StepBasic_sunSteradian);
         wrong->SetPlaneAngleUnit(new StepBasic_PlaneAngleUnit());
 
@@ -7946,7 +7824,7 @@ void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
         if (two_part->GlobalUnitAssignedContext().IsNull() ||
             model->Number(two_part) == 0 || model->Number(wrong) == 0) {
             throw ContractViolation(
-                "cannot inject the \"two_part_context\" fault: the hand-built "
+                "cannot inject the TwoPartContext fault: the hand-built "
                 "two-part composite context did not become a well-formed model "
                 "entity, so this negative test would pass vacuously");
         }
@@ -7983,7 +7861,7 @@ void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
         }
         if (cleared == 0) {
             throw ContractViolation(
-                "cannot inject the \"no_context\" fault: the transferred model "
+                "cannot inject the NoContext fault: the transferred model "
                 "carries no complex representation context to neutralise, so "
                 "this negative test would pass vacuously");
         }
@@ -7995,7 +7873,7 @@ void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
         for (Standard_Integer i = 1; i <= n; ++i) {
             if (!step_unit_assigned_context(model->Value(i)).IsNull()) {
                 throw ContractViolation(
-                    "cannot inject the \"no_context\" fault: the model still "
+                    "cannot inject the NoContext fault: the model still "
                     "resolves a unit-assigned context after every complex "
                     "context was cleared, so V1 would not fire and this "
                     "negative test would exercise a different arm");
@@ -8310,7 +8188,7 @@ static StepExportLockedResult export_step_locked(const OcctShape& shape,
     // Refs: #6184; docs/prds/v0_6/angle-dimension-completion.md (INV-AD-4,
     // section 9 B7). Length regime above: #6186.
 
-    // The `angle_mode_deg` fault must be installed BEFORE Transfer, which is
+    // The AngleModeDeg fault must be installed BEFORE Transfer, which is
     // what consumes `step.angleunit.mode` (via STEPControl_ActorWrite::Transfer
     // -> InitializeFactors). It restores itself on the way out — on the
     // throwing path under `Refuse` and on the early return under `Report`
@@ -8409,7 +8287,7 @@ ExportStepResult export_step(const OcctShape& shape, rust::Str schema) {
 
 StepGuardProbeResult export_step_with_injected_fault_for_test(const OcctShape& shape,
                                                               rust::Str schema,
-                                                              rust::Str fault) {
+                                                              StepGuardFault fault) {
     // Same mutex as `export_step`, for the same reason: OCCT's STEP writer
     // pipeline is backed by process-global state.
     std::lock_guard<std::mutex> lock(g_step_export_mutex);
@@ -8418,22 +8296,20 @@ StepGuardProbeResult export_step_with_injected_fault_for_test(const OcctShape& s
     // refusal produces — a hook that stamped its own label would let the
     // production diagnostic drift without reddening anything.
     return wrap_occt_call("export_step", [&]() {
-        StepGuardFault injected = parse_step_guard_fault(std::string(fault));
         return step_guard_probe(
-            export_step_locked(shape, schema, injected, StepGuardDisposition::Refuse));
+            export_step_locked(shape, schema, fault, StepGuardDisposition::Refuse));
     });
 }
 
 StepGuardProbeResult step_guard_probe_for_test(const OcctShape& shape,
                                                rust::Str schema,
-                                               rust::Str fault) {
+                                               StepGuardFault fault) {
     // Same mutex, same production op name and same locked body as the refusing
     // hook above — the ONLY difference is the disposition.
     std::lock_guard<std::mutex> lock(g_step_export_mutex);
     return wrap_occt_call("export_step", [&]() {
-        StepGuardFault injected = parse_step_guard_fault(std::string(fault));
         return step_guard_probe(
-            export_step_locked(shape, schema, injected, StepGuardDisposition::Report));
+            export_step_locked(shape, schema, fault, StepGuardDisposition::Report));
     });
 }
 

@@ -100,11 +100,12 @@ pub fn boolean_pass_count() -> u64 {
 #[cfg(has_occt)]
 pub use ffi::ffi::RevolveSynthesisPostSortResult;
 
-// Same re-export rationale for the #6344 STEP plane-angle guard probe: the
-// `export_step_with_injected_fault_for_test` wrapper below returns it, so
-// integration tests must be able to name it.
+// Same re-export rationale for the #6344 STEP plane-angle guard seam: the
+// `export_step_with_injected_fault_for_test` wrapper below returns the probe
+// result and takes the fault by value, so integration tests must be able to
+// name both.
 #[cfg(has_occt)]
-pub use ffi::ffi::StepGuardProbeResult;
+pub use ffi::ffi::{StepGuardFault, StepGuardProbeResult};
 
 /// Fixture for integration tests: runs only the post-sort/dedup helper on
 /// a synthetic flat-records input, without requiring real OCCT geometry.
@@ -4833,22 +4834,23 @@ impl OcctKernel {
     /// immediate constant with no branch, so no input shape and no
     /// `Interface_Static` can make a real export declare a non-radian plane
     /// angle — without injection the guard would be untestable and therefore
-    /// decorative. The accepted `fault` values are documented on the C++
-    /// declaration in `cpp/occt_wrapper.h`.
+    /// decorative. What each [`StepGuardFault`] corrupts is documented on the
+    /// variant itself.
     ///
     /// # Errors
     ///
     /// - `ExportError::InvalidHandle` — if the handle is unknown.
     /// - `ExportError::FormatError` — the guard REFUSED the export (the
-    ///   interesting case), or the `fault` name was not recognised. Both
-    ///   surface with the production `"export_step: "` attribution, so a test
-    ///   asserting refusal text is asserting exactly what a user would see.
+    ///   interesting case), or the fault could not be injected into this
+    ///   fixture. Both surface with the production `"export_step: "`
+    ///   attribution, so a test asserting refusal text is asserting exactly
+    ///   what a user would see.
     #[doc(hidden)]
     pub fn export_step_with_injected_fault_for_test(
         &self,
         handle: GeometryHandleId,
         schema: &str,
-        fault: &str,
+        fault: StepGuardFault,
     ) -> Result<StepGuardProbeResult, ExportError> {
         let shape = self
             .get_shape(handle)
@@ -4879,16 +4881,16 @@ impl OcctKernel {
     /// # Errors
     ///
     /// - `ExportError::InvalidHandle` — if the handle is unknown.
-    /// - `ExportError::FormatError` — the `fault` name was not recognised, or
-    ///   it could not be injected into this fixture. Both are fixture defects
-    ///   rather than findings about the model, so they still surface as errors
-    ///   here: a typo must not read as a guard hit.
+    /// - `ExportError::FormatError` — the fault could not be injected into
+    ///   this fixture. That is a fixture defect rather than a finding about
+    ///   the model, so it still surfaces as an error here: a fixture with
+    ///   nothing to corrupt must not read as a guard hit.
     #[doc(hidden)]
     pub fn step_guard_probe_for_test(
         &self,
         handle: GeometryHandleId,
         schema: &str,
-        fault: &str,
+        fault: StepGuardFault,
     ) -> Result<StepGuardProbeResult, ExportError> {
         let shape = self
             .get_shape(handle)
