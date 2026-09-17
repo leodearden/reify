@@ -177,3 +177,58 @@ structure def Pipeline {
         pipeline.connections
     );
 }
+
+/// §6.2 inference belongs to `chain`, not to one desugar site. A `forall` body
+/// elaborates its own chain in `forall_elaborate.rs`, and a bare element there
+/// must resolve exactly as it does in a plain `chain`.
+///
+/// The bound variable substitutes to an INDEXED element (`vents[0]`), which is
+/// why resolution keys on the sub name with the indexer stripped: every element
+/// of a collection shares one child template and so one set of port directions.
+#[test]
+fn forall_chain_elements_infer_default_ports() {
+    let source = r#"
+trait Air { param d : Length }
+occurrence def Vent {
+    port inlet : in Air { param d : Length = 5mm }
+    port outlet : out Air { param d : Length = 5mm }
+}
+occurrence def Hub {
+    port feed : in Air { param d : Length = 5mm }
+    port vent : out Air { param d : Length = 5mm }
+}
+structure def S {
+    sub vents : List<Vent>
+    constraint vents.count == 2
+    sub hub = Hub()
+    forall v in vents: chain v -> hub
+}
+"#;
+
+    let module = compile_source(source);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let s = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("expected template S");
+
+    let endpoints: Vec<(&str, &str)> = s
+        .connections
+        .iter()
+        .map(|c| (c.left_port.as_str(), c.right_port.as_str()))
+        .collect();
+    assert_eq!(
+        endpoints,
+        vec![
+            ("vents[0].outlet", "hub.feed"),
+            ("vents[1].outlet", "hub.feed"),
+        ]
+    );
+}
