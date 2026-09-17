@@ -31,7 +31,10 @@
 //!
 //! A site counts as **coded** when `.with_code(` appears at or after the
 //! anchor position on the anchor line, or on any of the next
-//! `PDIAG_CODE_WINDOW` non-comment lines. The probe is the bare token
+//! `PDIAG_CODE_WINDOW` non-comment lines — and BEFORE the probe's bound: the
+//! first constructor separated from this site by a statement terminator. The
+//! ordered pair `; … <anchor>` is what bounds, neither half of it alone, and
+//! [`probe_segment`] owns the reasoning. The probe is the bare token
 //! `.with_code(` and NOT `.with_code(DiagnosticCode::` — real sites pass a
 //! severity-dispatched variable (`crates/reify-eval/src/compute_targets/
 //! fea_diagnostics.rs:53`).
@@ -50,13 +53,14 @@
 //!
 //! ## Accepted residual imprecision
 //!
-//! Every entry below is deliberate, and all but TWO are *permissive* — they
-//! under-count, so they can weaken the gate but not manufacture a RED. The two
-//! honest exceptions are the first bullet (a quoted anchor IS counted) and the
-//! tail of the comment-mask bullet (a string-literal `/*` can mask a site's own
-//! `.with_code(` line, which [`code_in_window`] then never sees). Both are
-//! accepted rather than lexed away because neither occurs in the swept corpus
-//! and one `pdiag:allow` clears either. (Two FURTHER false-RED routes were
+//! Every entry below is deliberate, and all but THREE are *permissive* — they
+//! under-count, so they can weaken the gate but not manufacture a RED. The
+//! three honest exceptions are the first bullet (a quoted anchor IS counted),
+//! the false-RED tail of the probe-bound bullet (an interleaved binding), and
+//! the tail of the comment-mask bullet (a string-literal `/*` can mask a site's
+//! own `.with_code(` line, which [`code_in_window`] then never sees). All three
+//! are accepted rather than lexed away because none occurs in the swept corpus
+//! and one `pdiag:allow` clears any of them. (Two FURTHER false-RED routes were
 //! real defects and are closed rather than accepted: a nested `/* /* */ */`
 //! region reading as live code, by [`comment_mask`]'s depth counter; and a
 //! type whose name merely ENDS in `Diagnostic` — `FeaDiagnostic::error(` —
@@ -64,27 +68,21 @@
 //!
 //! - An anchor token inside a string literal on a code line is counted as a
 //!   site (none observed in the corpus; `pdiag:allow` escapes it). This is the
-//!   first of the two entries here that err toward a false RED.
-//! - An unrelated `.with_code(` inside a site's window can mark it coded — a
-//!   handful of sites repo-wide, all of them in `#[cfg(test)]` code this
-//!   detector excludes (appendix A).
-//!   "Permissive" understates it: unlike the other entries here, this one can
-//!   also mask a BRAND-NEW code-less site placed above an existing coded one,
-//!   which is a hole in the hard gate rather than mere imprecision. It is the
-//!   sibling of the escape leak [`escape_in_window`] closes, left standing
-//!   because the two probes need opposite bounds (see that function's docs),
-//!   and is tracked as its own work item — #5887.
-//! - The SAME-LINE half of that probe has the same hole in the other
-//!   direction. [`scan_file`] probes rightwards from the anchor so an EARLIER
-//!   constructor's code cannot mark a later one, but the converse stands: in
-//!   `push(Diagnostic::error(m)); push(Diagnostic::warning(m2).with_code(c));`
-//!   the first anchor's rightward slice contains the second's `.with_code(`,
-//!   so a brand-new code-less site parked to the LEFT of a coded one on one
-//!   line is censused as coded. Bounding the scan at the next anchor on the
-//!   line is NOT the fix — it would false-RED the one-line severity-dispatch
-//!   shape `if bad { Diagnostic::error(m) } else { Diagnostic::warning(m) }
-//!   .with_code(c)`, whose code attaches after both constructors. Same work
-//!   item as the bullet above — #5887.
+//!   first of the three entries here that err toward a false RED.
+//! - The probe's bound — the ordered pair `; … <anchor>`, [`probe_segment`] —
+//!   is coarser than the language in BOTH directions, and one of those
+//!   directions can manufacture a RED.
+//!   *Permissive:* a `,`-separated match-arm tail expression is not a
+//!   statement terminator, so an unrelated `.with_code(` one arm down still
+//!   absorbs the arm above it. `,` cannot be promoted to a terminator — it
+//!   also separates constructor arguments, so a comma-bounded probe would
+//!   stop inside a wrapped `format!` and red the DOMINANT multi-line shape.
+//!   *False-RED:* an INTERLEAVED binding (`let a = ctor; let b =
+//!   ctor.with_code(c); a.with_code(c2);`) puts `b`'s anchor between `a` and
+//!   `a`'s own code, so `a` reads code-less. That is this list's second
+//!   false-RED route. Neither shape occurs in the swept corpus (appendix A);
+//!   `pdiag:allow` clears the false RED, and the remedy is written down for
+//!   authors in `docs/notes/diagnostic-severity-policy.md` §3.
 //! - The comment mask is line-granular and keyed on each line's FIRST
 //!   non-whitespace token, so nothing mid-line is ever stripped. That is
 //!   deliberate: stripping `//`-to-end-of-line would let a `//` inside a string
@@ -96,7 +94,7 @@
 //!   [`code_in_window`] SKIPS masked lines, so a spurious region opened on an
 //!   ANCHOR line that swallows the `.with_code(` below it censuses a genuinely
 //!   coded site as code-less — `Diagnostic::error(format!("p {}", "/*"))` with
-//!   its `.with_code(c);` on the next line. That is this list's second
+//!   its `.with_code(c);` on the next line. That is this list's third
 //!   false-RED route; latent rather than live (no swept file ends at non-zero
 //!   depth, and no masked line in the corpus carries a `.with_code(`), and
 //!   `pdiag:allow` clears it.
@@ -235,10 +233,15 @@ const CODE_PROBE: &str = ".with_code(";
 /// `docs/notes/diagnostic-severity-policy.md` §3(a) names the bound and its
 /// remedies, so an author hit by it is not left guessing.
 ///
-/// Closing the leak properly (bounding the code probe below, as
-/// [`escape_in_window`] bounds the escape probe above) is what would make
-/// widening safe. It is not a one-line change — the two probes need opposite
-/// bounds, see that function's docs — and is tracked as #5887.
+/// That leak is now BOUNDED: [`probe_segment`] stops the probe at the first
+/// constructor beyond a statement end. It is deliberately not
+/// [`escape_in_window`]'s bound — the two probes need different terminators,
+/// see those functions' docs.
+///
+/// This does NOT make a wider window safe, and must not be read that way.
+/// Fact 2 above is a census taken under the UNBOUNDED probe, so it no longer
+/// describes what widening would cost; re-running appendix A's recipe under
+/// the bound is what a widening proposal needs before it means anything.
 const PDIAG_CODE_WINDOW: usize = 15;
 
 /// The per-site opt-out token, spelled as a deliberate mirror of PTODO's
@@ -387,10 +390,13 @@ fn anchor_positions(line: &str) -> Vec<usize> {
 
 /// Per-file scan: one [`Site`] per anchor occurrence, in source order.
 ///
-/// A site is **coded** when `.with_code(` appears at or after the anchor
-/// position on the anchor line, or anywhere on the next [`PDIAG_CODE_WINDOW`]
-/// non-comment lines. Comment lines are invisible to both anchoring and the
-/// probe, and do not consume window budget.
+/// A site is **coded** when [`code_attached`]'s two-stage forward scan reaches
+/// a `.with_code(` before the probe's bound: first the anchor's own line from
+/// the anchor rightwards, then the next [`PDIAG_CODE_WINDOW`] non-comment
+/// lines. Both stages run ONE rule — [`probe_segment`]'s ordered pair
+/// `; … <anchor>` — so a code-less site parked above, or left of, a coded one
+/// still counts. Comment lines are invisible to both anchoring and the probe,
+/// and do not consume window budget.
 ///
 /// Two suppressions layer on top of that:
 ///
@@ -591,9 +597,9 @@ fn probe_segment(
 /// The walk is [`probe_segment`]'s, one segment per non-comment line, so the
 /// window is bounded by the ordered `; … <anchor>` pair as well as by budget —
 /// see that function for why the pair and not either half alone.
-/// `past_terminator` seeds the walk with whether the site's own tail already
-/// carried a terminator, which is what lets the pair straddle the line break
-/// immediately below the anchor.
+/// `past_terminator` seeds the walk with the terminator state [`code_attached`]
+/// left after probing the anchor's own line, which is what lets the pair
+/// straddle the line break immediately below the anchor.
 ///
 /// Comment lines are skipped entirely: invisible to the probe, and costing no
 /// budget, exactly as they cost none for [`escape_in_window`].
@@ -693,14 +699,15 @@ fn escaped_anchors(line: &str, anchors: &[usize], window: impl FnOnce() -> bool)
 /// escape's reach (this module's header quotes `Diagnostic::error(` a dozen
 /// times).
 ///
-/// [`code_in_window`] deliberately gets NO such terminator: its failure
-/// direction is opposite. An over-reaching escape silently suppresses a new
-/// site — a hole in the hard gate — while an over-reaching code probe only
-/// mis-marks a site coded, which the module header documents as accepted
-/// permissive imprecision. Terminating the code probe at the next anchor would
-/// also break the real `if {…} else {…}.with_code(code)` severity-dispatch
-/// shape, where the first anchor must reach past the second to the shared
-/// trailing code attachment.
+/// [`code_in_window`] gets a DIFFERENT terminator, not none. This probe stops
+/// at the next anchor UNCONDITIONALLY, because an over-reaching escape
+/// suppresses a site nobody reviewed and the cheapest bound that prevents it
+/// is the right one. The code probe cannot afford that bound: it must still
+/// cross the real `if {…} else {…}.with_code(code)` severity-dispatch shape,
+/// where the first anchor reaches past the second to their shared trailing
+/// code. So it stops only at an anchor BEYOND a statement end
+/// ([`probe_segment`]) — the weakest bound that still closes the same class
+/// of hard-gate hole this terminator closes.
 fn escape_in_window(
     lines: &[&str],
     mask: &[bool],
