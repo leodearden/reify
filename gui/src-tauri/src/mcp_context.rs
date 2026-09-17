@@ -369,6 +369,28 @@ pub fn mcp_tool_call_impl(
 /// what keeps "one worker design" true instead of adding a second mechanism
 /// alongside it.
 ///
+/// # What the WHOLE-dispatch granularity costs
+///
+/// Four of the fifteen [`ReifyToolContext`] methods touch no engine at all:
+/// `focus_entity` and `navigate_to_source` only fire the emitter, `get_selection`
+/// reads the selection `RwLock`, and `get_eval_status` returns a constant. Their
+/// tools — `reify_focus_entity`, `reify_navigate_to_source`,
+/// `reify_get_selection`, `reify_get_eval_status` — therefore now QUEUE behind
+/// whatever engine job the single-consumer lane is running, where before this
+/// routing they answered immediately on a Tauri command thread. That is a new
+/// latency coupling for exactly the navigation tools an AI client uses while a
+/// drag is in flight, and it is NEW: `large_stack::Lane`'s "What the split does
+/// NOT buy" describes intra-lane serialization among work that was ALREADY on
+/// the lane, not work newly enrolled into it.
+///
+/// Accepted rather than bypassed. Keeping those four off the lane means a
+/// tool-name-keyed predicate here, which would duplicate the registry's own
+/// knowledge of which tool reaches which context method — a second copy that
+/// rots silently the first time a tool gains an engine touch, and rots in the
+/// dangerous direction (a tool wrongly classed non-engine gets the caller's
+/// ~2 MiB stack back, which is the overflow this module exists to remove). The
+/// safe granularity is the one the dispatch itself has.
+///
 /// # Why here rather than in `commands.rs`
 ///
 /// This path needs an OWNED `TauriToolContext` — engine `Arc` + emitter +

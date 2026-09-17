@@ -656,10 +656,26 @@ fn mcp_tool_call(
     // `get_initial_state_impl` IS this lock-then-`build_gui_state`, so this is a
     // reuse rather than a second bespoke lock site — and `build_gui_state` walks
     // the evaluated model, making it recursion-bearing and lane-worthy in its
-    // own right. ONE deliberate behavioural delta: a POISONED engine mutex now
-    // still emits the delta, because `with_engine_lock` recovers from poisoning
-    // where the previous `if let Ok(..) = state.engine.lock()` silently skipped
-    // it. That also makes this command consistent with every other one.
+    // own right.
+    //
+    // TWO deliberate behavioural deltas, both from `with_engine_lock`, which the
+    // hand-rolled `state.engine.lock()` did not go through:
+    //
+    // 1. POISON RECOVERY, a strict gain. A poisoned engine mutex now still emits
+    //    the delta, where the previous `if let Ok(..) = state.engine.lock()`
+    //    silently skipped it.
+    // 2. PANIC CONTAINMENT, a real loss. `with_engine_lock` wraps the closure in
+    //    `catch_unwind`, so a panic inside `build_gui_state` becomes an `Err`
+    //    that the `if let Ok(..)` below DISCARDS. Previously it unwound out of
+    //    `mcp_tool_call` and reached the frontend as an IPC error. The cost: the
+    //    tool call is still reported `Ok`, the delta is silently skipped, and the
+    //    frontend holds a stale model with no signal that it did.
+    //
+    // Accepted because it makes this command consistent with the other fourteen
+    // rather than uniquely panic-transparent, and because the panic text is not
+    // lost — `with_engine_lock` formats it into the `Err` — but a future change
+    // wanting the frontend told should surface that `Err`, not re-hand-roll the
+    // lock.
     let engine = Arc::clone(&state.engine);
     if let Ok(gui_state) = reify_gui::large_stack::run_on_worker(move || {
         reify_gui::commands::get_initial_state_impl(&engine)
