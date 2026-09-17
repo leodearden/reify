@@ -14,41 +14,64 @@ use std::collections::HashMap;
 // ── BestFoundReason enum (S2, task #4871) ────────────────────────────────────
 
 /// [S2] BestFoundReason enum: variants construct, are PartialEq, and describe()
-/// returns three pairwise-distinct non-empty strings.
+/// returns four pairwise-distinct non-empty strings.
 ///
 /// The test intentionally does NOT pin describe() wording via substring checks —
 /// that would relocate the rewording-fragility the enum was introduced to remove.
 /// The real behavioral contract (which variant fires the gate) is covered by
 /// `best_found_reason_iteration_limit_vs_converged` in solver.rs and the
-/// `matches!(reason, BestFoundReason::IterationLimit)` gate in engine_eval.rs.
+/// two-variant `matches!` gate in engine_eval.rs.
 ///
 /// RED until step-3 introduces the enum in ranked.rs and re-exports it from lib.rs.
+/// Extended by task #6553, which adds the fourth variant `EnumerationBudget` so a
+/// capped exact enumeration can say so honestly instead of borrowing
+/// `IterationLimit`'s derivative-free wording.
 #[test]
 fn best_found_reason_variants_describe() {
-    // All three variants must be constructible and are Copy + PartialEq.
+    // All four variants must be constructible and are Copy + PartialEq.
     assert_eq!(BestFoundReason::IterationLimit, BestFoundReason::IterationLimit);
     assert_eq!(BestFoundReason::ConvergedWithinBudget, BestFoundReason::ConvergedWithinBudget);
     assert_eq!(BestFoundReason::Unreported, BestFoundReason::Unreported);
+    assert_eq!(BestFoundReason::EnumerationBudget, BestFoundReason::EnumerationBudget);
 
-    // Each variant must map to a non-empty describe() string, and all three
+    // Each variant must map to a non-empty describe() string, and all four
     // strings must be pairwise distinct.  This locks the round-trip contract
     // without pinning exact wording (which would recreate the rewording-fragility
     // the enum was designed to remove — S2 plan note).
     let il_desc = BestFoundReason::IterationLimit.describe();
     let cb_desc = BestFoundReason::ConvergedWithinBudget.describe();
     let ur_desc = BestFoundReason::Unreported.describe();
+    let eb_desc = BestFoundReason::EnumerationBudget.describe();
 
     assert!(!il_desc.is_empty(), "IterationLimit.describe() must be non-empty");
     assert!(!cb_desc.is_empty(), "ConvergedWithinBudget.describe() must be non-empty");
     assert!(!ur_desc.is_empty(), "Unreported.describe() must be non-empty");
+    assert!(!eb_desc.is_empty(), "EnumerationBudget.describe() must be non-empty");
 
     assert_ne!(il_desc, cb_desc, "IterationLimit and ConvergedWithinBudget must describe() differently");
     assert_ne!(il_desc, ur_desc, "IterationLimit and Unreported must describe() differently");
     assert_ne!(cb_desc, ur_desc, "ConvergedWithinBudget and Unreported must describe() differently");
+    assert_ne!(
+        eb_desc, il_desc,
+        "EnumerationBudget and IterationLimit must describe() differently — \
+         collapsing them is the #6553 defect (a capped exact enumeration is neither \
+         derivative-free nor iteration-limited)"
+    );
+    assert_ne!(eb_desc, cb_desc, "EnumerationBudget and ConvergedWithinBudget must describe() differently");
+    assert_ne!(eb_desc, ur_desc, "EnumerationBudget and Unreported must describe() differently");
 
     // OptimalityStatus::BestFound accepts BestFoundReason in the reason field.
     let status = OptimalityStatus::BestFound { reason: BestFoundReason::IterationLimit };
     assert!(matches!(status, OptimalityStatus::BestFound { reason: BestFoundReason::IterationLimit }));
+
+    // ... including the new variant, which must round-trip back out of a match.
+    let budget_status = OptimalityStatus::BestFound { reason: BestFoundReason::EnumerationBudget };
+    match budget_status {
+        OptimalityStatus::BestFound { reason } => {
+            assert_eq!(reason, BestFoundReason::EnumerationBudget);
+        }
+        _ => panic!("expected BestFound"),
+    }
 }
 
 // ── OptimalityStatus ─────────────────────────────────────────────────────────
