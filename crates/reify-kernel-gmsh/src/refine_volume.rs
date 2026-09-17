@@ -303,7 +303,7 @@ pub fn refine_volume_with_size_field(
     } else {
         GMSH_MESH_SIZE_MAX_DEFAULT
     };
-    let _clamp_reset = MeshSizeClampReset::armed(&_guard);
+    let _clamp_reset = MeshSizeClampReset::armed(_guard.clamp_reset_witness());
     ffi::option_set_number("Mesh.MeshSizeMin", GMSH_MESH_SIZE_MIN_DEFAULT)?;
     ffi::option_set_number("Mesh.MeshSizeMax", max_hint)?;
 

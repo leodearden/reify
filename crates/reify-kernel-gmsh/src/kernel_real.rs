@@ -239,7 +239,8 @@ impl GmshKernel {
         // deliberately out of #6298's scope and owned by name by task #6212,
         // which also owns the still-unshared `Mesh.MeshSizeFromPoints` /
         // `MeshSizeFromCurvature` / `MeshSizeExtendFromBoundary` trio.
-        let _clamp_reset = crate::mesh_size_clamp::MeshSizeClampReset::armed(&_guard);
+        let _clamp_reset =
+            crate::mesh_size_clamp::MeshSizeClampReset::armed(_guard.clamp_reset_witness());
 
         ffi::clear()?;
         // Silence gmsh's stdout chatter — keeps test output readable.

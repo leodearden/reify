@@ -13,16 +13,15 @@
 //! `crates/reify-kernel-openvdb/src/init.rs:22-37`.
 //!
 //! Because the library's lifetime is this module's business, so is putting it
-//! back when the mesher breaks ([`mesh_generate_with_recovery`]) and refusing
+//! back when the mesher breaks (`mesh_generate_with_recovery`) and refusing
 //! to keep going when it cannot be put back ([`lock`]).
 //!
-//! [`read_tet_connectivity`] is that recovery's companion on the way out: a
+//! `read_tet_connectivity` is that recovery's companion on the way out: a
 //! broken mesher's characteristic output is an EMPTY element buffer, so all
 //! three tet meshers read their tets back through one shared, checked call.
 //!
 //! Only compiled when `cfg(has_gmsh)` is set by `build.rs`.
 
-use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -61,22 +60,24 @@ const GMSH_DEAD_MESSAGE: &str = "libgmsh is finalized and could not be \
 ///
 /// [`lock`] is the only constructor and the field is private, so a function
 /// that asks for a `&GmshGuard` cannot be reached without the real
-/// process-global lock held. [`mesh_generate_with_recovery`] needs exactly
+/// process-global lock held. `mesh_generate_with_recovery` needs exactly
 /// that: it finalizes libgmsh, which no thread inside the library survives. A
 /// `&MutexGuard<'_, ()>` parameter would have been satisfied by a guard
 /// borrowed from any `Mutex<()>` the caller cared to declare.
 /// [`crate::mesh_size_clamp::MeshSizeClampReset::armed`] is that same idiom
 /// one notch weaker — proportionate there, where a violation restores two
 /// options at the wrong moment, and not here, where it tears the library down.
-///
-/// Derefs to the guard it wraps, so it still serves as the lifetime witness
-/// `MeshSizeClampReset::armed` borrows.
 pub struct GmshGuard(MutexGuard<'static, ()>);
 
-impl Deref for GmshGuard {
-    type Target = MutexGuard<'static, ()>;
-
-    fn deref(&self) -> &Self::Target {
+impl GmshGuard {
+    /// The weaker witness [`crate::mesh_size_clamp::MeshSizeClampReset::armed`]
+    /// still asks for, and the only way to obtain one from a [`GmshGuard`].
+    ///
+    /// A named `pub(crate)` accessor rather than an `impl Deref`: a
+    /// `&MutexGuard<'_, ()>` is exactly the witness this type was introduced to
+    /// stop handing out, so the one site that still needs it names it, and no
+    /// caller outside this crate can reach one at all.
+    pub(crate) fn clamp_reset_witness(&self) -> &MutexGuard<'static, ()> {
         &self.0
     }
 }
@@ -158,7 +159,10 @@ pub fn ensure_initialized() {
 /// out is harmless either way: measured on libgmsh 4.15.2, an FFI call after
 /// `gmshFinalize` returns `ierr=1` ("Gmsh has not been initialized") and does
 /// nothing.
-pub fn mesh_generate_with_recovery(_guard: &GmshGuard, dim: i32) -> Result<(), GeometryError> {
+pub(crate) fn mesh_generate_with_recovery(
+    _guard: &GmshGuard,
+    dim: i32,
+) -> Result<(), GeometryError> {
     let original = match ffi::mesh_generate(dim) {
         Ok(()) => return Ok(()),
         Err(e) => e,
@@ -212,7 +216,7 @@ pub fn mesh_generate_with_recovery(_guard: &GmshGuard, dim: i32) -> Result<(), G
 ///
 /// `caller` names the entry point in the error message — three of them share
 /// this readback, and the buffer says nothing about where it came from.
-pub fn read_tet_connectivity(
+pub(crate) fn read_tet_connectivity(
     caller: &str,
     element_order: ElementOrderTag,
 ) -> Result<Vec<u64>, GeometryError> {
