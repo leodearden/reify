@@ -123,6 +123,7 @@ test_landlock_exec_refer.sh pool
 test_lane_task_status.sh pool
 test_lane_x_flock.sh pool
 test_lean_debuginfo_profile.sh pool
+test_lib_task_citation.sh pool
 test_linker_config.sh pool
 test_load_tolerance_lib.sh pool
 test_lock_charter_decompose_guard.sh pool
@@ -214,6 +215,7 @@ test_spec_anchor_lint.sh pool
 test_stash_guard.sh pool
 test_sync_comments_grep.sh pool
 test_target_per_lane_independence.sh pool
+test_task_branch_contamination_sweep.sh pool
 test_test_binary_concurrency_sampler.sh pool
 test_test_helpers.sh pool
 test_test_pycache_gitignored.sh pool
