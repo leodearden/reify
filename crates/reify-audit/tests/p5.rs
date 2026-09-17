@@ -19,8 +19,8 @@ mod p5 {
 
 use crate::common::schema::{seed_db, insert_event, insert_task_completed_event};
 use reify_audit::{
-    AuditContext, DoneProvenance, EvidenceRef, Finding, GitCommit, MockGitOps, MockJCodemunchOps,
-    Pattern, Severity, TaskMetadata, p5_phantom_done,
+    AuditContext, ChangedSymbol, DeclSuppression, DoneProvenance, EvidenceRef, Finding, GitCommit,
+    MockGitOps, MockJCodemunchOps, Pattern, Severity, TaskMetadata, p5_phantom_done,
 };
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashMap;
@@ -3444,6 +3444,119 @@ mod tests {
             h2_findings.is_empty(),
             "#[allow(dead_code)] symbol must NOT be flagged by H2; got {:?}",
             h2_findings
+        );
+    }
+
+    /// H2 FP guard (d): a symbol whose declaration was never LOCATED carries no
+    /// opt-out judgement at all, so H2 must skip it rather than strand it.
+    ///
+    /// The sibling above pins the case where enrichment READ the declaration
+    /// and found an opt-out. This is the case where enrichment read nothing —
+    /// `opts_out()` is vacuously false, so `is_symbol_suppressed` answers
+    /// "no opt-out" and H2 strands a symbol whose author may well have written
+    /// `#[allow(dead_code)]`. Same defect as P1's, through the same three
+    /// suppression facts.
+    ///
+    /// Two symbols, asserted as a partition of the pattern-filtered set: the
+    /// located sibling must still be stranded, so the guard is shown to be
+    /// narrow rather than blanket.
+    #[test]
+    fn h2_skips_a_symbol_whose_declaration_was_never_located() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "H2FP4");
+
+        let mut git = MockGitOps::new();
+        git.set_diff_changed_paths(
+            "main",
+            "h2fp4_commit",
+            vec![
+                "crates/reify-compiler/src/compile.rs".to_string(),
+                "crates/reify-eval/src/lib.rs".to_string(),
+            ],
+        );
+        git.set_log_grep("main", "H2FP4", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "H2FP4".to_string(),
+            TaskMetadata {
+                task_id: "H2FP4".to_string(),
+                status: "done".to_string(),
+                // Two distinct crates/<name>/ roots satisfy the cross-crate gate.
+                files: vec![
+                    "crates/reify-compiler/src/compile.rs".to_string(),
+                    "crates/reify-eval/src/lib.rs".to_string(),
+                ],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("h2fp4_commit".to_string()),
+                    note: None,
+                }),
+                title: "Cross-crate with an unlocatable declaration".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            "h2fp4_commit^1",
+            "h2fp4_commit",
+            vec![
+                ChangedSymbol {
+                    name: "unlocatable_helper".to_string(),
+                    file: "crates/reify-eval/src/lib.rs".to_string(),
+                    line: 100,
+                    // The declaration was never located — suppression UNKNOWN.
+                    suppression: None,
+                },
+                ChangedSymbol {
+                    name: "located_helper".to_string(),
+                    file: "crates/reify-compiler/src/compile.rs".to_string(),
+                    line: 20,
+                    // Located and genuinely carrying no opt-out.
+                    suppression: Some(DeclSuppression::default()),
+                },
+            ],
+        );
+        // No callers for either — nothing is rescued by find_references.
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        let h2_findings: Vec<_> = findings
+            .iter()
+            .filter(|f| f.pattern == Pattern::P5LivePathStranded)
+            .collect();
+        assert_eq!(
+            h2_findings.len(),
+            1,
+            "the located symbol must still be stranded and the unlocatable one \
+             must not; got {h2_findings:?}",
+        );
+        assert!(
+            h2_findings[0].summary.contains("located_helper"),
+            "the surviving finding must be the LOCATED symbol's; got summary: {:?}",
+            h2_findings[0].summary
+        );
+        assert!(
+            !h2_findings
+                .iter()
+                .any(|f| f.summary.contains("unlocatable_helper")),
+            "a symbol whose declaration was never located must not be stranded \
+             — nothing read its opt-outs; got {h2_findings:?}",
         );
     }
 
